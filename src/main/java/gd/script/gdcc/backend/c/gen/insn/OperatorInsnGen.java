@@ -179,7 +179,6 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                     : new PrimitiveFastPathGuardRule(
                     "gdcc_float_division_by_zero(" + rightCode + ")",
                     "floating modulo by zero");
-            case POWER -> PrimitiveFastPathGuardRule.NOOP;
             case SHIFT_LEFT -> bothInt
                     ? new PrimitiveFastPathGuardRule(
                     "gdcc_int_shift_left_invalid(" + leftCode + ", " + rightCode + ")",
@@ -322,12 +321,13 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                     leftOperand,
                     rightOperand
             );
-            var unpackFunctionName = bodyBuilder.helper().renderUnpackFunctionName(resultVar.type());
-            bodyBuilder.callAssign(
+            // Object unpack is BORROWED; destination slot retain must happen before Variant destroy.
+            InsnGenSupport.unpackVariantAssign(
+                    bodyBuilder,
                     bodyBuilder.targetOfVar(resultVar),
-                    unpackFunctionName,
                     resultVar.type(),
-                    List.of(resultVariant)
+                    resultVariant,
+                    "variant_evaluate result target"
             );
         }
 
@@ -436,17 +436,20 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
             throw bodyBuilder.invalidInsn("Object comparison supports only == and !=");
         }
 
-        // Align with Godot object pointer identity: compare raw Godot object pointers directly.
-        // Do not recover instance IDs from raw pointers and do not perform liveness validation here.
-        var leftRaw = bodyBuilder.renderArgument(bodyBuilder.valueOfVar(leftVar), true);
-        var rightRaw = bodyBuilder.renderArgument(bodyBuilder.valueOfVar(rightVar), true);
-        if (!leftRaw.temps().isEmpty() || !rightRaw.temps().isEmpty()) {
-            throw bodyBuilder.invalidInsn("object comparison operands must not require temporaries");
+        // Align with Godot object pointer identity: compare cached raw Godot object pointers.
+        // Do not recover instance IDs, do not compare fat structs/IDs, and do not validate liveness.
+        if (!(leftVar.type() instanceof GdObjectType leftObjectType) ||
+                !(rightVar.type() instanceof GdObjectType rightObjectType)) {
+            throw bodyBuilder.invalidInsn("object comparison requires object operands");
         }
+        var leftCode = bodyBuilder.valueOfVar(leftVar).generateCode();
+        var rightCode = bodyBuilder.valueOfVar(rightVar).generateCode();
+        var leftRaw = bodyBuilder.renderCachedGodotObjectPtr(leftCode, leftObjectType);
+        var rightRaw = bodyBuilder.renderCachedGodotObjectPtr(rightCode, rightObjectType);
         var operator = op == GodotOperator.EQUAL ? " == " : " != ";
         bodyBuilder.assignExpr(
                 bodyBuilder.targetOfVar(resultVar),
-                "(" + leftRaw.code() + operator + rightRaw.code() + ")",
+                "(" + leftRaw + operator + rightRaw + ")",
                 GdBoolType.BOOL
         );
     }
@@ -476,16 +479,12 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
             return;
         }
 
-        // Phase-2 legacy raw representation can only check the raw pointer.
-        // Phase-3 fat-pointer lowering will pass both raw and instance_id to
-        // gdcc_object_is_null_raw_and_id so freed objects are detected safely.
-        var objectRaw = bodyBuilder.renderArgument(bodyBuilder.valueOfVar(objectVar), true);
-        if (!objectRaw.temps().isEmpty()) {
-            throw bodyBuilder.invalidInsn("object/nil comparison operand must not require temporaries");
-        }
+        // Object-vs-nil uses the same (raw, id) null/freed query as object_is_null.
+        var objectCode = bodyBuilder.valueOfVar(objectVar).generateCode();
+        var isNullExpr = bodyBuilder.renderObjectIsNullExpr(objectCode);
         var expression = op == GodotOperator.EQUAL
-                ? "(" + objectRaw.code() + " == NULL)"
-                : "(" + objectRaw.code() + " != NULL)";
+                ? "(" + isNullExpr + ")"
+                : "(!" + isNullExpr + ")";
         bodyBuilder.assignExpr(bodyBuilder.targetOfVar(resultVar), expression, GdBoolType.BOOL);
     }
 

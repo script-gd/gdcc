@@ -26,8 +26,6 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
 
-import static gd.script.gdcc.util.StringUtil.escapeStringLiteral;
-
 public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
     @Override
     public @NotNull EnumSet<GdInstruction> getInsnOpcodes() {
@@ -55,8 +53,17 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
                     bodyBuilder.assignExpr(requireWritableTarget(bodyBuilder, resultVar), Boolean.toString(value), GdBoolType.BOOL);
             case LiteralIntInsn(_, var value) ->
                     bodyBuilder.assignExpr(requireWritableTarget(bodyBuilder, resultVar), Long.toString(value), GdIntType.INT);
-            case LiteralNullInsn _ ->
-                    bodyBuilder.assignExpr(requireWritableTarget(bodyBuilder, resultVar), "NULL", resultVar.type());
+            case LiteralNullInsn _ -> {
+                if (!(resultVar.type() instanceof GdObjectType objectType)) {
+                    throw bodyBuilder.invalidInsn("literal_null requires an object result type, got '" +
+                            resultVar.type().getTypeName() + "'");
+                }
+                bodyBuilder.assignExpr(
+                        requireWritableTarget(bodyBuilder, resultVar),
+                        bodyBuilder.helper().renderDefaultValueExprInC(objectType),
+                        resultVar.type()
+                );
+            }
             case LiteralNilInsn _ -> emitNilLiteral(bodyBuilder, resultVar);
             default -> throw bodyBuilder.invalidInsn("Unsupported new-data instruction: " + insn.opcode().opcode());
         }
@@ -66,11 +73,12 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
         // Ordinary String payloads may legitimately contain leading/trailing quotes, so backend keeps
         // this path payload-only instead of guessing whether the producer accidentally passed a raw
         // source lexeme.
-        var utf8Literal = utf8Literal(value);
+        // UTF-8 C string literals are direct `const char*`, not object values.
+        var utf8Literal = bodyBuilder.valueOfCStringLiteral(value);
         if (resultVar.ref()) {
             bodyBuilder.callVoid(
                     "godot_string_new_with_utf8_chars",
-                    List.of(bodyBuilder.valueOfVar(resultVar), bodyBuilder.valueOfExpr(utf8Literal, GdObjectType.OBJECT))
+                    List.of(bodyBuilder.valueOfVar(resultVar), utf8Literal)
             );
             return;
         }
@@ -78,7 +86,7 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
                 bodyBuilder.targetOfVar(resultVar),
                 "godot_new_String_with_utf8_chars",
                 resultVar.type(),
-                List.of(bodyBuilder.valueOfExpr(utf8Literal, GdObjectType.OBJECT))
+                List.of(utf8Literal)
         );
     }
 
@@ -88,11 +96,11 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
                     "LiteralStringNameInsn must carry normalized runtime payload, not raw lexeme: " + value
             );
         }
-        var utf8Literal = utf8Literal(value);
+        var utf8Literal = bodyBuilder.valueOfCStringLiteral(value);
         if (resultVar.ref()) {
             bodyBuilder.callVoid(
                     "godot_string_name_new_with_utf8_chars",
-                    List.of(bodyBuilder.valueOfVar(resultVar), bodyBuilder.valueOfExpr(utf8Literal, GdObjectType.OBJECT))
+                    List.of(bodyBuilder.valueOfVar(resultVar), utf8Literal)
             );
             return;
         }
@@ -100,7 +108,7 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
                 bodyBuilder.targetOfVar(resultVar),
                 "godot_new_StringName_with_utf8_chars",
                 resultVar.type(),
-                List.of(bodyBuilder.valueOfExpr(utf8Literal, GdObjectType.OBJECT))
+                List.of(utf8Literal)
         );
     }
 
@@ -180,10 +188,6 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
             default ->
                     throw bodyBuilder.invalidInsn("Unsupported new-data instruction: " + instruction.opcode().opcode());
         }
-    }
-
-    private @NotNull String utf8Literal(@NotNull String value) {
-        return "u8\"" + escapeStringLiteral(value) + "\"";
     }
 
     private boolean looksLikeRawStringNameLexeme(@NotNull String value) {

@@ -11,7 +11,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -92,9 +91,9 @@ public final class CBodyBuilder {
             var returnType = func.getReturnType();
             if (!(returnType instanceof GdVoidType)) {
                 out.append(helper.renderGdTypeInC(returnType)).append(" ").append(RETURN_SLOT_NAME);
-                if (returnType instanceof GdObjectType) {
-                    // Object return slots start with NULL so overwrite can safely release old value.
-                    out.append(" = NULL");
+                if (returnType instanceof GdObjectType objectType) {
+                    // Object return slots start zeroed so overwrite can safely release the old fat pointer.
+                    out.append(" = ").append(helper.renderDefaultValueExprInC(objectType));
                 }
                 out.append(";\n");
             }
@@ -168,7 +167,7 @@ public final class CBodyBuilder {
         var initCode = value.generateCode();
         if (temp.type() instanceof GdObjectType targetObjType) {
             var valueObjType = value.type() instanceof GdObjectType objectType ? objectType : null;
-            initCode = convertPtrIfNeeded(initCode, value.ptrKind(), valueObjType, targetObjType);
+            initCode = convertObjectValueIfNeeded(initCode, value.ptrKind(), valueObjType, targetObjType);
         }
         out.append(temp.name()).append(" = ").append(initCode).append(";\n");
         temp.setInitialized(true);
@@ -208,10 +207,6 @@ public final class CBodyBuilder {
         return currentInsnIndex;
     }
 
-    public @Nullable LirInstruction currentInsn() {
-        return currentInsn;
-    }
-
     public @NotNull String build() {
         return out.toString();
     }
@@ -234,13 +229,12 @@ public final class CBodyBuilder {
         usageBuffer.recordModuleLocalGodotBinding(binding);
     }
 
-    /// Resolves the PtrKind for a given GdType based on the class registry.
+    /// Resolves the value representation for a GdType.
+    /// Ordinary object storage/parameters/returns are fat pointers; raw ABI producers must be marked
+    /// explicitly as `RAW_PRODUCER` at the call/construct site.
     private @NotNull PtrKind resolvePtrKind(@NotNull GdType type) {
-        if (type instanceof GdObjectType objType) {
-            if (objType.checkGdccType(classRegistry())) {
-                return PtrKind.GDCC_PTR;
-            }
-            return PtrKind.GODOT_PTR;
+        if (type instanceof GdObjectType) {
+            return PtrKind.FAT_PTR;
         }
         return PtrKind.NON_OBJECT;
     }
@@ -259,23 +253,17 @@ public final class CBodyBuilder {
     public @NotNull ValueRef valueOfCastedVar(@NotNull LirVariable variable, @NotNull GdType castType) {
         var sourceType = variable.type();
         if (sourceType instanceof GdObjectType sourceObjectType && castType instanceof GdObjectType targetObjectType) {
-            var sourcePtrKind = resolvePtrKind(sourceObjectType);
-            var targetPtrKind = resolvePtrKind(targetObjectType);
-            if (sourceObjectType.getTypeName().equals(targetObjectType.getTypeName()) && sourcePtrKind == targetPtrKind) {
+            if (sourceObjectType.getTypeName().equals(targetObjectType.getTypeName())) {
                 return valueOfVar(variable);
             }
-            if (sourceObjectType.checkGdccType(classRegistry()) && targetObjectType.checkGdccType(classRegistry())) {
-                var upcastExpr = renderGdccUpcastExpr(variable, sourceObjectType, targetObjectType);
-                return valueOfExpr(upcastExpr, castType, targetPtrKind);
-            }
             var sourceCode = "$" + variable.id();
-            var convertedCode = convertPtrIfNeeded(sourceCode, sourcePtrKind, sourceObjectType, targetObjectType);
-            if (sourcePtrKind == PtrKind.GODOT_PTR && targetPtrKind == PtrKind.GDCC_PTR) {
-                return valueOfExpr(convertedCode, castType, targetPtrKind);
-            }
-            var castTypeCode = helper.renderGdTypeInC(castType);
-            var castExpr = "(" + castTypeCode + ")" + convertedCode;
-            return valueOfExpr(castExpr, castType, targetPtrKind);
+            var convertedCode = convertObjectValueIfNeeded(
+                    sourceCode,
+                    PtrKind.FAT_PTR,
+                    sourceObjectType,
+                    targetObjectType
+            );
+            return valueOfExpr(convertedCode, castType, PtrKind.FAT_PTR);
         }
         if (sourceType instanceof GdObjectType || castType instanceof GdObjectType) {
             throw invalidInsn("Cannot cast between object and non-object types: '" +
@@ -284,49 +272,6 @@ public final class CBodyBuilder {
         var castTypeCode = helper.renderGdTypeInC(castType);
         var castExpr = "(" + castTypeCode + ")$" + variable.id();
         return valueOfExpr(castExpr, castType);
-    }
-
-    /// Renders a GDCC -> GDCC upcast expression using `_super` prefix layout chain.
-    /// Fails fast for non-upcast or unverifiable inheritance paths.
-    private @NotNull String renderGdccUpcastExpr(@NotNull LirVariable variable,
-                                                 @NotNull GdObjectType sourceObjectType,
-                                                 @NotNull GdObjectType targetObjectType) {
-        var sourceName = sourceObjectType.getTypeName();
-        var targetName = targetObjectType.getTypeName();
-        if (sourceName.equals(targetName)) {
-            return "$" + variable.id();
-        }
-        if (!classRegistry().checkAssignable(sourceObjectType, targetObjectType)) {
-            throw invalidInsn("GDCC cast must be a safe upcast, but got '" +
-                    sourceName + "' -> '" + targetName + "'");
-        }
-
-        var visited = new HashSet<String>();
-        var currentName = sourceName;
-        var upcastDepth = 0;
-        while (!currentName.equals(targetName)) {
-            if (!visited.add(currentName)) {
-                throw invalidInsn("Detected GDCC inheritance cycle while casting '" +
-                        sourceName + "' -> '" + targetName + "'");
-            }
-            var currentClass = classRegistry().findGdccClass(currentName);
-            if (currentClass == null) {
-                throw invalidInsn("Cannot resolve GDCC class definition '" + currentName +
-                        "' while casting '" + sourceName + "' -> '" + targetName + "'");
-            }
-            var superCanonicalName = currentClass.getSuperName();
-            if (!classRegistry().isGdccClass(superCanonicalName)) {
-                throw invalidInsn("Cannot prove GDCC upcast path '" + sourceName + "' -> '" +
-                        targetName + "': parent '" + superCanonicalName + "' is not a GDCC class");
-            }
-            currentName = superCanonicalName;
-            upcastDepth++;
-        }
-
-        var sourceCode = "$" + variable.id();
-        return "&(" + sourceCode + "->_super" +
-                "._super".repeat(Math.max(0, upcastDepth - 1)) +
-                ")";
     }
 
     public @NotNull ValueRef valueOfVar(@NotNull String variableName) {
@@ -610,11 +555,8 @@ public final class CBodyBuilder {
     /// Unified codegen entry for the `assert_object_live` hard-fail guard.
     /// Backend paths that need a validated receiver/owner must request this guard instead of
     /// emitting ad-hoc inline liveness branches.
-    ///
-    /// Phase-2 legacy raw representation can only hard-fail on `raw == NULL`.
-    /// Phase-3 fat-pointer lowering must call the generic untyped helper
-    /// `gdcc_object_is_null_raw_and_id(raw, instance_id)` — never recover ID from raw, and never
-    /// generate per-class assert helpers.
+    /// Uses generic `gdcc_object_is_null_raw_and_id(raw, instance_id)` on the fat pointer fields;
+    /// never recovers ID from raw and never generates per-class assert helpers.
     public @NotNull CBodyBuilder emitAssertObjectLiveGuard(@NotNull LirVariable objectVariable) {
         if (checkInFinallyBlock()) {
             throw invalidInsn("assert_object_live must not appear in __finally__ block");
@@ -623,17 +565,61 @@ public final class CBodyBuilder {
             throw invalidInsn("assert_object_live target '" + objectVariable.id() + "' must be an object type, got '" +
                     objectVariable.type().getTypeName() + "'");
         }
-        var argument = renderArgument(valueOfVar(objectVariable), true);
-        if (!argument.temps().isEmpty()) {
-            throw invalidInsn("assert_object_live target '" + objectVariable.id() + "' must not require temporaries");
-        }
+        var objectCode = valueOfVar(objectVariable).generateCode();
         var objectName = escapeStringLiteral(objectVariable.id());
-        appendLine("if (" + argument.code() + " == NULL) {");
+        appendLine("if (" + renderObjectIsNullExpr(objectCode) + ") {");
         appendLine("    GDCC_PRINT_RUNTIME_ERROR(\"assert_object_live failed: object '" + objectName +
                 "' is null or freed\", __func__, __FILE__, __LINE__);");
         appendLine("    goto __finally__;");
         appendLine("}");
         return this;
+    }
+
+    /// Nullness/assert raw operand from a fat pointer without liveness validation and without
+    /// dereferencing a potentially freed GDCC wrapper. The helper only treats this value as a
+    /// NULL-ness sentinel, then decides liveness from `instance_id`.
+    /// Engine fat pointers already store a Godot raw pointer. GDCC fat pointers store a wrapper
+    /// pointer; casting it to GDExtensionObjectPtr is only safe as a NULL check sentinel.
+    public @NotNull String renderNullQueryRawOperand(@NotNull String fatPtrCode) {
+        return "(GDExtensionObjectPtr)(" + fatPtrCode + ").ptr";
+    }
+
+    /// Cached raw Godot object pointer for equality (no liveness check).
+    /// Engine types use the fat pointer's raw field. GDCC types go through `object_ptr` only when
+    /// the wrapper pointer is non-null; freed wrappers remain an open architecture risk for equality
+    /// (see phase 3 review) and must not be used for null/assert paths.
+    public @NotNull String renderCachedGodotObjectPtr(@NotNull String fatPtrCode, @NotNull GdObjectType objType) {
+        if (objType.checkGdccType(classRegistry())) {
+            var objectPtrHelper = helper.renderGdccObjectPtrHelperName(objType);
+            return "((" + fatPtrCode + ").ptr == NULL ? NULL : " + objectPtrHelper + "((" + fatPtrCode + ").ptr))";
+        }
+        return "(GDExtensionObjectPtr)(" + fatPtrCode + ").ptr";
+    }
+
+    /// Validated live raw Godot object pointer from a fat pointer (RefCounted fast path or ObjectDB).
+    public @NotNull String renderLiveGodotObjectPtr(@NotNull String fatPtrCode, @NotNull GdObjectType objType) {
+        var fatType = helper.renderObjectFatPtrStorageType(objType);
+        return fatType + "_live_object(" + fatPtrCode + ")";
+    }
+
+    /// Captures a live raw Godot object pointer into the target fat pointer type.
+    public @NotNull String renderFatPtrFromRaw(@NotNull String rawCode, @NotNull GdObjectType objType) {
+        var fatType = helper.renderObjectFatPtrStorageType(objType);
+        return fatType + "_from_raw((GDExtensionObjectPtr)(" + rawCode + "))";
+    }
+
+    /// Fat-pointer upcast helper name for an assignable source -> target pair.
+    public @NotNull String renderObjectFatPtrUpcastHelperName(@NotNull GdObjectType sourceType,
+                                                              @NotNull GdObjectType targetType) {
+        var sourceSpec = helper.requireObjectFatPtrSpec(sourceType, "object upcast source");
+        var targetSpec = helper.requireObjectFatPtrSpec(targetType, "object upcast target");
+        return sourceSpec.fatPtrTypeName() + "_upcast_to_" + targetSpec.canonicalClassName();
+    }
+
+    /// Null/freed query expression for an object fat pointer storage.
+    public @NotNull String renderObjectIsNullExpr(@NotNull String fatPtrCode) {
+        return "gdcc_object_is_null_raw_and_id(" + renderNullQueryRawOperand(fatPtrCode) + ", " +
+                fatPtrCode + ".instance_id)";
     }
 
     /// Common logic for writing a fresh call result into a target variable.
@@ -707,7 +693,7 @@ public final class CBodyBuilder {
         if (returnType instanceof GdVoidType) {
             return returnVoid();
         }
-        var defaultExpr = renderDefaultValueExpr(returnType);
+        var defaultExpr = helper.renderDefaultValueExprInC(returnType);
         return returnValue(valueOfExpr(defaultExpr, returnType));
     }
 
@@ -756,8 +742,12 @@ public final class CBodyBuilder {
                 );
                 if (movedReturnSource != null) {
                     // Returning an owning local object slot transfers that ownership to `_return_val`.
-                    // Clearing the source slot prevents `__finally__` auto-destruction from releasing it again.
-                    out.append(movedReturnSource.generateCode()).append(" = NULL;\n");
+                    // Clear using the source variable's fat pointer type (may differ after upcast).
+                    var sourceClearType = movedReturnSource.variable().type() instanceof GdObjectType sourceObjectType
+                            ? sourceObjectType
+                            : objType;
+                    out.append(movedReturnSource.generateCode()).append(" = ")
+                            .append(helper.renderDefaultValueExprInC(sourceClearType)).append(";\n");
                 }
             } else {
                 // Keep non-object return-slot write as a direct assignment.
@@ -775,7 +765,7 @@ public final class CBodyBuilder {
             // functions. It exists so the builder can still emit direct C returns in manual/test
             // scenarios after the value has already been prepared.
             var sourceObjType = value.type() instanceof GdObjectType objectType ? objectType : null;
-            returnCode = convertPtrIfNeeded(returnCode, value.ptrKind(), sourceObjType, objType);
+            returnCode = convertObjectValueIfNeeded(returnCode, value.ptrKind(), sourceObjType, objType);
         }
 
         if (returnResult.temps().isEmpty()) {
@@ -891,18 +881,6 @@ public final class CBodyBuilder {
         return new RenderResult(condition.generateCode(), List.of());
     }
 
-    private boolean isQuotedStringLiteral(@NotNull String literal) {
-        return literal.length() >= 2 && literal.startsWith("\"") && literal.endsWith("\"");
-    }
-
-    private boolean isQuotedStringNameLiteral(@NotNull String literal) {
-        return literal.length() >= 3 && literal.startsWith("&\"") && literal.endsWith("\"");
-    }
-
-    private boolean isQuotedNodePathLiteral(@NotNull String literal) {
-        return literal.length() >= 3 && literal.startsWith("$\"") && literal.endsWith("\"");
-    }
-
     @NotNull
     public static String renderStaticStringLiteral(@NotNull String value) {
         return "GD_STATIC_S(u8\"" + escapeStringLiteral(value) + "\")";
@@ -913,8 +891,9 @@ public final class CBodyBuilder {
         return "GD_STATIC_SN(u8\"" + escapeStringLiteral(value) + "\")";
     }
 
-    /// Renders the C expression of one type's zero/default return value.
-    /// This is used by hard-fail runtime branches that must return immediately.
+    /// Renders the C expression of one type's zero/default return value for non-object types.
+    /// Object defaults require a context-aware fat pointer type and must use
+    /// `CGenHelper.renderDefaultValueExprInC(...)`.
     @NotNull
     public static String renderDefaultValueExpr(@NotNull GdType type) {
         return switch (type) {
@@ -925,7 +904,9 @@ public final class CBodyBuilder {
             case GdBoolType _ -> "false";
             case GdIntType _ -> "0";
             case GdFloatType _ -> "0.0";
-            case GdObjectType _ -> "NULL";
+            case GdObjectType objectType -> throw new IllegalArgumentException(
+                    "object default values require CGenHelper.renderDefaultValueExprInC: " + objectType.getTypeName()
+            );
             case GdNilType _, GdVariantType _ -> "godot_new_Variant_nil()";
             case GdContainerType containerType -> switch (containerType) {
                 case GdArrayType _ -> "godot_new_Array()";
@@ -958,24 +939,25 @@ public final class CBodyBuilder {
     }
 
     /// Renders a ValueRef as a C argument, adding '&' if needed for pass-by-reference types.
-    /// - Primitive types and object pointers: pass by value (no &)
+    /// - Primitive types and object fat pointers: pass by value (no &)
     /// - Value-semantic types (String, StringName, Variant, etc.): pass by pointer (&)
-    /// When requireGodotRawPtr is true, GDCC object pointers are auto-converted to Godot
-    /// object pointers via `gdcc_object_to_godot_object_ptr(value, Type_object_ptr)`.
+    /// When requireGodotRawPtr is true, fat pointers expand to validated live Godot raw pointers.
     public @NotNull RenderResult renderArgument(@NotNull ValueRef value, boolean requireGodotRawPtr) {
         var type = value.type();
 
-        // Convert GDCC object ptr to Godot raw ptr when calling GDExtension functions
-        if (requireGodotRawPtr && value.ptrKind() == PtrKind.GDCC_PTR) {
-            if (!(type instanceof GdObjectType objType) || !objType.checkGdccType(classRegistry())) {
-                throw invalidInsn("Internal ptr kind/type mismatch for argument '" + value.generateCode() +
-                        "': ptrKind=GDCC_PTR, type='" + type.getTypeName() + "'");
+        if (requireGodotRawPtr && type instanceof GdObjectType objType) {
+            if (value.ptrKind() == PtrKind.NON_OBJECT) {
+                throw invalidInsn("Internal ptr kind/type mismatch for object argument '" + value.generateCode() +
+                        "': ptrKind=NON_OBJECT, type='" + type.getTypeName() + "'");
             }
-            return new RenderResult(toGodotObjectPtr(value.generateCode(), objType), List.of());
+            if (value.ptrKind() == PtrKind.RAW_PRODUCER) {
+                return new RenderResult("(GDExtensionObjectPtr)(" + value.generateCode() + ")", List.of());
+            }
+            return new RenderResult(renderLiveGodotObjectPtr(value.generateCode(), objType), List.of());
         }
-        if (requireGodotRawPtr && value.ptrKind() == PtrKind.NON_OBJECT && type instanceof GdObjectType) {
-            throw invalidInsn("Internal ptr kind/type mismatch for object argument '" + value.generateCode() +
-                    "': ptrKind=NON_OBJECT, type='" + type.getTypeName() + "'");
+        if (requireGodotRawPtr && value.ptrKind() != PtrKind.NON_OBJECT) {
+            throw invalidInsn("Internal ptr kind/type mismatch for non-object argument '" + value.generateCode() +
+                    "': ptrKind=" + value.ptrKind() + ", type='" + type.getTypeName() + "'");
         }
 
         // Special handling for variable references that are already refs
@@ -993,17 +975,16 @@ public final class CBodyBuilder {
 
     /// Determines if a type needs '&' when passed as argument.
     /// - Primitives (bool, int, float): NO
-    /// - Object pointers: NO
+    /// - Object fat pointers: NO (value-shaped struct by value)
     /// - Value-semantic types (String, Variant, Array, etc.): YES
     private boolean needsAddressOf(@NotNull GdType type) {
         if (type instanceof GdCompilerType compilerType) {
             compilerType.validateCStorageContract();
             return compilerType.isPassedByPointerInC();
         }
-        // Primitives are passed by value
-        // Object pointers are already pointers
+        // Primitives and object fat pointers are passed by value.
         // All other types (String, StringName, Variant, Array, Dictionary, etc.)
-        // are value-semantic structs that need to be passed by pointer
+        // are value-semantic structs that need to be passed by pointer.
         return !(type instanceof GdPrimitiveType) && !(type instanceof GdObjectType);
     }
 
@@ -1197,7 +1178,8 @@ public final class CBodyBuilder {
     }
 
     /// Writes an object value into a storage slot with ownership-aware semantics:
-    /// capture old (if initialized) → assign converted rhs → own new only for BORROWED rhs → release captured old.
+    /// capture old fat pointer → convert rhs to target fat pointer (preserve ID) → struct assign →
+    /// own validated live raw for BORROWED rhs → release validated live raw of captured old.
     private void emitObjectSlotWrite(@NotNull String targetCode,
                                      @NotNull GdObjectType targetType,
                                      boolean releaseOldValue,
@@ -1207,11 +1189,11 @@ public final class CBodyBuilder {
                                      @NotNull OwnershipKind ownership) {
         TempVar oldValueTemp = null;
         if (releaseOldValue) {
-            // Capture old value before overwriting slot to keep alias/self-assignment safe.
+            // Capture the full fat pointer before overwriting the slot (alias/self-assignment safe).
             oldValueTemp = newTempVariable("old_obj", targetType, targetCode);
             declareTempVar(oldValueTemp);
         }
-        var assignCode = convertPtrIfNeeded(rhsCode, rhsPtrKind, rhsObjType, targetType);
+        var assignCode = convertObjectValueIfNeeded(rhsCode, rhsPtrKind, rhsObjType, targetType);
         out.append(targetCode).append(" = ").append(assignCode).append(";\n");
         if (ownership == OwnershipKind.BORROWED) {
             // BORROWED rhs must be retained by the slot after assignment.
@@ -1247,7 +1229,7 @@ public final class CBodyBuilder {
 
         if (returnType instanceof GdObjectType objType) {
             var rhsPtrKind = resolveCallResultPtrKind(cFuncName, objType);
-            var assignCode = convertPtrIfNeeded(callExpr, rhsPtrKind, objType, objType);
+            var assignCode = convertObjectValueIfNeeded(callExpr, rhsPtrKind, objType, objType);
             var discardTemp = newTempVariable("discard", returnType, assignCode);
             declareTempVar(discardTemp);
             // Discarded OWNED object returns are consumed by immediate release.
@@ -1261,67 +1243,41 @@ public final class CBodyBuilder {
         emitDestroy(discardTemp.name(), returnType);
     }
 
-    /// Emits code to release ownership of an object.
-    /// Uses try_release_object for unknown RefCounted status, release_object for definite RefCounted.
-    private void emitReleaseObject(@NotNull String varCode, @NotNull GdObjectType objType) {
-        var godotPtrCode = toGodotObjectPtr(varCode, objType);
-        releaseOrTryRelease(godotPtrCode, objType);
+    /// Emits code to release ownership of an object fat pointer via its validated live raw pointer.
+    private void emitReleaseObject(@NotNull String fatPtrCode, @NotNull GdObjectType objType) {
+        releaseOrTryRelease(renderLiveGodotObjectPtr(fatPtrCode, objType), objType);
     }
 
-    /// Emits code to own an object.
-    /// Uses try_own_object for unknown RefCounted status, own_object for definite RefCounted.
-    private void emitOwnObject(@NotNull String varCode, @NotNull GdObjectType objType) {
-        var godotPtrCode = toGodotObjectPtr(varCode, objType);
-        ownOrTryOwn(godotPtrCode, objType);
+    /// Emits code to own an object fat pointer via its validated live raw pointer.
+    private void emitOwnObject(@NotNull String fatPtrCode, @NotNull GdObjectType objType) {
+        ownOrTryOwn(renderLiveGodotObjectPtr(fatPtrCode, objType), objType);
     }
 
-    /// Converts a GDCC object pointer expression to the Godot raw-object representation expected by
-    /// engine helpers and lifecycle calls.
-    /// This is representation-only: caller-owned vs borrowed state stays unchanged across conversion.
-    /// For GDCC types: use class-specific helper through gdcc_object_to_godot_object_ptr.
-    /// For engine types: use as-is.
-    private @NotNull String toGodotObjectPtr(@NotNull String varCode, @NotNull GdObjectType objType) {
-        if (objType.checkGdccType(classRegistry())) {
-            var objectPtrHelper = helper.renderGdccObjectPtrHelperName(objType);
-            return "gdcc_object_to_godot_object_ptr(" + varCode + ", " + objectPtrHelper + ")";
+    /// Converts an object value expression into the target fat-pointer storage type.
+    /// Ownership-neutral: never introduces retain/release.
+    /// RAW_PRODUCER captures ID via `_from_raw`; FAT_PTR uses same-type copy or generated upcast.
+    private @NotNull String convertObjectValueIfNeeded(@NotNull String code,
+                                                       @NotNull PtrKind valuePtrKind,
+                                                       @Nullable GdObjectType valueObjType,
+                                                       @NotNull GdObjectType targetObjType) {
+        if (valuePtrKind == PtrKind.RAW_PRODUCER) {
+            return renderFatPtrFromRaw(code, targetObjType);
         }
-        return varCode;
-    }
-
-    /// Converts an object pointer expression between GDCC and Godot representations if needed.
-    /// This helper is ownership-neutral: it must never introduce retain/release behavior.
-    ///
-    /// - GODOT_PTR value → GDCC_PTR target: wraps with `fromGodotObjectPtr`
-    /// - GDCC_PTR value → GODOT_PTR target: wraps with `gdcc_object_to_godot_object_ptr(...)`
-    /// - Same kind or NON_OBJECT: no conversion
-    private @NotNull String convertPtrIfNeeded(@NotNull String code,
-                                               @NotNull PtrKind valuePtrKind,
-                                               @Nullable GdObjectType valueObjType,
-                                               @NotNull GdObjectType targetObjType) {
-        var targetPtrKind = resolvePtrKind(targetObjType);
-        if (valuePtrKind == PtrKind.GODOT_PTR && targetPtrKind == PtrKind.GDCC_PTR) {
-            return fromGodotObjectPtr(code, targetObjType);
+        if (valuePtrKind == PtrKind.NON_OBJECT) {
+            throw invalidInsn("Cannot convert non-object expression '" + code + "' into object type '" +
+                    targetObjType.getTypeName() + "'");
         }
-        if (valuePtrKind == PtrKind.GDCC_PTR && targetPtrKind == PtrKind.GODOT_PTR) {
-            if (valueObjType == null || !valueObjType.checkGdccType(classRegistry())) {
-                throw invalidInsn("Cannot convert GDCC_PTR value '" + code +
-                        "' to Godot pointer: missing GDCC static type");
-            }
-            return toGodotObjectPtr(code, valueObjType);
+        if (valueObjType == null) {
+            throw invalidInsn("Cannot convert object expression '" + code + "' without a static object type");
         }
-        return code;
-    }
-
-    /// Converts a Godot raw-object pointer to the GDCC native-object representation when needed.
-    /// This is representation-only: caller-owned vs borrowed state stays unchanged across conversion.
-    /// For GDCC types: wraps with gdcc_object_from_godot_object_ptr.
-    /// For engine types: use as-is.
-    private @NotNull String fromGodotObjectPtr(@NotNull String godotPtrCode, @NotNull GdObjectType objType) {
-        if (objType.checkGdccType(classRegistry())) {
-            var castType = helper.renderGdTypeInC(objType);
-            return "(" + castType + ")gdcc_object_from_godot_object_ptr(" + godotPtrCode + ")";
+        if (valueObjType.getTypeName().equals(targetObjType.getTypeName())) {
+            return code;
         }
-        return godotPtrCode;
+        if (!classRegistry().checkAssignable(valueObjType, targetObjType)) {
+            throw invalidInsn("Cannot upcast object type '" + valueObjType.getTypeName() +
+                    "' to '" + targetObjType.getTypeName() + "'");
+        }
+        return renderObjectFatPtrUpcastHelperName(valueObjType, targetObjType) + "(" + code + ")";
     }
 
     /// Emits own_object or try_own_object based on RefCounted status.
@@ -1398,20 +1354,19 @@ public final class CBodyBuilder {
     private @NotNull PtrKind resolveCallResultPtrKind(@NotNull String cFuncName,
                                                       @NotNull GdObjectType returnObjType) {
         if (checkGlobalFuncReturnGodotRawPtr(cFuncName)) {
-            // godot_* calls return raw Godot object pointers.
-            return PtrKind.GODOT_PTR;
+            // External Godot/raw ABI helpers produce raw pointers that must capture an ID.
+            return PtrKind.RAW_PRODUCER;
         }
         return resolvePtrKind(returnObjType);
     }
 
-    /// Indicates the pointer kind of an object value reference.
-    /// Used to determine whether conversion is needed when passing to/from GDExtension APIs.
+    /// Value representation of an expression used by object conversion and argument rendering.
     public enum PtrKind {
-        /// GDCC object pointer (holds wrapper with `_object` field, e.g. `MyClass*`)
-        GDCC_PTR,
-        /// Godot/engine raw object pointer (e.g. `godot_Node*`, `GDExtensionObjectPtr`)
-        GODOT_PTR,
-        /// Not an object pointer (primitives, value-semantic types, etc.)
+        /// Internal object storage: `gdcc_<Type>_fat_ptr` with cached typed ptr + instance_id.
+        FAT_PTR,
+        /// Fresh raw Godot object pointer that must be captured into a fat pointer (`_from_raw`).
+        RAW_PRODUCER,
+        /// Not an object value (primitives, value-semantic types, etc.)
         NON_OBJECT
     }
 
@@ -1559,6 +1514,7 @@ public final class CBodyBuilder {
         }
     }
 
+    /// Direct C UTF-8 string pointer literal (`const char*`), not an object value.
     public record CStringLiteralValue(@NotNull String value) implements ValueRef {
         public CStringLiteralValue {
             Objects.requireNonNull(value);
@@ -1571,7 +1527,7 @@ public final class CBodyBuilder {
 
         @Override
         public @NotNull String generateCode() {
-            return "\"" + escapeStringLiteral(value) + "\"";
+            return "u8\"" + escapeStringLiteral(value) + "\"";
         }
 
         @Override

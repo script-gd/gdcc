@@ -62,7 +62,7 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
                         target,
                         binding.cFunctionName() + "()",
                         singletonType,
-                        CBodyBuilder.PtrKind.GODOT_PTR
+                        CBodyBuilder.PtrKind.RAW_PRODUCER
                 );
                 return;
             }

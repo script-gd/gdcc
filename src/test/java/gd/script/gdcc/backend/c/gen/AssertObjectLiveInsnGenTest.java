@@ -24,14 +24,15 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AssertObjectLiveInsnGenTest {
     @Test
-    @DisplayName("engine object guard should hard-fail on raw NULL")
-    void engineObjectGuardUsesRawNullCheck() {
+    @DisplayName("engine object guard should hard-fail via gdcc_object_is_null_raw_and_id")
+    void engineObjectGuardUsesRawAndIdCheck() {
         var nodeClass = new ExtensionGdClass(
                 "Node", false, false, "Object", "core",
                 List.of(), List.of(), List.of(), List.of(), List.of()
@@ -51,14 +52,15 @@ class AssertObjectLiveInsnGenTest {
         codegen.prepare(newContext(api, List.of(workerClass)), new LirModule("test_module", List.of(workerClass)));
 
         var body = codegen.generateFuncBody(workerClass, func);
-        assertTrue(body.contains("if ($obj == NULL) {"), body);
+        assertTrue(body.contains("gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($obj).ptr, $obj.instance_id)"), body);
         assertTrue(body.contains("assert_object_live failed: object 'obj' is null or freed"), body);
         assertTrue(body.contains("goto __finally__;"), body);
+        assertFalse(body.contains("godot_object_get_instance_id($obj)"), body);
     }
 
     @Test
-    @DisplayName("GDCC object guard should convert wrapper pointer to Godot raw pointer")
-    void gdccObjectGuardConvertsToRawPointer() {
+    @DisplayName("GDCC object guard should use null-query raw operand and instance_id without object_ptr")
+    void gdccObjectGuardUsesNullQueryRawAndId() {
         var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var objectClass = new LirClassDef("MyObject", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("assert_gdcc");
@@ -75,9 +77,9 @@ class AssertObjectLiveInsnGenTest {
         codegen.prepare(newContext(api, List.of(workerClass, objectClass)), new LirModule("test_module", List.of(workerClass, objectClass)));
 
         var body = codegen.generateFuncBody(workerClass, func);
-        assertTrue(body.contains(
-                "if (gdcc_object_to_godot_object_ptr($obj, MyObject_object_ptr) == NULL) {"
-        ), body);
+        assertTrue(body.contains("gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($obj).ptr, $obj.instance_id)"), body);
+        assertFalse(body.contains("MyObject_object_ptr"), body);
+        assertFalse(body.contains("godot_object_get_instance_id($obj)"), body);
     }
 
     @Test

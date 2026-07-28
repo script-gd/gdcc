@@ -160,15 +160,15 @@ public class CAssignInsnGenTest {
         assertTrue(body.contains("__gdcc_tmp_old_obj_"), body);
         assertTrue(body.contains(" = $dst;"), body);
         assertTrue(body.contains("$dst = $src;"), body);
-        assertTrue(body.contains("own_object($dst);"), body);
-        assertTrue(body.contains("release_object(__gdcc_tmp_old_obj_"), body);
-        assertFalse(body.contains("try_own_object($dst);"), body);
+        assertTrue(body.contains("own_object(gdcc_RefCounted_fat_ptr_live_object($dst));"), body);
+        assertTrue(body.contains("release_object(gdcc_RefCounted_fat_ptr_live_object(__gdcc_tmp_old_obj_"), body);
+        assertFalse(body.contains("try_own_object(gdcc_RefCounted_fat_ptr_live_object($dst));"), body);
         assertFalse(body.contains("try_release_object(__gdcc_tmp_old_obj_"), body);
 
         var captureIndex = body.indexOf(" = $dst;");
         var assignIndex = body.indexOf("$dst = $src;");
-        var ownIndex = body.indexOf("own_object($dst);");
-        var releaseIndex = body.indexOf("release_object(__gdcc_tmp_old_obj_");
+        var ownIndex = body.indexOf("own_object(gdcc_RefCounted_fat_ptr_live_object($dst));");
+        var releaseIndex = body.indexOf("release_object(gdcc_RefCounted_fat_ptr_live_object(__gdcc_tmp_old_obj_");
         assertTrue(captureIndex >= 0, body);
         assertTrue(assignIndex >= 0, body);
         assertTrue(ownIndex >= 0, body);
@@ -239,29 +239,25 @@ public class CAssignInsnGenTest {
         var codegen = newCodegen(module, api, List.of(workerClass, gdccNodeClass));
 
         var body = codegen.generateFuncBody(workerClass, func);
-        assertTrue(body.contains("gdcc_object_to_godot_object_ptr($src, MyGdccNode_object_ptr)"), body);
-        assertTrue(body.contains("$dst = gdcc_object_to_godot_object_ptr($src, MyGdccNode_object_ptr);"), body);
+        assertTrue(body.contains("$dst = gdcc_MyGdccNode_fat_ptr_upcast_to_Node($src);"), body);
     }
 
     @Test
-    @DisplayName("assign unknown object should use try_own_object and try_release_object")
-    void assignUnknownObjectShouldUseTryOwnRelease() {
-        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+    @DisplayName("assign unknown object should fail fast")
+    void assignUnknownObjectShouldFailFast() {
         var func = new LirFunctionDef("assign_unknown_object");
         func.setReturnType(GdVoidType.VOID);
-        func.createAndAddVariable("dst", new GdObjectType("UnknownObject"));
-        func.createAndAddVariable("src", new GdObjectType("UnknownObject"));
-        addEntryAssignAndReturn(func, new AssignInsn("dst", "src"));
-        workerClass.addFunction(func);
-
-        var module = new LirModule("test_module", List.of(workerClass));
-        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
-
-        var body = codegen.generateFuncBody(workerClass, func);
-        assertTrue(body.contains("try_own_object($dst);"), body);
-        assertTrue(body.contains("try_release_object(__gdcc_tmp_old_obj_"), body);
-        assertFalse(body.contains("\nown_object($dst);\n"), body);
-        assertFalse(body.contains("\nrelease_object(__gdcc_tmp_old_obj_"), body);
+        func.createAndAddVariable("dst", new GdObjectType("UnknownType"));
+        func.createAndAddVariable("src", new GdObjectType("UnknownType"));
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new AssignInsn("dst", "src"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        var classDef = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        classDef.addFunction(func);
+        var module = new LirModule("m", List.of(classDef));
+        var codegen = newCodegen(module, emptyApi(), List.of(classDef));
+        assertThrows(IllegalStateException.class, () -> codegen.generateFuncBody(classDef, func));
     }
 
     @Test

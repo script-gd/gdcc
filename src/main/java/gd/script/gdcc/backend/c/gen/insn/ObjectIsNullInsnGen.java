@@ -11,8 +11,7 @@ import org.jetbrains.annotations.NotNull;
 import java.util.EnumSet;
 import java.util.Objects;
 
-/// Lowers `object_is_null` for the legacy raw-pointer representation as `raw == NULL`.
-/// Phase-3 fat-pointer lowering will call `gdcc_object_is_null_raw_and_id(raw, instance_id)`.
+/// Lowers `object_is_null` with `gdcc_object_is_null_raw_and_id(raw, instance_id)`.
 /// It does not emit an `assert_object_live` guard because null checks are user-visible queries.
 public final class ObjectIsNullInsnGen implements CInsnGen<ObjectIsNullInsn> {
     @Override
@@ -35,13 +34,10 @@ public final class ObjectIsNullInsnGen implements CInsnGen<ObjectIsNullInsn> {
         if (resultVariable == null) {
             throw bodyBuilder.invalidInsn("object_is_null result variable not found: " + insn.resultId());
         }
-        var objectRaw = bodyBuilder.renderArgument(bodyBuilder.valueOfVar(objectVariable), true);
-        if (!objectRaw.temps().isEmpty()) {
-            throw bodyBuilder.invalidInsn("object_is_null operand must not require temporaries");
-        }
+        var objectCode = bodyBuilder.valueOfVar(objectVariable).generateCode();
         bodyBuilder.assignExpr(
                 bodyBuilder.targetOfVar(resultVariable),
-                "(" + objectRaw.code() + " == NULL)",
+                "(" + bodyBuilder.renderObjectIsNullExpr(objectCode) + ")",
                 GdBoolType.BOOL
         );
     }

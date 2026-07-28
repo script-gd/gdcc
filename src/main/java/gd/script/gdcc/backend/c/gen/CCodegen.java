@@ -493,11 +493,6 @@ public class CCodegen implements Codegen {
     /// Renders the constructor-time property initializer apply body.
     /// The init helper still only produces a value; this method owns the direct backing-field first-write
     /// route so property initialization keeps unified slot-write semantics without becoming a setter call.
-    public @NotNull String generatePropertyInitApplyBody(@NotNull LirClassDef clazz,
-                                                         @NotNull LirPropertyDef property) {
-        return generatePropertyInitApplyBody(clazz, property, GodotBindingUsageBuffer.noOp());
-    }
-
     private @NotNull String generatePropertyInitApplyBody(@NotNull LirClassDef clazz,
                                                           @NotNull LirPropertyDef property,
                                                           @NotNull GodotBindingUsageBuffer usageBuffer) {
@@ -516,8 +511,8 @@ public class CCodegen implements Codegen {
                 property.getType(),
                 clazz.getName() + "_" + initFunction.getName() + "(self)",
                 initFunction.getReturnType(),
-                initFunction.getReturnType() instanceof GdObjectType objectType
-                        ? (objectType.checkGdccType(ctx.classRegistry()) ? CBodyBuilder.PtrKind.GDCC_PTR : CBodyBuilder.PtrKind.GODOT_PTR)
+                initFunction.getReturnType() instanceof GdObjectType
+                        ? CBodyBuilder.PtrKind.FAT_PTR
                         : CBodyBuilder.PtrKind.NON_OBJECT,
                 // Property-init helpers are a dedicated fresh-producer entry: the apply helper must
                 // consume the returned object directly instead of re-owning the field write.

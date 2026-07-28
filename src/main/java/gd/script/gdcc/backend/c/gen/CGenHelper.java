@@ -125,7 +125,13 @@ public final class CGenHelper {
         return argName;
     }
 
+    /// Context-aware default/zero expression for hard-fail returns and null slots.
+    /// Object values use the per-type fat pointer zero compound literal; other types keep the
+    /// legacy non-object defaults from `CBodyBuilder.renderDefaultValueExpr`.
     public @NotNull String renderDefaultValueExprInC(@NotNull GdType type) {
+        if (type instanceof GdObjectType objectType) {
+            return "(" + renderObjectFatPtrStorageType(objectType) + "){ 0 }";
+        }
         return CBodyBuilder.renderDefaultValueExpr(type);
     }
 
@@ -264,6 +270,8 @@ public final class CGenHelper {
         }
     }
 
+    /// Internal storage / temporary / return C type for a GdType.
+    /// Object values use per-type fat pointer structs; container element object slots stay raw Godot pointers.
     public @NotNull String renderGdTypeInC(@NotNull GdType gdType) {
         return switch (gdType) {
             case GdCompilerType compilerType -> compilerType.getCStorageTypeName();
@@ -272,32 +280,28 @@ public final class CGenHelper {
                     if (gdArrayType.getValueType() instanceof GdVariantType) {
                         yield "godot_Array";
                     } else {
-                        yield "godot_TypedArray(" + renderGdTypeInC(gdArrayType.getValueType()) + ")";
+                        yield "godot_TypedArray(" + renderContainerElementTypeInC(gdArrayType.getValueType()) + ")";
                     }
                 }
                 case GdDictionaryType gdDictionaryType -> {
                     if (gdContainerType.getKeyType() instanceof GdVariantType && gdContainerType.getValueType() instanceof GdVariantType) {
                         yield "godot_Dictionary";
                     } else {
-                        yield "godot_TypedDictionary(" + renderGdTypeInC(gdDictionaryType.getKeyType()) + ", " + renderGdTypeInC(gdDictionaryType.getValueType()) + ")";
+                        yield "godot_TypedDictionary(" +
+                                renderContainerElementTypeInC(gdDictionaryType.getKeyType()) + ", " +
+                                renderContainerElementTypeInC(gdDictionaryType.getValueType()) + ")";
                     }
                 }
                 case GdPackedArrayType gdPackedArrayType -> "godot_" + gdPackedArrayType.getTypeName();
             };
-            case GdObjectType gdObjectType -> {
-                if (gdObjectType.checkEngineType(context.classRegistry())) {
-                    yield "godot_" + gdObjectType.getTypeName() + "*";
-                } else if (gdObjectType.checkGdccType(context.classRegistry())) {
-                    yield gdObjectType.getTypeName() + "*";
-                } else {
-                    yield "GDExtensionObjectPtr";
-                }
-            }
+            case GdObjectType gdObjectType -> renderObjectFatPtrStorageType(gdObjectType);
             case GdVoidType _ -> "void";
             default -> "godot_" + gdType.getTypeName();
         };
     }
 
+    /// Internal parameter C type for a GdType.
+    /// Object parameters are fat pointer structs passed by value (same shape as storage).
     public @NotNull String renderGdTypeRefInC(@NotNull GdType gdType) {
         return switch (gdType) {
             case GdCompilerType compilerType -> compilerType.getCStorageTypeName() + "*";
@@ -306,27 +310,21 @@ public final class CGenHelper {
                     if (gdArrayType.getValueType() instanceof GdVariantType) {
                         yield "godot_Array*";
                     } else {
-                        yield "godot_TypedArray(" + renderGdTypeInC(gdArrayType.getValueType()) + ")*";
+                        yield "godot_TypedArray(" + renderContainerElementTypeInC(gdArrayType.getValueType()) + ")*";
                     }
                 }
                 case GdDictionaryType gdDictionaryType -> {
                     if (gdContainerType.getKeyType() instanceof GdVariantType && gdContainerType.getValueType() instanceof GdVariantType) {
                         yield "godot_Dictionary*";
                     } else {
-                        yield "godot_TypedDictionary(" + renderGdTypeInC(gdDictionaryType.getKeyType()) + ", " + renderGdTypeInC(gdDictionaryType.getValueType()) + ")*";
+                        yield "godot_TypedDictionary(" +
+                                renderContainerElementTypeInC(gdDictionaryType.getKeyType()) + ", " +
+                                renderContainerElementTypeInC(gdDictionaryType.getValueType()) + ")*";
                     }
                 }
                 case GdPackedArrayType gdPackedArrayType -> "godot_" + gdPackedArrayType.getTypeName() + "*";
             };
-            case GdObjectType gdObjectType -> {
-                if (gdObjectType.checkEngineType(context.classRegistry())) {
-                    yield "godot_" + gdObjectType.getTypeName() + "*";
-                } else if (gdObjectType.checkGdccType(context.classRegistry())) {
-                    yield gdObjectType.getTypeName() + "*";
-                } else {
-                    yield "GDExtensionObjectPtr";
-                }
-            }
+            case GdObjectType gdObjectType -> renderObjectFatPtrParameterType(gdObjectType);
             case GdVoidType _ -> "void*";
             case GdPrimitiveType _ -> "godot_" + gdType.getTypeName();
             default -> "godot_" + gdType.getTypeName() + "*";
@@ -335,14 +333,31 @@ public final class CGenHelper {
 
     public @NotNull String renderValueRef(@NotNull GdType gdType, @NotNull String v) {
         return switch (gdType) {
+            // Fat pointer structs and primitives are value-shaped; other value types pass storage addresses.
             case GdObjectType _, GdPrimitiveType _ -> v;
             default -> "&" + v;
         };
     }
 
-    /// Role-specific object renderers for the fat pointer migration.
-    /// They are add-only before the representation cutover: ordinary production call sites keep the legacy
-    /// raw renderers, and no renderer may mix internal fat pointer and raw ABI roles.
+    /// Godot TypedArray/TypedDictionary element slots remain raw object pointers, not fat structs.
+    private @NotNull String renderContainerElementTypeInC(@NotNull GdType elementType) {
+        if (elementType instanceof GdObjectType objectType) {
+            return renderObjectBarePointerType(objectType);
+        }
+        return renderGdTypeInC(elementType);
+    }
+
+    /// Bare raw pointer spelling used by Godot container macros (`godot_Node*`, `Player*`).
+    public @NotNull String renderObjectBarePointerType(@NotNull GdObjectType objectType) {
+        var pointerCType = renderObjectRawPointerType(objectType);
+        if (pointerCType.endsWith(" *")) {
+            return pointerCType.substring(0, pointerCType.length() - 2) + "*";
+        }
+        return pointerCType;
+    }
+
+    /// Role-specific object renderers for fat-pointer storage vs raw ABI boundaries.
+    /// Internal storage/parameter/return use fat pointers; ptrcall slots and Godot receivers stay raw.
 
     public @NotNull ObjectFatPtrSpec requireObjectFatPtrSpec(@NotNull GdObjectType objectType, @NotNull String surface) {
         return ObjectFatPtrSpec.forObjectType(context.classRegistry(), objectType, surface);
@@ -519,7 +534,6 @@ public final class CGenHelper {
 
     public @NotNull String renderGdTypeName(@NotNull GdType gdType) {
         return switch (gdType) {
-            case GdCompilerType _ -> gdType.getTypeName();
             case GdContainerType gdContainerType -> switch (gdContainerType) {
                 case GdArrayType _ -> "Array";
                 case GdDictionaryType _ -> "Dictionary";
@@ -573,11 +587,8 @@ public final class CGenHelper {
             throw new IllegalArgumentException("compiler-only type leaked into Variant unpack: " + type.getTypeName());
         }
         if (type instanceof GdObjectType objectType) {
-            if (objectType.checkGdccType(context.classRegistry())) {
-                return "(" + objectType.getTypeName() + "*)godot_new_gdcc_Object_with_Variant";
-            } else {
-                return "(godot_" + objectType.getTypeName() + "*)godot_new_Object_with_Variant";
-            }
+            // Object unpack materializes a fat pointer that preserves the Variant's instance ID.
+            return renderObjectFatPtrStorageType(objectType) + "_from_variant";
         } else {
             return "godot_new_" + renderGdTypeName(type) + "_with_Variant";
         }
@@ -667,10 +678,8 @@ public final class CGenHelper {
             case GdNilType _ ->
                     throw new IllegalArgumentException("Nil uses dedicated godot_new_Variant_nil() materialization");
             case GdObjectType objectType -> {
-                if (objectType.checkGdccType(context.classRegistry())) {
-                    return "gdcc_new_Variant_with_gdcc_Object";
-                }
-                return "godot_new_Variant_with_Object";
+                // Fat-pointer pack uses the per-type helper so freed IDs degrade through live_object.
+                return renderObjectFatPtrStorageType(objectType) + "_to_variant";
             }
             default -> {
                 return "godot_new_Variant_with_" + renderGdTypeName(type);
@@ -744,19 +753,19 @@ public final class CGenHelper {
 
     /// Render the expected builtin type literal for one typed-array guard element leaf.
     public @NotNull String renderTypedArrayGuardBuiltinTypeLiteral(@NotNull GdType type) {
-        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type), "element leaf")
+        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type))
                 .typeIntLiteral();
     }
 
     /// Object leaves need extra class/script metadata comparison in the wrapper guard.
     public boolean isTypedArrayGuardObjectLeaf(@NotNull GdType type) {
-        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type), "element leaf")
+        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type))
                 .objectLeaf();
     }
 
     /// Render the expected class-name literal for one typed-array object leaf.
     public @NotNull String renderTypedArrayGuardClassNameExpr(@NotNull GdType type) {
-        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type), "element leaf")
+        return renderTypedArrayRuntimeLeaf(resolveTypedArrayGuardLeaf(type))
                 .classNameExpr();
     }
 
@@ -933,9 +942,8 @@ public final class CGenHelper {
         );
     }
 
-    private @NotNull TypedContainerRuntimeLeaf renderTypedArrayRuntimeLeaf(@NotNull GdType type,
-                                                                           @NotNull String useSite) {
-        return renderTypedContainerRuntimeLeaf(type, useSite, "typed-array", false);
+    private @NotNull TypedContainerRuntimeLeaf renderTypedArrayRuntimeLeaf(@NotNull GdType type) {
+        return renderTypedContainerRuntimeLeaf(type, "element leaf", "typed-array", false);
     }
 
     private @NotNull TypedContainerRuntimeLeaf renderTypedDictionaryRuntimeLeaf(@NotNull GdType type,
@@ -1061,13 +1069,6 @@ public final class CGenHelper {
             return false;
         }
         return engineVirtual.checkOverrideSignature(functionDef, true);
-    }
-
-    public boolean checkGdccType(@NotNull GdType gdType) {
-        if (gdType instanceof GdObjectType gdObjectType) {
-            return gdObjectType.checkGdccType(context.classRegistry());
-        }
-        return false;
     }
 
     public boolean checkGdccClassByName(@NotNull String className) {

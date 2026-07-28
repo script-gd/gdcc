@@ -178,6 +178,10 @@ public final class BackendPropertyAccessResolver {
                                                               @NotNull String insnName,
                                                               @NotNull String ownerRole,
                                                               @NotNull String messageTail) {
+        // Object receivers must hard-fail on null/freed before any dereference or Godot call.
+        if (receiverVar.type() instanceof GdObjectType) {
+            bodyBuilder.emitAssertObjectLiveGuard(receiverVar);
+        }
         if (receiverVar.type() instanceof GdObjectType receiverObjectType &&
                 ownerType instanceof GdObjectType ownerObjectType &&
                 !ownerObjectType.getTypeName().equals(receiverObjectType.getTypeName())) {
@@ -189,6 +193,16 @@ public final class BackendPropertyAccessResolver {
             return bodyBuilder.valueOfCastedVar(receiverVar, ownerObjectType);
         }
         return bodyBuilder.valueOfVar(receiverVar);
+    }
+
+    /// Materializes a validated live typed wrapper pointer for direct GDCC field access.
+    /// Emits `assert_object_live` first, then `gdcc_<Type>_fat_ptr_live_ptr(...)`.
+    static @NotNull String renderGdccLiveOwnerPointerExpr(@NotNull CBodyBuilder bodyBuilder,
+                                                          @NotNull LirVariable ownerVar,
+                                                          @NotNull GdObjectType ownerType) {
+        bodyBuilder.emitAssertObjectLiveGuard(ownerVar);
+        var fatType = bodyBuilder.helper().renderObjectFatPtrStorageType(ownerType);
+        return fatType + "_live_ptr(" + bodyBuilder.valueOfVar(ownerVar).generateCode() + ")";
     }
 
     static @NotNull BuiltinPropertyLookup resolveBuiltinProperty(@NotNull CBodyBuilder bodyBuilder,

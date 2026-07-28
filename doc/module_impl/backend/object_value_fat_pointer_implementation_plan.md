@@ -683,17 +683,39 @@ shape决定，否则同 signature 的不同 GDCC owner会构造错误 self type�
 
 #### Object/object equality
 
-object equality **直接比较两个 raw Godot object pointer**，无需 liveness 检查，也不比较 instance ID：
+object equality 比较的是两侧 **equality-normalized raw Godot object pointer**（以下简称 normalized raw），再做
+`==` / `!=`：
 
-- object/object `==`：`left_raw == right_raw`
-- object/object `!=`：`left_raw != right_raw`
-- 该语义对齐 Godot 对 object pointer identity 的比较形态；不通过 ID 恢复，也不先做 ObjectDB 验证。
+- object/object `==`：`normalized_left == normalized_right`
+- object/object `!=`：`normalized_left != normalized_right`
 - 禁止直接比较 fat struct。
-- 禁止直接比较 instance ID。
+- 禁止直接比较 instance ID（equality 不以 ID 为比较键）。
 - 禁止为 equality 从 raw pointer 调用 `godot_object_get_instance_id(...)`。
 
-阶段 2 / 阶段 3 共用该 equality 规则。阶段 2 ordinary value 已是 raw pointer，直接比较；阶段 3 切换到 fat pointer 后，
-先取出两侧 cached raw（engine 直接用 `.ptr`，GDCC 经 `object_ptr` helper 转 raw），再做 pointer `==`/`!=`。
+**Normalized raw（C1 合同，阶段 3C 落地）**：
+
+1. 先用 `gdcc_object_is_null_raw_and_id(raw_sentinel, instance_id)` 判定 null ∪ freed  
+   （`raw_sentinel` 仅作 NULL 位型哨兵：engine 为 `.ptr` 强转；GDCC 为 wrapper `.ptr` 强转，**不解引用** wrapper）。
+2. 若为 null/freed：normalized raw = `NULL`（dead 与 canonical null 在 equality 上折叠为同一空身份）。
+3. 若为 live：
+   - engine：normalized raw = `(GDExtensionObjectPtr)value.ptr`（已是 Godot raw）；
+   - GDCC：normalized raw = `gdcc_<Type>_fat_ptr_live_object(value)`（或等价 live 路径）；**禁止**在未证明 live 时调用
+     `Type_object_ptr(value.ptr)`。
+4. 最后比较两个 normalized raw 的指针值。
+
+语义推论（相对“无条件比 dangling address”）：
+
+- `null == null`、`freed == null`、`freedA == freedB` 均为 true（均归一为 `NULL`）。
+- live 同实例 true，live 异实例 false；live 与 null/freed 为 false。
+- 为避免 GDCC freed wrapper UAF，equality **允许**在 materialize 前做 nullness/liveness 查询；该查询只服务
+  “禁止解引用 dead wrapper / 折叠 dead”，**不**把 `instance_id` 当作 `==` 的比较键。
+
+**阶段状态**：
+
+- 阶段 2 ordinary value 为 legacy raw pointer：直接 `raw == raw`（无 ID）。
+- 阶段 3A/3B 过渡实现：从 fat 取 cached raw 后直接比（GDCC 经 `object_ptr`）；**对 freed GDCC wrapper 存在 UAF 风险**，
+  不得作为最终合同。
+- 阶段 **3C** 将 production equality 切换为上述 C1 normalized raw 路径，并更新 characterization / operator 测试锚定。
 
 #### Object nullness
 
@@ -804,7 +826,7 @@ ref后该路径会生成无效 C。
 阶段 0 仅新增 characterization tests，不修改 production backend 行为。property field 的 C 类型渲染由
 `TypeRenderingBaseline` 锁定；entry.h 结构体模板直接复用该 renderer。registered ptrcall object return
 由 `RegisteredWrapperBaseline` 锚定；exact engine method ptrcall object return 需要完整 engine bind fixture，
-其基线推迟到阶段 3C 实施前补充。
+其基线推迟到阶段 3D 实施前补充。
 
 ### 阶段 1：ObjectFatPtrSpec、collector 与声明
 
@@ -900,7 +922,7 @@ legacy raw pointer；role-specific renderer 仅供后续阶段按角色接入。
 | backend generator 统一 `assert_object_live` 入口（add-only；legacy raw 仅 `raw == NULL`） | 已完成 | `CBodyBuilder.emitAssertObjectLiveGuard`、`AssertObjectLiveInsnGenTest` |
 | object equality production lowering 直接 raw pointer 比较 | 已完成 | `COperatorInsnGenTest`、`ObjectValueLifecycleCharacterizationTest.EqualityBaseline` |
 | `object_is_null` / object-vs-nil production lowering 在 legacy raw 下退化为 `raw == NULL` | 已完成 | `ObjectIsNullInsnGenTest`、`COperatorInsnGenTest`、`ObjectValueLifecycleCharacterizationTest.EqualityBaseline` |
-| `object_is_null` / equality / assert 的 fat-pointer `(raw, id)` production 切换 | 已回退 / 推迟至阶段 3 | 见阶段 3B 与阶段 3 统一验收 |
+| `object_is_null` / equality / assert 的 fat-pointer `(raw, id)` production 切换 | 部分完成 / equality 待 3C | null/assert 见 3B；equality C1 见阶段 3C 与 §10.2 |
 | add-only 不改变现有 generated function/property/method ABI | 已完成 | `gd.script.gdcc.backend.c.*` 集成测试 |
 
 阶段 2 新增通用 ID helper、`gdcc_object_is_null_raw_and_id` 和 generated per-type fat pointer helper；`object_fat_ptr_types.h` 承载 typedef、
@@ -936,12 +958,14 @@ generated C 标记为可运行：
 
 工作：
 
-- locals、fields、parameters、returns切换为 fat pointer。
-- object default/null/return slot改为 `{0}`。
-- 重构 value representation metadata。
-- slot write、move-return、discard、upcast保留 ID。
-- own/release/destroy切换为 ID-validated raw pointer。
-- wrapper instance `_object/_super`保持 raw layout。
+| 任务 | 状态 | 备注 |
+|---|---|---|
+| locals、fields、parameters、returns切换为 fat pointer | 已完成 | `renderGdTypeInC` / `renderGdTypeRefInC` → `gdcc_<Type>_fat_ptr`；容器元素仍为 bare raw |
+| object default/null/return slot改为 `{0}` | 已完成 | `CGenHelper.renderDefaultValueExprInC`；`_return_val` / move-return clear |
+| 重构 value representation metadata | 已完成 | `PtrKind`：`FAT_PTR` / `RAW_PRODUCER` / `NON_OBJECT` |
+| slot write、move-return、discard、upcast保留 ID | 已完成 | `emitObjectSlotWrite` + upcast helper / `_from_raw` |
+| own/release/destroy切换为 ID-validated raw pointer | 已完成 | `*_live_object` 后 `own/release/try_*` |
+| wrapper instance `_object/_super`保持 raw layout | 已完成 | 未改 instance layout / `object_ptr` helpers |
 
 #### 3B. 对象 producer 与 ordinary instructions
 
@@ -964,21 +988,63 @@ generated C 标记为可运行：
 
 工作：
 
-- 所有 raw producer立即捕获 ID。
-- 所有 raw receiver/owner 解引用前通过显式 `assert_object_live` 守卫；守卫通过后按第 3.4 节取得 live pointer，不允许隐藏
-  inline validation。
-- dynamic Variant路径使用 borrowed object unpack。
-- direct GDCC field/method 访问先发出 `assert_object_live`，再物化 live owner pointer。
-- `object_is_null` / object-vs-nil lowering 切换到
-  `gdcc_object_is_null_raw_and_id(raw, instance_id)`；同时传入 fat pointer 的 raw 与 ID。
-- object/object equality 继续直接比较两侧 raw Godot object pointer（从 fat pointer 取出 cached raw 后 `==`/`!=`），
-  不检查存活、不比较 instance ID。
-- `assert_object_live` C lowering 切换到通用 `gdcc_object_is_null_raw_and_id(raw, instance_id)`；不生成 per-type assert
-  helper，也不从 raw 恢复 ID。
-- own/release/destroy 与 Variant pack/unpack 的 liveness 判断保留在 backend/runtime helper 内，不新增 LIR check 指令。
-- UTF-8 literal改用专用 direct C pointer value，不再伪装为 object。
+| 任务 | 状态 | 备注 |
+|---|---|---|
+| 所有 raw producer立即捕获 ID | 部分完成 | construct/singleton/`godot_*`/`gdcc_engine_call*` → `_from_raw`；exact helper 公共签名仍待 3D |
+| raw receiver/owner 解引用前 `assert_object_live` | 部分完成 | `BackendPropertyAccessResolver.renderReceiverValue` + dynamic object call；exact engine receiver 路径随 3D 收口 |
+| dynamic Variant 路径 borrowed object unpack | 已完成 | `InsnGenSupport.unpackVariantAssign` → `*_from_variant` + `BORROWED` |
+| direct GDCC field 访问 assert + live owner pointer | 已完成 | getter/setter self field：`_live_ptr` |
+| `object_is_null` / object-vs-nil → `(raw, id)` | 已完成 | `ObjectIsNullInsnGen` / `OperatorInsnGen` |
+| object/object equality 比较 cached raw | 过渡实现 | 3B 临时从 fat 取 raw 后直接比；**GDCC freed 经 `object_ptr` 有 UAF 风险**；最终 C1 合同见 3C / §10.2 |
+| `assert_object_live` → `gdcc_object_is_null_raw_and_id` | 已完成 | null/assert 已不经 `object_ptr`；无 per-type assert helper |
+| own/release/destroy liveness 留在 helper 内 | 已完成 | 无额外 LIR check |
+| UTF-8 literal 专用 C string pointer | 已完成 | `CStringLiteralValue` + `u8"..."`；不再伪装 `GdObjectType.OBJECT` |
 
-#### 3C. Exact engine caller/helper 原子切换
+说明：3A/3B 核心 ordinary path 已切换；**下一实现步为 3C（equality C1）**。原 exact engine helper 与 registered
+ptrcall/virtual 适配分别后延为 **3D / 3E**。当前 `ptrcall` 临时复用 internal fat pointer 表面，不得作为可发布
+cutover 验收。
+
+#### 3C. Object equality C1（normalized raw）
+
+**状态：待实施（下一步）**
+
+主要文件：
+
+- `gdcc_helper.h`（可选通用 normalize / equal helper）
+- `object_fat_ptr_types.h.ftl`（可选 per-type equality raw helper）
+- `CBodyBuilder.java`（`renderEqualityNormalizedRaw` 或等价 API；与 null/assert 路径分离）
+- `OperatorInsnGen.java`
+- `ObjectValueLifecycleCharacterizationTest` / `COperatorInsnGenTest`（及相关 equality 锚定测试）
+- `object_value_fat_pointer_implementation_plan.md` §10.2（合同已定，实现后同步状态）
+
+工作：
+
+- production object/object `==`/`!=` 切换为 §10.2 **C1 normalized raw**：
+  - null ∪ freed → `NULL`（`gdcc_object_is_null_raw_and_id`，raw 仅作哨兵，GDCC **不解引用** wrapper）；
+  - live engine → `(GDExtensionObjectPtr).ptr`；
+  - live GDCC → `*_live_object`（或等价 live 路径），禁止 dead 路径 `Type_object_ptr(fat.ptr)`。
+- 不比较 fat struct；不以 `instance_id` 为 `==` 比较键；不从 raw 恢复 ID。
+- null/assert 路径保持现有 `(raw, id)` helper，与 equality materialize 职责分离。
+- 更新正反测试：live/live、null/null、live/null、freed/null、freed/freed、GDCC/engine、生成码无 dead 路径
+  `object_ptr`。
+
+验收（3C 单独）：
+
+- GDCC freed equality 不 UAF（无 dead wrapper 解引用）。
+- `null == null`、`freed == null`、`freedA == freedB` 为 true；live 与 null/freed 为 false。
+- live 同/异实例仍按 normalized raw 指针 identity。
+- 不引入 per-type assert helper；不把 ID 比较写进 equality 主路径。
+
+非目标（3C 不做）：
+
+- 不改 exact engine helper 公共签名（3D）。
+- 不改 registered call_func/ptrcall/virtual bridge（3E）。
+- 不把 fat 布局改为额外缓存 godot raw（方案 A，若未来需要另开阶段）。
+- 不采用 C2（dead 比 ID）或 hard-fail equality。
+
+#### 3D. Exact engine caller/helper 原子切换（原 3C，后延）
+
+**状态：待实施（3C 之后）**
 
 主要文件：
 
@@ -995,7 +1061,9 @@ generated C 标记为可运行：
 - vararg fixed object pack和 Variant return ownership闭环。
 - 保持 method-bind lookup/error path现有合同。
 
-#### 3D. Registered methods 与 virtual bridge 原子切换
+#### 3E. Registered methods 与 virtual bridge 原子切换（原 3D，后延）
+
+**状态：待实施（3D 之后）**
 
 主要文件：
 
@@ -1021,7 +1089,8 @@ generated C 标记为可运行：
 - 每个 object-producing instruction都输出 `{ptr, instance_id}`。
 - freed receiver不被解引用，property/method hard-fail cleanup正确。
 - `object_is_null` / object-vs-nil 使用 `gdcc_object_is_null_raw_and_id(raw, instance_id)`，可安全识别 freed。
-- object/object equality 直接比较 raw Godot object pointer，不检查存活、不比较 instance ID。
+- object/object equality 使用 §10.2 **C1 normalized raw**（null∪freed→`NULL`，live 比 Godot raw；无 dead wrapper 解引用；
+  不比 fat struct / 不以 ID 为比较键）。
 - `assert_object_live` 使用通用 `(raw, id)` helper；无 per-type assert helper，且不从 raw 恢复 ID。
 - no stale cached pointer传入 Godot API。
 - object ptrcall args不是 fat struct地址。

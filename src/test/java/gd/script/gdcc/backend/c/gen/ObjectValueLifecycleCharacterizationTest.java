@@ -47,8 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Phase 0 characterization for current object lifecycle, conversion, comparison and Variant boundary
-/// behavior. These tests anchor the bare-pointer ownership baseline that the fat-pointer migration
-/// must preserve or deliberately change.
+/// behavior. These tests anchor the phase-3 fat-pointer ownership and producer baseline.
 class ObjectValueLifecycleCharacterizationTest {
     private static final GdObjectType ENGINE_NODE = new GdObjectType("Node");
     private static final GdObjectType ENGINE_REFCOUNTED = new GdObjectType("RefCounted");
@@ -68,11 +67,11 @@ class ObjectValueLifecycleCharacterizationTest {
                     body,
                     " = $dst;",
                     "$dst = $src;",
-                    "own_object($dst);",
-                    "release_object(__gdcc_tmp_old_obj_"
+                    "own_object(gdcc_RefCounted_fat_ptr_live_object($dst));",
+                    "release_object(gdcc_RefCounted_fat_ptr_live_object(__gdcc_tmp_old_obj_"
             );
-            assertFalse(body.contains("try_own_object($dst);"), body);
-            assertFalse(body.contains("try_release_object(__gdcc_tmp_old_obj_"), body);
+            assertFalse(body.contains("try_own_object("), body);
+            assertFalse(body.contains("try_release_object("), body);
         }
 
         @Test
@@ -89,19 +88,14 @@ class ObjectValueLifecycleCharacterizationTest {
         }
 
         @Test
-        @DisplayName("unknown object assignment uses runtime try_own/try_release helpers")
-        void unknownObjectAssignmentUsesTryHelpers() {
-            var body = generateAssignmentBody(UNKNOWN_OBJECT, UNKNOWN_OBJECT, api());
-
-            assertTrue(body.contains("try_own_object($dst);"), body);
-            assertTrue(body.contains("try_release_object(__gdcc_tmp_old_obj_"), body);
-            assertFalse(body.contains("\nown_object($dst);\n"), body);
-            assertFalse(body.contains("\nrelease_object(__gdcc_tmp_old_obj_"), body);
+        @DisplayName("unknown object assignment fails fast at fat pointer cutover")
+        void unknownObjectAssignmentFailsFast() {
+            assertThrows(IllegalStateException.class, () -> generateAssignmentBody(UNKNOWN_OBJECT, UNKNOWN_OBJECT, api()));
         }
 
         @Test
-        @DisplayName("GDCC child to engine parent assignment converts wrapper pointer to raw Godot pointer")
-        void gdccToEngineAssignmentConvertsPointerRepresentation() {
+        @DisplayName("GDCC child to engine parent assignment uses fat pointer upcast helper")
+        void gdccToEngineAssignmentUsesFatPtrUpcast() {
             var workerClass = newClass("Worker");
             var gdccNodeClass = new LirClassDef("GdccNode", "Node", false, false, Map.of(), List.of(), List.of(), List.of());
             var func = new LirFunctionDef("assign_upcast");
@@ -113,7 +107,7 @@ class ObjectValueLifecycleCharacterizationTest {
 
             var body = generateFuncBody(workerClass, func, api(), List.of(workerClass, gdccNodeClass));
 
-            assertTrue(body.contains("$dst = gdcc_object_to_godot_object_ptr($src, GdccNode_object_ptr);"), body);
+            assertTrue(body.contains("$dst = gdcc_GdccNode_fat_ptr_upcast_to_Node($src);"), body);
         }
     }
 
@@ -134,9 +128,9 @@ class ObjectValueLifecycleCharacterizationTest {
             var output = builder.build();
 
             assertTrue(output.contains("_return_val = $node;"), output);
-            assertTrue(output.contains("$node = NULL;"), output);
+            assertTrue(output.contains("$node = (gdcc_Node_fat_ptr){ 0 };"), output);
             assertFalse(output.contains("own_object("), output);
-            assertFalse(output.contains("release_object($node)"), output);
+            assertFalse(output.contains("release_object("), output);
         }
 
         @Test
@@ -153,7 +147,7 @@ class ObjectValueLifecycleCharacterizationTest {
             var output = builder.build();
 
             assertTrue(output.contains("_return_val = $node;"), output);
-            assertFalse(output.contains("$node = NULL;"), output);
+            assertFalse(output.contains("$node = (gdcc_Node_fat_ptr){ 0 };"), output);
         }
     }
 
@@ -161,8 +155,8 @@ class ObjectValueLifecycleCharacterizationTest {
     @DisplayName("Constructor and singleton baseline")
     class ConstructorSingletonBaseline {
         @Test
-        @DisplayName("engine object construction produces a fresh bare pointer without extra retain")
-        void engineConstructionProducesBarePointer() {
+        @DisplayName("engine object construction captures raw constructor into fat pointer without extra retain")
+        void engineConstructionCapturesIntoFatPointer() {
             var workerClass = newClass("Worker");
             var func = new LirFunctionDef("construct_node");
             func.setReturnType(GdVoidType.VOID);
@@ -172,14 +166,14 @@ class ObjectValueLifecycleCharacterizationTest {
 
             var body = generateFuncBody(workerClass, func, api(), List.of(workerClass));
 
-            assertTrue(body.contains("$node = godot_new_Node();"), body);
-            assertFalse(body.contains("own_object($node);"), body);
-            assertFalse(body.contains("try_own_object($node);"), body);
+            assertTrue(body.contains("gdcc_Node_fat_ptr_from_raw((GDExtensionObjectPtr)(godot_new_Node()))"), body);
+            assertFalse(body.contains("own_object("), body);
+            assertFalse(body.contains("try_own_object("), body);
         }
 
         @Test
-        @DisplayName("GDCC RefCounted construction wraps the raw instance through gdcc_object_from_godot_object_ptr")
-        void gdccRefCountedConstructionWrapsRawInstance() {
+        @DisplayName("GDCC RefCounted construction captures create_instance raw into fat pointer")
+        void gdccRefCountedConstructionCapturesIntoFatPointer() {
             var workerClass = newClass("Worker");
             var gdccWorkerClass = newClass("GdccWorker");
             var func = new LirFunctionDef("construct_worker");
@@ -191,14 +185,14 @@ class ObjectValueLifecycleCharacterizationTest {
             var body = generateFuncBody(workerClass, func, api(), List.of(workerClass, gdccWorkerClass));
 
             assertTrue(body.contains("gdcc_ref_counted_init_raw(GdccWorker_class_create_instance(NULL, false), true)"), body);
-            assertTrue(body.contains("gdcc_object_from_godot_object_ptr("), body);
+            assertTrue(body.contains("gdcc_GdccWorker_fat_ptr_from_raw"), body);
             assertFalse(body.contains("own_object("), body);
             assertFalse(body.contains("try_own_object("), body);
         }
 
         @Test
-        @DisplayName("singleton load produces the raw engine singleton pointer")
-        void singletonLoadProducesBarePointer() {
+        @DisplayName("singleton load captures raw engine singleton into fat pointer")
+        void singletonLoadCapturesIntoFatPointer() {
             var workerClass = newClass("Worker");
             var func = new LirFunctionDef("load_singleton");
             func.setReturnType(GdVoidType.VOID);
@@ -208,7 +202,7 @@ class ObjectValueLifecycleCharacterizationTest {
 
             var body = generateFuncBody(workerClass, func, singletonApi(), List.of(workerClass));
 
-            assertTrue(body.contains("$out = godot_GameSingleton_singleton();"), body);
+            assertTrue(body.contains("gdcc_Node_fat_ptr_from_raw((GDExtensionObjectPtr)(godot_GameSingleton_singleton()))"), body);
         }
     }
 
@@ -216,32 +210,29 @@ class ObjectValueLifecycleCharacterizationTest {
     @DisplayName("Variant pack/unpack baseline")
     class VariantPackUnpackBaseline {
         @Test
-        @DisplayName("packing object values uses the current bare-pointer Variant constructors")
-        void packUsesBarePointerVariantConstructors() {
+        @DisplayName("packing object values uses per-type fat pointer to_variant helpers")
+        void packUsesFatPointerToVariantHelpers() {
             var engineBody = generatePackBody(ENGINE_NODE, api());
-            assertTrue(engineBody.contains("$result = godot_new_Variant_with_Object($value);"), engineBody);
+            assertTrue(engineBody.contains("gdcc_Node_fat_ptr_to_variant($value)"), engineBody);
 
             var gdccBody = generatePackBody(GDCC_WORKER, api());
-            assertTrue(gdccBody.contains("$result = gdcc_new_Variant_with_gdcc_Object($value);"), gdccBody);
+            assertTrue(gdccBody.contains("gdcc_GdccWorker_fat_ptr_to_variant($value)"), gdccBody);
         }
 
         @Test
-        @DisplayName("unpacking object values releases the old slot but does not re-own the fresh helper result")
-        void unpackReleasesOldWithoutReowning() {
+        @DisplayName("unpacking object values is BORROWED from_variant and releases old via live_object")
+        void unpackUsesFromVariantBorrowedAndReleasesOld() {
             var engineBody = generateUnpackBody(ENGINE_REFCOUNTED, api());
-            assertTrue(engineBody.contains("$result = (godot_RefCounted*)godot_new_Object_with_Variant(&$variant);"), engineBody);
-            assertTrue(engineBody.contains("release_object(__gdcc_tmp_old_obj_"), engineBody);
+            assertTrue(engineBody.contains("gdcc_RefCounted_fat_ptr_from_variant"), engineBody);
+            assertTrue(engineBody.contains("release_object(gdcc_RefCounted_fat_ptr_live_object(__gdcc_tmp_old_obj_"), engineBody);
             assertFalse(engineBody.contains("own_object($result)"), engineBody);
 
             var gdccBody = generateUnpackBody(GDCC_WORKER, api());
-            assertTrue(gdccBody.contains("$result = (GdccWorker*)godot_new_gdcc_Object_with_Variant(&$variant);"), gdccBody);
-            assertTrue(gdccBody.contains("release_object(gdcc_object_to_godot_object_ptr(__gdcc_tmp_old_obj_"), gdccBody);
+            assertTrue(gdccBody.contains("gdcc_GdccWorker_fat_ptr_from_variant"), gdccBody);
+            assertTrue(gdccBody.contains("release_object(gdcc_GdccWorker_fat_ptr_live_object(__gdcc_tmp_old_obj_"), gdccBody);
             assertFalse(gdccBody.contains("own_object($result)"), gdccBody);
 
-            var unknownBody = generateUnpackBody(UNKNOWN_OBJECT, api());
-            assertTrue(unknownBody.contains("$result = (godot_UnknownObject*)godot_new_Object_with_Variant(&$variant);"), unknownBody);
-            assertTrue(unknownBody.contains("try_release_object(__gdcc_tmp_old_obj_"), unknownBody);
-            assertFalse(unknownBody.contains("own_object($result)"), unknownBody);
+            assertThrows(IllegalStateException.class, () -> generateUnpackBody(UNKNOWN_OBJECT, api()));
         }
     }
 
@@ -249,18 +240,21 @@ class ObjectValueLifecycleCharacterizationTest {
     @DisplayName("Equality and null comparison phase-2 anchor")
     class EqualityBaseline {
         @Test
-        @DisplayName("object equality compares raw Godot object pointers directly")
-        void objectEqualityUsesRawPointerComparison() {
+        @DisplayName("object equality compares cached raw Godot object pointers from fat pointers")
+        void objectEqualityUsesCachedRawPointerComparison() {
             var equalBody = generateBinaryOpBody(GodotOperator.EQUAL);
-            assertTrue(equalBody.contains("$result = ($left == $right);"), equalBody);
+            assertTrue(equalBody.contains("(GDExtensionObjectPtr)($left).ptr"), equalBody);
+            assertTrue(equalBody.contains("(GDExtensionObjectPtr)($right).ptr"), equalBody);
+            assertTrue(equalBody.contains(" == "), equalBody);
+            assertFalse(equalBody.contains(".instance_id =="), equalBody);
 
             var notEqualBody = generateBinaryOpBody(GodotOperator.NOT_EQUAL);
-            assertTrue(notEqualBody.contains("$result = ($left != $right);"), notEqualBody);
+            assertTrue(notEqualBody.contains(" != "), notEqualBody);
         }
 
         @Test
-        @DisplayName("object-vs-nil equality compares the raw object pointer against NULL")
-        void objectNilEqualityUsesRawNullCompare() {
+        @DisplayName("object-vs-nil equality uses gdcc_object_is_null_raw_and_id")
+        void objectNilEqualityUsesRawAndId() {
             var workerClass = newClass("Worker");
             var func = new LirFunctionDef("object_nil_equal");
             func.setReturnType(GdVoidType.VOID);
@@ -272,12 +266,12 @@ class ObjectValueLifecycleCharacterizationTest {
 
             var body = generateFuncBody(workerClass, func, api(), List.of(workerClass));
 
-            assertTrue(body.contains("$result = ($obj == NULL);"), body);
+            assertTrue(body.contains("gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($obj).ptr, $obj.instance_id)"), body);
         }
 
         @Test
-        @DisplayName("object-vs-nil inequality compares the raw object pointer against NULL")
-        void objectNilInequalityUsesRawNullCompare() {
+        @DisplayName("object-vs-nil inequality negates gdcc_object_is_null_raw_and_id")
+        void objectNilInequalityUsesRawAndId() {
             var workerClass = newClass("Worker");
             var func = new LirFunctionDef("object_nil_not_equal");
             func.setReturnType(GdVoidType.VOID);
@@ -289,7 +283,7 @@ class ObjectValueLifecycleCharacterizationTest {
 
             var body = generateFuncBody(workerClass, func, api(), List.of(workerClass));
 
-            assertTrue(body.contains("$result = ($obj != NULL);"), body);
+            assertTrue(body.contains("(!gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($obj).ptr, $obj.instance_id))"), body);
         }
 
         @Test
@@ -316,15 +310,13 @@ class ObjectValueLifecycleCharacterizationTest {
     @DisplayName("RefCounted status matrix baseline")
     class RefCountedMatrixBaseline {
         @Test
-        @DisplayName("explicit own/release selects plain, try, or no-op helpers by RefCounted status")
+        @DisplayName("explicit own/release selects plain or no-op helpers via live_object")
         void explicitOwnReleaseFollowsRefCountedStatus() {
             var gdccBody = generateOwnReleaseBody(GDCC_WORKER, api());
-            assertTrue(gdccBody.contains("own_object(gdcc_object_to_godot_object_ptr($obj, GdccWorker_object_ptr));"), gdccBody);
-            assertTrue(gdccBody.contains("release_object(gdcc_object_to_godot_object_ptr($obj, GdccWorker_object_ptr));"), gdccBody);
+            assertTrue(gdccBody.contains("own_object(gdcc_GdccWorker_fat_ptr_live_object($obj));"), gdccBody);
+            assertTrue(gdccBody.contains("release_object(gdcc_GdccWorker_fat_ptr_live_object($obj));"), gdccBody);
 
-            var unknownBody = generateOwnReleaseBody(UNKNOWN_OBJECT, api());
-            assertTrue(unknownBody.contains("try_own_object($obj);"), unknownBody);
-            assertTrue(unknownBody.contains("try_release_object($obj);"), unknownBody);
+            assertThrows(IllegalStateException.class, () -> generateOwnReleaseBody(UNKNOWN_OBJECT, api()));
 
             var nodeBody = generateOwnReleaseBody(ENGINE_NODE, api());
             assertFalse(nodeBody.contains("own_object("), nodeBody);
@@ -334,7 +326,7 @@ class ObjectValueLifecycleCharacterizationTest {
         }
 
         @Test
-        @DisplayName("__finally__ auto cleanup releases RefCounted slots but skips definite non-RefCounted slots")
+        @DisplayName("__finally__ auto cleanup releases RefCounted slots via live_object but skips non-RefCounted")
         void autoFinallyCleanupFollowsRefCountedStatus() {
             var workerClass = newClass("Worker");
             var gdccWorkerClass = newClass("GdccWorker");
@@ -348,11 +340,11 @@ class ObjectValueLifecycleCharacterizationTest {
 
             var entrySource = generateEntryC(api(), List.of(workerClass, gdccWorkerClass));
 
-            assertTrue(entrySource.contains("release_object($ref);"), entrySource);
-            assertTrue(entrySource.contains("release_object(gdcc_object_to_godot_object_ptr($worker, GdccWorker_object_ptr));"), entrySource);
+            assertTrue(entrySource.contains("release_object(gdcc_RefCounted_fat_ptr_live_object($ref));"), entrySource);
+            assertTrue(entrySource.contains("release_object(gdcc_GdccWorker_fat_ptr_live_object($worker));"), entrySource);
             assertFalse(entrySource.contains("try_destroy_object($node);"), entrySource);
             assertFalse(entrySource.contains("destroy_object($node);"), entrySource);
-            assertFalse(entrySource.contains("release_object($node);"), entrySource);
+            assertFalse(entrySource.contains("release_object(gdcc_Node_fat_ptr_live_object($node));"), entrySource);
         }
     }
 

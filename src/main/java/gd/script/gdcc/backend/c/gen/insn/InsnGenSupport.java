@@ -4,6 +4,7 @@ import gd.script.gdcc.backend.c.gen.CBodyBuilder;
 import gd.script.gdcc.lir.LirVariable;
 import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
@@ -64,6 +65,25 @@ final class InsnGenSupport {
                                     @NotNull String useSite) {
         rejectCompilerOnlyType(bodyBuilder, targetType, useSite);
         var unpackFunctionName = bodyBuilder.helper().renderUnpackFunctionName(targetType);
+        if (targetType instanceof GdObjectType objectType) {
+            // Object unpack materializes a BORROWED fat pointer; destination slot decides retain.
+            var variantArg = bodyBuilder.renderArgument(variantValue, false);
+            if (variantArg.preCode() != null && !variantArg.preCode().isBlank()) {
+                bodyBuilder.appendRaw(variantArg.preCode());
+            }
+            if (!variantArg.temps().isEmpty()) {
+                throw bodyBuilder.invalidInsn("object Variant unpack must not require temporaries at " + useSite);
+            }
+            bodyBuilder.assignVar(
+                    target,
+                    bodyBuilder.valueOfExpr(
+                            unpackFunctionName + "(" + variantArg.code() + ")",
+                            objectType,
+                            CBodyBuilder.PtrKind.FAT_PTR
+                    )
+            );
+            return;
+        }
         bodyBuilder.callAssign(target, unpackFunctionName, targetType, List.of(variantValue));
     }
 

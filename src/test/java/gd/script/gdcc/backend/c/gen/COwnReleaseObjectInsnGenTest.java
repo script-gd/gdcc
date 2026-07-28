@@ -52,13 +52,13 @@ public class COwnReleaseObjectInsnGenTest {
         codegen.prepare(newContext(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()), List.of(workerClass, objectClass)), module);
 
         var body = codegen.generateFuncBody(workerClass, func);
-        assertTrue(body.contains("own_object(gdcc_object_to_godot_object_ptr($obj, MyObject_object_ptr));"));
-        assertFalse(body.contains("try_own_object(gdcc_object_to_godot_object_ptr($obj, MyObject_object_ptr));"));
+        assertTrue(body.contains("own_object(gdcc_MyObject_fat_ptr_live_object($obj));"));
+        assertFalse(body.contains("try_own_object(gdcc_MyObject_fat_ptr_live_object($obj));"));
     }
 
     @Test
-    @DisplayName("Unknown object type should use try_release_object")
-    void unknownObjectTypeShouldUseTryReleaseObject() {
+    @DisplayName("Unknown object type should fail fast at fat pointer cutover")
+    void unknownObjectTypeShouldFailFast() {
         var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("release_obj");
         func.setReturnType(GdVoidType.VOID);
@@ -74,8 +74,7 @@ public class COwnReleaseObjectInsnGenTest {
         var codegen = new CCodegen();
         codegen.prepare(newContext(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()), List.of(workerClass)), module);
 
-        var body = codegen.generateFuncBody(workerClass, func);
-        assertTrue(body.contains("try_release_object($obj);"));
+        assertThrows(IllegalStateException.class, () -> codegen.generateFuncBody(workerClass, func));
     }
 
     @Test

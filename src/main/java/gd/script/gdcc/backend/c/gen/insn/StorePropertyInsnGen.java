@@ -48,7 +48,7 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
         // Validate property existence/writability and assignment compatibility first.
         var objectLookup = validatePropertyWrite(bodyBuilder, objectVar.type(), valueVar.type(), insn.propertyName());
 
-        if (objectVar.type() instanceof GdObjectType) {
+        if (objectVar.type() instanceof GdObjectType ownerObjectType) {
             if (objectLookup != null) {
                 var receiverValue = BackendPropertyAccessResolver.renderOwnerReceiverValue(
                         bodyBuilder,
@@ -60,8 +60,13 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
                     case GDCC -> {
                         var ownerClassName = objectLookup.ownerClass().getName();
                         if (isStoringInsideSetterSelf(bodyBuilder, objectVar, objectLookup)) {
+                            var liveOwner = BackendPropertyAccessResolver.renderGdccLiveOwnerPointerExpr(
+                                    bodyBuilder,
+                                    objectVar,
+                                    ownerObjectType
+                            );
                             var fieldTarget = bodyBuilder.targetOfExpr(
-                                    "$" + objectVar.id() + "->" + insn.propertyName(),
+                                    liveOwner + "->" + insn.propertyName(),
                                     objectLookup.property().getType()
                             );
                             bodyBuilder.assignVar(fieldTarget, bodyBuilder.valueOfVar(valueVar));

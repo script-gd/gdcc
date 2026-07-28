@@ -197,8 +197,13 @@ public final class CBuiltinBuilder {
                 bodyBuilder.callAssign(target, "godot_new_Variant_nil", GdVariantType.VARIANT, List.of());
                 return;
             }
-            if (expectedType instanceof GdObjectType) {
-                bodyBuilder.assignExpr(target, "NULL", expectedType, CBodyBuilder.PtrKind.GODOT_PTR);
+            if (expectedType instanceof GdObjectType objectType) {
+                bodyBuilder.assignExpr(
+                        target,
+                        bodyBuilder.helper().renderDefaultValueExprInC(objectType),
+                        expectedType,
+                        CBodyBuilder.PtrKind.FAT_PTR
+                );
                 return;
             }
             throw errorReporter.invalid("literal 'null' is not assignable to '" + expectedType.getTypeName() + "'");
@@ -299,18 +304,18 @@ public final class CBuiltinBuilder {
 
     private @Nullable List<GdType> resolveHelperShimCtorArgTypes(@NotNull GdType type, int argCount) {
         return switch (type) {
-            case GdTransform2DType _ when argCount == 6 -> repeatedCtorArgTypes(GdFloatType.FLOAT, 6);
-            case GdTransform3DType _ when argCount == 12 -> repeatedCtorArgTypes(GdFloatType.FLOAT, 12);
-            case GdBasisType _ when argCount == 9 -> repeatedCtorArgTypes(GdFloatType.FLOAT, 9);
-            case GdProjectionType _ when argCount == 16 -> repeatedCtorArgTypes(GdFloatType.FLOAT, 16);
+            case GdTransform2DType _ when argCount == 6 -> repeatedFloatCtorArgTypes(6);
+            case GdTransform3DType _ when argCount == 12 -> repeatedFloatCtorArgTypes(12);
+            case GdBasisType _ when argCount == 9 -> repeatedFloatCtorArgTypes(9);
+            case GdProjectionType _ when argCount == 16 -> repeatedFloatCtorArgTypes(16);
             default -> null;
         };
     }
 
-    private @NotNull List<GdType> repeatedCtorArgTypes(@NotNull GdType argType, int count) {
+    private @NotNull List<GdType> repeatedFloatCtorArgTypes(int count) {
         var suffixes = new ArrayList<GdType>(count);
         for (var i = 0; i < count; i++) {
-            suffixes.add(argType);
+            suffixes.add(GdFloatType.FLOAT);
         }
         return suffixes;
     }

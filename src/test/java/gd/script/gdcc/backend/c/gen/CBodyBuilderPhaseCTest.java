@@ -481,7 +481,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("RefCounted object assignment should capture old, own new, then release captured old")
+        @DisplayName("RefCounted object assignment should capture old fat ptr, own new, then release captured old")
         void testRefCountedObjectAssignment() {
             var target = new LirVariable("obj", new GdObjectType("RefCounted"), lirFunctionDef);
             var source = new LirVariable("src", new GdObjectType("RefCounted"), lirFunctionDef);
@@ -491,12 +491,14 @@ public class CBodyBuilderPhaseCTest {
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            // RefCounted: should use release_object and own_object (not try_ versions)
-            assertTrue(result.contains("godot_RefCounted* __gdcc_tmp_old_obj_0 = $obj;"),
-                    "Should capture old RefCounted object");
-            assertTrue(result.contains("release_object(__gdcc_tmp_old_obj_0);"),
-                    "Should release captured old RefCounted object");
-            assertTrue(result.contains("own_object($obj)"), "Should own new RefCounted object");
+            // Fat pointer storage: capture old fat ptr, struct-assign same type, retain/release via live_object.
+            assertTrue(result.contains("gdcc_RefCounted_fat_ptr __gdcc_tmp_old_obj_0 = $obj;"),
+                    "Should capture old RefCounted fat pointer. Actual:\n" + result);
+            assertTrue(result.contains("$obj = $src;"), "Same-type FAT_PTR storage should struct-assign directly. Actual:\n" + result);
+            assertTrue(result.contains("own_object(gdcc_RefCounted_fat_ptr_live_object($obj));"),
+                    "Should own new RefCounted object via live_object. Actual:\n" + result);
+            assertTrue(result.contains("release_object(gdcc_RefCounted_fat_ptr_live_object(__gdcc_tmp_old_obj_0));"),
+                    "Should release captured old RefCounted object via live_object. Actual:\n" + result);
         }
 
         @Test
@@ -518,7 +520,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("GDCC object assignment should use helper conversion for own/release")
+        @DisplayName("GDCC object assignment should struct-assign same-type fat ptr and own/release via live_object")
         void testGdccObjectAssignment() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var source = new LirVariable("src", new GdObjectType("MyGdccClass"), lirFunctionDef);
@@ -528,9 +530,15 @@ public class CBodyBuilderPhaseCTest {
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            // GDCC class inherits RefCounted, should use helper conversion
-            assertTrue(result.contains("gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr)"),
-                    "Should use class-specific GDCC object pointer helper conversion");
+            // Same-type FAT_PTR storage uses plain struct assign with live_object for own/release.
+            assertTrue(result.contains("gdcc_MyGdccClass_fat_ptr __gdcc_tmp_old_obj_0 = $myObj;"),
+                    "Should capture old GDCC fat pointer. Actual:\n" + result);
+            assertTrue(result.contains("$myObj = $src;"),
+                    "Same-type GDCC FAT_PTR should struct-assign directly. Actual:\n" + result);
+            assertTrue(result.contains("own_object(gdcc_MyGdccClass_fat_ptr_live_object($myObj));"),
+                    "Should own GDCC object via live_object. Actual:\n" + result);
+            assertTrue(result.contains("release_object(gdcc_MyGdccClass_fat_ptr_live_object(__gdcc_tmp_old_obj_0));"),
+                    "Should release captured old GDCC object via live_object. Actual:\n" + result);
         }
 
         @Test
@@ -724,10 +732,13 @@ public class CBodyBuilderPhaseCTest {
             objectBuilder.returnValue(objectBuilder.valueOfVar(objVar));
 
             var result = objectBuilder.build();
-            assertTrue(result.contains("godot_RefCounted* _return_val = NULL;"), "Prepare block should init return slot");
-            assertTrue(result.contains("release_object(__gdcc_tmp_old_obj_0);"), "Writing return slot should release captured old value");
-            assertTrue(result.contains("_return_val = $obj;"), "Should write returned object into slot");
-            assertTrue(result.contains("$obj = NULL;"), "Moved local object should be cleared so __finally__ does not release it again");
+            assertTrue(result.contains("gdcc_RefCounted_fat_ptr _return_val = (gdcc_RefCounted_fat_ptr){ 0 };"),
+                    "Prepare block should init return slot with fat pointer zero literal. Actual:\n" + result);
+            assertTrue(result.contains("release_object(gdcc_RefCounted_fat_ptr_live_object(__gdcc_tmp_old_obj_0));"),
+                    "Writing return slot should release captured old fat pointer via live_object. Actual:\n" + result);
+            assertTrue(result.contains("_return_val = $obj;"), "Should write returned object into slot. Actual:\n" + result);
+            assertTrue(result.contains("$obj = (gdcc_RefCounted_fat_ptr){ 0 };"),
+                    "Moved local object slot should be zeroed so __finally__ does not release it again. Actual:\n" + result);
             assertFalse(result.contains("own_object(_return_val);"), "Owning local object should move into return slot without extra own");
             assertTrue(result.contains("goto __finally__;"), "Non-finally return should jump to __finally__");
         }
@@ -740,43 +751,45 @@ public class CBodyBuilderPhaseCTest {
             var ownedValue = objectBuilder.valueOfOwnedExpr(
                     "create_object()",
                     new GdObjectType("RefCounted"),
-                    CBodyBuilder.PtrKind.GODOT_PTR
+                    CBodyBuilder.PtrKind.RAW_PRODUCER
             );
 
             objectBuilder.returnValue(ownedValue);
 
             var result = objectBuilder.build();
-            assertTrue(result.contains("release_object(__gdcc_tmp_old_obj_0);"), "Should still release previous return slot value");
-            assertTrue(result.contains("_return_val = create_object();"), "Should assign owned return expression");
+            assertTrue(result.contains("release_object(gdcc_RefCounted_fat_ptr_live_object(__gdcc_tmp_old_obj_0));"),
+                    "Should still release previous return slot value via live_object. Actual:\n" + result);
+            assertTrue(result.contains("_return_val = gdcc_RefCounted_fat_ptr_from_raw((GDExtensionObjectPtr)(create_object()));"),
+                    "Should convert owned raw producer before publishing into return slot. Actual:\n" + result);
             assertFalse(result.contains("own_object(_return_val);"), "Owned return value must not be owned again");
             assertTrue(result.contains("goto __finally__;"), "Non-finally return should jump to __finally__");
         }
 
         @Test
-        @DisplayName("Returning owned GODOT_PTR for GDCC return type should convert representation without own")
+        @DisplayName("Returning owned RAW_PRODUCER for GDCC return type should convert representation without own")
         void testReturnOwnedGodotPtrToGdccReturnTypeDoesNotOwnAgain() {
             var objectBuilder = createBuilderWithReturnType(new GdObjectType("MyGdccClass"));
             objectBuilder.beginBasicBlock("__prepare__");
             var ownedValue = objectBuilder.valueOfOwnedExpr(
                     "godot_make_worker()",
                     new GdObjectType("MyGdccClass"),
-                    CBodyBuilder.PtrKind.GODOT_PTR
+                    CBodyBuilder.PtrKind.RAW_PRODUCER
             );
 
             objectBuilder.returnValue(ownedValue);
 
             var result = objectBuilder.build();
             assertTrue(
-                    result.contains("_return_val = (MyGdccClass*)gdcc_object_from_godot_object_ptr(godot_make_worker());"),
-                    "OWNED Godot ptr return should be converted before publishing into GDCC return slot. Actual:\n" + result
+                    result.contains("_return_val = gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(godot_make_worker()));"),
+                    "OWNED Godot raw ptr return should be captured into GDCC return slot via fat_ptr_from_raw. Actual:\n" + result
             );
             assertFalse(
-                    result.contains("own_object(gdcc_object_to_godot_object_ptr(_return_val, MyGdccClass_object_ptr));"),
-                    "Representation conversion must not add an extra retain at the publish boundary. Actual:\n" + result
+                    result.contains("own_object(gdcc_MyGdccClass_fat_ptr_live_object(_return_val));"),
+                    "OWNED raw producer must not be retained again at the publish boundary. Actual:\n" + result
             );
-            assertFalse(
-                    result.contains("try_own_object(gdcc_object_to_godot_object_ptr(_return_val, MyGdccClass_object_ptr));"),
-                    "Representation conversion must stay ownership-neutral for unknown refcount status too. Actual:\n" + result
+            assertTrue(
+                    result.contains("release_object(gdcc_MyGdccClass_fat_ptr_live_object(__gdcc_tmp_old_obj_0));"),
+                    "Should release previous return slot value via live_object. Actual:\n" + result
             );
         }
 
@@ -792,8 +805,11 @@ public class CBodyBuilderPhaseCTest {
 
             var result = objectBuilder.build();
             assertTrue(result.contains("_return_val = $obj;"), "Borrowed parameter should still write into return slot");
-            assertTrue(result.contains("own_object(_return_val);"), "Borrowed parameter should be retained for the caller");
+            assertTrue(result.contains("own_object(gdcc_RefCounted_fat_ptr_live_object(_return_val));"),
+                    "Borrowed parameter should be retained for the caller via live_object. Actual:\n" + result);
             assertFalse(result.contains("$obj = NULL;"), "Borrowed parameter must not be cleared by move logic");
+            assertFalse(result.contains("$obj = (gdcc_RefCounted_fat_ptr){ 0 };"),
+                    "Borrowed parameter must not be cleared by move logic. Actual:\n" + result);
         }
 
         @Test
@@ -804,46 +820,52 @@ public class CBodyBuilderPhaseCTest {
             var borrowedValue = objectBuilder.valueOfExpr(
                     "self->cached_resource",
                     new GdObjectType("RefCounted"),
-                    CBodyBuilder.PtrKind.GODOT_PTR
+                    CBodyBuilder.PtrKind.RAW_PRODUCER
             );
 
             objectBuilder.returnValue(borrowedValue);
 
             var result = objectBuilder.build();
-            assertTrue(result.contains("_return_val = self->cached_resource;"),
-                    "Borrowed field/property style return should still publish through the return slot");
-            assertTrue(result.contains("own_object(_return_val);"),
-                    "Borrowed field/property style return should retain at the publish boundary");
+            assertTrue(result.contains("_return_val = gdcc_RefCounted_fat_ptr_from_raw((GDExtensionObjectPtr)(self->cached_resource));"),
+                    "Borrowed field/property style return should publish through the return slot by capturing the raw ptr into a fat pointer. Actual:\n" + result);
+            assertTrue(result.contains("own_object(gdcc_RefCounted_fat_ptr_live_object(_return_val));"),
+                    "Borrowed field/property style return should retain at the publish boundary via live_object. Actual:\n" + result);
             assertFalse(result.contains("cached_resource = NULL;"),
                     "Borrowed expression return must not trigger move-return source clearing");
+            assertFalse(result.contains("cached_resource = (gdcc_RefCounted_fat_ptr){ 0 };"),
+                    "Borrowed expression return must not trigger move-return source clearing. Actual:\n" + result);
             assertTrue(result.contains("goto __finally__;"), "Non-finally return should jump to __finally__");
         }
 
         @Test
-        @DisplayName("Returning borrowed GODOT_PTR for GDCC return type should retain only at publish boundary")
+        @DisplayName("Returning borrowed RAW_PRODUCER for GDCC return type should retain only at publish boundary")
         void testReturnBorrowedGodotPtrToGdccReturnTypeOwnsAtPublishBoundary() {
             var objectBuilder = createBuilderWithReturnType(new GdObjectType("MyGdccClass"));
             objectBuilder.beginBasicBlock("__prepare__");
             var borrowedValue = objectBuilder.valueOfExpr(
                     "self->cached_worker",
                     new GdObjectType("MyGdccClass"),
-                    CBodyBuilder.PtrKind.GODOT_PTR
+                    CBodyBuilder.PtrKind.RAW_PRODUCER
             );
 
             objectBuilder.returnValue(borrowedValue);
 
             var result = objectBuilder.build();
             assertTrue(
-                    result.contains("_return_val = (MyGdccClass*)gdcc_object_from_godot_object_ptr(self->cached_worker);"),
-                    "Borrowed Godot ptr should still be converted before publishing into GDCC return slot. Actual:\n" + result
+                    result.contains("_return_val = gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(self->cached_worker));"),
+                    "Borrowed Godot raw ptr should still be captured into GDCC return slot via fat_ptr_from_raw. Actual:\n" + result
             );
             assertTrue(
-                    result.contains("own_object(gdcc_object_to_godot_object_ptr(_return_val, MyGdccClass_object_ptr));"),
-                    "Borrowed return should retain exactly at the publish boundary after conversion. Actual:\n" + result
+                    result.contains("own_object(gdcc_MyGdccClass_fat_ptr_live_object(_return_val));"),
+                    "Borrowed return should retain exactly at the publish boundary via live_object. Actual:\n" + result
             );
             assertFalse(
-                    result.contains("try_own_object(gdcc_object_to_godot_object_ptr(_return_val, MyGdccClass_object_ptr));"),
+                    result.contains("try_own_object(gdcc_MyGdccClass_fat_ptr_live_object(_return_val));"),
                     "Known RefCounted GDCC return type should use the precise own path. Actual:\n" + result
+            );
+            assertTrue(
+                    result.contains("release_object(gdcc_MyGdccClass_fat_ptr_live_object(__gdcc_tmp_old_obj_0));"),
+                    "Should release previous return slot value via live_object. Actual:\n" + result
             );
         }
 
@@ -870,14 +892,17 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("Compatible object types should work")
-        void testCompatibleObjectTypeAssignment() {
-            // RefCounted is assignable to Object
+        @DisplayName("Unregistered object target type should fail-fast during fat pointer storage resolution")
+        void testUnknownTargetObjectAssignmentFailsFast() {
+            // The test registry only registers RefCounted and Node; the bare "Object" engine type is
+            // unknown to the fat-pointer spec resolver and must fail-fast in phase 3.
             var target = new LirVariable("obj", GdObjectType.OBJECT, lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
             var value = builder.valueOfExpr("refCountedPtr", new GdObjectType("RefCounted"));
 
-            assertDoesNotThrow(() -> builder.assignVar(targetRef, value));
+            var ex = assertThrows(IllegalStateException.class, () -> builder.assignVar(targetRef, value));
+            assertTrue(ex.getMessage().contains("Unknown object type 'Object'"),
+                    "Should fail-fast on unregistered object target. Actual:\n" + ex.getMessage());
         }
     }
 
@@ -907,8 +932,12 @@ public class CBodyBuilderPhaseCTest {
             builder.callAssign(targetRef, "create_object", new GdObjectType("RefCounted"), List.of());
 
             var result = builder.build();
-            assertTrue(result.contains("release_object(__gdcc_tmp_old_obj_0);"), "Should release captured old object");
-            assertFalse(result.contains("own_object($obj)"), "Owned call result should not be owned again");
+            assertTrue(result.contains("gdcc_RefCounted_fat_ptr __gdcc_tmp_old_obj_0 = $obj;"),
+                    "Should capture captured old object as fat pointer. Actual:\n" + result);
+            assertTrue(result.contains("release_object(gdcc_RefCounted_fat_ptr_live_object(__gdcc_tmp_old_obj_0));"),
+                    "Should release captured old object via live_object. Actual:\n" + result);
+            assertFalse(result.contains("own_object(gdcc_RefCounted_fat_ptr_live_object($obj));"),
+                    "Owned call result should not be owned again");
         }
 
         @Test
@@ -981,24 +1010,23 @@ public class CBodyBuilderPhaseCTest {
             builder.callAssign(builder.discardRef(), "create_object", new GdObjectType("RefCounted"), List.of());
 
             var result = builder.build();
-            assertTrue(result.contains("godot_RefCounted* __gdcc_tmp_discard_0 = create_object();"),
-                    "Should materialize object return into discard temp");
-            assertTrue(result.contains("release_object(__gdcc_tmp_discard_0);"),
-                    "Should release discarded RefCounted object");
-            assertFalse(result.contains("own_object(__gdcc_tmp_discard_0)"),
+            assertTrue(result.contains("gdcc_RefCounted_fat_ptr __gdcc_tmp_discard_0 = create_object();"),
+                    "Should materialize object return into fat pointer discard temp. Actual:\n" + result);
+            assertTrue(result.contains("release_object(gdcc_RefCounted_fat_ptr_live_object(__gdcc_tmp_discard_0));"),
+                    "Should release discarded RefCounted object via live_object. Actual:\n" + result);
+            assertFalse(result.contains("own_object(gdcc_RefCounted_fat_ptr_live_object(__gdcc_tmp_discard_0));"),
                     "Discard path must consume owned return without own");
         }
 
         @Test
-        @DisplayName("callAssign discard of unknown object return should try_release temporary result")
+        @DisplayName("callAssign discard of unknown object return should fail-fast on unregistered type")
         void testCallAssignDiscardUnknownObjectReturn() {
-            builder.callAssign(builder.discardRef(), "fetch_unknown", new GdObjectType("UnknownType"), List.of());
-
-            var result = builder.build();
-            assertTrue(result.contains("GDExtensionObjectPtr __gdcc_tmp_discard_0 = fetch_unknown();"),
-                    "Should materialize unknown object return into discard temp");
-            assertTrue(result.contains("try_release_object(__gdcc_tmp_discard_0);"),
-                    "Should try_release discarded unknown object");
+            // Phase 3 fail-fast: unknown object types cannot materialize a fat pointer discard temp.
+            var ex = assertThrows(IllegalStateException.class, () ->
+                    builder.callAssign(builder.discardRef(), "fetch_unknown", new GdObjectType("UnknownType"), List.of())
+            );
+            assertTrue(ex.getMessage().contains("Unknown object type 'UnknownType'"),
+                    "Discard of an unregistered object type must fail-fast. Actual:\n" + ex.getMessage());
         }
 
         @Test
@@ -1028,20 +1056,17 @@ public class CBodyBuilderPhaseCTest {
     class UnknownObjectAssignmentTests {
 
         @Test
-        @DisplayName("Unknown object assignment should use try_own/try_release")
-        void testUnknownObjectAssignmentUsesTry() {
+        @DisplayName("Unknown object assignment should fail-fast on unregistered type")
+        void testUnknownObjectAssignmentFailsFast() {
+            // Phase 3 fail-fast: unknown object types cannot materialize a fat pointer slot storage.
             var target = new LirVariable("obj", new GdObjectType("UnknownType"), lirFunctionDef);
             var source = new LirVariable("src", new GdObjectType("UnknownType"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
             var value = builder.valueOfVar(source);
 
-            builder.assignVar(targetRef, value);
-
-            var result = builder.build();
-            assertTrue(result.contains("GDExtensionObjectPtr __gdcc_tmp_old_obj_0 = $obj;"),
-                    "Should capture old unknown object");
-            assertTrue(result.contains("try_release_object(__gdcc_tmp_old_obj_0)"), "Should try_release unknown object");
-            assertTrue(result.contains("try_own_object($obj)"), "Should try_own unknown object");
+            var ex = assertThrows(IllegalStateException.class, () -> builder.assignVar(targetRef, value));
+            assertTrue(ex.getMessage().contains("Unknown object type 'UnknownType'"),
+                    "Should fail-fast before emitting storage for unregistered object types. Actual:\n" + ex.getMessage());
         }
     }
 
@@ -1050,19 +1075,19 @@ public class CBodyBuilderPhaseCTest {
     class PtrKindResolutionTests {
 
         @Test
-        @DisplayName("GDCC object variable should have GDCC_PTR kind")
+        @DisplayName("GDCC object variable should have FAT_PTR kind")
         void testGdccObjectVarPtrKind() {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var value = builder.valueOfVar(gdccVar);
-            assertEquals(CBodyBuilder.PtrKind.GDCC_PTR, value.ptrKind());
+            assertEquals(CBodyBuilder.PtrKind.FAT_PTR, value.ptrKind());
         }
 
         @Test
-        @DisplayName("Engine object variable should have GODOT_PTR kind")
+        @DisplayName("Engine object variable should have FAT_PTR kind")
         void testEngineObjectVarPtrKind() {
             var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var value = builder.valueOfVar(nodeVar);
-            assertEquals(CBodyBuilder.PtrKind.GODOT_PTR, value.ptrKind());
+            assertEquals(CBodyBuilder.PtrKind.FAT_PTR, value.ptrKind());
         }
 
         @Test
@@ -1076,15 +1101,15 @@ public class CBodyBuilderPhaseCTest {
         @Test
         @DisplayName("Expression with explicit PtrKind should use provided kind")
         void testExprExplicitPtrKind() {
-            var value = builder.valueOfExpr("some_ptr", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.GODOT_PTR);
-            assertEquals(CBodyBuilder.PtrKind.GODOT_PTR, value.ptrKind());
+            var value = builder.valueOfExpr("some_ptr", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.RAW_PRODUCER);
+            assertEquals(CBodyBuilder.PtrKind.RAW_PRODUCER, value.ptrKind());
         }
 
         @Test
         @DisplayName("Expression PtrKind should be auto-resolved from type by default")
         void testExprAutoResolvedPtrKind() {
             var value = builder.valueOfExpr("some_ptr", new GdObjectType("MyGdccClass"));
-            assertEquals(CBodyBuilder.PtrKind.GDCC_PTR, value.ptrKind());
+            assertEquals(CBodyBuilder.PtrKind.FAT_PTR, value.ptrKind());
         }
 
         @Test
@@ -1098,7 +1123,7 @@ public class CBodyBuilderPhaseCTest {
         @Test
         @DisplayName("Raw object expressions should stay BORROWED until a fresh producer marks them OWNED")
         void testExprDefaultsToBorrowedOwnership() {
-            var value = builder.valueOfExpr("make_obj()", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.GODOT_PTR);
+            var value = builder.valueOfExpr("make_obj()", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.RAW_PRODUCER);
 
             assertEquals(CBodyBuilder.OwnershipKind.BORROWED, value.ownership());
         }
@@ -1112,10 +1137,10 @@ public class CBodyBuilderPhaseCTest {
             );
 
             assertEquals(CBodyBuilder.OwnershipKind.BORROWED, value.ownership());
-            assertEquals(CBodyBuilder.PtrKind.GODOT_PTR, value.ptrKind());
+            assertEquals(CBodyBuilder.PtrKind.FAT_PTR, value.ptrKind());
             assertTrue(
-                    value.generateCode().contains("gdcc_object_to_godot_object_ptr($obj, MyGdccClass_object_ptr)"),
-                    "Borrowed casted value should still render the ptr conversion helper. Actual:\n" + value.generateCode()
+                    value.generateCode().contains("gdcc_MyGdccClass_fat_ptr_upcast_to_RefCounted($obj)"),
+                    "Borrowed casted value should render the fat pointer upcast helper. Actual:\n" + value.generateCode()
             );
         }
 
@@ -1125,7 +1150,7 @@ public class CBodyBuilderPhaseCTest {
             var value = builder.valueOfOwnedExpr(
                     "owned_ptr",
                     new GdObjectType("MyGdccClass"),
-                    CBodyBuilder.PtrKind.GDCC_PTR
+                    CBodyBuilder.PtrKind.FAT_PTR
             );
             assertEquals(CBodyBuilder.OwnershipKind.OWNED, value.ownership());
         }
@@ -1136,69 +1161,69 @@ public class CBodyBuilderPhaseCTest {
     class GdccObjectArgConversionTests {
 
         @Test
-        @DisplayName("GDCC object arg should be converted via helper when calling godot_ function")
+        @DisplayName("GDCC object arg should expand to validated live Godot raw ptr when calling godot_ function")
         void testGdccObjectArgConvertedForGodotFunc() {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var value = builder.valueOfVar(gdccVar);
 
             builder.callVoid("godot_some_func", List.of(value));
 
-            assertEquals("godot_some_func(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr));\n", builder.build());
+            assertEquals("godot_some_func(gdcc_MyGdccClass_fat_ptr_live_object($myObj));\n", builder.build());
         }
 
         @Test
-        @DisplayName("GDCC object arg should be converted via helper when calling gdcc_engine_call_ function")
+        @DisplayName("GDCC object arg should expand to validated live Godot raw ptr when calling gdcc_engine_call_ function")
         void testGdccObjectArgConvertedForEngineHelperFunc() {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var value = builder.valueOfVar(gdccVar);
 
             builder.callVoid("gdcc_engine_call_MyGdccClass_attach_P_RV", List.of(value));
 
-            assertEquals("gdcc_engine_call_MyGdccClass_attach_P_RV(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr));\n", builder.build());
+            assertEquals("gdcc_engine_call_MyGdccClass_attach_P_RV(gdcc_MyGdccClass_fat_ptr_live_object($myObj));\n", builder.build());
         }
 
         @Test
-        @DisplayName("GDCC object arg should be converted via helper when calling gdcc_engine_callv_ function")
+        @DisplayName("GDCC object arg should expand to validated live Godot raw ptr when calling gdcc_engine_callv_ function")
         void testGdccObjectArgConvertedForEngineVarargHelperFunc() {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var value = builder.valueOfVar(gdccVar);
 
             builder.callVoid("gdcc_engine_callv_MyGdccClass_attach_P_RV_Xv", List.of(value));
 
-            assertEquals("gdcc_engine_callv_MyGdccClass_attach_P_RV_Xv(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr));\n", builder.build());
+            assertEquals("gdcc_engine_callv_MyGdccClass_attach_P_RV_Xv(gdcc_MyGdccClass_fat_ptr_live_object($myObj));\n", builder.build());
         }
 
         @Test
-        @DisplayName("Engine object arg should NOT be converted when calling godot_ function")
+        @DisplayName("Engine object arg should expand to validated live Godot raw ptr via live_object when calling godot_ function")
         void testEngineObjectArgNotConvertedForGodotFunc() {
             var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var value = builder.valueOfVar(nodeVar);
 
             builder.callVoid("godot_Node_do_thing", List.of(value));
 
-            assertEquals("godot_Node_do_thing($node);\n", builder.build());
+            assertEquals("godot_Node_do_thing(gdcc_Node_fat_ptr_live_object($node));\n", builder.build());
         }
 
         @Test
-        @DisplayName("Engine object arg should NOT be converted when calling gdcc_engine_call_ function")
+        @DisplayName("Engine object arg should expand to validated live Godot raw ptr via live_object when calling gdcc_engine_call_ function")
         void testEngineObjectArgNotConvertedForEngineHelperFunc() {
             var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var value = builder.valueOfVar(nodeVar);
 
             builder.callVoid("gdcc_engine_call_Node_do_thing_P_RV", List.of(value));
 
-            assertEquals("gdcc_engine_call_Node_do_thing_P_RV($node);\n", builder.build());
+            assertEquals("gdcc_engine_call_Node_do_thing_P_RV(gdcc_Node_fat_ptr_live_object($node));\n", builder.build());
         }
 
         @Test
-        @DisplayName("Engine object arg should NOT be converted when calling gdcc_engine_callv_ function")
+        @DisplayName("Engine object arg should expand to validated live Godot raw ptr via live_object when calling gdcc_engine_callv_ function")
         void testEngineObjectArgNotConvertedForEngineVarargHelperFunc() {
             var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var value = builder.valueOfVar(nodeVar);
 
             builder.callVoid("gdcc_engine_callv_Node_do_thing_P_RV_Xv", List.of(value));
 
-            assertEquals("gdcc_engine_callv_Node_do_thing_P_RV_Xv($node);\n", builder.build());
+            assertEquals("gdcc_engine_callv_Node_do_thing_P_RV_Xv(gdcc_Node_fat_ptr_live_object($node));\n", builder.build());
         }
 
         @Test
@@ -1213,29 +1238,29 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("valueOfCastedVar should convert GDCC receiver to Godot raw ptr before engine cast")
+        @DisplayName("valueOfCastedVar should fail-fast when static GDCC->engine cast lacks an ancestor relation")
         void testCastedGdccReceiverToEngineOwnerShouldConvertBeforeCast() {
             var gdccVar = new LirVariable("self", new GdObjectType("MyGdccClass"), lirFunctionDef);
-            var casted = builder.valueOfCastedVar(gdccVar, new GdObjectType("Node"));
-
-            builder.callVoid("godot_Node_queue_free", List.of(casted));
-
-            assertEquals("godot_Node_queue_free((godot_Node*)gdcc_object_to_godot_object_ptr($self, MyGdccClass_object_ptr));\n", builder.build());
+            var ex = assertThrows(InvalidInsnException.class, () ->
+                    builder.valueOfCastedVar(gdccVar, new GdObjectType("Node"))
+            );
+            assertTrue(ex.getMessage().contains("Cannot upcast object type 'MyGdccClass' to 'Node'"),
+                    "Cross-hierarchy casts must fail-fast in phase 3. Actual:\n" + ex.getMessage());
         }
 
         @Test
-        @DisplayName("valueOfCastedVar should convert Godot raw ptr when casting engine receiver to GDCC type")
+        @DisplayName("valueOfCastedVar should fail-fast when casting engine receiver to an unrelated GDCC type")
         void testCastedEngineReceiverToGdccTypeShouldConvertFromGodotPtr() {
             var engineVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
-            var casted = builder.valueOfCastedVar(engineVar, new GdObjectType("MyGdccClass"));
-
-            builder.callVoid("my_custom_func", List.of(casted));
-
-            assertEquals("my_custom_func((MyGdccClass*)gdcc_object_from_godot_object_ptr($node));\n", builder.build());
+            var ex = assertThrows(InvalidInsnException.class, () ->
+                    builder.valueOfCastedVar(engineVar, new GdObjectType("MyGdccClass"))
+            );
+            assertTrue(ex.getMessage().contains("Cannot upcast object type 'Node' to 'MyGdccClass'"),
+                    "Cross-hierarchy casts must fail-fast in phase 3. Actual:\n" + ex.getMessage());
         }
 
         @Test
-        @DisplayName("valueOfCastedVar should render GDCC upcast via _super chain")
+        @DisplayName("valueOfCastedVar should render GDCC upcast via fat pointer upcast helper")
         void testCastedGdccChildToAncestorShouldUseSuperChain() {
             builder.classRegistry().addGdccClass(new LirClassDef("GdccGrandParent", "RefCounted"));
             builder.classRegistry().addGdccClass(new LirClassDef("GdccParent", "GdccGrandParent"));
@@ -1245,11 +1270,11 @@ public class CBodyBuilderPhaseCTest {
 
             builder.callVoid("my_custom_func", List.of(casted));
 
-            assertEquals("my_custom_func(&($child->_super._super));\n", builder.build());
+            assertEquals("my_custom_func(gdcc_GdccChild_fat_ptr_upcast_to_GdccGrandParent($child));\n", builder.build());
         }
 
         @Test
-        @DisplayName("valueOfCastedVar should render canonical inner-class GDCC upcast via _super chain")
+        @DisplayName("valueOfCastedVar should render canonical inner-class GDCC upcast via fat pointer upcast helper")
         void testCastedCanonicalInnerGdccChildToAncestorShouldUseSuperChain() {
             // The backend cast path works on canonical runtime identity even when source-facing local names remain available.
             builder.classRegistry().addGdccClass(new LirClassDef("Outer__sub__GrandParent", "RefCounted"), "GrandParent");
@@ -1260,7 +1285,10 @@ public class CBodyBuilderPhaseCTest {
 
             builder.callVoid("my_custom_func", List.of(casted));
 
-            assertEquals("my_custom_func(&($child->_super._super));\n", builder.build());
+            assertEquals(
+                    "my_custom_func(gdcc_Outer_sub_Child_fat_ptr_upcast_to_Outer__sub__GrandParent($child));\n",
+                    builder.build()
+            );
         }
 
         @Test
@@ -1274,7 +1302,8 @@ public class CBodyBuilderPhaseCTest {
                     builder.valueOfCastedVar(parentVar, new GdObjectType("GdccChild"))
             );
             assertInstanceOf(InvalidInsnException.class, ex);
-            assertTrue(ex.getMessage().contains("safe upcast"), ex.getMessage());
+            assertTrue(ex.getMessage().contains("Cannot upcast object type 'GdccParent' to 'GdccChild'"),
+                    ex.getMessage());
         }
 
         @Test
@@ -1288,27 +1317,31 @@ public class CBodyBuilderPhaseCTest {
                     builder.valueOfCastedVar(childVar, new GdObjectType("Outer__sub__Parent"))
             );
             assertInstanceOf(InvalidInsnException.class, ex);
-            assertTrue(ex.getMessage().contains("safe upcast"), ex.getMessage());
+            assertTrue(ex.getMessage().contains("Cannot upcast object type 'Outer__sub__Child' to 'Outer__sub__Parent'"),
+                    ex.getMessage());
         }
 
         @Test
-        @DisplayName("renderArgument should fail-fast on inconsistent GDCC_PTR and non-GDCC object type")
+        @DisplayName("renderArgument should fail-fast on inconsistent NON_OBJECT ptr kind and object type")
         void testRenderArgumentShouldRejectInconsistentGdccPtrKind() {
-            var mismatched = builder.valueOfExpr("(godot_Node*)$self", new GdObjectType("Node"), CBodyBuilder.PtrKind.GDCC_PTR);
+            // Phase 3 collapses engine and GDCC object storage into FAT_PTR, so the only remaining
+            // mismatch for an object argument is a NON_OBJECT ptr kind paired with an object type.
+            var mismatched = builder.valueOfExpr("(godot_Node*)$self", new GdObjectType("Node"), CBodyBuilder.PtrKind.NON_OBJECT);
             var ex = assertThrows(InvalidInsnException.class, () -> builder.callVoid("godot_Node_queue_free", List.of(mismatched)));
             assertInstanceOf(InvalidInsnException.class, ex);
-            assertTrue(ex.getMessage().contains("ptr kind/type mismatch"), ex.getMessage());
+            assertTrue(ex.getMessage().contains("ptr kind/type mismatch") && ex.getMessage().contains("NON_OBJECT"),
+                    ex.getMessage());
         }
 
         @Test
-        @DisplayName("GDCC object arg should be converted for own_object function")
+        @DisplayName("GDCC object arg should expand to validated live Godot raw ptr for own_object function")
         void testGdccObjectArgConvertedForOwnObject() {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var value = builder.valueOfVar(gdccVar);
 
             builder.callVoid("try_own_object", List.of(value));
 
-            assertEquals("try_own_object(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr));\n", builder.build());
+            assertEquals("try_own_object(gdcc_MyGdccClass_fat_ptr_live_object($myObj));\n", builder.build());
         }
 
         @Test
@@ -1322,7 +1355,7 @@ public class CBodyBuilderPhaseCTest {
                     builder.valueOfVar(strVar)
             ));
 
-            assertEquals("godot_Object_set(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr), &$name);\n", builder.build());
+            assertEquals("godot_Object_set(gdcc_MyGdccClass_fat_ptr_live_object($myObj), &$name);\n", builder.build());
         }
 
         @Test
@@ -1350,7 +1383,7 @@ public class CBodyBuilderPhaseCTest {
     class GdccObjectReturnConversionTests {
 
         @Test
-        @DisplayName("callAssign should wrap godot_ return with fromGodotObjectPtr for GDCC target")
+        @DisplayName("callAssign should wrap godot_ return with from_raw fat capture for GDCC target")
         void testCallAssignGdccTargetFromGodotFunc() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -1358,12 +1391,12 @@ public class CBodyBuilderPhaseCTest {
             builder.callAssign(targetRef, "godot_get_something", new GdObjectType("MyGdccClass"), List.of());
 
             var result = builder.build();
-            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(godot_get_something())"),
-                    "Should wrap godot_ return with fromGodotObjectPtr for GDCC target. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(godot_get_something()))"),
+                    "Should wrap godot_ return with from_raw fat capture for GDCC target. Actual:\n" + result);
         }
 
         @Test
-        @DisplayName("callAssign should wrap gdcc_engine_call_ return with fromGodotObjectPtr for GDCC target")
+        @DisplayName("callAssign should wrap gdcc_engine_call_ return with from_raw fat capture for GDCC target")
         void testCallAssignGdccTargetFromEngineHelperFunc() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -1371,12 +1404,12 @@ public class CBodyBuilderPhaseCTest {
             builder.callAssign(targetRef, "gdcc_engine_call_Node_spawn_P_RL4Node_", new GdObjectType("MyGdccClass"), List.of());
 
             var result = builder.build();
-            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(gdcc_engine_call_Node_spawn_P_RL4Node_())"),
-                    "Should wrap engine helper return with fromGodotObjectPtr for GDCC target. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(gdcc_engine_call_Node_spawn_P_RL4Node_()))"),
+                    "Should wrap engine helper return with from_raw fat capture for GDCC target. Actual:\n" + result);
         }
 
         @Test
-        @DisplayName("callAssign should wrap gdcc_engine_callv_ return with fromGodotObjectPtr for GDCC target")
+        @DisplayName("callAssign should wrap gdcc_engine_callv_ return with from_raw fat capture for GDCC target")
         void testCallAssignGdccTargetFromEngineVarargHelperFunc() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -1384,53 +1417,47 @@ public class CBodyBuilderPhaseCTest {
             builder.callAssign(targetRef, "gdcc_engine_callv_Node_spawn_P_RL4Node__Xv", new GdObjectType("MyGdccClass"), List.of());
 
             var result = builder.build();
-            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(gdcc_engine_callv_Node_spawn_P_RL4Node__Xv())"),
-                    "Should wrap vararg engine helper return with fromGodotObjectPtr for GDCC target. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(gdcc_engine_callv_Node_spawn_P_RL4Node__Xv()))"),
+                    "Should wrap vararg engine helper return with from_raw fat capture for GDCC target. Actual:\n" + result);
         }
 
         @Test
-        @DisplayName("callAssign should NOT wrap for engine target from godot_ function")
-        void testCallAssignEngineTargetFromGodotFuncNoWrap() {
+        @DisplayName("callAssign should capture godot_ return into fat pointer for engine target")
+        void testCallAssignEngineTargetFromGodotFuncCapturesFatPtr() {
             var target = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
 
             builder.callAssign(targetRef, "godot_get_node", new GdObjectType("Node"), List.of());
 
             var result = builder.build();
-            assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
-                    "Should NOT wrap for engine target. Actual:\n" + result);
-            assertTrue(result.contains("$node = godot_get_node()"),
-                    "Should assign directly. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_Node_fat_ptr_from_raw((GDExtensionObjectPtr)(godot_get_node()))"),
+                    "Engine raw producer must capture into fat pointer storage. Actual:\n" + result);
         }
 
         @Test
-        @DisplayName("callAssign should NOT wrap for engine target from gdcc_engine_call_ function")
-        void testCallAssignEngineTargetFromEngineHelperFuncNoWrap() {
+        @DisplayName("callAssign should capture gdcc_engine_call_ return into fat pointer for engine target")
+        void testCallAssignEngineTargetFromEngineHelperFuncCapturesFatPtr() {
             var target = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
 
             builder.callAssign(targetRef, "gdcc_engine_call_Node_spawn_P_RL4Node_", new GdObjectType("Node"), List.of());
 
             var result = builder.build();
-            assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
-                    "Engine helper return should stay on raw engine pointer surface. Actual:\n" + result);
-            assertTrue(result.contains("$node = gdcc_engine_call_Node_spawn_P_RL4Node_()"),
-                    "Should assign helper return directly. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_Node_fat_ptr_from_raw((GDExtensionObjectPtr)(gdcc_engine_call_Node_spawn_P_RL4Node_()))"),
+                    "Engine helper raw return must capture into fat pointer storage. Actual:\n" + result);
         }
 
         @Test
-        @DisplayName("callAssign should NOT wrap for engine target from gdcc_engine_callv_ function")
-        void testCallAssignEngineTargetFromEngineVarargHelperFuncNoWrap() {
+        @DisplayName("callAssign should capture gdcc_engine_callv_ return into fat pointer for engine target")
+        void testCallAssignEngineTargetFromEngineVarargHelperFuncCapturesFatPtr() {
             var target = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
 
             builder.callAssign(targetRef, "gdcc_engine_callv_Node_spawn_P_RL4Node__Xv", new GdObjectType("Node"), List.of());
 
             var result = builder.build();
-            assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
-                    "Vararg engine helper return should stay on raw engine pointer surface. Actual:\n" + result);
-            assertTrue(result.contains("$node = gdcc_engine_callv_Node_spawn_P_RL4Node__Xv()"),
-                    "Should assign vararg helper return directly. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_Node_fat_ptr_from_raw((GDExtensionObjectPtr)(gdcc_engine_callv_Node_spawn_P_RL4Node__Xv()))"),
+                    "Vararg engine helper raw return must capture into fat pointer storage. Actual:\n" + result);
         }
 
         @Test
@@ -1458,9 +1485,9 @@ public class CBodyBuilderPhaseCTest {
 
             var result = builder.build();
             // MyGdccClass extends RefCounted; owned call results should not be owned again.
-            assertTrue(result.contains("release_object(gdcc_object_to_godot_object_ptr(__gdcc_tmp_old_obj_0, MyGdccClass_object_ptr))"),
+            assertTrue(result.contains("release_object(gdcc_MyGdccClass_fat_ptr_live_object(__gdcc_tmp_old_obj_0))"),
                     "Should release captured old GDCC object. Actual:\n" + result);
-            assertFalse(result.contains("own_object(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr))"),
+            assertFalse(result.contains("own_object(gdcc_MyGdccClass_fat_ptr_live_object($myObj))"),
                     "Should consume owned call result without own. Actual:\n" + result);
         }
 
@@ -1476,11 +1503,11 @@ public class CBodyBuilderPhaseCTest {
 
             var result = builder.build();
             // Arg should be converted
-            assertTrue(result.contains("gdcc_object_to_godot_object_ptr($input, MyGdccClass_object_ptr)"),
+            assertTrue(result.contains("gdcc_MyGdccClass_fat_ptr_live_object($input)"),
                     "Should convert GDCC arg to godot ptr. Actual:\n" + result);
             // Return should be wrapped
-            assertTrue(result.contains("gdcc_object_from_godot_object_ptr"),
-                    "Should wrap return with fromGodotObjectPtr. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(godot_transform("),
+                    "Should wrap return with from_raw fat capture. Actual:\n" + result);
         }
     }
 
@@ -1489,55 +1516,53 @@ public class CBodyBuilderPhaseCTest {
     class AssignVarPtrConversionTests {
 
         @Test
-        @DisplayName("GODOT_PTR value assigned to GDCC target should wrap with fromGodotObjectPtr")
+        @DisplayName("RAW_PRODUCER value assigned to GDCC target should wrap with from_raw fat capture")
         void testGodotPtrValueToGdccTarget() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
-            // Expression with explicit GODOT_PTR: simulates a GDExtension API return value
-            var value = builder.valueOfExpr("some_godot_api_result", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.GODOT_PTR);
+            // Expression with explicit RAW_PRODUCER: simulates a GDExtension API return value
+            var value = builder.valueOfExpr("some_godot_api_result", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.RAW_PRODUCER);
 
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(some_godot_api_result)"),
-                    "Should convert GODOT_PTR to GDCC_PTR via fromGodotObjectPtr. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(some_godot_api_result))"),
+                    "Should convert RAW_PRODUCER to FAT_PTR via from_raw fat capture. Actual:\n" + result);
         }
 
         @Test
-        @DisplayName("GDCC_PTR value assigned to engine (GODOT_PTR) target should use helper conversion")
+        @DisplayName("FAT_PTR value assigned to engine parent target should use fat pointer upcast")
         void testGdccPtrValueToEngineTarget() {
-            // Target is Object (engine base type), so its PtrKind is GODOT_PTR
-            // MyGdccClass extends RefCounted extends Object, so assignment is valid
-            var target = new LirVariable("obj", GdObjectType.OBJECT, lirFunctionDef);
+            // MyGdccClass extends RefCounted, so assignment into RefCounted storage is valid.
+            var target = new LirVariable("obj", new GdObjectType("RefCounted"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
-            // Source is a GDCC variable, PtrKind is GDCC_PTR
             var source = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var value = builder.valueOfVar(source);
 
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            assertTrue(result.contains("$obj = gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr)"),
-                    "Should convert GDCC_PTR to GODOT_PTR via helper conversion. Actual:\n" + result);
+            assertTrue(result.contains("$obj = gdcc_MyGdccClass_fat_ptr_upcast_to_RefCounted($myObj)"),
+                    "Should upcast GDCC fat pointer into engine parent fat pointer. Actual:\n" + result);
         }
 
         @Test
-        @DisplayName("OWNED GDCC_PTR assigned to engine target should convert representation without extra own")
+        @DisplayName("OWNED FAT_PTR assigned to engine target should convert representation without extra own")
         void testOwnedGdccPtrValueToEngineTargetDoesNotOwnAgain() {
             var target = new LirVariable("rc", new GdObjectType("RefCounted"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
             var ownedValue = builder.valueOfOwnedExpr(
                     "fresh_worker()",
                     new GdObjectType("MyGdccClass"),
-                    CBodyBuilder.PtrKind.GDCC_PTR
+                    CBodyBuilder.PtrKind.FAT_PTR
             );
 
             builder.assignVar(targetRef, ownedValue);
 
             var result = builder.build();
             assertTrue(
-                    result.contains("$rc = gdcc_object_to_godot_object_ptr(fresh_worker(), MyGdccClass_object_ptr);"),
-                    "OWNED GDCC_PTR should still convert before storing into engine slot. Actual:\n" + result
+                    result.contains("$rc = gdcc_MyGdccClass_fat_ptr_upcast_to_RefCounted(fresh_worker());"),
+                    "OWNED FAT_PTR should still convert before storing into engine slot. Actual:\n" + result
             );
             assertFalse(
                     result.contains("own_object($rc);"),
@@ -1563,8 +1588,8 @@ public class CBodyBuilderPhaseCTest {
             assertTrue(result.contains("$target = $source;"),
                     "Should assign directly without conversion. Actual:\n" + result);
             assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
-                    "Should NOT wrap with fromGodotObjectPtr. Actual:\n" + result);
-            assertFalse(result.contains("gdcc_object_to_godot_object_ptr($source, MyGdccClass_object_ptr);"),
+                    "Should NOT wrap with from_raw fat capture. Actual:\n" + result);
+            assertFalse(result.contains("gdcc_MyGdccClass_fat_ptr_live_object($source);"),
                     "Should NOT use helper conversion on RHS. Actual:\n" + result);
         }
 
@@ -1586,45 +1611,45 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("GODOT_PTR to GDCC target should still do own/release with helper conversion using old-temp flow")
+        @DisplayName("RAW_PRODUCER to GDCC target should still do own/release with helper conversion using old-temp flow")
         void testGodotPtrToGdccTargetOwnRelease() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
-            var value = builder.valueOfExpr("some_godot_result", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.GODOT_PTR);
+            var value = builder.valueOfExpr("some_godot_result", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.RAW_PRODUCER);
 
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
             // MyGdccClass extends RefCounted, should have own/release with helper conversion
-            assertTrue(result.contains("release_object(gdcc_object_to_godot_object_ptr(__gdcc_tmp_old_obj_0, MyGdccClass_object_ptr))"),
+            assertTrue(result.contains("release_object(gdcc_MyGdccClass_fat_ptr_live_object(__gdcc_tmp_old_obj_0))"),
                     "Should release captured old GDCC object via helper conversion. Actual:\n" + result);
-            assertTrue(result.contains("own_object(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr))"),
+            assertTrue(result.contains("own_object(gdcc_MyGdccClass_fat_ptr_live_object($myObj))"),
                     "Should own new GDCC object via helper conversion. Actual:\n" + result);
             // Should also convert the assignment value
-            assertTrue(result.contains("gdcc_object_from_godot_object_ptr(some_godot_result)"),
-                    "Should convert GODOT_PTR to GDCC_PTR. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(some_godot_result))"),
+                    "Should convert RAW_PRODUCER to FAT_PTR. Actual:\n" + result);
         }
 
         @Test
-        @DisplayName("assignExpr with explicit PtrKind should convert GODOT_PTR to GDCC")
+        @DisplayName("assignExpr with explicit PtrKind should convert RAW_PRODUCER to GDCC")
         void testAssignExprWithPtrKindConversion() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
 
-            builder.assignExpr(targetRef, "godot_api_call()", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.GODOT_PTR);
+            builder.assignExpr(targetRef, "godot_api_call()", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.RAW_PRODUCER);
 
             var result = builder.build();
-            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(godot_api_call())"),
-                    "assignExpr with GODOT_PTR should convert to GDCC_PTR. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(godot_api_call()))"),
+                    "assignExpr with RAW_PRODUCER should convert to FAT_PTR. Actual:\n" + result);
         }
 
         @Test
-        @DisplayName("assignExpr without PtrKind should auto-resolve and NOT convert (GDCC type → GDCC_PTR)")
+        @DisplayName("assignExpr without PtrKind should auto-resolve and NOT convert (GDCC type → FAT_PTR)")
         void testAssignExprAutoResolvedNoPtrConversion() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
 
-            // Without explicit PtrKind, auto-resolved from GdObjectType("MyGdccClass") → GDCC_PTR
+            // Without explicit PtrKind, auto-resolved from GdObjectType("MyGdccClass") → FAT_PTR
             builder.assignExpr(targetRef, "some_gdcc_ptr", new GdObjectType("MyGdccClass"));
 
             var result = builder.build();
@@ -1635,9 +1660,9 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("GDCC_PTR to RefCounted (engine base class) target should use helper conversion")
+        @DisplayName("FAT_PTR to RefCounted (engine base class) target should use helper conversion")
         void testGdccPtrToRefCountedTarget() {
-            // RefCounted is an engine type (GODOT_PTR)
+            // RefCounted is an engine type (RAW_PRODUCER)
             var target = new LirVariable("rc", new GdObjectType("RefCounted"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
             // MyGdccClass extends RefCounted, so assignment is valid
@@ -1647,24 +1672,24 @@ public class CBodyBuilderPhaseCTest {
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            assertTrue(result.contains("$rc = gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr)"),
-                    "Should convert GDCC_PTR to GODOT_PTR via helper conversion. Actual:\n" + result);
+            assertTrue(result.contains("$rc = gdcc_MyGdccClass_fat_ptr_upcast_to_RefCounted($myObj)"),
+                    "Should convert FAT_PTR to RAW_PRODUCER via helper conversion. Actual:\n" + result);
         }
 
         @Test
-        @DisplayName("GODOT_PTR to GDCC target full ordering: capture old → assign with conversion → own → release old")
+        @DisplayName("RAW_PRODUCER to GDCC target full ordering: capture old → assign with conversion → own → release old")
         void testGodotPtrToGdccTargetFullOrdering() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
-            var value = builder.valueOfExpr("godot_result", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.GODOT_PTR);
+            var value = builder.valueOfExpr("godot_result", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.RAW_PRODUCER);
 
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            var captureIndex = result.indexOf("MyGdccClass* __gdcc_tmp_old_obj_0 = $myObj;");
-            var assignIndex = result.indexOf("$myObj = (MyGdccClass*)gdcc_object_from_godot_object_ptr(godot_result);");
-            var ownIndex = result.indexOf("own_object(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr))");
-            var releaseOldIndex = result.indexOf("release_object(gdcc_object_to_godot_object_ptr(__gdcc_tmp_old_obj_0, MyGdccClass_object_ptr));");
+            var captureIndex = result.indexOf("gdcc_MyGdccClass_fat_ptr __gdcc_tmp_old_obj_0 = $myObj;");
+            var assignIndex = result.indexOf("$myObj = gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(godot_result));");
+            var ownIndex = result.indexOf("own_object(gdcc_MyGdccClass_fat_ptr_live_object($myObj))");
+            var releaseOldIndex = result.indexOf("release_object(gdcc_MyGdccClass_fat_ptr_live_object(__gdcc_tmp_old_obj_0));");
 
             assertTrue(captureIndex >= 0, "Should capture old slot value. Actual:\n" + result);
             assertTrue(assignIndex >= 0, "Should have converted assignment. Actual:\n" + result);
@@ -1681,21 +1706,21 @@ public class CBodyBuilderPhaseCTest {
     class PropertyInitializerFirstWriteTests {
 
         @Test
-        @DisplayName("Object-valued property init first-write should convert GODOT_PTR and consume OWNED without own/release")
+        @DisplayName("Object-valued property init first-write should convert RAW_PRODUCER and consume OWNED without own/release")
         void testObjectPropertyInitFirstWriteConsumesOwnedReturn() {
             builder.applyPropertyInitializerFirstWrite(
                     "self->worker",
                     new GdObjectType("MyGdccClass"),
                     "godot_make_worker()",
                     new GdObjectType("MyGdccClass"),
-                    CBodyBuilder.PtrKind.GODOT_PTR,
+                    CBodyBuilder.PtrKind.RAW_PRODUCER,
                     CBodyBuilder.OwnershipKind.OWNED
             );
 
             var result = builder.build();
             assertTrue(
-                    result.contains("self->worker = (MyGdccClass*)gdcc_object_from_godot_object_ptr(godot_make_worker());"),
-                    "First-write should convert GODOT_PTR helper result before storing. Actual:\n" + result
+                    result.contains("self->worker = gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(godot_make_worker()));"),
+                    "First-write should convert RAW_PRODUCER helper result before storing. Actual:\n" + result
             );
             assertFalse(result.contains("__gdcc_tmp_old_obj_"), "First-write should not capture an old field value. Actual:\n" + result);
             assertFalse(result.contains("own_object("), "OWNED helper result should be consumed without extra own. Actual:\n" + result);
@@ -1710,13 +1735,15 @@ public class CBodyBuilderPhaseCTest {
                     new GdObjectType("RefCounted"),
                     "borrowed_ref()",
                     new GdObjectType("RefCounted"),
-                    CBodyBuilder.PtrKind.GODOT_PTR,
+                    CBodyBuilder.PtrKind.RAW_PRODUCER,
                     CBodyBuilder.OwnershipKind.BORROWED
             );
 
             var result = builder.build();
-            assertTrue(result.contains("self->node_ref = borrowed_ref();"), "Borrowed object result should still assign directly. Actual:\n" + result);
-            assertTrue(result.contains("own_object(self->node_ref);"), "Borrowed object result should be retained by the field. Actual:\n" + result);
+            assertTrue(result.contains("self->node_ref = gdcc_RefCounted_fat_ptr_from_raw((GDExtensionObjectPtr)(borrowed_ref()));"),
+                    "Borrowed RAW_PRODUCER should capture into fat pointer storage. Actual:\n" + result);
+            assertTrue(result.contains("own_object(gdcc_RefCounted_fat_ptr_live_object(self->node_ref));"),
+                    "Borrowed object result should be retained via live_object. Actual:\n" + result);
             assertFalse(result.contains("__gdcc_tmp_old_obj_"), "First-write should not capture old value even for borrowed rhs. Actual:\n" + result);
             assertFalse(result.contains("release_object("), "First-write should not release old value. Actual:\n" + result);
         }

@@ -5,6 +5,7 @@ import gd.script.gdcc.backend.ProjectInfo;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionAPI;
+import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
@@ -69,10 +70,10 @@ public class CNewDataInsnGenTest {
     }
 
     @Test
-    @DisplayName("literal_null should assign NULL to object variable")
+    @DisplayName("literal_null should assign a zeroed fat pointer to object variable")
     void literalNullShouldAssignNull() {
         var body = generateBody("obj", new GdObjectType("Node"), false, new LiteralNullInsn("obj"));
-        assertTrue(body.contains("$obj = NULL;"));
+        assertTrue(body.contains("$obj = (gdcc_Node_fat_ptr){ 0 };"));
     }
 
     @Test
@@ -228,7 +229,14 @@ public class CNewDataInsnGenTest {
     }
 
     private CCodegen newCodegen(LirModule module, List<LirClassDef> gdccClasses) {
-        var classRegistry = new ClassRegistry(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()));
+        var nodeClass = new ExtensionGdClass(
+                "Node", false, false, "Object", "core",
+                List.of(), List.of(), List.of(), List.of(), List.of()
+        );
+        var classRegistry = new ClassRegistry(new ExtensionAPI(
+                null, List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(nodeClass), List.of(), List.of()
+        ));
         for (var gdccClass : gdccClasses) {
             classRegistry.addGdccClass(gdccClass);
         }

@@ -400,8 +400,16 @@ class ObjectFatPtrDeclarationTest {
 
             var codegen = newCodegen(new LirModule("phase1_module", List.of(workerClass)), List.of(workerClass));
 
-            var error = assertThrows(IllegalStateException.class, codegen::generate);
-            assertTrue(error.getMessage().contains("UnknownObject"), error.getMessage());
+            // FreeMarker wraps the Java fail-fast as RuntimeException during template render.
+            var error = assertThrows(RuntimeException.class, codegen::generate);
+            var foundUnknown = false;
+            for (var cursor = (Throwable) error; cursor != null; cursor = cursor.getCause()) {
+                if (String.valueOf(cursor.getMessage()).contains("UnknownObject")) {
+                    foundUnknown = true;
+                    break;
+                }
+            }
+            assertTrue(foundUnknown, String.valueOf(error));
         }
     }
 

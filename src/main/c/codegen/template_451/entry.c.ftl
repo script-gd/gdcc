@@ -182,11 +182,8 @@ void ${classDef.name}_class_destructor(${classDef.name}* self) {
     <#list classDef.properties as property>
         <#if property.type.destroyable>
             <#if property.type.gdExtensionType.name() == "OBJECT">
-                <#if helper.checkGdccType(property.type)>
-                    try_release_object(${helper.renderGdTypeName(property.type)}_object_ptr(self->${property.name}));
-                <#else>
-                    try_release_object(self->${property.name});
-                </#if>
+                // Object properties store fat pointers; release the validated live raw Godot object.
+                try_release_object(${helper.renderObjectFatPtrStorageType(property.type)}_live_object(self->${property.name}));
             <#else>
                 ${helper.renderDestroyFunctionName(property.type)}(&(self->${property.name}));
             </#if>

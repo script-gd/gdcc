@@ -96,7 +96,7 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                             bodyBuilder.valueOfOwnedExpr(
                                     constructCall,
                                     objectTarget.constructedType(),
-                                    CBodyBuilder.PtrKind.GODOT_PTR
+                                    CBodyBuilder.PtrKind.RAW_PRODUCER
                             )
                     );
                 }
@@ -151,7 +151,7 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                 "construct_array"
         );
         var actualElementType = resultType.getValueType();
-        if (!hasSameRenderedTypeName(bodyBuilder, expectedElementType, actualElementType)) {
+        if (hasDifferentRenderedTypeName(bodyBuilder, expectedElementType, actualElementType)) {
             throw bodyBuilder.invalidInsn(
                     "construct_array type mismatch: operand element type '" +
                             renderTypeName(bodyBuilder, expectedElementType) +
@@ -186,7 +186,7 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                 valueClassName,
                 "construct_dictionary value"
         );
-        if (!hasSameRenderedTypeName(bodyBuilder, expectedKeyType, resultType.getKeyType())) {
+        if (hasDifferentRenderedTypeName(bodyBuilder, expectedKeyType, resultType.getKeyType())) {
             throw bodyBuilder.invalidInsn(
                     "construct_dictionary key type mismatch: operand key type '" +
                             renderTypeName(bodyBuilder, expectedKeyType) +
@@ -194,7 +194,7 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                             renderTypeName(bodyBuilder, resultType.getKeyType()) + "'"
             );
         }
-        if (!hasSameRenderedTypeName(bodyBuilder, expectedValueType, resultType.getValueType())) {
+        if (hasDifferentRenderedTypeName(bodyBuilder, expectedValueType, resultType.getValueType())) {
             throw bodyBuilder.invalidInsn(
                     "construct_dictionary value type mismatch: operand value type '" +
                             renderTypeName(bodyBuilder, expectedValueType) +
@@ -285,10 +285,10 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
         return parsedType;
     }
 
-    private boolean hasSameRenderedTypeName(@NotNull CBodyBuilder bodyBuilder,
-                                            @NotNull GdType expectedType,
-                                            @NotNull GdType actualType) {
-        return renderTypeName(bodyBuilder, expectedType).equals(renderTypeName(bodyBuilder, actualType));
+    private boolean hasDifferentRenderedTypeName(@NotNull CBodyBuilder bodyBuilder,
+                                                 @NotNull GdType expectedType,
+                                                 @NotNull GdType actualType) {
+        return !renderTypeName(bodyBuilder, expectedType).equals(renderTypeName(bodyBuilder, actualType));
     }
 
     private @NotNull String renderTypeName(@NotNull CBodyBuilder bodyBuilder, @NotNull GdType type) {

@@ -32,11 +32,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase 0 characterization for the current bare-pointer object value representation.
+/// Phase-3 fat-pointer characterization for object value representation.
 ///
-/// These tests anchor the pre-fat-pointer baseline required by
-/// `doc/module_impl/backend/object_value_fat_reference_implementation_plan.md`:
-/// later phases must update the asserted C shapes deliberately instead of deleting them.
+/// These tests deliberately re-anchor the cutover shapes from
+/// `doc/module_impl/backend/object_value_fat_pointer_implementation_plan.md`.
 class ObjectValueRepresentationCharacterizationTest {
     private static final GdObjectType ENGINE_NODE = new GdObjectType("Node");
     private static final GdObjectType ENGINE_REFCOUNTED = new GdObjectType("RefCounted");
@@ -47,70 +46,68 @@ class ObjectValueRepresentationCharacterizationTest {
     @DisplayName("Type rendering baseline")
     class TypeRenderingBaseline {
         @Test
-        @DisplayName("engine object storage and parameter types are bare godot pointers")
-        void engineObjectRendersAsBareGodotPointer() {
+        @DisplayName("engine object storage and parameter types are per-type fat pointers")
+        void engineObjectRendersAsFatPointer() {
             var helper = newHelper();
 
-            assertEquals("godot_Node*", helper.renderGdTypeInC(ENGINE_NODE));
-            assertEquals("godot_Node*", helper.renderGdTypeRefInC(ENGINE_NODE));
-            assertEquals("godot_RefCounted*", helper.renderGdTypeInC(ENGINE_REFCOUNTED));
-            assertEquals("godot_RefCounted*", helper.renderGdTypeRefInC(ENGINE_REFCOUNTED));
+            assertEquals("gdcc_Node_fat_ptr", helper.renderGdTypeInC(ENGINE_NODE));
+            assertEquals("gdcc_Node_fat_ptr", helper.renderGdTypeRefInC(ENGINE_NODE));
+            assertEquals("gdcc_RefCounted_fat_ptr", helper.renderGdTypeInC(ENGINE_REFCOUNTED));
+            assertEquals("gdcc_RefCounted_fat_ptr", helper.renderGdTypeRefInC(ENGINE_REFCOUNTED));
+            assertEquals("godot_Node*", helper.renderObjectBarePointerType(ENGINE_NODE));
+            assertEquals("godot_Node *", helper.renderObjectRawPointerType(ENGINE_NODE));
         }
 
         @Test
-        @DisplayName("GDCC object storage and parameter types are bare wrapper pointers")
-        void gdccObjectRendersAsBareWrapperPointer() {
+        @DisplayName("GDCC object storage and parameter types are per-type fat pointers")
+        void gdccObjectRendersAsFatPointer() {
             var helper = newHelper();
 
-            assertEquals("GdccWorker*", helper.renderGdTypeInC(GDCC_WORKER));
-            assertEquals("GdccWorker*", helper.renderGdTypeRefInC(GDCC_WORKER));
+            assertEquals("gdcc_GdccWorker_fat_ptr", helper.renderGdTypeInC(GDCC_WORKER));
+            assertEquals("gdcc_GdccWorker_fat_ptr", helper.renderGdTypeRefInC(GDCC_WORKER));
+            assertEquals("GdccWorker*", helper.renderObjectBarePointerType(GDCC_WORKER));
         }
 
         @Test
-        @DisplayName("unknown object types still fall back to GDExtensionObjectPtr before phase 4")
-        void unknownObjectFallsBackToGdExtensionObjectPtr() {
+        @DisplayName("unknown object types fail fast instead of falling back to GDExtensionObjectPtr")
+        void unknownObjectFailsFast() {
             var helper = newHelper();
 
-            assertEquals("GDExtensionObjectPtr", helper.renderGdTypeInC(UNKNOWN_OBJECT));
-            assertEquals("GDExtensionObjectPtr", helper.renderGdTypeRefInC(UNKNOWN_OBJECT));
+            assertThrows(IllegalStateException.class, () -> helper.renderGdTypeInC(UNKNOWN_OBJECT));
+            assertThrows(IllegalStateException.class, () -> helper.renderGdTypeRefInC(UNKNOWN_OBJECT));
+            assertThrows(IllegalStateException.class, () -> helper.renderDefaultValueExprInC(UNKNOWN_OBJECT));
         }
 
         @Test
-        @DisplayName("object values are passed directly because the current value already is a pointer")
+        @DisplayName("object fat pointers are passed by value without address-of")
         void objectValueRefDoesNotAddAddressOf() {
             var helper = newHelper();
 
             assertEquals("$obj", helper.renderValueRef(ENGINE_NODE, "$obj"));
             assertEquals("$obj", helper.renderValueRef(GDCC_WORKER, "$obj"));
-            assertEquals("$obj", helper.renderValueRef(UNKNOWN_OBJECT, "$obj"));
         }
 
         @Test
-        @DisplayName("object default values are bare NULL expressions")
-        void objectDefaultValueIsBareNull() {
-            assertEquals("NULL", CBodyBuilder.renderDefaultValueExpr(ENGINE_NODE));
-            assertEquals("NULL", CBodyBuilder.renderDefaultValueExpr(GDCC_WORKER));
-            assertEquals("NULL", CBodyBuilder.renderDefaultValueExpr(UNKNOWN_OBJECT));
-        }
-
-        @Test
-        @DisplayName("object pack helpers split only by GDCC vs non-GDCC representation")
-        void objectPackHelpersUseCurrentBarePointerSurface() {
+        @DisplayName("object default values are zeroed fat pointer compound literals")
+        void objectDefaultValueIsZeroedFatPointer() {
             var helper = newHelper();
 
-            assertEquals("godot_new_Variant_with_Object", helper.renderPackFunctionName(ENGINE_NODE));
-            assertEquals("gdcc_new_Variant_with_gdcc_Object", helper.renderPackFunctionName(GDCC_WORKER));
-            assertEquals("godot_new_Variant_with_Object", helper.renderPackFunctionName(UNKNOWN_OBJECT));
+            assertEquals("(gdcc_Node_fat_ptr){ 0 }", helper.renderDefaultValueExprInC(ENGINE_NODE));
+            assertEquals("(gdcc_GdccWorker_fat_ptr){ 0 }", helper.renderDefaultValueExprInC(GDCC_WORKER));
+            assertThrows(IllegalArgumentException.class, () -> CBodyBuilder.renderDefaultValueExpr(ENGINE_NODE));
         }
 
         @Test
-        @DisplayName("object unpack helpers cast the raw Godot object result to the current static pointer")
-        void objectUnpackHelpersUseCurrentCastSurface() {
+        @DisplayName("object pack/unpack helpers use per-type fat pointer conversion helpers")
+        void objectPackUnpackUseFatPointerHelpers() {
             var helper = newHelper();
 
-            assertEquals("(godot_Node*)godot_new_Object_with_Variant", helper.renderUnpackFunctionName(ENGINE_NODE));
-            assertEquals("(GdccWorker*)godot_new_gdcc_Object_with_Variant", helper.renderUnpackFunctionName(GDCC_WORKER));
-            assertEquals("(godot_UnknownObject*)godot_new_Object_with_Variant", helper.renderUnpackFunctionName(UNKNOWN_OBJECT));
+            assertEquals("gdcc_Node_fat_ptr_to_variant", helper.renderPackFunctionName(ENGINE_NODE));
+            assertEquals("gdcc_GdccWorker_fat_ptr_to_variant", helper.renderPackFunctionName(GDCC_WORKER));
+            assertEquals("gdcc_Node_fat_ptr_from_variant", helper.renderUnpackFunctionName(ENGINE_NODE));
+            assertEquals("gdcc_GdccWorker_fat_ptr_from_variant", helper.renderUnpackFunctionName(GDCC_WORKER));
+            assertThrows(IllegalStateException.class, () -> helper.renderPackFunctionName(UNKNOWN_OBJECT));
+            assertThrows(IllegalStateException.class, () -> helper.renderUnpackFunctionName(UNKNOWN_OBJECT));
         }
 
         @Test
@@ -149,8 +146,8 @@ class ObjectValueRepresentationCharacterizationTest {
     @DisplayName("Function surface baseline")
     class FunctionSurfaceBaseline {
         @Test
-        @DisplayName("object locals are initialized with bare NULL in __prepare__")
-        void objectLocalInitializesToBareNull() {
+        @DisplayName("object locals are declared with fat pointer storage types")
+        void objectLocalUsesFatPointerStorage() {
             var workerClass = newClass("Worker");
             var func = new LirFunctionDef("use_object_local");
             func.setReturnType(GdVoidType.VOID);
@@ -161,30 +158,29 @@ class ObjectValueRepresentationCharacterizationTest {
 
             var entrySource = generateFile(List.of(workerClass, newClass("GdccWorker")), "entry.c");
 
-            assertTrue(entrySource.contains("$node = NULL;"), entrySource);
-            assertTrue(entrySource.contains("$worker = NULL;"), entrySource);
+            assertTrue(entrySource.contains("gdcc_Node_fat_ptr $node;"), entrySource);
+            assertTrue(entrySource.contains("gdcc_GdccWorker_fat_ptr $worker;"), entrySource);
+            assertFalse(entrySource.contains("godot_Node* $node"), entrySource);
+            assertFalse(entrySource.contains("GdccWorker* $worker"), entrySource);
         }
 
         @Test
-        @DisplayName("object return slots are declared as bare pointers initialized to NULL")
-        void objectReturnSlotIsBarePointerNull() {
+        @DisplayName("object return slots are declared as fat pointers zero-initialized")
+        void objectReturnSlotIsZeroedFatPointer() {
             assertEquals(
-                    "__prepare__: // __prepare__\ngodot_Node* _return_val = NULL;\n",
+                    "__prepare__: // __prepare__\ngdcc_Node_fat_ptr _return_val = (gdcc_Node_fat_ptr){ 0 };\n",
                     prepareBlockOutputForReturn(ENGINE_NODE)
             );
             assertEquals(
-                    "__prepare__: // __prepare__\nGdccWorker* _return_val = NULL;\n",
+                    "__prepare__: // __prepare__\ngdcc_GdccWorker_fat_ptr _return_val = (gdcc_GdccWorker_fat_ptr){ 0 };\n",
                     prepareBlockOutputForReturn(GDCC_WORKER)
             );
-            assertEquals(
-                    "__prepare__: // __prepare__\nGDExtensionObjectPtr _return_val = NULL;\n",
-                    prepareBlockOutputForReturn(UNKNOWN_OBJECT)
-            );
+            assertThrows(IllegalStateException.class, () -> prepareBlockOutputForReturn(UNKNOWN_OBJECT));
         }
 
         @Test
-        @DisplayName("internal function headers keep bare object parameter and return pointers")
-        void internalFunctionHeadersUseBareObjectPointers() {
+        @DisplayName("internal function headers use fat pointer parameter and return types")
+        void internalFunctionHeadersUseFatPointers() {
             var workerClass = newClass("Worker");
 
             var takeEngine = new LirFunctionDef("take_engine");
@@ -198,8 +194,8 @@ class ObjectValueRepresentationCharacterizationTest {
             var entryHeader = generateEntryHeader(List.of(workerClass, newClass("GdccWorker")));
 
             assertTrue(entryHeader.contains("void Worker_take_engine("), entryHeader);
-            assertTrue(entryHeader.contains("godot_Node* $value"), entryHeader);
-            assertTrue(entryHeader.contains("godot_Node* Worker_return_engine("), entryHeader);
+            assertTrue(entryHeader.contains("gdcc_Node_fat_ptr $value"), entryHeader);
+            assertTrue(entryHeader.contains("gdcc_Node_fat_ptr Worker_return_engine("), entryHeader);
         }
     }
 
@@ -207,42 +203,46 @@ class ObjectValueRepresentationCharacterizationTest {
     @DisplayName("Registered wrapper baseline")
     class RegisteredWrapperBaseline {
         @Test
-        @DisplayName("call_func unpacks object arguments into bare static pointers")
-        void callFuncUnpacksObjectArgumentsIntoBarePointers() {
+        @DisplayName("call_func unpacks object arguments into fat pointers via from_variant")
+        void callFuncUnpacksObjectArgumentsIntoFatPointers() {
             var entryHeader = generateRegisteredWrapperHeader();
 
             assertTrue(entryHeader.contains(
-                    "const godot_Node* arg0 = (godot_Node*)godot_new_Object_with_Variant((GDExtensionVariantPtr)p_args[0]);"
+                    "const gdcc_Node_fat_ptr arg0 = gdcc_Node_fat_ptr_from_variant((GDExtensionVariantPtr)p_args[0]);"
             ), entryHeader);
             assertTrue(entryHeader.contains(
-                    "const GdccWorker* arg0 = (GdccWorker*)godot_new_gdcc_Object_with_Variant((GDExtensionVariantPtr)p_args[0]);"
+                    "const gdcc_GdccWorker_fat_ptr arg0 = gdcc_GdccWorker_fat_ptr_from_variant((GDExtensionVariantPtr)p_args[0]);"
             ), entryHeader);
         }
 
         @Test
-        @DisplayName("call_func packs object returns from bare static pointers")
-        void callFuncPacksObjectReturnsFromBarePointers() {
+        @DisplayName("call_func packs object returns through fat pointer to_variant helpers")
+        void callFuncPacksObjectReturnsFromFatPointers() {
             var entryHeader = generateRegisteredWrapperHeader();
 
-            assertTrue(entryHeader.contains("godot_Node* r = function(p_instance);"), entryHeader);
-            assertTrue(entryHeader.contains("godot_Variant ret = godot_new_Variant_with_Object(r);"), entryHeader);
-            assertTrue(entryHeader.contains("GdccWorker* r = function(p_instance);"), entryHeader);
-            assertTrue(entryHeader.contains("godot_Variant ret = gdcc_new_Variant_with_gdcc_Object(r);"), entryHeader);
+            assertTrue(entryHeader.contains("gdcc_Node_fat_ptr r = function(p_instance);"), entryHeader);
+            assertTrue(entryHeader.contains("godot_Variant ret = gdcc_Node_fat_ptr_to_variant(r);"), entryHeader);
+            assertTrue(entryHeader.contains("gdcc_GdccWorker_fat_ptr r = function(p_instance);"), entryHeader);
+            assertTrue(entryHeader.contains("godot_Variant ret = gdcc_GdccWorker_fat_ptr_to_variant(r);"), entryHeader);
         }
 
         @Test
-        @DisplayName("ptrcall passes raw object pointer slots and returns through raw pointer storage")
-        void ptrcallUsesRawObjectPointerSlots() {
+        @DisplayName("ptrcall currently reuses fat pointer function surface (3d raw-slot adaptation pending)")
+        void ptrcallStillOnInternalFatPointerSurfaceUntilPhase3d() {
+            // Phase 3d must switch ptrcall object slots back to raw Godot pointer storage.
+            // Until then, the internal function pointer type and call site share fat pointer types.
             var entryHeader = generateRegisteredWrapperHeader();
 
-            assertTrue(entryHeader.contains("(function(p_instance, (*((godot_Node**)p_args[0]))));"), entryHeader);
-            assertTrue(entryHeader.contains("(function(p_instance, (*((GdccWorker**)p_args[0]))));"), entryHeader);
-            assertTrue(entryHeader.contains("*((godot_Node**)r_return) = function(p_instance);"), entryHeader);
-            assertTrue(entryHeader.contains("*((GdccWorker**)r_return) = function(p_instance);"), entryHeader);
+            assertTrue(entryHeader.contains("void*, gdcc_Node_fat_ptr"), entryHeader);
+            assertTrue(entryHeader.contains("void*, gdcc_GdccWorker_fat_ptr"), entryHeader);
+            assertTrue(entryHeader.contains("(*((gdcc_Node_fat_ptr*)p_args[0]))"), entryHeader);
+            assertTrue(entryHeader.contains("(*((gdcc_GdccWorker_fat_ptr*)p_args[0]))"), entryHeader);
+            assertTrue(entryHeader.contains("*((gdcc_Node_fat_ptr*)r_return)"), entryHeader);
+            assertTrue(entryHeader.contains("*((gdcc_GdccWorker_fat_ptr*)r_return)"), entryHeader);
         }
 
         @Test
-        @DisplayName("registered wrappers do not destroy bare object locals")
+        @DisplayName("registered wrappers do not destroy object fat pointer locals with object_destroy")
         void registeredWrappersDoNotDestroyObjectLocals() {
             var entryHeader = generateRegisteredWrapperHeader();
 

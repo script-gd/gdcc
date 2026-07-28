@@ -63,7 +63,7 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
         var propertyType = readResolution.propertyType();
         var target = bodyBuilder.targetOfVar(resultVar);
 
-        if (objectVar.type() instanceof GdObjectType) {
+        if (objectVar.type() instanceof GdObjectType ownerObjectType) {
             var lookup = readResolution.objectLookup();
             if (lookup != null) {
                 var receiverValue = BackendPropertyAccessResolver.renderOwnerReceiverValue(
@@ -77,7 +77,12 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
                         var ownerClassName = lookup.ownerClass().getName();
                         var inGetterSelf = isLoadingInsideGetterSelf(bodyBuilder, objectVar, lookup);
                         if (inGetterSelf) {
-                            var expr = "$" + objectVar.id() + "->" + insn.propertyName();
+                            var liveOwner = BackendPropertyAccessResolver.renderGdccLiveOwnerPointerExpr(
+                                    bodyBuilder,
+                                    objectVar,
+                                    ownerObjectType
+                            );
+                            var expr = liveOwner + "->" + insn.propertyName();
                             // Getter-self fast path must treat the backing field as existing storage.
                             // Value-semantic types need copy-by-address from `&self->field`, not
                             // `tmp = self->field; copy(&tmp); destroy(tmp)`, otherwise the temp destroy

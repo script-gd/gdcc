@@ -69,6 +69,9 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                                        @NotNull CallMethodInsn instruction,
                                        @NotNull LirVariable receiverVar,
                                        @NotNull List<LirVariable> argVars) {
+        if (receiverVar.type() instanceof GdObjectType) {
+            bodyBuilder.emitAssertObjectLiveGuard(receiverVar);
+        }
         var dynamicArgs = materializeDynamicVariantArgs(bodyBuilder, argVars, "object_dynamic");
         var fixedArgs = List.of(
                 bodyBuilder.valueOfVar(receiverVar),
