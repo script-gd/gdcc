@@ -40,6 +40,28 @@ public class SimpleLirBlockInsnSerializerTest {
     }
 
     @Test
+    public void serialize_objectIsNullKeepsResultAndOperand() throws Exception {
+        var insnList = List.<LirInstruction>of(new ObjectIsNullInsn("result", "obj"));
+
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var sw = new StringWriter();
+        serializer.serialize(insnList, sw);
+
+        assertEquals("$result = object_is_null $obj;\n", sw.toString());
+    }
+
+    @Test
+    public void serialize_assertObjectLiveHasNoResultAndNoProvenance() throws Exception {
+        var insnList = List.<LirInstruction>of(new AssertObjectLiveInsn("obj"));
+
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var sw = new StringWriter();
+        serializer.serialize(insnList, sw);
+
+        assertEquals("assert_object_live $obj;\n", sw.toString());
+    }
+
+    @Test
     public void serialize_lifecycleInstructionWithProvenance_appendsEnumToken() throws Exception {
         var insnList = List.<LirInstruction>of(
                 new DestructInsn("0", LifecycleProvenance.AUTO_GENERATED),

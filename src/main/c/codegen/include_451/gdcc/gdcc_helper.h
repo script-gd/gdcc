@@ -11,6 +11,7 @@
 #include <gdcc_intrinsic.h>
 #include <stdio.h>
 #include <math.h>
+#include <stdint.h>
 
 #if !defined(GDE_EXPORT)
 #if defined(_WIN32)
@@ -129,6 +130,83 @@ static void try_destroy_object(const GDExtensionObjectPtr obj) {
     } else {
         godot_object_destroy(obj);
     }
+}
+
+/// Function attribute macros for side-effect-free query helpers.
+/// They degrade to nothing on toolchains without GNU attribute support.
+#if defined(__GNUC__)
+#define GDCC_PURE __attribute__((pure))
+#define GDCC_CONST __attribute__((const))
+#else
+#define GDCC_PURE
+#define GDCC_CONST
+#endif
+
+/// Godot 4.5.1 ObjectDB marks RefCounted object IDs with the high bit.
+/// GDCC uses it only as the dynamic RefCounted fast-path hint, never as object identity.
+#define GDCC_OBJECT_ID_REFERENCE_BIT (UINT64_C(1) << 63)
+
+/// Checks the ObjectID reference bit without touching ObjectDB.
+static inline GDCC_CONST godot_bool gdcc_object_id_is_ref_counted(GDObjectInstanceID instance_id) {
+    return (instance_id & GDCC_OBJECT_ID_REFERENCE_BIT) != 0;
+}
+
+/// Resolves a live raw Godot object pointer from an instance ID.
+/// ID 0 is canonical null; non-RefCounted IDs must be validated through ObjectDB.
+/// PURE is safe because the inner Godot function-pointer call is a conservative global-state
+/// barrier, so compilers will not CSE this query across Godot API or lifecycle calls.
+static inline GDCC_PURE GDExtensionObjectPtr gdcc_object_live_ptr(GDObjectInstanceID instance_id) {
+    if (instance_id == 0) {
+        return NULL;
+    }
+    return godot_object_get_instance_from_id(instance_id);
+}
+
+/// Returns whether an instance ID denotes a live object under the ownership invariant.
+/// RefCounted reference-bit hits are treated as live without an ObjectDB lookup.
+static inline GDCC_PURE godot_bool gdcc_object_is_live(GDObjectInstanceID instance_id) {
+    if (instance_id == 0) {
+        return false;
+    }
+    if (gdcc_object_id_is_ref_counted(instance_id)) {
+        return true;
+    }
+    return gdcc_object_live_ptr(instance_id) != NULL;
+}
+
+/// Semantic inverse of `gdcc_object_is_live` for an instance ID.
+/// Fat-pointer `object_is_null` / `assert_object_live` must pass both cached raw pointer and ID
+/// through `gdcc_object_is_null_raw_and_id`; do not recover ID from a possibly-dead raw pointer.
+static inline GDCC_PURE godot_bool gdcc_object_is_null(GDObjectInstanceID instance_id) {
+    return !gdcc_object_is_live(instance_id);
+}
+
+/// Direct raw Godot object pointer equality.
+/// Object `==` / `!=` compare raw pointers only; no liveness check and no instance ID comparison.
+static inline GDCC_CONST godot_bool gdcc_object_live_ptrs_equal(GDExtensionObjectPtr left, GDExtensionObjectPtr right) {
+    return left == right;
+}
+
+/// Reads an instance ID from a raw object pointer that the caller already guarantees is live.
+/// Mapping NULL -> 0 is safe. Calling this on a freed/dangling raw pointer is use-after-free.
+/// Only `from_raw` capture paths may use this; null/equality/assert must never recover ID from raw.
+static inline GDObjectInstanceID gdcc_object_id_from_raw(GDExtensionObjectPtr raw) {
+    if (raw == NULL) {
+        return 0;
+    }
+    return godot_object_get_instance_id(raw);
+}
+
+/// Null/freed query for a fat-pointer pair `(raw, instance_id)`.
+/// Never calls `godot_object_get_instance_id` on raw. ID is the liveness authority; raw == NULL is
+/// also treated as null. Generic and untyped: no per-class specialization.
+static inline GDCC_PURE godot_bool gdcc_object_is_null_raw_and_id(
+        GDExtensionObjectPtr raw,
+        GDObjectInstanceID instance_id) {
+    if (raw == NULL || instance_id == 0) {
+        return true;
+    }
+    return gdcc_object_is_null(instance_id);
 }
 
 /// Converts a Godot raw object pointer back to the bound GDCC native instance.

@@ -78,8 +78,8 @@ class COperatorInsnGenTest {
     }
 
     @Test
-    @DisplayName("object == should call gdcc_cmp_object helper")
-    void objectEqualUsesInstanceIdSpecialization() {
+    @DisplayName("object == should compare raw Godot object pointers directly")
+    void objectEqualUsesRawPointerComparison() {
         var body = generateBody(
                 emptyApi(),
                 new BinaryOpInsn("result", GodotOperator.EQUAL, "left_obj", "right_obj"),
@@ -90,12 +90,12 @@ class COperatorInsnGenTest {
                 )
         );
 
-        assertTrue(body.contains("$result = gdcc_cmp_object($left_obj, $right_obj);"), body);
+        assertTrue(body.contains("$result = ($left_obj == $right_obj);"), body);
     }
 
     @Test
-    @DisplayName("object != should negate gdcc_cmp_object result")
-    void objectNotEqualUsesNegatedSpecialization() {
+    @DisplayName("object != should compare raw Godot object pointers directly")
+    void objectNotEqualUsesRawPointerComparison() {
         var body = generateBody(
                 emptyApi(),
                 new BinaryOpInsn("result", GodotOperator.NOT_EQUAL, "left_obj", "right_obj"),
@@ -106,8 +106,7 @@ class COperatorInsnGenTest {
                 )
         );
 
-        assertTrue(body.contains("__gdcc_tmp_gdcc_cmp_object_eq_0 = gdcc_cmp_object($left_obj, $right_obj);"), body);
-        assertTrue(body.contains("$result = !__gdcc_tmp_gdcc_cmp_object_eq_0;"), body);
+        assertTrue(body.contains("$result = ($left_obj != $right_obj);"), body);
     }
 
     @Test
@@ -159,11 +158,11 @@ class COperatorInsnGenTest {
                 )
         );
 
-        assertTrue(body.contains("$result = (!(true));"), body);
+        assertTrue(body.contains("$result = (false);"), body);
     }
 
     @Test
-    @DisplayName("Nil == Object should compare object with NULL")
+    @DisplayName("Nil == Object should compare the raw object pointer against NULL")
     void nilEqualObjectUsesNullCompare() {
         var body = generateBody(
                 emptyApi(),
@@ -179,7 +178,7 @@ class COperatorInsnGenTest {
     }
 
     @Test
-    @DisplayName("Object == Nil should compare object with NULL")
+    @DisplayName("Object == Nil should compare the raw object pointer against NULL")
     void objectEqualNilUsesNullCompare() {
         var body = generateBody(
                 emptyApi(),
@@ -195,7 +194,7 @@ class COperatorInsnGenTest {
     }
 
     @Test
-    @DisplayName("Object != Nil should negate NULL compare")
+    @DisplayName("Object != Nil should compare the raw object pointer against NULL")
     void objectNotEqualNilNegatesNullCompare() {
         var body = generateBody(
                 emptyApi(),
@@ -207,7 +206,7 @@ class COperatorInsnGenTest {
                 )
         );
 
-        assertTrue(body.contains("$result = (!($obj == NULL));"), body);
+        assertTrue(body.contains("$result = ($obj != NULL);"), body);
     }
 
     @Test

@@ -607,6 +607,35 @@ public final class CBodyBuilder {
         return this;
     }
 
+    /// Unified codegen entry for the `assert_object_live` hard-fail guard.
+    /// Backend paths that need a validated receiver/owner must request this guard instead of
+    /// emitting ad-hoc inline liveness branches.
+    ///
+    /// Phase-2 legacy raw representation can only hard-fail on `raw == NULL`.
+    /// Phase-3 fat-pointer lowering must call the generic untyped helper
+    /// `gdcc_object_is_null_raw_and_id(raw, instance_id)` — never recover ID from raw, and never
+    /// generate per-class assert helpers.
+    public @NotNull CBodyBuilder emitAssertObjectLiveGuard(@NotNull LirVariable objectVariable) {
+        if (checkInFinallyBlock()) {
+            throw invalidInsn("assert_object_live must not appear in __finally__ block");
+        }
+        if (!(objectVariable.type() instanceof GdObjectType)) {
+            throw invalidInsn("assert_object_live target '" + objectVariable.id() + "' must be an object type, got '" +
+                    objectVariable.type().getTypeName() + "'");
+        }
+        var argument = renderArgument(valueOfVar(objectVariable), true);
+        if (!argument.temps().isEmpty()) {
+            throw invalidInsn("assert_object_live target '" + objectVariable.id() + "' must not require temporaries");
+        }
+        var objectName = escapeStringLiteral(objectVariable.id());
+        appendLine("if (" + argument.code() + " == NULL) {");
+        appendLine("    GDCC_PRINT_RUNTIME_ERROR(\"assert_object_live failed: object '" + objectName +
+                "' is null or freed\", __func__, __FILE__, __LINE__);");
+        appendLine("    goto __finally__;");
+        appendLine("}");
+        return this;
+    }
+
     /// Common logic for writing a fresh call result into a target variable.
     /// Call/construct/helper returns are treated as `OWNED` producers and therefore flow into the
     /// slot-write core without an extra retain on the new value.
@@ -1346,7 +1375,7 @@ public final class CBodyBuilder {
         return funcName.endsWith("own_object") || funcName.endsWith("release_object") ||
                 funcName.equals("try_destroy_object") ||
                 funcName.equals("gdcc_object_from_godot_object_ptr") ||
-                funcName.equals("gdcc_cmp_object");
+                funcName.equals("gdcc_object_is_null_raw_and_id");
     }
 
     /// Verifies that an emitted `godot_*` wrapper call is either runtime-provided or has already

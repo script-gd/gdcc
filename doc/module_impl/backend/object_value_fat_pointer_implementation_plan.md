@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：计划中 / 阶段 0 已锚定，阶段 1 已实施，后续阶段尚未开始
+- 状态：计划中 / 阶段 0 已锚定，阶段 1 已实施，阶段 2 已实施，后续阶段尚未开始
 - 更新时间：2026-07-28
 - Godot 对齐版本：`4.5.1-stable`
 - Godot 对齐提交：`f62fdbde15035c5576dad93e586201f4d41ef0cb`
@@ -57,7 +57,7 @@ Godot 4.5.1 的 `Variant::ObjData` 同时保存 `ObjectID id` 和 `Object *obj`�
    invariant 的 RefCounted 强引用可直接使用 cached pointer。
 5. 所有从 raw ABI 进入内部表示的对象值都在对象仍存活时立即捕获 instance ID。
 6. Variant 解包必须从 Variant 自身读取保存的 ID，不能从可能悬空的 pointer 重新读取。
-7. 对象 `==`、`!=` 和 object-vs-null 语义与 Godot validated-object 语义一致。
+7. 对象 `==`/`!=` 直接比较 raw Godot object pointer；object-vs-null / `object_is_null` 使用 `(raw, id)` 安全查询。
 8. 保持现有 `BORROWED` / `OWNED`、对象槽位写入顺序和 `_return_val` 发布合同。
 9. 删除未知对象类型到 `GDExtensionObjectPtr` 的静默 fallback。
 10. 将解引用前的硬失败存活性守卫建模为显式无返回 LIR 指令 `assert_object_live`；条件判断、equality、lifecycle、Variant
@@ -201,8 +201,17 @@ assert_object_live $<object_id:Object>
 - 用户条件判断、equality、own/release/destroy、Variant pack/unpack 不使用该指令；它们分别由 `object_is_null`、operator
   lowering、lifecycle helper、conversion helper 内部处理。
 
+C lowering 合同：
+
+- 必须使用通用无类型 helper，同时传入 cached raw Godot object pointer 与 `instance_id`：
+  `gdcc_object_is_null_raw_and_id(raw, instance_id)`。
+- **禁止**从 raw pointer 调用 `godot_object_get_instance_id(...)` 来“恢复”ID；对象已释放时该调用是 use-after-free。
+- **禁止**为每个类生成单独的胖指针 assert helper；本路径不需要编译时特化，也不追求编译器进一步优化。
+- 阶段 2 在 ordinary value 仍为 legacy raw pointer 时，C lowering 只能 hard-fail `raw == NULL`；完整 `(raw, id)`
+  路径在阶段 3 fat pointer cutover 后接入。
+
 backend generator helper（例如 `CBodyBuilder`/`CGenHelper` 中需要 validated receiver/owner 的路径）必须统一请求该指令，
-不得各自拼接 inline `gdcc_object_is_live(...)` + branch C 代码。
+不得各自拼接 ad-hoc liveness branch，也不得绕过统一入口直接调用 helper。
 
 后续优化 pass 可以把 `assert_object_live` 作为显式守卫进行合并/删除，但必须建模其 implicit error edge：
 
@@ -325,6 +334,10 @@ static inline godot_bool gdcc_object_is_live(GDObjectInstanceID instance_id) __a
 static inline godot_bool gdcc_object_is_null(GDObjectInstanceID instance_id) __attribute__((pure));
 static inline godot_bool gdcc_object_live_ptrs_equal(GDExtensionObjectPtr left, GDExtensionObjectPtr right)
         __attribute__((const));
+static inline godot_bool gdcc_object_is_null_raw_and_id(
+        GDExtensionObjectPtr raw,
+        GDObjectInstanceID instance_id) __attribute__((pure));
+static inline GDObjectInstanceID gdcc_object_id_from_raw(GDExtensionObjectPtr raw);
 ```
 
 语义：
@@ -333,12 +346,23 @@ static inline godot_bool gdcc_object_live_ptrs_equal(GDExtensionObjectPtr left, 
 - `gdcc_object_live_ptr(0)` 返回 `NULL`；非零 non-RefCounted ID 通过 `godot_object_get_instance_from_id(...)` 解析。
 - `gdcc_object_is_live(...)`：ID 0 为 false；reference bit 命中时在 RefCounted ownership invariant 下为 true；否则返回
   validated live pointer 是否非 null。
-- `gdcc_object_is_null(...)` 是 `gdcc_object_is_live(...)` 的语义反值，供 `object_is_null` 和 `assert_object_live`
-  lowering
-  使用。
-- `gdcc_object_live_ptrs_equal(...)` 直接比较两个 validated live raw Godot object pointer；`NULL == NULL` 为 true。调用者
-  必须先按第 3.4 节取得 live pointer，不得传入未验证的 non-RefCounted cached pointer。
-- object equality 不直接比较 instance ID；Godot 4.5.1 OBJECT `==` 使用 validated object pointer 比较，本计划与之对齐。
+- `gdcc_object_is_null(instance_id)` 是 ID-only 的 `gdcc_object_is_live(...)` 语义反值。
+- `gdcc_object_is_null_raw_and_id(raw, instance_id)` 是 fat-pointer 世界的 null/freed 查询与 `assert_object_live`
+  通用入口：
+  - 同时接收 untyped raw pointer 与 instance ID；
+  - `raw == NULL` 或 `instance_id == 0` 视为 null；
+  - 否则用 ID 做 liveness 查询；
+  - **绝不**对 raw 调用 `godot_object_get_instance_id(...)`。
+- `gdcc_object_live_ptrs_equal(...)` 直接比较两个 raw Godot object pointer；`NULL == NULL` 为 true。object equality
+  使用该语义（或等价的 C `==`/`!=`），不检查存活，也不比较 instance ID。
+- `gdcc_object_id_from_raw(raw)` **仅**用于调用者已保证 raw live 的 capture 路径（例如 `from_raw`）。对已释放 raw
+  调用会 use-after-free；**禁止**用它实现 null/equality/assert。
+
+危险路径（明确禁止）：
+
+- 不得提供或使用 `gdcc_object_is_null_from_raw(raw)` / `gdcc_object_equal_live_from_raw(raw, raw)` /
+  `gdcc_object_validated_live_ptr_from_raw(raw)` 这类“从裸指针恢复 ID 再验证存活”的 helper。
+- 若对象已不存活，强制 `godot_object_get_instance_id(raw)` 会使程序崩溃；该路径无用且危险。
 
 属性合同：
 
@@ -349,6 +373,7 @@ static inline godot_bool gdcc_object_live_ptrs_equal(GDExtensionObjectPtr left, 
   （均不标注 `pure`）会阻断编译器对 `pure` 查询的 CSE。实施时必须确保所有 side-effecting helper 和外部 Godot 函数均未被
   误标 `pure`/`const`。
 - 若目标工具链不支持属性，应通过宏降级为空，不得改变语义。
+- `assert_object_live` 使用通用 `(raw, id)` helper，不为每个类生成特化 helper，也不为该路径做额外编译时优化假设。
 
 ### 6.2 Per-type helper
 
@@ -654,24 +679,32 @@ shape决定，否则同 signature 的不同 GDCC owner会构造错误 self type�
 - registered wrapper、dynamic call、operator evaluator、default Variant materialization统一复用。
 - object unpack helper本身只做表示读取，产生 `BORROWED` value；是否 retain由 destination slot或 return publish边界决定。
 
-### 10.2 Object equality
+### 10.2 Object equality 与 `object_is_null`
 
-`gdcc_cmp_object(...)` 当前接收 raw pointers并重新调用 get-instance-id。应替换为 validated live pointer 比较。
+#### Object/object equality
 
-Godot 4.5.1 的 OBJECT `==` evaluator（`OperatorEvaluatorEqualObject`）使用 `get_validated_object()`，因此本计划采用
-validated pointer equality，而不是裸 Variant pointer 比较，也不比较 instance ID。
+object equality **直接比较两个 raw Godot object pointer**，无需 liveness 检查，也不比较 instance ID：
 
-`OperatorInsnGen`：
-
-- object/object `==`：先按第 3.4 节取得左右 validated live raw Godot object pointer，然后直接比较指针是否相同。
-- object/object `!=`：取指针比较反值。
-- object/null `==`：取得 object validated live pointer，然后与 `NULL` 比较；也可 lowering 为
-  `gdcc_object_is_null(instance_id)`。
-- object/null `!=`：取反。
+- object/object `==`：`left_raw == right_raw`
+- object/object `!=`：`left_raw != right_raw`
+- 该语义对齐 Godot 对 object pointer identity 的比较形态；不通过 ID 恢复，也不先做 ObjectDB 验证。
 - 禁止直接比较 fat struct。
 - 禁止直接比较 instance ID。
-- RefCounted fast path 下 validated live pointer 可来自 cached pointer；non-RefCounted 或 unknown 未命中时必须来自
-  ObjectDB。
+- 禁止为 equality 从 raw pointer 调用 `godot_object_get_instance_id(...)`。
+
+阶段 2 / 阶段 3 共用该 equality 规则。阶段 2 ordinary value 已是 raw pointer，直接比较；阶段 3 切换到 fat pointer 后，
+先取出两侧 cached raw（engine 直接用 `.ptr`，GDCC 经 `object_ptr` helper 转 raw），再做 pointer `==`/`!=`。
+
+#### Object nullness
+
+`object_is_null` 与 object/null equality 需要同时看到 raw pointer 与 instance ID：
+
+- fat-pointer 路径：`gdcc_object_is_null_raw_and_id(value.ptr_as_raw, value.instance_id)`
+- 不得使用 `gdcc_object_is_null_from_raw(raw)` 或任何从 raw 恢复 ID 的路径
+- 阶段 2 ordinary value 仍为 legacy raw pointer、没有可用 ID 时，production lowering 只能退化为 `raw == NULL`；
+  完整 freed 检测推迟到阶段 3 fat pointer cutover 后接入
+
+`gdcc_cmp_object(...)` 是 legacy helper，不得作为 production equality / nullness 路径；等待阶段 4 清理。
 
 ### 10.3 Variant evaluate
 
@@ -843,13 +876,41 @@ legacy raw pointer；role-specific renderer 仅供后续阶段按角色接入。
 验收：
 
 - null/live/freed ID helper行为正确。
-- object equality matrix与 Godot一致。
-- `assert_object_live` LIR surface 可解析/序列化，C lowering 在 null/freed 时进入 hard-fail cleanup。
-- `object_is_null` lowering 调用 pure null/live helper；object equality lowering 比较 validated live pointer。
+- object equality 直接比较 raw Godot object pointer，不检查存活、不比较 instance ID。
+- `assert_object_live` LIR surface 可解析/序列化；阶段 2 C lowering 在 legacy raw 表示下对 `raw == NULL` hard-fail cleanup。
+- `gdcc_object_is_null_raw_and_id(raw, id)` 通用 helper 存在，且**不**从 raw 恢复 ID。
+- **不**在阶段 2 production lowering 中接入“validated helper / 从 raw 恢复 ID”路径；完整
+  `object_is_null` / equality / `assert_object_live` 的 fat-pointer 语义切换推迟到阶段 3。
 - static RefCounted 路径不生成 ObjectDB lookup；unknown 路径生成 reference-bit fast path。
 - generated `gdcc_helper.h` 中查询 helper 的 `pure`/`const` 属性标注存在（或按工具链宏降级为空），side-effecting helper
   无标注。
-- 新 helper尚未接入 production lowering时不改变现有 generated function/property/method ABI。
+- 新 helper尚未接入 production fat-pointer representation 时不改变现有 generated function/property/method ABI。
+
+#### 阶段 2 任务状态
+
+| 任务 | 状态 | 锚定测试/产出 |
+|---|---|---|
+| 通用 ID validation/null/live/equality helper 与 `pure`/`const` 属性 | 已完成 | `GodotAbiHeaderCompileTest.gdccObjectIdHelpersShouldCompileAndFollowLivenessContract` |
+| 通用 `gdcc_object_is_null_raw_and_id(raw, id)` helper（不从 raw 恢复 ID） | 已完成 | `GodotAbiHeaderCompileTest.gdccObjectIdHelpersShouldCompileAndFollowLivenessContract` |
+| 删除/禁止 `*_from_raw` 存活恢复 helper 作为 production 路径 | 已完成 | `gdcc_helper.h` 不再提供 `gdcc_object_is_null_from_raw` / `gdcc_object_equal_live_from_raw` / `gdcc_object_validated_live_ptr_from_raw` |
+| reference-bit fast path 与 per-type RefCountedStatus live pointer helper | 已完成 | `ObjectFatPtrDeclarationTest.HelperGenerationTests`、`GodotAbiHeaderCompileTest` |
+| raw/Variant/fat conversion helper 生成 | 已完成 | `ObjectFatPtrDeclarationTest.HelperGenerationTests` |
+| type-specific live pointer 与 upcast helper 生成 | 已完成 | `ObjectFatPtrDeclarationTest.HelperGenerationTests` |
+| LIR `assert_object_live` opcode/record/parser/serializer/CInsnGen | 已完成 | `SimpleLirBlockInsnParserTest`、`SimpleLirBlockInsnSerializerTest`、`AssertObjectLiveInsnGenTest` |
+| backend generator 统一 `assert_object_live` 入口（add-only；legacy raw 仅 `raw == NULL`） | 已完成 | `CBodyBuilder.emitAssertObjectLiveGuard`、`AssertObjectLiveInsnGenTest` |
+| object equality production lowering 直接 raw pointer 比较 | 已完成 | `COperatorInsnGenTest`、`ObjectValueLifecycleCharacterizationTest.EqualityBaseline` |
+| `object_is_null` / object-vs-nil production lowering 在 legacy raw 下退化为 `raw == NULL` | 已完成 | `ObjectIsNullInsnGenTest`、`COperatorInsnGenTest`、`ObjectValueLifecycleCharacterizationTest.EqualityBaseline` |
+| `object_is_null` / equality / assert 的 fat-pointer `(raw, id)` production 切换 | 已回退 / 推迟至阶段 3 | 见阶段 3B 与阶段 3 统一验收 |
+| add-only 不改变现有 generated function/property/method ABI | 已完成 | `gd.script.gdcc.backend.c.*` 集成测试 |
+
+阶段 2 新增通用 ID helper、`gdcc_object_is_null_raw_and_id` 和 generated per-type fat pointer helper；`object_fat_ptr_types.h` 承载 typedef、
+per-type conversion/live/Variant helper、upcast helper 和 GDCC `object_ptr` helper forward declaration，`entry.h` 只 include
+`object_fat_ptr_types.h`，不再生成任何胖指针 helper。`assert_object_live` 已完成 LIR surface 与统一 C 入口，但 ordinary
+production path 仍保持 legacy raw 表示：equality 直接比较 raw pointer；`object_is_null` / object-vs-nil / assert 仅检查
+`raw == NULL`。曾短暂接入的 `*_from_raw` 存活恢复路径已撤回，因其对已释放 raw 调用 `godot_object_get_instance_id` 会崩溃。
+完整 `(raw, id)` null/assert 与 fat-pointer equality materialization 推迟到阶段 3。`gdcc_cmp_object` 保留为 legacy helper，
+等待阶段 4 清理。`RefCountedStatus.UNKNOWN` 的 per-type 模板路径已就绪，当前 collector 对未知类型 fail-fast，
+因此不会生成 UNKNOWN spec；通用 helper 的 reference-bit fast path 由 C behavior test 锚定。
 
 ### 阶段 3：原子 representation cutover
 
@@ -908,7 +969,12 @@ generated C 标记为可运行：
   inline validation。
 - dynamic Variant路径使用 borrowed object unpack。
 - direct GDCC field/method 访问先发出 `assert_object_live`，再物化 live owner pointer。
-- `object_is_null` 直接 lowering 到 pure null/live helper；equality 比较 validated live pointer。
+- `object_is_null` / object-vs-nil lowering 切换到
+  `gdcc_object_is_null_raw_and_id(raw, instance_id)`；同时传入 fat pointer 的 raw 与 ID。
+- object/object equality 继续直接比较两侧 raw Godot object pointer（从 fat pointer 取出 cached raw 后 `==`/`!=`），
+  不检查存活、不比较 instance ID。
+- `assert_object_live` C lowering 切换到通用 `gdcc_object_is_null_raw_and_id(raw, instance_id)`；不生成 per-type assert
+  helper，也不从 raw 恢复 ID。
 - own/release/destroy 与 Variant pack/unpack 的 liveness 判断保留在 backend/runtime helper 内，不新增 LIR check 指令。
 - UTF-8 literal改用专用 direct C pointer value，不再伪装为 object。
 
@@ -954,6 +1020,9 @@ generated C 标记为可运行：
 - explicit inheritance layout tests不回归。
 - 每个 object-producing instruction都输出 `{ptr, instance_id}`。
 - freed receiver不被解引用，property/method hard-fail cleanup正确。
+- `object_is_null` / object-vs-nil 使用 `gdcc_object_is_null_raw_and_id(raw, instance_id)`，可安全识别 freed。
+- object/object equality 直接比较 raw Godot object pointer，不检查存活、不比较 instance ID。
+- `assert_object_live` 使用通用 `(raw, id)` helper；无 per-type assert helper，且不从 raw 恢复 ID。
 - no stale cached pointer传入 Godot API。
 - object ptrcall args不是 fat struct地址。
 - object ptrcall return不是写入 fat struct storage。
@@ -1090,10 +1159,10 @@ generated C 标记为可运行：
 - 不允许 generated generic `void *` object value。
 - static RefCounted live pointer 路径不得出现 `godot_object_get_instance_from_id`。
 - unknown object liveness 路径必须先出现 reference-bit 测试。
-- 解引用硬失败守卫必须来自 `assert_object_live` lowering，不得出现未 allowlisted 的 inline `gdcc_object_is_live` +
-  branch。
-- `object_is_null`、equality、own/release/destroy、Variant pack/unpack 的 liveness 判断允许在 pure/runtime helper 内完成，
-  不要求额外 LIR liveness 指令。
+- 解引用硬失败守卫必须来自 `assert_object_live` lowering，并通过通用 `gdcc_object_is_null_raw_and_id(raw, id)`；
+  不得出现从 raw 恢复 ID 的路径，也不得生成 per-type assert helper。
+- `object_is_null` / object-vs-nil 使用 `gdcc_object_is_null_raw_and_id(raw, id)`；object equality 直接比较 raw pointer。
+- own/release/destroy、Variant pack/unpack 的 liveness 判断允许在 pure/runtime helper 内完成，不要求额外 LIR liveness 指令。
 
 ### 14.3 Godot runtime integration
 
@@ -1144,7 +1213,7 @@ script/run-gradle-targeted-tests.sh --tests GodotAbiHeaderCompileTest
 3. 所有 raw ingress都在 live边界捕获 ID。
 4. 所有 Variant ingress都从 Variant读取 ID。
 5. 所有 non-RefCounted liveness-sensitive 操作都按 ID 验证 pointer；RefCounted fast path 按强引用合同取得 live pointer。
-6. equality/null 语义通过 validated live pointer 和 live/null/freed 运行时矩阵。
+6. equality 直接比较 raw pointer；null/assert 通过 `(raw, id)` helper 与 live/null/freed 运行时矩阵。
 7. ownership与 `_return_val` 合同无回归。
 8. registered call_func、ptrcall和virtual callback完成 owner-aware适配。
 9. exact engine ptrcall和vararg object ABI完成双向适配。

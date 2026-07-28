@@ -5,6 +5,8 @@ import gd.script.gdcc.backend.c.gen.binding.BindingData;
 import gd.script.gdcc.backend.c.gen.binding.BoundMetadata;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodHelperParam;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
+import gd.script.gdcc.backend.c.gen.fatptr.ObjectFatPtrSpec;
+import gd.script.gdcc.backend.c.gen.fatptr.ObjectFatPtrUpcastSpec;
 import gd.script.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
 import gd.script.gdcc.backend.c.gen.insn.OperatorResolver;
 import gd.script.gdcc.lir.LirClassDef;
@@ -366,6 +368,25 @@ public final class CGenHelper {
         // Validate the static object type, but the Godot receiver slot is always the raw ABI pointer.
         requireObjectFatPtrSpec(objectType, "Godot receiver");
         return "GDExtensionObjectPtr";
+    }
+
+    /// Collects deterministic upcast helper specs among already-collected fat pointer types.
+    /// Only assignable source -> target pairs are emitted; same-type copies are plain struct copies.
+    public @NotNull List<ObjectFatPtrUpcastSpec> collectObjectFatPtrUpcastSpecs(@NotNull List<ObjectFatPtrSpec> specs) {
+        var upcasts = new ArrayList<ObjectFatPtrUpcastSpec>();
+        for (var source : specs) {
+            for (var target : specs) {
+                if (source.fatPtrTypeName().equals(target.fatPtrTypeName())) {
+                    continue;
+                }
+                if (!context.classRegistry().checkAssignable(source.objectType(), target.objectType())) {
+                    continue;
+                }
+                upcasts.add(ObjectFatPtrUpcastSpec.forPair(source, target));
+            }
+        }
+        upcasts.sort(Comparator.comparing(ObjectFatPtrUpcastSpec::helperName));
+        return List.copyOf(upcasts);
     }
 
     /// Engine bind accessor symbols must stay backend-owned and collision-free relative to public Godot wrappers.

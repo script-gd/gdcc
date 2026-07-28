@@ -246,22 +246,21 @@ class ObjectValueLifecycleCharacterizationTest {
     }
 
     @Nested
-    @DisplayName("Equality and null comparison baseline")
+    @DisplayName("Equality and null comparison phase-2 anchor")
     class EqualityBaseline {
         @Test
-        @DisplayName("object equality uses gdcc_cmp_object and inequality negates it")
-        void objectEqualityUsesGdccCmpObject() {
+        @DisplayName("object equality compares raw Godot object pointers directly")
+        void objectEqualityUsesRawPointerComparison() {
             var equalBody = generateBinaryOpBody(GodotOperator.EQUAL);
-            assertTrue(equalBody.contains("$result = gdcc_cmp_object($left, $right);"), equalBody);
+            assertTrue(equalBody.contains("$result = ($left == $right);"), equalBody);
 
             var notEqualBody = generateBinaryOpBody(GodotOperator.NOT_EQUAL);
-            assertTrue(notEqualBody.contains("__gdcc_tmp_gdcc_cmp_object_eq_0 = gdcc_cmp_object($left, $right);"), notEqualBody);
-            assertTrue(notEqualBody.contains("$result = !__gdcc_tmp_gdcc_cmp_object_eq_0;"), notEqualBody);
+            assertTrue(notEqualBody.contains("$result = ($left != $right);"), notEqualBody);
         }
 
         @Test
-        @DisplayName("object-vs-nil equality compares the bare pointer against NULL")
-        void objectNilEqualityUsesBareNullCompare() {
+        @DisplayName("object-vs-nil equality compares the raw object pointer against NULL")
+        void objectNilEqualityUsesRawNullCompare() {
             var workerClass = newClass("Worker");
             var func = new LirFunctionDef("object_nil_equal");
             func.setReturnType(GdVoidType.VOID);
@@ -277,8 +276,8 @@ class ObjectValueLifecycleCharacterizationTest {
         }
 
         @Test
-        @DisplayName("object-vs-nil inequality negates the bare NULL compare")
-        void objectNilInequalityUsesNegatedNullCompare() {
+        @DisplayName("object-vs-nil inequality compares the raw object pointer against NULL")
+        void objectNilInequalityUsesRawNullCompare() {
             var workerClass = newClass("Worker");
             var func = new LirFunctionDef("object_nil_not_equal");
             func.setReturnType(GdVoidType.VOID);
@@ -290,7 +289,7 @@ class ObjectValueLifecycleCharacterizationTest {
 
             var body = generateFuncBody(workerClass, func, api(), List.of(workerClass));
 
-            assertTrue(body.contains("$result = (!($obj == NULL));"), body);
+            assertTrue(body.contains("$result = ($obj != NULL);"), body);
         }
 
         @Test

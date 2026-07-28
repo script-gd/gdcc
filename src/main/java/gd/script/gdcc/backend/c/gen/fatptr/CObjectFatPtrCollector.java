@@ -1,4 +1,4 @@
-package gd.script.gdcc.backend.c.gen;
+package gd.script.gdcc.backend.c.gen.fatptr;
 
 import gd.script.gdcc.backend.c.gen.binding.ModuleLocalGodotBinding;
 import gd.script.gdcc.backend.c.gen.binding.usage.EngineConstructorUsage;

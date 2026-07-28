@@ -6,6 +6,8 @@ import gd.script.gdcc.backend.ProjectInfo;
 import gd.script.gdcc.backend.c.gen.binding.GodotBindingSymbol;
 import gd.script.gdcc.backend.c.gen.binding.ModuleLocalGodotBinding;
 import gd.script.gdcc.backend.c.gen.binding.usage.EngineConstructorUsage;
+import gd.script.gdcc.backend.c.gen.fatptr.CObjectFatPtrCollector;
+import gd.script.gdcc.backend.c.gen.fatptr.ObjectFatPtrSpec;
 import gd.script.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.gdextension.ExtensionAPI;
@@ -354,6 +356,8 @@ class ObjectFatPtrDeclarationTest {
             assertTrue(objectFatPtrTypesInclude > forwardDecl, header);
             assertTrue(structDef > objectFatPtrTypesInclude, header);
             assertFalse(header.contains("// Object fat pointer declarations"), header);
+            assertFalse(header.contains("// Object fat pointer helpers"), header);
+            assertFalse(header.contains("// Object fat pointer upcast helpers"), header);
             assertFalse(header.contains("typedef struct gdcc_Worker_fat_ptr"), header);
         }
 
@@ -398,6 +402,106 @@ class ObjectFatPtrDeclarationTest {
 
             var error = assertThrows(IllegalStateException.class, codegen::generate);
             assertTrue(error.getMessage().contains("UnknownObject"), error.getMessage());
+        }
+    }
+
+    @Nested
+    @DisplayName("Generated fat pointer helpers")
+    class HelperGenerationTests {
+        @Test
+        @DisplayName("object_fat_ptr_types.h generates conversion, live, and Variant helpers for each spec")
+        void perTypeHelpersAreGenerated() {
+            var workerClass = newClass("Worker");
+            var useObjects = new LirFunctionDef("use_objects");
+            useObjects.setReturnType(GdVoidType.VOID);
+            useObjects.addParameter(new LirParameterDef("node", ENGINE_NODE, null, useObjects));
+            useObjects.addParameter(new LirParameterDef("worker", GDCC_WORKER, null, useObjects));
+            addEntryReturn(useObjects);
+            workerClass.addFunction(useObjects);
+
+            var header = generateFile(List.of(workerClass, newClass("GdccWorker")), "object_fat_ptr_types.h");
+
+            assertTrue(header.contains("// Object fat pointer helpers"), header);
+            assertContainsOnce(header, "static inline gdcc_Node_fat_ptr gdcc_Node_fat_ptr_from_raw(GDExtensionObjectPtr raw)");
+            assertContainsOnce(header, "static inline gdcc_Node_fat_ptr gdcc_Node_fat_ptr_from_variant(const godot_Variant *value)");
+            assertContainsOnce(header, "static inline GDExtensionObjectPtr gdcc_Node_fat_ptr_live_object(gdcc_Node_fat_ptr value)");
+            assertContainsOnce(header, "static inline godot_Node *gdcc_Node_fat_ptr_live_ptr(gdcc_Node_fat_ptr value)");
+            assertContainsOnce(header, "static inline godot_Variant gdcc_Node_fat_ptr_to_variant(gdcc_Node_fat_ptr value)");
+            assertContainsOnce(header, "static inline gdcc_GdccWorker_fat_ptr gdcc_GdccWorker_fat_ptr_from_raw(GDExtensionObjectPtr raw)");
+
+            assertTrue(header.contains("GDObjectInstanceID id = godot_variant_get_object_instance_id(value);"), header);
+            assertTrue(header.contains("gdcc_Node_fat_ptr result = { ptr, id };"), header);
+            assertTrue(header.contains("gdcc_Node_fat_ptr result = { NULL, id };"), header);
+        }
+
+        @Test
+        @DisplayName("static RefCounted live helper uses the cached pointer and no ObjectDB lookup")
+        void refCountedYesLiveHelperSkipsObjectDb() {
+            var workerClass = newClass("Worker");
+            var useWorker = new LirFunctionDef("use_worker");
+            useWorker.setReturnType(GdVoidType.VOID);
+            useWorker.addParameter(new LirParameterDef("worker", GDCC_WORKER, null, useWorker));
+            addEntryReturn(useWorker);
+            workerClass.addFunction(useWorker);
+
+            var header = generateFile(List.of(workerClass, newClass("GdccWorker")), "object_fat_ptr_types.h");
+
+            var liveObjectStart = header.indexOf("static inline GDExtensionObjectPtr gdcc_GdccWorker_fat_ptr_live_object(");
+            var liveObjectEnd = header.indexOf("static inline", liveObjectStart + 1);
+            assertTrue(liveObjectStart >= 0, header);
+            var liveObject = header.substring(liveObjectStart, liveObjectEnd);
+
+            assertTrue(liveObject.contains("return GdccWorker_object_ptr(value.ptr);"), liveObject);
+            assertFalse(liveObject.contains("gdcc_object_live_ptr(value.instance_id)"), liveObject);
+        }
+
+        @Test
+        @DisplayName("static non-RefCounted live helper validates through ObjectDB")
+        void nonRefCountedLiveHelperUsesObjectDb() {
+            var workerClass = newClass("Worker");
+            var useNode = new LirFunctionDef("use_node");
+            useNode.setReturnType(GdVoidType.VOID);
+            useNode.addParameter(new LirParameterDef("node", ENGINE_NODE, null, useNode));
+            addEntryReturn(useNode);
+            workerClass.addFunction(useNode);
+
+            var header = generateFile(List.of(workerClass), "object_fat_ptr_types.h");
+
+            var liveObjectStart = header.indexOf("static inline GDExtensionObjectPtr gdcc_Node_fat_ptr_live_object(");
+            var liveObjectEnd = header.indexOf("static inline", liveObjectStart + 1);
+            assertTrue(liveObjectStart >= 0, header);
+            var liveObject = header.substring(liveObjectStart, liveObjectEnd);
+
+            assertTrue(liveObject.contains("return gdcc_object_live_ptr(value.instance_id);"), liveObject);
+            assertFalse(liveObject.contains("value.ptr"), liveObject);
+        }
+
+        @Test
+        @DisplayName("upcast helpers preserve instance ID and rebuild target pointers")
+        void upcastHelpersAreGeneratedForAssignablePairs() {
+            var workerClass = newClass("Worker");
+            var useBoth = new LirFunctionDef("use_both");
+            useBoth.setReturnType(GdVoidType.VOID);
+            useBoth.addParameter(new LirParameterDef("worker", GDCC_WORKER, null, useBoth));
+            useBoth.addParameter(new LirParameterDef("ref", ENGINE_REFCOUNTED, null, useBoth));
+            addEntryReturn(useBoth);
+            workerClass.addFunction(useBoth);
+
+            var header = generateFile(List.of(workerClass, newClass("GdccWorker")), "object_fat_ptr_types.h");
+
+            assertTrue(header.contains(
+                    "static inline gdcc_RefCounted_fat_ptr gdcc_GdccWorker_fat_ptr_upcast_to_RefCounted(gdcc_GdccWorker_fat_ptr value)"
+            ), header);
+            assertTrue(header.contains("result.instance_id = value.instance_id;"), header);
+            assertFalse(header.contains("gdcc_RefCounted_fat_ptr_upcast_to_GdccWorker"), header);
+        }
+
+        @Test
+        @DisplayName("modules without object specs emit no per-type helpers")
+        void noSpecsNoHelpers() {
+            var header = generateFile(List.of(), "object_fat_ptr_types.h");
+
+            assertFalse(header.contains("// Object fat pointer helpers"), header);
         }
     }
 

@@ -129,6 +129,42 @@ public class SimpleLirBlockInsnParserTest {
     }
 
     @Test
+    public void parse_assertObjectLiveUsesVariableOperand() {
+        var insns = parse("assert_object_live $obj;");
+        var insn = assertInstanceOf(AssertObjectLiveInsn.class, insns.getFirst());
+
+        assertAll(
+                () -> assertNull(insn.resultId()),
+                () -> assertEquals("obj", insn.objectId())
+        );
+    }
+
+    @Test
+    public void parse_objectIsNullUsesResultAndVariableOperand() {
+        var insns = parse("$result = object_is_null $obj;");
+        var insn = assertInstanceOf(ObjectIsNullInsn.class, insns.getFirst());
+
+        assertAll(
+                () -> assertEquals("result", insn.resultId()),
+                () -> assertEquals("obj", insn.objectId())
+        );
+    }
+
+    @Test
+    public void parse_objectIsNullRequiresOperand() {
+        var parser = new SimpleLirBlockInsnParser();
+        var ex = assertThrows(LirInsnParsingException.class, () -> parser.parse(new StringReader("$result = object_is_null;")));
+        assertTrue(ex.reason.contains("Invalid operand count"), ex.reason);
+    }
+
+    @Test
+    public void parse_assertObjectLiveRequiresOperand() {
+        var parser = new SimpleLirBlockInsnParser();
+        var ex = assertThrows(LirInsnParsingException.class, () -> parser.parse(new StringReader("assert_object_live;")));
+        assertTrue(ex.reason.contains("Invalid operand count"), ex.reason);
+    }
+
+    @Test
     public void parse_literalIntShouldPreserveGodotInt64Width() {
         var insns = parse("$wide = literal_int 4294967296;");
         var literal = assertInstanceOf(LiteralIntInsn.class, insns.getFirst());

@@ -187,6 +187,7 @@ public record ParsedLirInstruction(
 
                 case NOP -> new NopInsn();
                 case LINE_NUMBER -> new LineNumberInsn(Math.toIntExact(((IntOperand) operands.getFirst()).value()));
+                case ASSERT_OBJECT_LIVE -> new AssertObjectLiveInsn(((VariableOperand) operands.getFirst()).id());
             };
         } catch (IndexOutOfBoundsException | ClassCastException e) {
             throw new LirInsnParsingException(lineNumber, columnNumber, lirLine, "Error converting parsed instruction to concrete type: " + e.getMessage());

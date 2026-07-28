@@ -1,4 +1,4 @@
-package gd.script.gdcc.backend.c.gen;
+package gd.script.gdcc.backend.c.gen.fatptr;
 
 import gd.script.gdcc.backend.c.gen.binding.GodotBindingSupport;
 import gd.script.gdcc.scope.ClassRegistry;

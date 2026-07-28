@@ -85,19 +85,23 @@
 
 仅当左右均为 `Object` 类型时生效：
 
-1. `==`：
+1. `==`：直接比较两侧 raw Godot object pointer（`left_raw == right_raw`）。
    - 双 `NULL` -> `true`
    - 单侧 `NULL` -> `false`
-   - 双非空 -> `godot_object_get_instance_id(left) == godot_object_get_instance_id(right)`
-2. `!=`：上述结果取反。
-3. 其他 Object 运算符：fail-fast。
+   - 双非空 -> raw pointer identity
+2. `!=`：`left_raw != right_raw`。
+3. 不检查存活，不比较 instance ID；**禁止**从 raw 调用 `godot_object_get_instance_id(...)`。
+4. 其他 Object 运算符：fail-fast。
+5. fat-pointer 迁移后的 null/assert 语义见
+   `object_value_fat_pointer_implementation_plan.md` §3.5 / §6.1 / §10.2。
 
 ### 3.6 Nil 比较特化
 
 1. `Nil == Nil` -> `true`。
 2. `Nil != Nil` -> `false`。
 3. `Nil` 与非 `Nil` 比较：
-   - 对方为 `Object(null)` 时相等；
+   - 对方为 Object 时：legacy raw 表示下比较 `object_raw == NULL`；
+     fat-pointer 世界使用 `gdcc_object_is_null_raw_and_id(raw, instance_id)`（见 fat-pointer 计划 §10.2）。
    - 其余情况不相等。
 4. `Nil` 非比较运算不特化，走默认分流。
 5. 该特化只在左右都不是已发布 `Variant` 时参与 resolver。

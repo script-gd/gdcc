@@ -7,6 +7,7 @@ import gd.script.gdcc.backend.TemplateLoader;
 import gd.script.gdcc.backend.c.gen.binding.GenerateRenderFacade;
 import gd.script.gdcc.backend.c.gen.binding.usage.GodotBindingUsageBuffer;
 import gd.script.gdcc.backend.c.gen.binding.usage.GodotBindingUsageSession;
+import gd.script.gdcc.backend.c.gen.fatptr.CObjectFatPtrCollector;
 import gd.script.gdcc.backend.c.gen.insn.*;
 import gd.script.gdcc.enums.GdInstruction;
 import gd.script.gdcc.enums.LifecycleProvenance;
@@ -39,6 +40,8 @@ public class CCodegen implements Codegen {
     static {
         registerInsnGen(new NopInsnGen());
         registerInsnGen(new LineNumberInsnGen());
+        registerInsnGen(new AssertObjectLiveInsnGen());
+        registerInsnGen(new ObjectIsNullInsnGen());
         registerInsnGen(new ControlFlowInsnGen());
         registerInsnGen(new NewDataInsnGen());
         registerInsnGen(new AssignInsnGen());
@@ -589,6 +592,7 @@ public class CCodegen implements Codegen {
             );
             var objectFatPtrTypesTplCtx = Map.of(
                     "module", module,
+                    "helper", helper,
                     "objectFatPtrSpecs", objectFatPtrSpecs
             );
             var objectFatPtrTypesSrc = TemplateLoader.renderFromClasspath(

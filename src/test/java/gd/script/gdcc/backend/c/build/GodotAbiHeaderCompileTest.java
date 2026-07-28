@@ -503,6 +503,155 @@ class GodotAbiHeaderCompileTest {
         assertEquals(0, execution.exitCode(), execution::diagnostic);
     }
 
+    @Test
+    void gdccObjectIdHelpersShouldCompileAndFollowLivenessContract(@TempDir Path tempDir)
+            throws IOException, InterruptedException {
+        var zig = ZigUtil.findZig();
+        Assumptions.assumeTrue(zig != null, "Zig executable is required for object ID helper behavior smoke");
+        var source = tempDir.resolve("object_id_helper_probe.c");
+        Files.writeString(source, """
+                #include <godot_binding.h>
+                static GDExtensionClassLibraryPtr class_library = NULL;
+                #include <gdcc_helper.h>
+
+                #include <stdint.h>
+                #include <string.h>
+
+                #define PROBE_LIVE_ID 42
+                #define PROBE_FREED_ID 43
+                #define PROBE_REF_ID (GDCC_OBJECT_ID_REFERENCE_BIT | 7)
+
+                static int probe_object_db_calls = 0;
+
+                static void probe_unused(void) {
+                }
+
+                static GDExtensionObjectPtr probe_object_get_instance_from_id(GDObjectInstanceID p_id) {
+                    probe_object_db_calls++;
+                    if (p_id == PROBE_FREED_ID) {
+                        return NULL;
+                    }
+                    return (GDExtensionObjectPtr)(uintptr_t)0xa11ce;
+                }
+
+                static GDObjectInstanceID probe_object_get_instance_id(GDExtensionConstObjectPtr p_object) {
+                    if (p_object == (GDExtensionConstObjectPtr)(uintptr_t)0xf4ee) {
+                        return PROBE_FREED_ID;
+                    }
+                    return PROBE_LIVE_ID;
+                }
+
+                static GDExtensionInterfaceFunctionPtr probe_get_proc_address(const char *p_function_name) {
+                    if (strcmp(p_function_name, "object_get_instance_from_id") == 0) {
+                        return (GDExtensionInterfaceFunctionPtr)probe_object_get_instance_from_id;
+                    }
+                    if (strcmp(p_function_name, "object_get_instance_id") == 0) {
+                        return (GDExtensionInterfaceFunctionPtr)probe_object_get_instance_id;
+                    }
+                    return (GDExtensionInterfaceFunctionPtr)probe_unused;
+                }
+
+                int main(void) {
+                    if (!godot_initialize_interface(probe_get_proc_address)) {
+                        return 10;
+                    }
+
+                    if (!gdcc_object_id_is_ref_counted(PROBE_REF_ID) || gdcc_object_id_is_ref_counted(PROBE_LIVE_ID)) {
+                        return 20;
+                    }
+
+                    if (gdcc_object_live_ptr(0) != NULL) {
+                        return 30;
+                    }
+                    if (gdcc_object_live_ptr(PROBE_FREED_ID) != NULL) {
+                        return 31;
+                    }
+                    if (gdcc_object_live_ptr(PROBE_LIVE_ID) != (GDExtensionObjectPtr)(uintptr_t)0xa11ce) {
+                        return 32;
+                    }
+
+                    const int db_calls_before_ref = probe_object_db_calls;
+                    if (!gdcc_object_is_live(PROBE_REF_ID)) {
+                        return 40;
+                    }
+                    if (probe_object_db_calls != db_calls_before_ref) {
+                        return 41;
+                    }
+                    if (gdcc_object_is_live(0) || !gdcc_object_is_live(PROBE_LIVE_ID) || gdcc_object_is_live(PROBE_FREED_ID)) {
+                        return 42;
+                    }
+                    if (!gdcc_object_is_null(0) || !gdcc_object_is_null(PROBE_FREED_ID) || gdcc_object_is_null(PROBE_LIVE_ID)) {
+                        return 43;
+                    }
+
+                    if (!gdcc_object_live_ptrs_equal(NULL, NULL)) {
+                        return 50;
+                    }
+                    if (gdcc_object_live_ptrs_equal((GDExtensionObjectPtr)(uintptr_t)0x1, NULL)) {
+                        return 51;
+                    }
+                    if (!gdcc_object_live_ptrs_equal((GDExtensionObjectPtr)(uintptr_t)0x1, (GDExtensionObjectPtr)(uintptr_t)0x1)) {
+                        return 52;
+                    }
+
+                    if (gdcc_object_id_from_raw(NULL) != 0) {
+                        return 60;
+                    }
+                    if (gdcc_object_id_from_raw((GDExtensionObjectPtr)(uintptr_t)0x1) != PROBE_LIVE_ID) {
+                        return 61;
+                    }
+
+                    if (!gdcc_object_is_null_raw_and_id(NULL, 0)) {
+                        return 70;
+                    }
+                    if (!gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)(uintptr_t)0x1, 0)) {
+                        return 71;
+                    }
+                    if (!gdcc_object_is_null_raw_and_id(NULL, PROBE_LIVE_ID)) {
+                        return 72;
+                    }
+                    if (!gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)(uintptr_t)0xdead, PROBE_FREED_ID)) {
+                        return 73;
+                    }
+                    if (gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)(uintptr_t)0xa11ce, PROBE_LIVE_ID)) {
+                        return 74;
+                    }
+                    const int db_calls_before_ref_null = probe_object_db_calls;
+                    if (gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)(uintptr_t)0x7efc, PROBE_REF_ID)) {
+                        return 75;
+                    }
+                    if (probe_object_db_calls != db_calls_before_ref_null) {
+                        return 76;
+                    }
+
+                    return 0;
+                }
+                """);
+
+        var gdccIncludeDir = Path.of("src/main/c/codegen/include_451/gdcc").toAbsolutePath().normalize();
+        var probeObject = compileObject(
+                zig,
+                source,
+                List.of("-I" + gdccIncludeDir),
+                tempDir.resolve("object_id_helper_probe.o")
+        );
+        assertEquals(0, probeObject.exitCode(), probeObject::diagnostic);
+        var bindingObject = compileObject(
+                zig,
+                Path.of("src/main/c/codegen/include_451/godot/godot_binding.c"),
+                List.of(),
+                tempDir.resolve("godot_binding.o")
+        );
+        assertEquals(0, bindingObject.exitCode(), bindingObject::diagnostic);
+
+        var executable = tempDir.resolve("object_id_helper_probe");
+        var linked = linkExecutable(zig, List.of(probeObject.outputPath(), bindingObject.outputPath()), executable);
+        assertEquals(0, linked.exitCode(), linked::diagnostic);
+
+        var execution = runExecutable(executable);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+    }
+
     private static CompileResult compileObject(
             Path zig,
             Path source,
