@@ -23,9 +23,9 @@ already exists, otherwise use the project's own `compiler-cache` directory.
     - `Class_object_ptr` must be the generated helper for the static type of `obj`.
   - `godot_object_from_gdcc_object_ptr` is deprecated and must not be used in new or migrated code paths.
   - Convert from Godot object pointer using `gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr)`.
-  - `Variant` can be converted to/from GDCC object types using `gdcc_new_Variant_with_gdcc_Object(obj)` and `godot_new_gdcc_Object_with_Variant`.
-    - `gdcc_new_Variant_with_gdcc_Object(obj)` receives a raw GDCC wrapper pointer, selects the generated `<Class>_object_ptr` helper with `_Generic`, and performs the GDCC -> Godot pointer conversion internally.
-    - Do not pre-convert the argument with `gdcc_object_to_godot_object_ptr(...)` before passing it to this macro.
+  - Object values are internal per-type fat pointers (`gdcc_<Type>_fat_ptr`). Pack/unpack with Variant via
+    `<Type>_fat_ptr_to_variant` / `<Type>_fat_ptr_from_variant`. The legacy `gdcc_new_Variant_with_gdcc_Object` macro
+    was removed in Phase 4.
 - `godot_float` is usually a typedef for `double`, but it should always be used as `godot_float` for compatibility.
 - The C backend supports only Godot `float_64` ABI: 64-bit pointers with single-precision `real_t`.
   `REAL_T_IS_DOUBLE` and 32-bit Godot builds are outside the supported target matrix.
@@ -156,10 +156,15 @@ already exists, otherwise use the project's own `compiler-cache` directory.
 ### Global Helper Raw Pointer Contract
 
 - `CBodyBuilder#checkGlobalFuncRequireGodotRawPtr` is the single gate for global C helper calls whose object arguments must be Godot raw object pointers.
+- After Phase 4, the gate uses:
+  - an explicit allowlist (`gdcc_object_from_godot_object_ptr`, `gdcc_object_is_null_raw_and_id`);
+  - a temporary `godot_*` prefix backlog for generated Godot wrappers (migration target: structured callee metadata).
+- Generated `gdcc_eval_*` operator evaluator helpers accept fat-pointer object operands/returns and lower to raw slots only inside the helper body. They must NOT be treated as raw-ABI callees.
 - Object lifecycle helpers (`own_object` / `release_object` / `try_own_object` / `try_release_object` / `try_destroy_object`) do NOT go through this gate or `callVoid`. They are emitted by `emitObjectLifecycleCall` / `ownOrTryOwn` / `releaseOrTryRelease`, which pass the validated live raw pointer plus (for the `try_*` variants) the fat pointer's `instance_id`.
-- If a new helper is defined to accept `GDExtensionObjectPtr` (for example `gdcc_cmp_object`), add its function name to `checkGlobalFuncRequireGodotRawPtr`.
+- If a new non-`godot_*` helper is defined to accept `GDExtensionObjectPtr`, add its exact function name to the explicit allowlist (do not invent new name-prefix special cases).
 - Instruction generators should pass object arguments as regular `valueOfVar(...)` values and let `CBodyBuilder` handle pointer conversion centrally.
 - Do not duplicate per-generator object pointer normalization helpers for this case.
+- `gdcc_cmp_object` was removed; production object equality uses C1 normalized raw comparison.
 
 ### Backend-owned Runtime Writeback Helper
 

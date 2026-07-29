@@ -82,13 +82,10 @@ typedef struct <@lambdaCaptureName classDef func/> {
 
 </#list>
 
-<#if module.classDefs?size gt 0>
-#define gdcc_new_Variant_with_gdcc_Object(obj) godot_new_Variant_with_Object(gdcc_object_to_godot_object_ptr((obj), _Generic((obj), <#list module.classDefs as classDef>${classDef.name}*: ${classDef.name}_object_ptr<#if classDef_has_next>, </#if></#list>)))
-</#if>
-
 <#assign operatorEvaluatorHelperSpecs = helper.collectOperatorEvaluatorHelperSpecs(module)>
 <#if operatorEvaluatorHelperSpecs?size gt 0>
 // Operator evaluator helpers
+// Internal signatures use fat-pointer object values; Godot's evaluator ABI still takes raw object pointer slots.
 <#list operatorEvaluatorHelperSpecs as spec>
 static inline ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnType)} ${spec.functionName}(
     ${helper.renderOperatorEvaluatorHelperTypeInC(spec.leftType)} left<#if !spec.unary>,
@@ -106,14 +103,17 @@ static inline ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnTyp
             return ${helper.renderDefaultValueExprInC(spec.returnType)};
         }
     }
+    ${helper.renderOperatorEvaluatorObjectRawSlotDecl(spec.leftType, "left")}<#if !spec.unary>${helper.renderOperatorEvaluatorObjectRawSlotDecl(spec.rightType, "right")}</#if>
     // Operator evaluators assign into an existing carrier; destroyable returns must start initialized.
-    ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnType)} result = { 0 };
+    // Object returns (if any) use a raw carrier then ownership-neutral _from_raw. Live production paths
+    // today only need object operands (e.g. String in Object); object return is defensive for metadata.
+    ${helper.renderOperatorEvaluatorResultCarrierTypeInC(spec.returnType)} result = { 0 };
     evaluator(
         ${helper.renderOperatorEvaluatorArgExpr(spec.leftType, "left")},
         <#if spec.unary>NULL<#else>${helper.renderOperatorEvaluatorArgExpr(spec.rightType, "right")}</#if>,
         &result
     );
-    return result;
+    return ${helper.renderOperatorEvaluatorReturnExpr(spec.returnType, "result")};
 }
 </#list>
 </#if>

@@ -317,10 +317,8 @@ class CallMethodInsnGenTest {
                 List.of(hostClass, baseClass, childClass, peerClass)
         );
         assertTrue(body.contains("godot_Object_call(gdcc_BaseWorker_fat_ptr_live_object($baseRef), GD_STATIC_SN(u8\"child_only_consume_peer\")"), body);
-        assertTrue(
-                body.contains("gdcc_PeerWorker_fat_ptr_to_variant($peer)") || body.contains("gdcc_new_Variant_with_gdcc_Object($peer)"),
-                body
-        );
+        assertTrue(body.contains("gdcc_PeerWorker_fat_ptr_to_variant($peer)"), body);
+        assertFalse(body.contains("gdcc_new_Variant_with_gdcc_Object("), body);
         assertFalse(body.contains("godot_Variant_call("), body);
         assertFalse(body.contains("gdcc_object_to_godot_object_ptr($baseRef"), body);
     }

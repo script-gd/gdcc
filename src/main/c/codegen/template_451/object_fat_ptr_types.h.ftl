@@ -81,7 +81,7 @@ static inline ${spec.fatPtrTypeName} ${spec.fatPtrTypeName}_from_variant(const g
 /// UNKNOWN checks the ObjectID reference bit at runtime.
 static inline GDExtensionObjectPtr ${spec.fatPtrTypeName}_live_object(${spec.fatPtrTypeName} value) {
 <#if spec.refCountedStatus.name() == "YES">
-    if (value.instance_id == 0 || value.ptr == NULL) {
+    if (unlikely(value.instance_id == 0 || value.ptr == NULL)) {
         return NULL;
     }
 <#if spec.kind.name() == "GDCC">
@@ -92,11 +92,11 @@ static inline GDExtensionObjectPtr ${spec.fatPtrTypeName}_live_object(${spec.fat
 <#elseif spec.refCountedStatus.name() == "NO">
     return gdcc_object_live_ptr(value.instance_id);
 <#else>
-    if (value.instance_id == 0) {
+    if (unlikely(value.instance_id == 0)) {
         return NULL;
     }
     if (gdcc_object_id_is_ref_counted(value.instance_id)) {
-        if (value.ptr == NULL) {
+        if (unlikely(value.ptr == NULL)) {
             return NULL;
         }
 <#if spec.kind.name() == "GDCC">

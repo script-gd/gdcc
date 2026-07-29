@@ -10,6 +10,7 @@ import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
+import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatVectorType;
@@ -35,6 +36,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -943,5 +945,101 @@ class CGenHelperTest {
                 "GD_STATIC_SN(u8\"RuntimeOuter__sub__Worker\")",
                 helper.renderTypedDictionaryGuardClassNameExpr(typedDictionary, "value")
         );
+    }
+
+    @Test
+    @DisplayName("operator evaluator helper types use fat pointers for object operands")
+    void operatorEvaluatorHelperTypesUseFatPointersForObjects() {
+        var engineObject = new GdObjectType("Node");
+        var gdccObject = new GdObjectType("MyChild");
+
+        assertEquals("gdcc_Node_fat_ptr", helper.renderOperatorEvaluatorHelperTypeInC(engineObject));
+        assertEquals("gdcc_MyChild_fat_ptr", helper.renderOperatorEvaluatorHelperTypeInC(gdccObject));
+        assertEquals("gdcc_Node_fat_ptr", helper.renderOperatorEvaluatorHelperReturnTypeInC(engineObject));
+        assertEquals("godot_int", helper.renderOperatorEvaluatorHelperTypeInC(GdIntType.INT));
+        assertEquals("godot_String*", helper.renderOperatorEvaluatorHelperTypeInC(GdStringType.STRING));
+    }
+
+    @Test
+    @DisplayName("operator evaluator lowers fat object operands to temporary raw slots")
+    void operatorEvaluatorLowersObjectOperandsToRawSlots() {
+        var object = new GdObjectType("Node");
+
+        assertEquals(
+                "GDExtensionObjectPtr left_raw = gdcc_Node_fat_ptr_live_object(left);\n",
+                helper.renderOperatorEvaluatorObjectRawSlotDecl(object, "left")
+        );
+        assertEquals("&left_raw", helper.renderOperatorEvaluatorArgExpr(object, "left"));
+        assertEquals("", helper.renderOperatorEvaluatorObjectRawSlotDecl(GdIntType.INT, "left"));
+        assertEquals("&left", helper.renderOperatorEvaluatorArgExpr(GdIntType.INT, "left"));
+        assertEquals("left", helper.renderOperatorEvaluatorArgExpr(GdStringType.STRING, "left"));
+    }
+
+    @Test
+    @DisplayName("operator evaluator object returns capture raw carrier into fat pointer (defensive)")
+    void operatorEvaluatorObjectReturnsCaptureRawIntoFat() {
+        // Defensive: current extension_api has no Object-returning operators; still anchor the ABI shape.
+        var engineObject = new GdObjectType("Node");
+        var gdccObject = new GdObjectType("MyChild");
+
+        assertEquals("GDExtensionObjectPtr", helper.renderOperatorEvaluatorResultCarrierTypeInC(engineObject));
+        assertEquals("GDExtensionObjectPtr", helper.renderOperatorEvaluatorResultCarrierTypeInC(gdccObject));
+        assertNotEquals(
+                helper.renderOperatorEvaluatorHelperReturnTypeInC(engineObject),
+                helper.renderOperatorEvaluatorResultCarrierTypeInC(engineObject),
+                "carrier must stay raw while the helper return type is fat"
+        );
+        assertEquals(
+                "gdcc_Node_fat_ptr_from_raw((GDExtensionObjectPtr)(result))",
+                helper.renderOperatorEvaluatorReturnExpr(engineObject, "result")
+        );
+        assertEquals(
+                "gdcc_MyChild_fat_ptr_from_raw((GDExtensionObjectPtr)(result))",
+                helper.renderOperatorEvaluatorReturnExpr(gdccObject, "result")
+        );
+        // Non-object return: no from_raw wrap.
+        assertEquals("godot_bool", helper.renderOperatorEvaluatorResultCarrierTypeInC(GdBoolType.BOOL));
+        assertEquals("result", helper.renderOperatorEvaluatorReturnExpr(GdBoolType.BOOL, "result"));
+        assertEquals("godot_String", helper.renderOperatorEvaluatorResultCarrierTypeInC(GdStringType.STRING));
+        assertEquals("result", helper.renderOperatorEvaluatorReturnExpr(GdStringType.STRING, "result"));
+    }
+
+    @Test
+    @DisplayName("operator evaluator live path: object operand + bool return (no return from_raw)")
+    void operatorEvaluatorObjectOperandBoolReturnDoesNotFromRawReturn() {
+        // Production-reachable shape: e.g. String in Object / bool and Object → bool.
+        var object = new GdObjectType("Object");
+
+        assertEquals("gdcc_Object_fat_ptr", helper.renderOperatorEvaluatorHelperTypeInC(object));
+        assertEquals(
+                "GDExtensionObjectPtr right_raw = gdcc_Object_fat_ptr_live_object(right);\n",
+                helper.renderOperatorEvaluatorObjectRawSlotDecl(object, "right")
+        );
+        assertEquals("&right_raw", helper.renderOperatorEvaluatorArgExpr(object, "right"));
+        assertEquals("godot_bool", helper.renderOperatorEvaluatorHelperReturnTypeInC(GdBoolType.BOOL));
+        assertEquals("godot_bool", helper.renderOperatorEvaluatorResultCarrierTypeInC(GdBoolType.BOOL));
+        assertEquals("result", helper.renderOperatorEvaluatorReturnExpr(GdBoolType.BOOL, "result"));
+        assertFalse(helper.renderOperatorEvaluatorReturnExpr(GdBoolType.BOOL, "result").contains("_from_raw"));
+    }
+
+    @Test
+    @DisplayName("unknown object still fails fast in operator evaluator renderers")
+    void operatorEvaluatorUnknownObjectFailsFast() {
+        var unknown = new GdObjectType("NotARegisteredType");
+
+        var typeEx = assertThrows(IllegalStateException.class,
+                () -> helper.renderOperatorEvaluatorHelperTypeInC(unknown));
+        assertTrue(typeEx.getMessage().contains("NotARegisteredType")
+                || typeEx.getMessage().toLowerCase().contains("unknown"), typeEx.getMessage());
+
+        var slotEx = assertThrows(IllegalStateException.class,
+                () -> helper.renderOperatorEvaluatorObjectRawSlotDecl(unknown, "left"));
+        assertTrue(slotEx.getMessage().contains("NotARegisteredType")
+                || slotEx.getMessage().toLowerCase().contains("unknown"), slotEx.getMessage());
+
+        var returnEx = assertThrows(IllegalStateException.class,
+                () -> helper.renderOperatorEvaluatorReturnExpr(unknown, "result"));
+        assertTrue(returnEx.getMessage().contains("NotARegisteredType")
+                || returnEx.getMessage().toLowerCase().contains("unknown"), returnEx.getMessage());
     }
 }

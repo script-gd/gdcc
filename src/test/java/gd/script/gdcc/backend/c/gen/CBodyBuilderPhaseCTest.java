@@ -1359,13 +1359,43 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("GDCC object arg should stay GDCC ptr for gdcc_new_Variant_with_gdcc_Object")
-        void testGdccObjectArgNotConvertedForGdccVariantPackFunc() {
+        @DisplayName("gdcc_eval_* helpers accept fat pointers (not raw ABI) after Phase 4")
+        void testGdccEvalHelperKeepsFatPointerArgument() {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
 
-            builder.callVoid("gdcc_new_Variant_with_gdcc_Object", List.of(builder.valueOfVar(gdccVar)));
+            builder.callVoid("gdcc_eval_binary_in_object_array_to_bool", List.of(builder.valueOfVar(gdccVar)));
 
-            assertEquals("gdcc_new_Variant_with_gdcc_Object($myObj);\n", builder.build());
+            var result = builder.build();
+            assertEquals("gdcc_eval_binary_in_object_array_to_bool($myObj);\n", result);
+            assertFalse(result.contains("_live_object("));
+        }
+
+        @Test
+        @DisplayName("explicit raw-ABI helper still converts fat pointer to live raw")
+        void testExplicitRawAbiHelperConvertsToLiveObject() {
+            var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+
+            builder.callVoid("gdcc_object_from_godot_object_ptr", List.of(builder.valueOfVar(gdccVar)));
+
+            assertEquals("gdcc_object_from_godot_object_ptr(gdcc_MyGdccClass_fat_ptr_live_object($myObj));\n",
+                    builder.build());
+        }
+
+        @Test
+        @DisplayName("gdcc_eval_* object return is already fat (no from_raw capture)")
+        void testGdccEvalObjectReturnIsFatNotRawProducer() {
+            var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+
+            builder.callAssign(
+                    builder.targetOfVar(target),
+                    "gdcc_eval_binary_add_something",
+                    new GdObjectType("MyGdccClass"),
+                    List.of()
+            );
+
+            var result = builder.build();
+            assertTrue(result.contains("$myObj = gdcc_eval_binary_add_something();"), result);
+            assertFalse(result.contains("_from_raw("), result);
         }
 
         @Test

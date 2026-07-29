@@ -85,9 +85,12 @@ class CallMethodInsnGenEngineInheritanceTest {
                 "Base-typed GDCC receiver should use OBJECT_DYNAMIC dispatch with fat live_object conversion."
         );
         assertTrue(
-                entrySource.contains("gdcc_GDInheritancePeerWorker_fat_ptr_to_variant($peer)")
-                        || entrySource.contains("gdcc_new_Variant_with_gdcc_Object($peer)"),
-                "OBJECT_DYNAMIC arg packing should use fat to_variant (or legacy gdcc_new_Variant_with_gdcc_Object).\n" + entrySource
+                entrySource.contains("gdcc_GDInheritancePeerWorker_fat_ptr_to_variant($peer)"),
+                "OBJECT_DYNAMIC arg packing should use fat to_variant.\n" + entrySource
+        );
+        assertFalse(
+                entrySource.contains("gdcc_new_Variant_with_gdcc_Object("),
+                "Legacy gdcc_new_Variant_with_gdcc_Object must not appear after Phase 4 cleanup."
         );
         assertFalse(
                 entrySource.contains("gdcc_object_to_godot_object_ptr("),

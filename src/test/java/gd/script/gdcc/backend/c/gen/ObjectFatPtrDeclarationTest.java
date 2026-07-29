@@ -459,6 +459,7 @@ class ObjectFatPtrDeclarationTest {
             assertTrue(liveObjectStart >= 0, header);
             var liveObject = header.substring(liveObjectStart, liveObjectEnd);
 
+            assertTrue(liveObject.contains("if (unlikely(value.instance_id == 0 || value.ptr == NULL))"), liveObject);
             assertTrue(liveObject.contains("return GdccWorker_object_ptr(value.ptr);"), liveObject);
             assertFalse(liveObject.contains("gdcc_object_live_ptr(value.instance_id)"), liveObject);
         }

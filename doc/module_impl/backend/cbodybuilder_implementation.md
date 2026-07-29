@@ -120,11 +120,14 @@
 
 ### 3.2 helper 宏语义
 
-- `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)` 是当前推荐路径，且 NULL-safe。
+- `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)` 仍是 wrapper 指针边界宏，且 NULL-safe。
 - `godot_object_from_gdcc_object_ptr(obj)` 已废弃，不得用于新增或迁移后的路径。
-- `gdcc_new_Variant_with_gdcc_Object(obj)` 已复用上述 helper，因此打包 Variant 时不应额外手动转换。
-  - 该宏接收原始 GDCC wrapper 指针，并在宏内部选择生成的 `<Class>_object_ptr(...)` helper。
-  - 调用侧不得先把参数手工转换成 Godot raw object pointer。
+- 内部 object 值是 per-type fat pointer。Variant pack/unpack 使用 `<Type>_fat_ptr_to_variant` /
+  `<Type>_fat_ptr_from_variant`。
+- 已删除的 legacy 路径（阶段 4）：
+  - `gdcc_new_Variant_with_gdcc_Object` 宏
+  - `gdcc_cmp_object`（equality 走 C1 normalized raw）
+  - `checkGlobalFuncRequireGodotRawPtr` 对 `gdcc_eval_*` 的 name-prefix 特例
 
 ### 3.3 明确不替换的场景
 

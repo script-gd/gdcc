@@ -747,7 +747,7 @@ object equality 比较的是两侧 **equality-normalized raw Godot object pointe
 - 阶段 2 ordinary value 仍为 legacy raw pointer、没有可用 ID 时，production lowering 只能退化为 `raw == NULL`；
   完整 freed 检测推迟到阶段 3 fat pointer cutover 后接入
 
-`gdcc_cmp_object(...)` 是 legacy helper，不得作为 production equality / nullness 路径；等待阶段 4 清理。
+`gdcc_cmp_object(...)` 是已删除的 legacy helper（阶段 4）；production equality / nullness 不得再依赖它。
 
 ### 10.3 Variant evaluate
 
@@ -957,8 +957,8 @@ per-type conversion/live/Variant helper、upcast helper 和 GDCC `object_ptr` he
 `object_fat_ptr_types.h`，不再生成任何胖指针 helper。`assert_object_live` 已完成 LIR surface 与统一 C 入口，但 ordinary
 production path 仍保持 legacy raw 表示：equality 直接比较 raw pointer；`object_is_null` / object-vs-nil / assert 仅检查
 `raw == NULL`。曾短暂接入的 `*_from_raw` 存活恢复路径已撤回，因其对已释放 raw 调用 `godot_object_get_instance_id` 会崩溃。
-完整 `(raw, id)` null/assert 与 fat-pointer equality materialization 推迟到阶段 3。`gdcc_cmp_object` 保留为 legacy helper，
-等待阶段 4 清理。`RefCountedStatus.UNKNOWN` 的 per-type 模板路径已就绪，当前 collector 对未知类型 fail-fast，
+完整 `(raw, id)` null/assert 与 fat-pointer equality materialization 推迟到阶段 3。`gdcc_cmp_object` 曾保留为 legacy helper，
+已在阶段 4 删除。`RefCountedStatus.UNKNOWN` 的 per-type 模板路径已就绪，当前 collector 对未知类型 fail-fast，
 因此不会生成 UNKNOWN spec；通用 helper 的 reference-bit fast path 由 C behavior test 锚定。
 
 ### 阶段 3：原子 representation cutover
@@ -1146,16 +1146,37 @@ generated C 标记为可运行：
 
 工作：
 
-- 删除 unknown object -> `GDExtensionObjectPtr` fallback。
-- 删除不再使用的 GDCC/raw pointer macro和 name-prefix special cases。
-- 将仍需按 function-name识别的 raw ABI调用列入显式 allowlist并记录迁移 backlog。
-- 更新 backend事实文档。
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| 删除 unknown object -> `GDExtensionObjectPtr` fallback | 已完成（阶段 1/3 已 fail-fast，阶段 4 复核） | `ObjectFatPtrSpec` / characterization 负路径锚定 |
+| 删除 `gdcc_cmp_object` legacy helper | 已完成 | `gdcc_operator.h`；equality 仅走 C1 normalized raw |
+| 删除 `gdcc_new_Variant_with_gdcc_Object` legacy macro | 已完成 | `entry.h.ftl`；pack 统一走 `<Type>_fat_ptr_to_variant` |
+| operator evaluator 内部签名切 fat pointer | 已完成 | `CGenHelper` + `entry.h.ftl`：参数/返回 fat；helper 内 raw slot 降级 |
+| raw ABI 显式 allowlist + prefix backlog | 已完成 | `GLOBAL_FUNCS_REQUIRE_GODOT_RAW_PTR` + `godot_*` backlog；移除 `gdcc_eval_*` 特例 |
+| 更新 backend 事实文档（阶段 4 相关段落） | 已完成 | `gdcc_c_backend.md`、`cbodybuilder_implementation.md`、本计划 |
+| 行为锚定测试 | 已完成 | `CGenHelperTest`、`CBodyBuilderPhaseCTest`、call method 测试 |
+
+后续（非阶段 4 阻塞）：
+
+| 项 | 决策 | 说明 |
+|----|------|------|
+| `godot_*` 前缀 backlog → structured callee metadata | **延后到以后 PR** | 当前 `GODOT_RAW_ABI_PREFIX_BACKLOG` 保持；禁止再堆新 prefix 特例 |
+| evaluator object 返回 `_from_raw` | **保留防御** | 当前 API 无 Object-returning operator；注释 + 单元测试锚定 ABI shape |
+| generated C raw/fat scanner | 待确认 | 见验收表 |
 
 验收：
 
 - internal signatures/fields/locals无裸 object pointer。
 - raw `GDExtensionObjectPtr`只出现在明确 ABI/layout/helper边界。
 - generated C scanner对违规输出 fail-fast。
+
+| 验收项 | 状态 |
+|--------|------|
+| internal 无裸 object pointer | 已满足（codegen fail-fast + characterization） |
+| raw 仅在 ABI/layout/helper 边界 | 已满足（allowlist + 生成边界） |
+| generated C scanner 对违规 fail-fast | **待确认**：当前仅有 binding-wrapper scanner；是否需新增 raw/fat ABI post-gen scanner 见 review（架构项） |
+
+**阶段 4 代码清理状态：已完成（2026-07-29）。** scanner 验收解释待用户确认。更广的“对象值是裸 C 指针”旧叙述全量改写见阶段 5。
 
 ### 阶段 5：关联文档、代码注释与迁移说明同步
 
@@ -1265,7 +1286,7 @@ generated C 标记为可运行：
 - `object_is_null` / object-vs-nil 使用 `gdcc_object_is_null_raw_and_id(raw, id)`；object equality 直接比较 raw pointer。
 - own/release/destroy、Variant pack/unpack 的 liveness 判断允许在 pure/runtime helper 内完成，不要求额外 LIR liveness 指令。
 
-### 14.3 Godot runtime integration
+### 14.3 Godot runtime integration & E2E test
 
 至少增加以下场景：
 

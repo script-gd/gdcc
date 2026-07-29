@@ -105,25 +105,64 @@ public final class CGenHelper {
         return List.copyOf(specsByName.values());
     }
 
+    /// C parameter type of a generated `gdcc_eval_*` helper.
+    /// Object operands are internal fat pointers (by value); non-objects keep their usual ref shape.
     public @NotNull String renderOperatorEvaluatorHelperTypeInC(@NotNull GdType type) {
-        if (type instanceof GdObjectType) {
-            return "GDExtensionObjectPtr";
-        }
         return renderGdTypeRefInC(type);
     }
 
+    /// C return type of a generated `gdcc_eval_*` helper (same as internal storage).
     public @NotNull String renderOperatorEvaluatorHelperReturnTypeInC(@NotNull GdType type) {
+        return renderGdTypeInC(type);
+    }
+
+    /// Declares a local raw object slot when a fat-pointer operand must be lowered to Godot's
+    /// `GDExtensionPtrOperatorEvaluator` ABI (`void*` of a live raw object pointer). Empty for non-objects.
+    public @NotNull String renderOperatorEvaluatorObjectRawSlotDecl(@NotNull GdType type, @NotNull String argName) {
+        if (!(type instanceof GdObjectType objectType)) {
+            return "";
+        }
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        return "GDExtensionObjectPtr " + argName + "_raw = " + fatType + "_live_object(" + argName + ");\n";
+    }
+
+    /// Argument expression passed to `GDExtensionPtrOperatorEvaluator`.
+    /// Object operands pass the address of the temporary raw slot materialised above.
+    public @NotNull String renderOperatorEvaluatorArgExpr(@NotNull GdType type, @NotNull String argName) {
+        if (type instanceof GdObjectType) {
+            return "&" + argName + "_raw";
+        }
+        if (type instanceof GdPrimitiveType) {
+            return "&" + argName;
+        }
+        return argName;
+    }
+
+    /// Local result carrier type for the evaluator out-parameter.
+    /// Godot writes a raw object pointer; the helper then captures it into a fat pointer return.
+    ///
+    /// Defensive: Godot 4.5.1 `extension_api` has no builtin operator with `return_type: Object`
+    /// (Object appears only as a right operand; returns are bool/String). Object/object `==`/`!=` also
+    /// bypass evaluators via `OBJECT_COMPARISON`. This branch stays so a future metadata surface
+    /// keeps the same raw-carrier → ownership-neutral `_from_raw` shape as other raw producers.
+    public @NotNull String renderOperatorEvaluatorResultCarrierTypeInC(@NotNull GdType type) {
         if (type instanceof GdObjectType) {
             return "GDExtensionObjectPtr";
         }
         return renderGdTypeInC(type);
     }
 
-    public @NotNull String renderOperatorEvaluatorArgExpr(@NotNull GdType type, @NotNull String argName) {
-        if (type instanceof GdPrimitiveType || type instanceof GdObjectType) {
-            return "&" + argName;
+    /// Converts the evaluator result carrier into the helper return expression.
+    /// See {@link #renderOperatorEvaluatorResultCarrierTypeInC} for why the object branch is kept.
+    public @NotNull String renderOperatorEvaluatorReturnExpr(@NotNull GdType type, @NotNull String resultName) {
+        if (type instanceof GdObjectType objectType) {
+            return renderFatPtrFromRawExpr(resultName, objectType);
         }
-        return argName;
+        return resultName;
+    }
+
+    private @NotNull String renderFatPtrFromRawExpr(@NotNull String rawCode, @NotNull GdObjectType objectType) {
+        return renderObjectFatPtrStorageType(objectType) + "_from_raw((GDExtensionObjectPtr)(" + rawCode + "))";
     }
 
     /// Context-aware default/zero expression for hard-fail returns and null slots.
