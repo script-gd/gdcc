@@ -156,6 +156,7 @@ already exists, otherwise use the project's own `compiler-cache` directory.
 ### Global Helper Raw Pointer Contract
 
 - `CBodyBuilder#checkGlobalFuncRequireGodotRawPtr` is the single gate for global C helper calls whose object arguments must be Godot raw object pointers.
+- Object lifecycle helpers (`own_object` / `release_object` / `try_own_object` / `try_release_object` / `try_destroy_object`) do NOT go through this gate or `callVoid`. They are emitted by `emitObjectLifecycleCall` / `ownOrTryOwn` / `releaseOrTryRelease`, which pass the validated live raw pointer plus (for the `try_*` variants) the fat pointer's `instance_id`.
 - If a new helper is defined to accept `GDExtensionObjectPtr` (for example `gdcc_cmp_object`), add its function name to `checkGlobalFuncRequireGodotRawPtr`.
 - Instruction generators should pass object arguments as regular `valueOfVar(...)` values and let `CBodyBuilder` handle pointer conversion centrally.
 - Do not duplicate per-generator object pointer normalization helpers for this case.
@@ -328,8 +329,9 @@ Object category rules:
   does not upgrade it; the later slot write / return publish decides whether retain is needed.
 - When construct a `Variant` from an object, the new `Variant` owns the object, so you do not need to call `try_own_object` or `own_object` again.
 - `try_own_object`, `try_release_object` are safe to use on non-ref-counted objects, they will do nothing in that case, but always use non-try version if you are 100% sure the object is ref-counted for better performance.
-- `try_own_object`, `try_release_object`, `own_object` and `release_object` receives only Godot object ptr but not GDCC object ptr, so remember to pass helper-converted Godot object ptr instead of raw `gdcc_object`.
-- `try_destroy_object` is used to destroy an object that we own, if an object is ref-counted it is the same as `try_release_object`, if it is not ref-counted, it will be actually destroyed, so always remember to check the type and use it properly.
+- The `try_*` helpers decide RefCounted-ness via the ObjectID reference bit (bit 63), not a ClassDB class-name query. They take the validated live Godot object ptr plus the fat pointer's cached `instance_id`: `try_own_object(<T>_fat_ptr_live_object(v), v.instance_id)`. The ID must come from the fat pointer, never recovered from a possibly-freed raw ptr.
+- `own_object` and `release_object` receive only the Godot object ptr (single argument); the `try_*` variants additionally receive the `instance_id`. None of them accepts a GDCC object ptr, so remember to pass helper-converted Godot object ptr instead of raw `gdcc_object`.
+- `try_destroy_object` is used to destroy an object that we own, if an object is ref-counted it is the same as `try_release_object`, if it is not ref-counted, it will be actually destroyed. It also takes `(live ptr, instance_id)`; the reference bit selects release vs destroy.
 - Call lifecycle functions on `NULL` is safe, they will do nothing in that case, so you do not need to check if the pointer is `NULL` before calling lifecycle functions.
 - Object return publishing is modeled as writing `_return_val`:
   - borrowed source -> retain at `_return_val`

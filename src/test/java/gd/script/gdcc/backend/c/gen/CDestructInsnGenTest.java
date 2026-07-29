@@ -127,7 +127,7 @@ public class CDestructInsnGenTest {
         var codegen = newCodegen(module, List.of(workerClass), api);
 
         var body = codegen.generateFuncBody(workerClass, func);
-        assertTrue(body.contains("try_destroy_object(gdcc_Node_fat_ptr_live_object($node));"));
+        assertTrue(body.contains("try_destroy_object(gdcc_Node_fat_ptr_live_object($node), $node.instance_id);"));
     }
 
     @Test

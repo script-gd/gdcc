@@ -112,7 +112,8 @@
 
 ### 3.1 统一约束
 
-- 调用 GDExtension API（如 `godot_*`、`*own_object`、`*release_object`、`try_destroy_object`）时，若参数是 GDCC 对象指针，必须转换为 Godot raw ptr。
+- 调用 GDExtension API（如 `godot_*`）时，若参数是 GDCC 对象指针，必须转换为 Godot raw ptr。
+- 对象生命周期 helper（`own_object` / `release_object` / `try_own_object` / `try_release_object` / `try_destroy_object`）不经 `callVoid` / `checkGlobalFuncRequireGodotRawPtr`，统一由 `emitObjectLifecycleCall` / `ownOrTryOwn` / `releaseOrTryRelease` 拼接 validated live raw ptr；`try_*` 变体额外传 fat pointer 的 `instance_id`。
 - 代码生成侧禁止手写 `->_object` 来做“调用侧转换”；统一走：
   - `CBodyBuilder#toGodotObjectPtr(...)`
   - `gdcc_object_to_godot_object_ptr(...)`（唯一允许的 GDCC -> Godot 路径）

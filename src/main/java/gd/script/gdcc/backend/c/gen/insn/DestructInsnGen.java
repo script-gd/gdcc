@@ -81,6 +81,6 @@ public final class DestructInsnGen implements CInsnGen<DestructInsn> {
             case RefCountedStatus.UNKNOWN -> "try_release_object";
             case RefCountedStatus.NO -> "try_destroy_object";
         };
-        bodyBuilder.callVoid(cleanupFunction, List.of(bodyBuilder.valueOfVar(variable)));
+        bodyBuilder.emitObjectLifecycleCall(cleanupFunction, bodyBuilder.valueOfVar(variable));
     }
 }

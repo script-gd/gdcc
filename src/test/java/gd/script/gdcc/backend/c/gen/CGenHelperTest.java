@@ -677,13 +677,31 @@ class CGenHelperTest {
                 "release_object(gdcc_MyChild_fat_ptr_live_object(value));",
                 helper.renderCallWrapperOwnedObjectReturnConsumeStmt(new GdObjectType("MyChild"), "value")
         );
-        // Exact Object is UNKNOWN: may hold RC instances, so consume uses try_release.
+        // Exact Object is UNKNOWN: may hold RC instances, so consume uses try_release with the
+        // cached instance_id driving the runtime reference-bit check.
         assertEquals(
-                "try_release_object(gdcc_Object_fat_ptr_live_object(value));",
+                "try_release_object(gdcc_Object_fat_ptr_live_object(value), value.instance_id);",
                 helper.renderCallWrapperOwnedObjectReturnConsumeStmt(new GdObjectType("Object"), "value")
         );
         assertEquals("", helper.renderCallWrapperOwnedObjectReturnConsumeStmt(new GdObjectType("Node"), "value"));
         assertEquals("", helper.renderCallWrapperOwnedObjectReturnConsumeStmt(GdStringType.STRING, "value"));
+    }
+
+    @Test
+    @DisplayName("renderEngineMethodHelperVarargObjectReturnOwnStmt should own RefCounted and try-own Object")
+    void renderEngineMethodHelperVarargObjectReturnOwnStmtShouldOwnRefCountedReturnsOnly() {
+        assertEquals(
+                "own_object(gdcc_RefCounted_fat_ptr_live_object(result));",
+                helper.renderEngineMethodHelperVarargObjectReturnOwnStmt(new GdObjectType("RefCounted"), "result")
+        );
+        // Exact Object is UNKNOWN: may hold RC instances, so the vararg return own uses try_own with
+        // the cached instance_id driving the runtime reference-bit check.
+        assertEquals(
+                "try_own_object(gdcc_Object_fat_ptr_live_object(result), result.instance_id);",
+                helper.renderEngineMethodHelperVarargObjectReturnOwnStmt(new GdObjectType("Object"), "result")
+        );
+        assertEquals("", helper.renderEngineMethodHelperVarargObjectReturnOwnStmt(new GdObjectType("Node"), "result"));
+        assertEquals("", helper.renderEngineMethodHelperVarargObjectReturnOwnStmt(GdStringType.STRING, "result"));
     }
 
     @Test

@@ -14,7 +14,6 @@ import gd.script.gdcc.type.GdObjectType;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.EnumSet;
-import java.util.List;
 
 public final class OwnReleaseObjectInsnGen implements CInsnGen<ConstructionInstruction> {
     @Override
@@ -37,7 +36,7 @@ public final class OwnReleaseObjectInsnGen implements CInsnGen<ConstructionInstr
         if (callee == null) {
             return;
         }
-        bodyBuilder.callVoid(callee, List.of(bodyBuilder.valueOfVar(objectVar)));
+        bodyBuilder.emitObjectLifecycleCall(callee, bodyBuilder.valueOfVar(objectVar));
     }
 
     /// Own/release instructions are never auto-injected by backend, provenance should reflect that.

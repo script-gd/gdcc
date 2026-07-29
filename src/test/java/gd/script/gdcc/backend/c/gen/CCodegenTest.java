@@ -2368,7 +2368,7 @@ public class CCodegenTest {
         );
         assertContainsAll(childConstructorBody, "GDParentNode_class_constructor(&self->_super);");
         assertContainsAll(childDestructorBody, "GDParentNode_class_destructor(&self->_super);");
-        assertContainsAll(cCode, "try_release_object(gdcc_GDParentNode_fat_ptr_live_object(self->peer));");
+        assertContainsAll(cCode, "try_release_object(gdcc_GDParentNode_fat_ptr_live_object(self->peer), self->peer.instance_id);");
 
         assertEquals("Node", resolveConstructTarget(cCode, "GDParentNode"));
         assertEquals("Node", resolveConstructTarget(cCode, "GDChildNode"));

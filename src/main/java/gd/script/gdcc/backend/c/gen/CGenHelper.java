@@ -586,7 +586,7 @@ public final class CGenHelper {
         var liveExpr = fatType + "_live_object(" + resultExpr + ")";
         return switch (context.classRegistry().getRefCountedStatus(objectType)) {
             case YES -> "own_object(" + liveExpr + ");";
-            case UNKNOWN -> "try_own_object(" + liveExpr + ");";
+            case UNKNOWN -> "try_own_object(" + liveExpr + ", " + resultExpr + ".instance_id);";
             case NO -> "";
         };
     }
@@ -608,7 +608,7 @@ public final class CGenHelper {
         var liveExpr = fatType + "_live_object(" + resultExpr + ")";
         return switch (context.classRegistry().getRefCountedStatus(objectType)) {
             case YES -> "release_object(" + liveExpr + ");";
-            case UNKNOWN -> "try_release_object(" + liveExpr + ");";
+            case UNKNOWN -> "try_release_object(" + liveExpr + ", " + resultExpr + ".instance_id);";
             case NO -> "";
         };
     }

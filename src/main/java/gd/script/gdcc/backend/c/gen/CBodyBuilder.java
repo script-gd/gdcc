@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 import static gd.script.gdcc.util.StringUtil.escapeStringLiteral;
@@ -1263,12 +1264,35 @@ public final class CBodyBuilder {
 
     /// Emits code to release ownership of an object fat pointer via its validated live raw pointer.
     private void emitReleaseObject(@NotNull String fatPtrCode, @NotNull GdObjectType objType) {
-        releaseOrTryRelease(renderLiveGodotObjectPtr(fatPtrCode, objType), objType);
+        releaseOrTryRelease(fatPtrCode, objType);
     }
 
     /// Emits code to own an object fat pointer via its validated live raw pointer.
     private void emitOwnObject(@NotNull String fatPtrCode, @NotNull GdObjectType objType) {
-        ownOrTryOwn(renderLiveGodotObjectPtr(fatPtrCode, objType), objType);
+        ownOrTryOwn(fatPtrCode, objType);
+    }
+
+    /// `try_*` lifecycle helpers take a second `instance_id` argument that drives the runtime
+    /// RefCounted reference-bit check; the precise (`own_object` / `release_object`) variants already
+    /// know the object is RefCounted and stay single-argument.
+    private static final Set<String> TWO_ARG_LIFECYCLE_HELPERS =
+            Set.of("try_own_object", "try_release_object", "try_destroy_object");
+
+    /// Emits a named object lifecycle helper (`own_object` / `try_own_object` / `release_object` /
+    /// `try_release_object` / `try_destroy_object`) for an object fat pointer value. The validated
+    /// live raw pointer is the action target; the fat pointer's cached `instance_id` is appended for
+    /// the two-argument `try_*` variants. Used by the explicit lifecycle instruction generators.
+    public void emitObjectLifecycleCall(@NotNull String funcName, @NotNull ValueRef value) {
+        if (!(value.type() instanceof GdObjectType objType)) {
+            throw invalidInsn("Object lifecycle helper '" + funcName + "' requires an object value, but got '" +
+                    value.type().getTypeName() + "'");
+        }
+        var fatPtrCode = value.generateCode();
+        out.append(funcName).append("(").append(renderLiveGodotObjectPtr(fatPtrCode, objType));
+        if (TWO_ARG_LIFECYCLE_HELPERS.contains(funcName)) {
+            out.append(", ").append(fatPtrCode).append(".instance_id");
+        }
+        out.append(");\n");
     }
 
     /// Converts an object value expression into the target fat-pointer storage type.
@@ -1299,24 +1323,32 @@ public final class CBodyBuilder {
     }
 
     /// Emits own_object or try_own_object based on RefCounted status.
-    private void ownOrTryOwn(@NotNull String godotPtrCode, @NotNull GdObjectType objType) {
+    /// The validated live raw pointer is the action target; the fat pointer's cached instance_id
+    /// drives the runtime RefCounted reference-bit check for the UNKNOWN (`try_`) variant.
+    private void ownOrTryOwn(@NotNull String fatPtrCode, @NotNull GdObjectType objType) {
         var status = classRegistry().getRefCountedStatus(objType);
+        var livePtr = renderLiveGodotObjectPtr(fatPtrCode, objType);
         switch (status) {
-            case YES -> out.append("own_object(").append(godotPtrCode).append(");\n");
+            case YES -> out.append("own_object(").append(livePtr).append(");\n");
             case NO -> {
             }
-            case UNKNOWN -> out.append("try_own_object(").append(godotPtrCode).append(");\n");
+            case UNKNOWN -> out.append("try_own_object(").append(livePtr).append(", ")
+                    .append(fatPtrCode).append(".instance_id);\n");
         }
     }
 
     /// Emits release_object or try_release_object based on RefCounted status.
-    private void releaseOrTryRelease(@NotNull String godotPtrCode, @NotNull GdObjectType objType) {
+    /// The validated live raw pointer is the action target; the fat pointer's cached instance_id
+    /// drives the runtime RefCounted reference-bit check for the UNKNOWN (`try_`) variant.
+    private void releaseOrTryRelease(@NotNull String fatPtrCode, @NotNull GdObjectType objType) {
         var status = classRegistry().getRefCountedStatus(objType);
+        var livePtr = renderLiveGodotObjectPtr(fatPtrCode, objType);
         switch (status) {
-            case YES -> out.append("release_object(").append(godotPtrCode).append(");\n");
+            case YES -> out.append("release_object(").append(livePtr).append(");\n");
             case NO -> {
             }
-            case UNKNOWN -> out.append("try_release_object(").append(godotPtrCode).append(");\n");
+            case UNKNOWN -> out.append("try_release_object(").append(livePtr).append(", ")
+                    .append(fatPtrCode).append(".instance_id);\n");
         }
     }
 
@@ -1332,6 +1364,9 @@ public final class CBodyBuilder {
 
     /// Functions that still consume raw Godot object pointers at the call site.
     /// Exact engine helpers (`gdcc_engine_call_*` / `gdcc_engine_callv_*`) are excluded because they accept fat pointers.
+    /// Object lifecycle helpers (`own_object` / `try_*_object` / `release_object` / `try_destroy_object`)
+    /// are not routed through `callVoid`; they are emitted by `emitObjectLifecycleCall` /
+    /// `ownOrTryOwn` / `releaseOrTryRelease`, which also pass the fat pointer's `instance_id`.
     private boolean checkGlobalFuncRequireGodotRawPtr(@NotNull String funcName) {
         if (funcName.equals("gdcc_new_Variant_with_gdcc_Object")) {
             return false;
@@ -1342,9 +1377,7 @@ public final class CBodyBuilder {
         if (funcName.startsWith("godot_")) {
             return true;
         }
-        return funcName.endsWith("own_object") || funcName.endsWith("release_object") ||
-                funcName.equals("try_destroy_object") ||
-                funcName.equals("gdcc_object_from_godot_object_ptr") ||
+        return funcName.equals("gdcc_object_from_godot_object_ptr") ||
                 funcName.equals("gdcc_object_is_null_raw_and_id");
     }
 

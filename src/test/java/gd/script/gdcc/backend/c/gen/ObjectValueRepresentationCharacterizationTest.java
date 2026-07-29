@@ -149,7 +149,7 @@ class ObjectValueRepresentationCharacterizationTest {
 
             assertEquals("", helper.renderCallWrapperOwnedObjectReturnConsumeStmt(ENGINE_NODE, "r"));
             assertEquals(
-                    "try_release_object(gdcc_Object_fat_ptr_live_object(r));",
+                    "try_release_object(gdcc_Object_fat_ptr_live_object(r), r.instance_id);",
                     helper.renderCallWrapperOwnedObjectReturnConsumeStmt(ENGINE_OBJECT, "r")
             );
             assertEquals(

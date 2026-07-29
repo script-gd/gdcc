@@ -184,7 +184,8 @@ void ${classDef.name}_class_destructor(${classDef.name}* self) {
         <#if property.type.destroyable>
             <#if property.type.gdExtensionType.name() == "OBJECT">
                 // Object properties store fat pointers; release the validated live raw Godot object.
-                try_release_object(${helper.renderObjectFatPtrStorageType(property.type)}_live_object(self->${property.name}));
+                // The cached instance_id drives the runtime RefCounted reference-bit check.
+                try_release_object(${helper.renderObjectFatPtrStorageType(property.type)}_live_object(self->${property.name}), self->${property.name}.instance_id);
             <#else>
                 ${helper.renderDestroyFunctionName(property.type)}(&(self->${property.name}));
             </#if>

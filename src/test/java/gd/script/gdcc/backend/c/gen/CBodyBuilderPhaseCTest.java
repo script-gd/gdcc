@@ -1334,14 +1334,14 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("GDCC object arg should expand to validated live Godot raw ptr for own_object function")
+        @DisplayName("object lifecycle call should pass validated live raw ptr plus cached instance_id")
         void testGdccObjectArgConvertedForOwnObject() {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
-            var value = builder.valueOfVar(gdccVar);
 
-            builder.callVoid("try_own_object", List.of(value));
+            builder.emitObjectLifecycleCall("try_own_object", builder.valueOfVar(gdccVar));
 
-            assertEquals("try_own_object(gdcc_MyGdccClass_fat_ptr_live_object($myObj));\n", builder.build());
+            assertEquals("try_own_object(gdcc_MyGdccClass_fat_ptr_live_object($myObj), $myObj.instance_id);\n",
+                    builder.build());
         }
 
         @Test

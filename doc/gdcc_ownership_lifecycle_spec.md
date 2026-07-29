@@ -120,6 +120,11 @@ Select operation by `RefCountedStatus`:
 - `UNKNOWN`: `try_own_object` / `try_release_object`
 - `NO`: object own/release is a no-op
 
+The `try_*` helpers detect RefCounted at runtime via the ObjectID reference bit (bit 63), not a ClassDB
+class-name query. They receive the validated live raw pointer (`<T>_fat_ptr_live_object(v)`) plus the fat
+pointer's cached `instance_id` (`v.instance_id`); the ID is never recovered from the raw pointer. The
+precise (`own_object` / `release_object`) variants stay single-argument.
+
 `ClassRegistry.getRefCountedStatus` mapping notes:
 
 - Exact engine type `Object` is `UNKNOWN`: an Object-typed slot/return may hold a live `RefCounted`

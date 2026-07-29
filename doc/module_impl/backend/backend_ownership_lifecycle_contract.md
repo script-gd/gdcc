@@ -158,6 +158,8 @@ exact-engine helper 的 vararg（动态 `object_method_bind_call`）路径，对
   `is_refcounted=false`，但 `Object` 槽/返回值可能持有 live `RefCounted` 实例）。
 - 因此所有权转移边界（slot retain/release、wrapper consume、discard、helper own、`__finally__`
   cleanup）对 `Object` 统一走运行期 `try_own_object` / `try_release_object`，与已有 UNKNOWN 路径一致。
+- `try_*` helper 以 `(validated live raw ptr, fat.instance_id)` 为参，内部用 ObjectID reference bit
+  判别 RefCounted（不做 ClassDB 类名查询）；ID 来自 fat pointer 缓存，不从可能已释放的裸指针反推。
 - 例：`func f() -> Object: return RefCounted.new()` — wrapper 在 pack 后 `try_release` 消费构造
   `init_ref` 的 OWNED；`func echo(o: Object) -> Object: return o` — body 对 BORROWED 写返回时
   `try_own`，wrapper 再 `try_release`，引用收支平衡。

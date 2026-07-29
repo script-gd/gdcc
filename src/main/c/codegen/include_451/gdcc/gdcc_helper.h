@@ -72,66 +72,6 @@ static bool gdcc_is_editor_hint() {
     return godot_Engine_is_editor_hint(_gd_engine);
 }
 
-static void own_object(const GDExtensionObjectPtr obj) {
-    if (obj == NULL) {
-        return;
-    }
-    godot_RefCounted* rc = obj;
-    godot_RefCounted_reference(rc);
-}
-
-static void try_own_object(const GDExtensionObjectPtr obj) {
-    if (obj == NULL) {
-        return;
-    }
-    godot_StringName class_name;
-    if (!godot_object_get_class_name(obj, class_library, &class_name)) {
-        return;
-    }
-    if (godot_ClassDB_is_parent_class(godot_ClassDB_singleton(), &class_name, GD_STATIC_SN(u8"RefCounted"))) {
-        godot_RefCounted* rc = obj;
-        godot_RefCounted_reference(rc);
-    }
-}
-
-static void release_object(const GDExtensionObjectPtr obj) {
-    if (obj == NULL) {
-        return;
-    }
-    godot_RefCounted* rc = obj;
-    godot_RefCounted_unreference(rc);
-}
-
-static void try_release_object(const GDExtensionObjectPtr obj) {
-    if (obj == NULL) {
-        return;
-    }
-    godot_StringName class_name;
-    if (!godot_object_get_class_name(obj, class_library, &class_name)) {
-        return;
-    }
-    if (godot_ClassDB_is_parent_class(godot_ClassDB_singleton(), &class_name, GD_STATIC_SN(u8"RefCounted"))) {
-        godot_RefCounted* rc = obj;
-        godot_RefCounted_unreference(rc);
-    }
-}
-
-static void try_destroy_object(const GDExtensionObjectPtr obj) {
-    if (obj == NULL) {
-        return;
-    }
-    godot_StringName class_name;
-    if (!godot_object_get_class_name(obj, class_library, &class_name)) {
-        return;
-    }
-    if (godot_ClassDB_is_parent_class(godot_ClassDB_singleton(), &class_name, GD_STATIC_SN(u8"RefCounted"))) {
-        godot_RefCounted* rc = obj;
-        godot_RefCounted_unreference(rc);
-    } else {
-        godot_object_destroy(obj);
-    }
-}
-
 /// Function attribute macros for side-effect-free query helpers.
 /// They degrade to nothing on toolchains without GNU attribute support.
 #if defined(__GNUC__)
@@ -149,6 +89,59 @@ static void try_destroy_object(const GDExtensionObjectPtr obj) {
 /// Checks the ObjectID reference bit without touching ObjectDB.
 static inline GDCC_CONST godot_bool gdcc_object_id_is_ref_counted(GDObjectInstanceID instance_id) {
     return (instance_id & GDCC_OBJECT_ID_REFERENCE_BIT) != 0;
+}
+
+static void own_object(const GDExtensionObjectPtr obj) {
+    if (obj == NULL) {
+        return;
+    }
+    godot_RefCounted* rc = obj;
+    godot_RefCounted_reference(rc);
+}
+
+/// Runtime RefCounted retain for an object whose static type is unknown.
+/// `obj` must be the validated live raw pointer (`<T>_fat_ptr_live_object`); `instance_id` is the
+/// fat pointer's cached ID. The ObjectID reference bit (not a ClassDB class-name query) decides
+/// RefCounted-ness; the ID is never recovered from `obj`, which may be a freed non-RefCounted raw.
+static void try_own_object(const GDExtensionObjectPtr obj, const GDObjectInstanceID instance_id) {
+    if (obj == NULL || !gdcc_object_id_is_ref_counted(instance_id)) {
+        return;
+    }
+    godot_RefCounted* rc = obj;
+    godot_RefCounted_reference(rc);
+}
+
+static void release_object(const GDExtensionObjectPtr obj) {
+    if (obj == NULL) {
+        return;
+    }
+    godot_RefCounted* rc = obj;
+    godot_RefCounted_unreference(rc);
+}
+
+/// Runtime RefCounted release for an object whose static type is unknown.
+/// Same pointer/ID contract as `try_own_object`: reference bit decides, ID never recovered from `obj`.
+static void try_release_object(const GDExtensionObjectPtr obj, const GDObjectInstanceID instance_id) {
+    if (obj == NULL || !gdcc_object_id_is_ref_counted(instance_id)) {
+        return;
+    }
+    godot_RefCounted* rc = obj;
+    godot_RefCounted_unreference(rc);
+}
+
+/// Destroys an owned object whose static type is unknown.
+/// Reference-bit hit: release the RefCounted strong reference. Miss: free the manually-managed
+/// object. `obj` must be the validated live raw pointer; a NULL `obj` (already freed) is a no-op.
+static void try_destroy_object(const GDExtensionObjectPtr obj, const GDObjectInstanceID instance_id) {
+    if (obj == NULL) {
+        return;
+    }
+    if (gdcc_object_id_is_ref_counted(instance_id)) {
+        godot_RefCounted* rc = obj;
+        godot_RefCounted_unreference(rc);
+    } else {
+        godot_object_destroy(obj);
+    }
 }
 
 /// Resolves a live raw Godot object pointer from an instance ID.

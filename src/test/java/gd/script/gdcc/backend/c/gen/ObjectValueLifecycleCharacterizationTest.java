@@ -352,8 +352,8 @@ class ObjectValueLifecycleCharacterizationTest {
             assertThrows(IllegalStateException.class, () -> generateOwnReleaseBody(UNKNOWN_OBJECT, api()));
 
             var objectBody = generateOwnReleaseBody(ENGINE_OBJECT, api());
-            assertTrue(objectBody.contains("try_own_object(gdcc_Object_fat_ptr_live_object($obj));"), objectBody);
-            assertTrue(objectBody.contains("try_release_object(gdcc_Object_fat_ptr_live_object($obj));"), objectBody);
+            assertTrue(objectBody.contains("try_own_object(gdcc_Object_fat_ptr_live_object($obj), $obj.instance_id);"), objectBody);
+            assertTrue(objectBody.contains("try_release_object(gdcc_Object_fat_ptr_live_object($obj), $obj.instance_id);"), objectBody);
             assertFalse(objectBody.contains("\nown_object(gdcc_Object_fat_ptr_live_object($obj));"), objectBody);
             assertFalse(objectBody.contains("\nrelease_object(gdcc_Object_fat_ptr_live_object($obj));"), objectBody);
 
@@ -382,7 +382,7 @@ class ObjectValueLifecycleCharacterizationTest {
 
             assertTrue(entrySource.contains("release_object(gdcc_RefCounted_fat_ptr_live_object($ref));"), entrySource);
             assertTrue(entrySource.contains("release_object(gdcc_GdccWorker_fat_ptr_live_object($worker));"), entrySource);
-            assertTrue(entrySource.contains("try_release_object(gdcc_Object_fat_ptr_live_object($obj));"), entrySource);
+            assertTrue(entrySource.contains("try_release_object(gdcc_Object_fat_ptr_live_object($obj), $obj.instance_id);"), entrySource);
             assertFalse(entrySource.contains("try_destroy_object($node);"), entrySource);
             assertFalse(entrySource.contains("destroy_object($node);"), entrySource);
             assertFalse(entrySource.contains("release_object(gdcc_Node_fat_ptr_live_object($node));"), entrySource);
@@ -397,8 +397,8 @@ class ObjectValueLifecycleCharacterizationTest {
                     body,
                     " = $dst;",
                     "$dst = $src;",
-                    "try_own_object(gdcc_Object_fat_ptr_live_object($dst));",
-                    "try_release_object(gdcc_Object_fat_ptr_live_object(__gdcc_tmp_old_obj_"
+                    "try_own_object(gdcc_Object_fat_ptr_live_object($dst), $dst.instance_id);",
+                    "try_release_object(gdcc_Object_fat_ptr_live_object(__gdcc_tmp_old_obj_0), __gdcc_tmp_old_obj_0.instance_id);"
             );
             assertFalse(body.contains("\nown_object(gdcc_Object_fat_ptr_live_object($dst));"), body);
             assertFalse(body.contains("\nrelease_object(gdcc_Object_fat_ptr_live_object(__gdcc_tmp_old_obj_"), body);

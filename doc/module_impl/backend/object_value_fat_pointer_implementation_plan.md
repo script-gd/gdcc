@@ -786,6 +786,11 @@ condition。当前 frontend/LIR 若总是先 lower 为 bool，也应增加防御
 5. live 时执行现有 `own_object`、`try_own_object`、`release_object`、`try_release_object` 或 `try_destroy_object`。
 6. 生命周期 helper 本身会改变 ownership/ObjectDB 状态，因此不得被标注 pure，也不得跨 helper 调用复用其输入 live pointer。
 
+`try_*` helper 签名为 `(GDExtensionObjectPtr obj, GDObjectInstanceID instance_id)`：`obj` 是上一步取得的
+validated live raw pointer，`instance_id` 是 fat pointer 缓存的 ID。helper 内部用 `gdcc_object_id_is_ref_counted`
+（reference bit）判别 RefCounted，不再做 ClassDB 类名查询；ID 一律来自 fat pointer，绝不从可能已释放的
+`obj` 反推。精确变体 `own_object` / `release_object` 仍为单参数。
+
 ### 11.3 Variant 临时量与 ownership
 
 重点修正以下易错路径：
