@@ -102,7 +102,7 @@
   - **连续下划线折叠为单个 `_`**
   - 因此 `Outer__sub__Inner` → `Outer_sub_Inner`
 - 详细分层与禁止混用规则见 `gdcc_facing_class_name_contract.md` §2.4 与
-  `doc/module_impl/backend/object_value_fat_pointer_implementation_plan.md` §4.1.1
+  `doc/module_impl/backend/object_value_fat_pointer_implementation.md` §4.1.1
 - 该前提仅绑定当前 `zig cc` 工具链；若未来工具链或平台约束变化，应另行立项处理 backend 兼容性
 
 ---

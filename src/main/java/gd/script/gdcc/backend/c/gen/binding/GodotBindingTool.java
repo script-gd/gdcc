@@ -23,7 +23,7 @@ import java.util.Set;
 
 /// Command-line support for versioned Godot binding support generation.
 ///
-/// Stage 1A intentionally keeps this as a small local tool: it generates ABI declaration headers
+/// This is intentionally a small local tool: it generates ABI declaration headers
 /// from the already-loaded `ExtensionAPI` model and does not participate in module codegen.
 public final class GodotBindingTool {
     private static final @NotNull List<String> SUPPORTED_BUILD_CONFIGURATIONS = List.of("float_64");

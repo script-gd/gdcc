@@ -125,8 +125,8 @@ already exists, otherwise use the project's own `compiler-cache` directory.
   `gdcc_object_is_null_raw_and_id(raw, instance_id)` (never recover ID from a possibly-freed raw pointer).
 - Static RefCounted (`RefCountedStatus.YES`) uses the cached typed pointer under the ownership invariant;
   `UNKNOWN` uses the ObjectID reference bit (bit 63) for `try_*` lifecycle without ClassDB class-name queries.
-- Full migration design and acceptance matrix:
-  [object_value_fat_pointer_implementation_plan.md](module_impl/backend/object_value_fat_pointer_implementation_plan.md).
+- Full design, contracts and acceptance matrix:
+  [object_value_fat_pointer_implementation.md](module_impl/backend/object_value_fat_pointer_implementation.md).
 
 ### Pointer Conversion Baseline (Mandatory)
 
