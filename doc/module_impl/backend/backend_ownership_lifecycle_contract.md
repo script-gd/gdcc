@@ -98,6 +98,8 @@
   - `YES` -> `release_object`
   - `UNKNOWN` -> `try_release_object`
   - `NO` -> no-op
+- 所有 release/destroy helper 内部检查 `godot_RefCounted_unreference` 返回值：为 true（引用计数归零且无
+  script/binding veto）时调用 `godot_object_destroy` 释放对象。调用侧在 release/destroy 后不得再访问该指针。
 
 ### 6. 指针表示转换合同
 

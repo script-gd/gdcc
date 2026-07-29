@@ -114,38 +114,47 @@ static void try_own_object(const GDExtensionObjectPtr obj, const GDObjectInstanc
     godot_RefCounted_reference(rc);
 }
 
-/// Static-YES RefCounted release. Side-effecting: mutates reference count (not pure/const).
+/// Static-YES RefCounted release. Side-effecting: mutates reference count and may destroy (not pure/const).
+/// If `unreference` returns true (refcount reached zero and no veto), the object is destroyed.
 /// Same raw-pointer argument contract as `own_object`.
 static void release_object(const GDExtensionObjectPtr obj) {
     if (obj == NULL) {
         return;
     }
     godot_RefCounted* rc = obj;
-    godot_RefCounted_unreference(rc);
+    if (godot_RefCounted_unreference(rc)) {
+        godot_object_destroy(obj);
+    }
 }
 
 /// Runtime RefCounted release for an object whose static type is unknown.
-/// Side-effecting: may mutate reference count (not pure/const).
+/// Side-effecting: may mutate reference count and destroy (not pure/const).
+/// If `unreference` returns true (refcount reached zero and no veto), the object is destroyed.
 /// Same pointer/ID contract as `try_own_object`: reference bit decides, ID never recovered from `obj`.
 static void try_release_object(const GDExtensionObjectPtr obj, const GDObjectInstanceID instance_id) {
     if (obj == NULL || !gdcc_object_id_is_ref_counted(instance_id)) {
         return;
     }
     godot_RefCounted* rc = obj;
-    godot_RefCounted_unreference(rc);
+    if (godot_RefCounted_unreference(rc)) {
+        godot_object_destroy(obj);
+    }
 }
 
 /// Destroys an owned object whose static type is unknown.
-/// Side-effecting: release RefCounted strong ref or call `godot_object_destroy` (not pure/const).
-/// Reference-bit hit: release. Miss: free the manually-managed object.
+/// Side-effecting: release RefCounted strong ref (destroying if last) or free manually-managed object.
+/// Reference-bit hit: unreference + conditional destroy. Miss: unconditional destroy.
 /// `obj` must be the validated live raw pointer; a NULL `obj` (already freed) is a no-op.
 static void try_destroy_object(const GDExtensionObjectPtr obj, const GDObjectInstanceID instance_id) {
     if (obj == NULL) {
         return;
     }
     if (gdcc_object_id_is_ref_counted(instance_id)) {
+        // Same as try_release_object: never force-destroy a live RefCounted object.
         godot_RefCounted* rc = obj;
-        godot_RefCounted_unreference(rc);
+        if (godot_RefCounted_unreference(rc)) {
+            godot_object_destroy(obj);
+        }
     } else {
         godot_object_destroy(obj);
     }
@@ -164,6 +173,8 @@ static inline GDCC_PURE GDExtensionObjectPtr gdcc_object_live_ptr(GDObjectInstan
 
 /// Returns whether an instance ID denotes a live object under the ownership invariant.
 /// RefCounted reference-bit hits are treated as live without an ObjectDB lookup.
+/// After release/destroy the stale RefCounted ID still has the reference bit set and will
+/// false-positive here; callers must never query liveness after releasing ownership.
 static inline GDCC_PURE godot_bool gdcc_object_is_live(GDObjectInstanceID instance_id) {
     if (instance_id == 0) {
         return false;
