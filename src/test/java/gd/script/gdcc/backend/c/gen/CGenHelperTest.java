@@ -794,6 +794,27 @@ class CGenHelperTest {
     }
 
     @Test
+    @DisplayName("call wrapper type gate should accept NIL payloads for object params")
+    void renderCallWrapperVariantTypeGateShouldAcceptNilForObjectParams() {
+        var objectType = new GdObjectType("Node");
+        var objectGate = helper.renderCallWrapperVariantTypeGate(objectType, "type");
+        assertEquals(
+                "(type == GDEXTENSION_VARIANT_TYPE_OBJECT || type == GDEXTENSION_VARIANT_TYPE_NIL)",
+                objectGate
+        );
+        assertFalse(objectGate.contains("DICTIONARY"), objectGate);
+    }
+
+    @Test
+    @DisplayName("call wrapper unpack should emit fat_ptr_from_variant for object params")
+    void renderCallWrapperUnpackExprShouldEmitFatPtrFromVariantForObjectParams() {
+        var objectType = new GdObjectType("Node");
+        var unpack = helper.renderCallWrapperUnpackExpr(objectType, "p_args[0]", "arg0_type");
+        assertTrue(unpack.contains("_fat_ptr_from_variant"), unpack);
+        assertTrue(unpack.contains("p_args[0]"), unpack);
+    }
+
+    @Test
     @DisplayName("call wrapper vector widening should reject non builtin vector dimensions")
     void renderCallWrapperVectorWideningShouldRejectNonBuiltinVectorDimensions() {
         var invalidVector = new GdFloatVectorType(5);

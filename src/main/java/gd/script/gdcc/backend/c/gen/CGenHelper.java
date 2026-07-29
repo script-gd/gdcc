@@ -839,7 +839,8 @@ public final class CGenHelper {
     ///
     /// The wrapper keeps exact runtime checks by default. Any non-exact inbound rule must stay
     /// aligned with the frontend ordinary-boundary matrix and must be paired with wrapper-local
-    /// materialization in `renderCallWrapperUnpackExpr(...)`.
+    /// materialization in `renderCallWrapperUnpackExpr(...)` (which may be the default unpack
+    /// path when the underlying C unpack function already handles the widened inbound natively).
     public @NotNull String renderCallWrapperVariantTypeGate(@NotNull GdType paramType,
                                                             @NotNull String typeExpr) {
         TypeCheckUtil.requireNonCompilerOnly(paramType, "call wrapper type gate");
@@ -862,6 +863,12 @@ public final class CGenHelper {
             case GdStringType _ -> {
                 return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_STRING || "
                         + typeExpr + " == GDEXTENSION_VARIANT_TYPE_STRING_NAME)";
+            }
+            case GdObjectType _ -> {
+                // Godot's Variant::can_convert_strict allows NIL -> OBJECT; null fat pointer
+                // materialization is already handled inside <Type>_fat_ptr_from_variant.
+                return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_OBJECT || "
+                        + typeExpr + " == GDEXTENSION_VARIANT_TYPE_NIL)";
             }
             default -> {
                 var targetType = requireBoundMetadataType(paramType, "call wrapper type gate");

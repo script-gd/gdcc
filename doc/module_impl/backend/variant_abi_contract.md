@@ -98,11 +98,14 @@
     - `Vector2` / `Vector3` / `Vector4` 参数额外接受同维 `Variant(Vector2i)` / `Variant(Vector3i)` / `Variant(Vector4i)`
     - `StringName` 参数额外接受 `Variant(STRING)`，并先 unpack `String` 再通过 `StringName(String)` constructor materialize
     - `String` 参数额外接受 `Variant(STRING_NAME)`，并先 unpack `StringName` 再通过 `String(StringName)` constructor materialize
+    - 对象参数额外接受 `Variant(NIL)`，对齐 Godot `Variant::can_convert_strict(NIL, OBJECT) == true`；
+      unpack 路径 `<Type>_fat_ptr_from_variant` 已内建 NIL → null fat pointer `{ NULL, 0 }` 降级，无需额外 materializer
   - `r_error->expected` 仍保持目标参数类型，方法参数 metadata 也仍发布目标参数类型：
     - `float` 仍发布 `GDEXTENSION_VARIANT_TYPE_FLOAT`
     - `Vector*` 仍发布对应 `GDEXTENSION_VARIANT_TYPE_VECTOR*`
     - `StringName` 仍发布 `GDEXTENSION_VARIANT_TYPE_STRING_NAME`
     - `String` 仍发布 `GDEXTENSION_VARIANT_TYPE_STRING`
+    - 对象参数仍发布 `GDEXTENSION_VARIANT_TYPE_OBJECT`
   - `float -> int`、`Vector* -> Vector*i`、错维 `Vector*i -> Vector*`、`Rect2i -> Rect2`、`bool -> float`、`String -> float` 等其它 conversion 仍不得通过这条 gate
 - `Variant` 参数：
   - 不能执行 `actual_type == NIL` 的精确比较
