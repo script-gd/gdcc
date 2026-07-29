@@ -218,8 +218,8 @@ class CallMethodInsnGenEngineTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
-                entrySource.contains("godot_Object_call(gdcc_object_to_godot_object_ptr($baseRef, GDBaseDynamicWorker_object_ptr), GD_STATIC_SN(u8\"child_only_echo\")"),
-                "Parent-typed GDCC receiver should use OBJECT_DYNAMIC dispatch with GDCC pointer conversion."
+                entrySource.contains("godot_Object_call(gdcc_GDBaseDynamicWorker_fat_ptr_live_object($baseRef), GD_STATIC_SN(u8\"child_only_echo\")"),
+                "Parent-typed GDCC receiver should use OBJECT_DYNAMIC dispatch with fat live_object conversion."
         );
         assertFalse(
                 entrySource.contains("GDChildDynamicWorker_child_only_echo($baseRef"),
@@ -281,8 +281,8 @@ class CallMethodInsnGenEngineTest {
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(entrySource.contains("gdcc_engine_call_node_get_child_count_"), "Engine dispatch should use the generated exact-engine helper route.");
         assertTrue(
-                entrySource.contains("gdcc_object_to_godot_object_ptr($self, GDGdccEngineOwnerBridgeNode_object_ptr)"),
-                "Engine dispatch on GDCC receiver should still cast after helper conversion."
+                entrySource.contains("gdcc_GDGdccEngineOwnerBridgeNode_fat_ptr_upcast_to_Node($self)"),
+                "Engine dispatch on GDCC receiver should upcast fat self to engine owner fat type."
         );
         assertFalse(entrySource.contains("godot_Node_get_child_count("), "Generated exact-engine route should stop calling the legacy wrapper.");
 

@@ -10,7 +10,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.Objects;
 
 /// Immutable declaration spec for one static object type's fat pointer.
-/// Phase-3 cutover uses this as the internal storage/parameter/return representation.
+/// The backend uses this as the internal storage/parameter/return representation for object values.
 public record ObjectFatPtrSpec(
         @NotNull GdObjectType objectType,
         @NotNull String canonicalClassName,

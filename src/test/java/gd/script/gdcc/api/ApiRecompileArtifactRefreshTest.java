@@ -90,6 +90,7 @@ class ApiRecompileArtifactRefreshTest {
                 List.of(
                         tempDir.resolve("second-project").resolve("entry.c"),
                         tempDir.resolve("second-project").resolve("engine_method_binds.h"),
+                        tempDir.resolve("second-project").resolve("object_fat_ptr_types.h"),
                         tempDir.resolve("second-project").resolve("entry.h")
                 ),
                 secondResult.generatedFiles()

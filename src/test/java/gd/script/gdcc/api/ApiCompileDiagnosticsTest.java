@@ -189,6 +189,7 @@ class ApiCompileDiagnosticsTest {
                 List.of(
                         projectPath.resolve("entry.c"),
                         projectPath.resolve("engine_method_binds.h"),
+                        projectPath.resolve("object_fat_ptr_types.h"),
                         projectPath.resolve("entry.h")
                 ),
                 result.generatedFiles()

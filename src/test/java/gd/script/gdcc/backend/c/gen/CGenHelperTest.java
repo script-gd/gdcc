@@ -663,7 +663,23 @@ class CGenHelperTest {
     @DisplayName("renderCallWrapperDestroyStmt should skip object and primitive locals")
     void renderCallWrapperDestroyStmtShouldSkipObjectAndPrimitiveLocals() {
         assertEquals("", helper.renderCallWrapperDestroyStmt(new GdObjectType("Node"), "value"));
+        assertEquals("", helper.renderCallWrapperDestroyStmt(new GdObjectType("RefCounted"), "value"));
         assertEquals("", helper.renderCallWrapperDestroyStmt(GdIntType.INT, "value"));
+    }
+
+    @Test
+    @DisplayName("renderCallWrapperOwnedObjectReturnConsumeStmt should release RefCounted returns only")
+    void renderCallWrapperOwnedObjectReturnConsumeStmtShouldReleaseRefCountedReturnsOnly() {
+        assertEquals(
+                "release_object(gdcc_RefCounted_fat_ptr_live_object(value));",
+                helper.renderCallWrapperOwnedObjectReturnConsumeStmt(new GdObjectType("RefCounted"), "value")
+        );
+        assertEquals(
+                "release_object(gdcc_MyChild_fat_ptr_live_object(value));",
+                helper.renderCallWrapperOwnedObjectReturnConsumeStmt(new GdObjectType("MyChild"), "value")
+        );
+        assertEquals("", helper.renderCallWrapperOwnedObjectReturnConsumeStmt(new GdObjectType("Node"), "value"));
+        assertEquals("", helper.renderCallWrapperOwnedObjectReturnConsumeStmt(GdStringType.STRING, "value"));
     }
 
     @Test

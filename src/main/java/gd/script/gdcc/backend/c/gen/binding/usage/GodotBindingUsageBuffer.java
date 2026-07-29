@@ -38,8 +38,8 @@ public final class GodotBindingUsageBuffer {
         engineMethods.record(resolved);
     }
 
-    public void recordEngineConstructor(@NotNull GdObjectType constructedType) {
-        engineConstructors.record(constructedType);
+    public void recordEngineConstructor(@NotNull GdObjectType constructedType, boolean needsRefCountedInit) {
+        engineConstructors.record(constructedType, needsRefCountedInit);
     }
 
     public void recordModuleLocalGodotBinding(@NotNull ModuleLocalGodotBinding binding) {

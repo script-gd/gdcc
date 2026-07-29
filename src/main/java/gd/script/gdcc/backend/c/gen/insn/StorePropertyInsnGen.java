@@ -79,7 +79,7 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
                         }
                         var setterCall = ownerClassName + "_" + setterName;
                         bodyBuilder.callVoid(setterCall,
-                                List.of(receiverValue, bodyBuilder.valueOfVar(valueVar)));
+                                List.of(receiverValue, renderPropertyStoreValue(bodyBuilder, valueVar, objectLookup.property().getType())));
                     }
                     case ENGINE -> {
                         var accessor = BackendPropertyAccessResolver.resolveEnginePropertyWriteAccessor(
@@ -92,7 +92,7 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
                         if (accessor.index() != null) {
                             args.add(bodyBuilder.valueOfExpr(Integer.toString(accessor.index()), GdIntType.INT));
                         }
-                        args.add(bodyBuilder.valueOfVar(valueVar));
+                        args.add(renderPropertyStoreValue(bodyBuilder, valueVar, objectLookup.property().getType()));
                         bodyBuilder.callVoid(accessor.cFunctionName(), args);
                         bodyBuilder.recordUsedEngineMethodCall(accessor.toResolvedMethodCall());
                     }
@@ -161,6 +161,19 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
                     "' of type " + propertyType.getTypeName());
         }
         return null;
+    }
+
+    private static @NotNull CBodyBuilder.ValueRef renderPropertyStoreValue(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull LirVariable valueVar,
+            @NotNull GdType propertyType
+    ) {
+        if (valueVar.type() instanceof GdObjectType
+                && propertyType instanceof GdObjectType propertyObjType
+                && !valueVar.type().getTypeName().equals(propertyObjType.getTypeName())) {
+            return bodyBuilder.valueOfCastedVar(valueVar, propertyObjType);
+        }
+        return bodyBuilder.valueOfVar(valueVar);
     }
 
     private boolean isStoringInsideSetterSelf(@NotNull CBodyBuilder bodyBuilder,

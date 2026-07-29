@@ -107,10 +107,12 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz));
+        // The helper accepts owner fat self; GDCC→engine uses the generated upcast, not raw object_ptr.
         assertTrue(
-                body.contains("gdcc_engine_call_node_queue_free_P_RV((godot_Node*)gdcc_object_to_godot_object_ptr($self, GDMyNode_object_ptr));"),
+                body.contains("gdcc_engine_call_node_queue_free_P_RV(gdcc_GDMyNode_fat_ptr_upcast_to_Node($self));"),
                 body
         );
+        assertFalse(body.contains("gdcc_object_to_godot_object_ptr($self, GDMyNode_object_ptr)"), body);
         assertFalse(body.contains("gdcc_engine_call_node_queue_free_P_RV((godot_Node*)$self);"), body);
     }
 
@@ -191,7 +193,8 @@ class CallMethodInsnGenTest {
         hostClass.addFunction(caller);
 
         var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, childClass, baseClass));
-        assertTrue(body.contains("BaseWorker_base_ping(&($child->_super));"), body);
+        assertTrue(body.contains("BaseWorker_base_ping(gdcc_ChildWorker_fat_ptr_upcast_to_BaseWorker($child));"), body);
+        assertFalse(body.contains("&($child->_super)"), body);
         assertFalse(body.contains("BaseWorker_base_ping((BaseWorker*)$child);"), body);
         assertFalse(body.contains("godot_Object_call("), body);
     }
@@ -206,7 +209,7 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz));
-        assertTrue(body.contains("godot_Object_call($node, GD_STATIC_SN(u8\"missing_method\")"), body);
+        assertTrue(body.contains("godot_Object_call(gdcc_Node_fat_ptr_live_object($node), GD_STATIC_SN(u8\"missing_method\")"), body);
         assertFalse(body.contains("godot_Node_missing_method("), body);
     }
 
@@ -231,8 +234,9 @@ class CallMethodInsnGenTest {
         hostClass.addFunction(caller);
 
         var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass));
-        assertTrue(body.contains("godot_Object_call(gdcc_object_to_godot_object_ptr($worker, Worker_object_ptr), GD_STATIC_SN(u8\"missing_method\")"), body);
+        assertTrue(body.contains("godot_Object_call(gdcc_Worker_fat_ptr_live_object($worker), GD_STATIC_SN(u8\"missing_method\")"), body);
         assertFalse(body.contains("Worker_missing_method("), body);
+        assertFalse(body.contains("gdcc_object_to_godot_object_ptr($worker"), body);
     }
 
     @Test
@@ -266,9 +270,10 @@ class CallMethodInsnGenTest {
         hostClass.addFunction(caller);
 
         var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, baseClass, childClass));
-        assertTrue(body.contains("godot_Object_call(gdcc_object_to_godot_object_ptr($baseRef, BaseWorker_object_ptr), GD_STATIC_SN(u8\"child_only_echo\")"), body);
+        assertTrue(body.contains("godot_Object_call(gdcc_BaseWorker_fat_ptr_live_object($baseRef), GD_STATIC_SN(u8\"child_only_echo\")"), body);
         assertFalse(body.contains("ChildWorker_child_only_echo("), body);
         assertFalse(body.contains("godot_Variant_call("), body);
+        assertFalse(body.contains("gdcc_object_to_godot_object_ptr($baseRef"), body);
     }
 
     @Test
@@ -311,10 +316,13 @@ class CallMethodInsnGenTest {
                 newApi(List.of(), List.of()),
                 List.of(hostClass, baseClass, childClass, peerClass)
         );
-        assertTrue(body.contains("godot_Object_call(gdcc_object_to_godot_object_ptr($baseRef, BaseWorker_object_ptr), GD_STATIC_SN(u8\"child_only_consume_peer\")"), body);
-        assertTrue(body.contains("gdcc_new_Variant_with_gdcc_Object($peer)"), body);
-        assertFalse(body.contains("godot_new_Variant_with_Object("), body);
+        assertTrue(body.contains("godot_Object_call(gdcc_BaseWorker_fat_ptr_live_object($baseRef), GD_STATIC_SN(u8\"child_only_consume_peer\")"), body);
+        assertTrue(
+                body.contains("gdcc_PeerWorker_fat_ptr_to_variant($peer)") || body.contains("gdcc_new_Variant_with_gdcc_Object($peer)"),
+                body
+        );
         assertFalse(body.contains("godot_Variant_call("), body);
+        assertFalse(body.contains("gdcc_object_to_godot_object_ptr($baseRef"), body);
     }
 
     @Test
@@ -496,7 +504,7 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithAmbiguousOverloads())), List.of(clazz));
-        assertTrue(body.contains("godot_Object_call($node, GD_STATIC_SN(u8\"mix\")"), body);
+        assertTrue(body.contains("godot_Object_call(gdcc_Node_fat_ptr_live_object($node), GD_STATIC_SN(u8\"mix\")"), body);
         assertFalse(body.contains("godot_Node_mix("), body);
     }
 
@@ -827,7 +835,8 @@ class CallMethodInsnGenTest {
     void callMethodObjectDynamicShouldPackAndUnpack() {
         var clazz = newClass("Worker");
         var func = newFunction("call_object_dynamic");
-        func.createAndAddVariable("obj", new GdObjectType("MysteryObject"));
+        // Unknown object types fail-fast after fat-pointer cutover; use a known engine type.
+        func.createAndAddVariable("obj", new GdObjectType("Node"));
         func.createAndAddVariable("value", GdIntType.INT);
         func.createAndAddVariable("ret", GdIntType.INT);
         entry(func).appendInstruction(new CallMethodInsn(
@@ -838,8 +847,8 @@ class CallMethodInsnGenTest {
         ));
         clazz.addFunction(func);
 
-        var body = generateBody(clazz, func, newApi(List.of(), List.of()), List.of(clazz));
-        assertTrue(body.contains("godot_Object_call($obj, GD_STATIC_SN(u8\"compute\")"), body);
+        var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz));
+        assertTrue(body.contains("godot_Object_call(gdcc_Node_fat_ptr_live_object($obj), GD_STATIC_SN(u8\"compute\")"), body);
         assertTrue(body.contains("godot_new_Variant_with_int($value)"), body);
         assertTrue(body.contains("godot_new_int_with_Variant("), body);
         assertFalse(body.contains("godot_Variant_call("), body);

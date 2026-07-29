@@ -6,6 +6,7 @@ import gd.script.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
 import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.lir.*;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.RefCountedStatus;
 import gd.script.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -219,8 +220,12 @@ public final class CBodyBuilder {
 
     /// Engine constructors keep their public `godot_new_<Class>()` call shape in generated bodies.
     /// Recording here only decides which module-local wrapper definitions are emitted later.
+    /// For definite `RefCounted` engine classes the wrapper also calls `gdcc_ref_counted_init_raw`
+    /// so the returned raw pointer is OWNED at refcount=1 (aligned with GDCC class create paths).
     public void recordUsedEngineConstructor(@NotNull GdObjectType constructedType) {
-        usageBuffer.recordEngineConstructor(constructedType);
+        var needsRefCountedInit = classRegistry().getRefCountedStatus(constructedType)
+                == RefCountedStatus.YES;
+        usageBuffer.recordEngineConstructor(constructedType, needsRefCountedInit);
     }
 
     /// Explicitly records a module-local Godot wrapper before emitting the matching `godot_*` call.
@@ -584,7 +589,7 @@ public final class CBodyBuilder {
         return "(GDExtensionObjectPtr)(" + fatPtrCode + ").ptr";
     }
 
-    /// Equality-normalized raw Godot object pointer (phase 3C C1 / plan §10.2).
+    /// Equality-normalized raw Godot object pointer used as the `==`/`!=` comparison key.
     ///
     /// Contract:
     /// - null ∪ freed → `NULL` via `gdcc_object_is_null_raw_and_id`
@@ -619,7 +624,8 @@ public final class CBodyBuilder {
                                                               @NotNull GdObjectType targetType) {
         var sourceSpec = helper.requireObjectFatPtrSpec(sourceType, "object upcast source");
         var targetSpec = helper.requireObjectFatPtrSpec(targetType, "object upcast target");
-        return sourceSpec.fatPtrTypeName() + "_upcast_to_" + targetSpec.canonicalClassName();
+        // Must match ObjectFatPtrUpcastSpec.forPair helperName (cIdentifier, not raw class name).
+        return sourceSpec.fatPtrTypeName() + "_upcast_to_" + targetSpec.cIdentifier();
     }
 
     /// Null/freed query expression for an object fat pointer storage.
@@ -631,6 +637,10 @@ public final class CBodyBuilder {
     /// Common logic for writing a fresh call result into a target variable.
     /// Call/construct/helper returns are treated as `OWNED` producers and therefore flow into the
     /// slot-write core without an extra retain on the new value.
+    /// This consumes the producer's strong reference: exact-engine vararg helpers establish it via
+    /// `renderEngineMethodHelperVarargObjectReturnOwnStmt`, and the slot takes it over here (released
+    /// later by overwrite or `__finally__` cleanup). Treating such a return as BORROWED would retain
+    /// twice and leak.
     private void emitCallResultAssignment(@NotNull TargetRef target,
                                           @NotNull String cFuncName,
                                           @NotNull GdType returnType,
@@ -1238,7 +1248,9 @@ public final class CBodyBuilder {
             var assignCode = convertObjectValueIfNeeded(callExpr, rhsPtrKind, objType, objType);
             var discardTemp = newTempVariable("discard", returnType, assignCode);
             declareTempVar(discardTemp);
-            // Discarded OWNED object returns are consumed by immediate release.
+            // Discarded OWNED object returns are consumed by immediate release. This is the balancing
+            // release for producer-side retains such as the exact-engine vararg helper's return own;
+            // skipping it would leak the producer's strong reference.
             emitReleaseObject(discardTemp.name(), objType);
             return;
         }
@@ -1318,17 +1330,13 @@ public final class CBodyBuilder {
         return currentBlock != null && "__finally__".equals(currentBlock.id());
     }
 
+    /// Functions that still consume raw Godot object pointers at the call site.
+    /// Exact engine helpers (`gdcc_engine_call_*` / `gdcc_engine_callv_*`) are excluded because they accept fat pointers.
     private boolean checkGlobalFuncRequireGodotRawPtr(@NotNull String funcName) {
         if (funcName.equals("gdcc_new_Variant_with_gdcc_Object")) {
             return false;
         }
         if (funcName.startsWith("gdcc_eval_")) {
-            return true;
-        }
-        if (funcName.startsWith("gdcc_engine_call_")) {
-            return true;
-        }
-        if (funcName.startsWith("gdcc_engine_callv_")) {
             return true;
         }
         if (funcName.startsWith("godot_")) {
@@ -1350,11 +1358,11 @@ public final class CBodyBuilder {
         }
     }
 
+    /// Functions whose C return is still a raw Godot object pointer that must be captured via `_from_raw`.
+    /// Exact engine helpers are excluded because they already return fat pointers.
     private boolean checkGlobalFuncReturnGodotRawPtr(@NotNull String funcName) {
         return funcName.startsWith("godot_")
-                || funcName.startsWith("gdcc_eval_")
-                || funcName.startsWith("gdcc_engine_call_")
-                || funcName.startsWith("gdcc_engine_callv_");
+                || funcName.startsWith("gdcc_eval_");
     }
 
     private @NotNull PtrKind resolveCallResultPtrKind(@NotNull String cFuncName,

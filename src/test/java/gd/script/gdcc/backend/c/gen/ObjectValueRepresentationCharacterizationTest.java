@@ -32,10 +32,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase-3 fat-pointer characterization for object value representation.
+/// Fat-pointer characterization for object value representation.
 ///
-/// These tests deliberately re-anchor the cutover shapes from
-/// `doc/module_impl/backend/object_value_fat_pointer_implementation_plan.md`.
+/// These tests anchor the generated fat-pointer shapes (typedefs, storage, parameter and return
+/// surfaces) that the C backend must keep stable.
 class ObjectValueRepresentationCharacterizationTest {
     private static final GdObjectType ENGINE_NODE = new GdObjectType("Node");
     private static final GdObjectType ENGINE_REFCOUNTED = new GdObjectType("RefCounted");
@@ -140,6 +140,22 @@ class ObjectValueRepresentationCharacterizationTest {
             assertEquals("", helper.renderCallWrapperDestroyStmt(GDCC_WORKER, "arg0"));
             assertEquals("godot_String_destroy(&arg0);", helper.renderCallWrapperDestroyStmt(GdStringType.STRING, "arg0"));
         }
+
+        @Test
+        @DisplayName("call wrapper consumes OWNED object returns after Variant pack")
+        void callWrapperConsumesOwnedObjectReturns() {
+            var helper = newHelper();
+
+            assertEquals("", helper.renderCallWrapperOwnedObjectReturnConsumeStmt(ENGINE_NODE, "r"));
+            assertEquals(
+                    "release_object(gdcc_GdccWorker_fat_ptr_live_object(r));",
+                    helper.renderCallWrapperOwnedObjectReturnConsumeStmt(GDCC_WORKER, "r")
+            );
+            assertEquals(
+                    "release_object(gdcc_RefCounted_fat_ptr_live_object(r));",
+                    helper.renderCallWrapperOwnedObjectReturnConsumeStmt(ENGINE_REFCOUNTED, "r")
+            );
+        }
     }
 
     @Nested
@@ -220,25 +236,62 @@ class ObjectValueRepresentationCharacterizationTest {
         void callFuncPacksObjectReturnsFromFatPointers() {
             var entryHeader = generateRegisteredWrapperHeader();
 
-            assertTrue(entryHeader.contains("gdcc_Node_fat_ptr r = function(p_instance);"), entryHeader);
+            assertTrue(entryHeader.contains("gdcc_Node_fat_ptr r = function(self_fat);"), entryHeader);
             assertTrue(entryHeader.contains("godot_Variant ret = gdcc_Node_fat_ptr_to_variant(r);"), entryHeader);
-            assertTrue(entryHeader.contains("gdcc_GdccWorker_fat_ptr r = function(p_instance);"), entryHeader);
+            assertTrue(entryHeader.contains("gdcc_GdccWorker_fat_ptr r = function(self_fat);"), entryHeader);
             assertTrue(entryHeader.contains("godot_Variant ret = gdcc_GdccWorker_fat_ptr_to_variant(r);"), entryHeader);
+            // Object return: packing establishes Variant ownership but does not consume the function's
+            // OWNED strong reference on r. RefCounted returns must release r after destroy(ret);
+            // non-RefCounted (Node) must not.
+            assertTrue(entryHeader.contains("release_object(gdcc_GdccWorker_fat_ptr_live_object(r));"), entryHeader);
+            assertFalse(entryHeader.contains("release_object(gdcc_Node_fat_ptr_live_object(r));"), entryHeader);
+            var packIdx = entryHeader.indexOf("godot_Variant ret = gdcc_GdccWorker_fat_ptr_to_variant(r);");
+            var destroyIdx = entryHeader.indexOf("godot_Variant_destroy(&ret);", packIdx);
+            var releaseIdx = entryHeader.indexOf("release_object(gdcc_GdccWorker_fat_ptr_live_object(r));", destroyIdx);
+            assertTrue(packIdx >= 0 && destroyIdx > packIdx && releaseIdx > destroyIdx,
+                    "pack → destroy temp Variant → release OWNED r order required.\n" + entryHeader);
         }
 
         @Test
-        @DisplayName("ptrcall currently reuses fat pointer function surface (3d raw-slot adaptation pending)")
-        void ptrcallStillOnInternalFatPointerSurfaceUntilPhase3d() {
-            // Phase 3d must switch ptrcall object slots back to raw Godot pointer storage.
-            // Until then, the internal function pointer type and call site share fat pointer types.
+        @DisplayName("same ABI shape on different owners generates distinct instance wrappers")
+        void sameAbiShapeDifferentOwnersGetDistinctWrappers() {
+            var ownerA = newClass("OwnerA");
+            var ownerB = newClass("OwnerB");
+            for (var owner : List.of(ownerA, ownerB)) {
+                var take = new LirFunctionDef("take_node");
+                take.setReturnType(GdVoidType.VOID);
+                take.addParameter(new LirParameterDef("self", new GdObjectType(owner.getName()), null, take));
+                take.addParameter(new LirParameterDef("value", ENGINE_NODE, null, take));
+                addEntryReturn(take);
+                owner.addFunction(take);
+            }
+            var entryHeader = generateEntryHeader(List.of(ownerA, ownerB));
+            assertTrue(entryHeader.contains("call_OwnerA_"), entryHeader);
+            assertTrue(entryHeader.contains("call_OwnerB_"), entryHeader);
+            assertTrue(entryHeader.contains("ptrcall_OwnerA_"), entryHeader);
+            assertTrue(entryHeader.contains("ptrcall_OwnerB_"), entryHeader);
+            assertTrue(entryHeader.contains("gdcc_OwnerA_fat_ptr_from_raw(OwnerA_object_ptr((OwnerA*)p_instance))"), entryHeader);
+            assertTrue(entryHeader.contains("gdcc_OwnerB_fat_ptr_from_raw(OwnerB_object_ptr((OwnerB*)p_instance))"), entryHeader);
+            assertFalse(entryHeader.contains("call_1_arg_Node_no_ret("), entryHeader);
+        }
+
+        @Test
+        @DisplayName("ptrcall uses raw Godot object slots and owner fat self")
+        void ptrcallUsesRawGodotSlotsAndOwnerFatSelf() {
             var entryHeader = generateRegisteredWrapperHeader();
 
-            assertTrue(entryHeader.contains("void*, gdcc_Node_fat_ptr"), entryHeader);
-            assertTrue(entryHeader.contains("void*, gdcc_GdccWorker_fat_ptr"), entryHeader);
-            assertTrue(entryHeader.contains("(*((gdcc_Node_fat_ptr*)p_args[0]))"), entryHeader);
-            assertTrue(entryHeader.contains("(*((gdcc_GdccWorker_fat_ptr*)p_args[0]))"), entryHeader);
-            assertTrue(entryHeader.contains("*((gdcc_Node_fat_ptr*)r_return)"), entryHeader);
-            assertTrue(entryHeader.contains("*((gdcc_GdccWorker_fat_ptr*)r_return)"), entryHeader);
+            // Object args: raw pointer slot -> fat via from_raw (not fat struct at p_args).
+            assertTrue(entryHeader.contains("gdcc_Node_fat_ptr arg0 = gdcc_Node_fat_ptr_from_raw(*((const GDExtensionObjectPtr *)p_args[0]));"), entryHeader);
+            assertTrue(entryHeader.contains("gdcc_GdccWorker_fat_ptr arg0 = gdcc_GdccWorker_fat_ptr_from_raw(*((const GDExtensionObjectPtr *)p_args[0]));"), entryHeader);
+            assertFalse(entryHeader.contains("(*((gdcc_Node_fat_ptr*)p_args[0]))"), entryHeader);
+            assertFalse(entryHeader.contains("(*((gdcc_GdccWorker_fat_ptr*)p_args[0]))"), entryHeader);
+            // Object returns: validated raw transfer, not fat write into r_return.
+            assertTrue(entryHeader.contains("*((GDExtensionObjectPtr *)r_return) = gdcc_Node_fat_ptr_live_object(r);"), entryHeader);
+            assertTrue(entryHeader.contains("*((GDExtensionObjectPtr *)r_return) = gdcc_GdccWorker_fat_ptr_live_object(r);"), entryHeader);
+            assertFalse(entryHeader.contains("*((gdcc_Node_fat_ptr*)r_return)"), entryHeader);
+            // call_func uses owner fat self, not raw void* p_instance as first arg.
+            assertTrue(entryHeader.contains("self_fat ="), entryHeader);
+            assertTrue(entryHeader.contains("_from_raw(Worker_object_ptr((Worker*)p_instance))"), entryHeader);
         }
 
         @Test
@@ -287,7 +340,7 @@ class ObjectValueRepresentationCharacterizationTest {
     }
 
     private static String generateFile(List<LirClassDef> gdccClasses, String filePath) {
-        var module = new LirModule("phase0_representation_module", gdccClasses);
+        var module = new LirModule("object_representation_module", gdccClasses);
         var codegen = newCodegen(module, gdccClasses);
         return codegen.generate().stream()
                 .filter(file -> file.filePath().equals(filePath))

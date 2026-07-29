@@ -71,10 +71,11 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("godot_String __gdcc_tmp_string_0 = godot_new_String_with_String(&($self->value));"), body);
+        assertTrue(body.contains("godot_String __gdcc_tmp_string_0 = godot_new_String_with_String(&(gdcc_MyClass_fat_ptr_live_ptr($self)->value));"), body);
         assertTrue(body.contains("godot_String_destroy(&$tmp);"), body);
         assertTrue(body.contains("$tmp = __gdcc_tmp_string_0;"), body);
         assertFalse(body.contains("__gdcc_tmp_string_0 = $self->value;"), body);
+        assertFalse(body.contains("&($self->value)"), body);
         assertFalse(body.contains("godot_String_destroy(&__gdcc_tmp_string_0);"), body);
         assertFalse(body.contains("MyClass__field_getter_value("));
     }
@@ -106,7 +107,7 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("godot_Variant __gdcc_tmp_variant_0 = godot_new_Variant_with_Variant(&($self->payload));"), body);
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_variant_0 = godot_new_Variant_with_Variant(&(gdcc_MyClass_fat_ptr_live_ptr($self)->payload));"), body);
         assertTrue(body.contains("godot_Variant_destroy(&$tmp);"), body);
         assertTrue(body.contains("$tmp = __gdcc_tmp_variant_0;"), body);
         assertFalse(body.contains("__gdcc_tmp_variant_0 = $self->payload;"), body);
@@ -356,7 +357,7 @@ public class CLoadPropertyInsnGenTest {
     }
 
     @Test
-    @DisplayName("Unknown object type should fallback to godot_Object_get")
+    @DisplayName("Unknown object type should fail-fast for godot_Object_get path")
     void unknownObjectTypeShouldFallbackToGodotObjectGet() {
         var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("get_unknown_prop");
@@ -378,18 +379,12 @@ public class CLoadPropertyInsnGenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
 
-        var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("__gdcc_tmp_variant_0 = godot_Object_get($obj, GD_STATIC_SN(u8\"name\"));"));
-        assertTrue(body.contains("$tmp = godot_new_String_with_Variant(&__gdcc_tmp_variant_0);"));
-        assertFalse(body.contains("__gdcc_tmp_idx_valid_"), body);
-        assertFalse(body.contains("GDCC_PRINT_RUNTIME_ERROR"), body);
-        assertFalse(body.contains("godot_variant_get_named"), body);
-        assertFalse(body.contains("godot_variant_set_named"), body);
-        assertFalse(body.contains("godot_UnknownType_get_name("));
+        var ex = assertThrows(IllegalStateException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertTrue(ex.getMessage().contains("Unknown object type 'UnknownType'"), ex.getMessage());
     }
 
     @Test
-    @DisplayName("Unknown object type should unpack engine object from variant")
+    @DisplayName("Unknown object type should fail-fast (no GDExtensionObjectPtr fallback after fat cutover)")
     void unknownObjectTypeShouldUnpackEngineObjectFromVariant() {
         var nodeClass = new ExtensionGdClass(
                 "Node", false, true, "Object", "core",
@@ -416,14 +411,12 @@ public class CLoadPropertyInsnGenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
 
-        var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("__gdcc_tmp_variant_0 = godot_Object_get($obj, GD_STATIC_SN(u8\"child\"));"));
-        assertTrue(body.contains("$tmp = (godot_Node*)godot_new_Object_with_Variant(&__gdcc_tmp_variant_0);"));
-        assertFalse(body.contains("godot_UnknownType_get_child("));
+        var ex = assertThrows(IllegalStateException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertTrue(ex.getMessage().contains("Unknown object type 'UnknownType'"), ex.getMessage());
     }
 
     @Test
-    @DisplayName("Unknown object type should unpack GDCC object from variant")
+    @DisplayName("Unknown object type should fail-fast for GDCC object unpack path")
     void unknownObjectTypeShouldUnpackGdccObjectFromVariant() {
         var targetClass = new LirClassDef("TargetClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
@@ -446,14 +439,12 @@ public class CLoadPropertyInsnGenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
 
-        var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("__gdcc_tmp_variant_0 = godot_Object_get($obj, GD_STATIC_SN(u8\"target\"));"));
-        assertTrue(body.contains("$tmp = (TargetClass*)godot_new_gdcc_Object_with_Variant(&__gdcc_tmp_variant_0);"));
-        assertFalse(body.contains("godot_UnknownType_get_target("));
+        var ex = assertThrows(IllegalStateException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertTrue(ex.getMessage().contains("Unknown object type 'UnknownType'"), ex.getMessage());
     }
 
     @Test
-    @DisplayName("Unknown object type should unpack typed Array using normalized symbol name")
+    @DisplayName("Unknown object type should fail-fast for typed Array load")
     void unknownObjectTypeShouldUnpackTypedArrayWithNormalizedSymbol() {
         var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("get_unknown_array_prop");
@@ -475,9 +466,8 @@ public class CLoadPropertyInsnGenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
 
-        var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("$tmp = godot_new_Array_with_Variant(&__gdcc_tmp_variant_0);"));
-        assertFalse(body.contains("godot_new_Array["));
+        var ex = assertThrows(IllegalStateException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertTrue(ex.getMessage().contains("Unknown object type 'UnknownType'"), ex.getMessage());
     }
 
     @Test
@@ -863,7 +853,8 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("ParentClass__field_getter_value(&($child->_super));"), body);
+        assertTrue(body.contains("ParentClass__field_getter_value(gdcc_ChildClass_fat_ptr_upcast_to_ParentClass($child));"), body);
+        assertFalse(body.contains("&($child->_super)"), body);
         assertFalse(body.contains("ParentClass__field_getter_value((ParentClass*)$child);"), body);
         assertFalse(body.contains("ChildClass__field_getter_value("), body);
     }
@@ -900,7 +891,8 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("ParentClass__field_getter_value(&($grand->_super._super));"), body);
+        assertTrue(body.contains("ParentClass__field_getter_value(gdcc_GrandChildClass_fat_ptr_upcast_to_ParentClass($grand));"), body);
+        assertFalse(body.contains("&($grand->_super._super)"), body);
         assertFalse(body.contains("ParentClass__field_getter_value((ParentClass*)$grand);"), body);
     }
 
@@ -938,7 +930,8 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("ChildClass__field_getter_child_value(&($grand->_super));"), body);
+        assertTrue(body.contains("ChildClass__field_getter_child_value(gdcc_GrandChildClass_fat_ptr_upcast_to_ChildClass($grand));"), body);
+        assertFalse(body.contains("&($grand->_super)"), body);
         assertFalse(body.contains("ParentClass__field_getter_parent_value("), body);
     }
 
@@ -974,7 +967,8 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("gdcc_engine_call_node_get_name_P_RT((godot_Node*)gdcc_object_to_godot_object_ptr($obj, MyClass_object_ptr));"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_get_name_P_RT(gdcc_MyClass_fat_ptr_upcast_to_Node($obj));"), body);
+        assertFalse(body.contains("gdcc_object_to_godot_object_ptr($obj, MyClass_object_ptr)"), body);
         assertFalse(body.contains("gdcc_engine_call_node_get_name_P_RT((godot_Node*)$obj);"), body);
     }
 
@@ -1025,7 +1019,7 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("gdcc_engine_call_node_get_name_P_RT((godot_Node*)$control);"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_get_name_P_RT(gdcc_Control_fat_ptr_upcast_to_Node($control));"), body);
         assertFalse(body.contains("gdcc_engine_call_control_get_name_"), body);
     }
 
@@ -1062,7 +1056,8 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("gdcc_engine_call_node_get_name_P_RT((godot_Node*)gdcc_object_to_godot_object_ptr($grand, GrandChildClass_object_ptr));"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_get_name_P_RT(gdcc_GrandChildClass_fat_ptr_upcast_to_Node($grand));"), body);
+        assertFalse(body.contains("gdcc_object_to_godot_object_ptr($grand, GrandChildClass_object_ptr)"), body);
         assertFalse(body.contains("gdcc_engine_call_node_get_name_P_RT((godot_Node*)$grand);"), body);
     }
 

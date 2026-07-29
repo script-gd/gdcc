@@ -210,7 +210,7 @@ class ObjectFatPtrDeclarationTest {
                     false,
                     false
             );
-            var constructor = new EngineConstructorUsage("Node", "Node", "Node");
+            var constructor = new EngineConstructorUsage("Node", "Node", "Node", false);
             var singleton = new ModuleLocalGodotBinding.Singleton(
                     new GodotBindingSymbol(
                             GodotBindingSymbol.Family.SINGLETON,
@@ -398,7 +398,7 @@ class ObjectFatPtrDeclarationTest {
             addEntryReturn(func);
             workerClass.addFunction(func);
 
-            var codegen = newCodegen(new LirModule("phase1_module", List.of(workerClass)), List.of(workerClass));
+            var codegen = newCodegen(new LirModule("fat_ptr_declaration_module", List.of(workerClass)), List.of(workerClass));
 
             // FreeMarker wraps the Java fail-fast as RuntimeException during template render.
             var error = assertThrows(RuntimeException.class, codegen::generate);
@@ -528,7 +528,7 @@ class ObjectFatPtrDeclarationTest {
     }
 
     private static String generateFile(List<LirClassDef> gdccClasses, String filePath) {
-        var module = new LirModule("phase1_module", gdccClasses);
+        var module = new LirModule("fat_ptr_declaration_module", gdccClasses);
         var codegen = newCodegen(module, gdccClasses);
         return codegen.generate().stream()
                 .filter(file -> file.filePath().equals(filePath))

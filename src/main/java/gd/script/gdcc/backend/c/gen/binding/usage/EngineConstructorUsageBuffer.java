@@ -20,12 +20,12 @@ final class EngineConstructorUsageBuffer extends AbstractUsageBuffer<String, Eng
         return NO_OP;
     }
 
-    void record(@NotNull GdObjectType constructedType) {
+    void record(@NotNull GdObjectType constructedType, boolean needsRefCountedInit) {
         if (isNoOp()) {
             return;
         }
         var className = constructedType.getTypeName();
-        putIfAbsent(className, EngineConstructorUsage.fromClassName(className));
+        putIfAbsent(className, EngineConstructorUsage.fromClassName(className, needsRefCountedInit));
     }
 
     static @NotNull EngineConstructorUsageBuffer create() {

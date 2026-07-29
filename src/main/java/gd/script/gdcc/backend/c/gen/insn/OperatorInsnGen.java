@@ -436,7 +436,7 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
             throw bodyBuilder.invalidInsn("Object comparison supports only == and !=");
         }
 
-        // C1: compare equality-normalized raw Godot pointers (plan §10.2).
+        // Compare equality-normalized raw Godot pointers as the equality key.
         // null∪freed fold to NULL; live sides materialize Godot raw without dead GDCC wrapper UAF.
         // Do not compare fat structs or instance_id as the equality key; do not recover ID from raw.
         if (!(leftVar.type() instanceof GdObjectType leftObjectType) ||

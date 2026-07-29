@@ -96,8 +96,13 @@
 
 ### 2.5 C backend
 
-- backend 不对 superclass 名字再做 mangling
-- canonical name 中的 `__sub__` 允许原样进入 backend 标识符与模板链路
+- backend 不对 superclass **identity** 再做语义层 mangling：LIR / registry / Godot-facing surface 继续携带 canonical name（含 `__sub__`）
+- 但 fat pointer typedef、upcast helper 等**必须合法作 C 标识符**的符号会经 `GodotBindingSupport.cIdentifier()` 清洗：
+  - 非法字符 → `_`
+  - **连续下划线折叠为单个 `_`**
+  - 因此 `Outer__sub__Inner` → `Outer_sub_Inner`
+- 详细分层与禁止混用规则见 `gdcc_facing_class_name_contract.md` §2.4 与
+  `doc/module_impl/backend/object_value_fat_pointer_implementation_plan.md` §4.1.1
 - 该前提仅绑定当前 `zig cc` 工具链；若未来工具链或平台约束变化，应另行立项处理 backend 兼容性
 
 ---
@@ -186,7 +191,7 @@ human-facing 诊断若需要展示用户实际写下的 `extends` 文本，必�
 - MVP 仅处理单个 gdcc module，不支持跨 gdcc module 的 superclass 绑定
 - `rawExtendsText` 只存在于 discovery / diagnostic 的短生命周期对象
 - backend / LIR / registry / shared resolver 不依赖 superclass source text
-- `__sub__` 原样进入 backend 标识符链路，但该前提仅绑定当前 `zig cc` 工具链
+- Godot-facing / identity surface 继续原样携带 canonical `__sub__`；fat pointer 等 C 标识符 surface 经 `cIdentifier()` 折叠为 `_sub_`（见 `gdcc_facing_class_name_contract.md` §2.4）；该前提仅绑定当前 `zig cc` 工具链
 
 ---
 

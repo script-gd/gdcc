@@ -506,10 +506,14 @@ public class CCodegen implements Codegen {
                 initFunction,
                 usageBuffer
         );
+        // Internal init helpers take owner fat self; the apply wrapper still receives Class*.
+        var ownerType = new GdObjectType(clazz.getName());
+        var fatType = helper.renderObjectFatPtrStorageType(ownerType);
+        var selfFatArg = fatType + "_from_raw(" + clazz.getName() + "_object_ptr(self))";
         bodyBuilder.applyPropertyInitializerFirstWrite(
                 "self->" + property.getName(),
                 property.getType(),
-                clazz.getName() + "_" + initFunction.getName() + "(self)",
+                clazz.getName() + "_" + initFunction.getName() + "(" + selfFatArg + ")",
                 initFunction.getReturnType(),
                 initFunction.getReturnType() instanceof GdObjectType
                         ? CBodyBuilder.PtrKind.FAT_PTR

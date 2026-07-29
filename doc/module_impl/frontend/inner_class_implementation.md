@@ -28,7 +28,7 @@
   - 不引入 `cSymbolName`、额外 mangling 或 backend symbol alias
   - 不为 inner class 建立全局 `sourceName` alias
   - 不把 inner class 暴露到 value/function namespace
-  - 不改变 canonical `__sub__` 当前可进入 backend 标识符链路的既有前提
+  - 不改变 canonical `__sub__` 进入 Godot-facing / identity surface 的既有前提；C 标识符 surface 的 `_sub_` 折叠规则见 `gdcc_facing_class_name_contract.md` §2.4
 
 ---
 
@@ -299,7 +299,7 @@ inner class 相关恢复规则当前已经冻结为：
 - lexical type namespace 只发布 immediate inner classes
 - inner class 不进入 value/function namespace
 - declared type 解析不再依赖 `findType(...)` 的 guessed-object 主路径
-- `__sub__` 当前允许原样进入 backend 标识符链路
+- Godot-facing / identity surface 继续原样携带 canonical `__sub__`；fat pointer typedef / upcast helper 等 C 标识符经 `GodotBindingSupport.cIdentifier()` 折叠为 `_sub_`（见 `gdcc_facing_class_name_contract.md` §2.4）
 
 ---
 

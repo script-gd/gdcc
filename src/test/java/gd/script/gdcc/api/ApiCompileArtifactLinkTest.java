@@ -41,6 +41,7 @@ class ApiCompileArtifactLinkTest {
                 List.of(
                         outputMountRoot + "/generated/entry.c",
                         outputMountRoot + "/generated/engine_method_binds.h",
+                        outputMountRoot + "/generated/object_fat_ptr_types.h",
                         outputMountRoot + "/generated/entry.h",
                         outputMountRoot + "/artifacts/" + artifact.getFileName()
                 ),
@@ -50,6 +51,7 @@ class ApiCompileArtifactLinkTest {
                 List.of(
                         projectPath.resolve("entry.c").toString(),
                         projectPath.resolve("engine_method_binds.h").toString(),
+                        projectPath.resolve("object_fat_ptr_types.h").toString(),
                         projectPath.resolve("entry.h").toString(),
                         artifact.toString()
                 ),
@@ -63,7 +65,7 @@ class ApiCompileArtifactLinkTest {
                 api.listDirectory("demo", outputMountRoot).stream().map(VfsEntrySnapshot::name).toList()
         );
         assertEquals(
-                List.of("engine_method_binds.h", "entry.c", "entry.h"),
+                List.of("engine_method_binds.h", "entry.c", "entry.h", "object_fat_ptr_types.h"),
                 api.listDirectory("demo", outputMountRoot + "/generated").stream().map(VfsEntrySnapshot::name).toList()
         );
         assertEquals(

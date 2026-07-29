@@ -7,7 +7,7 @@
 
 - 状态：Implemented / Maintained
 - 范围：`backend.c` 的 `CALL_METHOD` 代码生成与调用契约
-- 更新时间：2026-04-13
+- 更新时间：2026-07-29
 - 关联基线：
   - `doc/module_impl/call_global_implementation.md`
   - `doc/module_impl/cbodybuilder_implementation.md`
@@ -72,6 +72,9 @@
   - exact engine route 已切到 backend-owned generated helper
   - exact engine route 的事实来源是 backend-owned helper，不是 public wrapper 命名面
   - static engine method 通过实例 `call_method` 命中时，仍保留 warning + receiver-free helper 合同
+  - exact-engine helper 的 vararg（动态 `call`）路径返回 `OWNED` 对象：helper 端在临时 Variant 销毁前补发
+    `own_object` / `try_own_object`，调用端必须恰好消费一次（写槽 / discard / wrapper consume）。
+    完整引用计数收支合同以 `doc/module_impl/backend/backend_ownership_lifecycle_contract.md` §8 为准
 
 ## 长期约定（必须保持）
 

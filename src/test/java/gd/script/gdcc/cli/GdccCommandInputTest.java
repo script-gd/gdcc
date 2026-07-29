@@ -432,6 +432,7 @@ class GdccCommandInputTest {
                 List.of(
                         tempDir.resolve("build/player/entry.c").toAbsolutePath().normalize(),
                         tempDir.resolve("build/player/engine_method_binds.h").toAbsolutePath().normalize(),
+                        tempDir.resolve("build/player/object_fat_ptr_types.h").toAbsolutePath().normalize(),
                         tempDir.resolve("build/player/entry.h").toAbsolutePath().normalize()
                 ),
                 terminal.api.getLastCompileResult("player").generatedFiles()
@@ -440,6 +441,7 @@ class GdccCommandInputTest {
                 List.of(
                         tempDir.resolve("build/enemy/entry.c").toAbsolutePath().normalize(),
                         tempDir.resolve("build/enemy/engine_method_binds.h").toAbsolutePath().normalize(),
+                        tempDir.resolve("build/enemy/object_fat_ptr_types.h").toAbsolutePath().normalize(),
                         tempDir.resolve("build/enemy/entry.h").toAbsolutePath().normalize()
                 ),
                 terminal.api.getLastCompileResult("enemy").generatedFiles()
@@ -471,6 +473,7 @@ class GdccCommandInputTest {
                 List.of(
                         outputDir.resolve("entry.c").toAbsolutePath().normalize(),
                         outputDir.resolve("engine_method_binds.h").toAbsolutePath().normalize(),
+                        outputDir.resolve("object_fat_ptr_types.h").toAbsolutePath().normalize(),
                         outputDir.resolve("entry.h").toAbsolutePath().normalize()
                 ),
                 result.generatedFiles()
@@ -479,6 +482,7 @@ class GdccCommandInputTest {
                 List.of(
                         "/__build__/generated/entry.c",
                         "/__build__/generated/engine_method_binds.h",
+                        "/__build__/generated/object_fat_ptr_types.h",
                         "/__build__/generated/entry.h",
                         "/__build__/artifacts/" + result.artifacts().getFirst().getFileName()
                 ),

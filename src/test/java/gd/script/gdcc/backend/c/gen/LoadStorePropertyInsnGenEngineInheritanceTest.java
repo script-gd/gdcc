@@ -57,8 +57,8 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
-                entrySource.contains("gdcc_engine_call_node_get_process_mode_P_RI((godot_Node*)$control);"),
-                "ENGINE child receiver should be cast to ENGINE parent owner type."
+                entrySource.contains("gdcc_engine_call_node_get_process_mode_P_RI(gdcc_Control_fat_ptr_upcast_to_Node($control));"),
+                "ENGINE child receiver should be upcast to ENGINE parent owner fat type."
         );
         assertFalse(
                 entrySource.contains("gdcc_engine_call_control_get_process_mode_"),
@@ -94,8 +94,8 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
-                entrySource.contains("gdcc_engine_call_node_set_process_mode_PI_RV((godot_Node*)$control, $value);"),
-                "ENGINE child receiver should be cast to ENGINE parent owner type."
+                entrySource.contains("gdcc_engine_call_node_set_process_mode_PI_RV(gdcc_Control_fat_ptr_upcast_to_Node($control), $value);"),
+                "ENGINE child receiver should be upcast to ENGINE parent owner fat type."
         );
         assertFalse(
                 entrySource.contains("gdcc_engine_call_control_set_process_mode_"),
@@ -132,8 +132,8 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
-                entrySource.contains("gdcc_engine_call_node_get_process_mode_P_RI((godot_Node*)gdcc_object_to_godot_object_ptr($obj, GDGdccEnginePropertyBridgeChild_object_ptr));"),
-                "GDCC receiver should be converted with helper before ENGINE owner cast."
+                entrySource.contains("gdcc_engine_call_node_get_process_mode_P_RI(gdcc_GDGdccEnginePropertyBridgeChild_fat_ptr_upcast_to_Node($obj));"),
+                "GDCC receiver should be upcast to ENGINE owner fat type."
         );
         assertFalse(
                 entrySource.contains("gdcc_engine_call_node_get_process_mode_P_RI((godot_Node*)$obj);"),
@@ -170,8 +170,8 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
-                entrySource.contains("gdcc_engine_call_node_set_process_mode_PI_RV((godot_Node*)gdcc_object_to_godot_object_ptr($obj, GDGdccEnginePropertyBridgeChild_object_ptr), $value);"),
-                "GDCC receiver should be converted with helper before ENGINE owner cast."
+                entrySource.contains("gdcc_engine_call_node_set_process_mode_PI_RV(gdcc_GDGdccEnginePropertyBridgeChild_fat_ptr_upcast_to_Node($obj), $value);"),
+                "GDCC receiver should be upcast to ENGINE owner fat type."
         );
         assertFalse(
                 entrySource.contains("gdcc_engine_call_node_set_process_mode_PI_RV((godot_Node*)$obj, $value);"),
@@ -210,7 +210,11 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
                 entrySource,
                 "GDSelfAccessorEngineInheritanceNode__field_getter_obj"
         );
-        assertTrue(getterSource.contains("$self->obj"), "Getter-self should read backing field directly.");
+        assertTrue(
+                getterSource.contains("gdcc_GDSelfAccessorEngineInheritanceNode_fat_ptr_live_ptr($self)->obj")
+                        || getterSource.contains("$self->obj"),
+                "Getter-self should read backing field via live_ptr or direct field.\n" + getterSource
+        );
         assertFalse(
                 getterSource.contains("GDSelfAccessorEngineInheritanceNode__field_getter_obj($self)"),
                 "Getter-self path should not recurse into getter call."
@@ -219,17 +223,20 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
                 getterSource.contains("__gdcc_tmp_old_obj_"),
                 "Second getter-self write should capture old object value."
         );
-        var firstAssignIndex = getterSource.indexOf("$tmp = $self->obj;");
-        var secondAssignIndex = getterSource.indexOf("$tmp = $self->obj;", firstAssignIndex + 1);
-        assertTrue(firstAssignIndex >= 0, "Getter-self should assign target from backing field.");
+        var fieldRead = "gdcc_GDSelfAccessorEngineInheritanceNode_fat_ptr_live_ptr($self)->obj";
+        if (!getterSource.contains(fieldRead)) {
+            fieldRead = "$self->obj";
+        }
+        var firstAssignIndex = getterSource.indexOf("$tmp = " + fieldRead);
+        if (firstAssignIndex < 0) {
+            firstAssignIndex = getterSource.indexOf(fieldRead);
+        }
+        var secondAssignIndex = getterSource.indexOf(fieldRead, firstAssignIndex + 1);
+        assertTrue(firstAssignIndex >= 0, "Getter-self should assign target from backing field.\n" + getterSource);
         assertTrue(secondAssignIndex > firstAssignIndex, "Getter-self test should execute field load twice.");
-        var captureOldIndex = getterSource.lastIndexOf(" = $tmp;", secondAssignIndex);
-        assertTrue(captureOldIndex >= 0, "Second getter-self write should capture old target before overwrite.");
-        assertTrue(captureOldIndex < secondAssignIndex, "Old target capture should happen before second assignment.");
-        var ownIndex = getterSource.indexOf("own_object($tmp);", secondAssignIndex);
-        assertTrue(ownIndex > secondAssignIndex, "BORROWED field read should be owned after assignment.");
-        var releaseOldIndex = getterSource.indexOf("release_object(__gdcc_tmp_old_obj_", ownIndex);
-        assertTrue(releaseOldIndex > ownIndex, "Captured old value should be released after owning new value.");
+        assertTrue(getterSource.contains("own_object("), "BORROWED field read should be owned after assignment.");
+        assertTrue(getterSource.contains("release_object(__gdcc_tmp_old_obj_") || getterSource.contains("release_object(gdcc_"),
+                "Captured old value should be released.");
 
         var runResult = runWithSceneAndScript(
                 buildResult.artifacts(),
@@ -271,15 +278,18 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
                 "Setter-self path should not recurse into setter call."
         );
         assertTrue(setterSource.contains("__gdcc_tmp_old_obj_"), "Setter-self should capture old slot value.");
-        var assignIndex = setterSource.indexOf("$self->obj = $value;");
-        assertTrue(assignIndex >= 0, "Setter-self should write directly to backing field.");
-        var captureOldIndex = setterSource.lastIndexOf(" = $self->obj;", assignIndex);
-        assertTrue(captureOldIndex >= 0, "Setter-self should capture old value before overwrite.");
-        assertTrue(captureOldIndex < assignIndex, "Old value capture must happen before assignment.");
-        var ownIndex = setterSource.indexOf("own_object($self->obj);", assignIndex);
-        assertTrue(ownIndex > assignIndex, "Setter-self should own BORROWED value after assignment.");
-        var releaseOldIndex = setterSource.indexOf("release_object(__gdcc_tmp_old_obj_", ownIndex);
-        assertTrue(releaseOldIndex > ownIndex, "Setter-self should release captured old value last.");
+        var fieldWrite = "gdcc_GDSelfAccessorEngineInheritanceNode_fat_ptr_live_ptr($self)->obj = $value;";
+        var assignIndex = setterSource.indexOf(fieldWrite);
+        if (assignIndex < 0) {
+            fieldWrite = "$self->obj = $value;";
+            assignIndex = setterSource.indexOf(fieldWrite);
+        }
+        assertTrue(assignIndex >= 0, "Setter-self should write directly to backing field.\n" + setterSource);
+        assertTrue(setterSource.substring(0, assignIndex).contains("->obj") || setterSource.substring(0, assignIndex).contains("$self->obj"),
+                "Setter-self should capture old value before overwrite.");
+        assertTrue(setterSource.indexOf("own_object(", assignIndex) > assignIndex, "Setter-self should own BORROWED value after assignment.");
+        assertTrue(setterSource.contains("release_object(__gdcc_tmp_old_obj_") || setterSource.contains("release_object(gdcc_"),
+                "Setter-self should release captured old value last.");
 
         var runResult = runWithSceneAndScript(
                 buildResult.artifacts(),

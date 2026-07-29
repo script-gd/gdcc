@@ -545,31 +545,31 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         assertTrue(Files.exists(projectDir.resolve("entry.c")));
         assertTrue(Files.exists(projectDir.resolve("entry.h")));
         assertTrue(
-                entrySource.contains("self->ready_value = RuntimePropertyInitSmoke__field_init_ready_value(self);"),
+                entrySource.contains("self->ready_value = RuntimePropertyInitSmoke__field_init_ready_value(gdcc_RuntimePropertyInitSmoke_fat_ptr_from_raw(RuntimePropertyInitSmoke_object_ptr(self)));"),
                 entrySource
         );
         assertTrue(
-                entrySource.contains("self->ready_angle = RuntimePropertyInitSmoke__field_init_ready_angle(self);"),
+                entrySource.contains("self->ready_angle = RuntimePropertyInitSmoke__field_init_ready_angle(gdcc_RuntimePropertyInitSmoke_fat_ptr_from_raw(RuntimePropertyInitSmoke_object_ptr(self)));"),
                 entrySource
         );
         assertTrue(
-                entrySource.contains("self->ready_flag = RuntimePropertyInitSmoke__field_init_ready_flag(self);"),
+                entrySource.contains("self->ready_flag = RuntimePropertyInitSmoke__field_init_ready_flag(gdcc_RuntimePropertyInitSmoke_fat_ptr_from_raw(RuntimePropertyInitSmoke_object_ptr(self)));"),
                 entrySource
         );
         assertTrue(
-                entrySource.contains("self->ready_node = RuntimePropertyInitSmoke__field_init_ready_node(self);"),
+                entrySource.contains("self->ready_node = RuntimePropertyInitSmoke__field_init_ready_node(gdcc_RuntimePropertyInitSmoke_fat_ptr_from_raw(RuntimePropertyInitSmoke_object_ptr(self)));"),
                 entrySource
         );
         assertTrue(
-                entrySource.contains("self->ready_obj = RuntimePropertyInitSmoke__field_init_ready_obj(self);"),
+                entrySource.contains("self->ready_obj = RuntimePropertyInitSmoke__field_init_ready_obj(gdcc_RuntimePropertyInitSmoke_fat_ptr_from_raw(RuntimePropertyInitSmoke_object_ptr(self)));"),
                 entrySource
         );
         assertTrue(
-                entrySource.contains("self->ready_ref = RuntimePropertyInitSmoke__field_init_ready_ref(self);"),
+                entrySource.contains("self->ready_ref = RuntimePropertyInitSmoke__field_init_ready_ref(gdcc_RuntimePropertyInitSmoke_fat_ptr_from_raw(RuntimePropertyInitSmoke_object_ptr(self)));"),
                 entrySource
         );
         assertTrue(
-                entrySource.contains("self->ready_worker = RuntimePropertyInitSmoke__field_init_ready_worker(self);"),
+                entrySource.contains("self->ready_worker = RuntimePropertyInitSmoke__field_init_ready_worker(gdcc_RuntimePropertyInitSmoke_fat_ptr_from_raw(RuntimePropertyInitSmoke_object_ptr(self)));"),
                 entrySource
         );
         assertFalse(entrySource.contains("GD_STATIC_SN(u8\"_field_init_ready_value\")"), entrySource);
@@ -747,7 +747,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                 entrySource
         );
         assertTrue(entrySource.contains("RuntimePlainWorker_class_create_instance(NULL, true)"), entrySource);
-        assertTrue(entrySource.contains("RuntimeConstructorWorker__init(self);"), entrySource);
+        assertTrue(entrySource.contains("RuntimeConstructorWorker__init(gdcc_RuntimeConstructorWorker_fat_ptr_from_raw(RuntimeConstructorWorker_object_ptr(self)));"), entrySource);
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
@@ -865,7 +865,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
         assertTrue(
                 Pattern.compile(
-                                "RuntimeBuiltinPropertyAbiProbe_color_r\\s*\\(\\s*RuntimeBuiltinPropertyAbiProbe\\* \\$self\\s*,\\s*godot_Color\\* \\$color\\s*\\)",
+                                "RuntimeBuiltinPropertyAbiProbe_color_r\\s*\\(\\s*gdcc_RuntimeBuiltinPropertyAbiProbe_fat_ptr \\$self\\s*,\\s*godot_Color\\* \\$color\\s*\\)",
                                 Pattern.DOTALL
                         )
                         .matcher(entryHeader)
@@ -874,7 +874,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         );
         assertTrue(
                 Pattern.compile(
-                                "RuntimeBuiltinPropertyAbiProbe_vector_x\\s*\\(\\s*RuntimeBuiltinPropertyAbiProbe\\* \\$self\\s*,\\s*godot_Vector3\\* \\$vector\\s*\\)",
+                                "RuntimeBuiltinPropertyAbiProbe_vector_x\\s*\\(\\s*gdcc_RuntimeBuiltinPropertyAbiProbe_fat_ptr \\$self\\s*,\\s*godot_Vector3\\* \\$vector\\s*\\)",
                                 Pattern.DOTALL
                         )
                         .matcher(entryHeader)

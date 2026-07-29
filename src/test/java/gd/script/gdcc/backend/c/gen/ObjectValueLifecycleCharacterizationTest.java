@@ -46,8 +46,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase 0 characterization for current object lifecycle, conversion, comparison and Variant boundary
-/// behavior. These tests anchor the phase-3 fat-pointer ownership and producer baseline.
+/// Characterization for object lifecycle, conversion, comparison and Variant boundary behavior.
+/// These tests anchor the fat-pointer ownership and producer baseline.
 class ObjectValueLifecycleCharacterizationTest {
     private static final GdObjectType ENGINE_NODE = new GdObjectType("Node");
     private static final GdObjectType ENGINE_REFCOUNTED = new GdObjectType("RefCounted");
@@ -237,7 +237,7 @@ class ObjectValueLifecycleCharacterizationTest {
     }
 
     @Nested
-    @DisplayName("Equality and null comparison phase-3C C1 anchor")
+    @DisplayName("Equality and null comparison normalized-raw anchor")
     class EqualityBaseline {
         @Test
         @DisplayName("engine object equality uses C1 normalized raw (null∪freed→NULL, live→.ptr)")
@@ -455,13 +455,13 @@ class ObjectValueLifecycleCharacterizationTest {
     }
 
     private static String generateFuncBody(LirClassDef mainClass, LirFunctionDef func, ExtensionAPI api, List<LirClassDef> gdccClasses) {
-        var module = new LirModule("phase0_lifecycle_module", gdccClasses);
+        var module = new LirModule("object_lifecycle_module", gdccClasses);
         var codegen = newCodegen(module, api, gdccClasses);
         return codegen.generateFuncBody(mainClass, func);
     }
 
     private static String generateEntryC(ExtensionAPI api, List<LirClassDef> gdccClasses) {
-        var module = new LirModule("phase0_lifecycle_module", gdccClasses);
+        var module = new LirModule("object_lifecycle_module", gdccClasses);
         var codegen = newCodegen(module, api, gdccClasses);
         return codegen.generate().stream()
                 .filter(file -> file.filePath().equals("entry.c"))

@@ -553,7 +553,10 @@ public class CCodegenTest {
         var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
 
         assertEquals(List.of("entry.c", "engine_method_binds.h", "object_fat_ptr_types.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
-        assertTrue(entrySource.contains("$node = godot_new_Node();"), entrySource);
+        assertTrue(
+                entrySource.contains("$node = gdcc_Node_fat_ptr_from_raw((GDExtensionObjectPtr)(godot_new_Node()));"),
+                entrySource
+        );
         assertContainsAll(
                 bindHeaderCode,
                 "static inline godot_Node *godot_new_Node(void)",
@@ -1851,7 +1854,7 @@ public class CCodegenTest {
         var constructorBody = resolveClassConstructorBody(cCode, "GDWorkerNode");
         var applyHelperBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_value");
         assertContainsAll(constructorBody, "GDWorkerNode_class_apply_property_init_ready_value(self);");
-        assertContainsAll(applyHelperBody, "self->ready_value =", "GDWorkerNode__field_init_ready_value(self)");
+        assertContainsAll(applyHelperBody, "self->ready_value =", "GDWorkerNode__field_init_ready_value(gdcc_GDWorkerNode_fat_ptr_from_raw(GDWorkerNode_object_ptr(self)))");
         assertFalse(applyHelperBody.contains("_field_setter_"), applyHelperBody);
         assertFalse(cCode.contains("GD_STATIC_SN(u8\"_field_init_ready_value\")"), cCode);
     }
@@ -1888,11 +1891,11 @@ public class CCodegenTest {
         var initHelperBody = resolveFunctionBodyByPrefix(cCode, "godot_int GDWorkerNode__field_init_ready_value");
 
         assertTrue(cCode.contains("godot_int GDWorkerNode__field_init_ready_value("), cCode);
-        assertTrue(cCode.contains("GDWorkerNode* $self"), cCode);
+        assertTrue(cCode.contains("gdcc_GDWorkerNode_fat_ptr $self"), cCode);
         assertContainsAll(initHelperBody, "$0 = 7;");
         var applyHelperBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_value");
         assertContainsAll(constructorBody, "GDWorkerNode_class_apply_property_init_ready_value(self);");
-        assertContainsAll(applyHelperBody, "self->ready_value =", "GDWorkerNode__field_init_ready_value(self)");
+        assertContainsAll(applyHelperBody, "self->ready_value =", "GDWorkerNode__field_init_ready_value(gdcc_GDWorkerNode_fat_ptr_from_raw(GDWorkerNode_object_ptr(self)))");
         assertFalse(applyHelperBody.contains("_field_setter_"), applyHelperBody);
     }
 
@@ -1923,8 +1926,8 @@ public class CCodegenTest {
 
         var intApplyBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_value");
         var objectApplyBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_node");
-        assertContainsAll(intApplyBody, "self->ready_value =", "GDWorkerNode__field_init_ready_value(self)");
-        assertContainsAll(objectApplyBody, "self->ready_node =", "GDWorkerNode__field_init_ready_node(self)");
+        assertContainsAll(intApplyBody, "self->ready_value =", "GDWorkerNode__field_init_ready_value(gdcc_GDWorkerNode_fat_ptr_from_raw(GDWorkerNode_object_ptr(self)))");
+        assertContainsAll(objectApplyBody, "self->ready_node =", "GDWorkerNode__field_init_ready_node(gdcc_GDWorkerNode_fat_ptr_from_raw(GDWorkerNode_object_ptr(self)))");
         assertFalse(intApplyBody.contains("_field_setter_"), intApplyBody);
         assertFalse(objectApplyBody.contains("_field_setter_"), objectApplyBody);
         assertFalse(constructorBody.contains("self->ready_value ="), constructorBody);
@@ -1949,7 +1952,7 @@ public class CCodegenTest {
         var cCode = new String(files.getFirst().contentWriter());
 
         var applyHelperBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_ref");
-        assertContainsAll(applyHelperBody, "self->ready_ref =", "GDWorkerNode__field_init_ready_ref(self)");
+        assertContainsAll(applyHelperBody, "self->ready_ref =", "GDWorkerNode__field_init_ready_ref(gdcc_GDWorkerNode_fat_ptr_from_raw(GDWorkerNode_object_ptr(self)))");
         assertFalse(applyHelperBody.contains("own_object(self->ready_ref);"), applyHelperBody);
         assertFalse(applyHelperBody.contains("try_own_object(self->ready_ref);"), applyHelperBody);
         assertFalse(applyHelperBody.contains("release_object("), applyHelperBody);
@@ -2007,7 +2010,7 @@ public class CCodegenTest {
         var applyHelperBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_value");
         var constructorBody = resolveClassConstructorBody(cCode, "GDWorkerNode");
 
-        assertContainsAll(applyHelperBody, "self->ready_value =", "GDWorkerNode__field_init_ready_value(self)");
+        assertContainsAll(applyHelperBody, "self->ready_value =", "GDWorkerNode__field_init_ready_value(gdcc_GDWorkerNode_fat_ptr_from_raw(GDWorkerNode_object_ptr(self)))");
         assertFalse(applyHelperBody.contains("custom_ready_value_setter"), applyHelperBody);
         assertFalse(constructorBody.contains("custom_ready_value_setter"), constructorBody);
         assertTrue(cCode.contains("GD_STATIC_SN(u8\"custom_ready_value_setter\")"), cCode);
@@ -2365,7 +2368,7 @@ public class CCodegenTest {
         );
         assertContainsAll(childConstructorBody, "GDParentNode_class_constructor(&self->_super);");
         assertContainsAll(childDestructorBody, "GDParentNode_class_destructor(&self->_super);");
-        assertContainsAll(cCode, "try_release_object(GDParentNode_object_ptr(self->peer));");
+        assertContainsAll(cCode, "try_release_object(gdcc_GDParentNode_fat_ptr_live_object(self->peer));");
 
         assertEquals("Node", resolveConstructTarget(cCode, "GDParentNode"));
         assertEquals("Node", resolveConstructTarget(cCode, "GDChildNode"));
@@ -2470,7 +2473,10 @@ public class CCodegenTest {
         var cCode = new String(files.getFirst().contentWriter());
 
         assertFalse(cCode.contains("GDWorkerNode__init(self);"), cCode);
-        assertTrue(cCode.contains("GDZeroArgNode__init(self);"), cCode);
+        assertTrue(
+                cCode.contains("GDZeroArgNode__init(gdcc_GDZeroArgNode_fat_ptr_from_raw(GDZeroArgNode_object_ptr(self)));"),
+                cCode
+        );
     }
 
     private static String resolveConstructTarget(String cCode, String className) {
@@ -2503,11 +2509,43 @@ public class CCodegenTest {
     }
 
     private static String resolveCallWrapperBody(String hCode, String bindName) {
-        return resolveFunctionBodyByPrefix(hCode, "static void call" + bindName);
+        // Instance wrappers are named call_<Owner><shape>; static wrappers remain call<shape>.
+        return resolveFunctionBodyByPrefix(hCode, resolveOwnedWrapperPrefix(hCode, "static void call", bindName));
     }
 
     private static String resolveMethodBindHelperBody(String hCode, String bindName) {
-        return resolveFunctionBodyByPrefix(hCode, "static void gdcc_bind_method" + bindName);
+        return resolveFunctionBodyByPrefix(hCode, resolveOwnedWrapperPrefix(hCode, "static void gdcc_bind_method", bindName));
+    }
+
+    private static String resolveOwnedWrapperPrefix(String hCode, String staticPrefix, String bindName) {
+        var exact = staticPrefix + bindName;
+        if (hCode.contains(exact + "(") || hCode.contains(exact + "\n") || hCode.contains(exact + " ")) {
+            // Prefer exact match when present (static methods / already ownerless shapes).
+            var idx = hCode.indexOf(exact);
+            if (idx >= 0) {
+                var paren = hCode.indexOf('(', idx);
+                if (paren > idx && hCode.substring(idx, paren).equals(exact)) {
+                    return exact;
+                }
+            }
+        }
+        var needle = staticPrefix + "_";
+        var from = 0;
+        while (true) {
+            var idx = hCode.indexOf(needle, from);
+            if (idx < 0) {
+                break;
+            }
+            var paren = hCode.indexOf('(', idx);
+            if (paren > idx) {
+                var full = hCode.substring(idx, paren);
+                if (full.endsWith(bindName)) {
+                    return full;
+                }
+            }
+            from = idx + needle.length();
+        }
+        return exact;
     }
 
     private static String resolveMethodBindCall(String cCode, String methodName) {

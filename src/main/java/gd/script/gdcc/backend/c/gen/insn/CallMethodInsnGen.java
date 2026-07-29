@@ -291,7 +291,14 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                         "' to method parameter #" + (i + 1) + " ('" + param.name() +
                         "') of type '" + param.type().getTypeName() + "'");
             }
-            fixedArgs.add(bodyBuilder.valueOfVar(argVar));
+            // Exact engine helpers take owner-typed fat params; subtype args must upcast like receivers.
+            if (argVar.type() instanceof GdObjectType
+                    && param.type() instanceof GdObjectType paramObjType
+                    && !argVar.type().getTypeName().equals(paramObjType.getTypeName())) {
+                fixedArgs.add(bodyBuilder.valueOfCastedVar(argVar, paramObjType));
+            } else {
+                fixedArgs.add(bodyBuilder.valueOfVar(argVar));
+            }
         }
 
         for (var i = providedFixedCount; i < fixedCount; i++) {

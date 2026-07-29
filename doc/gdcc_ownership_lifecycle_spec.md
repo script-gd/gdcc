@@ -204,12 +204,17 @@ Interaction with `__prepare__` / `__finally__`:
   - local non-`void` return carrier `r`
 - Cleanup rule for those locals is value-wrapper specific:
   - destroyable non-object wrappers must be explicitly destroyed before the wrapper returns
-  - object pointers and primitives must not go through this `destroy(&slot)` path
+  - `OWNED` object return carrier `r` must be released after Variant packing
+    (`release_object` / `try_release_object` per `RefCountedStatus`) so internal ownership
+    transfers net-zero into `r_return`
+  - object argument locals are BORROWED from Variant args and must not be released here
+  - primitives never need wrapper cleanup
 - Required success-path order:
   1. publish `r_return`
   2. destroy local `ret`
-  3. destroy destroyable non-object `r`
-  4. destroy wrapper-owned argument locals in reverse order
+  3. release `OWNED` object return carrier `r` (when RefCounted YES/UNKNOWN)
+  4. destroy destroyable non-object `r`
+  5. destroy wrapper-owned argument locals in reverse order
 - This rule complements, but does not replace, the function-body ownership model in Section 3:
   - Builder-managed slots still follow the unified slot-write/return/discard rules
   - wrapper locals stay a template-owned responsibility boundary

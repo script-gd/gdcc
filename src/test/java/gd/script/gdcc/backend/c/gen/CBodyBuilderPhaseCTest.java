@@ -895,7 +895,7 @@ public class CBodyBuilderPhaseCTest {
         @DisplayName("Unregistered object target type should fail-fast during fat pointer storage resolution")
         void testUnknownTargetObjectAssignmentFailsFast() {
             // The test registry only registers RefCounted and Node; the bare "Object" engine type is
-            // unknown to the fat-pointer spec resolver and must fail-fast in phase 3.
+            // unknown to the fat-pointer spec resolver and must fail-fast.
             var target = new LirVariable("obj", GdObjectType.OBJECT, lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
             var value = builder.valueOfExpr("refCountedPtr", new GdObjectType("RefCounted"));
@@ -1021,7 +1021,7 @@ public class CBodyBuilderPhaseCTest {
         @Test
         @DisplayName("callAssign discard of unknown object return should fail-fast on unregistered type")
         void testCallAssignDiscardUnknownObjectReturn() {
-            // Phase 3 fail-fast: unknown object types cannot materialize a fat pointer discard temp.
+            // Fail-fast: unknown object types cannot materialize a fat pointer discard temp.
             var ex = assertThrows(IllegalStateException.class, () ->
                     builder.callAssign(builder.discardRef(), "fetch_unknown", new GdObjectType("UnknownType"), List.of())
             );
@@ -1058,7 +1058,7 @@ public class CBodyBuilderPhaseCTest {
         @Test
         @DisplayName("Unknown object assignment should fail-fast on unregistered type")
         void testUnknownObjectAssignmentFailsFast() {
-            // Phase 3 fail-fast: unknown object types cannot materialize a fat pointer slot storage.
+            // Fail-fast: unknown object types cannot materialize a fat pointer slot storage.
             var target = new LirVariable("obj", new GdObjectType("UnknownType"), lirFunctionDef);
             var source = new LirVariable("src", new GdObjectType("UnknownType"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -1172,25 +1172,25 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("GDCC object arg should expand to validated live Godot raw ptr when calling gdcc_engine_call_ function")
+        @DisplayName("GDCC object arg should pass fat pointer to gdcc_engine_call_ helper")
         void testGdccObjectArgConvertedForEngineHelperFunc() {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var value = builder.valueOfVar(gdccVar);
 
             builder.callVoid("gdcc_engine_call_MyGdccClass_attach_P_RV", List.of(value));
 
-            assertEquals("gdcc_engine_call_MyGdccClass_attach_P_RV(gdcc_MyGdccClass_fat_ptr_live_object($myObj));\n", builder.build());
+            assertEquals("gdcc_engine_call_MyGdccClass_attach_P_RV($myObj);\n", builder.build());
         }
 
         @Test
-        @DisplayName("GDCC object arg should expand to validated live Godot raw ptr when calling gdcc_engine_callv_ function")
+        @DisplayName("GDCC object arg should pass fat pointer to gdcc_engine_callv_ helper")
         void testGdccObjectArgConvertedForEngineVarargHelperFunc() {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var value = builder.valueOfVar(gdccVar);
 
             builder.callVoid("gdcc_engine_callv_MyGdccClass_attach_P_RV_Xv", List.of(value));
 
-            assertEquals("gdcc_engine_callv_MyGdccClass_attach_P_RV_Xv(gdcc_MyGdccClass_fat_ptr_live_object($myObj));\n", builder.build());
+            assertEquals("gdcc_engine_callv_MyGdccClass_attach_P_RV_Xv($myObj);\n", builder.build());
         }
 
         @Test
@@ -1205,25 +1205,25 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("Engine object arg should expand to validated live Godot raw ptr via live_object when calling gdcc_engine_call_ function")
+        @DisplayName("Engine object arg should pass fat pointer to gdcc_engine_call_ helper")
         void testEngineObjectArgNotConvertedForEngineHelperFunc() {
             var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var value = builder.valueOfVar(nodeVar);
 
             builder.callVoid("gdcc_engine_call_Node_do_thing_P_RV", List.of(value));
 
-            assertEquals("gdcc_engine_call_Node_do_thing_P_RV(gdcc_Node_fat_ptr_live_object($node));\n", builder.build());
+            assertEquals("gdcc_engine_call_Node_do_thing_P_RV($node);\n", builder.build());
         }
 
         @Test
-        @DisplayName("Engine object arg should expand to validated live Godot raw ptr via live_object when calling gdcc_engine_callv_ function")
+        @DisplayName("Engine object arg should pass fat pointer to gdcc_engine_callv_ helper")
         void testEngineObjectArgNotConvertedForEngineVarargHelperFunc() {
             var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var value = builder.valueOfVar(nodeVar);
 
             builder.callVoid("gdcc_engine_callv_Node_do_thing_P_RV_Xv", List.of(value));
 
-            assertEquals("gdcc_engine_callv_Node_do_thing_P_RV_Xv(gdcc_Node_fat_ptr_live_object($node));\n", builder.build());
+            assertEquals("gdcc_engine_callv_Node_do_thing_P_RV_Xv($node);\n", builder.build());
         }
 
         @Test
@@ -1245,7 +1245,7 @@ public class CBodyBuilderPhaseCTest {
                     builder.valueOfCastedVar(gdccVar, new GdObjectType("Node"))
             );
             assertTrue(ex.getMessage().contains("Cannot upcast object type 'MyGdccClass' to 'Node'"),
-                    "Cross-hierarchy casts must fail-fast in phase 3. Actual:\n" + ex.getMessage());
+                    "Cross-hierarchy casts must fail-fast. Actual:\n" + ex.getMessage());
         }
 
         @Test
@@ -1256,7 +1256,7 @@ public class CBodyBuilderPhaseCTest {
                     builder.valueOfCastedVar(engineVar, new GdObjectType("MyGdccClass"))
             );
             assertTrue(ex.getMessage().contains("Cannot upcast object type 'Node' to 'MyGdccClass'"),
-                    "Cross-hierarchy casts must fail-fast in phase 3. Actual:\n" + ex.getMessage());
+                    "Cross-hierarchy casts must fail-fast. Actual:\n" + ex.getMessage());
         }
 
         @Test
@@ -1286,7 +1286,7 @@ public class CBodyBuilderPhaseCTest {
             builder.callVoid("my_custom_func", List.of(casted));
 
             assertEquals(
-                    "my_custom_func(gdcc_Outer_sub_Child_fat_ptr_upcast_to_Outer__sub__GrandParent($child));\n",
+                    "my_custom_func(gdcc_Outer_sub_Child_fat_ptr_upcast_to_Outer_sub_GrandParent($child));\n",
                     builder.build()
             );
         }
@@ -1324,7 +1324,7 @@ public class CBodyBuilderPhaseCTest {
         @Test
         @DisplayName("renderArgument should fail-fast on inconsistent NON_OBJECT ptr kind and object type")
         void testRenderArgumentShouldRejectInconsistentGdccPtrKind() {
-            // Phase 3 collapses engine and GDCC object storage into FAT_PTR, so the only remaining
+            // The backend collapses engine and GDCC object storage into FAT_PTR, so the only remaining
             // mismatch for an object argument is a NON_OBJECT ptr kind paired with an object type.
             var mismatched = builder.valueOfExpr("(godot_Node*)$self", new GdObjectType("Node"), CBodyBuilder.PtrKind.NON_OBJECT);
             var ex = assertThrows(InvalidInsnException.class, () -> builder.callVoid("godot_Node_queue_free", List.of(mismatched)));
@@ -1396,7 +1396,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("callAssign should wrap gdcc_engine_call_ return with from_raw fat capture for GDCC target")
+        @DisplayName("callAssign should treat gdcc_engine_call_ return as fat pointer for GDCC target")
         void testCallAssignGdccTargetFromEngineHelperFunc() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -1404,12 +1404,13 @@ public class CBodyBuilderPhaseCTest {
             builder.callAssign(targetRef, "gdcc_engine_call_Node_spawn_P_RL4Node_", new GdObjectType("MyGdccClass"), List.of());
 
             var result = builder.build();
-            assertTrue(result.contains("gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(gdcc_engine_call_Node_spawn_P_RL4Node_()))"),
-                    "Should wrap engine helper return with from_raw fat capture for GDCC target. Actual:\n" + result);
+            assertFalse(result.contains("gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(gdcc_engine_call_Node_spawn_P_RL4Node_()))"),
+                    "Engine helper already returns fat; caller must not re-capture via from_raw. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_engine_call_Node_spawn_P_RL4Node_()"), result);
         }
 
         @Test
-        @DisplayName("callAssign should wrap gdcc_engine_callv_ return with from_raw fat capture for GDCC target")
+        @DisplayName("callAssign should treat gdcc_engine_callv_ return as fat pointer for GDCC target")
         void testCallAssignGdccTargetFromEngineVarargHelperFunc() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -1417,8 +1418,9 @@ public class CBodyBuilderPhaseCTest {
             builder.callAssign(targetRef, "gdcc_engine_callv_Node_spawn_P_RL4Node__Xv", new GdObjectType("MyGdccClass"), List.of());
 
             var result = builder.build();
-            assertTrue(result.contains("gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(gdcc_engine_callv_Node_spawn_P_RL4Node__Xv()))"),
-                    "Should wrap vararg engine helper return with from_raw fat capture for GDCC target. Actual:\n" + result);
+            assertFalse(result.contains("gdcc_MyGdccClass_fat_ptr_from_raw((GDExtensionObjectPtr)(gdcc_engine_callv_Node_spawn_P_RL4Node__Xv()))"),
+                    "Vararg engine helper already returns fat; caller must not re-capture via from_raw. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_engine_callv_Node_spawn_P_RL4Node__Xv()"), result);
         }
 
         @Test
@@ -1435,7 +1437,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("callAssign should capture gdcc_engine_call_ return into fat pointer for engine target")
+        @DisplayName("callAssign should assign gdcc_engine_call_ fat return for engine target")
         void testCallAssignEngineTargetFromEngineHelperFuncCapturesFatPtr() {
             var target = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -1443,12 +1445,13 @@ public class CBodyBuilderPhaseCTest {
             builder.callAssign(targetRef, "gdcc_engine_call_Node_spawn_P_RL4Node_", new GdObjectType("Node"), List.of());
 
             var result = builder.build();
-            assertTrue(result.contains("gdcc_Node_fat_ptr_from_raw((GDExtensionObjectPtr)(gdcc_engine_call_Node_spawn_P_RL4Node_()))"),
-                    "Engine helper raw return must capture into fat pointer storage. Actual:\n" + result);
+            assertFalse(result.contains("gdcc_Node_fat_ptr_from_raw((GDExtensionObjectPtr)(gdcc_engine_call_Node_spawn_P_RL4Node_()))"),
+                    "Engine helper already returns fat; no caller-side from_raw. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_engine_call_Node_spawn_P_RL4Node_()"), result);
         }
 
         @Test
-        @DisplayName("callAssign should capture gdcc_engine_callv_ return into fat pointer for engine target")
+        @DisplayName("callAssign should assign gdcc_engine_callv_ fat return for engine target")
         void testCallAssignEngineTargetFromEngineVarargHelperFuncCapturesFatPtr() {
             var target = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -1456,8 +1459,9 @@ public class CBodyBuilderPhaseCTest {
             builder.callAssign(targetRef, "gdcc_engine_callv_Node_spawn_P_RL4Node__Xv", new GdObjectType("Node"), List.of());
 
             var result = builder.build();
-            assertTrue(result.contains("gdcc_Node_fat_ptr_from_raw((GDExtensionObjectPtr)(gdcc_engine_callv_Node_spawn_P_RL4Node__Xv()))"),
-                    "Vararg engine helper raw return must capture into fat pointer storage. Actual:\n" + result);
+            assertFalse(result.contains("gdcc_Node_fat_ptr_from_raw((GDExtensionObjectPtr)(gdcc_engine_callv_Node_spawn_P_RL4Node__Xv()))"),
+                    "Vararg engine helper already returns fat; no caller-side from_raw. Actual:\n" + result);
+            assertTrue(result.contains("gdcc_engine_callv_Node_spawn_P_RL4Node__Xv()"), result);
         }
 
         @Test

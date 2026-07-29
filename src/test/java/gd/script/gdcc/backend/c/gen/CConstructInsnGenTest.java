@@ -550,7 +550,10 @@ class CConstructInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
-        assertTrue(body.contains("$resource = godot_new_RefCounted();"), body);
+        assertTrue(
+                body.contains("$resource = gdcc_RefCounted_fat_ptr_from_raw((GDExtensionObjectPtr)(godot_new_RefCounted()));"),
+                body
+        );
         assertFalse(body.contains("own_object($resource);"), body);
         assertFalse(body.contains("try_own_object($resource);"), body);
     }
@@ -571,7 +574,7 @@ class CConstructInsnGenTest {
         var body = codegen.generateFuncBody(holderClass, func);
 
         assertTrue(body.contains("gdcc_ref_counted_init_raw(Worker_class_create_instance(NULL, false), true)"));
-        assertTrue(body.contains("gdcc_object_from_godot_object_ptr("), body);
+        assertTrue(body.contains("gdcc_Worker_fat_ptr_from_raw((GDExtensionObjectPtr)("), body);
         assertFalse(body.contains("own_object("), body);
         assertFalse(body.contains("try_own_object("), body);
     }
@@ -593,7 +596,7 @@ class CConstructInsnGenTest {
 
         assertTrue(body.contains("PlainWorker_class_create_instance(NULL, true)"), body);
         assertFalse(body.contains("gdcc_ref_counted_init_raw("), body);
-        assertTrue(body.contains("gdcc_object_from_godot_object_ptr("), body);
+        assertTrue(body.contains("gdcc_PlainWorker_fat_ptr_from_raw((GDExtensionObjectPtr)("), body);
     }
 
     @Test

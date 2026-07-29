@@ -342,7 +342,11 @@ class CCodegenEngineMethodBindHeaderTest {
         var entrySource = renderedFiles.get("entry.c");
         var bindHeader = renderedFiles.get("engine_method_binds.h");
 
-        assertTrue(entrySource.contains("$node = godot_new_Node();"), entrySource);
+        // Constructor still returns raw; call site captures into fat storage.
+        assertTrue(
+                entrySource.contains("gdcc_Node_fat_ptr_from_raw((GDExtensionObjectPtr)(godot_new_Node()))"),
+                entrySource
+        );
         assertContainsAll(
                 bindHeader,
                 "static inline godot_Node *godot_new_Node(void)",
@@ -408,10 +412,11 @@ class CCodegenEngineMethodBindHeaderTest {
                 bindHeader,
                 "static inline godot_int gdcc_engine_call_probe_link_PL5Probe_TI_RI"
         );
+        // Public surface is fat self/object args; raw slots stay inside the helper.
         assertContainsAll(
                 linkSignature,
-                "GDExtensionObjectPtr self",
-                "godot_Probe* arg0",
+                "gdcc_Probe_fat_ptr self",
+                "gdcc_Probe_fat_ptr arg0",
                 "godot_String* arg1",
                 "godot_int arg2"
         );
@@ -421,14 +426,19 @@ class CCodegenEngineMethodBindHeaderTest {
                 "GDExtensionMethodBindPtr bind = NULL;",
                 "if (!gdcc_engine_method_bind_probe_link_PL5Probe_TI_RI(&bind)) {",
                 "return 0;",
+                "GDExtensionObjectPtr self_raw = gdcc_Probe_fat_ptr_live_object(self);",
+                "GDExtensionObjectPtr arg0_raw = gdcc_Probe_fat_ptr_live_object(arg0);",
                 "const GDExtensionConstTypePtr args[] = {",
-                "&arg0,",
+                "&arg0_raw,",
                 "arg1,",
                 "&arg2",
                 "godot_object_method_bind_ptrcall(",
-                "self,",
+                "self_raw,",
                 "&result"
         );
+        assertFalse(linkBody.contains("&arg0,"), linkBody);
+        assertFalse(linkSignature.contains("GDExtensionObjectPtr self"), linkSignature);
+        assertFalse(linkSignature.contains("godot_Probe* arg0"), linkSignature);
         assertFalse(linkBody.contains("bind == NULL"), linkBody);
         assertFalse(linkBody.contains("engine method bind lookup failed: Probe.link"), linkBody);
         assertFalse(linkBody.contains("NULL,\n        args"), linkBody);
@@ -489,7 +499,7 @@ class CCodegenEngineMethodBindHeaderTest {
         );
         assertContainsAll(
                 configureSignature,
-                "GDExtensionObjectPtr self",
+                "gdcc_Probe_fat_ptr self",
                 "godot_int arg0",
                 "godot_int arg1",
                 "godot_String* arg2"
@@ -500,6 +510,7 @@ class CCodegenEngineMethodBindHeaderTest {
         var configureBody = resolveFunctionBodyByPrefix(bindHeader, "static inline void gdcc_engine_call_probe_configure_PIIT_RV");
         assertContainsAll(
                 configureBody,
+                "GDExtensionObjectPtr self_raw = gdcc_Probe_fat_ptr_live_object(self);",
                 "const godot_Probe_Mode arg0_slot = (godot_Probe_Mode)arg0;",
                 "const godot_Probe_Flags arg1_slot = (godot_Probe_Flags)arg1;",
                 "const GDExtensionConstTypePtr args[] = {",
@@ -507,7 +518,7 @@ class CCodegenEngineMethodBindHeaderTest {
                 "&arg1_slot,",
                 "arg2",
                 "godot_object_method_bind_ptrcall(",
-                "self,"
+                "self_raw,"
         );
         assertFalse(configureBody.contains("(const godot_Probe_Flags *)&"), configureBody);
         assertFalse(configureBody.contains("(const godot_Probe_Mode *)&"), configureBody);
@@ -591,7 +602,7 @@ class CCodegenEngineMethodBindHeaderTest {
         );
         assertContainsAll(
                 mixSignature,
-                "GDExtensionObjectPtr self",
+                "gdcc_Probe_fat_ptr self",
                 "godot_Variant* arg0",
                 "godot_String* arg1",
                 "const godot_Variant **argv",
@@ -600,6 +611,7 @@ class CCodegenEngineMethodBindHeaderTest {
         var mixBody = resolveFunctionBodyByPrefix(bindHeader, "static inline godot_String gdcc_engine_callv_probe_mix_PRT_RT_Xv");
         assertContainsAll(
                 mixBody,
+                "GDExtensionObjectPtr self_raw = gdcc_Probe_fat_ptr_live_object(self);",
                 "godot_Variant fixed_arg_0 = godot_new_Variant_with_Variant(arg0);",
                 "godot_Variant fixed_arg_1 = godot_new_Variant_with_String(arg1);",
                 "const godot_int fixed_argc = (godot_int)2;",
@@ -609,7 +621,7 @@ class CCodegenEngineMethodBindHeaderTest {
                 "godot_bool ret_initialized = false;",
                 "godot_Variant ret;",
                 "godot_object_method_bind_call(",
-                "self,",
+                "self_raw,",
                 "(GDExtensionUninitializedVariantPtr)&ret,",
                 "&error",
                 "char call_error_desc[512];",
@@ -676,6 +688,52 @@ class CCodegenEngineMethodBindHeaderTest {
     }
 
     @Test
+    @DisplayName("generate should own vararg RefCounted object return before temporary Variant destroy")
+    void generateShouldOwnVarargObjectReturnBeforeVariantDestroy() {
+        var hostClass = newClass("Worker", "RefCounted");
+
+        var callMake = newVoidFunction("call_make");
+        callMake.createAndAddVariable("probe", new GdObjectType("Probe"));
+        callMake.createAndAddVariable("label", GdStringType.STRING);
+        callMake.createAndAddVariable("extra", GdVariantType.VARIANT);
+        callMake.createAndAddVariable("result", new GdObjectType("RefCounted"));
+        entry(callMake).appendInstruction(new CallMethodInsn(
+                "result",
+                "make_ref",
+                "probe",
+                List.of(varOperand("label"), varOperand("extra"))
+        ));
+        entry(callMake).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(callMake);
+
+        var module = new LirModule("engine_bind_vararg_object_return_module", List.of(hostClass));
+        var codegen = newCodegen(
+                module,
+                apiWith(List.of(), List.of(probeClassWithVarargObjectReturn(), refCountedClass())),
+                List.of(hostClass)
+        );
+        var bindHeader = renderFiles(codegen.generate()).get("engine_method_binds.h");
+        // Object return leaf encodes as L{len}{Name}_ so descriptor ends with trailing '_' before _Xv.
+        var makeBody = resolveFunctionBodyByPrefix(
+                bindHeader,
+                "static inline gdcc_RefCounted_fat_ptr gdcc_engine_callv_probe_make_ref_PT_RL10RefCounted__Xv"
+        );
+        assertTrue(makeBody.contains("gdcc_RefCounted_fat_ptr_from_variant("), makeBody);
+        assertTrue(makeBody.contains("own_object(gdcc_RefCounted_fat_ptr_live_object(result));"), makeBody);
+        assertTrue(makeBody.contains("godot_Variant_destroy(&ret);"), makeBody);
+        assertOrderedFragments(
+                makeBody,
+                "gdcc_RefCounted_fat_ptr_from_variant(",
+                "own_object(gdcc_RefCounted_fat_ptr_live_object(result));",
+                "if (ret_initialized) {",
+                "godot_Variant_destroy(&ret);"
+        );
+        var ownIdx = makeBody.indexOf("own_object(gdcc_RefCounted_fat_ptr_live_object(result));");
+        var destroyIdx = makeBody.indexOf("godot_Variant_destroy(&ret);", ownIdx);
+        assertTrue(ownIdx >= 0 && destroyIdx > ownIdx, "own must precede Variant destroy.\n" + makeBody);
+    }
+
+    @Test
     @DisplayName("generate should normalize mixed vararg fixed prefix surface before helper-owned pack and cleanup")
     void generateShouldNormalizeMixedVarargFixedPrefixSurfaceBeforeHelperOwnedPackAndCleanup() {
         var hostClass = newClass("Worker", "RefCounted");
@@ -717,8 +775,8 @@ class CCodegenEngineMethodBindHeaderTest {
         );
         assertContainsAll(
                 dispatchSignature,
-                "GDExtensionObjectPtr self",
-                "godot_Probe* arg0",
+                "gdcc_Probe_fat_ptr self",
+                "gdcc_Probe_fat_ptr arg0",
                 "godot_int arg1",
                 "godot_int arg2",
                 "godot_String* arg3",
@@ -734,7 +792,8 @@ class CCodegenEngineMethodBindHeaderTest {
         );
         assertContainsAll(
                 dispatchBody,
-                "godot_Variant fixed_arg_0 = godot_new_Variant_with_Object(arg0);",
+                "GDExtensionObjectPtr self_raw = gdcc_Probe_fat_ptr_live_object(self);",
+                "godot_Variant fixed_arg_0 = gdcc_Probe_fat_ptr_to_variant(arg0);",
                 "godot_Variant fixed_arg_1 = godot_new_Variant_with_int(arg1);",
                 "godot_Variant fixed_arg_2 = godot_new_Variant_with_int(arg2);",
                 "godot_Variant fixed_arg_3 = godot_new_Variant_with_String(arg3);",
@@ -1170,6 +1229,32 @@ class CCodegenEngineMethodBindHeaderTest {
                 "core",
                 List.of(),
                 List.of(mix, dispatch, broadcast),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionGdClass probeClassWithVarargObjectReturn() {
+        var makeRef = new ExtensionGdClass.ClassMethod(
+                "make_ref",
+                false,
+                true,
+                false,
+                false,
+                98L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("RefCounted"),
+                List.of(new ExtensionFunctionArgument("label", "String", null, null))
+        );
+        return new ExtensionGdClass(
+                "Probe",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(makeRef),
                 List.of(),
                 List.of(),
                 List.of()

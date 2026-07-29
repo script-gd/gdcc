@@ -86,7 +86,7 @@ class ModuleLocalGodotBindingTemplateTest {
     void constructorLookupFailureShouldAvoidDesignatedInitializer() throws Exception {
         var header = render(
                 List.of(),
-                List.of(new EngineConstructorUsage("Node", "Node", "Node"))
+                List.of(new EngineConstructorUsage("Node", "Node", "Node", false))
         );
 
         assertAll(
@@ -98,9 +98,23 @@ class ModuleLocalGodotBindingTemplateTest {
                 () -> assertTrue(header.contains("context.owner = \"Node\";"), header),
                 () -> assertTrue(header.contains("context.type = \"Node\";"), header),
                 () -> assertTrue(header.contains("gdcc_binding_lookup_fail(&context);"), header),
+                () -> assertFalse(header.contains("gdcc_ref_counted_init_raw"), header),
                 () -> assertFalse(header.contains("gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){"), header),
                 () -> assertFalse(header.contains("\n                .kind = \"engine_constructor\""), header),
                 () -> assertFalse(header.contains("\n                .function_name = \"godot_new_Node\""), header)
+        );
+    }
+
+    @Test
+    void refCountedConstructorShouldCallInitRefAfterConstruct() throws Exception {
+        var header = render(
+                List.of(),
+                List.of(new EngineConstructorUsage("RefCounted", "RefCounted", "RefCounted", true))
+        );
+
+        assertAll(
+                () -> assertTrue(header.contains("static inline godot_RefCounted *godot_new_RefCounted(void)"), header),
+                () -> assertTrue(header.contains("object = gdcc_ref_counted_init_raw(object, false);"), header)
         );
     }
 

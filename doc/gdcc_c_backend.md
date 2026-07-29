@@ -238,23 +238,24 @@ already exists, otherwise use the project's own `compiler-cache` directory.
 
 ### call_func Wrapper Local Cleanup Contract
 
-- Generated `call_func` wrappers own the temporary non-object wrapper locals they materialize themselves:
-  - parameter locals created by `godot_new_<Type>_with_Variant(...)`
+- Generated `call_func` wrappers own the temporary wrapper-local values they materialize themselves:
+  - parameter locals created by `godot_new_<Type>_with_Variant(...)` (non-object) or BORROWED fat unpack (object)
   - the staged `godot_Variant ret` used to publish non-`void` returns
-  - the non-`void` local `r` when the returned type is a destroyable non-object wrapper
+  - the non-`void` local `r` when the returned type is an object (`OWNED` fat pointer) or a destroyable non-object wrapper
 - Those locals are outside ordinary `CBodyBuilder` slot lifecycle:
   - they live only inside the generated wrapper glue
-  - the wrapper must destroy them explicitly before returning to Godot
+  - the wrapper must destroy/release them explicitly before returning to Godot
 - Cleanup order is fixed:
   1. publish `r_return` with `godot_variant_new_copy(...)`
   2. destroy local `ret`
-  3. destroy local `r` when its source type is a destroyable non-object wrapper
-  4. destroy wrapper-owned argument locals in reverse order
-- Do not apply this cleanup contract to object pointers or primitives:
-  - object args/returns are plain pointer locals here, not value wrappers with `destroy(&slot)` semantics
-  - primitive args/returns never need wrapper cleanup
-- Backend touchpoint:
-  - `CGenHelper.renderCallWrapperDestroyStmt(...)` is the single type-driven helper that decides whether an argument/return local needs this wrapper cleanup
+  3. release `OWNED` object return carrier `r` (`release_object` / `try_release_object` per `RefCountedStatus`)
+  4. destroy local `r` when its source type is a destroyable non-object wrapper
+  5. destroy wrapper-owned argument locals in reverse order
+- Object argument locals are BORROWED from Variant args and must not be released.
+- Primitive args/returns never need wrapper cleanup.
+- Backend touchpoints:
+  - `CGenHelper.renderCallWrapperOwnedObjectReturnConsumeStmt(...)` consumes OWNED object return `r` after pack
+  - `CGenHelper.renderCallWrapperDestroyStmt(...)` destroys destroyable non-object wrapper locals only
 
 ### Receiver Value Terminology
 
@@ -431,19 +432,23 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
   - Typed `Array` / `Dictionary` construction first uses the plain container value, then calls the
     typed constructor with a real nil `Variant` script carrier. Backend must not replace this with a
     null pointer shortcut.
-- For object constructor route (`construct_object` / frontend `.new(...)` object target), call
-  `godot_new_XXX()` directly for engine classes, and call generated `XXX_class_create_instance(...)`
-  directly for gdcc classes. For non-`RefCounted` gdcc classes this remains `XXX_class_create_instance(NULL, true)`.
-  When the GDCC target definitely inherits `RefCounted`, generated C constructor call sites must use
-  `XXX_class_create_instance(NULL, false)` first, then wrap that external create call with
-  `gdcc_ref_counted_init_raw(..., true)` before the result enters the existing object slot write /
-  pointer-conversion path. The generated `*_class_create_instance(...)` itself stays a raw native-object
-  allocation/binding helper and
-  must not perform the external RefCounted init on behalf of every caller. When the same GDCC
-  `RefCounted` class is instantiated by Godot engine entry points or by GDScript, Godot itself is
-  responsible for initializing the reference count as part of its own creation path. GDCC custom constructors
-  themselves remain zero-arg only; parameterized custom constructor routes are blocked in frontend
-  compile mode.
+- For object constructor route (`construct_object` / frontend `.new(...)` object target):
+  - Engine classes: call `godot_new_XXX()` directly. When the engine target definitely inherits
+    `RefCounted`, the module-local constructor wrapper (`engine_method_binds.h.ftl`) must call
+    `gdcc_ref_counted_init_raw(object, false)` after `godot_classdb_construct_object` so the returned
+    raw pointer is OWNED at refcount=1 (aligned with GDCC create paths). Non-`RefCounted` engine
+    classes stay plain construct without `init_ref`.
+  - GDCC classes: call generated `XXX_class_create_instance(...)` directly. For non-`RefCounted`
+    gdcc classes this remains `XXX_class_create_instance(NULL, true)`. When the GDCC target
+    definitely inherits `RefCounted`, generated C constructor call sites must use
+    `XXX_class_create_instance(NULL, false)` first, then wrap that external create call with
+    `gdcc_ref_counted_init_raw(..., true)` before the result enters the existing object slot write /
+    pointer-conversion path. The generated `*_class_create_instance(...)` itself stays a raw
+    native-object allocation/binding helper and must not perform the external RefCounted init on
+    behalf of every caller. When the same GDCC `RefCounted` class is instantiated by Godot engine
+    entry points or by GDScript, Godot itself is responsible for initializing the reference count
+    as part of its own creation path. GDCC custom constructors themselves remain zero-arg only;
+    parameterized custom constructor routes are blocked in frontend compile mode.
 - For `$"..."`, generate NodePath constructor with utf8_chars.
 
 ### Extension Type Metadata Parsing Ownership

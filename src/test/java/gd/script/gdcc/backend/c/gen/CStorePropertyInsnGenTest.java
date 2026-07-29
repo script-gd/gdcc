@@ -66,8 +66,8 @@ public class CStorePropertyInsnGenTest {
 
         var body = codegen.generateFuncBody(gdccClass, func);
         assertTrue(body.contains("godot_String __gdcc_tmp_string_0 = godot_new_String_with_String($value);"), body);
-        assertTrue(body.contains("godot_String_destroy(&$self->value);"), body);
-        assertTrue(body.contains("$self->value = __gdcc_tmp_string_0;"), body);
+        assertTrue(body.contains("godot_String_destroy(&gdcc_MyClass_fat_ptr_live_ptr($self)->value);"), body);
+        assertTrue(body.contains("gdcc_MyClass_fat_ptr_live_ptr($self)->value = __gdcc_tmp_string_0;"), body);
         assertFalse(body.contains("godot_String_destroy(&__gdcc_tmp_string_0);"), body);
         assertFalse(body.contains("MyClass__field_setter_value("));
     }
@@ -93,8 +93,8 @@ public class CStorePropertyInsnGenTest {
 
         var body = codegen.generateFuncBody(gdccClass, func);
         assertTrue(body.contains("godot_Variant __gdcc_tmp_variant_0 = godot_new_Variant_with_Variant($value);"), body);
-        assertTrue(body.contains("godot_Variant_destroy(&$self->payload);"), body);
-        assertTrue(body.contains("$self->payload = __gdcc_tmp_variant_0;"), body);
+        assertTrue(body.contains("godot_Variant_destroy(&gdcc_MyClass_fat_ptr_live_ptr($self)->payload);"), body);
+        assertTrue(body.contains("gdcc_MyClass_fat_ptr_live_ptr($self)->payload = __gdcc_tmp_variant_0;"), body);
         assertFalse(body.contains("godot_Variant_destroy(&__gdcc_tmp_variant_0);"), body);
         assertFalse(body.contains("MyClass__field_setter_payload("), body);
     }
@@ -109,7 +109,7 @@ public class CStorePropertyInsnGenTest {
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(nodeClass), List.of(), List.of());
 
         var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
-        gdccClass.addProperty(new LirPropertyDef("target", new GdObjectType("Object"), false, null, null, "_field_setter_target", Map.of()));
+        gdccClass.addProperty(new LirPropertyDef("target", new GdObjectType("Node"), false, null, null, "_field_setter_target", Map.of()));
 
         var func = new LirFunctionDef("_field_setter_target");
         func.setReturnType(GdVoidType.VOID);
@@ -126,10 +126,12 @@ public class CStorePropertyInsnGenTest {
 
         var body = codegen.generateFuncBody(gdccClass, func);
         assertTrue(body.contains("__gdcc_tmp_old_obj_"), "Should capture old target object in temp.");
-        assertTrue(body.contains(" = $self->target;"), "Captured old temp should be initialized from target slot.");
-        assertTrue(body.contains("try_release_object(__gdcc_tmp_old_obj_"), "Should release captured old target object.");
-        assertTrue(body.contains("$self->target = $value;"));
-        assertTrue(body.contains("try_own_object($self->target);"));
+        assertTrue(
+                body.contains(" = gdcc_MyClass_fat_ptr_live_ptr($self)->target;"),
+                "Captured old temp should be initialized from target slot via live_ptr.\n" + body
+        );
+        // Node is non-RefCounted: capture old + assign; own/release may be no-ops for status NO.
+        assertTrue(body.contains("gdcc_MyClass_fat_ptr_live_ptr($self)->target = $value;"), body);
         assertFalse(body.contains("try_own_object($value);"));
     }
 
@@ -177,17 +179,26 @@ public class CStorePropertyInsnGenTest {
         assertTrue(body.contains("MyClass__field_getter_obj($self);"));
         assertFalse(body.contains("MyClass__field_setter_obj($self, $rhs);"));
         assertTrue(body.contains("__gdcc_tmp_old_obj_"), "Setter-self field write should capture old value temp.");
-        assertTrue(body.contains(" = $self->obj;"), "Captured temp should copy field old value.");
+        assertTrue(
+                body.contains(" = gdcc_MyClass_fat_ptr_live_ptr($self)->obj;"),
+                "Captured temp should copy field old value via live_ptr.\n" + body
+        );
 
-        var assignIndex = body.indexOf("$self->obj = $rhs;");
-        var ownIndex = body.indexOf("own_object($self->obj);");
-        assertTrue(assignIndex >= 0, "Setter-self field write should assign RHS value.");
-        assertTrue(ownIndex >= 0, "Setter-self field write should own BORROWED RHS value.");
-        assertTrue(body.substring(0, assignIndex).contains(" = $self->obj;"),
+        var assignIndex = body.indexOf("gdcc_MyClass_fat_ptr_live_ptr($self)->obj = $rhs;");
+        var ownIndex = body.indexOf("own_object(gdcc_RefCounted_fat_ptr_live_object(");
+        if (ownIndex < 0) {
+            ownIndex = body.indexOf("own_object(");
+        }
+        assertTrue(assignIndex >= 0, "Setter-self field write should assign RHS value.\n" + body);
+        assertTrue(ownIndex >= 0, "Setter-self field write should own BORROWED RHS value.\n" + body);
+        assertTrue(body.substring(0, assignIndex).contains(" = gdcc_MyClass_fat_ptr_live_ptr($self)->obj;"),
                 "Setter-self field write should capture old value before assignment.");
         assertTrue(assignIndex < ownIndex, "Assignment should happen before own.");
         var releaseOldIndex = body.indexOf("release_object(__gdcc_tmp_old_obj_", ownIndex);
-        assertTrue(releaseOldIndex >= 0, "Setter-self field write should release captured old value after own.");
+        if (releaseOldIndex < 0) {
+            releaseOldIndex = body.indexOf("release_object(gdcc_", ownIndex);
+        }
+        assertTrue(releaseOldIndex >= 0, "Setter-self field write should release captured old value after own.\n" + body);
         assertTrue(ownIndex < releaseOldIndex, "Release of captured old value should happen last.");
     }
 
@@ -365,7 +376,7 @@ public class CStorePropertyInsnGenTest {
     }
 
     @Test
-    @DisplayName("Unknown object type should fallback to godot_Object_set")
+    @DisplayName("Unknown object type should fail-fast (no GDExtensionObjectPtr fallback after fat cutover)")
     void unknownObjectTypeShouldFallbackToGodotObjectSet() {
         var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("set_unknown_prop");
@@ -381,14 +392,8 @@ public class CStorePropertyInsnGenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
 
-        var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("__gdcc_tmp_variant_0 = godot_new_Variant_with_String("));
-        assertTrue(body.contains("godot_Object_set($obj, GD_STATIC_SN(u8\"name\"), &__gdcc_tmp_variant_0);"));
-        assertFalse(body.contains("__gdcc_tmp_idx_valid_"), body);
-        assertFalse(body.contains("GDCC_PRINT_RUNTIME_ERROR"), body);
-        assertFalse(body.contains("godot_variant_get_named"), body);
-        assertFalse(body.contains("godot_variant_set_named"), body);
-        assertFalse(body.contains("godot_UnknownType_set_name("));
+        var ex = assertThrows(IllegalStateException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertTrue(ex.getMessage().contains("Unknown object type 'UnknownType'"), ex.getMessage());
     }
 
     @Test
@@ -483,7 +488,7 @@ public class CStorePropertyInsnGenTest {
     }
 
     @Test
-    @DisplayName("Unknown object type should pack typed Dictionary using normalized symbol name")
+    @DisplayName("Unknown object type should fail-fast for typed Dictionary store")
     void unknownObjectTypeShouldPackTypedDictionaryWithNormalizedSymbol() {
         var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("set_unknown_typed_dict");
@@ -501,9 +506,8 @@ public class CStorePropertyInsnGenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
 
-        var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("__gdcc_tmp_variant_0 = godot_new_Variant_with_Dictionary("));
-        assertFalse(body.contains("godot_new_Variant_with_Dictionary["));
+        var ex = assertThrows(IllegalStateException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertTrue(ex.getMessage().contains("Unknown object type 'UnknownType'"), ex.getMessage());
     }
 
     @Test
@@ -642,12 +646,20 @@ public class CStorePropertyInsnGenTest {
     @Test
     @DisplayName("Subtype value should be assignable to supertype property")
     void subtypeValueAssignableToSupertypeProperty() {
+        var objectClass = new ExtensionGdClass(
+                "Object", false, true, null, "core",
+                List.of(), List.of(), List.of(),
+                List.of(), List.of()
+        );
         var nodeClass = new ExtensionGdClass(
                 "Node", false, true, "Object", "core",
                 List.of(), List.of(), List.of(),
                 List.of(), List.of()
         );
-        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(nodeClass), List.of(), List.of());
+        var api = new ExtensionAPI(
+                null, List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(objectClass, nodeClass), List.of(), List.of()
+        );
 
         var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         gdccClass.addProperty(new LirPropertyDef("target", new GdObjectType("Object"), false, null, null, "_field_setter_target", Map.of()));
@@ -666,7 +678,10 @@ public class CStorePropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("MyClass__field_setter_target($obj, $value);"));
+        assertTrue(
+                body.contains("MyClass__field_setter_target($obj, gdcc_Node_fat_ptr_upcast_to_Object($value));"),
+                body
+        );
     }
 
     @Test
@@ -717,7 +732,8 @@ public class CStorePropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("ParentClass__field_setter_value(&($child->_super), $value);"), body);
+        assertTrue(body.contains("ParentClass__field_setter_value(gdcc_ChildClass_fat_ptr_upcast_to_ParentClass($child), $value);"), body);
+        assertFalse(body.contains("&($child->_super)"), body);
         assertFalse(body.contains("ParentClass__field_setter_value((ParentClass*)$child, $value);"), body);
     }
 
@@ -748,7 +764,8 @@ public class CStorePropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("ParentClass__field_setter_value(&($grand->_super._super), $value);"), body);
+        assertTrue(body.contains("ParentClass__field_setter_value(gdcc_GrandChildClass_fat_ptr_upcast_to_ParentClass($grand), $value);"), body);
+        assertFalse(body.contains("&($grand->_super._super)"), body);
         assertFalse(body.contains("ParentClass__field_setter_value((ParentClass*)$grand, $value);"), body);
     }
 
@@ -781,7 +798,8 @@ public class CStorePropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("ChildClass__field_setter_child_value(&($grand->_super), $value);"), body);
+        assertTrue(body.contains("ChildClass__field_setter_child_value(gdcc_GrandChildClass_fat_ptr_upcast_to_ChildClass($grand), $value);"), body);
+        assertFalse(body.contains("&($grand->_super)"), body);
         assertFalse(body.contains("ParentClass__field_setter_parent_value("), body);
     }
 
@@ -812,7 +830,8 @@ public class CStorePropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("gdcc_engine_call_node_set_name_PT_RV((godot_Node*)gdcc_object_to_godot_object_ptr($obj, MyClass_object_ptr), $value);"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_set_name_PT_RV(gdcc_MyClass_fat_ptr_upcast_to_Node($obj), $value);"), body);
+        assertFalse(body.contains("gdcc_object_to_godot_object_ptr($obj, MyClass_object_ptr)"), body);
         assertFalse(body.contains("gdcc_engine_call_node_set_name_PT_RV((godot_Node*)$obj, $value);"), body);
     }
 
@@ -858,7 +877,7 @@ public class CStorePropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("gdcc_engine_call_node_set_name_PT_RV((godot_Node*)$control, $value);"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_set_name_PT_RV(gdcc_Control_fat_ptr_upcast_to_Node($control), $value);"), body);
         assertFalse(body.contains("gdcc_engine_call_control_set_name_"), body);
     }
 
@@ -890,7 +909,8 @@ public class CStorePropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("gdcc_engine_call_node_set_name_PT_RV((godot_Node*)gdcc_object_to_godot_object_ptr($grand, GrandChildClass_object_ptr), $value);"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_set_name_PT_RV(gdcc_GrandChildClass_fat_ptr_upcast_to_Node($grand), $value);"), body);
+        assertFalse(body.contains("gdcc_object_to_godot_object_ptr($grand, GrandChildClass_object_ptr)"), body);
         assertFalse(body.contains("gdcc_engine_call_node_set_name_PT_RV((godot_Node*)$grand, $value);"), body);
     }
 
@@ -974,8 +994,12 @@ public class CStorePropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(childClass, childSetter);
-        assertTrue(body.contains("ParentClass__field_setter_value(&($self->_super), $value);"), body);
+        assertTrue(
+                body.contains("ParentClass__field_setter_value(gdcc_ChildClass_fat_ptr_upcast_to_ParentClass($self), $value);"),
+                body
+        );
         assertFalse(body.contains("$self->value ="), body);
+        assertFalse(body.contains("&($self->_super)"), body);
     }
 
     private void addEntryStoreAndReturn(LirFunctionDef func, StorePropertyInsn storeInsn) {

@@ -237,15 +237,15 @@ class CConstructInsnGenEngineTest {
         );
         assertTrue(
                 entrySource.contains(
-                        "gdcc_object_from_godot_object_ptr(GDConstructRuntimePlainObject_class_create_instance(NULL, true))"
+                        "gdcc_GDConstructRuntimePlainObject_fat_ptr_from_raw((GDExtensionObjectPtr)(GDConstructRuntimePlainObject_class_create_instance(NULL, true)))"
                 ),
-                "GDCC non-refcounted object constructor call should be converted from Godot pointer into gdcc wrapper."
+                "GDCC non-refcounted object constructor call should be converted from Godot pointer into fat pointer."
         );
         assertTrue(
                 entrySource.contains(
-                        "gdcc_object_from_godot_object_ptr(gdcc_ref_counted_init_raw(GDConstructRuntimeCountedWorker_class_create_instance(NULL, false), true))"
+                        "gdcc_GDConstructRuntimeCountedWorker_fat_ptr_from_raw((GDExtensionObjectPtr)(gdcc_ref_counted_init_raw(GDConstructRuntimeCountedWorker_class_create_instance(NULL, false), true)))"
                 ),
-                "GDCC RefCounted object constructor call should be externally wrapped with RefCounted init before gdcc wrapper conversion."
+                "GDCC RefCounted object constructor call should be externally wrapped with RefCounted init before fat pointer conversion."
         );
         var plainCreateInstanceBody = resolveCreateInstanceBody(entrySource, "GDConstructRuntimePlainObject");
         var countedCreateInstanceBody = resolveCreateInstanceBody(entrySource, "GDConstructRuntimeCountedWorker");
@@ -270,17 +270,18 @@ class CConstructInsnGenEngineTest {
                 "Engine non-ref local should not be auto-destroyed."
         );
         assertTrue(
-                engineRefConstructorBody.contains("release_object($ref_counted);"),
-                "Engine RefCounted local release path should be emitted."
+                engineRefConstructorBody.contains("release_object(gdcc_RefCounted_fat_ptr_live_object($ref_counted));")
+                        || engineRefConstructorBody.contains("release_object($ref_counted);"),
+                "Engine RefCounted local release path should be emitted.\n" + engineRefConstructorBody
         );
         assertFalse(
                 resolveFunctionBody(entrySource, "GDConstructObjectEngineNode_make_gdcc_plain_object_label")
-                        .contains("try_destroy_object(gdcc_object_to_godot_object_ptr($plain_object, GDConstructRuntimePlainObject_object_ptr));"),
+                        .contains("try_destroy_object(gdcc_GDConstructRuntimePlainObject_fat_ptr_live_object($plain_object));"),
                 "GDCC plain-object local should not be auto-destroyed."
         );
         assertTrue(
                 resolveFunctionBody(entrySource, "GDConstructObjectEngineNode_measure_gdcc_counted_worker_reference_count")
-                        .contains("release_object(gdcc_object_to_godot_object_ptr($worker, GDConstructRuntimeCountedWorker_object_ptr));"),
+                        .contains("release_object(gdcc_GDConstructRuntimeCountedWorker_fat_ptr_live_object($worker));"),
                 "GDCC RefCounted local release path should be emitted."
         );
 

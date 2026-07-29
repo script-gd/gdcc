@@ -231,15 +231,35 @@ backend generator helper（例如 `CBodyBuilder`/`CGenHelper` 中需要 validate
 在 Java backend 增加一个简单 immutable spec，至少包含：
 
 - `GdObjectType objectType`
-- canonical Godot class name
-- generated C identifier
-- generated ref C type name
-- pointer C type
+- `canonicalClassName`：opaque identity，直接等于 `GdObjectType.getTypeName()`  
+  （inner class 保留 `Outer__sub__Inner`）
+- `cIdentifier`：`GodotBindingSupport.cIdentifier(canonicalClassName)`  
+  （非法字符 → `_`，**连续下划线折叠为单个 `_`**，因此 `Outer__sub__Inner` → `Outer_sub_Inner`）
+- `fatPtrTypeName`：`gdcc_<cIdentifier>_fat_ptr`
+- `pointerCType`：engine 为 `godot_<canonicalClassName> *`，GDCC 为 `<canonicalClassName> *`
 - `ENGINE` / `GDCC` 分类
 - `RefCountedStatus`（`YES` / `NO` / `UNKNOWN`，来自现有 `ClassRegistry.getRefCountedStatus(...)`）
-- 对 GDCC 类型可用的 `<Class>_object_ptr` helper name
+- 对 GDCC 类型可用的 `<canonicalClassName>_object_ptr` helper name
 
 spec 不承担 ownership，也不保存运行时值。
+
+#### 4.1.1 canonical vs C identifier（inner class 必读）
+
+`ObjectFatPtrSpec` 同时携带两套名字，职责不得混用：
+
+| 字段 / 产物 | 形式 | 示例 | 用途 |
+|---|---|---|---|
+| `canonicalClassName` | 保留 `__sub__` | `Outer__sub__Inner` | Godot 注册/元数据、GDCC wrapper struct、`_object_ptr` 等 identity surface |
+| `cIdentifier` | 折叠为 `_sub_` | `Outer_sub_Inner` | 必须作为合法 C 标识符的符号 |
+| `fatPtrTypeName` | 基于 `cIdentifier` | `gdcc_Outer_sub_Inner_fat_ptr` | fat pointer typedef |
+| upcast helper | 两侧都用 `cIdentifier` | `gdcc_Outer_sub_Child_fat_ptr_upcast_to_Outer_sub_GrandParent` | `ObjectFatPtrUpcastSpec.forPair` 与 call site |
+
+强制约束：
+
+- `ObjectFatPtrUpcastSpec.forPair` 与 `CBodyBuilder.renderObjectFatPtrUpcastHelperName` **必须**同用 `cIdentifier` 拼 helper 名。
+- 禁止在 call site 使用 `canonicalClassName` 拼 upcast helper（否则声明为 `_sub_`、调用为 `__sub__`，C 编译失败）。
+- 单元测试期望 fat pointer / upcast 符号时，应对齐 `_sub_`，不要把 canonical `__sub__` 抄进 C 符号断言。
+- 更广的 class-name 合同见 `doc/module_impl/frontend/gdcc_facing_class_name_contract.md` §2.4。
 
 ### 4.2 模块级收集范围
 
@@ -652,8 +672,10 @@ instance wrapper：
 3. 捕获 ID并构造 owner fat self。
 4. 每个 object Variant argument构造 borrowed fat pointer。
 5. 调用 typed internal function。
-6. object return pack 成 Variant。
-7. pack 已建立 Variant ownership 后，消费 internal owned return，避免 RefCounted 泄漏。
+  6. object return pack 成 Variant。
+  7. pack 已建立 Variant ownership 后，对 internal OWNED return 调用 `release_object` /
+     `try_release_object`（按 `RefCountedStatus`；`CGenHelper.renderCallWrapperOwnedObjectReturnConsumeStmt`），
+     避免 RefCounted 泄漏。
 
 ### 9.3 `ptrcall`
 
@@ -770,7 +792,8 @@ condition。当前 frontend/LIR 若总是先 lower 为 bool，也应增加防御
 
 - Variant -> object slot：unpack结果是 borrowed；slot在 Variant销毁前 retain。
 - exact vararg object return：helper在销毁 return Variant前发布 owned fat return。
-- registered call_func object return：Variant pack建立自己的引用后，wrapper消费 internal owned return。
+- registered call_func object return：Variant pack建立自己的引用后，wrapper 对 internal OWNED return
+  调用 `release_object` / `try_release_object`（按 `RefCountedStatus`）消费所有权。
 - object default argument Variant：pack不消费 source fat pointer。
 
 这些规则必须通过 RefCounted计数测试验证，不能只断言 generated C string。
@@ -989,8 +1012,8 @@ generated C 标记为可运行：
 
 | 任务 | 状态 | 备注 |
 |---|---|---|
-| 所有 raw producer立即捕获 ID | 部分完成 | construct/singleton/`godot_*`/`gdcc_engine_call*` → `_from_raw`；exact helper 公共签名仍待 3D |
-| raw receiver/owner 解引用前 `assert_object_live` | 部分完成 | `BackendPropertyAccessResolver.renderReceiverValue` + dynamic object call；exact engine receiver 路径随 3D 收口 |
+| 所有 raw producer立即捕获 ID | 已完成 | construct/singleton/`godot_*` → `_from_raw`；exact helper 公共面已 fat（3D），helper 内 raw return 再 `_from_raw` |
+| raw receiver/owner 解引用前 `assert_object_live` | 已完成 | property/method receiver assert + exact helper `*_live_object(self)` 于 helper 体内 |
 | dynamic Variant 路径 borrowed object unpack | 已完成 | `InsnGenSupport.unpackVariantAssign` → `*_from_variant` + `BORROWED` |
 | direct GDCC field 访问 assert + live owner pointer | 已完成 | getter/setter self field：`_live_ptr` |
 | `object_is_null` / object-vs-nil → `(raw, id)` | 已完成 | `ObjectIsNullInsnGen` / `OperatorInsnGen` |
@@ -999,9 +1022,7 @@ generated C 标记为可运行：
 | own/release/destroy liveness 留在 helper 内 | 已完成 | 无额外 LIR check |
 | UTF-8 literal 专用 C string pointer | 已完成 | `CStringLiteralValue` + `u8"..."`；不再伪装 `GdObjectType.OBJECT` |
 
-说明：3A/3B 核心 ordinary path 已切换；**3C equality C1 已完成**。下一实现步为 **3D**（exact engine helper）。
-registered ptrcall/virtual 适配为 **3E**。当前 `ptrcall` 临时复用 internal fat pointer 表面，不得作为可发布
-cutover 验收。
+说明：3A–3E 对象值 fat-pointer cutover 的核心路径已落地。阶段 4 再清 unknown fallback / legacy raw 特例。
 
 #### 3C. Object equality C1（normalized raw）
 
@@ -1041,41 +1062,50 @@ cutover 验收。
 
 #### 3D. Exact engine caller/helper 原子切换（原 3C，后延）
 
-**状态：待实施（3C 之后）**
+**状态：已完成**
 
 主要文件：
 
-- `BackendMethodCallResolver.java`
-- `EngineMethodHelperParam.java`
-- `CGenHelper.java`
+- `CBodyBuilder.java`（移除 `gdcc_engine_call_*` raw arg/return 门控）
+- `CGenHelper.java`（helper self/object raw slot/from_raw/vararg own helpers）
 - `engine_method_binds.h.ftl`
+- `CCodegenEngineMethodBindHeaderTest` / `CBodyBuilderPhaseCTest` / property&method call 测试
 
 工作：
 
-- `CallMethodInsnGen`/property accessor caller与 generated helper统一传递 fat pointer。
-- object param在 helper内生成 raw ptrcall slot。
-- object return使用 raw return slot后包装。
-- vararg fixed object pack和 Variant return ownership闭环。
-- 保持 method-bind lookup/error path现有合同。
+| 任务 | 状态 | 备注 |
+|---|---|---|
+| helper public `self` → owner fat | 已完成 | 体内 `self_raw = *_live_object(self)` |
+| object fixed arg → helper 内 raw slot | 已完成 | `argN_raw` + `args[] = &argN_raw` |
+| object return → raw slot + `_from_raw` | 已完成 | 禁止把 fat storage 当地址写给 ptrcall |
+| caller 不再对 `gdcc_engine_call*` 做 raw 适配 | 已完成 | fat 直接传/接 |
+| vararg fixed object → `*_to_variant` | 已完成 | |
+| vararg object return retain before Variant destroy | 已完成 | YES/`UNKNOWN` own；`NO` 无操作 |
+| method-bind lookup/error 合同 | 保持 | |
 
 #### 3E. Registered methods 与 virtual bridge 原子切换（原 3D，后延）
 
-**状态：待实施（3D 之后）**
+**状态：核心 cutover 已完成；运行时/refcount 全量验收仍可增强（codegen 正反锚定已补）**
 
 主要文件：
 
-- `BindingData.java`
-- `CGenHelper.java`
-- `entry.h.ftl`
-- `entry.c.ftl`
+- `BindingData.java`（`ownerClassName`）
+- `CGenHelper.java`（owner bind name、self fat、ptrcall raw 适配）
+- `entry.h.ftl` / `entry.c.ftl`
+- `CCodegen.java`（property-init apply 对 fat self 的构造）
+- `ObjectValueRepresentationCharacterizationTest`
 
 工作：
 
-- binding identity加入 owner。
-- instance/static function pointer signature分离。
-- call_func/ptrcall object args/returns适配。
-- owner-specific self fat pointer。
-- virtual callback复用正确 owner wrapper。
+| 任务 | 状态 | 备注 |
+|---|---|---|
+| BindingData 携带 owner | 已完成 | instance wrapper 名称含 owner |
+| instance/static function pointer 分离 | 已完成 | static 无 fake self |
+| call_func：`p_instance` → owner fat self | 已完成 | `*_from_raw(Class_object_ptr(...))` |
+| ptrcall object args raw→fat | 已完成 | 不再把 fat 当地址当 Godot slot |
+| ptrcall object return fat→raw transfer | 已完成 | `*((GDExtensionObjectPtr*)r_return)=*_live_object(r)` |
+| virtual 走 owner-aware ptrcall 名 | 已完成 | `renderFuncBindName(classDef, function)` |
+| property-init apply / `_init` Class*→fat | 已完成 | constructor 边界适配 |
 
 阶段 3 统一验收：
 

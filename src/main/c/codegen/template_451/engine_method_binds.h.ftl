@@ -23,6 +23,13 @@ static inline godot_${constructor.cIdentifier} *godot_new_${constructor.cIdentif
         gdcc_binding_lookup_fail(&context);
         return NULL;
     }
+<#if constructor.needsRefCountedInit()>
+    // classdb_construct already fires NOTIFICATION_POSTINITIALIZE for engine classes, so pass
+    // initialize=false to avoid a second postinitialize. init_ref alone lifts the latent
+    // construct (refcount=1, refcount_init=1) to OWNED (refcount=1, refcount_init=0), aligning
+    // with GDCC create paths so call-wrapper pack+release transfers ownership net-zero.
+    object = gdcc_ref_counted_init_raw(object, false);
+</#if>
     return (godot_${constructor.cIdentifier} *)object;
 }
 
@@ -92,10 +99,11 @@ GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(
 )
 
 // Direct exact-engine helper kept separate from public Godot wrappers.
+// public surface is fat-pointer for object self/params/returns; ABI raw slots stay inside the body.
 static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngineMethodCallHelperName(resolved)}(
 <#if !resolved.isStatic() || helperParams?size gt 0 || resolved.isVararg()>
 <#if !resolved.isStatic()>
-    GDExtensionObjectPtr self<#if helperParams?size gt 0 || resolved.isVararg()>,</#if>
+    ${helper.renderEngineMethodHelperSelfType(resolved)} self<#if helperParams?size gt 0 || resolved.isVararg()>,</#if>
 </#if>
 <#list helperParams as param>
     ${param.cType} ${param.name}<#if param_has_next || resolved.isVararg()>,</#if>
@@ -116,6 +124,9 @@ static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngi
         return ${helper.renderDefaultValueExprInC(resolved.returnType)};
 </#if>
     }
+<#if !resolved.isStatic()>
+    GDExtensionObjectPtr self_raw = ${helper.renderEngineMethodHelperSelfLiveExpr(resolved)};
+</#if>
 <#if resolved.isVararg()>
 <#list helperParams as param>
     godot_Variant fixed_arg_${param_index} = ${helper.renderPackFunctionName(param.type)}(${helper.renderEngineMethodHelperValueExpr(param)});
@@ -153,7 +164,7 @@ static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngi
 <#if resolved.isStatic()>
         NULL,
 <#else>
-        self,
+        self_raw,
 </#if>
         call_args,
         final_argc,
@@ -255,6 +266,13 @@ static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngi
     ret_initialized = true;
 <#if resolved.returnType.typeName != "void">
     result = ${helper.renderUnpackFunctionName(resolved.returnType)}((GDExtensionVariantPtr)&ret);
+<#assign varargOwnStmt = helper.renderEngineMethodHelperVarargObjectReturnOwnStmt(resolved.returnType, "result")>
+<#if varargOwnStmt?has_content>
+    // The dynamic call returns the object via the temporary Variant `ret`; destroying `ret` below
+    // releases the Variant's reference. Retain here so the returned fat pointer is an OWNED result.
+    // Callers must consume it exactly once (slot write / discard / wrapper consume) or it leaks.
+    ${varargOwnStmt}
+</#if>
     call_ok = true;
 </#if>
 cleanup:
@@ -277,6 +295,9 @@ cleanup:
 <#if helper.checkEngineMethodHelperRequiresLocalValueSlot(param)>
     ${helper.renderEngineMethodHelperLocalSlotDecl(param)}
 </#if>
+<#if helper.checkEngineMethodHelperObjectParam(param)>
+    ${helper.renderEngineMethodHelperObjectRawSlotDecl(param)}
+</#if>
 </#list>
 <#if helperParams?size gt 0>
     const GDExtensionConstTypePtr args[] = {
@@ -291,7 +312,7 @@ cleanup:
 <#if resolved.isStatic()>
         NULL,
 <#else>
-        self,
+        self_raw,
 </#if>
 <#if helperParams?size gt 0>
         args,
@@ -301,6 +322,24 @@ cleanup:
         NULL
     );
     return;
+<#elseif helper.checkEngineMethodHelperObjectReturn(resolved.returnType)>
+    // Object return: raw ptrcall slot, then capture ID into fat pointer (never write fat storage as r_ret).
+    GDExtensionObjectPtr result_raw = NULL;
+    godot_object_method_bind_ptrcall(
+        bind,
+<#if resolved.isStatic()>
+        NULL,
+<#else>
+        self_raw,
+</#if>
+<#if helperParams?size gt 0>
+        args,
+<#else>
+        NULL,
+</#if>
+        &result_raw
+    );
+    return ${helper.renderEngineMethodHelperObjectFromRaw(resolved.returnType, "result_raw")};
 <#else>
     ${helper.renderGdTypeInC(resolved.returnType)} result = { 0 };
     godot_object_method_bind_ptrcall(
@@ -308,7 +347,7 @@ cleanup:
 <#if resolved.isStatic()>
         NULL,
 <#else>
-        self,
+        self_raw,
 </#if>
 <#if helperParams?size gt 0>
         args,

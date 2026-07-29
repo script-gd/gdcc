@@ -5,6 +5,7 @@ import gd.script.gdcc.backend.c.gen.binding.BindingData;
 import gd.script.gdcc.backend.c.gen.binding.BoundMetadata;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodHelperParam;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
+import gd.script.gdcc.backend.c.gen.binding.GodotBindingSupport;
 import gd.script.gdcc.backend.c.gen.fatptr.ObjectFatPtrSpec;
 import gd.script.gdcc.backend.c.gen.fatptr.ObjectFatPtrUpcastSpec;
 import gd.script.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
@@ -229,15 +230,18 @@ public final class CGenHelper {
     private void collectBindingData(@NotNull List<? extends ClassDef> classDefs) {
         bindingDataSet.clear();
         for (var classDef : classDefs) {
-            // Properties getter and setters binding data
+            var ownerName = classDef.getName();
+            // Properties getter and setters binding data (instance; owner-specific self).
             for (var propertyDef : classDef.getProperties()) {
                 bindingDataSet.add(new BindingData(
+                        ownerName,
                         List.of(),
                         propertyDef.getType(),
                         List.of(),
                         false
                 ));
                 bindingDataSet.add(new BindingData(
+                        ownerName,
                         List.of(propertyDef.getType()),
                         GdVoidType.VOID,
                         List.of(),
@@ -261,6 +265,7 @@ public final class CGenHelper {
                     }
                 }
                 bindingDataSet.add(new BindingData(
+                        functionDef.isStatic() ? null : ownerName,
                         paramTypes,
                         functionDef.getReturnType(),
                         defaultVariables,
@@ -467,10 +472,14 @@ public final class CGenHelper {
     }
 
     /// Ptrcall consumes addresses of argument storage slots.
-    /// - value-shaped params pass `&arg`
+    /// - object fat params first materialize a raw local, then pass `&argN_raw`
+    /// - other value-shaped params pass `&arg`
     /// - storage-pointer params pass the helper argument directly
     /// - enum/bitfield params first point at a helper-local raw slot
     public @NotNull String renderEngineMethodPtrcallSlotExpr(@NotNull EngineMethodHelperParam param) {
+        if (checkEngineMethodHelperObjectParam(param)) {
+            return "&" + renderEngineMethodHelperObjectRawSlotName(param);
+        }
         return switch (param.slotMode()) {
             case VALUE_ADDRESS -> "&" + param.name();
             case STORAGE_POINTER -> param.name();
@@ -495,13 +504,199 @@ public final class CGenHelper {
                 " = (" + param.slotCType() + ")" + param.name() + ";";
     }
 
+    /// Exact engine helper public surface uses owner fat `self`.
+    public @NotNull String renderEngineMethodHelperSelfType(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        if (!(resolved.ownerType() instanceof GdObjectType ownerObjectType)) {
+            throw new IllegalArgumentException(
+                    "Exact engine helper self type requires object owner, got '" +
+                            resolved.ownerType().getTypeName() + "'"
+            );
+        }
+        return renderObjectFatPtrStorageType(ownerObjectType);
+    }
+
+    /// Materialize validated raw Godot receiver for ptrcall/call inside the helper body.
+    public @NotNull String renderEngineMethodHelperSelfLiveExpr(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        return renderEngineMethodHelperSelfType(resolved) + "_live_object(self)";
+    }
+
+    public boolean checkEngineMethodHelperObjectParam(@NotNull EngineMethodHelperParam param) {
+        return param.type() instanceof GdObjectType;
+    }
+
+    public @NotNull String renderEngineMethodHelperObjectRawSlotName(@NotNull EngineMethodHelperParam param) {
+        if (!checkEngineMethodHelperObjectParam(param)) {
+            throw new IllegalArgumentException("Engine helper object raw slot requires object param: " + param.name());
+        }
+        return param.name() + "_raw";
+    }
+
+    /// Object fixed args enter as fat pointers; ptrcall needs a local raw slot address.
+    public @NotNull String renderEngineMethodHelperObjectRawSlotDecl(@NotNull EngineMethodHelperParam param) {
+        if (!(param.type() instanceof GdObjectType objectType)) {
+            throw new IllegalArgumentException("Engine helper object raw slot requires object param: " + param.name());
+        }
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        return "GDExtensionObjectPtr " + renderEngineMethodHelperObjectRawSlotName(param) +
+                " = " + fatType + "_live_object(" + param.name() + ");";
+    }
+
+    public boolean checkEngineMethodHelperObjectReturn(@NotNull GdType returnType) {
+        return returnType instanceof GdObjectType;
+    }
+
+    /// Wrap a successful ptrcall raw object return into the helper's fat return surface.
+    public @NotNull String renderEngineMethodHelperObjectFromRaw(
+            @NotNull GdType returnType,
+            @NotNull String rawExpr
+    ) {
+        if (!(returnType instanceof GdObjectType objectType)) {
+            throw new IllegalArgumentException(
+                    "Engine helper object from_raw requires object return, got '" + returnType.getTypeName() + "'"
+            );
+        }
+        return renderObjectFatPtrStorageType(objectType) + "_from_raw(" + rawExpr + ")";
+    }
+
+    /// Before destroying the temporary return Variant, establish the caller-owned object return.
+    /// Empty for non-object / definite non-RefCounted; retain for YES / try_own for UNKNOWN.
+    ///
+    /// Ownership contract (must stay balanced):
+    /// - The vararg dynamic-call path returns the object through a temporary Variant; destroying that
+    ///   Variant releases the reference it holds. This retain transfers a strong reference to the
+    ///   returned fat pointer so the helper yields an OWNED object result.
+    /// - The helper's caller must consume that OWNED result exactly once: slot write
+    ///   (`emitObjectSlotWrite(..., OWNED)`), discard (`emitDiscardedCall` immediate release), or a
+    ///   public wrapper return (pack via `to_variant` then
+    ///   `renderCallWrapperOwnedObjectReturnConsumeStmt` releases the internal OWNED `r`).
+    /// - Treating the helper return as BORROWED (retaining again, or never releasing) breaks the
+    ///   balance and leaks a RefCounted reference.
+    public @NotNull String renderEngineMethodHelperVarargObjectReturnOwnStmt(
+            @NotNull GdType returnType,
+            @NotNull String resultExpr
+    ) {
+        if (!(returnType instanceof GdObjectType objectType)) {
+            return "";
+        }
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        var liveExpr = fatType + "_live_object(" + resultExpr + ")";
+        return switch (context.classRegistry().getRefCountedStatus(objectType)) {
+            case YES -> "own_object(" + liveExpr + ");";
+            case UNKNOWN -> "try_own_object(" + liveExpr + ");";
+            case NO -> "";
+        };
+    }
+
+    /// Consume the internal OWNED object return carrier `r` after call-wrapper Variant packing.
+    ///
+    /// Packing (`to_variant` + `variant_new_copy` + `Variant_destroy`) establishes Variant ownership
+    /// but does not consume the function's OWNED strong reference on `r`. Release that reference
+    /// here so ownership transfers net-zero into `r_return`. Empty for non-object / non-RefCounted.
+    /// Must only be used on the return carrier — never on BORROWED argument locals.
+    public @NotNull String renderCallWrapperOwnedObjectReturnConsumeStmt(
+            @NotNull GdType returnType,
+            @NotNull String resultExpr
+    ) {
+        if (!(returnType instanceof GdObjectType objectType)) {
+            return "";
+        }
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        var liveExpr = fatType + "_live_object(" + resultExpr + ")";
+        return switch (context.classRegistry().getRefCountedStatus(objectType)) {
+            case YES -> "release_object(" + liveExpr + ");";
+            case UNKNOWN -> "try_release_object(" + liveExpr + ");";
+            case NO -> "";
+        };
+    }
+
     public @NotNull String renderFuncBindName(@NotNull BindingData bindingData) {
-        return renderFuncBindName(
+        var shapeName = renderFuncBindName(
                 bindingData.returnType(),
                 bindingData.paramTypes(),
                 bindingData.defaultVariables(),
                 bindingData.staticMethod()
         );
+        // Instance wrappers are owner-specific so self fat type cannot be shared by ABI shape alone.
+        if (bindingData.isInstanceMethod()) {
+            return "_" + GodotBindingSupport.cIdentifier(Objects.requireNonNull(bindingData.ownerClassName())) + shapeName;
+        }
+        return shapeName;
+    }
+
+    /// Owner-aware bind name for virtual dispatch (matches BindingData instance naming).
+    public @NotNull String renderFuncBindName(@NotNull ClassDef classDef, @NotNull FunctionDef functionDef) {
+        var paramTypes = new ArrayList<GdType>();
+        var defaultVarTypes = new ArrayList<GdType>();
+        for (var parameterDef : functionDef.getParameters()) {
+            if (parameterDef.getName().equals("self")) {
+                continue;
+            }
+            paramTypes.add(parameterDef.getType());
+            if (parameterDef.getDefaultValueFunc() != null) {
+                defaultVarTypes.add(parameterDef.getType());
+            }
+        }
+        var binding = new BindingData(
+                functionDef.isStatic() ? null : classDef.getName(),
+                paramTypes,
+                functionDef.getReturnType(),
+                defaultVarTypes,
+                functionDef.isStatic()
+        );
+        return renderFuncBindName(binding);
+    }
+
+    /// Construct owner fat self from Godot `p_instance` (GDCC wrapper pointer).
+    public @NotNull String renderRegisteredMethodSelfFatExpr(@NotNull BindingData bindingData) {
+        if (!bindingData.isInstanceMethod()) {
+            throw new IllegalArgumentException("static BindingData has no self fat expression");
+        }
+        var ownerName = Objects.requireNonNull(bindingData.ownerClassName());
+        var ownerType = new GdObjectType(ownerName);
+        var fatType = renderObjectFatPtrStorageType(ownerType);
+        var objectPtrHelper = ownerName + "_object_ptr";
+        return fatType + "_from_raw(" + objectPtrHelper + "((" + ownerName + "*)p_instance))";
+    }
+
+    public @NotNull String renderRegisteredMethodSelfFatType(@NotNull BindingData bindingData) {
+        if (!bindingData.isInstanceMethod()) {
+            throw new IllegalArgumentException("static BindingData has no self fat type");
+        }
+        return renderObjectFatPtrStorageType(new GdObjectType(Objects.requireNonNull(bindingData.ownerClassName())));
+    }
+
+    public boolean checkObjectType(@NotNull GdType type) {
+        return type instanceof GdObjectType;
+    }
+
+    /// Ptrcall object arg: raw Godot pointer slot -> borrowed fat pointer.
+    public @NotNull String renderPtrcallObjectArgDecl(@NotNull GdType paramType, int index) {
+        if (!(paramType instanceof GdObjectType objectType)) {
+            throw new IllegalArgumentException("ptrcall object arg requires object type");
+        }
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        return fatType + " arg" + index + " = " + fatType + "_from_raw(*((const GDExtensionObjectPtr *)p_args[" + index + "]));";
+    }
+
+    /// Non-object ptrcall argument expression (storage pointer / value slot as before).
+    public @NotNull String renderPtrcallNonObjectArgExpr(@NotNull GdType paramType, int index) {
+        if (paramType instanceof GdObjectType) {
+            throw new IllegalArgumentException("use renderPtrcallObjectArgDecl for object args");
+        }
+        return renderValueRef(paramType, "(*((" + renderGdTypeInC(paramType) + "*)p_args[" + index + "]))");
+    }
+
+    /// Ptrcall object return: owned fat -> validated raw transfer into `r_return` (no extra release).
+    public @NotNull String renderPtrcallObjectReturnWrite(@NotNull GdType returnType, @NotNull String resultExpr) {
+        if (!(returnType instanceof GdObjectType objectType)) {
+            throw new IllegalArgumentException("ptrcall object return write requires object type");
+        }
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        return "*((GDExtensionObjectPtr *)r_return) = " + fatType + "_live_object(" + resultExpr + ");";
     }
 
     private @NotNull EngineMethodSymbolKey requireEngineMethodSymbolKey(
@@ -517,7 +712,14 @@ public final class CGenHelper {
         return param.name() + "_slot";
     }
 
+    /// Shape-only bind name (no owner). Instance methods must use {@link #renderFuncBindName(ClassDef, FunctionDef)}.
+    /// Restricted to static functions so an owner-less instance bind name can never be generated.
     public @NotNull String renderFuncBindName(@NotNull FunctionDef functionDef) {
+        if (!functionDef.isStatic()) {
+            throw new IllegalArgumentException(
+                    "Instance FunctionDef bind names require owner class; use renderFuncBindName(ClassDef, FunctionDef)"
+            );
+        }
         var paramTypes = new ArrayList<GdType>();
         var defaultVarTypes = new ArrayList<GdType>();
         for (var parameterDef : functionDef.getParameters()) {
@@ -529,7 +731,7 @@ public final class CGenHelper {
                 defaultVarTypes.add(parameterDef.getType());
             }
         }
-        return renderFuncBindName(functionDef.getReturnType(), paramTypes, defaultVarTypes, functionDef.isStatic());
+        return renderFuncBindName(functionDef.getReturnType(), paramTypes, defaultVarTypes, true);
     }
 
     public @NotNull String renderGdTypeName(@NotNull GdType gdType) {
@@ -732,7 +934,8 @@ public final class CGenHelper {
     ///
     /// This is intentionally narrower than ordinary backend destruct semantics:
     /// - only destroyable non-object wrappers materialize an addressable local slot that the wrapper must destroy
-    /// - object locals stay as plain pointers here, so they must not be blanket destroy/release'd at wrapper exit
+    /// - object argument locals are BORROWED from Variant args and must not be released here
+    /// - OWNED object return carriers use `renderCallWrapperOwnedObjectReturnConsumeStmt` instead
     public @NotNull String renderCallWrapperDestroyStmt(@NotNull GdType type, @NotNull String varName) {
         TypeCheckUtil.requireNonCompilerOnly(type, "call wrapper destroy stmt");
         if (type instanceof GdObjectType || !type.isDestroyable()) {
@@ -1084,13 +1287,22 @@ public final class CGenHelper {
     }
 
     /// Render the dedicated constructor-time property-init apply helper name.
-    /// This stays in `CGenHelper` because it is pure generated-symbol naming, not a codegen-phase
+    /// This stays in `CGenHelper` because it is pure generated-symbol naming, not a
     /// control-flow concern.
     public @NotNull String renderPropertyInitApplyHelperName(
             @NotNull LirClassDef classDef,
             @NotNull LirPropertyDef propertyDef
     ) {
         return classDef.getName() + "_class_apply_property_init_" + propertyDef.getName();
+    }
+
+    /// Constructor/`Class*` sites materialize owner fat self for internal methods that take fat parameters.
+    public @NotNull String renderOwnerFatSelfFromWrapperPtr(
+            @NotNull String className,
+            @NotNull String wrapperPtrExpr
+    ) {
+        var fatType = renderObjectFatPtrStorageType(new GdObjectType(className));
+        return fatType + "_from_raw(" + className + "_object_ptr(" + wrapperPtrExpr + "))";
     }
 
     /// Resolve the nearest constructible native ancestor for a GDCC class.

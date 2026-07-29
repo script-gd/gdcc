@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（`__sub__` 保留序列、top-level mapping 输入边界、source-facing `extends` 边界、Godot-facing surface 分层合同与 backend symbol carry-through 已冻结）
-- 更新时间：2026-04-21
+- 状态：事实源维护中（`__sub__` 保留序列、top-level mapping 输入边界、source-facing `extends` 边界、Godot-facing surface 分层合同与 backend symbol carry-through 已冻结；并明确 `cIdentifier()` 将 `__sub__` 折叠为 `_sub_`）
+- 更新时间：2026-07-28
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/**`
   - `src/main/java/gd/script/gdcc/scope/**`
@@ -134,18 +134,38 @@ header `extends` 继续是 frontend 自己的 source-facing 绑定协议，而�
 
 ### 2.4 backend symbol carry-through
 
-backend 内部 C 符号链路继续直接携带 canonical name，包括 `__sub__`：
+backend 对 canonical class name 的消费必须区分两层 surface，**不得**再假设“所有 C 符号都原样保留 `__sub__`”：
 
-- `entry.c.ftl`
-- `entry.h.ftl`
-- `func.ftl`
+1. **Godot / identity surface（保留 canonical `__sub__`）**
+   - 注册名、`GD_STATIC_SN(...)`、bind owner class、instance attach
+   - typed array / typed dictionary object leaf 的 hint string
+   - GDCC wrapper struct / 部分 layout helper 等仍直接拼接 canonical name 的路径
+     （例如 `Outer__sub__Inner`、`Outer__sub__Inner_object_ptr`）
+   - 主要模板：`entry.c.ftl`、`entry.h.ftl`、`func.ftl`
 
-这条边界当前只表达一个事实：
+2. **C identifier surface（经 `GodotBindingSupport.cIdentifier()` 清洗）**
+   - 规则：非法字符 → `_`，且**连续下划线折叠为单个 `_`**
+   - 因此 inner canonical `Outer__sub__Inner` 在 C 标识符中变为 `Outer_sub_Inner`
+   - 当前强制走该路径的 surface 包括但不限于：
+     - fat pointer typedef：`gdcc_Outer_sub_Inner_fat_ptr`
+     - fat pointer per-type / upcast helper：
+       `gdcc_Outer_sub_Child_fat_ptr_upcast_to_Outer_sub_GrandParent`
+   - 实现锚点：
+     - `GodotBindingSupport.cIdentifier(...)`
+     - `ObjectFatPtrSpec.cIdentifier` / `ObjectFatPtrSpec.fatPtrTypeName`
+     - `ObjectFatPtrUpcastSpec.forPair(...).helperName`
+     - `CBodyBuilder.renderObjectFatPtrUpcastHelperName(...)` 必须与 upcast spec 使用同一套 `cIdentifier`
 
-- Godot-facing class identifier 问题已经通过 canonical contract 收口
-- backend 尚未引入额外的 symbol alias 或 mangling 层
+这条边界表达两个冻结事实：
 
-若未来工具链或平台对内部 `__` 符号再提出新约束，应另行立项做 C symbol portability 设计，而不是回退当前 class-name contract。
+- Godot-facing class identifier 问题已经通过 canonical contract 收口（identity 层继续是 `Outer__sub__Inner`）
+- backend **没有**为 class identity 引入额外 alias 字段；但 fat-pointer 等必须合法作 C 标识符的符号会经 `cIdentifier()` 做机械清洗，**不是**新的语义层
+
+后续开发约束：
+
+- 写测试时，Godot 字符串 / registry 期望用 `__sub__`；fat pointer 类型名 / upcast helper 期望用 `_sub_`
+- call site 与 declaration site 的 helper 名必须同形；禁止一边 `cIdentifier`、一边 `canonicalClassName`
+- 若未来工具链或平台对内部 `__` / `_sub_` 再提出新约束，应另行立项做 C symbol portability 设计，而不是回退当前 class-name contract
 
 ### 2.5 非目标 `$` surface 保持不变
 

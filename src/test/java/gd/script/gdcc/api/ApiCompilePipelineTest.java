@@ -69,6 +69,7 @@ class ApiCompilePipelineTest {
                 List.of(
                         projectPath.resolve("entry.c"),
                         projectPath.resolve("engine_method_binds.h"),
+                        projectPath.resolve("object_fat_ptr_types.h"),
                         projectPath.resolve("entry.h")
                 ),
                 result.generatedFiles()
@@ -80,6 +81,7 @@ class ApiCompilePipelineTest {
                 List.of(
                         "/__build__/generated/entry.c",
                         "/__build__/generated/engine_method_binds.h",
+                        "/__build__/generated/object_fat_ptr_types.h",
                         "/__build__/generated/entry.h",
                         "/__build__/artifacts/" + result.artifacts().getFirst().getFileName()
                 ),
@@ -131,6 +133,7 @@ class ApiCompilePipelineTest {
                 List.of(
                         projectPath.resolve("entry.c"),
                         projectPath.resolve("engine_method_binds.h"),
+                        projectPath.resolve("object_fat_ptr_types.h"),
                         projectPath.resolve("entry.h")
                 ),
                 result.generatedFiles()
@@ -139,13 +142,14 @@ class ApiCompilePipelineTest {
                 List.of(
                         "/__build__/generated/entry.c",
                         "/__build__/generated/engine_method_binds.h",
+                        "/__build__/generated/object_fat_ptr_types.h",
                         "/__build__/generated/entry.h",
                         "/__build__/artifacts/" + artifact.getFileName()
                 ),
                 result.outputLinks().stream().map(VfsEntrySnapshot.LinkEntrySnapshot::virtualPath).toList()
         );
         assertEquals(
-                List.of("engine_method_binds.h", "entry.c", "entry.h"),
+                List.of("engine_method_binds.h", "entry.c", "entry.h", "object_fat_ptr_types.h"),
                 api.listDirectory("demo", "/__build__/generated").stream().map(VfsEntrySnapshot::name).toList()
         );
 

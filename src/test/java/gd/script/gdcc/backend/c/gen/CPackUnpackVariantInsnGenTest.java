@@ -116,13 +116,17 @@ public class CPackUnpackVariantInsnGenTest {
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("__gdcc_tmp_old_obj_"), "Should capture old object into temp before overwriting");
         assertTrue(body.contains("= $result;"), "Captured old temp should be initialized from result slot");
-        assertTrue(body.contains("$result = (godot_RefCounted*)godot_new_Object_with_Variant(&$variant);"));
+        assertTrue(body.contains("$result = gdcc_RefCounted_fat_ptr_from_variant(&$variant);"), body);
         assertFalse(body.contains("own_object($result)"), "OWNED return should not be owned again");
-        assertTrue(body.contains("release_object(__gdcc_tmp_old_obj_"), "Should release captured old value");
+        assertTrue(
+                body.contains("release_object(gdcc_RefCounted_fat_ptr_live_object(__gdcc_tmp_old_obj_")
+                        || body.contains("release_object(__gdcc_tmp_old_obj_"),
+                "Should release captured old value:\n" + body
+        );
 
         var captureIndex = body.indexOf("= $result;");
-        var assignIndex = body.indexOf("$result = (godot_RefCounted*)godot_new_Object_with_Variant(&$variant);");
-        var releaseOldIndex = body.indexOf("release_object(__gdcc_tmp_old_obj_");
+        var assignIndex = body.indexOf("$result = gdcc_RefCounted_fat_ptr_from_variant(&$variant);");
+        var releaseOldIndex = body.indexOf("release_object(");
         assertTrue(captureIndex < assignIndex, "Capture should happen before assignment");
         assertTrue(assignIndex < releaseOldIndex, "Assignment should happen before release of old value");
     }
@@ -173,7 +177,7 @@ public class CPackUnpackVariantInsnGenTest {
 
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_Variant_destroy(&$result);"));
-        assertTrue(body.contains("$result = gdcc_new_Variant_with_gdcc_Object($value);"));
+        assertTrue(body.contains("$result = gdcc_TargetClass_fat_ptr_to_variant($value);"), body);
         assertFalse(body.contains("godot_new_Variant_with_Object("));
     }
 

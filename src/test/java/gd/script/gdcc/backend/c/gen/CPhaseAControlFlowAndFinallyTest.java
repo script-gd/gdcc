@@ -157,12 +157,15 @@ public class CPhaseAControlFlowAndFinallyTest {
         var body = codegen.generateFuncBody(clazz, func);
 
         assertTrue(body.contains("_return_val = $obj;"), body);
-        assertTrue(body.contains("$obj = NULL;"), body);
-        assertTrue(body.contains("release_object($obj);"), body);
+        assertTrue(body.contains("$obj = (gdcc_RefCounted_fat_ptr){ 0 };"), body);
+        assertTrue(body.contains("release_object(gdcc_RefCounted_fat_ptr_live_object($obj));"), body);
         assertFalse(body.contains("release_object(_return_val);"), body);
         assertTrue(body.contains("return _return_val;"), body);
-        assertTrue(body.indexOf("$obj = NULL;") < body.indexOf("release_object($obj);"),
-                "Move-return source must be cleared before auto cleanup. Actual:\n" + body);
+        assertTrue(
+                body.indexOf("$obj = (gdcc_RefCounted_fat_ptr){ 0 };")
+                        < body.indexOf("release_object(gdcc_RefCounted_fat_ptr_live_object($obj));"),
+                "Move-return source must be cleared before auto cleanup. Actual:\n" + body
+        );
     }
 
     @Test
@@ -258,7 +261,7 @@ public class CPhaseAControlFlowAndFinallyTest {
     void generateShouldAutoCleanupObjectLocalsButExcludeReturnSlot() {
         var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("object_func");
-        // Unknown object types fail fast during Phase 1 type collection, so the managed-cleanup
+        // Unknown object types fail fast during fat-pointer type collection, so the managed-cleanup
         // contract is anchored with a known GDCC RefCounted type instead.
         var managedType = new GdObjectType("TestClass");
         func.setReturnType(managedType);
@@ -288,7 +291,7 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var body = codegen.generateFuncBody(clazz, func);
         assertTrue(body.contains(
-                "release_object(gdcc_object_to_godot_object_ptr($managedLocal, TestClass_object_ptr));"
+                "release_object(gdcc_TestClass_fat_ptr_live_object($managedLocal));"
         ), body);
         assertFalse(body.contains("release_object(_return_val);"), body);
         assertFalse(body.contains("try_release_object(_return_val);"), body);
@@ -476,7 +479,17 @@ public class CPhaseAControlFlowAndFinallyTest {
     }
 
     private CCodegen newCodegen(LirModule module, List<LirClassDef> gdccClasses) {
-        var classRegistry = new ClassRegistry(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()));
+        // Fat-pointer cutover requires engine base types used as superclasses / return types.
+        var objectClass = new gd.script.gdcc.gdextension.ExtensionGdClass(
+                "Object", false, true, null, "core", List.of(), List.of(), List.of(), List.of(), List.of()
+        );
+        var refCountedClass = new gd.script.gdcc.gdextension.ExtensionGdClass(
+                "RefCounted", true, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()
+        );
+        var classRegistry = new ClassRegistry(new ExtensionAPI(
+                null, List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(objectClass, refCountedClass), List.of(), List.of()
+        ));
         for (var gdccClass : gdccClasses) {
             classRegistry.addGdccClass(gdccClass);
         }
