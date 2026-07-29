@@ -410,6 +410,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var mutatingReceiverRoute = mutatingReceiverRouteOrNull(session, node, resolvedCall);
             var receiverSlotId = session.materializeCallReceiverLeaf(block, node);
             var arguments = session.materializeCallArguments(block, node, resolvedCall);
+            session.emitAssertObjectLiveIfNeeded(block, receiverSlotId);
             block.appendNonTerminatorInstruction(new CallMethodInsn(
                     emittedExactResultSlotIdOrNull(node, resolvedCall),
                     resolvedCall.callableName(),
@@ -509,6 +510,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var mutatingReceiverRoute = mutatingReceiverRouteOrNull(session, node, resolvedCall);
             var receiverSlotId = session.materializeCallReceiverLeaf(block, node);
             var arguments = session.materializeCallArguments(block, node, resolvedCall);
+            session.emitAssertObjectLiveIfNeeded(block, receiverSlotId);
             block.appendNonTerminatorInstruction(new CallMethodInsn(
                     resultSlotId,
                     resolvedCall.callableName(),

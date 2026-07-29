@@ -6469,7 +6469,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForRange
                         extends RefCounted
-
+                        
                         func ping():
                             for i in range(3):
                                 print(i)
@@ -6530,7 +6530,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForIntShorthand
                         extends RefCounted
-
+                        
                         func ping():
                             var limit := 3
                             for i in limit:
@@ -6573,7 +6573,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForRangeFull
                         extends RefCounted
-
+                        
                         func ping():
                             for i in range(1, 5, 2):
                                 print(i)
@@ -6609,7 +6609,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForRangeTwo
                         extends RefCounted
-
+                        
                         func ping():
                             for i in range(1, 5):
                                 print(i)
@@ -6648,7 +6648,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForRangeFloat
                         extends RefCounted
-
+                        
                         func ping():
                             for i: float in range(3):
                                 print(i)
@@ -6688,7 +6688,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForRangeVariant
                         extends RefCounted
-
+                        
                         func ping():
                             for i: Variant in range(3):
                                 print(i)
@@ -6729,7 +6729,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForRangeNested
                         extends RefCounted
-
+                        
                         func ping():
                             for i in range(3):
                                 for j in range(2):
@@ -6778,9 +6778,9 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForRangeBoundary
                         extends RefCounted
-
+                        
                         var sink: int
-
+                        
                         func ping() -> int:
                             for i in range(3):
                                 sink = i
@@ -6824,7 +6824,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForVariant
                         extends RefCounted
-
+                        
                         func ping(values):
                             for item in values:
                                 print(item)
@@ -6884,7 +6884,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForVariantTyped
                         extends RefCounted
-
+                        
                         func ping(values: Array[int]):
                             for item in values:
                                 print(item)
@@ -6933,7 +6933,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForString
                         extends RefCounted
-
+                        
                         func ping(text: String):
                             for character in text:
                                 print(character)
@@ -6978,7 +6978,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForPackedArray
                         extends RefCounted
-
+                        
                         func ping(values: PackedInt32Array):
                             for item in values:
                                 print(item)
@@ -7024,7 +7024,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForFloat
                         extends RefCounted
-
+                        
                         func ping(limit: float):
                             for value in limit:
                                 print(value)
@@ -7068,7 +7068,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForDictionary
                         extends RefCounted
-
+                        
                         func ping(table: Dictionary[String, int]):
                             for key in table:
                                 print(key)
@@ -7116,7 +7116,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnNestedForIteratorRead
                         extends RefCounted
-
+                        
                         func ping() -> int:
                             var total := 0
                             for i in range(3):
@@ -7167,7 +7167,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnForBreakContinue
                         extends RefCounted
-
+                        
                         func ping(stop_now: bool, skip_now: bool) -> int:
                             var total := 0
                             for i in range(5):
@@ -7235,7 +7235,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnWhileBreakContinue
                         extends RefCounted
-
+                        
                         func ping(flag: bool, stop_now: bool, skip_now: bool, payload: int) -> int:
                             while flag:
                                 if stop_now:
@@ -7300,7 +7300,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnNestedForWhileBreakContinue
                         extends RefCounted
-
+                        
                         func ping(
                                 outer_flag: bool,
                                 stop_for: bool,
@@ -7841,7 +7841,8 @@ class FrontendLoweringBodyInsnPassTest {
                 case CallGlobalInsn call -> addVariableOperandIds(call.args(), slots);
                 case CallMethodInsn call -> addVariableOperandIds(call.args(), slots);
                 case CallStaticMethodInsn call -> addVariableOperandIds(call.args(), slots);
-                default -> {}
+                default -> {
+                }
             }
         }
         return slots;

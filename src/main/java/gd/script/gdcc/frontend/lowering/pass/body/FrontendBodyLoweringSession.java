@@ -22,6 +22,7 @@ import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryComp
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
+import gd.script.gdcc.lir.insn.AssertObjectLiveInsn;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
@@ -32,6 +33,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.ParameterDef;
 import gd.script.gdcc.scope.PropertyDef;
+import gd.script.gdcc.scope.RefCountedStatus;
 import gd.script.gdcc.type.GdContainerType;
 import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdFloatType;
@@ -647,6 +649,16 @@ public final class FrontendBodyLoweringSession {
             throw new IllegalStateException(
                     describeContext() + " requires an implicit self receiver slot"
             );
+        }
+    }
+
+    void emitAssertObjectLiveIfNeeded(@NotNull LirBasicBlock block, @NotNull String receiverSlotId) {
+        if (receiverSlotId.equals("self")) {
+            return;
+        }
+        if (requireFunctionVariableType(receiverSlotId) instanceof GdObjectType objectType
+                && classRegistry.getRefCountedStatus(objectType) != RefCountedStatus.YES) {
+            block.appendNonTerminatorInstruction(new AssertObjectLiveInsn(receiverSlotId));
         }
     }
 

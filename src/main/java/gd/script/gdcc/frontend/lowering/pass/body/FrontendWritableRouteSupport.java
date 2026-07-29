@@ -101,6 +101,7 @@ final class FrontendWritableRouteSupport {
         return switch (actualChain.leaf()) {
             case DirectSlotLeaf leaf -> leaf.slotId();
             case InstancePropertyLeaf leaf -> {
+                session.emitAssertObjectLiveIfNeeded(block, leaf.receiverSlotId());
                 block.appendNonTerminatorInstruction(new LoadPropertyInsn(
                         actualResultSlotId,
                         leaf.propertyName(),
@@ -159,6 +160,7 @@ final class FrontendWritableRouteSupport {
                 yield leaf.slotId();
             }
             case InstancePropertyLeaf leaf -> {
+                session.emitAssertObjectLiveIfNeeded(block, leaf.receiverSlotId());
                 block.appendNonTerminatorInstruction(new StorePropertyInsn(
                         leaf.propertyName(),
                         leaf.receiverSlotId(),
@@ -434,6 +436,7 @@ final class FrontendWritableRouteSupport {
     ) {
         return switch (step) {
             case InstancePropertyCommitStep propertyStep -> {
+                session.emitAssertObjectLiveIfNeeded(block, propertyStep.receiverSlotId());
                 block.appendNonTerminatorInstruction(new StorePropertyInsn(
                         propertyStep.propertyName(),
                         propertyStep.receiverSlotId(),

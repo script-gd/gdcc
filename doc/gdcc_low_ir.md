@@ -454,6 +454,22 @@ Sets the current source code line number for debugging purposes.
 line_number <line_number:int>
 ```
 
+#### assert_object_live
+Hard-fail dereference guard. Asserts that an object reference is still live before use.
+```
+assert_object_live $<object_id:Object>
+```
+No result. If the object is live, execution falls through. If the object is null or freed,
+the current function enters its stable runtime-error/default-return cleanup path (`goto __finally__`).
+
+- Does not retain/release/destroy; does not mutate object state; requires no lifecycle provenance.
+- Used only for method receivers, property receivers, `_super` chain access, and direct GDCC field/method owners.
+- NOT used for user conditional checks, equality, own/release/destroy, or Variant pack/unpack.
+- The `self` receiver is exempt: it is guaranteed live during method execution.
+- RefCounted objects (`RefCountedStatus.YES`) are exempt: holding a reference guarantees liveness.
+
+C lowering: calls `gdcc_object_is_null_raw_and_id(raw, instance_id)`.
+
 
 ### Instruction Usage Restrictions
 

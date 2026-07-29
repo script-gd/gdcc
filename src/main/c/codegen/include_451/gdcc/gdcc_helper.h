@@ -237,8 +237,15 @@ static GDExtensionClassInstancePtr gdcc_object_from_godot_object_ptr(GDExtension
 /// This macro is representation-only and must not be treated as a retain/release boundary.
 #define gdcc_object_to_godot_object_ptr(obj, object_ptr_helper) ({ __typeof__(obj) _o = (obj); _o ? object_ptr_helper(_o) : NULL; })
 
+/// Unpacks an OBJECT Variant into the bound GDCC native instance.
+/// Returns NULL for null or freed object payloads (Godot freed == null semantics).
+/// Liveness is validated through ObjectDB before any pointer dereference (ID-first pattern).
 static GDExtensionClassInstancePtr godot_new_gdcc_Object_with_Variant(const godot_Variant* value) {
-    const GDExtensionObjectPtr obj = godot_new_Object_with_Variant(value);
+    GDObjectInstanceID id = godot_variant_get_object_instance_id(value);
+    const GDExtensionObjectPtr obj = gdcc_object_live_ptr(id);
+    if (obj == NULL) {
+        return NULL;
+    }
     return gdcc_object_from_godot_object_ptr(obj);
 }
 
@@ -286,7 +293,8 @@ static godot_bool gdcc_check_variant_type_builtin(const godot_Variant *value,
 /// Runtime type guard for Variant -> Object unpack.
 /// - exact type match always passes.
 /// - subclass match is optional via `allow_subclass`.
-/// - null object payload is accepted for object targets.
+/// - null or freed object payload is accepted for object targets (Godot freed == null semantics).
+/// Liveness is validated through ObjectDB before any pointer dereference (ID-first pattern).
 static godot_bool gdcc_check_variant_type_object(const godot_Variant *value,
                                                  const godot_StringName *expected_class_name,
                                                  godot_bool allow_subclass) {
@@ -297,7 +305,12 @@ static godot_bool gdcc_check_variant_type_object(const godot_Variant *value,
         return false;
     }
 
-    GDExtensionObjectPtr object_value = godot_new_Object_with_Variant(value);
+    GDObjectInstanceID instance_id = godot_variant_get_object_instance_id(value);
+    if (instance_id == 0) {
+        return true;
+    }
+
+    GDExtensionObjectPtr object_value = gdcc_object_live_ptr(instance_id);
     if (object_value == NULL) {
         return true;
     }
