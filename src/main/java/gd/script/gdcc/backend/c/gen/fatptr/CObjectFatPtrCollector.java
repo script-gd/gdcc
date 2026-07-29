@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.TreeMap;
 
 /// Deterministic module-level collector for object fat pointer typedef declarations.
-/// The collector only records declaration specs; it does not switch any ordinary storage to fat pointers.
+/// Collects every static object surface that needs a `gdcc_<Type>_fat_ptr` typedef and helpers.
 public final class CObjectFatPtrCollector {
     private final @NotNull ClassRegistry classRegistry;
     private final @NotNull TreeMap<String, ObjectFatPtrSpec> specsByFatPtrTypeName = new TreeMap<>();
@@ -32,7 +32,8 @@ public final class CObjectFatPtrCollector {
         return collect(module, classRegistry, List.of(), List.of(), List.of());
     }
 
-    /// Engine binding surfaces are included because later migration stages will render fat pointers in exact-engine helpers.
+    /// Also walks engine method/constructor/module-local binding surfaces so exact-engine helpers
+    /// and generated wrappers share the same per-type fat pointer declarations.
     public static @NotNull List<ObjectFatPtrSpec> collect(
             @NotNull LirModule module,
             @NotNull ClassRegistry classRegistry,

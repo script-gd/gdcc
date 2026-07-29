@@ -28,14 +28,18 @@ static inline GDExtensionObjectPtr ${spec.objectPtrHelperName}(${spec.canonicalC
 </#if>
 </#list>
 // Object fat pointer helpers
+// Query helpers below are ownership-neutral (no retain/release). They may observe ObjectDB
+// state; pure/const attributes are applied only where the runtime header already does so for
+// shared helpers. `_to_variant` constructs a new Variant and is therefore side-effecting.
 
 <#list objectFatPtrSpecs as spec>
+/// Canonical null fat pointer `{ NULL, 0 }`. Ownership-neutral constructor.
 static inline ${spec.fatPtrTypeName} ${spec.fatPtrTypeName}_null(void) {
     ${spec.fatPtrTypeName} result = { NULL, 0 };
     return result;
 }
 
-/// Captures a live raw Godot object pointer into a fat pointer.
+/// Captures a live raw Godot object pointer into a fat pointer (ownership-neutral).
 /// Callers must pass NULL or a live raw pointer; dangling raw pointers are undefined.
 static inline ${spec.fatPtrTypeName} ${spec.fatPtrTypeName}_from_raw(GDExtensionObjectPtr raw) {
     if (raw == NULL) {
@@ -51,7 +55,7 @@ static inline ${spec.fatPtrTypeName} ${spec.fatPtrTypeName}_from_raw(GDExtension
     return result;
 }
 
-/// Reads an OBJECT Variant into a fat pointer.
+/// Reads an OBJECT Variant into a fat pointer (ownership-neutral materialization).
 /// The original instance ID is preserved; freed payloads keep the ID but have a NULL typed pointer.
 /// This relies on ObjectDB removing freed entries so `gdcc_object_live_ptr` returns NULL.
 static inline ${spec.fatPtrTypeName} ${spec.fatPtrTypeName}_from_variant(const godot_Variant *value) {
@@ -76,7 +80,7 @@ static inline ${spec.fatPtrTypeName} ${spec.fatPtrTypeName}_from_variant(const g
     return result;
 }
 
-/// Returns the validated raw Godot object pointer for this fat pointer.
+/// Returns the validated raw Godot object pointer for this fat pointer (query; no ownership change).
 /// RefCountedStatus specializes the fast path: YES uses the cached pointer, NO uses ObjectDB,
 /// UNKNOWN checks the ObjectID reference bit at runtime.
 static inline GDExtensionObjectPtr ${spec.fatPtrTypeName}_live_object(${spec.fatPtrTypeName} value) {
@@ -109,7 +113,7 @@ static inline GDExtensionObjectPtr ${spec.fatPtrTypeName}_live_object(${spec.fat
 </#if>
 }
 
-/// Returns the validated statically-typed pointer for this fat pointer.
+/// Returns the validated statically-typed pointer for this fat pointer (query; no ownership change).
 static inline ${spec.pointerCType}${spec.fatPtrTypeName}_live_ptr(${spec.fatPtrTypeName} value) {
 <#if spec.kind.name() == "GDCC">
 <#if spec.refCountedStatus.name() == "YES">
@@ -141,7 +145,7 @@ static inline ${spec.pointerCType}${spec.fatPtrTypeName}_live_ptr(${spec.fatPtrT
 </#if>
 }
 
-/// Packs a fat pointer into an OBJECT Variant.
+/// Packs a fat pointer into an OBJECT Variant (side-effecting: constructs a new Variant).
 /// Freed fat pointers degrade to OBJECT/null because public ABI cannot construct an ID-only Variant.
 static inline godot_Variant ${spec.fatPtrTypeName}_to_variant(${spec.fatPtrTypeName} value) {
     return godot_new_Variant_with_Object(${spec.fatPtrTypeName}_live_object(value));
@@ -153,7 +157,7 @@ static inline godot_Variant ${spec.fatPtrTypeName}_to_variant(${spec.fatPtrTypeN
 // Object fat pointer upcast helpers
 
 <#list objectFatPtrUpcastSpecs as upcast>
-/// Upcasts a fat pointer while preserving its instance ID.
+/// Upcasts a fat pointer while preserving its instance ID (ownership-neutral).
 /// Dead sources keep the ID but produce a NULL target pointer.
 static inline ${upcast.target.fatPtrTypeName} ${upcast.helperName}(${upcast.source.fatPtrTypeName} value) {
     GDExtensionObjectPtr raw = ${upcast.source.fatPtrTypeName}_live_object(value);

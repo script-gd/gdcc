@@ -81,6 +81,13 @@ extend the runtime-provided `godot_*` surface.
   runtime error printing, Object property get/set helpers, RefCounted ownership helpers, GDCC
   wrapper pointer conversion helpers, compatibility constructors, UTF-8 formatting helpers,
   Variant type guards, Variant writeback classification and `godot_Variant_call(...)`.
+  - Object **values** in generated code are per-type fat pointers (`gdcc_<Type>_fat_ptr` from
+    module `object_fat_ptr_types.h`); `gdcc_helper.h` owns the shared raw/ID query and lifecycle
+    surface used by those helpers.
+  - Query helpers such as `gdcc_object_live_ptr`, `gdcc_object_is_null_raw_and_id`, and
+    `gdcc_object_id_is_ref_counted` are annotated `GDCC_PURE` / `GDCC_CONST` where safe.
+  - Lifecycle helpers (`own_object` / `release_object` / `try_*`) take validated live raw pointers
+    (plus cached `instance_id` for `try_*`), mutate ownership / ObjectDB state, and are never pure.
 
 ## Binding Generator Overview
 

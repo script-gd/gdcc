@@ -384,7 +384,7 @@ public class CLoadPropertyInsnGenTest {
     }
 
     @Test
-    @DisplayName("Unknown object type should fail-fast (no GDExtensionObjectPtr fallback after fat cutover)")
+    @DisplayName("Unknown object type should fail-fast (no GDExtensionObjectPtr fallback)")
     void unknownObjectTypeShouldUnpackEngineObjectFromVariant() {
         var nodeClass = new ExtensionGdClass(
                 "Node", false, true, "Object", "core",

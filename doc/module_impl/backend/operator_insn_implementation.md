@@ -83,8 +83,7 @@
 
 ### 3.5 Object 比较特化（`==` / `!=`）
 
-仅当左右均为 `Object` 类型时生效（fat-pointer C1，见
-`object_value_fat_pointer_implementation_plan.md` §10.2 / 阶段 3C）：
+仅当左右均为 `Object` 类型时生效（fat-pointer C1 normalized raw equality）：
 
 1. 两侧各自 materialize **equality-normalized raw**（`CBodyBuilder.renderEqualityNormalizedRaw`）：
    - 先用 `gdcc_object_is_null_raw_and_id(raw_sentinel, instance_id)` 判定 null ∪ freed；
@@ -104,8 +103,7 @@
 1. `Nil == Nil` -> `true`。
 2. `Nil != Nil` -> `false`。
 3. `Nil` 与非 `Nil` 比较：
-   - 对方为 Object 时：legacy raw 表示下比较 `object_raw == NULL`；
-     fat-pointer 世界使用 `gdcc_object_is_null_raw_and_id(raw, instance_id)`（见 fat-pointer 计划 §10.2）。
+   - 对方为 Object 时：使用 `gdcc_object_is_null_raw_and_id(raw, instance_id)`（null ∪ freed → true）。
    - 其余情况不相等。
 4. `Nil` 非比较运算不特化，走默认分流。
 5. 该特化只在左右都不是已发布 `Variant` 时参与 resolver。

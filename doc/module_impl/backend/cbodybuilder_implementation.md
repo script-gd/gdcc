@@ -124,7 +124,7 @@
 - `godot_object_from_gdcc_object_ptr(obj)` 已废弃，不得用于新增或迁移后的路径。
 - 内部 object 值是 per-type fat pointer。Variant pack/unpack 使用 `<Type>_fat_ptr_to_variant` /
   `<Type>_fat_ptr_from_variant`。
-- 已删除的 legacy 路径（阶段 4）：
+- 已删除、不得再引入的 legacy 路径：
   - `gdcc_new_Variant_with_gdcc_Object` 宏
   - `gdcc_cmp_object`（equality 走 C1 normalized raw）
   - `checkGlobalFuncRequireGodotRawPtr` 对 `gdcc_eval_*` 的 name-prefix 特例

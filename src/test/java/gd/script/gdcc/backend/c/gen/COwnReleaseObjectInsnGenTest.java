@@ -57,7 +57,7 @@ public class COwnReleaseObjectInsnGenTest {
     }
 
     @Test
-    @DisplayName("Unknown object type should fail fast at fat pointer cutover")
+    @DisplayName("Unknown object type should fail fast")
     void unknownObjectTypeShouldFailFast() {
         var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("release_obj");

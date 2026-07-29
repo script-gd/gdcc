@@ -32,10 +32,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Fat-pointer characterization for object value representation.
+/// Characterization for object value representation under the fat-pointer C contract.
 ///
-/// These tests anchor the generated fat-pointer shapes (typedefs, storage, parameter and return
-/// surfaces) that the C backend must keep stable.
+/// Positive paths freeze internal storage/parameter/return as `gdcc_<Type>_fat_ptr` and keep raw
+/// pointer spellings only on ABI/layout edges (bare/raw renderer, container elements, receivers).
+/// Negative paths fail fast on unknown object types instead of falling back to `GDExtensionObjectPtr`.
 class ObjectValueRepresentationCharacterizationTest {
     private static final GdObjectType ENGINE_OBJECT = new GdObjectType("Object");
     private static final GdObjectType ENGINE_NODE = new GdObjectType("Node");
@@ -77,6 +78,22 @@ class ObjectValueRepresentationCharacterizationTest {
             assertThrows(IllegalStateException.class, () -> helper.renderGdTypeInC(UNKNOWN_OBJECT));
             assertThrows(IllegalStateException.class, () -> helper.renderGdTypeRefInC(UNKNOWN_OBJECT));
             assertThrows(IllegalStateException.class, () -> helper.renderDefaultValueExprInC(UNKNOWN_OBJECT));
+            assertThrows(IllegalStateException.class, () -> helper.renderObjectRawPointerType(UNKNOWN_OBJECT));
+            assertThrows(IllegalStateException.class, () -> helper.renderObjectReceiverType(UNKNOWN_OBJECT));
+            assertThrows(IllegalStateException.class, () -> helper.renderObjectBarePointerType(UNKNOWN_OBJECT));
+        }
+
+        @Test
+        @DisplayName("raw ABI boundary renderers stay raw while internal storage stays fat")
+        void rawAbiBoundariesStayRawWhileStorageIsFat() {
+            var helper = newHelper();
+
+            assertEquals("gdcc_Node_fat_ptr", helper.renderGdTypeInC(ENGINE_NODE));
+            assertEquals("godot_Node *", helper.renderObjectRawPointerType(ENGINE_NODE));
+            assertEquals("GDExtensionObjectPtr", helper.renderObjectReceiverType(ENGINE_NODE));
+            assertEquals("gdcc_GdccWorker_fat_ptr", helper.renderGdTypeInC(GDCC_WORKER));
+            assertEquals("GdccWorker *", helper.renderObjectRawPointerType(GDCC_WORKER));
+            assertEquals("GDExtensionObjectPtr", helper.renderObjectReceiverType(GDCC_WORKER));
         }
 
         @Test

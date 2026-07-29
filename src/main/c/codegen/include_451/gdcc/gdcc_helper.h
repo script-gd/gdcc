@@ -91,6 +91,8 @@ static inline GDCC_CONST godot_bool gdcc_object_id_is_ref_counted(GDObjectInstan
     return (instance_id & GDCC_OBJECT_ID_REFERENCE_BIT) != 0;
 }
 
+/// Static-YES RefCounted retain. Side-effecting: mutates reference count (not pure/const).
+/// `obj` must be the validated live raw pointer (`<T>_fat_ptr_live_object`); never pass a fat struct.
 static void own_object(const GDExtensionObjectPtr obj) {
     if (obj == NULL) {
         return;
@@ -100,6 +102,7 @@ static void own_object(const GDExtensionObjectPtr obj) {
 }
 
 /// Runtime RefCounted retain for an object whose static type is unknown.
+/// Side-effecting: may mutate reference count (not pure/const).
 /// `obj` must be the validated live raw pointer (`<T>_fat_ptr_live_object`); `instance_id` is the
 /// fat pointer's cached ID. The ObjectID reference bit (not a ClassDB class-name query) decides
 /// RefCounted-ness; the ID is never recovered from `obj`, which may be a freed non-RefCounted raw.
@@ -111,6 +114,8 @@ static void try_own_object(const GDExtensionObjectPtr obj, const GDObjectInstanc
     godot_RefCounted_reference(rc);
 }
 
+/// Static-YES RefCounted release. Side-effecting: mutates reference count (not pure/const).
+/// Same raw-pointer argument contract as `own_object`.
 static void release_object(const GDExtensionObjectPtr obj) {
     if (obj == NULL) {
         return;
@@ -120,6 +125,7 @@ static void release_object(const GDExtensionObjectPtr obj) {
 }
 
 /// Runtime RefCounted release for an object whose static type is unknown.
+/// Side-effecting: may mutate reference count (not pure/const).
 /// Same pointer/ID contract as `try_own_object`: reference bit decides, ID never recovered from `obj`.
 static void try_release_object(const GDExtensionObjectPtr obj, const GDObjectInstanceID instance_id) {
     if (obj == NULL || !gdcc_object_id_is_ref_counted(instance_id)) {
@@ -130,8 +136,9 @@ static void try_release_object(const GDExtensionObjectPtr obj, const GDObjectIns
 }
 
 /// Destroys an owned object whose static type is unknown.
-/// Reference-bit hit: release the RefCounted strong reference. Miss: free the manually-managed
-/// object. `obj` must be the validated live raw pointer; a NULL `obj` (already freed) is a no-op.
+/// Side-effecting: release RefCounted strong ref or call `godot_object_destroy` (not pure/const).
+/// Reference-bit hit: release. Miss: free the manually-managed object.
+/// `obj` must be the validated live raw pointer; a NULL `obj` (already freed) is a no-op.
 static void try_destroy_object(const GDExtensionObjectPtr obj, const GDObjectInstanceID instance_id) {
     if (obj == NULL) {
         return;

@@ -1,12 +1,13 @@
 # C Backend 对象值胖指针实施计划
 
 > 本文档记录将 C backend 内部对象值从裸指针迁移为“静态类型指针 + Godot instance
-> ID”胖指针的实施路线。本文档只描述尚未实施的目标、边界、步骤与验收条件；当前已落地事实仍以现有 backend 合同文档为准。
+> ID”胖指针的实施路线。阶段 0–4 的代码迁移与阶段 5 的文档/注释同步均已完成；
+> 当前运行时与 ABI 事实以现有 backend 合同文档为准，本计划保留设计依据与 backlog。
 
 ## 文档状态
 
-- 状态：计划中 / 阶段 0 已锚定，阶段 1 已实施，阶段 2 已实施，后续阶段尚未开始
-- 更新时间：2026-07-28
+- 状态：阶段 0–4 代码已实施；阶段 5 文档与注释同步已完成（2026-07-29）
+- 更新时间：2026-07-29
 - Godot 对齐版本：`4.5.1-stable`
 - Godot 对齐提交：`f62fdbde15035c5576dad93e586201f4d41ef0cb`
 - 主要事实源：
@@ -27,7 +28,9 @@
 
 ## 1. 背景与问题
 
-当前 backend 将 `GdObjectType` 直接渲染为裸 C 指针：
+> 历史背景（迁移前）。阶段 0–5 完成后，内部对象值已是 per-type fat pointer；下文保留问题动机。
+
+迁移前 backend 将 `GdObjectType` 直接渲染为裸 C 指针：
 
 - engine 类型：`godot_Node *`
 - GDCC 类型：`Player *`
@@ -1162,21 +1165,21 @@ generated C 标记为可运行：
 |----|------|------|
 | `godot_*` 前缀 backlog → structured callee metadata | **延后到以后 PR** | 当前 `GODOT_RAW_ABI_PREFIX_BACKLOG` 保持；禁止再堆新 prefix 特例 |
 | evaluator object 返回 `_from_raw` | **保留防御** | 当前 API 无 Object-returning operator；注释 + 单元测试锚定 ABI shape |
-| generated C raw/fat scanner | 待确认 | 见验收表 |
+| generated C raw/fat post-gen scanner | **不新增** | 用户确认（2026-07-29）：codegen fail-fast + characterization / binding-wrapper scanner 已满足首次迁移；不另做 raw/fat post-gen scanner |
 
 验收：
 
 - internal signatures/fields/locals无裸 object pointer。
 - raw `GDExtensionObjectPtr`只出现在明确 ABI/layout/helper边界。
-- generated C scanner对违规输出 fail-fast。
+- 违规的 internal 裸 object 表示在 codegen 路径 fail-fast（由 characterization 与 binding-wrapper scanner 锚定）；**不要求**单独的 post-gen raw/fat ABI scanner。
 
 | 验收项 | 状态 |
 |--------|------|
 | internal 无裸 object pointer | 已满足（codegen fail-fast + characterization） |
 | raw 仅在 ABI/layout/helper 边界 | 已满足（allowlist + 生成边界） |
-| generated C scanner 对违规 fail-fast | **待确认**：当前仅有 binding-wrapper scanner；是否需新增 raw/fat ABI post-gen scanner 见 review（架构项） |
+| 违规 fail-fast（无 post-gen raw/fat scanner） | 已满足（codegen fail-fast + characterization + binding-wrapper scanner；2026-07-29 用户确认不新增 post-gen scanner） |
 
-**阶段 4 代码清理状态：已完成（2026-07-29）。** scanner 验收解释待用户确认。更广的“对象值是裸 C 指针”旧叙述全量改写见阶段 5。
+**阶段 4 代码清理状态：已完成（2026-07-29）。** scanner 验收已按用户确认关闭。
 
 ### 阶段 5：关联文档、代码注释与迁移说明同步
 
@@ -1195,23 +1198,28 @@ generated C 标记为可运行：
 
 工作：
 
-- 将事实文档中“对象值是裸 C 指针”的旧描述更新为 per-static-type fat pointer 表示。
-- 更新 `renderGdTypeInC`、`renderGdTypeRefInC`、`renderValueRef`、slot write、return、pack/unpack、registered wrapper
-  等代码注释，使其描述 internal fat pointer 与 raw ABI 边界角色，而不是“对象本身已经是指针”。
-- 在 runtime helper 和 FreeMarker 模板中补充/修正注释，标明哪些 helper 是 pure/const 查询、哪些 helper 会改变
-  ownership/ObjectDB 状态。
-- 将阶段 0 characterization tests 中“当前裸指针基线”的注释更新为“fat-pointer 迁移后锚点”，并保留后续阶段刻意变更的断言说明。
-- 在相关模块文档中记录 unknown object type fail-fast、`assert_object_live` 守卫、RefCounted ObjectID reference-bit
-  fast path 和 outbound freed Variant ID 丢失限制。
-- 删除或改写已经失效的 legacy 注释、TODO 和迁移期临时说明；对仍需保留的 function-name allowlist 标注长期迁移方向。
-- 检查计划文档自身状态，将已完成阶段标记为已实施，并保留未完成的长期优化项（例如 LIR assert 合并 pass）作为 backlog。
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| 事实文档：对象值 = fat pointer | 已完成 | `gdcc_c_backend.md` 新增 Object Value Representation；`ref`/type mapping/`Pointer Conversion` 区分 value vs layout |
+| ownership 规范表示转换 | 已完成 | `gdcc_ownership_lifecycle_spec.md` §2.3 明确 fat value vs wrapper layout |
+| backend 模块文档 | 已完成 | `godot_binding_implementation.md` exact helper 入口；`call_method` / 其它已 fat-aligned 文档复核 |
+| 生产代码注释 | 已完成 | `CGenHelper` / 指令生成器已对齐；`CBodyBuilder` raw-ABI allowlist 与 `godot_*` backlog 注释标明长期方向 |
+| runtime helper pure/side-effect 注释 | 已完成 | `gdcc_helper.h`：query 已有 `GDCC_PURE`/`GDCC_CONST`；own/release/try_* 标明非 pure、有副作用 |
+| 阶段 0 characterization 注释 | 已完成 | 测试类注释已是 fat-pointer 迁移后锚点（非裸指针基线） |
+| 记录 fail-fast / assert / ref-bit / freed Variant ID 限制 | 已完成 | 见 `gdcc_c_backend.md` Object Value Representation 与 lifecycle 段落 |
+| 清理失效 legacy 注释 | 已完成 | 已删除 helper 仅作历史记录；allowlist 保留并标注 structured metadata backlog |
+| 计划文档自身状态 | 已完成 | 阶段 0–5 标记完成；LIR assert 合并 pass 等仍在 §16 backlog |
 
 验收：
 
-- 文档搜索不再把 internal object storage/parameter/return 描述为裸 pointer；raw pointer 只描述为 ABI/layout/helper 边界。
-- 生产代码和模板注释与 generated C 实际输出一致，不引用已删除 helper 或旧 fallback。
-- 阶段 0 测试注释能说明每个断言在 fat-pointer 迁移中的预期变化，而不是仅描述旧输出。
-- 关联文档之间的合同引用一致，没有互相矛盾的裸指针/胖指针描述。
+| 验收项 | 状态 |
+|--------|------|
+| 文档不将 internal storage/parameter/return 描述为裸 pointer | 已满足 |
+| 生产/模板注释与 generated C 一致，不引用已删 helper | 已满足 |
+| 阶段 0 测试注释描述 fat-pointer 锚点 | 已满足 |
+| 关联文档合同引用一致 | 已满足 |
+
+**阶段 5 状态：已完成（2026-07-29）。**
 
 ---
 
@@ -1341,7 +1349,7 @@ script/run-gradle-targeted-tests.sh --tests GodotAbiHeaderCompileTest
 9. exact engine ptrcall和vararg object ABI完成双向适配。
 10. generated C/header compile tests通过。
 11. UTF-8 literal等 raw C expression不再伪装为 object type。
-12. 现有 backend事实文档已更新，不再描述对象值为裸 pointer。
+12. 现有 backend事实文档已更新，不再描述对象值为裸 pointer（阶段 5 已完成）。
 13. 解引用硬失败守卫以显式无返回 `assert_object_live` LIR 指令表达；条件判断、equality、lifecycle、Variant pack/unpack
     不引入额外 LIR liveness 指令。
 14. static RefCounted 路径基于强引用合同跳过 ObjectDB 验证；unknown 路径使用 ObjectID reference-bit fast path。

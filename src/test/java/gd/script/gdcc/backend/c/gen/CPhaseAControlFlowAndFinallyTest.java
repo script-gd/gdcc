@@ -479,7 +479,7 @@ public class CPhaseAControlFlowAndFinallyTest {
     }
 
     private CCodegen newCodegen(LirModule module, List<LirClassDef> gdccClasses) {
-        // Fat-pointer cutover requires engine base types used as superclasses / return types.
+        // Engine base types must be registered so fat-pointer specs resolve for superclasses / returns.
         var objectClass = new gd.script.gdcc.gdextension.ExtensionGdClass(
                 "Object", false, true, null, "core", List.of(), List.of(), List.of(), List.of(), List.of()
         );

@@ -35,8 +35,16 @@ A writable storage location, including but not limited to:
 
 ### 2.3 Representation Conversion
 
-- Conversion between GDCC object pointers (`<Type*>`) and Godot raw object pointers
-- For example: `gdcc_object_from_godot_object_ptr(...)`, `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)`
+Internal object **values** are per-static-type fat pointers (`gdcc_<Type>_fat_ptr`). Representation conversion
+covers both:
+
+1. Fat pointer ↔ validated live raw Godot pointer (`<Type>_fat_ptr_from_raw` / `<Type>_fat_ptr_live_object`,
+   and same-type or upcast fat-to-fat helpers that preserve `instance_id`)
+2. GDCC **wrapper** pointers (`<Type*>`) ↔ Godot raw object pointers at layout/ABI edges
+   (for example `gdcc_object_from_godot_object_ptr(...)`, `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)`)
+
+Do not confuse wrapper instance layout (`<Type*>` / `_object` / `_super`) with object-value storage
+(`gdcc_<Type>_fat_ptr`).
 
 **Representation conversion does not change ownership category.**
 An `OWNED` value stays `OWNED` after conversion, and a `BORROWED` value stays `BORROWED`;

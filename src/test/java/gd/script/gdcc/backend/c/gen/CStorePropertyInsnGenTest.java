@@ -376,7 +376,7 @@ public class CStorePropertyInsnGenTest {
     }
 
     @Test
-    @DisplayName("Unknown object type should fail-fast (no GDExtensionObjectPtr fallback after fat cutover)")
+    @DisplayName("Unknown object type should fail-fast (no GDExtensionObjectPtr fallback)")
     void unknownObjectTypeShouldFallbackToGodotObjectSet() {
         var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("set_unknown_prop");

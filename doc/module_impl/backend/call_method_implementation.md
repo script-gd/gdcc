@@ -103,14 +103,19 @@
 
 ### 4. 指针转换安全约束
 
-- GDCC -> Godot 对象指针转换必须使用“按类生成的专用 helper”；`godot_object_from_gdcc_object_ptr` 视为废弃，不得用于新增或迁移后的路径。
-- 推荐统一写法：`gdcc_object_to_godot_object_ptr(value, Type_object_ptr)`。
-- `value` 的静态类型与 `Type_object_ptr` 必须匹配；若已安全上行转换到父类类型，才允许切换为父类 helper。
-- 当 receiver 是 GDCC wrapper，但目标 owner 为 ENGINE 时，必须先做 GDCC -> Godot raw ptr 转换，再按需要 cast 到 `godot_<Owner>*`。
-- 禁止仅通过 C cast 把 GDCC wrapper 指针伪装成 engine 指针。
+- 内部 receiver/参数对象值是 fat pointer（`gdcc_<Type>_fat_ptr`）。进入 Godot ABI 前先经
+  `assert_object_live`（硬失败解引用点）与 `<Type>_fat_ptr_live_object` / `live_ptr` 取得 validated raw。
+- GDCC **wrapper 布局指针** -> Godot 对象指针转换必须使用“按类生成的专用 helper”；
+  `godot_object_from_gdcc_object_ptr` 视为废弃，不得用于新增或迁移后的路径。
+- 推荐 wrapper 边界写法：`gdcc_object_to_godot_object_ptr(wrapper, Type_object_ptr)`。
+- `wrapper` 的静态类型与 `Type_object_ptr` 必须匹配；若已安全上行转换到父类类型，才允许切换为父类 helper。
+- 当 receiver 是 GDCC 类型但目标 owner 为 ENGINE 时：先从 fat 得到 live wrapper/raw，再做 GDCC wrapper -> Godot
+  raw 转换，并按需要 cast 到 `godot_<Owner>*`。
+- 禁止仅通过 C cast 把 GDCC wrapper 指针伪装成 engine 指针；也禁止把 fat struct 地址当作 Godot object slot。
 - `CBodyBuilder.renderArgument(...)` 的 ptr kind/type fail-fast 防线属于不可回退约束。
 - 当前实现事实：
-  - GDCC receiver -> ENGINE owner：生成 `gdcc_object_to_godot_object_ptr(receiver, ReceiverType_object_ptr)`，随后再 cast 到 `godot_<Owner>*`
+  - GDCC receiver -> ENGINE owner：validated live 后经 `gdcc_object_to_godot_object_ptr(..., ReceiverType_object_ptr)`，
+    再 cast 到 `godot_<Owner>*`
   - GDCC 子类 receiver -> GDCC 父类 owner：生成 `_super` 链安全上行表达式（例如 `&($child->_super)`），无裸 cast
 
 ### 5. `VARIANT_DYNAMIC` 诊断定位约束

@@ -46,8 +46,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Characterization for object lifecycle, conversion, comparison and Variant boundary behavior.
-/// These tests anchor the fat-pointer ownership and producer baseline.
+/// Characterization for object lifecycle, conversion, comparison and Variant boundaries.
+///
+/// Positive paths freeze slot-write order, C1 equality, pack/unpack helpers and RefCounted matrix
+/// under internal fat pointers. Negative paths reject unknown object surfaces and keep lifecycle
+/// helpers on validated live raw + cached `instance_id` (never recover ID from a freed raw).
 class ObjectValueLifecycleCharacterizationTest {
     private static final GdObjectType ENGINE_OBJECT = new GdObjectType("Object");
     private static final GdObjectType ENGINE_NODE = new GdObjectType("Node");
@@ -89,7 +92,7 @@ class ObjectValueLifecycleCharacterizationTest {
         }
 
         @Test
-        @DisplayName("unknown object assignment fails fast at fat pointer cutover")
+        @DisplayName("unknown object assignment fails fast (no bare GDExtensionObjectPtr fallback)")
         void unknownObjectAssignmentFailsFast() {
             assertThrows(IllegalStateException.class, () -> generateAssignmentBody(UNKNOWN_OBJECT, UNKNOWN_OBJECT, api()));
         }

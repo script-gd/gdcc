@@ -833,7 +833,7 @@ class CallMethodInsnGenTest {
     void callMethodObjectDynamicShouldPackAndUnpack() {
         var clazz = newClass("Worker");
         var func = newFunction("call_object_dynamic");
-        // Unknown object types fail-fast after fat-pointer cutover; use a known engine type.
+        // Unknown object types fail-fast; use a known engine type for this dynamic-call fixture.
         func.createAndAddVariable("obj", new GdObjectType("Node"));
         func.createAndAddVariable("value", GdIntType.INT);
         func.createAndAddVariable("ret", GdIntType.INT);

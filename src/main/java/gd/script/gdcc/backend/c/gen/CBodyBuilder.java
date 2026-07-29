@@ -1362,25 +1362,26 @@ public final class CBodyBuilder {
         return currentBlock != null && "__finally__".equals(currentBlock.id());
     }
 
-    /// Explicit helpers whose object parameters are still raw `GDExtensionObjectPtr` at the call site.
-    /// Generated `gdcc_eval_*` helpers accept fat pointers and lower to raw slots internally.
-    /// Exact engine helpers (`gdcc_engine_call_*` / `gdcc_engine_callv_*`) and lifecycle helpers
-    /// (`own_object` / `try_*` / `release_object`) never route through `callVoid` / `callAssign` for raw conversion.
+    /// Explicit non-`godot_*` helpers that still take raw `GDExtensionObjectPtr` at the call site.
+    /// Operator evaluators (`gdcc_eval_*`) and exact engine helpers
+    /// (`gdcc_engine_call_*` / `gdcc_engine_callv_*`) use fat-pointer surfaces and must not appear here.
+    /// Lifecycle helpers (`own_object` / `try_*` / `release_object`) never route through
+    /// `callVoid` / `callAssign`; they are emitted by `emitObjectLifecycleCall`.
     private static final Set<String> GLOBAL_FUNCS_REQUIRE_GODOT_RAW_PTR = Set.of(
             "gdcc_object_from_godot_object_ptr",
             "gdcc_object_is_null_raw_and_id"
     );
 
-    /// Temporary name-prefix backlog for generated Godot wrappers (still raw object ABI).
-    /// TODO: migrate to structured callee metadata in a later PR; do not grow new prefix rules.
+    /// Name-prefix backlog for generated Godot public wrappers that still expose raw object ABI.
+    /// Prefer structured callee metadata over growing name-prefix rules; do not add new prefixes.
     private static final String GODOT_RAW_ABI_PREFIX_BACKLOG = "godot_";
 
-    /// Functions that still consume raw Godot object pointers at the call site.
+    /// Whether a global C helper's object operands must be raw Godot pointers at the call site.
     private boolean checkGlobalFuncRequireGodotRawPtr(@NotNull String funcName) {
         if (GLOBAL_FUNCS_REQUIRE_GODOT_RAW_PTR.contains(funcName)) {
             return true;
         }
-        // Temporary name-prefix backlog for generated Godot wrappers (see GODOT_RAW_ABI_PREFIX_BACKLOG).
+        // See GODOT_RAW_ABI_PREFIX_BACKLOG: transitional raw-ABI recognition for public Godot wrappers.
         return funcName.startsWith(GODOT_RAW_ABI_PREFIX_BACKLOG);
     }
 
@@ -1394,10 +1395,10 @@ public final class CBodyBuilder {
         }
     }
 
-    /// Functions whose C return is still a raw Godot object pointer that must be captured via `_from_raw`.
-    /// `gdcc_eval_*` helpers already return fat pointers after the Phase 4 cutover.
+    /// Whether a global helper still returns a raw Godot object pointer that must be captured via `_from_raw`.
+    /// Fat-pointer helpers (`gdcc_eval_*`, exact engine helpers) return fat values and are excluded.
+    /// Only the transitional `godot_*` public-wrapper prefix backlog is treated as raw return (see backlog constant).
     private boolean checkGlobalFuncReturnGodotRawPtr(@NotNull String funcName) {
-        // Temporary name-prefix backlog for generated Godot wrappers (see GODOT_RAW_ABI_PREFIX_BACKLOG).
         return funcName.startsWith(GODOT_RAW_ABI_PREFIX_BACKLOG);
     }
 

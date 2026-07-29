@@ -90,11 +90,11 @@ class CallMethodInsnGenEngineInheritanceTest {
         );
         assertFalse(
                 entrySource.contains("gdcc_new_Variant_with_gdcc_Object("),
-                "Legacy gdcc_new_Variant_with_gdcc_Object must not appear after Phase 4 cleanup."
+                "Removed helper gdcc_new_Variant_with_gdcc_Object must not appear; pack via fat to_variant."
         );
         assertFalse(
                 entrySource.contains("gdcc_object_to_godot_object_ptr("),
-                "Legacy gdcc_object_to_godot_object_ptr conversion must not appear after fat cutover."
+                "OBJECT_DYNAMIC path must not emit wrapper-boundary gdcc_object_to_godot_object_ptr."
         );
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));

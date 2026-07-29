@@ -1359,7 +1359,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("gdcc_eval_* helpers accept fat pointers (not raw ABI) after Phase 4")
+        @DisplayName("gdcc_eval_* helpers accept fat pointers (not raw ABI)")
         void testGdccEvalHelperKeepsFatPointerArgument() {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
 

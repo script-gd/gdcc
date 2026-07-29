@@ -266,7 +266,9 @@ symbol identity。
 
 - call site 继续通过普通 helper 调用模型接入。
 - caller 保持 normalized callable surface；helper 才负责 `ptrcall` slot shaping。
-- object 参数以 normalized pointer variable 进入 helper，传给 `ptrcall` 时提交 `&argN`。
+- object 参数以内部 fat pointer（`gdcc_<Type>_fat_ptr`，by value）进入 helper；helper 体内物化为 raw slot
+  （`<Type>_fat_ptr_live_object` → 本地 `GDExtensionObjectPtr`），再把 `&raw_slot` 提交给 `ptrcall`。
+  不得把 fat struct 的地址当作 Godot ptrcall object slot。
 - enum / bitfield 在 helper 内物化为本地 raw `godot_int` slot，再提交 `&local_slot`。
 - static helper 不接收 receiver，bind 调用固定传 `NULL`。
 - 缺失非零 bind hash 的 exact route 显式失败，不回退 public wrapper。

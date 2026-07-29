@@ -43,8 +43,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Anchors object fat pointer spec collection, typedef declaration, unknown fail-fast, and
-/// role-specific renderers. Ordinary object storage intentionally remains on the legacy raw
-/// pointer surface until the fat pointer representation cutover.
+/// role-specific renderers. Internal object storage uses per-type fat pointers; bare/raw renderers
+/// serve ABI/layout edges only.
 class ObjectFatPtrDeclarationTest {
     private static final GdObjectType ENGINE_NODE = new GdObjectType("Node");
     private static final GdObjectType ENGINE_REFCOUNTED = new GdObjectType("RefCounted");
