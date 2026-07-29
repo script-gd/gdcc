@@ -120,6 +120,15 @@ Select operation by `RefCountedStatus`:
 - `UNKNOWN`: `try_own_object` / `try_release_object`
 - `NO`: object own/release is a no-op
 
+`ClassRegistry.getRefCountedStatus` mapping notes:
+
+- Exact engine type `Object` is `UNKNOWN`: an Object-typed slot/return may hold a live `RefCounted`
+  instance, so ownership boundaries must use runtime `try_*` helpers.
+- Definite non-`RefCounted` subclasses (`Node`, …) stay `NO`.
+- Definite `RefCounted` / `Resource` types stay `YES`.
+- GDCC user classes that inherit `Object` without reaching `RefCounted` stay `NO` (they are not the
+  engine root-Object special case).
+
 Automatic local cleanup rule:
 
 - `AUTO_GENERATED` `destruct` in `__finally__` is slot-based cleanup for managed locals still owned by the

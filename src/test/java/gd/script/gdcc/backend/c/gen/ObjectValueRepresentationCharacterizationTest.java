@@ -37,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// These tests anchor the generated fat-pointer shapes (typedefs, storage, parameter and return
 /// surfaces) that the C backend must keep stable.
 class ObjectValueRepresentationCharacterizationTest {
+    private static final GdObjectType ENGINE_OBJECT = new GdObjectType("Object");
     private static final GdObjectType ENGINE_NODE = new GdObjectType("Node");
     private static final GdObjectType ENGINE_REFCOUNTED = new GdObjectType("RefCounted");
     private static final GdObjectType GDCC_WORKER = new GdObjectType("GdccWorker");
@@ -147,6 +148,10 @@ class ObjectValueRepresentationCharacterizationTest {
             var helper = newHelper();
 
             assertEquals("", helper.renderCallWrapperOwnedObjectReturnConsumeStmt(ENGINE_NODE, "r"));
+            assertEquals(
+                    "try_release_object(gdcc_Object_fat_ptr_live_object(r));",
+                    helper.renderCallWrapperOwnedObjectReturnConsumeStmt(ENGINE_OBJECT, "r")
+            );
             assertEquals(
                     "release_object(gdcc_GdccWorker_fat_ptr_live_object(r));",
                     helper.renderCallWrapperOwnedObjectReturnConsumeStmt(GDCC_WORKER, "r")
@@ -396,6 +401,10 @@ class ObjectValueRepresentationCharacterizationTest {
     }
 
     private static ExtensionAPI api() {
+        var object = new ExtensionGdClass(
+                "Object", false, true, "", "core",
+                List.of(), List.of(), List.of(), List.of(), List.of()
+        );
         var refCounted = new ExtensionGdClass(
                 "RefCounted", true, true, "Object", "core",
                 List.of(), List.of(), List.of(), List.of(), List.of()
@@ -406,7 +415,7 @@ class ObjectValueRepresentationCharacterizationTest {
         );
         return new ExtensionAPI(
                 null, List.of(), List.of(), List.of(), List.of(), List.of(),
-                List.of(refCounted, node), List.of(), List.of()
+                List.of(object, refCounted, node), List.of(), List.of()
         );
     }
 }

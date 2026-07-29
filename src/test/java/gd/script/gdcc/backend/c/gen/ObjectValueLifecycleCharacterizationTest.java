@@ -49,6 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Characterization for object lifecycle, conversion, comparison and Variant boundary behavior.
 /// These tests anchor the fat-pointer ownership and producer baseline.
 class ObjectValueLifecycleCharacterizationTest {
+    private static final GdObjectType ENGINE_OBJECT = new GdObjectType("Object");
     private static final GdObjectType ENGINE_NODE = new GdObjectType("Node");
     private static final GdObjectType ENGINE_REFCOUNTED = new GdObjectType("RefCounted");
     private static final GdObjectType GDCC_WORKER = new GdObjectType("GdccWorker");
@@ -342,13 +343,19 @@ class ObjectValueLifecycleCharacterizationTest {
     @DisplayName("RefCounted status matrix baseline")
     class RefCountedMatrixBaseline {
         @Test
-        @DisplayName("explicit own/release selects plain or no-op helpers via live_object")
+        @DisplayName("explicit own/release selects plain, try_*, or no-op helpers via live_object")
         void explicitOwnReleaseFollowsRefCountedStatus() {
             var gdccBody = generateOwnReleaseBody(GDCC_WORKER, api());
             assertTrue(gdccBody.contains("own_object(gdcc_GdccWorker_fat_ptr_live_object($obj));"), gdccBody);
             assertTrue(gdccBody.contains("release_object(gdcc_GdccWorker_fat_ptr_live_object($obj));"), gdccBody);
 
             assertThrows(IllegalStateException.class, () -> generateOwnReleaseBody(UNKNOWN_OBJECT, api()));
+
+            var objectBody = generateOwnReleaseBody(ENGINE_OBJECT, api());
+            assertTrue(objectBody.contains("try_own_object(gdcc_Object_fat_ptr_live_object($obj));"), objectBody);
+            assertTrue(objectBody.contains("try_release_object(gdcc_Object_fat_ptr_live_object($obj));"), objectBody);
+            assertFalse(objectBody.contains("\nown_object(gdcc_Object_fat_ptr_live_object($obj));"), objectBody);
+            assertFalse(objectBody.contains("\nrelease_object(gdcc_Object_fat_ptr_live_object($obj));"), objectBody);
 
             var nodeBody = generateOwnReleaseBody(ENGINE_NODE, api());
             assertFalse(nodeBody.contains("own_object("), nodeBody);
@@ -358,13 +365,14 @@ class ObjectValueLifecycleCharacterizationTest {
         }
 
         @Test
-        @DisplayName("__finally__ auto cleanup releases RefCounted slots via live_object but skips non-RefCounted")
+        @DisplayName("__finally__ auto cleanup releases RefCounted/Object slots via live_object but skips non-RefCounted")
         void autoFinallyCleanupFollowsRefCountedStatus() {
             var workerClass = newClass("Worker");
             var gdccWorkerClass = newClass("GdccWorker");
             var func = new LirFunctionDef("auto_cleanup");
             func.setReturnType(GdVoidType.VOID);
             func.createAndAddVariable("node", ENGINE_NODE);
+            func.createAndAddVariable("obj", ENGINE_OBJECT);
             func.createAndAddVariable("ref", ENGINE_REFCOUNTED);
             func.createAndAddVariable("worker", GDCC_WORKER);
             addEntryReturn(func);
@@ -374,9 +382,26 @@ class ObjectValueLifecycleCharacterizationTest {
 
             assertTrue(entrySource.contains("release_object(gdcc_RefCounted_fat_ptr_live_object($ref));"), entrySource);
             assertTrue(entrySource.contains("release_object(gdcc_GdccWorker_fat_ptr_live_object($worker));"), entrySource);
+            assertTrue(entrySource.contains("try_release_object(gdcc_Object_fat_ptr_live_object($obj));"), entrySource);
             assertFalse(entrySource.contains("try_destroy_object($node);"), entrySource);
             assertFalse(entrySource.contains("destroy_object($node);"), entrySource);
             assertFalse(entrySource.contains("release_object(gdcc_Node_fat_ptr_live_object($node));"), entrySource);
+        }
+
+        @Test
+        @DisplayName("Object assignment uses try_own / try_release for possible RC instances")
+        void objectAssignmentUsesTryLifecycleCalls() {
+            var body = generateAssignmentBody(ENGINE_OBJECT, ENGINE_OBJECT, api());
+
+            assertOrder(
+                    body,
+                    " = $dst;",
+                    "$dst = $src;",
+                    "try_own_object(gdcc_Object_fat_ptr_live_object($dst));",
+                    "try_release_object(gdcc_Object_fat_ptr_live_object(__gdcc_tmp_old_obj_"
+            );
+            assertFalse(body.contains("\nown_object(gdcc_Object_fat_ptr_live_object($dst));"), body);
+            assertFalse(body.contains("\nrelease_object(gdcc_Object_fat_ptr_live_object(__gdcc_tmp_old_obj_"), body);
         }
     }
 
@@ -522,6 +547,10 @@ class ObjectValueLifecycleCharacterizationTest {
     }
 
     private static ExtensionAPI api() {
+        var object = new ExtensionGdClass(
+                "Object", false, true, "", "core",
+                List.of(), List.of(), List.of(), List.of(), List.of()
+        );
         var refCounted = new ExtensionGdClass(
                 "RefCounted", true, true, "Object", "core",
                 List.of(), List.of(), List.of(), List.of(), List.of()
@@ -532,18 +561,22 @@ class ObjectValueLifecycleCharacterizationTest {
         );
         return new ExtensionAPI(
                 null, List.of(), List.of(), List.of(), List.of(), List.of(),
-                List.of(refCounted, node), List.of(), List.of()
+                List.of(object, refCounted, node), List.of(), List.of()
         );
     }
 
     private static ExtensionAPI singletonApi() {
+        var object = new ExtensionGdClass(
+                "Object", false, true, "", "core",
+                List.of(), List.of(), List.of(), List.of(), List.of()
+        );
         var node = new ExtensionGdClass(
                 "Node", false, true, "Object", "core",
                 List.of(), List.of(), List.of(), List.of(), List.of()
         );
         return new ExtensionAPI(
                 null, List.of(), List.of(), List.of(), List.of(), List.of(),
-                List.of(node), List.of(new ExtensionSingleton("GameSingleton", "Node")), List.of()
+                List.of(object, node), List.of(new ExtensionSingleton("GameSingleton", "Node")), List.of()
         );
     }
 }

@@ -124,6 +124,28 @@ public class ClassRegistryGdccTest {
     }
 
     @Test
+    void exactEngineObjectIsUnknownWhileConcreteSubclassesKeepYesOrNo() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var registry = new ClassRegistry(api);
+        var userOnObject = new LirClassDef("UserOnObject", "Object");
+        var userOnNode = new LirClassDef("UserOnNode", "Node");
+        var userOnRefCounted = new LirClassDef("UserOnRefCounted", "RefCounted");
+        registry.addGdccClass(userOnObject);
+        registry.addGdccClass(userOnNode);
+        registry.addGdccClass(userOnRefCounted);
+
+        // Root Object may hold RC or non-RC instances — ownership uses try_* at boundaries.
+        assertEquals(RefCountedStatus.UNKNOWN, registry.getRefCountedStatus(new GdObjectType("Object")));
+        // Definite non-RC / RC engine subclasses stay NO / YES.
+        assertEquals(RefCountedStatus.NO, registry.getRefCountedStatus(new GdObjectType("Node")));
+        assertEquals(RefCountedStatus.YES, registry.getRefCountedStatus(new GdObjectType("RefCounted")));
+        // GDCC classes that inherit Object without RefCounted stay NO (not the engine Object special case).
+        assertEquals(RefCountedStatus.NO, registry.getRefCountedStatus(new GdObjectType("UserOnObject")));
+        assertEquals(RefCountedStatus.NO, registry.getRefCountedStatus(new GdObjectType("UserOnNode")));
+        assertEquals(RefCountedStatus.YES, registry.getRefCountedStatus(new GdObjectType("UserOnRefCounted")));
+    }
+
+    @Test
     void addMappedTopLevelGdccClassKeepsSourceNameOverrideSideTableInSync() throws IOException {
         var api = ExtensionApiLoader.loadDefault();
         var registry = new ClassRegistry(api);

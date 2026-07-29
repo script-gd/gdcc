@@ -43,26 +43,32 @@ public class ObjectReturnConsumptionLeakIntegrationTest {
         var source = """
                 class_name ObjectReturnLeakSmoke
                 extends Node
-
+                
                 var held: RefCounted
                 var captured: RefCounted
-
+                
                 func _init() -> void:
                     held = RefCounted.new()
-
+                
                 func slot_write_capture() -> void:
                     var local_ref: RefCounted = RefCounted.new()
                     captured = local_ref
-
+                
                 func captured_ref_count() -> int:
                     return captured.get_reference_count()
-
+                
                 func return_new_ref() -> RefCounted:
                     return RefCounted.new()
-
+                
+                func return_new_ref_as_object() -> Object:
+                    return RefCounted.new()
+                
                 func return_held_field() -> RefCounted:
                     return held
-
+                
+                func echo_object(o: Object) -> Object:
+                    return o
+                
                 func discard_new_ref() -> void:
                     RefCounted.new()
                 """;
@@ -122,8 +128,16 @@ public class ObjectReturnConsumptionLeakIntegrationTest {
                 () -> "Wrapper consume of a fresh object should hand the caller exactly one reference.\nOutput:\n" + combinedOutput
         );
         assertTrue(
+                combinedOutput.contains("object return wrapper consume Object-typed fresh refcount check passed."),
+                () -> "Wrapper consume of a fresh Object-typed RC return should hand the caller exactly one reference.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
                 combinedOutput.contains("object return wrapper consume borrowed refcount check passed."),
                 () -> "Wrapper consume of a borrowed field should hand the caller exactly two references.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("object return wrapper consume Object-typed borrowed refcount check passed."),
+                () -> "Wrapper consume of a borrowed Object return should hand the caller field+temp references.\nOutput:\n" + combinedOutput
         );
         assertTrue(
                 combinedOutput.contains("object return discard refcount check passed."),
@@ -155,15 +169,15 @@ public class ObjectReturnConsumptionLeakIntegrationTest {
     private static @NotNull String testScript() {
         return """
                 extends Node
-
+                
                 const TARGET_NODE_NAME = "ObjectReturnLeakNode"
-
+                
                 func _ready() -> void:
                     var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
                     if target == null:
                         push_error("Target node missing.")
                         return
-
+                
                     # Slot write: a fresh object is stored into a local slot then captured into a field.
                     # After the function returns, the local slot is released in __finally__, leaving only
                     # the field reference. Reading it back through the field getter adds one temporary
@@ -175,7 +189,7 @@ public class ObjectReturnConsumptionLeakIntegrationTest {
                         print("object return slot write refcount check passed.")
                     else:
                         push_error("object return slot write refcount check failed: count=" + str(captured_count))
-
+                
                     # Wrapper consume of a fresh move-returned object: GDScript must receive exactly one
                     # reference (the wrapper packing transfers ownership net-zero, no extra release).
                     var returned = target.call("return_new_ref")
@@ -184,7 +198,15 @@ public class ObjectReturnConsumptionLeakIntegrationTest {
                         print("object return wrapper consume fresh refcount check passed.")
                     else:
                         push_error("object return wrapper consume fresh refcount check failed: count=" + str(returned_count))
-
+                
+                    # Same producer, static return type Object (UNKNOWN -> try_release after pack).
+                    var returned_as_object = target.call("return_new_ref_as_object")
+                    var returned_as_object_count = int(returned_as_object.get_reference_count()) if returned_as_object != null else -1
+                    if returned_as_object_count == 1:
+                        print("object return wrapper consume Object-typed fresh refcount check passed.")
+                    else:
+                        push_error("object return wrapper consume Object-typed fresh refcount check failed: count=" + str(returned_as_object_count))
+                
                     # Wrapper consume of a borrowed field: GDScript receives one reference plus the field's
                     # existing reference, so the count must be exactly 2.
                     var held_out = target.call("return_held_field")
@@ -193,7 +215,20 @@ public class ObjectReturnConsumptionLeakIntegrationTest {
                         print("object return wrapper consume borrowed refcount check passed.")
                     else:
                         push_error("object return wrapper consume borrowed refcount check failed: count=" + str(held_count))
-
+                
+                    # BORROWED Object return: body try_own + wrapper try_release must balance.
+                    # Local `inp` stays live across the call (like the field in return_held_field),
+                    # so a balanced path leaves exactly inp + returned = 2.
+                    # Missing body try_own + still try_release would under-count / UAF;
+                    # missing wrapper try_release would leave 3.
+                    var inp = RefCounted.new()
+                    var echoed = target.call("echo_object", inp)
+                    var echoed_count = int(echoed.get_reference_count()) if echoed != null else -1
+                    if echoed_count == 2:
+                        print("object return wrapper consume Object-typed borrowed refcount check passed.")
+                    else:
+                        push_error("object return wrapper consume Object-typed borrowed refcount check failed: count=" + str(echoed_count))
+                
                     # Discard: a missing release would leak one RefCounted per call; stress the path and
                     # rely on a clean run plus Godot's leaked-instance reporting at shutdown.
                     for i in range(5000):

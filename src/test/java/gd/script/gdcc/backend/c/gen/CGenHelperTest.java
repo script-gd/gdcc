@@ -29,7 +29,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -668,7 +667,7 @@ class CGenHelperTest {
     }
 
     @Test
-    @DisplayName("renderCallWrapperOwnedObjectReturnConsumeStmt should release RefCounted returns only")
+    @DisplayName("renderCallWrapperOwnedObjectReturnConsumeStmt should release RefCounted and try-release Object")
     void renderCallWrapperOwnedObjectReturnConsumeStmtShouldReleaseRefCountedReturnsOnly() {
         assertEquals(
                 "release_object(gdcc_RefCounted_fat_ptr_live_object(value));",
@@ -677,6 +676,11 @@ class CGenHelperTest {
         assertEquals(
                 "release_object(gdcc_MyChild_fat_ptr_live_object(value));",
                 helper.renderCallWrapperOwnedObjectReturnConsumeStmt(new GdObjectType("MyChild"), "value")
+        );
+        // Exact Object is UNKNOWN: may hold RC instances, so consume uses try_release.
+        assertEquals(
+                "try_release_object(gdcc_Object_fat_ptr_live_object(value));",
+                helper.renderCallWrapperOwnedObjectReturnConsumeStmt(new GdObjectType("Object"), "value")
         );
         assertEquals("", helper.renderCallWrapperOwnedObjectReturnConsumeStmt(new GdObjectType("Node"), "value"));
         assertEquals("", helper.renderCallWrapperOwnedObjectReturnConsumeStmt(GdStringType.STRING, "value"));

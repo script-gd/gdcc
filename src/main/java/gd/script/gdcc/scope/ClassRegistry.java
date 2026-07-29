@@ -882,14 +882,23 @@ public final class ClassRegistry implements Scope {
 
     /// Determine whether an object type is reference-counted.
     /// Returns YES if the type definitely inherits from RefCounted.
-    /// Returns NO if the type definitely does NOT inherit from RefCounted (e.g., Resource).
-    /// Returns UNKNOWN if we cannot determine (e.g., unknown engine type or missing class info).
+    /// Returns NO if the type definitely does NOT inherit from RefCounted (e.g., Node).
+    /// Returns UNKNOWN if we cannot determine (e.g., root Object, unknown engine type, or missing class info).
+    ///
+    /// Exact engine type `Object` is UNKNOWN even though extension API marks it non-refcounted:
+    /// an Object-typed slot/return may hold a live RefCounted instance, so ownership boundaries must
+    /// use runtime `try_own` / `try_release`. Concrete non-RC subclasses (Node, ...) stay NO;
+    /// GDCC user classes that inherit Object without RefCounted also stay NO.
     public @NotNull RefCountedStatus getRefCountedStatus(@NotNull GdObjectType objectType) {
         var className = objectType.getTypeName();
         // Check engine classes first
         var engineClass = gdClassByName.get(className);
         if (engineClass != null) {
-            // Engine classes have isRefcounted flag from extension API
+            // Root Object may carry either RC or non-RC instances at runtime.
+            if (className.equals("Object")) {
+                return RefCountedStatus.UNKNOWN;
+            }
+            // Other engine classes have isRefcounted flag from extension API
             return engineClass.isRefcounted() ? RefCountedStatus.YES : RefCountedStatus.NO;
         }
         // Check GDCC user classes

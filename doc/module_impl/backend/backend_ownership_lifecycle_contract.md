@@ -9,7 +9,7 @@
 - 范围：
   - `src/main/java/gd/script/gdcc/backend/c/**`
   - `src/main/c/codegen/**`
-- 更新时间：2026-07-29
+- 更新时间：2026-07-29（Object → UNKNOWN ownership boundary）
 - 上游对齐基线：Godot `755fa449c4aa94fdf2c58e2b726fd62efde07e09`
 - 关联文档：
   - `doc/gdcc_ownership_lifecycle_spec.md`
@@ -151,17 +151,20 @@ exact-engine helper 的 vararg（动态 `object_method_bind_call`）路径，对
 - exact / ptrcall 路径**不**适用本合同：它直接把 raw 指针写进 slot（`result_raw`），没有 Variant 中转去释放引用，
   `_from_raw` 捕获即自带所有权，无需额外 retain / release。
 
-已知限制（静态类型驱动的所有权边界）：
+静态类型驱动的所有权边界（`Object` 根类型）：
 
 - own/release/consume 决策以**槽或返回值的静态类型**的 `RefCountedStatus` 为键，不是运行时实际类型。
-- 因此当 OWNED `RefCounted` 生产者结果被上溯到静态 `Object`（或其它 `NO`）载体时（例如
-  `func f() -> Object: return RefCounted.new()`），wrapper consume 走 `NO` → no-op，构造路径的
-  `init_ref` 引用无法在边界上被释放，会泄漏 1 引用。对称地，仅改 consume 为 `try_release`
-  会破坏真正的 BORROWED `Object` 返回。
-- 完整修复需要在所有权转移边界（slot retain/release、wrapper consume、discard、helper own）
-  对 `Object` 基类型统一按 `UNKNOWN`（运行期 `try_*`）处理，且必须整体一致；当前未做该扩展。
-- 在完整修复前，公开 API 应尽量用精确的 `RefCounted`（或具体子类）作为返回类型，避免
-  `-> Object` 承载 OWNED RefCounted 生产者。
+- 精确引擎类型 `Object` 由 `ClassRegistry.getRefCountedStatus` 解析为 `UNKNOWN`（扩展 API 虽标
+  `is_refcounted=false`，但 `Object` 槽/返回值可能持有 live `RefCounted` 实例）。
+- 因此所有权转移边界（slot retain/release、wrapper consume、discard、helper own、`__finally__`
+  cleanup）对 `Object` 统一走运行期 `try_own_object` / `try_release_object`，与已有 UNKNOWN 路径一致。
+- 例：`func f() -> Object: return RefCounted.new()` — wrapper 在 pack 后 `try_release` 消费构造
+  `init_ref` 的 OWNED；`func echo(o: Object) -> Object: return o` — body 对 BORROWED 写返回时
+  `try_own`，wrapper 再 `try_release`，引用收支平衡。
+- 确定的非 RC 子类（`Node` 等）与继承 `Object` 但未走到 `RefCounted` 的 GDCC 用户类仍为 `NO`，不
+  触发 `try_*`。
+- 若将来出现其它“静态基类可能承载 RC 实例”的边界类型，同样应按 `UNKNOWN` 处理，而不是仅改
+  wrapper consume 一侧。
 
 违约后果：
 
