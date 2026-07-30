@@ -4,7 +4,7 @@
 > 落地完成后，应将已冻结合同抽离/改写为长期事实源，并同步更新本目录下相关 docs 与 `frontend_rules.md` 中的 compile intercept 列表。
 >
 > 更新时间：2026-07-30  
-> 状态：Phase 0–2 已完成；Phase 1 Shared semantic + Phase 2 unified body lowering（`is_instance_of` / 常量折叠 / `is not` + NOT）；Phase 3 backend 待实施
+> 状态：Phase 0–3 已完成；Phase 1 Shared semantic + Phase 2 unified body lowering + Phase 3 backend 分派/`IsInstanceOfInsnGen`/runtime helpers；Phase 4 compile gate 解封待实施；Phase 5 单元测试 + 端到端测试待实施
 
 ---
 
@@ -94,9 +94,9 @@ $<result_id:bool> = is_instance_of "<type_name>" $<value_id>
 |----|------|
 | Semantic | ~~无 `RESOLVED(bool)`~~ → **已实现**；RHS 解析 + `typeTestTargets` side-table（`FrontendTypeTestTarget`） |
 | LIR Java 命名 | ~~`className`/`objectId`~~ → **`typeName`/`valueId`（P2 已完成）** |
-| Backend | 无 `IsInstanceOfInsnGen`；无按 value/type 的分派与常量折叠 |
-| Runtime | 缺 `is` 专用 object helper；缺参数化容器 metadata helper |
-| 测试 | body lowering 正反测已有；**codegen** 测仍待 P3 |
+| Backend | ~~无 `IsInstanceOfInsnGen`~~ → **P3 已完成**（常量 / type-enum / object helper / typed container helper） |
+| Runtime | ~~缺 helper~~ → **`gdcc_is_instance_of_object_*` + typed array/dictionary helpers**（null→false） |
+| 测试 | body lowering + **`IsInstanceOfInsnGenTest` codegen 正反测（P3）** |
 
 ### 1.4 关联文档
 
@@ -357,7 +357,7 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 | 目标 side-table | `FrontendAnalysisData.typeTestTargets()`：`FrontendTypeTestTarget.TargetKnown(GdType)` / `TargetUnresolvedObject(name)` |
 | 发布路径 | `BodyExpressionResolver` 捕获 target → `TypedLexicalEnvironment.putTypeTestTarget` → `FrontendExprTypePatch` |
 | 诊断 | 非法/nested RHS → `sema.expression_resolution` error；unresolved object → `sema.type_test_unresolved_object` warning |
-| 非目标 | hard-typed 不兼容 `sema.type_check` **未做**（留 P5）；compile gate / lowering **未解封** |
+| 非目标 | hard-typed 不兼容 `sema.type_check` **未做**（留 P6）；compile gate / lowering **未解封** |
 | 测试 | `FrontendExpressionSemanticSupportTest` 正反路径 + e2e + compile-gate 仍拦截 |
 
 ---
@@ -407,12 +407,27 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 
 **验收**
 
-- [ ] 任意合法 `is_instance_of` LIR 不再 `UnsupportedOperationException`。
-- [ ] null object → false；子类 is 父类 → true（helper 路径）。
-- [ ] Variant is int：生成 type-enum 比较而非错误的 ClassDB 调用。
-- [ ] `Array[int]`：走 typed helper，而非裸 `ARRAY` 枚举误判。
-- [ ] `UNRESOLVED_OBJECT` 目标：无论 value 静态类型，均走运行时继承链 helper，不折叠。
-- [ ] `IsInstanceOfInsnGenTest`（及必要辅助测）通过。
+- [x] 任意合法 `is_instance_of` LIR 不再 `UnsupportedOperationException`。
+- [x] null object → false；子类 is 父类 → true（helper 路径 / 可折叠 upcast）。
+- [x] Variant is int：生成 type-enum 比较而非错误的 ClassDB 调用。
+- [x] `Array[int]`：走 typed helper，而非裸 `ARRAY` 枚举误判。
+- [x] `UNRESOLVED_OBJECT` 目标：无论 value 静态类型，均走运行时继承链 helper，不折叠。
+- [x] `IsInstanceOfInsnGenTest`（及必要辅助测）通过。
+
+**Phase 3 落地记录（2026-07-30）**
+
+| 项 | 实现 |
+|----|------|
+| InsnGen | `IsInstanceOfInsnGen`：解析 `type_name`（`tryResolveDeclaredType` / unresolved 标识符降级）+ 操作数静态类型分派 |
+| 折叠 | 镜像 frontend `tryFoldKnownTypeTest`：exact / upcast / Nil→false / 族不相交→false / bare Array·Dictionary 接受 typed；`Variant` 与 parent→child / `UNRESOLVED_OBJECT` 不折 |
+| Builtin 路径 | `godot_variant_get_type(...) == GDEXTENSION_VARIANT_TYPE_*`（非参数化 builtin / packed / 裸 Array·Dictionary） |
+| Object 路径 | `gdcc_is_instance_of_object_raw_and_id`（fat ptr）/ `gdcc_is_instance_of_object_variant`；**禁止**复用 `gdcc_check_variant_type_object`（null→true） |
+| 参数化容器 | codegen 生成 typed leaf 常量（builtin enum + class `StringName`）；`gdcc_is_instance_of_typed_{array,dictionary}[_variant]` |
+| 注册 | `CCodegen` 注册 `IsInstanceOfInsnGen` |
+| Runtime 文档 | `gdcc_runtime_lib.md` 记录上述 helpers |
+| 测试 | `IsInstanceOfInsnGenTest` 正反路径（折叠、Variant 枚举、object helper、typed container、object-leaf 容器、bare Array/Dictionary、unresolved、fail-closed） |
+| 开放问题 #4 决策 | **不在运行时再解析 `"Array[int]"` 字符串**；codegen 侧生成 typed metadata 常量传入 helper |
+| UNRESOLVED + 精确非 object 值 | 禁止“真”折叠 / 禁止当 object 实例；对 `int is FutureEnemy` 等**可发常量 false**（语义正确，不强制无意义 ClassDB 调用） |
 
 ---
 
@@ -434,7 +449,72 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 
 ---
 
-### Phase 5 — 折叠与兼容性 hardening
+### Phase 5 — 单元测试补全 + test_suite 端到端验证
+
+**前置**：P4 验收通过（compile gate 已解封，`is` 可完整走通 codegen）。
+
+**工作内容**
+
+1. **Frontend 集成单测补全**：
+   - 在 `FrontendLoweringBodyInsnPassTest` 中补充 `is` / `is not` 的 body lowering 集成路径，确保 type-test 与其它表达式在统一 pass 中协同工作。
+   - 在 `FrontendCompileCheckAnalyzerTest` 中补充 gate 解封后的正向放行断言：`is` 通过、`as` 仍拦截。
+   - 补充 `FrontendBodyOwnerProceduresExprTypeTest`（或等价 procedure-level 测试）中 `is` 表达式的类型发布验证。
+
+2. **Backend 集成单测补全**：
+   - 在 `CBodyBuilderPhaseCTest`（或等价全函数体 codegen 测试）中补充包含 `is_instance_of` 的完整函数体 C 输出验证。
+   - 验证 `is not` 路径（`is_instance_of` + `unary_op NOT`）在完整函数体中的 C 输出正确性。
+
+3. **test_suite 端到端用例**（遵循 `doc/test_suite.md` 合同）：
+   - 在 `src/test/test_suite/unit_test/script/` 下新建 `type_test/` 分组目录，创建编译脚本：
+     - `builtin_type_test.gd`：覆盖 `is int`、`is float`、`is String`、`is PackedInt32Array` 等非参数化 builtin 精确匹配与不匹配。
+     - `object_type_test.gd`：覆盖 `is Node`、`is Node2D`（子类 is 父类 → true；父类 is 子类 → runtime）、null is Node → false。
+     - `container_type_test.gd`：覆盖 `is Array[int]`、`is Dictionary[String, int]`、裸 `Array` / `Dictionary` 与参数化容器的区分。
+     - `is_not_test.gd`：覆盖 `is not` 的 negated 语义（builtin、object、container 各至少一例）。
+     - `variant_type_test.gd`：覆盖 `Variant` 操作数的运行时路径（builtin 枚举比较、object helper、typed container helper）。
+   - 在 `src/test/test_suite/unit_test/validation/` 下创建同路径验证脚本：
+     - 每个验证脚本通过 `target.call(...)` 调用编译脚本的公共方法，断言返回值。
+     - 成功时打印 `__UNIT_TEST_PASS_MARKER__`，失败时 `push_error(...)`。
+   - 更新 `GdScriptUnitTestCompileRunnerTest.EXPECTED_SCRIPT_PATHS`，加入新增资源对路径。
+
+4. **编译脚本约束**（遵循 test_suite 合同）：
+   - 所有编译脚本 `extends Node` + `class_name`。
+   - 每个公共方法返回 `bool` 或 `int`，便于验证脚本断言。
+   - 保持单一行为合同：每个脚本聚焦一个 type-test 子族。
+   - 不在编译脚本中使用 `set_process(true)` 等非必要 toggle。
+
+**验收**
+
+- [ ] `FrontendLoweringBodyInsnPassTest` 包含 `is` / `is not` 集成路径且通过。
+- [ ] `FrontendCompileCheckAnalyzerTest` 包含 gate 解封后 `is` 放行 + `as` 仍拦截断言。
+- [ ] 完整函数体 codegen 测试覆盖 `is_instance_of` + `unary_op NOT` 组合。
+- [ ] `type_test/` 下至少 5 组 script/validation 资源对，覆盖 §2.2 全部合法 RHS 族。
+- [ ] `GdScriptUnitTestCompileRunnerTest` 动态生成用例包含新增路径且通过（Zig + Godot 可用时）。
+- [ ] 新增用例不破坏既有 test_suite 用例。
+- [ ] Zig / Godot 不可用时，JUnit assumption skip 仍正常工作。
+
+**Phase 5 测试矩阵（最小覆盖）**
+
+| 场景 | 编译脚本方法 | 验证断言 |
+|------|-------------|----------|
+| `1 is int` | `exact_builtin_match() -> bool` | `true` |
+| `1.0 is int` | `builtin_mismatch() -> bool` | `false` |
+| `"s" is String` | `string_match() -> bool` | `true` |
+| `PackedInt32Array() is PackedInt32Array` | `packed_match() -> bool` | `true` |
+| `node is Node` | `object_exact() -> bool` | `true` |
+| `node2d is Node` | `object_upcast() -> bool` | `true` |
+| `null is Node` | `null_is_object() -> bool` | `false` |
+| `variant_val is int`（运行时） | `variant_builtin_runtime(v: Variant) -> bool` | 按实际类型 |
+| `variant_val is Node`（运行时） | `variant_object_runtime(v: Variant) -> bool` | 按实际类型 |
+| `arr is Array[int]` | `typed_array_match() -> bool` | `true` |
+| `bare_arr is Array[int]` | `bare_is_typed_array() -> bool` | `false` |
+| `dict is Dictionary[String, int]` | `typed_dict_match() -> bool` | `true` |
+| `1 is not int` | `negated_exact_builtin() -> bool` | `false` |
+| `node2d is not Node` | `negated_upcast() -> bool` | `false` |
+| `null is not Node` | `negated_null() -> bool` | `true` |
+
+---
+
+### Phase 6 — 折叠与兼容性 hardening
 
 | 项 | 说明 |
 |----|------|
@@ -442,9 +522,8 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 | Backend 折叠 | 与 frontend 双保险，不重复错误 |
 | 硬类型诊断文案 | 对齐 Godot |
 | freed instance | 与 Godot 对齐或文档化差异 |
-| test_suite e2e | Zig 可用时脚本级 |
 
-**验收**：独立增量；不破坏 P1–P4。
+**验收**：独立增量；不破坏 P1–P5。
 
 ---
 
@@ -456,7 +535,8 @@ P0 文档/合同（已完成）
  → P2 unified lowering (is_instance_of | const)（已完成）
  → P3 backend dispatch + runtime helpers
  → P4 解封 TypeTest compile gate
- → P5 hardening / e2e
+ → P5 单元测试补全 + test_suite 端到端验证
+ → P6 hardening
 ```
 
 **禁止**：先删 compile block；禁止 LIR 多 opcode 分叉“优化”。
@@ -479,6 +559,12 @@ P0 文档/合同（已完成）
 | `gdcc_helper.h` / runtime | P3 | object + typed container helpers |
 | `FrontendCompileCheckAnalyzer.java` | P4 | 移除 block |
 | 关联 frontend docs | P4 | 同步 intercept 列表 |
+| `FrontendLoweringBodyInsnPassTest.java` | P5 | 补充 `is` / `is not` 集成路径 |
+| `FrontendCompileCheckAnalyzerTest.java` | P5 | gate 解封后正向放行断言 |
+| `CBodyBuilderPhaseCTest.java`（或等价） | P5 | 完整函数体 `is_instance_of` C 输出 |
+| `unit_test/script/type_test/*.gd` | P5 | test_suite 编译脚本 |
+| `unit_test/validation/type_test/*.gd` | P5 | test_suite 验证脚本 |
+| `GdScriptUnitTestCompileRunnerTest.java` | P5 | 更新 `EXPECTED_SCRIPT_PATHS` |
 
 **测试**
 
@@ -487,7 +573,10 @@ P0 文档/合同（已完成）
 | `FrontendExpressionSemanticSupportTest` | P1 |
 | body lowering type-test | P2 |
 | `IsInstanceOfInsnGenTest` | P3 |
-| `FrontendCompileCheckAnalyzerTest` | P4 |
+| `FrontendCompileCheckAnalyzerTest` | P4 / P5 |
+| `FrontendLoweringBodyInsnPassTest` | P5 |
+| `CBodyBuilderPhaseCTest`（或等价） | P5 |
+| `GdScriptUnitTestCompileRunnerTest` | P5 |
 
 ```bash
 script/run-gradle-targeted-tests.sh --tests <TestClass>
@@ -513,22 +602,23 @@ script/run-gradle-targeted-tests.sh --tests <TestClass>
 
 1. Freed instance：runtime error vs false？  
 2. gdcc script class：仅 ClassDB 名是否足够，是否需要 script 指针链？  
-3. Frontend vs Backend 折叠责任边界：P2 是否强制做满折叠，还是 P2 最小发指令、P3/P5 补折叠？  
-4. 参数化容器 type 编码如何传入 C helper（字符串再解析 vs codegen 生成 typed 常量）？  
+3. Frontend vs Backend 折叠责任边界：P2 是否强制做满折叠，还是 P2 最小发指令、P3/P6 补折叠？  
+4. ~~参数化容器 type 编码如何传入 C helper？~~ → **P3 决策：codegen 生成 typed 常量（builtin enum + class name），不在运行时解析 type 字符串。**  
 
 ---
 
 ## 9. 完成定义（DoD）
 
-**MVP DoD（P0–P4）**
+**MVP DoD（P0–P5）**
 
 1. 源码 `x is T` / `x is not T` 经 semantic → compile → lowering → C codegen 闭环。  
 2. LIR 仅见 `is_instance_of` 或 bool 常量（+ 可选 `unary_op NOT`），无配方式多指令 type-test。  
 3. Backend 按 §3.3 正确分派；null→false；继承链与非参数化 builtin 路径可用。  
 4. 参数化容器至少 fail-closed 或已实现 helper 路径之一（推荐 MVP 含 helper 或明确 UNSUPPORTED 诊断）。  
 5. TypeTest 已解封；Cast 仍拦截；文档同步；目标测试通过。
+6. test_suite 端到端用例覆盖 §2.2 全部合法 RHS 族；Zig + Godot 可用时通过。
 
-**完整 Godot 对齐**：参数化容器 + 折叠/hard-typed 诊断 + e2e 全部达标。
+**完整 Godot 对齐**：参数化容器 + 折叠/hard-typed 诊断 + hardening 全部达标。
 
 ---
 

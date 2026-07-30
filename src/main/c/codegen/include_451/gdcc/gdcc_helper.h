@@ -339,6 +339,183 @@ static godot_bool gdcc_check_variant_type_object(const godot_Variant *value,
     return subclass_match;
 }
 
+/// GDScript `is` object check for a fat-pointer pair `(raw, instance_id)`.
+/// Null/freed → false (unlike `gdcc_check_variant_type_object`, which accepts null for unpack).
+/// Live objects pass on exact ClassDB name match or when `expected` is a parent of the actual class.
+static inline godot_bool gdcc_is_instance_of_object_raw_and_id(
+        GDExtensionObjectPtr raw,
+        GDObjectInstanceID instance_id,
+        const godot_StringName *expected_class_name) {
+    if (expected_class_name == NULL) {
+        return false;
+    }
+    // Null ∪ freed never satisfies `x is T`.
+    if (gdcc_object_is_null_raw_and_id(raw, instance_id)) {
+        return false;
+    }
+    GDExtensionObjectPtr live = gdcc_object_live_ptr(instance_id);
+    if (live == NULL) {
+        return false;
+    }
+
+    godot_StringName actual_class_name;
+    if (!godot_object_get_class_name(live, class_library, &actual_class_name)) {
+        return false;
+    }
+
+    if (godot_StringName_op_equal_StringName(&actual_class_name, expected_class_name)) {
+        godot_StringName_destroy(&actual_class_name);
+        return true;
+    }
+
+    // ClassDB.is_parent_class(actual, expected) ⇔ expected is parent of actual (or equal).
+    godot_bool inherits = godot_ClassDB_is_parent_class(
+            godot_ClassDB_singleton(),
+            &actual_class_name,
+            expected_class_name
+    );
+    godot_StringName_destroy(&actual_class_name);
+    return inherits;
+}
+
+/// GDScript `is` object check for an OBJECT Variant payload. Null/freed → false.
+static inline godot_bool gdcc_is_instance_of_object_variant(
+        const godot_Variant *value,
+        const godot_StringName *expected_class_name) {
+    if (value == NULL || expected_class_name == NULL) {
+        return false;
+    }
+    if (godot_variant_get_type(value) != GDEXTENSION_VARIANT_TYPE_OBJECT) {
+        return false;
+    }
+    GDObjectInstanceID instance_id = godot_variant_get_object_instance_id(value);
+    if (instance_id == 0) {
+        return false;
+    }
+    GDExtensionObjectPtr live = gdcc_object_live_ptr(instance_id);
+    if (live == NULL) {
+        return false;
+    }
+    return gdcc_is_instance_of_object_raw_and_id(live, instance_id, expected_class_name);
+}
+
+/// True when typed-container script metadata is absent (Godot stores that as OBJECT/null, not TYPE_NIL).
+static inline godot_bool gdcc_typed_script_metadata_is_null(const godot_Variant *script) {
+    if (script == NULL) {
+        return true;
+    }
+    GDExtensionVariantType script_type = godot_variant_get_type(script);
+    if (script_type == GDEXTENSION_VARIANT_TYPE_NIL) {
+        return true;
+    }
+    if (script_type != GDEXTENSION_VARIANT_TYPE_OBJECT) {
+        return false;
+    }
+    return godot_variant_get_object_instance_id(script) == 0;
+}
+
+/// GDScript `is Array[T]` on a typed Array handle. Matches exact element builtin + class name; script leaf
+/// must be null (script-leaf targets are out of MVP scope). Bare/untyped Array fails parameterized targets.
+static inline godot_bool gdcc_is_instance_of_typed_array(
+        const godot_Array *array,
+        godot_int expected_builtin,
+        const godot_StringName *expected_class_name) {
+    if (array == NULL || expected_class_name == NULL) {
+        return false;
+    }
+    if (godot_Array_get_typed_builtin(array) != expected_builtin) {
+        return false;
+    }
+    godot_StringName actual_class_name = godot_Array_get_typed_class_name(array);
+    godot_bool class_match = godot_StringName_op_equal_StringName(&actual_class_name, expected_class_name);
+    godot_StringName_destroy(&actual_class_name);
+    if (!class_match) {
+        return false;
+    }
+    godot_Variant script = godot_Array_get_typed_script(array);
+    godot_bool script_null = gdcc_typed_script_metadata_is_null(&script);
+    godot_Variant_destroy(&script);
+    return script_null;
+}
+
+/// GDScript `is Array[T]` when the value is carried as Variant.
+static inline godot_bool gdcc_is_instance_of_typed_array_variant(
+        const godot_Variant *value,
+        godot_int expected_builtin,
+        const godot_StringName *expected_class_name) {
+    if (value == NULL || godot_variant_get_type(value) != GDEXTENSION_VARIANT_TYPE_ARRAY) {
+        return false;
+    }
+    godot_Array array = godot_new_Array_with_Variant(value);
+    godot_bool result = gdcc_is_instance_of_typed_array(&array, expected_builtin, expected_class_name);
+    godot_Array_destroy(&array);
+    return result;
+}
+
+/// GDScript `is Dictionary[K, V]` on a typed Dictionary handle (exact key/value metadata, null scripts).
+static inline godot_bool gdcc_is_instance_of_typed_dictionary(
+        const godot_Dictionary *dictionary,
+        godot_int expected_key_builtin,
+        const godot_StringName *expected_key_class_name,
+        godot_int expected_value_builtin,
+        const godot_StringName *expected_value_class_name) {
+    if (dictionary == NULL || expected_key_class_name == NULL || expected_value_class_name == NULL) {
+        return false;
+    }
+    if (godot_Dictionary_get_typed_key_builtin(dictionary) != expected_key_builtin
+            || godot_Dictionary_get_typed_value_builtin(dictionary) != expected_value_builtin) {
+        return false;
+    }
+
+    godot_StringName key_class = godot_Dictionary_get_typed_key_class_name(dictionary);
+    godot_bool key_class_match = godot_StringName_op_equal_StringName(&key_class, expected_key_class_name);
+    godot_StringName_destroy(&key_class);
+    if (!key_class_match) {
+        return false;
+    }
+
+    godot_StringName value_class = godot_Dictionary_get_typed_value_class_name(dictionary);
+    godot_bool value_class_match = godot_StringName_op_equal_StringName(&value_class, expected_value_class_name);
+    godot_StringName_destroy(&value_class);
+    if (!value_class_match) {
+        return false;
+    }
+
+    godot_Variant key_script = godot_Dictionary_get_typed_key_script(dictionary);
+    godot_bool key_script_null = gdcc_typed_script_metadata_is_null(&key_script);
+    godot_Variant_destroy(&key_script);
+    if (!key_script_null) {
+        return false;
+    }
+
+    godot_Variant value_script = godot_Dictionary_get_typed_value_script(dictionary);
+    godot_bool value_script_null = gdcc_typed_script_metadata_is_null(&value_script);
+    godot_Variant_destroy(&value_script);
+    return value_script_null;
+}
+
+/// GDScript `is Dictionary[K, V]` when the value is carried as Variant.
+static inline godot_bool gdcc_is_instance_of_typed_dictionary_variant(
+        const godot_Variant *value,
+        godot_int expected_key_builtin,
+        const godot_StringName *expected_key_class_name,
+        godot_int expected_value_builtin,
+        const godot_StringName *expected_value_class_name) {
+    if (value == NULL || godot_variant_get_type(value) != GDEXTENSION_VARIANT_TYPE_DICTIONARY) {
+        return false;
+    }
+    godot_Dictionary dictionary = godot_new_Dictionary_with_Variant(value);
+    godot_bool result = gdcc_is_instance_of_typed_dictionary(
+            &dictionary,
+            expected_key_builtin,
+            expected_key_class_name,
+            expected_value_builtin,
+            expected_value_class_name
+    );
+    godot_Dictionary_destroy(&dictionary);
+    return result;
+}
+
 /// Returns whether the current Variant carrier still needs outer-owner writeback.
 /// Positive polarity is intentional and must stay aligned with the frontend writable-target facts:
 /// - false for statically shared/reference families (`Array`, `Dictionary`, `Object`) and
