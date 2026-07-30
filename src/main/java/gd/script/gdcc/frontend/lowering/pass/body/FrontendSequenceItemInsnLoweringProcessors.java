@@ -1003,13 +1003,19 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 return false;
             }
             if (sameStaticType(valueType, targetType)) {
+                // Non-object value types (int, String, etc.) cannot be null → safe to fold true.
+                // Object types may hold null at runtime → defer to backend null-check path.
+                if (valueType instanceof GdObjectType) {
+                    return null;
+                }
                 return true;
             }
-            // Definite object upcast: static Node2D is Node → true.
+            // Definite object upcast: static Node2D is Node.
+            // Inheritance is proven, but value may be null → defer to backend null-check path.
             if (valueType instanceof GdObjectType
                     && targetType instanceof GdObjectType
                     && classRegistry.checkAssignable(valueType, targetType)) {
-                return true;
+                return null;
             }
             // Definite disjoint families (exact non-object vs object, or reverse).
             if (valueType instanceof GdObjectType != targetType instanceof GdObjectType) {

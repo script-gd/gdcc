@@ -111,7 +111,12 @@ public class GdScriptUnitTestCompileRunnerTest {
             "subscript/array_roundtrip.gd",
             "subscript/dictionary_float_key_roundtrip.gd",
             "subscript/packed_array_mutation_roundtrip.gd",
-            "subscript/string_stringname_dictionary_key_roundtrip.gd"
+            "subscript/string_stringname_dictionary_key_roundtrip.gd",
+            "type_test/builtin_type_test.gd",
+            "type_test/container_type_test.gd",
+            "type_test/is_not_test.gd",
+            "type_test/object_type_test.gd",
+            "type_test/variant_type_test.gd"
     );
     private static final List<String> ABI_SCRIPT_PATHS = scriptPathsWithPrefix("abi/");
     private static final List<String> ALGORITHM_SCRIPT_PATHS = scriptPathsWithPrefix("algorithm/");
@@ -124,6 +129,7 @@ public class GdScriptUnitTestCompileRunnerTest {
     private static final List<String> SCENE_SCRIPT_PATHS = scriptPathsWithPrefix("scene/");
     private static final List<String> SMOKE_SCRIPT_PATHS = scriptPathsWithPrefix("smoke/");
     private static final List<String> SUBSCRIPT_SCRIPT_PATHS = scriptPathsWithPrefix("subscript/");
+    private static final List<String> TYPE_TEST_SCRIPT_PATHS = scriptPathsWithPrefix("type_test/");
     private static final int PHYSICS_FRAME_QUIT_AFTER_FRAMES = 60;
     private static final Set<String> PHYSICS_FRAME_SCRIPT_PATHS = Set.of(
             "runtime/virtual/physics_process_called_and_delta_valid.gd"
@@ -226,6 +232,14 @@ public class GdScriptUnitTestCompileRunnerTest {
         return compileAndValidateBundledUnitScripts(
                 SUBSCRIPT_SCRIPT_PATHS,
                 "Zig not found; skipping subscript GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesTypeTestScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                TYPE_TEST_SCRIPT_PATHS,
+                "Zig not found; skipping type-test GDScript compile-run tests"
         );
     }
 

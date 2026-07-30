@@ -46,6 +46,7 @@ import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.GoIfInsn;
 import gd.script.gdcc.lir.insn.GotoInsn;
+import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
@@ -58,6 +59,7 @@ import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.lir.insn.StorePropertyInsn;
+import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.lir.insn.VariantGetInsn;
 import gd.script.gdcc.lir.insn.VariantGetIndexedInsn;
@@ -7373,6 +7375,115 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertNotEquals(whileRegion.conditionEntryId(), forContinueGoto.targetBbId()),
                 () -> assertEquals(whileRegion.exitId(), whileBreakGoto.targetBbId()),
                 () -> assertNotEquals(forRegion.exitId(), whileBreakGoto.targetBbId())
+        );
+    }
+
+    @Test
+    void runLowersTypeTestAlongsideOtherExpressionsInUnifiedPass() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_type_test_integration.gd",
+                """
+                        class_name BodyInsnTypeTestIntegration
+                        extends Node
+                        
+                        func probe(value) -> bool:
+                            var flag := value is Node
+                            var count := 1
+                            count += 1
+                            return flag
+                        """,
+                Map.of("BodyInsnTypeTestIntegration", "RuntimeBodyInsnTypeTestIntegration"),
+                true
+        );
+        var probeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeTestIntegration",
+                "probe"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = probeContext.targetFunction();
+        var instructions = allInstructions(function);
+        var isInstanceOf = requireOnlyInstruction(function, IsInstanceOfInsn.class);
+        var binaryOp = requireOnlyInstruction(function, BinaryOpInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("Node", isInstanceOf.typeName()),
+                () -> assertEquals(GodotOperator.ADD, binaryOp.op()),
+                () -> assertEquals(1, countInstructions(instructions, IsInstanceOfInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, BinaryOpInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersIsNotWithUnaryNotInUnifiedPass() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_type_test_negated.gd",
+                """
+                        class_name BodyInsnTypeTestNegated
+                        extends Node
+                        
+                        func probe(value) -> bool:
+                            return value is not int
+                        """,
+                Map.of("BodyInsnTypeTestNegated", "RuntimeBodyInsnTypeTestNegated"),
+                true
+        );
+        var probeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeTestNegated",
+                "probe"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = probeContext.targetFunction();
+        var isInstanceOf = requireOnlyInstruction(function, IsInstanceOfInsn.class);
+        var notInsn = requireOnlyInstruction(function, UnaryOpInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("int", isInstanceOf.typeName()),
+                () -> assertEquals(GodotOperator.NOT, notInsn.op()),
+                () -> assertEquals(isInstanceOf.resultId(), notInsn.operandId())
+        );
+    }
+
+    @Test
+    void runFoldsExactBuiltinTypeTestToConstantInUnifiedPass() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_type_test_fold.gd",
+                """
+                        class_name BodyInsnTypeTestFold
+                        extends Node
+                        
+                        func probe() -> bool:
+                            var x := 42
+                            return x is int
+                        """,
+                Map.of("BodyInsnTypeTestFold", "RuntimeBodyInsnTypeTestFold"),
+                true
+        );
+        var probeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeTestFold",
+                "probe"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = probeContext.targetFunction();
+        var instructions = allInstructions(function);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(0, countInstructions(instructions, IsInstanceOfInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, LiteralBoolInsn.class))
         );
     }
 

@@ -5,7 +5,6 @@ import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.*;
-import gd.script.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -52,6 +51,14 @@ public final class OperatorResolver {
         Objects.requireNonNull(bodyBuilder);
         Objects.requireNonNull(op);
         Objects.requireNonNull(operandType);
+
+        if (op == GodotOperator.NOT && operandType instanceof GdBoolType) {
+            return new PathDecision(
+                    OperatorPath.BUILTIN_EVALUATOR,
+                    GdBoolType.BOOL,
+                    "Bool NOT specialization"
+            );
+        }
 
         var semanticResultType = resolveOperatorReturnType(bodyBuilder, operandType, op, null);
         if (semanticResultType == null) {

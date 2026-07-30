@@ -57,7 +57,6 @@ import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
-import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
 import org.jetbrains.annotations.NotNull;
@@ -534,10 +533,6 @@ public class FrontendCompileCheckAnalyzer {
                 case CastExpression castExpression -> reportExplicitCompileBlock(
                         castExpression,
                         expressionCompileBlockedMessage("Cast expression")
-                );
-                case TypeTestExpression typeTestExpression -> reportExplicitCompileBlock(
-                        typeTestExpression,
-                        expressionCompileBlockedMessage("Type-test expression")
                 );
                 default -> {
                     markCompileSurfaceNode(expression);

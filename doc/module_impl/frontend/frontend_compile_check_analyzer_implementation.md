@@ -162,9 +162,8 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - `PreloadExpression`
 - `GetNodeExpression`
 - `CastExpression`
-- `TypeTestExpression`
 
-这些节点在 shared semantic 路径中仍是 frontend 已识别的语法/语义形态。compile gate 现在发出的错误只表示：
+`TypeTestExpression` 已于 Phase 4 解封（shared semantic 发布 `RESOLVED(bool)` + `typeTestTargets()`，body lowering 发射统一 `is_instance_of` / 常量 bool，backend `IsInstanceOfInsnGen` 分派 + runtime helpers 已落地）。
 
 - lowering 尚未就绪
 - 当前不能继续进入编译
@@ -391,7 +390,8 @@ compile gate 当前统一使用：
 - `PreloadExpression`
 - `GetNodeExpression`
 - `CastExpression`
-- `TypeTestExpression`
+
+`TypeTestExpression` 已于 Phase 4 解封（见 `frontend_is_type_test_implementation_plan.md`）。
 
 在满足这些条件之前，它们都必须继续由 compile-only gate 拦截，而不是因为“frontend 已识别”就提前放行。
 
@@ -430,7 +430,7 @@ compile gate 当前统一使用：
 
 - frontend -> LIR lowering 入口必须强制使用 `analyzeForCompile(...)`
 - lowering 在继续前必须检查 `diagnostics().hasErrors() == false`
-- `assert` 与 7 类显式拦截表达式（`ConditionalExpression` 至 `TypeTestExpression`）的真正 lowering/backend 支持仍待后续补齐；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）
+- `assert` 与 6 类显式拦截表达式（`ConditionalExpression` 至 `CastExpression`）的真正 lowering/backend 支持仍待后续补齐；`TypeTestExpression` 已于 Phase 4 解封；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）
 
 若未来需要为 LSP 单独呈现 compile-only blocker，正确方向仍是：
 

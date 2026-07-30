@@ -156,8 +156,9 @@ class FrontendTypeTestInsnLoweringTest {
                             return value is Node
                         """
         );
-        assertTrue(requireOnly(node2dIsNode.function(), LiteralBoolInsn.class).value());
-        assertEquals(0, count(node2dIsNode.function(), IsInstanceOfInsn.class));
+        var upcastInsn = requireOnly(node2dIsNode.function(), IsInstanceOfInsn.class);
+        assertEquals("Node", upcastInsn.typeName());
+        assertEquals(0, count(node2dIsNode.function(), LiteralBoolInsn.class));
     }
 
     @Test
@@ -373,7 +374,13 @@ class FrontendTypeTestInsnLoweringTest {
                             return value is not Node
                         """
         );
-        assertFalse(requireOnly(notUpcast.function(), LiteralBoolInsn.class).value());
+        var upcastIsInstanceOf = requireOnly(notUpcast.function(), IsInstanceOfInsn.class);
+        var upcastNot = requireOnly(notUpcast.function(), UnaryOpInsn.class);
+        assertAll(
+                () -> assertEquals("Node", upcastIsInstanceOf.typeName()),
+                () -> assertEquals(GodotOperator.NOT, upcastNot.op()),
+                () -> assertEquals(upcastIsInstanceOf.resultId(), upcastNot.operandId())
+        );
 
         var notParentToChild = lowerProbe(
                 """
@@ -440,7 +447,7 @@ class FrontendTypeTestInsnLoweringTest {
     }
 
     @Test
-    void analyzeForCompileStillBlocksTypeTestAtCompileGate() throws Exception {
+    void analyzeForCompilePassesTypeTestThroughCompileGate() throws Exception {
         var diagnostics = new DiagnosticManager();
         var unit = new GdScriptParserService().parseUnit(
                 Path.of("tmp", "type_test_gate_phase2.gd"),
@@ -463,7 +470,7 @@ class FrontendTypeTestInsnLoweringTest {
                 .filter(diagnostic -> diagnostic.category().equals("sema.compile_check"))
                 .filter(diagnostic -> diagnostic.message().toLowerCase().contains("type-test"))
                 .toList();
-        assertFalse(compileBlocks.isEmpty(), () -> "expected compile-gate block, got: " + analysisData.diagnostics());
+        assertTrue(compileBlocks.isEmpty(), () -> "TypeTest should pass compile gate, got: " + analysisData.diagnostics());
     }
 
     private static @NotNull LoweredProbe lowerProbe(@NotNull String source) throws Exception {
@@ -476,7 +483,7 @@ class FrontendTypeTestInsnLoweringTest {
         assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
         var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var module = new FrontendModule("test_module", List.of(unit), Map.of());
-        // Shared semantic only: keep TypeTest out of compile gate so body lowering can be exercised.
+        // Shared semantic path: body lowering tests only need expression facts, not the compile gate.
         var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
         assertFalse(
                 diagnostics.hasErrors(),

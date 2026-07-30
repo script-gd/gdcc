@@ -4,7 +4,7 @@
 > 落地完成后，应将已冻结合同抽离/改写为长期事实源，并同步更新本目录下相关 docs 与 `frontend_rules.md` 中的 compile intercept 列表。
 >
 > 更新时间：2026-07-30  
-> 状态：Phase 0–3 已完成；Phase 1 Shared semantic + Phase 2 unified body lowering + Phase 3 backend 分派/`IsInstanceOfInsnGen`/runtime helpers；Phase 4 compile gate 解封待实施；Phase 5 单元测试 + 端到端测试待实施
+> 状态：Phase 0–6a 已完成；Phase 1 Shared semantic + Phase 2 unified body lowering + Phase 3 backend 分派/`IsInstanceOfInsnGen`/runtime helpers + Phase 4 compile gate 解封 + Phase 5 单元测试补全 + test_suite 端到端验证 + Phase 6a Object upcast null-check 优化；Phase 6b 其余 hardening 待实施
 
 ---
 
@@ -85,7 +85,7 @@ $<result_id:bool> = is_instance_of "<type_name>" $<value_id>
 | 层 | 当前行为 | 位置 |
 |----|----------|------|
 | Shared semantic | ~~`DEFERRED`~~ → **`RESOLVED(bool)`（P1 已完成）** | `FrontendExpressionSemanticSupport.resolveTypeTestExpressionType` |
-| Compile gate | 显式 `Type-test expression` block（P4 才解封） | `FrontendCompileCheckAnalyzer` ~538–541 |
+| Compile gate | ~~显式 `Type-test expression` block~~ → **已解封（P4 已完成）** | `FrontendCompileCheckAnalyzer`（TypeTest 落入 default 分支） |
 | Body lowering | ~~stub~~ → **`is_instance_of` / 常量 / `NOT`（P2 已完成）** | `FrontendTypeTestInsnLoweringProcessor` |
 
 ### 1.3 缺失 / 需对齐统一合同
@@ -443,9 +443,18 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 
 **验收**
 
-- [ ] `var b = x is Node` 可过 compile gate 并完成 codegen（在支持路径内）。
-- [ ] `x as Node` 仍拦截。
-- [ ] fact 级 blocker 仍生效。
+- [x] `var b = x is Node` 可过 compile gate 并完成 codegen（在支持路径内）。
+- [x] `x as Node` 仍拦截。
+- [x] fact 级 blocker 仍生效。
+
+**Phase 4 落地记录（2026-07-30）**
+
+| 项 | 实现 |
+|----|------|
+| 代码变更 | `FrontendCompileCheckAnalyzer.walkExpression`：移除 `case TypeTestExpression` 分支，TypeTest 落入 `default`（`markCompileSurfaceNode` + `walkNestedExpressionChildren`）；删除未使用的 `TypeTestExpression` import |
+| 测试更新 | `FrontendCompileCheckAnalyzerTest`：显式 block 计数 8→7，新增 `noneMatch("Type-test expression")` 断言；`FrontendExpressionSemanticSupportTest`：`endToEndTypeTestStillBlockedByCompileGate` → `endToEndTypeTestPassesCompileGate`（断言无 compile block + 语义事实仍正确发布） |
+| 文档同步 | `frontend_compile_check_analyzer_implementation.md`（§3.3/§7/§9）、`frontend_rules.md`、`frontend_lowering_plan.md`（§6）、`frontend_chain_binding_expr_type_implementation.md`（§4.6）、`frontend_lowering_skeleton_pre_pass_implementation.md`、`diagnostic_manager.md` |
+| CastExpression | 保持拦截，不受影响 |
 
 ---
 
@@ -484,13 +493,24 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 
 **验收**
 
-- [ ] `FrontendLoweringBodyInsnPassTest` 包含 `is` / `is not` 集成路径且通过。
-- [ ] `FrontendCompileCheckAnalyzerTest` 包含 gate 解封后 `is` 放行 + `as` 仍拦截断言。
-- [ ] 完整函数体 codegen 测试覆盖 `is_instance_of` + `unary_op NOT` 组合。
-- [ ] `type_test/` 下至少 5 组 script/validation 资源对，覆盖 §2.2 全部合法 RHS 族。
-- [ ] `GdScriptUnitTestCompileRunnerTest` 动态生成用例包含新增路径且通过（Zig + Godot 可用时）。
-- [ ] 新增用例不破坏既有 test_suite 用例。
-- [ ] Zig / Godot 不可用时，JUnit assumption skip 仍正常工作。
+- [x] `FrontendLoweringBodyInsnPassTest` 包含 `is` / `is not` 集成路径且通过。
+- [x] `FrontendCompileCheckAnalyzerTest` 包含 gate 解封后 `is` 放行 + `as` 仍拦截断言。
+- [x] 完整函数体 codegen 测试覆盖 `is_instance_of` + `unary_op NOT` 组合。
+- [x] `type_test/` 下至少 5 组 script/validation 资源对，覆盖 §2.2 全部合法 RHS 族。
+- [x] `GdScriptUnitTestCompileRunnerTest` 动态生成用例包含新增路径且通过（Zig + Godot 可用时）。
+- [x] 新增用例不破坏既有 test_suite 用例。
+- [x] Zig / Godot 不可用时，JUnit assumption skip 仍正常工作。
+
+**Phase 5 落地记录（2026-07-30）**
+
+| 项 | 实现 |
+|----|------|
+| Frontend 集成 | `FrontendLoweringBodyInsnPassTest`：3 个新测试（type-test + 其它表达式协同、`is not` + `unary_op NOT`、exact builtin 折叠为常量） |
+| Compile gate 正向 | `FrontendCompileCheckAnalyzerTest`：计数 7 + `noneMatch("Type-test expression")` + `anyMatch("Cast expression")`（Phase 4 已覆盖） |
+| Backend 集成 | `IsInstanceOfInsnGenTest`：新增 `is_instance_of` + `unary_op NOT` 完整函数体 C 输出测试 |
+| Backend 补充 | `OperatorInsnGen`：新增 bool `NOT` 特化（`!operand` 直接生成）；`OperatorResolver`：新增 bool NOT 路径决策 |
+| test_suite | `type_test/` 下 5 组 script/validation 对：builtin、object、container、is_not、variant |
+| 注册 | `GdScriptUnitTestCompileRunnerTest`：`EXPECTED_SCRIPT_PATHS` + `TYPE_TEST_SCRIPT_PATHS` + `@TestFactory` |
 
 **Phase 5 测试矩阵（最小覆盖）**
 
@@ -514,16 +534,80 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 
 ---
 
-### Phase 6 — 折叠与兼容性 hardening
+### Phase 6 — Object upcast null-check 优化 + 折叠 hardening
+
+#### 6a. Object upcast/same-type 折叠修正为 null check（本阶段实施）
+
+**问题**
+
+`tryFoldKnownTypeTest`（frontend）与 `IsInstanceOfInsnGen.tryFold`（backend）对 Object 静态类型的 same-type / upcast 折叠为常量 `true`。但 Object 类型变量运行时可能持有 null，Godot 语义 `null is T` → `false`。折叠为 `true` 在此场景下语义错误。
+
+**方案**
+
+当静态类型已证明继承关系（same type 或 upcast）时，`x is T` 的唯一 false 路径是 null。因此：
+
+```
+x is T  ≡  x != null    （当静态类型已证明 upcast/same-type）
+```
+
+将折叠从"常量 true"改为"发射 null 判断"：
+
+| 层 | 变更 |
+|----|------|
+| Frontend `tryFoldKnownTypeTest` | Object same-type / upcast 不再返回 `true`；返回 `null`（不折叠），让 `is_instance_of` 正常发射 |
+| Backend `IsInstanceOfInsnGen.tryFold` | 同上：Object same-type / upcast 不再返回 `true` |
+| Backend dispatch（新增路径） | 当 value 静态类型为 Object 且 target 为 Object 且 `checkAssignable(value, target)` 成立时，发射 `!renderObjectIsNullExpr(objectCode)` 而非完整 `gdcc_is_instance_of_object_*` helper |
+
+**不变量**
+
+- 非 object builtin（`int`、`String` 等值类型）：`sameStaticType → true` 仍正确（值类型不可能为 null），保持不变
+- `UNRESOLVED_OBJECT` 目标：仍强制完整 helper（无法证明继承关系）
+- Variant 操作数测 Object：仍走 `gdcc_is_instance_of_object_variant`（静态类型不证明继承）
+- parent→child（`static Node is Node2D`）：不证明 upcast，仍走完整 helper
+- 单一 opcode 原则不变：LIR 仍只有 `is_instance_of`，路径选择是 codegen 细节
+
+**C 输出对比**
+
+```c
+// 之前（错误折叠）
+$result = true;
+
+// 之后（null check，正确且低成本）
+$result = !(<object null check expr>);
+
+// 完整 helper（仍用于 Variant / unresolved / parent→child）
+$result = gdcc_is_instance_of_object_raw_and_id(..., GD_STATIC_SN(u8"Node"));
+```
+
+**验收**
+
+- [x] `var x: Node = null; x is Node` 运行时返回 `false`（不再折叠为 `true`）
+- [x] `var x := Node2D.new(); x is Node` 运行时返回 `true`（null check 通过）
+- [x] `var x := 42; x is int` 仍折叠为 `true`（非 object 不受影响）
+- [x] Variant / unresolved / parent→child 路径不受影响
+- [x] `IsInstanceOfInsnGenTest` 新增正反测试
+- [x] test_suite `object_type_test.gd` 恢复静态类型 null 测试并通过
+- [x] 既有测试不破坏
+
+**Phase 6a 落地记录（2026-07-30）**
+
+| 项 | 实现 |
+|----|------|
+| Frontend | `tryFoldKnownTypeTest`：Object same-type/upcast 返回 `null`（不折叠）；非 object builtin 保持 `true` |
+| Backend fold | `IsInstanceOfInsnGen.tryFold`：镜像 frontend 变更 |
+| Backend dispatch | 新增 `emitProvenUpcastNullCheck`：`!(renderObjectIsNullExpr(objectCode))`，复用 `gdcc_object_is_null_raw_and_id` |
+| 测试 | `IsInstanceOfInsnGenTest`（2 个测试改为断言 null check）、`FrontendTypeTestInsnLoweringTest`（2 个测试改为断言 IsInstanceOfInsn 发射） |
+| test_suite | `object_type_test.gd` / `is_not_test.gd` 恢复静态类型 null 用例，端到端通过 |
+
+#### 6b. 其余 hardening（后续）
 
 | 项 | 说明 |
 |----|------|
 | Frontend 折叠覆盖面 | 常量字面量操作数、更多 hard-typed 不相交/相同 |
-| Backend 折叠 | 与 frontend 双保险，不重复错误 |
 | 硬类型诊断文案 | 对齐 Godot |
 | freed instance | 与 Godot 对齐或文档化差异 |
 
-**验收**：独立增量；不破坏 P1–P5。
+**验收**：独立增量；不破坏 P1–P6a。
 
 ---
 

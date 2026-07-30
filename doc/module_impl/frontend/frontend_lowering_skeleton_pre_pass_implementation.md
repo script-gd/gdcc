@@ -272,7 +272,6 @@ void run(FrontendLoweringContext context)
 - `PreloadExpression`
 - `GetNodeExpression`
 - `CastExpression`
-- `TypeTestExpression`
 - 脚本类 `static var`
 
 此外，frontend MVP 仍未完整支持：

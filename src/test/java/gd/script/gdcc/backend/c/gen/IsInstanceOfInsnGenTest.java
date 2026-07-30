@@ -3,6 +3,7 @@ package gd.script.gdcc.backend.c.gen;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
 import gd.script.gdcc.enums.GodotVersion;
+import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
@@ -11,6 +12,7 @@ import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
+import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
@@ -77,11 +79,12 @@ class IsInstanceOfInsnGenTest {
     }
 
     @Test
-    @DisplayName("static Node2D is Node folds to true (definite upcast)")
-    void objectUpcastFoldsTrue() {
+    @DisplayName("static Node2D is Node emits null check (proven upcast)")
+    void objectUpcastEmitsNullCheck() {
         var body = generateWithEngine("obj", new GdObjectType("Node2D"), "Node");
-        assertTrue(body.contains("$result = true;"), body);
+        assertTrue(body.contains("gdcc_object_is_null_raw_and_id"), body);
         assertFalse(body.contains("gdcc_is_instance_of_object"), body);
+        assertFalse(body.contains("$result = true;"), body);
     }
 
     @Test
@@ -259,10 +262,11 @@ class IsInstanceOfInsnGenTest {
     }
 
     @Test
-    @DisplayName("object fat pointer is Object uses raw_and_id helper when open")
-    void staticObjectIsObjectExactFoldsTrue() {
+    @DisplayName("object fat pointer same type emits null check (proven exact)")
+    void staticObjectExactEmitsNullCheck() {
         var body = generateWithEngine("obj", new GdObjectType("Node"), "Node");
-        assertTrue(body.contains("$result = true;"), body);
+        assertTrue(body.contains("gdcc_object_is_null_raw_and_id"), body);
+        assertFalse(body.contains("gdcc_is_instance_of_object"), body);
     }
 
     @Test
@@ -332,6 +336,33 @@ class IsInstanceOfInsnGenTest {
         var body = generateWithEngine("value", GdVariantType.VARIANT, "Node");
         assertFalse(body.contains("gdcc_check_variant_type_object"), body);
         assertTrue(body.contains("gdcc_is_instance_of_object_variant"), body);
+    }
+
+    @Test
+    @DisplayName("is_instance_of + unary_op NOT produces correct C for is-not path")
+    void isInstanceOfPlusUnaryNotProducesCorrectC() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("is_not_test");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("value", GdVariantType.VARIANT);
+        func.createAndAddVariable("tmp", GdBoolType.BOOL);
+        func.createAndAddVariable("result", GdBoolType.BOOL);
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new IsInstanceOfInsn("tmp", "int", "value"));
+        entry.appendInstruction(new UnaryOpInsn("result", GodotOperator.NOT, "tmp"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var api = emptyApi();
+        var codegen = new CCodegen();
+        codegen.prepare(newContext(api, List.of(workerClass)), new LirModule("test_module", List.of(workerClass)));
+        var body = codegen.generateFuncBody(workerClass, func);
+
+        assertTrue(body.contains("godot_variant_get_type"), body);
+        assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_INT"), body);
+        assertTrue(body.contains("$tmp"), body);
+        assertTrue(body.contains("$result = !$tmp;"), body);
     }
 
     private static @NotNull String generate(@NotNull String valueId, @NotNull GdType valueType, @NotNull String typeName) {

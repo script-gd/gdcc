@@ -93,7 +93,12 @@ public final class IsInstanceOfInsnGen implements CInsnGen<IsInstanceOfInsn> {
         var target = Objects.requireNonNull(resolvedTarget);
         switch (target) {
             case GdObjectType objectTarget -> {
-                emitObjectRuntimePath(bodyBuilder, resultVariable, valueVariable, objectTarget.getTypeName());
+                if (valueVariable.type() instanceof GdObjectType
+                        && bodyBuilder.classRegistry().checkAssignable(valueVariable.type(), objectTarget)) {
+                    emitProvenUpcastNullCheck(bodyBuilder, resultVariable, valueVariable);
+                } else {
+                    emitObjectRuntimePath(bodyBuilder, resultVariable, valueVariable, objectTarget.getTypeName());
+                }
                 return;
             }
             case GdArrayType arrayTarget when !arrayTarget.isGenericArray() -> {
@@ -131,12 +136,15 @@ public final class IsInstanceOfInsnGen implements CInsnGen<IsInstanceOfInsn> {
             return false;
         }
         if (sameStaticType(valueType, targetType)) {
+            if (valueType instanceof GdObjectType) {
+                return null;
+            }
             return true;
         }
         if (valueType instanceof GdObjectType
                 && targetType instanceof GdObjectType
                 && classRegistry.checkAssignable(valueType, targetType)) {
-            return true;
+            return null;
         }
         if (valueType instanceof GdObjectType != targetType instanceof GdObjectType) {
             return false;
@@ -239,6 +247,20 @@ public final class IsInstanceOfInsnGen implements CInsnGen<IsInstanceOfInsn> {
         // Exact non-object ordinary value can never be an object class at runtime
         // (including UNRESOLVED_OBJECT targets: plan forces no true-fold, not a useless runtime call).
         bodyBuilder.assignExpr(bodyBuilder.targetOfVar(resultVariable), "false", GdBoolType.BOOL);
+    }
+
+    /// Static type proves inheritance (same or upcast), so the only false path is null.
+    private void emitProvenUpcastNullCheck(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull LirVariable resultVariable,
+            @NotNull LirVariable valueVariable
+    ) {
+        var objectCode = bodyBuilder.valueOfVar(valueVariable).generateCode();
+        bodyBuilder.assignExpr(
+                bodyBuilder.targetOfVar(resultVariable),
+                "!(" + bodyBuilder.renderObjectIsNullExpr(objectCode) + ")",
+                GdBoolType.BOOL
+        );
     }
 
     private void emitTypedArrayPath(

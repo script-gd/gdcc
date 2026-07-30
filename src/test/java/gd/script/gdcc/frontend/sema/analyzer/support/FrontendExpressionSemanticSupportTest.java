@@ -1564,8 +1564,7 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
-    void endToEndTypeTestStillBlockedByCompileGate() throws Exception {
-        // Compile gate is a separate final phase; shared `analyze(...)` intentionally does not run it.
+    void endToEndTypeTestPassesCompileGate() throws Exception {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(
@@ -1589,9 +1588,8 @@ class FrontendExpressionSemanticSupportTest {
                 .filter(diagnostic -> diagnostic.category().equals("sema.compile_check"))
                 .filter(diagnostic -> diagnostic.message().toLowerCase().contains("type-test"))
                 .toList();
-        assertFalse(compileBlocks.isEmpty(), () -> "expected compile-gate block, got: "
+        assertTrue(compileBlocks.isEmpty(), () -> "TypeTest should pass compile gate, got: "
                 + analysisData.diagnostics());
-        // Phase 1 semantic facts remain published even while the gate still blocks compile.
         var typeTest = findNode(unit.ast(), TypeTestExpression.class, _ -> true);
         var expressionType = analysisData.expressionTypes().get(typeTest);
         assertNotNull(expressionType);

@@ -205,7 +205,7 @@
 1. `ConditionalExpression`
 2. `assert`
 3. `ArrayExpression` / `DictionaryExpression`
-4. `CastExpression` / `TypeTestExpression`
+4. `CastExpression`（`TypeTestExpression` 已于 Phase 4 解封）
 5. `GetNodeExpression` / `PreloadExpression`
 6. 脚本类 `static var`
 
