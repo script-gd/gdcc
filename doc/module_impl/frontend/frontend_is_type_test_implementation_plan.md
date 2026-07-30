@@ -4,7 +4,7 @@
 > 落地完成后，应将已冻结合同抽离/改写为长期事实源，并同步更新本目录下相关 docs 与 `frontend_rules.md` 中的 compile intercept 列表。
 >
 > 更新时间：2026-07-30  
-> 状态：Phase 0–6a 已完成；Phase 1 Shared semantic + Phase 2 unified body lowering + Phase 3 backend 分派/`IsInstanceOfInsnGen`/runtime helpers + Phase 4 compile gate 解封 + Phase 5 单元测试补全 + test_suite 端到端验证 + Phase 6a Object upcast null-check 优化；Phase 6b 其余 hardening 待实施
+> 状态：Phase 0–6b 已完成；Phase 1 Shared semantic + Phase 2 unified body lowering + Phase 3 backend 分派/`IsInstanceOfInsnGen`/runtime helpers + Phase 4 compile gate 解封 + Phase 5 单元测试补全 + test_suite 端到端验证 + Phase 6a Object upcast null-check 优化 + Phase 6b hardening（硬类型诊断 + freed instance 文档化）
 
 ---
 
@@ -269,7 +269,7 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 | RHS 非合法标识符（表达式、`null`、nested container） | `sema.expression_resolution` / type-ref 诊断 | **error** |
 | RHS 合法标识符但 ScopeTypeResolver 未命中（builtin / 容器族） | `sema.expression_resolution` | **error**（builtin / 容器必须编译期已知） |
 | RHS 合法标识符但 ScopeTypeResolver 未命中（Object 族降级） | `sema.type_test_unresolved_object` | **warning (lint)**：`"type name '<name>' not found in scope, will be checked at runtime"` |
-| 硬类型确定不兼容 | `sema.type_check`（建议；Variant 跳过） | error / warning（视策略） |
+| 硬类型确定不兼容 | `sema.type_check`（**P6b 已实现**；Variant/Nil 跳过） | warning（对齐 Godot 消息格式；Godot 为 error，gdcc 选 warning 避免破坏性变更） |
 | 当前 codegen 不支持的组合 | fail-closed，非 silent false | error |
 | compile gate 临时拦截 | `sema.compile_check`（解封后删除） | error |
 
@@ -357,7 +357,7 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 | 目标 side-table | `FrontendAnalysisData.typeTestTargets()`：`FrontendTypeTestTarget.TargetKnown(GdType)` / `TargetUnresolvedObject(name)` |
 | 发布路径 | `BodyExpressionResolver` 捕获 target → `TypedLexicalEnvironment.putTypeTestTarget` → `FrontendExprTypePatch` |
 | 诊断 | 非法/nested RHS → `sema.expression_resolution` error；unresolved object → `sema.type_test_unresolved_object` warning |
-| 非目标 | hard-typed 不兼容 `sema.type_check` **未做**（留 P6）；compile gate / lowering **未解封** |
+| 非目标 | hard-typed 不兼容 `sema.type_check` **P6b 已完成**；compile gate / lowering **未解封**（P4 解封） |
 | 测试 | `FrontendExpressionSemanticSupportTest` 正反路径 + e2e + compile-gate 仍拦截 |
 
 ---
@@ -603,11 +603,23 @@ $result = gdcc_is_instance_of_object_raw_and_id(..., GD_STATIC_SN(u8"Node"));
 
 | 项 | 说明 |
 |----|------|
-| Frontend 折叠覆盖面 | 常量字面量操作数、更多 hard-typed 不相交/相同 |
-| 硬类型诊断文案 | 对齐 Godot |
-| freed instance | 与 Godot 对齐或文档化差异 |
+| Frontend 折叠覆盖面 | 常量字面量操作数（已由精确静态类型覆盖）、更多 hard-typed 不相交/相同（已由 `checkAssignable` 双向检查覆盖） |
+| 硬类型诊断文案 | 对齐 Godot：`sema.type_check` warning `"Expression is of type \"X\" so it can't be of type \"Y\"."` |
+| freed instance | 与 Godot release 对齐（freed → false）；debug-only 运行时错误不复制，已文档化差异 |
 
 **验收**：独立增量；不破坏 P1–P6a。
+
+**Phase 6b 落地记录（2026-07-30）**
+
+| 项 | 实现 |
+|----|------|
+| 硬类型诊断 | `FrontendBodyOwnerProcedures.reportHardTypedIncompatibilityWarning`：当 value 静态类型（非 Variant/Nil）与 target（TargetKnown）双向不可赋值时，发射 `sema.type_check` warning |
+| 诊断消息 | `Expression is of type "X" so it can't be of type "Y".`（对齐 Godot `gdscript_analyzer.cpp:reduce_type_test`） |
+| 跳过条件 | Variant 操作数（运行时开放）、Nil 操作数（计划 §2.3 允许 → false）、UNRESOLVED_OBJECT 目标（运行时开放） |
+| freed instance | `gdcc_runtime_lib.md` 文档化：null/freed → false（匹配 Godot release）；debug-only 错误不复制 |
+| 折叠覆盖面 | 常量字面量已由精确静态类型覆盖（P2 测试矩阵验证）；hard-typed 不相交由 `checkAssignable` 双向检查 + 诊断覆盖 |
+| 测试 | `FrontendExpressionSemanticSupportTest.hardTypedIncompatibilityEmitsWarning`：正反 7 场景（int is Node、Node is int、Variant 操作数跳过、upcast 跳过、downcast 跳过、unresolved 跳过、Variant 目标跳过） |
+| 审阅修复 | review-expert-a 指出 `x is Variant` 假阳性（target 为 Variant 时 `checkAssignable` 双向均 false）；已添加 `targetType instanceof GdVariantType` 跳过守卫 |
 
 ---
 
@@ -684,7 +696,7 @@ script/run-gradle-targeted-tests.sh --tests <TestClass>
 
 ## 8. 开放问题
 
-1. Freed instance：runtime error vs false？  
+1. ~~Freed instance：runtime error vs false？~~ → **P6b 决策：匹配 Godot release（freed → false）；debug-only 运行时错误不复制，已在 `gdcc_runtime_lib.md` 文档化差异。**
 2. gdcc script class：仅 ClassDB 名是否足够，是否需要 script 指针链？  
 3. Frontend vs Backend 折叠责任边界：P2 是否强制做满折叠，还是 P2 最小发指令、P3/P6 补折叠？  
 4. ~~参数化容器 type 编码如何传入 C helper？~~ → **P3 决策：codegen 生成 typed 常量（builtin enum + class name），不在运行时解析 type 字符串。**  
@@ -702,7 +714,7 @@ script/run-gradle-targeted-tests.sh --tests <TestClass>
 5. TypeTest 已解封；Cast 仍拦截；文档同步；目标测试通过。
 6. test_suite 端到端用例覆盖 §2.2 全部合法 RHS 族；Zig + Godot 可用时通过。
 
-**完整 Godot 对齐**：参数化容器 + 折叠/hard-typed 诊断 + hardening 全部达标。
+**完整 Godot 对齐**：参数化容器 + 折叠/hard-typed 诊断（P6b 已完成）+ freed instance 文档化（P6b 已完成）；剩余：object 层级不相交折叠（需完整继承树编译期查询，留后续）。
 
 ---
 

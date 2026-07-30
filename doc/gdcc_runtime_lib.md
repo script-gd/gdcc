@@ -91,15 +91,11 @@ extend the runtime-provided `godot_*` surface.
     (plus cached `instance_id` for `try_*`), mutate ownership / ObjectDB state, and are never pure.
   - GDScript `is` / LIR `is_instance_of` helpers (null/freed → **false**; do **not** reuse
     `gdcc_check_variant_type_object`, which accepts null for unpack):
-    - `gdcc_is_instance_of_object_raw_and_id(raw, instance_id, expected_class_name)` —
-      fat-pointer object inheritance check via ClassDB exact / `is_parent_class`.
-    - `gdcc_is_instance_of_object_variant(value, expected_class_name)` — OBJECT Variant path.
-    - `gdcc_is_instance_of_typed_array(array, expected_builtin, expected_class_name)` and
-      `..._variant(...)` — exact typed-array metadata match (script leaf must be null).
-    - `gdcc_is_instance_of_typed_dictionary(...)` and `..._variant(...)` — exact key/value
-      typed-dictionary metadata match (script leaves must be null).
-    - Non-parameterized builtin / packed / bare Array·Dictionary `is` checks stay inlined as
-      `godot_variant_get_type(...) == GDEXTENSION_VARIANT_TYPE_*` in `IsInstanceOfInsnGen`.
+    - `gdcc_is_instance_of_object_{raw_and_id,variant}` — Object inheritance via ClassDB.
+    - `gdcc_is_instance_of_typed_{array,dictionary}[,_variant]` — exact typed-container metadata.
+    - Non-parameterized builtin `is` stays inlined as `godot_variant_get_type(...) == ENUM`.
+    - Freed instances produce `false` (Godot release behavior); Godot's debug-only runtime
+      error is not replicated.
 
 ## Binding Generator Overview
 

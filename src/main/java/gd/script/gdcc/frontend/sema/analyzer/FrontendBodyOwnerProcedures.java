@@ -64,6 +64,7 @@ import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdCompilerType;
+import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -95,6 +96,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             "sema.deferred_expression_resolution";
     private static final @NotNull String TYPE_TEST_UNRESOLVED_OBJECT_CATEGORY =
             "sema.type_test_unresolved_object";
+    private static final @NotNull String TYPE_CHECK_CATEGORY = "sema.type_check";
     private static final @NotNull String UNSUPPORTED_BINDING_SUBTREE_CATEGORY =
             "sema.unsupported_binding_subtree";
     private static final @NotNull String UNSUPPORTED_CHAIN_ROUTE_CATEGORY = "sema.unsupported_chain_route";
@@ -976,6 +978,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     entry.getValue()
             );
             reportUnresolvedTypeTestTargetWarning(context, entry.getKey(), entry.getValue());
+            reportHardTypedIncompatibilityWarning(context, entry.getKey(), entry.getValue());
         }
     }
 
@@ -993,6 +996,42 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         + "' not found in scope, will be checked at runtime",
                 context.sourcePath(),
                 FrontendRange.fromAstRange(typeTestExpression.targetType().range())
+        );
+    }
+
+    /// Emits a `sema.type_check` warning when the operand's static type is provably incompatible
+    /// with the type-test target (neither direction is assignable). Mirrors Godot's analyzer
+    /// diagnostic: `Expression is of type "X" so it can't be of type "Y".`
+    ///
+    /// Skipped for Variant / Nil operands and unresolved object targets (runtime-open).
+    private static void reportHardTypedIncompatibilityWarning(
+            @NotNull FrontendSuiteContext context,
+            @NotNull TypeTestExpression typeTestExpression,
+            @NotNull FrontendTypeTestTarget typeTestTarget
+    ) {
+        if (!(typeTestTarget instanceof FrontendTypeTestTarget.TargetKnown(var targetType))) {
+            return;
+        }
+        var valueExprType = context.typedEnvironment().expressionType(typeTestExpression.value());
+        if (valueExprType == null || valueExprType.status() != FrontendExpressionTypeStatus.RESOLVED) {
+            return;
+        }
+        var valueType = valueExprType.publishedType();
+        if (valueType instanceof GdVariantType || valueType instanceof GdNilType
+                || targetType instanceof GdVariantType) {
+            return;
+        }
+        var registry = context.classRegistry();
+        if (valueType != null && (registry.checkAssignable(valueType, targetType)
+                || registry.checkAssignable(targetType, valueType))) {
+            return;
+        }
+        context.diagnosticManager().warning(
+                TYPE_CHECK_CATEGORY,
+                "Expression is of type \"" + valueType.getTypeName()
+                        + "\" so it can't be of type \"" + targetType.getTypeName() + "\".",
+                context.sourcePath(),
+                FrontendRange.fromAstRange(typeTestExpression.value().range())
         );
     }
 

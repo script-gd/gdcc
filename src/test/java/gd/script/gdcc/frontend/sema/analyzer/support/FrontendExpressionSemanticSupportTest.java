@@ -146,7 +146,7 @@ class FrontendExpressionSemanticSupportTest {
                 """
                         class_name ExpressionSemanticSupportMissingResolvedValue
                         extends RefCounted
-
+                        
                         func ping(seed):
                             seed
                         """
@@ -1599,6 +1599,61 @@ class FrontendExpressionSemanticSupportTest {
                 FrontendTypeTestTarget.TargetKnown.class,
                 analysisData.typeTestTargets().get(typeTest)
         );
+    }
+
+    @Test
+    void hardTypedIncompatibilityEmitsWarning() throws Exception {
+        var analyzed = analyze(
+                "type_test_hard_typed_warning.gd",
+                """
+                        class_name TypeTestHardTypedWarning
+                        extends RefCounted
+                        
+                        func incompatible_int_is_object() -> bool:
+                            var x: int = 5
+                            return x is Node
+                        
+                        func incompatible_object_is_builtin() -> bool:
+                            var n: Node = null
+                            return n is int
+                        
+                        func variant_operand_no_warning(v) -> bool:
+                            return v is Node
+                        
+                        func compatible_upcast_no_warning() -> bool:
+                            var child := Node2D.new()
+                            var result := child is Node
+                            child.free()
+                            return result
+                        
+                        func compatible_downcast_no_warning() -> bool:
+                            var n := Node2D.new()
+                            var result := n is Node2D
+                            n.free()
+                            return result
+                        
+                        func unresolved_target_no_warning() -> bool:
+                            var x: int = 5
+                            return x is FutureEnemy
+                        
+                        func variant_target_no_warning() -> bool:
+                            var x: int = 5
+                            return x is Variant
+                        """
+        );
+        var typeCheckWarnings = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(d -> d.category().equals("sema.type_check"))
+                .toList();
+        assertEquals(2, typeCheckWarnings.size(),
+                () -> "Expected exactly 2 hard-typed warnings, got: " + typeCheckWarnings);
+        assertTrue(typeCheckWarnings.getFirst().message().contains("int"));
+        assertTrue(typeCheckWarnings.getFirst().message().contains("Node"));
+        assertTrue(typeCheckWarnings.get(1).message().contains("Node"));
+        assertTrue(typeCheckWarnings.get(1).message().contains("int"));
+        for (var warning : typeCheckWarnings) {
+            assertEquals(FrontendDiagnosticSeverity.WARNING, warning.severity());
+            assertTrue(warning.message().contains("can't be of type"));
+        }
     }
 
     @Test
