@@ -35,12 +35,21 @@ import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
+import gd.script.gdcc.lir.insn.UnaryOpInsn;
+import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
+import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
@@ -64,7 +73,6 @@ import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
-import gd.script.gdcc.type.GdObjectType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -893,10 +901,14 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
     }
 
-    /// Holds the explicit fail-fast boundary for type-test items until their runtime lowering contract is frozen.
+    /// Lowers `value is T` / `value is not T` to a single `is_instance_of` (or a folded bool constant).
     ///
-    /// The dedicated processor keeps future extension localized: once type-test lowering is ready,
-    /// the registry entry can be replaced without touching unrelated item handlers.
+    /// Contract (plan §3.2 / §3.4):
+    /// - RHS target comes from the published `typeTestTargets` side-table (never re-resolved here)
+    /// - `UNRESOLVED_OBJECT` always emits runtime `is_instance_of` and never folds
+    /// - known targets may fold to `true`/`false` when the operand static type decides the outcome
+    /// - `negated` is applied either by folding the constant or by wrapping with `unary_op NOT`
+    /// - never expands into `get_variant_type` / multi-intrinsic LIR recipes
     private static final class FrontendTypeTestInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<TypeTestItem, Void> {
         @Override
@@ -911,7 +923,119 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @NotNull TypeTestItem node,
                 @Nullable Void context
         ) {
-            throw session.unsupportedSequenceItem(node, "type-test lowering is not implemented yet");
+            var expression = node.expression();
+            var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
+            var valueSlotId = session.slotIdForValue(node.operandValueId());
+            var valueType = session.requireValueType(node.operandValueId());
+            var target = session.requireTypeTestTarget(expression);
+
+            return switch (target) {
+                case FrontendTypeTestTarget.TargetUnresolvedObject(var unresolvedTypeName) ->
+                    // Source identifier is intentionally not remapped; backend must force runtime.
+                        emitIsInstanceOfWithOptionalNot(
+                                session,
+                                block,
+                                resultSlotId,
+                                unresolvedTypeName,
+                                valueSlotId,
+                                expression.negated()
+                        );
+                case FrontendTypeTestTarget.TargetKnown(var knownTargetType) -> {
+                    var folded = tryFoldKnownTypeTest(
+                            session.classRegistry(),
+                            valueType,
+                            knownTargetType
+                    );
+                    if (folded != null) {
+                        var constant = expression.negated() != folded;
+                        block.appendNonTerminatorInstruction(new LiteralBoolInsn(resultSlotId, constant));
+                        yield block;
+                    }
+                    yield emitIsInstanceOfWithOptionalNot(
+                            session,
+                            block,
+                            resultSlotId,
+                            knownTargetType.getTypeName(),
+                            valueSlotId,
+                            expression.negated()
+                    );
+                }
+            };
+        }
+
+        private static @NotNull LirBasicBlock emitIsInstanceOfWithOptionalNot(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull String resultSlotId,
+                @NotNull String typeName,
+                @NotNull String valueSlotId,
+                boolean negated
+        ) {
+            if (!negated) {
+                block.appendNonTerminatorInstruction(new IsInstanceOfInsn(resultSlotId, typeName, valueSlotId));
+                return block;
+            }
+            // Keep the intermediate positive test in a dedicated temp so the published result slot
+            // only ever holds the final (possibly negated) bool.
+            var positiveSlotId = session.allocateWritableRouteTemp("type_test_positive", GdBoolType.BOOL);
+            block.appendNonTerminatorInstruction(new IsInstanceOfInsn(positiveSlotId, typeName, valueSlotId));
+            block.appendNonTerminatorInstruction(new UnaryOpInsn(resultSlotId, GodotOperator.NOT, positiveSlotId));
+            return block;
+        }
+
+        /// Returns a compile-time outcome when static types decide `value is T`; otherwise `null`.
+        ///
+        /// Only folds outcomes that cannot change at runtime (exact match, definite object upcast,
+        /// known-null, container-to-bare-Array/Dictionary, disjoint families, exact non-object
+        /// mismatch). Parent-to-child object tests and any `Variant` operand stay runtime-open.
+        /// Container parameters still require exact metadata for parameterized targets (no
+        /// element covariance fold: `Array[Node2D] is Array[Node]` stays false / not true).
+        private static @Nullable Boolean tryFoldKnownTypeTest(
+                @NotNull ClassRegistry classRegistry,
+                @NotNull GdType valueType,
+                @NotNull GdType targetType
+        ) {
+            if (valueType instanceof GdVariantType) {
+                return null;
+            }
+            // `null` / Nil is never an instance of any type-test target.
+            if (valueType instanceof GdNilType) {
+                return false;
+            }
+            if (sameStaticType(valueType, targetType)) {
+                return true;
+            }
+            // Definite object upcast: static Node2D is Node → true.
+            if (valueType instanceof GdObjectType
+                    && targetType instanceof GdObjectType
+                    && classRegistry.checkAssignable(valueType, targetType)) {
+                return true;
+            }
+            // Definite disjoint families (exact non-object vs object, or reverse).
+            if (valueType instanceof GdObjectType != targetType instanceof GdObjectType) {
+                return false;
+            }
+            // Object parent→child stays open: static Node is Node2D is not folded false.
+            if (valueType instanceof GdObjectType) {
+                return null;
+            }
+            // Bare Array/Dictionary accept any static Array/Dictionary value (typed or bare).
+            // Reverse (bare is Array[T]) stays false via the generic non-object mismatch below.
+            if (targetType instanceof GdArrayType targetArray
+                    && targetArray.isGenericArray()
+                    && valueType instanceof GdArrayType) {
+                return true;
+            }
+            return targetType instanceof GdDictionaryType targetDictionary
+                    && targetDictionary.isGenericDictionary()
+                    && valueType instanceof GdDictionaryType;
+            // Exact non-object mismatch (int is float, Array is Array[int], Packed* vs bare Array) is false.
+        }
+
+        private static boolean sameStaticType(@NotNull GdType first, @NotNull GdType second) {
+            return first == second
+                    || (first.getClass() == second.getClass()
+                    && first.getTypeName().equals(second.getTypeName()));
         }
     }
 

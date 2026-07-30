@@ -4,7 +4,7 @@
 > 落地完成后，应将已冻结合同抽离/改写为长期事实源，并同步更新本目录下相关 docs 与 `frontend_rules.md` 中的 compile intercept 列表。
 >
 > 更新时间：2026-07-30  
-> 状态：Phase 0 已完成；Phase 1 Shared semantic 已完成（`RESOLVED(bool)` + `typeTestTargets` side-table + unresolved-object lint）；Phase 2 待实施
+> 状态：Phase 0–2 已完成；Phase 1 Shared semantic + Phase 2 unified body lowering（`is_instance_of` / 常量折叠 / `is not` + NOT）；Phase 3 backend 待实施
 
 ---
 
@@ -85,18 +85,18 @@ $<result_id:bool> = is_instance_of "<type_name>" $<value_id>
 | 层 | 当前行为 | 位置 |
 |----|----------|------|
 | Shared semantic | ~~`DEFERRED`~~ → **`RESOLVED(bool)`（P1 已完成）** | `FrontendExpressionSemanticSupport.resolveTypeTestExpressionType` |
-| Compile gate | 显式 `Type-test expression` block | `FrontendCompileCheckAnalyzer` ~538–541 |
-| Body lowering | `type-test lowering is not implemented yet` | `FrontendTypeTestInsnLoweringProcessor` ~900–916 |
+| Compile gate | 显式 `Type-test expression` block（P4 才解封） | `FrontendCompileCheckAnalyzer` ~538–541 |
+| Body lowering | ~~stub~~ → **`is_instance_of` / 常量 / `NOT`（P2 已完成）** | `FrontendTypeTestInsnLoweringProcessor` |
 
 ### 1.3 缺失 / 需对齐统一合同
 
 | 层 | 缺口 |
 |----|------|
 | Semantic | ~~无 `RESOLVED(bool)`~~ → **已实现**；RHS 解析 + `typeTestTargets` side-table（`FrontendTypeTestTarget`） |
-| LIR Java 命名 | `IsInstanceOfInsn(className, objectId)` 仍用 Object 时代命名 → 应改为 `typeName` / `valueId`（或保留字段但文档/注释按统一语义） |
+| LIR Java 命名 | ~~`className`/`objectId`~~ → **`typeName`/`valueId`（P2 已完成）** |
 | Backend | 无 `IsInstanceOfInsnGen`；无按 value/type 的分派与常量折叠 |
 | Runtime | 缺 `is` 专用 object helper；缺参数化容器 metadata helper |
-| 测试 | 无 `is`/`is not` 与 `IsInstanceOfInsn` codegen 测试 |
+| 测试 | body lowering 正反测已有；**codegen** 测仍待 P3 |
 
 ### 1.4 关联文档
 
@@ -377,11 +377,22 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 
 **验收**
 
-- [ ] Object / builtin / 参数化容器目标在 LIR 中均为 `is_instance_of "..."` 或常量 bool。
-- [ ] `UNRESOLVED_OBJECT` 目标：始终发射 `is_instance_of`，不折叠。
-- [ ] `is not` 有 NOT 或折叠取反。
-- [ ] 无可判定时不错误折叠；可判定 upcast / 同 builtin 能折叠。
-- [ ] 相关 lowering 单测通过。
+- [x] Object / builtin / 参数化容器目标在 LIR 中均为 `is_instance_of "..."` 或常量 bool。
+- [x] `UNRESOLVED_OBJECT` 目标：始终发射 `is_instance_of`，不折叠。
+- [x] `is not` 有 NOT 或折叠取反。
+- [x] 无可判定时不错误折叠；可判定 upcast / 同 builtin 能折叠。
+- [x] 相关 lowering 单测通过。
+
+**Phase 2 落地记录（2026-07-30）**
+
+| 项 | 实现 |
+|----|------|
+| Processor | `FrontendTypeTestInsnLoweringProcessor`：读 `typeTestTargets` + operand 静态类型 |
+| Runtime 路径 | 一条 `IsInstanceOfInsn(result, typeName, valueSlot)`；`negated` 时先写 positive temp 再 `unary_op NOT` |
+| 折叠 | exact match → true；`Nil` 字面量 → false；object upcast → true；typed Array/Dictionary → bare Array/Dictionary → true；object↔非 object → false；exact 非 object 异名（含 bare→typed 容器）→ false；`Variant` / parent→child object / `UNRESOLVED_OBJECT` **不折** |
+| 命名 | `IsInstanceOfInsn` 字段 `className`/`objectId` → `typeName`/`valueId` |
+| 禁止项 | 未展开 `get_variant_type`；未解封 compile gate；未做 backend |
+| 测试 | `FrontendTypeTestInsnLoweringTest` 正反路径 + gate 仍拦截；`IsInstanceOfInsnContractTest` 字段重命名 |
 
 ---
 
@@ -442,7 +453,7 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 ```
 P0 文档/合同（已完成）
  → P1 semantic（已完成：RESOLVED(bool) + typeTestTargets + unresolved lint）
- → P2 unified lowering (is_instance_of | const)
+ → P2 unified lowering (is_instance_of | const)（已完成）
  → P3 backend dispatch + runtime helpers
  → P4 解封 TypeTest compile gate
  → P5 hardening / e2e

@@ -498,7 +498,7 @@ writable / compatibility 规则为：
 - `CastExpression`
 - `PatternBindingExpression`
 
-`TypeTestExpression` **已不在** deferred 集合中：shared semantic 发布 `RESOLVED(bool)` 与 `typeTestTargets()` 目标事实（见 `frontend_is_type_test_implementation_plan.md` Phase 1）。compile gate / body lowering 仍分别拦截，直至 Phase 2–4。
+`TypeTestExpression` **已不在** deferred 集合中：shared semantic 发布 `RESOLVED(bool)` 与 `typeTestTargets()` 目标事实；body lowering 统一发射 `is_instance_of` / 常量 bool（见 `frontend_is_type_test_implementation_plan.md` Phase 1–2）。compile gate 仍拦截直至 Phase 4；backend 分派为 Phase 3。
 
 额外规则为：
 

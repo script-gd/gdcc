@@ -9,16 +9,15 @@ import java.util.Objects;
 
 /// Unified type-test LIR instruction (GDScript `is` / `is not`).
 ///
-/// Represents `$result = is_instance_of "<type_name>" $value`. The [className] field carries the
-/// full compile-time type text (builtin name, canonical object class, or parameterized container
-/// like `"Array[int]"`); [objectId] is the ordinary typed value being tested (not forced to Variant).
+/// Represents `$result = is_instance_of "<type_name>" $value`. [typeName] is the full compile-time
+/// type text (builtin name, canonical object class, or parameterized container like `"Array[int]"`);
+/// [valueId] is the ordinary typed value being tested (not forced to Variant).
 /// Backend dispatches by value static type + type name; see the implementation plan §3.3.
-/// Field rename (`className`→`typeName`, `objectId`→`valueId`) is scheduled for Phase 2.
-public record IsInstanceOfInsn(@Nullable String resultId, @NotNull String className,
-                               @NotNull String objectId) implements TypeInstruction {
+public record IsInstanceOfInsn(@Nullable String resultId, @NotNull String typeName,
+                               @NotNull String valueId) implements TypeInstruction {
     public IsInstanceOfInsn {
-        Objects.requireNonNull(className, "className (type name) must not be null");
-        Objects.requireNonNull(objectId, "objectId (value id) must not be null");
+        Objects.requireNonNull(typeName, "typeName must not be null");
+        Objects.requireNonNull(valueId, "valueId must not be null");
     }
 
     @Override
@@ -28,7 +27,6 @@ public record IsInstanceOfInsn(@Nullable String resultId, @NotNull String classN
 
     @Override
     public @NotNull List<Operand> operands() {
-        return List.of(new StringOperand(className), new VariableOperand(objectId));
+        return List.of(new StringOperand(typeName), new VariableOperand(valueId));
     }
 }
-

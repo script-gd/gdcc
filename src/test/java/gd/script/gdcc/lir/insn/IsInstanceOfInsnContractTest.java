@@ -96,8 +96,8 @@ class IsInstanceOfInsnContractTest {
     void typeNameVariantsAllUseSameOpcodeAndStructure(String typeName) {
         var insn = new IsInstanceOfInsn("result", typeName, "value");
         assertEquals(GdInstruction.IS_INSTANCE_OF, insn.opcode());
-        assertEquals(typeName, insn.className());
-        assertEquals("value", insn.objectId());
+        assertEquals(typeName, insn.typeName());
+        assertEquals("value", insn.valueId());
 
         var operands = insn.operands();
         assertEquals(2, operands.size());
@@ -133,8 +133,8 @@ class IsInstanceOfInsnContractTest {
         var insn = assertInstanceOf(IsInstanceOfInsn.class, insns.getFirst());
         assertAll(
                 () -> assertEquals("result", insn.resultId()),
-                () -> assertEquals("Node2D", insn.className()),
-                () -> assertEquals("value", insn.objectId())
+                () -> assertEquals("Node2D", insn.typeName()),
+                () -> assertEquals("value", insn.valueId())
         );
     }
 
@@ -142,16 +142,16 @@ class IsInstanceOfInsnContractTest {
     void parsesBuiltinTypeTest() {
         var insns = parse("$r = is_instance_of \"int\" $x;\n");
         var insn = assertInstanceOf(IsInstanceOfInsn.class, insns.getFirst());
-        assertEquals("int", insn.className());
-        assertEquals("x", insn.objectId());
+        assertEquals("int", insn.typeName());
+        assertEquals("x", insn.valueId());
     }
 
     @Test
     void parsesParameterizedContainerTypeTest() {
         var insns = parse("$r = is_instance_of \"Dictionary[String, int]\" $d;\n");
         var insn = assertInstanceOf(IsInstanceOfInsn.class, insns.getFirst());
-        assertEquals("Dictionary[String, int]", insn.className());
-        assertEquals("d", insn.objectId());
+        assertEquals("Dictionary[String, int]", insn.typeName());
+        assertEquals("d", insn.valueId());
     }
 
     // --- Round-trip: serialize → parse → same instruction ---
@@ -172,13 +172,13 @@ class IsInstanceOfInsnContractTest {
     // LIR layer only guards against null (defensive programming boundary).
 
     @Test
-    void nullClassNameRejected() {
+    void nullTypeNameRejected() {
         assertThrows(NullPointerException.class,
                 () -> new IsInstanceOfInsn("result", null, "value"));
     }
 
     @Test
-    void nullObjectIdRejected() {
+    void nullValueIdRejected() {
         assertThrows(NullPointerException.class,
                 () -> new IsInstanceOfInsn("result", "int", null));
     }
@@ -209,7 +209,7 @@ class IsInstanceOfInsnContractTest {
     void nullResultIdAllowedForUnusedResult() {
         var insn = new IsInstanceOfInsn(null, "int", "value");
         assertNull(insn.resultId());
-        assertEquals("int", insn.className());
+        assertEquals("int", insn.typeName());
     }
 
     @Test

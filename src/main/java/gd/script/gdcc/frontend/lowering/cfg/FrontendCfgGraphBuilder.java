@@ -1061,8 +1061,8 @@ public final class FrontendCfgGraphBuilder {
     }
 
     /// Type-test expressions share the same “child first, then one explicit result item” contract as
-    /// casts. They stay compile-blocked today, but the CFG item surface already preserves the operand /
-    /// result boundary needed when that route is accepted later.
+    /// casts. Body lowering materializes the item as `is_instance_of` or a folded bool; compile gate
+    /// still blocks TypeTest until Phase 4 unseals it.
     private @NotNull ValueBuild buildTypeTestValue(
             @NotNull BuildCursor cursor,
             @NotNull TypeTestExpression typeTestExpression,

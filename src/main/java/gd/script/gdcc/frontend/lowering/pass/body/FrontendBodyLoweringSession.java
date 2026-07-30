@@ -18,6 +18,7 @@ import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
+import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirFunctionDef;
@@ -138,6 +139,25 @@ public final class FrontendBodyLoweringSession {
             throw new IllegalStateException("Missing published symbol binding for " + useSite.getClass().getSimpleName());
         }
         return binding;
+    }
+
+    /// Reads the published type-test RHS target fact for one `TypeTestExpression` anchor.
+    ///
+    /// Shared semantic owns publication; body lowering only consumes the frozen side-table entry.
+    @NotNull FrontendTypeTestTarget requireTypeTestTarget(@NotNull Node typeTestAnchor) {
+        var target = analysisData.typeTestTargets().get(
+                Objects.requireNonNull(typeTestAnchor, "typeTestAnchor must not be null")
+        );
+        if (target == null) {
+            throw new IllegalStateException(
+                    "Missing published type-test target for " + typeTestAnchor.getClass().getSimpleName()
+            );
+        }
+        return target;
+    }
+
+    @NotNull ClassRegistry classRegistry() {
+        return classRegistry;
     }
 
     /// The top-binding owner procedure only publishes binding kind `SELF` for explicit

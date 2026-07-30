@@ -8,11 +8,11 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 import java.util.Objects;
 
-/// Explicit `is` / type-test placeholder.
+/// Explicit CFG item for GDScript `is` / `is not` (`TypeTestExpression`).
 ///
-/// The item consumes one operand value and publishes one result value representing the source-level
-/// test outcome. Later lowering remains free to decide how that outcome is materialized for the
-/// target backend.
+/// Consumes one operand value and publishes one bool result. Body lowering emits a unified
+/// `is_instance_of` instruction or a folded bool constant (plan Phase 2); it does not re-resolve
+/// the RHS type (that fact lives in `typeTestTargets`).
 public record TypeTestItem(
         @NotNull TypeTestExpression expression,
         @NotNull String operandValueId,
