@@ -5,6 +5,7 @@ import gd.script.gdcc.frontend.scope.BlockScopeKind;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.scope.CallableScopeKind;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
@@ -16,8 +17,10 @@ import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
+import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticSupport.NestedExpressionResolver;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
@@ -188,7 +191,7 @@ class FrontendExpressionSemanticSupportTest {
                 new FrontendLocalSlotTypeUpdate(bodyScope, "seed", seed, GdIntType.INT)
         );
         var support = new FrontendExpressionSemanticSupport(
-                identifier -> environment.symbolBinding(identifier),
+                environment::symbolBinding,
                 analysisData.scopesByAst(),
                 ResolveRestriction::instanceContext,
                 () -> null,
@@ -196,7 +199,7 @@ class FrontendExpressionSemanticSupportTest {
                 () -> new FrontendChainHeadReceiverSupport(
                         analysisData,
                         analysisData.scopesByAst(),
-                        identifier -> environment.symbolBinding(identifier),
+                        environment::symbolBinding,
                         ResolveRestriction.instanceContext(),
                         false,
                         null,
@@ -1243,11 +1246,6 @@ class FrontendExpressionSemanticSupportTest {
                         "Cast expression typing is deferred"
                 ),
                 new RemainingExpressionCase(
-                        new TypeTestExpression(identifier("value"), typeRef, false, TINY),
-                        FrontendExpressionTypeStatus.DEFERRED,
-                        "Type-test expression typing is deferred"
-                ),
-                new RemainingExpressionCase(
                         new PatternBindingExpression("captured", TINY),
                         FrontendExpressionTypeStatus.DEFERRED,
                         "Pattern binding expression typing is deferred"
@@ -1274,6 +1272,335 @@ class FrontendExpressionSemanticSupportTest {
                             + result.expressionType().detailReason() + "'"
             );
         }
+
+        // Type-test is no longer deferred: remaining-route entry resolves to RESOLVED(bool).
+        var typeTest = new TypeTestExpression(identifier("value"), typeRef, false, TINY);
+        var typeTestResult = support.resolveRemainingExplicitExpressionType(
+                typeTest,
+                nestedResolver,
+                true,
+                false
+        );
+        assertTrue(typeTestResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, typeTestResult.expressionType().status());
+        assertEquals("bool", typeTestResult.expressionType().publishedType().getTypeName());
+        assertInstanceOf(
+                FrontendTypeTestTarget.TargetKnown.class,
+                typeTestResult.publishedTypeTestTargetOrNull()
+        );
+    }
+
+    @Test
+    void resolveTypeTestExpressionPublishesResolvedBoolForKnownBuiltinAndObjectTargets() throws Exception {
+        var support = newBareSupport();
+        var nestedResolver = resolvedVariantResolver();
+
+        var intTest = new TypeTestExpression(identifier("value"), new TypeRef("int", TINY), false, TINY);
+        var intResult = support.resolveTypeTestExpressionType(intTest, nestedResolver, false);
+        assertTrue(intResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, intResult.expressionType().status());
+        assertEquals("bool", intResult.expressionType().publishedType().getTypeName());
+        var knownInt = assertInstanceOf(
+                FrontendTypeTestTarget.TargetKnown.class,
+                intResult.publishedTypeTestTargetOrNull()
+        );
+        assertEquals("int", knownInt.type().getTypeName());
+
+        var isNotTest = new TypeTestExpression(identifier("value"), new TypeRef("int", TINY), true, TINY);
+        var isNotResult = support.resolveTypeTestExpressionType(isNotTest, nestedResolver, false);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, isNotResult.expressionType().status());
+        assertEquals("bool", isNotResult.expressionType().publishedType().getTypeName());
+        // negated is AST-only for Phase 1; semantic result type is still bool either way.
+        assertTrue(isNotTest.negated());
+
+        var nodeTest = new TypeTestExpression(identifier("value"), new TypeRef("Node", TINY), false, TINY);
+        var nodeResult = support.resolveTypeTestExpressionType(nodeTest, nestedResolver, false);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, nodeResult.expressionType().status());
+        var knownNode = assertInstanceOf(
+                FrontendTypeTestTarget.TargetKnown.class,
+                nodeResult.publishedTypeTestTargetOrNull()
+        );
+        assertEquals("Node", knownNode.type().getTypeName());
+
+        var arrayTest = new TypeTestExpression(
+                identifier("value"),
+                new TypeRef("Array[int]", TINY),
+                false,
+                TINY
+        );
+        var arrayResult = support.resolveTypeTestExpressionType(arrayTest, nestedResolver, false);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, arrayResult.expressionType().status());
+        var knownArray = assertInstanceOf(
+                FrontendTypeTestTarget.TargetKnown.class,
+                arrayResult.publishedTypeTestTargetOrNull()
+        );
+        assertEquals("Array[int]", knownArray.type().getTypeName());
+
+        var bareArrayResult = support.resolveTypeTestExpressionType(
+                new TypeTestExpression(identifier("value"), new TypeRef("Array", TINY), false, TINY),
+                nestedResolver,
+                false
+        );
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, bareArrayResult.expressionType().status());
+        var knownBareArray = assertInstanceOf(
+                FrontendTypeTestTarget.TargetKnown.class,
+                bareArrayResult.publishedTypeTestTargetOrNull()
+        );
+        assertEquals("Array", knownBareArray.type().getTypeName());
+
+        var bareDictResult = support.resolveTypeTestExpressionType(
+                new TypeTestExpression(identifier("value"), new TypeRef("Dictionary", TINY), false, TINY),
+                nestedResolver,
+                false
+        );
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, bareDictResult.expressionType().status());
+        var knownBareDict = assertInstanceOf(
+                FrontendTypeTestTarget.TargetKnown.class,
+                bareDictResult.publishedTypeTestTargetOrNull()
+        );
+        assertEquals("Dictionary", knownBareDict.type().getTypeName());
+
+        var typedDictResult = support.resolveTypeTestExpressionType(
+                new TypeTestExpression(
+                        identifier("value"),
+                        new TypeRef("Dictionary[String, int]", TINY),
+                        false,
+                        TINY
+                ),
+                nestedResolver,
+                false
+        );
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, typedDictResult.expressionType().status());
+        var knownTypedDict = assertInstanceOf(
+                FrontendTypeTestTarget.TargetKnown.class,
+                typedDictResult.publishedTypeTestTargetOrNull()
+        );
+        assertEquals("Dictionary[String, int]", knownTypedDict.type().getTypeName());
+
+        var packedResult = support.resolveTypeTestExpressionType(
+                new TypeTestExpression(
+                        identifier("value"),
+                        new TypeRef("PackedInt32Array", TINY),
+                        false,
+                        TINY
+                ),
+                nestedResolver,
+                false
+        );
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, packedResult.expressionType().status());
+        var knownPacked = assertInstanceOf(
+                FrontendTypeTestTarget.TargetKnown.class,
+                packedResult.publishedTypeTestTargetOrNull()
+        );
+        assertEquals("PackedInt32Array", knownPacked.type().getTypeName());
+    }
+
+    @Test
+    void resolveTypeTestExpressionDegradesUnknownObjectIdentifierToUnresolvedTarget() throws Exception {
+        var support = newBareSupport();
+        var nestedResolver = resolvedVariantResolver();
+        var typeTest = new TypeTestExpression(
+                identifier("value"),
+                new TypeRef("FutureEnemy", TINY),
+                false,
+                TINY
+        );
+
+        var result = support.resolveTypeTestExpressionType(typeTest, nestedResolver, false);
+
+        assertTrue(result.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, result.expressionType().status());
+        assertEquals("bool", result.expressionType().publishedType().getTypeName());
+        var unresolved = assertInstanceOf(
+                FrontendTypeTestTarget.TargetUnresolvedObject.class,
+                result.publishedTypeTestTargetOrNull()
+        );
+        assertEquals("FutureEnemy", unresolved.typeName());
+    }
+
+    @Test
+    void resolveTypeTestExpressionRejectsNullNestedContainerAndIllegalTypeText() throws Exception {
+        var support = newBareSupport();
+        var nestedResolver = resolvedVariantResolver();
+
+        var nullResult = support.resolveTypeTestExpressionType(
+                new TypeTestExpression(identifier("value"), new TypeRef("null", TINY), false, TINY),
+                nestedResolver,
+                false
+        );
+        assertEquals(FrontendExpressionTypeStatus.FAILED, nullResult.expressionType().status());
+        assertTrue(nullResult.expressionType().detailReason().contains("null"));
+        assertNull(nullResult.publishedTypeTestTargetOrNull());
+
+        var nestedResult = support.resolveTypeTestExpressionType(
+                new TypeTestExpression(
+                        identifier("value"),
+                        new TypeRef("Array[Array[int]]", TINY),
+                        false,
+                        TINY
+                ),
+                nestedResolver,
+                false
+        );
+        assertEquals(FrontendExpressionTypeStatus.FAILED, nestedResult.expressionType().status());
+        assertTrue(nestedResult.expressionType().detailReason().contains("Array[Array[int]]"));
+        assertNull(nestedResult.publishedTypeTestTargetOrNull());
+
+        var illegalResult = support.resolveTypeTestExpressionType(
+                new TypeTestExpression(
+                        identifier("value"),
+                        new TypeRef("123Bad", TINY),
+                        false,
+                        TINY
+                ),
+                nestedResolver,
+                false
+        );
+        assertEquals(FrontendExpressionTypeStatus.FAILED, illegalResult.expressionType().status());
+        assertNull(illegalResult.publishedTypeTestTargetOrNull());
+    }
+
+    @Test
+    void resolveTypeTestExpressionPropagatesValueOperandDependencyFailures() throws Exception {
+        var support = newBareSupport();
+        NestedExpressionResolver failingResolver = (_, _) -> FrontendExpressionType.failed("value operand failed");
+
+        var result = support.resolveTypeTestExpressionType(
+                new TypeTestExpression(identifier("value"), new TypeRef("int", TINY), false, TINY),
+                failingResolver,
+                false
+        );
+
+        assertFalse(result.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, result.expressionType().status());
+        assertTrue(result.expressionType().detailReason().contains("value operand failed"));
+        assertNull(result.publishedTypeTestTargetOrNull());
+    }
+
+    @Test
+    void endToEndTypeTestPublishesExpressionTypeTargetAndUnresolvedLint() throws Exception {
+        var analyzed = analyze(
+                "type_test_expression_semantic.gd",
+                """
+                        class_name TypeTestExpressionSemantic
+                        extends RefCounted
+                        
+                        func probe(value):
+                            var known = value is int
+                            var is_not = value is not Node
+                            var unknown = value is FutureEnemy
+                            var nested = value is Array[Array[int]]
+                        """
+        );
+        var function = findFunction(analyzed.ast(), "probe");
+        var typeTests = findNodes(function, TypeTestExpression.class, _ -> true);
+        assertEquals(4, typeTests.size());
+
+        var known = typeTests.stream()
+                .filter(typeTest -> typeTest.targetType().sourceText().equals("int"))
+                .findFirst()
+                .orElseThrow();
+        var isNot = typeTests.stream()
+                .filter(TypeTestExpression::negated)
+                .findFirst()
+                .orElseThrow();
+        var unknown = typeTests.stream()
+                .filter(typeTest -> typeTest.targetType().sourceText().equals("FutureEnemy"))
+                .findFirst()
+                .orElseThrow();
+        var nested = typeTests.stream()
+                .filter(typeTest -> typeTest.targetType().sourceText().equals("Array[Array[int]]"))
+                .findFirst()
+                .orElseThrow();
+
+        var knownType = analyzed.analysisData().expressionTypes().get(known);
+        assertNotNull(knownType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, knownType.status());
+        assertEquals("bool", knownType.publishedType().getTypeName());
+        var knownTarget = assertInstanceOf(
+                FrontendTypeTestTarget.TargetKnown.class,
+                analyzed.analysisData().typeTestTargets().get(known)
+        );
+        assertEquals("int", knownTarget.type().getTypeName());
+
+        var isNotType = analyzed.analysisData().expressionTypes().get(isNot);
+        assertNotNull(isNotType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, isNotType.status());
+        assertEquals("bool", isNotType.publishedType().getTypeName());
+        assertTrue(isNot.negated());
+        assertInstanceOf(
+                FrontendTypeTestTarget.TargetKnown.class,
+                analyzed.analysisData().typeTestTargets().get(isNot)
+        );
+
+        var unknownType = analyzed.analysisData().expressionTypes().get(unknown);
+        assertNotNull(unknownType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, unknownType.status());
+        var unresolvedTarget = assertInstanceOf(
+                FrontendTypeTestTarget.TargetUnresolvedObject.class,
+                analyzed.analysisData().typeTestTargets().get(unknown)
+        );
+        assertEquals("FutureEnemy", unresolvedTarget.typeName());
+
+        var nestedType = analyzed.analysisData().expressionTypes().get(nested);
+        assertNotNull(nestedType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, nestedType.status());
+        assertNull(analyzed.analysisData().typeTestTargets().get(nested));
+
+        var unresolvedDiagnostics = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.type_test_unresolved_object"))
+                .toList();
+        assertEquals(1, unresolvedDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.WARNING, unresolvedDiagnostics.getFirst().severity());
+        assertTrue(unresolvedDiagnostics.getFirst().message().contains("FutureEnemy"));
+        assertTrue(unresolvedDiagnostics.getFirst().message().contains("will be checked at runtime"));
+
+        var expressionErrors = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.expression_resolution"))
+                .filter(diagnostic -> diagnostic.message().contains("Array[Array[int]]"))
+                .toList();
+        assertEquals(1, expressionErrors.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, expressionErrors.getFirst().severity());
+    }
+
+    @Test
+    void endToEndTypeTestStillBlockedByCompileGate() throws Exception {
+        // Compile gate is a separate final phase; shared `analyze(...)` intentionally does not run it.
+        var diagnostics = new DiagnosticManager();
+        var parserService = new GdScriptParserService();
+        var unit = parserService.parseUnit(
+                Path.of("tmp", "type_test_compile_gate.gd"),
+                """
+                        class_name TypeTestCompileGate
+                        extends RefCounted
+                        
+                        func probe(value):
+                            var flag = value is Node
+                        """,
+                diagnostics
+        );
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analysisData = new FrontendSemanticAnalyzer().analyzeForCompile(
+                new FrontendModule("test_module", List.of(unit)),
+                classRegistry,
+                diagnostics
+        );
+        var compileBlocks = analysisData.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.compile_check"))
+                .filter(diagnostic -> diagnostic.message().toLowerCase().contains("type-test"))
+                .toList();
+        assertFalse(compileBlocks.isEmpty(), () -> "expected compile-gate block, got: "
+                + analysisData.diagnostics());
+        // Phase 1 semantic facts remain published even while the gate still blocks compile.
+        var typeTest = findNode(unit.ast(), TypeTestExpression.class, _ -> true);
+        var expressionType = analysisData.expressionTypes().get(typeTest);
+        assertNotNull(expressionType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, expressionType.status());
+        assertEquals("bool", expressionType.publishedType().getTypeName());
+        assertInstanceOf(
+                FrontendTypeTestTarget.TargetKnown.class,
+                analysisData.typeTestTargets().get(typeTest)
+        );
     }
 
     @Test

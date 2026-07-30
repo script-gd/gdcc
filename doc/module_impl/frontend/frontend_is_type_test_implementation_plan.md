@@ -4,7 +4,7 @@
 > 落地完成后，应将已冻结合同抽离/改写为长期事实源，并同步更新本目录下相关 docs 与 `frontend_rules.md` 中的 compile intercept 列表。
 >
 > 更新时间：2026-07-30  
-> 状态：Phase 0 已完成（合同冻结 + 评审确认 + unresolved Object 降级修订）；Phase 1 待实施
+> 状态：Phase 0 已完成；Phase 1 Shared semantic 已完成（`RESOLVED(bool)` + `typeTestTargets` side-table + unresolved-object lint）；Phase 2 待实施
 
 ---
 
@@ -84,7 +84,7 @@ $<result_id:bool> = is_instance_of "<type_name>" $<value_id>
 
 | 层 | 当前行为 | 位置 |
 |----|----------|------|
-| Shared semantic | `DEFERRED` | `FrontendExpressionSemanticSupport` ~602–608 |
+| Shared semantic | ~~`DEFERRED`~~ → **`RESOLVED(bool)`（P1 已完成）** | `FrontendExpressionSemanticSupport.resolveTypeTestExpressionType` |
 | Compile gate | 显式 `Type-test expression` block | `FrontendCompileCheckAnalyzer` ~538–541 |
 | Body lowering | `type-test lowering is not implemented yet` | `FrontendTypeTestInsnLoweringProcessor` ~900–916 |
 
@@ -92,7 +92,7 @@ $<result_id:bool> = is_instance_of "<type_name>" $<value_id>
 
 | 层 | 缺口 |
 |----|------|
-| Semantic | 无 `RESOLVED(bool)`；无 RHS 解析与目标 `GdType` publication |
+| Semantic | ~~无 `RESOLVED(bool)`~~ → **已实现**；RHS 解析 + `typeTestTargets` side-table（`FrontendTypeTestTarget`） |
 | LIR Java 命名 | `IsInstanceOfInsn(className, objectId)` 仍用 Object 时代命名 → 应改为 `typeName` / `valueId`（或保留字段但文档/注释按统一语义） |
 | Backend | 无 `IsInstanceOfInsnGen`；无按 value/type 的分派与常量折叠 |
 | Runtime | 缺 `is` 专用 object helper；缺参数化容器 metadata helper |
@@ -342,11 +342,23 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 
 **验收**
 
-- [ ] `x is Node` / `x is not int` → `RESOLVED(bool)`；`negated` 保留。
-- [ ] 非法 RHS（表达式、`null`、nested container）→ 诊断 error，无假 `RESOLVED(bool)`。
-- [ ] RHS 为合法标识符但 ScopeTypeResolver 未命中 → `UNRESOLVED_OBJECT(name)` + lint warning，仍 `RESOLVED(bool)`。
-- [ ] builtin / 容器族未解析 → 仍为 error（不降级）。
-- [ ] 目标测试通过；compile gate **仍拦截** type-test。
+- [x] `x is Node` / `x is not int` → `RESOLVED(bool)`；`negated` 保留。
+- [x] 非法 RHS（表达式、`null`、nested container）→ 诊断 error，无假 `RESOLVED(bool)`。
+- [x] RHS 为合法标识符但 ScopeTypeResolver 未命中 → `UNRESOLVED_OBJECT(name)` + lint warning，仍 `RESOLVED(bool)`。
+- [x] builtin / 容器族未解析 → 仍为 error（不降级）。
+- [x] 目标测试通过；compile gate **仍拦截** type-test。
+
+**Phase 1 落地记录（2026-07-30）**
+
+| 项 | 实现 |
+|----|------|
+| 语义解析 | `FrontendExpressionSemanticSupport.resolveTypeTestExpressionType`：value 依赖传播 + RHS `tryResolveSourceFacingDeclaredType` |
+| 结果类型 | `expressionTypes[TypeTestExpression] = RESOLVED(bool)`；`negated` 仅保留在 AST |
+| 目标 side-table | `FrontendAnalysisData.typeTestTargets()`：`FrontendTypeTestTarget.TargetKnown(GdType)` / `TargetUnresolvedObject(name)` |
+| 发布路径 | `BodyExpressionResolver` 捕获 target → `TypedLexicalEnvironment.putTypeTestTarget` → `FrontendExprTypePatch` |
+| 诊断 | 非法/nested RHS → `sema.expression_resolution` error；unresolved object → `sema.type_test_unresolved_object` warning |
+| 非目标 | hard-typed 不兼容 `sema.type_check` **未做**（留 P5）；compile gate / lowering **未解封** |
+| 测试 | `FrontendExpressionSemanticSupportTest` 正反路径 + e2e + compile-gate 仍拦截 |
 
 ---
 
@@ -428,8 +440,8 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 ## 5. 建议实现顺序
 
 ```
-P0 文档/合同（已完成 low_ir 扩展，待评审计划）
- → P1 semantic
+P0 文档/合同（已完成）
+ → P1 semantic（已完成：RESOLVED(bool) + typeTestTargets + unresolved lint）
  → P2 unified lowering (is_instance_of | const)
  → P3 backend dispatch + runtime helpers
  → P4 解封 TypeTest compile gate

@@ -287,6 +287,33 @@ public final class FrontendTypedLexicalEnvironment {
         );
     }
 
+    public void putTypeTestTarget(
+            @NotNull FrontendSemanticStage owner,
+            @NotNull Node astNode,
+            @NotNull FrontendTypeTestTarget typeTestTarget
+    ) {
+        requireOwner(owner, FrontendSemanticStage.EXPR_TYPE);
+        FrontendPublishedFactTypeGuard.checkTypeTestTarget(typeTestTarget);
+        putSideTable(
+                stableData.typeTestTargets(),
+                committedFacts.typeTestTargets,
+                pendingFacts.typeTestTargets,
+                astNode,
+                typeTestTarget,
+                "typeTestTargets",
+                FrontendTypeTestTarget::sameTarget
+        );
+    }
+
+    public @Nullable FrontendTypeTestTarget typeTestTarget(@NotNull Node astNode) {
+        return firstNonNull(
+                pendingFacts.typeTestTargets.get(astNode),
+                committedFacts.typeTestTargets.get(astNode),
+                stableData.typeTestTargets().get(astNode),
+                parent != null ? parent.typeTestTarget(astNode) : null
+        );
+    }
+
     public void putSlotType(
             @NotNull FrontendSemanticStage owner,
             @NotNull Node astNode,
@@ -497,6 +524,7 @@ public final class FrontendTypedLexicalEnvironment {
         private final @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates = new ArrayList<>();
         private final @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans = new FrontendAstSideTable<>();
         private final @NotNull List<FrontendLocalSlotTypeUpdate> forIterationSlotTypeUpdates = new ArrayList<>();
+        private final @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets = new FrontendAstSideTable<>();
 
         private @Nullable FrontendResolvedCall resolvedCall(@NotNull Node astNode) {
             var chainCall = chainResolvedCalls.get(astNode);
@@ -561,6 +589,12 @@ public final class FrontendTypedLexicalEnvironment {
                     "forIterationPlans",
                     FrontendForIterationPlan::samePlan
             );
+            mergeSideTable(
+                    typeTestTargets,
+                    incoming.typeTestTargets,
+                    "typeTestTargets",
+                    FrontendTypeTestTarget::sameTarget
+            );
             localSlotTypeUpdates.addAll(incoming.localSlotTypeUpdates);
             forIterationSlotTypeUpdates.addAll(incoming.forIterationSlotTypeUpdates);
         }
@@ -575,6 +609,7 @@ public final class FrontendTypedLexicalEnvironment {
             FrontendPublishedFactTypeGuard.checkLocalSlotTypeUpdates(localSlotTypeUpdates);
             FrontendPublishedFactTypeGuard.checkForIterationPlans(forIterationPlans);
             FrontendPublishedFactTypeGuard.checkLocalSlotTypeUpdates(forIterationSlotTypeUpdates);
+            FrontendPublishedFactTypeGuard.checkTypeTestTargets(typeTestTargets);
         }
 
         private @NotNull List<FrontendOwnerPatch> toOwnerPatches() {
@@ -588,8 +623,8 @@ public final class FrontendTypedLexicalEnvironment {
             if (!resolvedMembers.isEmpty() || !chainResolvedCalls.isEmpty()) {
                 patches.add(new FrontendChainBindingPatch(resolvedMembers, chainResolvedCalls));
             }
-            if (!expressionTypes.isEmpty() || !exprResolvedCalls.isEmpty()) {
-                patches.add(new FrontendExprTypePatch(expressionTypes, exprResolvedCalls));
+            if (!expressionTypes.isEmpty() || !exprResolvedCalls.isEmpty() || !typeTestTargets.isEmpty()) {
+                patches.add(new FrontendExprTypePatch(expressionTypes, exprResolvedCalls, typeTestTargets));
             }
             if (!forIterationPlans.isEmpty() || !forIterationSlotTypeUpdates.isEmpty()) {
                 patches.add(new FrontendForIterationResolutionPatch(forIterationPlans, forIterationSlotTypeUpdates));
@@ -609,7 +644,8 @@ public final class FrontendTypedLexicalEnvironment {
                     || !slotTypes.isEmpty()
                     || !localSlotTypeUpdates.isEmpty()
                     || !forIterationPlans.isEmpty()
-                    || !forIterationSlotTypeUpdates.isEmpty();
+                    || !forIterationSlotTypeUpdates.isEmpty()
+                    || !typeTestTargets.isEmpty();
         }
 
         private void clear() {
@@ -622,6 +658,7 @@ public final class FrontendTypedLexicalEnvironment {
             localSlotTypeUpdates.clear();
             forIterationPlans.clear();
             forIterationSlotTypeUpdates.clear();
+            typeTestTargets.clear();
         }
 
         private static <V> void mergeSideTable(

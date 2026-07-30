@@ -43,6 +43,7 @@ import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.TypeRef;
+import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -73,6 +74,7 @@ class FrontendAnalysisDataTest {
         assertTrue(analysisData.resolvedMembers().isEmpty());
         assertTrue(analysisData.resolvedCalls().isEmpty());
         assertTrue(analysisData.slotTypes().isEmpty());
+        assertTrue(analysisData.typeTestTargets().isEmpty());
         assertThrows(IllegalStateException.class, analysisData::moduleSkeleton);
         assertThrows(IllegalStateException.class, analysisData::diagnostics);
     }
@@ -778,6 +780,46 @@ class FrontendAnalysisDataTest {
                 "Owner.call"
         ));
         assertThrows(FrontendAnalysisPatchException.class, () -> analysisData.updateResolvedCalls(resolvedCalls));
+    }
+
+    @Test
+    void applyPatchMergesAndConflictsTypeTestTargets() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var typeTestNode = new TypeTestExpression(
+                identifier("value"),
+                new TypeRef("int", RANGE),
+                false,
+                RANGE
+        );
+        var knownTarget = new FrontendTypeTestTarget.TargetKnown(GdIntType.INT);
+        var targets = new FrontendAstSideTable<FrontendTypeTestTarget>();
+        targets.put(typeTestNode, knownTarget);
+
+        analysisData.applyPatch(new FrontendExprTypePatch(
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                targets
+        ));
+        assertSame(knownTarget, analysisData.typeTestTargets().get(typeTestNode));
+
+        // Idempotent republish of the same logical target must not conflict.
+        analysisData.applyPatch(new FrontendExprTypePatch(
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                targets
+        ));
+        assertSame(knownTarget, analysisData.typeTestTargets().get(typeTestNode));
+
+        var conflictingTargets = new FrontendAstSideTable<FrontendTypeTestTarget>();
+        conflictingTargets.put(typeTestNode, new FrontendTypeTestTarget.TargetUnresolvedObject("FutureEnemy"));
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(new FrontendExprTypePatch(
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        conflictingTargets
+                ))
+        );
     }
 
     @Test

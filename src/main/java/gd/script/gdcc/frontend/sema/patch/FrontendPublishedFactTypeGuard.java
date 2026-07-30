@@ -7,6 +7,7 @@ import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
+import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdType;
@@ -28,6 +29,7 @@ public final class FrontendPublishedFactTypeGuard {
         checkExpressionTypes(patch.expressionTypes());
         checkSlotTypes(patch.slotTypes());
         checkForIterationPlans(patch.forIterationPlans());
+        checkTypeTestTargets(patch.typeTestTargets());
         checkLocalSlotTypeUpdates(patch.localSlotTypeUpdates());
     }
 
@@ -107,6 +109,19 @@ public final class FrontendPublishedFactTypeGuard {
                 plan.exposedIteratorType(),
                 "forIterationPlans() exposed iterator type for '" + plan.iteratorName() + "'"
         );
+    }
+
+    public static void checkTypeTestTargets(@NotNull FrontendAstSideTable<FrontendTypeTestTarget> targets) {
+        for (var target : targets.values()) {
+            checkTypeTestTarget(target);
+        }
+    }
+
+    /// Known targets must stay source-facing; unresolved object names carry only a string payload.
+    public static void checkTypeTestTarget(@NotNull FrontendTypeTestTarget target) {
+        if (target instanceof FrontendTypeTestTarget.TargetKnown(var type)) {
+            checkNoCompilerOnlyLeak(type, "typeTestTargets() known target type");
+        }
     }
 
     public static void checkLocalSlotTypeUpdates(@NotNull Iterable<FrontendLocalSlotTypeUpdate> updates) {

@@ -544,7 +544,10 @@ public final class ClassRegistry implements Scope {
     /// Godot identifiers follow UAX#31-style identifier rules: they cannot start with a digit and may only
     /// contain identifier characters plus `_`. We use this guard before inventing an unknown object type so
     /// malformed texts like `Array[bad-name]` or `123Foo` do not silently become fake class names.
-    static boolean isLegalGodotIdentifier(@NotNull String text) {
+    ///
+    /// Also used by type-test RHS classification: a legal bare identifier that fails strict resolution
+    /// may degrade to an unresolved object target, while illegal texts stay hard errors.
+    public static boolean isLegalGodotIdentifier(@NotNull String text) {
         var trimmed = text.trim();
         if (trimmed.isEmpty()) {
             return false;

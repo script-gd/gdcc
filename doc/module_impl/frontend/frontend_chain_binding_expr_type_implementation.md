@@ -496,8 +496,9 @@ writable / compatibility 规则为：
 - `PreloadExpression`
 - `GetNodeExpression`
 - `CastExpression`
-- `TypeTestExpression`
 - `PatternBindingExpression`
+
+`TypeTestExpression` **已不在** deferred 集合中：shared semantic 发布 `RESOLVED(bool)` 与 `typeTestTargets()` 目标事实（见 `frontend_is_type_test_implementation_plan.md` Phase 1）。compile gate / body lowering 仍分别拦截，直至 Phase 2–4。
 
 额外规则为：
 

@@ -7,6 +7,7 @@ import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
+import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
 import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 
@@ -46,6 +47,10 @@ public sealed interface FrontendOwnerPatch permits
     }
 
     default @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans() {
+        return FrontendPatchTables.emptySideTable();
+    }
+
+    default @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets() {
         return FrontendPatchTables.emptySideTable();
     }
 

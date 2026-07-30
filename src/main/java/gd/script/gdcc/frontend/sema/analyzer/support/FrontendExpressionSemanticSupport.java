@@ -7,8 +7,10 @@ import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.frontend.sema.FrontendModuleSkeleton;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
+import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
@@ -16,6 +18,7 @@ import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.*;
 import gd.script.gdcc.scope.ResolveRestriction;
+import gd.script.gdcc.scope.resolver.ScopeTypeTextSupport;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdCallableType;
@@ -54,6 +57,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -85,10 +89,19 @@ public final class FrontendExpressionSemanticSupport {
     public record ExpressionSemanticResult(
             @NotNull FrontendExpressionType expressionType,
             boolean rootOwnsOutcome,
-            @Nullable FrontendResolvedCall publishedCallOrNull
+            @Nullable FrontendResolvedCall publishedCallOrNull,
+            @Nullable FrontendTypeTestTarget publishedTypeTestTargetOrNull
     ) {
         public ExpressionSemanticResult {
             Objects.requireNonNull(expressionType, "expressionType must not be null");
+        }
+
+        public ExpressionSemanticResult(
+                @NotNull FrontendExpressionType expressionType,
+                boolean rootOwnsOutcome,
+                @Nullable FrontendResolvedCall publishedCallOrNull
+        ) {
+            this(expressionType, rootOwnsOutcome, publishedCallOrNull, null);
         }
     }
 
@@ -99,6 +112,7 @@ public final class FrontendExpressionSemanticSupport {
             propertyInitializerContextSupplier;
     private final @NotNull ClassRegistry classRegistry;
     private final @NotNull Supplier<FrontendChainHeadReceiverSupport> headReceiverSupportSupplier;
+    private final @NotNull Supplier<Map<String, String>> topLevelCanonicalNameMapSupplier;
     private final @NotNull FrontendSubscriptSemanticSupport subscriptSemanticSupport;
 
     public FrontendExpressionSemanticSupport(
@@ -114,7 +128,8 @@ public final class FrontendExpressionSemanticSupport {
                 restrictionSupplier,
                 () -> null,
                 classRegistry,
-                headReceiverSupportSupplier
+                headReceiverSupportSupplier,
+                Map::of
         );
     }
 
@@ -132,7 +147,8 @@ public final class FrontendExpressionSemanticSupport {
                 restrictionSupplier,
                 propertyInitializerContextSupplier,
                 classRegistry,
-                headReceiverSupportSupplier
+                headReceiverSupportSupplier,
+                Map::of
         );
     }
 
@@ -143,6 +159,26 @@ public final class FrontendExpressionSemanticSupport {
             @NotNull Supplier<FrontendPropertyInitializerSupport.PropertyInitializerContext> propertyInitializerContextSupplier,
             @NotNull ClassRegistry classRegistry,
             @NotNull Supplier<FrontendChainHeadReceiverSupport> headReceiverSupportSupplier
+    ) {
+        this(
+                bindingLookup,
+                scopesByAst,
+                restrictionSupplier,
+                propertyInitializerContextSupplier,
+                classRegistry,
+                headReceiverSupportSupplier,
+                Map::of
+        );
+    }
+
+    public FrontendExpressionSemanticSupport(
+            @NotNull Function<IdentifierExpression, FrontendBinding> bindingLookup,
+            @NotNull FrontendAstSideTable<Scope> scopesByAst,
+            @NotNull Supplier<ResolveRestriction> restrictionSupplier,
+            @NotNull Supplier<FrontendPropertyInitializerSupport.PropertyInitializerContext> propertyInitializerContextSupplier,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull Supplier<FrontendChainHeadReceiverSupport> headReceiverSupportSupplier,
+            @NotNull Supplier<Map<String, String>> topLevelCanonicalNameMapSupplier
     ) {
         this.bindingLookup = Objects.requireNonNull(bindingLookup, "bindingLookup must not be null");
         this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
@@ -155,6 +191,10 @@ public final class FrontendExpressionSemanticSupport {
         this.headReceiverSupportSupplier = Objects.requireNonNull(
                 headReceiverSupportSupplier,
                 "headReceiverSupportSupplier must not be null"
+        );
+        this.topLevelCanonicalNameMapSupplier = Objects.requireNonNull(
+                topLevelCanonicalNameMapSupplier,
+                "topLevelCanonicalNameMapSupplier must not be null"
         );
         subscriptSemanticSupport = new FrontendSubscriptSemanticSupport(this.classRegistry);
     }
@@ -599,11 +639,9 @@ public final class FrontendExpressionSemanticSupport {
                     "Cast expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
-            case TypeTestExpression typeTestExpression -> resolveExplicitDeferredExpressionType(
+            case TypeTestExpression typeTestExpression -> resolveTypeTestExpressionType(
                     typeTestExpression,
                     nestedResolver,
-                    resolveNestedChildren,
-                    "Type-test expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case PatternBindingExpression patternBindingExpression -> resolveExplicitDeferredExpressionType(
@@ -648,6 +686,90 @@ public final class FrontendExpressionSemanticSupport {
             return propagated(dependencyIssue);
         }
         return rootOutcome(FrontendExpressionType.deferred(detailReason));
+    }
+
+    /// Resolves `value is T` / `value is not T`.
+    ///
+    /// Contract (Phase 1 shared semantic):
+    /// - result is always `bool` when the value operand is typing-stable and the RHS is acceptable
+    /// - target type is returned via `publishedTypeTestTargetOrNull` for side-table publication
+    /// - legal bare object class names that miss `ScopeTypeResolver` degrade to
+    ///   `TargetUnresolvedObject` (lint warning is owned by the publisher, not this helper)
+    /// - builtin / structured container targets that fail resolution stay `FAILED`
+    /// - this helper never emits diagnostics and never writes side tables
+    public @NotNull ExpressionSemanticResult resolveTypeTestExpressionType(
+            @NotNull TypeTestExpression typeTestExpression,
+            @NotNull NestedExpressionResolver nestedResolver,
+            boolean finalizeWindow
+    ) {
+        Objects.requireNonNull(typeTestExpression, "typeTestExpression must not be null");
+        Objects.requireNonNull(nestedResolver, "nestedResolver must not be null");
+
+        // TypeRef is not an Expression; only the value operand participates in nested typing.
+        var valueType = nestedResolver.resolve(typeTestExpression.value(), finalizeWindow);
+        var dependencyIssue = firstNonResolvedDependency(valueType);
+        if (dependencyIssue != null) {
+            return propagated(dependencyIssue);
+        }
+
+        var typeText = typeTestExpression.targetType().sourceText().trim();
+        if (typeText.isEmpty()) {
+            return rootOutcome(FrontendExpressionType.failed("Type-test target type is empty"));
+        }
+        // `null` is a value, not a type-test target in Godot / gdcc.
+        if (typeText.equals("null")) {
+            return rootOutcome(FrontendExpressionType.failed(
+                    "Type-test target type 'null' is not a valid type name"
+            ));
+        }
+
+        var scope = scopesByAst.get(typeTestExpression);
+        if (scope == null) {
+            // Synthetic unit-test nodes and some recovery paths may lack a root scope fact; fall back
+            // to the value operand scope, then the class registry root.
+            scope = scopesByAst.get(typeTestExpression.value());
+        }
+        if (scope == null) {
+            scope = classRegistry;
+        }
+
+        // Same declared-type path as variable annotations: lexical lookup first, then top-level
+        // canonical remap-on-miss. No UnresolvedTypeMapper inventing GdObjectType here.
+        var resolvedType = FrontendModuleSkeleton.tryResolveSourceFacingDeclaredType(
+                scope,
+                typeText,
+                currentTopLevelCanonicalNameMap()
+        );
+        if (resolvedType != null) {
+            return rootOutcome(
+                    FrontendExpressionType.resolved(GdBoolType.BOOL),
+                    null,
+                    new FrontendTypeTestTarget.TargetKnown(resolvedType)
+            );
+        }
+
+        // Nested structured containers and malformed Array/Dictionary texts are rejected by the
+        // strict declared-type resolver and must not degrade to unresolved object.
+        if (ScopeTypeTextSupport.looksStructuredTypeText(typeText)) {
+            return rootOutcome(FrontendExpressionType.failed(
+                    "Type-test target type '" + typeText + "' is not a supported declared type"
+            ));
+        }
+
+        // Bare legal identifier miss → Object-family runtime degrade (UNRESOLVED_OBJECT).
+        // Known builtins / bare Array·Dictionary always resolve when present in the registry, so a
+        // miss here cannot be a compile-time-known non-object type family.
+        if (ClassRegistry.isLegalGodotIdentifier(typeText)) {
+            return rootOutcome(
+                    FrontendExpressionType.resolved(GdBoolType.BOOL),
+                    null,
+                    new FrontendTypeTestTarget.TargetUnresolvedObject(typeText)
+            );
+        }
+
+        return rootOutcome(FrontendExpressionType.failed(
+                "Type-test target type '" + typeText + "' is not a valid type name"
+        ));
     }
 
     private @NotNull FrontendExpressionType resolveValueIdentifierExpressionType(
@@ -1334,19 +1456,39 @@ public final class FrontendExpressionSemanticSupport {
         return Objects.requireNonNull(restrictionSupplier.get(), "currentRestriction must not be null");
     }
 
+    private @NotNull Map<String, String> currentTopLevelCanonicalNameMap() {
+        return Objects.requireNonNull(
+                topLevelCanonicalNameMapSupplier.get(),
+                "topLevelCanonicalNameMap must not be null"
+        );
+    }
+
     private static @NotNull ExpressionSemanticResult propagated(@NotNull FrontendExpressionType expressionType) {
-        return new ExpressionSemanticResult(expressionType, false, null);
+        return new ExpressionSemanticResult(expressionType, false, null, null);
     }
 
     private static @NotNull ExpressionSemanticResult rootOutcome(@NotNull FrontendExpressionType expressionType) {
-        return rootOutcome(expressionType, null);
+        return rootOutcome(expressionType, null, null);
     }
 
     private static @NotNull ExpressionSemanticResult rootOutcome(
             @NotNull FrontendExpressionType expressionType,
             @Nullable FrontendResolvedCall publishedCallOrNull
     ) {
-        return new ExpressionSemanticResult(expressionType, true, publishedCallOrNull);
+        return rootOutcome(expressionType, publishedCallOrNull, null);
+    }
+
+    private static @NotNull ExpressionSemanticResult rootOutcome(
+            @NotNull FrontendExpressionType expressionType,
+            @Nullable FrontendResolvedCall publishedCallOrNull,
+            @Nullable FrontendTypeTestTarget publishedTypeTestTargetOrNull
+    ) {
+        return new ExpressionSemanticResult(
+                expressionType,
+                true,
+                publishedCallOrNull,
+                publishedTypeTestTargetOrNull
+        );
     }
 
     private record CallArgumentResolution(

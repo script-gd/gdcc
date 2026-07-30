@@ -21,6 +21,7 @@ import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
+import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
@@ -41,6 +42,7 @@ import gd.script.gdcc.frontend.sema.FrontendForLoopSupport;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
+import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
@@ -91,6 +93,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     private static final @NotNull String DEFERRED_CHAIN_RESOLUTION_CATEGORY = "sema.deferred_chain_resolution";
     private static final @NotNull String DEFERRED_EXPRESSION_RESOLUTION_CATEGORY =
             "sema.deferred_expression_resolution";
+    private static final @NotNull String TYPE_TEST_UNRESOLVED_OBJECT_CATEGORY =
+            "sema.type_test_unresolved_object";
     private static final @NotNull String UNSUPPORTED_BINDING_SUBTREE_CATEGORY =
             "sema.unsupported_binding_subtree";
     private static final @NotNull String UNSUPPORTED_CHAIN_ROUTE_CATEGORY = "sema.unsupported_chain_route";
@@ -965,6 +969,31 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             );
             reportUnsafeCallArgumentWarning(context, entry.getKey(), entry.getValue());
         }
+        for (var entry : resolver.typeTestTargets().entrySet()) {
+            context.typedEnvironment().putTypeTestTarget(
+                    FrontendSemanticStage.EXPR_TYPE,
+                    entry.getKey(),
+                    entry.getValue()
+            );
+            reportUnresolvedTypeTestTargetWarning(context, entry.getKey(), entry.getValue());
+        }
+    }
+
+    private static void reportUnresolvedTypeTestTargetWarning(
+            @NotNull FrontendSuiteContext context,
+            @NotNull TypeTestExpression typeTestExpression,
+            @NotNull FrontendTypeTestTarget typeTestTarget
+    ) {
+        if (!(typeTestTarget instanceof FrontendTypeTestTarget.TargetUnresolvedObject(var typeName))) {
+            return;
+        }
+        context.diagnosticManager().warning(
+                TYPE_TEST_UNRESOLVED_OBJECT_CATEGORY,
+                "type name '" + typeName
+                        + "' not found in scope, will be checked at runtime",
+                context.sourcePath(),
+                FrontendRange.fromAstRange(typeTestExpression.targetType().range())
+        );
     }
 
     private static void publishAssignmentTargetStepExpressionTypes(
@@ -1229,6 +1258,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<CallExpression, FrontendResolvedCall> resolvedCalls =
                 new IdentityHashMap<>();
+        private final @NotNull IdentityHashMap<TypeTestExpression, FrontendTypeTestTarget> typeTestTargets =
+                new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Expression, Boolean> reportedExpressionDiagnostics =
                 new IdentityHashMap<>();
         private final @NotNull FrontendChainReductionFacade chainReduction;
@@ -1264,7 +1295,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     context::restriction,
                     context::propertyInitializerContext,
                     context.classRegistry(),
-                    chainReduction::headReceiverSupport
+                    chainReduction::headReceiverSupport,
+                    () -> context.analysisData().moduleSkeleton().topLevelCanonicalNameMap()
             );
         }
 
@@ -1356,6 +1388,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                                 finalizeWindow
                         )
                         .expressionType();
+                case TypeTestExpression typeTestExpression ->
+                        resolveTypeTestExpressionType(typeTestExpression, finalizeWindow);
                 default -> expressionSemanticSupport
                         .resolveRemainingExplicitExpressionType(
                                 expression,
@@ -1365,6 +1399,21 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         )
                         .expressionType();
             };
+        }
+
+        private @NotNull FrontendExpressionType resolveTypeTestExpressionType(
+                @NotNull TypeTestExpression typeTestExpression,
+                boolean finalizeWindow
+        ) {
+            var result = expressionSemanticSupport.resolveTypeTestExpressionType(
+                    typeTestExpression,
+                    this::resolveExpressionType,
+                    finalizeWindow
+            );
+            if (result.publishedTypeTestTargetOrNull() != null) {
+                typeTestTargets.put(typeTestExpression, result.publishedTypeTestTargetOrNull());
+            }
+            return result.expressionType();
         }
 
         private @NotNull FrontendExpressionType resolveAssignmentExpressionType(
@@ -1537,6 +1586,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
 
         private @NotNull IdentityHashMap<CallExpression, FrontendResolvedCall> resolvedCalls() {
             return resolvedCalls;
+        }
+
+        private @NotNull IdentityHashMap<TypeTestExpression, FrontendTypeTestTarget> typeTestTargets() {
+            return typeTestTargets;
         }
 
         private @NotNull FrontendChainReductionHelper.ExpressionTypeResult resolveExpressionDependency(
