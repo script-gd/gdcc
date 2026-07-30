@@ -327,9 +327,11 @@ $<result_id> = object_cast "<class_name>" $<object_id>
 ```
 
 #### is_instance_of
-Checks if an Object is an instance of a specific class.
+Checks whether `$value_id` is an instance of the compile-time type `"<type_name>"` (GDScript `is`).
+`$value_id` may be any ordinary typed value (including `Variant`), not only Object.
+ Class names must be canonical / Godot-facing; parameterized containers use full type text (e.g. `"Array[int]"`). 
 ```
-$<result_id:bool> = is_instance_of "<class_name>" $<object_id:Object>
+$<result_id:bool> = is_instance_of "<type_name>" $<value_id>
 ```
 
 #### pack_variant
