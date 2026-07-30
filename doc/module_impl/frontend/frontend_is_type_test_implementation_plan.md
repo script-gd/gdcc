@@ -4,7 +4,7 @@
 > 落地完成后，应将已冻结合同抽离/改写为长期事实源，并同步更新本目录下相关 docs 与 `frontend_rules.md` 中的 compile intercept 列表。
 >
 > 更新时间：2026-07-30  
-> 状态：Phase 0 已完成（合同冻结 + 评审确认）；Phase 1 待实施
+> 状态：Phase 0 已完成（合同冻结 + 评审确认 + unresolved Object 降级修订）；Phase 1 待实施
 
 ---
 
@@ -34,7 +34,7 @@ $<result_id:bool> = is_instance_of "<type_name>" $<value_id>
 | 统一表面 | frontend → LIR **只**发射 `is_instance_of`（或编译期 bool 常量），不按 builtin/object/container 拆成多种 LIR 指令 |
 | 便于 HIR | 未来 HIR 优化/变形只需认识一条 type-test 抽象；路径选择是 codegen 细节，不是 IR 形状 |
 | 禁止 LIR 展开 | **禁止** frontend 把 `is` 展开为 `get_variant_type` + 比较、`call_intrinsic` 多指令序列等“配方式” LIR |
-| 后端分派 | C backend 根据 `$value_id` 静态类型 + `type_name` 解析结果选择：常量折叠 / Variant 类型枚举比较 / Object 继承链 / 参数化容器 helper |
+| 后端分派 | C backend 根据 `$value_id` 静态类型 + `type_name` 解析结果选择：常量折叠 / Variant 类型枚举比较 / Object 继承链 / 参数化容器 helper；`UNRESOLVED_OBJECT` 目标强制运行时 |
 | `is not` | 无独立 opcode；`unary_op NOT` 包一层（或与 type-test 一并折叠） |
 
 `doc/gdcc_low_ir.md` 仅保留语法与一句式语义；**完整 lowering / codegen / 折叠合同以本文 §3 为准**。
@@ -126,7 +126,8 @@ $<result_id:bool> = is_instance_of "<type_name>" $<value_id>
 |---------|------|----------------|
 | 非参数化 builtin（`int`、`String`、`Packed*Array`、裸 `Array`/`Dictionary`…） | ✅ | `GDExtensionVariantType` 精确相等 |
 | `Array[T]` / `Dictionary[K,V]` | ✅ | typed metadata 全匹配 |
-| Engine / gdcc Object 类 | ✅ | 继承链（ClassDB / 等价） |
+| Engine / gdcc Object 类（编译期已解析） | ✅ | 继承链（ClassDB / 等价） |
+| 编译期不可知但语法合法的 Object 类名（标识符） | ✅（降级） | 仅运行时 ClassDB 继承链；禁止折叠（§3.4） |
 | 变量表达式 / `null` 作类型 | ❌ | 编译错误 |
 | nested structured container | ❌ | 类型面已拒绝 |
 
@@ -180,7 +181,8 @@ $result = <bool constant materialization>
 - Object 用 **canonical / Godot-facing** 名，禁止 source-only 别名
 - 参数化容器写全：`"Array[int]"`、`"Dictionary[String, int]"`
 - nested structured container 不得出现
-- frontend 写入前必须已成功解析为 `GdType`（side-table 为真源；字符串是 LIR 序列化）
+- builtin / 参数化容器：frontend 写入前**必须**已成功解析为 `GdType`（side-table 为真源；字符串是 LIR 序列化）
+- Object 类名：解析成功 → 正常发布 `GdType`；解析失败但为合法标识符 → 以 `UNRESOLVED_OBJECT(name)` 发布（§3.6），`type_name` 字符串原样透传，仅走运行时路径
 
 **`value_id` 规则：**
 
@@ -195,7 +197,8 @@ $result = <bool constant materialization>
 | 精确类型，与 `T` 确定相同 / 可 upcast 的 Object 子类→父类 | 任意可判定 | **常量 `true`** |
 | 精确类型，与 `T` 确定不相交 | 任意可判定 | **常量 `false`** |
 | `Variant` 或 runtime-open | 非参数化 builtin / packed / 裸 Array·Dictionary | `godot_variant_get_type` **与 `GdExtensionTypeEnum` 比较**（可内联，不必单独 LIR） |
-| Object 静态类型，或 Variant 且目标为 Object 类 | Object / class | **继承链 helper**（`godot_ClassDB_is_parent_class` 等） |
+| Object 静态类型，或 Variant 且目标为 Object 类 | Object / class（已解析） | **继承链 helper**（`godot_ClassDB_is_parent_class` 等） |
+| 任意 | unresolved object name（`UNRESOLVED_OBJECT`） | **强制运行时**继承链 helper，**禁止折叠**（无论 value 静态类型） |
 | `Variant` 或容器值 | `Array[T]` / `Dictionary[K,V]` | **参数化容器 runtime helper** |
 | 其它尚不支持组合 | — | fail-closed（诊断或 codegen 错误），禁止 silent `false` |
 
@@ -210,6 +213,7 @@ $result = <bool constant materialization>
 | exact 非 object builtin | 某 object 类 | `false` |
 | exact object | 非 object builtin | `false` |
 | nil / 已知 null | 任意 | `false` |
+| 任意 | `UNRESOLVED_OBJECT` 目标 | **不折叠**，强制 runtime |
 
 ### 3.4 编译期常量折叠（两层都允许）
 
@@ -224,6 +228,7 @@ $result = <bool constant materialization>
 - 精确 builtin 同名 → `true`；精确 builtin 异名 → `false`
 - 精确 object vs 非 object builtin → `false`
 - **不确定**（如静态 `Node` 测 `Node2D`，或 `Variant`）→ 运行时路径
+- **`UNRESOLVED_OBJECT` 目标：永远不折叠**，无论 `$value_id` 静态类型如何，一律走运行时继承链 helper
 
 ### 3.5 Runtime helpers
 
@@ -245,18 +250,35 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 | 事实 | 合同 |
 |------|------|
 | `expressionTypes[TypeTestExpression]` | 成功 → `RESOLVED(BOOL)` |
-| 目标 `GdType` | 必须 side-table 发布（推荐 `resolvedTypeTestTargets` 或等价槽位） |
+| 目标 `GdType`（已解析） | 必须 side-table 发布（推荐 `resolvedTypeTestTargets` 或等价槽位） |
+| 目标 Object 类名（未解析） | 以 `UNRESOLVED_OBJECT(name)` 发布至同一 side-table；`name` 为源码标识符原文 |
 | `negated` | 只影响是否套 `NOT` / 折叠时取反 |
 | chain binding | 不再把 type-test 当作 typing DEFERRED |
 
+**`UNRESOLVED_OBJECT` 语义：**
+
+- 仅适用于 RHS 为合法标识符但 `ScopeTypeResolver` 未命中的情况
+- builtin / 参数化容器**不得**以此状态发布（必须解析成功，否则编译错误）
+- 下游（lowering / backend）见到此标记时：`type_name` 原样透传，禁止折叠，强制运行时路径
+- 触发 lint warning（§3.7）
+
 ### 3.7 诊断 category
 
-| 情况 | category |
-|------|----------|
-| RHS 无法解析 | `sema.expression_resolution` / type-ref 诊断 |
-| 硬类型确定不兼容 | `sema.type_check`（建议；Variant 跳过） |
-| 当前 codegen 不支持的组合 | fail-closed，非 silent false |
-| compile gate 临时拦截 | `sema.compile_check`（解封后删除） |
+| 情况 | category | 级别 |
+|------|----------|------|
+| RHS 非合法标识符（表达式、`null`、nested container） | `sema.expression_resolution` / type-ref 诊断 | **error** |
+| RHS 合法标识符但 ScopeTypeResolver 未命中（builtin / 容器族） | `sema.expression_resolution` | **error**（builtin / 容器必须编译期已知） |
+| RHS 合法标识符但 ScopeTypeResolver 未命中（Object 族降级） | `sema.type_test_unresolved_object` | **warning (lint)**：`"type name '<name>' not found in scope, will be checked at runtime"` |
+| 硬类型确定不兼容 | `sema.type_check`（建议；Variant 跳过） | error / warning（视策略） |
+| 当前 codegen 不支持的组合 | fail-closed，非 silent false | error |
+| compile gate 临时拦截 | `sema.compile_check`（解封后删除） | error |
+
+**lint warning 细则：**
+
+- 仅在 RHS 降级为 `UNRESOLVED_OBJECT` 时触发，不阻塞编译
+- 消息模板：`type name '{name}' not found in scope, will be checked at runtime`
+- 附带 trade-off 说明：拼写错误将表现为运行时 `false` 而非编译错误
+- 未来可选：提供 suppress 机制（如 `@warning_ignore("unresolved_type_test")`）
 
 ### 3.8 Java API 命名对齐（实施时）
 
@@ -301,6 +323,10 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
    注册模式但合同不同；本计划仅解封 TypeTest，Cast 保持拦截直至其独立任务完成。
 5. **不增加第二套 opcode 确认**：禁止在 LIR 增加 `is_builtin_type`、`is_object_class`、
    `is_typed_container` 等分叉 opcode；`not in` 平行备忘仍适用。
+6. **Unresolved Object 降级修订（2026-07-30）**：允许编译期不可知但语法合法的 Object
+   类名作为 RHS，以 `UNRESOLVED_OBJECT(name)` 发布，强制运行时继承链检查、禁止折叠；
+   触发 lint warning `"type name '<name>' not found in scope, will be checked at runtime"`。
+   builtin / 参数化容器仍必须编译期解析，不享受降级。
 
 ---
 
@@ -309,14 +335,17 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 **工作内容**
 
 1. `FrontendExpressionSemanticSupport`：type-test → 解析 value + RHS → `RESOLVED(BOOL)`。
-2. 发布目标 `GdType` side-table。
+2. 发布目标 `GdType` side-table；Object 类名解析失败时发布 `UNRESOLVED_OBJECT(name)`。
 3. （建议）hard-typed 不兼容 `sema.type_check`。
 4. 更新 DEFERRED 相关测试与 chain-binding 文档集合。
+5. 实现 lint warning：`UNRESOLVED_OBJECT` 时发出 `type name '<name>' not found in scope, will be checked at runtime`。
 
 **验收**
 
 - [ ] `x is Node` / `x is not int` → `RESOLVED(bool)`；`negated` 保留。
-- [ ] 非法 RHS → 诊断，无假 `RESOLVED(bool)`。
+- [ ] 非法 RHS（表达式、`null`、nested container）→ 诊断 error，无假 `RESOLVED(bool)`。
+- [ ] RHS 为合法标识符但 ScopeTypeResolver 未命中 → `UNRESOLVED_OBJECT(name)` + lint warning，仍 `RESOLVED(bool)`。
+- [ ] builtin / 容器族未解析 → 仍为 error（不降级）。
 - [ ] 目标测试通过；compile gate **仍拦截** type-test。
 
 ---
@@ -327,7 +356,8 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 
 1. 实现 `FrontendTypeTestInsnLoweringProcessor`：
    - 读取已解析目标 `GdType` → 序列化为 `type_name` 字符串。
-   - 若静态可判定：直接 materialize bool（含 `negated` 取反）。
+   - 若为 `UNRESOLVED_OBJECT(name)`：`type_name` 原样透传，**禁止折叠**，直接发射 `is_instance_of`。
+   - 若静态可判定（仅限已解析目标）：直接 materialize bool（含 `negated` 取反）。
    - 否则：发射 **一条** `IsInstanceOfInsn(result, typeName, valueId)`；`negated` 时再 `unary_op NOT`。
 2. **禁止**按目标族拆成 `get_variant_type` / 多 intrinsic 的 LIR 序列。
 3. 重命名 insn 字段（可选但推荐与本阶段同批）。
@@ -336,6 +366,7 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 **验收**
 
 - [ ] Object / builtin / 参数化容器目标在 LIR 中均为 `is_instance_of "..."` 或常量 bool。
+- [ ] `UNRESOLVED_OBJECT` 目标：始终发射 `is_instance_of`，不折叠。
 - [ ] `is not` 有 NOT 或折叠取反。
 - [ ] 无可判定时不错误折叠；可判定 upcast / 同 builtin 能折叠。
 - [ ] 相关 lowering 单测通过。
@@ -347,7 +378,7 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 **工作内容**
 
 1. `IsInstanceOfInsnGen`：解析 `type_name`（或消费 frontend 已解析信息的旁路；**以变量静态类型 + type 字符串/类型表为准**）。
-2. 实现 §3.3 四条路径：常量 / Variant 枚举比较 / Object 继承链 / 参数化容器 helper。
+2. 实现 §3.3 五条路径：常量 / Variant 枚举比较 / Object 继承链（已解析） / Object 继承链（unresolved，强制运行时） / 参数化容器 helper。
 3. `CCodegen` 注册；`gdcc_runtime_lib.md` 记录 helpers。
 4. 单测覆盖各分派（参照 `ObjectIsNullInsnGenTest`）。
 
@@ -357,6 +388,7 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 - [ ] null object → false；子类 is 父类 → true（helper 路径）。
 - [ ] Variant is int：生成 type-enum 比较而非错误的 ClassDB 调用。
 - [ ] `Array[int]`：走 typed helper，而非裸 `ARRAY` 枚举误判。
+- [ ] `UNRESOLVED_OBJECT` 目标：无论 value 静态类型，均走运行时继承链 helper，不折叠。
 - [ ] `IsInstanceOfInsnGenTest`（及必要辅助测）通过。
 
 ---
@@ -450,6 +482,7 @@ script/run-gradle-targeted-tests.sh --tests <TestClass>
 | backend 把 `Array[int]` 当成裸 `ARRAY` | 分派矩阵强制参数化走 helper |
 | `is not` 丢否定 | 强制 negated 测例 |
 | 过早折叠 `Node is Node2D` 为 false | 仅在层级证明不相交时折 false；否则 runtime |
+| `UNRESOLVED_OBJECT` 拼写错误变运行时 `false` | lint warning 提示；未来可加 suppress 机制 |
 
 ---
 
