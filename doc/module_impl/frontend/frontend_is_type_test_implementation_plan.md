@@ -4,7 +4,7 @@
 > 落地完成后，应将已冻结合同抽离/改写为长期事实源，并同步更新本目录下相关 docs 与 `frontend_rules.md` 中的 compile intercept 列表。
 >
 > 更新时间：2026-07-30  
-> 状态：计划待实施（调研完成；LIR 统一 `is_instance_of` 合同已按本修订冻结）
+> 状态：Phase 0 已完成（合同冻结 + 评审确认）；Phase 1 待实施
 
 ---
 
@@ -283,8 +283,24 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 
 - [x] `gdcc_low_ir.md` 语法已扩展为 `is_instance_of "<type_name>" $value_id`（精简描述）。
 - [x] 详细分派/折叠/helper 合同写在本文 §3。
-- [ ] 评审确认单一 opcode + backend 分派 + 常量折叠策略。
-- [ ] 评审确认不解封 Cast。
+- [x] 评审确认单一 opcode + backend 分派 + 常量折叠策略。
+- [x] 评审确认不解封 Cast。
+
+**评审确认记录（2026-07-30）**
+
+1. **单一 opcode 确认**：frontend → LIR 仅发射 `is_instance_of`（或编译期 bool 常量），
+   不按 builtin/object/container 拆成多种 LIR 指令。`GdInstruction.IS_INSTANCE_OF`
+   操作数为 `(STRING, VARIABLE)`，与统一表面兼容。禁止 frontend 展开为
+   `get_variant_type` + 比较、`call_intrinsic` 多指令序列等配方式 LIR。
+2. **Backend 分派确认**：路径选择是 codegen 细节（§3.3 矩阵），不是 IR 形状。
+   C backend 根据 `$value_id` 静态类型 + `type_name` 解析结果选择：
+   常量折叠 / Variant 类型枚举比较 / Object 继承链 / 参数化容器 helper。
+3. **常量折叠确认**：frontend lowering 与 backend codegen 两层均允许折叠（§3.4），
+   不确定时（如静态 `Node` 测 `Node2D`，或 `Variant`）走运行时路径，禁止过早折叠。
+4. **不解封 Cast 确认**：`CastExpression` 与 `TypeTestExpression` 共享 compile gate
+   注册模式但合同不同；本计划仅解封 TypeTest，Cast 保持拦截直至其独立任务完成。
+5. **不增加第二套 opcode 确认**：禁止在 LIR 增加 `is_builtin_type`、`is_object_class`、
+   `is_typed_container` 等分叉 opcode；`not in` 平行备忘仍适用。
 
 ---
 
