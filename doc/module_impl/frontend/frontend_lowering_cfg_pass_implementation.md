@@ -526,6 +526,7 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 - plain assignment
 - compound assignment
 - constructor materialization
+- `TypeTestExpression` (`is` / `is not`) with unified `is_instance_of` or folded bool lowering
 - callable-local slot type published contract
 
 plain assignment 的 compile-ready surface 明确包含 direct explicit-self property assignment：
@@ -682,7 +683,6 @@ body-lowering 合同：
 - `PARAMETER_DEFAULT_INIT` CFG / body lowering
 - `ConditionalExpression`
 - `CastExpression`
-- `TypeTestExpression`
 - `ArrayExpression`
 - `DictionaryExpression`
 - `PreloadExpression`
@@ -699,7 +699,6 @@ body-lowering 合同：
 当前 body lowering 明确保留 fail-fast 的路径包括：
 
 - `CastItem`
-- `TypeTestItem`
 - multi-key subscript lowering
 - 缺失 published fact 的 call/member/value type 路径
 

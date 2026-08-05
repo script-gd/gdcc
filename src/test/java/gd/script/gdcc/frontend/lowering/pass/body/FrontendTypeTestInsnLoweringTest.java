@@ -30,10 +30,10 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/// Phase 2 body-lowering contract for GDScript `is` / `is not`.
+/// Body-lowering contract for GDScript `is` / `is not`.
 ///
-/// Uses shared `analyze(...)` (not `analyzeForCompile`) so TypeTest can reach CFG/body lowering
-/// while the compile gate remains intentionally closed for the full pipeline (Phase 4).
+/// Uses shared `analyze(...)` (not `analyzeForCompile`) to isolate CFG/body lowering from the
+/// compile-only final gate.
 class FrontendTypeTestInsnLoweringTest {
 
     @Test
@@ -398,7 +398,7 @@ class FrontendTypeTestInsnLoweringTest {
 
     @Test
     void foldsVariantTargetToTrueForAnyOperandIncludingNegated() throws Exception {
-        // Phase 7: Variant is the top type — any operand (incl. null) folds true; is not → false.
+        // Variant is the top type: any operand, including null, folds true; is not -> false.
         // Must not emit is_instance_of "Variant" (backend would fail-closed / NIL-enum trap).
         assertFoldsVariantTargetTrue(
                 """
@@ -629,9 +629,9 @@ class FrontendTypeTestInsnLoweringTest {
     void analyzeForCompilePassesTypeTestThroughCompileGate() throws Exception {
         var diagnostics = new DiagnosticManager();
         var unit = new GdScriptParserService().parseUnit(
-                Path.of("tmp", "type_test_gate_phase2.gd"),
+                Path.of("tmp", "type_test_gate.gd"),
                 """
-                        class_name TypeTestGatePhase2
+                        class_name TypeTestGate
                         extends RefCounted
                         
                         func probe(value) -> bool:

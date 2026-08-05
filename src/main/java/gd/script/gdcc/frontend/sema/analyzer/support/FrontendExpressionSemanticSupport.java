@@ -690,7 +690,7 @@ public final class FrontendExpressionSemanticSupport {
 
     /// Resolves `value is T` / `value is not T`.
     ///
-    /// Contract (Phase 1 shared semantic):
+    /// Shared semantic contract:
     /// - result is always `bool` when the value operand is typing-stable and the RHS is acceptable
     /// - target type is returned via `publishedTypeTestTargetOrNull` for side-table publication
     /// - legal bare object class names that miss `ScopeTypeResolver` degrade to

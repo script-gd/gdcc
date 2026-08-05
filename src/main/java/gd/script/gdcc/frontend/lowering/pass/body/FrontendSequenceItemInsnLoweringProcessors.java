@@ -903,7 +903,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
 
     /// Lowers `value is T` / `value is not T` to a single `is_instance_of` (or a folded bool constant).
     ///
-    /// Contract (plan §3.2 / §3.4):
+    /// Current type-test lowering contract:
     /// - RHS target comes from the published `typeTestTargets` side-table (never re-resolved here)
     /// - `UNRESOLVED_OBJECT` always emits runtime `is_instance_of` and never folds
     /// - known targets may fold to `true`/`false` when the operand static type decides the outcome

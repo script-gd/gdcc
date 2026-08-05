@@ -22,7 +22,7 @@ import java.util.Objects;
 
 /// Backend codegen for the unified `is_instance_of` LIR surface (GDScript `is` / `is not`).
 ///
-/// Contract (plan §3.3 / §3.4 / §3.5 / Phase 7):
+/// Contract:
 /// - single LIR opcode; all path choice lives here (no frontend multi-instruction recipes)
 /// - fold only when value static type + resolved target decide the outcome
 /// - `Variant` target is the top type: fold true for any operand (never dispatch / never NIL enum)
@@ -253,7 +253,8 @@ public final class IsInstanceOfInsnGen implements CInsnGen<IsInstanceOfInsn> {
             return;
         }
         // Exact non-object ordinary value can never be an object class at runtime
-        // (including UNRESOLVED_OBJECT targets: plan forces no true-fold, not a useless runtime call).
+        // (including UNRESOLVED_OBJECT targets: the target contract forbids true-folding, not a
+        // useless runtime call).
         bodyBuilder.assignExpr(bodyBuilder.targetOfVar(resultVariable), "false", GdBoolType.BOOL);
     }
 

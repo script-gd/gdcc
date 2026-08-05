@@ -11,8 +11,8 @@ import java.util.Objects;
 /// Explicit CFG item for GDScript `is` / `is not` (`TypeTestExpression`).
 ///
 /// Consumes one operand value and publishes one bool result. Body lowering emits a unified
-/// `is_instance_of` instruction or a folded bool constant (plan Phase 2); it does not re-resolve
-/// the RHS type (that fact lives in `typeTestTargets`).
+/// `is_instance_of` instruction or a folded bool constant; it does not re-resolve the RHS type
+/// (that fact lives in `typeTestTargets`).
 public record TypeTestItem(
         @NotNull TypeTestExpression expression,
         @NotNull String operandValueId,

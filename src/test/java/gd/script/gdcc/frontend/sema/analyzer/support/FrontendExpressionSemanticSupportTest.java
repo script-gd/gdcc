@@ -1310,7 +1310,7 @@ class FrontendExpressionSemanticSupportTest {
         var isNotResult = support.resolveTypeTestExpressionType(isNotTest, nestedResolver, false);
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, isNotResult.expressionType().status());
         assertEquals("bool", isNotResult.expressionType().publishedType().getTypeName());
-        // negated is AST-only for Phase 1; semantic result type is still bool either way.
+        // negated is AST-only at this layer; the semantic result type is bool either way.
         assertTrue(isNotTest.negated());
 
         var nodeTest = new TypeTestExpression(identifier("value"), new TypeRef("Node", TINY), false, TINY);

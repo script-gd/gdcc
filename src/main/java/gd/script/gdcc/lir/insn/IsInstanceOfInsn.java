@@ -12,7 +12,8 @@ import java.util.Objects;
 /// Represents `$result = is_instance_of "<type_name>" $value`. [typeName] is the full compile-time
 /// type text (builtin name, canonical object class, or parameterized container like `"Array[int]"`);
 /// [valueId] is the ordinary typed value being tested (not forced to Variant).
-/// Backend dispatches by value static type + type name; see the implementation plan §3.3.
+/// Backend dispatches by value static type + type name; see the frontend type-test implementation
+/// contract.
 public record IsInstanceOfInsn(@Nullable String resultId, @NotNull String typeName,
                                @NotNull String valueId) implements TypeInstruction {
     public IsInstanceOfInsn {

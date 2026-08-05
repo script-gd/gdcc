@@ -39,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Positive/negative codegen coverage for plan §3.3 backend dispatch on `is_instance_of`.
+/// Positive/negative codegen coverage for backend dispatch on `is_instance_of`.
 class IsInstanceOfInsnGenTest {
     @Test
     @DisplayName("exact int is int folds to true")

@@ -19,7 +19,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/// Anchors the Phase 0 frozen contract for the unified `is_instance_of` LIR instruction.
+/// Anchors the frozen contract for the unified `is_instance_of` LIR instruction.
 /// Verifies: single opcode surface, operand structure, serialization format, parsing round-trip,
 /// and type-name variants (builtin / object / parameterized container).
 class IsInstanceOfInsnContractTest {
@@ -219,7 +219,7 @@ class IsInstanceOfInsnContractTest {
         assertEquals("is_instance_of \"int\" $value;\n", text);
     }
 
-    // --- Phase 0 negative contract: no separate opcode for `is not` or type-family split ---
+    // --- Negative contract: no separate opcode for `is not` or type-family split ---
 
     @Test
     void noSeparateOpcodeForIsNotOrTypeFamilySplit() {

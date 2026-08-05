@@ -1061,8 +1061,7 @@ public final class FrontendCfgGraphBuilder {
     }
 
     /// Type-test expressions share the same “child first, then one explicit result item” contract as
-    /// casts. Body lowering materializes the item as `is_instance_of` or a folded bool; compile gate
-    /// still blocks TypeTest until Phase 4 unseals it.
+    /// casts. Body lowering materializes the item as `is_instance_of` or a folded bool.
     private @NotNull ValueBuild buildTypeTestValue(
             @NotNull BuildCursor cursor,
             @NotNull TypeTestExpression typeTestExpression,
