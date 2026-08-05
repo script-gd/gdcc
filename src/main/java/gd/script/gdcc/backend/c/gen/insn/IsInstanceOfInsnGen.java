@@ -27,7 +27,8 @@ import java.util.Objects;
 /// - single LIR opcode; all path choice lives here (no frontend multi-instruction recipes)
 /// - static fold reuses {@link TypeTestFoldUtil} as insurance for still-emitted LIR
 /// - `Variant` target is the top type: fold true for any operand (never dispatch / never NIL enum)
-/// - unresolved object type names always take the runtime ClassDB path and never fold
+/// - unresolved legal object type names always take the runtime ClassDB path and never fold
+/// - unused result (`resultId == null`) is a no-op after type_name validation
 /// - null / freed objects are false for non-Variant targets (never reuse unpack null→true)
 /// - parameterized containers compare typed metadata via dedicated helpers, not bare ARRAY enum
 public final class IsInstanceOfInsnGen implements CInsnGen<IsInstanceOfInsn> {
@@ -41,12 +42,18 @@ public final class IsInstanceOfInsnGen implements CInsnGen<IsInstanceOfInsn> {
     @Override
     public void generateCCode(@NotNull CBodyBuilder bodyBuilder) {
         var insn = bodyBuilder.getCurrentInsn(this);
+        var typeName = insn.typeName().trim();
+        if (typeName.isEmpty()) {
+            throw bodyBuilder.invalidInsn("is_instance_of type_name must not be empty");
+        }
+
+        // Pure predicate with no side effects: unused result is a validated no-op.
+        if (insn.resultId() == null) {
+            return;
+        }
+
         var valueVariable = requireVariable(bodyBuilder, insn.valueId(), "value");
-        var resultVariable = requireVariable(
-                bodyBuilder,
-                Objects.requireNonNull(insn.resultId(), "is_instance_of resultId"),
-                "result"
-        );
+        var resultVariable = requireVariable(bodyBuilder, insn.resultId(), "result");
         InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, valueVariable, "is_instance_of value");
         InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, resultVariable, "is_instance_of result");
         if (!(resultVariable.type() instanceof GdBoolType)) {
@@ -56,17 +63,13 @@ public final class IsInstanceOfInsnGen implements CInsnGen<IsInstanceOfInsn> {
             );
         }
 
-        var typeName = insn.typeName().trim();
-        if (typeName.isEmpty()) {
-            throw bodyBuilder.invalidInsn("is_instance_of type_name must not be empty");
-        }
-
         var registry = bodyBuilder.classRegistry();
         var resolvedTarget = registry.tryResolveDeclaredType(typeName);
-        // Identifier that survives strict resolution failure is an unresolved object target:
-        // force runtime inheritance checks and forbid constant folding
+        // Only legal bare identifiers may degrade to unresolved object targets (mirrors frontend).
+        // Malformed names fail closed via invalidInsn instead of the ClassDB runtime path.
         var unresolvedObjectTarget = resolvedTarget == null
                 && !ScopeTypeTextSupport.looksStructuredTypeText(typeName)
+                && ClassRegistry.isLegalGodotIdentifier(typeName)
                 && ClassRegistry.tryParseStrictTextType(typeName, registry) == null;
 
         if (resolvedTarget == null && !unresolvedObjectTarget) {

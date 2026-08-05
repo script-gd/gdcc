@@ -19,8 +19,8 @@ func _ready() -> void:
 	if target.call("float_match") != true:
 		push_error("float_match expected true")
 		ok = false
-	if target.call("int_is_not_float") != false:
-		push_error("int_is_not_float expected false")
+	if target.call("int_is_float") != false:
+		push_error("int_is_float expected false")
 		ok = false
 
 	if ok:

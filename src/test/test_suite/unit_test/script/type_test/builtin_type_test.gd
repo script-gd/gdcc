@@ -17,6 +17,6 @@ func float_match() -> bool:
 	var f := 3.14
 	return f is float
 
-func int_is_not_float() -> bool:
+func int_is_float() -> bool:
 	var x := 42
 	return x is float

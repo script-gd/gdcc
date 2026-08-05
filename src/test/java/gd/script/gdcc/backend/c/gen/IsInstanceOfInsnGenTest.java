@@ -402,6 +402,60 @@ class IsInstanceOfInsnGenTest {
     }
 
     @Test
+    @DisplayName("null resultId is a validated no-op")
+    void nullResultIdIsNoOp() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("unused_result");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("value", GdIntType.INT);
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new IsInstanceOfInsn(null, "int", "value"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var api = emptyApi();
+        var codegen = new CCodegen();
+        codegen.prepare(newContext(api, List.of(workerClass)), new LirModule("test_module", List.of(workerClass)));
+        var body = codegen.generateFuncBody(workerClass, func);
+
+        assertFalse(body.contains("godot_variant_get_type"), body);
+        assertFalse(body.contains("gdcc_is_instance_of"), body);
+        assertFalse(body.contains("$result"), body);
+        assertFalse(body.contains(" = true;"), body);
+        assertFalse(body.contains(" = false;"), body);
+    }
+
+    @Test
+    @DisplayName("null resultId still validates empty type_name")
+    void nullResultIdStillValidatesTypeName() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("unused_empty_type");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("value", GdIntType.INT);
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new IsInstanceOfInsn(null, "   ", "value"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var api = emptyApi();
+        var codegen = new CCodegen();
+        codegen.prepare(newContext(api, List.of(workerClass)), new LirModule("test_module", List.of(workerClass)));
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
+        assertTrue(ex.getMessage().contains("must not be empty"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("malformed type_name fails closed instead of unresolved object path")
+    void malformedTypeNameFailsClosed() {
+        var ex = assertThrows(InvalidInsnException.class, () ->
+                generate("value", GdVariantType.VARIANT, "123Bad"));
+        assertTrue(ex.getMessage().contains("cannot be resolved"), ex.getMessage());
+    }
+
+    @Test
     @DisplayName("missing value variable fails closed")
     void missingValueVariableFailsClosed() {
         var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
