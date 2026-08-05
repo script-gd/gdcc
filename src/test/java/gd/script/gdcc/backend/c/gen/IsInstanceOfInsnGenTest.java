@@ -476,7 +476,7 @@ class IsInstanceOfInsnGenTest {
         assertTrue(body.contains("godot_variant_get_type"), body);
         assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_INT"), body);
         assertTrue(body.contains("$tmp"), body);
-        assertTrue(body.contains("$result = !$tmp;"), body);
+        assertTrue(body.contains("$result = gdcc_eval_unary_not_bool_to_bool($tmp);"), body);
     }
 
     private static @NotNull String generate(@NotNull String valueId, @NotNull GdType valueType, @NotNull String typeName) {

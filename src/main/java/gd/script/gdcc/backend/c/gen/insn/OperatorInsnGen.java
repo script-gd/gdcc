@@ -51,13 +51,6 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         var operandVar = resolveOperandVariable(bodyBuilder, instruction.operandId(), "operand");
         InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, operandVar, "operator operand");
 
-        if (instruction.op() == GodotOperator.NOT && operandVar.type() instanceof GdBoolType) {
-            validateResultCompatibility(bodyBuilder, OperatorResolver.OperatorPath.BUILTIN_EVALUATOR, GdBoolType.BOOL, resultVar);
-            var operandCode = bodyBuilder.valueOfVar(operandVar).generateCode();
-            bodyBuilder.assignExpr(bodyBuilder.targetOfVar(resultVar), "!" + operandCode, GdBoolType.BOOL);
-            return;
-        }
-
         var decision = resolver.resolveUnaryPath(bodyBuilder, instruction.op(), operandVar.type());
         if (decision.path() == OperatorResolver.OperatorPath.UNIMPLEMENTED) {
             throwUnimplementedPath(bodyBuilder, "unary", instruction.op().name(), decision.reason(),
