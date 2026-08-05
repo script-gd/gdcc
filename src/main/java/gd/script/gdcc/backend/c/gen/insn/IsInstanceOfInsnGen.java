@@ -14,8 +14,9 @@ import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
+import gd.script.gdcc.util.TypeTestFoldResult;
+import gd.script.gdcc.util.TypeTestFoldUtil;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
 import java.util.Objects;
@@ -24,7 +25,7 @@ import java.util.Objects;
 ///
 /// Contract:
 /// - single LIR opcode; all path choice lives here (no frontend multi-instruction recipes)
-/// - fold only when value static type + resolved target decide the outcome
+/// - static fold reuses {@link TypeTestFoldUtil} as insurance for still-emitted LIR
 /// - `Variant` target is the top type: fold true for any operand (never dispatch / never NIL enum)
 /// - unresolved object type names always take the runtime ClassDB path and never fold
 /// - null / freed objects are false for non-Variant targets (never reuse unpack null→true)
@@ -75,11 +76,15 @@ public final class IsInstanceOfInsnGen implements CInsnGen<IsInstanceOfInsn> {
         }
 
         if (!unresolvedObjectTarget) {
-            var folded = tryFold(registry, valueVariable.type(), Objects.requireNonNull(resolvedTarget));
-            if (folded != null) {
+            var folded = TypeTestFoldUtil.fold(
+                    registry,
+                    valueVariable.type(),
+                    Objects.requireNonNull(resolvedTarget)
+            );
+            if (folded != TypeTestFoldResult.RUNTIME_OPEN) {
                 bodyBuilder.assignExpr(
                         bodyBuilder.targetOfVar(resultVariable),
-                        folded.toString(),
+                        Boolean.toString(folded == TypeTestFoldResult.TRUE),
                         GdBoolType.BOOL
                 );
                 return;
@@ -122,60 +127,6 @@ public final class IsInstanceOfInsnGen implements CInsnGen<IsInstanceOfInsn> {
                 "is_instance_of does not support target type '" + target.getTypeName() +
                         "' with value type '" + valueVariable.type().getTypeName() + "'"
         );
-    }
-
-    /// Mirrors frontend `tryFoldKnownTypeTest` as a second insurance layer for still-emitted LIR.
-    ///
-    /// Variant target is the GDScript top type: fold true for any operand (incl. Nil / Variant)
-    /// so hand-written LIR never reaches the fail-closed dispatch. Must stay above the
-    /// Variant-operand and Nil guards; never route Variant through the NIL builtin-enum path.
-    private static @Nullable Boolean tryFold(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull GdType valueType,
-            @NotNull GdType targetType
-    ) {
-        if (targetType instanceof GdVariantType) {
-            return true;
-        }
-        if (valueType instanceof GdVariantType) {
-            return null;
-        }
-        if (valueType instanceof GdNilType) {
-            return false;
-        }
-        if (sameStaticType(valueType, targetType)) {
-            if (valueType instanceof GdObjectType) {
-                return null;
-            }
-            return true;
-        }
-        if (valueType instanceof GdObjectType
-                && targetType instanceof GdObjectType
-                && classRegistry.checkAssignable(valueType, targetType)) {
-            return null;
-        }
-        if (valueType instanceof GdObjectType != targetType instanceof GdObjectType) {
-            return false;
-        }
-        // Parent→child object stays open; never fold false without a proven disjoint hierarchy.
-        if (valueType instanceof GdObjectType) {
-            return null;
-        }
-        if (targetType instanceof GdArrayType targetArray
-                && targetArray.isGenericArray()
-                && valueType instanceof GdArrayType) {
-            return true;
-        }
-        // Exact non-object mismatch (including bare→typed container).
-        return targetType instanceof GdDictionaryType targetDictionary
-                && targetDictionary.isGenericDictionary()
-                && valueType instanceof GdDictionaryType;
-    }
-
-    private static boolean sameStaticType(@NotNull GdType first, @NotNull GdType second) {
-        return first == second
-                || (first.getClass() == second.getClass()
-                && first.getTypeName().equals(second.getTypeName()));
     }
 
     private static boolean isNonParameterizedBuiltinTarget(@NotNull GdType target) {

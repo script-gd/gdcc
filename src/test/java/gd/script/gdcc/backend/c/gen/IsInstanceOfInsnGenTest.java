@@ -296,11 +296,29 @@ class IsInstanceOfInsnGenTest {
     }
 
     @Test
-    @DisplayName("static Array is Array[int] folds false (bare is not typed)")
-    void bareArrayIsTypedArrayFoldsFalse() {
+    @DisplayName("static Array is Array[int] stays runtime-open via typed-array helper")
+    void bareArrayIsTypedArrayStaysRuntimeOpen() {
+        // Bare Array slots may carry typed metadata at runtime; do not fold false statically.
         var body = generate("arr", new GdArrayType(GdVariantType.VARIANT), "Array[int]");
-        assertTrue(body.contains("$result = false;"), body);
-        assertFalse(body.contains("gdcc_is_instance_of_typed_array"), body);
+        assertTrue(body.contains("gdcc_is_instance_of_typed_array"), body);
+        assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_INT"), body);
+        assertFalse(body.contains("$result = false;"), body);
+        assertFalse(body.contains("$result = true;"), body);
+    }
+
+    @Test
+    @DisplayName("static Dictionary is Dictionary[String, int] stays runtime-open via typed helper")
+    void bareDictionaryIsTypedDictionaryStaysRuntimeOpen() {
+        var body = generate(
+                "dict",
+                new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT),
+                "Dictionary[String, int]"
+        );
+        assertTrue(body.contains("gdcc_is_instance_of_typed_dictionary"), body);
+        assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_STRING"), body);
+        assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_INT"), body);
+        assertFalse(body.contains("$result = false;"), body);
+        assertFalse(body.contains("$result = true;"), body);
     }
 
     @Test

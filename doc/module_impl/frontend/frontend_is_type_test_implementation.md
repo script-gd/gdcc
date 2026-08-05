@@ -95,7 +95,7 @@ shared semantic 成功解析后发布 `FrontendExpressionType.RESOLVED(GdBoolTyp
 
 - 非参数化 builtin、packed 类型、裸 `Array` / `Dictionary` 使用 `GDExtensionVariantType` 精确匹配；`int` 与 `float` 不互通。
 - `Variant` 是顶类型；任意操作数（包括 `null`）为 `true`，`is not Variant` 为 `false`。
-- `Array[T]` / `Dictionary[K,V]` 要求 typed metadata 完全匹配；不做元素协变，也不把裸容器视为参数化容器。
+- `Array[T]` / `Dictionary[K,V]` 要求 runtime typed metadata 完全匹配；不做元素协变。静态类型为裸 `Array` / `Dictionary` 的操作数不能据此判定为“非参数化容器”——裸槽位在运行时仍可能持有带 typed metadata 的值。
 - 已解析 Engine/gdcc Object 类使用 Object 继承关系；已知同类型/upcast 的 false 路径只有 null。
 - 未解析但合法的 Object 名称产生 lint warning，进入运行时 Object 路径，不使用前端静态折叠。
 - script 类的编译期可证明同类型/upcast 路径使用 null-check；运行时 ClassDB 路径对 script 实例当前返回 `false`。
@@ -118,32 +118,34 @@ script 类运行时 `is` 当前不是完整支持面：native Object 的 ClassDB
 `FrontendTypeTestInsnLoweringProcessor` 的行为固定为：
 
 - `TargetUnresolvedObject`：保留原始 `typeName`，不按已知 target 静态折叠，生成 `IsInstanceOfInsn`；`is not` 追加 `UnaryOpInsn(NOT)`。
-- `TargetKnown`：调用 `tryFoldKnownTypeTest`。结果确定时生成 `LiteralBoolInsn`，并在 `negated` 情况下取反；否则生成统一 `IsInstanceOfInsn`。
+- `TargetKnown`：调用共享 `TypeTestFoldUtil.fold`。结果为 `TRUE` / `FALSE` 时生成 `LiteralBoolInsn`，并在 `negated` 情况下取反；`RUNTIME_OPEN` 时生成统一 `IsInstanceOfInsn`。
 - `Variant` 目标的折叠守卫位于 Nil 和 Variant 操作数判断之前，任何操作数都直接折叠为 `true`。
 - Object 同类型/upcast 不折叠为字面量 `true`，因为 Object 值可能为 null；保留 `IsInstanceOfInsn`，由 backend 生成 null-check。
 - Variant 操数测试非 Variant 目标保持 runtime-open。
 - 已知 Nil 对非 Variant 目标折叠为 `false`。
 - 精确 non-object 类型相同折叠为 `true`，明确不相交的类型族折叠为 `false`。
-- 裸 `Array` / `Dictionary` 接受同族 typed 或 bare value；反向的裸容器测试参数化目标不折叠为 `true`。
+- 裸 `Array` / `Dictionary` 目标接受同族 typed 或 bare value，可折叠为 `true`。
+- 反向的裸容器 *value* 测试参数化目标（`Array is Array[T]` / `Dictionary is Dictionary[K,V]`）保持 **runtime-open**：裸槽位可能在运行时携带 typed metadata，不得折叠为常量 `false`（也不得折叠为 `true`）；backend 走 typed-metadata helper。
+- 已参数化但元素类型不相等的组合（如 `Array[String] is Array[int]`）仍可折叠为 `false`（静态元素约束下不可能匹配）。
 - parent-to-child Object 测试、Variant 操数测试非 Variant 目标和其它无法证明的 Object 关系保持运行时路径。
 
 `FrontendCompileCheckAnalyzer` 已不再为 `TypeTestExpression` 建立显式 blocker；TypeTest 进入默认 compile surface 递归路径。其它尚未闭合的 expression surface 仍由 compile-only final gate 在 lowering 前封口。
 
 ## 5. Backend 分派与折叠
 
-`IsInstanceOfInsnGen` 对仍然存在的 `is_instance_of` 做第二层折叠和路径选择。手写或未来直接生成的 LIR 也必须遵守同一合同。
+静态折叠决策统一由 `TypeTestFoldUtil.fold` 给出 `TypeTestFoldResult`（`TRUE` / `FALSE` / `RUNTIME_OPEN`）。frontend body lowering 与 `IsInstanceOfInsnGen` 都消费同一决策树；backend 对仍然存在的 `is_instance_of` 再做一层保险折叠和路径选择。手写或未来直接生成的 LIR 也必须遵守同一合同。
 
-- 任意 value / `Variant` target：常量 `true`；不进入 runtime dispatch，不生成 `is_instance_of "Variant"` 的稳定 LIR。
-- non-object exact same type：常量 `true`。
-- Nil / 非 Variant target：常量 `false`。
-- Object same type 或已证明 upcast：生成 `!(object_is_null(...))`；不直接生成字面量 `true`。
-- Object parent -> child 或其它 runtime-open Object 关系：使用 `gdcc_is_instance_of_object_raw_and_id` 或 `gdcc_is_instance_of_object_variant`。
+- 任意 value / `Variant` target：`TRUE`；不进入 runtime dispatch，不生成 `is_instance_of "Variant"` 的稳定 LIR。
+- non-object exact same type：`TRUE`。
+- Nil / 非 Variant target：`FALSE`。
+- Object same type 或已证明 upcast：`RUNTIME_OPEN`，生成 `!(object_is_null(...))`；不直接生成字面量 `true`。
+- Object parent -> child 或其它 runtime-open Object 关系：`RUNTIME_OPEN`，使用 `gdcc_is_instance_of_object_raw_and_id` 或 `gdcc_is_instance_of_object_variant`。
 - unresolved Object target：进入 Object runtime route；Object/Variant value 使用继承链 helper，明确的 non-object value 生成 `false`，不使用已知静态 target 折叠规则。
-- 非参数化 builtin / packed / 裸容器：比较 `godot_variant_get_type(...)` 与 `GDExtensionVariantType` 枚举。
-- 参数化 Array / Dictionary：使用 typed metadata helper。
+- 非参数化 builtin / packed / 裸容器 *目标*：比较 `godot_variant_get_type(...)` 与 `GDExtensionVariantType` 枚举。
+- 参数化 Array / Dictionary 目标：使用 typed metadata helper。静态 value 为裸 `Array` / `Dictionary` 时同样走该路径（`gdcc_is_instance_of_typed_array` / `gdcc_is_instance_of_typed_dictionary`）；`TypeTestFoldUtil` 必须返回 `RUNTIME_OPEN`，不得按静态类型折叠为 `FALSE`。
 - 其它不支持组合：fail-closed，抛出明确的 codegen invalid-instruction 错误，禁止静默返回 `false`。
 
-`GdVariantType.getGdExtensionType()` 的值为 `NIL`，因此 `Variant` target 绝不能进入 builtin enum 路径或 ClassDB 路径。frontend 和 backend 都保留顶类型守卫，防止稳定 LIR 以外的手写/遗留 LIR 触发错误路径。
+`GdVariantType.getGdExtensionType()` 的值为 `NIL`，因此 `Variant` target 绝不能进入 builtin enum 路径或 ClassDB 路径。`TypeTestFoldUtil` 的顶类型守卫位于 Nil / Variant-operand 判断之前，防止稳定 LIR 以外的手写/遗留 LIR 触发错误路径。
 
 ## 6. Runtime helper 合同
 
@@ -182,14 +184,18 @@ runtime helper 的完整 ABI 说明以 `doc/gdcc_runtime_lib.md` 和 `gdcc_helpe
   - 构建 `TypeTestItem`
 - `src/main/java/gd/script/gdcc/frontend/lowering/cfg/item/TypeTestItem.java`
   - 固定 CFG value-op 形状
+- `src/main/java/gd/script/gdcc/util/TypeTestFoldResult.java`
+  - 共享折叠结果：`TRUE` / `FALSE` / `RUNTIME_OPEN`
+- `src/main/java/gd/script/gdcc/util/TypeTestFoldUtil.java`
+  - frontend 与 backend 共用的静态 `is` 折叠决策树
 - `src/main/java/gd/script/gdcc/frontend/lowering/pass/body/FrontendSequenceItemInsnLoweringProcessors.java`
-  - 统一 lowering、frontend 折叠和 `is not` 的 NOT 包装
+  - 统一 lowering、消费 `TypeTestFoldUtil` 和 `is not` 的 NOT 包装
 - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzer.java`
   - 保证 TypeTest 不再被显式 compile blocker 拦截
 - `src/main/java/gd/script/gdcc/lir/insn/IsInstanceOfInsn.java`
   - 统一 LIR 指令和 `typeName` / `valueId` 命名
 - `src/main/java/gd/script/gdcc/backend/c/gen/insn/IsInstanceOfInsnGen.java`
-  - backend 二次折叠、路径分派和 fail-closed 校验
+  - 二次消费 `TypeTestFoldUtil`、路径分派和 fail-closed 校验
 - `src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java`
   - 注册 `IsInstanceOfInsnGen`
 - `src/main/c/codegen/include_451/gdcc/gdcc_helper.h`
@@ -207,6 +213,8 @@ runtime helper 的完整 ABI 说明以 `doc/gdcc_runtime_lib.md` 和 `gdcc_helpe
   - `typeTestTargets` 的幂等合并和冲突保护
 - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzerTest.java`
   - TypeTest 不产生显式 compile blocker，其它 compile surface 仍被正确封口
+- `src/test/java/gd/script/gdcc/util/TypeTestFoldUtilTest.java`
+  - 共享折叠决策树的直接合同（含裸容器 vs 参数化目标的 `RUNTIME_OPEN`）
 - `src/test/java/gd/script/gdcc/frontend/lowering/pass/body/FrontendTypeTestInsnLoweringTest.java`
   - builtin、Object、Variant、Nil、typed container、unresolved target、`is not` 和 frontend 折叠矩阵
 - `src/test/java/gd/script/gdcc/frontend/lowering/FrontendLoweringBodyInsnPassTest.java`
@@ -221,7 +229,7 @@ runtime helper 的完整 ABI 说明以 `doc/gdcc_runtime_lib.md` 和 `gdcc_helpe
 针对性测试使用仓库约定的 PowerShell 脚本，例如：
 
 ```text
-pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests IsInstanceOfInsnContractTest,FrontendExpressionSemanticSupportTest,FrontendTypeTestInsnLoweringTest,IsInstanceOfInsnGenTest
+pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests TypeTestFoldUtilTest,IsInstanceOfInsnContractTest,FrontendExpressionSemanticSupportTest,FrontendTypeTestInsnLoweringTest,IsInstanceOfInsnGenTest
 ```
 
 ## 10. 长期维护约束

@@ -42,16 +42,13 @@ import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
-import gd.script.gdcc.scope.ClassRegistry;
-import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
-import gd.script.gdcc.type.GdDictionaryType;
-import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
-import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import gd.script.gdcc.util.TypeTestFoldResult;
+import gd.script.gdcc.util.TypeTestFoldUtil;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.lir.insn.VariantGetNamedInsn;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
@@ -942,13 +939,13 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                                 expression.negated()
                         );
                 case FrontendTypeTestTarget.TargetKnown(var knownTargetType) -> {
-                    var folded = tryFoldKnownTypeTest(
+                    var folded = TypeTestFoldUtil.fold(
                             session.classRegistry(),
                             valueType,
                             knownTargetType
                     );
-                    if (folded != null) {
-                        var constant = expression.negated() != folded;
+                    if (folded != TypeTestFoldResult.RUNTIME_OPEN) {
+                        var constant = expression.negated() != (folded == TypeTestFoldResult.TRUE);
                         block.appendNonTerminatorInstruction(new LiteralBoolInsn(resultSlotId, constant));
                         yield block;
                     }
@@ -984,72 +981,6 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             return block;
         }
 
-        /// Returns a compile-time outcome when static types decide `value is T`; otherwise `null`.
-        ///
-        /// Only folds outcomes that cannot change at runtime (Variant top-type target, exact match,
-        /// known-null vs non-Variant target, container-to-bare-Array/Dictionary, disjoint families,
-        /// exact non-object mismatch). Parent-to-child object tests and any `Variant` operand against
-        /// a non-Variant target stay runtime-open. Object same-type / definite upcast stay open for
-        /// backend null-check (value may be null). Container parameters still require exact metadata
-        /// for parameterized targets (no element covariance: `Array[Node2D] is Array[Node]` stays
-        /// false / not true).
-        private static @Nullable Boolean tryFoldKnownTypeTest(
-                @NotNull ClassRegistry classRegistry,
-                @NotNull GdType valueType,
-                @NotNull GdType targetType
-        ) {
-            // Top type: `x is Variant` is always true (including null); must precede Nil / Variant-operand guards.
-            if (targetType instanceof GdVariantType) {
-                return true;
-            }
-            if (valueType instanceof GdVariantType) {
-                return null;
-            }
-            // `null` / Nil is never an instance of any non-Variant type-test target.
-            if (valueType instanceof GdNilType) {
-                return false;
-            }
-            if (sameStaticType(valueType, targetType)) {
-                // Non-object value types (int, String, etc.) cannot be null → safe to fold true.
-                // Object types may hold null at runtime → defer to backend null-check path.
-                if (valueType instanceof GdObjectType) {
-                    return null;
-                }
-                return true;
-            }
-            // Definite object upcast: static Node2D is Node.
-            // Inheritance is proven, but value may be null → defer to backend null-check path.
-            if (valueType instanceof GdObjectType
-                    && targetType instanceof GdObjectType
-                    && classRegistry.checkAssignable(valueType, targetType)) {
-                return null;
-            }
-            // Definite disjoint families (exact non-object vs object, or reverse).
-            if (valueType instanceof GdObjectType != targetType instanceof GdObjectType) {
-                return false;
-            }
-            // Object parent→child stays open: static Node is Node2D is not folded false.
-            if (valueType instanceof GdObjectType) {
-                return null;
-            }
-            // Bare Array/Dictionary accept any static Array/Dictionary value (typed or bare).
-            // Reverse (bare is Array[T]) stays false via the generic non-object mismatch below.
-            if (targetType instanceof GdArrayType targetArray
-                    && targetArray.isGenericArray()
-                    && valueType instanceof GdArrayType) {
-                return true;
-            }
-            return targetType instanceof GdDictionaryType targetDictionary
-                    && targetDictionary.isGenericDictionary()
-                    && valueType instanceof GdDictionaryType;
-            // Exact non-object mismatch (int is float, Array is Array[int], Packed* vs bare Array) is false.
-        }
-
-        private static boolean sameStaticType(@NotNull GdType first, @NotNull GdType second) {
-            return first == second
-                    || (first.getClass() == second.getClass()
-                    && first.getTypeName().equals(second.getTypeName()));
-        }
     }
 
     /// Initializes the hidden loop-carried iterator state by calling the route's init intrinsic.

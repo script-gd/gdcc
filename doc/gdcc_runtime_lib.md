@@ -93,6 +93,8 @@ extend the runtime-provided `godot_*` surface.
     `gdcc_check_variant_type_object`, which accepts null for unpack):
     - `gdcc_is_instance_of_object_{raw_and_id,variant}` — Object inheritance via ClassDB.
     - `gdcc_is_instance_of_typed_{array,dictionary}[,_variant]` — exact typed-container metadata.
+      Used for parameterized targets even when the static value type is bare `Array` /
+      `Dictionary` (those slots may still carry typed metadata at runtime).
     - Non-parameterized builtin `is` stays inlined as `godot_variant_get_type(...) == ENUM`.
     - Freed instances produce `false` (Godot release behavior); Godot's debug-only runtime
       error is not replicated.

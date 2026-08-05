@@ -273,7 +273,8 @@ class FrontendTypeTestInsnLoweringTest {
         assertTrue(requireOnly(exactTyped.function(), LiteralBoolInsn.class).value());
         assertEquals(0, count(exactTyped.function(), IsInstanceOfInsn.class));
 
-        // Typed container is bare Array → true (variant family); reverse bare→typed is false.
+        // Typed container is bare Array → true (variant family).
+        // Reverse bare→parameterized stays runtime-open: the bare slot may hold typed metadata.
         var typedIsBare = lowerProbe(
                 """
                         class_name TypeTestTypedArrayIsBare
@@ -295,8 +296,8 @@ class FrontendTypeTestInsnLoweringTest {
                             return value is Array[int]
                         """
         );
-        assertFalse(requireOnly(bareIsTyped.function(), LiteralBoolInsn.class).value());
-        assertEquals(0, count(bareIsTyped.function(), IsInstanceOfInsn.class));
+        assertEquals("Array[int]", requireOnly(bareIsTyped.function(), IsInstanceOfInsn.class).typeName());
+        assertEquals(0, count(bareIsTyped.function(), LiteralBoolInsn.class));
 
         var typedDictIsBare = lowerProbe(
                 """
@@ -319,8 +320,11 @@ class FrontendTypeTestInsnLoweringTest {
                             return value is Dictionary[String, int]
                         """
         );
-        assertFalse(requireOnly(bareDictIsTyped.function(), LiteralBoolInsn.class).value());
-        assertEquals(0, count(bareDictIsTyped.function(), IsInstanceOfInsn.class));
+        assertEquals(
+                "Dictionary[String, int]",
+                requireOnly(bareDictIsTyped.function(), IsInstanceOfInsn.class).typeName()
+        );
+        assertEquals(0, count(bareDictIsTyped.function(), LiteralBoolInsn.class));
     }
 
     @Test
