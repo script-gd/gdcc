@@ -116,6 +116,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "type_test/container_type_test.gd",
             "type_test/is_not_test.gd",
             "type_test/object_type_test.gd",
+            "type_test/packed_type_test.gd",
             "type_test/variant_type_test.gd"
     );
     private static final List<String> ABI_SCRIPT_PATHS = scriptPathsWithPrefix("abi/");

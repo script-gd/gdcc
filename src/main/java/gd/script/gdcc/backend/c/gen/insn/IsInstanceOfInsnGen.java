@@ -22,11 +22,12 @@ import java.util.Objects;
 
 /// Backend codegen for the unified `is_instance_of` LIR surface (GDScript `is` / `is not`).
 ///
-/// Contract (plan §3.3 / §3.4 / §3.5):
+/// Contract (plan §3.3 / §3.4 / §3.5 / Phase 7):
 /// - single LIR opcode; all path choice lives here (no frontend multi-instruction recipes)
 /// - fold only when value static type + resolved target decide the outcome
+/// - `Variant` target is the top type: fold true for any operand (never dispatch / never NIL enum)
 /// - unresolved object type names always take the runtime ClassDB path and never fold
-/// - null / freed objects are false (never reuse `gdcc_check_variant_type_object` unpack null→true)
+/// - null / freed objects are false for non-Variant targets (never reuse unpack null→true)
 /// - parameterized containers compare typed metadata via dedicated helpers, not bare ARRAY enum
 public final class IsInstanceOfInsnGen implements CInsnGen<IsInstanceOfInsn> {
     private final OperatorResolver resolver = new OperatorResolver();
@@ -124,11 +125,18 @@ public final class IsInstanceOfInsnGen implements CInsnGen<IsInstanceOfInsn> {
     }
 
     /// Mirrors frontend `tryFoldKnownTypeTest` as a second insurance layer for still-emitted LIR.
+    ///
+    /// Variant target is the GDScript top type: fold true for any operand (incl. Nil / Variant)
+    /// so hand-written LIR never reaches the fail-closed dispatch. Must stay above the
+    /// Variant-operand and Nil guards; never route Variant through the NIL builtin-enum path.
     private static @Nullable Boolean tryFold(
             @NotNull ClassRegistry classRegistry,
             @NotNull GdType valueType,
             @NotNull GdType targetType
     ) {
+        if (targetType instanceof GdVariantType) {
+            return true;
+        }
         if (valueType instanceof GdVariantType) {
             return null;
         }

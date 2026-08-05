@@ -3,8 +3,8 @@
 > 本文档是 `is` / `is not` 类型测试表达式的**分步骤实施计划与验收细则**。
 > 落地完成后，应将已冻结合同抽离/改写为长期事实源，并同步更新本目录下相关 docs 与 `frontend_rules.md` 中的 compile intercept 列表。
 >
-> 更新时间：2026-07-30  
-> 状态：Phase 0–6b 已完成；Phase 1 Shared semantic + Phase 2 unified body lowering + Phase 3 backend 分派/`IsInstanceOfInsnGen`/runtime helpers + Phase 4 compile gate 解封 + Phase 5 单元测试补全 + test_suite 端到端验证 + Phase 6a Object upcast null-check 优化 + Phase 6b hardening（硬类型诊断 + freed instance 文档化）
+> 更新时间：2026-08-05  
+> 状态：Phase 0–7 已完成。已完成：Phase 1 Shared semantic + Phase 2 unified body lowering + Phase 3 backend 分派/`IsInstanceOfInsnGen`/runtime helpers + Phase 4 compile gate 解封 + Phase 5 单元测试补全 + test_suite 端到端验证 + Phase 6a Object upcast null-check 优化 + Phase 6b hardening（硬类型诊断 + freed instance 文档化）+ Phase 7 `x is Variant` 顶类型折叠
 
 ---
 
@@ -125,24 +125,44 @@ $<result_id:bool> = is_instance_of "<type_name>" $<value_id>
 | RHS `T` | 合法 | 运行时检查概要 |
 |---------|------|----------------|
 | 非参数化 builtin（`int`、`String`、`Packed*Array`、裸 `Array`/`Dictionary`…） | ✅ | `GDExtensionVariantType` 精确相等 |
+| `Variant`（顶类型） | ✅ | **恒 `true`**（含 `null`）；编译期折叠，不走运行时 type-test（§3.4 / Phase 7） |
 | `Array[T]` / `Dictionary[K,V]` | ✅ | typed metadata 全匹配 |
 | Engine / gdcc Object 类（编译期已解析） | ✅ | 继承链（ClassDB / 等价） |
+| Script 类（gdcc 注册的脚本类） | ⚠️ 部分 | 仅编译期可证明路径正确（same-type/upcast → null-check）；运行时 ClassDB 路径对 script 实例返回 **false**（见 §2.5） |
 | 编译期不可知但语法合法的 Object 类名（标识符） | ✅（降级） | 仅运行时 ClassDB 继承链；禁止折叠（§3.4） |
 | 变量表达式 / `null` 作类型 | ❌ | 编译错误 |
 | nested structured container | ❌ | 类型面已拒绝 |
+
 
 ### 2.3 关键边界
 
 | 场景 | 期望 |
 |------|------|
-| `null is *` | `false` |
+| `null is *`（非 `Variant` 目标） | `false` |
+| `null is Variant` / `* is Variant` | **`true`**（顶类型；见 Phase 7） |
+| `* is not Variant` | **`false`** |
 | `1 is int` / `1.0 is int` | `true` / `false` |
 | 子类 `is` 父类 | `true` |
-| 硬类型确定不兼容 | 可编译期报错或折叠 `false`（Variant 不误报） |
+| 硬类型确定不兼容 | 可编译期报错或折叠 `false`（Variant 目标 / Variant 操作数不误报） |
 
 ### 2.4 `is not`
 
 语义 `not (x is T)`；LIR 用 `unary_op NOT` 包 `is_instance_of`（或双折叠常量）。
+
+### 2.5 Script 类型限制（已知不支持）
+
+gdcc 当前 **不支持** script 类在运行时 `is` 路径上的正确语义。两条受影响路径：
+
+| 路径 | 表现 | 根因 |
+|------|------|------|
+| Object 运行时 ClassDB（`x is MyScript`，非 upcast/same-type） | 对 script 实例返回 **false** | `godot_object_get_class_name` 返回 native 基类名；`ClassDB.is_parent_class` 不识别 script 名 |
+| 参数化容器 script-leaf（`x is Array[MyScript]`） | 对含 script metadata 的容器返回 **false** | runtime helper 显式要求 script metadata 为 null（`gdcc_typed_script_metadata_is_null`） |
+
+**编译期可证明路径仍然正确**：same-type / upcast 走 null-check（不经过 ClassDB）；exact typed-container 静态匹配折叠为 `true`。
+
+**未注册 script 类**（非当前编译单元）降级为 `UNRESOLVED_OBJECT`，走同一 ClassDB 运行时路径，同样对 script 实例返回 false。
+
+**决策**：MVP 不实现 script 运行时 `is`；不发出编译期警告。原因：unresolved 路径无法区分 GDExtension 类（ClassDB 有效）与 script 类（ClassDB 无效），警告覆盖面仅限同编译单元内非 upcast 的 script `is`，收益不足以证明工程成本。见 §8 开放问题 #2 关闭记录。
 
 ---
 
@@ -194,8 +214,9 @@ $result = <bool constant materialization>
 
 | `$value_id` 静态类型 | `type_name` 解析结果 | Codegen 动作 |
 |----------------------|----------------------|--------------|
-| 精确类型，与 `T` 确定相同 / 可 upcast 的 Object 子类→父类 | 任意可判定 | **常量 `true`** |
-| 精确类型，与 `T` 确定不相交 | 任意可判定 | **常量 `false`** |
+| 任意（含 Nil / Object / 标量 / 容器 / Variant） | **`Variant`（顶类型）** | **常量 `true`**（frontend lowering 与 backend `tryFold` 均折叠；**不进入** runtime dispatch / 不发射 `is_instance_of "Variant"`） |
+| 精确类型，与 `T` 确定相同 / 可 upcast 的 Object 子类→父类 | 任意可判定（非 Variant） | **常量 `true`**（Object same/upcast 见 Phase 6a → null-check，非字面 true） |
+| 精确类型，与 `T` 确定不相交 | 任意可判定（非 Variant） | **常量 `false`** |
 | `Variant` 或 runtime-open | 非参数化 builtin / packed / 裸 Array·Dictionary | `godot_variant_get_type` **与 `GdExtensionTypeEnum` 比较**（可内联，不必单独 LIR） |
 | Object 静态类型，或 Variant 且目标为 Object 类 | Object / class（已解析） | **继承链 helper**（`godot_ClassDB_is_parent_class` 等） |
 | 任意 | unresolved object name（`UNRESOLVED_OBJECT`） | **强制运行时**继承链 helper，**禁止折叠**（无论 value 静态类型） |
@@ -206,13 +227,15 @@ $result = <bool constant materialization>
 
 | 静态 `$value_id` | `type_name` | 折叠 |
 |------------------|-------------|------|
+| 任意（含 Nil / Object / 标量 / 容器 / Variant） | `"Variant"` | **`true`**（顶类型；`is not Variant` → `false`） |
 | exact `int` | `"int"` | `true` |
 | exact `float` | `"int"` | `false` |
-| exact `Node2D` | `"Node"` | `true`（确定 upcast） |
+| exact `Node2D` | `"Node"` | null-check 路径（Phase 6a；不折字面 true） |
 | exact `Node` | `"Node2D"` | 不折 `true`；仅当层级证明不可能才折 `false`，否则 runtime |
 | exact 非 object builtin | 某 object 类 | `false` |
 | exact object | 非 object builtin | `false` |
-| nil / 已知 null | 任意 | `false` |
+| nil / 已知 null | 任意非 `"Variant"` | `false` |
+| nil / 已知 null | `"Variant"` | **`true`**（与 Godot 对齐） |
 | 任意 | `UNRESOLVED_OBJECT` 目标 | **不折叠**，强制 runtime |
 
 ### 3.4 编译期常量折叠（两层都允许）
@@ -224,10 +247,11 @@ $result = <bool constant materialization>
 
 典型折叠：
 
-- object **upcast 确定为真**（`Node2D is Node` 且静态类型为 `Node2D`）→ `true`
+- **`Variant` 目标：永远折叠为 `true`**（任意操作数，含 Nil / Object / 标量 / 容器 / Variant 操作数）；`is not Variant` → `false`。**禁止**发射 `is_instance_of "Variant"`，**禁止**走 backend runtime dispatch（见 Phase 7）
+- object **upcast / same-type**（`Node2D is Node` 等）→ 不折字面 true；发射 `is_instance_of`，backend 走 null-check（Phase 6a）
 - 精确 builtin 同名 → `true`；精确 builtin 异名 → `false`
 - 精确 object vs 非 object builtin → `false`
-- **不确定**（如静态 `Node` 测 `Node2D`，或 `Variant`）→ 运行时路径
+- **不确定**（如静态 `Node` 测 `Node2D`，或 **Variant 操作数**测非 Variant 目标）→ 运行时路径
 - **`UNRESOLVED_OBJECT` 目标：永远不折叠**，无论 `$value_id` 静态类型如何，一律走运行时继承链 helper
 
 ### 3.5 Runtime helpers
@@ -519,7 +543,7 @@ godot_bool gdcc_is_instance_of_typed_dictionary(const godot_Variant *value, /* k
 | `1 is int` | `exact_builtin_match() -> bool` | `true` |
 | `1.0 is int` | `builtin_mismatch() -> bool` | `false` |
 | `"s" is String` | `string_match() -> bool` | `true` |
-| `PackedInt32Array() is PackedInt32Array` | `packed_match() -> bool` | `true` |
+| `PackedInt32Array() is PackedInt32Array` | `packed_type_test.packed_match() -> bool` | `true`（独立 `packed_type_test.gd`，含 mismatch / is not / Variant 运行时） |
 | `node is Node` | `object_exact() -> bool` | `true` |
 | `node2d is Node` | `object_upcast() -> bool` | `true` |
 | `null is Node` | `null_is_object() -> bool` | `false` |
@@ -623,25 +647,161 @@ $result = gdcc_is_instance_of_object_raw_and_id(..., GD_STATIC_SN(u8"Node"));
 
 ---
 
+### Phase 7 — `x is Variant` 顶类型折叠（恒 true）
+
+> 状态：**已完成**（2026-08-05）  
+> 调研日期：2026-08-05  
+> 真源：Godot 4.x `modules/gdscript`（`reduce_type_test` / `GDScriptDataType::has_type` / `OPCODE_ASSIGN_TRUE`）
+
+#### 7.1 问题
+
+`Variant` 作为 type-test **目标**（`x is Variant` / `x is not Variant`）在 P0–P6 合同中**未定义**：§3.3 分派矩阵里 `Variant` 只出现在 `$value_id`（操作数）侧。实现上出现两类缺陷：
+
+| 操作数静态类型 | 当前行为 | Godot 期望 |
+|----------------|----------|------------|
+| `Variant` | 不折叠 → 发射 `is_instance_of "Variant"` → backend fail-closed 抛 `InvalidInsnException` **崩溃** | `true` |
+| `Nil` / null 字面量 | 折叠为 `false`（静默错误） | `true` |
+| Object（如 `Node`） | 折叠为 `false`（Object vs 非 Object 族 XOR） | `true` |
+| 标量 / 容器（`int`、`Array[T]`…） | 折叠为 `false`（末尾 non-object mismatch） | `true` |
+
+`is not Variant` 经 `negated` 取反后全部同步错误。
+
+**根因链路（精确到行）：**
+
+1. **语义层无崩溃**：`Variant` 由 `ClassRegistry` 解析为 `GdVariantType.VARIANT` → `TargetKnown(GdVariantType)`（`FrontendExpressionSemanticSupport.resolveTypeTestExpressionType`）。P6b 已在 `FrontendBodyOwnerProcedures.reportHardTypedIncompatibilityWarning` 对 `targetType instanceof GdVariantType` 跳过硬类型诊断。
+2. **Lowering 错误折叠**：`FrontendTypeTestInsnLoweringProcessor.tryFoldKnownTypeTest` 无 Variant-target 守卫：
+   - Variant 操作数 → `null`（runtime-open）→ 发射 `is_instance_of "Variant"`
+   - Nil → `false`；Object → 族 XOR `false`；标量/容器 → 末尾 `false`
+3. **Backend 崩溃**：`IsInstanceOfInsnGen.generateCCode` 仅当操作数为 Variant 时可达（其余已被前端错误折叠）。`tryFold` 对 Variant 操作数返回 `null`；dispatch switch 无 `GdVariantType` 分支；`isNonParameterizedBuiltinTarget` **显式排除** `GdVariantType` → 落入 `throw invalidInsn(...)`。
+4. **陷阱**：`GdVariantType.getGdExtensionType()` 返回 `NIL`。若误把 Variant target 塞进 builtin-enum 路径，会产出 `GDEXTENSION_VARIANT_TYPE_NIL` 错误比较。**禁止**走 enum 路径。
+
+#### 7.2 Godot 真源（验收锚点）
+
+| 事实 | 证据 |
+|------|------|
+| `x is Variant` 对**任意**操作数恒 `true`（含 `null`） | 编译器对 VARIANT kind：`has_type()` 为 false → 直接 `write_assign_true` / `OPCODE_ASSIGN_TRUE`，不生成 type-test 字节码 |
+| `x is not Variant` 恒 `false` | 解析器把 `is not` 去糖为 `not (x is T)` |
+| 常量操作数亦可折叠为 `true` | `reduce_type_test` 对 VARIANT target：`builtin_type != OBJECT` → `reduced_value = true`（含 null） |
+| 自带测试 | `modules/gdscript/tests/scripts/analyzer/features/type_test_usage.gd`：`(untyped_array is Variant) == true` |
+
+gdcc 对齐结论：**`Variant` 是顶类型**；`x is Variant` ≡ 编译期常量 `true`；`x is not Variant` ≡ 编译期常量 `false`。不需要 runtime helper，不需要 LIR `is_instance_of "Variant"`。
+
+#### 7.3 方案（冻结）
+
+对齐 Godot：在 **lowering 折叠层**把 Variant target 当作顶类型常量折叠；backend 镜像作第二道保险。
+
+| 层 | 变更 | 位置要求 |
+|----|------|----------|
+| Frontend `tryFoldKnownTypeTest` | **最顶部**（早于 Variant-操作数 `null` 守卫与 Nil→`false` 守卫）加：`if (targetType instanceof GdVariantType) return true;` | 放在 Variant-操作数守卫之后 → 崩溃未修；放在 Nil 守卫之后 → `null is Variant` 仍错 |
+| Backend `IsInstanceOfInsnGen.tryFold` | 顶部**镜像**同一守卫：`if (targetType instanceof GdVariantType) return true;` | 覆盖手写 LIR / 未来 HIR 直降，避免 fail-closed 崩溃 |
+| `negated` | 无额外逻辑：`constant = negated != folded` 自然得到 `is not Variant` → `false` | 与既有路径一致 |
+| Backend dispatch / `isNonParameterizedBuiltinTarget` | **不改** | 折叠后 dispatch 不可达；禁止为了“补洞”把 Variant 塞进 enum 路径 |
+| 语义层 / `FrontendTypeTestTarget` | **不新增** `TargetAlwaysTrue` 等 record | 语义层职责是解析/诊断；折叠属 lowering。新增 sealed 变体属过度设计 |
+| 硬类型诊断 P6b 守卫 | **保留** | 语义阶段在 lowering 之前；`targetType instanceof GdVariantType` 跳过仍必要 |
+
+**折叠后 LIR 形状：**
+
+```
+# x is Variant
+$result = <bool true constant>
+
+# x is not Variant
+$result = <bool false constant>
+```
+
+**禁止：**
+
+- 发射 `is_instance_of "Variant"`
+- 把 Variant target 当作非参数化 builtin 走 `godot_variant_get_type == NIL`
+- 把 Variant target 当作 Object 走 ClassDB helper
+- 仅修 backend 崩溃而不修 frontend 错误折叠（否则 Nil/Object/标量仍静默 `false`）
+
+**不变量（与既有合同兼容）：**
+
+- Phase 6a object null-check：仅作用于 **Object 目标** same-type/upcast；与 Variant 顶类型折叠作用域不重叠
+- `UNRESOLVED_OBJECT` never-fold：`Variant` 是 ClassRegistry 内建类型，永远解析为 `TargetKnown`，不可能进入 `TargetUnresolvedObject`
+- Variant **操作数**测非 Variant 目标：仍 runtime-open（`tryFold` 在 target 非 Variant 时对 Variant 操作数返回 `null`）
+- 单一 opcode 原则不变：可判定时直接 bool 常量（与 §0.2 / §3.2 一致）
+
+#### 7.4 工作内容
+
+1. **Frontend folding**：`FrontendSequenceItemInsnLoweringProcessors.FrontendTypeTestInsnLoweringProcessor.tryFoldKnownTypeTest` 顶部加 Variant-target 守卫；更新方法 javadoc（当前 "any `Variant` operand stay runtime-open" → 改为「对非 Variant 目标」+ 顶类型折叠说明）。
+2. **Backend folding**：`IsInstanceOfInsnGen.tryFold` 顶部镜像守卫。
+3. **合同同步（本文件已部分预写，落地时核对）**：
+   - §2.2 RHS 表 / §2.3 关键边界（已写入）
+   - §3.3 分派矩阵 / §3.4 折叠表（已写入；落地后在落地记录勾选）
+   - 如有需要，同步 `doc/gdcc_low_ir.md` 一句：`"Variant"` 作为 `type_name` 在 frontend 折叠为常量，不应出现在稳定 LIR
+4. **测试**（见 §7.5）。
+
+#### 7.5 验收
+
+- [x] `var v: Variant = 1; v is Variant` → 折叠常量 `true`（不发射 `IsInstanceOfInsn`，不崩溃）
+- [x] `var n: Node = null; n is Variant` → 折叠常量 `true`（不再 Object-族 XOR → false）
+- [x] `var i := 42; i is Variant` → 折叠常量 `true`
+- [x] `null is Variant` / `var x = null; x is Variant` → 折叠常量 `true`
+- [x] `Array[int] is Variant` / bare `Array is Variant` / `Packed*Array is Variant` → 折叠常量 `true`
+- [x] 上述所有操作数的 `is not Variant` → 折叠常量 `false`
+- [x] **不**发射 `is_instance_of "Variant"`；LIR 仅见 bool 常量
+- [x] Backend 手写 LIR：`is_instance_of "Variant"` + 非 Variant 操作数（如 `int`）→ 镜像守卫折叠为 `true`，不 crash（回归保护 backend 纵深防御）
+- [x] Backend 手写 LIR：`is_instance_of "Variant"` + Variant 操作数 → 折叠 `true`，不 crash
+- [x] 既有 P1–P6 测试不破坏；Variant **操作数**测其它目标（`v is int` / `v is Node`）路径不受影响
+- [x] test_suite 端到端覆盖 `is Variant` / `is not Variant`（至少 int + null + Object 各一）
+
+**建议测试落点：**
+
+| 测试 | 覆盖 |
+|------|------|
+| `FrontendTypeTestInsnLoweringTest` | 多操作数族 × is/is not → 常量 true/false；无 `IsInstanceOfInsn` |
+| `IsInstanceOfInsnGenTest` | 手写 LIR Variant target（Variant 操作数 + 非 Variant 操作数）→ 折叠 true |
+| `FrontendExpressionSemanticSupportTest` | 既有 `variant_target_no_warning` 保持；可选补语义仍 `RESOLVED(bool)` + `TargetKnown(VARIANT)` |
+| test_suite `type_test/` | 新增或扩展 script/validation：`is_variant` / `is_not_variant` 断言 |
+
+#### 7.6 关键文件
+
+| 文件 | 动作 |
+|------|------|
+| `FrontendSequenceItemInsnLoweringProcessors.java` | `tryFoldKnownTypeTest` 顶部守卫 + javadoc |
+| `IsInstanceOfInsnGen.java` | `tryFold` 顶部镜像守卫 |
+| `FrontendTypeTestInsnLoweringTest.java` | 折叠正反测 |
+| `IsInstanceOfInsnGenTest.java` | 手写 LIR 镜像守卫 + 不 crash |
+| `unit_test/script/type_test/*` + `validation/*` | 端到端（可选扩展现有 `variant_type_test` 或新建） |
+| 本文档 §2.2 / §2.3 / §3.3 / §3.4 | 合同已预写；落地记录勾选 |
+
+#### 7.7 落地记录
+
+| 项 | 实现 |
+|----|------|
+| Frontend 折叠 | `tryFoldKnownTypeTest` 最顶部：`if (targetType instanceof GdVariantType) return true;`（先于 Variant 操作数 / Nil 守卫） |
+| Backend 镜像 | `IsInstanceOfInsnGen.tryFold` 同序守卫；dispatch / `isNonParameterizedBuiltinTarget` 未改 |
+| 文档 | `gdcc_low_ir.md` `is_instance_of`：注明 Variant top-type 折叠，稳定 LIR 不应出现 `"Variant"` |
+| 单元测试 | `FrontendTypeTestInsnLoweringTest.foldsVariantTargetToTrueForAnyOperandIncludingNegated`；`IsInstanceOfInsnGenTest` 四条 Variant-target 手写 LIR |
+| test_suite | 扩展 `variant_type_test.gd` script/validation：`is_variant_*` / `is_not_variant_*`（int / null / Node / Variant 操作数，含 `is_not_variant_operand`） |
+| 回归 | `FrontendTypeTestInsnLoweringTest` + `IsInstanceOfInsnGenTest` + `FrontendExpressionSemanticSupportTest` 全绿 |
+| 审阅 | review-expert-a：**APPROVE**；无中/高风险；已补 e2e `is not Variant`+Variant 操作数 |
+
+---
+
 ## 5. 建议实现顺序
 
 ```
 P0 文档/合同（已完成）
- → P1 semantic（已完成：RESOLVED(bool) + typeTestTargets + unresolved lint）
- → P2 unified lowering (is_instance_of | const)（已完成）
- → P3 backend dispatch + runtime helpers
- → P4 解封 TypeTest compile gate
- → P5 单元测试补全 + test_suite 端到端验证
- → P6 hardening
+  → P1 semantic（已完成：RESOLVED(bool) + typeTestTargets + unresolved lint）
+  → P2 unified lowering (is_instance_of | const)（已完成）
+  → P3 backend dispatch + runtime helpers（已完成）
+  → P4 解封 TypeTest compile gate（已完成）
+  → P5 单元测试补全 + test_suite 端到端验证（已完成）
+  → P6 hardening（已完成：6a null-check + 6b 硬类型诊断/freed 文档化）
+  → P7 `x is Variant` 顶类型折叠（已完成）
 ```
 
-**禁止**：先删 compile block；禁止 LIR 多 opcode 分叉“优化”。
+**禁止**：先删 compile block；禁止 LIR 多 opcode 分叉“优化”；禁止把 Variant target 塞进 builtin-enum / ClassDB 路径。
 
 **与 Cast**：仅共享 RHS 解析与 Object 表示经验；gate 分开。
 
 ---
 
 ## 6. 关键文件清单
+
 
 | 文件 | 阶段 | 动作 |
 |------|------|------|
@@ -661,18 +821,23 @@ P0 文档/合同（已完成）
 | `unit_test/script/type_test/*.gd` | P5 | test_suite 编译脚本 |
 | `unit_test/validation/type_test/*.gd` | P5 | test_suite 验证脚本 |
 | `GdScriptUnitTestCompileRunnerTest.java` | P5 | 更新 `EXPECTED_SCRIPT_PATHS` |
+| `FrontendSequenceItemInsnLoweringProcessors.java` | P7 | `tryFoldKnownTypeTest` Variant-target 顶类型折叠 |
+| `IsInstanceOfInsnGen.java` | P7 | `tryFold` 镜像守卫（防 `is_instance_of "Variant"` crash） |
+| `FrontendTypeTestInsnLoweringTest.java` | P7 | `is Variant` / `is not Variant` 多操作数族折叠 |
+| `IsInstanceOfInsnGenTest.java` | P7 | 手写 LIR Variant target 折叠 + 不 crash |
+| test_suite `type_test/`（扩展） | P7 | 端到端 `is Variant` / `is not Variant` |
 
 **测试**
 
 | 测试 | 阶段 |
 |------|------|
-| `FrontendExpressionSemanticSupportTest` | P1 |
-| body lowering type-test | P2 |
-| `IsInstanceOfInsnGenTest` | P3 |
+| `FrontendExpressionSemanticSupportTest` | P1 / P6b / P7（可选） |
+| body lowering type-test | P2 / P7 |
+| `IsInstanceOfInsnGenTest` | P3 / P6a / P7 |
 | `FrontendCompileCheckAnalyzerTest` | P4 / P5 |
 | `FrontendLoweringBodyInsnPassTest` | P5 |
 | `CBodyBuilderPhaseCTest`（或等价） | P5 |
-| `GdScriptUnitTestCompileRunnerTest` | P5 |
+| `GdScriptUnitTestCompileRunnerTest` | P5 / P7 |
 
 ```bash
 script/run-gradle-targeted-tests.sh --tests <TestClass>
@@ -691,15 +856,18 @@ script/run-gradle-targeted-tests.sh --tests <TestClass>
 | `is not` 丢否定 | 强制 negated 测例 |
 | 过早折叠 `Node is Node2D` 为 false | 仅在层级证明不相交时折 false；否则 runtime |
 | `UNRESOLVED_OBJECT` 拼写错误变运行时 `false` | lint warning 提示；未来可加 suppress 机制 |
+| `x is Variant` 未定义：错误折叠 + backend crash | Phase 7：Variant target 顶类型恒 true 折叠；禁止 enum/ClassDB 路径 |
+| 误把 `GdVariantType` 当 builtin enum（`getGdExtensionType()==NIL`） | Phase 7 明确禁止；折叠后 dispatch 不可达 |
 
 ---
 
 ## 8. 开放问题
 
 1. ~~Freed instance：runtime error vs false？~~ → **P6b 决策：匹配 Godot release（freed → false）；debug-only 运行时错误不复制，已在 `gdcc_runtime_lib.md` 文档化差异。**
-2. gdcc script class：仅 ClassDB 名是否足够，是否需要 script 指针链？  
+2. ~~gdcc script class：仅 ClassDB 名是否足够，是否需要 script 指针链？~~ → **决策：MVP 不支持 script 运行时 `is`（§2.5）。ClassDB 路径对 script 实例静默 false；不发出编译期警告——unresolved 路径无法区分 GDExtension 类与 script 类，警告覆盖面过窄。未来若需支持，需 Godot script inheritance API（`Script.get_instance_base_type` / script 指针链），属独立任务。**
 3. Frontend vs Backend 折叠责任边界：P2 是否强制做满折叠，还是 P2 最小发指令、P3/P6 补折叠？  
 4. ~~参数化容器 type 编码如何传入 C helper？~~ → **P3 决策：codegen 生成 typed 常量（builtin enum + class name），不在运行时解析 type 字符串。**  
+5. ~~`x is Variant` 语义与 codegen 路径？~~ → **P7 决策：对齐 Godot 顶类型；任意操作数（含 null）恒 true / `is not` 恒 false；frontend `tryFoldKnownTypeTest` 顶部折叠 + backend `tryFold` 镜像；禁止 `is_instance_of "Variant"` 与 enum/ClassDB 误路径。**
 
 ---
 
@@ -714,7 +882,13 @@ script/run-gradle-targeted-tests.sh --tests <TestClass>
 5. TypeTest 已解封；Cast 仍拦截；文档同步；目标测试通过。
 6. test_suite 端到端用例覆盖 §2.2 全部合法 RHS 族；Zig + Godot 可用时通过。
 
-**完整 Godot 对齐**：参数化容器 + 折叠/hard-typed 诊断（P6b 已完成）+ freed instance 文档化（P6b 已完成）；剩余：object 层级不相交折叠（需完整继承树编译期查询，留后续）。
+**完整 Godot 对齐**：参数化容器 + 折叠/hard-typed 诊断（P6b 已完成）+ freed instance 文档化（P6b 已完成）+ **`x is Variant` 顶类型折叠（P7 已完成）**；剩余：object 层级不相交折叠（需完整继承树编译期查询，留后续）。
+
+**P7 DoD 摘要（已满足）**
+
+1. 任意操作数 `x is Variant` 编译期折叠为 `true`；`x is not Variant` → `false`（含 null）。  
+2. LIR 不出现 `is_instance_of "Variant"`；backend 对遗留 LIR 亦折叠而非 crash。  
+3. 文档 §2.2 / §2.3 / §3.3 / §3.4 与测试（lowering + backend 手写 LIR + test_suite）同步。  
 
 ---
 

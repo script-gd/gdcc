@@ -907,6 +907,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
     /// - RHS target comes from the published `typeTestTargets` side-table (never re-resolved here)
     /// - `UNRESOLVED_OBJECT` always emits runtime `is_instance_of` and never folds
     /// - known targets may fold to `true`/`false` when the operand static type decides the outcome
+    /// - `Variant` target is the top type and always folds (`true` / `is not` → `false`)
     /// - `negated` is applied either by folding the constant or by wrapping with `unary_op NOT`
     /// - never expands into `get_variant_type` / multi-intrinsic LIR recipes
     private static final class FrontendTypeTestInsnLoweringProcessor
@@ -985,20 +986,26 @@ final class FrontendSequenceItemInsnLoweringProcessors {
 
         /// Returns a compile-time outcome when static types decide `value is T`; otherwise `null`.
         ///
-        /// Only folds outcomes that cannot change at runtime (exact match, definite object upcast,
-        /// known-null, container-to-bare-Array/Dictionary, disjoint families, exact non-object
-        /// mismatch). Parent-to-child object tests and any `Variant` operand stay runtime-open.
-        /// Container parameters still require exact metadata for parameterized targets (no
-        /// element covariance fold: `Array[Node2D] is Array[Node]` stays false / not true).
+        /// Only folds outcomes that cannot change at runtime (Variant top-type target, exact match,
+        /// known-null vs non-Variant target, container-to-bare-Array/Dictionary, disjoint families,
+        /// exact non-object mismatch). Parent-to-child object tests and any `Variant` operand against
+        /// a non-Variant target stay runtime-open. Object same-type / definite upcast stay open for
+        /// backend null-check (value may be null). Container parameters still require exact metadata
+        /// for parameterized targets (no element covariance: `Array[Node2D] is Array[Node]` stays
+        /// false / not true).
         private static @Nullable Boolean tryFoldKnownTypeTest(
                 @NotNull ClassRegistry classRegistry,
                 @NotNull GdType valueType,
                 @NotNull GdType targetType
         ) {
+            // Top type: `x is Variant` is always true (including null); must precede Nil / Variant-operand guards.
+            if (targetType instanceof GdVariantType) {
+                return true;
+            }
             if (valueType instanceof GdVariantType) {
                 return null;
             }
-            // `null` / Nil is never an instance of any type-test target.
+            // `null` / Nil is never an instance of any non-Variant type-test target.
             if (valueType instanceof GdNilType) {
                 return false;
             }

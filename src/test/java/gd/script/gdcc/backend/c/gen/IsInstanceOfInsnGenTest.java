@@ -21,6 +21,8 @@ import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdPackedNumericArrayType;
+import gd.script.gdcc.type.GdPackedStringArrayType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -95,6 +97,43 @@ class IsInstanceOfInsnGenTest {
         assertTrue(body.contains("GD_STATIC_SN(u8\"Node2D\")"), body);
         assertFalse(body.contains("$result = true;"), body);
         assertFalse(body.contains("$result = false;"), body);
+    }
+
+    @Test
+    @DisplayName("Variant is Variant folds true (top type; no crash / no NIL enum path)")
+    void variantTargetWithVariantOperandFoldsTrue() {
+        var body = generate("value", GdVariantType.VARIANT, "Variant");
+        assertTrue(body.contains("$result = true;"), body);
+        assertFalse(body.contains("godot_variant_get_type"), body);
+        assertFalse(body.contains("GDEXTENSION_VARIANT_TYPE_NIL"), body);
+        assertFalse(body.contains("gdcc_is_instance_of"), body);
+    }
+
+    @Test
+    @DisplayName("int is Variant folds true (hand-written LIR mirror of frontend top-type fold)")
+    void variantTargetWithBuiltinOperandFoldsTrue() {
+        var body = generate("value", GdIntType.INT, "Variant");
+        assertTrue(body.contains("$result = true;"), body);
+        assertFalse(body.contains("godot_variant_get_type"), body);
+        assertFalse(body.contains("GDEXTENSION_VARIANT_TYPE_NIL"), body);
+    }
+
+    @Test
+    @DisplayName("null/Nil is Variant folds true (top type overrides Nil→false for other targets)")
+    void variantTargetWithNilOperandFoldsTrue() {
+        var body = generate("n", GdNilType.NIL, "Variant");
+        assertTrue(body.contains("$result = true;"), body);
+        assertFalse(body.contains("$result = false;"), body);
+        assertFalse(body.contains("gdcc_is_instance_of"), body);
+    }
+
+    @Test
+    @DisplayName("Node is Variant folds true (object family no longer XOR-false vs Variant target)")
+    void variantTargetWithObjectOperandFoldsTrue() {
+        var body = generateWithEngine("obj", new GdObjectType("Node"), "Variant");
+        assertTrue(body.contains("$result = true;"), body);
+        assertFalse(body.contains("gdcc_is_instance_of_object"), body);
+        assertFalse(body.contains("gdcc_object_is_null_raw_and_id"), body);
     }
 
     @Test
@@ -177,6 +216,63 @@ class IsInstanceOfInsnGenTest {
         var body = generate("value", GdVariantType.VARIANT, "Array");
         assertTrue(body.contains("godot_variant_get_type"), body);
         assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_ARRAY"), body);
+        assertFalse(body.contains("gdcc_is_instance_of_typed_array"), body);
+    }
+
+    @Test
+    @DisplayName("Variant is PackedInt32Array uses type enum, not typed-array helper or ClassDB")
+    void variantIsPackedInt32ArrayUsesTypeEnum() {
+        var body = generate("value", GdVariantType.VARIANT, "PackedInt32Array");
+        assertTrue(body.contains("godot_variant_get_type"), body);
+        assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY"), body);
+        assertFalse(body.contains("gdcc_is_instance_of_typed_array"), body);
+        assertFalse(body.contains("gdcc_is_instance_of_object"), body);
+        assertFalse(body.contains("ClassDB_is_parent_class"), body);
+        assertFalse(body.contains("$result = true;"), body);
+        assertFalse(body.contains("$result = false;"), body);
+    }
+
+    @Test
+    @DisplayName("Variant is PackedStringArray uses PACKED_STRING_ARRAY type enum")
+    void variantIsPackedStringArrayUsesTypeEnum() {
+        var body = generate("value", GdVariantType.VARIANT, "PackedStringArray");
+        assertTrue(body.contains("godot_variant_get_type"), body);
+        assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY"), body);
+        assertFalse(body.contains("gdcc_is_instance_of_typed_array"), body);
+    }
+
+    @Test
+    @DisplayName("exact static PackedInt32Array is PackedInt32Array folds to true")
+    void staticPackedExactMatchFoldsTrue() {
+        var body = generate("p", GdPackedNumericArrayType.PACKED_INT32_ARRAY, "PackedInt32Array");
+        assertTrue(body.contains("$result = true;"), body);
+        assertFalse(body.contains("godot_variant_get_type"), body);
+        assertFalse(body.contains("gdcc_is_instance_of"), body);
+    }
+
+    @Test
+    @DisplayName("static PackedInt32Array is PackedFloat32Array folds to false")
+    void staticPackedMismatchFoldsFalse() {
+        var body = generate("p", GdPackedNumericArrayType.PACKED_INT32_ARRAY, "PackedFloat32Array");
+        assertTrue(body.contains("$result = false;"), body);
+        assertFalse(body.contains("godot_variant_get_type"), body);
+        assertFalse(body.contains("gdcc_is_instance_of_typed_array"), body);
+    }
+
+    @Test
+    @DisplayName("static PackedStringArray is PackedInt32Array folds to false")
+    void staticPackedStringVsIntFoldsFalse() {
+        var body = generate("p", GdPackedStringArrayType.PACKED_STRING_ARRAY, "PackedInt32Array");
+        assertTrue(body.contains("$result = false;"), body);
+        assertFalse(body.contains("godot_variant_get_type"), body);
+    }
+
+    @Test
+    @DisplayName("static PackedInt32Array is bare Array folds to false (distinct Variant types)")
+    void staticPackedIsBareArrayFoldsFalse() {
+        var body = generate("p", GdPackedNumericArrayType.PACKED_INT32_ARRAY, "Array");
+        assertTrue(body.contains("$result = false;"), body);
+        assertFalse(body.contains("godot_variant_get_type"), body);
         assertFalse(body.contains("gdcc_is_instance_of_typed_array"), body);
     }
 

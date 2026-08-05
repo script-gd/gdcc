@@ -324,9 +324,188 @@ class FrontendTypeTestInsnLoweringTest {
     }
 
     @Test
+    void foldsExactPackedMatchMismatchAndNegated() throws Exception {
+        var same = lowerProbe(
+                """
+                        class_name TypeTestFoldSamePacked
+                        extends RefCounted
+                        
+                        func probe(value: PackedInt32Array) -> bool:
+                            return value is PackedInt32Array
+                        """
+        );
+        assertTrue(requireOnly(same.function(), LiteralBoolInsn.class).value());
+        assertEquals(0, count(same.function(), IsInstanceOfInsn.class));
+
+        var mismatch = lowerProbe(
+                """
+                        class_name TypeTestFoldMismatchPacked
+                        extends RefCounted
+                        
+                        func probe(value: PackedInt32Array) -> bool:
+                            return value is PackedFloat32Array
+                        """
+        );
+        assertFalse(requireOnly(mismatch.function(), LiteralBoolInsn.class).value());
+        assertEquals(0, count(mismatch.function(), IsInstanceOfInsn.class));
+
+        var packedIsBareArray = lowerProbe(
+                """
+                        class_name TypeTestPackedIsBareArray
+                        extends RefCounted
+                        
+                        func probe(value: PackedInt32Array) -> bool:
+                            return value is Array
+                        """
+        );
+        assertFalse(requireOnly(packedIsBareArray.function(), LiteralBoolInsn.class).value());
+        assertEquals(0, count(packedIsBareArray.function(), IsInstanceOfInsn.class));
+
+        var isNotMismatch = lowerProbe(
+                """
+                        class_name TypeTestFoldIsNotMismatchPacked
+                        extends RefCounted
+                        
+                        func probe(value: PackedInt32Array) -> bool:
+                            return value is not PackedInt64Array
+                        """
+        );
+        assertTrue(requireOnly(isNotMismatch.function(), LiteralBoolInsn.class).value());
+        assertEquals(0, count(isNotMismatch.function(), IsInstanceOfInsn.class));
+        assertEquals(0, count(isNotMismatch.function(), UnaryOpInsn.class));
+    }
+
+    @Test
+    void lowersVariantIsPackedToSingleIsInstanceOf() throws Exception {
+        var lowered = lowerProbe(
+                """
+                        class_name TypeTestVariantIsPacked
+                        extends RefCounted
+                        
+                        func probe(value) -> bool:
+                            return value is PackedInt32Array
+                        """
+        );
+
+        var insn = requireOnly(lowered.function(), IsInstanceOfInsn.class);
+        assertAll(
+                () -> assertEquals("PackedInt32Array", insn.typeName()),
+                () -> assertEquals(0, count(lowered.function(), UnaryOpInsn.class)),
+                () -> assertEquals(0, count(lowered.function(), GetVariantTypeInsn.class)),
+                () -> assertEquals(0, count(lowered.function(), LiteralBoolInsn.class))
+        );
+    }
+
+    @Test
+    void foldsVariantTargetToTrueForAnyOperandIncludingNegated() throws Exception {
+        // Phase 7: Variant is the top type — any operand (incl. null) folds true; is not → false.
+        // Must not emit is_instance_of "Variant" (backend would fail-closed / NIL-enum trap).
+        assertFoldsVariantTargetTrue(
+                """
+                        class_name TypeTestVariantTargetVariantOperand
+                        extends RefCounted
+                        
+                        func probe(value: Variant) -> bool:
+                            return value is Variant
+                        """
+        );
+        assertFoldsVariantTargetTrue(
+                """
+                        class_name TypeTestVariantTargetIntOperand
+                        extends RefCounted
+                        
+                        func probe(value: int) -> bool:
+                            return value is Variant
+                        """
+        );
+        assertFoldsVariantTargetTrue(
+                """
+                        class_name TypeTestVariantTargetNodeOperand
+                        extends RefCounted
+                        
+                        func probe(value: Node) -> bool:
+                            return value is Variant
+                        """
+        );
+        assertFoldsVariantTargetTrue(
+                """
+                        class_name TypeTestVariantTargetNullOperand
+                        extends RefCounted
+                        
+                        func probe() -> bool:
+                            return null is Variant
+                        """
+        );
+        assertFoldsVariantTargetTrue(
+                """
+                        class_name TypeTestVariantTargetTypedArrayOperand
+                        extends RefCounted
+                        
+                        func probe(value: Array[int]) -> bool:
+                            return value is Variant
+                        """
+        );
+        assertFoldsVariantTargetTrue(
+                """
+                        class_name TypeTestVariantTargetBareArrayOperand
+                        extends RefCounted
+                        
+                        func probe(value: Array) -> bool:
+                            return value is Variant
+                        """
+        );
+        assertFoldsVariantTargetTrue(
+                """
+                        class_name TypeTestVariantTargetPackedArrayOperand
+                        extends RefCounted
+                        
+                        func probe(value: PackedByteArray) -> bool:
+                            return value is Variant
+                        """
+        );
+
+        assertFoldsVariantTargetIsNotFalse(
+                """
+                        class_name TypeTestIsNotVariantIntOperand
+                        extends RefCounted
+                        
+                        func probe(value: int) -> bool:
+                            return value is not Variant
+                        """
+        );
+        assertFoldsVariantTargetIsNotFalse(
+                """
+                        class_name TypeTestIsNotVariantNullOperand
+                        extends RefCounted
+                        
+                        func probe() -> bool:
+                            return null is not Variant
+                        """
+        );
+        assertFoldsVariantTargetIsNotFalse(
+                """
+                        class_name TypeTestIsNotVariantNodeOperand
+                        extends RefCounted
+                        
+                        func probe(value: Node) -> bool:
+                            return value is not Variant
+                        """
+        );
+        assertFoldsVariantTargetIsNotFalse(
+                """
+                        class_name TypeTestIsNotVariantOperand
+                        extends RefCounted
+                        
+                        func probe(value: Variant) -> bool:
+                            return value is not Variant
+                        """
+        );
+    }
+
+    @Test
     void foldsNilLiteralOperandToFalseAndHonorsNegation() throws Exception {
         // Direct null literal keeps Nil static type; a `var x = null` local stabilizes to Variant
-        // and must stay runtime-open (covered by the Variant no-fold case).
+        // and must stay runtime-open for non-Variant targets (covered by the Variant no-fold case).
         var nullIsNode = lowerProbe(
                 """
                         class_name TypeTestNullIsNode
@@ -471,6 +650,20 @@ class FrontendTypeTestInsnLoweringTest {
                 .filter(diagnostic -> diagnostic.message().toLowerCase().contains("type-test"))
                 .toList();
         assertTrue(compileBlocks.isEmpty(), () -> "TypeTest should pass compile gate, got: " + analysisData.diagnostics());
+    }
+
+    private static void assertFoldsVariantTargetTrue(@NotNull String source) throws Exception {
+        var lowered = lowerProbe(source);
+        assertTrue(requireOnly(lowered.function(), LiteralBoolInsn.class).value(), source);
+        assertEquals(0, count(lowered.function(), IsInstanceOfInsn.class), source);
+        assertEquals(0, count(lowered.function(), UnaryOpInsn.class), source);
+    }
+
+    private static void assertFoldsVariantTargetIsNotFalse(@NotNull String source) throws Exception {
+        var lowered = lowerProbe(source);
+        assertFalse(requireOnly(lowered.function(), LiteralBoolInsn.class).value(), source);
+        assertEquals(0, count(lowered.function(), IsInstanceOfInsn.class), source);
+        assertEquals(0, count(lowered.function(), UnaryOpInsn.class), source);
     }
 
     private static @NotNull LoweredProbe lowerProbe(@NotNull String source) throws Exception {

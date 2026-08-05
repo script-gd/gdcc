@@ -330,7 +330,9 @@ $<result_id> = object_cast "<class_name>" $<object_id>
 Checks whether `$value_id` is an instance of the compile-time type `"<type_name>"` (GDScript `is`).
 `$value_id` may be any ordinary typed value (including `Variant`), not only Object.
 Class names must be canonical / Godot-facing; parameterized containers use full type text (e.g. `"Array[int]"`).
-Result is always `bool`; `null` / nil object yields `false`.
+Result is always `bool`; `null` / nil object yields `false` for non-`Variant` targets.
+`Variant` is the top type: frontend (and backend fold insurance) constant-folds `x is Variant` to
+`true` / `x is not Variant` to `false`; stable LIR should not carry `is_instance_of "Variant"`.
 ```
 $<result_id:bool> = is_instance_of "<type_name>" $<value_id>
 ```
