@@ -5,7 +5,7 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.lir.LirSignalDef;
-import gd.script.gdcc.util.TypeCheckUtil;
+import gd.script.gdcc.util.type.TypeCheckUtil;
 import org.jetbrains.annotations.NotNull;
 
 /// Validates that compiler-only types never leak into public ABI-like LIR surfaces.

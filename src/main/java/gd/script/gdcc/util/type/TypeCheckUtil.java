@@ -1,4 +1,4 @@
-package gd.script.gdcc.util;
+package gd.script.gdcc.util.type;
 
 import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdType;

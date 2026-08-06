@@ -14,8 +14,8 @@ import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
-import gd.script.gdcc.util.TypeTestFoldResult;
-import gd.script.gdcc.util.TypeTestFoldUtil;
+import gd.script.gdcc.util.type.TypeTestFoldResult;
+import gd.script.gdcc.util.type.TypeTestFoldUtil;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.EnumSet;

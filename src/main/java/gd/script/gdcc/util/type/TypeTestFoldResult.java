@@ -1,4 +1,4 @@
-package gd.script.gdcc.util;
+package gd.script.gdcc.util.type;
 
 /// Compile-time outcome of a static `value is T` type test.
 ///

@@ -4,8 +4,9 @@
 
 ## 文档状态
 
-- 状态：计划完成，尚未实施
+- 状态：Phase 0 已完成；Phase 1+ 尚未实施
 - 调研基线：2026-08-05
+- Phase 0 完成：2026-08-06
 - Godot 对齐基线：`godotengine/godot` tag `4.7.1-stable`
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/**`
@@ -116,7 +117,7 @@ CastExpression
 
 冻结的上游语义：
 
-- `as` 是低优先级 infix operator，仅高于 assignment；所有 binary operator 左结合。
+- `as` 在 Godot 中是低优先级 infix operator，仅高于 assignment；所有 binary operator 左结合。当前 GDCC 依赖 gdparser 0.5.2 的实际优先级见 Phase 0 验收说明。
 - RHS 是 type specifier，不是普通 expression。
 - `value as T` 的静态结果类型是 hard `T`；GDScript 类型系统不额外表达 nullable。
 - target 为 `Variant` 时直接透传，不发 cast opcode。
@@ -140,7 +141,7 @@ CastExpression
 - `null as Node`：结果为 `null`。
 - `Child.new() as Parent`：保持同一对象。
 - `Parent.new() as Child`：runtime 成功或 `null`。
-- `a + b as float`：解析为 `(a + b) as float`。
+- `a + b as float`：Godot 4.7.1 解析为 `(a + b) as float`；当前 gdparser 0.5.2 解析为 `a + (b as float)`（Phase 0 以依赖实际 AST 为准，可用 `(a + b) as float` 恢复 Godot 形状）。
 - `x as int as float`：解析为 `(x as int) as float`。
 
 ## 3. 总体设计决策
@@ -166,7 +167,7 @@ lowering 通过 `requireExpressionType(castExpression)` 读取 target type，通
 新增 frontend/backend 可共享的纯语义分类器，建议命名：
 
 ```text
-gd.script.gdcc.util.ExplicitCastSupport
+gd.script.gdcc.util.type.ExplicitCastSupport
 ```
 
 建议返回稳定 decision：
@@ -329,7 +330,7 @@ hard source/target 使用 Godot 4.7.1 `Variant::can_convert(...)` 表，而不�
 - `bool` / `int` / `float` / `String` / `Nil` 的 Godot 显式转换组合。
 - `String -> StringName`、`String -> NodePath`、`String -> Color`。
 - `int -> Color`。
-- `Object` / `Nil -> RID`。
+- `Object -> RID`（Godot `can_convert` 允许）；`Nil -> RID` 不允许（仅 `Nil -> Object`）。
 - `Vector2 <-> Vector2i`、`Rect2 <-> Rect2i`、`Vector3 <-> Vector3i`、`Vector4 <-> Vector4i`。
 - `Basis <-> Quaternion`。
 - `Transform2D -> Transform3D`。
@@ -347,9 +348,10 @@ runtime 失败必须稳定打印 cast error、销毁 temporary Variant，并走 
 
 - source `Nil`：`OBJECT_RUNTIME_CAST`，结果 canonical null。
 - source `Variant` / `DYNAMIC`：`OBJECT_RUNTIME_CAST` + unsafe warning。
-- source Object 与 target 同型或 source 可 assignment-upcast 到 target：`OBJECT_UPCAST`，使用 `AssignInsn`。
+- source Object 与 target 精确同型：`IDENTITY`（与其它 exact same type 共用路径），使用 `AssignInsn`。
+- source Object 是 target 的真子类（strict assignment-upcast）：`OBJECT_UPCAST`，使用 `AssignInsn`。
 - source Object 与 target 在同一继承链上、target 是 source 的子类：`OBJECT_RUNTIME_CAST`。
-- source/target 是静态已知不相关 Object class：`INVALID`，`sema.type_check` error。
+- source/target 是静态已知不相关 Object class，或任一侧 class 未在 registry 注册导致链关系无法证明：`INVALID`，`sema.type_check` error。
 - source 是确定的 non-object hard type：`INVALID`，除非 target 实际是 `RID` 等 builtin 路径。
 
 class relation 与 canonical name 必须复用 `ClassRegistry`、`FrontendClassNameContract`、runtime name mapping 和 superclass canonical-name 合同；lowering/backend 不得拼接 source alias。
@@ -402,22 +404,34 @@ helper 本身 ownership-neutral；fat pointer 构造仍由 target-aware generate
 
 ### Phase 0：冻结 parser 与 explicit-cast 合同
 
+状态：**已完成**（2026-08-06）
+
 实施内容：
 
-- 在 `FrontendParseSmokeTest` 或独立 `FrontendCastParseBehaviorTest` 中冻结 `CastExpression` AST。
-- 覆盖低优先级、左结合、RHS `TypeRef` 与缺失 type specifier 的 parse diagnostic。
-- 新增 `ExplicitCastSupport` 与 decision enum。
-- 新增 `ExplicitCastSupportTest`，按 source/target type parameterized matrix 覆盖 Godot `Variant::can_convert` 表与 Object relation。
-- 冻结参数化容器 base-only cast parity，并加入 generic/different-parameter/Variant source positive cases 与 metadata-not-rewritten assertions。
+- [x] 独立 `FrontendCastParseBehaviorTest` 冻结 `CastExpression` AST。
+- [x] 覆盖 gdparser 实际二元优先级、左结合、RHS `TypeRef` 与缺失 type specifier 的 parse diagnostic。
+- [x] 新增 `ExplicitCastSupport` 与 `ExplicitCastDecision` enum。
+- [x] 新增 `ExplicitCastSupportTest`，按 source/target type parameterized matrix 覆盖 Godot `Variant::can_convert` 表与 Object relation。
+- [x] 冻结参数化容器 base-only cast parity（generic/different-parameter/Variant source positive cases）。metadata-not-rewritten 属于 backend runtime 断言，延后到 Phase 3/5。
+
+产出：
+
+- `src/main/java/gd/script/gdcc/util/type/ExplicitCastDecision.java`
+- `src/main/java/gd/script/gdcc/util/type/ExplicitCastSupport.java`
+- `src/test/java/gd/script/gdcc/util/type/ExplicitCastSupportTest.java`
+- `src/test/java/gd/script/gdcc/frontend/parse/FrontendCastParseBehaviorTest.java`
 
 验收细则：
 
-- `a + b as float` 的 Cast operand 是 BinaryExpression。
-- `x as int as float` 外层 Cast operand 是内层 CastExpression。
-- target text 保持 parser 提供的 source-facing `TypeRef`。
-- classifier 不调用 implicit boundary helper。
-- classifier 对 compiler-only type fail-fast。
-- 完整 matrix test 能在单个失败中显示 source/target/expected decision。
+- [x] **gdparser 0.5.2 实际行为**：`a + b as float` 解析为 `a + (b as float)`（外层 `BinaryExpression`，右侧为 `CastExpression`）。Godot 4.7.1 将 `as` 置于二元算符之下；`(a + b) as float` 可恢复 Godot 形状。本阶段只冻结依赖 AST，不修改 gdparser。
+- [x] `x as int as float` 外层 Cast operand 是内层 CastExpression（左结合）。
+- [x] target text 保持 parser 提供的 source-facing `TypeRef`。
+- [x] classifier 不调用 implicit boundary helper；测试锚定 `String→NodePath` / `int→Color` / `Object→RID` / `float→int` 等 strict-matrix 不会误拒的 pair。
+- [x] classifier 对 compiler-only type fail-fast。
+- [x] 完整 matrix test 能在单个失败中显示 source/target/expected decision。
+- [x] **`Nil→RID` = INVALID**（Godot `can_convert` 仅允许 `Nil→Object`；计划 §5.2 原文 “Object / Nil -> RID” 中 Nil 侧以本条 Godot 源码为准）。
+- [x] Object 精确同型冻结为 `IDENTITY`（严格 upcast 才是 `OBJECT_UPCAST`）；未知 Object 类名 fail-closed 有测试锚定。
+- [x] `review-expert-a` 审阅：无 high 级问题；medium/low（文档对齐、unknown class、`*→String` 边）已修复并复测通过。
 
 ### Phase 1：shared semantic 与 diagnostic
 
@@ -579,8 +593,8 @@ decision 到 LIR 的固定映射：
 - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendBodyOwnerProcedures.java`
 - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendTypeCheckAnalyzer.java`
 - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzer.java`
-- `src/main/java/gd/script/gdcc/util/ExplicitCastSupport.java`（新增）
-- `src/main/java/gd/script/gdcc/util/ExplicitCastDecision.java`（新增 public enum，frontend 与 backend 必须共享；不得复制 private 平行 decision）
+- `src/main/java/gd/script/gdcc/util/type/ExplicitCastSupport.java`（新增）
+- `src/main/java/gd/script/gdcc/util/type/ExplicitCastDecision.java`（新增 public enum，frontend 与 backend 必须共享；不得复制 private 平行 decision）
 
 ### 7.2 Frontend lowering
 

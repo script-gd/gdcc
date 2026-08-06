@@ -1,4 +1,4 @@
-package gd.script.gdcc.util;
+package gd.script.gdcc.util.type;
 
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;

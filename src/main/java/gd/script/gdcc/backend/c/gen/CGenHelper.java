@@ -20,7 +20,7 @@ import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.scope.*;
 import gd.script.gdcc.scope.resolver.ScopeTypeParsers;
 import gd.script.gdcc.type.*;
-import gd.script.gdcc.util.TypeCheckUtil;
+import gd.script.gdcc.util.type.TypeCheckUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
