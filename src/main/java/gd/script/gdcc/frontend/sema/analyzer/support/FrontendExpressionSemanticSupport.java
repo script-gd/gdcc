@@ -632,11 +632,9 @@ public final class FrontendExpressionSemanticSupport {
                     "Get-node expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
-            case CastExpression castExpression -> resolveExplicitDeferredExpressionType(
+            case CastExpression castExpression -> resolveCastExpressionType(
                     castExpression,
                     nestedResolver,
-                    resolveNestedChildren,
-                    "Cast expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case TypeTestExpression typeTestExpression -> resolveTypeTestExpressionType(
@@ -686,6 +684,79 @@ public final class FrontendExpressionSemanticSupport {
             return propagated(dependencyIssue);
         }
         return rootOutcome(FrontendExpressionType.deferred(detailReason));
+    }
+
+    /// Resolves `value as T` (CastExpression).
+    ///
+    /// Shared semantic contract (Phase 1):
+    /// - result type is hard target type when value is typing-stable and target text resolves
+    /// - no side-table: result type itself carries the target (`RESOLVED(targetType)`)
+    /// - unknown bare identifiers, `null`, `void`, empty, and malformed structured targets are
+    ///   root-owned `FAILED` (stricter than type-test's unresolved-object degrade)
+    /// - static hard-pair validity is not decided here; type-check owns `sema.type_check` via
+    ///   {@code ExplicitCastSupport}
+    /// - this helper never emits diagnostics and never writes side tables
+    public @NotNull ExpressionSemanticResult resolveCastExpressionType(
+            @NotNull CastExpression castExpression,
+            @NotNull NestedExpressionResolver nestedResolver,
+            boolean finalizeWindow
+    ) {
+        Objects.requireNonNull(castExpression, "castExpression must not be null");
+        Objects.requireNonNull(nestedResolver, "nestedResolver must not be null");
+
+        // TypeRef is not an Expression; only the value operand participates in nested typing.
+        var valueType = nestedResolver.resolve(castExpression.value(), finalizeWindow);
+        var dependencyIssue = firstNonResolvedDependency(valueType);
+        if (dependencyIssue != null) {
+            return propagated(dependencyIssue);
+        }
+
+        var typeText = castExpression.targetType().sourceText().trim();
+        switch (typeText) {
+            case "" -> {
+                return rootOutcome(FrontendExpressionType.failed("Cast target type is empty"));
+            }
+            // `null` / `void` are not valid source-facing cast targets.
+            case "null" -> {
+                return rootOutcome(FrontendExpressionType.failed(
+                        "Cast target type 'null' is not a valid type name"
+                ));
+            }
+            case "void" -> {
+                return rootOutcome(FrontendExpressionType.failed(
+                        "Cast target type 'void' is not a valid type name"
+                ));
+            }
+        }
+
+        var scope = scopesByAst.get(castExpression);
+        if (scope == null) {
+            scope = scopesByAst.get(castExpression.value());
+        }
+        if (scope == null) {
+            scope = classRegistry;
+        }
+
+        // Same declared-type path as type annotations / type-test known targets: lexical first,
+        // then top-level canonical remap-on-miss. Cast miss policy is strict: any miss is FAILED.
+        var resolvedType = FrontendModuleSkeleton.tryResolveSourceFacingDeclaredType(
+                scope,
+                typeText,
+                currentTopLevelCanonicalNameMap()
+        );
+        if (resolvedType != null) {
+            return rootOutcome(FrontendExpressionType.resolved(resolvedType));
+        }
+
+        if (ScopeTypeTextSupport.looksStructuredTypeText(typeText)) {
+            return rootOutcome(FrontendExpressionType.failed(
+                    "Cast target type '" + typeText + "' is not a supported declared type"
+            ));
+        }
+
+        return rootOutcome(FrontendExpressionType.failed(
+                "Cast target type '" + typeText + "' cannot be resolved in the current scope"
+        ));
     }
 
     /// Resolves `value is T` / `value is not T`.

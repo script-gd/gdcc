@@ -8,6 +8,7 @@ import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
+import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendForLoopSupport;
 import gd.script.gdcc.frontend.sema.FrontendIterableSemantics;
@@ -26,15 +27,18 @@ import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import gd.script.gdcc.util.type.ExplicitCastSupport;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.ElifClause;
 import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
@@ -111,12 +115,15 @@ public class FrontendTypeCheckAnalyzer {
         }
     }
 
-    protected void visitOrdinaryLocalInitializer(
+        protected void visitOrdinaryLocalInitializer(
             @NotNull TypeCheckAccess access,
             @NotNull VariableDeclaration variableDeclaration
     ) {
         Objects.requireNonNull(access, "access must not be null");
         Objects.requireNonNull(variableDeclaration, "variableDeclaration must not be null");
+        if (variableDeclaration.value() != null) {
+            visitNestedCastExpressions(access, variableDeclaration.value());
+        }
         if (!hasExplicitDeclaredType(variableDeclaration.type())) {
             return;
         }
@@ -157,13 +164,19 @@ public class FrontendTypeCheckAnalyzer {
         Objects.requireNonNull(access, "access must not be null");
         Objects.requireNonNull(variableDeclaration, "variableDeclaration must not be null");
 
+        var propertyValue = Objects.requireNonNull(
+                variableDeclaration.value(),
+                "property initializer must not be null"
+        );
+        visitNestedCastExpressions(access, propertyValue);
+
         var publishedProperty = publishedPropertyOrNull(access, variableDeclaration);
         if (publishedProperty == null) {
             return;
         }
         var initializerType = stableExpressionTypeOrNull(
                 access.analysisData(),
-                Objects.requireNonNull(variableDeclaration.value(), "property initializer must not be null"),
+                propertyValue,
                 "Property initializer for '" + variableDeclaration.name() + "'"
         );
         if (initializerType == null) {
@@ -207,6 +220,9 @@ public class FrontendTypeCheckAnalyzer {
                 "currentCallableReturnSlot must not be null while checking return statements"
         );
         var returnValue = returnStatement.value();
+        if (returnValue != null) {
+            visitNestedCastExpressions(access, returnValue);
+        }
         if (returnValue == null) {
             if (returnSlot instanceof GdVoidType) {
                 return;
@@ -249,6 +265,8 @@ public class FrontendTypeCheckAnalyzer {
         Objects.requireNonNull(condition, "condition must not be null");
         Objects.requireNonNull(owner, "owner must not be null");
 
+        visitNestedCastExpressions(access, condition);
+
         var publishedConditionType = stableExpressionTypeOrNull(
                 access.analysisData(),
                 condition,
@@ -272,6 +290,98 @@ public class FrontendTypeCheckAnalyzer {
         }
     }
 
+    /// Walks one expression tree and type-checks every nested {@link CastExpression}.
+    ///
+    /// Static hard-pair validity uses {@link ExplicitCastSupport}; unstable value operands keep
+    /// their upstream diagnostic owner and are skipped here.
+    protected void visitNestedCastExpressions(
+            @NotNull TypeCheckAccess access,
+            @Nullable Expression expression
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        if (expression == null) {
+            return;
+        }
+        if (expression instanceof CastExpression castExpression) {
+            visitCastExpression(access, castExpression);
+        }
+        for (var child : expression.getChildren()) {
+            if (child instanceof Expression childExpression) {
+                visitNestedCastExpressions(access, childExpression);
+            }
+        }
+    }
+
+    /// Validates one published `value as T` against the shared explicit-cast classifier.
+    ///
+    /// Emits `sema.type_check` only when both source and target facts are hard/stable and
+    /// {@link ExplicitCastSupport#checkAllowed} rejects the pair. Runtime-open sources are not
+    /// rejected here (`sema.unsafe_cast` is owned by expression publication).
+    protected void visitCastExpression(
+            @NotNull TypeCheckAccess access,
+            @NotNull CastExpression castExpression
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(castExpression, "castExpression must not be null");
+
+        var publishedCastType = stableExpressionTypeOrNull(
+                access.analysisData(),
+                castExpression,
+                "CastExpression"
+        );
+        if (publishedCastType == null) {
+            return;
+        }
+        var targetType = Objects.requireNonNull(
+                publishedCastType.publishedType(),
+                "publishedType must not be null for stable cast expression"
+        );
+        if (targetType instanceof GdCompilerType compilerOnlyType) {
+            throw new IllegalStateException(
+                    "compiler-only type leaked into frontend cast result fact: "
+                            + compilerOnlyType.getTypeName()
+            );
+        }
+
+        var publishedValueType = stableExpressionTypeOrNull(
+                access.analysisData(),
+                castExpression.value(),
+                "CastExpression value"
+        );
+        if (publishedValueType == null) {
+            return;
+        }
+        // DYNAMIC / Variant sources stay runtime-open; unsafe warning is published elsewhere.
+        if (publishedValueType.status() == FrontendExpressionTypeStatus.DYNAMIC
+                || publishedValueType.publishedType() instanceof GdVariantType) {
+            return;
+        }
+        var sourceType = Objects.requireNonNull(
+                publishedValueType.publishedType(),
+                "publishedType must not be null for stable cast value"
+        );
+        if (sourceType instanceof GdCompilerType compilerOnlyType) {
+            throw new IllegalStateException(
+                    "compiler-only type leaked into frontend cast source fact: "
+                            + compilerOnlyType.getTypeName()
+            );
+        }
+        if (ExplicitCastSupport.checkAllowed(
+                access.assignmentSemanticContext().classRegistry(),
+                sourceType,
+                targetType
+        )) {
+            return;
+        }
+        access.diagnosticManager().error(
+                TYPE_CHECK_CATEGORY,
+                "Invalid cast. Cannot convert from \"" + sourceType.getTypeName()
+                        + "\" to \"" + targetType.getTypeName() + "\".",
+                access.sourcePath(),
+                FrontendRange.fromAstRange(castExpression.range())
+        );
+    }
+
     /// Type-checks the header of one `for iterator[: Type] in expr` statement against the already
     /// published `FrontendForIterationPlan`.
     ///
@@ -291,6 +401,7 @@ public class FrontendTypeCheckAnalyzer {
     ) {
         Objects.requireNonNull(access, "access must not be null");
         Objects.requireNonNull(forStatement, "forStatement must not be null");
+        visitNestedCastExpressions(access, forStatement.iterable());
         var plan = requirePublishedForIterationPlan(access.analysisData(), forStatement);
         switch (plan.route()) {
             case RANGE_CALL -> visitRangeCallHeader(access, forStatement, plan);
@@ -885,7 +996,22 @@ public class FrontendTypeCheckAnalyzer {
             if (supportedExecutableBlockDepth <= 0) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            visitConditionExpression(callbackAccess(), assertStatement.condition(), assertStatement);
+            var access = callbackAccess();
+            visitConditionExpression(access, assertStatement.condition(), assertStatement);
+            if (assertStatement.message() != null) {
+                visitNestedCastExpressions(access, assertStatement.message());
+            }
+            return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleExpressionStatement(
+                @NotNull ExpressionStatement expressionStatement
+        ) {
+            if (supportedExecutableBlockDepth <= 0) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            visitNestedCastExpressions(callbackAccess(), expressionStatement.expression());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 

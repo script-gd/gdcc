@@ -527,12 +527,11 @@ class FrontendExpressionSemanticSupportTest {
                     assertNull(nodeResult.publishedCallOrNull());
                 },
                 () -> {
+                    // Cast is no longer deferred: Variant source + hard target publishes RESOLVED(target).
                     var publishedCastType = castType;
                     assertNotNull(publishedCastType);
-                    assertEquals(FrontendExpressionTypeStatus.DEFERRED, publishedCastType.status());
-                    var detailReason = publishedCastType.detailReason();
-                    assertNotNull(detailReason);
-                    assertTrue(detailReason.contains("Cast expression typing is deferred"));
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, publishedCastType.status());
+                    assertEquals("int", publishedCastType.publishedType().getTypeName());
                 }
         );
     }
@@ -1241,11 +1240,6 @@ class FrontendExpressionSemanticSupportTest {
                         "Get-node expression typing is deferred"
                 ),
                 new RemainingExpressionCase(
-                        new CastExpression(identifier("value"), typeRef, TINY),
-                        FrontendExpressionTypeStatus.DEFERRED,
-                        "Cast expression typing is deferred"
-                ),
-                new RemainingExpressionCase(
                         new PatternBindingExpression("captured", TINY),
                         FrontendExpressionTypeStatus.DEFERRED,
                         "Pattern binding expression typing is deferred"
@@ -1288,6 +1282,19 @@ class FrontendExpressionSemanticSupportTest {
                 FrontendTypeTestTarget.TargetKnown.class,
                 typeTestResult.publishedTypeTestTargetOrNull()
         );
+
+        // Cast is no longer deferred: remaining-route entry resolves to RESOLVED(target).
+        var castExpression = new CastExpression(identifier("value"), typeRef, TINY);
+        var castResult = support.resolveRemainingExplicitExpressionType(
+                castExpression,
+                nestedResolver,
+                true,
+                false
+        );
+        assertTrue(castResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, castResult.expressionType().status());
+        assertEquals("String", castResult.expressionType().publishedType().getTypeName());
+        assertNull(castResult.publishedTypeTestTargetOrNull());
     }
 
     @Test
@@ -1654,6 +1661,351 @@ class FrontendExpressionSemanticSupportTest {
             assertEquals(FrontendDiagnosticSeverity.WARNING, warning.severity());
             assertTrue(warning.message().contains("can't be of type"));
         }
+    }
+
+    @Test
+    void resolveCastExpressionPublishesResolvedTargetForKnownBuiltinAndObjectTargets() throws Exception {
+        var support = newBareSupport();
+        var nestedResolver = resolvedVariantResolver();
+
+        var intCast = new CastExpression(identifier("value"), new TypeRef("int", TINY), TINY);
+        var intResult = support.resolveCastExpressionType(intCast, nestedResolver, false);
+        assertTrue(intResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, intResult.expressionType().status());
+        assertEquals("int", intResult.expressionType().publishedType().getTypeName());
+        assertNull(intResult.publishedTypeTestTargetOrNull());
+
+        var nodeCast = new CastExpression(identifier("value"), new TypeRef("Node", TINY), TINY);
+        var nodeResult = support.resolveCastExpressionType(nodeCast, nestedResolver, false);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, nodeResult.expressionType().status());
+        assertEquals("Node", nodeResult.expressionType().publishedType().getTypeName());
+
+        var arrayCast = new CastExpression(identifier("value"), new TypeRef("Array[int]", TINY), TINY);
+        var arrayResult = support.resolveCastExpressionType(arrayCast, nestedResolver, false);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, arrayResult.expressionType().status());
+        assertEquals("Array[int]", arrayResult.expressionType().publishedType().getTypeName());
+
+        var variantCast = new CastExpression(identifier("value"), new TypeRef("Variant", TINY), TINY);
+        var variantResult = support.resolveCastExpressionType(variantCast, nestedResolver, false);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, variantResult.expressionType().status());
+        assertEquals("Variant", variantResult.expressionType().publishedType().getTypeName());
+    }
+
+    @Test
+    void resolveCastExpressionFailsUnknownNullVoidAndMalformedTargets() throws Exception {
+        var support = newBareSupport();
+        var nestedResolver = resolvedVariantResolver();
+
+        var unknownResult = support.resolveCastExpressionType(
+                new CastExpression(identifier("value"), new TypeRef("FutureEnemy", TINY), TINY),
+                nestedResolver,
+                false
+        );
+        assertTrue(unknownResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, unknownResult.expressionType().status());
+        assertTrue(unknownResult.expressionType().detailReason().contains("FutureEnemy"));
+        assertTrue(unknownResult.expressionType().detailReason().contains("cannot be resolved"));
+
+        var nullResult = support.resolveCastExpressionType(
+                new CastExpression(identifier("value"), new TypeRef("null", TINY), TINY),
+                nestedResolver,
+                false
+        );
+        assertEquals(FrontendExpressionTypeStatus.FAILED, nullResult.expressionType().status());
+        assertTrue(nullResult.expressionType().detailReason().contains("null"));
+
+        var voidResult = support.resolveCastExpressionType(
+                new CastExpression(identifier("value"), new TypeRef("void", TINY), TINY),
+                nestedResolver,
+                false
+        );
+        assertEquals(FrontendExpressionTypeStatus.FAILED, voidResult.expressionType().status());
+        assertTrue(voidResult.expressionType().detailReason().contains("void"));
+
+        var nestedResult = support.resolveCastExpressionType(
+                new CastExpression(identifier("value"), new TypeRef("Array[Array[int]]", TINY), TINY),
+                nestedResolver,
+                false
+        );
+        assertEquals(FrontendExpressionTypeStatus.FAILED, nestedResult.expressionType().status());
+        assertTrue(nestedResult.expressionType().detailReason().contains("Array[Array[int]]"));
+
+        var emptyResult = support.resolveCastExpressionType(
+                new CastExpression(identifier("value"), new TypeRef("   ", TINY), TINY),
+                nestedResolver,
+                false
+        );
+        assertEquals(FrontendExpressionTypeStatus.FAILED, emptyResult.expressionType().status());
+        assertTrue(emptyResult.expressionType().detailReason().contains("empty"));
+    }
+
+    @Test
+    void resolveCastExpressionPropagatesValueOperandDependencyFailures() throws Exception {
+        var support = newBareSupport();
+        NestedExpressionResolver failingResolver = (_, _) -> FrontendExpressionType.failed("value operand failed");
+
+        var result = support.resolveCastExpressionType(
+                new CastExpression(identifier("value"), new TypeRef("int", TINY), TINY),
+                failingResolver,
+                false
+        );
+
+        assertFalse(result.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, result.expressionType().status());
+        assertTrue(result.expressionType().detailReason().contains("value operand failed"));
+    }
+
+    @Test
+    void endToEndCastPublishesTargetTypeUnsafeWarningAndResolutionErrors() throws Exception {
+        var analyzed = analyze(
+                "cast_expression_semantic.gd",
+                """
+                        class_name CastExpressionSemantic
+                        extends RefCounted
+                        
+                        func probe(value: Variant, hard_int: int) -> void:
+                            var as_int = value as int
+                            var as_variant = hard_int as Variant
+                            var as_float = hard_int as float
+                            var unknown = value as FutureEnemy
+                            var as_void = value as void
+                            var nested = value as Array[Array[int]]
+                        """
+        );
+        var function = findFunction(analyzed.ast(), "probe");
+        var casts = findNodes(function, CastExpression.class, _ -> true);
+        assertEquals(6, casts.size());
+
+        var asInt = casts.stream()
+                .filter(cast -> cast.targetType().sourceText().equals("int"))
+                .findFirst()
+                .orElseThrow();
+        var asVariant = casts.stream()
+                .filter(cast -> cast.targetType().sourceText().equals("Variant"))
+                .findFirst()
+                .orElseThrow();
+        var asFloat = casts.stream()
+                .filter(cast -> cast.targetType().sourceText().equals("float"))
+                .findFirst()
+                .orElseThrow();
+        var unknown = casts.stream()
+                .filter(cast -> cast.targetType().sourceText().equals("FutureEnemy"))
+                .findFirst()
+                .orElseThrow();
+        var asVoid = casts.stream()
+                .filter(cast -> cast.targetType().sourceText().equals("void"))
+                .findFirst()
+                .orElseThrow();
+        var nested = casts.stream()
+                .filter(cast -> cast.targetType().sourceText().equals("Array[Array[int]]"))
+                .findFirst()
+                .orElseThrow();
+
+        var asIntType = analyzed.analysisData().expressionTypes().get(asInt);
+        assertNotNull(asIntType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, asIntType.status());
+        assertEquals("int", asIntType.publishedType().getTypeName());
+
+        var asVariantType = analyzed.analysisData().expressionTypes().get(asVariant);
+        assertNotNull(asVariantType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, asVariantType.status());
+        assertEquals("Variant", asVariantType.publishedType().getTypeName());
+
+        var asFloatType = analyzed.analysisData().expressionTypes().get(asFloat);
+        assertNotNull(asFloatType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, asFloatType.status());
+        assertEquals("float", asFloatType.publishedType().getTypeName());
+
+        var unknownType = analyzed.analysisData().expressionTypes().get(unknown);
+        assertNotNull(unknownType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, unknownType.status());
+
+        var voidType = analyzed.analysisData().expressionTypes().get(asVoid);
+        assertNotNull(voidType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, voidType.status());
+
+        var nestedType = analyzed.analysisData().expressionTypes().get(nested);
+        assertNotNull(nestedType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, nestedType.status());
+
+        var unsafeWarnings = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.unsafe_cast"))
+                .toList();
+        assertEquals(1, unsafeWarnings.size(), () -> "Expected one unsafe_cast warning, got: " + unsafeWarnings);
+        assertEquals(FrontendDiagnosticSeverity.WARNING, unsafeWarnings.getFirst().severity());
+        assertTrue(unsafeWarnings.getFirst().message().contains("Variant"));
+        assertTrue(unsafeWarnings.getFirst().message().contains("int"));
+
+        // value as Variant must not warn; hard int as float must not warn.
+        assertTrue(unsafeWarnings.stream().noneMatch(d -> d.message().contains("float")));
+
+        var expressionErrors = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.expression_resolution"))
+                .toList();
+        assertEquals(3, expressionErrors.size(), () -> "Expected three resolution errors, got: " + expressionErrors);
+        assertTrue(expressionErrors.stream().anyMatch(d -> d.message().contains("FutureEnemy")));
+        assertTrue(expressionErrors.stream().anyMatch(d -> d.message().contains("void")));
+        assertTrue(expressionErrors.stream().anyMatch(d -> d.message().contains("Array[Array[int]]")));
+    }
+
+    @Test
+    void endToEndHardInvalidCastEmitsTypeCheckError() throws Exception {
+        var analyzed = analyze(
+                "cast_expression_hard_invalid.gd",
+                """
+                        class_name CastExpressionHardInvalid
+                        extends RefCounted
+                        
+                        func hard_invalid() -> void:
+                            var x: int = 1
+                            var y = x as Node
+                        
+                        func related_object_ok() -> void:
+                            var n: Node = Node.new()
+                            var n2d = n as Node2D
+                            n.free()
+                        """
+        );
+
+        var typeCheckErrors = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(d -> d.category().equals("sema.type_check"))
+                .filter(d -> d.message().contains("Invalid cast"))
+                .toList();
+        assertEquals(1, typeCheckErrors.size(), () -> "Expected one invalid cast error, got: " + typeCheckErrors);
+        assertEquals(FrontendDiagnosticSeverity.ERROR, typeCheckErrors.getFirst().severity());
+        assertTrue(typeCheckErrors.getFirst().message().contains("int"));
+        assertTrue(typeCheckErrors.getFirst().message().contains("Node"));
+
+        var function = findFunction(analyzed.ast(), "related_object_ok");
+        var objectCast = findNode(function, CastExpression.class, _ -> true);
+        var objectCastType = analyzed.analysisData().expressionTypes().get(objectCast);
+        assertNotNull(objectCastType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, objectCastType.status());
+        assertEquals("Node2D", objectCastType.publishedType().getTypeName());
+    }
+
+    @Test
+    void endToEndDynamicSourceCastEmitsUnsafeWarning() throws Exception {
+        // Attribute on Variant widens to DYNAMIC; cast target stays hard and must warn once.
+        var analyzed = analyze(
+                "cast_expression_dynamic_source.gd",
+                """
+                        class_name CastExpressionDynamicSource
+                        extends RefCounted
+                        
+                        func probe(value: Variant) -> void:
+                            var as_int = value.foo as int
+                        """
+        );
+        var function = findFunction(analyzed.ast(), "probe");
+        var cast = findNode(function, CastExpression.class, _ -> true);
+        var castType = analyzed.analysisData().expressionTypes().get(cast);
+        assertNotNull(castType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, castType.status());
+        assertEquals("int", castType.publishedType().getTypeName());
+
+        var unsafeWarnings = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.unsafe_cast"))
+                .toList();
+        assertEquals(1, unsafeWarnings.size(), () -> "Expected one unsafe_cast for DYNAMIC source, got: "
+                + analyzed.analysisData().diagnostics());
+    }
+
+    @Test
+    void endToEndCastResultFeedsChainAndTypedConsumerWithoutRecheck() throws Exception {
+        var analyzed = analyze(
+                "cast_expression_chain_consumer.gd",
+                """
+                        class_name CastExpressionChainConsumer
+                        extends RefCounted
+                        
+                        func probe(value: Variant) -> String:
+                            var name = (value as Node).name
+                            return name
+                        """
+        );
+        var function = findFunction(analyzed.ast(), "probe");
+        var cast = findNode(function, CastExpression.class, _ -> true);
+        var castType = analyzed.analysisData().expressionTypes().get(cast);
+        assertNotNull(castType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, castType.status());
+        assertEquals("Node", castType.publishedType().getTypeName());
+
+        // Result is consumed as Node-typed chain head; no hard type-check invalid-cast error.
+        var invalidCastErrors = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(d -> d.category().equals("sema.type_check"))
+                .filter(d -> d.message().contains("Invalid cast"))
+                .toList();
+        assertTrue(invalidCastErrors.isEmpty(), () -> "Cast result consumers must not re-run cast pair check: "
+                + invalidCastErrors);
+
+        var unsafeWarnings = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(d -> d.category().equals("sema.unsafe_cast"))
+                .toList();
+        assertEquals(1, unsafeWarnings.size());
+    }
+
+    @Test
+    void endToEndCastStillBlockedByCompileGate() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var parserService = new GdScriptParserService();
+        var unit = parserService.parseUnit(
+                Path.of("tmp", "cast_compile_gate.gd"),
+                """
+                        class_name CastCompileGate
+                        extends RefCounted
+                        
+                        func probe(value: Variant) -> int:
+                            return value as int
+                        """,
+                diagnostics
+        );
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analysisData = new FrontendSemanticAnalyzer().analyzeForCompile(
+                new FrontendModule("test_module", List.of(unit)),
+                classRegistry,
+                diagnostics
+        );
+        var cast = findNode(unit.ast(), CastExpression.class, _ -> true);
+        var expressionType = analysisData.expressionTypes().get(cast);
+        assertNotNull(expressionType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, expressionType.status());
+        assertEquals("int", expressionType.publishedType().getTypeName());
+
+        var compileBlocks = analysisData.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.compile_check"))
+                .filter(diagnostic -> diagnostic.message().contains("Cast expression"))
+                .toList();
+        assertEquals(1, compileBlocks.size(), () -> "Cast must remain compile-blocked in Phase 1, got: "
+                + analysisData.diagnostics());
+    }
+
+    @Test
+    void endToEndCastDoesNotDuplicateUpstreamOperandErrors() throws Exception {
+        var analyzed = analyze(
+                "cast_expression_upstream_failure.gd",
+                """
+                        class_name CastExpressionUpstreamFailure
+                        extends RefCounted
+                        
+                        func probe() -> void:
+                            var y = missing as int
+                        """
+        );
+        var function = findFunction(analyzed.ast(), "probe");
+        var cast = findNode(function, CastExpression.class, _ -> true);
+        var castType = analyzed.analysisData().expressionTypes().get(cast);
+        assertNotNull(castType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, castType.status());
+
+        // Only the identifier failure should own the expression_resolution error; cast root does not
+        // re-emit a second root-owned cast-target failure for a known target.
+        var expressionErrors = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.expression_resolution"))
+                .toList();
+        assertEquals(1, expressionErrors.size(), () -> "Expected single upstream error, got: " + expressionErrors);
+        assertTrue(expressionErrors.getFirst().message().contains("missing")
+                || expressionErrors.getFirst().message().toLowerCase().contains("identifier"));
     }
 
     @Test

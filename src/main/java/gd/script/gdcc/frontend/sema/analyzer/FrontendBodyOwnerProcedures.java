@@ -7,6 +7,7 @@ import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.Expression;
@@ -91,6 +92,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     private static final @NotNull String EXPRESSION_RESOLUTION_CATEGORY = "sema.expression_resolution";
     private static final @NotNull String DISCARDED_EXPRESSION_CATEGORY = "sema.discarded_expression";
     private static final @NotNull String UNSAFE_CALL_ARGUMENT_CATEGORY = "sema.unsafe_call_argument";
+    /// Shared expr-publication warning for `Variant` / `DYNAMIC` source explicit casts to a hard target.
+    private static final @NotNull String UNSAFE_CAST_CATEGORY = "sema.unsafe_cast";
     private static final @NotNull String DEFERRED_CHAIN_RESOLUTION_CATEGORY = "sema.deferred_chain_resolution";
     private static final @NotNull String DEFERRED_EXPRESSION_RESOLUTION_CATEGORY =
             "sema.deferred_expression_resolution";
@@ -948,7 +951,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             if (resolver.isRouteHeadOnlyTypeMeta(entry.getKey())) {
                 continue;
             }
-            if (!resolver.isAssignmentTargetPrefixExpression(entry.getKey())) {
+            if (!resolver.isAssignmentTargetPrefixExpression(entry.getKey())
+                    && resolver.rootOwnsExpressionDiagnostic(entry.getKey())) {
                 reportExpressionDiagnostic(context, resolver, entry.getKey(), entry.getValue());
             }
             context.typedEnvironment().putExpressionType(
@@ -956,6 +960,9 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     entry.getKey(),
                     entry.getValue()
             );
+            if (entry.getKey() instanceof CastExpression castExpression) {
+                reportUnsafeCastWarning(context, resolver, castExpression, entry.getValue());
+            }
             if (entry.getKey() instanceof AttributeExpression attributeExpression) {
                 publishAttributeStepExpressionTypes(context, resolver.reduceAttributeExpression(attributeExpression));
             }
@@ -1026,13 +1033,22 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 || registry.checkAssignable(targetType, valueType))) {
             return;
         }
-        context.diagnosticManager().warning(
-                TYPE_CHECK_CATEGORY,
-                "Expression is of type \"" + valueType.getTypeName()
-                        + "\" so it can't be of type \"" + targetType.getTypeName() + "\".",
-                context.sourcePath(),
-                FrontendRange.fromAstRange(typeTestExpression.value().range())
-        );
+        if (valueType != null) {
+            context.diagnosticManager().warning(
+                    TYPE_CHECK_CATEGORY,
+                    "Expression is of type \"" + valueType.getTypeName()
+                            + "\" so it can't be of type \"" + targetType.getTypeName() + "\".",
+                    context.sourcePath(),
+                    FrontendRange.fromAstRange(typeTestExpression.value().range())
+            );
+        } else {
+            context.diagnosticManager().warning(
+                    TYPE_CHECK_CATEGORY,
+                    "Expression is of unknown type so it can't be of type \"" + targetType.getTypeName() + "\".",
+                    context.sourcePath(),
+                    FrontendRange.fromAstRange(typeTestExpression.value().range())
+            );
+        }
     }
 
     private static void publishAssignmentTargetStepExpressionTypes(
@@ -1062,6 +1078,46 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         + "' requires runtime conversion to '" + targetType.getTypeName() + "'",
                 context.sourcePath(),
                 FrontendRange.fromAstRange(callExpression.range())
+        );
+    }
+
+    /// Emits `sema.unsafe_cast` when the cast source is runtime-open (`Variant` or `DYNAMIC`) and
+    /// the target is not `Variant`. Coexists with `RESOLVED(targetType)`; does not block compile.
+    ///
+    /// Value-operand type is read from the resolver transient cache first so publication order of
+    /// `finalizedExpressionTypes` cannot hide the source fact.
+    private static void reportUnsafeCastWarning(
+            @NotNull FrontendSuiteContext context,
+            @NotNull BodyExpressionResolver resolver,
+            @NotNull CastExpression castExpression,
+            @NotNull FrontendExpressionType publishedCastType
+    ) {
+        if (publishedCastType.status() != FrontendExpressionTypeStatus.RESOLVED
+                && publishedCastType.status() != FrontendExpressionTypeStatus.DYNAMIC) {
+            return;
+        }
+        var targetType = publishedCastType.publishedType();
+        if (targetType == null || targetType instanceof GdVariantType) {
+            return;
+        }
+        var valueType = resolver.finalizedExpressionTypes().get(castExpression.value());
+        if (valueType == null) {
+            valueType = context.typedEnvironment().expressionType(castExpression.value());
+        }
+        if (valueType == null) {
+            return;
+        }
+        var runtimeOpen = valueType.status() == FrontendExpressionTypeStatus.DYNAMIC
+                || (valueType.status() == FrontendExpressionTypeStatus.RESOLVED
+                && valueType.publishedType() instanceof GdVariantType);
+        if (!runtimeOpen) {
+            return;
+        }
+        context.diagnosticManager().warning(
+                UNSAFE_CAST_CATEGORY,
+                "Casting \"Variant\" to \"" + targetType.getTypeName() + "\" is unsafe.",
+                context.sourcePath(),
+                FrontendRange.fromAstRange(castExpression.range())
         );
     }
 
@@ -1299,6 +1355,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<TypeTestExpression, FrontendTypeTestTarget> typeTestTargets =
                 new IdentityHashMap<>();
+        /// Explicit false means the non-success status was propagated from a dependency; the root
+        /// must not re-emit the same diagnostic. Missing keys default to root-owned (true).
+        private final @NotNull IdentityHashMap<Expression, Boolean> rootOwnsExpressionDiagnostics =
+                new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Expression, Boolean> reportedExpressionDiagnostics =
                 new IdentityHashMap<>();
         private final @NotNull FrontendChainReductionFacade chainReduction;
@@ -1429,6 +1489,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         .expressionType();
                 case TypeTestExpression typeTestExpression ->
                         resolveTypeTestExpressionType(typeTestExpression, finalizeWindow);
+                case CastExpression castExpression ->
+                        resolveCastExpressionType(castExpression, finalizeWindow);
                 default -> expressionSemanticSupport
                         .resolveRemainingExplicitExpressionType(
                                 expression,
@@ -1449,9 +1511,24 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     this::resolveExpressionType,
                     finalizeWindow
             );
+            rootOwnsExpressionDiagnostics.put(typeTestExpression, result.rootOwnsOutcome());
             if (result.publishedTypeTestTargetOrNull() != null) {
                 typeTestTargets.put(typeTestExpression, result.publishedTypeTestTargetOrNull());
             }
+            return result.expressionType();
+        }
+
+        private @NotNull FrontendExpressionType resolveCastExpressionType(
+                @NotNull CastExpression castExpression,
+                boolean finalizeWindow
+        ) {
+            var result = expressionSemanticSupport.resolveCastExpressionType(
+                    castExpression,
+                    this::resolveExpressionType,
+                    finalizeWindow
+            );
+            // Propagated value-operand failures keep the upstream diagnostic owner.
+            rootOwnsExpressionDiagnostics.put(castExpression, result.rootOwnsOutcome());
             return result.expressionType();
         }
 
@@ -1609,6 +1686,11 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
 
         private boolean isRouteHeadOnlyTypeMeta(@NotNull Expression expression) {
             return routeHeadOnlyTypeMetaExpressions.containsKey(expression);
+        }
+
+        /// Defaults to true for expression kinds that do not record ownership explicitly.
+        private boolean rootOwnsExpressionDiagnostic(@NotNull Expression expression) {
+            return rootOwnsExpressionDiagnostics.getOrDefault(expression, Boolean.TRUE);
         }
 
         private boolean markExpressionDiagnosticReported(@NotNull Expression expression) {

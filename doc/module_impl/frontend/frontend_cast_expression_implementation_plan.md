@@ -4,9 +4,10 @@
 
 ## 文档状态
 
-- 状态：Phase 0 已完成；Phase 1+ 尚未实施
+- 状态：Phase 0–1 已完成；Phase 2+ 尚未实施
 - 调研基线：2026-08-05
 - Phase 0 完成：2026-08-06
+- Phase 1 完成：2026-08-06
 - Godot 对齐基线：`godotengine/godot` tag `4.7.1-stable`
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/**`
@@ -435,24 +436,34 @@ helper 本身 ownership-neutral；fat pointer 构造仍由 target-aware generate
 
 ### Phase 1：shared semantic 与 diagnostic
 
+状态：**已完成**（2026-08-06）
+
 实施内容：
 
-- `FrontendExpressionSemanticSupport`：新增 `resolveCastExpressionType(...)`，替换 Cast deferred 分支。
-- `FrontendBodyOwnerProcedures`：发布 `RESOLVED(targetType)`；对 runtime-open source 发布 `sema.unsafe_cast` warning。
-- `FrontendTypeCheckAnalyzer`：新增 CastExpression static compatibility 检查。
-- `FrontendCompileCheckAnalyzer`：暂不解除 blocker。
-- 更新 `diagnostic_manager.md`、`frontend_rules.md` 中的 shared diagnostic 描述，但保留 temporary compile intercept。
+- [x] `FrontendExpressionSemanticSupport`：新增 `resolveCastExpressionType(...)`，替换 Cast deferred 分支。
+- [x] `FrontendBodyOwnerProcedures`：发布 `RESOLVED(targetType)`；对 runtime-open source 发布 `sema.unsafe_cast` warning。
+- [x] `FrontendTypeCheckAnalyzer`：新增 CastExpression static compatibility 检查（`visitNestedCastExpressions` / `visitCastExpression`，经 statement roots 遍历嵌套 cast）。
+- [x] `FrontendCompileCheckAnalyzer`：暂不解除 blocker。
+- [x] 更新 `diagnostic_manager.md`、`frontend_rules.md` 中的 shared diagnostic 描述，但保留 temporary compile intercept。
+
+产出：
+
+- `FrontendExpressionSemanticSupport.resolveCastExpressionType(...)`
+- `FrontendBodyOwnerProcedures.reportUnsafeCastWarning(...)`（category `sema.unsafe_cast`）
+- `FrontendTypeCheckAnalyzer.visitCastExpression(...)` / `visitNestedCastExpressions(...)`
+- 扩展测试：`FrontendExpressionSemanticSupportTest`（cast unit + end-to-end）
 
 验收细则：
 
-- known builtin/Object target 发布 exact target type。
-- unknown type、`null`、`void`、malformed structured target 发布 `FAILED` 并发单一 error。
-- operand upstream failure 不在 cast root 重复发错。
-- hard invalid cast 发 `sema.type_check` error。
-- `Variant as int` 发布 `RESOLVED(int)` 与一条 `sema.unsafe_cast` warning。
-- `value as Variant` 无 unsafe warning。
-- compile-only 入口仍对 CastExpression 发 blocker，证明尚未提前放行。
-- `FrontendAnalysisData` 无新增 cast target side-table。
+- [x] known builtin/Object target 发布 exact target type。
+- [x] unknown type、`null`、`void`、malformed structured target 发布 `FAILED` 并发单一 error。
+- [x] operand upstream failure 不在 cast root 重复发错。
+- [x] hard invalid cast 发 `sema.type_check` error。
+- [x] `Variant as int` 发布 `RESOLVED(int)` 与一条 `sema.unsafe_cast` warning。
+- [x] `value as Variant` 无 unsafe warning。
+- [x] compile-only 入口仍对 CastExpression 发 blocker，证明尚未提前放行。
+- [x] `FrontendAnalysisData` 无新增 cast target side-table。
+- [x] `review-expert-a` 审阅：APPROVE；无 high/medium；low（DYNAMIC 文案、match 边界、测试缺口）已评估：计划文案保持 Casting "Variant"...，并补充 DYNAMIC/chain consumer 回归测试。
 
 ### Phase 2：LIR 合同与 parser/serializer
 
