@@ -428,6 +428,8 @@ cached `ptr`。self-assignment 和 alias-safe 顺序继续保持。
 
 ### 7.3 Cast 与 upcast
 
+Representation-only upcast（`valueOfCastedVar` / generated `_upcast_to_*` helper）在 backend 已证明 assignable 时使用：
+
 - 同一静态对象类型：直接复制 struct。
 - GDCC child -> GDCC parent：保留 ID；live 时从 source wrapper 走显式 `_super` chain 得到 target pointer，dead 时 target
   pointer 为 `NULL`。
@@ -435,6 +437,13 @@ cached `ptr`。self-assignment 和 alias-safe 顺序继续保持。
 - GDCC -> engine ancestor：保留 ID；live raw Godot pointer cast 为 target engine pointer。
 - engine/raw -> GDCC：仅在 registry 证明兼容时，通过 instance binding 构造 target wrapper pointer。
 - 不允许通过 C struct cast 转换两个不同 fat-pointer 类型。
+
+Runtime class-check cast（GDScript `as` / LIR `object_cast`）**不得**用 representation upcast 替代：
+
+- 使用 ownership-neutral helper `gdcc_object_cast_raw_and_id` / `gdcc_object_cast_variant`（见 `gdcc_helper.h`）。
+- success：validated live raw + source `instance_id` 经 target `_from_raw` 捕获；provenance 保留 source BORROWED/OWNED。
+- failure/null/freed/class-mismatch：canonical null `{ptr = NULL, instance_id = 0}`。
+- 禁止 `godot_object_cast_to`、`gdcc_check_variant_type_object`、plain `_fat_ptr_from_variant` 作为 class check。
 
 ### 7.4 Argument rendering
 

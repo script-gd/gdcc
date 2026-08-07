@@ -4,11 +4,12 @@
 
 ## 文档状态
 
-- 状态：Phase 0–2 已完成；Phase 3+ 尚未实施
+- 状态：Phase 0–3 已完成；Phase 4+ 尚未实施
 - 调研基线：2026-08-05
 - Phase 0 完成：2026-08-06
 - Phase 1 完成：2026-08-06
 - Phase 2 完成：2026-08-07
+- Phase 3 完成：2026-08-07
 - Godot 对齐基线：`godotengine/godot` tag `4.7.1-stable`
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/**`
@@ -486,41 +487,43 @@ helper 本身 ownership-neutral；fat pointer 构造仍由 target-aware generate
 - [x] `object_cast` 保持现有文本兼容，Java API 使用 `valueId`。
 - [x] `object_cast` 的 `className` 固定为 runtime canonical/Godot-facing class name；`builtin_cast` 接受 builtin 的稳定 `GdType.getTypeName()` 文本，参数化 `Array[T]` / `Dictionary[K, V]` 必须保留完整 declared type text。
 - [x] parser 不重解析/不重写指令类型文本（Phase 2）。
-- [ ] backend 对 `object_cast` / `builtin_cast` 做 target 防御性校验，失败为 `invalidInsn`（Phase 3）。
+- [x] backend 对 `object_cast` / `builtin_cast` 做 target 防御性校验，失败为 `invalidInsn`（Phase 3）。
 - [x] frontend published-fact guard 拒绝 compiler-only cast result（既有）；`LirPublicAbiValidator` 未扩展为 instruction walker（Phase 2）。
-- [ ] backend instruction generator 对 compiler-only locals/source/result 做 fail-fast（Phase 3）。
+- [x] backend instruction generator 对 compiler-only locals/source/result 做 fail-fast（Phase 3）。
 
 ### Phase 3：C backend 与 runtime helper
 
+状态：**已完成**（2026-08-07）
+
 实施内容：
 
-- 新增 `BuiltinCastInsnGen` 并注册到 `CCodegen`。
-- 新增 `ObjectCastInsnGen` 并注册到 `CCodegen`。
-- 在 `InsnGenSupport` 中提取可复用的 Variant construction/unpack cleanup 小 helper，避免 generator 重复手写 temp 生命周期。
-- 在 `gdcc_helper.h` 或 object fat-pointer template 中增加 ownership-neutral object cast query helper。
-- 更新 `doc/gdcc_runtime_lib.md`、object fat-pointer 与 ownership 文档。
-- 新增 `BuiltinCastInsnGenTest`、`ObjectCastInsnGenTest`。
+- [x] 新增 `BuiltinCastInsnGen` 并注册到 `CCodegen`。
+- [x] 新增 `ObjectCastInsnGen` 并注册到 `CCodegen`。
+- [x] 在 `InsnGenSupport` 中提取可复用的 Variant construction/unpack cleanup 小 helper，避免 generator 重复手写 temp 生命周期。
+- [x] 在 `gdcc_helper.h` 或 object fat-pointer template 中增加 ownership-neutral object cast query helper。
+- [x] 更新 `doc/gdcc_runtime_lib.md`、object fat-pointer 与 ownership 文档。
+- [x] 新增 `BuiltinCastInsnGenTest`、`ObjectCastInsnGenTest`。
 
 `BuiltinCastInsnGen` 验收细则：
 
-- non-Variant source 只 pack 一次。
-- 调用 `godot_variant_construct`，target enum 与 result type 一致。
-- 参数化 `Array[T]` / `Dictionary[K, V]` 使用 base ARRAY/DICTIONARY enum，且不调用 typed metadata guard/constructor。
-- 检查 `GDExtensionCallError.error == GDEXTENSION_CALL_OK`。
-- 成功后 exact unpack 到 target result。
-- 失败路径打印稳定 runtime error，销毁全部 initialized temp，走 default-return cleanup。
-- exact/identity/Variant target LIR 若误入 generator，明确 invalid-instruction fail-fast。
+- [x] non-Variant source 只 pack 一次。
+- [x] 调用 `godot_variant_construct`，target enum 与 result type 一致。
+- [x] 参数化 `Array[T]` / `Dictionary[K, V]` 使用 base ARRAY/DICTIONARY enum，且不调用 typed metadata guard/constructor。
+- [x] 检查 `GDExtensionCallError.error == GDEXTENSION_CALL_OK`。
+- [x] 成功后 exact unpack 到 target result。
+- [x] 失败路径打印稳定 runtime error，销毁全部 initialized temp，走 default-return cleanup。
+- [x] exact/identity/Variant target LIR 若误入 generator，明确 invalid-instruction fail-fast。
 
 `ObjectCastInsnGen` 验收细则：
 
-- Engine object success/downcast-fail/null/freed。
-- 已通过 runtime registration 暴露 canonical class/inheritance identity 的 GDCC Object success/downcast-fail；GDScript script-instance-only 或未注册继承关系的类必须明确走 unsupported/blocked 合同，不得把“ClassDB 名字存在”当成完整 script inheritance 支持。
-- Variant OBJECT/non-OBJECT/NIL payload。
-- success 保留 instance ID，failure 归一化为 ID 0。
-- 不从未经验证的 raw pointer 恢复 ID。
-- 不调用 `gdcc_check_variant_type_object` 或 plain `_fat_ptr_from_variant` 代替 class check。
-- success result 保留 source value provenance，failure 使用 canonical null；统一 result slot write 不产生多余 own/release。
-- hand-written invalid target/result mismatch fail-fast。
+- [x] Engine object success/downcast-fail/null/freed。
+- [x] 已通过 runtime registration 暴露 canonical class/inheritance identity 的 GDCC Object success/downcast-fail；GDScript script-instance-only 或未注册继承关系的类必须明确走 unsupported/blocked 合同，不得把“ClassDB 名字存在”当成完整 script inheritance 支持。
+- [x] Variant OBJECT/non-OBJECT/NIL payload。
+- [x] success 保留 instance ID，failure 归一化为 ID 0。
+- [x] 不从未经验证的 raw pointer 恢复 ID。
+- [x] 不调用 `gdcc_check_variant_type_object` 或 plain `_fat_ptr_from_variant` 代替 class check。
+- [x] success result 保留 source value provenance，failure 使用 canonical null；统一 result slot write 不产生多余 own/release。
+- [x] hand-written invalid target/result mismatch fail-fast。
 
 ### Phase 4：frontend body lowering
 

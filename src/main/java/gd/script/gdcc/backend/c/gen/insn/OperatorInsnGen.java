@@ -205,11 +205,10 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                                                    @NotNull GodotOperator op,
                                                    @NotNull String reason) {
         bodyBuilder.appendLine("if (" + invalidConditionExpr + ") {");
-        bodyBuilder.appendLine(
-                "GDCC_PRINT_RUNTIME_ERROR(\"Primitive fast path guard failed for operator '" +
-                        op.name() + "': " + reason + "\", __func__, __FILE__, __LINE__);"
+        InsnGenSupport.emitRuntimeFailureReturn(
+                bodyBuilder,
+                "Primitive fast path guard failed for operator '" + op.name() + "': " + reason
         );
-        bodyBuilder.returnDefault();
         bodyBuilder.appendLine("}");
     }
 
@@ -348,11 +347,15 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                                             @NotNull InsnGenSupport.VariantOperand rightOperand) {
         var typeCheckExpr = renderVariantUnpackTypeCheckExpr(bodyBuilder, resultVariant, targetType);
         bodyBuilder.appendLine("if (!(" + typeCheckExpr + ")) {");
-        bodyBuilder.appendLine(
-                "GDCC_PRINT_RUNTIME_ERROR(\"variant_evaluate type check failed for operator '" + op.name() +
-                        "': expected " + targetType.getTypeName() + "\", __func__, __FILE__, __LINE__);"
+        // resultVariant is initialized here; destroy it with source temps before default-return.
+        InsnGenSupport.emitRuntimeFailureReturn(
+                bodyBuilder,
+                "variant_evaluate type check failed for operator '" + op.name() +
+                        "': expected " + targetType.getTypeName(),
+                leftOperand.tempVar(),
+                rightOperand.tempVar(),
+                resultVariant
         );
-        emitVariantEvaluateTypeCheckFailureReturn(bodyBuilder, resultVariant, leftOperand, rightOperand);
         bodyBuilder.appendLine("}");
     }
 
@@ -374,21 +377,6 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         var expectedClassLiteral = CBodyBuilder.renderStaticStringNameLiteral(targetObjectType.getTypeName());
         return "gdcc_check_variant_type_object(&" + resultVariant.name() + ", " +
                 expectedClassLiteral + ", true)";
-    }
-
-    private void emitVariantEvaluateTypeCheckFailureReturn(@NotNull CBodyBuilder bodyBuilder,
-                                                           @NotNull CBodyBuilder.TempVar resultVariant,
-                                                           @NotNull InsnGenSupport.VariantOperand leftOperand,
-                                                           @NotNull InsnGenSupport.VariantOperand rightOperand) {
-        bodyBuilder.destroyTempVar(resultVariant);
-        if (rightOperand.tempVar() != null) {
-            bodyBuilder.destroyTempVar(rightOperand.tempVar());
-        }
-        if (leftOperand.tempVar() != null) {
-            bodyBuilder.destroyTempVar(leftOperand.tempVar());
-        }
-
-        bodyBuilder.returnDefault();
     }
 
     private void emitVariantEvaluateFailureReturn(@NotNull CBodyBuilder bodyBuilder,

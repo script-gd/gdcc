@@ -399,6 +399,53 @@ static inline godot_bool gdcc_is_instance_of_object_variant(
     return gdcc_is_instance_of_object_raw_and_id(live, instance_id, expected_class_name);
 }
 
+/// GDScript `as` object cast for a fat-pointer pair `(raw, instance_id)`.
+/// Ownership-neutral: returns a validated live raw Godot object pointer on success, or NULL when
+/// null/freed/class-mismatch. Never recovers instance_id from an unvalidated raw pointer.
+/// Callers build the target-typed fat pointer (`_from_raw`) and preserve the source instance_id
+/// only on the success path; failure must write the canonical null `{ptr=NULL, instance_id=0}`.
+static inline GDExtensionObjectPtr gdcc_object_cast_raw_and_id(
+        GDExtensionObjectPtr raw,
+        GDObjectInstanceID instance_id,
+        const godot_StringName *expected_class_name) {
+    if (expected_class_name == NULL) {
+        return NULL;
+    }
+    if (gdcc_object_is_null_raw_and_id(raw, instance_id)) {
+        return NULL;
+    }
+    GDExtensionObjectPtr live = gdcc_object_live_ptr(instance_id);
+    if (live == NULL) {
+        return NULL;
+    }
+    if (!gdcc_is_instance_of_object_raw_and_id(live, instance_id, expected_class_name)) {
+        return NULL;
+    }
+    return live;
+}
+
+/// GDScript `as` object cast for a Variant payload (OBJECT / non-OBJECT / NIL).
+/// Ownership-neutral. Non-OBJECT and NIL payloads yield NULL (canonical null at the call site).
+static inline GDExtensionObjectPtr gdcc_object_cast_variant(
+        const godot_Variant *value,
+        const godot_StringName *expected_class_name) {
+    if (value == NULL || expected_class_name == NULL) {
+        return NULL;
+    }
+    if (godot_variant_get_type(value) != GDEXTENSION_VARIANT_TYPE_OBJECT) {
+        return NULL;
+    }
+    GDObjectInstanceID instance_id = godot_variant_get_object_instance_id(value);
+    if (instance_id == 0) {
+        return NULL;
+    }
+    GDExtensionObjectPtr live = gdcc_object_live_ptr(instance_id);
+    if (live == NULL) {
+        return NULL;
+    }
+    return gdcc_object_cast_raw_and_id(live, instance_id, expected_class_name);
+}
+
 /// True when typed-container script metadata is absent (Godot stores that as OBJECT/null, not TYPE_NIL).
 static inline godot_bool gdcc_typed_script_metadata_is_null(const godot_Variant *script) {
     if (script == NULL) {

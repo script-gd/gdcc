@@ -98,6 +98,18 @@ extend the runtime-provided `godot_*` surface.
     - Non-parameterized builtin `is` stays inlined as `godot_variant_get_type(...) == ENUM`.
     - Freed instances produce `false` (Godot release behavior); Godot's debug-only runtime
       error is not replicated.
+  - GDScript `as` / LIR `object_cast` helpers (ownership-neutral; return validated live raw or NULL):
+    - `gdcc_object_cast_raw_and_id(raw, instance_id, expected_class_name)` — fat-pointer path;
+      null/freed/class-mismatch → NULL. Never recovers ID from an unvalidated raw pointer.
+    - `gdcc_object_cast_variant(value, expected_class_name)` — OBJECT / non-OBJECT / NIL payload;
+      non-OBJECT and NIL → NULL. Success raw is passed to target `_from_raw` so instance_id is
+      captured from the live object; failure writes canonical null `{ptr=NULL, instance_id=0}`.
+    - Do **not** use `godot_object_cast_to`, `gdcc_check_variant_type_object`, or plain
+      `_fat_ptr_from_variant` as the class-check/cast mechanism.
+  - GDScript `as` / LIR `builtin_cast` does **not** add a dedicated runtime helper: generators pack
+    the source once, call `godot_variant_construct` with the base Variant enum (parameterized
+    `Array[T]` / `Dictionary[K, V]` use ARRAY/DICTIONARY only), check `GDExtensionCallError`, then
+    exact-unpack. Construct failure prints via `GDCC_PRINT_RUNTIME_ERROR` and default-returns.
 
 ## Binding Generator Overview
 

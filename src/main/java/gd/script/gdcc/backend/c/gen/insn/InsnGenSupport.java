@@ -115,6 +115,28 @@ final class InsnGenSupport {
         return rendered.code();
     }
 
+    /// Destroys any still-initialized temps in reverse declaration order (last-in first-out).
+    static void destroyInitializedTemps(@NotNull CBodyBuilder bodyBuilder,
+                                        @NotNull CBodyBuilder.TempVar @NotNull ... temps) {
+        for (var i = temps.length - 1; i >= 0; i--) {
+            var temp = temps[i];
+            if (temp != null) {
+                bodyBuilder.destroyTempVar(temp);
+            }
+        }
+    }
+
+    /// Prints a stable runtime error, destroys the listed temps, then leaves via default-return cleanup.
+    static void emitRuntimeFailureReturn(@NotNull CBodyBuilder bodyBuilder,
+                                         @NotNull String errorDescription,
+                                         @NotNull CBodyBuilder.TempVar @NotNull ... tempsToDestroy) {
+        bodyBuilder.appendLine(
+                "GDCC_PRINT_RUNTIME_ERROR(\"" + errorDescription + "\", __func__, __FILE__, __LINE__);"
+        );
+        destroyInitializedTemps(bodyBuilder, tempsToDestroy);
+        bodyBuilder.returnDefault();
+    }
+
     record VariantOperand(@NotNull CBodyBuilder.ValueRef variantValue,
                           @Nullable CBodyBuilder.TempVar tempVar) {
         VariantOperand {
