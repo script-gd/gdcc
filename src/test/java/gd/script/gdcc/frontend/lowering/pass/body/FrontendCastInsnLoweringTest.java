@@ -41,8 +41,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /// Body-lowering contract for GDScript `value as T`.
 ///
-/// Uses shared {@code analyze(...)} (not {@code analyzeForCompile}) so tests isolate CFG/body
-/// lowering while the CastExpression compile-only gate remains closed until Phase 5.
+/// Uses shared {@code analyze(...)} so tests isolate CFG/body lowering without requiring the full
+/// compile-only pipeline. Compile-gate release is covered by
+/// {@link #analyzeForCompileAllowsCastExpression()}.
 ///
 /// Assertions key off the published {@link CastItem} result slot. A following return may emit an
 /// extra {@link AssignInsn} for the return value, so tests must not require a whole-function single
@@ -506,7 +507,7 @@ class FrontendCastInsnLoweringTest {
     }
 
     @Test
-    void analyzeForCompileStillBlocksCastExpression() throws Exception {
+    void analyzeForCompileAllowsCastExpression() throws Exception {
         var diagnostics = new DiagnosticManager();
         var unit = new GdScriptParserService().parseUnit(
                 Path.of("tmp", "cast_gate.gd"),
@@ -529,10 +530,11 @@ class FrontendCastInsnLoweringTest {
                 .filter(diagnostic -> diagnostic.category().equals("sema.compile_check"))
                 .filter(diagnostic -> diagnostic.message().toLowerCase().contains("cast"))
                 .toList();
-        assertFalse(
+        assertTrue(
                 compileBlocks.isEmpty(),
-                () -> "Phase 4 must keep CastExpression compile-blocked, got: " + analysisData.diagnostics()
+                () -> "CastExpression should pass compile gate, got: " + analysisData.diagnostics()
         );
+        assertFalse(analysisData.diagnostics().hasErrors(), () -> "Unexpected errors: " + analysisData.diagnostics());
     }
 
     private static @NotNull String requireCastResultSlot(@NotNull LoweredProbe lowered) {

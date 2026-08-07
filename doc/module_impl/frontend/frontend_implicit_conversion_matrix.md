@@ -75,7 +75,7 @@ GDExtension `call_func` inbound wrapper 两条路径的完成度对齐；它不�
 
 - `String` / `StringName` 的 operator 支持由 exact operator metadata 与 operator lowering 合同决定，
   不由本文矩阵扩面。
-- `CastExpression` / `CastItem` 仍不是本 feature 的支持面。
+- `CastExpression` / `CastItem` 不是本 feature 的支持面；`as` 由独立合同 `frontend_cast_expression_implementation.md` 管理。
 - `NodePath -> String`、`String -> NodePath` 仍保持当前 GDCC 不支持状态。
 
 ### 1.3 当前 GDCC 的统一基线

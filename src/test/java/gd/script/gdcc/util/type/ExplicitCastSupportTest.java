@@ -52,8 +52,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Contract coverage for the shared explicit-cast classifier.
 ///
-/// Builtin pairs freeze Godot 4.7.1 {@code Variant::can_convert} (not strict). Object cases
-/// freeze same-chain bidirectional rules. Parameterized containers freeze base-only parity.
+/// Builtin pairs freeze Godot {@code Variant::can_convert} (not strict; identical on 4.5.1 and
+/// 4.7.1). Object cases freeze same-chain bidirectional rules. Parameterized containers freeze
+/// base-only parity.
 class ExplicitCastSupportTest {
     private static ClassRegistry registry;
 

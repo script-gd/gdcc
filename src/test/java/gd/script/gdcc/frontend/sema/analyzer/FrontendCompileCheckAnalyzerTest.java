@@ -28,14 +28,17 @@ import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.Statement;
+import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -113,7 +116,9 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compiled = analyzeForCompile("compile_check_explicit_blocks.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        assertEquals(7, compileDiagnostics.size());
+        // Remaining explicit intercepts: assert, conditional, array, dict, preload, get-node.
+        // CastExpression and TypeTestExpression have left the temporary intercept set.
+        assertEquals(6, compileDiagnostics.size());
         assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                         && Objects.equals(
@@ -128,8 +133,177 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Dictionary literal")));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Preload expression")));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Get-node expression")));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Cast expression")));
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Cast expression")));
         assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Type-test expression")));
+        assertEquals(compiled.diagnostics(), compiled.diagnosticManager().snapshot());
+    }
+
+    @Test
+    void analyzeForCompileAllowsCastExpressionOnceBodyLoweringContractLands() throws Exception {
+        var source = """
+                class_name CompileCheckCastExpression
+                extends RefCounted
+                
+                func probe(value: int) -> float:
+                    return value as float
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_cast_expression.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_cast_expression.gd", source);
+        assertFalse(
+                compiled.diagnostics().hasErrors(),
+                () -> "Unexpected compile diagnostics: " + compiled.diagnostics().asList()
+        );
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileDoesNotDuplicatePropagatedCastOperandFailure() throws Exception {
+        var compiled = analyzeForCompile("compile_check_cast_propagated_operand.gd", """
+                class_name CompileCheckCastPropagatedOperand
+                extends RefCounted
+                
+                func probe() -> int:
+                    var y = missing as int
+                    return y
+                """);
+        var probeFunction = findFunction(compiled.unit().ast().statements(), "probe");
+        var missingIdentifier = findNode(
+                probeFunction,
+                IdentifierExpression.class,
+                identifier -> "missing".equals(identifier.name())
+        );
+
+        var expressionDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution");
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertEquals(1, expressionDiagnostics.size());
+        assertEquals(FrontendRange.fromAstRange(missingIdentifier.range()), expressionDiagnostics.getFirst().range());
+        assertTrue(
+                compileDiagnostics.isEmpty(),
+                () -> "propagated cast operand failure must not add cast-root compile_check: " + compileDiagnostics
+        );
+        assertEquals(compiled.diagnostics(), compiled.diagnosticManager().snapshot());
+    }
+
+    @Test
+    void analyzeForCompileDoesNotDuplicatePropagatedTypeTestOperandFailure() throws Exception {
+        var compiled = analyzeForCompile("compile_check_type_test_propagated_operand.gd", """
+                class_name CompileCheckTypeTestPropagatedOperand
+                extends RefCounted
+                
+                func probe() -> bool:
+                    var y = missing is int
+                    return y
+                """);
+        var probeFunction = findFunction(compiled.unit().ast().statements(), "probe");
+        var missingIdentifier = findNode(
+                probeFunction,
+                IdentifierExpression.class,
+                identifier -> "missing".equals(identifier.name())
+        );
+
+        var expressionDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution");
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertEquals(1, expressionDiagnostics.size());
+        assertEquals(FrontendRange.fromAstRange(missingIdentifier.range()), expressionDiagnostics.getFirst().range());
+        assertTrue(
+                compileDiagnostics.isEmpty(),
+                () -> "propagated type-test operand failure must not add type-test-root compile_check: "
+                        + compileDiagnostics
+        );
+        assertEquals(compiled.diagnostics(), compiled.diagnosticManager().snapshot());
+    }
+
+    @Test
+    void analyzeForCompileDoesNotDuplicateChainedPropagatedCastFailure() throws Exception {
+        var compiled = analyzeForCompile("compile_check_chained_cast_propagated_operand.gd", """
+                class_name CompileCheckChainedCastPropagatedOperand
+                extends RefCounted
+                
+                func probe() -> float:
+                    var y = (missing as int) as float
+                    return y
+                """);
+        var probeFunction = findFunction(compiled.unit().ast().statements(), "probe");
+        var missingIdentifier = findNode(
+                probeFunction,
+                IdentifierExpression.class,
+                identifier -> "missing".equals(identifier.name())
+        );
+
+        var expressionDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution");
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertEquals(1, expressionDiagnostics.size());
+        assertEquals(FrontendRange.fromAstRange(missingIdentifier.range()), expressionDiagnostics.getFirst().range());
+        assertTrue(
+                compileDiagnostics.isEmpty(),
+                () -> "chained propagated cast failures must not add cast-root compile_check: " + compileDiagnostics
+        );
+        assertEquals(compiled.diagnostics(), compiled.diagnosticManager().snapshot());
+    }
+
+    @Test
+    void analyzeForCompileKeepsRootOwnedCastTargetFailureOwnedByExpressionResolution() throws Exception {
+        var compiled = analyzeForCompile("compile_check_cast_unknown_target.gd", """
+                class_name CompileCheckCastUnknownTarget
+                extends RefCounted
+                
+                func probe(value: int):
+                    var y = value as MissingType
+                """);
+        var probeFunction = findFunction(compiled.unit().ast().statements(), "probe");
+        var castExpression = findNode(probeFunction, CastExpression.class, _ -> true);
+
+        var expressionDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution");
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertFalse(expressionDiagnostics.isEmpty());
+        assertEquals(FrontendRange.fromAstRange(castExpression.range()), expressionDiagnostics.getFirst().range());
+        assertTrue(
+                compileDiagnostics.isEmpty(),
+                () -> "root-owned cast target failure should stay owned by expression_resolution, not compile_check: "
+                        + compileDiagnostics
+        );
+        assertEquals(compiled.diagnostics(), compiled.diagnosticManager().snapshot());
+    }
+
+    @Test
+    void analyzeForCompileKeepsRootOwnedTypeTestTargetFailureOwnedByExpressionResolution() throws Exception {
+        var compiled = analyzeForCompile("compile_check_type_test_invalid_target.gd", """
+                class_name CompileCheckTypeTestInvalidTarget
+                extends RefCounted
+                
+                func probe(value: int) -> bool:
+                    return value is null
+                """);
+        var probeFunction = findFunction(compiled.unit().ast().statements(), "probe");
+        var typeTestExpression = findNode(probeFunction, TypeTestExpression.class, _ -> true);
+
+        var expressionDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution");
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertFalse(expressionDiagnostics.isEmpty());
+        assertEquals(FrontendRange.fromAstRange(typeTestExpression.range()), expressionDiagnostics.getFirst().range());
+        assertTrue(
+                expressionDiagnostics.getFirst().message().contains("null"),
+                () -> "expected invalid type-test target diagnostic: " + expressionDiagnostics
+        );
+        assertTrue(
+                compileDiagnostics.isEmpty(),
+                () -> "root-owned type-test target failure should stay owned by expression_resolution, not compile_check: "
+                        + compileDiagnostics
+        );
         assertEquals(compiled.diagnostics(), compiled.diagnosticManager().snapshot());
     }
 

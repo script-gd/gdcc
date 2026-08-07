@@ -682,7 +682,6 @@ body-lowering 合同：
 
 - `PARAMETER_DEFAULT_INIT` CFG / body lowering
 - `ConditionalExpression`
-- `CastExpression`
 - `ArrayExpression`
 - `DictionaryExpression`
 - `PreloadExpression`
@@ -691,6 +690,8 @@ body-lowering 合同：
 - multi-key subscript lowering
 - `for`（compile gate 为 route-aware：registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker；`FrontendForRegion`、四个 `ForLoop*Item`、source/hidden slot registry、跨表验证与 body lowering（`declareForLoopSlots()` + init/should_continue/get/next processors、temp-then-commit）均已落地；完整合同见 `frontend_for_range_loop_implementation.md`）
 
+`CastExpression` / `CastItem` 已进入 compile-ready body lowering 合同（decision→LIR 映射见 `frontend_cast_expression_implementation.md`），不再属于 shell-only / temporary fail-fast surface。
+
 其中 `ConditionalExpression` 继续 compile-block 的原因已经固定：
 
 - graph 虽已具备分支区域与 merge slot 基础设施
@@ -698,7 +699,6 @@ body-lowering 合同：
 
 当前 body lowering 明确保留 fail-fast 的路径包括：
 
-- `CastItem`
 - multi-key subscript lowering
 - 缺失 published fact 的 call/member/value type 路径
 

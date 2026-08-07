@@ -487,7 +487,7 @@ writable / compatibility 规则为：
 
 `ForStatement` 已使用 header-only statement boundary：iterator type 与 iterable expression 在外层 lexical context 中运行 owner procedures，flush 后通过普通 child-suite path 解析 `FOR_BODY`。For body 中的 ordinary expressions 与 locals 复用本合同；typed result 不能决定是否进入 body。Iteration plan 与 iterator exact refinement 属于后续独立 owner，不由 chain/expr owner 猜测。
 
-当前 remaining explicit-deferred expression set 固定为：
+  当前 remaining explicit-deferred expression set 固定为：
 
 - `ConditionalExpression`
 - `ArrayExpression`
@@ -495,10 +495,11 @@ writable / compatibility 规则为：
 - `AwaitExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
-- `CastExpression`
 - `PatternBindingExpression`
 
 `TypeTestExpression` **已不在** deferred 集合中：shared semantic 发布 `RESOLVED(bool)` 与 `typeTestTargets()` 目标事实；body lowering 统一发射 `is_instance_of` / 常量 bool；backend `IsInstanceOfInsnGen` 分派 + runtime helpers 已落地；compile gate 不再为其建立显式 blocker（见 `frontend_is_type_test_implementation.md`）。
+
+`CastExpression` **已不在** deferred 集合中：shared semantic 发布 `RESOLVED(targetType)`；body lowering 按 `ExplicitCastDecision` 发射 assign / pack / `builtin_cast` / `object_cast`；backend 与 runtime helpers 已闭环；compile gate 不再为其建立显式 blocker（见 `frontend_cast_expression_implementation.md`）。
 
 额外规则为：
 

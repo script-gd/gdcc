@@ -86,7 +86,7 @@ class FrontendCfgGraphBuilderTest {
 
     @Test
     void buildExecutableBodyPublishesCastItemWithOperandFirst() throws Exception {
-        // Shared semantic path: CastExpression is still compile-gated, but CFG item shape is stable.
+        // Shared semantic path: CFG item shape for CastExpression is stable and compile-ready.
         var analyzed = analyzeSharedSemanticFunction(
                 "cfg_builder_cast_item.gd",
                 """
@@ -1147,10 +1147,9 @@ class FrontendCfgGraphBuilderTest {
         var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
         var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
         var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
-        var originalBinding = analyzed.analysisData().symbolBindings().get(receiver);
-        analyzed.analysisData().symbolBindings().put(
+        analyzed.analysisData().symbolBindings().compute(
                 receiver,
-                new FrontendBinding(
+                (k, originalBinding) -> new FrontendBinding(
                         "values",
                         FrontendBindingKind.CAPTURE,
                         originalBinding == null ? receiver : originalBinding.declarationSite()
@@ -1193,10 +1192,9 @@ class FrontendCfgGraphBuilderTest {
         var assignmentStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().get(1));
         var assignmentExpression = assertInstanceOf(AssignmentExpression.class, assignmentStatement.expression());
         var target = assertInstanceOf(IdentifierExpression.class, assignmentExpression.left());
-        var originalBinding = analyzed.analysisData().symbolBindings().get(target);
-        analyzed.analysisData().symbolBindings().put(
+        analyzed.analysisData().symbolBindings().compute(
                 target,
-                new FrontendBinding(
+                (k, originalBinding) -> new FrontendBinding(
                         "self",
                         FrontendBindingKind.SELF,
                         originalBinding == null ? target : originalBinding.declarationSite()
@@ -1244,10 +1242,9 @@ class FrontendCfgGraphBuilderTest {
         var assignmentStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().get(1));
         var assignmentExpression = assertInstanceOf(AssignmentExpression.class, assignmentStatement.expression());
         var target = assertInstanceOf(IdentifierExpression.class, assignmentExpression.left());
-        var originalBinding = analyzed.analysisData().symbolBindings().get(target);
-        analyzed.analysisData().symbolBindings().put(
+        analyzed.analysisData().symbolBindings().compute(
                 target,
-                new FrontendBinding(
+                (k, originalBinding) -> new FrontendBinding(
                         "value",
                         FrontendBindingKind.CONSTANT,
                         originalBinding == null ? target : originalBinding.declarationSite()
@@ -1291,10 +1288,9 @@ class FrontendCfgGraphBuilderTest {
         var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
         var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
         var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
-        var originalBinding = analyzed.analysisData().symbolBindings().get(receiver);
-        analyzed.analysisData().symbolBindings().put(
+        analyzed.analysisData().symbolBindings().compute(
                 receiver,
-                new FrontendBinding(
+                (k, originalBinding) -> new FrontendBinding(
                         "self",
                         FrontendBindingKind.SELF,
                         originalBinding == null ? receiver : originalBinding.declarationSite()

@@ -17,12 +17,12 @@ import java.util.Objects;
 /// Shared pure classifier for GDScript {@code value as T} explicit casts.
 ///
 /// This is the single truth source for static hard-cast validity, type-check error routing,
-/// body-lowering LIR choice, and backend defensive re-check. It encodes Godot 4.7.1
-/// {@code Variant::can_convert} (not {@code can_convert_strict}) plus Object same-chain
-/// bidirectional rules. It must not call frontend implicit-boundary helpers or treat
-/// {@link ClassRegistry#checkAssignable} as the full {@code as} rule.
+/// body-lowering LIR choice, and backend defensive re-check. It encodes Godot
+/// {@code Variant::can_convert} (not {@code can_convert_strict}; identical on 4.5.1 and 4.7.1)
+/// plus Object same-chain bidirectional rules. It must not call frontend implicit-boundary
+/// helpers or treat {@link ClassRegistry#checkAssignable} as the full {@code as} rule.
 ///
-/// See {@code doc/module_impl/frontend/frontend_cast_expression_implementation_plan.md}.
+/// See {@code doc/module_impl/frontend/frontend_cast_expression_implementation.md}.
 public final class ExplicitCastSupport {
     private ExplicitCastSupport() {
     }
@@ -145,7 +145,8 @@ public final class ExplicitCastSupport {
                 && first.getTypeName().equals(second.getTypeName()));
     }
 
-    /// Godot 4.7.1 {@code Variant::can_convert} (tag {@code 4.7.1-stable}, {@code core/variant/variant.cpp}).
+    /// Godot {@code Variant::can_convert} ({@code core/variant/variant.cpp}; table identical on
+    /// 4.5.1-stable and 4.7.1-stable; project runtime ABI remains 4.5.1).
     /// Identity is handled by the caller; trailing {@code NIL} sentinels in Godot lists are not types.
     @SuppressWarnings("DataFlowIssue")
     static boolean canConvert(@NotNull GdExtensionTypeEnum from, @NotNull GdExtensionTypeEnum to) {

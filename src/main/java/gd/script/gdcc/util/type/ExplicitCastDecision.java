@@ -4,7 +4,7 @@ package gd.script.gdcc.util.type;
 ///
 /// Shared by frontend type-check / body lowering and C backend defensive re-check so the
 /// explicit-cast matrix stays a single truth source (see
-/// `frontend_cast_expression_implementation_plan.md`). Unsafe-warning policy for
+/// `frontend_cast_expression_implementation.md`). Unsafe-warning policy for
 /// `Variant` / `DYNAMIC` sources is orthogonal and must not appear here.
 public enum ExplicitCastDecision {
     /// Exact same static type, or representation-compatible container identity (e.g.

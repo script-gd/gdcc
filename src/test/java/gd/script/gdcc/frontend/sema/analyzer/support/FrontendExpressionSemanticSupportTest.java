@@ -1946,7 +1946,7 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
-    void endToEndCastStillBlockedByCompileGate() throws Exception {
+    void endToEndCastPassesCompileGateWithResolvedTarget() throws Exception {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(
@@ -1976,8 +1976,19 @@ class FrontendExpressionSemanticSupportTest {
                 .filter(diagnostic -> diagnostic.category().equals("sema.compile_check"))
                 .filter(diagnostic -> diagnostic.message().contains("Cast expression"))
                 .toList();
-        assertEquals(1, compileBlocks.size(), () -> "Cast must remain compile-blocked in Phase 1, got: "
-                + analysisData.diagnostics());
+        assertTrue(
+                compileBlocks.isEmpty(),
+                () -> "CastExpression should pass compile gate, got: " + analysisData.diagnostics()
+        );
+        // Unsafe source still produces a shared warning; it must not become a compile-check rewrap.
+        var unsafeWarnings = analysisData.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.unsafe_cast"))
+                .toList();
+        assertEquals(1, unsafeWarnings.size());
+        assertFalse(
+                analysisData.diagnostics().hasErrors(),
+                () -> "Supported cast must not error at compile gate, got: " + analysisData.diagnostics()
+        );
     }
 
     @Test

@@ -20,7 +20,7 @@ import java.util.EnumSet;
 
 /// Backend codegen for LIR `builtin_cast` (GDScript `as` to a non-Object runtime builtin).
 ///
-/// Contract (see `frontend_cast_expression_implementation_plan.md`):
+/// Contract (see `frontend_cast_expression_implementation.md`):
 /// - target must resolve to a non-Object / non-Variant / non-Nil runtime builtin
 /// - parameterized `Array[T]` / `Dictionary[K, V]` use base ARRAY/DICTIONARY construct only
 /// - non-Variant source packs once; construct via `godot_variant_construct` + `GDExtensionCallError`

@@ -18,7 +18,7 @@ import java.util.EnumSet;
 
 /// Backend codegen for LIR `object_cast` (GDScript `as` to an Object target).
 ///
-/// Contract (see `frontend_cast_expression_implementation_plan.md` §3.4 / §5.4):
+/// Contract (see `frontend_cast_expression_implementation.md` §5.2 / §5.3):
 /// - class name is the canonical / Godot-facing runtime name; unresolved names fail closed
 /// - `resultId == null` is a validated no-op after checks (no runtime cast)
 /// - success keeps the validated live raw + source instance_id via `_from_raw`; failure is

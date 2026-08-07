@@ -180,7 +180,7 @@ MVP 必须覆盖以下 expected-type 来源：
 4. function return type。
 5. 已选定 exact callable 的 fixed parameter type。
 6. typed container 内嵌字面量的 element/key/value target，但仍受 nested typed container 禁止规则约束。
-7. `value as Array[T]` / `value as Dictionary[K, V]` 的 cast target。该项在当前 `as` 实现完成并稳定后接入。
+7. `value as Array[T]` / `value as Dictionary[K, V]` 的 cast target。`as` 全链路已完成（见 `frontend_cast_expression_implementation.md`）；container-literal 侧对该 expected-type 源的接通仍属本计划后续工作。
 
 以下场景不提供 typed literal context：
 
@@ -782,7 +782,7 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 5. 生成每个 operand 的 target type 与 boundary decision。
 6. `FrontendTypeCheckAnalyzer` 只消费 plan 中的 `REJECT` decisions 与 duplicate-key issues。
 7. 引入 `TypedContainerAbiSupport`，增加 nested typed container、script leaf、void/compiler-only leaf fail-closed。
-8. `as` 实现稳定后，再接通 cast target expected type。
+8. 接通 cast target expected type（`as` 事实源已稳定，见 `frontend_cast_expression_implementation.md`）。
 
 验收：
 
@@ -986,13 +986,12 @@ src/test/test_suite/unit_test/script/collection/typed_container_literal_boundari
 
 ## 10. 与 `as` 关键字工作的隔离
 
-当前工作区存在进行中的 `as` backend 工作。实施本计划时必须遵守：
+`as`（CastExpression）全链路已完成并收敛为 `frontend_cast_expression_implementation.md`。实施本计划时仍须遵守：
 
-1. 在 `as` 当前改动完成、提交或由用户明确确认稳定前，不开始修改共享 source 文件。
-2. 本计划文档不得改写 `frontend_cast_expression_implementation_plan.md`。
-3. 开始容器字面量实施前重新读取共享文件，不能基于本计划调研时的旧行号直接套 patch。
-4. 不回退、不覆盖、不整理任何不属于容器字面量的 `as` 改动。
-5. parser behavior test、纯新增 support/plan 类型可以先在独立变更中准备，但任何 shared switch、patch carrier、analysis data、type-check、CFG、LIR registry 或 CCodegen 修改都必须等待 `as` 共享文件稳定。
+1. 本计划文档不得改写 `frontend_cast_expression_implementation.md` 的稳定合同。
+2. 开始容器字面量实施前重新读取共享文件，不能基于本计划调研时的旧行号直接套 patch。
+3. 不回退、不覆盖任何已落地的 `as` 改动；只在共享 switch/registry 上追加 container-literal 路径。
+4. Cast 已离开 compile-gate temporary intercept；移除 Array/Dictionary blocker 时不得回退 Cast 放行状态。
 
 高冲突文件：
 
@@ -1004,7 +1003,7 @@ src/test/test_suite/unit_test/script/collection/typed_container_literal_boundari
 | `FrontendExprTypePatch.java` / `FrontendPublishedFactTypeGuard.java` | literal plan 需要进入 EXPR_TYPE patch/type guard | 基于 cast 完成后的 carrier 形状追加字段与 guard |
 | `FrontendTypeCheckAnalyzer.java` | cast validity 与 literal element/duplicate-key diagnostics 共用 visitor | 保留 cast visitor，只增加 plan consumer 与 nested traversal |
 | `FrontendChainReductionHelper.java` / `ScopeMethodResolver` call sites | chain overload 必须在选择前 preview literal argument | 使用共享 literal candidate comparator，不改 cast route |
-| `FrontendCompileCheckAnalyzer.java` | Cast/Array/Dictionary 共用 blocker switch | 仅移除 Array/Dictionary case，保留 Cast 当前状态 |
+| `FrontendCompileCheckAnalyzer.java` | Array/Dictionary 仍在 blocker switch；Cast 已放行 | 仅移除 Array/Dictionary case，不回退 Cast 已放行状态 |
 | `FrontendCfgGraphBuilder.java` | Cast 与 literal 都进入 buildValue | 新增独立 ContainerLiteralItem 分支，不改 CastItem |
 | `FrontendSequenceItemInsnLoweringProcessors.java` | processor registry 与 opaque classifier 共享 | 在 `as` processor 落地后追加 literal processor |
 | `CCodegen.java` | generator registry 正在被 cast backend 修改 | 等 `as` 修改稳定后追加 ContainerLiteralInsnGen |

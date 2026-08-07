@@ -205,15 +205,15 @@
 1. `ConditionalExpression`
 2. `assert`
 3. `ArrayExpression` / `DictionaryExpression`
-4. `CastExpression`（`TypeTestExpression` 已有独立的 compile-ready lowering/backend 合同）
-5. `GetNodeExpression` / `PreloadExpression`
-6. 脚本类 `static var`
+4. `GetNodeExpression` / `PreloadExpression`
+5. 脚本类 `static var`
 
 说明：
 
+- `TypeTestExpression` 与 `CastExpression` 已有独立的 compile-ready lowering/backend 合同并离开 temporary intercept 列表（见 `frontend_is_type_test_implementation.md`、`frontend_cast_expression_implementation.md`）
 - `ConditionalExpression` 依赖 frontend CFG graph / condition-evaluation-region 合同先稳定
 - `assert` 依赖 lowering/backend 的 statement 语义
-- container / cast / runtime integration / static field 相关 blocker 均应在对应 lowering/backend 设计闭环后再解除
+- container / runtime integration / static field 相关 blocker 均应在对应 lowering/backend 设计闭环后再解除
 - `for` 的 compile gate 为 route-aware policy：`ForLoweringContractRegistry` 中已注册 contract 的 route 放行，未注册 route（当前 `OBJECT_CUSTOM`）发 route-not-ready blocker；已注册 route 的 CFG/body lowering 已落地，见 `frontend_for_range_loop_implementation.md`
 
 ---

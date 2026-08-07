@@ -23,7 +23,7 @@
   - `doc/module_impl/frontend/frontend_lowering_cfg_pass_implementation.md`
   - `doc/module_impl/frontend/diagnostic_manager.md`
 - 明确非目标：
-  - `CastExpression` / `as`、`is_instance_of()` 全局函数和 `not in` 不属于本合同
+  - `CastExpression` / `as` 由独立合同 `frontend_cast_expression_implementation.md` 管理；`is_instance_of()` 全局函数和 `not in` 不属于本合同
   - path-based、autoload、global-script-class 不作为本合同额外扩展的类型来源
   - nested structured container（例如 `Array[Array[int]]`）不属于支持面
   - 不增加独立 HIR pass，也不把 type test 拆成多个 LIR opcode

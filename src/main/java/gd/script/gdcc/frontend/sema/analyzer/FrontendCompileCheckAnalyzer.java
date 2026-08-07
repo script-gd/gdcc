@@ -57,6 +57,7 @@ import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
+import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
 import org.jetbrains.annotations.NotNull;
@@ -530,10 +531,6 @@ public class FrontendCompileCheckAnalyzer {
                         getNodeExpression,
                         expressionCompileBlockedMessage("Get-node expression")
                 );
-                case CastExpression castExpression -> reportExplicitCompileBlock(
-                        castExpression,
-                        expressionCompileBlockedMessage("Cast expression")
-                );
                 default -> {
                     markCompileSurfaceNode(expression);
                     walkNestedExpressionChildren(expression);
@@ -572,6 +569,9 @@ public class FrontendCompileCheckAnalyzer {
                     continue;
                 }
                 if (isAssignmentRootCoveredByExplicitSelfPrefixDiagnostic(anchor)) {
+                    continue;
+                }
+                if (isCoveredByPropagatedValueOperandCompileBlock(anchor, publishedType)) {
                     continue;
                 }
                 if (isCoveredByStaticSelfBindingDiagnostic(publishedType.detailReason())) {
@@ -746,6 +746,45 @@ public class FrontendCompileCheckAnalyzer {
                 return null;
             }
             return selfExpression;
+        }
+
+        /// Cast/type-test roots that only echo a dependency's blocking fact must not add a second
+        /// compile_check: either the value operand already owns an upstream blocking diagnostic at
+        /// its exact range, or it carries the identical fact on compile surface and will be scanned
+        /// at its own anchor.
+        ///
+        /// Invariant / debt: only cast and type-test currently record `rootOwnsOutcome` into body
+        /// ownership and skip re-emitting root diagnostics when propagated. Binary/unary/call still
+        /// re-own the root range, so exact-range conflict dedup covers them today. If more kinds
+        /// start publishing non-root-owned facts without a matching gate path, reintroduce a shared
+        /// ownership signal (Option A) rather than growing this AST-kind switch.
+        /// Relies on `propagated(...)` forwarding the same status + detailReason as the dependency.
+        private boolean isCoveredByPropagatedValueOperandCompileBlock(
+                @NotNull Node anchor,
+                @NotNull FrontendExpressionType publishedType
+        ) {
+            if (anchor instanceof CastExpression castExpression) {
+                return isPropagatedValueOperandCovered(castExpression.value(), publishedType);
+            }
+            if (anchor instanceof TypeTestExpression typeTestExpression) {
+                return isPropagatedValueOperandCovered(typeTestExpression.value(), publishedType);
+            }
+            return false;
+        }
+
+        private boolean isPropagatedValueOperandCovered(
+                @NotNull Expression operand,
+                @NotNull FrontendExpressionType publishedType
+        ) {
+            if (hasPublishedConflictingDiagnosticAt(operand)) {
+                return true;
+            }
+            var operandType = expressionTypes.get(operand);
+            return operandType != null
+                    && operandType.status() == publishedType.status()
+                    && Objects.equals(operandType.detailReason(), publishedType.detailReason())
+                    && (compileSurfaceNodes.contains(operand)
+                    || compileSurfaceNodes.contains(compileAnchorForExpressionType(operand)));
         }
 
         /// Validate the key shape used by `expressionTypes()` before compile diagnostics rely on it.

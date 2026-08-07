@@ -44,6 +44,14 @@ public class GdScriptUnitTestCompileRunnerTest {
             "abi/variant/property_roundtrip.gd",
             "algorithm/fibonacci_sequence.gd",
             "algorithm/graph_traversal.gd",
+            "cast/builtin_identity_conversion.gd",
+            "cast/cast_result_consumers.gd",
+            "cast/engine_object_cast.gd",
+            "cast/gdcc_object_cast.gd",
+            "cast/null_freed_object_cast.gd",
+            "cast/parameterized_container_cast.gd",
+            "cast/variant_to_builtin_runtime_failure.gd",
+            "cast/variant_to_builtin_success.gd",
             "collection/array_sum_and_mutation.gd",
             "collection/dictionary_mutation_and_lookup.gd",
             "constructor/atomic_builtin_constructor_roundtrip.gd",
@@ -121,6 +129,7 @@ public class GdScriptUnitTestCompileRunnerTest {
     );
     private static final List<String> ABI_SCRIPT_PATHS = scriptPathsWithPrefix("abi/");
     private static final List<String> ALGORITHM_SCRIPT_PATHS = scriptPathsWithPrefix("algorithm/");
+    private static final List<String> CAST_SCRIPT_PATHS = scriptPathsWithPrefix("cast/");
     private static final List<String> COLLECTION_SCRIPT_PATHS = scriptPathsWithPrefix("collection/");
     private static final List<String> CONSTRUCTOR_SCRIPT_PATHS = scriptPathsWithPrefix("constructor/");
     private static final List<String> CONTROL_FLOW_SCRIPT_PATHS = scriptPathsWithPrefix("control_flow/");
@@ -153,6 +162,14 @@ public class GdScriptUnitTestCompileRunnerTest {
         return compileAndValidateBundledUnitScripts(
                 ABI_SCRIPT_PATHS,
                 "Zig not found; skipping ABI GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesCastScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                CAST_SCRIPT_PATHS,
+                "Zig not found; skipping cast GDScript compile-run tests"
         );
     }
 

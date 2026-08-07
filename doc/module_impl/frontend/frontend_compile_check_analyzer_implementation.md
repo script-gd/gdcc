@@ -25,7 +25,7 @@
 - 明确非目标：
   - 不在这里实现 frontend -> LIR lowering
   - 不在这里实现 `assert` 的 lowering 或 backend 语义
-  - 不在这里为 `ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression` 补 lowering
+  - 不在这里为 `ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression` 补 lowering
   - 不在这里把 compile-only blocker 反向回灌到 shared semantic / inspection / 未来 LSP 路径
   - 不在这里改写上游 analyzer 的 diagnostic owner，也不新增新的 semantic side table
 
@@ -161,9 +161,12 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - `DictionaryExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
-- `CastExpression`
 
 `TypeTestExpression` 不属于当前显式 compile-block 列表：shared semantic 发布 `RESOLVED(bool)` + `typeTestTargets()`，body lowering 发射统一 `is_instance_of` / 常量 bool，backend `IsInstanceOfInsnGen` 分派 + runtime helpers 已落地。
+
+`CastExpression` 同样不属于当前显式 compile-block 列表：shared semantic 发布 `RESOLVED(targetType)` 与 `sema.unsafe_cast` / `sema.type_check` diagnostic，body lowering 按 `ExplicitCastDecision` 发射 assign / pack / `builtin_cast` / `object_cast`，backend generator 与 runtime helpers 已闭环（见 `frontend_cast_expression_implementation.md`）。
+
+对仍在显式 intercept 列表中的表达式：
 
 - lowering 尚未就绪
 - 当前不能继续进入编译
@@ -342,6 +345,14 @@ compile gate 当前统一使用：
 - 这条去重只覆盖 plain `=`、单步 `AttributePropertyStep`、base 为显式 `SelfExpression` 的 direct property assignment；assignment value type incompatibility、value-required assignment、以及真正 root-owned failure 仍由 root 自身负责。
 - 该规则不改变 `resolvedMembers()` / `resolvedCalls()` 的通用扫描合同，也不把 property-initializer 普通 member/call blocker 静默吞掉。
 
+对 `CastExpression` / `TypeTestExpression` 还额外保持一条 value-operand 传播去重规则：
+
+- 若 cast / type-test root 的 non-lowering-ready fact 只是传播其 `value` operand 的同一 blocking status，generic scan 必须跳过 root 级 `sema.compile_check`。
+- 判定条件：operand exact range 已有 upstream blocking diagnostic；或 operand 在 compile surface 上携带相同 `status + detailReason` fact（自身会在 operand anchor 被扫描）。
+- 该规则覆盖 `missing as int`、`missing is int` 与链式 `(missing as int) as float` 等 dependency-propagated 场景；真正 root-owned cast/type-test failure（如未知 target type / `is null`）仍由 root 自己的 upstream diagnostic 负责，exact-range 去重继续生效。
+- 该规则不创建新 side table，不改写上游 semantic ownership，也不扩展到 binary/unary/call 等其它 propagated root。
+- **Invariant / debt：** 当前仅 cast / type-test 在 body owner 中记录 `rootOwnsOutcome=false` 并跳过 root 重发诊断；binary / unary / call 仍在 root range 重持有 diagnostic，故 exact-range 去重足够。未来若更多 kind 改为非 root-owned 发布，必须同步推广 ownership 信号给 compile gate（Option A），而不是继续按 AST kind 硬编码增长。
+
 ### 5.3 当前 published-error 匹配方式
 
 当前“已有 upstream error”按以下条件判定：
@@ -389,9 +400,9 @@ compile gate 当前统一使用：
 - `DictionaryExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
-- `CastExpression`
 
 `TypeTestExpression` 已从显式 compile-block 列表移除（见 `frontend_is_type_test_implementation.md`）。
+`CastExpression` 已从显式 compile-block 列表移除（见 `frontend_cast_expression_implementation.md`）。
 
 在满足这些条件之前，它们都必须继续由 compile-only gate 拦截，而不是因为“frontend 已识别”就提前放行。
 
@@ -402,7 +413,7 @@ compile gate 当前统一使用：
 当前 compile gate 的关键行为由以下 targeted tests 锁定：
 
 - `FrontendCompileCheckAnalyzerTest`
-  - 显式 AST compile-block
+  - 显式 AST compile-block（当前 5 类：Conditional / Array / Dictionary / Preload / GetNode；Cast 与 TypeTest 已离开 intercept）
   - short-circuit binary 不再被 compile gate 误封口
   - generic side-table blocker
   - property initializer island 上的 generic blocker
@@ -411,6 +422,8 @@ compile gate 当前统一使用：
   - `DYNAMIC` 不误判为 blocker
   - `ConditionalExpression` 只在 compile-only 路径被拦截，不污染 shared analyze
   - `assert` 继续保持 shared condition contract，只在 compile-only 路径被拦截
+  - cast / type-test value-operand 传播去重：`missing as int` / `missing is int` / 链式 `(missing as int) as float` 不在 root 补 `sema.compile_check`
+  - cast / type-test root-owned target failure 仍由 `sema.expression_resolution` 持有，exact-range 去重后无 root `compile_check`
   - for route-aware compile policy：`RANGE_CALL` / `INT_SHORTHAND` 凭已注册 contract 放行（无 `sema.compile_check`，且释放后进入 body 扫描其中 `assert` 等封口节点）；`GENERIC_VARIANT` 在 statement root 发 route-not-ready blocker 且说明缺少 lowering route；同一 ForStatement anchor 已有 upstream error 时不补发同级 `sema.compile_check`
 - `FrontendSemanticAnalyzerFrameworkTest`
   - `analyze(...)` 与 `analyzeForCompile(...)` 的分离
@@ -430,7 +443,7 @@ compile gate 当前统一使用：
 
 - frontend -> LIR lowering 入口必须强制使用 `analyzeForCompile(...)`
 - lowering 在继续前必须检查 `diagnostics().hasErrors() == false`
-- `assert` 与 6 类显式拦截表达式（`ConditionalExpression` 至 `CastExpression`）的真正 lowering/backend 支持仍待后续补齐；`TypeTestExpression` 已完成 shared semantic、CFG/body lowering 与 backend 闭环；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）
+- `assert` 与 5 类显式拦截表达式（`ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`）的真正 lowering/backend 支持仍待后续补齐；`TypeTestExpression` 与 `CastExpression` 已完成 shared semantic、CFG/body lowering 与 backend 闭环；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）
 
 若未来需要为 LSP 单独呈现 compile-only blocker，正确方向仍是：
 
