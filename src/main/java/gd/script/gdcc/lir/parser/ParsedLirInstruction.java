@@ -123,6 +123,18 @@ public record ParsedLirInstruction(
                 case GET_CLASS_NAME -> new GetClassNameInsn(resultId, ((VariableOperand) operands.getFirst()).id());
                 case OBJECT_CAST ->
                         new ObjectCastInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id());
+                case BUILTIN_CAST -> {
+                    // Result is required by LIR contract; fail parse instead of NPE from the record.
+                    if (resultId == null) {
+                        throw new LirInsnParsingException(
+                                lineNumber, columnNumber, lirLine,
+                                "builtin_cast requires a result variable");
+                    }
+                    yield new BuiltinCastInsn(
+                            resultId,
+                            ((StringOperand) operands.getFirst()).value(),
+                            ((VariableOperand) operands.get(1)).id());
+                }
                 case IS_INSTANCE_OF ->
                         new IsInstanceOfInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id());
                 case PACK_VARIANT ->

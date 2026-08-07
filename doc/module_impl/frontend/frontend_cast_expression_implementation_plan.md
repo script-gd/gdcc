@@ -4,10 +4,11 @@
 
 ## 文档状态
 
-- 状态：Phase 0–1 已完成；Phase 2+ 尚未实施
+- 状态：Phase 0–2 已完成；Phase 3+ 尚未实施
 - 调研基线：2026-08-05
 - Phase 0 完成：2026-08-06
 - Phase 1 完成：2026-08-06
+- Phase 2 完成：2026-08-07
 - Godot 对齐基线：`godotengine/godot` tag `4.7.1-stable`
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/**`
@@ -467,23 +468,27 @@ helper 本身 ownership-neutral；fat pointer 构造仍由 target-aware generate
 
 ### Phase 2：LIR 合同与 parser/serializer
 
+状态：**已完成**（2026-08-07）
+
 实施内容：
 
-- 新增 `GdInstruction.BUILTIN_CAST`。
-- 新增 `BuiltinCastInsn`。
-- 扩展 `ParsedLirInstruction`。
-- 将 `ObjectCastInsn.objectId` 重命名为 `valueId`，同步 parser/serializer/tests。
-- 更新 `doc/gdcc_low_ir.md` 中 `builtin_cast` 与 `object_cast` 合同。
-- 新增 `BuiltinCastInsnContractTest`、`ObjectCastInsnContractTest`。
+- [x] 新增 `GdInstruction.BUILTIN_CAST`。
+- [x] 新增 `BuiltinCastInsn`。
+- [x] 扩展 `ParsedLirInstruction`。
+- [x] 将 `ObjectCastInsn.objectId` 重命名为 `valueId`，同步 parser/serializer/tests。
+- [x] 更新 `doc/gdcc_low_ir.md` 中 `builtin_cast` 与 `object_cast` 合同。
+- [x] 新增 `BuiltinCastInsnContractTest`、`ObjectCastInsnContractTest`。
 
 验收细则：
 
-- 两条指令均完成 serialize/parse round-trip。
-- `builtin_cast` result required；missing result/operand/invalid operand kind 解析失败。
-- `object_cast` 保持现有文本兼容，Java API 使用 `valueId`。
-- `object_cast` 的 `className` 固定为 runtime canonical/Godot-facing class name；`builtin_cast` 接受 builtin 的稳定 `GdType.getTypeName()` 文本，参数化 `Array[T]` / `Dictionary[K, V]` 必须保留完整 declared type text。
-- parser 不重解析或重写指令类型文本；backend 对 `object_cast` 以 `ClassRegistry`/runtime name contract 做防御性校验，对 `builtin_cast` 以 builtin target 校验，失败均为 `invalidInsn`。
-- frontend published-fact guard 拒绝 compiler-only cast result；backend instruction generator 对 compiler-only locals/source/result 做 fail-fast。现有 `LirPublicAbiValidator` 继续只负责其已有 public ABI surfaces，不扩展为 instruction/local walker 的假合同。
+- [x] 两条指令均完成 serialize/parse round-trip。
+- [x] `builtin_cast` result required；missing result/operand/invalid operand kind 解析失败。
+- [x] `object_cast` 保持现有文本兼容，Java API 使用 `valueId`。
+- [x] `object_cast` 的 `className` 固定为 runtime canonical/Godot-facing class name；`builtin_cast` 接受 builtin 的稳定 `GdType.getTypeName()` 文本，参数化 `Array[T]` / `Dictionary[K, V]` 必须保留完整 declared type text。
+- [x] parser 不重解析/不重写指令类型文本（Phase 2）。
+- [ ] backend 对 `object_cast` / `builtin_cast` 做 target 防御性校验，失败为 `invalidInsn`（Phase 3）。
+- [x] frontend published-fact guard 拒绝 compiler-only cast result（既有）；`LirPublicAbiValidator` 未扩展为 instruction walker（Phase 2）。
+- [ ] backend instruction generator 对 compiler-only locals/source/result 做 fail-fast（Phase 3）。
 
 ### Phase 3：C backend 与 runtime helper
 

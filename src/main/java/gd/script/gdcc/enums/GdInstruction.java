@@ -44,6 +44,9 @@ public enum GdInstruction {
     GET_VARIANT_TYPE("get_variant_type", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE), 1, 1),
     GET_CLASS_NAME("get_class_name", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE), 1, 1),
     OBJECT_CAST("object_cast", ReturnKind.OPTIONAL, List.of(OperandKind.STRING, OperandKind.VARIABLE), 2, 2),
+    /// Runtime builtin conversion for GDScript `as` (non-Object, non-Variant target).
+    /// Target text is opaque: full `GdType.getTypeName()` including `Array[T]` / `Dictionary[K, V]`.
+    BUILTIN_CAST("builtin_cast", ReturnKind.REQUIRED, List.of(OperandKind.STRING, OperandKind.VARIABLE), 2, 2),
     IS_INSTANCE_OF("is_instance_of", ReturnKind.REQUIRED, List.of(OperandKind.STRING, OperandKind.VARIABLE), 2, 2),
     PACK_VARIANT("pack_variant", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE), 1, 1),
     UNPACK_VARIANT("unpack_variant", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE), 1, 1),

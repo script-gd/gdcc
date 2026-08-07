@@ -5,9 +5,23 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
+import java.util.Objects;
 
-public record ObjectCastInsn(@Nullable String resultId, @NotNull String className,
-                             @NotNull String objectId) implements TypeInstruction {
+/// Runtime object class cast for GDScript `as` (Object / Variant / Nil source → object target).
+///
+/// Text form: `$result = object_cast "<class_name>" $value` (opcode text unchanged).
+/// @param className must be the canonical / Godot-facing runtime name; parser stores it as opaque text.
+/// @param valueId is the source operand (renamed from historical `objectId`; source may be Object, Variant, or Nil).
+/// @param resultId is optional: null means validated no-op at the backend (no runtime cast).
+public record ObjectCastInsn(
+        @Nullable String resultId,
+        @NotNull String className,
+        @NotNull String valueId
+) implements TypeInstruction {
+    public ObjectCastInsn {
+        Objects.requireNonNull(className, "className must not be null");
+        Objects.requireNonNull(valueId, "valueId must not be null");
+    }
 
     @Override
     public GdInstruction opcode() {
@@ -16,7 +30,6 @@ public record ObjectCastInsn(@Nullable String resultId, @NotNull String classNam
 
     @Override
     public @NotNull List<Operand> operands() {
-        return List.of(new StringOperand(className), new VariableOperand(objectId));
+        return List.of(new StringOperand(className), new VariableOperand(valueId));
     }
 }
-

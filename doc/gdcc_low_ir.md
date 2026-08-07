@@ -321,9 +321,25 @@ $<result_id:String> = get_class_name $<id>
 ```
 
 #### object_cast
-Casts an Object to a specific class. If the Object is not an instance of the class, returns null.
+Runtime class cast for GDScript `as` when the target is an Object class.
+Source may be Object, Variant, or Nil (`$value_id`). Failure cases (null, freed, non-object
+Variant payload, class mismatch) yield canonical null; success returns the same instance as a
+target-typed fat pointer without changing ownership category.
+`class_name` is the canonical / Godot-facing runtime name (opaque text at parse time).
+Result is optional: missing result is a validated no-op at the backend.
 ```
-$<result_id> = object_cast "<class_name>" $<object_id>
+$<result_id:TargetObject> = object_cast "<class_name>" $<value_id>
+```
+
+#### builtin_cast
+Runtime builtin conversion for GDScript `as` when the target is a non-Object, non-Variant,
+non-Nil runtime builtin (including parameterized `Array[T]` / `Dictionary[K, V]`).
+Uses Godot `Variant::construct` / `can_convert` semantics at the backend (not exact constructor
+metadata). Target type text is opaque compile-time `GdType.getTypeName()` and is not re-resolved
+by the parser; parameterized containers keep full declared text.
+Result is required. Exact same-type and `as Variant` use `assign` / `pack_variant` instead.
+```
+$<result_id:target_type> = builtin_cast "<target_type_name>" $<value_id>
 ```
 
 #### is_instance_of
