@@ -29,6 +29,7 @@ import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
@@ -38,6 +39,7 @@ import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
+import gd.script.gdcc.lir.insn.BuiltinCastInsn;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
@@ -7375,6 +7377,63 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertNotEquals(whileRegion.conditionEntryId(), forContinueGoto.targetBbId()),
                 () -> assertEquals(whileRegion.exitId(), whileBreakGoto.targetBbId()),
                 () -> assertNotEquals(forRegion.exitId(), whileBreakGoto.targetBbId())
+        );
+    }
+
+    @Test
+    void runLowersCastAlongsideOtherExpressionsInUnifiedPass() throws Exception {
+        // Shared analyze path via prepareContext helper would use analyzeForCompile and hit the gate;
+        // run the same shared-semantic harness used by FrontendCastInsnLoweringTest-style coverage.
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_cast_integration.gd"),
+                """
+                        class_name BodyInsnCastIntegration
+                        extends Node
+                        
+                        func probe(value: int) -> float:
+                            var converted := value as float
+                            var count := 1
+                            count += 1
+                            return converted
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule(
+                "test_module",
+                List.of(unit),
+                Map.of("BodyInsnCastIntegration", "RuntimeBodyInsnCastIntegration")
+        );
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected semantic errors: " + diagnostics.snapshot());
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var probeContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCastIntegration",
+                "probe"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var function = probeContext.targetFunction();
+        var instructions = allInstructions(function);
+        var cast = requireOnlyInstruction(function, BuiltinCastInsn.class);
+        var binaryOp = requireOnlyInstruction(function, BinaryOpInsn.class);
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals("float", cast.targetTypeName()),
+                () -> assertEquals(GodotOperator.ADD, binaryOp.op()),
+                () -> assertEquals(1, countInstructions(instructions, BuiltinCastInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, BinaryOpInsn.class))
         );
     }
 

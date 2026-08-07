@@ -47,6 +47,7 @@ import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import gd.script.gdcc.util.type.ExplicitCastSupport;
 import gd.script.gdcc.util.type.TypeTestFoldResult;
 import gd.script.gdcc.util.type.TypeTestFoldUtil;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
@@ -875,11 +876,14 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
     }
 
-    /// Holds the explicit fail-fast boundary for cast items while cast lowering remains outside the
-    /// current frontend-body support surface.
+    /// Lowers `value as T` using the shared {@link ExplicitCastSupport} decision matrix.
     ///
-    /// Keeping this as its own processor keeps the unsupported route explicit in the registry instead
-    /// of burying it inside an unrelated `switch`.
+    /// Fixed contracts:
+    /// - target type is the published cast expression type (result materialization), never a re-parse
+    ///   of {@code TypeRef.sourceText()}
+    /// - source type comes from the already-lowered operand value id
+    /// - does not reuse ordinary implicit-boundary materialization
+    /// - INVALID decisions are fail-fast guard rails (type-check owns user diagnostics)
     private static final class FrontendCastInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<CastItem, Void> {
         @Override
@@ -894,7 +898,13 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @NotNull CastItem node,
                 @Nullable Void context
         ) {
-            throw session.unsupportedSequenceItem(node, "cast lowering is not implemented yet");
+            var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
+            var sourceSlotId = session.slotIdForValue(node.operandValueId());
+            var sourceType = session.requireValueType(node.operandValueId());
+            // CastItem TEMP_SLOT is already typed by expressionTypes()[CastExpression] = target type.
+            var targetType = session.requireValueType(node.resultValueId());
+            session.emitExplicitCast(block, node, resultSlotId, sourceSlotId, sourceType, targetType);
+            return block;
         }
     }
 

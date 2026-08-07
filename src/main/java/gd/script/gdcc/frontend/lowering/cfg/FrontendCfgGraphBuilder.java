@@ -1042,9 +1042,9 @@ public final class FrontendCfgGraphBuilder {
         );
     }
 
-    /// Cast expressions are still compile-blocked by the default pipeline, but the item contract is
-    /// already wired so targeted builder tests and later compile-surface expansion do not require a
-    /// structural rewrite of the frontend CFG surface.
+    /// Cast expressions keep the same “operand first, then one result item” shape as type tests.
+    /// Body lowering consumes {@link gd.script.gdcc.frontend.lowering.cfg.item.CastItem} via
+    /// {@code ExplicitCastSupport}; compile-only gate removal is a separate Phase 5 concern.
     private @NotNull ValueBuild buildCastValue(
             @NotNull BuildCursor cursor,
             @NotNull CastExpression castExpression,

@@ -7,6 +7,7 @@ import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendForSourceIteratorSlot;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
@@ -24,10 +25,13 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.AssertObjectLiveInsn;
+import gd.script.gdcc.lir.insn.AssignInsn;
+import gd.script.gdcc.lir.insn.BuiltinCastInsn;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
+import gd.script.gdcc.lir.insn.ObjectCastInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -46,6 +50,7 @@ import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.util.StringUtil;
+import gd.script.gdcc.util.type.ExplicitCastSupport;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -1148,6 +1153,56 @@ public final class FrontendBodyLoweringSession {
                         + " is not supported by frontend body lowering yet: "
                         + detail
         );
+    }
+
+    /// Emits the single LIR instruction for one explicit `as` cast.
+    ///
+    /// Decision source is only {@link ExplicitCastSupport}; ordinary implicit-boundary helpers are not
+    /// consulted. Target type text for {@link BuiltinCastInsn}/{@link ObjectCastInsn} comes from the
+    /// already-published {@link GdType}, never from a re-parse of the AST {@code TypeRef}.
+    void emitExplicitCast(
+            @NotNull LirBasicBlock block,
+            @NotNull CastItem item,
+            @NotNull String resultSlotId,
+            @NotNull String sourceSlotId,
+            @NotNull GdType sourceType,
+            @NotNull GdType targetType
+    ) {
+        var decision = ExplicitCastSupport.classify(classRegistry, sourceType, targetType);
+        switch (decision) {
+            case IDENTITY, OBJECT_UPCAST -> block.appendNonTerminatorInstruction(
+                    new AssignInsn(resultSlotId, sourceSlotId)
+            );
+            case PACK_TO_VARIANT -> block.appendNonTerminatorInstruction(
+                    new PackVariantInsn(resultSlotId, sourceSlotId)
+            );
+            case BUILTIN_RUNTIME_CAST -> block.appendNonTerminatorInstruction(
+                    new BuiltinCastInsn(resultSlotId, targetType.getTypeName(), sourceSlotId)
+            );
+            case OBJECT_RUNTIME_CAST -> {
+                // Nil/Variant/downcast: keep one ObjectCastInsn so failure always uses the shared
+                // canonical-null contract (no literal-null bypass).
+                if (!(targetType instanceof GdObjectType)) {
+                    throw unsupportedSequenceItem(
+                            item,
+                            "OBJECT_RUNTIME_CAST requires object target type, but was "
+                                    + targetType.getTypeName()
+                    );
+                }
+                block.appendNonTerminatorInstruction(new ObjectCastInsn(
+                        resultSlotId,
+                        requireClassName(targetType),
+                        sourceSlotId
+                ));
+            }
+            case INVALID -> throw unsupportedSequenceItem(
+                    item,
+                    "explicit cast is statically invalid from "
+                            + sourceType.getTypeName()
+                            + " to "
+                            + targetType.getTypeName()
+            );
+        }
     }
 
     private void requireShellOnlyTarget() {

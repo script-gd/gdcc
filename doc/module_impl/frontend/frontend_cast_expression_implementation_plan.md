@@ -4,12 +4,13 @@
 
 ## 文档状态
 
-- 状态：Phase 0–3 已完成；Phase 4+ 尚未实施
+- 状态：Phase 0–4 已完成；Phase 5+ 尚未实施
 - 调研基线：2026-08-05
 - Phase 0 完成：2026-08-06
 - Phase 1 完成：2026-08-06
 - Phase 2 完成：2026-08-07
 - Phase 3 完成：2026-08-07
+- Phase 4 完成：2026-08-07
 - Godot 对齐基线：`godotengine/godot` tag `4.7.1-stable`
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/**`
@@ -527,13 +528,15 @@ helper 本身 ownership-neutral；fat pointer 构造仍由 target-aware generate
 
 ### Phase 4：frontend body lowering
 
+状态：**已完成**（2026-08-07）
+
 实施内容：
 
-- `FrontendBodyLoweringSession` 增加 cast-specific materialization helper，但不复用 implicit boundary decision。
-- 实现 `FrontendCastInsnLoweringProcessor`。
-- 保持 `FrontendCfgGraphBuilder.buildCastValue(...)` 的现有 item 形状，仅更新过时注释。
-- 新增 `FrontendCastInsnLoweringTest`。
-- 扩展 `FrontendLoweringBodyInsnPassTest` 与 CFG builder tests。
+- [x] `FrontendBodyLoweringSession.emitExplicitCast(...)`：cast-specific decision→LIR helper；不复用 implicit boundary decision。
+- [x] 实现 `FrontendCastInsnLoweringProcessor`（读取 published source/target type，委托 session helper）。
+- [x] 保持 `FrontendCfgGraphBuilder.buildCastValue(...)` 的现有 item 形状，仅更新过时注释。
+- [x] 新增 `FrontendCastInsnLoweringTest`。
+- [x] 扩展 `FrontendLoweringBodyInsnPassTest` 与 `FrontendCfgGraphBuilderTest`。
 
 decision 到 LIR 的固定映射：
 
@@ -546,16 +549,23 @@ decision 到 LIR 的固定映射：
 
 验收细则：
 
-- operand 只求值一次，保持 source order。
-- result 始终写入 `cfg_tmp_<resultValueId>` target-typed slot。
-- `as Variant` 对 concrete source 发 `PackVariantInsn`，Variant source 直接 assign。
-- builtin hard/dynamic source 发单一 `BuiltinCastInsn`。
-- generic/different-parameter/Variant source cast 到 parameterized container 发单一 `BuiltinCastInsn`；result slot 保持完整 parameterized static type。
-- Object upcast 直接 assign，runtime downcast 发单一 `ObjectCastInsn`。
-- `Nil as Object` 固定发 `ObjectCastInsn`，由统一 object-cast failure contract 生成 canonical null；lowering 不得旁路为另一条可选 literal-null 路径。
-- cast 作为 condition 时继续走既有 condition normalization。
-- cast 作为 chain head 时 CFG 先生成 CastItem，再生成 member/call/subscript item。
-- lowering 不重新解析 `TypeRef.sourceText()`。
+- [x] operand 只求值一次，保持 source order（CFG 先求 operand，再发 CastItem）。
+- [x] result 始终写入 `cfg_tmp_<resultValueId>` target-typed slot。
+- [x] `as Variant` 对 concrete source 发 `PackVariantInsn`，Variant source 直接 assign。
+- [x] builtin hard/dynamic source 发单一 `BuiltinCastInsn`。
+- [x] generic/different-parameter/Variant source cast 到 parameterized container 发单一 `BuiltinCastInsn`；result slot 保持完整 parameterized static type。
+- [x] Object upcast 直接 assign，runtime downcast 发单一 `ObjectCastInsn`。
+- [x] `Nil as Object` 固定发 `ObjectCastInsn`，由统一 object-cast failure contract 生成 canonical null；lowering 不得旁路为另一条可选 literal-null 路径。
+- [x] cast 作为 chain head 时 CFG 先生成 CastItem，再生成 member/call/subscript item；body 消费 cast result。
+- [x] lowering 不重新解析 `TypeRef.sourceText()`（target 来自 published result materialization）。
+- [x] Phase 4 保持 compile-only gate；`analyzeForCompile` 仍对 CastExpression 发 `sema.compile_check` blocker。
+
+产出：
+
+- `FrontendBodyLoweringSession.emitExplicitCast(...)`
+- `FrontendSequenceItemInsnLoweringProcessors.FrontendCastInsnLoweringProcessor`
+- `src/test/java/gd/script/gdcc/frontend/lowering/pass/body/FrontendCastInsnLoweringTest.java`
+- 扩展：`FrontendCfgGraphBuilderTest`、`FrontendLoweringBodyInsnPassTest`
 
 ### Phase 5：解除 compile gate 与端到端验证
 
