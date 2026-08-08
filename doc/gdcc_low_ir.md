@@ -334,9 +334,8 @@ $<result_id:TargetObject> = object_cast "<class_name>" $<value_id>
 #### builtin_cast
 Runtime builtin conversion for GDScript `as` when the target is a non-Object, non-Variant,
 non-Nil runtime builtin (including parameterized `Array[T]` / `Dictionary[K, V]`).
-Uses Godot `Variant::construct` / `can_convert` semantics at the backend (not exact constructor
-metadata). Target type text is opaque compile-time `GdType.getTypeName()` and is not re-resolved
-by the parser; parameterized containers keep full declared text.
+The same as Godot `Variant::construct` / `can_convert` semantics at the backend. 
+Parameterized containers keep full declared type text.
 Result is required. Exact same-type and `as Variant` use `assign` / `pack_variant` instead.
 ```
 $<result_id:target_type> = builtin_cast "<target_type_name>" $<value_id>
