@@ -753,11 +753,10 @@ public class FrontendCompileCheckAnalyzer {
         /// its exact range, or it carries the identical fact on compile surface and will be scanned
         /// at its own anchor.
         ///
-        /// Invariant / debt: only cast and type-test currently record `rootOwnsOutcome` into body
-        /// ownership and skip re-emitting root diagnostics when propagated. Binary/unary/call still
-        /// re-own the root range, so exact-range conflict dedup covers them today. If more kinds
-        /// start publishing non-root-owned facts without a matching gate path, reintroduce a shared
-        /// ownership signal (Option A) rather than growing this AST-kind switch.
+        /// Current invariant: only cast and type-test record `rootOwnsOutcome` into body ownership
+        /// and skip re-emitting root diagnostics when propagated. Binary/unary/call still re-own the
+        /// root range, so exact-range conflict dedup covers them. Prefer a shared ownership signal
+        /// over growing this AST-kind switch if more kinds publish non-root-owned facts.
         /// Relies on `propagated(...)` forwarding the same status + detailReason as the dependency.
         private boolean isCoveredByPropagatedValueOperandCompileBlock(
                 @NotNull Node anchor,

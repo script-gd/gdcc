@@ -117,7 +117,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_explicit_blocks.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         // Remaining explicit intercepts: assert, conditional, array, dict, preload, get-node.
-        // CastExpression and TypeTestExpression have left the temporary intercept set.
+        // CastExpression and TypeTestExpression are not in the intercept set.
         assertEquals(6, compileDiagnostics.size());
         assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
@@ -139,7 +139,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileAllowsCastExpressionOnceBodyLoweringContractLands() throws Exception {
+    void analyzeForCompileAllowsCastExpression() throws Exception {
         var source = """
                 class_name CompileCheckCastExpression
                 extends RefCounted

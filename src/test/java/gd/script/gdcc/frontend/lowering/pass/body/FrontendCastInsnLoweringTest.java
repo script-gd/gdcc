@@ -42,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /// Body-lowering contract for GDScript `value as T`.
 ///
 /// Uses shared {@code analyze(...)} so tests isolate CFG/body lowering without requiring the full
-/// compile-only pipeline. Compile-gate release is covered by
+/// compile-only pipeline. Compile-gate allowance for cast is covered by
 /// {@link #analyzeForCompileAllowsCastExpression()}.
 ///
 /// Assertions key off the published {@link CastItem} result slot. A following return may emit an

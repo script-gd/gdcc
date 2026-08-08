@@ -19,7 +19,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/// Anchors the frozen Phase-2 contract for `builtin_cast`.
+/// Anchors the frozen LIR contract for `builtin_cast`.
 /// Covers opcode shape, required result, opaque target text (incl. parameterized containers),
 /// serialize/parse round-trip, and negative parse cases.
 class BuiltinCastInsnContractTest {

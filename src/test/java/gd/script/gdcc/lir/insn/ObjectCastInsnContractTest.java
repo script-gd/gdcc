@@ -19,8 +19,8 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/// Anchors the Phase-2 contract for `object_cast` after `objectId` → `valueId` rename.
-/// Text opcode and operand layout stay compatible; Java API exposes [ObjectCastInsn#valueId()].
+/// Anchors the frozen LIR contract for `object_cast`.
+/// Text opcode and operand layout use `$value`; Java API exposes [ObjectCastInsn#valueId()].
 class ObjectCastInsnContractTest {
 
     private static List<LirInstruction> parse(String input) {

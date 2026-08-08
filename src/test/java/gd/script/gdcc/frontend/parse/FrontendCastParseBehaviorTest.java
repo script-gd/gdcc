@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Freezes gdparser {@code CastExpression} AST shape for Phase 0 of explicit cast support.
+/// Freezes gdparser {@code CastExpression} AST shape for explicit cast support.
 ///
 /// Precedence, associativity, and RHS {@code TypeRef} contracts come from Godot (4.5.1/4.7.1
 /// identical for {@code as}) and the already-shipped gdparser dependency; this suite only
@@ -116,7 +116,7 @@ class FrontendCastParseBehaviorTest {
     @Test
     void missingCastTypeSpecifierProducesParseLoweringError() {
         var diagnostics = new DiagnosticManager();
-        var unit = parserService.parseUnit(Path.of("tmp", "cast_missing_type.gd"), """
+        parserService.parseUnit(Path.of("tmp", "cast_missing_type.gd"), """
                 func probe(value):
                     return value as
                 """, diagnostics);

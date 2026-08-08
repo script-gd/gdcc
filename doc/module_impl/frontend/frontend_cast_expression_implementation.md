@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（shared semantic、CFG/body lowering、`builtin_cast` / `object_cast` codegen、runtime helpers、compile-only gate 与 `cast/` 端到端测试均已纳入当前实现）
-- 更新时间：2026-08-07
+- 更新时间：2026-08-08
 - Godot 对齐基线：runtime / GDExtension ABI 固定为 `4.5.1`（`GodotVersion.V451`）；`Variant::can_convert` 矩阵与 `4.5.1-stable` / `4.7.1-stable` 源表相同（设计时对照 `4.7.1-stable` 的 `core/variant/variant.cpp` 抄录，两 tag 字节级一致）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
@@ -91,8 +91,8 @@ shared semantic 负责解析并发布 target-typed result；type-check 负责 ha
 ### 2.2 LIR 形状
 
 ```text
-$<result_id> = builtin_cast "<target_type_name>" $<value_id>
-$<result_id> = object_cast "<class_name>" $<value_id>
+$result_id = builtin_cast "<target_type_name>" $value_id
+$result_id = object_cast "<class_name>" $value_id
 ```
 
 固定约束：
@@ -125,7 +125,7 @@ $<result_id> = object_cast "<class_name>" $<value_id>
 | target 解析失败 / unknown / void / null | `sema.expression_resolution` | error | expression semantic |
 | hard source/target 且 `checkAllowed == false` | `sema.type_check` | error | type-check (`visitCastExpression`) |
 | source 为 `Variant` / `DYNAMIC` 且 target 非 `Variant` | `sema.unsafe_cast` | warning | expression publisher；与 `RESOLVED` 共存 |
-| supported cast | 无 `sema.compile_check` | — | compile gate 已放行 |
+| supported cast | 无 `sema.compile_check` | — | compile gate 不拦截 CastExpression |
 
 invalid cast 只保留 shared semantic / type-check error，不被 compile gate 重复包装。shared `analyze(...)` 与 compile-only `analyzeForCompile(...)` 的 diagnostic owner 保持分离。
 
@@ -195,7 +195,7 @@ local/property initializer、assignment RHS、return、fixed call argument、con
 
 - supported cast 不产生 `sema.compile_check`。
 - invalid cast 只保留 shared type-check / expression-resolution error。
-- 其它 temporary intercept（`ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`）以及 `assert` / route-aware `ForStatement` 仍被正确封口。
+- 当前仍被显式 intercept 的表达式（`ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`）以及 `assert` / route-aware `ForStatement` 仍被正确封口。
 
 ## 7. 核心实现落点
 
@@ -234,16 +234,6 @@ local/property initializer、assignment RHS、return、fixed call argument、con
   - `parameterized_container_cast`
 
 compile-fail 场景（unrelated hard types、unregistered script-instance-only）锚定在 frontend focused tests，不进入 test_suite。
-
-针对性测试：
-
-```text
-pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendCastParseBehaviorTest,ExplicitCastSupportTest,FrontendExpressionSemanticSupportTest,FrontendCompileCheckAnalyzerTest,FrontendCastInsnLoweringTest,BuiltinCastInsnGenTest,ObjectCastInsnGenTest
-```
-
-```text
-pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests GdScriptUnitTestCompileRunnerTest.compilesAndValidatesCastScripts
-```
 
 ## 9. 长期维护约束
 

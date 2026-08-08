@@ -1044,7 +1044,7 @@ public final class FrontendCfgGraphBuilder {
 
     /// Cast expressions keep the same “operand first, then one result item” shape as type tests.
     /// Body lowering consumes {@link gd.script.gdcc.frontend.lowering.cfg.item.CastItem} via
-    /// {@code ExplicitCastSupport}; compile-only gate removal is a separate Phase 5 concern.
+    /// {@code ExplicitCastSupport}. Compile-only gate does not intercept {@code CastExpression}.
     private @NotNull ValueBuild buildCastValue(
             @NotNull BuildCursor cursor,
             @NotNull CastExpression castExpression,
