@@ -5,10 +5,13 @@
 
 ## 文档状态
 
-- 状态：Planned / Not Implemented
+- 状态：In Progress（阶段 0 已完成 / 阶段 1–7 未实施）
 - 目标 Godot 基线：4.5.1-stable
-- gdparser 基线：0.5.2
+- gdparser 基线：0.5.3（满足阶段 0 字典 Lua-style / 混用 style 契约）
 - 计划范围：普通 executable body 与当前已支持的 property initializer island
+- 阶段进度：
+  - 阶段 0：Done — `FrontendContainerLiteralParseBehaviorTest` 16/16 全绿（gdparser 0.5.3）；Lua-style key 归一化为 `string_name` 常量；混用 style 报 `parse.lowering`；依赖已升级。
+  - 阶段 1–7：Not Started
 - 主要关联文档：
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`
@@ -113,7 +116,7 @@ Godot 行为中与本计划直接相关的结论：
 8. `Array` 与 `Array[Variant]` 等价；`Dictionary` 与 `Dictionary[Variant, Variant]` 等价。
 9. nested typed container 不属于 Godot 4.5 正式支持面。
 
-### 3.2 gdparser 0.5.2 当前 AST 事实
+### 3.2 gdparser 0.5.3 AST 事实（阶段 0 已验收）
 
 当前依赖提供以下记录：
 
@@ -123,14 +126,16 @@ record DictionaryExpression(List<DictEntry> entries, boolean openEnded, Range ra
 record DictEntry(Expression key, Expression value, Range range)
 ```
 
-`SuperIceCN/gdparser@0.5.2` 的 `CstToAstMapper` 当前行为还暴露两个实施前必须确认的问题：
+`SuperIceCN/gdparser@0.5.3` 的关键 行为（已由 `FrontendContainerLiteralParseBehaviorTest` 冻结）：
 
 1. `openEnded` 来自 `pattern_open_ending`，表达的是 `..` pattern opening，不是普通尾逗号。
-2. `DictionaryExpression` 不保留 Python-style `:` 与 Lua-style `=` 的 style 字段，`mapDictionaryEntry(...)` 直接映射 CST left/value。
+2. `DictionaryExpression` / `DictEntry` 不保留 style 字段；风格语义在 CST→AST 时已落地：
+   - Python-style `:`：key 保持 expression（`{x: 1}` → `IdentifierExpression("x")`）。
+   - Lua-style `=`：key 归一化为 `LiteralExpression(kind="string_name", sourceText=&"...")`（`{x = 1}` / `{"name" = 1}`）。
+   - 同一字典内混用 `:` / `=` → lowering ERROR（GDCC 映射为 `parse.lowering`）。
+3. Grammar（上游 tree-sitter-gdscript `c5c8fa4`）允许 Lua-style string key：`{"name" = 1}`。
 
-因此 parser 验收不能只检查“产生了 DictionaryExpression”，还必须检查 Lua-style key 是否已经被 parser 正确归一化为 `StringName` 常量语义，以及混用 style 是否在 parse 阶段报错。
-
-若 gdparser 0.5.2 无法满足第 0 阶段验收，本功能必须先在 gdparser 仓库修正 AST/mapper，再在获得修改 build 配置的明确许可后升级 GDCC 依赖。不得在 GDCC semantic 层通过 source text 猜测 `:` / `=` 风格。
+**R2 仍有效：** 不得在 GDCC semantic 层通过 source text 猜测 `:` / `=` 风格；风格语义由 gdparser 负责。
 
 ### 3.3 GDCC 当前实现缺口
 
@@ -712,29 +717,47 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 
 ## 9. 分阶段实施与验收
 
-### 阶段 0：Parser 契约验收
+### 阶段 0：Parser 契约验收 — Done
 
 实施：
 
-1. 新增 `FrontendContainerLiteralParseBehaviorTest`。
-2. 验证普通数组、字典、空字面量、嵌套字面量和尾逗号。
-3. 验证 Dictionary Python/Lua 两种 style。
-4. 验证 style 混用产生 parse error。
-5. 验证 Lua-style identifier/string key 归一化为 StringName 语义。
-6. 验证 `openEnded` 只表示 `..`，尾逗号不会设置它。
-7. 若失败，在 gdparser 修复并发布新版本；获得许可后再升级依赖。
+1. 新增 `FrontendContainerLiteralParseBehaviorTest`。 ✅
+2. 验证普通数组、字典、空字面量、嵌套字面量和尾逗号。 ✅
+3. 验证 Dictionary Python/Lua 两种 style。 ✅
+4. 验证 style 混用产生 parse error。 ✅
+5. 验证 Lua-style identifier/string key 归一化为 StringName 语义。 ✅
+6. 验证 `openEnded` 只表示 `..`，尾逗号不会设置它。 ✅
+7. 在 gdparser 0.5.3 修复并发布；GDCC 依赖升级到 `gdparser:0.5.3`。 ✅
 
 验收：
 
-- `[1, 2,]` 为 `ArrayExpression(elements=2, openEnded=false)`。
-- `{"x": 1,}` 为 `DictionaryExpression(entries=1, openEnded=false)`。
-- `{x = 1}` 的 key 不是 ordinary Identifier variable read。
-- `{x: 1, y = 2}` 产生 parse error。
-- `{1 = "x"}` 产生 parse error。
-- `{x: 1}` 保持 expression-key 语义。
-- parser error 继续映射到 `parse.lowering`，不抛 runtime exception。
+- `[1, 2,]` 为 `ArrayExpression(elements=2, openEnded=false)`。 ✅
+- `{"x": 1,}` 为 `DictionaryExpression(entries=1, openEnded=false)`。 ✅
+- `{x = 1}` 的 key 不是 ordinary Identifier variable read。 ✅ `LiteralExpression(string_name, &"x")`
+- `{x: 1, y = 2}` 产生 parse error。 ✅ `parse.lowering` ERROR
+- `{1 = "x"}` 产生 parse error。 ✅ `parse.lowering` ERROR
+- `{x: 1}` 保持 expression-key 语义。 ✅ `IdentifierExpression("x")`
+- parser error 继续映射到 `parse.lowering`，不抛 runtime exception。 ✅
 
-完成门槛：parser 契约未通过前，不开始 semantic 实施。
+回归锚点：`src/test/java/gd/script/gdcc/frontend/parse/FrontendContainerLiteralParseBehaviorTest.java`
+
+验收实测（gdparser 0.5.3，`FrontendContainerLiteralParseBehaviorTest`）：**16 tests，0 failed**。
+
+历史阻塞（gdparser 0.5.2，已在 0.5.3 解除，仅作记录）：
+
+| 原失败用例 | 期望 | 0.5.2 实际 | 0.5.3 结果 |
+| --- | --- | --- | --- |
+| `luaStyleIdentifierKeyIsStringNameConstantNotVariableRead` | key = `LiteralExpression(string_name, &"x")` | `IdentifierExpression("x")` | ✅ |
+| `luaStyleStringKeyIsStringNameConstant` | 接受并归一化为 `&"name"` | CST ERROR | ✅ |
+| `mixedDictionaryStylesProduceParseLoweringError` | `parse.lowering` ERROR | 静默接受 | ✅ |
+
+根因与修复（已落地，不得在 GDCC semantic 用源码猜测绕过，见 R2 / §3.2）：
+
+1. 同步上游 tree-sitter-gdscript（`c5c8fa4`）：`pair` 的 `=` 分支允许 `string | identifier`。
+2. `CstToAstMapper`：`=` 时合成 `string_name` 字面量；首 entry 锁定 style，混用发 ERROR。
+3. 重建 native grammar 库并发布 gdparser 0.5.3。
+
+完成门槛：✅ 已满足。允许开始阶段 1（semantic）实施。
 
 ### 阶段 1：Generic literal shared semantic
 
@@ -1044,7 +1067,7 @@ var c = ({"items": [1, 2]} as Dictionary)["items"]
 
 风险：`{name = 1}` 被解释成读取变量 `name`。
 
-防线：阶段 0 作为 hard prerequisite；不允许 GDCC 根据 source text 猜测修复。
+防线：阶段 0 作为 hard prerequisite（**已通过，gdparser 0.5.3**）；不允许 GDCC 根据 source text 猜测修复；`FrontendContainerLiteralParseBehaviorTest` 持续回归。
 
 ### R3：把 `openEnded` 当尾逗号
 

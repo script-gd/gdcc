@@ -54,7 +54,7 @@ dependencies {
     implementation("org.slf4j:slf4j-api:2.0.17")
     implementation("info.picocli:picocli:4.7.7")
     annotationProcessor("info.picocli:picocli-codegen:4.7.7")
-    implementation("com.github.SuperIceCN:gdparser:0.5.2")
+    implementation("com.github.SuperIceCN:gdparser:0.5.3")
 }
 
 tasks.test {
