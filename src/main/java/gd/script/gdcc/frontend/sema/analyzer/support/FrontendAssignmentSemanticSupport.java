@@ -269,15 +269,37 @@ public final class FrontendAssignmentSemanticSupport {
             @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver nestedResolver,
             boolean finalizeWindow
     ) {
+        return resolveAssignmentExpressionType(
+                context,
+                assignmentExpression,
+                usage,
+                (expression, finalize, _) -> nestedResolver.resolve(expression, finalize),
+                finalizeWindow
+        );
+    }
+
+    /// RHS of plain `=` receives the writable target slot as expected type so container
+    /// literals construct contextually; compound operators still type the RHS generically.
+    public static @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult resolveAssignmentExpressionType(
+            @NotNull Context context,
+            @NotNull AssignmentExpression assignmentExpression,
+            @NotNull AssignmentUsage usage,
+            @NotNull FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver nestedResolver,
+            boolean finalizeWindow
+    ) {
         var supportContext = Objects.requireNonNull(context, "context must not be null");
         var targetResult = resolveAssignmentTarget(
                 supportContext,
                 assignmentExpression.left(),
-                nestedResolver,
+                (expression, finalize) -> nestedResolver.resolve(expression, finalize, null),
                 finalizeWindow
         );
         var targetIssue = toTargetIssue(targetResult);
-        var rightType = nestedResolver.resolve(assignmentExpression.right(), finalizeWindow);
+        var rightExpectedType = "=".equals(assignmentExpression.operator())
+                && targetResult.status() == AssignmentTargetStatus.RESOLVED
+                ? targetResult.slotType()
+                : null;
+        var rightType = nestedResolver.resolve(assignmentExpression.right(), finalizeWindow, rightExpectedType);
         var dependencyIssue = firstNonResolvedDependency(rightType);
         if (targetIssue != null) {
             return expressionResult(targetIssue, targetResult.rootOwnsOutcome());

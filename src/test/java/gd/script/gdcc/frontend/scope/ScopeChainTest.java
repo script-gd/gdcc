@@ -8,6 +8,8 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -111,5 +113,25 @@ public class ScopeChainTest {
 
         assertEquals(BlockScopeKind.BLOCK_STATEMENT, block.kind());
         assertThrows(IllegalArgumentException.class, () -> block.defineLocal("dup", GdBoolType.BOOL, "second"));
+    }
+
+    @Test
+    void owningClassOrNullWalksFromBlockThroughCallableToClassScope() {
+        var registry = FrontendScopeTestSupport.createRegistry();
+        var classDef = FrontendScopeTestSupport.createClass("Hero", "Object", java.util.List.of(), java.util.List.of());
+        registry.addGdccClass(classDef);
+
+        var classScope = new ClassScope(registry, registry, classDef);
+        var callable = new CallableScope(classScope, CallableScopeKind.FUNCTION_DECLARATION);
+        var block = new BlockScope(callable, BlockScopeKind.BLOCK_STATEMENT);
+
+        assertNull(registry.currentClassOrNull());
+        assertNull(registry.owningClassOrNull());
+        assertSame(classDef, classScope.currentClassOrNull());
+        assertSame(classDef, classScope.owningClassOrNull());
+        assertNull(callable.currentClassOrNull());
+        assertSame(classDef, callable.owningClassOrNull());
+        assertNull(block.currentClassOrNull());
+        assertSame(classDef, block.owningClassOrNull());
     }
 }

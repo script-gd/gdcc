@@ -15,6 +15,7 @@ import gd.script.gdcc.frontend.sema.FrontendBodyStructuralCompleteness;
 import gd.script.gdcc.frontend.sema.FrontendInterfaceSurface;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendCallableReturnTypeSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.frontend.sema.patch.FrontendCallableExportBatch;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -115,6 +116,10 @@ public class FrontendSuiteResolver {
                 interfaceSurface.typedLexicalBaseline()
         );
         var exportBatch = new FrontendCallableExportBatch();
+        var currentCallableReturnType = FrontendCallableReturnTypeSupport.resolveReturnTypeOrNull(
+                callableOwner,
+                blockScope.owningClassOrNull()
+        );
         var context = new FrontendSuiteContext(
                 sourcePathFor(interfaceSurface, callableOwner, analysisData),
                 callableOwner,
@@ -129,7 +134,8 @@ public class FrontendSuiteResolver {
                 analysisData,
                 diagnosticManager,
                 classRegistry,
-                exportBatch
+                exportBatch,
+                currentCallableReturnType
         );
         runCallableEntryVarTypePost(context, callableOwner);
         resolveSuite(context, body);
@@ -231,6 +237,7 @@ public class FrontendSuiteResolver {
                 analysisData,
                 diagnosticManager,
                 classRegistry,
+                null,
                 null
         );
         statementResolver.resolvePropertyInitializer(context, propertyInitializer);

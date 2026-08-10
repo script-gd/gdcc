@@ -17,6 +17,7 @@ import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.util.StringUtil;
+import gd.script.gdcc.util.type.TypedContainerAbiSupport;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -25,19 +26,20 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
 
-/// Shared semantic helper for array / dictionary literals (Phase 1+: generic construction).
+/// Shared semantic helper for array / dictionary literals.
 ///
 /// Responsibilities:
-/// - resolve generic (and later contextual) construction types
+/// - resolve generic or contextual construction types from an optional expected container type
 /// - recursively type every child expression through the caller's nested resolver
-/// - build a {@link FrontendContainerLiteralPlan} when the literal root is typing-stable
-/// - fail-closed on `openEnded` pattern openings in ordinary expressions
+/// - build a `FrontendContainerLiteralPlan` when the literal root is typing-stable
+/// - fail-closed on `openEnded` pattern openings and unsupported typed-container ABI leaves
 /// - freeze directly-reducible constant duplicate-key issues into the plan
+/// - provide overload candidate ranks from element-level boundary decisions
 ///
 /// Non-responsibilities (owned elsewhere):
 /// - diagnostics emission
 /// - side-table / overlay writes
-/// - expected-type-aware cache keys and overload preview (Phase 2)
+/// - expected-type-aware owner-local cache keys (BodyExpressionResolver)
 /// - compile-gate unblock (Phase 6)
 public final class FrontendContainerLiteralSemanticSupport {
     /// Pure resolution outcome: expression fact + optional plan + root-owned diagnostic flag.
@@ -51,15 +53,43 @@ public final class FrontendContainerLiteralSemanticSupport {
         }
     }
 
+    /// Aggregate element-boundary rank used by overload selection for one candidate parameter type.
+    public record CandidateRank(boolean rejected, int worstRank, int totalRank) {
+        public static final @NotNull CandidateRank EMPTY = new CandidateRank(false, Integer.MAX_VALUE, 0);
+
+        public CandidateRank {
+            if (worstRank < 0 || totalRank < 0) {
+                throw new IllegalArgumentException("ranks must be non-negative");
+            }
+        }
+    }
+
     private FrontendContainerLiteralSemanticSupport() {
     }
 
-    /// Resolves an array literal without expected type → generic {@code Array}.
+    /// Resolves an array literal without expected type → generic `Array`.
     public static @NotNull Resolution resolveArrayExpressionType(
             @NotNull ClassRegistry classRegistry,
             @NotNull ArrayExpression arrayExpression,
             @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver nestedResolver,
             boolean finalizeWindow
+    ) {
+        return resolveArrayExpressionType(
+                classRegistry,
+                arrayExpression,
+                withoutExpected(nestedResolver),
+                finalizeWindow,
+                null
+        );
+    }
+
+    /// Resolves an array literal; `expectedType` is used only when it is a `GdArrayType`.
+    public static @NotNull Resolution resolveArrayExpressionType(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ArrayExpression arrayExpression,
+            @NotNull FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver nestedResolver,
+            boolean finalizeWindow,
+            @Nullable GdType expectedType
     ) {
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         Objects.requireNonNull(arrayExpression, "arrayExpression must not be null");
@@ -71,9 +101,16 @@ public final class FrontendContainerLiteralSemanticSupport {
             );
         }
 
+        var resultType = constructionArrayType(expectedType);
+        var abiFailure = TypedContainerAbiSupport.unsupportedConstructionReason(resultType, classRegistry);
+        if (abiFailure != null) {
+            return rootFailed(abiFailure);
+        }
+
+        var elementExpected = resultType.getValueType();
         var elementTypes = new ArrayList<FrontendExpressionType>(arrayExpression.elements().size());
         for (var element : arrayExpression.elements()) {
-            var elementType = nestedResolver.resolve(element, finalizeWindow);
+            var elementType = nestedResolver.resolve(element, finalizeWindow, elementExpected);
             var dependencyIssue = firstNonResolvedDependency(elementType);
             if (dependencyIssue != null) {
                 return propagated(dependencyIssue);
@@ -81,18 +118,34 @@ public final class FrontendContainerLiteralSemanticSupport {
             elementTypes.add(elementType);
         }
 
-        var resultType = new GdArrayType(GdVariantType.VARIANT);
         var operands = buildArrayOperands(classRegistry, elementTypes, resultType);
         var plan = new FrontendContainerLiteralPlan(resultType, operands, List.of());
         return rootResolved(resultType, plan);
     }
 
-    /// Resolves a dictionary literal without expected type → generic {@code Dictionary}.
+    /// Resolves a dictionary literal without expected type → generic `Dictionary`.
     public static @NotNull Resolution resolveDictionaryExpressionType(
             @NotNull ClassRegistry classRegistry,
             @NotNull DictionaryExpression dictionaryExpression,
             @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver nestedResolver,
             boolean finalizeWindow
+    ) {
+        return resolveDictionaryExpressionType(
+                classRegistry,
+                dictionaryExpression,
+                withoutExpected(nestedResolver),
+                finalizeWindow,
+                null
+        );
+    }
+
+    /// Resolves a dictionary literal; `expectedType` is used only when it is a `GdDictionaryType`.
+    public static @NotNull Resolution resolveDictionaryExpressionType(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull DictionaryExpression dictionaryExpression,
+            @NotNull FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver nestedResolver,
+            boolean finalizeWindow,
+            @Nullable GdType expectedType
     ) {
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         Objects.requireNonNull(dictionaryExpression, "dictionaryExpression must not be null");
@@ -104,15 +157,23 @@ public final class FrontendContainerLiteralSemanticSupport {
             );
         }
 
+        var resultType = constructionDictionaryType(expectedType);
+        var abiFailure = TypedContainerAbiSupport.unsupportedConstructionReason(resultType, classRegistry);
+        if (abiFailure != null) {
+            return rootFailed(abiFailure);
+        }
+
+        var keyExpected = resultType.getKeyType();
+        var valueExpected = resultType.getValueType();
         var keyTypes = new ArrayList<FrontendExpressionType>(dictionaryExpression.entries().size());
         var valueTypes = new ArrayList<FrontendExpressionType>(dictionaryExpression.entries().size());
         for (var entry : dictionaryExpression.entries()) {
-            var keyType = nestedResolver.resolve(entry.key(), finalizeWindow);
+            var keyType = nestedResolver.resolve(entry.key(), finalizeWindow, keyExpected);
             var keyIssue = firstNonResolvedDependency(keyType);
             if (keyIssue != null) {
                 return propagated(keyIssue);
             }
-            var valueType = nestedResolver.resolve(entry.value(), finalizeWindow);
+            var valueType = nestedResolver.resolve(entry.value(), finalizeWindow, valueExpected);
             var valueIssue = firstNonResolvedDependency(valueType);
             if (valueIssue != null) {
                 return propagated(valueIssue);
@@ -121,11 +182,173 @@ public final class FrontendContainerLiteralSemanticSupport {
             valueTypes.add(valueType);
         }
 
-        var resultType = new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
         var operands = buildDictionaryOperands(classRegistry, keyTypes, valueTypes, resultType);
         var duplicateKeyIssues = collectDuplicateKeyIssues(dictionaryExpression);
         var plan = new FrontendContainerLiteralPlan(resultType, operands, duplicateKeyIssues);
         return rootResolved(resultType, plan);
+    }
+
+    private static @NotNull FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver withoutExpected(
+            @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver nestedResolver
+    ) {
+        return (expression, finalizeWindow, _) -> nestedResolver.resolve(expression, finalizeWindow);
+    }
+
+    /// Ranks a container-literal argument against one candidate parameter type without publishing facts.
+    ///
+    /// Non-container parameter types yield a single operand boundary against the preliminary generic
+    /// container type. Family mismatch keeps the literal generic and uses ordinary boundary ranking.
+    public static @NotNull CandidateRank rankLiteralAgainstParameter(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull Expression literalExpression,
+            @NotNull List<GdType> preliminaryChildSourceTypes,
+            @NotNull GdType parameterType
+    ) {
+        Objects.requireNonNull(classRegistry, "classRegistry must not be null");
+        Objects.requireNonNull(literalExpression, "literalExpression must not be null");
+        Objects.requireNonNull(preliminaryChildSourceTypes, "preliminaryChildSourceTypes must not be null");
+        Objects.requireNonNull(parameterType, "parameterType must not be null");
+
+        if (literalExpression instanceof ArrayExpression arrayExpression) {
+            if (preliminaryChildSourceTypes.size() != arrayExpression.elements().size()) {
+                throw new IllegalArgumentException("array child source type count drifted");
+            }
+            if (!(parameterType instanceof GdArrayType parameterArray)) {
+                return rankContainerAgainstNonFamily(classRegistry, new GdArrayType(GdVariantType.VARIANT), parameterType);
+            }
+            var abiFailure = TypedContainerAbiSupport.unsupportedConstructionReason(parameterArray, classRegistry);
+            if (abiFailure != null) {
+                return new CandidateRank(true, 0, 0);
+            }
+            return rankSourceTypes(
+                    classRegistry,
+                    preliminaryChildSourceTypes,
+                    parameterArray.getValueType()
+            );
+        }
+        if (literalExpression instanceof DictionaryExpression dictionaryExpression) {
+            var expectedPairCount = dictionaryExpression.entries().size() * 2;
+            if (preliminaryChildSourceTypes.size() != expectedPairCount) {
+                throw new IllegalArgumentException("dictionary child source type count drifted");
+            }
+            if (!(parameterType instanceof GdDictionaryType parameterDictionary)) {
+                return rankContainerAgainstNonFamily(
+                        classRegistry,
+                        new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT),
+                        parameterType
+                );
+            }
+            var abiFailure = TypedContainerAbiSupport.unsupportedConstructionReason(parameterDictionary, classRegistry);
+            if (abiFailure != null) {
+                return new CandidateRank(true, 0, 0);
+            }
+            return rankDictionarySourceTypes(
+                    classRegistry,
+                    preliminaryChildSourceTypes,
+                    parameterDictionary
+            );
+        }
+        throw new IllegalArgumentException(
+                "rankLiteralAgainstParameter requires ArrayExpression or DictionaryExpression"
+        );
+    }
+
+    /// Aggregates operand ranks: REJECT eliminates; otherwise worst=min and total=sum of specificity ranks.
+    public static @NotNull CandidateRank aggregateOperandRanks(
+            @NotNull List<FrontendVariantBoundaryCompatibility.Decision> decisions
+    ) {
+        if (decisions.isEmpty()) {
+            return CandidateRank.EMPTY;
+        }
+        var rejected = false;
+        var worst = Integer.MAX_VALUE;
+        var total = 0;
+        for (var decision : decisions) {
+            if (decision == FrontendVariantBoundaryCompatibility.Decision.REJECT) {
+                rejected = true;
+            }
+            var rank = FrontendVariantBoundaryCompatibility.decisionSpecificityRank(decision);
+            worst = Math.min(worst, rank);
+            total += rank;
+        }
+        return new CandidateRank(rejected, worst == Integer.MAX_VALUE ? 0 : worst, total);
+    }
+
+    /// Prefer higher worstRank, then higher totalRank. Returns negative when left is better.
+    public static int compareCandidateRanks(@NotNull CandidateRank left, @NotNull CandidateRank right) {
+        Objects.requireNonNull(left, "left must not be null");
+        Objects.requireNonNull(right, "right must not be null");
+        if (left.rejected() != right.rejected()) {
+            return left.rejected() ? 1 : -1;
+        }
+        if (left.worstRank() != right.worstRank()) {
+            return Integer.compare(right.worstRank(), left.worstRank());
+        }
+        return Integer.compare(right.totalRank(), left.totalRank());
+    }
+
+    static @NotNull GdArrayType constructionArrayType(@Nullable GdType expectedType) {
+        if (expectedType instanceof GdArrayType arrayType) {
+            return arrayType;
+        }
+        return new GdArrayType(GdVariantType.VARIANT);
+    }
+
+    static @NotNull GdDictionaryType constructionDictionaryType(@Nullable GdType expectedType) {
+        if (expectedType instanceof GdDictionaryType dictionaryType) {
+            return dictionaryType;
+        }
+        return new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
+    }
+
+    private static @NotNull CandidateRank rankSourceTypes(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull List<GdType> sourceTypes,
+            @NotNull GdType targetType
+    ) {
+        var decisions = new ArrayList<FrontendVariantBoundaryCompatibility.Decision>(sourceTypes.size());
+        for (var sourceType : sourceTypes) {
+            decisions.add(FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                    classRegistry,
+                    sourceType,
+                    targetType
+            ));
+        }
+        return aggregateOperandRanks(decisions);
+    }
+
+    private static @NotNull CandidateRank rankDictionarySourceTypes(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull List<GdType> flatSourceTypes,
+            @NotNull GdDictionaryType parameterDictionary
+    ) {
+        var decisions = new ArrayList<FrontendVariantBoundaryCompatibility.Decision>(flatSourceTypes.size());
+        for (var i = 0; i < flatSourceTypes.size(); i += 2) {
+            decisions.add(FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                    classRegistry,
+                    flatSourceTypes.get(i),
+                    parameterDictionary.getKeyType()
+            ));
+            decisions.add(FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                    classRegistry,
+                    flatSourceTypes.get(i + 1),
+                    parameterDictionary.getValueType()
+            ));
+        }
+        return aggregateOperandRanks(decisions);
+    }
+
+    private static @NotNull CandidateRank rankContainerAgainstNonFamily(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull GdContainerType genericContainerType,
+            @NotNull GdType parameterType
+    ) {
+        var decision = FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                classRegistry,
+                genericContainerType,
+                parameterType
+        );
+        return aggregateOperandRanks(List.of(decision));
     }
 
     private static @NotNull List<OperandPlan> buildArrayOperands(
@@ -246,7 +469,7 @@ public final class FrontendContainerLiteralSemanticSupport {
         }
     }
 
-    /// Parses gdparser integer lexemes including {@code 0x}/{@code 0b}/{@code 0o} prefixes and {@code _}.
+    /// Parses gdparser integer lexemes including `0x`/`0b`/`0o` prefixes and `_`.
     private static long parseIntLiteral(@NotNull String sourceText) {
         var normalized = sourceText.replace("_", "").trim();
         if (normalized.startsWith("0x") || normalized.startsWith("0X")) {
@@ -265,7 +488,7 @@ public final class FrontendContainerLiteralSemanticSupport {
         return Double.parseDouble(sourceText.replace("_", "").trim());
     }
 
-    /// Decodes {@code ^"..."} / {@code "..."} NodePath lexemes via shared string unescape rules.
+    /// Decodes `^"..."` / `"..."` NodePath lexemes via shared string unescape rules.
     private static @Nullable String tryDecodeNodePathLexeme(@NotNull String sourceText) {
         var text = sourceText.trim();
         if (text.startsWith("^")) {
@@ -367,7 +590,7 @@ public final class FrontendContainerLiteralSemanticSupport {
             }
         }
 
-        /// Distinct from {@link IntKey}: Godot keeps int {@code 1} and float {@code 1.0} as different keys.
+        /// Distinct from `IntKey`: Godot keeps int `1` and float `1.0` as different keys.
         record FloatKey(double value) implements ConstantKey {
             @Override
             public boolean equals(Object other) {

@@ -5,14 +5,16 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 0–1 已完成 / 阶段 2–7 未实施）
+- 状态：In Progress（阶段 0–2 已完成 / Pre Phase 3 Pending / 阶段 3–7 未实施）
 - 目标 Godot 基线：4.5.1-stable
 - gdparser 基线：0.5.3（满足阶段 0 字典 Lua-style / 混用 style 契约）
 - 计划范围：普通 executable body 与当前已支持的 property initializer island
 - 阶段进度：
   - 阶段 0：Done — `FrontendContainerLiteralParseBehaviorTest` 16/16 全绿（gdparser 0.5.3）；Lua-style key 归一化为 `string_name` 常量；混用 style 报 `parse.lowering`；依赖已升级。
   - 阶段 1：Done — generic Array/Dictionary shared semantic + `FrontendContainerLiteralPlan` side-table；compile gate 仍拦截。
-  - 阶段 2–7：Not Started
+  - 阶段 2：Done — contextual typed literal + expected-type resolver/cache guard + type-check plan consumer + `TypedContainerAbiSupport`；compile gate 仍拦截。
+  - Pre Phase 3：Pending — 补齐 §5.4 合同 1/4 的 chain/constructor 侧 literal preview 与 `argumentTypes()` contextual 重写（阶段 2 遗留 deferred）；**开始阶段 3 前必须完成**。
+  - 阶段 3–7：Not Started
 - 主要关联文档：
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`
@@ -809,49 +811,148 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 .\gradlew.bat test --tests FrontendCompileCheckAnalyzerTest --no-daemon --info --console=plain
 ```
 
-### 阶段 2：Contextual typed literal 与 type-check
+### 阶段 2：Contextual typed literal 与 type-check — Done
 
 实施：
 
-1. 扩展 expected-type-aware resolver API 和 cache guard。
-2. 新增 `FrontendCallableReturnTypeSupport` 与 `FrontendSuiteContext.currentCallableReturnType` 数据通路。
-3. 接通 typed initializer、assignment、return、exact fixed call argument。
-4. 在 bare call、chain call、constructor/static call 接通 selected-call candidate preview/finalize。
-5. 生成每个 operand 的 target type 与 boundary decision。
-6. `FrontendTypeCheckAnalyzer` 只消费 plan 中的 `REJECT` decisions 与 duplicate-key issues。
-7. 引入 `TypedContainerAbiSupport`，增加 nested typed container、script leaf、void/compiler-only leaf fail-closed。
-8. 接通 cast target expected type（`as` 事实源已稳定，见 `frontend_cast_expression_implementation.md`）。
+1. 扩展 expected-type-aware resolver API 和 cache guard。 ✅ `ContextualNestedExpressionResolver`；`BodyExpressionResolver.resolveExpressionTypeExpected` + `finalExpectedTypes` fail-fast
+2. 新增 `FrontendCallableReturnTypeSupport` 与 `FrontendSuiteContext.currentCallableReturnType` 数据通路。 ✅
+3. 接通 typed initializer、assignment、return、exact fixed call argument。 ✅ local/property declared slot、`=` RHS、return value、bare exact call fixed params、chain exact call fixed params
+4. 在 bare call、chain call、constructor/static call 接通 selected-call candidate preview/finalize。 ✅ bare call 完整 element-boundary preview/rank/finalize；chain call 在 EXPR_TYPE 侧按 CHAIN_BINDING 已选 boundary finalize literal（**§5.4 合同 1/4 的 chain/constructor 侧 preview + 重写 `argumentTypes()` 迁入 Pre Phase 3**）；constructor/static 选择仍用 generic container snapshot
+5. 生成每个 operand 的 target type 与 boundary decision。 ✅ contextual construction type 写入 plan
+6. `FrontendTypeCheckAnalyzer` 只消费 plan 中的 `REJECT` decisions 与 duplicate-key issues。 ✅
+7. 引入 `TypedContainerAbiSupport`，增加 nested typed container、script leaf、void/compiler-only leaf fail-closed。 ✅
+8. 接通 cast target expected type（`as` 事实源已稳定，见 `frontend_cast_expression_implementation.md`）。 ✅ 先解析 target，再以 target 为 expected 解析 value
 
 验收：
 
-- `Array[int] = [1, 2]` 通过。
-- `Array[float] = [1, 2]` plan 含两个 `ALLOW_WITH_INTRINSIC_CAST`。
-- `Array[StringName] = ["x"]` plan 含 `ALLOW_WITH_BUILTIN_CONSTRUCTOR`。
-- `Array[int] = [variant_value]` plan 使用现有 Variant unpack boundary。
-- `Array[String] = [1]` 只在元素处产生一条 `sema.type_check` error。
-- `Dictionary[StringName, float] = {"x": 1}` 同时冻结 key constructor 与 value intrinsic cast。
-- assignment/return/fixed call parameter 均可提供 typed context。
-- bare call、chain method 与 constructor/static call overload 均根据统一 element boundary rank 选择正确 callable。
-- 多候选 preview 后只发布一个 final expression type/plan，preview cache 不进入 stable side table。
-- `f([1])`、`obj.m([1])` 与 exact constructor/static call 中，`expressionTypes[literal]`、`FrontendResolvedCall.argumentTypes()`、`containerLiteralPlans[literal].resultType()` 三者一致。
-- CHAIN_BINDING 到 EXPR_TYPE 不因 generic-first publication 触发 expected-type conflict。
-- dynamic call argument 保持 generic literal。
-- nested typed container 在 frontend 报错，不进入 backend。
-- `Array[Array]` 的 nested generic value 合法，`Array[Array[int]]` 的 nested typed leaf 非法。
-- unsupported script leaf、void/compiler-only leaf 在 frontend 报源码诊断，不进入 backend。
-- 重复 String/StringName key 报错，`1` 与 `1.0` 不误判重复。
+- `Array[int] = [1, 2]` 通过。 ✅
+- `Array[float] = [1, 2]` plan 含两个 `ALLOW_WITH_INTRINSIC_CAST`。 ✅
+- `Array[StringName] = ["x"]` plan 含 `ALLOW_WITH_BUILTIN_CONSTRUCTOR`。 ✅
+- `Array[int] = [variant_value]` plan 使用现有 Variant unpack boundary。 ✅（消费既有 matrix）
+- `Array[String] = [1]` 只在元素处产生一条 `sema.type_check` error。 ✅
+- `Dictionary[StringName, float] = {"x": 1}` 同时冻结 key constructor 与 value intrinsic cast。 ✅
+- assignment/return/fixed call parameter 均可提供 typed context。 ✅
+- bare call、chain method 与 constructor/static call overload 均根据统一 element boundary rank 选择正确 callable。 ⚠️ bare 完整 element rank + 双 overload 锚点；chain/constructor selection 仍用 generic container snapshot 排名 → **Pre Phase 3**
+- 多候选 preview 后只发布一个 final expression type/plan，preview cache 不进入 stable side table。 ✅ `finalizeWindow=false` 不写 `containerLiteralPlans`
+- `f([1])`、`obj.m([1])` 与 exact constructor/static call 中，`expressionTypes[literal]`、`FrontendResolvedCall.argumentTypes()`、`containerLiteralPlans[literal].resultType()` 三者一致。 ⚠️ bare `f([1])` 三者一致；chain `obj.m([1])` 的 `expressionTypes`/`plan` 已 contextual，但 CHAIN_BINDING 发布的 `argumentTypes()` 仍可能是 generic → **Pre Phase 3**
+- CHAIN_BINDING 到 EXPR_TYPE 不因 generic-first publication 触发 expected-type conflict。 ✅ chain 不 finalize literal；EXPR_TYPE 按 selected param finalize
+- dynamic call argument 保持 generic literal。 ✅ 无 exact boundary 时 expected=null
+- nested typed container 在 frontend 报错，不进入 backend。 ✅ root-owned FAILED + 无 plan
+- `Array[Array]` 的 nested generic value 合法，`Array[Array[int]]` 的 nested typed leaf 非法。 ✅
+- unsupported script leaf、void/compiler-only leaf 在 frontend 报源码诊断，不进入 backend。 ✅ `TypedContainerAbiSupport` fail-closed
+- 重复 String/StringName key 报错，`1` 与 `1.0` 不误判重复。 ✅ type-check 消费 plan issues
+
+落地文件：
+
+- `FrontendContainerLiteralSemanticSupport`（contextual + rank APIs）
+- `FrontendExpressionSemanticSupport` / `FrontendAssignmentSemanticSupport`（expected-aware paths）
+- `FrontendBodyOwnerProcedures.BodyExpressionResolver`（cache guard + root expected wiring）
+- `FrontendCallableReturnTypeSupport` / `FrontendSuiteContext.currentCallableReturnType`
+- `TypedContainerAbiSupport`
+- `FrontendTypeCheckAnalyzer` plan consumer
+
+回归锚点：
+
+- `FrontendContainerLiteralSemanticSupportTest` / `TypedContainerAbiSupportTest`
+- `FrontendBodyOwnerProceduresExprTypeTest`（contextual local/return/assign/cast/call）
+- `FrontendTypeCheckAnalyzerTest`（REJECT + duplicate key）
+- `FrontendExpressionSemanticSupportTest` / `FrontendAssignmentSemanticSupportTest`
+- `FrontendCompileCheckAnalyzerTest`（compile gate 仍拦截 Array/Dictionary）
 
 建议 targeted tests：
 
 ```powershell
 .\gradlew.bat test --tests FrontendContainerLiteralSemanticSupportTest --no-daemon --info --console=plain
+.\gradlew.bat test --tests TypedContainerAbiSupportTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendTypeCheckAnalyzerTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendAssignmentSemanticSupportTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendExpressionSemanticSupportTest --no-daemon --info --console=plain
-.\gradlew.bat test --tests FrontendChainReductionHelperTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendBodyOwnerProceduresExprTypeTest --no-daemon --info --console=plain
-.\gradlew.bat test --tests FrontendVariantBoundaryCompatibilityTest --no-daemon --info --console=plain
+.\gradlew.bat test --tests FrontendCompileCheckAnalyzerTest --no-daemon --info --console=plain
 ```
+
+### Pre Phase 3：chain/constructor literal preview 与 `argumentTypes()` 一致性 — Pending
+
+> **硬门槛：** 必须在阶段 3（CFG）开始前完成。  
+> 原因：CFG/lowering 会把 `FrontendResolvedCall.argumentTypes()` 当作 call-site 真源快照；若仍保留 generic `Array`/`Dictionary`，后续 materialization 与诊断会冻结错误类型。  
+> 本小节正式关闭阶段 2 遗留的 §5.4 合同 1/4 deferred 项。
+
+#### 背景（当前缺口）
+
+阶段 2 已完成：
+
+- bare call：element-boundary preview → 选择 → finalize → `argumentTypes()` / `expressionTypes` / `plan.resultType()` 三者 contextual 一致。
+- chain call（EXPR_TYPE）：读取 CHAIN_BINDING 已发布的 `exactCallableBoundary().fixedParameterTypes()`，对 literal 参数 `resolveExpressionTypeExpected`，因此 `expressionTypes[literal]` 与 `containerLiteralPlans[literal].resultType()` 已 contextual。
+- CHAIN_BINDING 不 finalize literal、不写 `containerLiteralPlans`（避免 expected-type conflict）✅。
+
+仍缺失（本阶段必须补齐）：
+
+1. chain / static method / constructor **选择**仍用 generic container snapshot 排名，无法按元素边界区分 `m(Array[int])` vs `m(Array[String])`。
+2. CHAIN_BINDING 发布的 `FrontendResolvedCall.argumentTypes()` 对 container literal 仍可能是 generic `Array`/`Dictionary`，与 EXPR_TYPE 已发布的 contextual fact 不一致。
+
+#### 实施
+
+1. 抽取/复用与 bare call **同一套** literal preview helper（`rankLiteralAgainstParameter` + child source types；`finalizeWindow=false`；禁止写 `expressionTypes`/`containerLiteralPlans`）。
+2. `FrontendChainReductionHelper` 在 instance/static/constructor 选择前，对每个候选的 container-literal 参数做 element-boundary preview/rank；`REJECT` 淘汰候选；ranking 顺序与 §5.4 一致（worstRank → totalRank → 既有 specificity）。
+3. 选中 callable 后，CHAIN_BINDING **直接**发布带 contextual `argumentTypes()` 的 `FrontendResolvedCall`（例如 `Array[int]`），不得再保留 preliminary generic snapshot。
+4. `resolveArgumentTypes(...)` 不得把 generic Array/Dictionary 当作最终 call-site snapshot；rewrite 发生在 CHAIN_BINDING 发布点（`resolvedCallTrace` / constructor RESOLVED 分支），不在 EXPR_TYPE 二次改写 call fact。
+5. EXPR_TYPE 继续以 CHAIN_BINDING 已发布的 `FrontendResolvedCall` 为真源 finalize literal；**不得**重新选 overload 或重发不同 call fact。
+6. chain 路径 preview 禁止对 container literal 做 `finalizeWindow=true` 的 retry（否则会以 `expected=null` finalize，随后 EXPR_TYPE 触发 expected-type conflict）。
+7. constructor/static call 与 instance chain 共用同一 preview + rewrite 合同。
+8. 保持 compile gate 对 Array/Dictionary 的拦截（解封仍属阶段 6）。
+
+#### 设计约束
+
+- CHAIN_BINDING 仍不得发布 EXPR_TYPE-owned `containerLiteralPlans()` / root `expressionTypes`（literal root plan 仍由 EXPR_TYPE finalize 发布）。
+- `exactCallableBoundary()` 继续表示 selected signature；`argumentTypes()` 只是 call-site 快照，二者不可互换。
+- scope 包不得依赖 parser AST；literal rank 通过 frontend 侧 helper 或 index-aware ranker 注入，避免在 `ScopeMethodResolver` 内硬编码 AST。
+- 与 bare call 的 ambiguity 合同对齐：同 rank typed-container overload 保持 ambiguity，不按声明顺序任选。
+
+#### 验收
+
+- `obj.m([1])` 在 `m(Array[int])` 与 `m(Array[String])` 间按 element boundary rank 选择正确 callable；不无条件歧义、不按声明顺序任选。
+- chain 命中后三者一致且均为 contextual：
+  - `expressionTypes[literal]`
+  - `FrontendResolvedCall.argumentTypes()[i]`
+  - `containerLiteralPlans[literal].resultType()`
+- static method chain 与 constructor/static call 的 container-literal argument 同样获得 selected exact boundary 的 contextual `argumentTypes()`。
+- speculative candidate preview 不进入 finalized cache，不写 `containerLiteralPlans()`。
+- CHAIN_BINDING → EXPR_TYPE 不因 generic-first 触发 expected-type conflict。
+- dynamic / 无 exact boundary 的 call argument 保持 generic literal。
+- `FrontendCompileCheckAnalyzer` 对 Array/Dictionary 的 blocker 仍保持拦截。
+- 阶段 2 顶部状态中本项 ⚠️ 全部翻为 ✅，并交叉引用本节。
+
+#### 主要改动落点（实施时）
+
+| 区域 | 职责 |
+| --- | --- |
+| `FrontendChainReductionHelper` | preview payload、选择路径注入 rank、发布前 rewrite `argumentTypes()` |
+| `FrontendConstructorResolutionSupport` | constructor overload 对 literal 使用同一 preview/rank |
+| shared helper（`FrontendContainerLiteralSemanticSupport` / bare-call helpers） | 复用 child-source + `rankLiteralAgainstParameter`，禁止平行第二套规则 |
+| `ScopeMethodResolver`（可选） | index-aware ranker 接口，保持 scope 层无 AST 依赖 |
+| `FrontendBodyOwnerProcedures.resolveAttributeCallArguments` | 保持 selected-boundary finalize；验证三方一致 |
+
+#### 回归锚点
+
+- chain overloaded-call：`obj.m([1])` / `obj.m(["x"])` 对 `Array[int]` vs `Array[String]`
+- static method chain 与 constructor/static call 各至少一组
+- three-way consistency：`expressionTypes` / `argumentTypes` / `plan.resultType`
+- preview 不 finalize / 不写 plan
+- 既有 bare overload + vararg 回归不回退
+- `FrontendCompileCheckAnalyzerTest` 仍绿
+
+建议 targeted tests：
+
+```powershell
+.\gradlew.bat test --tests FrontendBodyOwnerProceduresChainBindingTest --no-daemon --info --console=plain
+.\gradlew.bat test --tests FrontendBodyOwnerProceduresExprTypeTest --no-daemon --info --console=plain
+.\gradlew.bat test --tests FrontendChainReductionHelperTest --no-daemon --info --console=plain
+.\gradlew.bat test --tests FrontendExpressionSemanticSupportTest --no-daemon --info --console=plain
+.\gradlew.bat test --tests FrontendCompileCheckAnalyzerTest --no-daemon --info --console=plain
+```
+
+完成门槛：上述验收全绿后，允许开始阶段 3（CFG）。
 
 ### 阶段 3：CFG
 

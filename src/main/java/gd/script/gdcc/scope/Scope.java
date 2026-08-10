@@ -166,4 +166,29 @@ public interface Scope {
         Objects.requireNonNull(name, "name");
         return resolveTypeMeta(name, ResolveRestriction.unrestricted()).allowedValueOrNull();
     }
+
+    /// Class identity owned by this scope level only.
+    ///
+    /// Default is `null` for non-class scopes (`ClassRegistry`, block/callable layers, protocol fixtures).
+    /// Class-owning implementations override this to return their own metadata without walking parents.
+    default @Nullable ClassDef currentClassOrNull() {
+        return null;
+    }
+
+    /// Nearest owning class along the full lexical parent chain, starting at this scope.
+    ///
+    /// Used by analyzers that need the enclosing class metadata from a body/block scope
+    /// (return-slot lookup, `self` reconstruction, bare-call receiver type). Walks every parent
+    /// including nested class layers and stops at the first non-null `currentClassOrNull()`.
+    default @Nullable ClassDef owningClassOrNull() {
+        Scope current = this;
+        while (current != null) {
+            var owner = current.currentClassOrNull();
+            if (owner != null) {
+                return owner;
+            }
+            current = current.getParentScope();
+        }
+        return null;
+    }
 }

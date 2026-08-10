@@ -1837,6 +1837,54 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(expectedPropertyInitializerName, event.propertyInitializerName());
     }
 
+    @Test
+    void analyzeReportsContainerLiteralElementRejectAndDuplicateKeyFromPlan() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_container_literal_plan.gd", """
+                class_name TypeCheckContainerLiteralPlan
+                extends RefCounted
+                
+                func ping():
+                    var bad: Array[String] = [1]
+                    var dup: Dictionary = {"x": 1, "x": 2}
+                    var ok: Array[int] = [1, 2]
+                """);
+
+        // Shared semantic already ran inside prepareTypeCheckInput; re-run only type-check for isolation.
+        var typeCheckOnly = new DiagnosticManager();
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                typeCheckOnly
+        );
+
+        var typeCheckDiagnostics = diagnosticsByCategory(typeCheckOnly.snapshot(), "sema.type_check");
+        assertEquals(
+                1,
+                typeCheckDiagnostics.stream()
+                        .filter(d -> d.message().contains("Cannot have an element of type")
+                                && d.message().contains("int")
+                                && d.message().contains("Array[String]"))
+                        .count()
+        );
+        assertEquals(
+                1,
+                typeCheckDiagnostics.stream()
+                        .filter(d -> d.message().contains("was already used in this dictionary"))
+                        .count()
+        );
+        assertTrue(typeCheckDiagnostics.stream().noneMatch(d -> d.message().contains("ok")));
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var badInit = findVariable(pingFunction.body().statements(), "bad").value();
+        var badPlan = preparedInput.analysisData().containerLiteralPlans().get(badInit);
+        assertNotNull(badPlan);
+        assertEquals("Array[String]", badPlan.resultType().getTypeName());
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                preparedInput.analysisData().expressionTypes().get(badInit).status()
+        );
+    }
+
     private static @NotNull PreparedTypeCheckInput prepareTypeCheckInput(
             @NotNull String fileName,
             @NotNull String source

@@ -73,6 +73,20 @@ public class ScopeProtocolTest {
     }
 
     @Test
+    void currentClassOrNullDefaultsToNullAndOwningClassWalksParents() {
+        var rootScope = new TestScope();
+        var middleScope = new TestScope();
+        var leafScope = new TestScope();
+        middleScope.setParentScope(rootScope);
+        leafScope.setParentScope(middleScope);
+
+        assertNull(rootScope.currentClassOrNull());
+        assertNull(middleScope.currentClassOrNull());
+        assertNull(leafScope.currentClassOrNull());
+        assertNull(leafScope.owningClassOrNull());
+    }
+
+    @Test
     void resolveTypeMetaRecursesAndStaysStrict() {
         var rootScope = new TestScope();
         var middleScope = new TestScope();

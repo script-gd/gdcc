@@ -1924,6 +1924,7 @@ class FrontendSuiteResolverTest {
                 phaseInput.analysisData(),
                 phaseInput.diagnostics(),
                 phaseInput.registry(),
+                null,
                 null
         );
     }

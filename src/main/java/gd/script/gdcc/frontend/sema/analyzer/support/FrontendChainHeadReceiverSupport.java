@@ -1,6 +1,5 @@
 package gd.script.gdcc.frontend.sema.analyzer.support;
 
-import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
@@ -382,16 +381,17 @@ public final class FrontendChainHeadReceiverSupport {
 
     /// Resolves `self` for the current AST location.
     ///
-    /// `self` is not modeled as an ordinary scope value, so the helper walks outward to the nearest
-    /// enclosing `ClassScope` and synthesizes the receiver from the owning class type. This method
+    /// `self` is not modeled as an ordinary scope value, so the helper uses
+    /// `Scope.owningClassOrNull()` and synthesizes the receiver from that class type. This method
     /// also centralizes the static-context policy: when the caller says the current context is
     /// static, the same receiver is preserved but wrapped as `BLOCKED`.
     public @NotNull FrontendChainReductionHelper.ReceiverState resolveSelfReceiver(@NotNull Node selfNode) {
         if (propertyInitializerContext != null) {
             return propertyInitializerBoundaryReceiver(FrontendPropertyInitializerSupport.selfBoundaryDetail());
         }
-        var classScope = findEnclosingClassScope(scopesByAst.get(Objects.requireNonNull(selfNode, "selfNode must not be null")));
-        if (classScope == null) {
+        var scope = scopesByAst.get(Objects.requireNonNull(selfNode, "selfNode must not be null"));
+        var owningClass = scope == null ? null : scope.owningClassOrNull();
+        if (owningClass == null) {
             return new FrontendChainReductionHelper.ReceiverState(
                     FrontendChainReductionHelper.Status.UNSUPPORTED,
                     FrontendReceiverKind.UNKNOWN,
@@ -401,7 +401,7 @@ public final class FrontendChainHeadReceiverSupport {
             );
         }
         var resolvedSelf = FrontendChainReductionHelper.ReceiverState.resolvedInstance(
-                new GdObjectType(classScope.getCurrentClass().getName())
+                new GdObjectType(owningClass.getName())
         );
         if (staticContext) {
             return FrontendChainReductionHelper.ReceiverState.blockedFrom(
@@ -480,19 +480,4 @@ public final class FrontendChainHeadReceiverSupport {
         );
     }
 
-    /// Finds the nearest enclosing class boundary for `self` reconstruction.
-    ///
-    /// The walk is lexical and intentionally small: the helper only needs the owning class type, not
-    /// any broader analyzer state. Keeping this search local avoids duplicating the same "find class
-    /// scope up the parent chain" logic in every analyzer.
-    private static @Nullable ClassScope findEnclosingClassScope(@Nullable Scope scope) {
-        var current = scope;
-        while (current != null) {
-            if (current instanceof ClassScope classScope) {
-                return classScope;
-            }
-            current = current.getParentScope();
-        }
-        return null;
-    }
 }

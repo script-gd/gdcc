@@ -15,6 +15,7 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
@@ -31,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase 1 unit contracts for generic container-literal shared semantic.
+/// Phase 1–2 unit contracts for generic and contextual container-literal shared semantic.
 class FrontendContainerLiteralSemanticSupportTest {
     private static final @NotNull Range TINY = new Range(0, 1, new Point(0, 0), new Point(0, 1));
 
@@ -340,12 +341,204 @@ class FrontendContainerLiteralSemanticSupportTest {
         assertEquals(GdVariantType.VARIANT, resolution.planOrNull().operands().getFirst().sourceType());
     }
 
+    @Test
+    void contextualArrayIntUsesDirectBoundaryAndResultType() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var array = new ArrayExpression(List.of(integerLiteral("1"), integerLiteral("2")), false, TINY);
+
+        var resolution = FrontendContainerLiteralSemanticSupport.resolveArrayExpressionType(
+                registry,
+                array,
+                contextualResolvedChildren(),
+                true,
+                new GdArrayType(GdIntType.INT)
+        );
+
+        assertEquals("Array[int]", resolution.expressionType().publishedType().getTypeName());
+        assertNotNull(resolution.planOrNull());
+        assertEquals(
+                FrontendVariantBoundaryCompatibility.Decision.ALLOW_DIRECT,
+                resolution.planOrNull().operands().getFirst().decision()
+        );
+        assertEquals(GdIntType.INT, resolution.planOrNull().operands().getFirst().targetType());
+    }
+
+    @Test
+    void contextualArrayFloatFromIntUsesIntrinsicCast() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var array = new ArrayExpression(List.of(integerLiteral("1"), integerLiteral("2")), false, TINY);
+
+        var resolution = FrontendContainerLiteralSemanticSupport.resolveArrayExpressionType(
+                registry,
+                array,
+                contextualResolvedChildren(),
+                true,
+                new GdArrayType(GdFloatType.FLOAT)
+        );
+
+        assertEquals("Array[float]", resolution.expressionType().publishedType().getTypeName());
+        assertNotNull(resolution.planOrNull());
+        assertEquals(2, resolution.planOrNull().operands().size());
+        for (var operand : resolution.planOrNull().operands()) {
+            assertEquals(FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_INTRINSIC_CAST, operand.decision());
+            assertEquals(GdFloatType.FLOAT, operand.targetType());
+        }
+    }
+
+    @Test
+    void contextualArrayStringNameFromStringUsesBuiltinConstructor() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var array = new ArrayExpression(List.of(stringLiteral("\"x\"")), false, TINY);
+
+        var resolution = FrontendContainerLiteralSemanticSupport.resolveArrayExpressionType(
+                registry,
+                array,
+                contextualResolvedChildren(),
+                true,
+                new GdArrayType(GdStringNameType.STRING_NAME)
+        );
+
+        assertEquals("Array[StringName]", resolution.expressionType().publishedType().getTypeName());
+        assertNotNull(resolution.planOrNull());
+        assertEquals(
+                FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_BUILTIN_CONSTRUCTOR,
+                resolution.planOrNull().operands().getFirst().decision()
+        );
+    }
+
+    @Test
+    void contextualArrayStringFromIntIsRejectInPlan() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var array = new ArrayExpression(List.of(integerLiteral("1")), false, TINY);
+
+        var resolution = FrontendContainerLiteralSemanticSupport.resolveArrayExpressionType(
+                registry,
+                array,
+                contextualResolvedChildren(),
+                true,
+                new GdArrayType(GdStringType.STRING)
+        );
+
+        // Root keeps contextual type; type-check owns the REJECT diagnostic.
+        assertEquals("Array[String]", resolution.expressionType().publishedType().getTypeName());
+        assertNotNull(resolution.planOrNull());
+        assertEquals(
+                FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                resolution.planOrNull().operands().getFirst().decision()
+        );
+    }
+
+    @Test
+    void nonArrayExpectedTypeDoesNotRewriteFamily() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var array = new ArrayExpression(List.of(integerLiteral("1")), false, TINY);
+
+        var resolution = FrontendContainerLiteralSemanticSupport.resolveArrayExpressionType(
+                registry,
+                array,
+                contextualResolvedChildren(),
+                true,
+                GdStringType.STRING
+        );
+
+        assertEquals("Array", resolution.expressionType().publishedType().getTypeName());
+        assertTrue(((GdArrayType) resolution.expressionType().publishedType()).isGenericArray());
+    }
+
+    @Test
+    void nestedTypedArrayConstructionFailsClosedWithoutPlan() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var array = new ArrayExpression(List.of(), false, TINY);
+
+        var resolution = FrontendContainerLiteralSemanticSupport.resolveArrayExpressionType(
+                registry,
+                array,
+                contextualResolvedChildren(),
+                true,
+                new GdArrayType(new GdArrayType(GdIntType.INT))
+        );
+
+        assertEquals(FrontendExpressionTypeStatus.FAILED, resolution.expressionType().status());
+        assertTrue(resolution.expressionType().detailReason().contains("Nested typed container"));
+        assertNull(resolution.planOrNull());
+    }
+
+    @Test
+    void nestedGenericArrayElementIsAllowed() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var array = new ArrayExpression(List.of(), false, TINY);
+
+        var resolution = FrontendContainerLiteralSemanticSupport.resolveArrayExpressionType(
+                registry,
+                array,
+                contextualResolvedChildren(),
+                true,
+                new GdArrayType(new GdArrayType(GdVariantType.VARIANT))
+        );
+
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, resolution.expressionType().status());
+        assertEquals("Array[Array]", resolution.expressionType().publishedType().getTypeName());
+        assertNotNull(resolution.planOrNull());
+    }
+
+    @Test
+    void contextualDictionaryFreezesKeyConstructorAndValueIntrinsic() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var dict = new DictionaryExpression(
+                List.of(new DictEntry(stringLiteral("\"x\""), integerLiteral("1"), TINY)),
+                false,
+                TINY
+        );
+
+        var resolution = FrontendContainerLiteralSemanticSupport.resolveDictionaryExpressionType(
+                registry,
+                dict,
+                contextualResolvedChildren(),
+                true,
+                new GdDictionaryType(GdStringNameType.STRING_NAME, GdFloatType.FLOAT)
+        );
+
+        assertEquals("Dictionary[StringName, float]", resolution.expressionType().publishedType().getTypeName());
+        assertNotNull(resolution.planOrNull());
+        assertEquals(2, resolution.planOrNull().operands().size());
+        assertEquals(
+                FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_BUILTIN_CONSTRUCTOR,
+                resolution.planOrNull().operands().getFirst().decision()
+        );
+        assertEquals(
+                FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_INTRINSIC_CAST,
+                resolution.planOrNull().operands().get(1).decision()
+        );
+    }
+
+    @Test
+    void rankLiteralAgainstTypedArrayRejectsIncompatibleElements() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var array = new ArrayExpression(List.of(integerLiteral("1")), false, TINY);
+
+        var accepted = FrontendContainerLiteralSemanticSupport.rankLiteralAgainstParameter(
+                registry,
+                array,
+                List.of(GdIntType.INT),
+                new GdArrayType(GdIntType.INT)
+        );
+        assertFalse(accepted.rejected());
+
+        var rejected = FrontendContainerLiteralSemanticSupport.rankLiteralAgainstParameter(
+                registry,
+                array,
+                List.of(GdIntType.INT),
+                new GdArrayType(GdStringType.STRING)
+        );
+        assertTrue(rejected.rejected());
+    }
+
     private static @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver resolvedChildren() {
         return (expression, finalizeWindow) -> {
             if (expression instanceof LiteralExpression literal) {
                 return switch (literal.kind()) {
                     case "integer", "number" -> FrontendExpressionType.resolved(GdIntType.INT);
-                    case "float" -> FrontendExpressionType.resolved(gd.script.gdcc.type.GdFloatType.FLOAT);
+                    case "float" -> FrontendExpressionType.resolved(GdFloatType.FLOAT);
                     case "string" -> FrontendExpressionType.resolved(GdStringType.STRING);
                     case "string_name" -> FrontendExpressionType.resolved(GdStringNameType.STRING_NAME);
                     default -> FrontendExpressionType.resolved(GdVariantType.VARIANT);
@@ -353,6 +546,10 @@ class FrontendContainerLiteralSemanticSupportTest {
             }
             return FrontendExpressionType.resolved(GdVariantType.VARIANT);
         };
+    }
+
+    private static @NotNull FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver contextualResolvedChildren() {
+        return (expression, finalizeWindow, expectedType) -> resolvedChildren().resolve(expression, finalizeWindow);
     }
 
     private static @NotNull LiteralExpression integerLiteral(@NotNull String sourceText) {

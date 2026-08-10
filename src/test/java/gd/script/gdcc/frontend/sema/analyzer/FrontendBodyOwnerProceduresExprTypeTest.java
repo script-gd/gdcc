@@ -26,11 +26,13 @@ import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
@@ -2664,6 +2666,215 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                         .anyMatch(diagnostic -> diagnostic.category().equals("sema.variable_binding")
                                 && diagnostic.message().contains("shadows outer local 'value'"))
         );
+    }
+
+    @Test
+    void analyzePublishesContextualTypedArrayLiteralFromLocalInitializer() throws Exception {
+        var analyzed = analyze(
+                "expr_type_contextual_array_local.gd",
+                """
+                        class_name ExprTypeContextualArrayLocal
+                        extends RefCounted
+                        
+                        func ping():
+                            var values: Array[int] = [1, 2]
+                            var floats: Array[float] = [1, 2]
+                            var generic := [1, 2]
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var valuesInit = findVariable(pingFunction.body().statements(), "values").value();
+        var floatsInit = findVariable(pingFunction.body().statements(), "floats").value();
+        var genericInit = findVariable(pingFunction.body().statements(), "generic").value();
+
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(valuesInit).publishedType().getTypeName());
+        assertEquals("Array[float]", analyzed.analysisData().expressionTypes().get(floatsInit).publishedType().getTypeName());
+        assertEquals("Array", analyzed.analysisData().expressionTypes().get(genericInit).publishedType().getTypeName());
+
+        var valuesPlan = analyzed.analysisData().containerLiteralPlans().get(valuesInit);
+        var floatsPlan = analyzed.analysisData().containerLiteralPlans().get(floatsInit);
+        assertNotNull(valuesPlan);
+        assertNotNull(floatsPlan);
+        assertEquals(
+                gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility.Decision.ALLOW_DIRECT,
+                valuesPlan.operands().getFirst().decision()
+        );
+        assertEquals(
+                gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_INTRINSIC_CAST,
+                floatsPlan.operands().getFirst().decision()
+        );
+    }
+
+    @Test
+    void analyzePublishesContextualTypedArrayLiteralFromReturnAndAssignment() throws Exception {
+        var analyzed = analyze(
+                "expr_type_contextual_array_return_assign.gd",
+                """
+                        class_name ExprTypeContextualArrayReturnAssign
+                        extends RefCounted
+                        
+                        func make() -> Array[int]:
+                            return [1, 2]
+                        
+                        func ping():
+                            var values: Array[float]
+                            values = [1, 2]
+                        """
+        );
+
+        var makeFunction = findFunction(analyzed.ast(), "make");
+        var returnStmt = assertInstanceOf(
+                ReturnStatement.class,
+                makeFunction.body().statements().getFirst()
+        );
+        var returnPlan = analyzed.analysisData().containerLiteralPlans().get(returnStmt.value());
+        assertNotNull(returnPlan);
+        assertEquals("Array[int]", returnPlan.resultType().getTypeName());
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var assignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        var assignPlan = analyzed.analysisData().containerLiteralPlans().get(assignment.right());
+        assertNotNull(assignPlan);
+        assertEquals("Array[float]", assignPlan.resultType().getTypeName());
+        assertEquals(
+                gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_INTRINSIC_CAST,
+                assignPlan.operands().getFirst().decision()
+        );
+    }
+
+    @Test
+    void analyzePublishesContextualTypedArrayLiteralFromCastTarget() throws Exception {
+        var analyzed = analyze(
+                "expr_type_contextual_array_cast.gd",
+                """
+                        class_name ExprTypeContextualArrayCast
+                        extends RefCounted
+                        
+                        func ping():
+                            var values := [1, 2] as Array[int]
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var cast = assertInstanceOf(
+                CastExpression.class,
+                findVariable(pingFunction.body().statements(), "values").value()
+        );
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(cast).publishedType().getTypeName());
+        var plan = analyzed.analysisData().containerLiteralPlans().get(cast.value());
+        assertNotNull(plan);
+        assertEquals("Array[int]", plan.resultType().getTypeName());
+    }
+
+    @Test
+    void analyzePublishesContextualTypedArrayLiteralFromExactCallArgument() throws Exception {
+        var analyzed = analyze(
+                "expr_type_contextual_array_call_arg.gd",
+                """
+                        class_name ExprTypeContextualArrayCallArg
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> void:
+                            pass
+                        
+                        func ping():
+                            take([1, 2])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var call = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        var literal = call.arguments().getFirst();
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(literal).publishedType().getTypeName());
+        var plan = analyzed.analysisData().containerLiteralPlans().get(literal);
+        assertNotNull(plan);
+        assertEquals("Array[int]", plan.resultType().getTypeName());
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(call);
+        assertNotNull(resolvedCall);
+        assertEquals("Array[int]", resolvedCall.argumentTypes().getFirst().getTypeName());
+    }
+
+    @Test
+    void analyzeSelectsBareOverloadByContainerLiteralElementBoundary() throws Exception {
+        var analyzed = analyze(
+                "expr_type_container_literal_overload.gd",
+                """
+                        class_name ExprTypeContainerLiteralOverload
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> int:
+                            return 1
+                        
+                        func take(values: Array[String]) -> int:
+                            return 2
+                        
+                        func ping():
+                            take([1])
+                            take(["x"])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var firstCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        var secondCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(firstCall.arguments().getFirst())
+                .publishedType().getTypeName());
+        assertEquals("Array[String]", analyzed.analysisData().expressionTypes().get(secondCall.arguments().getFirst())
+                .publishedType().getTypeName());
+        assertEquals("Array[int]", analyzed.analysisData().resolvedCalls().get(firstCall).argumentTypes().getFirst()
+                .getTypeName());
+        assertEquals("Array[String]", analyzed.analysisData().resolvedCalls().get(secondCall).argumentTypes().getFirst()
+                .getTypeName());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(firstCall).status());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(secondCall).status());
+    }
+
+    @Test
+    void analyzeKeepsVarargBareCallApplicableWithExtraArguments() throws Exception {
+        var analyzed = analyze(
+                "expr_type_vararg_print_still_works.gd",
+                """
+                        class_name ExprTypeVarargPrintStillWorks
+                        extends RefCounted
+                        
+                        func ping():
+                            print(1, 2)
+                            print([1], 2)
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var firstCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        var secondCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(firstCall).status());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(secondCall).status());
+        // print(...) has no fixed parameters, so the literal gets no typed context and stays generic Array.
+        assertEquals("Array", analyzed.analysisData().expressionTypes().get(secondCall.arguments().getFirst())
+                .publishedType().getTypeName());
     }
 
     private static @NotNull AnalyzedScript analyze(

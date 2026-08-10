@@ -618,7 +618,7 @@ public final class FrontendAnalysisData {
         return true;
     }
 
-    static boolean sameType(@Nullable GdType first, @Nullable GdType second) {
+    public static boolean sameType(@Nullable GdType first, @Nullable GdType second) {
         if (first == null || second == null) {
             return first == second;
         }

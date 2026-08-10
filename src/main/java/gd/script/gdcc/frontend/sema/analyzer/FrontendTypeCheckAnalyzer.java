@@ -6,16 +6,19 @@ import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
+import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendForLoopSupport;
 import gd.script.gdcc.frontend.sema.FrontendIterableSemantics;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendCallableReturnTypeSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.PropertyDef;
@@ -30,12 +33,14 @@ import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.util.type.ExplicitCastSupport;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
+import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.ElifClause;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -290,10 +295,11 @@ public class FrontendTypeCheckAnalyzer {
         }
     }
 
-    /// Walks one expression tree and type-checks every nested {@link CastExpression}.
+    /// Walks one expression tree and type-checks nested casts and published container-literal plans.
     ///
-    /// Static hard-pair validity uses {@link ExplicitCastSupport}; unstable value operands keep
-    /// their upstream diagnostic owner and are skipped here.
+    /// Static hard-pair validity uses `ExplicitCastSupport`; unstable value operands keep
+    /// their upstream diagnostic owner and are skipped here. Container-literal REJECT / duplicate-key
+    /// issues are consumed only from the published plan (no second key reduction).
     protected void visitNestedCastExpressions(
             @NotNull TypeCheckAccess access,
             @Nullable Expression expression
@@ -305,6 +311,9 @@ public class FrontendTypeCheckAnalyzer {
         if (expression instanceof CastExpression castExpression) {
             visitCastExpression(access, castExpression);
         }
+        if (expression instanceof ArrayExpression || expression instanceof DictionaryExpression) {
+            visitContainerLiteralPlan(access, expression);
+        }
         for (var child : expression.getChildren()) {
             if (child instanceof Expression childExpression) {
                 visitNestedCastExpressions(access, childExpression);
@@ -312,10 +321,99 @@ public class FrontendTypeCheckAnalyzer {
         }
     }
 
+    /// Emits element/key/value REJECT and frozen duplicate-key diagnostics for one published plan.
+    protected void visitContainerLiteralPlan(
+            @NotNull TypeCheckAccess access,
+            @NotNull Expression literalExpression
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(literalExpression, "literalExpression must not be null");
+        var plan = access.analysisData().containerLiteralPlans().get(literalExpression);
+        if (plan == null) {
+            // Unstable / openEnded / ABI-failed roots publish no plan; upstream owns diagnostics.
+            return;
+        }
+        var resultType = plan.resultType();
+        for (var operand : plan.operands()) {
+            if (operand.decision() != FrontendVariantBoundaryCompatibility.Decision.REJECT) {
+                continue;
+            }
+            // Upstream FAILED/BLOCKED children do not appear in plans; only stable REJECT boundaries.
+            var message = switch (operand.role()) {
+                case ARRAY_ELEMENT -> "Cannot have an element of type \""
+                        + operand.sourceType().getTypeName()
+                        + "\" in an array of type \""
+                        + resultType.getTypeName()
+                        + "\".";
+                case DICTIONARY_KEY -> "Cannot have a key of type \""
+                        + operand.sourceType().getTypeName()
+                        + "\" in a dictionary of type \""
+                        + resultType.getTypeName()
+                        + "\".";
+                case DICTIONARY_VALUE -> "Cannot have a value of type \""
+                        + operand.sourceType().getTypeName()
+                        + "\" in a dictionary of type \""
+                        + resultType.getTypeName()
+                        + "\".";
+            };
+            var anchor = operandAnchorExpression(literalExpression, operand);
+            access.diagnosticManager().error(
+                    TYPE_CHECK_CATEGORY,
+                    message,
+                    access.sourcePath(),
+                    FrontendRange.fromAstRange(anchor.range())
+            );
+        }
+        for (var issue : plan.duplicateKeyIssues()) {
+            var anchor = dictionaryEntryKeyExpression(literalExpression, issue.duplicateEntryIndex());
+            access.diagnosticManager().error(
+                    TYPE_CHECK_CATEGORY,
+                    "Key " + issue.keyDisplay()
+                            + " was already used in this dictionary; first occurrence is entry #"
+                            + (issue.firstEntryIndex() + 1),
+                    access.sourcePath(),
+                    FrontendRange.fromAstRange(anchor.range())
+            );
+        }
+    }
+
+    private static @NotNull Expression operandAnchorExpression(
+            @NotNull Expression literalExpression,
+            @NotNull FrontendContainerLiteralPlan.OperandPlan operand
+    ) {
+        if (literalExpression instanceof ArrayExpression arrayExpression) {
+            return arrayExpression.elements().get(operand.sourceIndex());
+        }
+        if (literalExpression instanceof DictionaryExpression dictionaryExpression) {
+            var entry = dictionaryExpression.entries().get(operand.sourceIndex());
+            return switch (operand.role()) {
+                case DICTIONARY_KEY -> entry.key();
+                case DICTIONARY_VALUE -> entry.value();
+                case ARRAY_ELEMENT -> throw new IllegalStateException(
+                        "ARRAY_ELEMENT role cannot appear on a dictionary literal plan"
+                );
+            };
+        }
+        throw new IllegalStateException(
+                "Container literal plan attached to non-container expression: "
+                        + literalExpression.getClass().getSimpleName()
+        );
+    }
+
+    private static @NotNull Expression dictionaryEntryKeyExpression(
+            @NotNull Expression literalExpression,
+            int entryIndex
+    ) {
+        if (!(literalExpression instanceof DictionaryExpression dictionaryExpression)) {
+            throw new IllegalStateException("Duplicate key issues require a DictionaryExpression");
+        }
+        return dictionaryExpression.entries().get(entryIndex).key();
+    }
+
     /// Validates one published `value as T` against the shared explicit-cast classifier.
     ///
     /// Emits `sema.type_check` only when both source and target facts are hard/stable and
-    /// {@link ExplicitCastSupport#checkAllowed} rejects the pair. Runtime-open sources are not
+    /// `ExplicitCastSupport.checkAllowed` rejects the pair. Runtime-open sources are not
     /// rejected here (`sema.unsafe_cast` is owned by expression publication).
     protected void visitCastExpression(
             @NotNull TypeCheckAccess access,
@@ -1182,24 +1280,7 @@ public class FrontendTypeCheckAnalyzer {
         }
 
         private @NotNull GdType resolveFunctionReturnSlot(@NotNull FunctionDeclaration functionDeclaration) {
-            Objects.requireNonNull(functionDeclaration, "functionDeclaration must not be null");
-            if (functionDeclaration.name().equals("_init")) {
-                return GdVoidType.VOID;
-            }
-            var currentClassDef = Objects.requireNonNull(
-                    currentClass,
-                    "currentClass must not be null while resolving function return slot"
-            );
-            return currentClassDef.getFunctions().stream()
-                    .filter(function -> function.getName().equals(functionDeclaration.name()))
-                    .filter(function -> function.isStatic() == functionDeclaration.isStatic())
-                    .filter(function -> function.getParameterCount() == functionDeclaration.parameters().size())
-                    .findFirst()
-                    .orElseThrow(() -> new IllegalStateException(
-                            "Function skeleton has not been published for: "
-                                    + currentClassDef.getName() + "." + functionDeclaration.name()
-                    ))
-                    .getReturnType();
+            return FrontendCallableReturnTypeSupport.resolveFunctionReturnSlot(functionDeclaration, currentClass);
         }
 
         private @NotNull ClassScope requireClassScope(@NotNull Node classOwner) {

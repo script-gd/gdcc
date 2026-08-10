@@ -12,7 +12,6 @@ import gd.script.gdcc.frontend.sema.FrontendModuleSkeleton;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
-import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
@@ -78,6 +77,18 @@ public final class FrontendExpressionSemanticSupport {
     @FunctionalInterface
     public interface NestedExpressionResolver {
         @NotNull FrontendExpressionType resolve(@NotNull Expression expression, boolean finalizeWindow);
+    }
+
+    /// Expected-type-aware nested resolver for container literals and other contextual roots.
+    /// Call sites must pass a real implementation (e.g. `this::resolveExpressionTypeExpected`);
+    /// do not wrap `NestedExpressionResolver` via a silent default that drops expected types.
+    @FunctionalInterface
+    public interface ContextualNestedExpressionResolver {
+        @NotNull FrontendExpressionType resolve(
+                @NotNull Expression expression,
+                boolean finalizeWindow,
+                @Nullable GdType expectedType
+        );
     }
 
     private enum MatchPreference {
@@ -284,28 +295,49 @@ public final class FrontendExpressionSemanticSupport {
             boolean resolveArgumentsWhenCalleeUnresolved,
             boolean finalizeWindow
     ) {
+        return resolveCallExpressionType(
+                callExpression,
+                (expression, finalize, _) -> nestedResolver.resolve(expression, finalize),
+                resolveArgumentsWhenCalleeUnresolved,
+                finalizeWindow
+        );
+    }
+
+    /// Expected-aware bare-call path: container-literal arguments are previewed per candidate, then
+    /// finalized with the selected fixed parameter types so published plans stay contextual.
+    public @NotNull ExpressionSemanticResult resolveCallExpressionType(
+            @NotNull CallExpression callExpression,
+            @NotNull ContextualNestedExpressionResolver nestedResolver,
+            boolean resolveArgumentsWhenCalleeUnresolved,
+            boolean finalizeWindow
+    ) {
         if (callExpression.callee() instanceof IdentifierExpression bareCallee) {
             var bareBinding = bindingFor(bareCallee);
             if (bareBinding != null && bareBinding.kind() == FrontendBindingKind.TYPE_META) {
-                var argumentResolution = resolveCallArgumentTypes(callExpression.arguments(), nestedResolver, finalizeWindow);
+                var argumentResolution = resolveCallArgumentTypes(
+                        callExpression.arguments(),
+                        nestedResolver,
+                        finalizeWindow
+                );
                 if (argumentResolution.issue() != null) {
                     return propagated(argumentResolution.issue());
                 }
                 return resolveBareTypeMetaConstructorCallExpression(bareCallee, argumentResolution.argumentTypes());
             }
-            var calleeType = nestedResolver.resolve(bareCallee, finalizeWindow);
+            var calleeType = nestedResolver.resolve(bareCallee, finalizeWindow, null);
             if (calleeType.status() != FrontendExpressionTypeStatus.RESOLVED
                     && !shouldContinueBlockedBareCallResolution(bareCallee, calleeType)) {
                 return propagated(calleeType);
             }
-            var argumentResolution = resolveCallArgumentTypes(callExpression.arguments(), nestedResolver, finalizeWindow);
-            if (argumentResolution.issue() != null) {
-                return propagated(argumentResolution.issue());
-            }
-            return resolveBareIdentifierCallExpression(bareCallee, argumentResolution.argumentTypes());
+            return resolveBareIdentifierCallWithLiteralContext(
+                    bareCallee,
+                    callExpression.arguments(),
+                    nestedResolver,
+                    finalizeWindow
+            );
         }
 
-        var calleeType = nestedResolver.resolve(callExpression.callee(), finalizeWindow);
+        var calleeType = nestedResolver.resolve(callExpression.callee(), finalizeWindow, null);
         if (!resolveArgumentsWhenCalleeUnresolved
                 && calleeType.status() != FrontendExpressionTypeStatus.RESOLVED) {
             return propagated(calleeType);
@@ -693,40 +725,80 @@ public final class FrontendExpressionSemanticSupport {
         return rootOutcome(FrontendExpressionType.deferred(detailReason));
     }
 
-    /// Resolves an array literal to generic {@code Array} (Phase 1; no expected-type context yet).
-    ///
-    /// - types every element through {@code nestedResolver}
-    /// - fail-closes on {@code openEnded} pattern openings
-    /// - publishes a {@link FrontendContainerLiteralPlan} only when the root is typing-stable
-    /// - never emits diagnostics and never writes side tables
+    /// Resolves an array literal (generic or contextual) through `FrontendContainerLiteralSemanticSupport`.
     public @NotNull ExpressionSemanticResult resolveArrayExpressionType(
             @NotNull ArrayExpression arrayExpression,
             @NotNull NestedExpressionResolver nestedResolver,
             boolean finalizeWindow
     ) {
+        return resolveArrayExpressionType(arrayExpression, nestedResolver, finalizeWindow, null);
+    }
+
+    public @NotNull ExpressionSemanticResult resolveArrayExpressionType(
+            @NotNull ArrayExpression arrayExpression,
+            @NotNull NestedExpressionResolver nestedResolver,
+            boolean finalizeWindow,
+            @Nullable GdType expectedType
+    ) {
+        return resolveArrayExpressionType(
+                arrayExpression,
+                (expression, finalize, _) -> nestedResolver.resolve(expression, finalize),
+                finalizeWindow,
+                expectedType
+        );
+    }
+
+    public @NotNull ExpressionSemanticResult resolveArrayExpressionType(
+            @NotNull ArrayExpression arrayExpression,
+            @NotNull ContextualNestedExpressionResolver nestedResolver,
+            boolean finalizeWindow,
+            @Nullable GdType expectedType
+    ) {
         var resolution = FrontendContainerLiteralSemanticSupport.resolveArrayExpressionType(
                 classRegistry,
                 arrayExpression,
                 nestedResolver,
-                finalizeWindow
+                finalizeWindow,
+                expectedType
         );
         return toContainerLiteralResult(resolution);
     }
 
-    /// Resolves a dictionary literal to generic {@code Dictionary} (Phase 1; no expected-type context yet).
-    ///
-    /// Same ownership rules as {@link #resolveArrayExpressionType}: recursive child typing, openEnded
-    /// fail-closed, plan only on stable roots, no diagnostics / side-table writes.
+    /// Resolves a dictionary literal (generic or contextual) through `FrontendContainerLiteralSemanticSupport`.
     public @NotNull ExpressionSemanticResult resolveDictionaryExpressionType(
             @NotNull DictionaryExpression dictionaryExpression,
             @NotNull NestedExpressionResolver nestedResolver,
             boolean finalizeWindow
     ) {
+        return resolveDictionaryExpressionType(dictionaryExpression, nestedResolver, finalizeWindow, null);
+    }
+
+    public @NotNull ExpressionSemanticResult resolveDictionaryExpressionType(
+            @NotNull DictionaryExpression dictionaryExpression,
+            @NotNull NestedExpressionResolver nestedResolver,
+            boolean finalizeWindow,
+            @Nullable GdType expectedType
+    ) {
+        return resolveDictionaryExpressionType(
+                dictionaryExpression,
+                (expression, finalize, _) -> nestedResolver.resolve(expression, finalize),
+                finalizeWindow,
+                expectedType
+        );
+    }
+
+    public @NotNull ExpressionSemanticResult resolveDictionaryExpressionType(
+            @NotNull DictionaryExpression dictionaryExpression,
+            @NotNull ContextualNestedExpressionResolver nestedResolver,
+            boolean finalizeWindow,
+            @Nullable GdType expectedType
+    ) {
         var resolution = FrontendContainerLiteralSemanticSupport.resolveDictionaryExpressionType(
                 classRegistry,
                 dictionaryExpression,
                 nestedResolver,
-                finalizeWindow
+                finalizeWindow,
+                expectedType
         );
         return toContainerLiteralResult(resolution);
     }
@@ -751,22 +823,29 @@ public final class FrontendExpressionSemanticSupport {
     /// - unknown bare identifiers, `null`, `void`, empty, and malformed structured targets are
     ///   root-owned `FAILED` (stricter than type-test's unresolved-object degrade)
     /// - static hard-pair validity is not decided here; type-check owns `sema.type_check` via
-    ///   {@code ExplicitCastSupport}
+    ///   `ExplicitCastSupport`
     /// - this helper never emits diagnostics and never writes side tables
     public @NotNull ExpressionSemanticResult resolveCastExpressionType(
             @NotNull CastExpression castExpression,
             @NotNull NestedExpressionResolver nestedResolver,
             boolean finalizeWindow
     ) {
+        return resolveCastExpressionType(
+                castExpression,
+                (expression, finalize, _) -> nestedResolver.resolve(expression, finalize),
+                finalizeWindow
+        );
+    }
+
+    /// Resolves `value as T`. Target is resolved first so container-literal operands receive
+    /// the cast target as expected type (Phase 2).
+    public @NotNull ExpressionSemanticResult resolveCastExpressionType(
+            @NotNull CastExpression castExpression,
+            @NotNull ContextualNestedExpressionResolver nestedResolver,
+            boolean finalizeWindow
+    ) {
         Objects.requireNonNull(castExpression, "castExpression must not be null");
         Objects.requireNonNull(nestedResolver, "nestedResolver must not be null");
-
-        // TypeRef is not an Expression; only the value operand participates in nested typing.
-        var valueType = nestedResolver.resolve(castExpression.value(), finalizeWindow);
-        var dependencyIssue = firstNonResolvedDependency(valueType);
-        if (dependencyIssue != null) {
-            return propagated(dependencyIssue);
-        }
 
         var typeText = castExpression.targetType().sourceText().trim();
         switch (typeText) {
@@ -801,19 +880,24 @@ public final class FrontendExpressionSemanticSupport {
                 typeText,
                 currentTopLevelCanonicalNameMap()
         );
-        if (resolvedType != null) {
-            return rootOutcome(FrontendExpressionType.resolved(resolvedType));
-        }
-
-        if (ScopeTypeTextSupport.looksStructuredTypeText(typeText)) {
+        if (resolvedType == null) {
+            if (ScopeTypeTextSupport.looksStructuredTypeText(typeText)) {
+                return rootOutcome(FrontendExpressionType.failed(
+                        "Cast target type '" + typeText + "' is not a supported declared type"
+                ));
+            }
             return rootOutcome(FrontendExpressionType.failed(
-                    "Cast target type '" + typeText + "' is not a supported declared type"
+                    "Cast target type '" + typeText + "' cannot be resolved in the current scope"
             ));
         }
 
-        return rootOutcome(FrontendExpressionType.failed(
-                "Cast target type '" + typeText + "' cannot be resolved in the current scope"
-        ));
+        // Value operand is typed after the target so nested container literals can construct contextually.
+        var valueType = nestedResolver.resolve(castExpression.value(), finalizeWindow, resolvedType);
+        var dependencyIssue = firstNonResolvedDependency(valueType);
+        if (dependencyIssue != null) {
+            return propagated(dependencyIssue);
+        }
+        return rootOutcome(FrontendExpressionType.resolved(resolvedType));
     }
 
     /// Resolves `value is T` / `value is not T`.
@@ -963,9 +1047,40 @@ public final class FrontendExpressionSemanticSupport {
             @NotNull NestedExpressionResolver nestedResolver,
             boolean finalizeWindow
     ) {
+        return resolveCallArgumentTypes(
+                arguments,
+                (expression, finalize, _) -> nestedResolver.resolve(expression, finalize),
+                finalizeWindow
+        );
+    }
+
+    private @NotNull CallArgumentResolution resolveCallArgumentTypes(
+            @NotNull List<? extends Expression> arguments,
+            @NotNull ContextualNestedExpressionResolver nestedResolver,
+            boolean finalizeWindow
+    ) {
+        return resolveCallArgumentTypes(arguments, nestedResolver, finalizeWindow, null);
+    }
+
+    /// When `expectedParameterTypes` is non-null, container-literal arguments finalize with the
+    /// matching fixed parameter type; other arguments still resolve without expected type.
+    private @NotNull CallArgumentResolution resolveCallArgumentTypes(
+            @NotNull List<? extends Expression> arguments,
+            @NotNull ContextualNestedExpressionResolver nestedResolver,
+            boolean finalizeWindow,
+            @Nullable List<GdType> expectedParameterTypes
+    ) {
         var argumentTypes = new ArrayList<GdType>(arguments.size());
-        for (var argument : arguments) {
-            var argumentType = nestedResolver.resolve(argument, finalizeWindow);
+        for (var i = 0; i < arguments.size(); i++) {
+            var argument = arguments.get(i);
+            var expected = expectedParameterTypes != null && i < expectedParameterTypes.size()
+                    ? expectedParameterTypes.get(i)
+                    : null;
+            // Variant parameters do not provide typed-container construction context.
+            if (expected instanceof GdVariantType) {
+                expected = null;
+            }
+            var argumentType = nestedResolver.resolve(argument, finalizeWindow, expected);
             switch (argumentType.status()) {
                 case RESOLVED, DYNAMIC -> argumentTypes.add(
                         Objects.requireNonNull(argumentType.publishedType(), "publishedType must not be null")
@@ -978,10 +1093,22 @@ public final class FrontendExpressionSemanticSupport {
         return new CallArgumentResolution(List.copyOf(argumentTypes), null);
     }
 
-    private @NotNull ExpressionSemanticResult resolveBareIdentifierCallExpression(
+    private @NotNull ExpressionSemanticResult resolveBareIdentifierCallWithLiteralContext(
             @NotNull IdentifierExpression bareCallee,
-            @NotNull List<GdType> argumentTypes
+            @NotNull List<? extends Expression> arguments,
+            @NotNull ContextualNestedExpressionResolver nestedResolver,
+            boolean finalizeWindow
     ) {
+        // Preliminary generic snapshot for non-literal args and for candidate ranking sources.
+        // Preview uses finalizeWindow=false so owner-local caches stay non-final; any unstable
+        // argument must still be finalized below so root publication can export expression facts.
+        var preliminary = resolveCallArgumentTypes(arguments, nestedResolver, false, null);
+        if (preliminary.issue() != null) {
+            if (finalizeWindow) {
+                resolveCallArgumentTypes(arguments, nestedResolver, true, null);
+            }
+            return propagated(preliminary.issue());
+        }
         var currentScope = scopesByAst.get(bareCallee);
         if (currentScope == null) {
             return rootOutcome(FrontendExpressionType.unsupported(
@@ -991,45 +1118,110 @@ public final class FrontendExpressionSemanticSupport {
         var bareCallRoute = bareCallRoute(bareCallee);
         var functionResult = currentScope.resolveFunctions(bareCallee.name(), currentRestriction());
         if (functionResult.isAllowed()) {
-            var overloadSelection = selectCallableOverload(functionResult.requireValue(), argumentTypes);
+            var overloadSelection = selectCallableOverload(
+                    functionResult.requireValue(),
+                    arguments,
+                    preliminary.argumentTypes(),
+                    nestedResolver
+            );
             if (overloadSelection.selected() != null) {
                 var selected = overloadSelection.selected();
+                var selectedParameterTypes = fixedParameterTypes(selected);
+                var finalized = resolveCallArgumentTypes(
+                        arguments,
+                        nestedResolver,
+                        finalizeWindow,
+                        selectedParameterTypes
+                );
+                if (finalized.issue() != null) {
+                    return propagated(finalized.issue());
+                }
                 return rootOutcome(
                         FrontendExpressionType.resolved(selected.getReturnType()),
-                        resolvedBareCall(bareCallee, bareCallRoute, selected, argumentTypes)
+                        resolvedBareCall(bareCallee, bareCallRoute, selected, finalized.argumentTypes())
                 );
             }
             var detailReason = Objects.requireNonNull(overloadSelection.detailReason(), "detailReason must not be null");
+            // Finalize with generic expected so argument expression facts still publish.
+            var finalized = resolveCallArgumentTypes(arguments, nestedResolver, finalizeWindow, null);
+            if (finalized.issue() != null) {
+                return propagated(finalized.issue());
+            }
             return rootOutcome(
                     FrontendExpressionType.failed(detailReason),
-                    failedBareCall(bareCallee, bareCallRoute, argumentTypes, detailReason)
+                    failedBareCall(bareCallee, bareCallRoute, finalized.argumentTypes(), detailReason)
             );
         }
         if (functionResult.isBlocked()) {
-            var overloadSelection = selectCallableOverload(functionResult.requireValue(), argumentTypes);
+            var overloadSelection = selectCallableOverload(
+                    functionResult.requireValue(),
+                    arguments,
+                    preliminary.argumentTypes(),
+                    nestedResolver
+            );
             var selected = overloadSelection.selected();
-            var blockedReturnType = selected != null
-                    ? selected.getReturnType()
-                    : null;
+            var blockedReturnType = selected != null ? selected.getReturnType() : null;
             var detailReason = "Binding '" + bareCallee.name() + "' is not accessible in the current context";
+            final List<GdType> publishedArgTypes;
+            if (selected != null) {
+                var finalized = resolveCallArgumentTypes(
+                        arguments,
+                        nestedResolver,
+                        finalizeWindow,
+                        fixedParameterTypes(selected)
+                );
+                if (finalized.issue() != null) {
+                    return propagated(finalized.issue());
+                }
+                publishedArgTypes = finalized.argumentTypes();
+            } else {
+                var finalized = resolveCallArgumentTypes(arguments, nestedResolver, finalizeWindow, null);
+                if (finalized.issue() != null) {
+                    return propagated(finalized.issue());
+                }
+                publishedArgTypes = finalized.argumentTypes();
+            }
             return rootOutcome(
                     FrontendExpressionType.blocked(blockedReturnType, detailReason),
-                    selected != null ? blockedBareCall(bareCallee, bareCallRoute, selected, argumentTypes, detailReason) : null
+                    selected != null
+                            ? blockedBareCall(bareCallee, bareCallRoute, selected, publishedArgTypes, detailReason)
+                            : null
             );
         }
         var detailReason = "Published bare callee binding '" + bareCallee.name() + "' is no longer visible";
+        var finalized = resolveCallArgumentTypes(arguments, nestedResolver, finalizeWindow, null);
+        if (finalized.issue() != null) {
+            return propagated(finalized.issue());
+        }
         return rootOutcome(
                 FrontendExpressionType.failed(detailReason),
-                failedBareCall(bareCallee, bareCallRoute, argumentTypes, detailReason)
+                failedBareCall(bareCallee, bareCallRoute, finalized.argumentTypes(), detailReason)
         );
     }
 
+    /// Generic-snapshot overload selection (no container-literal expression AST).
     @NotNull CallableOverloadSelection selectCallableOverload(
             @NotNull List<? extends FunctionDef> overloadSet,
             @NotNull List<GdType> argumentTypes
     ) {
+        return selectCallableOverload(overloadSet, List.of(), argumentTypes, null);
+    }
+
+    /// When `argumentExpressions` is non-empty, container-literal arguments are ranked against
+    /// each candidate parameter type (preview only) instead of using only the generic snapshot.
+    @NotNull CallableOverloadSelection selectCallableOverload(
+            @NotNull List<? extends FunctionDef> overloadSet,
+            @NotNull List<? extends Expression> argumentExpressions,
+            @NotNull List<GdType> preliminaryArgumentTypes,
+            @Nullable ContextualNestedExpressionResolver nestedResolverOrNull
+    ) {
         var applicable = overloadSet.stream()
-                .filter(callable -> matchesCallableArguments(callable, argumentTypes))
+                .filter(callable -> matchesCallableArgumentsWithLiterals(
+                        callable,
+                        argumentExpressions,
+                        preliminaryArgumentTypes,
+                        nestedResolverOrNull
+                ))
                 .toList();
         if (applicable.size() == 1) {
             return new CallableOverloadSelection(applicable.getFirst(), null);
@@ -1037,7 +1229,13 @@ public final class FrontendExpressionSemanticSupport {
         if (applicable.size() > 1) {
             var mostSpecific = FrontendCallableOverloadRankingSupport.selectMostSpecificApplicable(
                     applicable,
-                    (candidate, baseline) -> isStrictlyMoreSpecific(candidate, baseline, argumentTypes)
+                    (candidate, baseline) -> isStrictlyMoreSpecificWithLiterals(
+                            candidate,
+                            baseline,
+                            argumentExpressions,
+                            preliminaryArgumentTypes,
+                            nestedResolverOrNull
+                    )
             );
             if (mostSpecific != null) {
                 return new CallableOverloadSelection(mostSpecific, null);
@@ -1050,7 +1248,7 @@ public final class FrontendExpressionSemanticSupport {
         var detailReason = overloadSet.isEmpty()
                 ? "Bare call resolves to an empty overload set"
                 : "No applicable overload for bare call: "
-                  + buildCallableMismatchReason(overloadSet.getFirst(), argumentTypes)
+                  + buildCallableMismatchReason(overloadSet.getFirst(), preliminaryArgumentTypes)
                   + ". candidates: " + renderCallableSignatures(overloadSet);
         return new CallableOverloadSelection(null, detailReason);
     }
@@ -1266,13 +1464,11 @@ public final class FrontendExpressionSemanticSupport {
 
     private @Nullable GdType currentClassReceiverType(@NotNull IdentifierExpression anchor) {
         var currentScope = scopesByAst.get(Objects.requireNonNull(anchor, "anchor must not be null"));
-        while (currentScope != null) {
-            if (currentScope instanceof ClassScope classScope) {
-                return new GdObjectType(classScope.getCurrentClass().getName());
-            }
-            currentScope = currentScope.getParentScope();
+        if (currentScope == null) {
+            return null;
         }
-        return null;
+        var owningClass = currentScope.owningClassOrNull();
+        return owningClass == null ? null : new GdObjectType(owningClass.getName());
     }
 
     /// Fixed-argument call compatibility is another direct consumer of the typed-boundary matrix in
@@ -1281,6 +1477,184 @@ public final class FrontendExpressionSemanticSupport {
     /// call-specific handwritten conversion table. The corresponding ordinary `(un)pack`
     /// materialization contract is documented in
     /// `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`.
+    private boolean matchesCallableArgumentsWithLiterals(
+            @NotNull FunctionDef callable,
+            @NotNull List<? extends Expression> argumentExpressions,
+            @NotNull List<GdType> preliminaryArgumentTypes,
+            @Nullable ContextualNestedExpressionResolver nestedResolverOrNull
+    ) {
+        if (argumentExpressions.isEmpty() || nestedResolverOrNull == null) {
+            return matchesCallableArguments(callable, preliminaryArgumentTypes);
+        }
+        var parameters = List.copyOf(callable.getParameters());
+        var fixedCount = parameters.size();
+        var providedCount = preliminaryArgumentTypes.size();
+        if (providedCount < fixedCount && !canOmitTrailingParameters(parameters, providedCount)) {
+            return false;
+        }
+        if (!callable.isVararg() && providedCount > fixedCount) {
+            return false;
+        }
+        // Fixed prefix only: vararg tails are Variant-packed and never supply typed-container context (§4.2).
+        var fixedPrefixCount = Math.min(providedCount, fixedCount);
+        for (var index = 0; index < fixedPrefixCount; index++) {
+            var parameterType = parameters.get(index).getType();
+            var argument = index < argumentExpressions.size() ? argumentExpressions.get(index) : null;
+            if (argument instanceof ArrayExpression || argument instanceof DictionaryExpression) {
+                var childSources = preliminaryChildSourceTypesOrNull(argument, nestedResolverOrNull);
+                if (childSources == null) {
+                    return false;
+                }
+                var rank = FrontendContainerLiteralSemanticSupport.rankLiteralAgainstParameter(
+                        classRegistry,
+                        argument,
+                        childSources,
+                        parameterType
+                );
+                if (rank.rejected()) {
+                    return false;
+                }
+                continue;
+            }
+            if (!FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                    classRegistry,
+                    preliminaryArgumentTypes.get(index),
+                    parameterType
+            )) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isStrictlyMoreSpecificWithLiterals(
+            @NotNull FunctionDef candidate,
+            @NotNull FunctionDef baseline,
+            @NotNull List<? extends Expression> argumentExpressions,
+            @NotNull List<GdType> preliminaryArgumentTypes,
+            @Nullable ContextualNestedExpressionResolver nestedResolverOrNull
+    ) {
+        if (argumentExpressions.isEmpty() || nestedResolverOrNull == null) {
+            return isStrictlyMoreSpecific(candidate, baseline, preliminaryArgumentTypes);
+        }
+        var candidateRank = literalAggregateRank(
+                candidate,
+                argumentExpressions,
+                preliminaryArgumentTypes,
+                nestedResolverOrNull
+        );
+        var baselineRank = literalAggregateRank(
+                baseline,
+                argumentExpressions,
+                preliminaryArgumentTypes,
+                nestedResolverOrNull
+        );
+        var literalCompare = FrontendContainerLiteralSemanticSupport.compareCandidateRanks(candidateRank, baselineRank);
+        if (literalCompare != 0) {
+            return literalCompare < 0;
+        }
+        return isStrictlyMoreSpecific(candidate, baseline, preliminaryArgumentTypes);
+    }
+
+    private @NotNull FrontendContainerLiteralSemanticSupport.CandidateRank literalAggregateRank(
+            @NotNull FunctionDef callable,
+            @NotNull List<? extends Expression> argumentExpressions,
+            @NotNull List<GdType> preliminaryArgumentTypes,
+            @NotNull ContextualNestedExpressionResolver nestedResolver
+    ) {
+        var decisions = new ArrayList<FrontendVariantBoundaryCompatibility.Decision>();
+        var fixedPrefixCount = Math.min(preliminaryArgumentTypes.size(), callable.getParameters().size());
+        for (var index = 0; index < fixedPrefixCount; index++) {
+            var parameterType = parameterTypeAt(callable, index);
+            if (parameterType == null) {
+                decisions.add(FrontendVariantBoundaryCompatibility.Decision.REJECT);
+                continue;
+            }
+            var argument = index < argumentExpressions.size() ? argumentExpressions.get(index) : null;
+            if (argument instanceof ArrayExpression || argument instanceof DictionaryExpression) {
+                var childSources = preliminaryChildSourceTypesOrNull(argument, nestedResolver);
+                if (childSources == null) {
+                    decisions.add(FrontendVariantBoundaryCompatibility.Decision.REJECT);
+                    continue;
+                }
+                var rank = FrontendContainerLiteralSemanticSupport.rankLiteralAgainstParameter(
+                        classRegistry,
+                        argument,
+                        childSources,
+                        parameterType
+                );
+                if (rank.rejected()) {
+                    decisions.add(FrontendVariantBoundaryCompatibility.Decision.REJECT);
+                } else {
+                    decisions.add(decisionFromRank(rank.worstRank()));
+                }
+                continue;
+            }
+            decisions.add(FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                    classRegistry,
+                    preliminaryArgumentTypes.get(index),
+                    parameterType
+            ));
+        }
+        // Vararg tails contribute no decisions (Variant-packed, no typed-container context).
+        return FrontendContainerLiteralSemanticSupport.aggregateOperandRanks(decisions);
+    }
+
+    /// Maps a numeric specificity rank back to a decision for aggregate comparison only.
+    private static @NotNull FrontendVariantBoundaryCompatibility.Decision decisionFromRank(int rank) {
+        return switch (rank) {
+            case 4 -> FrontendVariantBoundaryCompatibility.Decision.ALLOW_DIRECT;
+            case 3 -> FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_LITERAL_NULL;
+            case 2 -> FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_INTRINSIC_CAST;
+            case 1 -> FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_PACK;
+            default -> FrontendVariantBoundaryCompatibility.Decision.REJECT;
+        };
+    }
+
+    /// Generic-only child source types for overload preview (never finalizes, never writes plans).
+    private @Nullable List<GdType> preliminaryChildSourceTypesOrNull(
+            @NotNull Expression literal,
+            @NotNull ContextualNestedExpressionResolver nestedResolver
+    ) {
+        if (literal instanceof ArrayExpression arrayExpression) {
+            var sources = new ArrayList<GdType>(arrayExpression.elements().size());
+            for (var element : arrayExpression.elements()) {
+                var childType = nestedResolver.resolve(element, false, null);
+                if (childType.status() != FrontendExpressionTypeStatus.RESOLVED
+                        && childType.status() != FrontendExpressionTypeStatus.DYNAMIC) {
+                    return null;
+                }
+                sources.add(Objects.requireNonNull(childType.publishedType(), "publishedType must not be null"));
+            }
+            return List.copyOf(sources);
+        }
+        if (literal instanceof DictionaryExpression dictionaryExpression) {
+            var sources = new ArrayList<GdType>(dictionaryExpression.entries().size() * 2);
+            for (var entry : dictionaryExpression.entries()) {
+                var keyType = nestedResolver.resolve(entry.key(), false, null);
+                if (keyType.status() != FrontendExpressionTypeStatus.RESOLVED
+                        && keyType.status() != FrontendExpressionTypeStatus.DYNAMIC) {
+                    return null;
+                }
+                var valueType = nestedResolver.resolve(entry.value(), false, null);
+                if (valueType.status() != FrontendExpressionTypeStatus.RESOLVED
+                        && valueType.status() != FrontendExpressionTypeStatus.DYNAMIC) {
+                    return null;
+                }
+                sources.add(Objects.requireNonNull(keyType.publishedType(), "publishedType must not be null"));
+                sources.add(Objects.requireNonNull(valueType.publishedType(), "publishedType must not be null"));
+            }
+            return List.copyOf(sources);
+        }
+        return null;
+    }
+
+    private static @NotNull List<GdType> fixedParameterTypes(@NotNull FunctionDef callable) {
+        return callable.getParameters().stream()
+                .map(ParameterDef::getType)
+                .toList();
+    }
+
     private boolean matchesCallableArguments(
             @NotNull FunctionDef callable,
             @NotNull List<GdType> argumentTypes

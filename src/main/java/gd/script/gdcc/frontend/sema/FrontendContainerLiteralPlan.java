@@ -14,10 +14,10 @@ import java.util.Objects;
 ///
 /// Published into `FrontendAnalysisData.containerLiteralPlans()` and shared by later type-check /
 /// CFG / lowering as the single element-boundary source of truth. Constraints:
-/// - `resultType` is only {@link GdArrayType} or {@link GdDictionaryType}
+/// - `resultType` is only `GdArrayType` or `GdDictionaryType`
 /// - Array operands size equals source element count; Dictionary operands are key0/value0/key1/value1
-/// - may carry {@code REJECT} decisions and {@link DuplicateKeyIssue}s without being a diagnostic
-/// - never carries {@code GdCompilerType}
+/// - may carry `REJECT` decisions and `DuplicateKeyIssue`s without being a diagnostic
+/// - never carries `GdCompilerType`
 ///
 /// @param resultType         generic or contextual construction type of the literal root
 /// @param operands           source-order operand materialization plans

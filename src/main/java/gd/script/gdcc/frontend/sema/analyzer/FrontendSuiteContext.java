@@ -15,6 +15,7 @@ import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolveRequest;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
+import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -27,6 +28,9 @@ import java.util.Objects;
 /// owner procedures cannot fall back to hidden analyzer-local side-table snapshots. Callable roots
 /// also share one export batch with their nested suites; child overlays stay isolated while their
 /// exported transactions are deferred to the callable boundary.
+///
+/// `currentCallableReturnType` is frozen at callable-root creation and threaded through child
+/// blocks so return-value expected typing does not re-query a second skeleton path.
 public record FrontendSuiteContext(
         @NotNull Path sourcePath,
         @NotNull Node callableOwner,
@@ -41,7 +45,8 @@ public record FrontendSuiteContext(
         @NotNull FrontendAnalysisData analysisData,
         @NotNull DiagnosticManager diagnosticManager,
         @NotNull ClassRegistry classRegistry,
-        @Nullable FrontendCallableExportBatch exportBatch
+        @Nullable FrontendCallableExportBatch exportBatch,
+        @Nullable GdType currentCallableReturnType
 ) {
     public FrontendSuiteContext {
         Objects.requireNonNull(sourcePath, "sourcePath must not be null");
@@ -76,7 +81,8 @@ public record FrontendSuiteContext(
                 analysisData,
                 diagnosticManager,
                 classRegistry,
-                exportBatch
+                exportBatch,
+                currentCallableReturnType
         );
     }
 

@@ -99,6 +99,12 @@ public final class ClassScope extends AbstractFrontendScope {
         return currentClass;
     }
 
+    /// Protocol hook for `Scope.owningClassOrNull()`; same identity as `getCurrentClass()`.
+    @Override
+    public @Nullable ClassDef currentClassOrNull() {
+        return currentClass;
+    }
+
     /// Exposes the registry that owns the current/inherited member metadata for this class scope.
     public @NotNull ClassRegistry getClassRegistry() {
         return classRegistry;
