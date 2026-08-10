@@ -1189,23 +1189,32 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         );
 
         var pingFunction = findFunction(analyzed.ast(), "ping");
-        var deferredRoots = List.of(
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression(),
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        var conditionalRoot = assertInstanceOf(
+                ExpressionStatement.class,
+                pingFunction.body().statements().get(0)
+        ).expression();
+        var arrayRoot = assertInstanceOf(
+                ExpressionStatement.class,
+                pingFunction.body().statements().get(1)
+        ).expression();
+        assertEquals(
+                FrontendExpressionTypeStatus.DEFERRED,
+                analyzed.analysisData().expressionTypes().get(conditionalRoot).status()
         );
-        for (var deferredRoot : deferredRoots) {
-            assertEquals(
-                    FrontendExpressionTypeStatus.DEFERRED,
-                    analyzed.analysisData().expressionTypes().get(deferredRoot).status()
-            );
-        }
+        // Phase 1: array literals publish RESOLVED(Array); conditional remains deferred.
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(arrayRoot).status()
+        );
+        assertEquals("Array", analyzed.analysisData().expressionTypes().get(arrayRoot).publishedType().getTypeName());
+        assertNotNull(analyzed.analysisData().containerLiteralPlans().get(arrayRoot));
 
         var deferredDiagnostics = diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution");
-        assertEquals(2, deferredDiagnostics.size());
+        assertEquals(1, deferredDiagnostics.size());
         assertTrue(deferredDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains(
                 "Conditional expression typing is deferred"
         )));
-        assertTrue(deferredDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains(
+        assertTrue(deferredDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains(
                 "Array literal typing is deferred"
         )));
         assertTrue(deferredDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("milestone-G")));

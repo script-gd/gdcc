@@ -5,13 +5,14 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 0 已完成 / 阶段 1–7 未实施）
+- 状态：In Progress（阶段 0–1 已完成 / 阶段 2–7 未实施）
 - 目标 Godot 基线：4.5.1-stable
 - gdparser 基线：0.5.3（满足阶段 0 字典 Lua-style / 混用 style 契约）
 - 计划范围：普通 executable body 与当前已支持的 property initializer island
 - 阶段进度：
   - 阶段 0：Done — `FrontendContainerLiteralParseBehaviorTest` 16/16 全绿（gdparser 0.5.3）；Lua-style key 归一化为 `string_name` 常量；混用 style 报 `parse.lowering`；依赖已升级。
-  - 阶段 1–7：Not Started
+  - 阶段 1：Done — generic Array/Dictionary shared semantic + `FrontendContainerLiteralPlan` side-table；compile gate 仍拦截。
+  - 阶段 2–7：Not Started
 - 主要关联文档：
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`
@@ -759,39 +760,53 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 
 完成门槛：✅ 已满足。允许开始阶段 1（semantic）实施。
 
-### 阶段 1：Generic literal shared semantic
+### 阶段 1：Generic literal shared semantic — Done
 
 实施：
 
-1. 新增 `FrontendContainerLiteralSemanticSupport`。
-2. 将 Array/Dictionary 从 explicit deferred resolver 改为 dedicated resolver。
-3. 无 expected type 时发布 generic Array/Dictionary。
-4. 递归解析所有 child expression，保留 upstream status。
-5. `openEnded=true` 在 ordinary expression 中 fail-closed。
-6. 新增 `FrontendContainerLiteralPlan` 及 EXPR_TYPE side-table publication plumbing。
-7. local stabilization 只复用 `FrontendContainerLiteralSemanticSupport`，不得保留第二套 deferred/generic literal 规则。
-8. generic/contextual plan 构造同时冻结直接常量 duplicate-key issues；此阶段 type-check consumer 尚未接入时 compile gate 仍保持 blocker。
-9. 保持 compile gate 显式 blocker，不解除编译拦截。
+1. 新增 `FrontendContainerLiteralSemanticSupport`。 ✅
+2. 将 Array/Dictionary 从 explicit deferred resolver 改为 dedicated resolver。 ✅
+3. 无 expected type 时发布 generic Array/Dictionary。 ✅
+4. 递归解析所有 child expression，保留 upstream status。 ✅
+5. `openEnded=true` 在 ordinary expression 中 fail-closed。 ✅ root-owned `FAILED`
+6. 新增 `FrontendContainerLiteralPlan` 及 EXPR_TYPE side-table publication plumbing。 ✅
+7. local stabilization 只复用 `FrontendContainerLiteralSemanticSupport`，不得保留第二套 deferred/generic literal 规则。 ✅ `stableLocalTypeOrNull` 自然稳定 generic 容器
+8. generic/contextual plan 构造同时冻结直接常量 duplicate-key issues；此阶段 type-check consumer 尚未接入时 compile gate 仍保持 blocker。 ✅
+9. 保持 compile gate 显式 blocker，不解除编译拦截。 ✅ `FrontendCompileCheckAnalyzerTest` 仍绿
 
 验收：
 
-- `[1, "x"]` 发布 `RESOLVED(Array)`。
-- `{"x": 1}` 发布 `RESOLVED(Dictionary)`。
-- `var a := [1, 2]` slot 稳定为 generic Array，不是 `Array[int]`。
-- `var d := {"x": 1}` slot 稳定为 generic Dictionary。
-- mixed/empty/nested generic literal 都为 RESOLVED。
-- child expression FAILED 时 literal 传播状态且不重复诊断。
-- plan stable-reference、patch merge、idempotent 和 compiler-only guard tests 全部通过。
-- compile-only 分析仍阻止 literal 进入 lowering。
+- `[1, "x"]` 发布 `RESOLVED(Array)`。 ✅
+- `{"x": 1}` 发布 `RESOLVED(Dictionary)`。 ✅
+- `var a := [1, 2]` slot 稳定为 generic Array，不是 `Array[int]`。 ✅
+- `var d := {"x": 1}` slot 稳定为 generic Dictionary。 ✅
+- mixed/empty/nested generic literal 都为 RESOLVED。 ✅
+- child expression FAILED 时 literal 传播状态且不重复诊断。 ✅
+- plan stable-reference、patch merge、idempotent 和 compiler-only guard tests 全部通过。 ✅
+- compile-only 分析仍阻止 literal 进入 lowering。 ✅
+
+落地文件：
+
+- `FrontendContainerLiteralPlan` / `FrontendContainerLiteralSemanticSupport`
+- side-table plumbing：`FrontendAnalysisData`、`FrontendTypedLexicalEnvironment`、`FrontendExprTypePatch`、`FrontendOwnerPatch`、`FrontendPublishedFactTypeGuard`
+- publication：`FrontendExpressionSemanticSupport` + `FrontendBodyOwnerProcedures.BodyExpressionResolver`
+
+回归锚点：
+
+- `FrontendContainerLiteralSemanticSupportTest`（7）
+- `FrontendExpressionSemanticSupportTest` / `FrontendBodyOwnerProceduresExprTypeTest` / `FrontendBodyOwnerProceduresVarTypePostTest`
+- `FrontendAnalysisDataTest` / `FrontendTypedLexicalEnvironmentTest` / `FrontendCompileCheckAnalyzerTest`
 
 建议 targeted tests：
 
 ```powershell
+.\gradlew.bat test --tests FrontendContainerLiteralSemanticSupportTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendExpressionSemanticSupportTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendBodyOwnerProceduresExprTypeTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendBodyOwnerProceduresVarTypePostTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendAnalysisDataTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendTypedLexicalEnvironmentTest --no-daemon --info --console=plain
+.\gradlew.bat test --tests FrontendCompileCheckAnalyzerTest --no-daemon --info --console=plain
 ```
 
 ### 阶段 2：Contextual typed literal 与 type-check

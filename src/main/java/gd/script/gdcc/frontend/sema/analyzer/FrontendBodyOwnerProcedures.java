@@ -1,5 +1,6 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
+import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -10,6 +11,7 @@ import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
@@ -35,6 +37,7 @@ import gd.script.gdcc.frontend.sema.FrontendBodySemanticSupportPolicy;
 import gd.script.gdcc.frontend.sema.FrontendBodyDeclarationIndex;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
+import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
@@ -987,6 +990,13 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             reportUnresolvedTypeTestTargetWarning(context, entry.getKey(), entry.getValue());
             reportHardTypedIncompatibilityWarning(context, entry.getKey(), entry.getValue());
         }
+        for (var entry : resolver.containerLiteralPlans().entrySet()) {
+            context.typedEnvironment().putContainerLiteralPlan(
+                    FrontendSemanticStage.EXPR_TYPE,
+                    entry.getKey(),
+                    entry.getValue()
+            );
+        }
     }
 
     private static void reportUnresolvedTypeTestTargetWarning(
@@ -1355,6 +1365,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<TypeTestExpression, FrontendTypeTestTarget> typeTestTargets =
                 new IdentityHashMap<>();
+        private final @NotNull IdentityHashMap<Expression, FrontendContainerLiteralPlan> containerLiteralPlans =
+                new IdentityHashMap<>();
         /// Explicit false means the non-success status was propagated from a dependency; the root
         /// must not re-emit the same diagnostic. Missing keys default to root-owned (true).
         private final @NotNull IdentityHashMap<Expression, Boolean> rootOwnsExpressionDiagnostics =
@@ -1491,6 +1503,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         resolveTypeTestExpressionType(typeTestExpression, finalizeWindow);
                 case CastExpression castExpression ->
                         resolveCastExpressionType(castExpression, finalizeWindow);
+                case ArrayExpression arrayExpression ->
+                        resolveArrayExpressionType(arrayExpression, finalizeWindow);
+                case DictionaryExpression dictionaryExpression ->
+                        resolveDictionaryExpressionType(dictionaryExpression, finalizeWindow);
                 default -> expressionSemanticSupport
                         .resolveRemainingExplicitExpressionType(
                                 expression,
@@ -1529,6 +1545,38 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             );
             // Propagated value-operand failures keep the upstream diagnostic owner.
             rootOwnsExpressionDiagnostics.put(castExpression, result.rootOwnsOutcome());
+            return result.expressionType();
+        }
+
+        private @NotNull FrontendExpressionType resolveArrayExpressionType(
+                @NotNull ArrayExpression arrayExpression,
+                boolean finalizeWindow
+        ) {
+            var result = expressionSemanticSupport.resolveArrayExpressionType(
+                    arrayExpression,
+                    this::resolveExpressionType,
+                    finalizeWindow
+            );
+            rootOwnsExpressionDiagnostics.put(arrayExpression, result.rootOwnsOutcome());
+            if (result.publishedContainerLiteralPlanOrNull() != null) {
+                containerLiteralPlans.put(arrayExpression, result.publishedContainerLiteralPlanOrNull());
+            }
+            return result.expressionType();
+        }
+
+        private @NotNull FrontendExpressionType resolveDictionaryExpressionType(
+                @NotNull DictionaryExpression dictionaryExpression,
+                boolean finalizeWindow
+        ) {
+            var result = expressionSemanticSupport.resolveDictionaryExpressionType(
+                    dictionaryExpression,
+                    this::resolveExpressionType,
+                    finalizeWindow
+            );
+            rootOwnsExpressionDiagnostics.put(dictionaryExpression, result.rootOwnsOutcome());
+            if (result.publishedContainerLiteralPlanOrNull() != null) {
+                containerLiteralPlans.put(dictionaryExpression, result.publishedContainerLiteralPlanOrNull());
+            }
             return result.expressionType();
         }
 
@@ -1711,6 +1759,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
 
         private @NotNull IdentityHashMap<TypeTestExpression, FrontendTypeTestTarget> typeTestTargets() {
             return typeTestTargets;
+        }
+
+        private @NotNull IdentityHashMap<Expression, FrontendContainerLiteralPlan> containerLiteralPlans() {
+            return containerLiteralPlans;
         }
 
         private @NotNull FrontendChainReductionHelper.ExpressionTypeResult resolveExpressionDependency(

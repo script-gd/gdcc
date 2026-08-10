@@ -5,6 +5,7 @@ import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
+import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendModuleSkeleton;
@@ -90,7 +91,8 @@ public final class FrontendExpressionSemanticSupport {
             @NotNull FrontendExpressionType expressionType,
             boolean rootOwnsOutcome,
             @Nullable FrontendResolvedCall publishedCallOrNull,
-            @Nullable FrontendTypeTestTarget publishedTypeTestTargetOrNull
+            @Nullable FrontendTypeTestTarget publishedTypeTestTargetOrNull,
+            @Nullable FrontendContainerLiteralPlan publishedContainerLiteralPlanOrNull
     ) {
         public ExpressionSemanticResult {
             Objects.requireNonNull(expressionType, "expressionType must not be null");
@@ -99,9 +101,18 @@ public final class FrontendExpressionSemanticSupport {
         public ExpressionSemanticResult(
                 @NotNull FrontendExpressionType expressionType,
                 boolean rootOwnsOutcome,
+                @Nullable FrontendResolvedCall publishedCallOrNull,
+                @Nullable FrontendTypeTestTarget publishedTypeTestTargetOrNull
+        ) {
+            this(expressionType, rootOwnsOutcome, publishedCallOrNull, publishedTypeTestTargetOrNull, null);
+        }
+
+        public ExpressionSemanticResult(
+                @NotNull FrontendExpressionType expressionType,
+                boolean rootOwnsOutcome,
                 @Nullable FrontendResolvedCall publishedCallOrNull
         ) {
-            this(expressionType, rootOwnsOutcome, publishedCallOrNull, null);
+            this(expressionType, rootOwnsOutcome, publishedCallOrNull, null, null);
         }
     }
 
@@ -597,18 +608,14 @@ public final class FrontendExpressionSemanticSupport {
                     "Conditional expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
-            case ArrayExpression arrayExpression -> resolveExplicitDeferredExpressionType(
+            case ArrayExpression arrayExpression -> resolveArrayExpressionType(
                     arrayExpression,
                     nestedResolver,
-                    resolveNestedChildren,
-                    "Array literal typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
-            case DictionaryExpression dictionaryExpression -> resolveExplicitDeferredExpressionType(
+            case DictionaryExpression dictionaryExpression -> resolveDictionaryExpressionType(
                     dictionaryExpression,
                     nestedResolver,
-                    resolveNestedChildren,
-                    "Dictionary literal typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case AwaitExpression awaitExpression -> resolveExplicitDeferredExpressionType(
@@ -684,6 +691,56 @@ public final class FrontendExpressionSemanticSupport {
             return propagated(dependencyIssue);
         }
         return rootOutcome(FrontendExpressionType.deferred(detailReason));
+    }
+
+    /// Resolves an array literal to generic {@code Array} (Phase 1; no expected-type context yet).
+    ///
+    /// - types every element through {@code nestedResolver}
+    /// - fail-closes on {@code openEnded} pattern openings
+    /// - publishes a {@link FrontendContainerLiteralPlan} only when the root is typing-stable
+    /// - never emits diagnostics and never writes side tables
+    public @NotNull ExpressionSemanticResult resolveArrayExpressionType(
+            @NotNull ArrayExpression arrayExpression,
+            @NotNull NestedExpressionResolver nestedResolver,
+            boolean finalizeWindow
+    ) {
+        var resolution = FrontendContainerLiteralSemanticSupport.resolveArrayExpressionType(
+                classRegistry,
+                arrayExpression,
+                nestedResolver,
+                finalizeWindow
+        );
+        return toContainerLiteralResult(resolution);
+    }
+
+    /// Resolves a dictionary literal to generic {@code Dictionary} (Phase 1; no expected-type context yet).
+    ///
+    /// Same ownership rules as {@link #resolveArrayExpressionType}: recursive child typing, openEnded
+    /// fail-closed, plan only on stable roots, no diagnostics / side-table writes.
+    public @NotNull ExpressionSemanticResult resolveDictionaryExpressionType(
+            @NotNull DictionaryExpression dictionaryExpression,
+            @NotNull NestedExpressionResolver nestedResolver,
+            boolean finalizeWindow
+    ) {
+        var resolution = FrontendContainerLiteralSemanticSupport.resolveDictionaryExpressionType(
+                classRegistry,
+                dictionaryExpression,
+                nestedResolver,
+                finalizeWindow
+        );
+        return toContainerLiteralResult(resolution);
+    }
+
+    private static @NotNull ExpressionSemanticResult toContainerLiteralResult(
+            @NotNull FrontendContainerLiteralSemanticSupport.Resolution resolution
+    ) {
+        return new ExpressionSemanticResult(
+                resolution.expressionType(),
+                resolution.rootOwnsOutcome(),
+                null,
+                null,
+                resolution.planOrNull()
+        );
     }
 
     /// Resolves `value as T` (CastExpression).
@@ -1535,7 +1592,7 @@ public final class FrontendExpressionSemanticSupport {
     }
 
     private static @NotNull ExpressionSemanticResult propagated(@NotNull FrontendExpressionType expressionType) {
-        return new ExpressionSemanticResult(expressionType, false, null, null);
+        return new ExpressionSemanticResult(expressionType, false, null, null, null);
     }
 
     private static @NotNull ExpressionSemanticResult rootOutcome(@NotNull FrontendExpressionType expressionType) {
@@ -1558,7 +1615,8 @@ public final class FrontendExpressionSemanticSupport {
                 expressionType,
                 true,
                 publishedCallOrNull,
-                publishedTypeTestTargetOrNull
+                publishedTypeTestTargetOrNull,
+                null
         );
     }
 

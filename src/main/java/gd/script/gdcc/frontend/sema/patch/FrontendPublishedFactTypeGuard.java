@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema.patch;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
+import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
@@ -30,6 +31,7 @@ public final class FrontendPublishedFactTypeGuard {
         checkSlotTypes(patch.slotTypes());
         checkForIterationPlans(patch.forIterationPlans());
         checkTypeTestTargets(patch.typeTestTargets());
+        checkContainerLiteralPlans(patch.containerLiteralPlans());
         checkLocalSlotTypeUpdates(patch.localSlotTypeUpdates());
     }
 
@@ -121,6 +123,29 @@ public final class FrontendPublishedFactTypeGuard {
     public static void checkTypeTestTarget(@NotNull FrontendTypeTestTarget target) {
         if (target instanceof FrontendTypeTestTarget.TargetKnown(var type)) {
             checkNoCompilerOnlyLeak(type, "typeTestTargets() known target type");
+        }
+    }
+
+    public static void checkContainerLiteralPlans(
+            @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> plans
+    ) {
+        for (var plan : plans.values()) {
+            checkContainerLiteralPlan(plan);
+        }
+    }
+
+    /// Container plans are source-facing: result and every operand type must stay ordinary.
+    public static void checkContainerLiteralPlan(@NotNull FrontendContainerLiteralPlan plan) {
+        checkNoCompilerOnlyLeak(plan.resultType(), "containerLiteralPlans() result type");
+        for (var operand : plan.operands()) {
+            checkNoCompilerOnlyLeak(
+                    operand.sourceType(),
+                    "containerLiteralPlans() operand source type"
+            );
+            checkNoCompilerOnlyLeak(
+                    operand.targetType(),
+                    "containerLiteralPlans() operand target type"
+            );
         }
     }
 

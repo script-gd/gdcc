@@ -1211,20 +1211,6 @@ class FrontendExpressionSemanticSupportTest {
                         "Conditional expression typing is deferred"
                 ),
                 new RemainingExpressionCase(
-                        new ArrayExpression(List.of(integerLiteral("1")), false, TINY),
-                        FrontendExpressionTypeStatus.DEFERRED,
-                        "Array literal typing is deferred"
-                ),
-                new RemainingExpressionCase(
-                        new DictionaryExpression(
-                                List.of(new DictEntry(stringLiteral("\"hp\""), integerLiteral("1"), TINY)),
-                                false,
-                                TINY
-                        ),
-                        FrontendExpressionTypeStatus.DEFERRED,
-                        "Dictionary literal typing is deferred"
-                ),
-                new RemainingExpressionCase(
                         new AwaitExpression(identifier("signal_name"), TINY),
                         FrontendExpressionTypeStatus.DEFERRED,
                         "Await expression typing is deferred"
@@ -1295,6 +1281,35 @@ class FrontendExpressionSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, castResult.expressionType().status());
         assertEquals("String", castResult.expressionType().publishedType().getTypeName());
         assertNull(castResult.publishedTypeTestTargetOrNull());
+
+        // Container literals are no longer deferred: remaining-route publishes generic Array/Dictionary.
+        var arrayExpression = new ArrayExpression(List.of(integerLiteral("1")), false, TINY);
+        var arrayResult = support.resolveRemainingExplicitExpressionType(
+                arrayExpression,
+                nestedResolver,
+                true,
+                false
+        );
+        assertTrue(arrayResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, arrayResult.expressionType().status());
+        assertEquals("Array", arrayResult.expressionType().publishedType().getTypeName());
+        assertNotNull(arrayResult.publishedContainerLiteralPlanOrNull());
+
+        var dictionaryExpression = new DictionaryExpression(
+                List.of(new DictEntry(stringLiteral("\"hp\""), integerLiteral("1"), TINY)),
+                false,
+                TINY
+        );
+        var dictionaryResult = support.resolveRemainingExplicitExpressionType(
+                dictionaryExpression,
+                nestedResolver,
+                true,
+                false
+        );
+        assertTrue(dictionaryResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, dictionaryResult.expressionType().status());
+        assertEquals("Dictionary", dictionaryResult.expressionType().publishedType().getTypeName());
+        assertNotNull(dictionaryResult.publishedContainerLiteralPlanOrNull());
     }
 
     @Test

@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -151,6 +152,64 @@ class FrontendBodyOwnerProceduresVarTypePostTest {
                 .noneMatch(diagnostic -> diagnostic.category().equals(
                         FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
                 )));
+    }
+
+    @Test
+    void analyzeStabilizesInferredContainerLiteralLocalsToGenericContainers() throws Exception {
+        // Phase 1 acceptance: `:= [1, 2]` / `:= {"x": 1}` stabilize to generic Array/Dictionary,
+        // never element-inferred Array[int] / Dictionary[String, int].
+        var analyzed = analyzeShared(
+                "var_type_post_container_literal_locals.gd",
+                """
+                        class_name VarTypePostContainerLiteralLocals
+                        extends RefCounted
+                        
+                        func ping():
+                            var values := [1, 2]
+                            var config := {"x": 1}
+                            var empty_values := []
+                            var empty_config := {}
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast().statements(), "ping");
+        var values = findNode(
+                pingFunction.body(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("values")
+        );
+        var config = findNode(
+                pingFunction.body(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("config")
+        );
+        var emptyValues = findNode(
+                pingFunction.body(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("empty_values")
+        );
+        var emptyConfig = findNode(
+                pingFunction.body(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("empty_config")
+        );
+
+        assertEquals("Array", Objects.requireNonNull(analyzed.analysisData().slotTypes().get(values)).getTypeName());
+        assertEquals(
+                "Dictionary",
+                Objects.requireNonNull(analyzed.analysisData().slotTypes().get(config)).getTypeName()
+        );
+        assertEquals(
+                "Array",
+                Objects.requireNonNull(analyzed.analysisData().slotTypes().get(emptyValues)).getTypeName()
+        );
+        assertEquals(
+                "Dictionary",
+                Objects.requireNonNull(analyzed.analysisData().slotTypes().get(emptyConfig)).getTypeName()
+        );
+        assertNotNull(analyzed.analysisData().containerLiteralPlans().get(values.value()));
+        assertNotNull(analyzed.analysisData().containerLiteralPlans().get(config.value()));
+        assertFalse(analyzed.diagnostics().hasErrors(), () -> "Unexpected diagnostics: " + analyzed.diagnostics());
     }
 
     @Test

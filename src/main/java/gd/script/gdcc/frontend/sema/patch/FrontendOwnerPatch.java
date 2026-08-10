@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema.patch;
 
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
+import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
@@ -51,6 +52,10 @@ public sealed interface FrontendOwnerPatch permits
     }
 
     default @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets() {
+        return FrontendPatchTables.emptySideTable();
+    }
+
+    default @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans() {
         return FrontendPatchTables.emptySideTable();
     }
 

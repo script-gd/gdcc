@@ -52,6 +52,9 @@ public final class FrontendAnalysisData {
     /// Published type-test RHS targets keyed by the owning `TypeTestExpression`.
     /// Carries either a resolved `GdType` or an unresolved object class name for runtime checking.
     private final @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets;
+    /// Published container-literal construction plans keyed by `ArrayExpression` / `DictionaryExpression`.
+    /// Freezes element boundary decisions and duplicate-key issues for type-check / CFG / lowering.
+    private final @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans;
 
     private FrontendAnalysisData(
             @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst,
@@ -63,7 +66,8 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls,
             @NotNull FrontendAstSideTable<GdType> slotTypes,
             @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans,
-            @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets
+            @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets,
+            @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans
     ) {
         this.annotationsByAst = Objects.requireNonNull(annotationsByAst, "annotationsByAst must not be null");
         this.skippedSubtreeRoots = Objects.requireNonNull(
@@ -84,11 +88,16 @@ public final class FrontendAnalysisData {
                 "forIterationPlans must not be null"
         );
         this.typeTestTargets = Objects.requireNonNull(typeTestTargets, "typeTestTargets must not be null");
+        this.containerLiteralPlans = Objects.requireNonNull(
+                containerLiteralPlans,
+                "containerLiteralPlans must not be null"
+        );
     }
 
     /// Creates an empty analysis data carrier with the full side-table topology already present.
     public static @NotNull FrontendAnalysisData bootstrap() {
         return new FrontendAnalysisData(
+                new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
@@ -159,6 +168,13 @@ public final class FrontendAnalysisData {
         replaceSideTableContents(this.typeTestTargets, typeTestTargets, "typeTestTargets");
     }
 
+    public void updateContainerLiteralPlans(
+            @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans
+    ) {
+        FrontendPublishedFactTypeGuard.checkContainerLiteralPlans(containerLiteralPlans);
+        replaceSideTableContents(this.containerLiteralPlans, containerLiteralPlans, "containerLiteralPlans");
+    }
+
     /// Applies one single-owner patch without replacing any stable side-table reference.
     ///
     /// Conflict checks and local-slot validation are scoped to this patch. Repeated calls, including
@@ -175,6 +191,7 @@ public final class FrontendAnalysisData {
                 checkedPatch.slotTypes(),
                 checkedPatch.forIterationPlans(),
                 checkedPatch.typeTestTargets(),
+                checkedPatch.containerLiteralPlans(),
                 checkedPatch.localSlotTypeUpdates()
         );
     }
@@ -188,6 +205,7 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<GdType> patchSlotTypes,
             @NotNull FrontendAstSideTable<FrontendForIterationPlan> patchForIterationPlans,
             @NotNull FrontendAstSideTable<FrontendTypeTestTarget> patchTypeTestTargets,
+            @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> patchContainerLiteralPlans,
             @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates
     ) {
         var validatedLocalSlotUpdates = validateLocalSlotTypeUpdates(stage, localSlotTypeUpdates);
@@ -223,6 +241,12 @@ public final class FrontendAnalysisData {
                 "typeTestTargets",
                 FrontendTypeTestTarget::sameTarget
         );
+        checkPatchConflicts(
+                containerLiteralPlans,
+                patchContainerLiteralPlans,
+                "containerLiteralPlans",
+                FrontendContainerLiteralPlan::samePlan
+        );
 
         mergeSideTable(symbolBindings, patchSymbolBindings);
         mergeSideTable(resolvedMembers, patchResolvedMembers);
@@ -231,6 +255,7 @@ public final class FrontendAnalysisData {
         mergeSideTable(slotTypes, patchSlotTypes);
         mergeSideTable(forIterationPlans, patchForIterationPlans);
         mergeSideTable(typeTestTargets, patchTypeTestTargets);
+        mergeSideTable(containerLiteralPlans, patchContainerLiteralPlans);
         for (var validatedUpdate : validatedLocalSlotUpdates) {
             applyLocalSlotTypeUpdate(validatedUpdate);
         }
@@ -285,6 +310,10 @@ public final class FrontendAnalysisData {
 
     public @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets() {
         return typeTestTargets;
+    }
+
+    public @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans() {
+        return containerLiteralPlans;
     }
 
     /// Refreshes published local bindings after a verified local-slot rewrite.

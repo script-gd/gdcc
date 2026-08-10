@@ -1,5 +1,6 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
@@ -10,6 +11,7 @@ import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
 import gd.script.gdcc.frontend.sema.patch.FrontendChainBindingPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendExprTypePatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendForIterationResolutionPatch;
@@ -32,6 +34,7 @@ import gd.script.gdcc.scope.ScopeLookupStatus;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.scope.ScopeValueKind;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdType;
@@ -75,6 +78,7 @@ class FrontendAnalysisDataTest {
         assertTrue(analysisData.resolvedCalls().isEmpty());
         assertTrue(analysisData.slotTypes().isEmpty());
         assertTrue(analysisData.typeTestTargets().isEmpty());
+        assertTrue(analysisData.containerLiteralPlans().isEmpty());
         assertThrows(IllegalStateException.class, analysisData::moduleSkeleton);
         assertThrows(IllegalStateException.class, analysisData::diagnostics);
     }
@@ -823,6 +827,74 @@ class FrontendAnalysisDataTest {
     }
 
     @Test
+    void applyPatchMergesAndConflictsContainerLiteralPlans() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var arrayNode = new ArrayExpression(List.of(integerLiteral("1")), false, RANGE);
+        var plan = genericArrayPlan();
+        var plans = new FrontendAstSideTable<FrontendContainerLiteralPlan>();
+        plans.put(arrayNode, plan);
+
+        analysisData.applyPatch(new FrontendExprTypePatch(
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                plans
+        ));
+        assertSame(plan, analysisData.containerLiteralPlans().get(arrayNode));
+
+        // Logical samePlan republish is idempotent.
+        var republish = new FrontendAstSideTable<FrontendContainerLiteralPlan>();
+        republish.put(arrayNode, genericArrayPlan());
+        analysisData.applyPatch(new FrontendExprTypePatch(
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                republish
+        ));
+        assertTrue(FrontendContainerLiteralPlan.samePlan(
+                plan,
+                Objects.requireNonNull(analysisData.containerLiteralPlans().get(arrayNode))
+        ));
+
+        var conflicting = new FrontendAstSideTable<FrontendContainerLiteralPlan>();
+        conflicting.put(arrayNode, new FrontendContainerLiteralPlan(
+                new GdArrayType(GdIntType.INT),
+                List.of(),
+                List.of()
+        ));
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(new FrontendExprTypePatch(
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        conflicting
+                ))
+        );
+    }
+
+    @Test
+    void updateContainerLiteralPlansRejectsCompilerOnlyOperandTypes() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var plans = new FrontendAstSideTable<FrontendContainerLiteralPlan>();
+        plans.put(
+                new ArrayExpression(List.of(), false, RANGE),
+                new FrontendContainerLiteralPlan(
+                        new GdArrayType(GdVariantType.VARIANT),
+                        List.of(new FrontendContainerLiteralPlan.OperandPlan(
+                                0,
+                                FrontendContainerLiteralPlan.OperandRole.ARRAY_ELEMENT,
+                                GdccForRangeIterType.FOR_RANGE_ITER,
+                                GdVariantType.VARIANT,
+                                FrontendVariantBoundaryCompatibility.Decision.REJECT
+                        )),
+                        List.of()
+                )
+        );
+        assertThrows(FrontendAnalysisPatchException.class, () -> analysisData.updateContainerLiteralPlans(plans));
+    }
+
+    @Test
     void ownerPatchTransactionAppliesInFixedOwnerOrderAndRejectsRegressions() {
         var analysisData = FrontendAnalysisData.bootstrap();
         var bindingNode = identifier("value");
@@ -1140,6 +1212,24 @@ class FrontendAnalysisDataTest {
                 value,
                 ScopeLookupStatus.FOUND_ALLOWED
         );
+    }
+
+    private static @NotNull FrontendContainerLiteralPlan genericArrayPlan() {
+        return new FrontendContainerLiteralPlan(
+                new GdArrayType(GdVariantType.VARIANT),
+                List.of(new FrontendContainerLiteralPlan.OperandPlan(
+                        0,
+                        FrontendContainerLiteralPlan.OperandRole.ARRAY_ELEMENT,
+                        GdIntType.INT,
+                        GdVariantType.VARIANT,
+                        FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_PACK
+                )),
+                List.of()
+        );
+    }
+
+    private static @NotNull LiteralExpression integerLiteral(@NotNull String sourceText) {
+        return new LiteralExpression("integer", sourceText, RANGE);
     }
 
     @SuppressWarnings("SameParameterValue")
