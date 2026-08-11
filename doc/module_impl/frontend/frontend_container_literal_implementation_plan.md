@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 0–2 / Pre Phase 3 已完成 / 阶段 3–7 未实施）
+- 状态：In Progress（阶段 0–3 / Pre Phase 3 已完成 / 阶段 4–7 未实施）
 - 目标 Godot 基线：4.5.1-stable
 - gdparser 基线：0.5.3（满足阶段 0 字典 Lua-style / 混用 style 契约）
 - 计划范围：普通 executable body 与当前已支持的 property initializer island
@@ -14,7 +14,8 @@
   - 阶段 1：Done — generic Array/Dictionary shared semantic + `FrontendContainerLiteralPlan` side-table；compile gate 仍拦截。
   - 阶段 2：Done — contextual typed literal + expected-type resolver/cache guard + type-check plan consumer + `TypedContainerAbiSupport`；compile gate 仍拦截。
   - Pre Phase 3：Done — chain/static/constructor 共用 literal element-boundary preview/rank；CHAIN_BINDING 直接发布 contextual `argumentTypes()`；constructor 可发布 `exactCallableBoundary`；compile gate 仍拦截。
-  - 阶段 3–7：Not Started
+  - 阶段 3：Done — `ContainerLiteralItem` + CFG buildValue 路由 + plan 校验 + materialization TEMP_SLOT + body processor fail-fast shell；`classifyOpaqueExpression` 对 Array/Dictionary 改为 REJECT；compile gate 仍拦截。
+  - 阶段 4–7：Not Started
 - 主要关联文档：
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`
@@ -951,23 +952,33 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 
 ### 阶段 3：CFG
 
+状态：Done
+
 实施：
 
-1. 新增 `ContainerLiteralItem`。
-2. 扩展 `ValueOpItem` permits。
-3. 接通 Array/Dictionary buildValue 分支。
-4. 读取并验证 literal plan。
-5. 扩展 materialization collection。
-6. 注册 body processor shell；此阶段可先让 processor fail-fast，LIR 阶段完成后再落地。
+1. ✅ 新增 `ContainerLiteralItem`。
+2. ✅ 扩展 `ValueOpItem` permits。
+3. ✅ 接通 Array/Dictionary buildValue 分支。
+4. ✅ 读取并验证 literal plan。
+5. ✅ 扩展 materialization collection。
+6. ✅ 注册 body processor shell；此阶段可先让 processor fail-fast，LIR 阶段完成后再落地。
+
+落地摘要：
+
+- `ContainerLiteralItem`：单 item 覆盖 Array/Dictionary；构造器校验 expression 家族；operand ids 源序冻结。
+- `FrontendCfgGraphBuilder`：`buildArrayLiteralValue` / `buildDictionaryLiteralValue`；plan 必须存在、`resultType` 对齐 `expressionTypes`、operand 数/role/sourceIndex 对齐、禁止 `REJECT`。
+- `FrontendBodyLoweringSupport`：`ContainerLiteralItem` → 独立 `cfg_tmp_*` TEMP_SLOT，类型取 published expression type。
+- `FrontendSequenceItemInsnLoweringProcessors`：注册 fail-fast processor shell；`classifyOpaqueExpression` 对 Array/Dictionary 改为 protocol `REJECT`（不再 `DEFER`）。
+- compile gate 仍拦截 `analyzeForCompile`；CFG/body 测试走 shared `analyze`。
 
 验收：
 
-- `[f(1), f(2)]` 的 CFG producer 顺序为 call1、call2、container literal。
-- `{k1(): v1(), k2(): v2()}` 的 operand 顺序固定为 k1/v1/k2/v2。
-- 每个 child value id 只有一个 ordinary producer。
-- 嵌套字面量内层 result id 被外层 item 消费。
-- statement-position literal 仍保留 child side effects。
-- plan 缺失、数量不匹配、role 不匹配或含 REJECT 时 fail-fast。
+- ✅ `[f(1), f(2)]` 的 CFG producer 顺序为 call1、call2、container literal。
+- ✅ `{k1(): v1(), k2(): v2()}` 的 operand 顺序固定为 k1/v1/k2/v2。
+- ✅ 每个 child value id 只有一个 ordinary producer。
+- ✅ 嵌套字面量内层 result id 被外层 item 消费。
+- ✅ statement-position literal 仍保留 child side effects。
+- ✅ plan 缺失、数量不匹配、role 不匹配或含 REJECT 时 fail-fast。
 
 建议 targeted tests：
 
@@ -975,6 +986,8 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 .\gradlew.bat test --tests FrontendCfgGraphBuilderContainerLiteralTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendLoweringBuildCfgPassTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendBodyLoweringSupportTest --no-daemon --info --console=plain
+.\gradlew.bat test --tests FrontendContainerLiteralInsnLoweringTest --no-daemon --info --console=plain
+.\gradlew.bat test --tests FrontendCfgGraphTest --no-daemon --info --console=plain
 ```
 
 ### 阶段 4：LIR

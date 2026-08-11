@@ -7,6 +7,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ContainerLiteralItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopGetItem;
@@ -35,13 +36,16 @@ import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
+import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
 import gd.script.gdcc.util.StringUtil;
+import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -57,6 +61,7 @@ import dev.superice.gdparser.frontend.ast.CommentStatement;
 import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.ContinueStatement;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.ElifClause;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -841,6 +846,10 @@ public final class FrontendCfgGraphBuilder {
                     preferredResultValueId
             );
             case CastExpression castExpression -> buildCastValue(cursor, castExpression, preferredResultValueId);
+            case ArrayExpression arrayExpression ->
+                    buildArrayLiteralValue(cursor, arrayExpression, preferredResultValueId);
+            case DictionaryExpression dictionaryExpression ->
+                    buildDictionaryLiteralValue(cursor, dictionaryExpression, preferredResultValueId);
             case TypeTestExpression typeTestExpression ->
                     buildTypeTestValue(cursor, typeTestExpression, preferredResultValueId);
             case ConditionalExpression conditionalExpression -> buildConditionalExpressionValue(conditionalExpression);
@@ -1058,6 +1067,204 @@ public final class FrontendCfgGraphBuilder {
                 resultValueId
         ));
         return new ValueBuild(operandBuild.cursor(), castExpression, resultValueId, null);
+    }
+
+    /// Array literals evaluate elements in source order, then append one dedicated container item.
+    ///
+    /// CFG never replays the AST for construction: operand value ids are frozen here, and body
+    /// lowering later materializes each plan boundary without re-walking children. Plan validation
+    /// fails fast if semantic facts are missing, mismatched, or still carry {@code REJECT}.
+    private @NotNull ValueBuild buildArrayLiteralValue(
+            @NotNull BuildCursor cursor,
+            @NotNull ArrayExpression arrayExpression,
+            @Nullable String preferredResultValueId
+    ) {
+        var plan = requireContainerLiteralPlan(arrayExpression);
+        var currentCursor = cursor;
+        var operandValueIds = new ArrayList<String>(arrayExpression.elements().size());
+        for (var element : arrayExpression.elements()) {
+            var elementBuild = buildValue(currentCursor, element, null);
+            currentCursor = elementBuild.cursor();
+            operandValueIds.add(elementBuild.resultValueId());
+        }
+        validateContainerLiteralPlan(
+                arrayExpression,
+                plan,
+                operandValueIds.size(),
+                FrontendContainerLiteralPlan.OperandRole.ARRAY_ELEMENT
+        );
+        var resultValueId = chooseResultValueId(preferredResultValueId);
+        currentCursor.currentSequence().items().add(new ContainerLiteralItem(
+                arrayExpression,
+                List.copyOf(operandValueIds),
+                resultValueId
+        ));
+        return new ValueBuild(currentCursor, arrayExpression, resultValueId, null);
+    }
+
+    /// Dictionary literals freeze key/value evaluation as key0/value0/key1/value1 before construction.
+    private @NotNull ValueBuild buildDictionaryLiteralValue(
+            @NotNull BuildCursor cursor,
+            @NotNull DictionaryExpression dictionaryExpression,
+            @Nullable String preferredResultValueId
+    ) {
+        var plan = requireContainerLiteralPlan(dictionaryExpression);
+        var currentCursor = cursor;
+        var operandValueIds = new ArrayList<String>(dictionaryExpression.entries().size() * 2);
+        for (var entry : dictionaryExpression.entries()) {
+            var keyBuild = buildValue(currentCursor, entry.key(), null);
+            currentCursor = keyBuild.cursor();
+            operandValueIds.add(keyBuild.resultValueId());
+            var valueBuild = buildValue(currentCursor, entry.value(), null);
+            currentCursor = valueBuild.cursor();
+            operandValueIds.add(valueBuild.resultValueId());
+        }
+        validateContainerLiteralPlan(
+                dictionaryExpression,
+                plan,
+                operandValueIds.size(),
+                FrontendContainerLiteralPlan.OperandRole.DICTIONARY_KEY
+        );
+        var resultValueId = chooseResultValueId(preferredResultValueId);
+        currentCursor.currentSequence().items().add(new ContainerLiteralItem(
+                dictionaryExpression,
+                List.copyOf(operandValueIds),
+                resultValueId
+        ));
+        return new ValueBuild(currentCursor, dictionaryExpression, resultValueId, null);
+    }
+
+    private @NotNull FrontendContainerLiteralPlan requireContainerLiteralPlan(@NotNull Expression literal) {
+        var plan = requireAnalysisData().containerLiteralPlans().get(literal);
+        if (plan == null) {
+            throw new IllegalStateException(
+                    "containerLiteralPlans() is missing a plan for "
+                            + literal.getClass().getSimpleName()
+                            + " at "
+                            + literal.range()
+            );
+        }
+        return plan;
+    }
+
+    /// Validates the published plan against the literal AST and expression type before emitting the item.
+    ///
+    /// @param expectedFirstRole array builders pass {@code ARRAY_ELEMENT}; dictionary builders pass
+    ///                          {@code DICTIONARY_KEY} so the first role is family-checked, then each
+    ///                          plan operand is checked for the full role sequence.
+    private void validateContainerLiteralPlan(
+            @NotNull Expression literal,
+            @NotNull FrontendContainerLiteralPlan plan,
+            int builtOperandCount,
+            @NotNull FrontendContainerLiteralPlan.OperandRole expectedFirstRole
+    ) {
+        var publishedType = requireAnalysisData().expressionTypes().get(literal);
+        if (publishedType == null || publishedType.publishedType() == null) {
+            throw new IllegalStateException(
+                    "expressionTypes() is missing a published type for container literal "
+                            + literal.getClass().getSimpleName()
+                            + " at "
+                            + literal.range()
+            );
+        }
+        if (!FrontendAnalysisData.sameType(plan.resultType(), publishedType.publishedType())) {
+            throw new IllegalStateException(
+                    "container literal plan resultType "
+                            + plan.resultType().getTypeName()
+                            + " does not match expressionTypes() "
+                            + publishedType.publishedType().getTypeName()
+                            + " at "
+                            + literal.range()
+            );
+        }
+        if (plan.operands().size() != builtOperandCount) {
+            throw new IllegalStateException(
+                    "container literal plan operand count "
+                            + plan.operands().size()
+                            + " does not match built operand count "
+                            + builtOperandCount
+                            + " for "
+                            + literal.getClass().getSimpleName()
+                            + " at "
+                            + literal.range()
+            );
+        }
+        validateContainerLiteralOperandRoles(literal, plan, expectedFirstRole);
+        for (var operand : plan.operands()) {
+            if (operand.decision() == FrontendVariantBoundaryCompatibility.Decision.REJECT) {
+                throw new IllegalStateException(
+                        "container literal plan still carries REJECT for "
+                                + literal.getClass().getSimpleName()
+                                + " at "
+                                + literal.range()
+                                + "; compile-error gate should have blocked lowering"
+                );
+            }
+        }
+    }
+
+    private void validateContainerLiteralOperandRoles(
+            @NotNull Expression literal,
+            @NotNull FrontendContainerLiteralPlan plan,
+            @NotNull FrontendContainerLiteralPlan.OperandRole expectedFirstRole
+    ) {
+        if (plan.operands().isEmpty()) {
+            return;
+        }
+        if (expectedFirstRole == FrontendContainerLiteralPlan.OperandRole.ARRAY_ELEMENT) {
+            for (var index = 0; index < plan.operands().size(); index++) {
+                var operand = plan.operands().get(index);
+                if (operand.role() != FrontendContainerLiteralPlan.OperandRole.ARRAY_ELEMENT) {
+                    throw new IllegalStateException(
+                            "array literal plan operand[" + index + "] role is " + operand.role()
+                                    + " but expected ARRAY_ELEMENT at " + literal.range()
+                    );
+                }
+                if (operand.sourceIndex() != index) {
+                    throw new IllegalStateException(
+                            "array literal plan operand[" + index + "] sourceIndex is " + operand.sourceIndex()
+                                    + " but expected " + index + " at " + literal.range()
+                    );
+                }
+            }
+            return;
+        }
+        if (expectedFirstRole != FrontendContainerLiteralPlan.OperandRole.DICTIONARY_KEY) {
+            throw new IllegalStateException(
+                    "container literal plan validation expected ARRAY_ELEMENT or DICTIONARY_KEY as family marker, got "
+                            + expectedFirstRole
+                            + " at "
+                            + literal.range()
+            );
+        }
+        // Dictionary: plan order is key0/value0/key1/value1 with sourceIndex = entry index.
+        if (plan.operands().size() % 2 != 0) {
+            throw new IllegalStateException(
+                    "dictionary literal plan operand count must be even (key/value pairs), got "
+                            + plan.operands().size()
+                            + " at "
+                            + literal.range()
+            );
+        }
+        for (var index = 0; index < plan.operands().size(); index++) {
+            var operand = plan.operands().get(index);
+            var expectedRole = (index % 2 == 0)
+                    ? FrontendContainerLiteralPlan.OperandRole.DICTIONARY_KEY
+                    : FrontendContainerLiteralPlan.OperandRole.DICTIONARY_VALUE;
+            if (operand.role() != expectedRole) {
+                throw new IllegalStateException(
+                        "dictionary literal plan operand[" + index + "] role is " + operand.role()
+                                + " but expected " + expectedRole + " at " + literal.range()
+                );
+            }
+            var expectedSourceIndex = index / 2;
+            if (operand.sourceIndex() != expectedSourceIndex) {
+                throw new IllegalStateException(
+                        "dictionary literal plan operand[" + index + "] sourceIndex is " + operand.sourceIndex()
+                                + " but expected " + expectedSourceIndex + " at " + literal.range()
+                );
+            }
+        }
     }
 
     /// Type-test expressions share the same “child first, then one explicit result item” contract as

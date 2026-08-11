@@ -5,6 +5,7 @@ import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraphBuilder;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ContainerLiteralItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
@@ -17,7 +18,9 @@ import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -511,6 +514,70 @@ class FrontendBodyLoweringSupportTest {
     }
 
     @Test
+    void collectCfgValueMaterializationsPublishesTempSlotForContainerLiteralItems() throws Exception {
+        // Shared semantic path: compile gate still blocks Array/Dictionary in analyzeForCompile.
+        var analyzed = analyzeSharedSemanticFunction(
+                "body_lowering_support_container_literal.gd",
+                """
+                        class_name BodyLoweringSupportContainerLiteral
+                        extends RefCounted
+                        
+                        func probe() -> void:
+                            var values: Array[int] = [1, 2]
+                            var map: Dictionary[String, int] = {"a": 1}
+                        """,
+                "probe",
+                Map.of(
+                        "BodyLoweringSupportContainerLiteral",
+                        "RuntimeBodyLoweringSupportContainerLiteral"
+                )
+        );
+
+        var graph = new FrontendCfgGraphBuilder()
+                .buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+                .graph();
+        var containers = collectReachableValueItems(graph).stream()
+                .filter(ContainerLiteralItem.class::isInstance)
+                .map(ContainerLiteralItem.class::cast)
+                .toList();
+        assertEquals(2, containers.size());
+        var materializations = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                graph,
+                analyzed.analysisData(),
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> {
+                    for (var item : containers) {
+                        var materialization = materializations.get(item.resultValueId());
+                        assertEquals(
+                                FrontendBodyLoweringSupport.CfgValueMaterializationKind.TEMP_SLOT,
+                                materialization.kind()
+                        );
+                        assertNull(materialization.aliasSourceAnchorOrNull());
+                        assertEquals(
+                                Objects.requireNonNull(
+                                        analyzed.analysisData().expressionTypes().get(item.expression())
+                                ).publishedType(),
+                                materialization.type()
+                        );
+                        assertTrue(
+                                materialization.type() instanceof GdArrayType
+                                        || materialization.type() instanceof GdDictionaryType,
+                                () -> "Expected container type, got " + materialization.type()
+                        );
+                        assertEquals(
+                                "cfg_tmp_" + item.resultValueId(),
+                                FrontendBodyLoweringSupport.cfgTempSlotId(item.resultValueId())
+                        );
+                    }
+                }
+        );
+    }
+
+    @Test
     void collectCfgValueSlotTypesFailsWithCompoundSpecificMessageWhenOperandTypesAreMissing() throws Exception {
         var analyzed = analyzeFunction(
                 "body_lowering_support_compound_missing_operand_type.gd",
@@ -608,6 +675,25 @@ class FrontendBodyLoweringSupportTest {
         var module = parseModule(fileName, source, topLevelCanonicalNameMap);
         var diagnostics = new DiagnosticManager();
         var analysisData = new FrontendSemanticAnalyzer().analyzeForCompile(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        return new AnalyzedFunction(module, diagnostics, analysisData, requireFunctionDeclaration(
+                module.units().getFirst().ast(),
+                functionName
+        ));
+    }
+
+    private static @NotNull AnalyzedFunction analyzeSharedSemanticFunction(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull String functionName,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
+        var module = parseModule(fileName, source, topLevelCanonicalNameMap);
+        var diagnostics = new DiagnosticManager();
+        var analysisData = new FrontendSemanticAnalyzer().analyze(
                 module,
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
                 diagnostics

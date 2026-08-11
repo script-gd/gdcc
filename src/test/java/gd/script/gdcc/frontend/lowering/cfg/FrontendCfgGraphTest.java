@@ -5,6 +5,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ContainerLiteralItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
@@ -14,10 +15,12 @@ import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
+import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
@@ -642,12 +645,46 @@ class FrontendCfgGraphTest {
                 IllegalArgumentException.class,
                 () -> new MemberLoadItem(identifier("seed"), " ", "recv0", "v2")
         );
+        var blankContainerOperand = assertThrows(
+                IllegalArgumentException.class,
+                () -> new ContainerLiteralItem(
+                        new ArrayExpression(List.of(), false, SYNTHETIC_RANGE),
+                        List.of("elem0", " "),
+                        "v3"
+                )
+        );
 
         assertAll(
                 () -> assertTrue(blankOpaque.getMessage().contains("resultValueId")),
                 () -> assertTrue(blankCallOperand.getMessage().contains("argumentValueIds[1]")),
-                () -> assertTrue(blankMemberName.getMessage().contains("memberName"))
+                () -> assertTrue(blankMemberName.getMessage().contains("memberName")),
+                () -> assertTrue(blankContainerOperand.getMessage().contains("operandValueIds[1]"))
         );
+    }
+
+    @Test
+    void containerLiteralItemExposesStableAnchorOperandsAndRejectsNonLiteralRoots() {
+        var arrayExpression = new ArrayExpression(List.of(identifier("a"), identifier("b")), false, SYNTHETIC_RANGE);
+        var dictionaryExpression = new DictionaryExpression(List.of(), false, SYNTHETIC_RANGE);
+        var arrayItem = new ContainerLiteralItem(arrayExpression, List.of("e0", "e1"), "v10");
+        var dictionaryItem = new ContainerLiteralItem(dictionaryExpression, List.of(), "v11");
+
+        assertAll(
+                () -> assertSame(arrayExpression, arrayItem.expression()),
+                () -> assertSame(arrayExpression, arrayItem.anchor()),
+                () -> assertEquals(List.of("e0", "e1"), arrayItem.operandValueIds()),
+                () -> assertEquals("v10", arrayItem.resultValueIdOrNull()),
+                () -> assertTrue(arrayItem.hasStandaloneMaterializationSlot()),
+                () -> assertSame(dictionaryExpression, dictionaryItem.expression()),
+                () -> assertEquals(List.of(), dictionaryItem.operandValueIds()),
+                () -> assertEquals("v11", dictionaryItem.resultValueIdOrNull())
+        );
+
+        var rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> new ContainerLiteralItem(identifier("not_a_literal"), List.of(), "v12")
+        );
+        assertTrue(rejected.getMessage().contains("ArrayExpression"), rejected.getMessage());
     }
 
     private static IdentifierExpression identifier(String name) {

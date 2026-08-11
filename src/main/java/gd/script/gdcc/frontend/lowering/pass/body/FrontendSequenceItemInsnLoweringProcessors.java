@@ -8,6 +8,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ContainerLiteralItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopGetItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopInitItem;
@@ -113,6 +114,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 new FrontendCompoundAssignmentBinaryInsnLoweringProcessor(),
                 new FrontendAssignmentInsnLoweringProcessor(),
                 new FrontendCastInsnLoweringProcessor(),
+                new FrontendContainerLiteralInsnLoweringProcessor(),
                 new FrontendTypeTestInsnLoweringProcessor(),
                 new FrontendForLoopInitInsnLoweringProcessor(),
                 new FrontendForLoopShouldContinueInsnLoweringProcessor(),
@@ -293,7 +295,11 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                         OpaqueExprHandling.DEFER,
                         "this expression root needs a dedicated lowering route before body pass consumes it"
                 );
-                case ArrayExpression _, DictionaryExpression _, PreloadExpression _, GetNodeExpression _ ->
+                case ArrayExpression _, DictionaryExpression _ -> new OpaqueExprPolicy(
+                        OpaqueExprHandling.REJECT,
+                        "array/dictionary literals must lower through ContainerLiteralItem, not OpaqueExprValueItem"
+                );
+                case PreloadExpression _, GetNodeExpression _ ->
                         new OpaqueExprPolicy(
                                 OpaqueExprHandling.DEFER,
                                 "this compile-blocked expression family stays outside the first body lowering surface"
@@ -905,6 +911,32 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var targetType = session.requireValueType(node.resultValueId());
             session.emitExplicitCast(block, node, resultSlotId, sourceSlotId, sourceType, targetType);
             return block;
+        }
+    }
+
+    /// Phase 3 shell for array/dictionary literals.
+    ///
+    /// CFG already freezes operand value ids and the published plan. Real LIR emission lands in
+    /// Phase 4 (`construct_container_literal`); until then body lowering fail-fasts so incomplete
+    /// support never silently degrades to opaque handling.
+    private static final class FrontendContainerLiteralInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<ContainerLiteralItem, Void> {
+        @Override
+        public @NotNull Class<ContainerLiteralItem> nodeType() {
+            return ContainerLiteralItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull ContainerLiteralItem node,
+                @Nullable Void context
+        ) {
+            throw session.unsupportedSequenceItem(
+                    node,
+                    "ContainerLiteralItem LIR emission is deferred to Phase 4 construct_container_literal"
+            );
         }
     }
 

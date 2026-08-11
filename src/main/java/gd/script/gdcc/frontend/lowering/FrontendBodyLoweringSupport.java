@@ -228,6 +228,11 @@ public final class FrontendBodyLoweringSupport {
                     CfgValueMaterializationKind.TEMP_SLOT,
                     null
             );
+            case ContainerLiteralItem containerLiteralItem -> new CfgValueMaterialization(
+                    requireExpressionType(analysisData, containerLiteralItem.expression()),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
             case TypeTestItem _ -> new CfgValueMaterialization(
                     GdBoolType.BOOL,
                     CfgValueMaterializationKind.TEMP_SLOT,
