@@ -62,6 +62,7 @@ public record ParsedLirInstruction(
                     if (operands.size() > 1) v = ((StringOperand) operands.get(1)).value();
                     yield new ConstructDictionaryInsn(resultId, k, v);
                 }
+                case CONSTRUCT_CONTAINER_LITERAL -> new ConstructContainerLiteralInsn(resultId, List.copyOf(operands));
                 case CONSTRUCT_OBJECT -> {
                     var cls = ((StringOperand) operands.getFirst()).value();
                     yield new ConstructObjectInsn(resultId, cls);

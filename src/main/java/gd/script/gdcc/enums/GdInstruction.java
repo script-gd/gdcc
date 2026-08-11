@@ -21,6 +21,9 @@ public enum GdInstruction {
     CONSTRUCT_BUILTIN("construct_builtin", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE, OperandKind.VARARGS), 0, Integer.MAX_VALUE),
     CONSTRUCT_ARRAY("construct_array", ReturnKind.REQUIRED, List.of(OperandKind.STRING), 0, 1),
     CONSTRUCT_DICTIONARY("construct_dictionary", ReturnKind.REQUIRED, List.of(OperandKind.STRING, OperandKind.STRING), 0, 2),
+    /// Filled Array/Dictionary from source-order VariableOperands. Family follows result variable type.
+    /// Empty operands are legal; does not replace empty `construct_array` / `construct_dictionary`.
+    CONSTRUCT_CONTAINER_LITERAL("construct_container_literal", ReturnKind.REQUIRED, List.of(OperandKind.VARARGS), 0, Integer.MAX_VALUE),
     CONSTRUCT_OBJECT("construct_object", ReturnKind.REQUIRED, List.of(OperandKind.STRING), 1, 1),
     CONSTRUCT_CALLABLE("construct_callable", ReturnKind.REQUIRED, List.of(OperandKind.STRING), 1, 1),
     CONSTRUCT_LAMBDA("construct_lambda", ReturnKind.REQUIRED, List.of(OperandKind.STRING, OperandKind.VARARGS), 1, Integer.MAX_VALUE),

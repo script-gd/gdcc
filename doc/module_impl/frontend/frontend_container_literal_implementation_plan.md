@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 0–3 / Pre Phase 3 已完成 / 阶段 4–7 未实施）
+- 状态：In Progress（阶段 0–4 / Pre Phase 3 已完成 / 阶段 5–7 未实施）
 - 目标 Godot 基线：4.5.1-stable
 - gdparser 基线：0.5.3（满足阶段 0 字典 Lua-style / 混用 style 契约）
 - 计划范围：普通 executable body 与当前已支持的 property initializer island
@@ -15,7 +15,8 @@
   - 阶段 2：Done — contextual typed literal + expected-type resolver/cache guard + type-check plan consumer + `TypedContainerAbiSupport`；compile gate 仍拦截。
   - Pre Phase 3：Done — chain/static/constructor 共用 literal element-boundary preview/rank；CHAIN_BINDING 直接发布 contextual `argumentTypes()`；constructor 可发布 `exactCallableBoundary`；compile gate 仍拦截。
   - 阶段 3：Done — `ContainerLiteralItem` + CFG buildValue 路由 + plan 校验 + materialization TEMP_SLOT + body processor fail-fast shell；`classifyOpaqueExpression` 对 Array/Dictionary 改为 REJECT；compile gate 仍拦截。
-  - 阶段 4–7：Not Started
+  - 阶段 4：Done — `CONSTRUCT_CONTAINER_LITERAL` + `ConstructContainerLiteralInsn` + parser/serializer round-trip + body processor plan-driven materialize + emit；compile gate 仍拦截。
+  - 阶段 5–7：Not Started
 - 主要关联文档：
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`
@@ -640,10 +641,10 @@ public record ConstructContainerLiteralInsn(
 合同：
 
 - result variable type 为 `GdArrayType` 时，所有 operands 按数组元素顺序解释。
-- result variable type 为 `GdDictionaryType` 时，operands 按 key0/value0/key1/value1 解释，数量必须为偶数。
-- result variable 不得为 ref。
-- result variable 不得是 Packed*Array 或其他 builtin。
-- operands 全部必须是 `VariableOperand`。
+- result variable type 为 `GdDictionaryType` 时，operands 按 key0/value0/key1/value1 解释；**偶数数量由 C backend（阶段 5）校验**，LIR record/parser 不在阶段 4 因奇数 fail-fast（frontend CFG 已按 entry 对发布）。
+- result variable 不得为 ref（backend 阶段 5 校验）。
+- result variable 不得是 Packed*Array 或其他 builtin（backend 阶段 5 校验）。
+- operands 全部必须是 `VariableOperand`（record 构造 + parser varargs kind）。
 - 每个 operand 可以是任意 source-facing GdType；backend 负责临时 pack 为 Variant 后写入容器。
 - 空 operands 合法，family 由 result variable type 决定。
 
@@ -992,31 +993,30 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 
 ### 阶段 4：LIR
 
-实施：
+状态：**Done**
 
-1. 新增 `CONSTRUCT_CONTAINER_LITERAL`。
-2. 新增 `ConstructContainerLiteralInsn`。
-3. 接通 parser/serializer/concrete conversion。
-4. body processor 使用 plan materialize operands 后发射新指令。
-5. 更新 `doc/gdcc_low_ir.md`。
+已实施：
 
-验收：
+1. `GdInstruction.CONSTRUCT_CONTAINER_LITERAL`（pure `VARARGS`，min=0；parser 强制 varargs 为 `VARIABLE`）。
+2. `ConstructContainerLiteralInsn(resultId, operands)`：operands 必须全是 `VariableOperand`。
+3. `ParsedLirInstruction.toConcrete` + `SimpleLirBlockInsnParser` varargs kind 推断；serializer 沿用通用路径。
+4. body processor：`requireContainerLiteralPlan` → 逐 operand `materializeFrontendBoundaryValue` → emit `ConstructContainerLiteralInsn` 到 `cfg_tmp_*`。
+5. `doc/gdcc_low_ir.md` 已补充 `construct_container_literal` 合同。
+
+验收（由 `ConstructContainerLiteralInsnContractTest` + `FrontendContainerLiteralInsnLoweringTest` 锚定）：
 
 - Array operands round-trip 保序。
 - Dictionary operands round-trip 保持偶数与 key/value 顺序。
 - 空 operands 对 Array/Dictionary 都合法。
-- non-variable operand 被 parser/contract 拒绝。
-- Dictionary odd operand count 被 instruction/backend validation 拒绝。
-- result missing、ref result、非容器 result 被拒绝。
-- body lowering 中 int->float、String->StringName、Variant unpack 的前置 materialization 指令准确。
+- non-variable operand 被 parser/record 拒绝。
+- Dictionary odd operand count：LIR 层允许任意偶数/奇数（family 仅由 result type 决定）；**backend 校验在阶段 5** 拒绝奇数。
+- result missing / ref / 非容器：**backend 阶段 5** 拒绝；frontend 仅保证 result 为 published 容器 `cfg_tmp_*`。
+- body lowering 中 int->float、String->StringName、Variant pack/unpack 的前置 materialization 指令准确。
 
 建议 targeted tests：
 
 ```powershell
 .\gradlew.bat test --tests ConstructContainerLiteralInsnContractTest --no-daemon --info --console=plain
-.\gradlew.bat test --tests SimpleLirBlockInsnParserTest --no-daemon --info --console=plain
-.\gradlew.bat test --tests DomLirParserTest --no-daemon --info --console=plain
-.\gradlew.bat test --tests DomLirSerializerTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendContainerLiteralInsnLoweringTest --no-daemon --info --console=plain
 ```
 

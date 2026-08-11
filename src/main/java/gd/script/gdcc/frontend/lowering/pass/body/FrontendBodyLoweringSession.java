@@ -16,6 +16,7 @@ import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
+import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
@@ -159,6 +160,22 @@ public final class FrontendBodyLoweringSession {
             );
         }
         return target;
+    }
+
+    /// Reads the frozen array/dictionary construction plan for one literal root.
+    ///
+    /// CFG build already required the plan; body lowering only materializes operands and emits
+    /// `construct_container_literal`. Missing plan is a protocol violation, not a source diagnostic.
+    @NotNull FrontendContainerLiteralPlan requireContainerLiteralPlan(@NotNull Node literalAnchor) {
+        var plan = analysisData.containerLiteralPlans().get(
+                Objects.requireNonNull(literalAnchor, "literalAnchor must not be null")
+        );
+        if (plan == null) {
+            throw new IllegalStateException(
+                    "Missing published container literal plan for " + literalAnchor.getClass().getSimpleName()
+            );
+        }
+        return plan;
     }
 
     @NotNull ClassRegistry classRegistry() {
@@ -765,18 +782,12 @@ public final class FrontendBodyLoweringSession {
         return function;
     }
 
-    /// Materializes one already-approved ordinary frontend typed boundary into an explicit LIR slot.
+    /// Materializes one ordinary frontend typed boundary by re-deriving the matrix decision.
     ///
-    /// The authoritative boundary matrix lives in
-    /// `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`; semantic legality is owned
-    /// by `FrontendVariantBoundaryCompatibility`, and this helper must stay isomorphic to that
-    /// decision table instead of inventing extra lowering-only conversions. The long-form consumer and
-    /// materialization contract lives in
+    /// Prefer the overload that accepts a frozen
+    /// [FrontendVariantBoundaryCompatibility.Decision] when the consumer already published that
+    /// decision (e.g. container-literal plan operands). The long-form contract lives in
     /// `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`.
-    ///
-    /// Local/property initialization, assignment, call, return, and subscript key/index consumers
-    /// should route all ordinary boundary writes through this helper instead of duplicating ad-hoc
-    /// boundary branches.
     @NotNull String materializeFrontendBoundaryValue(
             @NotNull LirBasicBlock block,
             @NotNull String sourceSlotId,
@@ -785,9 +796,39 @@ public final class FrontendBodyLoweringSession {
             @NotNull String boundaryUse
     ) {
         Objects.requireNonNull(block, "block must not be null");
+        var source = Objects.requireNonNull(sourceType, "sourceType must not be null");
+        var target = Objects.requireNonNull(targetType, "targetType must not be null");
+        return materializeFrontendBoundaryValue(
+                block,
+                sourceSlotId,
+                source,
+                target,
+                FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                        classRegistry,
+                        source,
+                        target
+                ),
+                boundaryUse
+        );
+    }
+
+    /// Materializes one ordinary boundary using a **frozen** compatibility decision.
+    ///
+    /// Used when semantic/CFG already published the decision (container-literal plan, future call
+    /// argument plans). Lowering must not re-query the matrix so LIR stays isomorphic to the plan.
+    @NotNull String materializeFrontendBoundaryValue(
+            @NotNull LirBasicBlock block,
+            @NotNull String sourceSlotId,
+            @NotNull GdType sourceType,
+            @NotNull GdType targetType,
+            @NotNull FrontendVariantBoundaryCompatibility.Decision decision,
+            @NotNull String boundaryUse
+    ) {
+        Objects.requireNonNull(block, "block must not be null");
         var sourceSlot = StringUtil.requireNonBlank(sourceSlotId, "sourceSlotId");
         var source = Objects.requireNonNull(sourceType, "sourceType must not be null");
         var target = Objects.requireNonNull(targetType, "targetType must not be null");
+        var frozenDecision = Objects.requireNonNull(decision, "decision must not be null");
         var use = StringUtil.requireNonBlank(boundaryUse, "boundaryUse");
         if (source instanceof GdVoidType) {
             throw new IllegalStateException(
@@ -819,11 +860,7 @@ public final class FrontendBodyLoweringSession {
                             + compilerOnlyType.getTypeName()
             );
         }
-        return switch (FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
-                classRegistry,
-                source,
-                target
-        )) {
+        return switch (frozenDecision) {
             case ALLOW_DIRECT -> sourceSlot;
             case ALLOW_WITH_PACK -> {
                 var packedSlotId = nextBoundaryMaterializationSlotId(use, "pack");

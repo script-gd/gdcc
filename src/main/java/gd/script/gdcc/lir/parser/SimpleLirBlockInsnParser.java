@@ -128,6 +128,9 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
                     }
                 }
                 // otherwise keep GENERIC
+            } else if (instr == GdInstruction.CONSTRUCT_CONTAINER_LITERAL) {
+                // Pattern is pure VARARGS; operands must all be variables (empty list legal).
+                varargElemKind = GdInstruction.OperandKind.VARIABLE;
             }
         }
 

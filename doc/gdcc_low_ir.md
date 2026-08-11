@@ -140,6 +140,29 @@ the specified key type with a generic value type.
 $<result_id> = construct_dictionary "<key_class_name>"? "<value_class_name>"?
 ```
 
+#### construct_container_literal
+Constructs a fresh `Array` or `Dictionary` and fills it from already-materialized
+operand slots. Family is decided solely by the result variable type.
+
+Rules:
+- Result variable type must be non-ref `GdArrayType` or `GdDictionaryType` (never
+  `Packed*Array` or other builtins). Backend rejects missing / ref / non-container results.
+- All operands must be `VariableOperand`. Empty operands are legal for both families.
+- If result is `GdArrayType`: operands are element0..elementN in source order.
+- If result is `GdDictionaryType`: operands are key0/value0/key1/value1/...;
+  operand count must be even (backend validation).
+- Element/key/value ordinary-boundary conversions (e.g. `int -> float`,
+  `String -> StringName`, Variant pack/unpack) are emitted by frontend body lowering
+  *before* this instruction. Backend only packs operands to Variant for container writes.
+
+This instruction does **not** replace empty `construct_array` / `construct_dictionary`,
+which remain the contract for `__prepare__`, property default init, and explicit empty
+typed/generic construction.
+
+```
+$<result_id> = construct_container_literal $<operand0_id> $<operand1_id> ...
+```
+
 #### construct_object
 Constructs a new Object of a specific class.
 If the new class object extends RefCounted, the returned object is owned (reference count increased by 1).
