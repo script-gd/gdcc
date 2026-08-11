@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 0–4 / Pre Phase 3 已完成 / 阶段 5–7 未实施）
+- 状态：In Progress（阶段 0–5 / Pre Phase 3 已完成 / 阶段 6–7 未实施）
 - 目标 Godot 基线：4.5.1-stable
 - gdparser 基线：0.5.3（满足阶段 0 字典 Lua-style / 混用 style 契约）
 - 计划范围：普通 executable body 与当前已支持的 property initializer island
@@ -16,7 +16,8 @@
   - Pre Phase 3：Done — chain/static/constructor 共用 literal element-boundary preview/rank；CHAIN_BINDING 直接发布 contextual `argumentTypes()`；constructor 可发布 `exactCallableBoundary`；compile gate 仍拦截。
   - 阶段 3：Done — `ContainerLiteralItem` + CFG buildValue 路由 + plan 校验 + materialization TEMP_SLOT + body processor fail-fast shell；`classifyOpaqueExpression` 对 Array/Dictionary 改为 REJECT；compile gate 仍拦截。
   - 阶段 4：Done — `CONSTRUCT_CONTAINER_LITERAL` + `ConstructContainerLiteralInsn` + parser/serializer round-trip + body processor plan-driven materialize + emit；compile gate 仍拦截。
-  - 阶段 5–7：Not Started
+  - 阶段 5：Done — `ContainerLiteralInsnGen` + `CCodegen` 注册；Array `push_back` / Dictionary `set` + pack temp lifecycle；compile gate 仍拦截。
+  - 阶段 6–7：Not Started
 - 主要关联文档：
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`
@@ -1020,31 +1021,38 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 .\gradlew.bat test --tests FrontendContainerLiteralInsnLoweringTest --no-daemon --info --console=plain
 ```
 
-### 阶段 5：C Backend
+### 阶段 5：C Backend — Done
 
 实施：
 
-1. 新增 `ContainerLiteralInsnGen`。
-2. 在 `CCodegen` 注册新 generator。
-3. Array 使用 empty typed/generic construction + `godot_Array_push_back`。
-4. Dictionary 使用 empty typed/generic construction + `godot_Dictionary_set`。
-5. 复用 `InsnGenSupport.materializeVariantOperand`。
-6. 增加 generator-local temp cleanup 和 invalid-insn guards。
+1. ✅ 新增 `ContainerLiteralInsnGen`（仅 `CONSTRUCT_CONTAINER_LITERAL`；不并入 `ConstructInsnGen`）。
+2. ✅ 在 `CCodegen` 静态 registry 注册 `ContainerLiteralInsnGen`。
+3. ✅ Array：`constructBuiltin(..., List.of())` + 每元素 `materializeVariantOperand` + `godot_Array_push_back` + 立即 destroy pack temp。
+4. ✅ Dictionary：偶数 operand 校验 + empty construct + pair-wise `godot_Dictionary_set` + `godot_bool` 失败分支 + pack temp 清理。
+5. ✅ 复用 `InsnGenSupport.materializeVariantOperand` / `destroyInitializedTemps` / `emitRuntimeFailureReturn`。
+6. ✅ invalid-insn：missing/unknown/ref result、非 Array|Dictionary result、奇数 Dictionary operands、未知 operand。
 
-验收矩阵：
+落地要点：
 
-| 场景 | 期望 |
-| --- | --- |
-| generic empty Array | `godot_new_Array()`，无 append |
-| generic Array with scalars | 每元素 pack Variant 后按序 push_back |
-| typed Array[int] | typed empty constructor + packed int Variant append |
-| typed Array[float] with int source | frontend 已生成 int->float，backend 只 pack float |
-| generic Dictionary | 按 pair 顺序 set |
-| typed Dictionary | typed empty constructor + packed target-typed key/value set |
-| object element | pack temp 正确销毁，容器保留对象引用 |
-| nested generic literal | 内层容器先构造，外层随后 pack/append |
-| duplicate dynamic key | 后写覆盖先写 |
-| statement-position discarded result | result 最终 destruct，无泄漏 |
+- family 仅由 result 变量类型决定（`GdArrayType` / `GdDictionaryType`）。
+- `Array[Variant]` / `Dictionary[Variant, Variant]` 走 plain `godot_new_Array()` / `godot_new_Dictionary()`，不生成 typed metadata。
+- backend **不**重做元素转换；只做 Variant carrier pack。
+- `godot_Array_push_back` 返回 `void`，不伪造失败检查；`godot_Dictionary_set` 检查返回的 `godot_bool`。
+
+验收矩阵（由 `CContainerLiteralInsnGenTest` + `CContainerLiteralInsnGenEngineTest` 锚定）：
+
+| 场景 | 期望 | 状态 |
+| --- | --- | --- |
+| generic empty Array | `godot_new_Array()`，无 append | ✅ unit |
+| generic Array with scalars | 每元素 pack Variant 后按序 push_back | ✅ unit + engine |
+| typed Array[int] | typed empty constructor + packed int Variant append | ✅ unit + engine (`is_typed`/`get_typed_builtin`) |
+| typed Array[float] with float carriers | backend 只 pack float（frontend 已完成 int→float） | ✅ unit + engine |
+| generic Dictionary | 按 pair 顺序 set + bool failure branch | ✅ unit + engine |
+| typed Dictionary | typed empty constructor + packed target-typed key/value set | ✅ unit + engine |
+| object element | pack temp 在 push_back 后销毁 | ✅ unit |
+| nested generic literal | 内层 construct 后 outer pack/append | ✅ unit + engine |
+| duplicate dynamic key | 后写覆盖先写 | ✅ engine |
+| result guards | missing/ref/Packed*/non-container/odd-dict 拒绝 | ✅ unit |
 
 建议 targeted tests：
 
@@ -1052,7 +1060,7 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 .\gradlew.bat test --tests CContainerLiteralInsnGenTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests CContainerLiteralInsnGenEngineTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests CConstructInsnGenTest --no-daemon --info --console=plain
-.\gradlew.bat test --tests PackUnpackVariantInsnGenTest --no-daemon --info --console=plain
+.\gradlew.bat test --tests CPackUnpackVariantInsnGenTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests CPhaseAControlFlowAndFinallyTest --no-daemon --info --console=plain
 ```
 
