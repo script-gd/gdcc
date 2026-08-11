@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 0–2 已完成 / Pre Phase 3 Pending / 阶段 3–7 未实施）
+- 状态：In Progress（阶段 0–2 / Pre Phase 3 已完成 / 阶段 3–7 未实施）
 - 目标 Godot 基线：4.5.1-stable
 - gdparser 基线：0.5.3（满足阶段 0 字典 Lua-style / 混用 style 契约）
 - 计划范围：普通 executable body 与当前已支持的 property initializer island
@@ -13,7 +13,7 @@
   - 阶段 0：Done — `FrontendContainerLiteralParseBehaviorTest` 16/16 全绿（gdparser 0.5.3）；Lua-style key 归一化为 `string_name` 常量；混用 style 报 `parse.lowering`；依赖已升级。
   - 阶段 1：Done — generic Array/Dictionary shared semantic + `FrontendContainerLiteralPlan` side-table；compile gate 仍拦截。
   - 阶段 2：Done — contextual typed literal + expected-type resolver/cache guard + type-check plan consumer + `TypedContainerAbiSupport`；compile gate 仍拦截。
-  - Pre Phase 3：Pending — 补齐 §5.4 合同 1/4 的 chain/constructor 侧 literal preview 与 `argumentTypes()` contextual 重写（阶段 2 遗留 deferred）；**开始阶段 3 前必须完成**。
+  - Pre Phase 3：Done — chain/static/constructor 共用 literal element-boundary preview/rank；CHAIN_BINDING 直接发布 contextual `argumentTypes()`；constructor 可发布 `exactCallableBoundary`；compile gate 仍拦截。
   - 阶段 3–7：Not Started
 - 主要关联文档：
   - `doc/module_impl/common_rules.md`
@@ -479,6 +479,12 @@ totalRank = sum(all operand ranks)
 3. `worstRank` 相同则 `totalRank` 较高者优先。
 4. 仍相同则回到现有 parameter-type specificity / overload ambiguity 合同。
 
+实现落点（bare / constructor / chain instance / chain static **共用**）：
+
+- 聚合：`FrontendCallableLiteralArgumentSupport.literalAggregateRank(...)` → `CandidateRank(worst, total)`
+- 比较：`FrontendContainerLiteralSemanticSupport.compareCandidateRanks(...)`（经 `isStrictlyMoreSpecificByLiteralAggregate`）
+- chain 在 `ScopeMethodResolver` 中通过 `CandidateSpecificity` 注入该比较器；`ParameterCompatibilityRank` 只负责 applicable（reject 为 0），不再用 packed int 的 min/sum 做候选级 specificity。
+
 单个 operand rank 复用：
 
 ```java
@@ -818,7 +824,7 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 1. 扩展 expected-type-aware resolver API 和 cache guard。 ✅ `ContextualNestedExpressionResolver`；`BodyExpressionResolver.resolveExpressionTypeExpected` + `finalExpectedTypes` fail-fast
 2. 新增 `FrontendCallableReturnTypeSupport` 与 `FrontendSuiteContext.currentCallableReturnType` 数据通路。 ✅
 3. 接通 typed initializer、assignment、return、exact fixed call argument。 ✅ local/property declared slot、`=` RHS、return value、bare exact call fixed params、chain exact call fixed params
-4. 在 bare call、chain call、constructor/static call 接通 selected-call candidate preview/finalize。 ✅ bare call 完整 element-boundary preview/rank/finalize；chain call 在 EXPR_TYPE 侧按 CHAIN_BINDING 已选 boundary finalize literal（**§5.4 合同 1/4 的 chain/constructor 侧 preview + 重写 `argumentTypes()` 迁入 Pre Phase 3**）；constructor/static 选择仍用 generic container snapshot
+4. 在 bare call、chain call、constructor/static call 接通 selected-call candidate preview/finalize。 ✅ bare + chain/static/constructor 均走共享 element-boundary preview/rank；CHAIN_BINDING 发布 contextual `argumentTypes()`；见 Pre Phase 3
 5. 生成每个 operand 的 target type 与 boundary decision。 ✅ contextual construction type 写入 plan
 6. `FrontendTypeCheckAnalyzer` 只消费 plan 中的 `REJECT` decisions 与 duplicate-key issues。 ✅
 7. 引入 `TypedContainerAbiSupport`，增加 nested typed container、script leaf、void/compiler-only leaf fail-closed。 ✅
@@ -833,9 +839,9 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 - `Array[String] = [1]` 只在元素处产生一条 `sema.type_check` error。 ✅
 - `Dictionary[StringName, float] = {"x": 1}` 同时冻结 key constructor 与 value intrinsic cast。 ✅
 - assignment/return/fixed call parameter 均可提供 typed context。 ✅
-- bare call、chain method 与 constructor/static call overload 均根据统一 element boundary rank 选择正确 callable。 ⚠️ bare 完整 element rank + 双 overload 锚点；chain/constructor selection 仍用 generic container snapshot 排名 → **Pre Phase 3**
+- bare call、chain method 与 constructor/static call overload 均根据统一 element boundary rank 选择正确 callable。 ✅ 见 Pre Phase 3
 - 多候选 preview 后只发布一个 final expression type/plan，preview cache 不进入 stable side table。 ✅ `finalizeWindow=false` 不写 `containerLiteralPlans`
-- `f([1])`、`obj.m([1])` 与 exact constructor/static call 中，`expressionTypes[literal]`、`FrontendResolvedCall.argumentTypes()`、`containerLiteralPlans[literal].resultType()` 三者一致。 ⚠️ bare `f([1])` 三者一致；chain `obj.m([1])` 的 `expressionTypes`/`plan` 已 contextual，但 CHAIN_BINDING 发布的 `argumentTypes()` 仍可能是 generic → **Pre Phase 3**
+- `f([1])`、`obj.m([1])` 与 exact constructor/static call 中，`expressionTypes[literal]`、`FrontendResolvedCall.argumentTypes()`、`containerLiteralPlans[literal].resultType()` 三者一致。 ✅ 见 Pre Phase 3
 - CHAIN_BINDING 到 EXPR_TYPE 不因 generic-first publication 触发 expected-type conflict。 ✅ chain 不 finalize literal；EXPR_TYPE 按 selected param finalize
 - dynamic call argument 保持 generic literal。 ✅ 无 exact boundary 时 expected=null
 - nested typed container 在 frontend 报错，不进入 backend。 ✅ root-owned FAILED + 无 plan
@@ -872,82 +878,71 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 .\gradlew.bat test --tests FrontendCompileCheckAnalyzerTest --no-daemon --info --console=plain
 ```
 
-### Pre Phase 3：chain/constructor literal preview 与 `argumentTypes()` 一致性 — Pending
+### Pre Phase 3：chain/constructor literal preview 与 `argumentTypes()` 一致性 — Done
 
 > **硬门槛：** 必须在阶段 3（CFG）开始前完成。  
 > 原因：CFG/lowering 会把 `FrontendResolvedCall.argumentTypes()` 当作 call-site 真源快照；若仍保留 generic `Array`/`Dictionary`，后续 materialization 与诊断会冻结错误类型。  
 > 本小节正式关闭阶段 2 遗留的 §5.4 合同 1/4 deferred 项。
 
-#### 背景（当前缺口）
+#### 背景（阶段 2 遗留缺口，现已关闭）
 
-阶段 2 已完成：
+阶段 2 完成后曾保留：
 
-- bare call：element-boundary preview → 选择 → finalize → `argumentTypes()` / `expressionTypes` / `plan.resultType()` 三者 contextual 一致。
-- chain call（EXPR_TYPE）：读取 CHAIN_BINDING 已发布的 `exactCallableBoundary().fixedParameterTypes()`，对 literal 参数 `resolveExpressionTypeExpected`，因此 `expressionTypes[literal]` 与 `containerLiteralPlans[literal].resultType()` 已 contextual。
-- CHAIN_BINDING 不 finalize literal、不写 `containerLiteralPlans`（避免 expected-type conflict）✅。
+1. chain / static method / constructor **选择**仍用 generic container snapshot 排名。
+2. CHAIN_BINDING 发布的 `FrontendResolvedCall.argumentTypes()` 对 container literal 可能是 generic，与 EXPR_TYPE contextual fact 不一致。
 
-仍缺失（本阶段必须补齐）：
+#### 实施（落地）
 
-1. chain / static method / constructor **选择**仍用 generic container snapshot 排名，无法按元素边界区分 `m(Array[int])` vs `m(Array[String])`。
-2. CHAIN_BINDING 发布的 `FrontendResolvedCall.argumentTypes()` 对 container literal 仍可能是 generic `Array`/`Dictionary`，与 EXPR_TYPE 已发布的 contextual fact 不一致。
+1. ✅ 抽取共享 `FrontendCallableLiteralArgumentSupport`：child-source preview、`rankLiteralAgainstParameter` 编码 rank、`rewriteArgumentTypes`；`finalizeWindow=false` 路径不写 plan。
+2. ✅ `ScopeMethodResolver.ParameterCompatibilityRank` index-aware 接口（**applicability**）；`ScopeMethodResolver.CandidateSpecificity` 注入候选级 specificity；`FrontendChainReductionHelper` 在 instance/static 选择前同时注入 element-boundary applicability rank 与 `literalAggregateRank` specificity。
+3. ✅ bare / constructor / chain instance / chain static 的 overload **specificity** 统一走 `literalAggregateRank` + `compareCandidateRanks`（`isStrictlyMoreSpecificByLiteralAggregate`）；scope 默认 min/sum packed-int 路径仅在未注入 `CandidateSpecificity` 时使用（backend 0/1 路径不受影响）。
+4. ✅ `FrontendConstructorResolutionSupport` 增加 literal-aware overload；constructor RESOLVED 可发布 `exactCallableBoundary`（`FrontendResolvedCall` 放宽 CONSTRUCTOR）。
+5. ✅ `resolvedCallTrace` / constructor RESOLVED / bare type-meta constructor 在发布点 rewrite contextual `argumentTypes()`。
+6. ✅ EXPR_TYPE 继续消费 CHAIN_BINDING 已发布 boundary finalize literal，不重选 overload。
+7. ✅ compile gate 对 Array/Dictionary 保持拦截。
 
-#### 实施
+#### 设计约束（保持）
 
-1. 抽取/复用与 bare call **同一套** literal preview helper（`rankLiteralAgainstParameter` + child source types；`finalizeWindow=false`；禁止写 `expressionTypes`/`containerLiteralPlans`）。
-2. `FrontendChainReductionHelper` 在 instance/static/constructor 选择前，对每个候选的 container-literal 参数做 element-boundary preview/rank；`REJECT` 淘汰候选；ranking 顺序与 §5.4 一致（worstRank → totalRank → 既有 specificity）。
-3. 选中 callable 后，CHAIN_BINDING **直接**发布带 contextual `argumentTypes()` 的 `FrontendResolvedCall`（例如 `Array[int]`），不得再保留 preliminary generic snapshot。
-4. `resolveArgumentTypes(...)` 不得把 generic Array/Dictionary 当作最终 call-site snapshot；rewrite 发生在 CHAIN_BINDING 发布点（`resolvedCallTrace` / constructor RESOLVED 分支），不在 EXPR_TYPE 二次改写 call fact。
-5. EXPR_TYPE 继续以 CHAIN_BINDING 已发布的 `FrontendResolvedCall` 为真源 finalize literal；**不得**重新选 overload 或重发不同 call fact。
-6. chain 路径 preview 禁止对 container literal 做 `finalizeWindow=true` 的 retry（否则会以 `expected=null` finalize，随后 EXPR_TYPE 触发 expected-type conflict）。
-7. constructor/static call 与 instance chain 共用同一 preview + rewrite 合同。
-8. 保持 compile gate 对 Array/Dictionary 的拦截（解封仍属阶段 6）。
-
-#### 设计约束
-
-- CHAIN_BINDING 仍不得发布 EXPR_TYPE-owned `containerLiteralPlans()` / root `expressionTypes`（literal root plan 仍由 EXPR_TYPE finalize 发布）。
-- `exactCallableBoundary()` 继续表示 selected signature；`argumentTypes()` 只是 call-site 快照，二者不可互换。
-- scope 包不得依赖 parser AST；literal rank 通过 frontend 侧 helper 或 index-aware ranker 注入，避免在 `ScopeMethodResolver` 内硬编码 AST。
-- 与 bare call 的 ambiguity 合同对齐：同 rank typed-container overload 保持 ambiguity，不按声明顺序任选。
+- CHAIN_BINDING 仍不得发布 EXPR_TYPE-owned `containerLiteralPlans()` / root `expressionTypes`。
+- `exactCallableBoundary()` 与 `argumentTypes()` 职责分离。
+- scope 包无 parser AST 依赖；applicability rank 经 index-aware callback 注入；specificity 经 AST-free `CandidateSpecificity` 注入（frontend 可闭包 call-site expressions）。
+- 同 rank typed-container overload 保持 ambiguity（object 路径 dynamic fallback；不按声明顺序任选）。
+- chain 聚合固定参列表取自 `ScopeResolvedMethod.parameters()`（已剥离 synthetic `self`），与 bare 的 user-visible 参数视图一致。
 
 #### 验收
 
-- `obj.m([1])` 在 `m(Array[int])` 与 `m(Array[String])` 间按 element boundary rank 选择正确 callable；不无条件歧义、不按声明顺序任选。
-- chain 命中后三者一致且均为 contextual：
-  - `expressionTypes[literal]`
-  - `FrontendResolvedCall.argumentTypes()[i]`
-  - `containerLiteralPlans[literal].resultType()`
-- static method chain 与 constructor/static call 的 container-literal argument 同样获得 selected exact boundary 的 contextual `argumentTypes()`。
-- speculative candidate preview 不进入 finalized cache，不写 `containerLiteralPlans()`。
-- CHAIN_BINDING → EXPR_TYPE 不因 generic-first 触发 expected-type conflict。
-- dynamic / 无 exact boundary 的 call argument 保持 generic literal。
-- `FrontendCompileCheckAnalyzer` 对 Array/Dictionary 的 blocker 仍保持拦截。
-- 阶段 2 顶部状态中本项 ⚠️ 全部翻为 ✅，并交叉引用本节。
+- `obj.m([1])` 在 `m(Array[int])` 与 `m(Array[String])` 间按 element boundary rank 选择正确 callable。 ✅
+- chain 命中后三者一致且均为 contextual：`expressionTypes` / `argumentTypes` / `plan.resultType`。 ✅
+- static method chain 获得 selected exact boundary 的 contextual `argumentTypes()`。 ✅
+- speculative preview 不写 `containerLiteralPlans()`。 ✅
+- CHAIN_BINDING → EXPR_TYPE 无 generic-first expected-type conflict。 ✅
+- 无 exact boundary / REJECT 路径保持 generic literal snapshot。 ✅
+- `FrontendCompileCheckAnalyzer` Array/Dictionary blocker 仍拦截。 ✅
+- 阶段 2 顶部 ⚠️ 已翻 ✅。
 
-#### 主要改动落点（实施时）
+#### 主要改动落点
 
 | 区域 | 职责 |
 | --- | --- |
-| `FrontendChainReductionHelper` | preview payload、选择路径注入 rank、发布前 rewrite `argumentTypes()` |
-| `FrontendConstructorResolutionSupport` | constructor overload 对 literal 使用同一 preview/rank |
-| shared helper（`FrontendContainerLiteralSemanticSupport` / bare-call helpers） | 复用 child-source + `rankLiteralAgainstParameter`，禁止平行第二套规则 |
-| `ScopeMethodResolver`（可选） | index-aware ranker 接口，保持 scope 层无 AST 依赖 |
-| `FrontendBodyOwnerProcedures.resolveAttributeCallArguments` | 保持 selected-boundary finalize；验证三方一致 |
+| `FrontendCallableLiteralArgumentSupport` | 共享 preview / applicability rank / `literalAggregateRank` / rewrite |
+| `FrontendChainReductionHelper` | applicability + `CandidateSpecificity` 注入 + 发布前 rewrite |
+| `FrontendConstructorResolutionSupport` | constructor literal-aware selection |
+| `ScopeMethodResolver.ParameterCompatibilityRank` | scope 层 index-aware **applicability**（无 AST） |
+| `ScopeMethodResolver.CandidateSpecificity` | scope 层候选级 specificity 注入点（无 AST） |
+| `FrontendResolvedCall.ExactCallableBoundary` | constructor 边界 + `fromFunctionDef` |
+| `FrontendExpressionSemanticSupport` | bare constructor 与 bare 路径复用共享 helper |
 
 #### 回归锚点
 
-- chain overloaded-call：`obj.m([1])` / `obj.m(["x"])` 对 `Array[int]` vs `Array[String]`
-- static method chain 与 constructor/static call 各至少一组
-- three-way consistency：`expressionTypes` / `argumentTypes` / `plan.resultType`
-- preview 不 finalize / 不写 plan
-- 既有 bare overload + vararg 回归不回退
-- `FrontendCompileCheckAnalyzerTest` 仍绿
+- `FrontendBodyOwnerProceduresChainBindingTest`：chain/static overload + same-rank ambiguity
+- `FrontendBodyOwnerProceduresExprTypeTest`：chain three-way consistency + reject
+- bare overload / constructor / compile-gate 既有测试仍绿
 
 建议 targeted tests：
 
 ```powershell
 .\gradlew.bat test --tests FrontendBodyOwnerProceduresChainBindingTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendBodyOwnerProceduresExprTypeTest --no-daemon --info --console=plain
-.\gradlew.bat test --tests FrontendChainReductionHelperTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendExpressionSemanticSupportTest --no-daemon --info --console=plain
 .\gradlew.bat test --tests FrontendCompileCheckAnalyzerTest --no-daemon --info --console=plain
 ```

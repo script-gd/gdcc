@@ -16,6 +16,7 @@ import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.scope.ScopeTypeMeta;
 import gd.script.gdcc.scope.ScopeValueKind;
+import gd.script.gdcc.scope.resolver.ScopeMethodParameter;
 import gd.script.gdcc.scope.resolver.ScopeMethodResolver;
 import gd.script.gdcc.scope.resolver.ScopePropertyResolver;
 import gd.script.gdcc.scope.resolver.ScopeResolvedMethod;
@@ -1212,25 +1213,29 @@ public final class FrontendChainReductionHelper {
                     stepIndex,
                     step,
                     incomingReceiver,
-                    request.classRegistry(),
+                    request,
                     argumentResolution.argumentTypes(),
                     argumentResolution.retryUsed()
             );
         }
 
         if (incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META) {
-            return reduceStaticMethodStep(stepIndex, step, incomingReceiver, request, argumentResolution.argumentTypes());
+            return reduceStaticMethodStep(
+                    stepIndex,
+                    step,
+                    incomingReceiver,
+                    request,
+                    argumentResolution.argumentTypes()
+            );
         }
         return reduceInstanceMethodStep(
                 stepIndex,
                 step,
                 incomingReceiver,
-                request.propertyInitializerContext(),
-                request.classRegistry(),
+                request,
                 argumentResolution.argumentTypes(),
                 argumentResolution.retryUsed(),
-                notes,
-                request.noteSink()
+                notes
         );
     }
 
@@ -1261,11 +1266,8 @@ public final class FrontendChainReductionHelper {
                 receiverTypeMeta,
                 step.name(),
                 argumentTypes,
-                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
-                        request.classRegistry(),
-                        sourceType,
-                        targetType
-                )
+                literalAwareParameterRank(request, step.arguments()),
+                literalAwareCandidateSpecificity(request, step.arguments(), argumentTypes)
         );
         return switch (result) {
             case ScopeMethodResolver.Resolved resolved -> resolvedCallTrace(
@@ -1374,36 +1376,54 @@ public final class FrontendChainReductionHelper {
             int stepIndex,
             @NotNull AttributeCallStep step,
             @NotNull ReceiverState incomingReceiver,
-            @NotNull ClassRegistry classRegistry,
+            @NotNull ReductionRequest request,
             @NotNull List<GdType> argumentTypes,
             boolean finalizeRetryUsed
     ) {
         var receiverTypeMeta = Objects.requireNonNull(incomingReceiver.receiverTypeMeta(), "receiverTypeMeta must not be null");
-        var resolution = FrontendConstructorResolutionSupport.resolveConstructor(classRegistry, receiverTypeMeta, argumentTypes);
+        var childSourceResolver = FrontendCallableLiteralArgumentSupport.fromChainExpressionTypeResolver(
+                (expression, finalizeWindow) -> lookupExpressionType(request, expression, finalizeWindow)
+        );
+        var resolution = FrontendConstructorResolutionSupport.resolveConstructor(
+                request.classRegistry(),
+                receiverTypeMeta,
+                step.arguments(),
+                argumentTypes,
+                childSourceResolver
+        );
         return switch (resolution.status()) {
-            case RESOLVED -> new StepTrace(
-                    stepIndex,
-                    step,
-                    StepKind.CALL,
-                    RouteKind.CONSTRUCTOR,
-                    incomingReceiver,
-                    Status.RESOLVED,
-                    ReceiverState.resolvedInstance(receiverTypeMeta.instanceType()),
-                    null,
-                    null,
-                    FrontendResolvedCall.resolved(
-                            step.name(),
-                            FrontendCallResolutionKind.CONSTRUCTOR,
-                            FrontendReceiverKind.TYPE_META,
-                            resolution.ownerKind(),
-                            incomingReceiver.receiverType(),
-                            receiverTypeMeta.instanceType(),
-                            argumentTypes,
-                            resolution.declarationSite()
-                    ),
-                    finalizeRetryUsed,
-                    null
-            );
+            case RESOLVED -> {
+                var boundary = constructorBoundaryOrNull(resolution.declarationSite());
+                var publishedArgumentTypes = FrontendCallableLiteralArgumentSupport.rewriteArgumentTypes(
+                        step.arguments(),
+                        argumentTypes,
+                        boundary == null ? null : boundary.fixedParameterTypes()
+                );
+                yield new StepTrace(
+                        stepIndex,
+                        step,
+                        StepKind.CALL,
+                        RouteKind.CONSTRUCTOR,
+                        incomingReceiver,
+                        Status.RESOLVED,
+                        ReceiverState.resolvedInstance(receiverTypeMeta.instanceType()),
+                        null,
+                        null,
+                        FrontendResolvedCall.resolved(
+                                step.name(),
+                                FrontendCallResolutionKind.CONSTRUCTOR,
+                                FrontendReceiverKind.TYPE_META,
+                                resolution.ownerKind(),
+                                incomingReceiver.receiverType(),
+                                receiverTypeMeta.instanceType(),
+                                publishedArgumentTypes,
+                                resolution.declarationSite(),
+                                boundary
+                        ),
+                        finalizeRetryUsed,
+                        null
+                );
+            }
             case FAILED -> new StepTrace(
                     stepIndex,
                     step,
@@ -1435,23 +1455,21 @@ public final class FrontendChainReductionHelper {
             int stepIndex,
             @NotNull AttributeCallStep step,
             @NotNull ReceiverState incomingReceiver,
-            @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext propertyInitializerContext,
-            @NotNull ClassRegistry classRegistry,
+            @NotNull ReductionRequest request,
             @NotNull List<GdType> argumentTypes,
             boolean finalizeRetryUsed,
-            @NotNull List<ReductionNote> notes,
-            @NotNull NoteSink noteSink
+            @NotNull List<ReductionNote> notes
     ) {
+        var propertyInitializerContext = request.propertyInitializerContext();
+        var classRegistry = request.classRegistry();
+        var noteSink = request.noteSink();
         var result = ScopeMethodResolver.resolveInstanceMethodWithParameterRank(
                 classRegistry,
                 Objects.requireNonNull(incomingReceiver.receiverType(), "receiverType must not be null"),
                 step.name(),
                 argumentTypes,
-                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
-                        classRegistry,
-                        sourceType,
-                        targetType
-                )
+                literalAwareParameterRank(request, step.arguments()),
+                literalAwareCandidateSpecificity(request, step.arguments(), argumentTypes)
         );
         return switch (result) {
             case ScopeMethodResolver.Resolved resolved -> {
@@ -1607,6 +1625,14 @@ public final class FrontendChainReductionHelper {
     ) {
         // Publish the shared resolver's normalized callable boundary once so downstream exact-call
         // consumers can reuse it without touching raw `FunctionDef` parameter metadata again.
+        // Rewrite container-literal argument snapshots to the selected contextual construction type
+        // so CHAIN_BINDING facts already match EXPR_TYPE finalization (Pre Phase 3).
+        var boundary = FrontendResolvedCall.ExactCallableBoundary.fromResolvedMethod(resolvedMethod);
+        var publishedArgumentTypes = FrontendCallableLiteralArgumentSupport.rewriteArgumentTypes(
+                step.arguments(),
+                argumentTypes,
+                boundary.fixedParameterTypes()
+        );
         var call = FrontendResolvedCall.resolved(
                 step.name(),
                 callKind,
@@ -1614,9 +1640,9 @@ public final class FrontendChainReductionHelper {
                 resolvedMethod.ownerKind(),
                 incomingReceiver.receiverType(),
                 resolvedMethod.returnType(),
-                argumentTypes,
+                publishedArgumentTypes,
                 resolvedMethod.function(),
-                FrontendResolvedCall.ExactCallableBoundary.fromResolvedMethod(resolvedMethod)
+                boundary
         );
         return new StepTrace(
                 stepIndex,
@@ -1959,6 +1985,172 @@ public final class FrontendChainReductionHelper {
     /// We keep the retry window bounded to two passes:
     /// - normal lookup from published side tables / current callback facts
     /// - one finalize-window retry for the same argument list
+    /// Index-aware applicability rank for chain instance/static method selection. Container-literal
+    /// arguments use element-boundary preview ranks (`0` rejects); ordinary arguments keep matrix
+    /// ranks. Specificity among applicable candidates uses
+    /// [literalAwareCandidateSpecificity] so chain shares bare/ctor `literalAggregateRank`.
+    private static @NotNull ScopeMethodResolver.ParameterCompatibilityRank literalAwareParameterRank(
+            @NotNull ReductionRequest request,
+            @NotNull List<? extends Expression> argumentExpressions
+    ) {
+        var childSourceResolver = chainChildSourceResolver(request);
+        return (argumentIndex, sourceType, targetType) -> FrontendCallableLiteralArgumentSupport.parameterCompatibilityRank(
+                request.classRegistry(),
+                argumentExpressions,
+                childSourceResolver,
+                argumentIndex,
+                sourceType,
+                targetType
+        );
+    }
+
+    /// Candidate-level specificity for chain instance/static selection.
+    ///
+    /// Closes over call-site expressions without pushing AST into the scope package. Uses the same
+    /// `literalAggregateRank` + `compareCandidateRanks` path as bare/constructor overload
+    /// selection; aggregates over `ScopeResolvedMethod.parameters()` (synthetic `self` already
+    /// stripped). When aggregates tie, falls back to matrix Pareto on user-visible fixed parameters.
+    private static @NotNull ScopeMethodResolver.CandidateSpecificity literalAwareCandidateSpecificity(
+            @NotNull ReductionRequest request,
+            @NotNull List<? extends Expression> argumentExpressions,
+            @NotNull List<GdType> preliminaryArgumentTypes
+    ) {
+        var childSourceResolver = chainChildSourceResolver(request);
+        var classRegistry = request.classRegistry();
+        return (candidate, baseline) -> {
+            if (argumentExpressions.isEmpty()) {
+                return isStrictlyMoreSpecificByBoundaryRanks(
+                        classRegistry,
+                        candidate,
+                        baseline,
+                        preliminaryArgumentTypes
+                );
+            }
+            return FrontendCallableLiteralArgumentSupport.isStrictlyMoreSpecificByLiteralAggregate(
+                    classRegistry,
+                    fixedParameterTypes(candidate),
+                    fixedParameterTypes(baseline),
+                    argumentExpressions,
+                    preliminaryArgumentTypes,
+                    childSourceResolver,
+                    () -> isStrictlyMoreSpecificByBoundaryRanks(
+                            classRegistry,
+                            candidate,
+                            baseline,
+                            preliminaryArgumentTypes
+                    )
+            );
+        };
+    }
+
+    private static @NotNull FrontendCallableLiteralArgumentSupport.ChildSourceResolver chainChildSourceResolver(
+            @NotNull ReductionRequest request
+    ) {
+        return FrontendCallableLiteralArgumentSupport.fromChainExpressionTypeResolver(
+                (expression, finalizeWindow) -> lookupExpressionType(request, expression, finalizeWindow)
+        );
+    }
+
+    private static @NotNull List<GdType> fixedParameterTypes(@NotNull ScopeResolvedMethod method) {
+        return method.parameters().stream()
+                .map(ScopeMethodParameter::type)
+                .toList();
+    }
+
+    /// Classic per-argument matrix Pareto on user-visible fixed parameters (chain fallback when
+    /// `literalAggregateRank` ties, and when there are no argument expressions).
+    ///
+    /// Aligned with bare/constructor `isStrictlyMoreSpecific`: supplied-arg ranks, then fewer
+    /// omitted trailing defaults preferred, then non-vararg over vararg.
+    private static boolean isStrictlyMoreSpecificByBoundaryRanks(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ScopeResolvedMethod candidate,
+            @NotNull ScopeResolvedMethod baseline,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        var strictlyBetter = false;
+        for (var index = 0; index < argumentTypes.size(); index++) {
+            var sourceType = argumentTypes.get(index);
+            var candidateTarget = index < candidate.parameters().size()
+                    ? candidate.parameters().get(index).type()
+                    : null;
+            var baselineTarget = index < baseline.parameters().size()
+                    ? baseline.parameters().get(index).type()
+                    : null;
+            if (candidateTarget == null && baselineTarget == null) {
+                continue;
+            }
+            if (candidateTarget == null) {
+                if (candidate.isVararg()) {
+                    return false;
+                }
+                continue;
+            }
+            if (baselineTarget == null) {
+                if (baseline.isVararg()) {
+                    strictlyBetter = true;
+                }
+                continue;
+            }
+            var candidateRank = FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                    classRegistry,
+                    sourceType,
+                    candidateTarget
+            );
+            var baselineRank = FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                    classRegistry,
+                    sourceType,
+                    baselineTarget
+            );
+            if (candidateRank < baselineRank) {
+                return false;
+            }
+            if (candidateRank > baselineRank) {
+                strictlyBetter = true;
+            }
+        }
+
+        var omittedByCandidate = omittedTrailingParameterCount(candidate, argumentTypes.size());
+        var omittedByBaseline = omittedTrailingParameterCount(baseline, argumentTypes.size());
+        if (omittedByCandidate > omittedByBaseline) {
+            return false;
+        }
+        if (omittedByCandidate < omittedByBaseline) {
+            strictlyBetter = true;
+        }
+
+        if (candidate.isVararg() && !baseline.isVararg()) {
+            return false;
+        }
+        if (!candidate.isVararg() && baseline.isVararg()) {
+            strictlyBetter = true;
+        }
+        return strictlyBetter;
+    }
+
+    private static int omittedTrailingParameterCount(
+            @NotNull ScopeResolvedMethod method,
+            int providedCount
+    ) {
+        var parameters = method.parameters();
+        if (providedCount >= parameters.size()) {
+            return 0;
+        }
+        return parameters.size() - providedCount;
+    }
+
+    /// Constructor declaration sites are either a selected `FunctionDef` or an owner-level anchor
+    /// (Variant-driven unary route / zero-arg engine constructor). Only `FunctionDef` publishes a
+    /// fixed-parameter boundary for contextual literal finalization.
+    private static @Nullable FrontendResolvedCall.ExactCallableBoundary constructorBoundaryOrNull(
+            @Nullable Object declarationSite
+    ) {
+        if (declarationSite instanceof FunctionDef functionDef) {
+            return FrontendResolvedCall.ExactCallableBoundary.fromFunctionDef(functionDef);
+        }
+        return null;
+    }
+
     private static @NotNull ArgumentResolution resolveArgumentTypes(
             @NotNull List<? extends Expression> arguments,
             @NotNull ReductionRequest request

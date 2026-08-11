@@ -2241,6 +2241,263 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         assertEquals(1, diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").size());
     }
 
+    @Test
+    void analyzeSelectsChainOverloadByContainerLiteralElementBoundary() throws Exception {
+        var analyzed = analyze(
+                "chain_container_literal_overload.gd",
+                """
+                        class_name ChainContainerLiteralOverload
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> int:
+                            return 1
+                        
+                        func take(values: Array[String]) -> int:
+                            return 2
+                        
+                        func ping():
+                            self.take([1])
+                            self.take(["x"])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var firstStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var secondStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
+        var firstStep = findNode(firstStatement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var secondStep = findNode(secondStatement, AttributeCallStep.class, step -> step.name().equals("take"));
+
+        var firstCall = analyzed.analysisData().resolvedCalls().get(firstStep);
+        var secondCall = analyzed.analysisData().resolvedCalls().get(secondStep);
+        assertNotNull(firstCall);
+        assertNotNull(secondCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, firstCall.status());
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, secondCall.status());
+        assertEquals("Array[int]", firstCall.argumentTypes().getFirst().getTypeName());
+        assertEquals("Array[String]", secondCall.argumentTypes().getFirst().getTypeName());
+        assertNotNull(firstCall.exactCallableBoundary());
+        assertEquals("Array[int]", firstCall.exactCallableBoundary().fixedParameterTypes().getFirst().getTypeName());
+        assertNotNull(secondCall.exactCallableBoundary());
+        assertEquals("Array[String]", secondCall.exactCallableBoundary().fixedParameterTypes().getFirst().getTypeName());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeKeepsSameRankTypedContainerChainOverloadAmbiguous() throws Exception {
+        var analyzed = analyze(
+                "chain_container_literal_same_rank_ambiguous.gd",
+                """
+                        class_name ChainContainerLiteralSameRankAmbiguous
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> int:
+                            return 1
+                        
+                        func take(values: Array[String]) -> int:
+                            return 2
+                        
+                        func ping(payload):
+                            self.take(payload)
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var statement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var takeStep = findNode(statement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(takeStep);
+        assertNotNull(resolvedCall);
+        // Variant payload ranks equally against Array[int] and Array[String]; must not pick by declaration order.
+        assertEquals(FrontendCallResolutionStatus.DYNAMIC, resolvedCall.status());
+    }
+
+    @Test
+    void analyzePublishesContextualArgumentTypesForStaticMethodChainLiteral() throws Exception {
+        var analyzed = analyze(
+                "static_chain_container_literal.gd",
+                """
+                        class_name StaticChainContainerLiteral
+                        extends RefCounted
+                        
+                        static func take(values: Array[int]) -> int:
+                            return 1
+                        
+                        static func take(values: Array[String]) -> int:
+                            return 2
+                        
+                        func ping():
+                            StaticChainContainerLiteral.take([1])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var statement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var takeStep = findNode(statement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(takeStep);
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status());
+        assertEquals(FrontendCallResolutionKind.STATIC_METHOD, resolvedCall.callKind());
+        assertEquals("Array[int]", resolvedCall.argumentTypes().getFirst().getTypeName());
+        assertNotNull(resolvedCall.exactCallableBoundary());
+        assertEquals("Array[int]", resolvedCall.exactCallableBoundary().fixedParameterTypes().getFirst().getTypeName());
+    }
+
+    @Test
+    void analyzeAcceptsEmptyContainerLiteralOnTypedChainParameter() throws Exception {
+        var analyzed = analyze(
+                "chain_empty_container_literal.gd",
+                """
+                        class_name ChainEmptyContainerLiteral
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> int:
+                            return 1
+                        
+                        func ping():
+                            self.take([])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var statement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var takeStep = findNode(statement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(takeStep);
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status(), String.valueOf(resolvedCall.detailReason()));
+        assertEquals("Array[int]", resolvedCall.argumentTypes().getFirst().getTypeName());
+    }
+
+    @Test
+    void analyzePrefersTypedEmptyLiteralOverVariantWhenSecondArgumentPresent() throws Exception {
+        // Empty literal is vacuously best against Array[int]; Variant overload loses under shared
+        // literalAggregateRank (same path as bare/ctor). Also exercises multi-arg aggregation.
+        var analyzed = analyze(
+                "chain_empty_literal_plus_second_arg.gd",
+                """
+                        class_name ChainEmptyLiteralPlusSecondArg
+                        extends RefCounted
+                        
+                        func take(values: Array[int], flag: int) -> int:
+                            return 1
+                        
+                        func take(values, flag: int) -> int:
+                            return 2
+                        
+                        func ping():
+                            self.take([], 1)
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var statement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var takeStep = findNode(statement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(takeStep);
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status(), String.valueOf(resolvedCall.detailReason()));
+        assertEquals("Array[int]", resolvedCall.argumentTypes().getFirst().getTypeName());
+        assertNotNull(resolvedCall.exactCallableBoundary());
+        assertEquals("Array[int]", resolvedCall.exactCallableBoundary().fixedParameterTypes().getFirst().getTypeName());
+    }
+
+    @Test
+    void analyzeKeepsStaticSameRankTypedContainerAmbiguousAsFailed() throws Exception {
+        var analyzed = analyze(
+                "static_chain_container_literal_same_rank.gd",
+                """
+                        class_name StaticChainContainerLiteralSameRank
+                        extends RefCounted
+                        
+                        static func take(values: Array[int]) -> int:
+                            return 1
+                        
+                        static func take(values: Array[String]) -> int:
+                            return 2
+                        
+                        func ping(payload):
+                            StaticChainContainerLiteralSameRank.take(payload)
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var statement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var takeStep = findNode(statement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(takeStep);
+        assertNotNull(resolvedCall);
+        // Static/builtin same-rank typed-container overloads stay fail-closed (not DYNAMIC, not
+        // declaration-order pick). Exact message text may include either "Ambiguous overload" or
+        // the outer method-lookup wrapper.
+        assertEquals(FrontendCallResolutionStatus.FAILED, resolvedCall.status());
+        assertNotNull(resolvedCall.detailReason());
+        assertFalse(resolvedCall.detailReason().isBlank());
+    }
+
+    @Test
+    void analyzePrefersFewerOmittedDefaultsOnChainWhenLiteralAggregatesTie() throws Exception {
+        // After literalAggregateRank ties, chain fallback must match bare: fewer omitted trailing
+        // defaults wins — unary take(Array[int]) omits 0 vs binary omits 1 when calling take([1]).
+        var analyzed = analyze(
+                "chain_literal_omitted_defaults.gd",
+                """
+                        class_name ChainLiteralOmittedDefaults
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> int:
+                            return 1
+                        
+                        func take(values: Array[int], flag: int = 0) -> int:
+                            return 2
+                        
+                        func ping():
+                            self.take([1])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var statement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var takeStep = findNode(statement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(takeStep);
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status(), String.valueOf(resolvedCall.detailReason()));
+        assertNotNull(resolvedCall.exactCallableBoundary());
+        assertEquals(1, resolvedCall.exactCallableBoundary().fixedParameterTypes().size());
+        assertEquals("Array[int]", resolvedCall.exactCallableBoundary().fixedParameterTypes().getFirst().getTypeName());
+    }
+
+    @Test
+    void analyzeResolvesMixedLiteralAndScalarChainViaSharedAggregateThenFallback() throws Exception {
+        // Multi-arg mixed literal/scalar:
+        //   take(Array[float], int) vs take(Array[int], float) with take([1], 1)
+        // literalAggregateRank ties on (worst, total); step-4 classic matrix fallback then prefers
+        // int→int over int→float, selecting Array[float]+int. Chain must use the same aggregate
+        // path as bare/ctor (not packed-int min alone).
+        var analyzed = analyze(
+                "chain_mixed_literal_scalar_aggregate.gd",
+                """
+                        class_name ChainMixedLiteralScalarAggregate
+                        extends RefCounted
+                        
+                        func take(values: Array[float], flag: int) -> int:
+                            return 1
+                        
+                        func take(values: Array[int], flag: float) -> int:
+                            return 2
+                        
+                        func ping():
+                            self.take([1], 1)
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var statement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var takeStep = findNode(statement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(takeStep);
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status(), String.valueOf(resolvedCall.detailReason()));
+        assertEquals("Array[float]", resolvedCall.argumentTypes().getFirst().getTypeName());
+        assertNotNull(resolvedCall.exactCallableBoundary());
+        assertEquals("Array[float]", resolvedCall.exactCallableBoundary().fixedParameterTypes().getFirst().getTypeName());
+        assertEquals("int", resolvedCall.exactCallableBoundary().fixedParameterTypes().get(1).getTypeName());
+    }
+
     private static @NotNull AnalyzedScript analyze(
             @NotNull String fileName,
             @NotNull String source

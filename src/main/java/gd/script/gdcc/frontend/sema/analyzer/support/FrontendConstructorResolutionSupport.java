@@ -1,5 +1,8 @@
 package gd.script.gdcc.frontend.sema.analyzer.support;
 
+import dev.superice.gdparser.frontend.ast.ArrayExpression;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
+import dev.superice.gdparser.frontend.ast.Expression;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
@@ -59,8 +62,21 @@ final class FrontendConstructorResolutionSupport {
             @NotNull ScopeTypeMeta receiverTypeMeta,
             @NotNull List<GdType> argumentTypes
     ) {
+        return resolveConstructor(classRegistry, receiverTypeMeta, List.of(), argumentTypes, null);
+    }
+
+    /// Constructor selection with optional container-literal argument expressions for element-boundary
+    /// preview ranking (shared with bare-call / chain Pre Phase 3 contract).
+    static @NotNull Resolution resolveConstructor(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull List<? extends Expression> argumentExpressions,
+            @NotNull List<GdType> argumentTypes,
+            @Nullable FrontendCallableLiteralArgumentSupport.ChildSourceResolver childSourceResolverOrNull
+    ) {
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         Objects.requireNonNull(receiverTypeMeta, "receiverTypeMeta must not be null");
+        Objects.requireNonNull(argumentExpressions, "argumentExpressions must not be null");
         Objects.requireNonNull(argumentTypes, "argumentTypes must not be null");
         return switch (receiverTypeMeta.kind()) {
             case GLOBAL_ENUM -> failed(
@@ -70,7 +86,13 @@ final class FrontendConstructorResolutionSupport {
             );
             case ENGINE_CLASS -> resolveEngineConstructor(classRegistry, receiverTypeMeta, argumentTypes);
             case GDCC_CLASS -> resolveGdccConstructor(classRegistry, receiverTypeMeta, argumentTypes);
-            case BUILTIN -> resolveBuiltinConstructor(classRegistry, receiverTypeMeta, argumentTypes);
+            case BUILTIN -> resolveBuiltinConstructor(
+                    classRegistry,
+                    receiverTypeMeta,
+                    argumentExpressions,
+                    argumentTypes,
+                    childSourceResolverOrNull
+            );
         };
     }
 
@@ -130,7 +152,9 @@ final class FrontendConstructorResolutionSupport {
     private static @NotNull Resolution resolveBuiltinConstructor(
             @NotNull ClassRegistry classRegistry,
             @NotNull ScopeTypeMeta receiverTypeMeta,
-            @NotNull List<GdType> argumentTypes
+            @NotNull List<? extends Expression> argumentExpressions,
+            @NotNull List<GdType> argumentTypes,
+            @Nullable FrontendCallableLiteralArgumentSupport.ChildSourceResolver childSourceResolverOrNull
     ) {
         var builtinClass = resolveBuiltinStaticOwner(classRegistry, receiverTypeMeta);
         if (builtinClass == null) {
@@ -164,7 +188,9 @@ final class FrontendConstructorResolutionSupport {
                 classRegistry,
                 receiverTypeMeta,
                 builtinClass.constructors(),
+                argumentExpressions,
                 argumentTypes,
+                childSourceResolverOrNull,
                 ScopeOwnerKind.BUILTIN
         );
     }
@@ -173,11 +199,19 @@ final class FrontendConstructorResolutionSupport {
             @NotNull ClassRegistry classRegistry,
             @NotNull ScopeTypeMeta receiverTypeMeta,
             @NotNull List<? extends FunctionDef> constructors,
+            @NotNull List<? extends Expression> argumentExpressions,
             @NotNull List<GdType> argumentTypes,
+            @Nullable FrontendCallableLiteralArgumentSupport.ChildSourceResolver childSourceResolverOrNull,
             @NotNull ScopeOwnerKind ownerKind
     ) {
         var applicable = constructors.stream()
-                .filter(constructor -> matchesCallableArguments(classRegistry, constructor, argumentTypes))
+                .filter(constructor -> matchesCallableArgumentsWithLiterals(
+                        classRegistry,
+                        constructor,
+                        argumentExpressions,
+                        argumentTypes,
+                        childSourceResolverOrNull
+                ))
                 .toList();
         if (applicable.size() == 1) {
             return resolved(applicable.getFirst(), ownerKind);
@@ -185,11 +219,13 @@ final class FrontendConstructorResolutionSupport {
         if (applicable.size() > 1) {
             var mostSpecific = FrontendCallableOverloadRankingSupport.selectMostSpecificApplicable(
                     applicable,
-                    (candidate, baseline) -> isStrictlyMoreSpecific(
+                    (candidate, baseline) -> isStrictlyMoreSpecificWithLiterals(
                             classRegistry,
                             candidate,
                             baseline,
-                            argumentTypes
+                            argumentExpressions,
+                            argumentTypes,
+                            childSourceResolverOrNull
                     )
             );
             if (mostSpecific != null) {
@@ -253,6 +289,74 @@ final class FrontendConstructorResolutionSupport {
             strictlyBetter = true;
         }
         return strictlyBetter;
+    }
+
+    private static boolean isStrictlyMoreSpecificWithLiterals(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FunctionDef candidate,
+            @NotNull FunctionDef baseline,
+            @NotNull List<? extends Expression> argumentExpressions,
+            @NotNull List<GdType> argumentTypes,
+            @Nullable FrontendCallableLiteralArgumentSupport.ChildSourceResolver childSourceResolverOrNull
+    ) {
+        if (argumentExpressions.isEmpty() || childSourceResolverOrNull == null) {
+            return isStrictlyMoreSpecific(classRegistry, candidate, baseline, argumentTypes);
+        }
+        return FrontendCallableLiteralArgumentSupport.isStrictlyMoreSpecificByLiteralAggregate(
+                classRegistry,
+                FrontendCallableLiteralArgumentSupport.fixedParameterTypes(candidate),
+                FrontendCallableLiteralArgumentSupport.fixedParameterTypes(baseline),
+                argumentExpressions,
+                argumentTypes,
+                childSourceResolverOrNull,
+                () -> isStrictlyMoreSpecific(classRegistry, candidate, baseline, argumentTypes)
+        );
+    }
+
+    private static boolean matchesCallableArgumentsWithLiterals(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FunctionDef callable,
+            @NotNull List<? extends Expression> argumentExpressions,
+            @NotNull List<GdType> argumentTypes,
+            @Nullable FrontendCallableLiteralArgumentSupport.ChildSourceResolver childSourceResolverOrNull
+    ) {
+        if (argumentExpressions.isEmpty() || childSourceResolverOrNull == null) {
+            return matchesCallableArguments(classRegistry, callable, argumentTypes);
+        }
+        var parameters = callable.getParameters();
+        var fixedCount = parameters.size();
+        var providedCount = argumentTypes.size();
+        if (providedCount < fixedCount && !canOmitTrailingParameters(parameters, providedCount)) {
+            return false;
+        }
+        if (!callable.isVararg() && providedCount > fixedCount) {
+            return false;
+        }
+        var fixedPrefixCount = Math.min(providedCount, fixedCount);
+        for (var index = 0; index < fixedPrefixCount; index++) {
+            var parameterType = parameters.get(index).getType();
+            var argument = index < argumentExpressions.size() ? argumentExpressions.get(index) : null;
+            if (argument instanceof ArrayExpression || argument instanceof DictionaryExpression) {
+                var compatible = FrontendCallableLiteralArgumentSupport.literalArgumentCompatibleOrNull(
+                        classRegistry,
+                        argument,
+                        childSourceResolverOrNull,
+                        parameterType
+                );
+                if (compatible == null || !compatible) {
+                    return false;
+                }
+                continue;
+            }
+            if (!FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                    classRegistry,
+                    argumentTypes.get(index),
+                    parameterType
+            )) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static @NotNull MatchPreference compareArgumentSpecificity(

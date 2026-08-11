@@ -34,8 +34,41 @@ import java.util.function.ToIntBiFunction;
 /// - centralizes candidate collection, applicability checks, and ranking rules
 /// - does not decide frontend lowering shape or backend C emission details
 /// - does not treat constructors (`ClassName.new(...)` / `_init`) as ordinary methods
+/// - remains AST-free: index-aware ranking callbacks may encode call-site argument position, but
+///   never parser AST nodes
 public final class ScopeMethodResolver {
     private ScopeMethodResolver() {
+    }
+
+    /// Index-aware fixed-parameter compatibility rank.
+    ///
+    /// `argumentIndex` is the call-site fixed-argument position (0-based). Rank `0` rejects the
+    /// pair; larger positive ranks describe a more specific accepted boundary for overload
+    /// applicability (and for the default specificity path when no
+    /// [CandidateSpecificity] is supplied). Frontend callers may encode
+    /// container-literal element-boundary ranks here without pulling parser AST into the scope
+    /// package.
+    ///
+    /// When a [CandidateSpecificity] callback is supplied, this rank still gates
+    /// applicability via `matchesArguments`; candidate-level tie-breaking uses the callback
+    /// instead of packing per-argument ranks into min/sum.
+    @FunctionalInterface
+    public interface ParameterCompatibilityRank {
+        int rank(int argumentIndex, @NotNull GdType sourceType, @NotNull GdType targetType);
+    }
+
+    /// Optional candidate-level specificity comparator.
+    ///
+    /// Returns `true` when `candidate` is strictly more specific than `baseline` among already
+    /// applicable overloads. Scope stays AST-free: frontend may close over call-site expressions
+    /// and implement §5.4 `worstRank`/`totalRank` aggregation (for example via
+    /// `literalAggregateRank`) without embedding AST types in this package.
+    @FunctionalInterface
+    public interface CandidateSpecificity {
+        boolean isStrictlyMoreSpecific(
+                @NotNull ScopeResolvedMethod candidate,
+                @NotNull ScopeResolvedMethod baseline
+        );
     }
 
     /// Runtime-dynamic route that the caller may still choose after static lookup stops.
@@ -164,6 +197,51 @@ public final class ScopeMethodResolver {
             @NotNull List<GdType> argTypes,
             @NotNull ToIntBiFunction<GdType, GdType> parameterCompatibilityRank
     ) {
+        Objects.requireNonNull(parameterCompatibilityRank, "parameterCompatibilityRank");
+        return resolveInstanceMethodWithParameterRank(
+                registry,
+                receiverType,
+                methodName,
+                argTypes,
+                (_argumentIndex, sourceType, targetType) ->
+                        parameterCompatibilityRank.applyAsInt(sourceType, targetType)
+        );
+    }
+
+    /// Same as type-pair ranking, but the callback also receives the fixed-argument index so
+    /// frontend callers can inject per-position ranks (e.g. container-literal element boundaries)
+    /// without encoding AST inside the scope package.
+    public static @NotNull Result resolveInstanceMethodWithParameterRank(
+            @NotNull ClassRegistry registry,
+            @NotNull GdType receiverType,
+            @NotNull String methodName,
+            @NotNull List<GdType> argTypes,
+            @NotNull ParameterCompatibilityRank parameterCompatibilityRank
+    ) {
+        return resolveInstanceMethodWithParameterRank(
+                registry,
+                receiverType,
+                methodName,
+                argTypes,
+                parameterCompatibilityRank,
+                null
+        );
+    }
+
+    /// Index-aware applicability plus optional candidate-level specificity.
+    ///
+    /// `parameterCompatibilityRank` always gates fixed-parameter applicability. When
+    /// `candidateSpecificity` is non-null, it replaces the default per-argument rank min/sum
+    /// Pareto path for selecting among applicable overloads (frontend uses this to share
+    /// `literalAggregateRank` with bare/constructor selection).
+    public static @NotNull Result resolveInstanceMethodWithParameterRank(
+            @NotNull ClassRegistry registry,
+            @NotNull GdType receiverType,
+            @NotNull String methodName,
+            @NotNull List<GdType> argTypes,
+            @NotNull ParameterCompatibilityRank parameterCompatibilityRank,
+            @Nullable CandidateSpecificity candidateSpecificity
+    ) {
         Objects.requireNonNull(registry, "registry");
         Objects.requireNonNull(receiverType, "receiverType");
         Objects.requireNonNull(methodName, "methodName");
@@ -183,13 +261,21 @@ public final class ScopeMethodResolver {
                         objectType,
                         methodName,
                         argTypes,
-                        parameterCompatibilityRank
+                        parameterCompatibilityRank,
+                        candidateSpecificity
                 );
             }
             if (receiverType instanceof GdVariantType) {
                 return new DynamicFallback(DynamicKind.VARIANT_DYNAMIC, DynamicFallbackReason.VARIANT_RECEIVER);
             }
-            return resolveBuiltinInstanceMethod(registry, receiverType, methodName, argTypes, parameterCompatibilityRank);
+            return resolveBuiltinInstanceMethod(
+                    registry,
+                    receiverType,
+                    methodName,
+                    argTypes,
+                    parameterCompatibilityRank,
+                    candidateSpecificity
+            );
         } catch (ScopeMethodResolutionException ex) {
             return new Failed(ex.kind(), ex.getMessage());
         }
@@ -236,6 +322,45 @@ public final class ScopeMethodResolver {
             @NotNull List<GdType> argTypes,
             @NotNull ToIntBiFunction<GdType, GdType> parameterCompatibilityRank
     ) {
+        Objects.requireNonNull(parameterCompatibilityRank, "parameterCompatibilityRank");
+        return resolveStaticMethodWithParameterRank(
+                registry,
+                receiverTypeMeta,
+                methodName,
+                argTypes,
+                (_argumentIndex, sourceType, targetType) ->
+                        parameterCompatibilityRank.applyAsInt(sourceType, targetType)
+        );
+    }
+
+    /// Index-aware static method ranking counterpart of
+    /// `resolveInstanceMethodWithParameterRank(ClassRegistry, GdType, String, List, ParameterCompatibilityRank)`.
+    public static @NotNull Result resolveStaticMethodWithParameterRank(
+            @NotNull ClassRegistry registry,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull String methodName,
+            @NotNull List<GdType> argTypes,
+            @NotNull ParameterCompatibilityRank parameterCompatibilityRank
+    ) {
+        return resolveStaticMethodWithParameterRank(
+                registry,
+                receiverTypeMeta,
+                methodName,
+                argTypes,
+                parameterCompatibilityRank,
+                null
+        );
+    }
+
+    /// Static counterpart with optional candidate-level specificity (see instance overload).
+    public static @NotNull Result resolveStaticMethodWithParameterRank(
+            @NotNull ClassRegistry registry,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull String methodName,
+            @NotNull List<GdType> argTypes,
+            @NotNull ParameterCompatibilityRank parameterCompatibilityRank,
+            @Nullable CandidateSpecificity candidateSpecificity
+    ) {
         Objects.requireNonNull(registry, "registry");
         Objects.requireNonNull(receiverTypeMeta, "receiverTypeMeta");
         Objects.requireNonNull(methodName, "methodName");
@@ -266,7 +391,8 @@ public final class ScopeMethodResolver {
                     candidates,
                     argTypes,
                     false,
-                    parameterCompatibilityRank
+                    parameterCompatibilityRank,
+                    candidateSpecificity
             );
             return switch (selection) {
                 case CandidateSelected selected -> new Resolved(selected.candidate().resolved());
@@ -282,11 +408,14 @@ public final class ScopeMethodResolver {
         }
     }
 
-    private static @NotNull Result resolveKnownObjectInstanceMethod(@NotNull ClassRegistry registry,
-                                                                    @NotNull GdObjectType receiverType,
-                                                                    @NotNull String methodName,
-                                                                    @NotNull List<GdType> argTypes,
-                                                                    @NotNull ToIntBiFunction<GdType, GdType> parameterCompatibilityRank) {
+    private static @NotNull Result resolveKnownObjectInstanceMethod(
+            @NotNull ClassRegistry registry,
+            @NotNull GdObjectType receiverType,
+            @NotNull String methodName,
+            @NotNull List<GdType> argTypes,
+            @NotNull ParameterCompatibilityRank parameterCompatibilityRank,
+            @Nullable CandidateSpecificity candidateSpecificity
+    ) {
         var classDef = registry.getClassDef(receiverType);
         if (classDef == null) {
             return new DynamicFallback(DynamicKind.OBJECT_DYNAMIC, DynamicFallbackReason.RECEIVER_METADATA_UNKNOWN);
@@ -303,7 +432,8 @@ public final class ScopeMethodResolver {
                 candidates,
                 argTypes,
                 true,
-                parameterCompatibilityRank
+                parameterCompatibilityRank,
+                candidateSpecificity
         );
         return switch (selection) {
             case CandidateSelected selected -> new Resolved(selected.candidate().resolved());
@@ -313,11 +443,14 @@ public final class ScopeMethodResolver {
         };
     }
 
-    private static @NotNull Result resolveBuiltinInstanceMethod(@NotNull ClassRegistry registry,
-                                                                @NotNull GdType receiverType,
-                                                                @NotNull String methodName,
-                                                                @NotNull List<GdType> argTypes,
-                                                                @NotNull ToIntBiFunction<GdType, GdType> parameterCompatibilityRank) {
+    private static @NotNull Result resolveBuiltinInstanceMethod(
+            @NotNull ClassRegistry registry,
+            @NotNull GdType receiverType,
+            @NotNull String methodName,
+            @NotNull List<GdType> argTypes,
+            @NotNull ParameterCompatibilityRank parameterCompatibilityRank,
+            @Nullable CandidateSpecificity candidateSpecificity
+    ) {
         var lookupName = normalizeBuiltinReceiverLookupName(receiverType);
         var builtinClass = registry.findBuiltinClass(lookupName);
         if (builtinClass == null) {
@@ -340,7 +473,8 @@ public final class ScopeMethodResolver {
                 candidates,
                 argTypes,
                 false,
-                parameterCompatibilityRank
+                parameterCompatibilityRank,
+                candidateSpecificity
         );
         return switch (selection) {
             case CandidateSelected selected -> new Resolved(selected.candidate().resolved());
@@ -386,13 +520,18 @@ public final class ScopeMethodResolver {
     /// - nearest owner distance wins
     /// - instance methods win over static ones for instance calls
     /// - non-vararg wins over vararg
+    /// - among remaining candidates, either an injected [CandidateSpecificity] or the default
+    ///   per-argument rank path picks a unique most-specific overload
     /// - if several equally-best object candidates remain, the caller may choose dynamic fallback
-    private static @NotNull CandidateSelection chooseBestCandidate(@NotNull String methodName,
-                                                                   @NotNull String receiverDisplayName,
-                                                                   @NotNull List<MethodCandidate> candidates,
-                                                                   @NotNull List<GdType> argTypes,
-                                                                   boolean preferInstanceOverStatic,
-                                                                   @NotNull ToIntBiFunction<GdType, GdType> parameterCompatibilityRank) {
+    private static @NotNull CandidateSelection chooseBestCandidate(
+            @NotNull String methodName,
+            @NotNull String receiverDisplayName,
+            @NotNull List<MethodCandidate> candidates,
+            @NotNull List<GdType> argTypes,
+            boolean preferInstanceOverStatic,
+            @NotNull ParameterCompatibilityRank parameterCompatibilityRank,
+            @Nullable CandidateSpecificity candidateSpecificity
+    ) {
         var applicable = new ArrayList<MethodCandidate>();
         for (var candidate : candidates) {
             if (matchesArguments(candidate.resolved(), argTypes, parameterCompatibilityRank)) {
@@ -426,7 +565,12 @@ public final class ScopeMethodResolver {
         if (pool.size() == 1) {
             return new CandidateSelected(pool.getFirst());
         }
-        var mostSpecific = selectMostSpecificCandidate(pool, argTypes, parameterCompatibilityRank);
+        var mostSpecific = selectMostSpecificCandidate(
+                pool,
+                argTypes,
+                parameterCompatibilityRank,
+                candidateSpecificity
+        );
         return mostSpecific == null
                 ? new CandidateAmbiguous(pool)
                 : new CandidateSelected(mostSpecific);
@@ -435,7 +579,8 @@ public final class ScopeMethodResolver {
     private static @Nullable MethodCandidate selectMostSpecificCandidate(
             @NotNull List<MethodCandidate> pool,
             @NotNull List<GdType> argTypes,
-            @NotNull ToIntBiFunction<GdType, GdType> parameterCompatibilityRank
+            @NotNull ParameterCompatibilityRank parameterCompatibilityRank,
+            @Nullable CandidateSpecificity candidateSpecificity
     ) {
         MethodCandidate selected = null;
         for (var candidate : pool) {
@@ -444,7 +589,15 @@ public final class ScopeMethodResolver {
                 if (candidate == other) {
                     continue;
                 }
-                if (isStrictlyMoreSpecific(other.resolved(), candidate.resolved(), argTypes, parameterCompatibilityRank)) {
+                var otherMoreSpecific = candidateSpecificity != null
+                        ? candidateSpecificity.isStrictlyMoreSpecific(other.resolved(), candidate.resolved())
+                        : isStrictlyMoreSpecific(
+                        other.resolved(),
+                        candidate.resolved(),
+                        argTypes,
+                        parameterCompatibilityRank
+                );
+                if (otherMoreSpecific) {
                     dominated = true;
                     break;
                 }
@@ -460,39 +613,75 @@ public final class ScopeMethodResolver {
         return selected;
     }
 
+    /// Default specificity when no [CandidateSpecificity] is injected.
+    ///
+    /// Uses per-argument ranks from `ParameterCompatibilityRank`: higher min rank (worst) wins
+    /// first, then higher sum (total), then classic Pareto. Sum uses `long` so an empty-literal
+    /// encoded rank of `Integer.MAX_VALUE` cannot wrap when mixed with additional fixed arguments.
+    /// Frontend chain paths inject `CandidateSpecificity` instead so they share bare/ctor
+    /// `literalAggregateRank` / `compareCandidateRanks` (§5.4).
     private static boolean isStrictlyMoreSpecific(
             @NotNull ScopeResolvedMethod candidate,
             @NotNull ScopeResolvedMethod baseline,
             @NotNull List<GdType> argTypes,
-            @NotNull ToIntBiFunction<GdType, GdType> parameterCompatibilityRank
+            @NotNull ParameterCompatibilityRank parameterCompatibilityRank
     ) {
+        var candidateMin = Integer.MAX_VALUE;
+        var baselineMin = Integer.MAX_VALUE;
+        long candidateSum = 0L;
+        long baselineSum = 0L;
         var strictlyBetter = false;
+        var strictlyWorse = false;
         for (var index = 0; index < argTypes.size(); index++) {
             var candidateTarget = parameterTypeAt(candidate, index);
             var baselineTarget = parameterTypeAt(baseline, index);
             var preference = compareArgumentSpecificity(
+                    index,
                     argTypes.get(index),
                     candidateTarget,
                     baselineTarget,
                     parameterCompatibilityRank
             );
+            var candidateRank = rankAt(index, argTypes.get(index), candidateTarget, parameterCompatibilityRank);
+            var baselineRank = rankAt(index, argTypes.get(index), baselineTarget, parameterCompatibilityRank);
+            candidateMin = Math.min(candidateMin, candidateRank);
+            baselineMin = Math.min(baselineMin, baselineRank);
+            candidateSum += candidateRank;
+            baselineSum += baselineRank;
             switch (preference) {
-                case WORSE -> {
-                    return false;
-                }
+                case WORSE -> strictlyWorse = true;
                 case BETTER -> strictlyBetter = true;
                 case EQUAL -> {
                 }
             }
         }
-        return strictlyBetter;
+        if (candidateMin != baselineMin) {
+            return candidateMin > baselineMin;
+        }
+        if (candidateSum != baselineSum) {
+            return candidateSum > baselineSum;
+        }
+        return strictlyBetter && !strictlyWorse;
+    }
+
+    private static int rankAt(
+            int argumentIndex,
+            @NotNull GdType sourceType,
+            @Nullable GdType targetType,
+            @NotNull ParameterCompatibilityRank parameterCompatibilityRank
+    ) {
+        if (targetType == null) {
+            return 0;
+        }
+        return parameterCompatibilityRank.rank(argumentIndex, sourceType, targetType);
     }
 
     private static @NotNull MatchPreference compareArgumentSpecificity(
+            int argumentIndex,
             @NotNull GdType sourceType,
             @Nullable GdType candidateTarget,
             @Nullable GdType baselineTarget,
-            @NotNull ToIntBiFunction<GdType, GdType> parameterCompatibilityRank
+            @NotNull ParameterCompatibilityRank parameterCompatibilityRank
     ) {
         if (candidateTarget == null && baselineTarget == null) {
             return MatchPreference.EQUAL;
@@ -503,8 +692,8 @@ public final class ScopeMethodResolver {
         if (baselineTarget == null) {
             return MatchPreference.BETTER;
         }
-        var candidateRank = parameterCompatibilityRank.applyAsInt(sourceType, candidateTarget);
-        var baselineRank = parameterCompatibilityRank.applyAsInt(sourceType, baselineTarget);
+        var candidateRank = parameterCompatibilityRank.rank(argumentIndex, sourceType, candidateTarget);
+        var baselineRank = parameterCompatibilityRank.rank(argumentIndex, sourceType, baselineTarget);
         if (candidateRank > baselineRank) {
             return MatchPreference.BETTER;
         }
@@ -534,7 +723,7 @@ public final class ScopeMethodResolver {
 
     private static @NotNull String buildMismatchReason(@NotNull ScopeResolvedMethod candidate,
                                                        @NotNull List<GdType> argTypes,
-                                                       @NotNull ToIntBiFunction<GdType, GdType> parameterCompatibilityRank) {
+                                                       @NotNull ParameterCompatibilityRank parameterCompatibilityRank) {
         var fixedCount = candidate.parameters().size();
         var providedCount = argTypes.size();
         if (providedCount < fixedCount && !canOmitTrailingParameters(candidate.parameters(), providedCount)) {
@@ -551,7 +740,7 @@ public final class ScopeMethodResolver {
         for (var i = 0; i < providedFixedCount; i++) {
             var argType = argTypes.get(i);
             var param = candidate.parameters().get(i);
-            if (parameterCompatibilityRank.applyAsInt(argType, param.type()) <= 0) {
+            if (parameterCompatibilityRank.rank(i, argType, param.type()) <= 0) {
                 return "Cannot assign value of type '" + argType.getTypeName() +
                         "' to method parameter #" + (i + 1) + " ('" + param.name() +
                         "') of type '" + param.type().getTypeName() + "'";
@@ -583,7 +772,7 @@ public final class ScopeMethodResolver {
 
     private static boolean matchesArguments(@NotNull ScopeResolvedMethod candidate,
                                             @NotNull List<GdType> argTypes,
-                                            @NotNull ToIntBiFunction<GdType, GdType> parameterCompatibilityRank) {
+                                            @NotNull ParameterCompatibilityRank parameterCompatibilityRank) {
         var fixedCount = candidate.parameters().size();
         var provided = argTypes.size();
         if (provided < fixedCount && !canOmitTrailingParameters(candidate.parameters(), provided)) {
@@ -596,7 +785,7 @@ public final class ScopeMethodResolver {
         for (var i = 0; i < providedFixedCount; i++) {
             var argType = argTypes.get(i);
             var paramType = candidate.parameters().get(i).type();
-            if (parameterCompatibilityRank.applyAsInt(argType, paramType) <= 0) {
+            if (parameterCompatibilityRank.rank(i, argType, paramType) <= 0) {
                 return false;
             }
         }

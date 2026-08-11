@@ -8,6 +8,7 @@ import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
+import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
@@ -2875,6 +2876,134 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         // print(...) has no fixed parameters, so the literal gets no typed context and stays generic Array.
         assertEquals("Array", analyzed.analysisData().expressionTypes().get(secondCall.arguments().getFirst())
                 .publishedType().getTypeName());
+    }
+
+    @Test
+    void analyzePublishesThreeWayConsistentContextualLiteralForChainCallArgument() throws Exception {
+        var analyzed = analyze(
+                "expr_type_chain_container_literal_three_way.gd",
+                """
+                        class_name ExprTypeChainContainerLiteralThreeWay
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> void:
+                            pass
+                        
+                        func ping():
+                            self.take([1, 2])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var statement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var callStep = findNode(statement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var literal = callStep.arguments().getFirst();
+
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(literal).publishedType().getTypeName());
+        var plan = analyzed.analysisData().containerLiteralPlans().get(literal);
+        assertNotNull(plan);
+        assertEquals("Array[int]", plan.resultType().getTypeName());
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(callStep);
+        assertNotNull(resolvedCall);
+        assertEquals("Array[int]", resolvedCall.argumentTypes().getFirst().getTypeName());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, analyzed.analysisData().expressionTypes().get(statement.expression()).status());
+    }
+
+    @Test
+    void analyzeSelectsChainOverloadAndKeepsThreeWayConsistency() throws Exception {
+        var analyzed = analyze(
+                "expr_type_chain_container_literal_overload.gd",
+                """
+                        class_name ExprTypeChainContainerLiteralOverload
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> int:
+                            return 1
+                        
+                        func take(values: Array[String]) -> int:
+                            return 2
+                        
+                        func ping():
+                            self.take([1])
+                            self.take(["x"])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var firstStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var secondStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
+        var firstStep = findNode(firstStatement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var secondStep = findNode(secondStatement, AttributeCallStep.class, step -> step.name().equals("take"));
+
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(firstStep.arguments().getFirst())
+                .publishedType().getTypeName());
+        assertEquals("Array[String]", analyzed.analysisData().expressionTypes().get(secondStep.arguments().getFirst())
+                .publishedType().getTypeName());
+        assertEquals("Array[int]", analyzed.analysisData().resolvedCalls().get(firstStep).argumentTypes().getFirst()
+                .getTypeName());
+        assertEquals("Array[String]", analyzed.analysisData().resolvedCalls().get(secondStep).argumentTypes().getFirst()
+                .getTypeName());
+        assertEquals("Array[int]", analyzed.analysisData().containerLiteralPlans().get(firstStep.arguments().getFirst())
+                .resultType().getTypeName());
+        assertEquals("Array[String]", analyzed.analysisData().containerLiteralPlans().get(secondStep.arguments().getFirst())
+                .resultType().getTypeName());
+    }
+
+    @Test
+    void analyzeKeepsIncompatibleChainContainerLiteralCallFailedWithoutDeclarationOrderPick() throws Exception {
+        var analyzed = analyze(
+                "expr_type_chain_container_literal_reject.gd",
+                """
+                        class_name ExprTypeChainContainerLiteralReject
+                        extends RefCounted
+                        
+                        func take(values: Array[String]) -> int:
+                            return 1
+                        
+                        func ping():
+                            self.take([1])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var statement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var takeStep = findNode(statement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(takeStep);
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionStatus.FAILED, resolvedCall.status());
+        // CHAIN_BINDING does not finalize the literal plan; generic snapshot stays until no exact boundary.
+        assertEquals("Array", resolvedCall.argumentTypes().getFirst().getTypeName());
+    }
+
+    @Test
+    void analyzePublishesThreeWayConsistentEmptyArrayLiteralForChainCallArgument() throws Exception {
+        var analyzed = analyze(
+                "expr_type_chain_empty_container_literal.gd",
+                """
+                        class_name ExprTypeChainEmptyContainerLiteral
+                        extends RefCounted
+                        
+                        func take(values: Array[int]) -> void:
+                            pass
+                        
+                        func ping():
+                            self.take([])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var statement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var callStep = findNode(statement, AttributeCallStep.class, step -> step.name().equals("take"));
+        var literal = callStep.arguments().getFirst();
+
+        assertEquals("Array[int]", analyzed.analysisData().expressionTypes().get(literal).publishedType().getTypeName());
+        var plan = analyzed.analysisData().containerLiteralPlans().get(literal);
+        assertNotNull(plan);
+        assertEquals("Array[int]", plan.resultType().getTypeName());
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(callStep);
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status());
+        assertEquals("Array[int]", resolvedCall.argumentTypes().getFirst().getTypeName());
     }
 
     private static @NotNull AnalyzedScript analyze(

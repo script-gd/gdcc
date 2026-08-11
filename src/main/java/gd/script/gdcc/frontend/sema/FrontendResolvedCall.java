@@ -1,5 +1,7 @@
 package gd.script.gdcc.frontend.sema;
 
+import gd.script.gdcc.scope.FunctionDef;
+import gd.script.gdcc.scope.ParameterDef;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.scope.resolver.ScopeMethodParameter;
 import gd.script.gdcc.scope.resolver.ScopeResolvedMethod;
@@ -262,9 +264,10 @@ public record FrontendResolvedCall(
                 );
             }
             if (callKind != FrontendCallResolutionKind.INSTANCE_METHOD
-                    && callKind != FrontendCallResolutionKind.STATIC_METHOD) {
+                    && callKind != FrontendCallResolutionKind.STATIC_METHOD
+                    && callKind != FrontendCallResolutionKind.CONSTRUCTOR) {
                 throw new IllegalArgumentException(
-                        "exactCallableBoundary is only valid for exact instance/static method routes"
+                        "exactCallableBoundary is only valid for exact instance/static/constructor routes"
                 );
             }
         }
@@ -336,6 +339,16 @@ public record FrontendResolvedCall(
                     .map(ScopeMethodParameter::type)
                     .toList();
             return new ExactCallableBoundary(fixedParameterTypes, resolvedMethod.isVararg());
+        }
+
+        /// Builds a boundary from a selected constructor/`FunctionDef` declaration site.
+        public static @NotNull ExactCallableBoundary fromFunctionDef(@NotNull FunctionDef functionDef) {
+            var fixedParameterTypes = Objects.requireNonNull(functionDef, "functionDef must not be null")
+                    .getParameters()
+                    .stream()
+                    .map(ParameterDef::getType)
+                    .toList();
+            return new ExactCallableBoundary(fixedParameterTypes, functionDef.isVararg());
         }
     }
 

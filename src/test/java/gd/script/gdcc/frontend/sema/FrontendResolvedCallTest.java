@@ -248,8 +248,10 @@ class FrontendResolvedCallTest {
     }
 
     @Test
-    void constructorRejectsExactCallableBoundaryForConstructorRoutes() {
-        var ex = assertThrows(IllegalArgumentException.class, () -> new FrontendResolvedCall(
+    void constructorAllowsExactCallableBoundaryForConstructorRoutes() {
+        // Pre Phase 3: constructor RESOLVED may publish exactCallableBoundary so EXPR_TYPE can
+        // finalize container-literal arguments against selected fixed parameter types.
+        var call = new FrontendResolvedCall(
                 "new",
                 FrontendCallResolutionKind.CONSTRUCTOR,
                 FrontendCallResolutionStatus.RESOLVED,
@@ -261,9 +263,11 @@ class FrontendResolvedCallTest {
                 new FrontendResolvedCall.ExactCallableBoundary(List.of(new GdObjectType("Node")), false),
                 "Node.new",
                 null
-        ));
+        );
 
-        assertEquals("exactCallableBoundary is only valid for exact instance/static method routes", ex.getMessage());
+        assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, call.callKind());
+        assertNotNull(call.exactCallableBoundary());
+        assertEquals(1, call.exactCallableBoundary().fixedParameterTypes().size());
     }
 
     @Test
