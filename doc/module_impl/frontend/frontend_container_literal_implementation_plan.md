@@ -1,23 +1,24 @@
 # Frontend 数组与字典字面量实施计划
 
 > 本文档描述 GDScript 数组字面量与字典字面量从 parser AST、shared semantic、type-check、CFG、LIR 到 C backend 的完整实施方案。
-> 本文档只制定计划，不表示当前功能已经进入 compile-ready 支持面。
+> 阶段 0–7 已完成；Array/Dictionary literal 已进入 compile-ready 支持面。
 
 ## 文档状态
 
-- 状态：In Progress（阶段 0–5 / Pre Phase 3 已完成 / 阶段 6–7 未实施）
+- 状态：Done（阶段 0–7 全部完成；Array/Dictionary literal 已 compile-ready）
 - 目标 Godot 基线：4.5.1-stable
 - gdparser 基线：0.5.3（满足阶段 0 字典 Lua-style / 混用 style 契约）
 - 计划范围：普通 executable body 与当前已支持的 property initializer island
 - 阶段进度：
   - 阶段 0：Done — `FrontendContainerLiteralParseBehaviorTest` 16/16 全绿（gdparser 0.5.3）；Lua-style key 归一化为 `string_name` 常量；混用 style 报 `parse.lowering`；依赖已升级。
-  - 阶段 1：Done — generic Array/Dictionary shared semantic + `FrontendContainerLiteralPlan` side-table；compile gate 仍拦截。
-  - 阶段 2：Done — contextual typed literal + expected-type resolver/cache guard + type-check plan consumer + `TypedContainerAbiSupport`；compile gate 仍拦截。
-  - Pre Phase 3：Done — chain/static/constructor 共用 literal element-boundary preview/rank；CHAIN_BINDING 直接发布 contextual `argumentTypes()`；constructor 可发布 `exactCallableBoundary`；compile gate 仍拦截。
-  - 阶段 3：Done — `ContainerLiteralItem` + CFG buildValue 路由 + plan 校验 + materialization TEMP_SLOT + body processor fail-fast shell；`classifyOpaqueExpression` 对 Array/Dictionary 改为 REJECT；compile gate 仍拦截。
-  - 阶段 4：Done — `CONSTRUCT_CONTAINER_LITERAL` + `ConstructContainerLiteralInsn` + parser/serializer round-trip + body processor plan-driven materialize + emit；compile gate 仍拦截。
-  - 阶段 5：Done — `ContainerLiteralInsnGen` + `CCodegen` 注册；Array `push_back` / Dictionary `set` + pack temp lifecycle；compile gate 仍拦截。
-  - 阶段 6–7：Not Started
+  - 阶段 1：Done — generic Array/Dictionary shared semantic + `FrontendContainerLiteralPlan` side-table。
+  - 阶段 2：Done — contextual typed literal + expected-type resolver/cache guard + type-check plan consumer + `TypedContainerAbiSupport`。
+  - Pre Phase 3：Done — chain/static/constructor 共用 literal element-boundary preview/rank；CHAIN_BINDING 直接发布 contextual `argumentTypes()`；constructor 可发布 `exactCallableBoundary`。
+  - 阶段 3：Done — `ContainerLiteralItem` + CFG buildValue 路由 + plan 校验 + materialization TEMP_SLOT + body processor；`classifyOpaqueExpression` 对 Array/Dictionary 为 REJECT（dedicated-item-only）。
+  - 阶段 4：Done — `CONSTRUCT_CONTAINER_LITERAL` + `ConstructContainerLiteralInsn` + parser/serializer round-trip + body processor plan-driven materialize + emit。
+  - 阶段 5：Done — `ContainerLiteralInsnGen` + `CCodegen` 注册；Array `push_back` / Dictionary `set` + pack temp lifecycle。
+  - 阶段 6：Done — 移除 compile gate Array/Dictionary blocker；`FrontendCompileCheckAnalyzerTest` / framework boundary 更新；4 组 collection suite + engine 路径全绿；opaque REJECT 保持。
+  - 阶段 7：Done — `frontend_rules` / compile-check / diagnostic / chain / lowering docs 同步；新增 `construct_container_literal_implementation.md`。
 - 主要关联文档：
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`

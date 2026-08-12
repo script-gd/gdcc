@@ -26,9 +26,9 @@ import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
-import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
+import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
@@ -116,9 +116,9 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compiled = analyzeForCompile("compile_check_explicit_blocks.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        // Remaining explicit intercepts: assert, conditional, array, dict, preload, get-node.
-        // CastExpression and TypeTestExpression are not in the intercept set.
-        assertEquals(6, compileDiagnostics.size());
+        // Remaining explicit intercepts: assert, conditional, preload, get-node.
+        // Array/Dictionary literals, CastExpression, and TypeTestExpression are not in the intercept set.
+        assertEquals(4, compileDiagnostics.size());
         assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                         && Objects.equals(
@@ -129,13 +129,41 @@ class FrontendCompileCheckAnalyzerTest {
         ));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("assert statement")));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Conditional expression")));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Array literal")));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Dictionary literal")));
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Array literal")));
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Dictionary literal")));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Preload expression")));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Get-node expression")));
         assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Cast expression")));
         assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Type-test expression")));
         assertEquals(compiled.diagnostics(), compiled.diagnosticManager().snapshot());
+    }
+
+    @Test
+    void analyzeForCompileAllowsArrayAndDictionaryLiterals() throws Exception {
+        var source = """
+                class_name CompileCheckContainerLiterals
+                extends RefCounted
+                
+                var scores: Array[int] = [1, 2]
+                var labels: Dictionary[String, int] = {"a": 1}
+                
+                func probe(value: int) -> Array:
+                    var mixed = [value, "x", true]
+                    var nested = [[1], {"k": 2}]
+                    var packed: Variant = [value]
+                    return [mixed.size(), nested.size(), packed]
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_container_literals.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_container_literals.gd", source);
+        assertFalse(
+                compiled.diagnostics().hasErrors(),
+                () -> "Unexpected compile diagnostics: " + compiled.diagnostics().asList()
+        );
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
     }
 
     @Test
@@ -982,19 +1010,20 @@ class FrontendCompileCheckAnalyzerTest {
 
     @Test
     void analyzeSkipsCompileCheckWhenAnchorAlreadyHasPublishedError() throws Exception {
+        // Anchor on a still-blocked form so dedup is not vacuous after container-literal gate removal.
         var preparedInput = prepareCompileCheckInput("compile_check_existing_error.gd", """
                 class_name CompileCheckExistingError
                 extends Node
                 
                 func ping():
-                    [1]
+                    1 if true else 0
                 """);
-        var arrayExpression = findNode(preparedInput.unit().ast(), ArrayExpression.class, ignored -> true);
+        var conditionalExpression = findNode(preparedInput.unit().ast(), ConditionalExpression.class, ignored -> true);
         preparedInput.diagnosticManager().error(
                 "sema.synthetic",
                 "synthetic upstream error",
                 preparedInput.unit().path(),
-                FrontendRange.fromAstRange(arrayExpression.range())
+                FrontendRange.fromAstRange(conditionalExpression.range())
         );
         preparedInput.analysisData().updateDiagnostics(preparedInput.diagnosticManager().snapshot());
 
@@ -1014,14 +1043,14 @@ class FrontendCompileCheckAnalyzerTest {
                 extends Node
                 
                 func ping():
-                    [1]
+                    1 if true else 0
                 """);
-        var arrayExpression = findNode(preparedInput.unit().ast(), ArrayExpression.class, _ -> true);
+        var conditionalExpression = findNode(preparedInput.unit().ast(), ConditionalExpression.class, _ -> true);
         preparedInput.diagnosticManager().error(
                 "sema.synthetic",
                 "synthetic upstream error not yet copied to analysisData",
                 preparedInput.unit().path(),
-                FrontendRange.fromAstRange(arrayExpression.range())
+                FrontendRange.fromAstRange(conditionalExpression.range())
         );
         assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.synthetic").isEmpty());
 

@@ -276,12 +276,12 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.compile_check`
   - compile-only `FrontendCompileCheckAnalyzer` 对进入 lowering 前仍不可编译的 surface 发出的最终 error
   - 同时覆盖：
-    - 当前首批显式封口的 `assert`、`ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`，以及按 route-aware policy 处理的 `ForStatement`；`TypeTestExpression` 与 `CastExpression` 不属于显式封口列表
+    - 当前首批显式封口的 `assert`、`ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`，以及按 route-aware policy 处理的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression` 与 `CastExpression` 不属于显式封口列表
     - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
     - supported callable-local `var` 因 `sema.variable_slot_publication` warning 仍缺失 `slotTypes()` 的 lowering-only fact 缺洞
   - `assert` 在这里仍只是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，不把它回退成 strict-bool `sema.type_check`
   - `ForStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `forIterationPlans()` 与 `ForLoweringContractRegistry`，已注册 lowering contract 的 route 放行并进入 body 重扫 facts，未注册 contract 的 route（当前 `OBJECT_CUSTOM`）在 statement root 发 route-not-ready blocker（说明缺少 lowering route，而非 `FOR_SUBTREE` unsupported）；已注册 route 的 CFG/body lowering 已落地
-  - 上述 5 类表达式（即 `ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`，不含 statement 级 `assert` 与 route-aware 的 `ForStatement`；`TypeTestExpression` 与 `CastExpression` 已完成 lowering/backend 闭环）属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
+  - 上述 3 类表达式（即 `ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`，不含 statement 级 `assert` 与 route-aware 的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression` 与 `CastExpression` 已完成 lowering/backend 闭环）属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
   - `ConditionalExpression` 当前单独被列入这份清单，是因为真正的 lowering 需要等 frontend CFG graph / condition-evaluation-region 合同冻结后再接通；现有 metadata-only `FrontendLoweringCfgPass` 仍属于过渡层
   - `DYNAMIC` 不属于 compile blocker；它保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 未实现状态
   - 该 category 只属于 compile-only 入口，不属于默认共享语义 / inspection / 未来 LSP 入口

@@ -32,33 +32,19 @@
 - 这是 frontend 已知支持面边界，不是本轮新增测试暴露出的新回归
 - 因此本轮不把这些 case 写成 failing resource test，而是将正向样例约束在当前正式支持面内
 
-## 3. `Array` / `Dictionary` literal 在 compile mode 仍被 frontend compile-check 阻断
+## 3. 已修复：`Array` / `Dictionary` literal 已 compile-ready
 
-本轮第一次 targeted run 直接暴露出以下事实：
+历史记录：早期 suite 路径中 `var sequence: Array = [0, 1]` / `var scores: Dictionary = {}` 等会在
+compile-check 以 `Array/Dictionary literal is ... temporarily blocked` 失败；作者一度改用
+`Array()` / `Dictionary()` + `push_back` 规避。
 
-- `var sequence: Array = [0, 1]`
-- `var scores: Dictionary = {}`
-- `graph["A"] = ["B", "C"]`
-- `var values: Dictionary[StringName, int] = {}`
-- `var values: Dictionary[String, int] = {}`
+现已修复（阶段 6）：
 
-在 `test_suite` 这条 compile/link/run 链路里都会先停在 compile surface，典型报错为：
-
-- `Array literal is recognized by the frontend but is temporarily blocked in compile mode until lowering support lands`
-- `Dictionary literal is recognized by the frontend but is temporarily blocked in compile mode until lowering support lands`
-
-对 test suite 的直接影响：
-
-- 新增数组/图算法用例不能直接用数组字面量初始化 seed 数据
-- 新增字典/图算法用例不能直接用字典字面量搭图
-- `String` / `StringName` typed Dictionary key 端到端锚点也不能在 compiled source 内用 `{}` 构造 seed；
-  本轮新增的 subscript resource 改为由 Godot validation script 构造 typed Dictionary，再传入 compiled
-  method，在 compiled body 内只验证 key materialization、route 与 writable writeback。
-
-当前处理结论：
-
-- 正向资源脚本统一改写为 `Array()` / `Dictionary()` 无参构造，再用 `push_back(...)` 和 subscript 逐步填充
-- 这是一条当前 compile surface 的真实边界，后续若 frontend 为 literal lowering 开口，应补专门 regression case
+- compile gate 不再显式拦截 `ArrayExpression` / `DictionaryExpression`
+- 全链路走 `FrontendContainerLiteralPlan` → `ContainerLiteralItem` → `construct_container_literal`
+- 回归 suite：`collection/array_literal_roundtrip.gd`、`collection/dictionary_literal_roundtrip.gd`、
+  `collection/container_literal_evaluation_order.gd`、`collection/typed_container_literal_boundaries.gd`
+- 新用例可直接使用字面量；仍可选用 `Array()` / `Dictionary()` 构造路径（empty construct 合同不变）
 
 ## 4. 已修复：plain `Dictionary` keyed subscript 不再要求显式 `Variant` key slot
 

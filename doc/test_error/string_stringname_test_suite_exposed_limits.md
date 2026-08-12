@@ -13,22 +13,16 @@ fixture 与实现限制。长期支持范围以 `doc/module_impl/frontend/fronte
 - `src/test/test_suite/unit_test/script/runtime/string_stringname_inbound_dynamic_call.gd`
 - `src/test/test_suite/unit_test/script/subscript/string_stringname_dictionary_key_roundtrip.gd`
 
-## 1. typed Dictionary literal 在 compiled source 内仍被 compile-check 阻断
+## 1. 已修复：typed Dictionary literal 不再被 compile-check 阻断
 
-首次编写 `subscript/string_stringname_dictionary_key_roundtrip.gd` 时，compiled source 使用了：
+历史：首次编写 `subscript/string_stringname_dictionary_key_roundtrip.gd` 时，
+`var values: Dictionary[StringName, int] = {}` 等会在 compile-check 失败
+（`Dictionary literal is ... temporarily blocked`）。当时 resource 改为由 validation 侧构造
+typed Dictionary 再传入 compiled method。
 
-- `var values: Dictionary[StringName, int] = {}`
-- `var values: Dictionary[String, int] = {}`
-
-targeted run 在 frontend compile-check 阶段失败，错误为：
-
-- `Dictionary literal is recognized by the frontend but is temporarily blocked in compile mode until lowering support lands`
-
-处理结论：
-
-- 这不是 `String <-> StringName` boundary 的失败，而是既有 Dictionary literal lowering gap。
-- 当前 resource 改为由 Godot validation script 构造 typed Dictionary，再传入 compiled method。
-- compiled method 只负责验证 key materialization、access route 与 writable writeback。
+现已修复（阶段 6）：Dictionary literal 已 compile-ready；`collection/dictionary_literal_roundtrip.gd`
+等 suite 直接使用字面量。该 subscript resource 可保留现有 validation 注入写法（仍有效），新用例
+可直接在 compiled source 内写 `{}` / `{...}`。
 
 ## 2. typed Dictionary 泛型签名不会进入 generated wrapper helper 名称
 

@@ -25,7 +25,7 @@
 - 明确非目标：
   - 不在这里实现 frontend -> LIR lowering
   - 不在这里实现 `assert` 的 lowering 或 backend 语义
-  - 不在这里为 `ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression` 补 lowering
+  - 不在这里为 `ConditionalExpression`、`PreloadExpression`、`GetNodeExpression` 补 lowering（`ArrayExpression` / `DictionaryExpression` 已 compile-ready，不由本 gate 拦截）
   - 不在这里把 compile-only blocker 反向回灌到 shared semantic / inspection / 未来 LSP 路径
   - 不在这里改写上游 analyzer 的 diagnostic owner，也不新增新的 semantic side table
 
@@ -157,10 +157,10 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 以下表达式当前同样由 compile gate 显式拦截：
 
 - `ConditionalExpression`
-- `ArrayExpression`
-- `DictionaryExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
+
+`ArrayExpression` / `DictionaryExpression` 不属于当前显式 compile-block 列表：shared semantic 发布 `FrontendContainerLiteralPlan`，CFG/body 经 `ContainerLiteralItem` 发射 `construct_container_literal`，backend `ContainerLiteralInsnGen` 已闭环（见 `frontend_container_literal_implementation_plan.md`）。
 
 `TypeTestExpression` 不属于当前显式 compile-block 列表：shared semantic 发布 `RESOLVED(bool)` + `typeTestTargets()`，body lowering 发射统一 `is_instance_of` / 常量 bool，backend `IsInstanceOfInsnGen` 分派 + runtime helpers 已落地。
 
@@ -396,13 +396,12 @@ compile gate 当前统一使用：
 - `assert`
 - `ForStatement`（route-aware compile policy：`ForLoweringContractRegistry` 中已注册的 route 放行并进入 body 重扫；未注册 route 在 statement root 拦截；已注册 route 的 CFG/body lowering 已落地，见 `frontend_for_range_loop_implementation.md`）
 - `ConditionalExpression`
-- `ArrayExpression`
-- `DictionaryExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
 
 `TypeTestExpression` 已从显式 compile-block 列表移除（见 `frontend_is_type_test_implementation.md`）。
 `CastExpression` 已从显式 compile-block 列表移除（见 `frontend_cast_expression_implementation.md`）。
+`ArrayExpression` / `DictionaryExpression` 已从显式 compile-block 列表移除（见 `frontend_container_literal_implementation_plan.md`）。
 
 在满足这些条件之前，它们都必须继续由 compile-only gate 拦截，而不是因为“frontend 已识别”就提前放行。
 
@@ -413,7 +412,7 @@ compile gate 当前统一使用：
 当前 compile gate 的关键行为由以下 targeted tests 锁定：
 
 - `FrontendCompileCheckAnalyzerTest`
-  - 显式 AST compile-block（当前 5 类：Conditional / Array / Dictionary / Preload / GetNode；Cast 与 TypeTest 已离开 intercept）
+  - 显式 AST compile-block（当前 3 类：Conditional / Preload / GetNode；Array / Dictionary / Cast / TypeTest 已离开 intercept）
   - short-circuit binary 不再被 compile gate 误封口
   - generic side-table blocker
   - property initializer island 上的 generic blocker
@@ -443,7 +442,7 @@ compile gate 当前统一使用：
 
 - frontend -> LIR lowering 入口必须强制使用 `analyzeForCompile(...)`
 - lowering 在继续前必须检查 `diagnostics().hasErrors() == false`
-- `assert` 与 5 类显式拦截表达式（`ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`）的真正 lowering/backend 支持仍待后续补齐；`TypeTestExpression` 与 `CastExpression` 已完成 shared semantic、CFG/body lowering 与 backend 闭环；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）
+- `assert` 与 3 类显式拦截表达式（`ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`）的真正 lowering/backend 支持仍待后续补齐；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression` 与 `CastExpression` 已完成 shared semantic、CFG/body lowering 与 backend 闭环；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）
 
 若未来需要为 LSP 单独呈现 compile-only blocker，正确方向仍是：
 

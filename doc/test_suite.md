@@ -45,6 +45,13 @@ src/test/test_suite/unit_test/script/smoke/basic_arithmetic.gd
 src/test/test_suite/unit_test/validation/smoke/basic_arithmetic.gd
 ```
 
+Container-literal e2e pairs live under `collection/` (generic/typed roundtrip, evaluation order,
+typed boundaries, nested/untyped reads, `for-in` over literals). They exercise
+`construct_container_literal` through the full compile/link/run path; keep validation semantic
+(size/subscript/order), not generated-C text matching. Prefer Variant/typed-boundary unpack over
+`int(...)` when the slot is already `int` or generic `Variant`; keep cast constructors only for
+real folds such as `float -> int`.
+
 ## How Discovery Works
 
 `ResourceExtractor.listResourceFilesRecursively(...)` is used to enumerate all files under `unit_test/script`.

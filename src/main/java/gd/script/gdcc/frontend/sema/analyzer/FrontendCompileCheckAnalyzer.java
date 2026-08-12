@@ -31,7 +31,6 @@ import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
-import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
@@ -40,7 +39,6 @@ import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
-import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.ElifClause;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -515,14 +513,8 @@ public class FrontendCompileCheckAnalyzer {
                         conditionalExpression,
                         conditionalCompileBlockedMessage()
                 );
-                case ArrayExpression arrayExpression -> reportExplicitCompileBlock(
-                        arrayExpression,
-                        expressionCompileBlockedMessage("Array literal")
-                );
-                case DictionaryExpression dictionaryExpression -> reportExplicitCompileBlock(
-                        dictionaryExpression,
-                        expressionCompileBlockedMessage("Dictionary literal")
-                );
+                // ArrayExpression / DictionaryExpression: compile-ready via ContainerLiteralItem +
+                // construct_container_literal (see frontend_container_literal_implementation_plan.md).
                 case PreloadExpression preloadExpression -> reportExplicitCompileBlock(
                         preloadExpression,
                         expressionCompileBlockedMessage("Preload expression")

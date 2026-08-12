@@ -40,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /// Phase 4 body-lowering contract for array/dictionary literals.
 ///
-/// Shared `analyze(...)` only: compile gate still intercepts Array/Dictionary in compile mode.
+/// Uses `analyzeForCompile(...)` so Phase 6 compile-gate release is part of the lowering readiness path.
 class FrontendContainerLiteralInsnLoweringTest {
 
     @Test
@@ -388,11 +388,10 @@ class FrontendContainerLiteralInsnLoweringTest {
                 List.of(unit),
                 Map.of(className, "Runtime" + className)
         );
-        // Shared semantic only: compile gate still intercepts ArrayExpression for compile-mode.
-        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+        var analysisData = new FrontendSemanticAnalyzer().analyzeForCompile(module, classRegistry, diagnostics);
         assertFalse(
                 diagnostics.hasErrors(),
-                () -> "Unexpected semantic errors before body lowering: " + diagnostics.snapshot()
+                () -> "Unexpected compile-ready errors before body lowering: " + diagnostics.snapshot()
         );
 
         var context = new FrontendLoweringContext(module, classRegistry, diagnostics);

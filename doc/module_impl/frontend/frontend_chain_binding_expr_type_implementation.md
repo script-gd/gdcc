@@ -490,12 +490,12 @@ writable / compatibility 规则为：
   当前 remaining explicit-deferred expression set 固定为：
 
 - `ConditionalExpression`
-- `ArrayExpression`
-- `DictionaryExpression`
 - `AwaitExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
 - `PatternBindingExpression`
+
+`ArrayExpression` / `DictionaryExpression` **已不在** deferred 集合中：shared semantic 发布 `FrontendContainerLiteralPlan`；CFG 建 `ContainerLiteralItem`；body lowering 发射 `construct_container_literal`；backend `ContainerLiteralInsnGen` 已闭环；compile gate 不再为其建立显式 blocker（见 `frontend_container_literal_implementation_plan.md`）。
 
 `TypeTestExpression` **已不在** deferred 集合中：shared semantic 发布 `RESOLVED(bool)` 与 `typeTestTargets()` 目标事实；body lowering 统一发射 `is_instance_of` / 常量 bool；backend `IsInstanceOfInsnGen` 分派 + runtime helpers 已落地；compile gate 不再为其建立显式 blocker（见 `frontend_is_type_test_implementation.md`）。
 

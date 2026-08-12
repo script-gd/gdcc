@@ -267,13 +267,11 @@ void run(FrontendLoweringContext context)
 
 - `assert`
 - `ConditionalExpression`
-- `ArrayExpression`
-- `DictionaryExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
 - 脚本类 `static var`
 
-说明：`TypeTestExpression` 与 `CastExpression` 已离开 compile-only 显式封口列表（见对应事实源文档）。
+说明：`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression` 与 `CastExpression` 已离开 compile-only 显式封口列表（见对应事实源文档）。
 
 此外，frontend MVP 仍未完整支持：
 

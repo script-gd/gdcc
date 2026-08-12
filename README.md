@@ -36,7 +36,7 @@ GDCC is currently in an early alpha stage. Do not use it in production.
 ## Unsupported or Limited
 
 - `for`, `match`, `lambda`, `await`, and coroutine flows.
-- Array and dictionary literals, ternary expressions, `assert`, `preload`, `get_node`, casts, and type tests.
+- Ternary expressions, `assert`, `preload`, and `get_node`. (Array/dictionary literals, casts, and type tests are compile-ready.)
 - `not in`, string `%` formatting, parameter defaults, local or class constants, and script-level `static var`.
 - Path-based `extends`, autoload superclass binding, global script class superclass binding, and multi-module superclass binding.
 - Built-in keyed access such as `vector["x"]`; use property-style access such as `vector.x` where supported.
