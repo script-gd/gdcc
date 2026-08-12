@@ -21,7 +21,7 @@ import java.util.List;
 /// already-materialized operand into a generator-local Variant and calling
 /// `godot_Array_push_back` / `godot_Dictionary_set`. Does not re-decide element conversions (frontend
 /// boundary materialization owns that). See
-/// `doc/module_impl/frontend/frontend_container_literal_implementation_plan.md` §8.
+/// `doc/module_impl/frontend/frontend_container_literal_implementation.md` §8.
 public final class ContainerLiteralInsnGen implements CInsnGen<ConstructContainerLiteralInsn> {
     private static final String ARRAY_PUSH_BACK = "godot_Array_push_back";
     private static final String DICTIONARY_SET = "godot_Dictionary_set";

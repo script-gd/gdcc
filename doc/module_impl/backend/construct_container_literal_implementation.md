@@ -15,7 +15,7 @@
   - `doc/module_impl/backend/builtin_builder_implementation.md`
   - `doc/module_impl/backend/typed_array_abi_contract.md`
   - `doc/module_impl/backend/typed_dictionary_abi_contract.md`
-  - `doc/module_impl/frontend/frontend_container_literal_implementation_plan.md`
+  - `doc/module_impl/frontend/frontend_container_literal_implementation.md`
 
 ## 当前最终状态（与代码对齐）
 

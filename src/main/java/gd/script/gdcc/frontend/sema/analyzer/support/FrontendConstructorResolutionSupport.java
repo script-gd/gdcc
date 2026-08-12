@@ -66,7 +66,7 @@ final class FrontendConstructorResolutionSupport {
     }
 
     /// Constructor selection with optional container-literal argument expressions for element-boundary
-    /// preview ranking (shared with bare-call / chain Pre Phase 3 contract).
+    /// preview ranking (shared with bare-call / chain selection).
     static @NotNull Resolution resolveConstructor(
             @NotNull ClassRegistry classRegistry,
             @NotNull ScopeTypeMeta receiverTypeMeta,

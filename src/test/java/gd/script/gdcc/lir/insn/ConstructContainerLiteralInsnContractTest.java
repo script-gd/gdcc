@@ -17,7 +17,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/// Anchors the frozen LIR contract for `construct_container_literal` (Phase 4).
+/// Anchors the frozen LIR contract for `construct_container_literal`.
 ///
 /// Covers opcode shape, VariableOperand-only operands, empty varargs, order-preserving
 /// serialize/parse round-trip, and negative parse/construction cases.
@@ -218,7 +218,7 @@ class ConstructContainerLiteralInsnContractTest {
     @Test
     void parseWithoutResultProducesNullResultId() {
         // Parser currently permits a null resultId for REQUIRED construction opcodes;
-        // backend (Phase 5) rejects missing / ref / non-container results at codegen time.
+        // backend rejects missing / ref / non-container results at codegen time.
         var insn = assertInstanceOf(
                 ConstructContainerLiteralInsn.class,
                 parse("construct_container_literal $a;\n").getFirst()

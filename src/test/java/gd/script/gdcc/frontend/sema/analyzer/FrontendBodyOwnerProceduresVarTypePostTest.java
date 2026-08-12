@@ -156,7 +156,7 @@ class FrontendBodyOwnerProceduresVarTypePostTest {
 
     @Test
     void analyzeStabilizesInferredContainerLiteralLocalsToGenericContainers() throws Exception {
-        // Phase 1 acceptance: `:= [1, 2]` / `:= {"x": 1}` stabilize to generic Array/Dictionary,
+        // `:= [1, 2]` / `:= {"x": 1}` stabilize to generic Array/Dictionary,
         // never element-inferred Array[int] / Dictionary[String, int].
         var analyzed = analyzeShared(
                 "var_type_post_container_literal_locals.gd",

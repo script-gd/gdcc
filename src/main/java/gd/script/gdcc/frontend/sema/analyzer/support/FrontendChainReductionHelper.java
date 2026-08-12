@@ -1626,7 +1626,7 @@ public final class FrontendChainReductionHelper {
         // Publish the shared resolver's normalized callable boundary once so downstream exact-call
         // consumers can reuse it without touching raw `FunctionDef` parameter metadata again.
         // Rewrite container-literal argument snapshots to the selected contextual construction type
-        // so CHAIN_BINDING facts already match EXPR_TYPE finalization (Pre Phase 3).
+        // so CHAIN_BINDING facts already match EXPR_TYPE finalization.
         var boundary = FrontendResolvedCall.ExactCallableBoundary.fromResolvedMethod(resolvedMethod);
         var publishedArgumentTypes = FrontendCallableLiteralArgumentSupport.rewriteArgumentTypes(
                 step.arguments(),

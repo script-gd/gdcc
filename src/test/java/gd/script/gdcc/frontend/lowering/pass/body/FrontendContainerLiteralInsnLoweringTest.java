@@ -38,9 +38,9 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/// Phase 4 body-lowering contract for array/dictionary literals.
+/// Body-lowering contract for array/dictionary literals.
 ///
-/// Uses `analyzeForCompile(...)` so Phase 6 compile-gate release is part of the lowering readiness path.
+/// Uses `analyzeForCompile(...)` so compile-gate release is part of the lowering readiness path.
 class FrontendContainerLiteralInsnLoweringTest {
 
     @Test

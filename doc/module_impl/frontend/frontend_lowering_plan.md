@@ -210,7 +210,7 @@
 说明：
 
 - `TypeTestExpression` 与 `CastExpression` 已有独立的 compile-ready lowering/backend 合同并离开 temporary intercept 列表（见 `frontend_is_type_test_implementation.md`、`frontend_cast_expression_implementation.md`）
-- `ArrayExpression` / `DictionaryExpression` 已 compile-ready 并离开 temporary intercept（见 `frontend_container_literal_implementation_plan.md`、`construct_container_literal_implementation.md`）
+- `ArrayExpression` / `DictionaryExpression` 已 compile-ready 并离开 temporary intercept（见 `frontend_container_literal_implementation.md`、`construct_container_literal_implementation.md`）
 - `ConditionalExpression` 依赖 frontend CFG graph / condition-evaluation-region 合同先稳定
 - `assert` 依赖 lowering/backend 的 statement 语义
 - runtime integration / static field 相关 blocker 均应在对应 lowering/backend 设计闭环后再解除

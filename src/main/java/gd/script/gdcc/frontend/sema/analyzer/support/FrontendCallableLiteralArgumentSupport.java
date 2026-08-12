@@ -24,8 +24,7 @@ import java.util.function.BooleanSupplier;
 /// Shared container-literal argument preview / rank / rewrite helpers for bare, chain, and
 /// constructor call selection.
 ///
-/// Contract (see `doc/module_impl/frontend/frontend_container_literal_implementation_plan.md` §5.4
-/// and Pre Phase 3):
+/// Contract (see `doc/module_impl/frontend/frontend_container_literal_implementation.md` §4):
 /// - preview never finalizes literals and never writes `expressionTypes` / `containerLiteralPlans`
 /// - ranking reuses `FrontendContainerLiteralSemanticSupport.rankLiteralAgainstParameter`
 /// - **specificity** for bare / constructor / chain instance / chain static all share

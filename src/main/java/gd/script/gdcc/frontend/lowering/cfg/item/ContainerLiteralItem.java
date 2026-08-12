@@ -17,8 +17,8 @@ import java.util.Objects;
 /// - Dictionary: key0/value0/key1/value1/...
 ///
 /// Body lowering must consume {@link gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan}
-/// for operand materialization; this item never re-walks the AST children. Phase 3 registers a
-/// fail-fast processor shell; Phase 4 emits the dedicated LIR instruction.
+/// for operand materialization; this item never re-walks the AST children. A dedicated body
+/// processor materializes the operands and emits the `construct_container_literal` LIR instruction.
 public record ContainerLiteralItem(
         @NotNull Expression expression,
         @NotNull List<String> operandValueIds,

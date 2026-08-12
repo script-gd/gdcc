@@ -905,7 +905,7 @@ public final class FrontendExpressionSemanticSupport {
     }
 
     /// Resolves `value as T`. Target is resolved first so container-literal operands receive
-    /// the cast target as expected type (Phase 2).
+    /// the cast target as expected type.
     public @NotNull ExpressionSemanticResult resolveCastExpressionType(
             @NotNull CastExpression castExpression,
             @NotNull ContextualNestedExpressionResolver nestedResolver,

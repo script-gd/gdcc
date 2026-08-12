@@ -34,10 +34,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Codegen contract for `construct_container_literal` (Phase 5).
+/// Codegen contract for `construct_container_literal`.
 ///
 /// Anchors empty/generic/typed paths, pack order, Dictionary even-count, and result-type guards
-/// against `frontend_container_literal_implementation_plan.md` §8 / §阶段 5.
+/// against `frontend_container_literal_implementation.md` §8.
 class CContainerLiteralInsnGenTest {
 
     @Test

@@ -43,7 +43,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Engine integration for `construct_container_literal` fill paths (Phase 5 acceptance matrix).
+/// Engine integration for `construct_container_literal` fill paths.
 class CContainerLiteralInsnGenEngineTest {
 
     @Test

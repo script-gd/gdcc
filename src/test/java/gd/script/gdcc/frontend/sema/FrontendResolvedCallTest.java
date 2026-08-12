@@ -249,7 +249,7 @@ class FrontendResolvedCallTest {
 
     @Test
     void constructorAllowsExactCallableBoundaryForConstructorRoutes() {
-        // Pre Phase 3: constructor RESOLVED may publish exactCallableBoundary so EXPR_TYPE can
+        // Constructor RESOLVED may publish exactCallableBoundary so EXPR_TYPE can
         // finalize container-literal arguments against selected fixed parameter types.
         var call = new FrontendResolvedCall(
                 "new",

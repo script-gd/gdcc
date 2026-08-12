@@ -160,7 +160,7 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - `PreloadExpression`
 - `GetNodeExpression`
 
-`ArrayExpression` / `DictionaryExpression` 不属于当前显式 compile-block 列表：shared semantic 发布 `FrontendContainerLiteralPlan`，CFG/body 经 `ContainerLiteralItem` 发射 `construct_container_literal`，backend `ContainerLiteralInsnGen` 已闭环（见 `frontend_container_literal_implementation_plan.md`）。
+`ArrayExpression` / `DictionaryExpression` 不属于当前显式 compile-block 列表：shared semantic 发布 `FrontendContainerLiteralPlan`，CFG/body 经 `ContainerLiteralItem` 发射 `construct_container_literal`，backend `ContainerLiteralInsnGen` 已闭环（见 `frontend_container_literal_implementation.md`）。
 
 `TypeTestExpression` 不属于当前显式 compile-block 列表：shared semantic 发布 `RESOLVED(bool)` + `typeTestTargets()`，body lowering 发射统一 `is_instance_of` / 常量 bool，backend `IsInstanceOfInsnGen` 分派 + runtime helpers 已落地。
 
@@ -401,7 +401,7 @@ compile gate 当前统一使用：
 
 `TypeTestExpression` 已从显式 compile-block 列表移除（见 `frontend_is_type_test_implementation.md`）。
 `CastExpression` 已从显式 compile-block 列表移除（见 `frontend_cast_expression_implementation.md`）。
-`ArrayExpression` / `DictionaryExpression` 已从显式 compile-block 列表移除（见 `frontend_container_literal_implementation_plan.md`）。
+`ArrayExpression` / `DictionaryExpression` 已从显式 compile-block 列表移除（见 `frontend_container_literal_implementation.md`）。
 
 在满足这些条件之前，它们都必须继续由 compile-only gate 拦截，而不是因为“frontend 已识别”就提前放行。
 

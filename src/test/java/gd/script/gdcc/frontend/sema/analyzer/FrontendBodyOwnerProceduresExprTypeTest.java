@@ -1204,7 +1204,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                 FrontendExpressionTypeStatus.DEFERRED,
                 analyzed.analysisData().expressionTypes().get(conditionalRoot).status()
         );
-        // Phase 1: array literals publish RESOLVED(Array); conditional remains deferred.
+        // Array literals publish RESOLVED(Array); conditional remains deferred.
         assertEquals(
                 FrontendExpressionTypeStatus.RESOLVED,
                 analyzed.analysisData().expressionTypes().get(arrayRoot).status()

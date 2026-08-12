@@ -40,7 +40,7 @@ import java.util.Objects;
 /// - diagnostics emission
 /// - side-table / overlay writes
 /// - expected-type-aware owner-local cache keys (BodyExpressionResolver)
-/// - compile-gate unblock (Phase 6)
+/// - compile-gate release (FrontendCompileCheckAnalyzer)
 public final class FrontendContainerLiteralSemanticSupport {
     /// Pure resolution outcome: expression fact + optional plan + root-owned diagnostic flag.
     public record Resolution(

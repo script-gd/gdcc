@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Freezes gdparser container-literal AST contracts required by
-/// `frontend_container_literal_implementation_plan.md` Phase 0.
+/// `frontend_container_literal_implementation.md`.
 ///
 /// Scope is parser shape only: element counts, trailing comma vs `openEnded`,
 /// Python/Lua dictionary styles, and `parse.lowering` error mapping. Semantic
@@ -57,7 +57,7 @@ class FrontendContainerLiteralParseBehaviorTest {
 
     @Test
     void trailingCommaOnArrayDoesNotSetOpenEnded() {
-        // Phase 0 acceptance: `[1, 2,]` → elements=2, openEnded=false.
+        // `[1, 2,]` → elements=2, openEnded=false.
         var unit = parse("array_trailing_comma.gd", """
                 func probe():
                     return [1, 2,]
@@ -143,7 +143,7 @@ class FrontendContainerLiteralParseBehaviorTest {
 
     @Test
     void trailingCommaOnDictionaryDoesNotSetOpenEnded() {
-        // Phase 0 acceptance: `{"x": 1,}` → entries=1, openEnded=false.
+        // `{"x": 1,}` → entries=1, openEnded=false.
         var unit = parse("dict_trailing_comma.gd", """
                 func probe():
                     return {"x": 1,}
@@ -189,7 +189,7 @@ class FrontendContainerLiteralParseBehaviorTest {
 
     @Test
     void luaStyleIdentifierKeyIsStringNameConstantNotVariableRead() {
-        // Phase 0 acceptance: `{x = 1}` key must not be ordinary IdentifierExpression.
+        // `{x = 1}` key must not be ordinary IdentifierExpression.
         var unit = parse("dict_lua_identifier_key.gd", """
                 func probe():
                     return {x = 1}
@@ -206,7 +206,7 @@ class FrontendContainerLiteralParseBehaviorTest {
 
     @Test
     void luaStyleStringKeyIsStringNameConstant() {
-        // Plan §4.5: `{"name" = value}` is Lua-style StringName key, not a String key.
+        // `{"name" = value}` is Lua-style StringName key, not a String key.
         var unit = parse("dict_lua_string_key.gd", """
                 func probe():
                     return {"name" = 1}
@@ -223,7 +223,7 @@ class FrontendContainerLiteralParseBehaviorTest {
 
     @Test
     void mixedDictionaryStylesProduceParseLoweringError() {
-        // Phase 0 acceptance: `{x: 1, y = 2}` must fail at parse, not lower as two entries.
+        // `{x: 1, y = 2}` must fail at parse, not lower as two entries.
         assertParseLoweringError("dict_mixed_styles.gd", """
                 func probe():
                     return {x: 1, y = 2}
@@ -232,7 +232,7 @@ class FrontendContainerLiteralParseBehaviorTest {
 
     @Test
     void invalidLuaStyleNonStringKeyProducesParseLoweringError() {
-        // Phase 0 acceptance: `{1 = "x"}` is not a legal Lua-style key.
+        // `{1 = "x"}` is not a legal Lua-style key.
         assertParseLoweringError("dict_invalid_lua_key.gd", """
                 func probe():
                     return {1 = "x"}

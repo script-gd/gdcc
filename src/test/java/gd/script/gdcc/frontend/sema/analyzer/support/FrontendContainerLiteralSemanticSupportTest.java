@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase 1–2 unit contracts for generic and contextual container-literal shared semantic.
+/// Unit contracts for generic and contextual container-literal shared semantic.
 class FrontendContainerLiteralSemanticSupportTest {
     private static final @NotNull Range TINY = new Range(0, 1, new Point(0, 0), new Point(0, 1));
 

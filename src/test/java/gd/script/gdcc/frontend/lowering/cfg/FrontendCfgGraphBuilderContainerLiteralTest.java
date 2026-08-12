@@ -37,10 +37,10 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase 3 CFG acceptance for array/dictionary literals.
+/// CFG acceptance for array/dictionary literals.
 ///
-/// Uses shared semantic analysis (`analyze`) so compile-gate still blocks compile-mode, while CFG
-/// builder can still consume published plans and expression types.
+/// Uses shared semantic analysis (`analyze`); the CFG builder consumes published plans and
+/// expression types.
 class FrontendCfgGraphBuilderContainerLiteralTest {
     @Test
     void arrayLiteralPublishesOperandProducersThenContainerItemInSourceOrder() throws Exception {

@@ -514,7 +514,7 @@ public class FrontendCompileCheckAnalyzer {
                         conditionalCompileBlockedMessage()
                 );
                 // ArrayExpression / DictionaryExpression: compile-ready via ContainerLiteralItem +
-                // construct_container_literal (see frontend_container_literal_implementation_plan.md).
+                // construct_container_literal (see frontend_container_literal_implementation.md).
                 case PreloadExpression preloadExpression -> reportExplicitCompileBlock(
                         preloadExpression,
                         expressionCompileBlockedMessage("Preload expression")
