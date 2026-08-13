@@ -643,6 +643,72 @@ class CGenHelperTest {
     }
 
     @Test
+    @DisplayName("renderSignalParameterMetadata should use method-arg usage rather than property usage")
+    void renderSignalParameterMetadataShouldUseMethodArgUsage() {
+        var intMetadata = helper.renderSignalParameterMetadata(GdIntType.INT);
+        var variantMetadata = helper.renderSignalParameterMetadata(GdVariantType.VARIANT);
+
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT", intMetadata.usageExpr());
+        assertEquals(
+                "godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT",
+                variantMetadata.usageExpr()
+        );
+        assertNotEquals(
+                helper.renderPropertyMetadata(new LirPropertyDef(
+                        "payload",
+                        GdIntType.INT,
+                        false,
+                        null,
+                        null,
+                        null,
+                        Map.of()
+                )).usageExpr(),
+                intMetadata.usageExpr()
+        );
+    }
+
+    @Test
+    @DisplayName("renderSignalParameterMetadata should keep Object class_name on the empty default")
+    void renderSignalParameterMetadataShouldKeepEmptyObjectClassName() {
+        var metadata = helper.renderSignalParameterMetadata(new GdObjectType("Node"));
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_OBJECT", metadata.typeEnumLiteral());
+        assertEquals("GD_STATIC_SN(u8\"\")", metadata.classNameExpr());
+        assertEquals("godot_PROPERTY_HINT_NONE", metadata.hintEnumLiteral());
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderSignalParameterMetadata should emit typed container hints")
+    void renderSignalParameterMetadataShouldEmitTypedContainerHints() {
+        var arrayMetadata = helper.renderSignalParameterMetadata(new GdArrayType(GdStringNameType.STRING_NAME));
+        var dictionaryMetadata = helper.renderSignalParameterMetadata(
+                new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node"))
+        );
+
+        assertEquals("godot_PROPERTY_HINT_ARRAY_TYPE", arrayMetadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"StringName\")", arrayMetadata.hintStringExpr());
+        assertEquals("godot_PROPERTY_HINT_DICTIONARY_TYPE", dictionaryMetadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"StringName;Node\")", dictionaryMetadata.hintStringExpr());
+        assertEquals("GD_STATIC_SN(u8\"\")", arrayMetadata.classNameExpr());
+        assertEquals("GD_STATIC_SN(u8\"\")", dictionaryMetadata.classNameExpr());
+    }
+
+    @Test
+    @DisplayName("renderSignalParameterMetadata should reject compiler-only types")
+    void renderSignalParameterMetadataShouldRejectCompilerOnlyType() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderSignalParameterMetadata(GdccForRangeIterType.FOR_RANGE_ITER)
+        );
+
+        assertEquals(
+                "compiler-only type leaked into signal parameter metadata: GdccForRangeIter",
+                ex.getMessage()
+        );
+    }
+
+    @Test
     @DisplayName("renderCallWrapperDestroyStmt should destroy wrapper-owned String locals")
     void renderCallWrapperDestroyStmtShouldDestroyStringLocal() {
         assertEquals(

@@ -19,6 +19,7 @@ import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
+import dev.superice.gdparser.frontend.ast.SignalStatement;
 import dev.superice.gdparser.frontend.ast.Statement;
 import org.junit.jupiter.api.Test;
 
@@ -1075,6 +1076,124 @@ class FrontendClassSkeletonTest {
         assertTrue(skeletonDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.message().contains("reserved synthetic property-helper prefix")
         ));
+    }
+
+    @Test
+    void buildRejectsGdccSignalThatShadowsInheritedEngineSignalButKeepsOtherMembersAlive() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "engine_signal_conflict.gd"), """
+                class_name EngineSignalConflict
+                extends Node
+                
+                signal ready()
+                signal pinged(value: int)
+                
+                func ok():
+                    pass
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "EngineSignalConflict");
+        var readyStatement = findStatement(
+                unit.ast().statements(),
+                SignalStatement.class,
+                statement -> statement.name().equals("ready")
+        );
+        var skeletonDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton"))
+                .toList();
+
+        assertNull(findSignalByNameOrNull(classDef, "ready"));
+        var pinged = findSignalByName(classDef, "pinged");
+        assertEquals(1, pinged.getParameterCount());
+        assertEquals("value", pinged.getParameter(0).getName());
+        assertEquals(GdIntType.INT, pinged.getParameter(0).getType());
+        assertNotNull(findFunctionByNameOrNull(classDef, "ok"));
+        assertEquals(1, skeletonDiagnostics.size());
+        assertTrue(skeletonDiagnostics.getFirst().message().contains("ready"));
+        assertTrue(skeletonDiagnostics.getFirst().message().contains("Node.ready"));
+        assertTrue(analysisData.skippedSubtreeRoots().containsKey(readyStatement));
+    }
+
+    @Test
+    void buildAllowsGdccChildToShadowInheritedGdccSignal() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var parentUnit = parserService.parseUnit(Path.of("tmp", "parent_signal.gd"), """
+                class_name ParentSignalOwner
+                extends RefCounted
+                
+                signal pinged(value: String)
+                """, diagnostics);
+        var childUnit = parserService.parseUnit(Path.of("tmp", "child_signal.gd"), """
+                class_name ChildSignalOwner
+                extends ParentSignalOwner
+                
+                signal pinged(value: int)
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(parentUnit, childUnit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var parentClass = findClassByName(topLevelClassDefs(result), "ParentSignalOwner");
+        var childClass = findClassByName(topLevelClassDefs(result), "ChildSignalOwner");
+
+        assertTrue(result.diagnostics().isEmpty());
+        assertEquals("String", findSignalByName(parentClass, "pinged").getParameter(0).getType().getTypeName());
+        assertEquals(GdIntType.INT, findSignalByName(childClass, "pinged").getParameter(0).getType());
+    }
+
+    @Test
+    void buildRejectsEngineSignalShadowThroughGdccParentChain() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var parentUnit = parserService.parseUnit(Path.of("tmp", "node_parent.gd"), """
+                class_name NodeParent
+                extends Node
+                
+                signal pinged()
+                """, diagnostics);
+        var childUnit = parserService.parseUnit(Path.of("tmp", "node_child.gd"), """
+                class_name NodeChild
+                extends NodeParent
+                
+                signal ready()
+                signal pinged()
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(parentUnit, childUnit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var childClass = findClassByName(topLevelClassDefs(result), "NodeChild");
+        var skeletonDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton"))
+                .toList();
+
+        assertNull(findSignalByNameOrNull(childClass, "ready"));
+        assertNotNull(findSignalByNameOrNull(childClass, "pinged"));
+        assertEquals(1, skeletonDiagnostics.size());
+        assertTrue(skeletonDiagnostics.getFirst().message().contains("Node.ready"));
     }
 
     @Test

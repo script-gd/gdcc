@@ -1079,6 +1079,13 @@ public final class CGenHelper {
         );
     }
 
+    /// Signal-parameter metadata reuses the method-arg usage surface, not export-property usage.
+    ///
+    /// Object `class_name` stays on the existing empty default from `renderBoundMetadata`.
+    public @NotNull BoundMetadata renderSignalParameterMetadata(@NotNull GdType type) {
+        return renderBoundMetadata(type, "godot_PROPERTY_USAGE_DEFAULT", "signal parameter");
+    }
+
     /// Property registration keeps the current export/non-export base-usage split
     /// while reusing the same outward Variant encoding as method args/returns.
     public @NotNull BoundMetadata renderPropertyMetadata(@NotNull PropertyDef propertyDef) {

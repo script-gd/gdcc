@@ -6,7 +6,7 @@
 
 ## 文档状态
 
-- 状态：计划维护中（Phase 0–1 已落地：compile gate + signal 值物化；Phase 2–5 未实施）
+- 状态：计划维护中（Phase 0–2 已落地：compile gate + signal 值物化 + ClassDB 注册/冲突守卫；Phase 3–5 未实施）
 - 更新时间：2026-08-13
 - 相关事实源 / 规则：
   - `frontend_rules.md`
@@ -140,11 +140,10 @@
 - 位置：`FrontendCfgGraphBuilder.applyAttributeStep(...)`（L1757-1776）对**所有** `AttributePropertyStep` 无条件发布 `MemberLoadItem` 并附加 property writable route；随后 `FrontendMemberLoadInsnLoweringProcessor.lower(...)`（`FrontendSequenceItemInsnLoweringProcessors.java:654-683`）只按 `receiverKind()` 分派，`bindingKind==SIGNAL` 落入 `INSTANCE` → `InstancePropertyLeaf` → `LoadPropertyInsn`（错误）。
 - 需要：CFG 层对 `bindingKind==SIGNAL` 的成员读取改发 `SignalLoadItem`（见 D2），不附加 property writable route；lowering 侧由专用 processor 发射 `ConstructSignalInsn`，并在 `FrontendMemberLoadInsnLoweringProcessor` 对 SIGNAL 显式 fail-fast。
 
-### G3 — C entry 缺少 signal 注册
+### G3 — C entry 缺少 signal 注册（Phase 2 已闭环）
 
-- 位置：`src/main/c/codegen/template_451/entry.c.ftl` 的 `${classDef.name}_class_bind_methods()`（约 L81-105）。
-- 现状：只有 `// Methods` 与 `// Properties` 两段，无 signal 注册。
-- 需要：新增 `// Signals` 段，调用 `godot_classdb_register_extension_class_signal(...)`，并为每个 signal 参数渲染 `GDExtensionPropertyInfo`（见 D4 的 allocation/cleanup 合同）。
+- 位置：`src/main/c/codegen/template_451/entry.c.ftl` 的 `${classDef.name}_class_bind_methods()`。
+- 落地：`// Signals` 段调用 `godot_classdb_register_extension_class_signal(...)`；0 参传 `NULL, 0`；有参经 `renderSignalParameterMetadata` + `gdcc_make_property_full`，注册后 `gdcc_destruct_property`。
 
 ### G4 — vararg builtin 方法的 C wrapper 仅生成 0 参（且 header/source 需同步）
 
@@ -185,11 +184,11 @@
 - 需要：显式覆盖并断言 LIR 中出现 `PackVariantInsn` / `UnpackVariantInsn`（而非依赖 assignability）；用例见 §8。
 - **backend 强约束**：`CBodyBuilder.renderVarargArgv(...)`（`CBodyBuilder.java:945-947`）会拒绝未先 pack 的 Signal，因此测试必须验证 frontend 先产生 `PackVariantInsn`，否则 vararg emit 会在 backend fail-fast。
 
-### G9 —（新增）engine/native signal 同名重声明无实现守卫（范围已收窄）
+### G9 —（新增）engine/native signal 同名重声明无实现守卫（范围已收窄；Phase 2 已闭环）
 
-- 位置：`FrontendClassSkeletonBuilder`（L247-257）当前只检查保留 synthetic helper 名称，无 inherited/native signal 冲突检查。
-- **范围收窄（冻结）**：现有 baseline `ScopeSignalResolverTest.resolveObjectSignalShouldPickNearestGdccOwner`（`src/test/java/gd/script/gdcc/scope/resolver/ScopeSignalResolverTest.java:45-62`）明确要求 parent/child 同名 **GDCC** signal 由 nearest-child 优先（shadowing 合法）。因此 G9/D8 **只限定为**：GDCC signal **不得覆盖 inherited engine/native signal**。inherited **GDCC** signal 的 nearest-child shadow保持允许，不改 scope contract、不改该 baseline 测试。
-- 需要：按 D8 冻结方案，在 skeleton/semantic phase 以 compile-time diagnostic 显式拒绝“GDCC signal 与 inherited engine/native signal 同名”（不依赖 runtime ClassDB 兜底），并纳入 negative test。
+- 位置：`FrontendClassSkeletonBuilder.fillClassMembers` 的 `SignalStatement` 分支，现先走 reserved-prefix 再走 `rejectEngineNativeSignalShadow`。
+- **范围收窄（冻结）**：现有 baseline `ScopeSignalResolverTest.resolveObjectSignalShouldPickNearestGdccOwner`（`src/test/java/gd/script/gdcc/scope/resolver/ScopeSignalResolverTest.java:45-62`）明确要求 parent/child 同名 **GDCC** signal 由 nearest-child 优先（shadowing 合法）。因此 G9/D8 **只限定为**：GDCC signal **不得覆盖 inherited engine/native signal**。inherited **GDCC** signal 的 nearest-child 阴影保持允许，不改 scope contract、不改该 baseline 测试。
+- 落地：`ClassRegistry.findEngineSignalInHierarchy` 只匹配 `ExtensionGdClass` signal；skeleton 对命中发 `sema.class_skeleton` 并跳过该 `SignalStatement`。
 
 ---
 
@@ -278,11 +277,11 @@
 - 因此构造阶段不引入额外诊断；null/freed 非 self/非 RefCounted receiver 的可观察行为就是 `AssertObjectLiveInsn` 的 hard-fail，与普通 call 对齐。补 null/freed receiver 测试验证该行为。
 - 明确 `Signal`/`Callable` 不持有 receiver（ObjectID 非 owning，见 §9）：构造后 receiver 被释放，value 仍在但失效，`.emit/.connect` 的失效行为由 Godot 运行时 ObjectDB 查决定，GDCC 不额外保活。
 
-### D8 —（新增）engine/native signal 冲突守卫落点（范围已收窄）
+### D8 —（新增）engine/native signal 冲突守卫落点（范围已收窄；Phase 2 已落地）
 
 - **范围（冻结）**：只拒绝 **GDCC signal 覆盖 inherited engine/native signal**；inherited **GDCC** signal 的 nearest-child 阴影保持允许（baseline `ScopeSignalResolverTest.java:45-62`，不得回退）。
 - **落点（冻结）**：在 skeleton/semantic phase（`FrontendClassSkeletonBuilder` 收集 signal 时）检查当前类新声明 signal 是否与 inherited engine/native signal 同名，命中即发 compile-time diagnostic 拒绝；**不**依赖 runtime ClassDB 兜底。纳入 negative test（见 G9）。
-- **实现注记**：当前仓库**没有**现成的“沿父类链查 engine/native signal”helper；需新增一个 `findEngineSignalInHierarchy(...)` 式工具（skeleton 已持有 `ClassRegistry` 与 canonical super，可经 `ExtensionGdClass.getSignals()` 遍历 engine 链），不得把 GDCC 父类 signal 误判为 engine。
+- **落地**：`ClassRegistry.findEngineSignalInHierarchy(className, signalName)` 从给定类（含其自身）沿 super 链查找，只消费 `ExtensionGdClass`；skeleton 用 `classDef.getSuperName()` 起查，避免把当前类自己的新声明误判为 inherited engine signal。
 
 ---
 
@@ -340,11 +339,17 @@
 
 - 目标：GDCC 类的新声明 signal 注册到 ClassDB；冲突有守卫。
 - 依赖：Phase 0（不依赖 Phase 1，但建议在其后以便端到端验证）。
+- 状态：**已完成**（2026-08-13）。
 - 动作：
-  1. 按 D8 落点实现 engine/inherited signal 冲突守卫 + negative test。
-  2. `CGenHelper` 新增 signal 参数 metadata 渲染（复用 `gdcc_make_property_full`/`gdcc_destruct_property` 合同）。
-  3. `entry.c.ftl` `_class_bind_methods()` 增加 `// Signals` 段，调用 `godot_classdb_register_extension_class_signal(...)`；无参数传 `NULL, 0`。
-  4. 仅注册 `classDef.signals`（当前类新声明），跳过继承 signal。
+  1. ~~按 D8 落点实现 engine/inherited signal 冲突守卫 + negative test。~~
+  2. ~~`CGenHelper` 新增 signal 参数 metadata 渲染（复用 `gdcc_make_property_full`/`gdcc_destruct_property` 合同）。~~
+  3. ~~`entry.c.ftl` `_class_bind_methods()` 增加 `// Signals` 段，调用 `godot_classdb_register_extension_class_signal(...)`；无参数传 `NULL, 0`。~~
+  4. ~~仅注册 `classDef.signals`（当前类新声明），跳过继承 signal。~~
+- 落地注记：
+  - `ClassRegistry.findEngineSignalInHierarchy(className, signalName)` 从给定类（含其自身）沿 super 链查找；只匹配 `ExtensionGdClass` 上的 signal，GDCC 父类同名 signal 不计入。skeleton 用 `classDef.getSuperName()` 起查，因此当前类自己的新声明不会被误判为 inherited engine signal。
+  - 冲突诊断类别为 `sema.class_skeleton`：跳过该 `SignalStatement` 并写入 `skippedSubtreeRoots`；同一类的其它 member 继续收集。
+  - `CGenHelper.renderSignalParameterMetadata(type)` 固定委托 `renderBoundMetadata(type, "godot_PROPERTY_USAGE_DEFAULT", "signal parameter")`；Object `class_name` 保持空默认。
+  - `entry.c.ftl` 的 `// Signals` 只迭代 `classDef.signals`；0 参走 `NULL, 0`，有参走栈上 `signal_args[]` + 注册后 `gdcc_destruct_property`。
 - 验收：
   - 生成 C 中出现且仅出现当前类新声明 signal 的注册调用。
   - 参数 `GDExtensionPropertyInfo` 类型/数量/名称与声明一致；无参数 signal 传 `NULL, 0`；注册后字符串被释放。

@@ -102,6 +102,28 @@ void ${classDef.name}_class_bind_methods() {
         </#if>
     }
     </#list>
+    // Signals
+    <#-- Only classDef.signals (current-class declarations) are registered. Zero-arg signals must
+         pass NULL, 0. Argument metadata reuses renderSignalParameterMetadata / gdcc_make_property_full
+         and is released with gdcc_destruct_property after ClassDB takes its copy. -->
+    <#list classDef.signals as signal>
+    {
+        <#if (signal.parameters?size) == 0>
+        godot_classdb_register_extension_class_signal(class_library, class_name, GD_STATIC_SN(u8"${signal.name}"), NULL, 0);
+        <#else>
+        GDExtensionPropertyInfo signal_args[] = {
+            <#list signal.parameters as parameter>
+                <#assign signalParamMetadata = helper.renderSignalParameterMetadata(parameter.type)>
+            gdcc_make_property_full(${signalParamMetadata.typeEnumLiteral}, GD_STATIC_SN(u8"${parameter.name}"), ${signalParamMetadata.hintEnumLiteral}, ${signalParamMetadata.hintStringExpr}, ${signalParamMetadata.classNameExpr}, ${signalParamMetadata.usageExpr}),
+            </#list>
+        };
+        godot_classdb_register_extension_class_signal(class_library, class_name, GD_STATIC_SN(u8"${signal.name}"), signal_args, ${signal.parameters?size});
+            <#list signal.parameters as parameter>
+        gdcc_destruct_property(&signal_args[${parameter_index}]);
+            </#list>
+        </#if>
+    }
+    </#list>
 }
 </#list>
 

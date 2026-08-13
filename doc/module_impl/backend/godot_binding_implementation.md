@@ -21,6 +21,8 @@
   - `CALL_METHOD` 的整体分派规则；见 `doc/module_impl/backend/call_method_implementation.md`
   - `LOAD_STATIC` 的静态常量解析；见 `doc/module_impl/backend/load_static_implementation.md`
   - Variant / typed container outward ABI；见对应 `*_abi_contract.md`
+  - GDCC class 自身 signal 的 ClassDB 注册（`entry.c.ftl` `// Signals` 段，经
+    `CGenHelper.renderSignalParameterMetadata`）
 - 关联文档：
   - `doc/gdcc_runtime_lib.md`
   - `doc/gdcc_c_backend.md`
@@ -367,6 +369,11 @@ constant 这类模块变化 symbol 才进入 module-local。
   - enum / bitfield local slot materialization
   - vararg helper fixed prefix packing、cleanup 与 error path
   - module-local wrapper section 只写入 `engine_method_binds.h`
+- `CCodegenSignalRegistrationTest` / `CGenHelperTest`
+  - `_class_bind_methods` 只注册当前类 `classDef.signals`
+  - 无参 signal 传 `NULL, 0`；有参 signal 复用 `gdcc_make_property_full` /
+    `gdcc_destruct_property`，usage 为 method-arg `godot_PROPERTY_USAGE_DEFAULT`
+  - Object signal 参数 `class_name` 保持空默认
 - `CallMethodInsnGenTest` / `CallMethodInsnGenEngineTest`
   - caller-side normalized helper surface
   - exact engine route 不回退 public wrapper

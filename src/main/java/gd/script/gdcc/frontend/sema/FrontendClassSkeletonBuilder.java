@@ -250,6 +250,10 @@ public final class FrontendClassSkeletonBuilder {
                             "Signal",
                             signalStatement.name(),
                             context
+                    ) || rejectEngineNativeSignalShadow(
+                            classDef,
+                            signalStatement,
+                            context
                     )) {
                         continue;
                     }
@@ -549,6 +553,34 @@ public final class FrontendClassSkeletonBuilder {
                 FrontendRange.fromAstRange(sourceNode.range())
         );
         markSkippedSubtreeRoots(List.of(sourceNode), context.analysisData());
+        return true;
+    }
+
+    /// GDCC may shadow an inherited GDCC signal, but it must not redeclare an inherited
+    /// engine/native signal. The lookup walks past GDCC parents and only matches `ExtensionGdClass`
+    /// metadata, so a same-name parent GDCC signal never triggers this reject.
+    private boolean rejectEngineNativeSignalShadow(
+            @NotNull LirClassDef classDef,
+            @NotNull SignalStatement signalStatement,
+            @NotNull SkeletonBuildContext context
+    ) {
+        var signalName = signalStatement.name().trim();
+        var inheritedEngineSignal = context.classRegistry().findEngineSignalInHierarchy(
+                classDef.getSuperName(),
+                signalName
+        );
+        if (inheritedEngineSignal == null) {
+            return false;
+        }
+        context.diagnostics().error(
+                "sema.class_skeleton",
+                "Signal '" + signalName + "' on class '" + classDef.getName()
+                        + "' conflicts with inherited engine/native signal '"
+                        + inheritedEngineSignal.ownerClass().getName() + "." + signalName + "'",
+                context.sourcePath(),
+                FrontendRange.fromAstRange(signalStatement.range())
+        );
+        markSkippedSubtreeRoots(List.of(signalStatement), context.analysisData());
         return true;
     }
 
