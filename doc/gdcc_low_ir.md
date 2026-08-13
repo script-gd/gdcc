@@ -179,6 +179,13 @@ Current C backend lowers this instruction by:
 $<result_id> = construct_object <class_name>
 ```
 
+#### construct_signal
+Constructs a new Signal value from a live object receiver and a compile-time signal name.
+The result is a destroyable builtin value and does not keep the receiver alive.
+```
+$<result_id> = construct_signal $<receiver_id> "<signal_name>"
+```
+
 #### construct_callable
 Constructs a new Callable from a function in this compiling unit.
 ```

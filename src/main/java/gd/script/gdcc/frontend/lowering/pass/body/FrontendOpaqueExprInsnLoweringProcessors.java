@@ -10,6 +10,7 @@ import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralNilInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
+import gd.script.gdcc.lir.insn.ConstructSignalInsn;
 import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
@@ -85,6 +86,15 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                     }
                     session.requireSelfSlot();
                     block.appendNonTerminatorInstruction(new LoadPropertyInsn(resultSlotId, binding.symbolName(), "self"));
+                }
+                case SIGNAL -> {
+                    session.requireSelfSlot();
+                    session.emitAssertObjectLiveIfNeeded(block, "self");
+                    block.appendNonTerminatorInstruction(new ConstructSignalInsn(
+                            resultSlotId,
+                            "self",
+                            binding.symbolName()
+                    ));
                 }
                 case SINGLETON -> {
                     session.checkSingletonBindingType(binding);

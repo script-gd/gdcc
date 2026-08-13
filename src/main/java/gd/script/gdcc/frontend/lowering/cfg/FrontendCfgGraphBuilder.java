@@ -17,6 +17,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopShouldContinueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.SignalLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SequenceItem;
@@ -1758,6 +1759,22 @@ public final class FrontendCfgGraphBuilder {
             case AttributePropertyStep attributePropertyStep -> {
                 var publishedMember = requireLoweringReadyMember(attributePropertyStep);
                 var resultValueId = chooseResultValueId(preferredResultValueId);
+                if (isResolvedSignalMember(publishedMember)) {
+                    // RESOLVED SIGNAL reads construct a fresh value. Do not attach a property
+                    // writable route; assignment already fails in shared semantic analysis.
+                    receiverBuild.cursor().currentSequence().items().add(new SignalLoadItem(
+                            attributePropertyStep,
+                            publishedMember.memberName(),
+                            receiverBuild.resultValueId(),
+                            resultValueId
+                    ));
+                    yield new ValueBuild(
+                            receiverBuild.cursor(),
+                            attributePropertyStep,
+                            resultValueId,
+                            null
+                    );
+                }
                 receiverBuild.cursor().currentSequence().items().add(new MemberLoadItem(
                         attributePropertyStep,
                         publishedMember.memberName(),
@@ -2000,7 +2017,7 @@ public final class FrontendCfgGraphBuilder {
                     ),
                     List.of()
             );
-            case CONSTANT, SINGLETON -> null;
+            case CONSTANT, SINGLETON, SIGNAL -> null;
             default -> throw new IllegalStateException(
                     "Identifier writable-route publication is not supported for binding kind " + binding.kind()
             );
@@ -2883,6 +2900,13 @@ public final class FrontendCfgGraphBuilder {
         }
         checkDynamicMemberPublicationContract(attributePropertyStep, publishedMember, "CFG member lowering");
         return publishedMember;
+    }
+
+    /// Only RESOLVED SIGNAL members become `SignalLoadItem`. DYNAMIC stays on the ordinary member
+    /// route because the published fact is already runtime-open, not a known signal constructor.
+    private static boolean isResolvedSignalMember(@NotNull FrontendResolvedMember publishedMember) {
+        return publishedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                && publishedMember.bindingKind() == FrontendBindingKind.SIGNAL;
     }
 
     /// Dynamic members are runtime-open instance routes. A TYPE_META dynamic fact means the static

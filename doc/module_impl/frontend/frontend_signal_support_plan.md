@@ -6,7 +6,7 @@
 
 ## 文档状态
 
-- 状态：计划维护中（Phase 0 已落地：compile gate feature-specific blocker；Phase 1–5 未实施）
+- 状态：计划维护中（Phase 0–1 已落地：compile gate + signal 值物化；Phase 2–5 未实施）
 - 更新时间：2026-08-13
 - 相关事实源 / 规则：
   - `frontend_rules.md`
@@ -315,15 +315,21 @@
 
 - 目标：bare 与 receiver 限定 signal 读取都能物化为 `godot_Signal`。
 - 依赖：Phase 0。
+- 状态：**已完成**（2026-08-13）。
 - 动作（按序）：
-  1. LIR：新增 `ConstructSignalInsn` 与 `GdInstruction.CONSTRUCT_SIGNAL`；补 `DomLirParser`/`ParsedLirInstruction` 序列化/解析与 round-trip。
-  2. CFG（bare）：`buildIdentifierOpaqueRoute(...)` 为 `SIGNAL` 发布“无 writable route、保留 binding”事实（payload 可 `null`）。
-  3. CFG（receiver）：新增 `SignalLoadItem`；`applyAttributeStep(...)` 对 `bindingKind==SIGNAL` 改发该 item，不附加 property writable route。
-  4. 管线接入（G7）：`ValueOpItem` `permits`、`FrontendBodyLoweringSupport` materialization switch、processor registry、imports。
-  5. body lowering：新增 `FrontendSignalLoadInsnLoweringProcessor` 发射 `ConstructSignalInsn`；bare 路径在 `FrontendIdentifierOpaqueExprInsnLoweringProcessor` 增加 `case SIGNAL`（receiver 固定 `self`）；`FrontendMemberLoadInsnLoweringProcessor` 对 SIGNAL 显式 fail-fast。
-  6. liveness：构造前套用 D7 guard。
-  7. backend：`ConstructInsnGen` 新增 `ConstructSignalInsn` case，渲染 `godot_new_Signal_with_Object_StringName(...)`；result 为 `godot_Signal`，按 builtin 值生命周期处理（destroy）。**同时把 `CONSTRUCT_SIGNAL` 加入 `ConstructInsnGen.getInsnOpcodes()`**，并补 CCodegen dispatch 测试。
-  8. compile gate：解除“signal 值读取” blocker（仅值读取，不含 `.emit`/`.connect`）。
+  1. ~~LIR：新增 `ConstructSignalInsn` 与 `GdInstruction.CONSTRUCT_SIGNAL`；补 `DomLirParser`/`ParsedLirInstruction` 序列化/解析与 round-trip。~~
+  2. ~~CFG（bare）：`buildIdentifierOpaqueRoute(...)` 为 `SIGNAL` 发布“无 writable route、保留 binding”事实（payload 可 `null`）。~~
+  3. ~~CFG（receiver）：新增 `SignalLoadItem`；`applyAttributeStep(...)` 对 `bindingKind==SIGNAL` 改发该 item，不附加 property writable route。~~
+  4. ~~管线接入（G7）：`ValueOpItem` `permits`、`FrontendBodyLoweringSupport` materialization switch、processor registry、imports。~~
+  5. ~~body lowering：新增 `FrontendSignalLoadInsnLoweringProcessor` 发射 `ConstructSignalInsn`；bare 路径在 `FrontendIdentifierOpaqueExprInsnLoweringProcessor` 增加 `case SIGNAL`（receiver 固定 `self`）；`FrontendMemberLoadInsnLoweringProcessor` 对 SIGNAL 显式 fail-fast。~~
+  6. ~~liveness：构造前套用 D7 guard。~~
+  7. ~~backend：`ConstructInsnGen` 新增 `ConstructSignalInsn` case，渲染 `godot_new_Signal_with_Object_StringName(...)`；result 为 `godot_Signal`，按 builtin 值生命周期处理（destroy）。**同时把 `CONSTRUCT_SIGNAL` 加入 `ConstructInsnGen.getInsnOpcodes()`**，并补 CCodegen dispatch 测试。~~
+  8. ~~compile gate：解除“signal 值读取” blocker（仅值读取，不含 `.emit`/`.connect`）。~~
+- 落地注记：
+  - `ConstructSignalInsn(resultId, receiverVarId, signalName)` operand 为 `(VARIABLE, STRING)`；bare 路径固定 `self`。
+  - `SignalLoadItem` 只承接 `RESOLVED` + `bindingKind==SIGNAL` 的 receiver 读取；`DYNAMIC` 仍走普通 `MemberLoadItem`。
+  - compile gate 只放开 signal **值读取**；`.emit/.connect/.disconnect` 与 bare method/static/utility 值读取仍拦截。
+  - D7：`self` / RefCounted 不发 `AssertObjectLiveInsn`；其它 Object receiver 发 hard-fail guard。
 - 验收：
   - `var s = foo` / `var s = obj.foo` / `var s = self.foo` 均能编译并物化 `godot_Signal`。
   - `foo = x` 仍报 read-only；static context 读取仍被拦截。

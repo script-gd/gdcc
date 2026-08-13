@@ -22,7 +22,7 @@ import java.util.List;
 /// - the direct-slot alias item intentionally keeps a value id bound to one trusted source slot so
 ///   call lowering can consume it without inventing a dead temp first
 public sealed interface ValueOpItem extends SequenceItem permits OpaqueExprValueItem, DirectSlotAliasValueItem,
-        LocalDeclarationItem, AssignmentItem, CompoundAssignmentBinaryOpItem, MemberLoadItem, SubscriptLoadItem,
+        LocalDeclarationItem, AssignmentItem, CompoundAssignmentBinaryOpItem, MemberLoadItem, SignalLoadItem, SubscriptLoadItem,
         CallItem, CastItem, TypeTestItem, MergeValueItem, BoolConstantItem, ForLoopInitItem,
         ForLoopShouldContinueItem, ForLoopGetItem, ForLoopNextItem, ContainerLiteralItem {
     /// Result value id published by this item, or `null` when the item only commits state.

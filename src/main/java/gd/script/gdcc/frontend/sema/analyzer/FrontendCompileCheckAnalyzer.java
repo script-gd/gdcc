@@ -80,7 +80,8 @@ import java.util.function.Predicate;
 ///   is not ready yet
 /// - generic side-table scans over published `expressionTypes()` / `resolvedMembers()` /
 ///   `resolvedCalls()` facts that are still blocked/deferred/failed/unsupported on compile surface
-/// - feature-specific RESOLVED blockers for signal/method-reference surfaces that would otherwise
+/// - feature-specific RESOLVED blockers for Signal.emit/connect/disconnect and bare
+///   method-reference / static-method / utility-function value reads that would otherwise
 ///   crash CFG or be mis-lowered as property loads
 /// - no new side tables and no rewrites of upstream semantic ownership
 public class FrontendCompileCheckAnalyzer {
@@ -99,7 +100,6 @@ public class FrontendCompileCheckAnalyzer {
     );
     private static final @NotNull Set<String> SIGNAL_METHOD_NAMES = Set.of("emit", "connect", "disconnect");
     private static final @NotNull Set<FrontendBindingKind> BARE_VALUE_REFERENCE_BINDING_KINDS = Set.of(
-            FrontendBindingKind.SIGNAL,
             FrontendBindingKind.METHOD,
             FrontendBindingKind.STATIC_METHOD,
             FrontendBindingKind.UTILITY_FUNCTION
@@ -189,17 +189,6 @@ public class FrontendCompileCheckAnalyzer {
                 + "supports only zero-argument custom object construction";
     }
 
-    /// Feature-specific compile-only message for a receiver-qualified signal member read.
-    /// The route is already published as RESOLVED, so the generic status scan would skip it.
-    private static @NotNull String resolvedSignalMemberCompileBlockedMessage(
-            @NotNull FrontendResolvedMember publishedMember
-    ) {
-        return "Signal member '"
-                + Objects.requireNonNull(publishedMember, "publishedMember must not be null").memberName()
-                + "' is recognized by the frontend but is blocked in compile mode because "
-                + "signal value lowering support lands";
-    }
-
     /// Feature-specific compile-only message for Signal.emit/connect/disconnect.
     private static @NotNull String signalMethodCallCompileBlockedMessage(
             @NotNull FrontendResolvedCall publishedCall
@@ -210,12 +199,12 @@ public class FrontendCompileCheckAnalyzer {
                 + "signal call lowering support lands";
     }
 
-    /// Feature-specific compile-only message for bare signal / method-reference value reads.
-    /// Kind is taken from the published binding so the same helper can cover SIGNAL and
-    /// METHOD / STATIC_METHOD / UTILITY_FUNCTION without guessing from expression type.
+    /// Feature-specific compile-only message for bare METHOD / STATIC_METHOD /
+    /// UTILITY_FUNCTION value reads.
+    /// Kind is taken from the published binding so the helper does not guess from expression type.
+    /// SIGNAL value reads are intentionally excluded after Phase 1 materialization.
     private static @NotNull String bareValueReferenceCompileBlockedMessage(@NotNull FrontendBinding binding) {
         var kindLabel = switch (Objects.requireNonNull(binding, "binding must not be null").kind()) {
-            case SIGNAL -> "signal";
             case METHOD -> "method-reference";
             case STATIC_METHOD -> "static-method";
             case UTILITY_FUNCTION -> "utility-function";
@@ -642,19 +631,12 @@ public class FrontendCompileCheckAnalyzer {
         }
 
         /// Member facts are reported at the exact property-step anchor to keep diagnostics precise.
-        /// RESOLVED SIGNAL members are feature-blocked before the generic status short-circuit,
-        /// matching `shouldBlockParameterizedGdccConstructor` so they cannot slip into lowering.
+        /// RESOLVED SIGNAL value reads now lower through `SignalLoadItem`; only residual
+        /// BLOCKED/DEFERRED/FAILED/UNSUPPORTED members stay compile-blocked here.
         private void scanResolvedMemberCompileBlocks() {
             for (var entry : resolvedMembers.entrySet()) {
                 var anchor = requireAttributePropertyStep(entry.getKey());
                 var publishedMember = Objects.requireNonNull(entry.getValue(), "publishedMember must not be null");
-                if (shouldBlockResolvedSignalMember(anchor, publishedMember)) {
-                    reportCompileBlock(
-                            anchor,
-                            resolvedSignalMemberCompileBlockedMessage(publishedMember)
-                    );
-                    continue;
-                }
                 if (!isCompileBlocking(publishedMember.status()) || !compileSurfaceNodes.contains(anchor)) {
                     continue;
                 }
@@ -724,18 +706,6 @@ public class FrontendCompileCheckAnalyzer {
             };
         }
 
-        /// Receiver-qualified signal reads publish RESOLVED members. Block them before the status
-        /// short-circuit so compile mode never reaches the CFG crash / property-mislower path.
-        /// DYNAMIC remains a runtime-open fact and must not be upgraded into a compile blocker.
-        private boolean shouldBlockResolvedSignalMember(
-                @NotNull Node anchor,
-                @NotNull FrontendResolvedMember publishedMember
-        ) {
-            return compileSurfaceNodes.contains(anchor)
-                    && publishedMember.status() == FrontendMemberResolutionStatus.RESOLVED
-                    && publishedMember.bindingKind() == FrontendBindingKind.SIGNAL;
-        }
-
         /// `.emit` / `.connect` / `.disconnect` on a Signal receiver are recognized but not lowering-ready.
         /// Match on published receiver type plus method name so ordinary Signal-local calls stay untouched.
         /// DYNAMIC Signal calls stay runtime-open, matching the generic status exemption.
@@ -749,7 +719,7 @@ public class FrontendCompileCheckAnalyzer {
                     && SIGNAL_METHOD_NAMES.contains(publishedCall.callableName());
         }
 
-        /// Bare SIGNAL / METHOD / STATIC_METHOD / UTILITY_FUNCTION identifiers used as values crash
+        /// Bare METHOD / STATIC_METHOD / UTILITY_FUNCTION identifiers used as values still crash
         /// CFG today. Consume published `symbolBindings()` and skip identifiers that are only the
         /// callee of a surface `CallExpression`, so legal `helper(right)` stays compile-ready.
         private void scanBareValueReferenceCompileBlocks() {

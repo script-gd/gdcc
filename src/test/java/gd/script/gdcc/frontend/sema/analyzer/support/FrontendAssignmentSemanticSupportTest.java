@@ -23,6 +23,7 @@ import gd.script.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -169,6 +170,7 @@ class FrontendAssignmentSemanticSupportTest {
                             return 1
                         
                         func ping(values: Array[int]):
+                            pinged = 1
                             self.pinged = 1
                             Worker = 1
                             helper = 1
@@ -180,26 +182,45 @@ class FrontendAssignmentSemanticSupportTest {
         var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
         var publishedResolver = publishedExpressionResolver(analyzed);
         var pingFunction = findFunction(analyzed.ast(), "ping");
-        var signalAssignment = assertInstanceOf(
+        var bareSignalAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression()
         );
-        var typeMetaAssignment = assertInstanceOf(
+        var signalAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
         );
-        var callableAssignment = assertInstanceOf(
+        var typeMetaAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
         );
-        var assignabilityFailure = assertInstanceOf(
+        var callableAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3)).expression()
         );
-        var valueRequiredAssignment = assertInstanceOf(
+        var assignabilityFailure = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(4)).expression()
         );
+        var valueRequiredAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(5)).expression()
+        );
+
+        var bareSignalResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
+                bareSignalAssignment,
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        assertTrue(bareSignalResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, bareSignalResult.expressionType().status());
+        assertEquals(
+                "Signal 'pinged' is read-only and cannot be assigned",
+                bareSignalResult.expressionType().detailReason()
+        );
+        assertInstanceOf(IdentifierExpression.class, bareSignalAssignment.left());
 
         var signalResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
                 support,

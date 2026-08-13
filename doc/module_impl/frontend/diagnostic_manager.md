@@ -278,7 +278,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - 同时覆盖：
     - 当前首批显式封口的 `assert`、`ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`，以及按 route-aware policy 处理的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression` 与 `CastExpression` 不属于显式封口列表
     - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
-    - feature-specific RESOLVED blocker：signal member 读取、`Signal.emit/connect/disconnect`、bare SIGNAL/METHOD/STATIC_METHOD/UTILITY_FUNCTION 值读取（按 published `symbolBindings().kind()`，排除 `CallExpression.callee()`）
+    - feature-specific RESOLVED blocker：`Signal.emit/connect/disconnect`、bare METHOD/STATIC_METHOD/UTILITY_FUNCTION 值读取（按 published `symbolBindings().kind()`，排除 `CallExpression.callee()`）。Phase 1 已解除 signal 值读取 blocker。
     - supported callable-local `var` 因 `sema.variable_slot_publication` warning 仍缺失 `slotTypes()` 的 lowering-only fact 缺洞
   - `assert` 在这里仍只是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，不把它回退成 strict-bool `sema.type_check`
   - `ForStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `forIterationPlans()` 与 `ForLoweringContractRegistry`，已注册 lowering contract 的 route 放行并进入 body 重扫 facts，未注册 contract 的 route（当前 `OBJECT_CUSTOM`）在 statement root 发 route-not-ready blocker（说明缺少 lowering route，而非 `FOR_SUBTREE` unsupported）；已注册 route 的 CFG/body lowering 已落地

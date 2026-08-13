@@ -10,6 +10,7 @@ import gd.script.gdcc.lir.insn.ConstructArrayInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructDictionaryInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.ConstructSignalInsn;
 import gd.script.gdcc.lir.insn.ConstructionInstruction;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.RefCountedStatus;
@@ -17,6 +18,7 @@ import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedArrayType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.util.StringUtil;
@@ -31,6 +33,7 @@ import java.util.List;
 /// - construct_array
 /// - construct_dictionary
 /// - construct_object
+/// - construct_signal
 public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction> {
     private record ObjectConstructTarget(
             @NotNull GdObjectType constructedType,
@@ -45,7 +48,8 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                 GdInstruction.CONSTRUCT_BUILTIN,
                 GdInstruction.CONSTRUCT_ARRAY,
                 GdInstruction.CONSTRUCT_DICTIONARY,
-                GdInstruction.CONSTRUCT_OBJECT
+                GdInstruction.CONSTRUCT_OBJECT,
+                GdInstruction.CONSTRUCT_SIGNAL
         );
     }
 
@@ -100,6 +104,30 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                             )
                     );
                 }
+                case ConstructSignalInsn(_, var receiverVarId, var signalName) -> {
+                    if (!(resultVar.type() instanceof GdSignalType)) {
+                        throw bodyBuilder.invalidInsn(
+                                "Result variable ID '" + resultVar.id() + "' must be Signal type for construct_signal"
+                        );
+                    }
+                    var receiverVar = resolveSignalReceiverVariable(bodyBuilder, receiverVarId);
+                    var livePtr = bodyBuilder.renderLiveGodotObjectPtr(
+                            bodyBuilder.valueOfVar(receiverVar).generateCode(),
+                            (GdObjectType) receiverVar.type()
+                    );
+                    bodyBuilder.assignVar(
+                            target,
+                            // Signal is a destroyable builtin value and only stores a non-owning ObjectID.
+                            bodyBuilder.valueOfExpr(
+                                    "godot_new_Signal_with_Object_StringName("
+                                            + livePtr
+                                            + ", "
+                                            + CBodyBuilder.renderStaticStringNameLiteral(signalName)
+                                            + ")",
+                                    resultVar.type()
+                            )
+                    );
+                }
                 default -> throw bodyBuilder.invalidInsn(
                         "Unsupported construction instruction: " + instruction.opcode().opcode()
                 );
@@ -123,6 +151,23 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
             throw bodyBuilder.invalidInsn("Result variable ID '" + resultId + "' cannot be a reference");
         }
         return resultVar;
+    }
+
+    private @NotNull LirVariable resolveSignalReceiverVariable(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull String receiverVarId
+    ) {
+        var actualReceiverId = StringUtil.requireTrimmedNonBlank(receiverVarId, "construct_signal receiver");
+        var receiverVar = bodyBuilder.func().getVariableById(actualReceiverId);
+        if (receiverVar == null) {
+            throw bodyBuilder.invalidInsn("construct_signal receiver variable ID '" + actualReceiverId + "' not found");
+        }
+        if (!(receiverVar.type() instanceof GdObjectType)) {
+            throw bodyBuilder.invalidInsn(
+                    "construct_signal receiver variable ID '" + actualReceiverId + "' must be Object type"
+            );
+        }
+        return receiverVar;
     }
 
     private @NotNull List<CBodyBuilder.ValueRef> resolveConstructorArguments(@NotNull CBodyBuilder bodyBuilder,

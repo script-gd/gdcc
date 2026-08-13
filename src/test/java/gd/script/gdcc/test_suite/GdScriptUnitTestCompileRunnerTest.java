@@ -86,6 +86,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "member/builtin_property_writeback_color.gd",
             "member/builtin_property_writeback_vector3.gd",
             "member/compound_assignment.gd",
+            "member/signal_value_read.gd",
             "runtime/array_constructor_size.gd",
             "runtime/array_void_return_helper_size.gd",
             "runtime/array_void_return_push_back_size.gd",

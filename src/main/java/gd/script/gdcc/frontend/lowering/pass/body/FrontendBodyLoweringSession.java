@@ -694,6 +694,17 @@ public final class FrontendBodyLoweringSession {
         }
     }
 
+    /// Signal/callable construction must keep the canonical `self` slot when the CFG receiver
+    /// is a `SelfExpression`. Opaque self reads copy into a temp, but D7 still treats that
+    /// receiver as always-live `self` and must not emit `AssertObjectLiveInsn`.
+    @NotNull String requireLiveObjectReceiverSlotId(@NotNull String receiverValueId) {
+        if (isCanonicalSelfValue(receiverValueId)) {
+            requireSelfSlot();
+            return "self";
+        }
+        return slotIdForValue(receiverValueId);
+    }
+
     void emitAssertObjectLiveIfNeeded(@NotNull LirBasicBlock block, @NotNull String receiverSlotId) {
         if (receiverSlotId.equals("self")) {
             return;
@@ -731,6 +742,22 @@ public final class FrontendBodyLoweringSession {
     @NotNull GdType requireValueType(@NotNull String valueId) {
         var materialization = requireValueMaterialization(valueId);
         return materialization.type();
+    }
+
+    private boolean isCanonicalSelfValue(@NotNull String valueId) {
+        for (var node : graph.nodes().values()) {
+            if (!(node instanceof FrontendCfgGraph.SequenceNode sequenceNode)) {
+                continue;
+            }
+            for (var item : sequenceNode.items()) {
+                if (item instanceof OpaqueExprValueItem opaque
+                        && valueId.equals(opaque.resultValueId())
+                        && opaque.expression() instanceof SelfExpression) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     @NotNull String slotIdForValue(@NotNull String valueId) {

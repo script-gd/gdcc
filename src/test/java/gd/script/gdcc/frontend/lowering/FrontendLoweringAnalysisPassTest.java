@@ -235,6 +235,44 @@ class FrontendLoweringAnalysisPassTest {
         assertTrue(skeletonDiagnostics.getFirst().message().contains("_field_getter_"));
     }
 
+    @Test
+    void lowerBareSignalAssignmentStopsAfterAnalysisPassBeforeAnyLoweringPassRuns() throws Exception {
+        var module = parseModule(
+                "lowering_blocked_bare_signal_assignment.gd",
+                """
+                        class_name LoweringBlockedBareSignalAssignment
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func bad():
+                            pinged = null
+                        """
+        );
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var diagnostics = new DiagnosticManager();
+        var continuationRan = new AtomicBoolean();
+        var manager = new FrontendLoweringPassManager(List.of(
+                new FrontendLoweringAnalysisPass(),
+                _ -> continuationRan.set(true)
+        ));
+
+        var lowered = manager.lower(module, registry, diagnostics);
+        var expressionDiagnostics = diagnostics.snapshot().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.expression_resolution"))
+                .toList();
+        var compileDiagnostics = diagnostics.snapshot().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.compile_check"))
+                .toList();
+
+        assertNull(lowered);
+        assertFalse(continuationRan.get());
+        assertTrue(diagnostics.hasErrors());
+        assertEquals(1, expressionDiagnostics.size());
+        assertTrue(expressionDiagnostics.getFirst().message().contains("read-only"));
+        assertTrue(compileDiagnostics.isEmpty());
+    }
+
     private static @NotNull FrontendModule parseModule(
             @NotNull String fileName,
             @NotNull String source

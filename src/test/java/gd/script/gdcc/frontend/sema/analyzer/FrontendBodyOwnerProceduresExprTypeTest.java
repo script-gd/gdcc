@@ -1624,6 +1624,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                             return 1
                         
                         func ping(values: Array[int]):
+                            pinged = 1
                             self.pinged = 1
                             Worker = 1
                             helper = 1
@@ -1632,22 +1633,32 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         );
 
         var pingFunction = findFunction(analyzed.ast(), "ping");
-        var signalAssignment = assertInstanceOf(
+        var bareSignalAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression()
         );
-        var typeMetaAssignment = assertInstanceOf(
+        var signalAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
         );
-        var callableAssignment = assertInstanceOf(
+        var typeMetaAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
         );
-        var assignabilityFailure = assertInstanceOf(
+        var callableAssignment = assertInstanceOf(
                 AssignmentExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3)).expression()
         );
+        var assignabilityFailure = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(4)).expression()
+        );
+
+        var bareSignalAssignmentType = analyzed.analysisData().expressionTypes().get(bareSignalAssignment);
+        assertNotNull(bareSignalAssignmentType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, bareSignalAssignmentType.status());
+        assertEquals("Signal 'pinged' is read-only and cannot be assigned", bareSignalAssignmentType.detailReason());
+        assertInstanceOf(IdentifierExpression.class, bareSignalAssignment.left());
 
         var signalAssignmentType = analyzed.analysisData().expressionTypes().get(signalAssignment);
         assertNotNull(signalAssignmentType);
@@ -1670,7 +1681,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         assertTrue(assignabilityFailureType.detailReason().contains("not assignable"));
 
         var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
-        assertEquals(4, expressionDiagnostics.size());
+        assertEquals(5, expressionDiagnostics.size());
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());

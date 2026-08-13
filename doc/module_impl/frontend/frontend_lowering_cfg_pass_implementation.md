@@ -193,6 +193,7 @@ fully-terminated 的 `if` / `elif` / `else` 允许把 region `mergeId` 指向 `S
 - `AssignmentItem`
 - `CompoundAssignmentBinaryOpItem`
 - `MemberLoadItem`
+- `SignalLoadItem`
 - `SubscriptLoadItem`
 - `CallItem`
 - `MergeValueItem`

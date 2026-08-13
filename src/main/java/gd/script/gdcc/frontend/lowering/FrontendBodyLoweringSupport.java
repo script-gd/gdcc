@@ -218,6 +218,11 @@ public final class FrontendBodyLoweringSupport {
                     CfgValueMaterializationKind.TEMP_SLOT,
                     null
             );
+            case SignalLoadItem signalLoadItem -> new CfgValueMaterialization(
+                    requireMemberResultType(analysisData, signalLoadItem.anchor()),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
             case SubscriptLoadItem subscriptLoadItem -> new CfgValueMaterialization(
                     requireSubscriptResultType(analysisData, classRegistry, subscriptLoadItem, resolvedMaterializations),
                     CfgValueMaterializationKind.TEMP_SLOT,

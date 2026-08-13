@@ -25,6 +25,7 @@ import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
@@ -1533,7 +1534,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileBlocksBareSignalValueReadWhileAnalyzeLeavesSharedFactsUntouched() throws Exception {
+    void analyzeForCompileReleasesBareSignalValueReadWhileAnalyzeLeavesSharedFactsUntouched() throws Exception {
         var source = """
                 class_name CompileCheckBareSignalValue
                 extends Node
@@ -1550,17 +1551,13 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compiled = analyzeForCompile("compile_check_bare_signal_value.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        var pingedIdentifier = findIdentifier(findFunction(compiled.unit().ast().statements(), "ping"), "copied", "pinged");
 
-        assertTrue(compiled.diagnostics().hasErrors());
-        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
-        assertEquals(FrontendRange.fromAstRange(pingedIdentifier.range()), compileDiagnostics.getFirst().range());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Bare signal 'pinged'"));
-        assertTrue(compileDiagnostics.getFirst().message().contains("value-reference lowering support lands"));
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics().asList()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
     @Test
-    void analyzeForCompileBlocksReceiverQualifiedSignalReads() throws Exception {
+    void analyzeForCompileReleasesReceiverQualifiedSignalReads() throws Exception {
         var source = """
                 class_name CompileCheckReceiverSignalValue
                 extends Node
@@ -1574,20 +1571,69 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compiled = analyzeForCompile("compile_check_receiver_signal_value.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        var pingFunction = findFunction(compiled.unit().ast().statements(), "ping");
-        var expectedRanges = Set.of(
-                FrontendRange.fromAstRange(findNamedPropertyStep(pingFunction, "from_other", "pinged").range()),
-                FrontendRange.fromAstRange(findNamedPropertyStep(pingFunction, "from_self", "pinged").range())
-        );
 
-        assertTrue(compiled.diagnostics().hasErrors());
-        assertEquals(expectedRanges, compileDiagnostics.stream()
-                .map(FrontendDiagnostic::range)
-                .collect(java.util.stream.Collectors.toSet()));
-        assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
-                diagnostic.message().contains("Signal member 'pinged'")
-                        && diagnostic.message().contains("signal value lowering support lands")
-        ));
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics().asList()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileStillBlocksStaticContextSignalReads() throws Exception {
+        var source = """
+                class_name CompileCheckStaticSignalValue
+                extends Node
+                
+                signal pinged
+                
+                static func copy_signal() -> Signal:
+                    return pinged
+                """;
+
+        var compiled = analyzeForCompile("compile_check_static_signal_value.gd", source);
+
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics().asList()::toString);
+        assertTrue(compiled.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("pinged")
+        ), compiled.diagnostics().asList()::toString);
+    }
+
+    @Test
+    void analyzeForCompileReportsBareSignalAssignmentAsReadOnlyWithoutCompileCheck() throws Exception {
+        var source = """
+                class_name CompileCheckBareSignalAssignment
+                extends Node
+                
+                signal pinged
+                
+                func bad():
+                    pinged = null
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_bare_signal_assignment.gd", source);
+        var compiled = analyzeForCompile("compile_check_bare_signal_assignment.gd", source);
+        var badFunction = findFunction(compiled.unit().ast().statements(), "bad");
+        var assignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, badFunction.body().statements().getFirst()).expression()
+        );
+        assertInstanceOf(IdentifierExpression.class, assignment.left());
+
+        var sharedExpressionDiagnostics = diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.expression_resolution");
+        var compiledExpressionDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution");
+        var compiledCompileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(sharedAnalyzed.diagnostics().hasErrors(), sharedAnalyzed.diagnostics().asList()::toString);
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics().asList()::toString);
+        assertEquals(1, sharedExpressionDiagnostics.size(), sharedExpressionDiagnostics::toString);
+        assertTrue(
+                sharedExpressionDiagnostics.getFirst().message().contains("read-only"),
+                sharedExpressionDiagnostics::toString
+        );
+        assertEquals(1, compiledExpressionDiagnostics.size(), compiledExpressionDiagnostics::toString);
+        assertTrue(
+                compiledExpressionDiagnostics.getFirst().message().contains("read-only"),
+                compiledExpressionDiagnostics::toString
+        );
+        assertTrue(compiledCompileDiagnostics.isEmpty(), compiledCompileDiagnostics::toString);
     }
 
     @Test
@@ -1820,7 +1866,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeKeepsDedicatedGuardForResolvedSignalMemberAndSignalMethodCallRegression() throws Exception {
+    void analyzeKeepsDedicatedGuardForResolvedSignalMethodCallRegression() throws Exception {
         var preparedInput = prepareCompileCheckInput("compile_check_signal_resolved_regression.gd", """
                 class_name CompileCheckSignalResolvedRegression
                 extends Node
@@ -1876,24 +1922,13 @@ class FrontendCompileCheckAnalyzerTest {
                 preparedInput.analysisData().diagnostics(),
                 "sema.compile_check"
         );
-        assertEquals(2, compileDiagnostics.size(), compileDiagnostics::toString);
-        assertEquals(
-                Set.of(
-                        FrontendRange.fromAstRange(pingedStep.range()),
-                        FrontendRange.fromAstRange(emitStep.range())
-                ),
-                compileDiagnostics.stream().map(FrontendDiagnostic::range).collect(java.util.stream.Collectors.toSet())
-        );
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.message().contains("Signal member 'pinged'")
-        ));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.message().contains("Signal method 'emit(...)'")
-        ));
+        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
+        assertEquals(FrontendRange.fromAstRange(emitStep.range()), compileDiagnostics.getFirst().range());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Signal method 'emit(...)'"));
     }
 
     @Test
-    void analyzeKeepsDedicatedGuardForBareSignalValueBindingRegression() throws Exception {
+    void analyzeReleasesBareSignalValueBindingRegression() throws Exception {
         var preparedInput = prepareCompileCheckInput("compile_check_bare_signal_binding_regression.gd", """
                 class_name CompileCheckBareSignalBindingRegression
                 extends Node
@@ -1926,9 +1961,7 @@ class FrontendCompileCheckAnalyzerTest {
                 preparedInput.analysisData().diagnostics(),
                 "sema.compile_check"
         );
-        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
-        assertEquals(FrontendRange.fromAstRange(pingedIdentifier.range()), compileDiagnostics.getFirst().range());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Bare signal 'pinged'"));
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
     private static @NotNull AnalyzedScript analyzeShared(

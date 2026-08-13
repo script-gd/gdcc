@@ -16,12 +16,14 @@ import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopNextItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopShouldContinueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.SignalLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.TypeTestItem;
+import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
@@ -37,6 +39,7 @@ import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructContainerLiteralInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.ConstructSignalInsn;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
 import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
@@ -113,6 +116,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 new FrontendDirectSlotAliasInsnLoweringProcessor(),
                 new FrontendCallInsnLoweringProcessor(),
                 new FrontendMemberLoadInsnLoweringProcessor(),
+                new FrontendSignalLoadInsnLoweringProcessor(),
                 new FrontendSubscriptLoadInsnLoweringProcessor(),
                 new FrontendCompoundAssignmentBinaryInsnLoweringProcessor(),
                 new FrontendAssignmentInsnLoweringProcessor(),
@@ -302,11 +306,10 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                         OpaqueExprHandling.REJECT,
                         "array/dictionary literals must lower through ContainerLiteralItem, not OpaqueExprValueItem"
                 );
-                case PreloadExpression _, GetNodeExpression _ ->
-                        new OpaqueExprPolicy(
-                                OpaqueExprHandling.DEFER,
-                                "this compile-blocked expression family stays outside the first body lowering surface"
-                        );
+                case PreloadExpression _, GetNodeExpression _ -> new OpaqueExprPolicy(
+                        OpaqueExprHandling.DEFER,
+                        "this compile-blocked expression family stays outside the first body lowering surface"
+                );
                 case AssignmentExpression _, AttributeExpression _, CallExpression _, SubscriptExpression _ ->
                         new OpaqueExprPolicy(
                                 OpaqueExprHandling.REJECT,
@@ -646,6 +649,13 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @Nullable Void context
         ) {
             var resolvedMember = session.requireResolvedMember(node.anchor());
+            if (resolvedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                    && resolvedMember.bindingKind() == FrontendBindingKind.SIGNAL) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "RESOLVED SIGNAL members must lower through SignalLoadItem, not MemberLoadItem"
+                );
+            }
             var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
             if (resolvedMember.status() == FrontendMemberResolutionStatus.DYNAMIC) {
                 lowerDynamicMemberLoad(session, block, node, resolvedMember, resultSlotId);
@@ -753,6 +763,57 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     receiverVariantSlotId,
                     nameSlotId
             ));
+        }
+    }
+
+    /// Materializes a published RESOLVED SIGNAL member into `construct_signal`.
+    ///
+    /// The processor consumes only the published member fact and the CFG receiver value id.
+    /// It never invents a property writable route and never guesses a signal name from AST.
+    private static final class FrontendSignalLoadInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<SignalLoadItem, Void> {
+        @Override
+        public @NotNull Class<SignalLoadItem> nodeType() {
+            return SignalLoadItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull SignalLoadItem node,
+                @Nullable Void context
+        ) {
+            var resolvedMember = session.requireResolvedMember(node.anchor());
+            if (resolvedMember.status() != FrontendMemberResolutionStatus.RESOLVED
+                    || resolvedMember.bindingKind() != FrontendBindingKind.SIGNAL) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "signal load requires a RESOLVED SIGNAL member, but got "
+                                + resolvedMember.status()
+                                + "/"
+                                + resolvedMember.bindingKind()
+                );
+            }
+            if (resolvedMember.receiverKind() != FrontendReceiverKind.INSTANCE) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "signal load requires an instance receiver, but got "
+                                + resolvedMember.receiverKind()
+                );
+            }
+            if (node.receiverValueId() == null) {
+                throw session.unsupportedSequenceItem(node, "signal load is missing a receiver value id");
+            }
+            var receiverSlotId = session.requireLiveObjectReceiverSlotId(node.receiverValueId());
+            var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
+            session.emitAssertObjectLiveIfNeeded(block, receiverSlotId);
+            block.appendNonTerminatorInstruction(new ConstructSignalInsn(
+                    resultSlotId,
+                    receiverSlotId,
+                    node.signalName()
+            ));
+            return block;
         }
     }
 

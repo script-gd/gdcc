@@ -11,6 +11,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.SignalLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SequenceItem;
@@ -1049,6 +1050,119 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals(List.of(), valueItem.operandValueIds()),
                 () -> assertEquals(valueItem.resultValueId(), stopNode.returnValueIdOrNull()),
                 () -> assertTrue(entryNode.items().stream().noneMatch(DirectSlotAliasValueItem.class::isInstance))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyKeepsBareSignalIdentifierOnOpaqueValueSurfaceWithoutWritableRoute() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_bare_signal_read.gd",
+                """
+                        class_name CfgBuilderBareSignalRead
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func copy_signal() -> Signal:
+                            return pinged
+                        """,
+                "copy_signal",
+                Map.of("CfgBuilderBareSignalRead", "RuntimeCfgBuilderBareSignalRead")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode("stop_1"));
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var receiver = assertInstanceOf(IdentifierExpression.class, returnStatement.value());
+        var valueItem = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().getFirst());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertEquals(1, entryNode.items().size()),
+                () -> assertSame(receiver, valueItem.expression()),
+                () -> assertEquals(valueItem.resultValueId(), stopNode.returnValueIdOrNull()),
+                () -> assertTrue(entryNode.items().stream().noneMatch(MemberLoadItem.class::isInstance)),
+                () -> assertTrue(entryNode.items().stream().noneMatch(SignalLoadItem.class::isInstance))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyBuildsReceiverSignalReadsAsSignalLoadsWithoutWritableRoute() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_receiver_signal_read.gd",
+                """
+                        class_name CfgBuilderReceiverSignalRead
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func copy_from(other: CfgBuilderReceiverSignalRead) -> Signal:
+                            return other.pinged
+                        """,
+                "copy_from",
+                Map.of("CfgBuilderReceiverSignalRead", "RuntimeCfgBuilderReceiverSignalRead")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode("stop_1"));
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var attribute = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var pingedStep = assertInstanceOf(AttributePropertyStep.class, attribute.steps().getFirst());
+        var receiver = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().get(0));
+        var signalLoad = assertInstanceOf(SignalLoadItem.class, entryNode.items().get(1));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertEquals(2, entryNode.items().size()),
+                () -> assertEquals(attribute.base(), receiver.expression()),
+                () -> assertEquals(pingedStep, signalLoad.anchor()),
+                () -> assertEquals("pinged", signalLoad.signalName()),
+                () -> assertEquals(List.of(receiver.resultValueId()), signalLoad.operandValueIds()),
+                () -> assertEquals(receiver.resultValueId(), signalLoad.receiverValueId()),
+                () -> assertEquals(signalLoad.resultValueId(), stopNode.returnValueIdOrNull()),
+                () -> assertTrue(entryNode.items().stream().noneMatch(MemberLoadItem.class::isInstance))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyBuildsInheritedEngineSignalReadsAsSignalLoadsWithoutWritableRoute() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_engine_signal_read.gd",
+                """
+                        class_name CfgBuilderEngineSignalRead
+                        extends Node
+                        
+                        func copy_ready(n: Node) -> Signal:
+                            return n.ready
+                        """,
+                "copy_ready",
+                Map.of("CfgBuilderEngineSignalRead", "RuntimeCfgBuilderEngineSignalRead")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode("stop_1"));
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var attribute = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var readyStep = assertInstanceOf(AttributePropertyStep.class, attribute.steps().getFirst());
+        var receiver = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().get(0));
+        var signalLoad = assertInstanceOf(SignalLoadItem.class, entryNode.items().get(1));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertEquals(2, entryNode.items().size()),
+                () -> assertEquals(attribute.base(), receiver.expression()),
+                () -> assertEquals(readyStep, signalLoad.anchor()),
+                () -> assertEquals("ready", signalLoad.signalName()),
+                () -> assertEquals(List.of(receiver.resultValueId()), signalLoad.operandValueIds()),
+                () -> assertEquals(receiver.resultValueId(), signalLoad.receiverValueId()),
+                () -> assertEquals(signalLoad.resultValueId(), stopNode.returnValueIdOrNull()),
+                () -> assertTrue(entryNode.items().stream().noneMatch(MemberLoadItem.class::isInstance))
         );
     }
 

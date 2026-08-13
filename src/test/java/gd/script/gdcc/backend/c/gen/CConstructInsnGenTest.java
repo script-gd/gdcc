@@ -17,10 +17,15 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirPropertyDef;
+import gd.script.gdcc.backend.c.gen.insn.ConstructInsnGen;
+import gd.script.gdcc.enums.GdInstruction;
+import gd.script.gdcc.lir.insn.AssertObjectLiveInsn;
 import gd.script.gdcc.lir.insn.ConstructArrayInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructDictionaryInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.ConstructSignalInsn;
+import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
@@ -31,6 +36,7 @@ import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
 import gd.script.gdcc.type.GdPackedStringArrayType;
 import gd.script.gdcc.type.GdPackedVectorArrayType;
@@ -646,6 +652,115 @@ class CConstructInsnGenTest {
         var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
         assertTrue(body.contains("godot_new_Node()"), body);
         assertFalse(body.contains("godot_new_  Node  ()"), body);
+    }
+
+    @Test
+    @DisplayName("construct_signal should emit live-object Signal constructor and destroy the result")
+    void constructSignalShouldEmitSignalFromReceiverAndDestroyResult() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_signal_value");
+        func.createAndAddVariable("self", new GdObjectType("Node"));
+        func.createAndAddVariable("sig", new GdSignalType());
+
+        entry(func).appendInstruction(new ConstructSignalInsn("sig", "self", "pinged"));
+        entry(func).appendInstruction(new DestructInsn("sig"));
+        entry(func).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("godot_new_Signal_with_Object_StringName("), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"pinged\")"), body);
+        assertTrue(body.contains("_live_object($self)"), body);
+        assertTrue(body.contains("godot_Signal_destroy(&$sig);"), body);
+        assertFalse(body.contains("assert_object_live"), body);
+        assertFalse(body.contains("own_object("), body);
+        assertFalse(body.contains("try_own_object("), body);
+    }
+
+    @Test
+    @DisplayName("construct_signal after assert_object_live should hard-fail a null or freed Object receiver")
+    void constructSignalShouldKeepLiveAssertHardFailForNonSelfObjectReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_signal_live_assert");
+        func.createAndAddVariable("other", new GdObjectType("Node"));
+        func.createAndAddVariable("sig", new GdSignalType());
+
+        entry(func).appendInstruction(new AssertObjectLiveInsn("other"));
+        entry(func).appendInstruction(new ConstructSignalInsn("sig", "other", "ready"));
+        entry(func).appendInstruction(new DestructInsn("sig"));
+        entry(func).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        var assertIndex = body.indexOf("assert_object_live failed: object 'other' is null or freed");
+        var constructIndex = body.indexOf("godot_new_Signal_with_Object_StringName(");
+        assertTrue(assertIndex >= 0, body);
+        assertTrue(constructIndex >= 0, body);
+        assertTrue(assertIndex < constructIndex, body);
+        assertTrue(body.contains("gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($other).ptr, $other.instance_id)"), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"ready\")"), body);
+        assertTrue(body.contains("_live_object($other)"), body);
+        assertTrue(body.contains("godot_Signal_destroy(&$sig);"), body);
+    }
+
+    @Test
+    @DisplayName("construct_signal opcode is registered on ConstructInsnGen")
+    void constructSignalOpcodeIsRegisteredForDispatch() {
+        assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_SIGNAL));
+        assertFalse(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_CALLABLE));
+    }
+
+    @Test
+    @DisplayName("construct_signal should reject missing receiver variables")
+    void constructSignalShouldRejectMissingReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_signal_missing_receiver");
+        func.createAndAddVariable("sig", new GdSignalType());
+
+        entry(func).appendInstruction(new ConstructSignalInsn("sig", "missing", "pinged"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("receiver variable ID 'missing' not found"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_signal should reject non-object receivers")
+    void constructSignalShouldRejectNonObjectReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_signal_non_object_receiver");
+        func.createAndAddVariable("recv", GdFloatType.FLOAT);
+        func.createAndAddVariable("sig", new GdSignalType());
+
+        entry(func).appendInstruction(new ConstructSignalInsn("sig", "recv", "pinged"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("must be Object type"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_signal should reject non-signal result slots")
+    void constructSignalShouldRejectNonSignalResultSlot() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_signal_non_signal_slot");
+        func.createAndAddVariable("self", new GdObjectType("Node"));
+        func.createAndAddVariable("value", GdFloatType.FLOAT);
+
+        entry(func).appendInstruction(new ConstructSignalInsn("value", "self", "pinged"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("must be Signal type for construct_signal"), ex.getMessage());
     }
 
     @Test

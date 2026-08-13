@@ -37,6 +37,7 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirParameterDef;
+import gd.script.gdcc.lir.insn.AssertObjectLiveInsn;
 import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.BuiltinCastInsn;
@@ -46,6 +47,7 @@ import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.ConstructSignalInsn;
 import gd.script.gdcc.lir.insn.GoIfInsn;
 import gd.script.gdcc.lir.insn.GotoInsn;
 import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
@@ -4580,6 +4582,243 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(0, countInstructions(constructedInstructions, CallMethodInsn.class)),
                 () -> assertEquals(0, countInstructions(constructedInstructions, PackVariantInsn.class)),
                 () -> assertEquals(0, countInstructions(constructedInstructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersBareAndReceiverSignalReadsIntoConstructSignalInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_signal_value_read.gd",
+                """
+                        class_name BodyInsnSignalValueRead
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func copy_bare() -> Signal:
+                            return pinged
+                        
+                        func copy_self() -> Signal:
+                            return self.pinged
+                        
+                        func copy_other(other: BodyInsnSignalValueRead) -> Signal:
+                            return other.pinged
+                        """,
+                Map.of("BodyInsnSignalValueRead", "RuntimeBodyInsnSignalValueRead"),
+                true
+        );
+        var bareContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalValueRead",
+                "copy_bare"
+        );
+        var selfContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalValueRead",
+                "copy_self"
+        );
+        var otherContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalValueRead",
+                "copy_other"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var bareConstruct = requireOnlyInstruction(bareContext.targetFunction(), ConstructSignalInsn.class);
+        var selfConstruct = requireOnlyInstruction(selfContext.targetFunction(), ConstructSignalInsn.class);
+        var otherConstruct = requireOnlyInstruction(otherContext.targetFunction(), ConstructSignalInsn.class);
+        var otherLiveAssert = requireOnlyInstruction(otherContext.targetFunction(), AssertObjectLiveInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("self", bareConstruct.receiverVarId()),
+                () -> assertEquals("pinged", bareConstruct.signalName()),
+                () -> assertEquals(0, countInstructions(allInstructions(bareContext.targetFunction()), AssertObjectLiveInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(bareContext.targetFunction()), LoadPropertyInsn.class)),
+                () -> assertEquals("self", selfConstruct.receiverVarId()),
+                () -> assertEquals("pinged", selfConstruct.signalName()),
+                () -> assertEquals(0, countInstructions(allInstructions(selfContext.targetFunction()), AssertObjectLiveInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(selfContext.targetFunction()), LoadPropertyInsn.class)),
+                () -> assertEquals("pinged", otherConstruct.signalName()),
+                () -> assertEquals(otherLiveAssert.objectId(), otherConstruct.receiverVarId()),
+                () -> assertNotEquals("self", otherConstruct.receiverVarId()),
+                () -> assertEquals(0, countInstructions(allInstructions(otherContext.targetFunction()), LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runSkipsLiveAssertWhenSignalReceiverIsRefCounted() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_signal_value_read_refcounted.gd",
+                """
+                        class_name BodyInsnSignalValueReadRefCounted
+                        extends RefCounted
+                        
+                        signal pinged
+                        
+                        func copy_other(other: BodyInsnSignalValueReadRefCounted) -> Signal:
+                            return other.pinged
+                        """,
+                Map.of("BodyInsnSignalValueReadRefCounted", "RuntimeBodyInsnSignalValueReadRefCounted"),
+                true
+        );
+        var otherContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalValueReadRefCounted",
+                "copy_other"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var otherConstruct = requireOnlyInstruction(otherContext.targetFunction(), ConstructSignalInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("pinged", otherConstruct.signalName()),
+                () -> assertEquals(0, countInstructions(allInstructions(otherContext.targetFunction()), AssertObjectLiveInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(otherContext.targetFunction()), LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersLocalSignalStoreIntoConstructSignalThenAssign() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_signal_value_local_store.gd",
+                """
+                        class_name BodyInsnSignalValueLocalStore
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func copy_untyped(other: BodyInsnSignalValueLocalStore) -> void:
+                            var s = other.pinged
+                        
+                        func copy_typed(other: BodyInsnSignalValueLocalStore) -> void:
+                            var typed: Signal = other.pinged
+                        """,
+                Map.of("BodyInsnSignalValueLocalStore", "RuntimeBodyInsnSignalValueLocalStore"),
+                true
+        );
+        var untypedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalValueLocalStore",
+                "copy_untyped"
+        );
+        var typedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalValueLocalStore",
+                "copy_typed"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var untypedInstructions = allInstructions(untypedContext.targetFunction());
+        var typedInstructions = allInstructions(typedContext.targetFunction());
+        var untypedConstruct = requireOnlyInstruction(untypedContext.targetFunction(), ConstructSignalInsn.class);
+        var typedConstruct = requireOnlyInstruction(typedContext.targetFunction(), ConstructSignalInsn.class);
+        var untypedLiveAssert = requireOnlyInstruction(untypedContext.targetFunction(), AssertObjectLiveInsn.class);
+        var typedLiveAssert = requireOnlyInstruction(typedContext.targetFunction(), AssertObjectLiveInsn.class);
+        var untypedPack = requireOnlyInstruction(untypedContext.targetFunction(), PackVariantInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("pinged", untypedConstruct.signalName()),
+                () -> assertEquals(untypedLiveAssert.objectId(), untypedConstruct.receiverVarId()),
+                () -> assertNotEquals("self", untypedConstruct.receiverVarId()),
+                () -> assertEquals(untypedConstruct.resultId(), untypedPack.valueId()),
+                () -> assertEquals(untypedPack.resultId(), assignSourcesByTarget(untypedInstructions).get("s")),
+                () -> assertEquals(0, countInstructions(untypedInstructions, LoadPropertyInsn.class)),
+                () -> assertEquals("pinged", typedConstruct.signalName()),
+                () -> assertEquals(typedLiveAssert.objectId(), typedConstruct.receiverVarId()),
+                () -> assertNotEquals("self", typedConstruct.receiverVarId()),
+                () -> assertEquals(typedConstruct.resultId(), assignSourcesByTarget(typedInstructions).get("typed")),
+                () -> assertEquals(0, countInstructions(typedInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(typedInstructions, LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersInheritedEngineSignalReadIntoConstructSignalInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_engine_signal_value_read.gd",
+                """
+                        class_name BodyInsnEngineSignalValueRead
+                        extends Node
+                        
+                        func copy_ready(n: Node) -> Signal:
+                            return n.ready
+                        """,
+                Map.of("BodyInsnEngineSignalValueRead", "RuntimeBodyInsnEngineSignalValueRead"),
+                true
+        );
+        var copyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEngineSignalValueRead",
+                "copy_ready"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var construct = requireOnlyInstruction(copyContext.targetFunction(), ConstructSignalInsn.class);
+        var liveAssert = requireOnlyInstruction(copyContext.targetFunction(), AssertObjectLiveInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("ready", construct.signalName()),
+                () -> assertEquals(liveAssert.objectId(), construct.receiverVarId()),
+                () -> assertNotEquals("self", construct.receiverVarId()),
+                () -> assertEquals(0, countInstructions(allInstructions(copyContext.targetFunction()), LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runKeepsDynamicSignalMemberOnOrdinaryMemberLoadRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_signal_member_read.gd",
+                """
+                        class_name BodyInsnDynamicSignalMemberRead
+                        extends RefCounted
+                        
+                        func marker(host: Variant) -> Variant:
+                            return host.pinged
+                        """,
+                Map.of("BodyInsnDynamicSignalMemberRead", "RuntimeBodyInsnDynamicSignalMemberRead"),
+                true
+        );
+        var markerContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicSignalMemberRead",
+                "marker"
+        );
+        var memberLoad = requireSingleMemberLoadItem(markerContext.requireFrontendCfgGraph(), "pinged");
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                memberLoad.anchor(),
+                FrontendResolvedMember.dynamic(
+                        "pinged",
+                        FrontendBindingKind.SIGNAL,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        GdVariantType.VARIANT,
+                        "synthetic dynamic signal member",
+                        "synthetic dynamic signal member"
+                )
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals(0, countInstructions(allInstructions(markerContext.targetFunction()), ConstructSignalInsn.class)),
+                () -> assertEquals(1, countInstructions(allInstructions(markerContext.targetFunction()), VariantGetNamedInsn.class))
         );
     }
 
