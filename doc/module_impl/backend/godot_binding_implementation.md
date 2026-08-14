@@ -90,6 +90,11 @@ native input。
   - 输入为 `ExtensionAPI.utility_functions[]`
   - 输出为 `godot_utility.h/.c`
   - vararg utility 使用 trailing `const godot_Variant **argv, godot_int argc` 约定
+  - vararg builtin method 使用同一 trailing `argv/argc` 约定
+  - 两类 vararg wrapper 体内均用
+    `GDExtensionConstTypePtr args[fixed + (argc > 0 ? argc : 1)]`，再以
+    `(fixed + argc == 0) ? NULL : args` 调用（utility 走缓存指针，builtin 走
+    `GDCC_BUILTIN_METHOD_VOID/RETURN`），避免 `argc==0` 时的零长度 VLA
 - fixed wrappers：
   - 输入为版本化源码清单，当前是 `Godot451FixedBindings`
   - 输出为 `godot_fixed_binding.h/.c`

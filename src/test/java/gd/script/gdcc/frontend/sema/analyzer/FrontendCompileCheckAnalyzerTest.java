@@ -1637,7 +1637,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileBlocksSignalEmitConnectDisconnect() throws Exception {
+    void analyzeForCompileBlocksSignalConnectDisconnectButReleasesEmit() throws Exception {
         var source = """
                 class_name CompileCheckSignalMethods
                 extends Node
@@ -1656,7 +1656,6 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_signal_methods.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         var pingFunction = findFunction(compiled.unit().ast().statements(), "ping");
-        var emitStep = findNamedCallStep(pingFunction, "emit");
         var connectStep = findNamedCallStep(pingFunction, "connect");
         var disconnectStep = findNamedCallStep(pingFunction, "disconnect");
         var connectHandler = findNode(
@@ -1670,7 +1669,6 @@ class FrontendCompileCheckAnalyzerTest {
                 identifier -> identifier.name().equals("_handler")
         );
         var expectedRanges = Set.of(
-                FrontendRange.fromAstRange(emitStep.range()),
                 FrontendRange.fromAstRange(connectStep.range()),
                 FrontendRange.fromAstRange(disconnectStep.range()),
                 FrontendRange.fromAstRange(connectHandler.range()),
@@ -1678,14 +1676,14 @@ class FrontendCompileCheckAnalyzerTest {
         );
 
         assertTrue(compiled.diagnostics().hasErrors());
-        assertEquals(5, compileDiagnostics.size(), compileDiagnostics::toString);
+        assertEquals(4, compileDiagnostics.size(), compileDiagnostics::toString);
         assertEquals(
                 expectedRanges,
                 compileDiagnostics.stream().map(FrontendDiagnostic::range).collect(java.util.stream.Collectors.toSet())
         );
-        assertEquals(1, compileDiagnostics.stream()
+        assertEquals(0, compileDiagnostics.stream()
                 .filter(diagnostic -> diagnostic.message().contains("Signal method 'emit(...)'"))
-                .count());
+                .count(), compileDiagnostics::toString);
         assertEquals(1, compileDiagnostics.stream()
                 .filter(diagnostic -> diagnostic.message().contains("Signal method 'connect(...)'"))
                 .count());
@@ -1695,6 +1693,28 @@ class FrontendCompileCheckAnalyzerTest {
         assertEquals(2, compileDiagnostics.stream()
                 .filter(diagnostic -> diagnostic.message().contains("Bare method-reference '_handler'"))
                 .count());
+    }
+
+    @Test
+    void analyzeForCompileReleasesSignalEmitArityAndHeterogeneousArgs() throws Exception {
+        var source = """
+                class_name CompileCheckSignalEmitReleased
+                extends Node
+                
+                signal pinged(count: int)
+                
+                func ping(sig: Signal, label: String, vec: Vector3):
+                    sig.emit()
+                    sig.emit(1)
+                    sig.emit(1, label, vec)
+                    pinged.emit("not-an-int")
+                """;
+
+        var compiled = analyzeForCompile("compile_check_signal_emit_released.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
     @Test
@@ -1873,13 +1893,13 @@ class FrontendCompileCheckAnalyzerTest {
                 
                 signal pinged
                 
-                func ping(other: CompileCheckSignalResolvedRegression):
+                func ping(other: CompileCheckSignalResolvedRegression, handler: Callable):
                     var receiver_signal = other.pinged
-                    other.pinged.emit()
+                    other.pinged.connect(handler)
                 """);
         var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
         var pingedStep = findNamedPropertyStep(pingFunction, "receiver_signal", "pinged");
-        var emitStep = findNamedCallStep(pingFunction, "emit");
+        var connectStep = findNamedCallStep(pingFunction, "connect");
         preparedInput.analysisData().expressionTypes().clear();
         preparedInput.analysisData().resolvedMembers().clear();
         preparedInput.analysisData().resolvedCalls().clear();
@@ -1897,9 +1917,9 @@ class FrontendCompileCheckAnalyzerTest {
                 )
         );
         preparedInput.analysisData().resolvedCalls().put(
-                emitStep,
+                connectStep,
                 FrontendResolvedCall.resolved(
-                        "emit",
+                        "connect",
                         FrontendCallResolutionKind.INSTANCE_METHOD,
                         FrontendReceiverKind.INSTANCE,
                         ScopeOwnerKind.BUILTIN,
@@ -1923,8 +1943,8 @@ class FrontendCompileCheckAnalyzerTest {
                 "sema.compile_check"
         );
         assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
-        assertEquals(FrontendRange.fromAstRange(emitStep.range()), compileDiagnostics.getFirst().range());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Signal method 'emit(...)'"));
+        assertEquals(FrontendRange.fromAstRange(connectStep.range()), compileDiagnostics.getFirst().range());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Signal method 'connect(...)'"));
     }
 
     @Test

@@ -6,7 +6,7 @@
 
 ## 文档状态
 
-- 状态：计划维护中（Phase 0–2 已落地：compile gate + signal 值物化 + ClassDB 注册/冲突守卫；Phase 3–5 未实施）
+- 状态：计划维护中（Phase 0–3 已落地：compile gate + signal 值物化 + ClassDB 注册/冲突守卫 + `.emit` vararg；Phase 4–5 未实施）
 - 更新时间：2026-08-13
 - 相关事实源 / 规则：
   - `frontend_rules.md`
@@ -115,7 +115,7 @@
 13. **C runtime wrappers（已存在）**：
     - `godot_new_Signal_with_Object_StringName(godot_Object*, const godot_StringName*)`（`godot_builtin.c:11290`）
     - `godot_classdb_register_extension_class_signal(...)`（`godot_interface.h:869`）
-    - `godot_Signal_emit(const godot_Signal*)`（**当前仅 0 参**，见 G4）
+    - `godot_Signal_emit(const godot_Signal*, const godot_Variant **argv, godot_int argc)`（Phase 3 / G4 已闭环）
     - `godot_new_Callable_with_Object_StringName(godot_Object*, const godot_StringName*)`（`godot_builtin.c:11057`）
     - Variant pack/unpack：`godot_new_Variant_with_Signal` / `godot_new_Signal_with_Variant`（`godot_builtin.h:70-71`）、`godot_Signal_destroy`（`godot_builtin.c:11300`）。
 14. **C 类型渲染**：`CGenHelper.renderGdTypeInC(GdSignalType)` → `godot_Signal`、`renderGdTypeName` → `Signal`，二者均命中 `default` 兜底分支（`"godot_" + getTypeName()` / `getTypeName()`，`CGenHelper.java:343,784`），无显式 `GdSignalType` case。属隐式契约；Phase 1 实施时可补显式 `case GdSignalType` 以消除隐式依赖。
@@ -145,13 +145,11 @@
 - 位置：`src/main/c/codegen/template_451/entry.c.ftl` 的 `${classDef.name}_class_bind_methods()`。
 - 落地：`// Signals` 段调用 `godot_classdb_register_extension_class_signal(...)`；0 参传 `NULL, 0`；有参经 `renderSignalParameterMetadata` + `gdcc_make_property_full`，注册后 `gdcc_destruct_property`。
 
-### G4 — vararg builtin 方法的 C wrapper 仅生成 0 参（且 header/source 需同步）
+### G4 — vararg builtin 方法的 C wrapper 仅生成 0 参（Phase 3 已闭环）
 
-- 位置：`GodotBuiltinGenerator.BuiltinRenderer.appendMethodDefinition(...)`（`GodotBuiltinGenerator.java:497-559`）；declaration 与 definition 共用 `renderMethodParameters(...)`（L470-480、L1152-1162）。
-- 现状：vararg 方法（如 `Signal.emit`）的 `method.arguments()` 为空，生成 `GDCC_BUILTIN_METHOD_VOID0`（0 参）；当前 `godot_builtin.h:1547` 与 `godot_builtin.c:11373-11376` 都是 0 参。
-- 需要：为 vararg builtin 方法生成 `(self, const godot_Variant **argv, godot_int argc)` wrapper，整体结构参照 `GodotUtilityGenerator`（L162-203）但**不照抄其 `args[fixed + argc]` VLA 写法**（见 §9 风险）；**同时重新生成并校验 `godot_builtin.h` 与 `godot_builtin.c`**；回归**所有** vararg builtin（不止 `Signal.emit`，还包括 `Callable.call/call_deferred/rpc/bind` 等）；对 `argc==0` 显式处理，避免零长度 VLA。
-- **动态 args 生成机制（冻结）**：`GDCC_BUILTIN_METHOD_ARGS` 是静态 variadic initializer，不适合承载 `argv` 循环生成的动态数组。vararg wrapper 必须改为：在函数体内声明 `GDExtensionConstTypePtr args[fixed + (argc > 0 ? argc : 1)]`（长度恒 ≥1，杜绝 `argc==0` 时的零长度 VLA），先填 fixed args、再循环把 `argv[i]` 填入 `args[fixed + i]`；随后以 `(fixed + argc == 0) ? NULL : args` 作为 args 指针、`fixed + argc` 作为 count，调用现有 `GDCC_BUILTIN_METHOD_VOID/RETURN(cache, self, args_ptr, count)`（该宏接受 runtime `args` 指针与 runtime count）。`argc==0` 时既不引用 `args` 首元素、也不出现零长度数组。不新增静态 variadic macro。
-- **self const 性（冻结）**：`Signal.emit` metadata `is_const=true`，wrapper 必须保留 `const godot_Signal *self`。
+- 位置：`GodotBuiltinGenerator.BuiltinRenderer.appendMethodDefinition(...)`；declaration 与 definition 共用 `renderMethodParameters(...)`。
+- 落地：vararg builtin 生成 `(self, ..., const godot_Variant **argv, godot_int argc)`；体内 `args[fixed + (argc > 0 ? argc : 1)]`，再以 `(fixed + argc == 0) ? NULL : args` 调用现有 `GDCC_BUILTIN_METHOD_VOID/RETURN`。`GodotUtilityGenerator` 现已采用同一 VLA 防护。`godot_builtin.h/.c` 已按 `GodotBindingTool generate-builtin --gde 4.5.1 --out src/main/c/codegen/include_451/godot` 重新生成。
+- **self const 性（冻结）**：`Signal.emit` metadata `is_const=true`，wrapper 保留 `const godot_Signal *self`。
 
 ### G5 — method-reference → Callable 未闭环（`connect`/`disconnect` 前置）
 
@@ -361,12 +359,18 @@
 
 - 目标：`foo.emit(a, b, ...)` 任意参数数量/类型可编译并正确分发。
 - 依赖：Phase 1（receiver 已是 `godot_Signal` 值）。
+- 状态：**已完成**（2026-08-13）。
 - 动作：
-  1. `GodotBuiltinGenerator.appendMethodDefinition(...)` 为 vararg builtin 方法生成 `(self, const godot_Variant **argv, godot_int argc)` wrapper；按 G4 冻结机制：函数体内用 `argc==0 ? NULL : args` 的动态 args 模式（填 fixed args + 循环 `argv`），再调用现有 `GDCC_BUILTIN_METHOD_VOID/RETURN(cache, self, args, count)`；保留 `Signal.emit` 的 `const godot_Signal *self`（`is_const=true`）。**不得**照抄 `GodotUtilityGenerator.java:188-205` 的 `args[fixed + argc]` VLA 写法（它在 fixed=0 且 argc=0 时产生零长度 VLA；该潜在问题属 utility generator 的另一项独立清理）。
-  2. **重新生成并校验 checked-in wrapper（冻结入口）**：用 `GodotBindingTool generate-builtin --gde 4.5.1 --out src/main/c/codegen/include_451/godot`（`GodotBindingTool.java:87-91`；当前无 Gradle task），同时提交重新生成的 `godot_builtin.h` 与 `godot_builtin.c`，并核对 `godot_Signal_emit` 新签名。out 目录写错会静默打包旧 wrapper，必须核对。
-  3. 回归**所有** vararg builtin（`Signal.emit`、`Callable.call/call_deferred/rpc/bind` 等），不只 `Signal.emit`。
-  4. 确认 `CallMethodInsnGen` BUILTIN vararg 路径对 `Signal.emit` 生成正确调用。
-  5. compile gate：解除 `.emit` blocker；**同步更新 `frontend_rules.md` 中 `.emit` 未闭环的表述**（见 §9 文档漂移）。
+  1. ~~`GodotBuiltinGenerator.appendMethodDefinition(...)` 为 vararg builtin 方法生成 `(self, const godot_Variant **argv, godot_int argc)` wrapper。~~
+  2. ~~用 `GodotBindingTool generate-builtin --gde 4.5.1 --out src/main/c/codegen/include_451/godot` 重新生成 `godot_builtin.h` 与 `godot_builtin.c`。~~
+  3. ~~回归全部 6 个 vararg builtin：`Signal.emit`、`Callable.call/call_deferred/rpc/rpc_id/bind`。~~
+  4. ~~确认 `CallMethodInsnGen` BUILTIN vararg 路径对 `Signal.emit` 生成正确调用。~~
+  5. ~~compile gate：解除 `.emit` blocker；同步更新 `frontend_rules.md`。~~
+- 落地注记：
+  - 仍走既有 `lowerExactInstanceCall` → `CallMethodInsn`；未新增 emit 指令。
+  - vararg wrapper 用 `args[fixed + (argc > 0 ? argc : 1)]` + `(fixed + argc == 0) ? NULL : args`；`rpc_id` 的 1 个 fixed 参数先填入 `args[0]`。
+  - compile gate 的 `SIGNAL_METHOD_NAMES` 现为 `connect` / `disconnect`；`.emit` 放行后声明签名仍不静态拒绝 arity/type。
+  - `var unused: int = sig.emit()` 继续由 `sema.type_check` 按 void→int 拒绝。
 - 验收：
   - `foo.emit()`、`foo.emit(1)`、`foo.emit(1, "x", vec)` 均可编译；`emit()` 零参数生成 C 合法（无零长度 VLA）。
   - frontend **不**按声明签名拒绝多余/异型实参（§2.2）。
@@ -488,7 +492,7 @@
 ## 9. 风险与备注
 
 - **vararg builtin wrapper 是通用改动**（G4）：影响所有 vararg builtin 方法生成，需在 Phase 3 做足回归；`godot_builtin.h/.c` 必须同步重新生成。
-- **零长度 VLA 工具链风险**：`GodotUtilityGenerator`（L183-205）生成 `args[fixed + argc]`；`Signal.emit()` fixed=0、argc=0 可能产生零长度 VLA。必须对 `argc==0` 显式传 `NULL,0` 或保证长度 ≥1，并把 `emit()` 作为**真实生成 C** 的测试，而非只测字符串片段。
+- **零长度 VLA 工具链风险（已闭环）**：`GodotUtilityGenerator` 与 `GodotBuiltinGenerator` 均已用 `args[fixed + (argc > 0 ? argc : 1)]` + `(fixed + argc == 0) ? NULL : args` 避免零长度 VLA。`Signal.emit()` 仍须作为**真实生成 C** 的回归，而非只测字符串片段。
 - **ObjectID 非 owning 引用**（D7/§2.1）：`Signal`/`Callable` 只保存 ObjectID，不保活 receiver；receiver 被释放后 value 仍存在但已失效。`godot_Signal_destroy` 只销毁 value storage。必须明确：构造/调用的诊断与 guard、freed receiver 后的行为、connection 在 callable object 被释放后的行为，并补测试。
 - **method-reference lowering（Phase 4）风险最高**：可能与 writable-route / dynamic receiver 路径交织；若冲突过大，按 D5 降级为后续阶段并显式记录。
 - **engine signal**：原生类 signal 只读、不注册、同名冲突被拒（D8）；需在 negative 用例覆盖。

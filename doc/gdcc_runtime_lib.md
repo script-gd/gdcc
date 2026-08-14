@@ -128,7 +128,8 @@ The currently supported version is Godot `4.5.1`.
   duplicate generated member accessors are filtered; operator generation is limited to supported
   Variant enum surfaces; method lookup uses primary and compatibility hashes.
 - `generate-utility` emits global utility wrappers, including vararg utility functions with the
-  trailing `const godot_Variant **argv, godot_int argc` convention.
+  trailing `const godot_Variant **argv, godot_int argc` convention. Vararg wrappers size the
+  stack argv array as `fixed + (argc > 0 ? argc : 1)` and pass `NULL` when `fixed + argc == 0`.
 - `generate-fixed` emits the explicit fixed binding set described below.
 - `check-fixed` scans handwritten GDCC helpers and templates for `godot_*` references that are not
   local functions and not in the provided runtime symbol set. This keeps handwritten helper calls

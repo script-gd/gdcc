@@ -270,157 +270,157 @@ void godot_Variant_destroy(godot_Variant *self) {
     godot_variant_destroy((GDExtensionVariantPtr)self);
 }
 
-GDCC_DEFINE_VARIANT_TO_TYPE(Quaternion, godot_Quaternion, GDEXTENSION_VARIANT_TYPE_QUATERNION, (godot_Quaternion){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector2, godot_Vector2, GDEXTENSION_VARIANT_TYPE_VECTOR2, (godot_Vector2){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Quaternion, const godot_Quaternion *, GDEXTENSION_VARIANT_TYPE_QUATERNION)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Plane, godot_Plane, GDEXTENSION_VARIANT_TYPE_PLANE, (godot_Plane){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Plane, const godot_Plane *, GDEXTENSION_VARIANT_TYPE_PLANE)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Transform3D, godot_Transform3D, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, (godot_Transform3D){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Transform3D, const godot_Transform3D *, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Array, godot_Array, GDEXTENSION_VARIANT_TYPE_ARRAY, (godot_Array){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Array, const godot_Array *, GDEXTENSION_VARIANT_TYPE_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(RID, godot_RID, GDEXTENSION_VARIANT_TYPE_RID, (godot_RID){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(RID, const godot_RID *, GDEXTENSION_VARIANT_TYPE_RID)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedColorArray, godot_PackedColorArray, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, (godot_PackedColorArray){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedColorArray, const godot_PackedColorArray *, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Rect2, godot_Rect2, GDEXTENSION_VARIANT_TYPE_RECT2, (godot_Rect2){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Rect2, const godot_Rect2 *, GDEXTENSION_VARIANT_TYPE_RECT2)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector4, godot_Vector4, GDEXTENSION_VARIANT_TYPE_VECTOR4, (godot_Vector4){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector4, const godot_Vector4 *, GDEXTENSION_VARIANT_TYPE_VECTOR4)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector3, godot_Vector3, GDEXTENSION_VARIANT_TYPE_VECTOR3, (godot_Vector3){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector3, const godot_Vector3 *, GDEXTENSION_VARIANT_TYPE_VECTOR3)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector2i, godot_Vector2i, GDEXTENSION_VARIANT_TYPE_VECTOR2I, (godot_Vector2i){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector2i, const godot_Vector2i *, GDEXTENSION_VARIANT_TYPE_VECTOR2I)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector2, const godot_Vector2 *, GDEXTENSION_VARIANT_TYPE_VECTOR2)
 
 GDCC_DEFINE_VARIANT_TO_TYPE(float, godot_float, GDEXTENSION_VARIANT_TYPE_FLOAT, (godot_float)0)
 
 GDCC_DEFINE_VARIANT_FROM_TYPE_VALUE(float, godot_float, GDEXTENSION_VARIANT_TYPE_FLOAT)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector2, godot_Vector2, GDEXTENSION_VARIANT_TYPE_VECTOR2, (godot_Vector2){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector2i, godot_Vector2i, GDEXTENSION_VARIANT_TYPE_VECTOR2I, (godot_Vector2i){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector2, const godot_Vector2 *, GDEXTENSION_VARIANT_TYPE_VECTOR2)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector2i, const godot_Vector2i *, GDEXTENSION_VARIANT_TYPE_VECTOR2I)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(Color, godot_Color, GDEXTENSION_VARIANT_TYPE_COLOR, (godot_Color){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector3, godot_Vector3, GDEXTENSION_VARIANT_TYPE_VECTOR3, (godot_Vector3){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Color, const godot_Color *, GDEXTENSION_VARIANT_TYPE_COLOR)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector3, const godot_Vector3 *, GDEXTENSION_VARIANT_TYPE_VECTOR3)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedVector3Array, godot_PackedVector3Array, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY, (godot_PackedVector3Array){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector4, godot_Vector4, GDEXTENSION_VARIANT_TYPE_VECTOR4, (godot_Vector4){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedVector3Array, const godot_PackedVector3Array *, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector4, const godot_Vector4 *, GDEXTENSION_VARIANT_TYPE_VECTOR4)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedByteArray, godot_PackedByteArray, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, (godot_PackedByteArray){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(Rect2, godot_Rect2, GDEXTENSION_VARIANT_TYPE_RECT2, (godot_Rect2){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedByteArray, const godot_PackedByteArray *, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Rect2, const godot_Rect2 *, GDEXTENSION_VARIANT_TYPE_RECT2)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(int, godot_int, GDEXTENSION_VARIANT_TYPE_INT, (godot_int)0)
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedColorArray, godot_PackedColorArray, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, (godot_PackedColorArray){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_VALUE(int, godot_int, GDEXTENSION_VARIANT_TYPE_INT)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedColorArray, const godot_PackedColorArray *, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedInt32Array, godot_PackedInt32Array, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY, (godot_PackedInt32Array){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(RID, godot_RID, GDEXTENSION_VARIANT_TYPE_RID, (godot_RID){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedInt32Array, const godot_PackedInt32Array *, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(RID, const godot_RID *, GDEXTENSION_VARIANT_TYPE_RID)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector4i, godot_Vector4i, GDEXTENSION_VARIANT_TYPE_VECTOR4I, (godot_Vector4i){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(Array, godot_Array, GDEXTENSION_VARIANT_TYPE_ARRAY, (godot_Array){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector4i, const godot_Vector4i *, GDEXTENSION_VARIANT_TYPE_VECTOR4I)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Array, const godot_Array *, GDEXTENSION_VARIANT_TYPE_ARRAY)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(Transform2D, godot_Transform2D, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, (godot_Transform2D){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(Transform3D, godot_Transform3D, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, (godot_Transform3D){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Transform2D, const godot_Transform2D *, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Transform3D, const godot_Transform3D *, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(bool, godot_bool, GDEXTENSION_VARIANT_TYPE_BOOL, false)
+GDCC_DEFINE_VARIANT_TO_TYPE(Plane, godot_Plane, GDEXTENSION_VARIANT_TYPE_PLANE, (godot_Plane){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_VALUE(bool, godot_bool, GDEXTENSION_VARIANT_TYPE_BOOL)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Plane, const godot_Plane *, GDEXTENSION_VARIANT_TYPE_PLANE)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(Object, godot_Object *, GDEXTENSION_VARIANT_TYPE_OBJECT, NULL)
+GDCC_DEFINE_VARIANT_TO_TYPE(Quaternion, godot_Quaternion, GDEXTENSION_VARIANT_TYPE_QUATERNION, (godot_Quaternion){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_OBJECT(Object, godot_Object *, GDEXTENSION_VARIANT_TYPE_OBJECT)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Quaternion, const godot_Quaternion *, GDEXTENSION_VARIANT_TYPE_QUATERNION)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(AABB, godot_AABB, GDEXTENSION_VARIANT_TYPE_AABB, (godot_AABB){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedFloat64Array, godot_PackedFloat64Array, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY, (godot_PackedFloat64Array){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(AABB, const godot_AABB *, GDEXTENSION_VARIANT_TYPE_AABB)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedFloat32Array, godot_PackedFloat32Array, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, (godot_PackedFloat32Array){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedFloat32Array, const godot_PackedFloat32Array *, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(StringName, godot_StringName, GDEXTENSION_VARIANT_TYPE_STRING_NAME, (godot_StringName){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(StringName, const godot_StringName *, GDEXTENSION_VARIANT_TYPE_STRING_NAME)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Basis, godot_Basis, GDEXTENSION_VARIANT_TYPE_BASIS, (godot_Basis){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Basis, const godot_Basis *, GDEXTENSION_VARIANT_TYPE_BASIS)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Projection, godot_Projection, GDEXTENSION_VARIANT_TYPE_PROJECTION, (godot_Projection){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Projection, const godot_Projection *, GDEXTENSION_VARIANT_TYPE_PROJECTION)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Rect2i, godot_Rect2i, GDEXTENSION_VARIANT_TYPE_RECT2I, (godot_Rect2i){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Rect2i, const godot_Rect2i *, GDEXTENSION_VARIANT_TYPE_RECT2I)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Signal, godot_Signal, GDEXTENSION_VARIANT_TYPE_SIGNAL, (godot_Signal){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Signal, const godot_Signal *, GDEXTENSION_VARIANT_TYPE_SIGNAL)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Callable, godot_Callable, GDEXTENSION_VARIANT_TYPE_CALLABLE, (godot_Callable){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Callable, const godot_Callable *, GDEXTENSION_VARIANT_TYPE_CALLABLE)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(String, godot_String, GDEXTENSION_VARIANT_TYPE_STRING, (godot_String){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(String, const godot_String *, GDEXTENSION_VARIANT_TYPE_STRING)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(NodePath, godot_NodePath, GDEXTENSION_VARIANT_TYPE_NODE_PATH, (godot_NodePath){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(NodePath, const godot_NodePath *, GDEXTENSION_VARIANT_TYPE_NODE_PATH)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedVector2Array, godot_PackedVector2Array, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY, (godot_PackedVector2Array){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedVector2Array, const godot_PackedVector2Array *, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector3i, godot_Vector3i, GDEXTENSION_VARIANT_TYPE_VECTOR3I, (godot_Vector3i){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector3i, const godot_Vector3i *, GDEXTENSION_VARIANT_TYPE_VECTOR3I)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedInt64Array, godot_PackedInt64Array, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY, (godot_PackedInt64Array){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedInt64Array, const godot_PackedInt64Array *, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedVector4Array, godot_PackedVector4Array, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY, (godot_PackedVector4Array){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedVector4Array, const godot_PackedVector4Array *, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Dictionary, godot_Dictionary, GDEXTENSION_VARIANT_TYPE_DICTIONARY, (godot_Dictionary){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Dictionary, const godot_Dictionary *, GDEXTENSION_VARIANT_TYPE_DICTIONARY)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedFloat64Array, const godot_PackedFloat64Array *, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY)
 
 GDCC_DEFINE_VARIANT_TO_TYPE(PackedStringArray, godot_PackedStringArray, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY, (godot_PackedStringArray){ 0 })
 
 GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedStringArray, const godot_PackedStringArray *, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedFloat64Array, godot_PackedFloat64Array, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY, (godot_PackedFloat64Array){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(Dictionary, godot_Dictionary, GDEXTENSION_VARIANT_TYPE_DICTIONARY, (godot_Dictionary){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedFloat64Array, const godot_PackedFloat64Array *, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Dictionary, const godot_Dictionary *, GDEXTENSION_VARIANT_TYPE_DICTIONARY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedVector4Array, godot_PackedVector4Array, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY, (godot_PackedVector4Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedVector4Array, const godot_PackedVector4Array *, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedInt64Array, godot_PackedInt64Array, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY, (godot_PackedInt64Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedInt64Array, const godot_PackedInt64Array *, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector3i, godot_Vector3i, GDEXTENSION_VARIANT_TYPE_VECTOR3I, (godot_Vector3i){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector3i, const godot_Vector3i *, GDEXTENSION_VARIANT_TYPE_VECTOR3I)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedVector2Array, godot_PackedVector2Array, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY, (godot_PackedVector2Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedVector2Array, const godot_PackedVector2Array *, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(NodePath, godot_NodePath, GDEXTENSION_VARIANT_TYPE_NODE_PATH, (godot_NodePath){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(NodePath, const godot_NodePath *, GDEXTENSION_VARIANT_TYPE_NODE_PATH)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(String, godot_String, GDEXTENSION_VARIANT_TYPE_STRING, (godot_String){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(String, const godot_String *, GDEXTENSION_VARIANT_TYPE_STRING)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Callable, godot_Callable, GDEXTENSION_VARIANT_TYPE_CALLABLE, (godot_Callable){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Callable, const godot_Callable *, GDEXTENSION_VARIANT_TYPE_CALLABLE)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Signal, godot_Signal, GDEXTENSION_VARIANT_TYPE_SIGNAL, (godot_Signal){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Signal, const godot_Signal *, GDEXTENSION_VARIANT_TYPE_SIGNAL)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Rect2i, godot_Rect2i, GDEXTENSION_VARIANT_TYPE_RECT2I, (godot_Rect2i){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Rect2i, const godot_Rect2i *, GDEXTENSION_VARIANT_TYPE_RECT2I)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Projection, godot_Projection, GDEXTENSION_VARIANT_TYPE_PROJECTION, (godot_Projection){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Projection, const godot_Projection *, GDEXTENSION_VARIANT_TYPE_PROJECTION)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Basis, godot_Basis, GDEXTENSION_VARIANT_TYPE_BASIS, (godot_Basis){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Basis, const godot_Basis *, GDEXTENSION_VARIANT_TYPE_BASIS)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(StringName, godot_StringName, GDEXTENSION_VARIANT_TYPE_STRING_NAME, (godot_StringName){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(StringName, const godot_StringName *, GDEXTENSION_VARIANT_TYPE_STRING_NAME)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedFloat32Array, godot_PackedFloat32Array, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, (godot_PackedFloat32Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedFloat32Array, const godot_PackedFloat32Array *, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(AABB, godot_AABB, GDEXTENSION_VARIANT_TYPE_AABB, (godot_AABB){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(AABB, const godot_AABB *, GDEXTENSION_VARIANT_TYPE_AABB)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Object, godot_Object *, GDEXTENSION_VARIANT_TYPE_OBJECT, NULL)
+
+GDCC_DEFINE_VARIANT_FROM_OBJECT(Object, godot_Object *, GDEXTENSION_VARIANT_TYPE_OBJECT)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(bool, godot_bool, GDEXTENSION_VARIANT_TYPE_BOOL, false)
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_VALUE(bool, godot_bool, GDEXTENSION_VARIANT_TYPE_BOOL)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Transform2D, godot_Transform2D, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, (godot_Transform2D){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Transform2D, const godot_Transform2D *, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector4i, godot_Vector4i, GDEXTENSION_VARIANT_TYPE_VECTOR4I, (godot_Vector4i){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector4i, const godot_Vector4i *, GDEXTENSION_VARIANT_TYPE_VECTOR4I)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedInt32Array, godot_PackedInt32Array, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY, (godot_PackedInt32Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedInt32Array, const godot_PackedInt32Array *, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(int, godot_int, GDEXTENSION_VARIANT_TYPE_INT, (godot_int)0)
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_VALUE(int, godot_int, GDEXTENSION_VARIANT_TYPE_INT)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedByteArray, godot_PackedByteArray, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, (godot_PackedByteArray){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedByteArray, const godot_PackedByteArray *, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedVector3Array, godot_PackedVector3Array, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY, (godot_PackedVector3Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedVector3Array, const godot_PackedVector3Array *, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Color, godot_Color, GDEXTENSION_VARIANT_TYPE_COLOR, (godot_Color){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Color, const godot_Color *, GDEXTENSION_VARIANT_TYPE_COLOR)
 
 static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_bool_AND_Object = NULL;
 
@@ -11187,38 +11187,58 @@ godot_Callable godot_Callable_unbind(const godot_Callable *self, godot_int argco
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Callable_call = NULL;
 
-godot_Variant godot_Callable_call(const godot_Callable *self) {
+godot_Variant godot_Callable_call(const godot_Callable *self, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Callable_call, GDEXTENSION_VARIANT_TYPE_CALLABLE, "call", 3643564216LL, NULL, 0, "godot_Callable_call", "Callable", return godot_new_Variant_nil());
-    GDCC_BUILTIN_METHOD_RETURN0(gdcc_builtin_method_Callable_call, self, godot_Variant);
+    GDExtensionConstTypePtr args[0 + (argc > 0 ? argc : 1)];
+    for (godot_int index = 0; index < argc; index++) {
+        args[0 + index] = (GDExtensionConstTypePtr)argv[index];
+    }
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Callable_call, self, (0 + argc == 0) ? NULL : args, godot_Variant, 0 + argc);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Callable_call_deferred = NULL;
 
-void godot_Callable_call_deferred(const godot_Callable *self) {
+void godot_Callable_call_deferred(const godot_Callable *self, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Callable_call_deferred, GDEXTENSION_VARIANT_TYPE_CALLABLE, "call_deferred", 3286317445LL, NULL, 0, "godot_Callable_call_deferred", "Callable", return);
-    GDCC_BUILTIN_METHOD_VOID0(gdcc_builtin_method_Callable_call_deferred, self);
+    GDExtensionConstTypePtr args[0 + (argc > 0 ? argc : 1)];
+    for (godot_int index = 0; index < argc; index++) {
+        args[0 + index] = (GDExtensionConstTypePtr)argv[index];
+    }
+    GDCC_BUILTIN_METHOD_VOID(gdcc_builtin_method_Callable_call_deferred, self, (0 + argc == 0) ? NULL : args, 0 + argc);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Callable_rpc = NULL;
 
-void godot_Callable_rpc(const godot_Callable *self) {
+void godot_Callable_rpc(const godot_Callable *self, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Callable_rpc, GDEXTENSION_VARIANT_TYPE_CALLABLE, "rpc", 3286317445LL, NULL, 0, "godot_Callable_rpc", "Callable", return);
-    GDCC_BUILTIN_METHOD_VOID0(gdcc_builtin_method_Callable_rpc, self);
+    GDExtensionConstTypePtr args[0 + (argc > 0 ? argc : 1)];
+    for (godot_int index = 0; index < argc; index++) {
+        args[0 + index] = (GDExtensionConstTypePtr)argv[index];
+    }
+    GDCC_BUILTIN_METHOD_VOID(gdcc_builtin_method_Callable_rpc, self, (0 + argc == 0) ? NULL : args, 0 + argc);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Callable_rpc_id = NULL;
 
-void godot_Callable_rpc_id(const godot_Callable *self, godot_int peer_id) {
+void godot_Callable_rpc_id(const godot_Callable *self, godot_int peer_id, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Callable_rpc_id, GDEXTENSION_VARIANT_TYPE_CALLABLE, "rpc_id", 2270047679LL, NULL, 0, "godot_Callable_rpc_id", "Callable", return);
-    GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&peer_id);
-    GDCC_BUILTIN_METHOD_VOID(gdcc_builtin_method_Callable_rpc_id, self, args, 1);
+    GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];
+    args[0] = (GDExtensionConstTypePtr)&peer_id;
+    for (godot_int index = 0; index < argc; index++) {
+        args[1 + index] = (GDExtensionConstTypePtr)argv[index];
+    }
+    GDCC_BUILTIN_METHOD_VOID(gdcc_builtin_method_Callable_rpc_id, self, (1 + argc == 0) ? NULL : args, 1 + argc);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Callable_bind = NULL;
 
-godot_Callable godot_Callable_bind(const godot_Callable *self) {
+godot_Callable godot_Callable_bind(const godot_Callable *self, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Callable_bind, GDEXTENSION_VARIANT_TYPE_CALLABLE, "bind", 3224143119LL, NULL, 0, "godot_Callable_bind", "Callable", return (godot_Callable){ 0 });
-    GDCC_BUILTIN_METHOD_RETURN0(gdcc_builtin_method_Callable_bind, self, godot_Callable);
+    GDExtensionConstTypePtr args[0 + (argc > 0 ? argc : 1)];
+    for (godot_int index = 0; index < argc; index++) {
+        args[0 + index] = (GDExtensionConstTypePtr)argv[index];
+    }
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Callable_bind, self, (0 + argc == 0) ? NULL : args, godot_Callable, 0 + argc);
 }
 
 static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Callable_NOT = NULL;
@@ -11370,9 +11390,13 @@ godot_bool godot_Signal_has_connections(const godot_Signal *self) {
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Signal_emit = NULL;
 
-void godot_Signal_emit(const godot_Signal *self) {
+void godot_Signal_emit(const godot_Signal *self, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Signal_emit, GDEXTENSION_VARIANT_TYPE_SIGNAL, "emit", 3286317445LL, NULL, 0, "godot_Signal_emit", "Signal", return);
-    GDCC_BUILTIN_METHOD_VOID0(gdcc_builtin_method_Signal_emit, self);
+    GDExtensionConstTypePtr args[0 + (argc > 0 ? argc : 1)];
+    for (godot_int index = 0; index < argc; index++) {
+        args[0 + index] = (GDExtensionConstTypePtr)argv[index];
+    }
+    GDCC_BUILTIN_METHOD_VOID(gdcc_builtin_method_Signal_emit, self, (0 + argc == 0) ? NULL : args, 0 + argc);
 }
 
 static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Signal_NOT = NULL;

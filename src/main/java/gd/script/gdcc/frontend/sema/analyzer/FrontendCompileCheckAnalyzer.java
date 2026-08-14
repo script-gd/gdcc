@@ -80,7 +80,7 @@ import java.util.function.Predicate;
 ///   is not ready yet
 /// - generic side-table scans over published `expressionTypes()` / `resolvedMembers()` /
 ///   `resolvedCalls()` facts that are still blocked/deferred/failed/unsupported on compile surface
-/// - feature-specific RESOLVED blockers for Signal.emit/connect/disconnect and bare
+/// - feature-specific RESOLVED blockers for Signal.connect/disconnect and bare
 ///   method-reference / static-method / utility-function value reads that would otherwise
 ///   crash CFG or be mis-lowered as property loads
 /// - no new side tables and no rewrites of upstream semantic ownership
@@ -98,7 +98,8 @@ public class FrontendCompileCheckAnalyzer {
     private static final @NotNull Set<String> NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES = Set.of(
             FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
     );
-    private static final @NotNull Set<String> SIGNAL_METHOD_NAMES = Set.of("emit", "connect", "disconnect");
+    /// Phase 3 lifted `.emit`; `.connect` / `.disconnect` stay blocked until Callable materialization.
+    private static final @NotNull Set<String> SIGNAL_METHOD_NAMES = Set.of("connect", "disconnect");
     private static final @NotNull Set<FrontendBindingKind> BARE_VALUE_REFERENCE_BINDING_KINDS = Set.of(
             FrontendBindingKind.METHOD,
             FrontendBindingKind.STATIC_METHOD,
@@ -189,7 +190,7 @@ public class FrontendCompileCheckAnalyzer {
                 + "supports only zero-argument custom object construction";
     }
 
-    /// Feature-specific compile-only message for Signal.emit/connect/disconnect.
+    /// Feature-specific compile-only message for Signal.connect/disconnect.
     private static @NotNull String signalMethodCallCompileBlockedMessage(
             @NotNull FrontendResolvedCall publishedCall
     ) {
@@ -706,7 +707,8 @@ public class FrontendCompileCheckAnalyzer {
             };
         }
 
-        /// `.emit` / `.connect` / `.disconnect` on a Signal receiver are recognized but not lowering-ready.
+        /// `.connect` / `.disconnect` on a Signal receiver are recognized but not lowering-ready.
+        /// `.emit` already lowers through the builtin vararg `CallMethodInsn` path.
         /// Match on published receiver type plus method name so ordinary Signal-local calls stay untouched.
         /// DYNAMIC Signal calls stay runtime-open, matching the generic status exemption.
         private boolean shouldBlockSignalMethodCall(

@@ -153,14 +153,17 @@ final class GodotUtilityGenerator {
                         ))
                         .append(";\n");
             }
+            var fixedCount = argumentCount(function);
             out.append("    ").append(cacheName).append('(')
                     .append(GodotBindingSupport.isVoid(function.returnType()) ? "NULL" : "(GDExtensionTypePtr)&result")
                     .append(", ")
-                    .append(argumentCount(function) == 0 && !function.isVararg() ? "NULL" : "args")
+                    .append(function.isVararg()
+                            ? "(" + fixedCount + " + argc == 0) ? NULL : args"
+                            : fixedCount == 0 ? "NULL" : "args")
                     .append(", ")
                     .append(function.isVararg()
-                            ? "(int)(" + GodotBindingSupport.list(function.arguments()).size() + " + argc)"
-                            : String.valueOf(GodotBindingSupport.list(function.arguments()).size()))
+                            ? "(int)(" + fixedCount + " + argc)"
+                            : String.valueOf(fixedCount))
                     .append(");\n");
             if (!GodotBindingSupport.isVoid(function.returnType())) {
                 out.append("    return result;\n");
@@ -186,9 +189,10 @@ final class GodotUtilityGenerator {
                 return;
             }
             if (function.isVararg()) {
+                // Length is always >= 1 so argc==0 never emits a zero-length VLA.
                 out.append("    GDExtensionConstTypePtr args[")
                         .append(fixedArguments.size())
-                        .append(" + argc];\n");
+                        .append(" + (argc > 0 ? argc : 1)];\n");
                 for (var i = 0; i < fixedArguments.size(); i++) {
                     var argument = fixedArguments.get(i);
                     out.append("    args[").append(i).append("] = ")

@@ -537,24 +537,40 @@ final class GodotBuiltinGenerator {
                 out.append("return ").append(GodotBindingSupport.zeroReturn(method.returnType()));
             }
             out.append(");\n");
-            if (!arguments.isEmpty()) {
-                out.append("    GDCC_BUILTIN_METHOD_ARGS(args, ")
-                        .append(renderConstTypeArgumentList(arguments))
-                        .append(");\n");
-            }
-            if (GodotBindingSupport.isVoid(method.returnType())) {
-                if (arguments.isEmpty()) {
-                    out.append("    GDCC_BUILTIN_METHOD_VOID0(").append(cacheName).append(", self);\n");
+            if (method.isVararg()) {
+                // G4: runtime argv cannot use GDCC_BUILTIN_METHOD_ARGS (static initializer).
+                // Length is always >= 1 so argc==0 never emits a zero-length VLA.
+                appendVarargMethodArgs(out, arguments);
+                var countExpr = arguments.size() + " + argc";
+                var argsPtrExpr = "(" + arguments.size() + " + argc == 0) ? NULL : args";
+                if (GodotBindingSupport.isVoid(method.returnType())) {
+                    out.append("    GDCC_BUILTIN_METHOD_VOID(").append(cacheName).append(", self, ")
+                            .append(argsPtrExpr).append(", ").append(countExpr).append(");\n");
                 } else {
-                    out.append("    GDCC_BUILTIN_METHOD_VOID(").append(cacheName).append(", self, args, ")
-                            .append(arguments.size()).append(");\n");
+                    out.append("    GDCC_BUILTIN_METHOD_RETURN(").append(cacheName).append(", self, ")
+                            .append(argsPtrExpr).append(", ").append(returnType).append(", ")
+                            .append(countExpr).append(");\n");
                 }
-            } else if (arguments.isEmpty()) {
-                out.append("    GDCC_BUILTIN_METHOD_RETURN0(").append(cacheName).append(", self, ")
-                        .append(returnType).append(");\n");
             } else {
-                out.append("    GDCC_BUILTIN_METHOD_RETURN(").append(cacheName).append(", self, args, ")
-                        .append(returnType).append(", ").append(arguments.size()).append(");\n");
+                if (!arguments.isEmpty()) {
+                    out.append("    GDCC_BUILTIN_METHOD_ARGS(args, ")
+                            .append(renderConstTypeArgumentList(arguments))
+                            .append(");\n");
+                }
+                if (GodotBindingSupport.isVoid(method.returnType())) {
+                    if (arguments.isEmpty()) {
+                        out.append("    GDCC_BUILTIN_METHOD_VOID0(").append(cacheName).append(", self);\n");
+                    } else {
+                        out.append("    GDCC_BUILTIN_METHOD_VOID(").append(cacheName).append(", self, args, ")
+                                .append(arguments.size()).append(");\n");
+                    }
+                } else if (arguments.isEmpty()) {
+                    out.append("    GDCC_BUILTIN_METHOD_RETURN0(").append(cacheName).append(", self, ")
+                            .append(returnType).append(");\n");
+                } else {
+                    out.append("    GDCC_BUILTIN_METHOD_RETURN(").append(cacheName).append(", self, args, ")
+                            .append(returnType).append(", ").append(arguments.size()).append(");\n");
+                }
             }
             out.append("}\n\n");
         }
@@ -915,6 +931,18 @@ final class GodotBuiltinGenerator {
                         method.isConst() ? GodotBindingSymbol.Abi.CONST_TYPE_PTR : GodotBindingSymbol.Abi.MUTABLE_TYPE_PTR
                 ));
                 parameters.addAll(parameters(GodotBindingSupport.list(method.arguments())));
+                if (method.isVararg()) {
+                    parameters.add(new GodotBindingSymbol.Parameter(
+                            "argv",
+                            "const godot_Variant **",
+                            GodotBindingSymbol.Abi.VARIANT_VARARG
+                    ));
+                    parameters.add(new GodotBindingSymbol.Parameter(
+                            "argc",
+                            "godot_int",
+                            GodotBindingSymbol.Abi.VALUE
+                    ));
+                }
                 symbols.add(GodotBindingSupport.symbol(
                         GodotBindingSymbol.Family.BUILTIN,
                         builtin.name(),
@@ -1158,7 +1186,35 @@ final class GodotBuiltinGenerator {
             for (var argument : GodotBindingSupport.list(method.arguments())) {
                 params.add(GodotBindingSupport.renderPublicParameter(argument.type(), argument.name()));
             }
+            if (method.isVararg()) {
+                params.add("const godot_Variant **argv");
+                params.add("godot_int argc");
+            }
             return String.join(", ", params);
+        }
+
+        /// Builds the runtime args array for a vararg builtin wrapper.
+        /// Same guarded VLA as [GodotUtilityGenerator]: length is always >= 1.
+        private static void appendVarargMethodArgs(
+                @NotNull StringBuilder out,
+                @NotNull List<ExtensionFunctionArgument> arguments
+        ) {
+            out.append("    GDExtensionConstTypePtr args[")
+                    .append(arguments.size())
+                    .append(" + (argc > 0 ? argc : 1)];\n");
+            for (var i = 0; i < arguments.size(); i++) {
+                var argument = arguments.get(i);
+                out.append("    args[").append(i).append("] = ")
+                        .append(GodotBindingSupport.typePtrArgument(
+                                argument.type(),
+                                GodotBindingSupport.parameterName(argument.name())
+                        ))
+                        .append(";\n");
+            }
+            out.append("    for (godot_int index = 0; index < argc; index++) {\n")
+                    .append("        args[").append(arguments.size()).append(" + index] = ")
+                    .append("(GDExtensionConstTypePtr)argv[index];\n")
+                    .append("    }\n");
         }
 
         private static @NotNull String renderOperatorParameters(

@@ -4823,6 +4823,83 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersSignalEmitVarargThroughCallMethodAndPacksNonVariantArgs() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_signal_emit_vararg.gd",
+                """
+                        class_name BodyInsnSignalEmitVararg
+                        extends Node
+                        
+                        signal pinged(count: int)
+                        
+                        func emit_empty(sig: Signal) -> void:
+                            sig.emit()
+                        
+                        func emit_mixed(sig: Signal, label: String) -> void:
+                            sig.emit(1, label)
+                        
+                        func emit_declared_mismatch() -> void:
+                            pinged.emit("not-an-int")
+                        """,
+                Map.of("BodyInsnSignalEmitVararg", "RuntimeBodyInsnSignalEmitVararg"),
+                true
+        );
+        var emptyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalEmitVararg",
+                "emit_empty"
+        );
+        var mixedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalEmitVararg",
+                "emit_mixed"
+        );
+        var mismatchContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalEmitVararg",
+                "emit_declared_mismatch"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var emptyCall = requireOnlyInstruction(emptyContext.targetFunction(), CallMethodInsn.class);
+        var mixedInstructions = allInstructions(mixedContext.targetFunction());
+        var mixedCall = requireOnlyInstruction(mixedContext.targetFunction(), CallMethodInsn.class);
+        var mixedPacks = mixedInstructions.stream()
+                .filter(PackVariantInsn.class::isInstance)
+                .map(PackVariantInsn.class::cast)
+                .toList();
+        var mismatchCall = requireOnlyInstruction(mismatchContext.targetFunction(), CallMethodInsn.class);
+        var mismatchPack = requireOnlyInstruction(mismatchContext.targetFunction(), PackVariantInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("emit", emptyCall.methodName()),
+                () -> assertNull(emptyCall.resultId()),
+                () -> assertTrue(emptyCall.args().isEmpty(), emptyCall.args()::toString),
+                () -> assertEquals("emit", mixedCall.methodName()),
+                () -> assertNull(mixedCall.resultId()),
+                () -> assertEquals(2, mixedCall.args().size()),
+                () -> assertEquals(2, mixedPacks.size()),
+                () -> assertEquals(
+                        mixedPacks.stream().map(PackVariantInsn::resultId).toList(),
+                        mixedCall.args().stream()
+                                .map(operand -> assertInstanceOf(LirInstruction.VariableOperand.class, operand).id())
+                                .toList()
+                ),
+                () -> assertEquals("emit", mismatchCall.methodName()),
+                () -> assertEquals(1, mismatchCall.args().size()),
+                () -> assertEquals(
+                        mismatchPack.resultId(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, mismatchCall.args().getFirst()).id()
+                )
+        );
+    }
+
+    @Test
     void runLowersVariantDynamicMemberReadIntoVariantNamedGet() throws Exception {
         var prepared = prepareContext(
                 "body_insn_variant_dynamic_member_read.gd",

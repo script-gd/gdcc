@@ -863,14 +863,14 @@ static GDExtensionPtrUtilityFunction gdcc_utility_max = NULL;
 
 godot_Variant godot_max(const godot_Variant * arg1, const godot_Variant * arg2, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_max, "max", 3896050336LL, "godot_max", return godot_new_Variant_nil());
-    GDExtensionConstTypePtr args[2 + argc];
+    GDExtensionConstTypePtr args[2 + (argc > 0 ? argc : 1)];
     args[0] = (GDExtensionConstTypePtr)arg1;
     args[1] = (GDExtensionConstTypePtr)arg2;
     for (godot_int index = 0; index < argc; index++) {
         args[2 + index] = (GDExtensionConstTypePtr)argv[index];
     }
     godot_Variant result = { 0 };
-    gdcc_utility_max((GDExtensionTypePtr)&result, args, (int)(2 + argc));
+    gdcc_utility_max((GDExtensionTypePtr)&result, (2 + argc == 0) ? NULL : args, (int)(2 + argc));
     return result;
 }
 
@@ -898,14 +898,14 @@ static GDExtensionPtrUtilityFunction gdcc_utility_min = NULL;
 
 godot_Variant godot_min(const godot_Variant * arg1, const godot_Variant * arg2, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_min, "min", 3896050336LL, "godot_min", return godot_new_Variant_nil());
-    GDExtensionConstTypePtr args[2 + argc];
+    GDExtensionConstTypePtr args[2 + (argc > 0 ? argc : 1)];
     args[0] = (GDExtensionConstTypePtr)arg1;
     args[1] = (GDExtensionConstTypePtr)arg2;
     for (godot_int index = 0; index < argc; index++) {
         args[2 + index] = (GDExtensionConstTypePtr)argv[index];
     }
     godot_Variant result = { 0 };
-    gdcc_utility_min((GDExtensionTypePtr)&result, args, (int)(2 + argc));
+    gdcc_utility_min((GDExtensionTypePtr)&result, (2 + argc == 0) ? NULL : args, (int)(2 + argc));
     return result;
 }
 
@@ -1086,13 +1086,13 @@ static GDExtensionPtrUtilityFunction gdcc_utility_str = NULL;
 
 godot_String godot_str(const godot_Variant * arg1, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_str, "str", 32569176LL, "godot_str", return (godot_String){ 0 });
-    GDExtensionConstTypePtr args[1 + argc];
+    GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];
     args[0] = (GDExtensionConstTypePtr)arg1;
     for (godot_int index = 0; index < argc; index++) {
         args[1 + index] = (GDExtensionConstTypePtr)argv[index];
     }
     godot_String result = { 0 };
-    gdcc_utility_str((GDExtensionTypePtr)&result, args, (int)(1 + argc));
+    gdcc_utility_str((GDExtensionTypePtr)&result, (1 + argc == 0) ? NULL : args, (int)(1 + argc));
     return result;
 }
 
@@ -1120,108 +1120,108 @@ static GDExtensionPtrUtilityFunction gdcc_utility_print = NULL;
 
 void godot_print(const godot_Variant * arg1, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_print, "print", 2648703342LL, "godot_print", return);
-    GDExtensionConstTypePtr args[1 + argc];
+    GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];
     args[0] = (GDExtensionConstTypePtr)arg1;
     for (godot_int index = 0; index < argc; index++) {
         args[1 + index] = (GDExtensionConstTypePtr)argv[index];
     }
-    gdcc_utility_print(NULL, args, (int)(1 + argc));
+    gdcc_utility_print(NULL, (1 + argc == 0) ? NULL : args, (int)(1 + argc));
 }
 
 static GDExtensionPtrUtilityFunction gdcc_utility_print_rich = NULL;
 
 void godot_print_rich(const godot_Variant * arg1, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_print_rich, "print_rich", 2648703342LL, "godot_print_rich", return);
-    GDExtensionConstTypePtr args[1 + argc];
+    GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];
     args[0] = (GDExtensionConstTypePtr)arg1;
     for (godot_int index = 0; index < argc; index++) {
         args[1 + index] = (GDExtensionConstTypePtr)argv[index];
     }
-    gdcc_utility_print_rich(NULL, args, (int)(1 + argc));
+    gdcc_utility_print_rich(NULL, (1 + argc == 0) ? NULL : args, (int)(1 + argc));
 }
 
 static GDExtensionPtrUtilityFunction gdcc_utility_printerr = NULL;
 
 void godot_printerr(const godot_Variant * arg1, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_printerr, "printerr", 2648703342LL, "godot_printerr", return);
-    GDExtensionConstTypePtr args[1 + argc];
+    GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];
     args[0] = (GDExtensionConstTypePtr)arg1;
     for (godot_int index = 0; index < argc; index++) {
         args[1 + index] = (GDExtensionConstTypePtr)argv[index];
     }
-    gdcc_utility_printerr(NULL, args, (int)(1 + argc));
+    gdcc_utility_printerr(NULL, (1 + argc == 0) ? NULL : args, (int)(1 + argc));
 }
 
 static GDExtensionPtrUtilityFunction gdcc_utility_printt = NULL;
 
 void godot_printt(const godot_Variant * arg1, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_printt, "printt", 2648703342LL, "godot_printt", return);
-    GDExtensionConstTypePtr args[1 + argc];
+    GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];
     args[0] = (GDExtensionConstTypePtr)arg1;
     for (godot_int index = 0; index < argc; index++) {
         args[1 + index] = (GDExtensionConstTypePtr)argv[index];
     }
-    gdcc_utility_printt(NULL, args, (int)(1 + argc));
+    gdcc_utility_printt(NULL, (1 + argc == 0) ? NULL : args, (int)(1 + argc));
 }
 
 static GDExtensionPtrUtilityFunction gdcc_utility_prints = NULL;
 
 void godot_prints(const godot_Variant * arg1, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_prints, "prints", 2648703342LL, "godot_prints", return);
-    GDExtensionConstTypePtr args[1 + argc];
+    GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];
     args[0] = (GDExtensionConstTypePtr)arg1;
     for (godot_int index = 0; index < argc; index++) {
         args[1 + index] = (GDExtensionConstTypePtr)argv[index];
     }
-    gdcc_utility_prints(NULL, args, (int)(1 + argc));
+    gdcc_utility_prints(NULL, (1 + argc == 0) ? NULL : args, (int)(1 + argc));
 }
 
 static GDExtensionPtrUtilityFunction gdcc_utility_printraw = NULL;
 
 void godot_printraw(const godot_Variant * arg1, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_printraw, "printraw", 2648703342LL, "godot_printraw", return);
-    GDExtensionConstTypePtr args[1 + argc];
+    GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];
     args[0] = (GDExtensionConstTypePtr)arg1;
     for (godot_int index = 0; index < argc; index++) {
         args[1 + index] = (GDExtensionConstTypePtr)argv[index];
     }
-    gdcc_utility_printraw(NULL, args, (int)(1 + argc));
+    gdcc_utility_printraw(NULL, (1 + argc == 0) ? NULL : args, (int)(1 + argc));
 }
 
 static GDExtensionPtrUtilityFunction gdcc_utility_print_verbose = NULL;
 
 void godot_print_verbose(const godot_Variant * arg1, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_print_verbose, "print_verbose", 2648703342LL, "godot_print_verbose", return);
-    GDExtensionConstTypePtr args[1 + argc];
+    GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];
     args[0] = (GDExtensionConstTypePtr)arg1;
     for (godot_int index = 0; index < argc; index++) {
         args[1 + index] = (GDExtensionConstTypePtr)argv[index];
     }
-    gdcc_utility_print_verbose(NULL, args, (int)(1 + argc));
+    gdcc_utility_print_verbose(NULL, (1 + argc == 0) ? NULL : args, (int)(1 + argc));
 }
 
 static GDExtensionPtrUtilityFunction gdcc_utility_push_error = NULL;
 
 void godot_push_error(const godot_Variant * arg1, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_push_error, "push_error", 2648703342LL, "godot_push_error", return);
-    GDExtensionConstTypePtr args[1 + argc];
+    GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];
     args[0] = (GDExtensionConstTypePtr)arg1;
     for (godot_int index = 0; index < argc; index++) {
         args[1 + index] = (GDExtensionConstTypePtr)argv[index];
     }
-    gdcc_utility_push_error(NULL, args, (int)(1 + argc));
+    gdcc_utility_push_error(NULL, (1 + argc == 0) ? NULL : args, (int)(1 + argc));
 }
 
 static GDExtensionPtrUtilityFunction gdcc_utility_push_warning = NULL;
 
 void godot_push_warning(const godot_Variant * arg1, const godot_Variant **argv, godot_int argc) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_push_warning, "push_warning", 2648703342LL, "godot_push_warning", return);
-    GDExtensionConstTypePtr args[1 + argc];
+    GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];
     args[0] = (GDExtensionConstTypePtr)arg1;
     for (godot_int index = 0; index < argc; index++) {
         args[1 + index] = (GDExtensionConstTypePtr)argv[index];
     }
-    gdcc_utility_push_warning(NULL, args, (int)(1 + argc));
+    gdcc_utility_push_warning(NULL, (1 + argc == 0) ? NULL : args, (int)(1 + argc));
 }
 
 static GDExtensionPtrUtilityFunction gdcc_utility_var_to_str = NULL;

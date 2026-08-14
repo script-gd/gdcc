@@ -1134,6 +1134,42 @@ class FrontendTypeCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeReportsTypeMismatchWhenVoidSignalEmitFeedsTypedInitializer()
+            throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_void_signal_emit_initializer.gd", """
+                class_name TypeCheckVoidSignalEmitInitializer
+                extends Node
+                
+                func ping(sig: Signal):
+                    var unused: int = sig.emit()
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var unusedType = requireInitializerType(
+                pingFunction.body().statements(),
+                "unused",
+                preparedInput
+        );
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, unusedType.status());
+        assertEquals(GdVoidType.VOID, unusedType.publishedType());
+
+        var typeCheckDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+        assertEquals(1, typeCheckDiagnostics.size());
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("unused"));
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("void"));
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("int"));
+    }
+
+    @Test
     void analyzeRequiresStableConditionFactsButDoesNotEnforceStrictBoolConditionSlots()
             throws Exception {
         var preparedInput = prepareTypeCheckInput("type_check_condition_contract.gd", """

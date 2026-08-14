@@ -3,6 +3,7 @@ package gd.script.gdcc.backend.c.gen.binding;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
+import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -106,6 +107,175 @@ class GodotBuiltinGeneratorTest {
                         true
                 )
         );
+    }
+
+    @Test
+    void renderBuiltinVarargMethodsShouldUseDynamicArgvWithoutZeroLengthVla() {
+        var emit = new ExtensionBuiltinClass.ClassMethod(
+                "emit",
+                "void",
+                true,
+                true,
+                false,
+                false,
+                1L,
+                List.of(),
+                List.of(),
+                null
+        );
+        var call = new ExtensionBuiltinClass.ClassMethod(
+                "call",
+                "Variant",
+                true,
+                true,
+                false,
+                false,
+                2L,
+                List.of(),
+                List.of(),
+                new ExtensionBuiltinClass.ClassMethod.ReturnValue("Variant")
+        );
+        var rpcId = new ExtensionBuiltinClass.ClassMethod(
+                "rpc_id",
+                "void",
+                true,
+                true,
+                false,
+                false,
+                3L,
+                List.of(new ExtensionFunctionArgument("peer_id", "int", null, null)),
+                List.of(),
+                null
+        );
+        var api = new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(
+                        new ExtensionBuiltinClass(
+                                "Signal",
+                                false,
+                                false,
+                                null,
+                                List.of(),
+                                List.of(emit),
+                                List.of(),
+                                List.of(),
+                                List.of(),
+                                List.of()
+                        ),
+                        new ExtensionBuiltinClass(
+                                "Callable",
+                                false,
+                                false,
+                                null,
+                                List.of(),
+                                List.of(call, rpcId),
+                                List.of(),
+                                List.of(),
+                                List.of(),
+                                List.of()
+                        )
+                ),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+
+        var files = GodotBuiltinGenerator.renderBuiltinSupport(api);
+        var header = files.get("godot_builtin.h");
+        var source = files.get("godot_builtin.c");
+        var emitBody = functionBody(source, "void godot_Signal_emit(");
+        var callBody = functionBody(source, "godot_Variant godot_Callable_call(");
+        var rpcIdBody = functionBody(source, "void godot_Callable_rpc_id(");
+
+        assertAll(
+                () -> assertTrue(header.contains(
+                        "void godot_Signal_emit(const godot_Signal *self, const godot_Variant **argv, godot_int argc);"
+                )),
+                () -> assertTrue(header.contains(
+                        "godot_Variant godot_Callable_call(const godot_Callable *self, "
+                                + "const godot_Variant **argv, godot_int argc);"
+                )),
+                () -> assertTrue(header.contains(
+                        "void godot_Callable_rpc_id(const godot_Callable *self, godot_int peer_id, "
+                                + "const godot_Variant **argv, godot_int argc);"
+                )),
+                () -> assertTrue(emitBody.contains("GDExtensionConstTypePtr args[0 + (argc > 0 ? argc : 1)];")),
+                () -> assertTrue(emitBody.contains("(0 + argc == 0) ? NULL : args")),
+                () -> assertTrue(emitBody.contains(
+                        "GDCC_BUILTIN_METHOD_VOID(gdcc_builtin_method_Signal_emit, self, "
+                                + "(0 + argc == 0) ? NULL : args, 0 + argc);"
+                )),
+                () -> assertFalse(emitBody.contains("GDCC_BUILTIN_METHOD_VOID0(")),
+                () -> assertFalse(emitBody.contains("GDCC_BUILTIN_METHOD_ARGS(")),
+                () -> assertFalse(emitBody.contains("args[0 + argc]")),
+                () -> assertTrue(callBody.contains("GDExtensionConstTypePtr args[0 + (argc > 0 ? argc : 1)];")),
+                () -> assertTrue(callBody.contains(
+                        "GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Callable_call, self, "
+                                + "(0 + argc == 0) ? NULL : args, godot_Variant, 0 + argc);"
+                )),
+                () -> assertTrue(rpcIdBody.contains("GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];")),
+                () -> assertTrue(rpcIdBody.contains("args[0] = (GDExtensionConstTypePtr)&peer_id;")),
+                () -> assertTrue(rpcIdBody.contains("args[1 + index] = (GDExtensionConstTypePtr)argv[index];")),
+                () -> assertTrue(rpcIdBody.contains("(1 + argc == 0) ? NULL : args")),
+                () -> assertEquals(
+                        3,
+                        GodotBuiltinGenerator.collectSymbols(api).stream()
+                                .filter(GodotBindingSymbol::vararg)
+                                .count()
+                )
+        );
+    }
+
+    @Test
+    void renderBuiltinSupportShouldKeepCheckedInVarargWrappersInSync() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var files = GodotBuiltinGenerator.renderBuiltinSupport(api);
+        var header = files.get("godot_builtin.h");
+        var source = files.get("godot_builtin.c");
+        var checkedInRoot = Path.of("src/main/c/codegen/include_451/godot");
+        var checkedInHeader = Files.readString(checkedInRoot.resolve("godot_builtin.h"));
+        var checkedInSource = Files.readString(checkedInRoot.resolve("godot_builtin.c"));
+        var varargSymbols = GodotBuiltinGenerator.collectSymbols(api).stream()
+                .filter(GodotBindingSymbol::vararg)
+                .toList();
+        var expectedNames = List.of(
+                "godot_Callable_bind",
+                "godot_Callable_call",
+                "godot_Callable_call_deferred",
+                "godot_Callable_rpc",
+                "godot_Callable_rpc_id",
+                "godot_Signal_emit"
+        );
+
+        assertEquals(
+                expectedNames,
+                varargSymbols.stream().map(GodotBindingSymbol::cFunctionName).sorted().toList()
+        );
+        for (var symbol : varargSymbols) {
+            var signature = symbol.returnType() + " " + symbol.cFunctionName() + "(";
+            var generatedBody = functionBody(source, signature);
+            var checkedInBody = functionBody(checkedInSource, signature);
+            var selfType = symbol.parameters().getFirst().cType();
+            assertAll(
+                    symbol.cFunctionName(),
+                    () -> assertTrue(header.contains(symbol.cFunctionName() + "("), header),
+                    () -> assertTrue(checkedInHeader.contains(symbol.cFunctionName() + "("), checkedInHeader),
+                    () -> assertTrue(header.contains("const godot_Variant **argv"), header),
+                    () -> assertTrue(checkedInHeader.contains("const godot_Variant **argv"), checkedInHeader),
+                    () -> assertTrue(selfType.contains("const "), selfType),
+                    () -> assertEquals(generatedBody, checkedInBody),
+                    () -> assertTrue(generatedBody.contains(" + (argc > 0 ? argc : 1)];"), generatedBody),
+                    () -> assertTrue(generatedBody.contains(" ? NULL : args"), generatedBody),
+                    () -> assertFalse(generatedBody.contains("GDCC_BUILTIN_METHOD_ARGS("), generatedBody),
+                    () -> assertFalse(generatedBody.contains("GDCC_BUILTIN_METHOD_VOID0("), generatedBody),
+                    () -> assertFalse(generatedBody.contains("GDCC_BUILTIN_METHOD_RETURN0("), generatedBody)
+            );
+        }
     }
 
     @Test

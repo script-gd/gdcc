@@ -24,6 +24,7 @@ import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
 import gd.script.gdcc.type.GdPackedVectorArrayType;
 import gd.script.gdcc.type.GdStringNameType;
@@ -69,6 +70,74 @@ class CallMethodInsnGenTest {
 
         var body = generateBody(clazz, func, newApi(List.of(vector3Builtin()), List.of()), List.of(clazz));
         assertTrue(body.contains("$ret = godot_Vector3_rotated(&$vector, &$axis, $angle);"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should emit builtin Signal.emit with packed argv/argc")
+    void callMethodBuiltinSignalEmitShouldRenderVarargArgv() {
+        var clazz = newClass("Worker");
+        var func = newFunction("emit_signal");
+        func.createAndAddVariable("sig", new GdSignalType());
+        func.createAndAddVariable("arg0", GdVariantType.VARIANT);
+        func.createAndAddVariable("arg1", GdVariantType.VARIANT);
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "emit",
+                "sig",
+                List.of(
+                        new LirInstruction.VariableOperand("arg0"),
+                        new LirInstruction.VariableOperand("arg1")
+                )
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(signalBuiltin()), List.of()), List.of(clazz));
+        assertTrue(body.contains("godot_Signal_emit(&$sig, __gdcc_tmp_argv_"), body);
+        assertTrue(body.contains("const godot_Variant* __gdcc_tmp_argv_"), body);
+        assertTrue(body.contains(", (godot_int)2);"), body);
+        assertFalse(body.contains("godot_Signal_emit(&$sig);"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should emit builtin Signal.emit() as NULL, 0")
+    void callMethodBuiltinSignalEmitZeroArgsShouldRenderNullArgc() {
+        var clazz = newClass("Worker");
+        var func = newFunction("emit_empty");
+        func.createAndAddVariable("sig", new GdSignalType());
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "emit",
+                "sig",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(signalBuiltin()), List.of()), List.of(clazz));
+        assertTrue(body.contains("godot_Signal_emit(&$sig, NULL, (godot_int)0);"), body);
+        assertFalse(body.contains("const godot_Variant* __gdcc_tmp_argv_"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should reject a non-Variant Signal.emit tail argument")
+    void callMethodBuiltinSignalEmitShouldRejectNonVariantVararg() {
+        var clazz = newClass("Worker");
+        var func = newFunction("emit_bad_tail");
+        func.createAndAddVariable("sig", new GdSignalType());
+        func.createAndAddVariable("count", GdIntType.INT);
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "emit",
+                "sig",
+                List.of(new LirInstruction.VariableOperand("count"))
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, newApi(List.of(signalBuiltin()), List.of()), List.of(clazz))
+        );
+        assertTrue(ex.getMessage().contains("Vararg argument #1"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("must be Variant"), ex.getMessage());
     }
 
     @Test
@@ -1050,6 +1119,31 @@ class CallMethodInsnGenTest {
                 List.of(),
                 builtinClasses,
                 gdClasses,
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionBuiltinClass signalBuiltin() {
+        var emit = new ExtensionBuiltinClass.ClassMethod(
+                "emit",
+                "void",
+                true,
+                true,
+                false,
+                false,
+                3286317445L,
+                List.of(),
+                List.of(),
+                null
+        );
+        return new ExtensionBuiltinClass(
+                "Signal",
+                false,
+                List.of(),
+                List.of(emit),
+                List.of(),
+                List.of(),
                 List.of(),
                 List.of()
         );

@@ -65,8 +65,10 @@ class GodotUtilityGeneratorTest {
                 () -> assertTrue(source.contains(".function_name = function_value")),
                 () -> assertTrue(source.contains(".has_primary_hash = true")),
                 () -> assertTrue(source.contains(".primary_hash = hash_value")),
-                () -> assertTrue(source.contains("GDExtensionConstTypePtr args[1 + argc];")),
-                () -> assertFalse(source.contains("const GDExtensionConstTypePtr args[1 + argc];")),
+                () -> assertTrue(source.contains("GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];")),
+                () -> assertTrue(source.contains("(1 + argc == 0) ? NULL : args")),
+                () -> assertFalse(source.contains("GDExtensionConstTypePtr args[1 + argc];")),
+                () -> assertFalse(source.contains("const GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];")),
                 () -> assertFalse(functionBody(source, "void godot_print(").contains("compatibility_hashes")),
                 () -> assertFalse(source.contains("hash_compatibility")),
                 () -> assertUtilityLookupUsesResolveMacro(source, "godot_print", "gdcc_utility_print")
@@ -100,8 +102,12 @@ class GodotUtilityGeneratorTest {
                 () -> assertFalse(source.contains("godot_Variant result;\n"), source),
                 () -> assertFalse(source.contains("godot_String result;\n"), source),
                 () -> assertFalse(printBody.contains(" result"), printBody),
-                () -> assertTrue(printBody.contains("gdcc_utility_print(NULL, args, (int)(1 + argc));"),
-                        printBody)
+                () -> assertTrue(printBody.contains("GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];"),
+                        printBody),
+                () -> assertTrue(printBody.contains(
+                                "gdcc_utility_print(NULL, (1 + argc == 0) ? NULL : args, (int)(1 + argc));"),
+                        printBody),
+                () -> assertFalse(printBody.contains("args[1 + argc]"), printBody)
         );
     }
 
