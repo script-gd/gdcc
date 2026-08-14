@@ -24,6 +24,7 @@ import gd.script.gdcc.lir.insn.ConstructArrayInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructDictionaryInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.ConstructCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructSignalInsn;
 import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
@@ -36,6 +37,7 @@ import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
 import gd.script.gdcc.type.GdPackedStringArrayType;
@@ -707,7 +709,109 @@ class CConstructInsnGenTest {
     @DisplayName("construct_signal opcode is registered on ConstructInsnGen")
     void constructSignalOpcodeIsRegisteredForDispatch() {
         assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_SIGNAL));
-        assertFalse(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_CALLABLE));
+        assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_CALLABLE));
+    }
+
+    @Test
+    @DisplayName("construct_callable should emit live-object Callable constructor and destroy the result")
+    void constructCallableShouldEmitCallableFromReceiverAndDestroyResult() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_callable_value");
+        func.createAndAddVariable("self", new GdObjectType("Node"));
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructCallableInsn("cb", "self", "_handler"));
+        entry(func).appendInstruction(new DestructInsn("cb"));
+        entry(func).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("godot_new_Callable_with_Object_StringName("), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"_handler\")"), body);
+        assertTrue(body.contains("_live_object($self)"), body);
+        assertTrue(body.contains("godot_Callable_destroy(&$cb);"), body);
+        assertFalse(body.contains("assert_object_live"), body);
+        assertFalse(body.contains("own_object("), body);
+        assertFalse(body.contains("try_own_object("), body);
+    }
+
+    @Test
+    @DisplayName("construct_callable after assert_object_live should hard-fail a null or freed Object receiver")
+    void constructCallableShouldKeepLiveAssertHardFailForNonSelfObjectReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_callable_live_assert");
+        func.createAndAddVariable("other", new GdObjectType("Node"));
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new AssertObjectLiveInsn("other"));
+        entry(func).appendInstruction(new ConstructCallableInsn("cb", "other", "_handler"));
+        entry(func).appendInstruction(new DestructInsn("cb"));
+        entry(func).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        var assertIndex = body.indexOf("assert_object_live failed: object 'other' is null or freed");
+        var constructIndex = body.indexOf("godot_new_Callable_with_Object_StringName(");
+        assertTrue(assertIndex >= 0, body);
+        assertTrue(constructIndex >= 0, body);
+        assertTrue(assertIndex < constructIndex, body);
+        assertTrue(body.contains("gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($other).ptr, $other.instance_id)"), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"_handler\")"), body);
+        assertTrue(body.contains("_live_object($other)"), body);
+        assertTrue(body.contains("godot_Callable_destroy(&$cb);"), body);
+    }
+
+    @Test
+    @DisplayName("construct_callable should reject missing receiver variables")
+    void constructCallableShouldRejectMissingReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_callable_missing_receiver");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructCallableInsn("cb", "missing", "_handler"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("receiver variable ID 'missing' not found"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_callable should reject non-object receivers")
+    void constructCallableShouldRejectNonObjectReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_callable_non_object_receiver");
+        func.createAndAddVariable("recv", GdFloatType.FLOAT);
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructCallableInsn("cb", "recv", "_handler"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("must be Object type"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_callable should reject non-callable result slots")
+    void constructCallableShouldRejectNonCallableResultSlot() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_callable_non_callable_slot");
+        func.createAndAddVariable("self", new GdObjectType("Node"));
+        func.createAndAddVariable("value", GdFloatType.FLOAT);
+
+        entry(func).appendInstruction(new ConstructCallableInsn("value", "self", "_handler"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("must be Callable type for construct_callable"), ex.getMessage());
     }
 
     @Test

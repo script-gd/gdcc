@@ -59,11 +59,11 @@
 
 当前 builtin constructor wrapper 命名规则固定为：
 
-| 场景 | 规则 | 示例 |
-|---|---|---|
-| 无参构造 | `godot_new_<TypeName>()` | `godot_new_Vector3()` |
-| 有参构造 | `godot_new_<TypeName>_with_<arg1_type>_<arg2_type>...(...)` | `godot_new_Vector3_with_float_float_float(x, y, z)` |
-| 非类型后缀 token | `godot_new_<TypeName>_with_<token>...(...)` | `godot_new_NodePath_with_utf8_chars(u8"...")` |
+| 场景             | 规则                                                        | 示例                                                |
+| ---------------- | ----------------------------------------------------------- | --------------------------------------------------- |
+| 无参构造         | `godot_new_<TypeName>()`                                    | `godot_new_Vector3()`                               |
+| 有参构造         | `godot_new_<TypeName>_with_<arg1_type>_<arg2_type>...(...)` | `godot_new_Vector3_with_float_float_float(x, y, z)` |
+| 非类型后缀 token | `godot_new_<TypeName>_with_<token>...(...)`                 | `godot_new_NodePath_with_utf8_chars(u8"...")`       |
 
 带参数的构造函数必须包含 `_with_` 后缀，并且后缀必须覆盖所有参数。
 后缀 token 的来源有两类：
@@ -92,12 +92,14 @@ helper 由 `gdcc_builtin_ctor.h` 提供；例如 `int(int)` 仍按普通 exact m
 
 `ConstructInsnGen` 注册并处理以下 opcode：
 
-| LIR 指令 | 结果要求 | 分发 |
-|---|---|---|
-| `construct_builtin` | non-ref result | 解析 variable operands 后调用 `CBuiltinBuilder.constructBuiltin(...)` |
-| `construct_array` | `Array` 或 `Packed*Array` result | 校验 hint 后调用 `constructBuiltin(..., List.of())` |
-| `construct_dictionary` | `Dictionary` result | 校验 key/value hint 后调用 `constructBuiltin(..., List.of())` |
-| `construct_object` | Object result | 由 `ConstructInsnGen` 自己处理对象构造与 ownership |
+| LIR 指令               | 结果要求                         | 分发                                                                  |
+| ---------------------- | -------------------------------- | --------------------------------------------------------------------- |
+| `construct_builtin`    | non-ref result                   | 解析 variable operands 后调用 `CBuiltinBuilder.constructBuiltin(...)` |
+| `construct_array`      | `Array` 或 `Packed*Array` result | 校验 hint 后调用 `constructBuiltin(..., List.of())`                   |
+| `construct_dictionary` | `Dictionary` result              | 校验 key/value hint 后调用 `constructBuiltin(..., List.of())`         |
+| `construct_object`     | Object result                    | 由 `ConstructInsnGen` 自己处理对象构造与 ownership                    |
+| `construct_signal`     | Signal result                    | `godot_new_Signal_with_Object_StringName(live_object, name)`          |
+| `construct_callable`   | Callable result                  | `godot_new_Callable_with_Object_StringName(live_object, name)`        |
 
 `CCodegen.generateFunctionPrepareBlock()` 与 `generateDefaultGetterSetterInitialization()` 会自动为非 primitive / 非 literal 默认值路径注入构造指令：
 
@@ -139,12 +141,12 @@ helper 由 `gdcc_builtin_ctor.h` 提供；例如 `int(int)` 仍按普通 exact m
 
 当前 GDCC helper shim constructor 只覆盖以下签名：
 
-| target | 参数签名 | 目标符号 |
-|---|---|---|
-| `Transform2D` | 6 x `float` | `godot_new_Transform2D_with_float_float_float_float_float_float` |
-| `Transform3D` | 12 x `float` | `godot_new_Transform3D_with_float_float_float_float_float_float_float_float_float_float_float_float` |
-| `Basis` | 9 x `float` | `godot_new_Basis_with_float_float_float_float_float_float_float_float_float` |
-| `Projection` | 16 x `float` | `godot_new_Projection_with_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float` |
+| target        | 参数签名     | 目标符号                                                                                                                    |
+| ------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `Transform2D` | 6 x `float`  | `godot_new_Transform2D_with_float_float_float_float_float_float`                                                            |
+| `Transform3D` | 12 x `float` | `godot_new_Transform3D_with_float_float_float_float_float_float_float_float_float_float_float_float`                        |
+| `Basis`       | 9 x `float`  | `godot_new_Basis_with_float_float_float_float_float_float_float_float_float`                                                |
+| `Projection`  | 16 x `float` | `godot_new_Projection_with_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float` |
 
 不要为普通 numeric constructor 继续扩展硬编码表。
 这些 shim 由 `gdcc_builtin_ctor.h` 提供，并通过 `<gdcc_helper.h>` 间接暴露给生成代码。
@@ -224,18 +226,18 @@ target 生命周期由调用方控制。
 
 当前支持：
 
-| literal | 条件 | 生成策略 |
-|---|---|---|
-| `null` | `Variant` target | `godot_new_Variant_nil()` |
-| `null` | Object target | `NULL` Godot pointer |
-| bool/int/float | 对应 primitive target | 直接写入，float 支持 `inf` / `+inf` / `-inf` 映射 |
-| `"..."` | `NodePath` target | `godot_new_NodePath_with_utf8_chars(u8"...")` |
-| `"..."` | 其他 string-like target | `valueOfStringPtrLiteral(...)` |
-| `&"..."` | `StringName` | `valueOfStringNamePtrLiteral(...)` |
-| `$"..."` | `NodePath` | `godot_new_NodePath_with_utf8_chars(u8"...")` |
-| `[]` | `Array` target | `constructBuiltin(..., List.of())` |
-| `{}` | `Dictionary` target | `constructBuiltin(..., List.of())` |
-| `<Type>(...)` | constructor target | registry resolve + constructor materialization |
+| literal        | 条件                    | 生成策略                                          |
+| -------------- | ----------------------- | ------------------------------------------------- |
+| `null`         | `Variant` target        | `godot_new_Variant_nil()`                         |
+| `null`         | Object target           | `NULL` Godot pointer                              |
+| bool/int/float | 对应 primitive target   | 直接写入，float 支持 `inf` / `+inf` / `-inf` 映射 |
+| `"..."`        | `NodePath` target       | `godot_new_NodePath_with_utf8_chars(u8"...")`     |
+| `"..."`        | 其他 string-like target | `valueOfStringPtrLiteral(...)`                    |
+| `&"..."`       | `StringName`            | `valueOfStringNamePtrLiteral(...)`                |
+| `$"..."`       | `NodePath`              | `godot_new_NodePath_with_utf8_chars(u8"...")`     |
+| `[]`           | `Array` target          | `constructBuiltin(..., List.of())`                |
+| `{}`           | `Dictionary` target     | `constructBuiltin(..., List.of())`                |
+| `<Type>(...)`  | constructor target      | registry resolve + constructor materialization    |
 
 空 literal、类型不匹配 literal、未知 constructor type、unsupported argument literal 都必须 fail-fast，
 不能生成半正确 C 代码。

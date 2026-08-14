@@ -187,9 +187,11 @@ $<result_id> = construct_signal $<receiver_id> "<signal_name>"
 ```
 
 #### construct_callable
-Constructs a new Callable from a function in this compiling unit.
+Constructs a new Callable from a live object receiver and a compile-time method name.
+The result is a destroyable builtin value and does not keep the receiver alive.
+The old one-operand form is illegal.
 ```
-$<result_id> = construct_callable "<function_name>"
+$<result_id> = construct_callable $<receiver_id> "<method_name>"
 ```
 
 #### construct_lambda

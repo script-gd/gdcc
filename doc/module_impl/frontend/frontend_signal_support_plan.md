@@ -2,12 +2,14 @@
 
 > 本文档是 GdScript `signal` 一等值支持（不含 `await signal` 协程）的实施计划。它冻结支持范围、Godot 语义基准、当前已落地事实、关键缺口、设计决策与分阶段实施/验收细则。实施完成后，本文档中“已落地”部分应迁移为独立 `frontend_signal_implementation.md` 事实源，本文档只保留未实现内容。
 >
-> 本版本已根据三轮 expert review 修订。`review-expert-b` 第一轮（needs-rework）：修正 compile gate 前提、补齐 CFG 崩溃点、`SignalLoadItem`/`CallableLoadItem` 管线接入、`construct_callable` 合同迁移、Variant 边界、receiver liveness 与 ObjectID 非持有语义。`review-expert-b` 第二轮（复核）：冻结 compile gate bare-identifier `symbolBindings` 输入、收窄 D8 至 engine/native、冻结 `construct_callable` 迁移方案与旧语法处理、冻结 D4 `class_name` 与 D7 null/freed 行为、明确 G4 动态 args 生成与 opcode 注册、补 Variant→Signal unpack 测试。`review-expert-a` 第三轮（交叉审阅，SOUND-WITH-MINOR-FIXES）：D6/Phase 0 bare `METHOD` blocker 增加 `CallExpression.callee` 排除并把崩溃面扩至 bare `STATIC_METHOD`/`UTILITY_FUNCTION` 值读取、明确 RESOLVED blocker 的 scan 结构重组、冻结 Phase 3 `GodotBindingTool generate-builtin` 重新生成入口、澄清 G4 `argc==0` 不照抄 utility VLA、补 `connect` 返回 `int` 与 D4 usage-flag / D8 engine-signal helper 细节。 第四轮（实施前补强，本轮）：冻结 G4 零长度 VLA 的具体 C 渲染、澄清「writable route」术语（lowering `FrontendWritableRoutePayload` vs sema `RouteKind`）、修正 §3 `CallMethodInsnGen`/`renderGdTypeInC` 行号与兜底分支表述、明确 `.emit/.connect` 的 `AttributeCallStep` 无需改动、修正 G1 位置 B 为诊断恢复、引用 `shouldBlockParameterizedGdccConstructor` 作为 D6 重组先例、补 engine signal 参数类型来源链路。
+> 本版本已根据三轮 expert review 修订。`review-expert-b` 第一轮（needs-rework）：修正 compile gate 前提、补齐 CFG 崩溃点、`SignalLoadItem`/`CallableLoadItem` 管线接入、`construct_callable` 合同迁移、Variant 边界、receiver liveness 与 ObjectID 非持有语义。`review-expert-b` 第二轮（复核）：冻结 compile gate bare-identifier `symbolBindings` 输入、收窄 D8 至 engine/native、冻结 `construct_callable` 迁移方案与旧语法处理、冻结 D4 `class_name` 与 D7 null/freed 行为、明确 G4 动态 args 生成与 opcode 注册、补 Variant→Signal unpack 测试。`review-expert-a` 第三轮（交叉审阅，SOUND-WITH-MINOR-FIXES）：D6/Phase 0 bare `METHOD` blocker 增加 `CallExpression.callee` 排除并把崩溃面扩至 bare `STATIC_METHOD`/`UTILITY_FUNCTION` 值读取、明确 RESOLVED blocker 的 scan 结构重组、冻结 Phase 3 `GodotBindingTool generate-builtin` 重新生成入口、澄清 G4 `argc==0` 不照抄 utility VLA、补 `connect` 返回 `int` 与 D4 usage-flag / D8 engine-signal helper 细节。第四轮（实施前补强）：冻结 G4 零长度 VLA 的具体 C 渲染、澄清「writable route」术语（lowering `FrontendWritableRoutePayload` vs sema `RouteKind`）、修正 §3 `CallMethodInsnGen`/`renderGdTypeInC` 行号与兜底分支表述、明确 `.emit/.connect` 的 `AttributeCallStep` 无需改动、修正 G1 位置 B 为诊断恢复、引用 `shouldBlockParameterizedGdccConstructor` 作为 D6 重组先例、补 engine signal 参数类型来源链路。
+>
+> 2026-08-14 增补 **Phase 4.1**（规划，未实施）：builtin 实例方法引用并入已有 `construct_callable`（扩展 `$receiver` 类型分派，operand schema 不变）；无 receiver 的 static/utility 另增 `construct_standalone_callable`。不得把 static/utility 塞回 `construct_callable`，也不得再拆 `construct_callable_from_variant`。Godot 4.5.1 基线见 §2.4；设计冻结见 D9–D14。
 
 ## 文档状态
 
-- 状态：计划维护中（Phase 0–3 已落地：compile gate + signal 值物化 + ClassDB 注册/冲突守卫 + `.emit` vararg；Phase 4–5 未实施）
-- 更新时间：2026-08-13
+- 状态：计划维护中（Phase 0–4 已落地：compile gate + signal 值物化 + ClassDB 注册/冲突守卫 + `.emit` vararg + `connect`/`disconnect` + Object/self Callable；**Phase 4.1 已规划未实施**：builtin 实例 / GDCC·engine 静态 / utility → Callable；Phase 5 未实施）
+- 更新时间：2026-08-14
 - 相关事实源 / 规则：
   - `frontend_rules.md`
   - `scope_architecture_refactor_plan.md`（signal scope/resolver 冻结合同，§4.5）
@@ -32,14 +34,21 @@
 - signal 跨 Variant 边界的 pack/unpack（见 G8）。
 - signal 在 ClassDB 的注册（`godot_classdb_register_extension_class_signal`）。
 - `Signal.emit(...)` vararg 调用闭环。
-- `Signal.connect(callable, flags=0)` / `Signal.disconnect(callable)` 闭环（依赖 method-reference → `Callable` 构造，仅 Object/self receiver，见 D5）。
+- `Signal.connect(callable, flags=0)` / `Signal.disconnect(callable)` 闭环（Phase 4：Object/self receiver method-reference → `Callable`，见 D5）。
+- Phase 4.1：下列值引用直接物化为 `Callable`（见 D9–D14）：
+  - builtin **实例**方法引用：`vec.abs`、`array.clear`（并入 `construct_callable`，按 `$receiver` 类型换 C 出口）。
+  - GDCC / engine **静态**方法引用：`Worker.build`、bare `static_func`、`JSON.parse_string`（`construct_standalone_callable`）。
+  - utility 函数引用：bare `print`、`lerp`（`construct_standalone_callable`）。
 - 与之相关的 diagnostics、inheritance、engine signal、negative 用例与端到端测试。
 
 ### 1.2 明确非目标（out of scope）
 
 - `await signal` 及任何协程挂起/恢复状态机。
-- lambda / capture 语义扩展（`ConstructCallableInsn` 不承接 lambda）。
-- builtin / static / utility method-reference → Callable（本期仅 Object/self receiver，见 D5）。
+- lambda / capture 语义扩展（`ConstructCallableInsn` / Phase 4.1 新 opcode 均不承接 lambda）。
+- **builtin type-meta 方法当值**（`Vector2.abs`、`Vector2.from_angle`）：Godot 4.5.1 analyzer 在 builtin meta 上只解析 constant/enum，不把方法当值；Phase 4.1 **继续拒绝**，与基线对齐。
+- **构造器当值**（`Node.new`、`Inner.new`）：Godot 自身历史脆弱（release-build / class-object `new`），本期不实施。
+- `CALL_STATIC_METHOD` 完整 backend（`CallStaticMethodInsn` → CInsnGen）不在 Phase 4.1 范围；静态方法 **调用** 与静态方法 **引用** 分开，后者走自定义 Callable trampoline（D12）。
+- Callable `bind` / `unbind` / RPC callable 的新 lowering；已物化的 `Callable` 值走既有 builtin `CallMethodInsn`（`.call` / `.bind`）即可。
 - signal 声明参数签名对 `emit` 的静态强制检查（见 §2.3）。
 - 自定义 `signal` 作为 type annotation 的扩展（`Signal` 类型已存在，不扩展类型系统）。
 
@@ -79,6 +88,37 @@
 - `signal foo(a: int, b: String)` 中的参数类型用于 ClassDB 注册（`GDExtensionPropertyInfo` 数组）与编辑器提示。
 - frontend 已对 signal 参数做 ABI 校验（`LirPublicAbiValidator`），但**不得**在 `emit` 调用点按声明签名做静态 arity/type 拒绝。
 
+### 2.4 Callable 值引用（Phase 4.1 基线，4.5.1 / 本地 `tmp/godot-src` + `godotengine/godot`）
+
+> 下列为 Godot 官方 runtime 行为。GDCC 只对齐 **可稳定复现且有 GDExtension 出口** 的部分；与 Godot 历史 quirk 对齐处必须写进验收，不得“修得比引擎更严/更松”而不记录。
+
+| 源码形态                                                        | Godot 是否允许             | 运行时表示                                                                                              | GDExtension / GDCC 已有出口                                                                                                                       |
+| --------------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Object/self 实例方法：`obj._handler`、`_handler`                | 是                         | 标准 `Callable(Object*, StringName)`                                                                    | `godot_new_Callable_with_Object_StringName`（Phase 4 已用）                                                                                       |
+| builtin **实例**方法：`array.clear`、`vec.abs`                  | 是                         | 自定义 `VariantCallable`：receiver **按值拷贝**进 userdata，`call` 走 `Variant::callp`                  | `godot_Callable_create(self, variant*, method*)`（即 builtin 静态方法 `Callable.create`，`godot_builtin.h:1504`）                                 |
+| `Dictionary.clear` 等 keyed builtin 成员                        | **否**（当 key，不是方法） | 必须显式 `Callable.create(dict, &"clear")`                                                              | 同上；Phase 4.1 **不**把 `dict.clear` 当方法引用                                                                                                  |
+| builtin **type-meta** 方法：`Vector2.abs`、`Vector2.from_angle` | **否**                     | analyzer 在 builtin meta 上只认 constant/enum，硬类型 miss 报错                                         | 无；Phase 4.1 继续拒绝                                                                                                                            |
+| GDCC/script 静态方法：`Worker.build`、bare `static_func`        | 是                         | 标准 `Callable(script_obj, name)`；`is_valid()` 通常为 true                                             | GDCC 没有 script object 作 receiver。必须用 `godot_callable_custom_create2` 直接 trampoline 到已生成静态函数                                      |
+| engine/native 静态方法：`JSON.parse_string`                     | 是                         | 标准 `Callable(GDScriptNativeClass*, name)`；官方测试 `.out` 确认 **`is_valid() == false`** 仍可 `call` | 没有稳定的 NativeClass 对象出口。同样走 `callable_custom_create2` + method-bind/`gdcc_engine_call_static_*` trampoline，**不得**依赖 `is_valid()` |
+| utility：`print`、`lerp`                                        | 是                         | 自定义 `GDScriptUtilityCallable(name)`；analyzer **编译期常量折叠**                                     | 无专用 `callable_custom_create_utility`。用 `godot_callable_custom_create2`，`call_func` 转发已缓存的 `gdcc_utility_<name>`                       |
+| 构造器当值：`Node.new`                                          | 是（但历史脆弱）           | `Callable(class_obj, "new")`                                                                            | 本期不实施                                                                                                                                        |
+
+关键实现锚点（只读，实施时对照，勿抄 Godot 模块私有类）：
+
+- `core/variant/callable.cpp` `Callable::create`：`OBJECT → Callable(ObjectID, method)`，其它 → `VariantCallable`。
+- `core/variant/variant_setget.cpp` `Variant::get_named`：非 Dictionary 的 builtin 方法 → `VariantCallable(*this, member)`。
+- `modules/gdscript/gdscript.cpp` `GDScriptNativeClass::_get` / `GDScript::_get`：静态方法 → 标准 Callable。
+- `modules/gdscript/gdscript_analyzer.cpp:4625+`：utility 标识符常量折叠为 `GDScriptUtilityCallable`。
+- `modules/gdscript/gdscript_analyzer.cpp:4055-4099`：builtin **meta** 只处理 constant/enum，**没有**方法当值分支。
+- 官方测试：`builtin_method_as_callable.gd`、`static_method_as_callable.gd`、`native_static_method_as_callable.gd`。
+
+**对 GDCC 的直接推论**：
+
+1. **禁止**把 static/utility 或伪造 Object 塞进 `construct_callable`。该 opcode 的 **operand schema**（`(VARIABLE, STRING)` min/max=2）保持 D5 冻结；Phase 4.1 只扩展 **`$receiver` 静态类型分派**（Object vs 非 Object builtin）。
+2. builtin 实例方法引用与 Object 实例方法引用共用 `construct_callable`。backend 按 slot 类型选择出口：Object → `godot_new_Callable_with_Object_StringName`；非 Object builtin → `godot_Callable_create`（`VariantCallable`，值拷贝 receiver）。`Variant` receiver 拒绝。
+3. utility 与 GDCC/engine 静态方法引用没有 instance receiver，走新 opcode `construct_standalone_callable` + `godot_callable_custom_create2`，不伪造 class-meta Object。
+4. engine 静态方法引用的 `is_valid()` 在 Godot 里就是 false；GDCC 自定义 trampoline **应报告 valid**（编译期已知目标），这是有意偏离，必须在测试里写明，不得拿官方 `JSON.parse_string.is_valid()` 当回归金标准。
+
 ### 2.4 注册与继承
 
 - signal 通过 `classdb_register_extension_class_signal(library, class_name, signal_name, argument_info, argument_count)` 注册。
@@ -108,7 +148,7 @@
    - **engine signal 参数类型来源**：`resolvedSignalTrace` 经 `GdSignalType.from(signal.signal())` 从 `SignalDef` 派生 `parameterTypes`；engine/native signal 的 `SignalDef` 来自 `extension_api_451.json` 的 `ExtensionGdClass.getSignals()`。Phase 5 的 e2e（`Node.ready`/`Button.pressed`）依赖该链路，Phase 1 前需确认 engine signal 参数类型已正确落进 `ClassRegistry`。
 7. **类型**：`GdSignalType`（`getTypeName()=="Signal"`、`getGdExtensionType()==SIGNAL`，`GdSignalType.java:18-51`）；`GdCallableType` 已存在。
 8. **只读约束**：`FrontendAssignmentSemanticSupport`（L462-466、L656-659）对 signal 赋值报 read-only。
-9. **method-reference 语义**：`resolvedMethodReferenceTrace(...)`（L990-1018）已把 method 引用发布为 `GdCallableType`。
+9. **method-reference 语义**：`resolvedMethodReferenceTrace(...)`（L990-1018）已把 method 引用发布为 `GdCallableType`。Phase 4 只物化 Object/self 实例引用；builtin instance / static / utility 仍由 compile gate 拦截（G10 / Phase 4.1）。
 10. **`.emit`/`.connect` 方法解析**：`reduceInstanceMethodStep` → `ScopeMethodResolver.resolveBuiltinInstanceMethod`（L446-488）→ `findBuiltinClass("Signal")`，candidate 选择已支持 vararg（L773-798）。
 11. **call lowering**：`lowerExactInstanceCall(...)`（`FrontendSequenceItemInsnLoweringProcessors.java:419-436`）→ `CallMethodInsn(result, name, receiverSlot, args)`，并已先发射 `emitAssertObjectLiveIfNeeded`。
 12. **backend call**：`CallMethodInsnGen.generateCCode`（L38-52）按 `BackendMethodCallResolver` 的 mode 分派（含 `BUILTIN`），`emitKnownSignatureCall`（L193-231）做 fixed + varargs 拆分；`BackendMethodCallResolver` 渲染 `godot_<owner>_<method>`。
@@ -117,6 +157,8 @@
     - `godot_classdb_register_extension_class_signal(...)`（`godot_interface.h:869`）
     - `godot_Signal_emit(const godot_Signal*, const godot_Variant **argv, godot_int argc)`（Phase 3 / G4 已闭环）
     - `godot_new_Callable_with_Object_StringName(godot_Object*, const godot_StringName*)`（`godot_builtin.c:11057`）
+    - `godot_Callable_create(godot_Callable *self, const godot_Variant*, const godot_StringName*)`（`godot_builtin.h:1504`，Phase 4.1 builtin 实例路径）
+    - `godot_callable_custom_create2(...)`（`godot_interface.h:793-802`，Phase 4.1 static/utility 与既有 `construct_lambda`）
     - Variant pack/unpack：`godot_new_Variant_with_Signal` / `godot_new_Signal_with_Variant`（`godot_builtin.h:70-71`）、`godot_Signal_destroy`（`godot_builtin.c:11300`）。
 14. **C 类型渲染**：`CGenHelper.renderGdTypeInC(GdSignalType)` → `godot_Signal`、`renderGdTypeName` → `Signal`，二者均命中 `default` 兜底分支（`"godot_" + getTypeName()` / `getTypeName()`，`CGenHelper.java:343,784`），无显式 `GdSignalType` case。属隐式契约；Phase 1 实施时可补显式 `case GdSignalType` 以消除隐式依赖。
 15. **raw object 指针提取**：`CBodyBuilder.renderLiveGodotObjectPtr(fatPtr, objType)`（L611-615），合同为“validated live pointer”。
@@ -126,7 +168,7 @@
 
 ## 4. 关键缺口（已定位，含 review 新增）
 
-> 每条缺口都给出精确文件/符号位置。实施必须逐条闭环，不得遗漏。G1–G5 为原始缺口（已细化），G6–G9 为 review 新增。
+> 每条缺口都给出精确文件/符号位置。实施必须逐条闭环，不得遗漏。G1–G5 为原始缺口（已细化），G6–G9 为 review 新增，G10 为 Phase 4.1。
 
 ### G1 — bare signal 读取：CFG 阶段先崩溃，lowering 也缺 case
 
@@ -151,7 +193,7 @@
 - 落地：vararg builtin 生成 `(self, ..., const godot_Variant **argv, godot_int argc)`；体内 `args[fixed + (argc > 0 ? argc : 1)]`，再以 `(fixed + argc == 0) ? NULL : args` 调用现有 `GDCC_BUILTIN_METHOD_VOID/RETURN`。`GodotUtilityGenerator` 现已采用同一 VLA 防护。`godot_builtin.h/.c` 已按 `GodotBindingTool generate-builtin --gde 4.5.1 --out src/main/c/codegen/include_451/godot` 重新生成。
 - **self const 性（冻结）**：`Signal.emit` metadata `is_const=true`，wrapper 保留 `const godot_Signal *self`。
 
-### G5 — method-reference → Callable 未闭环（`connect`/`disconnect` 前置）
+### G5 — method-reference → Callable 未闭环（`connect`/`disconnect` 前置；Phase 4 已闭环）
 
 - 位置：
   - bare method reference：与 G1 同一 `buildIdentifierOpaqueRoute(...)` `default` 崩溃点（`FrontendCfgGraphBuilder.java:1963-2006`）。
@@ -187,6 +229,16 @@
 - 位置：`FrontendClassSkeletonBuilder.fillClassMembers` 的 `SignalStatement` 分支，现先走 reserved-prefix 再走 `rejectEngineNativeSignalShadow`。
 - **范围收窄（冻结）**：现有 baseline `ScopeSignalResolverTest.resolveObjectSignalShouldPickNearestGdccOwner`（`src/test/java/gd/script/gdcc/scope/resolver/ScopeSignalResolverTest.java:45-62`）明确要求 parent/child 同名 **GDCC** signal 由 nearest-child 优先（shadowing 合法）。因此 G9/D8 **只限定为**：GDCC signal **不得覆盖 inherited engine/native signal**。inherited **GDCC** signal 的 nearest-child 阴影保持允许，不改 scope contract、不改该 baseline 测试。
 - 落地：`ClassRegistry.findEngineSignalInHierarchy` 只匹配 `ExtensionGdClass` signal；skeleton 对命中发 `sema.class_skeleton` 并跳过该 `SignalStatement`。
+
+### G10 — builtin / static / utility 值引用无法物化为 Callable（Phase 4.1）
+
+- 位置：
+  - compile gate：`FrontendCompileCheckAnalyzer.shouldBlockUnsupportedMethodReference`（`FrontendCompileCheckAnalyzer.java:713-726`）拦截 RESOLVED builtin instance `METHOD` 与任何 `STATIC_METHOD`；`BARE_VALUE_REFERENCE_BINDING_KINDS`（L102-105）拦截 bare `STATIC_METHOD` / `UTILITY_FUNCTION` 值读。
+  - CFG：`isResolvedUnsupportedMethodReference`（`FrontendCfgGraphBuilder.java:2953-2960`）在 instance `applyAttributeStep` 与 `buildTypeMetaHeadMemberStep` fail-fast；bare static/utility 仍撞 `buildIdentifierOpaqueRoute` `default`。
+  - lowering：`FrontendMemberLoadInsnLoweringProcessor` 拒绝任何到达 `MemberLoadItem` 的 RESOLVED `METHOD`/`STATIC_METHOD`；opaque `default` 拒绝 bare static/utility。
+  - LIR/backend：`ConstructCallableInsn` / `ConstructInsnGen.resolveObjectReceiverVariable` 目前只接受 `GdObjectType`。`godot_Callable_create` 与 `godot_callable_custom_create2` 已存在但无 frontend producer。`CALL_STATIC_METHOD` 无 CInsnGen。
+- 共享语义 **已就绪**：`resolveInstanceMethodReference` 解析 builtin receiver；`resolveStaticMethodReference` 解析 `TYPE_META`；bare utility/static 经 `symbolBindings()` 发布 `GdCallableType`。缺口全在 gate / CFG / lowering / backend。
+- 需要：扩展 `construct_callable` 的 `$receiver` 类型分派（builtin 实例）；新增 `construct_standalone_callable`（static/utility）；qualified static 用 `StandaloneCallableLoadItem`；按 D6/§7 五条件解除对应 compile-gate blocker。
 
 ---
 
@@ -239,7 +291,8 @@
 
 ### D5 — `connect`/`disconnect` 的 Callable 构造边界 + `construct_callable` 合同迁移
 
-- **Receiver 边界**：本期仅支持 **Object/self receiver** 的 method-reference → Callable（`foo.connect(_handler)`、`foo.connect(obj._handler)`）。`resolveInstanceMethodReference(...)`（`FrontendChainReductionHelper.java:2283-2293`）也会解析 builtin receiver，但 runtime constructor 只接受 `godot_Object*`（`godot_builtin.h:1498-1504`），因此对 **builtin / static / utility** method reference 必须发 unsupported diagnostic，不得隐式假设 builtin value 可转 Object。
+- **Receiver 边界（Phase 4 落地）**：Phase 4 只物化 **Object/self receiver**（`foo.connect(_handler)`、`foo.connect(obj._handler)`）。`godot_new_Callable_with_Object_StringName` 只接受 `godot_Object*`，因此 Phase 4 **不得**把 builtin 强转 Object，也不得把 static/utility 塞进本 opcode。
+- **Phase 4.1 修订（operand schema 仍冻结，类型分派扩展）**：`construct_callable` 保持 `(VARIABLE, STRING)` min/max=2。`$receiver` 允许 `GdObjectType` 或非 Object builtin；`Variant` / static / utility 仍禁止。builtin 实例走同一 opcode 的另一 C 出口（D9/D11）；无 receiver 的函数引用走 `construct_standalone_callable`（D12）。4.1 解封前 compile gate 继续拦截后两类以及 builtin type-meta。
 - **`construct_callable` 合同迁移（已冻结：扩展现有 opcode）**：
   - **决定**：扩展现有 `construct_callable` 携带 `(receiver_var, method_name)` 两个 operand；**不**新增独立 opcode。
   - **现状澄清**：该 opcode 当前**无 frontend producer、无 backend C consumer、无 serialized fixture/测试**；但 `ParsedLirInstruction.java:70-73` 已是现有 parser consumer。仓库内无任何旧 1-operand 形式的 fixture，因此 in-repo 迁移风险低。
@@ -280,6 +333,93 @@
 - **范围（冻结）**：只拒绝 **GDCC signal 覆盖 inherited engine/native signal**；inherited **GDCC** signal 的 nearest-child 阴影保持允许（baseline `ScopeSignalResolverTest.java:45-62`，不得回退）。
 - **落点（冻结）**：在 skeleton/semantic phase（`FrontendClassSkeletonBuilder` 收集 signal 时）检查当前类新声明 signal 是否与 inherited engine/native signal 同名，命中即发 compile-time diagnostic 拒绝；**不**依赖 runtime ClassDB 兜底。纳入 negative test（见 G9）。
 - **落地**：`ClassRegistry.findEngineSignalInHierarchy(className, signalName)` 从给定类（含其自身）沿 super 链查找，只消费 `ExtensionGdClass`；skeleton 用 `classDef.getSuperName()` 起查，避免把当前类自己的新声明误判为 inherited engine signal。
+
+### D9 —（Phase 4.1）扩展 `construct_callable` 类型分派；只新增 `construct_standalone_callable`
+
+- **operand schema 仍冻结**：`construct_callable` 保持 `(VARIABLE, STRING)` min/max=2。旧 1-operand 仍非法。禁止加 kind 枚举 / optional operand / 兼容 shim。
+- **`$receiver` 类型分派（Phase 4.1 修订 D5）**：
+
+  | `$receiver` 静态类型                         | C 出口                                                                                                            | liveness                                          |
+  | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+  | `GdObjectType`                               | 维持 Phase 4：`godot_new_Callable_with_Object_StringName`                                                         | D7：`self`/RefCounted 跳过，其它 Object hard-fail |
+  | 非 Object builtin（`Vector2` / `Array` / …） | `ConstructInsnGen` 内 pack 临时 Variant → `godot_Callable_create(NULL, &tmp, name)`，立刻 `godot_Variant_destroy` | **不**发 Object guard                             |
+  | `Variant`                                    | **拒绝**（盒内是 Object 还是 builtin 编译期未知，会绕过 D7）                                                      | —                                                 |
+  | 无 receiver（static / utility）              | **禁止**走本 opcode                                                                                               | —                                                 |
+
+- **只新增一条 opcode**：`construct_standalone_callable`（与 `construct_signal` / `construct_lambda` 并列，走 `ConstructInsnGen` 注册）：
+  `$<result> = construct_standalone_callable "<kind>" "<owner_or_empty>" "<name>"`，`kind ∈ {utility, static_gdcc, static_engine}`。
+- **不**新增 `construct_callable_from_variant`：builtin 实例与 Object 共用 `construct_callable`，backend 按 slot 类型换出口。
+- **不**新增 `construct_utility_callable` / `construct_static_callable`：无 receiver 的两类共用 standalone + kind。
+- **不**复用 `CONSTRUCT_LAMBDA`：lambda 携带 capture 与函数体；本阶段没有 capture。
+- standalone 的 touch-point：`GdInstruction` schema、insn record、`ParsedLirInstruction`、`doc/gdcc_low_ir.md`、round-trip 测试、`ConstructInsnGen.getInsnOpcodes()` + CCodegen dispatch 测试。`SimpleLirBlockInsnParser` / `DomLirSerializer` 仍靠 enum-driven 泛化，无需手改。
+- `construct_callable` 本身 **不改** operand schema；只需改 `ConstructInsnGen` 的 receiver 解析（把 `resolveObjectReceiverVariable` 换成类型 switch）并更新 `gdcc_low_ir.md` 的类型分派说明。
+- 新 opcode 必须加入 `ConstructInsnGen.getInsnOpcodes()`，否则 `CCodegen` 按 opcode 映射不会路由到 switch case。
+
+### D10 —（Phase 4.1）CFG item：扩展 `CallableLoadItem` 谓词 + 新增 `StandaloneCallableLoadItem`
+
+- **builtin 实例方法引用**（`vec.abs`、`array.clear`）：仍走 **qualified** `AttributePropertyStep`。把 `isResolvedObjectMethodReference` 旁再开 `isResolvedBuiltinInstanceMethodReference`：`RESOLVED && METHOD && INSTANCE && ownerKind==BUILTIN`。命中则发已有 `CallableLoadItem`（仍不带 writable route）。**不要**为 builtin 再造第三个 load item——receiver value id + method name 形状与 Object 路径相同，分流放在 backend。
+- **`CallableLoadItem` 谓词扩展（冻结）**：
+  - Object/self：`METHOD + INSTANCE + ownerKind != BUILTIN` → lowering 发 `ConstructCallableInsn` + D7。
+  - builtin instance：`METHOD + INSTANCE + ownerKind == BUILTIN` → lowering **同样**发 `ConstructCallableInsn`，**不**发 Object liveness guard。
+  - 其它 RESOLVED `METHOD`/`STATIC_METHOD` **不得**落入 `CallableLoadItem`。
+- **static / utility 值引用** 形状不同（无 instance receiver）：新增 `StandaloneCallableLoadItem(anchor, kind, ownerName, callableName, resultValueId)`。
+  - qualified static：`Type.static_func` 在 `buildTypeMetaHeadMemberStep` 命中 `RESOLVED STATIC_METHOD` 时发此 item，**不再** fail-fast，也 **不得** 落到 `MemberLoadItem`。
+  - bare static / utility：扩展 `buildIdentifierOpaqueRoute`，不要再走 `default` 崩溃。**冻结选择**：与 bare `METHOD` 对齐——bare 留在 `OpaqueExprValueItem`，由 `FrontendOpaqueExprInsnLoweringProcessors` 发射 `construct_standalone_callable`；qualified static 才用 `StandaloneCallableLoadItem`。这样 G7 只需为该 item 接一次管线。
+- G7 同步清单对 `StandaloneCallableLoadItem` 全套生效：`ValueOpItem.permits`、`FrontendBodyLoweringSupport` materialization、processor registry、imports、producer 测试；**不得**携带 `FrontendWritableRoutePayload`。
+- `FrontendMemberLoadInsnLoweringProcessor` 对 RESOLVED `METHOD`/`STATIC_METHOD` 的 fail-fast **保留**（defense-in-depth）。放行后这两类不应再到达 `MemberLoadItem`；到达即 invariant 违规。
+- `DYNAMIC` 成员继续走 `MemberLoadItem`，不得被新谓词误收。
+
+### D11 —（Phase 4.1）builtin 实例方法引用并入 `construct_callable`
+
+- lowering：`FrontendCallableLoadInsnLoweringProcessor` 对 Object/self 与 builtin instance **都**发射 `ConstructCallableInsn(result, receiver, method)`。差别只在 guard：Object 走 D7；builtin **不**发 `AssertObjectLiveInsn`。
+- backend：`ConstructInsnGen` 按 `$receiver` 静态类型分派（D9 表）。builtin 分支在 generator 内 pack 临时 Variant，立刻 destroy，**不**另插 `PackVariantInsn`。
+  - `godot_Callable_create` 的 `self` 是 Godot static builtin method 的 unused receiver；传 `NULL`（与 generated wrapper 一致）。
+  - 结果写入 `GdCallableType` destroyable slot，走既有 `emitNonObjectSlotWrite` / alias-safety。
+- receiver 语义对齐 `VariantCallable`：
+  - 普通 builtin（`Vector2`）按值拷贝，之后改 `vec` 不影响已构造 Callable。
+  - `Array` / `Dictionary` 按 Godot Variant 共享语义拷贝（底层 buffer 共享）；`array.clear` 作为 Callable 调用会清空原数组。必须有 runtime 锚点，不得按“深拷贝”写测试。
+- `Dictionary` / keyed 容器上的 `dict.clear` **不是**方法引用（Godot 当 key）。sema 若仍发布 `METHOD`，compile gate / CFG 必须拒绝或走属性路径，**不得**误发 `construct_callable` 的 builtin 分支。实施前用现有 `FrontendChainReductionHelper` 测一次 `Dictionary.clear` 的 published fact，把结论写回本节。
+- 禁止把 builtin receiver 传给 `godot_new_Callable_with_Object_StringName` 或伪造 Object。
+
+### D12 —（Phase 4.1）static / utility → `construct_standalone_callable` + custom trampoline
+
+- **不**复用 `Callable(class_meta_object, name)`：GDCC 没有 `GDScript` / `GDScriptNativeClass` 对象可当 receiver；engine 路径上 Godot 自己的 `is_valid()` 还是 false。
+- backend 为每种 kind 生成/复用一个 `gdcc_*` helper（登记进 `GodotBindingProvidedSymbols` / module-local family，遵守 `gdcc_runtime_lib.md` 注册规则）：
+  - `utility`：userdata 指向编译期 utility 名或已缓存的 `gdcc_utility_<name>`；`call_func` 转发 `(r_ret, argv, argc)`。`is_valid_func` 恒 true。`hash/equal/less` 按 name。`get_argument_count_func` 用 utility metadata（vararg → 与 `GDScriptUtilityCallable` 的 Variant 分支一致，取 `get_utility_function_argument_count`）。无堆分配则 `free_func` 可为 no-op。
+  - `static_gdcc`：userdata 持有已生成的 GDCC 静态函数指针 + ABI 描述；`call_func` 按已发布的 `FrontendResolvedCall` / function metadata 做 Variant unpack → 调静态函数 → pack 返回值。目标必须是当前编译单元或已链接 GDCC 类的 `static func`。
+  - `static_engine`：userdata 持有 owner + method + `EngineMethodBindSpec`（或直接调已有 `gdcc_engine_call_static_<owner>_<method>_<symbolId>`）。`call_func` 走 method-bind，`NULL` receiver。`is_valid_func` 在 bind 可解析时为 true（有意不同于 Godot native-class `is_valid()==false`）。
+- **builtin 静态方法引用**（`Vector2.from_angle`）按 §1.2 / §2.4 **拒绝**，不进入 `static_engine` / `static_gdcc`。
+- frontend 必须在 lowering 时写入正确 kind + owner：
+  - bare utility → `utility` / owner 空 / name=`print`。
+  - bare GDCC static / `Worker.build` → `static_gdcc` / owner=`Worker`（或实际声明 owner）/ name。
+  - `JSON.parse_string` → `static_engine` / owner=`JSON` / name=`parse_string`。
+- `CALL_STATIC_METHOD` backend 仍保持非目标。本阶段只让 **值引用** 变成可 `Callable.call` 的对象；`Worker.build()` 调用面维持现状。
+- custom callable 必须填 `GDExtensionCallableCustomInfo2`（不要用已弃用的 `callable_custom_create`）。`token` 使用与 `construct_lambda` 文档相同的 GDExtension token。`object_id` 填 0。
+
+### D13 —（Phase 4.1）compile gate 解除顺序与 callee 排除
+
+- 仍遵守 compile-check 文档 §7 五条件：lowering 落地、合同写入本文与 `gdcc_low_ir.md`、backend 能消费、正反测试、同步 `frontend_rules.md` / `frontend_compile_check_analyzer_implementation.md` / `frontend_lowering_cfg_pass_implementation.md` / `diagnostic_manager.md`（若诊断文案变了）。
+- **分步解除，禁止一次拆光**：
+  1. 先解除 RESOLVED **builtin instance** method-ref blocker（`METHOD && BUILTIN && INSTANCE`）。
+  2. 再解除 RESOLVED **GDCC/engine** `STATIC_METHOD`（qualified）与 bare `STATIC_METHOD` 值读。
+  3. 最后解除 bare `UTILITY_FUNCTION` 值读。
+- **继续拦截**：
+  - builtin type-meta 方法当值（若 sema 能发布；不能发布则保持 miss/UNSUPPORTED，不要新造 RESOLVED）。
+  - lambda / capture。
+  - `Node.new` 当值。
+  - 作为 `CallExpression.callee()` 的 identifier **不得**被值引用 blocker 误伤（D6 callee 排除保持；`helper(right)` / `print(x)` / `build(x)` 零 `sema.compile_check`）。
+- 诊断文案从“only Object/self can materialize”改为：builtin 实例指向 `construct_callable` 类型分派；static/utility 指向 `construct_standalone_callable`。旧文案测试必须一起改。
+- `DYNAMIC` 仍不得升为 compile blocker。
+
+### D14 —（Phase 4.1）所有权 / 生命周期 / 失败边界
+
+- 新构造的 Callable 都是 **destroyable builtin value**，走 `godot_destroy_Callable`。
+- Object 实例：仍不保活 receiver（ObjectID 非 owning，D7）。
+- builtin 实例：receiver 已拷进 `VariantCallable`；LIR 层不保活原 slot。`Array`/`Dictionary` 共享语义见 D11。
+- static / utility：无 receiver，不发 D7 guard。
+- 构造失败（未知 utility 名、engine bind 缺失、GDCC 静态符号未生成）必须 **compile-time / codegen fail-fast**，不得生成会在第一次 `call` 才崩的空 Callable。
+- `connect(vec.abs)` / `connect(print)` / `connect(Worker.build)` 一旦物化成功，继续走既有 `Signal.connect` builtin 路径；不为本阶段新造 connect 指令。
+- Callable 值上的 `.call(...)` / `.bind(...)` 仍是 builtin `CallMethodInsn`。本阶段不实施“对未物化 method-ref 直接 `.bind`”的捷径，除非它先物化成 `GdCallableType`。
 
 ---
 
@@ -369,7 +509,7 @@
 - 落地注记：
   - 仍走既有 `lowerExactInstanceCall` → `CallMethodInsn`；未新增 emit 指令。
   - vararg wrapper 用 `args[fixed + (argc > 0 ? argc : 1)]` + `(fixed + argc == 0) ? NULL : args`；`rpc_id` 的 1 个 fixed 参数先填入 `args[0]`。
-  - compile gate 的 `SIGNAL_METHOD_NAMES` 现为 `connect` / `disconnect`；`.emit` 放行后声明签名仍不静态拒绝 arity/type。
+  - compile gate 已放行 `.emit` / `.connect` / `.disconnect`；声明签名仍不静态拒绝 emit arity/type。
   - `var unused: int = sig.emit()` 继续由 `sema.type_check` 按 void→int 拒绝。
 - 验收：
   - `foo.emit()`、`foo.emit(1)`、`foo.emit(1, "x", vec)` 均可编译；`emit()` 零参数生成 C 合法（无零长度 VLA）。
@@ -382,25 +522,107 @@
 
 - 目标：`foo.connect(_handler)`、`foo.disconnect(_handler)`、`foo.connect(obj._handler)` 闭环。
 - 依赖：Phase 1（`connect`/`disconnect` 的 receiver 需为已物化 `godot_Signal` 值）。`connect`/`disconnect` 本身是 fixed-arg builtin call，**技术上不依赖 Phase 3**；保留“建议 Phase 3 之后”仅为做 connect+emit 的完整 e2e 运行时验证。
+- 状态：**已完成**（2026-08-14）。
 - 动作：
-  1. 按 D5 冻结方案扩展 `construct_callable` 合同，同步 `GdInstruction`/`ConstructCallableInsn`/`ParsedLirInstruction`/`gdcc_low_ir.md`/测试（`SimpleLirBlockInsnParser`、`DomLirSerializer` 无需改）。
-  2. CFG：为 bare 与 receiver method reference 增加承载（`CallableLoadItem`），修复 `buildIdentifierOpaqueRoute` bare `METHOD` 崩溃点；不共享 property writable-route。
-  3. body lowering：method-reference 读取发射扩展后的 `ConstructCallableInsn`（bare receiver 固定 `self`）；对 builtin/static/utility method reference 发 unsupported。
-  4. backend：`ConstructInsnGen` 新增 `ConstructCallableInsn` case，渲染 `godot_new_Callable_with_Object_StringName(recv_live_object, "method")`；套用 D7 liveness；opcode 保持在 `getInsnOpcodes()` 中。
-  5. `Signal.connect(callable, flags)` / `Signal.disconnect(callable)` 经既有 builtin call 路径消费 `Callable`（含 flags 省略/显式）。
-  6. compile gate：解除 `.connect` / `.disconnect` blocker；lambda/字面量 Callable 保持拦截。
+  1. ~~按 D5 冻结方案扩展 `construct_callable` 合同，同步 `GdInstruction`/`ConstructCallableInsn`/`ParsedLirInstruction`/`gdcc_low_ir.md`/测试（`SimpleLirBlockInsnParser`、`DomLirSerializer` 无需改）。~~
+  2. ~~CFG：为 bare 与 receiver method reference 增加承载（`CallableLoadItem`），修复 `buildIdentifierOpaqueRoute` bare `METHOD` 崩溃点；不共享 property writable-route。~~
+  3. ~~body lowering：method-reference 读取发射扩展后的 `ConstructCallableInsn`（bare receiver 固定 `self`）；对 builtin/static/utility method reference 发 unsupported。~~
+  4. ~~backend：`ConstructInsnGen` 新增 `ConstructCallableInsn` case，渲染 `godot_new_Callable_with_Object_StringName(recv_live_object, "method")`；套用 D7 liveness；opcode 保持在 `getInsnOpcodes()` 中。~~
+  5. ~~`Signal.connect(callable, flags)` / `Signal.disconnect(callable)` 经既有 builtin call 路径消费 `Callable`（含 flags 省略/显式）。~~
+  6. ~~compile gate：解除 `.connect` / `.disconnect` blocker；lambda/字面量 Callable 保持拦截。~~
+- 落地注记：
+  - `ConstructCallableInsn(resultId, receiverVarId, methodName)` operand 为 `(VARIABLE, STRING)`；旧 1-operand 形式由 operand-count 校验拒绝。
+  - `CallableLoadItem` 只承接 `RESOLVED` + `bindingKind==METHOD` + instance + 非 builtin owner 的 receiver 读取；bare `METHOD` 留在 opaque 路径并固定 `self`。
+  - builtin/static method-reference 不得落入 `MemberLoadItem`：CFG 在 instance 与 type-meta head 两条路径 fail-fast；lowering 对任何到达 `MemberLoadItem` 的 RESOLVED `METHOD`/`STATIC_METHOD` 再 fail-fast。
+  - compile gate 放行 `.connect` / `.disconnect` 与 bare Object/self `METHOD` 值读取；builtin instance / static / utility method-reference 与 lambda 仍拦截。
+  - flags 使用已支持的限定形式 `Object.CONNECT_*`；bare `CONNECT_DEFERRED` 不在本期 scope 模型内。
+  - D7：`self` / RefCounted 不发 `AssertObjectLiveInsn`；其它 Object receiver 发 hard-fail guard。
 - 验收：
   - `foo.connect(_handler)` / `foo.disconnect(_handler)` / `foo.connect(obj._handler)` 可编译；`Callable` 正确绑定 receiver 与 method 名。
   - `connect` flags 省略与显式（`CONNECT_DEFERRED`/`CONNECT_ONE_SHOT`）均可编译。
   - builtin/static/utility/lambda method reference 被明确拒绝。
   - 对应 targeted + 端到端测试通过（含真实触发 handler 的运行时验证，若 Zig 环境可用）。
 
+### Phase 4.1 — builtin 实例 / GDCC·engine 静态 / utility → Callable（G10 + D9–D14）
+
+- 目标：`var c = vec.abs`、`var c = Worker.build`、`var c = JSON.parse_string`、`var c = print` 以及它们作为 `Signal.connect(...)` 实参时可编译并物化为可 `call` 的 `godot_Callable`。
+- 依赖：Phase 4（D5 Object/self 路径保持冻结且绿）。不依赖 Phase 5。
+- 状态：**规划中**（2026-08-14 写入；未实施）。
+- 实施顺序冻结为四个可单独提交的子阶段。每个子阶段结束必须：相关 targeted tests 绿、`frontend_rules.md` / 本计划落地注记同步、compile gate 只解除该子阶段 surface。
+
+#### Phase 4.1a — LIR / backend 合同先行（不放行 compile gate）
+
+- 动作：
+  1. 按 D9 扩展 `ConstructInsnGen` 的 `construct_callable` 类型分派：Object 保持原出口；非 Object builtin 渲染 `godot_Callable_create` + 临时 Variant destroy；`Variant` receiver fail-fast。更新 `gdcc_low_ir.md` 说明，**不改** operand schema。
+  2. 新增 `CONSTRUCT_STANDALONE_CALLABLE`：`GdInstruction` schema、insn record、`ParsedLirInstruction`、`gdcc_low_ir.md`、round-trip / 非法 operand 负例。
+  3. `ConstructInsnGen` 增加 standalone case 并注册 `getInsnOpcodes()`；补 CCodegen dispatch 正反例。
+  4. standalone 渲染 `godot_callable_custom_create2`；先落地 `utility` trampoline（`gdcc_utility_*` 已存在，风险最低）。`static_gdcc` / `static_engine` helper 可在本子阶段只留 fail-fast stub，但 opcode 与 kind 字符串校验必须齐。
+  5. 按 `gdcc_runtime_lib.md` 登记任何新 `gdcc_*` helper。
+- 验收：
+  - 手写 LIR：Object `construct_callable` 仍 round-trip；builtin receiver 的同一 opcode 走 `godot_Callable_create`；standalone fixture 能 parse / serialize。
+  - `CConstructInsnGenTest` 的 Object 正例无回归；新增 builtin / `Variant` 负例。
+  - 未知 `kind`、缺 owner 的 `static_*`、空 method name 在 parser 或 codegen fail-fast。
+  - compile gate **仍拦截** builtin instance / static / utility 源码形态（本子阶段不得解封）。
+
+#### Phase 4.1b — builtin 实例方法引用
+
+- 动作：
+  1. 扩展 `isResolvedBuiltinInstanceMethodReference`；`applyAttributeStep` 对 builtin instance `METHOD` 发 `CallableLoadItem`，不再 fail-fast。
+  2. `FrontendCallableLoadInsnLoweringProcessor` 对 builtin instance 同样发 `ConstructCallableInsn`；不发 Object liveness guard。分流留给 backend 类型分派。
+  3. 先用现有 chain-reduction 测试确认 `Dictionary.clear` / keyed 容器 published fact；若是 key 不是 `METHOD`，写进 D11 并加负例。
+  4. 满足五条件后，只解除 compile gate 的 builtin instance method-ref blocker。
+  5. type-meta `Vector2.abs` / `Vector2.from_angle` 保持拒绝（§1.2）。
+- 验收：
+  - [N] CFG：`vec.abs` / `array.clear` 发布 `CallableLoadItem`，无 writable route。
+  - [N] lowering：发射 `construct_callable`（与 Object 路径同一 opcode），**不**另造 from-variant 指令。
+  - [N] backend：C 含 `godot_Callable_create`；临时 Variant 被 destroy；**不含** `godot_new_Callable_with_Object_StringName`。
+  - [N] compile gate：`var c = vec.abs` 零 `sema.compile_check`；`Vector2.from_angle` / `Vector2.abs` 仍被拒或保持 UNSUPPORTED。
+  - [N] 负例：`dict.clear` 不走 variant-callable（按 D11 核实后的 fact）。
+  - [N] 既有 `vec.abs()` **调用**、Object `_handler` 路径无回归。
+  - [N] e2e（Zig 可用）：`array.clear` 作为 Callable 调用后原数组被清空（共享语义）。
+  - [B] `FrontendCfgGraphBuilderTest.buildExecutableBodyRejectsBuiltinAndStaticMethodReferencesAsPropertyLoads` 拆成：builtin instance 放行 + static 仍拒绝（直到 4.1c）。
+
+#### Phase 4.1c — GDCC / engine 静态方法引用
+
+- 动作：
+  1. `buildTypeMetaHeadMemberStep`：`RESOLVED STATIC_METHOD` 且 owner 为 GDCC/ENGINE 时发 `StandaloneCallableLoadItem`；BUILTIN static 继续 fail-fast / compile 拒绝。
+  2. bare `STATIC_METHOD`：opaque 路径发射 `construct_standalone_callable "static_gdcc" ...`（当前类 owner）。
+  3. 落地 `static_gdcc` 与 `static_engine` trampoline（不再是 stub）。engine 路径复用 `gdcc_engine_call_static_*` / method-bind，`NULL` receiver。
+  4. 解除 qualified + bare `STATIC_METHOD` 值读 blocker；callee 排除保持。
+  5. **不**实现 `CallStaticMethodInsn` 的 CInsnGen。
+- 验收：
+  - [N] `var c = Worker.build` / `var c = static_func` / `var c = JSON.parse_string` 可编译。
+  - [N] CFG/lowering：qualified → `StandaloneCallableLoadItem` → `construct_standalone_callable`；bare → opaque → 同一 opcode。
+  - [N] `Worker.build()` / `JSON.parse_string(...)` **调用**不被值引用路径误伤。
+  - [N] e2e：`c.call(...)` 返回与直接调用相同的结果。
+  - [N] `c.is_valid()` 对 GDCC/engine trampoline 为 true（相对 Godot native-class quirk 的有意偏离，测试注释必须写明）。
+  - [N] 未知 engine 静态方法 / 未生成的 GDCC 静态符号：compile 或 codegen fail-fast。
+  - [B] `FrontendVoidReturnCallIntegrationTest` 对 `call_static_method` 无 generator 的负例保持，除非该测试只覆盖值引用。
+
+#### Phase 4.1d — utility 函数引用 + connect 回归
+
+- 动作：
+  1. bare `UTILITY_FUNCTION` opaque 路径发射 `construct_standalone_callable "utility" "" "print"`。
+  2. 解除 bare utility 值读 blocker；`print(x)` callee 排除保持。
+  3. 补 `sig.connect(vec.abs)` / `sig.connect(print)` / `sig.connect(Worker.build)` 回归（消费 Phase 3/4 已有 connect 路径）。
+  4. 同步 §8.6：standalone `var c = _handler` 保持放行；builtin instance / GDCC·engine static / utility 值读改为支持；type-meta builtin / lambda / `Node.new` 仍拒绝。
+- 验收：
+  - [N] `var c = print` / `var c = lerp` 可编译；`c.call(...)` e2e 与直接调用一致（`print` 无返回值、`lerp` 有返回值各一条）。
+  - [N] `print(x)` 零 `sema.compile_check`。
+  - [N] `connect` 能接受这三类 Callable 并在 emit 时触发（Zig 可用时）。
+  - [N] lambda / `Node.new` / `Vector2.from_angle` 仍 unsupported。
+  - [B] Phase 4 Object/self 全部锚点保持绿。
+
+- 落地注记（实施时填写，规划期占位）：
+  - 尚未编码。实施每个子阶段时按 Phase 4 的风格把“冻结合同 / 实际落点 / 测试类名”写回本段。
+- 若某子阶段与 writable-route / dynamic / `CALL_STATIC_METHOD` 冲突不可调和：只允许把 **该子阶段** 降级，必须在此记录降级边界，不得把“规划中”改成“已完成”。
+
 ### Phase 5 — 测试矩阵补全、文档收口、compile gate 终检
 
 - 目标：补齐 Variant 边界 / native / inherited / flags / 生命周期 / negative 用例，收口文档。
-- 依赖：Phase 1-4。
+- 依赖：Phase 1–4；Phase 4.1 完成后把 §8.6 的“值读取拦截”条改成支持断言，再做终检。4.1 未完成前 Phase 5 不得把 builtin/static/utility 值引用写成已支持。
 - 动作：
-  1. 补齐 §8 测试矩阵所有用例（尤其 G8 Variant 边界、native/inherited signal、connect flags、null/freed receiver、method-reference negatives）。
+  1. 补齐 §8 测试矩阵所有用例（尤其 G8 Variant 边界、native/inherited signal、connect flags、null/freed receiver、Phase 4.1 正反例）。
   2. 将本文档“已落地”部分迁移为 `frontend_signal_implementation.md` 事实源；本文档保留未实现/降级边界；把 4.5.1 语义基线写入事实源。
   3. 同步更新所有仍写 `.emit`/signal 未闭环的旧文档：`frontend_rules.md`、`scope_architecture_refactor_plan.md`、`frontend_lowering_plan.md`、`frontend_lowering_skeleton_pre_pass_implementation.md`。
   4. 全量 `clean build`；确认 compile gate 终检无遗漏 blocker、无误放行。
@@ -419,7 +641,9 @@
 - metadata 缺失时禁止猜测 dynamic signal；保持 `MetadataUnknown` → dynamic/unsupported 边界。
 - diagnostics 必须走 `DiagnosticManager` + “diagnostic + skip subtree” 恢复策略；普通源码错误不得作为异常控制流。
 - 继承 signal 不得重复注册；engine signal 只读、不注册、冲突被拒（D8）。
-- builtin/static/utility method-reference → Callable 必须发 unsupported，不得伪造 Object receiver。
+- Phase 4：builtin/static/utility method-reference → Callable 在 4.1 解封前必须发 unsupported，不得伪造 Object receiver。
+- Phase 4.1 解封后：builtin 实例必须走 `construct_callable` 的非 Object 分支（`godot_Callable_create`），不得伪造 Object；static/utility 只许 `construct_standalone_callable`，不得塞回 `construct_callable`。到达 `MemberLoadItem` 的 RESOLVED `METHOD`/`STATIC_METHOD` 仍 fail-fast。`Variant` receiver 的 `construct_callable` 必须 fail-fast。
+- builtin type-meta 方法当值、构造器当值、lambda 仍必须 unsupported / fail-closed。
 
 ---
 
@@ -443,12 +667,14 @@
 - [B] `LirPublicAbiValidatorTest`：signal 参数 ABI。
 - [N] `construct_signal` 指令 round-trip 与 operand 校验。
 - [N] `construct_callable`（迁移后 `(receiver_var, method_name)`）round-trip；旧 1-operand 形式被 operand-count 校验拒绝。
+- [N] Phase 4.1：`construct_callable` 对 Object / builtin receiver 的同一 schema round-trip；`construct_standalone_callable` round-trip；非法 kind / 缺 operand / `Variant` receiver 被拒。
 
 ### 8.3 backend / codegen（targeted）
 
 - [N] `ConstructInsnGen`：`construct_signal` → `godot_new_Signal_with_Object_StringName`。
 - [N] `ConstructInsnGen`：`construct_callable` → `godot_new_Callable_with_Object_StringName`。
-- [N] CCodegen dispatch：`CONSTRUCT_SIGNAL` / `CONSTRUCT_CALLABLE` 已注册进 `getInsnOpcodes()` 并被路由（opcode 未注册的负例）。
+- [N] Phase 4.1：`construct_callable`（builtin receiver）→ `godot_Callable_create`；`construct_standalone_callable` → `godot_callable_custom_create2`。
+- [N] CCodegen dispatch：`CONSTRUCT_SIGNAL` / `CONSTRUCT_CALLABLE` / `CONSTRUCT_STANDALONE_CALLABLE` 已注册进 `getInsnOpcodes()` 并被路由（opcode 未注册的负例）。
 - [N] `GodotBuiltinGenerator`：vararg builtin 方法生成 vararg wrapper（`Signal.emit` 为锚点 + 全部 vararg builtin 回归 + `argc==0` + `const self`）。
 - [N] `entry.c.ftl` signal 注册（拆分为独立 anchor test）：
   - 无参 signal 传 `NULL, 0`；
@@ -477,15 +703,18 @@
 - [N] 继承 signal 在 subclass instance 上 emit。
 - [N] engine/native signal 读取（如 `Button.pressed`、`Node.ready`）与 inherited native signal 读取。
 - [N] null / freed receiver 的 signal 读取 / emit / connect 行为。
-- [N] negative：signal 赋值、static 读取、lambda/builtin/static method-reference connect、`await signal`（应报 unsupported）。
+- [N] negative：signal 赋值、static signal 读取、lambda / builtin type-meta / `Node.new` 当 Callable、`await signal`（应报 unsupported）。
+- [N] Phase 4.1 e2e：`vec.abs` / `array.clear` / `Worker.build` / `JSON.parse_string` / `print` 作为 Callable 被 `.call` 或 `connect` 消费。
 
 ### 8.6 compile gate
 
 - [N] Phase 0 blocker anchor 测试（`FrontendCompileCheckAnalyzerTest`）。
 - [N] 各阶段 blocker 解除前后对比测试（feature-specific anchor，不只断言总数）。
-- [N] standalone `var c = _handler`、builtin/static method-reference 的支持/拒绝边界。
-- [N] **callee-exclusion 回归**：合法 bare method 调用 `helper(right)` 保持零 `sema.compile_check`（`FrontendCompileCheckAnalyzerTest.java:661-683` 锚点），而 `var c = helper`（method-reference 值）被拦截。
-- [N] bare static-method / utility-function **值**读取被拦截；其正常调用不被误伤。
+- [N] standalone `var c = _handler`（Phase 4 已放行）。
+- [N] Phase 4.1 支持边界：`var c = vec.abs`、`var c = Worker.build`、`var c = JSON.parse_string`、`var c = print` / `lerp`。
+- [N] Phase 4.1 拒绝边界：`Vector2.abs` / `Vector2.from_angle`、`Node.new`、lambda、`dict.clear` 方法误认（按 D11）。
+- [N] **callee-exclusion 回归**：合法 bare method / static / utility **调用** `helper(right)` / `build(x)` / `print(x)` 保持零 `sema.compile_check`（`FrontendCompileCheckAnalyzerTest.java:661-683` 锚点）。
+- [N] 4.1 完成前：bare static/utility **值**读取仍拦截；4.1c/4.1d 解封后该条改为“值读取放行、调用不被误伤”。
 
 ---
 
@@ -495,6 +724,12 @@
 - **零长度 VLA 工具链风险（已闭环）**：`GodotUtilityGenerator` 与 `GodotBuiltinGenerator` 均已用 `args[fixed + (argc > 0 ? argc : 1)]` + `(fixed + argc == 0) ? NULL : args` 避免零长度 VLA。`Signal.emit()` 仍须作为**真实生成 C** 的回归，而非只测字符串片段。
 - **ObjectID 非 owning 引用**（D7/§2.1）：`Signal`/`Callable` 只保存 ObjectID，不保活 receiver；receiver 被释放后 value 仍存在但已失效。`godot_Signal_destroy` 只销毁 value storage。必须明确：构造/调用的诊断与 guard、freed receiver 后的行为、connection 在 callable object 被释放后的行为，并补测试。
 - **method-reference lowering（Phase 4）风险最高**：可能与 writable-route / dynamic receiver 路径交织；若冲突过大，按 D5 降级为后续阶段并显式记录。
+- **Phase 4.1 新风险**：
+  - `godot_Callable_create` 的 `self` 参数易被误当成结果槽；必须按 generated wrapper 传 `NULL` 并把返回值写入 dest。
+  - `Array`/`Dictionary` Variant 共享语义写错测试会把实现锁死成深拷贝。
+  - `static_engine` trampoline 若误走 NativeClass `is_valid()` 语义，会与“编译期已知 bind”冲突。
+  - 一次解封三类 compile gate 会让失败面不可定位；必须按 4.1b→4.1c→4.1d 解封。
+  - 不要顺便实现 `CALL_STATIC_METHOD` backend；那是独立缺口，混进本阶段会拖垮验收。
 - **engine signal**：原生类 signal 只读、不注册、同名冲突被拒（D8）；需在 negative 用例覆盖。
 - **文档漂移**：`frontend_rules.md:68` 仍写 `.emit(...)` use-site 未闭环；`scope_architecture_refactor_plan.md`、`frontend_lowering_plan.md`、`frontend_lowering_skeleton_pre_pass_implementation.md` 也有同类旧表述。各阶段解封时必须同步更新对应文档，并把 4.5.1 语义基线写入事实源。
 - **符号名**：本计划统一使用 `ConstructCallableInsn`（仓库不存在 `ConnectCallableInsn`，避免实现者搜索错误符号）。

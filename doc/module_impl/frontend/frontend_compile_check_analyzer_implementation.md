@@ -246,9 +246,9 @@ compile gate 当前会在 compile surface 上扫描以下已发布事实：
 
 generic status scan 之外，compile gate 还保留一组 **RESOLVED feature-specific blocker**（结构同 `shouldBlockParameterizedGdccConstructor`，必须放在 `isCompileBlocking` 短路之前）：
 
-- `resolvedCalls()` 中 receiver 为 `GdSignalType` 且名为 `connect` / `disconnect` 的调用
-- `symbolBindings()` 中 `kind ∈ {METHOD, STATIC_METHOD, UTILITY_FUNCTION}` 的 **bare identifier 值读取**；作为 surface `CallExpression.callee()` 的 identifier 必须排除，以免误伤合法 bare method / static / utility 调用
-- Phase 1 已解除 RESOLVED signal **值读取** blocker（bare `SIGNAL` identifier 与 receiver-qualified `bindingKind == SIGNAL` member）。Phase 3 已解除 RESOLVED `.emit` blocker。static-context / type-meta signal 仍由 generic `UNSUPPORTED`/`BLOCKED` scan 拦截。
+- `resolvedMembers()` 中 RESOLVED 的 builtin instance method-reference（`bindingKind == METHOD && ownerKind == BUILTIN`）以及任何 static method-reference（`bindingKind == STATIC_METHOD`）
+- `symbolBindings()` 中 `kind ∈ {STATIC_METHOD, UTILITY_FUNCTION}` 的 **bare identifier 值读取**；作为 surface `CallExpression.callee()` 的 identifier 必须排除，以免误伤合法 bare method / static / utility 调用
+- Phase 1 已解除 RESOLVED signal **值读取** blocker。Phase 3 已解除 RESOLVED `.emit` blocker。Phase 4 已解除 `.connect` / `.disconnect` 与 bare Object/self `METHOD` 值读取 blocker。static-context / type-meta signal 仍由 generic `UNSUPPORTED`/`BLOCKED` scan 拦截。
 - 这些 blocker 只发 `sema.compile_check`，不改写 shared `analyze(...)` / inspection 已发布的 RESOLVED facts
 
 `symbolBindings()` 本身还键 `LiteralExpression` / `SelfExpression`；bare blocker 只消费 `IdentifierExpression`，不得按 `GdSignalType` / `GdCallableType` 猜测局部变量。
@@ -424,7 +424,7 @@ compile gate 当前统一使用：
 - `FrontendCompileCheckAnalyzerTest`
   - 显式 AST compile-block（当前 3 类：Conditional / Preload / GetNode；Array / Dictionary / Cast / TypeTest 已离开 intercept）
   - short-circuit binary 不再被 compile gate 误封口
-  - Phase 1 signal 值读取与 Phase 3 `.emit` 已放行；仍拦截 `.connect/.disconnect` 与 bare METHOD/STATIC_METHOD/UTILITY_FUNCTION 值读取；callee-exclusion 与 `Signal`/`Callable` 局部变量不被类型猜测误伤
+  - Phase 1 signal 值读取、Phase 3 `.emit`、Phase 4 `.connect/.disconnect` 与 bare Object/self `METHOD` 值读取已放行；仍拦截 bare STATIC_METHOD/UTILITY_FUNCTION 值读取与 builtin/static method-reference；callee-exclusion 与 `Signal`/`Callable` 局部变量不被类型猜测误伤
   - generic side-table blocker
   - property initializer island 上的 generic blocker
   - shared-anchor 去重

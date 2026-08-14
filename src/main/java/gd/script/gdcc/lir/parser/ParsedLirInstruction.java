@@ -73,8 +73,9 @@ public record ParsedLirInstruction(
                     yield new ConstructSignalInsn(resultId, receiverVarId, signalName);
                 }
                 case CONSTRUCT_CALLABLE -> {
-                    var fn = ((StringOperand) operands.getFirst()).value();
-                    yield new ConstructCallableInsn(resultId, fn);
+                    var receiverVarId = ((VariableOperand) operands.getFirst()).id();
+                    var methodName = ((StringOperand) operands.get(1)).value();
+                    yield new ConstructCallableInsn(resultId, receiverVarId, methodName);
                 }
                 case CONSTRUCT_LAMBDA -> {
                     var lambdaName = ((StringOperand) operands.getFirst()).value();

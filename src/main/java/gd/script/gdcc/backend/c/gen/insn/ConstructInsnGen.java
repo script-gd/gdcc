@@ -10,6 +10,7 @@ import gd.script.gdcc.lir.insn.ConstructArrayInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructDictionaryInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.ConstructCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructSignalInsn;
 import gd.script.gdcc.lir.insn.ConstructionInstruction;
 import gd.script.gdcc.scope.ClassDef;
@@ -18,6 +19,7 @@ import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedArrayType;
+import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -49,7 +51,8 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                 GdInstruction.CONSTRUCT_ARRAY,
                 GdInstruction.CONSTRUCT_DICTIONARY,
                 GdInstruction.CONSTRUCT_OBJECT,
-                GdInstruction.CONSTRUCT_SIGNAL
+                GdInstruction.CONSTRUCT_SIGNAL,
+                GdInstruction.CONSTRUCT_CALLABLE
         );
     }
 
@@ -110,7 +113,11 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                                 "Result variable ID '" + resultVar.id() + "' must be Signal type for construct_signal"
                         );
                     }
-                    var receiverVar = resolveSignalReceiverVariable(bodyBuilder, receiverVarId);
+                    var receiverVar = resolveObjectReceiverVariable(
+                            bodyBuilder,
+                            receiverVarId,
+                            "construct_signal"
+                    );
                     var livePtr = bodyBuilder.renderLiveGodotObjectPtr(
                             bodyBuilder.valueOfVar(receiverVar).generateCode(),
                             (GdObjectType) receiverVar.type()
@@ -123,6 +130,34 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                                             + livePtr
                                             + ", "
                                             + CBodyBuilder.renderStaticStringNameLiteral(signalName)
+                                            + ")",
+                                    resultVar.type()
+                            )
+                    );
+                }
+                case ConstructCallableInsn(_, var receiverVarId, var methodName) -> {
+                    if (!(resultVar.type() instanceof GdCallableType)) {
+                        throw bodyBuilder.invalidInsn(
+                                "Result variable ID '" + resultVar.id() + "' must be Callable type for construct_callable"
+                        );
+                    }
+                    var receiverVar = resolveObjectReceiverVariable(
+                            bodyBuilder,
+                            receiverVarId,
+                            "construct_callable"
+                    );
+                    var livePtr = bodyBuilder.renderLiveGodotObjectPtr(
+                            bodyBuilder.valueOfVar(receiverVar).generateCode(),
+                            (GdObjectType) receiverVar.type()
+                    );
+                    bodyBuilder.assignVar(
+                            target,
+                            // Callable is a destroyable builtin value and only stores a non-owning ObjectID.
+                            bodyBuilder.valueOfExpr(
+                                    "godot_new_Callable_with_Object_StringName("
+                                            + livePtr
+                                            + ", "
+                                            + CBodyBuilder.renderStaticStringNameLiteral(methodName)
                                             + ")",
                                     resultVar.type()
                             )
@@ -153,18 +188,19 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
         return resultVar;
     }
 
-    private @NotNull LirVariable resolveSignalReceiverVariable(
+    private @NotNull LirVariable resolveObjectReceiverVariable(
             @NotNull CBodyBuilder bodyBuilder,
-            @NotNull String receiverVarId
+            @NotNull String receiverVarId,
+            @NotNull String opcodeName
     ) {
-        var actualReceiverId = StringUtil.requireTrimmedNonBlank(receiverVarId, "construct_signal receiver");
+        var actualReceiverId = StringUtil.requireTrimmedNonBlank(receiverVarId, opcodeName + " receiver");
         var receiverVar = bodyBuilder.func().getVariableById(actualReceiverId);
         if (receiverVar == null) {
-            throw bodyBuilder.invalidInsn("construct_signal receiver variable ID '" + actualReceiverId + "' not found");
+            throw bodyBuilder.invalidInsn(opcodeName + " receiver variable ID '" + actualReceiverId + "' not found");
         }
         if (!(receiverVar.type() instanceof GdObjectType)) {
             throw bodyBuilder.invalidInsn(
-                    "construct_signal receiver variable ID '" + actualReceiverId + "' must be Object type"
+                    opcodeName + " receiver variable ID '" + actualReceiverId + "' must be Object type"
             );
         }
         return receiverVar;

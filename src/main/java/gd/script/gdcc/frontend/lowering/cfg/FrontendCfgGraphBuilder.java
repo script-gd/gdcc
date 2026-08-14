@@ -16,6 +16,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopNextItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopShouldContinueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.CallableLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SignalLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
@@ -86,6 +87,7 @@ import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.scope.PropertyDef;
+import gd.script.gdcc.scope.ScopeOwnerKind;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -956,6 +958,13 @@ public final class FrontendCfgGraphBuilder {
             @Nullable String preferredResultValueId
     ) {
         var publishedMember = requireLoweringReadyMember(attributePropertyStep);
+        if (isResolvedUnsupportedMethodReference(publishedMember)) {
+            throw new IllegalStateException(
+                    "RESOLVED method-reference '"
+                            + publishedMember.memberName()
+                            + "' cannot lower as a type-meta member load; only Object/self instance methods materialize as Callable"
+            );
+        }
         var resultValueId = chooseResultValueId(preferredResultValueId);
         cursor.currentSequence().items().add(new MemberLoadItem(
                 attributePropertyStep,
@@ -1775,6 +1784,29 @@ public final class FrontendCfgGraphBuilder {
                             null
                     );
                 }
+                if (isResolvedObjectMethodReference(publishedMember)) {
+                    // RESOLVED Object/self METHOD reads construct a fresh Callable. Do not attach
+                    // a property writable route; builtin/static/utility refs stay off this item.
+                    receiverBuild.cursor().currentSequence().items().add(new CallableLoadItem(
+                            attributePropertyStep,
+                            publishedMember.memberName(),
+                            receiverBuild.resultValueId(),
+                            resultValueId
+                    ));
+                    yield new ValueBuild(
+                            receiverBuild.cursor(),
+                            attributePropertyStep,
+                            resultValueId,
+                            null
+                    );
+                }
+                if (isResolvedUnsupportedMethodReference(publishedMember)) {
+                    throw new IllegalStateException(
+                            "RESOLVED method-reference '"
+                                    + publishedMember.memberName()
+                                    + "' cannot lower as a property; only Object/self instance methods materialize as Callable"
+                    );
+                }
                 receiverBuild.cursor().currentSequence().items().add(new MemberLoadItem(
                         attributePropertyStep,
                         publishedMember.memberName(),
@@ -2017,7 +2049,7 @@ public final class FrontendCfgGraphBuilder {
                     ),
                     List.of()
             );
-            case CONSTANT, SINGLETON, SIGNAL -> null;
+            case CONSTANT, SINGLETON, SIGNAL, METHOD -> null;
             default -> throw new IllegalStateException(
                     "Identifier writable-route publication is not supported for binding kind " + binding.kind()
             );
@@ -2907,6 +2939,24 @@ public final class FrontendCfgGraphBuilder {
     private static boolean isResolvedSignalMember(@NotNull FrontendResolvedMember publishedMember) {
         return publishedMember.status() == FrontendMemberResolutionStatus.RESOLVED
                 && publishedMember.bindingKind() == FrontendBindingKind.SIGNAL;
+    }
+
+    /// Only RESOLVED Object/self METHOD members become `CallableLoadItem`. Builtin, static, and
+    /// DYNAMIC method-references stay off this item so they cannot fabricate an Object receiver.
+    private static boolean isResolvedObjectMethodReference(@NotNull FrontendResolvedMember publishedMember) {
+        return publishedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                && publishedMember.bindingKind() == FrontendBindingKind.METHOD
+                && publishedMember.receiverKind() == FrontendReceiverKind.INSTANCE
+                && publishedMember.ownerKind() != ScopeOwnerKind.BUILTIN;
+    }
+
+    /// Builtin instance and any static method-reference stay off `CallableLoadItem` and must not
+    /// fall through to `MemberLoadItem`, or they would be mis-lowered as property/static loads.
+    private static boolean isResolvedUnsupportedMethodReference(@NotNull FrontendResolvedMember publishedMember) {
+        return publishedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                && (publishedMember.bindingKind() == FrontendBindingKind.METHOD
+                || publishedMember.bindingKind() == FrontendBindingKind.STATIC_METHOD)
+                && !isResolvedObjectMethodReference(publishedMember);
     }
 
     /// Dynamic members are runtime-open instance routes. A TYPE_META dynamic fact means the static

@@ -10,6 +10,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.CallableLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SignalLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
@@ -1163,6 +1164,141 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals(receiver.resultValueId(), signalLoad.receiverValueId()),
                 () -> assertEquals(signalLoad.resultValueId(), stopNode.returnValueIdOrNull()),
                 () -> assertTrue(entryNode.items().stream().noneMatch(MemberLoadItem.class::isInstance))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyKeepsBareMethodIdentifierOnOpaqueValueSurfaceWithoutWritableRoute() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_bare_method_ref.gd",
+                """
+                        class_name CfgBuilderBareMethodRef
+                        extends Node
+                        
+                        func _handler():
+                            pass
+                        
+                        func copy_handler() -> Callable:
+                            return _handler
+                        """,
+                "copy_handler",
+                Map.of("CfgBuilderBareMethodRef", "RuntimeCfgBuilderBareMethodRef")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode("stop_1"));
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var receiver = assertInstanceOf(IdentifierExpression.class, returnStatement.value());
+        var valueItem = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().getFirst());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertEquals(1, entryNode.items().size()),
+                () -> assertSame(receiver, valueItem.expression()),
+                () -> assertEquals(valueItem.resultValueId(), stopNode.returnValueIdOrNull()),
+                () -> assertTrue(entryNode.items().stream().noneMatch(MemberLoadItem.class::isInstance)),
+                () -> assertTrue(entryNode.items().stream().noneMatch(CallableLoadItem.class::isInstance))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyBuildsReceiverMethodReferencesAsCallableLoadsWithoutWritableRoute() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_receiver_method_ref.gd",
+                """
+                        class_name CfgBuilderReceiverMethodRef
+                        extends Node
+                        
+                        func _handler():
+                            pass
+                        
+                        func copy_from(other: CfgBuilderReceiverMethodRef) -> Callable:
+                            return other._handler
+                        """,
+                "copy_from",
+                Map.of("CfgBuilderReceiverMethodRef", "RuntimeCfgBuilderReceiverMethodRef")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode("stop_1"));
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var attribute = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var handlerStep = assertInstanceOf(AttributePropertyStep.class, attribute.steps().getFirst());
+        var receiver = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().get(0));
+        var callableLoad = assertInstanceOf(CallableLoadItem.class, entryNode.items().get(1));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertEquals(2, entryNode.items().size()),
+                () -> assertEquals(attribute.base(), receiver.expression()),
+                () -> assertEquals(handlerStep, callableLoad.anchor()),
+                () -> assertEquals("_handler", callableLoad.methodName()),
+                () -> assertEquals(List.of(receiver.resultValueId()), callableLoad.operandValueIds()),
+                () -> assertEquals(receiver.resultValueId(), callableLoad.receiverValueId()),
+                () -> assertEquals(callableLoad.resultValueId(), stopNode.returnValueIdOrNull()),
+                () -> assertTrue(entryNode.items().stream().noneMatch(MemberLoadItem.class::isInstance))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyRejectsBuiltinAndStaticMethodReferencesAsPropertyLoads() throws Exception {
+        var builtinAnalyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_builtin_method_ref.gd",
+                """
+                        class_name CfgBuilderBuiltinMethodRef
+                        extends Node
+                        
+                        func copy_abs(vec: Vector2) -> Callable:
+                            return vec.abs
+                        """,
+                "copy_abs",
+                Map.of("CfgBuilderBuiltinMethodRef", "RuntimeCfgBuilderBuiltinMethodRef")
+        );
+        var staticAnalyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_static_method_ref.gd",
+                """
+                        class_name CfgBuilderStaticMethodRef
+                        extends Node
+                        
+                        static func make_static():
+                            return 1
+                        
+                        func copy_static() -> Callable:
+                            return CfgBuilderStaticMethodRef.make_static
+                        """,
+                "copy_static",
+                Map.of("CfgBuilderStaticMethodRef", "RuntimeCfgBuilderStaticMethodRef")
+        );
+
+        var builtinEx = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(
+                        builtinAnalyzed.function().body(),
+                        builtinAnalyzed.analysisData()
+                )
+        );
+        var staticEx = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(
+                        staticAnalyzed.function().body(),
+                        staticAnalyzed.analysisData()
+                )
+        );
+
+        assertAll(
+                () -> assertTrue(builtinEx.getMessage().contains("vec.abs")
+                        || builtinEx.getMessage().contains("abs"), builtinEx.getMessage()),
+                () -> assertTrue(builtinEx.getMessage().contains("cannot lower as a property"), builtinEx.getMessage()),
+                () -> assertTrue(staticEx.getMessage().contains("make_static"), staticEx.getMessage()),
+                () -> assertTrue(
+                        staticEx.getMessage().contains("cannot lower as a type-meta member load")
+                                || staticEx.getMessage().contains("cannot lower as a property"),
+                        staticEx.getMessage()
+                )
         );
     }
 

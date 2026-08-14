@@ -24,7 +24,6 @@ import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.scope.ScopeOwnerKind;
-import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.scope.Scope;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
@@ -98,10 +97,9 @@ public class FrontendCompileCheckAnalyzer {
     private static final @NotNull Set<String> NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES = Set.of(
             FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
     );
-    /// Phase 3 lifted `.emit`; `.connect` / `.disconnect` stay blocked until Callable materialization.
-    private static final @NotNull Set<String> SIGNAL_METHOD_NAMES = Set.of("connect", "disconnect");
+    /// Phase 4 lifted Object/self method-reference values. Bare static/utility value reads stay
+    /// blocked because they cannot become `godot_new_Callable_with_Object_StringName`.
     private static final @NotNull Set<FrontendBindingKind> BARE_VALUE_REFERENCE_BINDING_KINDS = Set.of(
-            FrontendBindingKind.METHOD,
             FrontendBindingKind.STATIC_METHOD,
             FrontendBindingKind.UTILITY_FUNCTION
     );
@@ -190,23 +188,28 @@ public class FrontendCompileCheckAnalyzer {
                 + "supports only zero-argument custom object construction";
     }
 
-    /// Feature-specific compile-only message for Signal.connect/disconnect.
-    private static @NotNull String signalMethodCallCompileBlockedMessage(
-            @NotNull FrontendResolvedCall publishedCall
+    /// Feature-specific compile-only message for receiver-qualified method-references that
+    /// cannot become `godot_new_Callable_with_Object_StringName`.
+    private static @NotNull String unsupportedMethodReferenceCompileBlockedMessage(
+            @NotNull FrontendResolvedMember publishedMember
     ) {
-        return "Signal method '"
-                + Objects.requireNonNull(publishedCall, "publishedCall must not be null").callableName()
-                + "(...)' is recognized by the frontend but is blocked in compile mode because "
-                + "signal call lowering support lands";
+        var kindLabel = switch (Objects.requireNonNull(publishedMember, "publishedMember must not be null").bindingKind()) {
+            case METHOD -> "method-reference";
+            case STATIC_METHOD -> "static-method";
+            default -> throw new IllegalStateException(
+                    "unexpected method-reference kind: " + publishedMember.bindingKind()
+            );
+        };
+        return "Qualified " + kindLabel + " '" + publishedMember.memberName()
+                + "' is recognized by the frontend but is blocked in compile mode because "
+                + "only Object/self method-references can materialize as Callable";
     }
 
-    /// Feature-specific compile-only message for bare METHOD / STATIC_METHOD /
-    /// UTILITY_FUNCTION value reads.
+    /// Feature-specific compile-only message for bare STATIC_METHOD / UTILITY_FUNCTION value reads.
     /// Kind is taken from the published binding so the helper does not guess from expression type.
-    /// SIGNAL value reads are intentionally excluded after Phase 1 materialization.
+    /// Bare METHOD value reads are intentionally excluded after Phase 4 materialization.
     private static @NotNull String bareValueReferenceCompileBlockedMessage(@NotNull FrontendBinding binding) {
         var kindLabel = switch (Objects.requireNonNull(binding, "binding must not be null").kind()) {
-            case METHOD -> "method-reference";
             case STATIC_METHOD -> "static-method";
             case UTILITY_FUNCTION -> "utility-function";
             default -> throw new IllegalStateException("unexpected bare value-reference kind: " + binding.kind());
@@ -632,12 +635,19 @@ public class FrontendCompileCheckAnalyzer {
         }
 
         /// Member facts are reported at the exact property-step anchor to keep diagnostics precise.
-        /// RESOLVED SIGNAL value reads now lower through `SignalLoadItem`; only residual
+        /// RESOLVED SIGNAL / Object METHOD value reads now lower through dedicated items; residual
         /// BLOCKED/DEFERRED/FAILED/UNSUPPORTED members stay compile-blocked here.
         private void scanResolvedMemberCompileBlocks() {
             for (var entry : resolvedMembers.entrySet()) {
                 var anchor = requireAttributePropertyStep(entry.getKey());
                 var publishedMember = Objects.requireNonNull(entry.getValue(), "publishedMember must not be null");
+                if (shouldBlockUnsupportedMethodReference(anchor, publishedMember)) {
+                    reportCompileBlock(
+                            anchor,
+                            unsupportedMethodReferenceCompileBlockedMessage(publishedMember)
+                    );
+                    continue;
+                }
                 if (!isCompileBlocking(publishedMember.status()) || !compileSurfaceNodes.contains(anchor)) {
                     continue;
                 }
@@ -666,13 +676,6 @@ public class FrontendCompileCheckAnalyzer {
                             anchor,
                             gdccParameterizedConstructorCompileBlockedMessage(publishedCall),
                             true
-                    );
-                    continue;
-                }
-                if (shouldBlockSignalMethodCall(anchor, publishedCall)) {
-                    reportCompileBlock(
-                            anchor,
-                            signalMethodCallCompileBlockedMessage(publishedCall)
                     );
                     continue;
                 }
@@ -707,23 +710,24 @@ public class FrontendCompileCheckAnalyzer {
             };
         }
 
-        /// `.connect` / `.disconnect` on a Signal receiver are recognized but not lowering-ready.
-        /// `.emit` already lowers through the builtin vararg `CallMethodInsn` path.
-        /// Match on published receiver type plus method name so ordinary Signal-local calls stay untouched.
-        /// DYNAMIC Signal calls stay runtime-open, matching the generic status exemption.
-        private boolean shouldBlockSignalMethodCall(
+        /// Builtin instance and any static method-reference cannot become an Object-backed Callable.
+        /// DYNAMIC facts stay runtime-open, matching the generic status exemption.
+        private boolean shouldBlockUnsupportedMethodReference(
                 @NotNull Node anchor,
-                @NotNull FrontendResolvedCall publishedCall
+                @NotNull FrontendResolvedMember publishedMember
         ) {
-            return compileSurfaceNodes.contains(anchor)
-                    && publishedCall.status() == FrontendCallResolutionStatus.RESOLVED
-                    && publishedCall.receiverType() instanceof GdSignalType
-                    && SIGNAL_METHOD_NAMES.contains(publishedCall.callableName());
+            if (!compileSurfaceNodes.contains(anchor)
+                    || publishedMember.status() != FrontendMemberResolutionStatus.RESOLVED) {
+                return false;
+            }
+            return publishedMember.bindingKind() == FrontendBindingKind.STATIC_METHOD
+                    || (publishedMember.bindingKind() == FrontendBindingKind.METHOD
+                    && publishedMember.ownerKind() == ScopeOwnerKind.BUILTIN);
         }
 
-        /// Bare METHOD / STATIC_METHOD / UTILITY_FUNCTION identifiers used as values still crash
-        /// CFG today. Consume published `symbolBindings()` and skip identifiers that are only the
-        /// callee of a surface `CallExpression`, so legal `helper(right)` stays compile-ready.
+        /// Bare STATIC_METHOD / UTILITY_FUNCTION identifiers used as values still crash CFG today.
+        /// Consume published `symbolBindings()` and skip identifiers that are only the callee of a
+        /// surface `CallExpression`, so legal `helper(right)` / `print(x)` stays compile-ready.
         private void scanBareValueReferenceCompileBlocks() {
             for (var entry : symbolBindings.entrySet()) {
                 // The published table also keys LiteralExpression / SelfExpression. Those are

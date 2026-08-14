@@ -15,6 +15,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopInitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopNextItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopShouldContinueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.CallableLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SignalLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
@@ -39,6 +40,7 @@ import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructContainerLiteralInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.ConstructCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructSignalInsn;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
 import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
@@ -117,6 +119,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 new FrontendCallInsnLoweringProcessor(),
                 new FrontendMemberLoadInsnLoweringProcessor(),
                 new FrontendSignalLoadInsnLoweringProcessor(),
+                new FrontendCallableLoadInsnLoweringProcessor(),
                 new FrontendSubscriptLoadInsnLoweringProcessor(),
                 new FrontendCompoundAssignmentBinaryInsnLoweringProcessor(),
                 new FrontendAssignmentInsnLoweringProcessor(),
@@ -656,6 +659,14 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                         "RESOLVED SIGNAL members must lower through SignalLoadItem, not MemberLoadItem"
                 );
             }
+            if (resolvedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                    && (resolvedMember.bindingKind() == FrontendBindingKind.METHOD
+                    || resolvedMember.bindingKind() == FrontendBindingKind.STATIC_METHOD)) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "RESOLVED METHOD/STATIC_METHOD members must lower through CallableLoadItem, not MemberLoadItem"
+                );
+            }
             var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
             if (resolvedMember.status() == FrontendMemberResolutionStatus.DYNAMIC) {
                 lowerDynamicMemberLoad(session, block, node, resolvedMember, resultSlotId);
@@ -812,6 +823,56 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     resultSlotId,
                     receiverSlotId,
                     node.signalName()
+            ));
+            return block;
+        }
+    }
+
+    /// Materializes a published RESOLVED Object METHOD member into `construct_callable`.
+    ///
+    /// The processor consumes only the published member fact and the CFG receiver value id.
+    /// Builtin, static, and utility method-references never reach this item.
+    private static final class FrontendCallableLoadInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<CallableLoadItem, Void> {
+        @Override
+        public @NotNull Class<CallableLoadItem> nodeType() {
+            return CallableLoadItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull CallableLoadItem node,
+                @Nullable Void context
+        ) {
+            var resolvedMember = session.requireResolvedMember(node.anchor());
+            if (resolvedMember.status() != FrontendMemberResolutionStatus.RESOLVED
+                    || resolvedMember.bindingKind() != FrontendBindingKind.METHOD
+                    || resolvedMember.receiverKind() != FrontendReceiverKind.INSTANCE
+                    || resolvedMember.ownerKind() == ScopeOwnerKind.BUILTIN) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "callable load requires a RESOLVED Object METHOD member, but got "
+                                + resolvedMember.status()
+                                + "/"
+                                + resolvedMember.bindingKind()
+                                + "/"
+                                + resolvedMember.receiverKind()
+                                + "/"
+                                + resolvedMember.ownerKind()
+                );
+            }
+            if (node.receiverValueId() == null) {
+                throw session.unsupportedSequenceItem(node, "callable load is missing a receiver value id");
+            }
+            var receiverSlotId = session.requireLiveObjectReceiverSlotId(node.receiverValueId());
+            var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
+            session.emitAssertObjectLiveIfNeeded(block, receiverSlotId);
+            block.appendNonTerminatorInstruction(new ConstructCallableInsn(
+                    resultSlotId,
+                    receiverSlotId,
+                    node.methodName()
             ));
             return block;
         }

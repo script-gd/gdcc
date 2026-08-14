@@ -194,6 +194,7 @@ fully-terminated 的 `if` / `elif` / `else` 允许把 region `mergeId` 指向 `S
 - `CompoundAssignmentBinaryOpItem`
 - `MemberLoadItem`
 - `SignalLoadItem`
+- `CallableLoadItem`
 - `SubscriptLoadItem`
 - `CallItem`
 - `MergeValueItem`
@@ -256,6 +257,7 @@ payload 只继续承载 post-call reverse commit；payload-backed call 若缺失
 graph publication / body-lowering invariant 处直接失败，不再静默回退成 leaf 重读；direct-slot mutating receiver 的
 “真实源 slot”现在也不再由 body lowering 特判回推，而是通过 alias-backed receiver value 直接表达。
 dynamic instance-call receiver 现也冻结为同一套 payload consumer：
+
 - `FrontendCallMutabilitySupport` 会把 `DYNAMIC_FALLBACK + INSTANCE` 视为 conservative may-mutate route
 - 因而已发布 writable receiver payload 的 dynamic call 也会在 call 之后进入 shared reverse-commit path
 - 若 current carrier 静态可判定，则继续复用 `FrontendWritableTypeWritebackSupport` 的 fast-path/fast-skip

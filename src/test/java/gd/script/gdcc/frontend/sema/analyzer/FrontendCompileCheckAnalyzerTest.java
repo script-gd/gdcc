@@ -1637,7 +1637,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileBlocksSignalConnectDisconnectButReleasesEmit() throws Exception {
+    void analyzeForCompileReleasesSignalConnectDisconnectAndBareMethodReference() throws Exception {
         var source = """
                 class_name CompileCheckSignalMethods
                 extends Node
@@ -1647,52 +1647,20 @@ class FrontendCompileCheckAnalyzerTest {
                 func _handler():
                     pass
                 
-                func ping(sig: Signal):
+                func ping(sig: Signal, other: CompileCheckSignalMethods):
                     sig.emit()
                     sig.connect(_handler)
                     sig.disconnect(_handler)
+                    var err = sig.connect(other._handler, Object.CONNECT_DEFERRED)
+                    var copied = _handler
+                    return err
                 """;
 
         var compiled = analyzeForCompile("compile_check_signal_methods.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        var pingFunction = findFunction(compiled.unit().ast().statements(), "ping");
-        var connectStep = findNamedCallStep(pingFunction, "connect");
-        var disconnectStep = findNamedCallStep(pingFunction, "disconnect");
-        var connectHandler = findNode(
-                connectStep,
-                IdentifierExpression.class,
-                identifier -> identifier.name().equals("_handler")
-        );
-        var disconnectHandler = findNode(
-                disconnectStep,
-                IdentifierExpression.class,
-                identifier -> identifier.name().equals("_handler")
-        );
-        var expectedRanges = Set.of(
-                FrontendRange.fromAstRange(connectStep.range()),
-                FrontendRange.fromAstRange(disconnectStep.range()),
-                FrontendRange.fromAstRange(connectHandler.range()),
-                FrontendRange.fromAstRange(disconnectHandler.range())
-        );
 
-        assertTrue(compiled.diagnostics().hasErrors());
-        assertEquals(4, compileDiagnostics.size(), compileDiagnostics::toString);
-        assertEquals(
-                expectedRanges,
-                compileDiagnostics.stream().map(FrontendDiagnostic::range).collect(java.util.stream.Collectors.toSet())
-        );
-        assertEquals(0, compileDiagnostics.stream()
-                .filter(diagnostic -> diagnostic.message().contains("Signal method 'emit(...)'"))
-                .count(), compileDiagnostics::toString);
-        assertEquals(1, compileDiagnostics.stream()
-                .filter(diagnostic -> diagnostic.message().contains("Signal method 'connect(...)'"))
-                .count());
-        assertEquals(1, compileDiagnostics.stream()
-                .filter(diagnostic -> diagnostic.message().contains("Signal method 'disconnect(...)'"))
-                .count());
-        assertEquals(2, compileDiagnostics.stream()
-                .filter(diagnostic -> diagnostic.message().contains("Bare method-reference '_handler'"))
-                .count());
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
     @Test
@@ -1739,7 +1707,6 @@ class FrontendCompileCheckAnalyzerTest {
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         var pingFunction = findFunction(compiled.unit().ast().statements(), "ping");
         var expectedRanges = Set.of(
-                FrontendRange.fromAstRange(findIdentifier(pingFunction, "method_ref", "helper").range()),
                 FrontendRange.fromAstRange(findIdentifier(pingFunction, "static_ref", "make_static").range()),
                 FrontendRange.fromAstRange(findIdentifier(pingFunction, "utility_ref", "print").range())
         );
@@ -1748,7 +1715,7 @@ class FrontendCompileCheckAnalyzerTest {
         assertEquals(expectedRanges, compileDiagnostics.stream()
                 .map(FrontendDiagnostic::range)
                 .collect(java.util.stream.Collectors.toSet()));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
                 diagnostic.message().contains("Bare method-reference 'helper'")
         ));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
@@ -1757,6 +1724,69 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
                 diagnostic.message().contains("Bare utility-function 'print'")
         ));
+    }
+
+    @Test
+    void analyzeForCompileBlocksBuiltinAndStaticMethodReferences() throws Exception {
+        var source = """
+                class_name CompileCheckUnsupportedMethodReferences
+                extends Node
+                
+                static func make_static():
+                    return 1
+                
+                func ping(vec: Vector2):
+                    var builtin_ref = vec.abs
+                    var static_ref = CompileCheckUnsupportedMethodReferences.make_static
+                    var lambda_cb = func():
+                        pass
+                    pinged.connect(lambda_cb)
+                
+                signal pinged
+                """;
+
+        var compiled = analyzeForCompile("compile_check_unsupported_method_references.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        var pingFunction = findFunction(compiled.unit().ast().statements(), "ping");
+        var absStep = findNamedPropertyStep(pingFunction, "builtin_ref", "abs");
+        var staticStep = findNamedPropertyStep(pingFunction, "static_ref", "make_static");
+
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.range().equals(FrontendRange.fromAstRange(absStep.range()))
+                        && diagnostic.message().contains("Qualified method-reference 'abs'")
+        ), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.range().equals(FrontendRange.fromAstRange(staticStep.range()))
+                        && diagnostic.message().contains("Qualified static-method 'make_static'")
+        ), compileDiagnostics::toString);
+        assertFalse(diagnosticsByCategory(compiled.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileBlocksDirectLambdaConnectArgument() throws Exception {
+        var source = """
+                class_name CompileCheckDirectLambdaConnect
+                extends Node
+                
+                signal pinged
+                
+                func ping(sig: Signal):
+                    sig.connect(func():
+                        pass
+                    )
+                """;
+
+        var compiled = analyzeForCompile("compile_check_direct_lambda_connect.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        var unsupportedBindingDiagnostics = diagnosticsByCategory(
+                compiled.diagnostics(),
+                "sema.unsupported_binding_subtree"
+        );
+
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+        assertFalse(unsupportedBindingDiagnostics.isEmpty(), compiled.diagnostics()::toString);
     }
 
     @Test
@@ -1886,7 +1916,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeKeepsDedicatedGuardForResolvedSignalMethodCallRegression() throws Exception {
+    void analyzeReleasesResolvedSignalConnectCallRegression() throws Exception {
         var preparedInput = prepareCompileCheckInput("compile_check_signal_resolved_regression.gd", """
                 class_name CompileCheckSignalResolvedRegression
                 extends Node
@@ -1942,9 +1972,7 @@ class FrontendCompileCheckAnalyzerTest {
                 preparedInput.analysisData().diagnostics(),
                 "sema.compile_check"
         );
-        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
-        assertEquals(FrontendRange.fromAstRange(connectStep.range()), compileDiagnostics.getFirst().range());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Signal method 'connect(...)'"));
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
     @Test
