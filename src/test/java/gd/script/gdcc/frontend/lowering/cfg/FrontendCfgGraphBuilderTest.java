@@ -13,6 +13,8 @@ import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallableLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SignalLoadItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.StandaloneCallableLoadItem;
+import gd.script.gdcc.lir.insn.StandaloneCallableKind;
 import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SequenceItem;
@@ -1245,8 +1247,8 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
-    void buildExecutableBodyRejectsBuiltinAndStaticMethodReferencesAsPropertyLoads() throws Exception {
-        var builtinAnalyzed = analyzeSharedSemanticFunction(
+    void buildExecutableBodyBuildsBuiltinInstanceMethodReferencesAsCallableLoads() throws Exception {
+        var analyzed = analyzeFunction(
                 "cfg_builder_builtin_method_ref.gd",
                 """
                         class_name CfgBuilderBuiltinMethodRef
@@ -1258,7 +1260,32 @@ class FrontendCfgGraphBuilderTest {
                 "copy_abs",
                 Map.of("CfgBuilderBuiltinMethodRef", "RuntimeCfgBuilderBuiltinMethodRef")
         );
-        var staticAnalyzed = analyzeSharedSemanticFunction(
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode("stop_1"));
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var attribute = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var absStep = assertInstanceOf(AttributePropertyStep.class, attribute.steps().getFirst());
+        var receiver = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().get(0));
+        var callableLoad = assertInstanceOf(CallableLoadItem.class, entryNode.items().get(1));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertEquals(2, entryNode.items().size()),
+                () -> assertEquals(attribute.base(), receiver.expression()),
+                () -> assertEquals(absStep, callableLoad.anchor()),
+                () -> assertEquals("abs", callableLoad.methodName()),
+                () -> assertEquals(List.of(receiver.resultValueId()), callableLoad.operandValueIds()),
+                () -> assertEquals(callableLoad.resultValueId(), stopNode.returnValueIdOrNull()),
+                () -> assertTrue(entryNode.items().stream().noneMatch(MemberLoadItem.class::isInstance))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyBuildsQualifiedStaticMethodReferencesAsStandaloneCallableLoads() throws Exception {
+        var analyzed = analyzeFunction(
                 "cfg_builder_static_method_ref.gd",
                 """
                         class_name CfgBuilderStaticMethodRef
@@ -1274,32 +1301,47 @@ class FrontendCfgGraphBuilderTest {
                 Map.of("CfgBuilderStaticMethodRef", "RuntimeCfgBuilderStaticMethodRef")
         );
 
-        var builtinEx = assertThrows(
-                IllegalStateException.class,
-                () -> new FrontendCfgGraphBuilder().buildExecutableBody(
-                        builtinAnalyzed.function().body(),
-                        builtinAnalyzed.analysisData()
-                )
-        );
-        var staticEx = assertThrows(
-                IllegalStateException.class,
-                () -> new FrontendCfgGraphBuilder().buildExecutableBody(
-                        staticAnalyzed.function().body(),
-                        staticAnalyzed.analysisData()
-                )
-        );
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode("stop_1"));
+        var standaloneLoad = assertInstanceOf(StandaloneCallableLoadItem.class, entryNode.items().getFirst());
 
         assertAll(
-                () -> assertTrue(builtinEx.getMessage().contains("vec.abs")
-                        || builtinEx.getMessage().contains("abs"), builtinEx.getMessage()),
-                () -> assertTrue(builtinEx.getMessage().contains("cannot lower as a property"), builtinEx.getMessage()),
-                () -> assertTrue(staticEx.getMessage().contains("make_static"), staticEx.getMessage()),
-                () -> assertTrue(
-                        staticEx.getMessage().contains("cannot lower as a type-meta member load")
-                                || staticEx.getMessage().contains("cannot lower as a property"),
-                        staticEx.getMessage()
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertEquals(1, entryNode.items().size()),
+                () -> assertEquals("make_static", standaloneLoad.callableName()),
+                () -> assertEquals("RuntimeCfgBuilderStaticMethodRef", standaloneLoad.ownerName()),
+                () -> assertEquals(StandaloneCallableKind.STATIC_GDCC, standaloneLoad.kind()),
+                () -> assertEquals(standaloneLoad.resultValueId(), stopNode.returnValueIdOrNull()),
+                () -> assertTrue(entryNode.items().stream().noneMatch(MemberLoadItem.class::isInstance))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyRejectsDictionaryClearAsMethodReference() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_dictionary_clear_ref.gd",
+                """
+                        class_name CfgBuilderDictionaryClearRef
+                        extends Node
+                        
+                        func copy_clear(dict: Dictionary) -> Callable:
+                            return dict.clear
+                        """,
+                "copy_clear",
+                Map.of("CfgBuilderDictionaryClearRef", "RuntimeCfgBuilderDictionaryClearRef")
+        );
+
+        var ex = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(
+                        analyzed.function().body(),
+                        analyzed.analysisData()
                 )
         );
+        assertTrue(ex.getMessage().contains("clear"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("cannot lower as a property"), ex.getMessage());
     }
 
     @Test

@@ -246,8 +246,8 @@ compile gate 当前会在 compile surface 上扫描以下已发布事实：
 
 generic status scan 之外，compile gate 还保留一组 **RESOLVED feature-specific blocker**（结构同 `shouldBlockParameterizedGdccConstructor`，必须放在 `isCompileBlocking` 短路之前）：
 
-- `resolvedMembers()` 中 RESOLVED 的 builtin instance method-reference（`bindingKind == METHOD && ownerKind == BUILTIN`）以及任何 static method-reference（`bindingKind == STATIC_METHOD`）
-- `symbolBindings()` 中 `kind ∈ {STATIC_METHOD, UTILITY_FUNCTION}` 的 **bare identifier 值读取**；作为 surface `CallExpression.callee()` 的 identifier 必须排除，以免误伤合法 bare method / static / utility 调用
+- `resolvedMembers()` 中 RESOLVED 的 Dictionary 实例 method-reference（`METHOD && BUILTIN && receiverType instanceof GdDictionaryType`）以及 builtin type-meta static method-reference（`STATIC_METHOD && ownerKind == BUILTIN`）
+- Phase 4.1 已解除非 Dictionary builtin instance / GDCC·engine static / bare utility 值读取。作为 surface `CallExpression.callee()` 的 identifier 必须排除，以免误伤合法 bare method / static / utility 调用
 - Phase 1 已解除 RESOLVED signal **值读取** blocker。Phase 3 已解除 RESOLVED `.emit` blocker。Phase 4 已解除 `.connect` / `.disconnect` 与 bare Object/self `METHOD` 值读取 blocker。static-context / type-meta signal 仍由 generic `UNSUPPORTED`/`BLOCKED` scan 拦截。
 - 这些 blocker 只发 `sema.compile_check`，不改写 shared `analyze(...)` / inspection 已发布的 RESOLVED facts
 

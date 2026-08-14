@@ -6,6 +6,7 @@
 #include <gdcc_string_name.h>
 #include <gdcc_string.h>
 #include <gdcc_call.h>
+#include <gdcc_callable.h>
 #include <gdcc_bind.h>
 #include <gdcc_operator.h>
 #include <gdcc_intrinsic.h>

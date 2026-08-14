@@ -19,6 +19,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallableLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SignalLoadItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.StandaloneCallableLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SequenceItem;
@@ -86,8 +87,11 @@ import gd.script.gdcc.type.GdContainerType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.type.GdVariantType;
+import gd.script.gdcc.lir.insn.StandaloneCallableKind;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdObjectType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -958,11 +962,25 @@ public final class FrontendCfgGraphBuilder {
             @Nullable String preferredResultValueId
     ) {
         var publishedMember = requireLoweringReadyMember(attributePropertyStep);
+        if (isResolvedStandaloneStaticMethodReference(publishedMember)) {
+            var resultValueId = chooseResultValueId(preferredResultValueId);
+            var kind = publishedMember.ownerKind() == ScopeOwnerKind.ENGINE
+                    ? StandaloneCallableKind.STATIC_ENGINE
+                    : StandaloneCallableKind.STATIC_GDCC;
+            cursor.currentSequence().items().add(new StandaloneCallableLoadItem(
+                    attributePropertyStep,
+                    kind,
+                    requireStandaloneOwnerName(publishedMember),
+                    publishedMember.memberName(),
+                    resultValueId
+            ));
+            return valueRootBuild(cursor, attributePropertyStep, resultValueId);
+        }
         if (isResolvedUnsupportedMethodReference(publishedMember)) {
             throw new IllegalStateException(
                     "RESOLVED method-reference '"
                             + publishedMember.memberName()
-                            + "' cannot lower as a type-meta member load; only Object/self instance methods materialize as Callable"
+                            + "' cannot lower as a type-meta member load; builtin type-meta methods stay unsupported"
             );
         }
         var resultValueId = chooseResultValueId(preferredResultValueId);
@@ -1784,9 +1802,9 @@ public final class FrontendCfgGraphBuilder {
                             null
                     );
                 }
-                if (isResolvedObjectMethodReference(publishedMember)) {
-                    // RESOLVED Object/self METHOD reads construct a fresh Callable. Do not attach
-                    // a property writable route; builtin/static/utility refs stay off this item.
+                if (isResolvedInstanceMethodReference(publishedMember)) {
+                    // RESOLVED Object/self or non-Dictionary builtin METHOD reads construct a
+                    // fresh Callable. Do not attach a property writable route.
                     receiverBuild.cursor().currentSequence().items().add(new CallableLoadItem(
                             attributePropertyStep,
                             publishedMember.memberName(),
@@ -1804,7 +1822,7 @@ public final class FrontendCfgGraphBuilder {
                     throw new IllegalStateException(
                             "RESOLVED method-reference '"
                                     + publishedMember.memberName()
-                                    + "' cannot lower as a property; only Object/self instance methods materialize as Callable"
+                                    + "' cannot lower as a property; Dictionary keys and type-meta builtin methods stay unsupported"
                     );
                 }
                 receiverBuild.cursor().currentSequence().items().add(new MemberLoadItem(
@@ -2049,7 +2067,7 @@ public final class FrontendCfgGraphBuilder {
                     ),
                     List.of()
             );
-            case CONSTANT, SINGLETON, SIGNAL, METHOD -> null;
+            case CONSTANT, SINGLETON, SIGNAL, METHOD, STATIC_METHOD, UTILITY_FUNCTION -> null;
             default -> throw new IllegalStateException(
                     "Identifier writable-route publication is not supported for binding kind " + binding.kind()
             );
@@ -2941,8 +2959,7 @@ public final class FrontendCfgGraphBuilder {
                 && publishedMember.bindingKind() == FrontendBindingKind.SIGNAL;
     }
 
-    /// Only RESOLVED Object/self METHOD members become `CallableLoadItem`. Builtin, static, and
-    /// DYNAMIC method-references stay off this item so they cannot fabricate an Object receiver.
+    /// Object/self instance METHOD members become `CallableLoadItem`.
     private static boolean isResolvedObjectMethodReference(@NotNull FrontendResolvedMember publishedMember) {
         return publishedMember.status() == FrontendMemberResolutionStatus.RESOLVED
                 && publishedMember.bindingKind() == FrontendBindingKind.METHOD
@@ -2950,13 +2967,45 @@ public final class FrontendCfgGraphBuilder {
                 && publishedMember.ownerKind() != ScopeOwnerKind.BUILTIN;
     }
 
-    /// Builtin instance and any static method-reference stay off `CallableLoadItem` and must not
-    /// fall through to `MemberLoadItem`, or they would be mis-lowered as property/static loads.
+    /// Non-Dictionary builtin instance METHOD members reuse `CallableLoadItem`.
+    /// `dict.clear` is a Dictionary key in Godot and must not become a method-reference.
+    private static boolean isResolvedBuiltinInstanceMethodReference(@NotNull FrontendResolvedMember publishedMember) {
+        return publishedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                && publishedMember.bindingKind() == FrontendBindingKind.METHOD
+                && publishedMember.receiverKind() == FrontendReceiverKind.INSTANCE
+                && publishedMember.ownerKind() == ScopeOwnerKind.BUILTIN
+                && !(publishedMember.receiverType() instanceof GdDictionaryType);
+    }
+
+    private static boolean isResolvedInstanceMethodReference(@NotNull FrontendResolvedMember publishedMember) {
+        return isResolvedObjectMethodReference(publishedMember)
+                || isResolvedBuiltinInstanceMethodReference(publishedMember);
+    }
+
+    /// GDCC/engine qualified static method-references become `StandaloneCallableLoadItem`.
+    private static boolean isResolvedStandaloneStaticMethodReference(@NotNull FrontendResolvedMember publishedMember) {
+        return publishedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                && publishedMember.bindingKind() == FrontendBindingKind.STATIC_METHOD
+                && publishedMember.ownerKind() != ScopeOwnerKind.BUILTIN;
+    }
+
+    /// Residual RESOLVED METHOD/STATIC_METHOD facts stay off `MemberLoadItem`.
     private static boolean isResolvedUnsupportedMethodReference(@NotNull FrontendResolvedMember publishedMember) {
         return publishedMember.status() == FrontendMemberResolutionStatus.RESOLVED
                 && (publishedMember.bindingKind() == FrontendBindingKind.METHOD
                 || publishedMember.bindingKind() == FrontendBindingKind.STATIC_METHOD)
-                && !isResolvedObjectMethodReference(publishedMember);
+                && !isResolvedInstanceMethodReference(publishedMember)
+                && !isResolvedStandaloneStaticMethodReference(publishedMember);
+    }
+
+    private static @NotNull String requireStandaloneOwnerName(@NotNull FrontendResolvedMember publishedMember) {
+        if (publishedMember.receiverType() instanceof GdObjectType(var className)) {
+            return className;
+        }
+        throw new IllegalStateException(
+                "standalone static method-reference '" + publishedMember.memberName()
+                        + "' is missing an object owner type"
+        );
     }
 
     /// Dynamic members are runtime-open instance routes. A TYPE_META dynamic fact means the static

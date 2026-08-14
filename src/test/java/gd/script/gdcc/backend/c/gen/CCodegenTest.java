@@ -409,11 +409,17 @@ public class CCodegenTest {
                 "if (p_level != GDEXTENSION_INITIALIZATION_SCENE) {",
                 "return;",
                 "gdcc_sn_registry_destroy_all();",
-                "gdcc_s_registry_destroy_all();"
+                "gdcc_s_registry_destroy_all();",
+                "gdcc_standalone_callable_registry_destroy_all();"
         );
         assertTrue(
                 deinitializeBody.indexOf("if (p_level != GDEXTENSION_INITIALIZATION_SCENE)") <
                         deinitializeBody.indexOf("gdcc_sn_registry_destroy_all();"),
+                deinitializeBody
+        );
+        assertTrue(
+                deinitializeBody.indexOf("gdcc_s_registry_destroy_all();") <
+                        deinitializeBody.indexOf("gdcc_standalone_callable_registry_destroy_all();"),
                 deinitializeBody
         );
     }

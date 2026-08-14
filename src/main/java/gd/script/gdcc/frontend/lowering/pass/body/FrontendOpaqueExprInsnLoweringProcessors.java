@@ -12,6 +12,8 @@ import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.ConstructCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructSignalInsn;
+import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
+import gd.script.gdcc.lir.insn.StandaloneCallableKind;
 import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
@@ -106,6 +108,18 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                             binding.symbolName()
                     ));
                 }
+                case STATIC_METHOD -> block.appendNonTerminatorInstruction(new ConstructStandaloneCallableInsn(
+                        resultSlotId,
+                        StandaloneCallableKind.STATIC_GDCC,
+                        session.currentClassName(),
+                        binding.symbolName()
+                ));
+                case UTILITY_FUNCTION -> block.appendNonTerminatorInstruction(new ConstructStandaloneCallableInsn(
+                        resultSlotId,
+                        StandaloneCallableKind.UTILITY,
+                        "",
+                        binding.symbolName()
+                ));
                 case SINGLETON -> {
                     session.checkSingletonBindingType(binding);
                     block.appendNonTerminatorInstruction(new LoadStaticInsn(

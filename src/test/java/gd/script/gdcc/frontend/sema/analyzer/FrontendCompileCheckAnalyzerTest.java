@@ -1686,7 +1686,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileBlocksBareMethodStaticAndUtilityValueReads() throws Exception {
+    void analyzeForCompileReleasesBareStaticAndUtilityValueReads() throws Exception {
         var source = """
                 class_name CompileCheckBareValueReferences
                 extends RefCounted
@@ -1705,29 +1705,13 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compiled = analyzeForCompile("compile_check_bare_value_references.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        var pingFunction = findFunction(compiled.unit().ast().statements(), "ping");
-        var expectedRanges = Set.of(
-                FrontendRange.fromAstRange(findIdentifier(pingFunction, "static_ref", "make_static").range()),
-                FrontendRange.fromAstRange(findIdentifier(pingFunction, "utility_ref", "print").range())
-        );
 
-        assertTrue(compiled.diagnostics().hasErrors());
-        assertEquals(expectedRanges, compileDiagnostics.stream()
-                .map(FrontendDiagnostic::range)
-                .collect(java.util.stream.Collectors.toSet()));
-        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
-                diagnostic.message().contains("Bare method-reference 'helper'")
-        ));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.message().contains("Bare static-method 'make_static'")
-        ));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.message().contains("Bare utility-function 'print'")
-        ));
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
     @Test
-    void analyzeForCompileBlocksBuiltinAndStaticMethodReferences() throws Exception {
+    void analyzeForCompileReleasesBuiltinAndStaticMethodReferences() throws Exception {
         var source = """
                 class_name CompileCheckUnsupportedMethodReferences
                 extends Node
@@ -1735,9 +1719,14 @@ class FrontendCompileCheckAnalyzerTest {
                 static func make_static():
                     return 1
                 
-                func ping(vec: Vector2):
+                func ping(vec: Vector2, dict: Dictionary):
                     var builtin_ref = vec.abs
                     var static_ref = CompileCheckUnsupportedMethodReferences.make_static
+                    var engine_ref = JSON.parse_string
+                    var dict_ref = dict.clear
+                    var type_meta_ref = Vector2.from_angle
+                    var type_meta_abs = Vector2.abs
+                    dict.clear()
                     var lambda_cb = func():
                         pass
                     pinged.connect(lambda_cb)
@@ -1748,17 +1737,25 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_unsupported_method_references.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         var pingFunction = findFunction(compiled.unit().ast().statements(), "ping");
-        var absStep = findNamedPropertyStep(pingFunction, "builtin_ref", "abs");
-        var staticStep = findNamedPropertyStep(pingFunction, "static_ref", "make_static");
+        var dictStep = findNamedPropertyStep(pingFunction, "dict_ref", "clear");
 
         assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.range().equals(FrontendRange.fromAstRange(absStep.range()))
-                        && diagnostic.message().contains("Qualified method-reference 'abs'")
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
+                diagnostic.message().contains("Qualified method-reference 'abs'")
+        ), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
+                diagnostic.message().contains("Qualified static-method 'make_static'")
+        ), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
+                diagnostic.message().contains("parse_string")
         ), compileDiagnostics::toString);
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.range().equals(FrontendRange.fromAstRange(staticStep.range()))
-                        && diagnostic.message().contains("Qualified static-method 'make_static'")
+                diagnostic.range().equals(FrontendRange.fromAstRange(dictStep.range()))
+                        && diagnostic.message().contains("Qualified method-reference 'clear'")
+        ), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
+                diagnostic.message().contains("Qualified method-reference 'clear'")
+                        && !diagnostic.range().equals(FrontendRange.fromAstRange(dictStep.range()))
         ), compileDiagnostics::toString);
         assertFalse(diagnosticsByCategory(compiled.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
     }

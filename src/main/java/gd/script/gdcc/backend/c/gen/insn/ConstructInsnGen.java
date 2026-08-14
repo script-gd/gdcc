@@ -12,17 +12,23 @@ import gd.script.gdcc.lir.insn.ConstructDictionaryInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.ConstructCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructSignalInsn;
+import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructionInstruction;
+import gd.script.gdcc.lir.insn.StandaloneCallableKind;
 import gd.script.gdcc.scope.ClassDef;
+import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.RefCountedStatus;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedArrayType;
 import gd.script.gdcc.type.GdCallableType;
+import gd.script.gdcc.type.GdCompilerType;
+import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
+import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 
@@ -36,6 +42,8 @@ import java.util.List;
 /// - construct_dictionary
 /// - construct_object
 /// - construct_signal
+/// - construct_callable
+/// - construct_standalone_callable
 public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction> {
     private record ObjectConstructTarget(
             @NotNull GdObjectType constructedType,
@@ -52,7 +60,8 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                 GdInstruction.CONSTRUCT_DICTIONARY,
                 GdInstruction.CONSTRUCT_OBJECT,
                 GdInstruction.CONSTRUCT_SIGNAL,
-                GdInstruction.CONSTRUCT_CALLABLE
+                GdInstruction.CONSTRUCT_CALLABLE,
+                GdInstruction.CONSTRUCT_STANDALONE_CALLABLE
         );
     }
 
@@ -141,27 +150,16 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                                 "Result variable ID '" + resultVar.id() + "' must be Callable type for construct_callable"
                         );
                     }
-                    var receiverVar = resolveObjectReceiverVariable(
-                            bodyBuilder,
-                            receiverVarId,
-                            "construct_callable"
-                    );
-                    var livePtr = bodyBuilder.renderLiveGodotObjectPtr(
-                            bodyBuilder.valueOfVar(receiverVar).generateCode(),
-                            (GdObjectType) receiverVar.type()
-                    );
-                    bodyBuilder.assignVar(
-                            target,
-                            // Callable is a destroyable builtin value and only stores a non-owning ObjectID.
-                            bodyBuilder.valueOfExpr(
-                                    "godot_new_Callable_with_Object_StringName("
-                                            + livePtr
-                                            + ", "
-                                            + CBodyBuilder.renderStaticStringNameLiteral(methodName)
-                                            + ")",
-                                    resultVar.type()
-                            )
-                    );
+                    emitConstructCallable(bodyBuilder, target, resultVar, receiverVarId, methodName);
+                }
+                case ConstructStandaloneCallableInsn(_, var kind, var ownerName, var callableName) -> {
+                    if (!(resultVar.type() instanceof GdCallableType)) {
+                        throw bodyBuilder.invalidInsn(
+                                "Result variable ID '" + resultVar.id()
+                                        + "' must be Callable type for construct_standalone_callable"
+                        );
+                    }
+                    emitConstructStandaloneCallable(bodyBuilder, target, resultVar, kind, ownerName, callableName);
                 }
                 default -> throw bodyBuilder.invalidInsn(
                         "Unsupported construction instruction: " + instruction.opcode().opcode()
@@ -204,6 +202,220 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
             );
         }
         return receiverVar;
+    }
+
+    /// Object receivers keep the Phase 4 ObjectID constructor. Non-Object builtins pack a
+    /// temporary Variant and use `godot_Callable_create`. Variant receivers stay illegal.
+    private void emitConstructCallable(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull CBodyBuilder.TargetRef target,
+            @NotNull LirVariable resultVar,
+            @NotNull String receiverVarId,
+            @NotNull String methodName
+    ) {
+        var actualReceiverId = StringUtil.requireTrimmedNonBlank(receiverVarId, "construct_callable receiver");
+        var receiverVar = bodyBuilder.func().getVariableById(actualReceiverId);
+        if (receiverVar == null) {
+            throw bodyBuilder.invalidInsn("construct_callable receiver variable ID '" + actualReceiverId + "' not found");
+        }
+        switch (receiverVar.type()) {
+            case GdObjectType objectType -> {
+                var livePtr = bodyBuilder.renderLiveGodotObjectPtr(
+                        bodyBuilder.valueOfVar(receiverVar).generateCode(),
+                        objectType
+                );
+                bodyBuilder.assignVar(
+                        target,
+                        bodyBuilder.valueOfExpr(
+                                "godot_new_Callable_with_Object_StringName("
+                                        + livePtr
+                                        + ", "
+                                        + CBodyBuilder.renderStaticStringNameLiteral(methodName)
+                                        + ")",
+                                resultVar.type()
+                        )
+                );
+            }
+            case GdVariantType _ -> throw bodyBuilder.invalidInsn(
+                    "construct_callable receiver variable ID '" + actualReceiverId
+                            + "' must not be Variant"
+            );
+            default -> {
+                if (!isPackableBuiltinReceiver(receiverVar.type())) {
+                    throw bodyBuilder.invalidInsn(
+                            "construct_callable receiver variable ID '" + actualReceiverId
+                                    + "' must be Object or non-Object builtin type"
+                    );
+                }
+                var packedReceiver = InsnGenSupport.materializeVariantOperand(
+                        bodyBuilder,
+                        receiverVar,
+                        "callable_receiver"
+                );
+                var receiverArg = InsnGenSupport.renderArgumentCode(
+                        bodyBuilder,
+                        packedReceiver.variantValue(),
+                        "construct_callable"
+                );
+                bodyBuilder.assignVar(
+                        target,
+                        bodyBuilder.valueOfExpr(
+                                "godot_Callable_create(NULL, "
+                                        + receiverArg
+                                        + ", "
+                                        + CBodyBuilder.renderStaticStringNameLiteral(methodName)
+                                        + ")",
+                                resultVar.type()
+                        )
+                );
+                InsnGenSupport.destroyInitializedTemps(bodyBuilder, packedReceiver.tempVar());
+            }
+        }
+    }
+
+    private boolean isPackableBuiltinReceiver(@NotNull GdType type) {
+        return !(type instanceof GdObjectType)
+                && !(type instanceof GdVariantType)
+                && !(type instanceof GdVoidType)
+                && !(type instanceof GdNilType)
+                && !(type instanceof GdCompilerType)
+                && type.getGdExtensionType() != null;
+    }
+
+    private void emitConstructStandaloneCallable(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull CBodyBuilder.TargetRef target,
+            @NotNull LirVariable resultVar,
+            @NotNull StandaloneCallableKind kind,
+            @NotNull String ownerName,
+            @NotNull String callableName
+    ) {
+        var spec = switch (kind) {
+            case UTILITY -> resolveUtilityStandaloneSpec(bodyBuilder, callableName);
+            case STATIC_GDCC -> resolveGdccStaticStandaloneSpec(bodyBuilder, ownerName, callableName);
+            case STATIC_ENGINE -> resolveEngineStaticStandaloneSpec(bodyBuilder, ownerName, callableName);
+        };
+        bodyBuilder.assignVar(
+                target,
+                bodyBuilder.valueOfExpr(
+                        "gdcc_new_standalone_callable("
+                                + "u8\"" + escapeCString(kind.token()) + "\", "
+                                + "u8\"" + escapeCString(spec.ownerName()) + "\", "
+                                + "u8\"" + escapeCString(spec.callableName()) + "\", "
+                                + spec.utilityHash() + "LL, "
+                                + spec.argumentCount() + ", "
+                                + spec.vararg() + ", "
+                                + spec.returnsValue()
+                                + ")",
+                        resultVar.type()
+                )
+        );
+    }
+
+    private @NotNull StandaloneCallableSpec resolveUtilityStandaloneSpec(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull String callableName
+    ) {
+        var utility = bodyBuilder.classRegistry().findUtilityFunction(callableName);
+        if (utility == null) {
+            throw bodyBuilder.invalidInsn(
+                    "construct_standalone_callable utility '" + callableName + "' is not registered"
+            );
+        }
+        return new StandaloneCallableSpec(
+                "",
+                utility.name(),
+                Integer.toUnsignedLong(utility.hash()),
+                utility.getParameterCount(),
+                utility.isVararg(),
+                !(utility.getReturnType() instanceof GdVoidType)
+        );
+    }
+
+    private @NotNull StandaloneCallableSpec resolveGdccStaticStandaloneSpec(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull String ownerName,
+            @NotNull String callableName
+    ) {
+        var classDef = bodyBuilder.classRegistry().resolveClassDefByName(ownerName);
+        if (classDef == null || !classDef.isGdccClass()) {
+            throw bodyBuilder.invalidInsn(
+                    "construct_standalone_callable static_gdcc owner '" + ownerName + "' is not a GDCC class"
+            );
+        }
+        var function = requireStaticFunction(bodyBuilder, classDef, callableName, "static_gdcc");
+        return new StandaloneCallableSpec(
+                classDef.getName(),
+                function.getName(),
+                0L,
+                function.getParameterCount(),
+                function.isVararg(),
+                !(function.getReturnType() instanceof GdVoidType)
+        );
+    }
+
+    private @NotNull StandaloneCallableSpec resolveEngineStaticStandaloneSpec(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull String ownerName,
+            @NotNull String callableName
+    ) {
+        var classDef = bodyBuilder.classRegistry().getClassDef(new GdObjectType(ownerName));
+        if (!(classDef instanceof ExtensionGdClass engineClass)) {
+            throw bodyBuilder.invalidInsn(
+                    "construct_standalone_callable static_engine owner '" + ownerName + "' is not an engine class"
+            );
+        }
+        var function = requireStaticFunction(bodyBuilder, engineClass, callableName, "static_engine");
+        return new StandaloneCallableSpec(
+                engineClass.getName(),
+                function.getName(),
+                0L,
+                function.getParameterCount(),
+                function.isVararg(),
+                !(function.getReturnType() instanceof GdVoidType)
+        );
+    }
+
+    private @NotNull FunctionDef requireStaticFunction(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull ClassDef classDef,
+            @NotNull String callableName,
+            @NotNull String kindToken
+    ) {
+        FunctionDef found = null;
+        for (var function : classDef.getFunctions()) {
+            if (!function.getName().equals(callableName) || !function.isStatic()) {
+                continue;
+            }
+            if (found != null) {
+                throw bodyBuilder.invalidInsn(
+                        "construct_standalone_callable " + kindToken + " '" + classDef.getName()
+                                + "." + callableName + "' is overloaded"
+                );
+            }
+            found = function;
+        }
+        if (found == null) {
+            throw bodyBuilder.invalidInsn(
+                    "construct_standalone_callable " + kindToken + " '" + classDef.getName()
+                            + "." + callableName + "' is not a generated static function"
+            );
+        }
+        return found;
+    }
+
+    private @NotNull String escapeCString(@NotNull String value) {
+        return StringUtil.escapeStringLiteral(value);
+    }
+
+    private record StandaloneCallableSpec(
+            @NotNull String ownerName,
+            @NotNull String callableName,
+            long utilityHash,
+            int argumentCount,
+            boolean vararg,
+            boolean returnsValue
+    ) {
     }
 
     private @NotNull List<CBodyBuilder.ValueRef> resolveConstructorArguments(@NotNull CBodyBuilder bodyBuilder,

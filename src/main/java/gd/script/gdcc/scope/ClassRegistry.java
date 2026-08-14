@@ -188,6 +188,11 @@ public final class ClassRegistry implements Scope {
         return utilityByName.containsKey(name);
     }
 
+    /// Return the extension utility metadata by name, or `null` when the utility is unknown.
+    public @Nullable ExtensionUtilityFunction findUtilityFunction(@NotNull String name) {
+        return utilityByName.get(name);
+    }
+
     /// Check whether a name refers to a global enum.
     public boolean isGlobalEnum(@NotNull String name) {
         return globalEnumByName.containsKey(name);

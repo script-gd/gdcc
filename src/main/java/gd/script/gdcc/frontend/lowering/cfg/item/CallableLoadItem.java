@@ -9,14 +9,14 @@ import org.jetbrains.annotations.Nullable;
 import java.util.List;
 import java.util.Objects;
 
-/// Receiver-qualified Object method-reference placeholder for a published `RESOLVED` METHOD member.
+/// Receiver-qualified instance method-reference placeholder for a published `RESOLVED` METHOD.
 ///
 /// This item is intentionally distinct from `MemberLoadItem`: a method-reference constructs a
 /// fresh `godot_Callable` and must not publish a property writable route. Bare method identifiers
 /// stay on the opaque-expression path and never become a `CallableLoadItem`.
 ///
-/// Only Object/self instance methods land here. Builtin, static, and utility method-references
-/// stay off this item and are rejected by the compile gate.
+/// Object/self and non-Dictionary builtin instance methods land here. Static/utility references
+/// use `StandaloneCallableLoadItem` or the opaque path.
 public record CallableLoadItem(
         @NotNull Node memberAnchor,
         @NotNull String methodName,

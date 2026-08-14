@@ -81,7 +81,12 @@ extend the runtime-provided `godot_*` surface.
   runtime error printing, Object property get/set helpers, RefCounted ownership helpers, GDCC
   wrapper pointer conversion helpers, compatibility constructors, UTF-8 formatting helpers,
   Variant type guards, GDScript `is` type-test helpers, Variant writeback classification and
-  `godot_Variant_call(...)`.
+  `godot_Variant_call(...)`. It also pulls in sibling headers such as `gdcc_callable.h`.
+- `gdcc_callable.h`: no-receiver custom Callables for `construct_standalone_callable`. Owns
+  `gdcc_new_standalone_callable`, a growable heap intern table of `gdcc_standalone_callable_spec`
+  (one `godot_mem_alloc` per unique `(kind, owner, name)`), custom `GDExtensionCallableCustomInfo2`
+  callbacks, and `ClassDB.class_call_static` forwarding. `gdcc_standalone_callable_registry_destroy_all()`
+  frees the table on GDExtension unload. The includer must declare `class_library` first.
   - Object **values** in generated code are per-type fat pointers (`gdcc_<Type>_fat_ptr` from
     module `object_fat_ptr_types.h`); `gdcc_helper.h` owns the shared raw/ID query and lifecycle
     surface used by those helpers.

@@ -49,6 +49,8 @@ import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.ConstructCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructSignalInsn;
+import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
+import gd.script.gdcc.lir.insn.StandaloneCallableKind;
 import gd.script.gdcc.lir.insn.GoIfInsn;
 import gd.script.gdcc.lir.insn.GotoInsn;
 import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
@@ -4923,6 +4925,155 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals("_handler", otherConstruct.methodName()),
                 () -> assertEquals(0, countInstructions(allInstructions(otherContext.targetFunction()), AssertObjectLiveInsn.class)),
                 () -> assertEquals(0, countInstructions(allInstructions(otherContext.targetFunction()), LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersBuiltinInstanceMethodReferenceIntoConstructCallableWithoutLiveAssert() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_builtin_method_reference.gd",
+                """
+                        class_name BodyInsnBuiltinMethodReference
+                        extends Node
+                        
+                        func copy_abs(vec: Vector2) -> Callable:
+                            return vec.abs
+                        """,
+                Map.of("BodyInsnBuiltinMethodReference", "RuntimeBodyInsnBuiltinMethodReference"),
+                true
+        );
+        var copyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnBuiltinMethodReference",
+                "copy_abs"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var construct = requireOnlyInstruction(copyContext.targetFunction(), ConstructCallableInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("abs", construct.methodName()),
+                () -> assertNotEquals("self", construct.receiverVarId()),
+                () -> assertEquals(0, countInstructions(allInstructions(copyContext.targetFunction()), AssertObjectLiveInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(copyContext.targetFunction()), LoadPropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersQualifiedAndBareStaticMethodReferencesIntoStandaloneCallable() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_static_method_reference.gd",
+                """
+                        class_name BodyInsnStaticMethodReference
+                        extends Node
+                        
+                        static func make_static():
+                            return 1
+                        
+                        func copy_qualified() -> Callable:
+                            return BodyInsnStaticMethodReference.make_static
+                        
+                        func copy_bare() -> Callable:
+                            return make_static
+                        """,
+                Map.of("BodyInsnStaticMethodReference", "RuntimeBodyInsnStaticMethodReference"),
+                true
+        );
+        var qualifiedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStaticMethodReference",
+                "copy_qualified"
+        );
+        var bareContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStaticMethodReference",
+                "copy_bare"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var qualified = requireOnlyInstruction(qualifiedContext.targetFunction(), ConstructStandaloneCallableInsn.class);
+        var bare = requireOnlyInstruction(bareContext.targetFunction(), ConstructStandaloneCallableInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals(StandaloneCallableKind.STATIC_GDCC, qualified.kind()),
+                () -> assertEquals("RuntimeBodyInsnStaticMethodReference", qualified.ownerName()),
+                () -> assertEquals("make_static", qualified.callableName()),
+                () -> assertEquals(StandaloneCallableKind.STATIC_GDCC, bare.kind()),
+                () -> assertEquals("RuntimeBodyInsnStaticMethodReference", bare.ownerName()),
+                () -> assertEquals("make_static", bare.callableName())
+        );
+    }
+
+    @Test
+    void runLowersQualifiedEngineStaticMethodReferenceIntoStandaloneCallable() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_engine_static_method_reference.gd",
+                """
+                        class_name BodyInsnEngineStaticMethodReference
+                        extends Node
+                        
+                        func copy_parse() -> Callable:
+                            return JSON.parse_string
+                        """,
+                Map.of("BodyInsnEngineStaticMethodReference", "RuntimeBodyInsnEngineStaticMethodReference"),
+                true
+        );
+        var copyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEngineStaticMethodReference",
+                "copy_parse"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var construct = requireOnlyInstruction(copyContext.targetFunction(), ConstructStandaloneCallableInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals(StandaloneCallableKind.STATIC_ENGINE, construct.kind()),
+                () -> assertEquals("JSON", construct.ownerName()),
+                () -> assertEquals("parse_string", construct.callableName())
+        );
+    }
+
+    @Test
+    void runLowersBareUtilityFunctionReferenceIntoStandaloneCallable() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_utility_function_reference.gd",
+                """
+                        class_name BodyInsnUtilityFunctionReference
+                        extends Node
+                        
+                        func copy_print() -> Callable:
+                            return print
+                        """,
+                Map.of("BodyInsnUtilityFunctionReference", "RuntimeBodyInsnUtilityFunctionReference"),
+                true
+        );
+        var copyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnUtilityFunctionReference",
+                "copy_print"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var construct = requireOnlyInstruction(copyContext.targetFunction(), ConstructStandaloneCallableInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals(StandaloneCallableKind.UTILITY, construct.kind()),
+                () -> assertEquals("", construct.ownerName()),
+                () -> assertEquals("print", construct.callableName())
         );
     }
 

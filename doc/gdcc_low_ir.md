@@ -6,6 +6,7 @@ of the compiler mapping directly to GDExtension APIs.
 ## Overview
 
 Low IR is a function level IR. Each function consists of 3 parts:
+
 - Signature: names, parameters, return type
 - Variables: local variables used in the function
   - Variables are indexed starting from 0, var 0-N are function parameters
@@ -42,6 +43,7 @@ Current MVP contract:
 ## Instructions
 
 Each instruction has an optional return value, a string id, and a list of operands:
+
 ```
 ($<result_id>)? = <instruction_id> ($<operand_id>|<literial>) ...
 ```
@@ -49,51 +51,67 @@ Each instruction has an optional return value, a string id, and a list of operan
 ### New Data Instructions
 
 #### literal_bool
+
 Creates a new boolean constant.
+
 ```
 $<result_id> = literal_bool <true|false>
 ```
 
 #### literal_int
+
 Creates a new i64 constant.
+
 ```
 $<result_id> = literal_int <i64_value>
 ```
 
 #### literal_float
+
 Creates a new f64 constant.
+
 ```
 $<result_id> = literal_float <f64_value>
 ```
 
 #### literal_string
+
 Creates a new String constant.
+
 ```
 $<result_id> = literal_string "<string_value_utf8>"
 ```
 
 #### literal_string_name
+
 Creates a new StringName constant.
+
 ```
 $<result_id> = literal_string_name "<string_value_utf8>"
 ```
 
 #### literal_nil
-Creates a new Variant Nil constant. 
+
+Creates a new Variant Nil constant.
+
 ```
 $<result_id> = literal_nil
 ```
 
 #### literal_null
+
 Create a new Object null constant.
+
 ```
 $<result_id> = literal_null
 ```
 
 #### assign
-Assign one variable to another. 
+
+Assign one variable to another.
 The source variable must be assignable to the result variable type.
 Current assignability rules in backend codegen are:
+
 - Same type.
 - Object inheritance upcast.
 - Container covariance (limited):
@@ -102,6 +120,7 @@ Current assignability rules in backend codegen are:
   - `Dictionary[K, V]` to `Dictionary` / `Dictionary[Variant, Variant]`.
   - `Dictionary[K1, V1]` to `Dictionary[K2, V2]` when `K1` is assignable to `K2` and `V1` is assignable to `V2`.
 - Compiler-only types are not widened into ordinary ABI-facing assignability. They stay on backend-owned local/intrinsic paths.
+
 ```
 $<result_id> = assign $<source_id>
 ```
@@ -109,16 +128,20 @@ $<result_id> = assign $<source_id>
 ### Construction & Destruction Instructions
 
 #### construct_builtin
+
 Constructs a builtin of a specific type with arguments. The type is the same as the type
 of the result variable.
+
 ```
 $<result_id> = construct_builtin $<arg1_id> $<arg2_id> ...
 ```
 
 #### construct_array
+
 Constructs a new `Array` or `Packed*Array` depending on the result variable type.
 
 Rules:
+
 - If result variable type is `Array` (`GdArrayType`):
   - `class_name` is optional.
   - If omitted, constructs generic `Array[Variant]`.
@@ -132,19 +155,23 @@ $<result_id> = construct_array "<class_name>"?
 ```
 
 #### construct_dictionary
+
 Constructs a new TypedDictionary of a specific class / type.
 If both class names are omitted, constructs a generic Dictionary.
 If only one class name is provided, constructs a TypedDictionary with
 the specified key type with a generic value type.
+
 ```
 $<result_id> = construct_dictionary "<key_class_name>"? "<value_class_name>"?
 ```
 
 #### construct_container_literal
+
 Constructs a fresh `Array` or `Dictionary` and fills it from already-materialized
 operand slots. Family is decided solely by the result variable type.
 
 Rules:
+
 - Result variable type must be non-ref `GdArrayType` or `GdDictionaryType` (never
   `Packed*Array` or other builtins). Backend rejects missing / ref / non-container results.
 - All operands must be `VariableOperand`. Empty operands are legal for both families.
@@ -153,7 +180,7 @@ Rules:
   operand count must be even (backend validation).
 - Element/key/value ordinary-boundary conversions (e.g. `int -> float`,
   `String -> StringName`, Variant pack/unpack) are emitted by frontend body lowering
-  *before* this instruction. Backend only packs operands to Variant for container writes.
+  _before_ this instruction. Backend only packs operands to Variant for container writes.
 
 This instruction does **not** replace empty `construct_array` / `construct_dictionary`,
 which remain the contract for `__prepare__`, property default init, and explicit empty
@@ -164,9 +191,11 @@ $<result_id> = construct_container_literal $<operand0_id> $<operand1_id> ...
 ```
 
 #### construct_object
+
 Constructs a new Object of a specific class.
 If the new class object extends RefCounted, the returned object is owned (reference count increased by 1).
 Current C backend lowers this instruction by:
+
 - calling `godot_new_XXX()` directly for engine classes
 - calling generated `XXX_class_create_instance(NULL, true)` for non-`RefCounted` GDCC classes
 - calling `XXX_class_create_instance(NULL, false)` and then `gdcc_ref_counted_init_raw(..., true)`
@@ -175,45 +204,70 @@ Current C backend lowers this instruction by:
   count initialization path instead of duplicating that work inside `*_class_create_instance(...)`
 - then reusing the existing object-slot write / pointer-conversion ownership path instead of
   introducing a dedicated constructor-only lifecycle branch
+
 ```
 $<result_id> = construct_object <class_name>
 ```
 
 #### construct_signal
+
 Constructs a new Signal value from a live object receiver and a compile-time signal name.
 The result is a destroyable builtin value and does not keep the receiver alive.
+
 ```
 $<result_id> = construct_signal $<receiver_id> "<signal_name>"
 ```
 
 #### construct_callable
-Constructs a new Callable from a live object receiver and a compile-time method name.
-The result is a destroyable builtin value and does not keep the receiver alive.
-The old one-operand form is illegal.
+
+Constructs a new Callable from an instance receiver and a compile-time method name.
+Operand schema stays `(VARIABLE, STRING)` min/max=2. The old one-operand form is illegal.
+`$receiver` type dispatch:
+
+- `GdObjectType` → `godot_new_Callable_with_Object_StringName`
+- non-Object builtin → pack a temporary Variant, then `godot_Callable_create(NULL, &tmp, name)`
+- `Variant` / static / utility → illegal
+  The result is a destroyable builtin value and does not keep the receiver alive.
+
 ```
 $<result_id> = construct_callable $<receiver_id> "<method_name>"
 ```
 
+#### construct_standalone_callable
+
+Constructs a new Callable for a compile-time known function that has no instance receiver.
+`kind` is one of `utility`, `static_gdcc`, `static_engine`. Utility owner must be empty;
+static kinds require a class owner. Backend uses `godot_callable_custom_create2`.
+
+```
+$<result_id> = construct_standalone_callable "<kind>" "<owner_or_empty>" "<name>"
+```
+
 #### construct_lambda
+
 Constructs a new Callable from a lambda function in this compiling unit.
 For implementation, `godot_callable_custom_create2` is used.
 All captures are copied into a tmp struct and passed to the lambda via `callable_userdata`.
 If there are no captures, NULL is passed as `callable_userdata`.
 `free_func` in `GDExtensionCallableCustomInfo2` must be set to destruct the captures.
+
 ```
 $<result_id> = construct_lambda "<lambda_function_name>" $<capture1_id> $<capture2_id> ...
 ```
 
 #### destruct
-Destructs a variable, releasing any resources it holds.
-All Variants must be destructed after use to avoid memory leaks.  
 
-Warning: 
+Destructs a variable, releasing any resources it holds.
+All Variants must be destructed after use to avoid memory leaks.
+
+Warning:
+
 - Destruct object that is not ref-counted is not always needed since users may want to do it manually.
 - Destruct object that is not ref-counted does actually mem-delete the object.
 - However, destructing ref-counted objects is required to decrease the reference count.
 
 Types can be destruct:
+
 - String
 - StringName
 - NodePath
@@ -224,8 +278,8 @@ Types can be destruct:
 - Packed*Array
 - Object
 - Variant
-All types not in the above list are stack allocated and do not need to be destructed.
-However, destructing them is a no-op and allowed.
+  All types not in the above list are stack allocated and do not need to be destructed.
+  However, destructing them is a no-op and allowed.
 
 An optional lifecycle provenance enum string can be provided: `AUTO_GENERATED`, `INTERNAL`, `USER_EXPLICIT`, `UNKNOWN`.
 If it is not provided, it defaults to `UNKNOWN` and a warning should be emitted since provenance is important for validating the correct usage of this instruction.
@@ -233,6 +287,7 @@ If it is not provided, it defaults to `UNKNOWN` and a warning should be emitted 
 This instruction should not be used arbitrarily on any variable. It should only be used in specific scenarios that meets the provenance requirement.
 
 Restrictions:
+
 - Allowed:
   - `AUTO_GENERATED`: only compiler-injected destruct in `__finally__`.
   - `INTERNAL`: only compiler internal/temp variables (for example numeric IDs or `__tmp_*` IDs).
@@ -250,6 +305,7 @@ destruct $<variant_id> "[lifecycle provenance]"
 ```
 
 #### try_own_object
+
 Attempts to take ownership of an Object. If successful, the reference count is increased.
 If the Object is not ref-counted, this is a no-op.
 
@@ -261,6 +317,7 @@ try_own_object $<object_id> "[lifecycle provenance]"
 ```
 
 #### try_release_object
+
 Attempts to release ownership of an Object. If successful, the reference count is decreased.
 If the Object is not ref-counted, this is a no-op.
 
@@ -272,15 +329,19 @@ try_release_object $<object_id> "[lifecycle provenance]"
 ```
 
 #### unary_op
-Performs a built-in operation on one operand. 
+
+Performs a built-in operation on one operand.
 For all available operations, see enum `GodotOperator`.
+
 ```
 $<result_id> = unary_op "<op_name>" $<operand_id>
 ```
 
 #### binary_op
+
 Performs a built-in operation on two operands.
 For all available operations, see enum `GodotOperator`.
+
 ```
 $<result_id> = binary_op "<op_name>" $<left_operand_id> $<right_operand_id>
 ```
@@ -288,49 +349,65 @@ $<result_id> = binary_op "<op_name>" $<left_operand_id> $<right_operand_id>
 ### Indexing Instructions
 
 #### variant_get
+
 Gets a value from a Variant by another Variant.
+
 ```
 $<result_id> = variant_get $<variant_id> $<key>
 ```
 
 #### variant_get_keyed
+
 Gets a value from a keyed Variant (usually Dictionary) by another Variant
+
 ```
 $<result_id> = variant_get_keyed $<keyed_variant_id> $<Variant>
 ```
 
 #### variant_get_named
+
 Gets a value from a named Variant (usually Object) by StringName.
+
 ```
 $<result_id> = variant_get_named $<named_variant_id> $<name_id:StringName>
 ```
 
 #### variant_get_indexed
+
 Gets a value in a Variant by an int variable.
+
 ```
 $<result_id> = variant_get_indexed $<variant_id> $<index_id:int>
 ```
 
 #### variant_set
+
 Sets a value in a Variant by another Variant.
+
 ```
 variant_set $<variant_id> $<key> $<value>
 ```
 
 #### variant_set_keyed
+
 Sets a value in a keyed Variant (usually Dictionary) by another Variant
+
 ```
 variant_set_keyed $<keyed_variant_id> $<key> $<value>
 ```
 
 #### variant_set_named
+
 Sets a value in a named Variant (usually Object) by StringName.
+
 ```
 variant_set_named $<named_variant_id> $<name_id:StringName> $<value>
 ```
 
 #### variant_set_indexed
+
 Sets a value in a Variant by an int variable.
+
 ```
 variant_set_indexed $<variant_id> $<index_id:int> $<value>
 ```
@@ -338,42 +415,52 @@ variant_set_indexed $<variant_id> $<index_id:int> $<value>
 ### Type Instructions
 
 #### get_variant_type
+
 Gets the type int id of Variant. The id is the same in order of `GdExtensionTypeEnum`.
+
 ```
 $<result_id:int> = get_variant_type $<variant_id>
 ```
 
 #### get_class_name
+
 Gets the type name of a variable as String:
+
 - If this variable has a static type (not Variant), returns the static type name.
 - If this variable is of Variant type, returns the type name.
 - If this variable is an Object, returns the class name.
+
 ```
 $<result_id:String> = get_class_name $<id>
 ```
 
 #### object_cast
+
 Runtime class cast for GDScript `as` when the target is an Object class.
 Source may be Object, Variant, or Nil (`$value_id`). Failure cases (null, freed, non-object
 Variant payload, class mismatch) yield canonical null; success returns the same instance as a
 target-typed fat pointer without changing ownership category.
 `class_name` is the canonical / Godot-facing runtime name (opaque text at parse time).
 Result is optional: missing result is a validated no-op at the backend.
+
 ```
 $<result_id:TargetObject> = object_cast "<class_name>" $<value_id>
 ```
 
 #### builtin_cast
+
 Runtime builtin conversion for GDScript `as` when the target is a non-Object, non-Variant,
 non-Nil runtime builtin (including parameterized `Array[T]` / `Dictionary[K, V]`).
-The same as Godot `Variant::construct` / `can_convert` semantics at the backend. 
+The same as Godot `Variant::construct` / `can_convert` semantics at the backend.
 Parameterized containers keep full declared type text.
 Result is required. Exact same-type and `as Variant` use `assign` / `pack_variant` instead.
+
 ```
 $<result_id:target_type> = builtin_cast "<target_type_name>" $<value_id>
 ```
 
 #### is_instance_of
+
 Checks whether `$value_id` is an instance of the compile-time type `"<type_name>"` (GDScript `is`).
 `$value_id` may be any ordinary typed value (including `Variant`), not only Object.
 Class names must be canonical / Godot-facing; parameterized containers use full type text (e.g. `"Array[int]"`).
@@ -383,30 +470,39 @@ Result is always `bool`; `null` / nil object yields `false` for non-`Variant` ta
 Bare `Array` / `Dictionary` values tested against parameterized targets remain as
 `is_instance_of "Array[T]"` / `"Dictionary[K, V]"` (runtime typed-metadata check); they must not
 be folded away based only on the static bare slot type.
+
 ```
 $<result_id:bool> = is_instance_of "<type_name>" $<value_id>
 ```
 
 #### pack_variant
+
 Packs a value into a Variant.
+
 ```
 $<result_id> = pack_variant $<value_id>
 ```
 
 #### unpack_variant
+
 Unpacks a value from a Variant.
+
 ```
 $<result_id> = unpack_variant $<variant_id>
 ```
 
 #### variant_is_nil
+
 Checks if a Variant is nil.
+
 ```
 $<result_id:bool> = variant_is_nil $<variant_id:Variant>
 ```
 
 #### object_is_null
+
 Checks if an Object is null.
+
 ```
 $<result_id:bool> = object_is_null $<object_id:Object>
 ```
@@ -414,19 +510,25 @@ $<result_id:bool> = object_is_null $<object_id:Object>
 ### Control Flow Instructions
 
 #### goto
+
 Unconditional branch to a basic block.
+
 ```
 goto <target_block_id>
 ```
 
 #### go_if
+
 Conditional branch to one of two basic blocks based on a boolean condition.
+
 ```
 go_if $<condition_id:bool> <true_block_id> <false_block_id>
 ```
 
 #### return
+
 Returns from the current function, optionally with a return value.
+
 ```
 return ($<return_value_id>)?
 ```
@@ -434,33 +536,43 @@ return ($<return_value_id>)?
 ### Call Instructions
 
 #### call_global
+
 Calls a global function by name.
+
 ```
 $<result_id>? = call_global "<function_name>" $<arg1_id> $<arg2_id> ...
 ```
 
 #### call_method
+
 Calls a method on an Object by method name.
+
 ```
 $<result_id>? = call_method "<method_name>" $<object_id> $<arg1_id> $<arg2_id> ...
 ```
 
 #### call_super_method
+
 Calls a super method on an Object by method name.
 If the method does not exist in the super class, it will result in a runtime error.
+
 ```
 $<result_id>? = call_super_method "<method_name>" $<object_id> $<arg1_id> $<arg2_id> ...
 ```
 
 #### call_static_method
+
 Calls a static method on a class by class name and method name.
+
 ```
 $<result_id>? = call_static_method "<class_name>" "<method_name>" $<arg1_id> $<arg2_id> ...
 ```
 
 #### call_intrinsic
+
 Calls a backend-owned intrinsic function by name. The full surface, registry contract, and
 intrinsic catalog are maintained in [GDCC LIR Intrinsic](gdcc_lir_intrinsic.md).
+
 ```
 $<result_id>? = call_intrinsic "<intrinsic_name>" $<arg1_id> $<arg2_id> ...
 ```
@@ -468,29 +580,38 @@ $<result_id>? = call_intrinsic "<intrinsic_name>" $<arg1_id> $<arg2_id> ...
 ### Load/Store Instructions
 
 #### load_property
+
 Loads a property from an Object by property name.
+
 ```
 $<result_id> = load_property "<property_name>" $<object_id>
 ```
 
 #### store_property
+
 Stores a value to a property in an Object by property name.
+
 ```
 store_property "<property_name>" $<object_id> $<value_id>
 ```
 
 #### load_static
+
 Loads a static variable/property by name.
+
 ```
 $<result_id> = load_static "<class_name>" "<static_name>"
 ```
+
 `<class_name>` may be `@GlobalScope` for top-level Godot global constants and
 Godot singleton properties such as `Engine` or `Input`. A singleton property read
 materializes the engine-owned singleton object; method calls on that receiver still
 use ordinary `call_method`.
 
 #### store_static
+
 Stores a value to a static variable/property by name.
+
 ```
 store_static "<class_name>" "<static_name>" $<value_id>
 ```
@@ -498,22 +619,29 @@ store_static "<class_name>" "<static_name>" $<value_id>
 ### Misc Instructions
 
 #### nop
+
 No operation. Does nothing.
+
 ```
 nop
 ```
 
 #### line_number
+
 Sets the current source code line number for debugging purposes.
+
 ```
 line_number <line_number:int>
 ```
 
 #### assert_object_live
+
 Hard-fail dereference guard. Asserts that an object reference is still live before use.
+
 ```
 assert_object_live $<object_id:Object>
 ```
+
 No result. If the object is live, execution falls through. If the object is null or freed,
 the current function enters its stable runtime-error/default-return cleanup path (`goto __finally__`).
 
@@ -525,7 +653,6 @@ the current function enters its stable runtime-error/default-return cleanup path
 
 C lowering: calls `gdcc_object_is_null_raw_and_id(raw, instance_id)`.
 
-
 ### Instruction Usage Restrictions
 
 The lifecycle instructions `destruct`, `try_own_object`, and `try_release_object` are controlled instructions.
@@ -533,12 +660,12 @@ They are not general-purpose instructions for arbitrary external LIR.
 
 Allowed/forbidden quick reference:
 
-| Provenance | Allowed | Forbidden |
-| --- | --- | --- |
-| `AUTO_GENERATED` | Compiler-generated `destruct` in `__finally__` | Any non-`__finally__` usage; any own/release instruction |
-| `INTERNAL` | Compiler internal lifecycle maintenance on temp/internal variables | User-named variables (for example `obj`, `value`) |
-| `USER_EXPLICIT` | Frontend-lowered explicit lifecycle intent from user source | Emitting in auto-generated blocks (`__prepare__`, `__finally__`) |
-| `UNKNOWN` | Compat mode warning pass-through | Strict mode |
+| Provenance       | Allowed                                                            | Forbidden                                                        |
+| ---------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| `AUTO_GENERATED` | Compiler-generated `destruct` in `__finally__`                     | Any non-`__finally__` usage; any own/release instruction         |
+| `INTERNAL`       | Compiler internal lifecycle maintenance on temp/internal variables | User-named variables (for example `obj`, `value`)                |
+| `USER_EXPLICIT`  | Frontend-lowered explicit lifecycle intent from user source        | Emitting in auto-generated blocks (`__prepare__`, `__finally__`) |
+| `UNKNOWN`        | Compat mode warning pass-through                                   | Strict mode                                                      |
 
 Legal IR snippets:
 
@@ -567,18 +694,20 @@ try_own_object $obj "INTERNAL"; // invalid: INTERNAL on ordinary user-named vari
 ## Syntax
 
 A Low IR file (which is a .xml format file) consists of 4 parts:
+
 - Class Definitions
 - Signals
 - Properties
 - Functions
 
 ### Class Definitions
+
 ```xml
 <!-- name is optional for anonymous classes -->
 <!-- is_abstract and is_tool are optional, default to false -->
-<class_def name="<class_name>" 
-           super="super_class_name" 
-           is_abstract="false" 
+<class_def name="<class_name>"
+           super="super_class_name"
+           is_abstract="false"
            is_tool="false">
     <annotation key="<annotation_key>" value="<annotation_value>"/>
     <annotation key="<annotation_key>" value="<annotation_value>"/>
@@ -611,9 +740,9 @@ A Low IR file (which is a .xml format file) consists of 4 parts:
     <!-- The getter func should receive a self parameter and return the same type as the prop.  -->
     <!-- The setter func should receive a self and a value parameter in the same type as the prop. -->
     <!-- If getter & setter are not present, a default one is generated -->
-    <property name="<prop_name>" 
-              type="<prop_type>" 
-              is_static="false" 
+    <property name="<prop_name>"
+              type="<prop_type>"
+              is_static="false"
               init_func="<init_function_name>"
               getter_func="<getter_function_name>"
               setter_func="<setter_function_name>">
@@ -627,9 +756,9 @@ A Low IR file (which is a .xml format file) consists of 4 parts:
 
 ```xml
 <functions>
-    <function name="<function_name>" 
-              is_static="false" 
-              is_abstract="false" 
+    <function name="<function_name>"
+              is_static="false"
+              is_abstract="false"
               is_lambda="false"
               is_vararg="false"
               is_hidden="false">
@@ -666,6 +795,7 @@ A Low IR file (which is a .xml format file) consists of 4 parts:
 ### Demo
 
 GdScript:
+
 ```gdscript
 class_name RotatingCamera extends Camera3D
 
@@ -698,8 +828,10 @@ func get_pitch(to_radius := false) -> float:
 ```
 
 Low IR:
+
 > Note: lifecycle instructions in this demo are shown with explicit provenance to avoid ambiguity.
 > They are illustrative controlled examples, not a signal that external hand-written IR can use lifecycle instructions freely.
+
 ```xml
 
 <ir>

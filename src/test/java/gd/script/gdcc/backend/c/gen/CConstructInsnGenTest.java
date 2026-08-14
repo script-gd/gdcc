@@ -26,6 +26,8 @@ import gd.script.gdcc.lir.insn.ConstructDictionaryInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.ConstructCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructSignalInsn;
+import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
+import gd.script.gdcc.lir.insn.StandaloneCallableKind;
 import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -34,6 +36,7 @@ import gd.script.gdcc.type.GdBasisType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
@@ -710,6 +713,7 @@ class CConstructInsnGenTest {
     void constructSignalOpcodeIsRegisteredForDispatch() {
         assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_SIGNAL));
         assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_CALLABLE));
+        assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_STANDALONE_CALLABLE));
     }
 
     @Test
@@ -779,21 +783,158 @@ class CConstructInsnGenTest {
     }
 
     @Test
-    @DisplayName("construct_callable should reject non-object receivers")
-    void constructCallableShouldRejectNonObjectReceiver() {
+    @DisplayName("construct_callable should emit Callable.create for builtin receivers")
+    void constructCallableShouldEmitCallableCreateForBuiltinReceiver() {
         var clazz = newTestClass();
-        var func = newFunction("construct_callable_non_object_receiver");
-        func.createAndAddVariable("recv", GdFloatType.FLOAT);
+        var func = newFunction("construct_callable_builtin_receiver");
+        func.createAndAddVariable("vec", GdFloatVectorType.VECTOR2);
         func.createAndAddVariable("cb", new GdCallableType());
 
-        entry(func).appendInstruction(new ConstructCallableInsn("cb", "recv", "_handler"));
+        entry(func).appendInstruction(new ConstructCallableInsn("cb", "vec", "abs"));
+        entry(func).appendInstruction(new DestructInsn("cb"));
+        entry(func).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("godot_Callable_create(NULL,"), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"abs\")"), body);
+        assertTrue(body.contains("godot_Variant_destroy("), body);
+        assertFalse(body.contains("godot_new_Callable_with_Object_StringName("), body);
+        assertFalse(body.contains("_live_object($vec)"), body);
+    }
+
+    @Test
+    @DisplayName("construct_callable should reject Variant receivers")
+    void constructCallableShouldRejectVariantReceiver() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_callable_variant_receiver");
+        func.createAndAddVariable("recv", GdVariantType.VARIANT);
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructCallableInsn("cb", "recv", "abs"));
         clazz.addFunction(func);
 
         var ex = assertThrows(
                 InvalidInsnException.class,
                 () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
         );
-        assertTrue(ex.getMessage().contains("must be Object type"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("must not be Variant"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_standalone_callable should emit custom-create helper for utility")
+    void constructStandaloneCallableShouldEmitUtilityCustomCreate() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_standalone_utility");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb",
+                StandaloneCallableKind.UTILITY,
+                "",
+                "print"
+        ));
+        entry(func).appendInstruction(new DestructInsn("cb"));
+        entry(func).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("gdcc_new_standalone_callable("), body);
+        assertTrue(body.contains("u8\"utility\""), body);
+        assertTrue(body.contains("u8\"print\""), body);
+        assertTrue(body.contains("2648703342LL"), body);
+        assertFalse(body.contains("godot_new_Callable_with_Object_StringName("), body);
+    }
+
+    @Test
+    @DisplayName("construct_standalone_callable should emit custom-create helper for GDCC static")
+    void constructStandaloneCallableShouldEmitGdccStaticCustomCreate() {
+        var clazz = newTestClass();
+        var build = newFunction("build");
+        build.setStatic(true);
+        clazz.addFunction(build);
+        var func = newFunction("construct_standalone_gdcc_static");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb",
+                StandaloneCallableKind.STATIC_GDCC,
+                "Worker",
+                "build"
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("gdcc_new_standalone_callable("), body);
+        assertTrue(body.contains("u8\"static_gdcc\""), body);
+        assertTrue(body.contains("u8\"Worker\""), body);
+        assertTrue(body.contains("u8\"build\""), body);
+    }
+
+    @Test
+    @DisplayName("construct_standalone_callable should emit custom-create helper for engine static")
+    void constructStandaloneCallableShouldEmitEngineStaticCustomCreate() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_standalone_engine_static");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb",
+                StandaloneCallableKind.STATIC_ENGINE,
+                "JSON",
+                "parse_string"
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("gdcc_new_standalone_callable("), body);
+        assertTrue(body.contains("u8\"static_engine\""), body);
+        assertTrue(body.contains("u8\"JSON\""), body);
+        assertTrue(body.contains("u8\"parse_string\""), body);
+    }
+
+    @Test
+    @DisplayName("construct_standalone_callable should reject unknown utility names")
+    void constructStandaloneCallableShouldRejectUnknownUtility() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_standalone_unknown_utility");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb",
+                StandaloneCallableKind.UTILITY,
+                "",
+                "not_a_utility"
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("utility 'not_a_utility' is not registered"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_standalone_callable should reject missing GDCC static symbols")
+    void constructStandaloneCallableShouldRejectMissingGdccStatic() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_standalone_missing_gdcc");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb",
+                StandaloneCallableKind.STATIC_GDCC,
+                "Worker",
+                "missing"
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(ex.getMessage().contains("Worker.missing"), ex.getMessage());
     }
 
     @Test
@@ -1450,18 +1591,41 @@ class CConstructInsnGenTest {
     }
 
     private ExtensionAPI apiWithConstructibleObjectClasses() {
+        var parseString = new ExtensionGdClass.ClassMethod(
+                "parse_string",
+                true,
+                false,
+                true,
+                false,
+                1L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("Variant"),
+                List.of(new ExtensionFunctionArgument("json_string", "String", null, null))
+        );
         return new ExtensionAPI(
                 null,
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(),
+                List.of(new ExtensionUtilityFunction("print", "", "general", true, (int) 2648703342L, List.of())),
                 List.of(),
                 List.of(
                         new ExtensionGdClass("Object", false, true, "", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
                         new ExtensionGdClass("Node", false, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
                         new ExtensionGdClass("RefCounted", true, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
-                        new ExtensionGdClass("EditorOnlyThing", false, false, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of())
+                        new ExtensionGdClass("EditorOnlyThing", false, false, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
+                        new ExtensionGdClass(
+                                "JSON",
+                                false,
+                                true,
+                                "Object",
+                                "core",
+                                List.of(),
+                                List.of(parseString),
+                                List.of(),
+                                List.of(),
+                                List.of()
+                        )
                 ),
                 List.of(),
                 List.of()

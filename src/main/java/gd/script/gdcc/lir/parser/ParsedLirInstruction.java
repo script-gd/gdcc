@@ -77,6 +77,21 @@ public record ParsedLirInstruction(
                     var methodName = ((StringOperand) operands.get(1)).value();
                     yield new ConstructCallableInsn(resultId, receiverVarId, methodName);
                 }
+                case CONSTRUCT_STANDALONE_CALLABLE -> {
+                    var kindToken = ((StringOperand) operands.getFirst()).value();
+                    var ownerName = ((StringOperand) operands.get(1)).value();
+                    var callableName = ((StringOperand) operands.get(2)).value();
+                    try {
+                        yield new ConstructStandaloneCallableInsn(
+                                resultId,
+                                StandaloneCallableKind.requireToken(kindToken),
+                                ownerName,
+                                callableName
+                        );
+                    } catch (IllegalArgumentException ex) {
+                        throw new LirInsnParsingException(lineNumber, columnNumber, lirLine, ex.getMessage());
+                    }
+                }
                 case CONSTRUCT_LAMBDA -> {
                     var lambdaName = ((StringOperand) operands.getFirst()).value();
                     var captures = new ArrayList<Operand>();

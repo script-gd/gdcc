@@ -70,9 +70,10 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
         godot_print(&msg_variant, NULL, 0);
         godot_Variant_destroy(&msg_variant);
     }
-    <#--  Destroy Const StringNames and Strings  -->
+    <#--  Destroy Const StringNames, Strings, and interned standalone Callables  -->
     gdcc_sn_registry_destroy_all();
     gdcc_s_registry_destroy_all();
+    gdcc_standalone_callable_registry_destroy_all();
 }
 
 <#-- Bind Methods for each class.-->

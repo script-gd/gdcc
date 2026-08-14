@@ -24,6 +24,7 @@ import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.scope.Scope;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
@@ -97,12 +98,9 @@ public class FrontendCompileCheckAnalyzer {
     private static final @NotNull Set<String> NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES = Set.of(
             FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
     );
-    /// Phase 4 lifted Object/self method-reference values. Bare static/utility value reads stay
-    /// blocked because they cannot become `godot_new_Callable_with_Object_StringName`.
-    private static final @NotNull Set<FrontendBindingKind> BARE_VALUE_REFERENCE_BINDING_KINDS = Set.of(
-            FrontendBindingKind.STATIC_METHOD,
-            FrontendBindingKind.UTILITY_FUNCTION
-    );
+    /// Phase 4.1 lifted Object/self, builtin instance, static, and utility value reads.
+    /// Keep this empty so callee-exclusion tests stay on the same scan path.
+    private static final @NotNull Set<FrontendBindingKind> BARE_VALUE_REFERENCE_BINDING_KINDS = Set.of();
 
     public void analyze(
             @NotNull FrontendAnalysisData analysisData,
@@ -188,8 +186,8 @@ public class FrontendCompileCheckAnalyzer {
                 + "supports only zero-argument custom object construction";
     }
 
-    /// Feature-specific compile-only message for receiver-qualified method-references that
-    /// cannot become `godot_new_Callable_with_Object_StringName`.
+    /// Feature-specific compile-only message for residual method-references that still cannot
+    /// become `construct_callable` or `construct_standalone_callable`.
     private static @NotNull String unsupportedMethodReferenceCompileBlockedMessage(
             @NotNull FrontendResolvedMember publishedMember
     ) {
@@ -202,7 +200,8 @@ public class FrontendCompileCheckAnalyzer {
         };
         return "Qualified " + kindLabel + " '" + publishedMember.memberName()
                 + "' is recognized by the frontend but is blocked in compile mode because "
-                + "only Object/self method-references can materialize as Callable";
+                + "only Object/self, non-Dictionary builtin instance, and GDCC/engine static "
+                + "method-references can materialize as Callable";
     }
 
     /// Feature-specific compile-only message for bare STATIC_METHOD / UTILITY_FUNCTION value reads.
@@ -710,7 +709,7 @@ public class FrontendCompileCheckAnalyzer {
             };
         }
 
-        /// Builtin instance and any static method-reference cannot become an Object-backed Callable.
+        /// Residual method-references: Dictionary instance keys and builtin type-meta methods.
         /// DYNAMIC facts stay runtime-open, matching the generic status exemption.
         private boolean shouldBlockUnsupportedMethodReference(
                 @NotNull Node anchor,
@@ -720,14 +719,16 @@ public class FrontendCompileCheckAnalyzer {
                     || publishedMember.status() != FrontendMemberResolutionStatus.RESOLVED) {
                 return false;
             }
-            return publishedMember.bindingKind() == FrontendBindingKind.STATIC_METHOD
-                    || (publishedMember.bindingKind() == FrontendBindingKind.METHOD
-                    && publishedMember.ownerKind() == ScopeOwnerKind.BUILTIN);
+            if (publishedMember.bindingKind() == FrontendBindingKind.STATIC_METHOD) {
+                return publishedMember.ownerKind() == ScopeOwnerKind.BUILTIN;
+            }
+            return publishedMember.bindingKind() == FrontendBindingKind.METHOD
+                    && publishedMember.ownerKind() == ScopeOwnerKind.BUILTIN
+                    && publishedMember.receiverType() instanceof GdDictionaryType;
         }
 
-        /// Bare STATIC_METHOD / UTILITY_FUNCTION identifiers used as values still crash CFG today.
-        /// Consume published `symbolBindings()` and skip identifiers that are only the callee of a
-        /// surface `CallExpression`, so legal `helper(right)` / `print(x)` stays compile-ready.
+        /// Phase 4.1 emptied `BARE_VALUE_REFERENCE_BINDING_KINDS`. This scan stays as the
+        /// callee-exclusion hook if a later phase re-blocks a bare kind.
         private void scanBareValueReferenceCompileBlocks() {
             for (var entry : symbolBindings.entrySet()) {
                 // The published table also keys LiteralExpression / SelfExpression. Those are

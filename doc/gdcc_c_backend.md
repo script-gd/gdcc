@@ -156,7 +156,9 @@ already exists, otherwise use the project's own `compiler-cache` directory.
   - `r_initialization->deinitialize = &deinitialize;`
 - `initialize(...)` must return without side effects for levels other than `GDEXTENSION_INITIALIZATION_SCENE`.
 - `deinitialize(...)` must use the same level guard before printing unload messages or destroying GDCC static registries.
-- This keeps class registration, StringName/String registries, and module log output scoped to the scene-level lifecycle that Godot uses for runtime class availability.
+- This keeps class registration, StringName/String registries, standalone Callable intern
+  storage, and module log output scoped to the scene-level lifecycle that Godot uses for
+  runtime class availability.
 
 ### Ptrcall Helper Return Carrier Contract
 
@@ -300,7 +302,7 @@ already exists, otherwise use the project's own `compiler-cache` directory.
   - It can be a direct variable expression (for example `$obj`).
   - It can be an owner-aligned expression after safe upcast/cast (for example `&($child->_super)` or `(godot_Node*)...`).
 - Receiver Value is an argument-shape concept, not an ownership-lifecycle concept:
-  - Determining Receiver Value only decides *which pointer expression to pass*.
+  - Determining Receiver Value only decides _which pointer expression to pass_.
   - `own/release/destroy` rules are handled by lifecycle/slot-write logic, not by receiver rendering.
 
 Conventions:
@@ -396,7 +398,7 @@ Object category rules:
 
 ### Slot Write Consolidation
 
-- Keep object and non-object slot writes separated by semantics: 
+- Keep object and non-object slot writes separated by semantics:
   - Objects follow ownership rules (`capture old -> assign(convert ptr if needed) -> own only for BORROWED -> release captured old`).
   - Non-objects follow value-lifecycle rules (`prepare/copy rhs -> destroy old (if needed) -> assign`).
 - For non-object writes, prefer a single Builder helper (for example `emitNonObjectSlotWrite`) used by both `assignVar` and `callAssign` result assignment paths.
@@ -437,7 +439,7 @@ Object category rules:
     cannot bypass the `_return_val` publish boundary.
 - For non-void functions, `_return_val` is declared at the top of the `__prepare__` block.
   - `_return_val` does not require automatic destruction.
-- Once `_return_val` is written, a goto to `__finally__` is emitted immediately, so `_return_val` is always live until the end of the function, and its value is published through return flow. 
+- Once `_return_val` is written, a goto to `__finally__` is emitted immediately, so `_return_val` is always live until the end of the function, and its value is published through return flow.
   - What's more, `_return_val` is never written twice since `__finally__` block directly returns after reading `_return_val`.
 
 ### Property Init Helper Ownership
@@ -454,9 +456,11 @@ Object category rules:
 ### Default Argument Values
 
 All possible default values in Godot 4.5.1:
+
 ```
 Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "0000000000000000000000000000000000000000000000000000000000000000", Color(0, 0, 0, 0), PackedVector2Array(), 0.08, "20340101000000", "Alert!", PackedVector3Array(), 20.0, 90, ",", "20140101000000", 50, 32767, -1, 15, 16, "application/octet-stream", PackedColorArray(), 65536, PackedFloat32Array(), 2000, 65535, 4294967295, 163, 120, 0, 1, 2, 3, 1.0, Vector2i(0, 0), null, 4, 400, 5, PackedInt64Array(), 1024, 6, 5.0, true, Callable(), "", Vector2(1, 1), Array[StringName]([]), "UDP", &"Master", Array[Plane]([]), Array[RID]([]), 8192, 1000, 0.001, 0.75, Vector2(0, -1), PackedByteArray(), Vector2(0, 0), "CN=myserver,O=myorganisation,C=IT", PackedStringArray(), "*", 30, Array[Array]([]), Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0), 32, PackedInt32Array(), Color(0, 0, 0, 1), Vector3(0, 1, 0), [], {}, Rect2i(0, 0, 0, 0), Vector2i(-1, -1), Vector2i(1, 1), &"", "•", "endregion", false, "region", 0.01, Array[RDPipelineSpecializationConstant]([]), "None", 264, 100, 0.0, Color(1, 1, 1, 1), 0.1, -1.0, Vector3(0, 0, 0), "InternetGatewayDevice", 0.2, 2.0, 500, Rect2(0, 0, 0, 0), 4.0, 0.8, NodePath("")
 ```
+
 - For float and int, generate C literals directly.
 - For `"..."` and `&"..."`, generate `GD_STATIC_S(u8"...")` and `GD_STATIC_SN(u8"...)` respectively.
 - For `null`, generate `NULL`.

@@ -4,11 +4,11 @@
 >
 > 本版本已根据三轮 expert review 修订。`review-expert-b` 第一轮（needs-rework）：修正 compile gate 前提、补齐 CFG 崩溃点、`SignalLoadItem`/`CallableLoadItem` 管线接入、`construct_callable` 合同迁移、Variant 边界、receiver liveness 与 ObjectID 非持有语义。`review-expert-b` 第二轮（复核）：冻结 compile gate bare-identifier `symbolBindings` 输入、收窄 D8 至 engine/native、冻结 `construct_callable` 迁移方案与旧语法处理、冻结 D4 `class_name` 与 D7 null/freed 行为、明确 G4 动态 args 生成与 opcode 注册、补 Variant→Signal unpack 测试。`review-expert-a` 第三轮（交叉审阅，SOUND-WITH-MINOR-FIXES）：D6/Phase 0 bare `METHOD` blocker 增加 `CallExpression.callee` 排除并把崩溃面扩至 bare `STATIC_METHOD`/`UTILITY_FUNCTION` 值读取、明确 RESOLVED blocker 的 scan 结构重组、冻结 Phase 3 `GodotBindingTool generate-builtin` 重新生成入口、澄清 G4 `argc==0` 不照抄 utility VLA、补 `connect` 返回 `int` 与 D4 usage-flag / D8 engine-signal helper 细节。第四轮（实施前补强）：冻结 G4 零长度 VLA 的具体 C 渲染、澄清「writable route」术语（lowering `FrontendWritableRoutePayload` vs sema `RouteKind`）、修正 §3 `CallMethodInsnGen`/`renderGdTypeInC` 行号与兜底分支表述、明确 `.emit/.connect` 的 `AttributeCallStep` 无需改动、修正 G1 位置 B 为诊断恢复、引用 `shouldBlockParameterizedGdccConstructor` 作为 D6 重组先例、补 engine signal 参数类型来源链路。
 >
-> 2026-08-14 增补 **Phase 4.1**（规划，未实施）：builtin 实例方法引用并入已有 `construct_callable`（扩展 `$receiver` 类型分派，operand schema 不变）；无 receiver 的 static/utility 另增 `construct_standalone_callable`。不得把 static/utility 塞回 `construct_callable`，也不得再拆 `construct_callable_from_variant`。Godot 4.5.1 基线见 §2.4；设计冻结见 D9–D14。
+> 2026-08-14 增补 **Phase 4.1**（已实施）：builtin 实例方法引用并入已有 `construct_callable`（扩展 `$receiver` 类型分派，operand schema 不变）；无 receiver 的 static/utility 另增 `construct_standalone_callable`。不得把 static/utility 塞回 `construct_callable`，也不得再拆 `construct_callable_from_variant`。Godot 4.5.1 基线见 §2.4；设计冻结见 D9–D14。
 
 ## 文档状态
 
-- 状态：计划维护中（Phase 0–4 已落地：compile gate + signal 值物化 + ClassDB 注册/冲突守卫 + `.emit` vararg + `connect`/`disconnect` + Object/self Callable；**Phase 4.1 已规划未实施**：builtin 实例 / GDCC·engine 静态 / utility → Callable；Phase 5 未实施）
+- 状态：计划维护中（Phase 0–4.1 已落地：compile gate + signal 值物化 + ClassDB 注册/冲突守卫 + `.emit` vararg + `connect`/`disconnect` + Object/self / 非 Dictionary builtin 实例 / GDCC·engine 静态 / utility Callable；Phase 5 未实施）
 - 更新时间：2026-08-14
 - 相关事实源 / 规则：
   - `frontend_rules.md`
@@ -230,15 +230,13 @@
 - **范围收窄（冻结）**：现有 baseline `ScopeSignalResolverTest.resolveObjectSignalShouldPickNearestGdccOwner`（`src/test/java/gd/script/gdcc/scope/resolver/ScopeSignalResolverTest.java:45-62`）明确要求 parent/child 同名 **GDCC** signal 由 nearest-child 优先（shadowing 合法）。因此 G9/D8 **只限定为**：GDCC signal **不得覆盖 inherited engine/native signal**。inherited **GDCC** signal 的 nearest-child 阴影保持允许，不改 scope contract、不改该 baseline 测试。
 - 落地：`ClassRegistry.findEngineSignalInHierarchy` 只匹配 `ExtensionGdClass` signal；skeleton 对命中发 `sema.class_skeleton` 并跳过该 `SignalStatement`。
 
-### G10 — builtin / static / utility 值引用无法物化为 Callable（Phase 4.1）
+### G10 — builtin / static / utility 值引用无法物化为 Callable（Phase 4.1，已关闭）
 
-- 位置：
-  - compile gate：`FrontendCompileCheckAnalyzer.shouldBlockUnsupportedMethodReference`（`FrontendCompileCheckAnalyzer.java:713-726`）拦截 RESOLVED builtin instance `METHOD` 与任何 `STATIC_METHOD`；`BARE_VALUE_REFERENCE_BINDING_KINDS`（L102-105）拦截 bare `STATIC_METHOD` / `UTILITY_FUNCTION` 值读。
-  - CFG：`isResolvedUnsupportedMethodReference`（`FrontendCfgGraphBuilder.java:2953-2960`）在 instance `applyAttributeStep` 与 `buildTypeMetaHeadMemberStep` fail-fast；bare static/utility 仍撞 `buildIdentifierOpaqueRoute` `default`。
-  - lowering：`FrontendMemberLoadInsnLoweringProcessor` 拒绝任何到达 `MemberLoadItem` 的 RESOLVED `METHOD`/`STATIC_METHOD`；opaque `default` 拒绝 bare static/utility。
-  - LIR/backend：`ConstructCallableInsn` / `ConstructInsnGen.resolveObjectReceiverVariable` 目前只接受 `GdObjectType`。`godot_Callable_create` 与 `godot_callable_custom_create2` 已存在但无 frontend producer。`CALL_STATIC_METHOD` 无 CInsnGen。
-- 共享语义 **已就绪**：`resolveInstanceMethodReference` 解析 builtin receiver；`resolveStaticMethodReference` 解析 `TYPE_META`；bare utility/static 经 `symbolBindings()` 发布 `GdCallableType`。缺口全在 gate / CFG / lowering / backend。
-- 需要：扩展 `construct_callable` 的 `$receiver` 类型分派（builtin 实例）；新增 `construct_standalone_callable`（static/utility）；qualified static 用 `StandaloneCallableLoadItem`；按 D6/§7 五条件解除对应 compile-gate blocker。
+- 已落地：
+  - compile gate：只继续拦截 Dictionary 实例 METHOD 与 builtin type-meta `STATIC_METHOD`。bare `STATIC_METHOD` / `UTILITY_FUNCTION` 值读已解除；callee 排除保持。
+  - CFG：builtin instance → `CallableLoadItem`；qualified GDCC/engine static → `StandaloneCallableLoadItem`；bare static/utility 走 opaque。
+  - lowering / backend：Object/builtin 共用 `construct_callable` 类型分派；static/utility 走 `construct_standalone_callable` + `gdcc_new_standalone_callable`。
+- 仍拒绝：`dict.clear` 当方法引用、`Vector2.from_angle` / `Vector2.abs` type-meta、`Node.new`、lambda。`CALL_STATIC_METHOD` 仍无 CInsnGen。
 
 ---
 
@@ -378,7 +376,7 @@
 - receiver 语义对齐 `VariantCallable`：
   - 普通 builtin（`Vector2`）按值拷贝，之后改 `vec` 不影响已构造 Callable。
   - `Array` / `Dictionary` 按 Godot Variant 共享语义拷贝（底层 buffer 共享）；`array.clear` 作为 Callable 调用会清空原数组。必须有 runtime 锚点，不得按“深拷贝”写测试。
-- `Dictionary` / keyed 容器上的 `dict.clear` **不是**方法引用（Godot 当 key）。sema 若仍发布 `METHOD`，compile gate / CFG 必须拒绝或走属性路径，**不得**误发 `construct_callable` 的 builtin 分支。实施前用现有 `FrontendChainReductionHelper` 测一次 `Dictionary.clear` 的 published fact，把结论写回本节。
+- `Dictionary` / keyed 容器上的 `dict.clear` **不是**方法引用（Godot 当 key）。核实结论：`FrontendChainReductionHelper.resolveInstanceMethodReference` 仍把裸 `dict.clear` 发布为 `RESOLVED METHOD + INSTANCE + BUILTIN + Dictionary`。compile gate / CFG 必须按 `receiverType instanceof GdDictionaryType` 拒绝，**不得**误发 `construct_callable` 的 builtin 分支。`dict.clear()` 调用面仍走 builtin method call。
 - 禁止把 builtin receiver 传给 `godot_new_Callable_with_Object_StringName` 或伪造 Object。
 
 ### D12 —（Phase 4.1）static / utility → `construct_standalone_callable` + custom trampoline
@@ -540,14 +538,14 @@
 - 验收：
   - `foo.connect(_handler)` / `foo.disconnect(_handler)` / `foo.connect(obj._handler)` 可编译；`Callable` 正确绑定 receiver 与 method 名。
   - `connect` flags 省略与显式（`CONNECT_DEFERRED`/`CONNECT_ONE_SHOT`）均可编译。
-  - builtin/static/utility/lambda method reference 被明确拒绝。
+  - lambda method reference 被明确拒绝；builtin/static/utility 值引用改由 Phase 4.1 承接。
   - 对应 targeted + 端到端测试通过（含真实触发 handler 的运行时验证，若 Zig 环境可用）。
 
 ### Phase 4.1 — builtin 实例 / GDCC·engine 静态 / utility → Callable（G10 + D9–D14）
 
 - 目标：`var c = vec.abs`、`var c = Worker.build`、`var c = JSON.parse_string`、`var c = print` 以及它们作为 `Signal.connect(...)` 实参时可编译并物化为可 `call` 的 `godot_Callable`。
 - 依赖：Phase 4（D5 Object/self 路径保持冻结且绿）。不依赖 Phase 5。
-- 状态：**规划中**（2026-08-14 写入；未实施）。
+- 状态：**已完成**（2026-08-14 实施 4.1a–d）。
 - 实施顺序冻结为四个可单独提交的子阶段。每个子阶段结束必须：相关 targeted tests 绿、`frontend_rules.md` / 本计划落地注记同步、compile gate 只解除该子阶段 surface。
 
 #### Phase 4.1a — LIR / backend 合同先行（不放行 compile gate）
@@ -613,8 +611,12 @@
   - [N] lambda / `Node.new` / `Vector2.from_angle` 仍 unsupported。
   - [B] Phase 4 Object/self 全部锚点保持绿。
 
-- 落地注记（实施时填写，规划期占位）：
-  - 尚未编码。实施每个子阶段时按 Phase 4 的风格把“冻结合同 / 实际落点 / 测试类名”写回本段。
+- 落地注记：
+  - 冻结合同：`construct_callable` schema 不变，backend 按 `$receiver` 类型分派；只新增 `construct_standalone_callable "<kind>" "<owner>" "<name>"`。`dict.clear` 仍是 published METHOD，但 compile gate / CFG 按 Dictionary receiver 拒绝。
+  - 实际落点：`ConstructInsnGen.emitConstructCallable` / `emitConstructStandaloneCallable`；runtime helper `gdcc_new_standalone_callable`（`gdcc_callable.h`，经 `gdcc_helper.h` 聚合引入）；CFG `isResolvedBuiltinInstanceMethodReference` + `StandaloneCallableLoadItem`；opaque `STATIC_METHOD`/`UTILITY_FUNCTION`；compile gate 只拦 Dictionary / builtin type-meta。
+  - 测试：`ConstructStandaloneCallableInsnContractTest`、`CConstructInsnGenTest` builtin/standalone 正反例、`FrontendCfgGraphBuilderTest` builtin/static/dict 拆分、`FrontendLoweringBodyInsnPassTest` builtin/static/utility lowering、`FrontendCompileCheckAnalyzerTest` 放行与 Dictionary 负例。
+  - 已知边界：e2e Zig（`array.clear` 共享语义、`c.call` / `is_valid` / connect 三类）未在本轮落地，留给 Phase 5。standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC/engine 静态方法，不实现 `CALL_STATIC_METHOD` CInsnGen。
+  - intern 表：`gdcc_standalone_callable_spec_of` 按 `(kind, owner, name)` 线性去重；每条 spec 单独 `godot_mem_alloc`，指针数组按 `gdcc_string_name.h` 方式倍增。`deinitialize` 调 `gdcc_standalone_callable_registry_destroy_all()`。`free_func` 仍是 no-op（多份 Callable 共享同一 spec）。OOM 仍返回空 Callable。
 - 若某子阶段与 writable-route / dynamic / `CALL_STATIC_METHOD` 冲突不可调和：只允许把 **该子阶段** 降级，必须在此记录降级边界，不得把“规划中”改成“已完成”。
 
 ### Phase 5 — 测试矩阵补全、文档收口、compile gate 终检
@@ -641,7 +643,7 @@
 - metadata 缺失时禁止猜测 dynamic signal；保持 `MetadataUnknown` → dynamic/unsupported 边界。
 - diagnostics 必须走 `DiagnosticManager` + “diagnostic + skip subtree” 恢复策略；普通源码错误不得作为异常控制流。
 - 继承 signal 不得重复注册；engine signal 只读、不注册、冲突被拒（D8）。
-- Phase 4：builtin/static/utility method-reference → Callable 在 4.1 解封前必须发 unsupported，不得伪造 Object receiver。
+- Phase 4.1：builtin 实例必须走 `construct_callable` 非 Object 分支；static/utility 只许 `construct_standalone_callable`。`Variant` receiver 与 Dictionary key 必须 fail-fast。
 - Phase 4.1 解封后：builtin 实例必须走 `construct_callable` 的非 Object 分支（`godot_Callable_create`），不得伪造 Object；static/utility 只许 `construct_standalone_callable`，不得塞回 `construct_callable`。到达 `MemberLoadItem` 的 RESOLVED `METHOD`/`STATIC_METHOD` 仍 fail-fast。`Variant` receiver 的 `construct_callable` 必须 fail-fast。
 - builtin type-meta 方法当值、构造器当值、lambda 仍必须 unsupported / fail-closed。
 
