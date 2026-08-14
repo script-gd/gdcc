@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（compile-only final gate、for route-aware compile policy、显式 AST 封口、generic published-fact blocker、signal/method-reference feature-specific RESOLVED blocker、shared/compile 分流边界与 SuiteResolver stable facts 已落地）
-- 更新时间：2026-08-13（Phase 3：解除 `.emit` blocker；`.connect/.disconnect` 与 method-reference 仍拦截）
+- 更新时间：2026-08-14（signal/Callable 值引用已闭环；compile gate 只拦 Dictionary 实例 method-ref 与 builtin type-meta static method-ref）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -18,6 +18,7 @@
   - `frontend_rules.md`
   - `diagnostic_manager.md`
   - `frontend_chain_binding_expr_type_implementation.md`
+  - `frontend_signal_implementation.md`
   - `frontend_unary_binary_expr_semantic_implementation.md`
   - `frontend_type_check_analyzer_implementation.md`
   - `frontend_analysis_inspection_tool_implementation.md`
@@ -173,7 +174,7 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 
 其中 `ConditionalExpression` 还带有一条更具体的当前事实：
 
-- 它的 lowering 需要依赖 frontend CFG graph / condition-evaluation-region 合同冻结；当前 legacy metadata-only `FrontendLoweringCfgPass` 仍不足以支撑解封
+- 它的 lowering 需要依赖 frontend CFG graph / condition-evaluation-region 合同冻结；`FrontendLoweringBuildCfgPass` 已能建图，但 value-merge / branch-result materialization 仍未接通，因此仍不足以支撑解封
 - 因此在 CFG 入口尚未定型前，compile gate 必须先把它挡在编译管线外
 
 short-circuit `BinaryExpression(and/or/&&/||)` 当前已经从显式 compile-block 列表中移除：
@@ -424,7 +425,7 @@ compile gate 当前统一使用：
 - `FrontendCompileCheckAnalyzerTest`
   - 显式 AST compile-block（当前 3 类：Conditional / Preload / GetNode；Array / Dictionary / Cast / TypeTest 已离开 intercept）
   - short-circuit binary 不再被 compile gate 误封口
-  - Phase 1 signal 值读取、Phase 3 `.emit`、Phase 4 `.connect/.disconnect` 与 bare Object/self `METHOD` 值读取已放行；仍拦截 bare STATIC_METHOD/UTILITY_FUNCTION 值读取与 builtin/static method-reference；callee-exclusion 与 `Signal`/`Callable` 局部变量不被类型猜测误伤
+  - signal 值读取、`.emit`、`.connect/.disconnect`、Object/self `METHOD`、非 Dictionary builtin 实例、GDCC/engine 静态与 bare utility 值读取已放行；仍拦截 Dictionary 实例 method-ref 与 builtin type-meta static method-ref；callee-exclusion 与 `Signal`/`Callable` 局部变量不被类型猜测误伤
   - generic side-table blocker
   - property initializer island 上的 generic blocker
   - shared-anchor 去重

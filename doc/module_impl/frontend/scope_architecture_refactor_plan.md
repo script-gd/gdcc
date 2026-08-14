@@ -178,7 +178,7 @@
 
 - `self` 不作为隐式 `ScopeValue` 进入 lexical value namespace；当前由 top binding 直接发布 `SELF` binding，并由 chain receiver support 解析为当前类实例 receiver
 - `self` 在 static context 与 property initializer 中的 fail-closed 边界已经落地；相关非法用法的用户可见 diagnostics 仍由 frontend binder 各阶段负责，而不是由 `Scope` 协议承载
-- `signal` 的无 receiver 名称解析与 receiver-based metadata lookup 已纳入 `ClassScope` / `ScopeSignalResolver`，但 `.emit(...)`、`await signal` 等 signal/coroutine use-site 的完整 binder 语义仍未闭环
+- `signal` 的无 receiver 名称解析与 receiver-based metadata lookup 已纳入 `ClassScope` / `ScopeSignalResolver`。值读取 / `.emit` / `.connect` 已由 frontend binder 闭环（见 `frontend_signal_implementation.md`）；`await signal` 协程仍未闭环
 
 ### 2.6 Shared resolver 已经成为前后端共享事实源
 
@@ -334,7 +334,7 @@ Godot 当前行为可概括为：
 尚未纳入完整 parity 的内容：
 
 - `self`
-- signal 的 `.emit(...)`、`await` 与更完整的 binder/context-sensitive diagnostics
+- `await signal` 与其它 coroutine / context-sensitive signal 语义
 - 通过实例语法访问静态成员时的 frontend 绑定与诊断策略
 
 这些问题必须在后续 frontend binder 阶段单独建模，而不能假装已经由 `Scope` 或 shared resolver 自动解决。
@@ -433,9 +433,7 @@ AST 节点与 scope 的关联仍应由 side-table 维护，而不是把 AST 节�
   - `FrontendBindingKind.SIGNAL`
   - `ClassScope` 的 unqualified signal lookup
   - `ScopeSignalResolver` 的 receiver-based metadata lookup
-- 当前仍未闭环的 signal 语义包括：
-  - `self.some_signal` 的完整 use-site binding 与 diagnostics
-  - `.emit(...)`
+- 值读取、`.emit` / `.connect` / `.disconnect` 与 Object/self / builtin / static / utility Callable 已闭环（见 `frontend_signal_implementation.md`）。当前仍未闭环的 signal 语义只包括：
   - `await signal`
   - 其他 coroutine / context-sensitive signal 语义
 
@@ -505,12 +503,12 @@ signal 路径必须继续遵守当前 scope 架构的分层边界：
 
 当前方案是工程化折中，不是最终 parity 终点。若未来目标转向更高 Godot 一致性，必须重新设计 parent/view 模型，而不是在现有 `ClassScope` 上继续堆条件分支。
 
-### 6.4 `self` 尚未纳入当前 `Scope` 协议，signal use-site 语义仍未闭环
+### 6.4 `self` 尚未纳入当前 `Scope` 协议；`await signal` 仍未闭环
 
-当前 restriction parity 不能宣称已经完整覆盖 Godot 的 static-context 语义。后续 analyzer / binder 工作仍需补齐；其中 signal 现阶段已经冻结的 scope/resolver 合同见 `4.5 signal 的当前冻结合同`。
+当前 restriction parity 不能宣称已经完整覆盖 Godot 的 static-context 语义。后续 analyzer / binder 工作仍需补齐；signal 的 scope/resolver 冻结合同见 §4.5，值读取与 `.emit`/`.connect` 见 `frontend_signal_implementation.md`。
 
 - `SelfExpression`
-- signal 的 use-site binding / `.emit(...)` / `await`
+- `await signal` / coroutine
 - 相关错误文案与语法上下文差异
 
 ### 6.5 已完成：`ClassScope` missing-super failure policy 收敛

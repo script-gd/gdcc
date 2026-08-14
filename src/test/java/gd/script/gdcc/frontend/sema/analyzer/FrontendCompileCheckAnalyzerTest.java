@@ -1710,6 +1710,82 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
+    /// Phase 4.1d / §8.6: bare `lerp` is a value-ref, while `lerp(...)` stays a legal utility call.
+    @Test
+    void analyzeForCompileReleasesLerpUtilityValueRead() throws Exception {
+        var source = """
+                class_name CompileCheckLerpValueReference
+                extends Node
+                
+                func ping():
+                    var utility_ref = lerp
+                    lerp(0.0, 1.0, 0.5)
+                """;
+
+        var compiled = analyzeForCompile("compile_check_lerp_value_reference.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
+    /// §8.6: constructor-as-value stays failed; compile gate must not treat it as a released Callable.
+    @Test
+    void analyzeForCompileBlocksConstructorValueReference() throws Exception {
+        var source = """
+                class_name CompileCheckConstructorValueReference
+                extends Node
+                
+                func ping():
+                    var ctor_ref = Node.new
+                """;
+
+        var compiled = analyzeForCompile("compile_check_constructor_value_reference.gd", source);
+        var ctorStep = findNamedPropertyStep(findFunction(compiled.unit().ast().statements(), "ping"), "ctor_ref", "new");
+        var memberDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.member_resolution");
+
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(
+                memberDiagnostics.stream().anyMatch(diagnostic ->
+                        diagnostic.range().equals(FrontendRange.fromAstRange(ctorStep.range()))
+                                && diagnostic.message().contains("new")
+                ),
+                compiled.diagnostics().asList()::toString
+        );
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty()
+                        || compiled.diagnostics().asList().stream().anyMatch(diagnostic ->
+                        diagnostic.message().contains("new") || diagnostic.message().contains("Node.new")),
+                compiled.diagnostics().asList()::toString);
+    }
+
+    /// §8.6: `await signal` remains a compile-blocked deferred expression.
+    @Test
+    void analyzeForCompileBlocksAwaitSignal() throws Exception {
+        var source = """
+                class_name CompileCheckAwaitSignal
+                extends Node
+                
+                signal pinged
+                
+                func ping():
+                    await pinged
+                """;
+
+        var compiled = analyzeForCompile("compile_check_await_signal.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertFalse(compileDiagnostics.isEmpty(), compiled.diagnostics()::toString);
+        assertTrue(
+                compileDiagnostics.stream().anyMatch(diagnostic ->
+                        diagnostic.message().contains("Await")
+                                || diagnostic.message().contains("await")
+                                || diagnostic.message().contains("deferred")
+                ),
+                compileDiagnostics::toString
+        );
+    }
+
     @Test
     void analyzeForCompileReleasesBuiltinAndStaticMethodReferences() throws Exception {
         var source = """

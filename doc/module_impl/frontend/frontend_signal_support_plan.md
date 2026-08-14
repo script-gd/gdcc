@@ -8,9 +8,10 @@
 
 ## 文档状态
 
-- 状态：计划维护中（Phase 0–4.1 已落地：compile gate + signal 值物化 + ClassDB 注册/冲突守卫 + `.emit` vararg + `connect`/`disconnect` + Object/self / 非 Dictionary builtin 实例 / GDCC·engine 静态 / utility Callable；Phase 5 未实施）
+- 状态：计划维护中（Phase 0–5 已落地。已落地事实见 `frontend_signal_implementation.md`；本文只保留未实现 / 降级边界与历史阶段记录）
 - 更新时间：2026-08-14
 - 相关事实源 / 规则：
+  - `frontend_signal_implementation.md`（当前事实源）
   - `frontend_rules.md`
   - `scope_architecture_refactor_plan.md`（signal scope/resolver 冻结合同，§4.5）
   - `frontend_lowering_plan.md`（lowering 只消费 published facts、compile gate 解除条件）
@@ -52,9 +53,11 @@
 - signal 声明参数签名对 `emit` 的静态强制检查（见 §2.3）。
 - 自定义 `signal` 作为 type annotation 的扩展（`Signal` 类型已存在，不扩展类型系统）。
 
-### 1.3 compile gate 现状与策略（已修正）
+### 1.3 compile gate 现状与策略（历史记录，Phase 0 前）
 
-> **重要修正**：review 确认当前 compile gate **并没有**任何 signal-specific blocker。`FrontendCompileCheckAnalyzer` 只拦截 `BLOCKED/DEFERRED/FAILED/UNSUPPORTED` 状态（`FrontendCompileCheckAnalyzer.java:193-212`），而 receiver 限定的 `resolvedSignalTrace(...)` / `resolvedMethodReferenceTrace(...)` 与 bare identifier 的 `resolveValueIdentifierExpressionType(...)`（`FrontendExpressionSemanticSupport`）都发布 `RESOLVED`，因此 signal 值读取、`.emit`、`.connect`、method-reference 目前都会**通过 gate**，随后在 CFG 构建（bare）崩溃、或被误 lowering 成 property（receiver）、或在 C 编译阶段失败。
+> **历史前提（已由 Phase 0–4.1 关闭）**：实施前 review 确认当时 compile gate **并没有**任何 signal-specific blocker。当前剩余 blocker 与放行面以 `frontend_signal_implementation.md` §5 / `frontend_compile_check_analyzer_implementation.md` §4.2 为准。
+>
+> 当时：review 确认 compile gate **并没有**任何 signal-specific blocker。`FrontendCompileCheckAnalyzer` 只拦截 `BLOCKED/DEFERRED/FAILED/UNSUPPORTED` 状态（`FrontendCompileCheckAnalyzer.java:193-212`），而 receiver 限定的 `resolvedSignalTrace(...)` / `resolvedMethodReferenceTrace(...)` 与 bare identifier 的 `resolveValueIdentifierExpressionType(...)`（`FrontendExpressionSemanticSupport`）都发布 `RESOLVED`，因此 signal 值读取、`.emit`、`.connect`、method-reference 目前都会**通过 gate**，随后在 CFG 构建（bare）崩溃、或被误 lowering 成 property（receiver）、或在 C 编译阶段失败。
 
 - 因此 **Phase 0 必须先补一组 feature-specific compile gate blocker**，把上述 surface 挡在 lowering 之外，保证编译器安全；之后每个阶段只解除该阶段对应 surface 的 blocker。
 - **blocker 输入合同（已修正）**：gate 当前只接收 `expressionTypes/resolvedMembers/resolvedCalls/slotTypes/forIterationPlans`（`FrontendCompileCheckAnalyzer.java:121-132`），**没有**接收 `symbolBindings()`。因此：
@@ -148,7 +151,7 @@
    - **engine signal 参数类型来源**：`resolvedSignalTrace` 经 `GdSignalType.from(signal.signal())` 从 `SignalDef` 派生 `parameterTypes`；engine/native signal 的 `SignalDef` 来自 `extension_api_451.json` 的 `ExtensionGdClass.getSignals()`。Phase 5 的 e2e（`Node.ready`/`Button.pressed`）依赖该链路，Phase 1 前需确认 engine signal 参数类型已正确落进 `ClassRegistry`。
 7. **类型**：`GdSignalType`（`getTypeName()=="Signal"`、`getGdExtensionType()==SIGNAL`，`GdSignalType.java:18-51`）；`GdCallableType` 已存在。
 8. **只读约束**：`FrontendAssignmentSemanticSupport`（L462-466、L656-659）对 signal 赋值报 read-only。
-9. **method-reference 语义**：`resolvedMethodReferenceTrace(...)`（L990-1018）已把 method 引用发布为 `GdCallableType`。Phase 4 只物化 Object/self 实例引用；builtin instance / static / utility 仍由 compile gate 拦截（G10 / Phase 4.1）。
+9. **method-reference 语义**：`resolvedMethodReferenceTrace(...)`（L990-1018）已把 method 引用发布为 `GdCallableType`。Object/self、非 Dictionary builtin 实例、GDCC/engine 静态与 utility 值引用均已物化。compile gate **只**继续拦截 Dictionary 实例 method-ref 与 builtin type-meta static method-ref（见 `frontend_signal_implementation.md` §5）。
 10. **`.emit`/`.connect` 方法解析**：`reduceInstanceMethodStep` → `ScopeMethodResolver.resolveBuiltinInstanceMethod`（L446-488）→ `findBuiltinClass("Signal")`，candidate 选择已支持 vararg（L773-798）。
 11. **call lowering**：`lowerExactInstanceCall(...)`（`FrontendSequenceItemInsnLoweringProcessors.java:419-436`）→ `CallMethodInsn(result, name, receiverSlot, args)`，并已先发射 `emitAssertObjectLiveIfNeeded`。
 12. **backend call**：`CallMethodInsnGen.generateCCode`（L38-52）按 `BackendMethodCallResolver` 的 mode 分派（含 `BUILTIN`），`emitKnownSignatureCall`（L193-231）做 fixed + varargs 拆分；`BackendMethodCallResolver` 渲染 `godot_<owner>_<method>`。
@@ -622,15 +625,21 @@
 ### Phase 5 — 测试矩阵补全、文档收口、compile gate 终检
 
 - 目标：补齐 Variant 边界 / native / inherited / flags / 生命周期 / negative 用例，收口文档。
-- 依赖：Phase 1–4；Phase 4.1 完成后把 §8.6 的“值读取拦截”条改成支持断言，再做终检。4.1 未完成前 Phase 5 不得把 builtin/static/utility 值引用写成已支持。
+- 依赖：Phase 1–4.1。
+- 状态：**已完成**（2026-08-14）。已落地事实已迁至 `frontend_signal_implementation.md`。
 - 动作：
-  1. 补齐 §8 测试矩阵所有用例（尤其 G8 Variant 边界、native/inherited signal、connect flags、null/freed receiver、Phase 4.1 正反例）。
-  2. 将本文档“已落地”部分迁移为 `frontend_signal_implementation.md` 事实源；本文档保留未实现/降级边界；把 4.5.1 语义基线写入事实源。
-  3. 同步更新所有仍写 `.emit`/signal 未闭环的旧文档：`frontend_rules.md`、`scope_architecture_refactor_plan.md`、`frontend_lowering_plan.md`、`frontend_lowering_skeleton_pre_pass_implementation.md`。
+  1. ~~补齐 §8 测试矩阵所有用例（尤其 G8 Variant 边界、native/inherited signal、connect flags、null/freed receiver、Phase 4.1 正反例）。~~
+  2. ~~将本文档“已落地”部分迁移为 `frontend_signal_implementation.md` 事实源；本文档保留未实现/降级边界；把 4.5.1 语义基线写入事实源。~~
+  3. ~~同步更新所有仍写 `.emit`/signal 未闭环的旧文档：`frontend_rules.md`、`scope_architecture_refactor_plan.md`、`frontend_lowering_plan.md`、`frontend_lowering_skeleton_pre_pass_implementation.md`。~~
   4. 全量 `clean build`；确认 compile gate 终检无遗漏 blocker、无误放行。
+- 落地注记：
+  - 当前事实源：`frontend_signal_implementation.md`。
+  - 仍未实现（保持拒绝 / post-MVP）：`await signal`、lambda / capture、builtin type-meta 方法当值、构造器当值、`CALL_STATIC_METHOD` CInsnGen。
+  - 新增 targeted：`FrontendBodyOwnerProceduresExprTypeTest` signal expr-type、`FrontendVariantBoundaryCompatibilityTest` Signal pack/unpack decision、`FrontendLoweringBodyInsnPassTest` G8 LIR 边界、`FrontendCompileCheckAnalyzerTest` `lerp` / `Node.new` / `await`、`CConstructInsnGenTest` 未注册 opcode 负例。
+  - 新增 e2e：`member/signal_emit_connect.gd`、`member/signal_inherited_and_engine.gd`、`member/signal_null_receiver.gd`、`member/callable_value_refs.gd`。
 - 验收：
-  - §8 所有测试通过。
-  - 文档状态更新，事实源拆分完成，上述旧文档表述与之一致。
+  - §8 测试矩阵由事实源 §9 锚点覆盖。
+  - 文档状态更新，事实源拆分完成，旧文档只把 `await`/coroutine 留作未闭环。
   - `./gradlew clean build` 全绿。
 
 ---
@@ -705,18 +714,20 @@
 - [N] 继承 signal 在 subclass instance 上 emit。
 - [N] engine/native signal 读取（如 `Button.pressed`、`Node.ready`）与 inherited native signal 读取。
 - [N] null / freed receiver 的 signal 读取 / emit / connect 行为。
-- [N] negative：signal 赋值、static signal 读取、lambda / builtin type-meta / `Node.new` 当 Callable、`await signal`（应报 unsupported）。
+- [N] negative：signal 赋值、static signal 读取、lambda / builtin type-meta / `Node.new` 当 Callable、`await signal`（应报 unsupported）。这些是 compile-fail 合同，锚定在 frontend targeted tests（`FrontendCompileCheckAnalyzerTest` / assignment / skeleton），不进 `test_suite` e2e（该套件只跑可编译脚本）。
 - [N] Phase 4.1 e2e：`vec.abs` / `array.clear` / `Worker.build` / `JSON.parse_string` / `print` 作为 Callable 被 `.call` 或 `connect` 消费。
+- [N] compiled/interpreted interop：解释脚本连接并接收 GDCC 自定义类 signal；GDCC 连接并接收解释脚本自定义 signal；双向互连；engine Node signal 穿越 compiled/interpreted 边界。
+- [N] Variant named-get：`host: Variant` 上读取 ClassDB 已注册 signal / engine `ready` / 解释脚本自定义 signal，对照 `Object.get`。
 
 ### 8.6 compile gate
 
 - [N] Phase 0 blocker anchor 测试（`FrontendCompileCheckAnalyzerTest`）。
 - [N] 各阶段 blocker 解除前后对比测试（feature-specific anchor，不只断言总数）。
 - [N] standalone `var c = _handler`（Phase 4 已放行）。
-- [N] Phase 4.1 支持边界：`var c = vec.abs`、`var c = Worker.build`、`var c = JSON.parse_string`、`var c = print` / `lerp`。
+- [N] Phase 4.1 支持边界：`var c = vec.abs`、`var c = Worker.build`、`var c = JSON.parse_string`、`var c = print` / `lerp`（已放行）。
 - [N] Phase 4.1 拒绝边界：`Vector2.abs` / `Vector2.from_angle`、`Node.new`、lambda、`dict.clear` 方法误认（按 D11）。
 - [N] **callee-exclusion 回归**：合法 bare method / static / utility **调用** `helper(right)` / `build(x)` / `print(x)` 保持零 `sema.compile_check`（`FrontendCompileCheckAnalyzerTest.java:661-683` 锚点）。
-- [N] 4.1 完成前：bare static/utility **值**读取仍拦截；4.1c/4.1d 解封后该条改为“值读取放行、调用不被误伤”。
+- [N] 4.1c/4.1d 解封后：bare static/utility **值读取放行**、调用不被误伤。
 
 ---
 
@@ -733,6 +744,6 @@
   - 一次解封三类 compile gate 会让失败面不可定位；必须按 4.1b→4.1c→4.1d 解封。
   - 不要顺便实现 `CALL_STATIC_METHOD` backend；那是独立缺口，混进本阶段会拖垮验收。
 - **engine signal**：原生类 signal 只读、不注册、同名冲突被拒（D8）；需在 negative 用例覆盖。
-- **文档漂移**：`frontend_rules.md:68` 仍写 `.emit(...)` use-site 未闭环；`scope_architecture_refactor_plan.md`、`frontend_lowering_plan.md`、`frontend_lowering_skeleton_pre_pass_implementation.md` 也有同类旧表述。各阶段解封时必须同步更新对应文档，并把 4.5.1 语义基线写入事实源。
+- **文档漂移**：已落地表述以 `frontend_signal_implementation.md` 为准。旧文档只应把 `await` / coroutine 留作未闭环；`.emit` / `.connect` / signal 值读取不得再写成未支持。
 - **符号名**：本计划统一使用 `ConstructCallableInsn`（仓库不存在 `ConnectCallableInsn`，避免实现者搜索错误符号）。
 - 所有 C 模板 / wrapper 改动必须同步 `doc/module_impl/backend/godot_binding_implementation.md` 的 ABI 约定描述。

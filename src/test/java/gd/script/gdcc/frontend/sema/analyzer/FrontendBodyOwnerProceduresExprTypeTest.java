@@ -39,6 +39,7 @@ import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.type.GdCallableType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
@@ -973,6 +974,77 @@ class FrontendBodyOwnerProceduresExprTypeTest {
 
         var discardedDiagnostics = diagnosticsByCategory(analyzed, "sema.discarded_expression");
         assertEquals(3, discardedDiagnostics.size());
+    }
+
+    /// Phase 5 §8.1: bare / receiver / inherited-engine signal reads must publish RESOLVED(GdSignalType).
+    @Test
+    void analyzePublishesGdSignalTypeForBareAndReceiverSignalValueReads() throws Exception {
+        var analyzed = analyze(
+                "expr_type_signal_value_reads.gd",
+                """
+                        class_name ExprTypeSignalValueReads
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func ping(other: ExprTypeSignalValueReads):
+                            pinged
+                            self.pinged
+                            other.pinged
+                            other.ready
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var bareSignal = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        var selfSignal = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        var otherSignal = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
+        );
+        var engineSignal = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3)).expression()
+        );
+
+        var bareType = analyzed.analysisData().expressionTypes().get(bareSignal);
+        var selfType = analyzed.analysisData().expressionTypes().get(selfSignal);
+        var otherType = analyzed.analysisData().expressionTypes().get(otherSignal);
+        var engineType = analyzed.analysisData().expressionTypes().get(engineSignal);
+        var otherMember = analyzed.analysisData().resolvedMembers().get(
+                assertInstanceOf(AttributePropertyStep.class, otherSignal.steps().getFirst())
+        );
+        var engineMember = analyzed.analysisData().resolvedMembers().get(
+                assertInstanceOf(AttributePropertyStep.class, engineSignal.steps().getFirst())
+        );
+
+        assertAll(
+                () -> assertNotNull(bareType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, bareType.status()),
+                () -> assertInstanceOf(GdSignalType.class, bareType.publishedType()),
+                () -> assertNotNull(selfType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, selfType.status()),
+                () -> assertInstanceOf(GdSignalType.class, selfType.publishedType()),
+                () -> assertNotNull(otherType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, otherType.status()),
+                () -> assertInstanceOf(GdSignalType.class, otherType.publishedType()),
+                () -> assertNotNull(engineType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, engineType.status()),
+                () -> assertInstanceOf(GdSignalType.class, engineType.publishedType()),
+                () -> assertNotNull(otherMember),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, otherMember.status()),
+                () -> assertEquals(FrontendBindingKind.SIGNAL, otherMember.bindingKind()),
+                () -> assertNotNull(engineMember),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, engineMember.status()),
+                () -> assertEquals(FrontendBindingKind.SIGNAL, engineMember.bindingKind()),
+                () -> assertEquals("ready", engineMember.memberName())
+        );
     }
 
     @Test

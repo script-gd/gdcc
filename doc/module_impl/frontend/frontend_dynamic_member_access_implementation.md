@@ -217,6 +217,7 @@ dynamic member 的核心回归锚点当前分布在：
 - runtime resource
   - `src/test/test_suite/unit_test/script/runtime/dynamic_member_variant_named_access.gd`
   - `src/test/test_suite/unit_test/script/runtime/dynamic_member_variant_named_access_missing.gd`
+  - `src/test/test_suite/unit_test/script/runtime/dynamic_member_variant_signal_read.gd`
 
 这些测试当前共同固定以下行为：
 

@@ -20,6 +20,7 @@ import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
@@ -426,6 +427,8 @@ public class ClassRegistryTest {
         assertFalse(registry.checkAssignable(GdIntVectorType.VECTOR4I, GdFloatVectorType.VECTOR4));
         assertFalse(registry.checkAssignable(GdFloatVectorType.VECTOR3, GdIntVectorType.VECTOR3I));
         assertFalse(registry.checkAssignable(GdIntVectorType.VECTOR2I, GdFloatVectorType.VECTOR3));
+        assertFalse(registry.checkAssignable(new GdSignalType(), GdVariantType.VARIANT));
+        assertFalse(registry.checkAssignable(GdVariantType.VARIANT, new GdSignalType()));
     }
 
     @Test

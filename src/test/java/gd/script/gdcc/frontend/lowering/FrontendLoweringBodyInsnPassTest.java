@@ -46,6 +46,7 @@ import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
+import gd.script.gdcc.lir.insn.ConstructContainerLiteralInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.ConstructCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructSignalInsn;
@@ -5253,6 +5254,179 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
+    /// G8 / §8.4: Signal crossing Variant, container, named/indexed store, or emit vararg must pack first.
+    @Test
+    void runPacksAndUnpacksSignalAcrossExplicitVariantBoundaries() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_signal_variant_boundary.gd",
+                """
+                        class_name BodyInsnSignalVariantBoundary
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func take_variant(value: Variant) -> void:
+                            pass
+                        
+                        func pack_param(other: BodyInsnSignalVariantBoundary) -> void:
+                            take_variant(other.pinged)
+                        
+                        func pack_array(other: BodyInsnSignalVariantBoundary) -> void:
+                            var items: Array = [other.pinged]
+                        
+                        func pack_dict(other: BodyInsnSignalVariantBoundary) -> void:
+                            var payload: Dictionary = {"sig": other.pinged}
+                        
+                        func pack_named_store(host: Variant, other: BodyInsnSignalVariantBoundary) -> void:
+                            host.marker = other.pinged
+                        
+                        func pack_indexed_store(host: Array, other: BodyInsnSignalVariantBoundary) -> void:
+                            host[0] = other.pinged
+                        
+                        func pack_emit_arg(sig: Signal, other: BodyInsnSignalVariantBoundary) -> void:
+                            sig.emit(other.pinged)
+                        
+                        func unpack_param(boxed: Variant) -> void:
+                            var typed: Signal = boxed
+                        
+                        func unpack_array(items: Array) -> void:
+                            var typed: Signal = items[0]
+                        """,
+                Map.of("BodyInsnSignalVariantBoundary", "RuntimeBodyInsnSignalVariantBoundary"),
+                true
+        );
+        var packParamContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "pack_param"
+        );
+        var packArrayContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "pack_array"
+        );
+        var packDictContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "pack_dict"
+        );
+        var packNamedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "pack_named_store"
+        );
+        var packIndexedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "pack_indexed_store"
+        );
+        var packEmitContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "pack_emit_arg"
+        );
+        var unpackParamContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "unpack_param"
+        );
+        var unpackArrayContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalVariantBoundary",
+                "unpack_array"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var packParamConstruct = requireOnlyInstruction(packParamContext.targetFunction(), ConstructSignalInsn.class);
+        var packParamPack = requireOnlyInstruction(packParamContext.targetFunction(), PackVariantInsn.class);
+        var packParamCall = requireOnlyInstruction(packParamContext.targetFunction(), CallMethodInsn.class);
+        var packArrayConstruct = requireOnlyInstruction(packArrayContext.targetFunction(), ConstructSignalInsn.class);
+        var packArrayPack = requirePackOf(packArrayContext.targetFunction(), packArrayConstruct.resultId());
+        var packArrayLiteral = requireOnlyInstruction(packArrayContext.targetFunction(), ConstructContainerLiteralInsn.class);
+        var packDictConstruct = requireOnlyInstruction(packDictContext.targetFunction(), ConstructSignalInsn.class);
+        var packDictPack = requirePackOf(packDictContext.targetFunction(), packDictConstruct.resultId());
+        var packDictLiteral = requireOnlyInstruction(packDictContext.targetFunction(), ConstructContainerLiteralInsn.class);
+        var packNamedConstruct = requireOnlyInstruction(packNamedContext.targetFunction(), ConstructSignalInsn.class);
+        var packNamedPack = requireOnlyInstruction(packNamedContext.targetFunction(), PackVariantInsn.class);
+        var packNamedStore = requireOnlyInstruction(packNamedContext.targetFunction(), VariantSetNamedInsn.class);
+        var packIndexedConstruct = requireOnlyInstruction(packIndexedContext.targetFunction(), ConstructSignalInsn.class);
+        var packIndexedPack = requireOnlyInstruction(packIndexedContext.targetFunction(), PackVariantInsn.class);
+        var packIndexedStore = requireOnlyInstruction(packIndexedContext.targetFunction(), VariantSetIndexedInsn.class);
+        var packEmitConstruct = requireOnlyInstruction(packEmitContext.targetFunction(), ConstructSignalInsn.class);
+        var packEmitPack = requireOnlyInstruction(packEmitContext.targetFunction(), PackVariantInsn.class);
+        var packEmitCall = requireOnlyInstruction(packEmitContext.targetFunction(), CallMethodInsn.class);
+        var unpackParam = requireOnlyInstruction(unpackParamContext.targetFunction(), UnpackVariantInsn.class);
+        var unpackArray = requireOnlyInstruction(unpackArrayContext.targetFunction(), UnpackVariantInsn.class);
+        var unpackArrayGet = requireOnlyInstruction(unpackArrayContext.targetFunction(), VariantGetIndexedInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("pinged", packParamConstruct.signalName()),
+                () -> assertEquals(packParamConstruct.resultId(), packParamPack.valueId()),
+                () -> assertEquals("take_variant", packParamCall.methodName()),
+                () -> assertEquals(
+                        packParamPack.resultId(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, packParamCall.args().getFirst()).id()
+                ),
+                () -> assertEquals("pinged", packArrayConstruct.signalName()),
+                () -> assertEquals(packArrayConstruct.resultId(), packArrayPack.valueId()),
+                () -> assertEquals(
+                        packArrayPack.resultId(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, packArrayLiteral.operands().getFirst()).id()
+                ),
+                () -> assertEquals("pinged", packDictConstruct.signalName()),
+                () -> assertEquals(packDictConstruct.resultId(), packDictPack.valueId()),
+                () -> assertEquals(2, packDictLiteral.operands().size()),
+                () -> assertEquals(
+                        packDictPack.resultId(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, packDictLiteral.operands().getLast()).id()
+                ),
+                () -> assertEquals("pinged", packNamedConstruct.signalName()),
+                () -> assertEquals(packNamedConstruct.resultId(), packNamedPack.valueId()),
+                () -> assertEquals(packNamedPack.resultId(), packNamedStore.valueId()),
+                () -> assertEquals("pinged", packIndexedConstruct.signalName()),
+                () -> assertEquals(packIndexedConstruct.resultId(), packIndexedPack.valueId()),
+                () -> assertEquals(packIndexedPack.resultId(), packIndexedStore.valueId()),
+                () -> assertEquals("pinged", packEmitConstruct.signalName()),
+                () -> assertEquals(packEmitConstruct.resultId(), packEmitPack.valueId()),
+                () -> assertEquals("emit", packEmitCall.methodName()),
+                () -> assertEquals(
+                        packEmitPack.resultId(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, packEmitCall.args().getFirst()).id()
+                ),
+                () -> assertEquals(
+                        unpackParam.resultId(),
+                        assignSourcesByTarget(allInstructions(unpackParamContext.targetFunction())).get("typed")
+                ),
+                () -> assertTrue(
+                        "boxed".equals(unpackParam.variantId())
+                                || "boxed".equals(assignSourcesByTarget(allInstructions(unpackParamContext.targetFunction()))
+                                .get(unpackParam.variantId())),
+                        () -> "unpack_param must consume boxed or a copy of boxed: " + allInstructions(unpackParamContext.targetFunction())
+                ),
+                () -> assertEquals(0, countInstructions(allInstructions(unpackParamContext.targetFunction()), PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(unpackArrayContext.targetFunction()), PackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(allInstructions(unpackArrayContext.targetFunction()), UnpackVariantInsn.class)),
+                () -> assertTrue(
+                        "items".equals(unpackArrayGet.variantId())
+                                || "items".equals(assignSourcesByTarget(allInstructions(unpackArrayContext.targetFunction()))
+                                .get(unpackArrayGet.variantId())),
+                        () -> "unpack_array get must consume items or a copy of items: " + allInstructions(unpackArrayContext.targetFunction())
+                ),
+                () -> assertEquals(unpackArrayGet.resultId(), unpackArray.variantId()),
+                () -> assertEquals(unpackArray.resultId(), assignSourcesByTarget(allInstructions(unpackArrayContext.targetFunction())).get("typed"))
+        );
+    }
+
     @Test
     void runLowersVariantDynamicMemberReadIntoVariantNamedGet() throws Exception {
         var prepared = prepareContext(
@@ -8370,6 +8544,19 @@ class FrontendLoweringBodyInsnPassTest {
             @NotNull Class<? extends LirInstruction> instructionType
     ) {
         return (int) instructions.stream().filter(instructionType::isInstance).count();
+    }
+
+    private static @NotNull PackVariantInsn requirePackOf(
+            @NotNull LirFunctionDef function,
+            @NotNull String valueId
+    ) {
+        var packs = allInstructions(function).stream()
+                .filter(PackVariantInsn.class::isInstance)
+                .map(PackVariantInsn.class::cast)
+                .filter(insn -> valueId.equals(insn.valueId()))
+                .toList();
+        assertEquals(1, packs.size(), () -> "Expected one PackVariantInsn of " + valueId + ": " + allInstructions(function));
+        return packs.getFirst();
     }
 
     private static @NotNull List<String> packResultIds(@NotNull List<LirInstruction> instructions) {

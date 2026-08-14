@@ -20,6 +20,7 @@ import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.backend.c.gen.insn.ConstructInsnGen;
 import gd.script.gdcc.enums.GdInstruction;
 import gd.script.gdcc.lir.insn.AssertObjectLiveInsn;
+import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructArrayInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructDictionaryInsn;
@@ -714,6 +715,28 @@ class CConstructInsnGenTest {
         assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_SIGNAL));
         assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_CALLABLE));
         assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_STANDALONE_CALLABLE));
+    }
+
+    /// §8.3 negative: CALL_STATIC_METHOD has no CInsnGen. Dispatch must throw, not skip the insn.
+    @Test
+    @DisplayName("CCodegen must fail-fast when an opcode is not registered on any CInsnGen")
+    void unregisteredOpcodeFailsDispatchInsteadOfSkipping() {
+        var clazz = newTestClass();
+        var func = newFunction("unregistered_static_call");
+        func.createAndAddVariable("result", GdVariantType.VARIANT);
+        entry(func).appendInstruction(new CallStaticMethodInsn(
+                "result",
+                "JSON",
+                "parse_string",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var thrown = assertThrows(
+                UnsupportedOperationException.class,
+                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+        );
+        assertTrue(thrown.getMessage().contains("call_static_method"), thrown.getMessage());
     }
 
     @Test

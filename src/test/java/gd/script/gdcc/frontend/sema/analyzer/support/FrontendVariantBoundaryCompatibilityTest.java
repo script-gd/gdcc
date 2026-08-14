@@ -11,12 +11,14 @@ import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertAll;
 
 class FrontendVariantBoundaryCompatibilityTest {
@@ -78,6 +80,33 @@ class FrontendVariantBoundaryCompatibilityTest {
                         GdStringType.STRING,
                         GdIntType.INT
                 )
+        );
+    }
+
+    /// G8: Signal↔Variant is an explicit pack/unpack edge. ClassRegistry.assignability stays false.
+    @Test
+    void signalVariantBoundaryUsesExplicitPackUnpackNotAssignability() throws Exception {
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var signalType = new GdSignalType();
+        assertAll(
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_PACK,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                signalType,
+                                GdVariantType.VARIANT
+                        )
+                ),
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_UNPACK,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                GdVariantType.VARIANT,
+                                signalType
+                        )
+                ),
+                () -> assertFalse(classRegistry.checkAssignable(signalType, GdVariantType.VARIANT)),
+                () -> assertFalse(classRegistry.checkAssignable(GdVariantType.VARIANT, signalType))
         );
     }
 

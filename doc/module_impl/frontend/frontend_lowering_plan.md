@@ -227,7 +227,7 @@
 - `lambda`
 - 参数默认值语义本身
 - block-local `const`
-- signal coroutine use-site（`await` / `.emit(...)`）
+- signal coroutine use-site（`await signal`；`.emit` / `.connect` 已闭环，见 `frontend_signal_implementation.md`）
 - property initializer 中依赖实例状态的完整初始化时序语义
 
 其中参数默认值需要额外明确：
