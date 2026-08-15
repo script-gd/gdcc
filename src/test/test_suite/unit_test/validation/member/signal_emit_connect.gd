@@ -52,6 +52,9 @@ func _ready() -> void:
     if before_idle != 0:
         push_error("CONNECT_DEFERRED fired synchronously: %s" % before_idle)
         return
+    # process_frame is emitted before MessageQueue flush; wait a second idle frame
+    # so CONNECT_DEFERRED is delivered before we read the hit count.
+    await get_tree().process_frame
     await get_tree().process_frame
     if int(target.call("read_deferred_hits")) != 1:
         push_error("CONNECT_DEFERRED did not fire after idle: %s" % int(target.call("read_deferred_hits")))

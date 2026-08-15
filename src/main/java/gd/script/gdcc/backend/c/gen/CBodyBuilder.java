@@ -563,6 +563,8 @@ public final class CBodyBuilder {
     /// emitting ad-hoc inline liveness branches.
     /// Uses generic `gdcc_object_is_null_raw_and_id(raw, instance_id)` on the fat pointer fields;
     /// never recovers ID from raw and never generates per-class assert helpers.
+    /// The implicit error edge publishes a default return via `returnDefault()` so non-object
+    /// `_return_val` slots (Signal, Callable, String, ...) are initialized before `__finally__`.
     public @NotNull CBodyBuilder emitAssertObjectLiveGuard(@NotNull LirVariable objectVariable) {
         if (checkInFinallyBlock()) {
             throw invalidInsn("assert_object_live must not appear in __finally__ block");
@@ -576,7 +578,7 @@ public final class CBodyBuilder {
         appendLine("if (" + renderObjectIsNullExpr(objectCode) + ") {");
         appendLine("    GDCC_PRINT_RUNTIME_ERROR(\"assert_object_live failed: object '" + objectName +
                 "' is null or freed\", __func__, __FILE__, __LINE__);");
-        appendLine("    goto __finally__;");
+        returnDefault();
         appendLine("}");
         return this;
     }

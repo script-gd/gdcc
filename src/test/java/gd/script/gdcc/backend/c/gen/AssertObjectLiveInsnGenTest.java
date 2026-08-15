@@ -16,6 +16,7 @@ import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -56,6 +57,36 @@ class AssertObjectLiveInsnGenTest {
         assertTrue(body.contains("assert_object_live failed: object 'obj' is null or freed"), body);
         assertTrue(body.contains("goto __finally__;"), body);
         assertFalse(body.contains("godot_object_get_instance_id($obj)"), body);
+        assertFalse(body.contains("_return_val"), body);
+    }
+
+    @Test
+    @DisplayName("non-void Signal return should publish a default Signal before leaving the live-fail edge")
+    void signalReturnPublishesDefaultOnLiveFail() {
+        var nodeClass = new ExtensionGdClass(
+                "Node", false, false, "Object", "core",
+                List.of(), List.of(), List.of(), List.of(), List.of()
+        );
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(nodeClass), List.of(), List.of());
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assert_node_return_signal");
+        func.setReturnType(new GdSignalType());
+        func.createAndAddVariable("obj", new GdObjectType("Node"));
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new AssertObjectLiveInsn("obj"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var codegen = new CCodegen();
+        codegen.prepare(newContext(api, List.of(workerClass)), new LirModule("test_module", List.of(workerClass)));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($obj).ptr, $obj.instance_id)"), body);
+        assertTrue(body.contains("assert_object_live failed: object 'obj' is null or freed"), body);
+        assertTrue(body.contains("godot_new_Signal()"), body);
+        assertTrue(body.contains("_return_val = godot_new_Signal_with_Signal("), body);
+        assertTrue(body.contains("goto __finally__;"), body);
     }
 
     @Test
