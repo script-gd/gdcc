@@ -538,7 +538,7 @@ final class GodotBuiltinGenerator {
             }
             out.append(");\n");
             if (method.isVararg()) {
-                // G4: runtime argv cannot use GDCC_BUILTIN_METHOD_ARGS (static initializer).
+                // Runtime argv cannot use GDCC_BUILTIN_METHOD_ARGS (static initializer).
                 // Length is always >= 1 so argc==0 never emits a zero-length VLA.
                 appendVarargMethodArgs(out, arguments);
                 var countExpr = arguments.size() + " + argc";

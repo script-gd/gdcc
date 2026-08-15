@@ -20,7 +20,7 @@ import java.util.Objects;
 /// Responsibilities deliberately mirror the existing shared member resolvers while keeping signal
 /// semantics isolated from property/method lookup:
 /// - known object receivers resolve through class metadata + inheritance walk
-/// - builtin receivers are classified as confirmed non-signal paths using builtin class metadata
+/// - non-object receivers, including Variant and builtin, fail as `UNSUPPORTED_RECEIVER_KIND`
 /// - metadata-missing object receivers surface `MetadataUnknown`
 /// - malformed metadata and confirmed misses surface structured `Failed`
 ///
@@ -125,7 +125,7 @@ public final class ScopeSignalResolver {
 
     /// Resolve signal metadata for a known object receiver.
     ///
-    /// Result policy matches the signal S2 plan:
+    /// Result policy:
     /// - missing root metadata -> `MetadataUnknown`
     /// - malformed hierarchy metadata -> `Failed`
     /// - signal absent in a known hierarchy -> `Failed(SIGNAL_MISSING)`

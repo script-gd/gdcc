@@ -280,7 +280,7 @@ void run(FrontendLoweringContext context)
 - `match`
 - 参数默认值
 - block-local `const`
-- signal coroutine use-site（`await signal`；`.emit` / `.connect` 已闭环，见 `frontend_signal_implementation.md`）
+- signal coroutine use-site（`await signal`；`.emit` / `.connect` 已闭环，见 `frontend_signal_support.md`）
 
 只要对应 lowering/backend 合同、实现和测试未闭环，这些边界就必须继续留在 compile gate，而不是在 lowering 中做局部放行。
 

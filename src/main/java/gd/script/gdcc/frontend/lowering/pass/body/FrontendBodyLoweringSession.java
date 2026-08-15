@@ -695,8 +695,8 @@ public final class FrontendBodyLoweringSession {
     }
 
     /// Signal/callable construction must keep the canonical `self` slot when the CFG receiver
-    /// is a `SelfExpression`. Opaque self reads copy into a temp, but D7 still treats that
-    /// receiver as always-live `self` and must not emit `AssertObjectLiveInsn`.
+    /// is a `SelfExpression`. Opaque self reads copy into a temp, but that receiver is still
+    /// treated as always-live `self` and must not emit `AssertObjectLiveInsn`.
     @NotNull String requireLiveObjectReceiverSlotId(@NotNull String receiverValueId) {
         if (isCanonicalSelfValue(receiverValueId)) {
             requireSelfSlot();

@@ -833,7 +833,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
 
     /// Materializes a published RESOLVED instance METHOD member into `construct_callable`.
     ///
-    /// Object receivers keep D7 liveness. Builtin receivers skip the Object guard.
+    /// Object receivers keep Object liveness. Builtin receivers skip the Object guard.
     private static final class FrontendCallableLoadInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<CallableLoadItem, Void> {
         @Override

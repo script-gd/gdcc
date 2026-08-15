@@ -717,7 +717,7 @@ class CConstructInsnGenTest {
         assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_STANDALONE_CALLABLE));
     }
 
-    /// §8.3 negative: CALL_STATIC_METHOD has no CInsnGen. Dispatch must throw, not skip the insn.
+    /// CALL_STATIC_METHOD has no CInsnGen. Dispatch must throw, not skip the insn.
     @Test
     @DisplayName("CCodegen must fail-fast when an opcode is not registered on any CInsnGen")
     void unregisteredOpcodeFailsDispatchInsteadOfSkipping() {

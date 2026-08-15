@@ -5364,7 +5364,7 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
-    /// G8 / §8.4: Signal crossing Variant, container, named/indexed store, or emit vararg must pack first.
+    /// Signal crossing Variant, container, named/indexed store, or emit vararg must pack first.
     @Test
     void runPacksAndUnpacksSignalAcrossExplicitVariantBoundaries() throws Exception {
         var prepared = prepareContext(

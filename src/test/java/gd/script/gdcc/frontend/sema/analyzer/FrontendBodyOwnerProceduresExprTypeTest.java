@@ -976,7 +976,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         assertEquals(3, discardedDiagnostics.size());
     }
 
-    /// Phase 5 §8.1: bare / receiver / inherited-engine signal reads must publish RESOLVED(GdSignalType).
+    /// Bare / receiver / inherited-engine signal reads must publish RESOLVED(GdSignalType).
     @Test
     void analyzePublishesGdSignalTypeForBareAndReceiverSignalValueReads() throws Exception {
         var analyzed = analyze(

@@ -83,7 +83,7 @@ class FrontendVariantBoundaryCompatibilityTest {
         );
     }
 
-    /// G8: Signal↔Variant is an explicit pack/unpack edge. ClassRegistry.assignability stays false.
+    /// Signal↔Variant is an explicit pack/unpack edge. ClassRegistry.assignability stays false.
     @Test
     void signalVariantBoundaryUsesExplicitPackUnpackNotAssignability() throws Exception {
         var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());

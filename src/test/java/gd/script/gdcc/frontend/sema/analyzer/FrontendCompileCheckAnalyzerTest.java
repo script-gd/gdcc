@@ -1710,7 +1710,7 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
-    /// Phase 4.1d / §8.6: bare `lerp` is a value-ref, while `lerp(...)` stays a legal utility call.
+    /// Bare `lerp` is a value-ref, while `lerp(...)` stays a legal utility call.
     @Test
     void analyzeForCompileReleasesLerpUtilityValueRead() throws Exception {
         var source = """
@@ -1729,7 +1729,7 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
-    /// §8.6: constructor-as-value stays failed; compile gate must not treat it as a released Callable.
+    /// Constructor-as-value stays failed; compile gate must not treat it as a released Callable.
     @Test
     void analyzeForCompileBlocksConstructorValueReference() throws Exception {
         var source = """
@@ -1758,7 +1758,7 @@ class FrontendCompileCheckAnalyzerTest {
                 compiled.diagnostics().asList()::toString);
     }
 
-    /// §8.6: `await signal` remains a compile-blocked deferred expression.
+    /// `await signal` remains a compile-blocked deferred expression.
     @Test
     void analyzeForCompileBlocksAwaitSignal() throws Exception {
         var source = """

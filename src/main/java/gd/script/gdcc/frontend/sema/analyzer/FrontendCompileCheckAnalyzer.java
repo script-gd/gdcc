@@ -98,7 +98,7 @@ public class FrontendCompileCheckAnalyzer {
     private static final @NotNull Set<String> NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES = Set.of(
             FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
     );
-    /// Phase 4.1 lifted Object/self, builtin instance, static, and utility value reads.
+    /// Object/self, builtin instance, static, and utility value reads are already released.
     /// Keep this empty so callee-exclusion tests stay on the same scan path.
     private static final @NotNull Set<FrontendBindingKind> BARE_VALUE_REFERENCE_BINDING_KINDS = Set.of();
 
@@ -206,7 +206,7 @@ public class FrontendCompileCheckAnalyzer {
 
     /// Feature-specific compile-only message for bare STATIC_METHOD / UTILITY_FUNCTION value reads.
     /// Kind is taken from the published binding so the helper does not guess from expression type.
-    /// Bare METHOD value reads are intentionally excluded after Phase 4 materialization.
+    /// Bare METHOD value reads are intentionally excluded because they already materialize.
     private static @NotNull String bareValueReferenceCompileBlockedMessage(@NotNull FrontendBinding binding) {
         var kindLabel = switch (Objects.requireNonNull(binding, "binding must not be null").kind()) {
             case STATIC_METHOD -> "static-method";
@@ -727,8 +727,8 @@ public class FrontendCompileCheckAnalyzer {
                     && publishedMember.receiverType() instanceof GdDictionaryType;
         }
 
-        /// Phase 4.1 emptied `BARE_VALUE_REFERENCE_BINDING_KINDS`. This scan stays as the
-        /// callee-exclusion hook if a later phase re-blocks a bare kind.
+        /// `BARE_VALUE_REFERENCE_BINDING_KINDS` is empty. This scan stays as the
+        /// callee-exclusion hook if a later change re-blocks a bare kind.
         private void scanBareValueReferenceCompileBlocks() {
             for (var entry : symbolBindings.entrySet()) {
                 // The published table also keys LiteralExpression / SelfExpression. Those are

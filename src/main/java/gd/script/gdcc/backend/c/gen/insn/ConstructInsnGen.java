@@ -205,7 +205,7 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
         return receiverVar;
     }
 
-    /// Object receivers keep the Phase 4 ObjectID constructor. Non-Object builtins pack a
+    /// Object receivers use the ObjectID constructor. Non-Object builtins pack a
     /// temporary Variant and use `godot_Callable_create`. Variant receivers stay illegal.
     private void emitConstructCallable(
             @NotNull CBodyBuilder bodyBuilder,

@@ -334,7 +334,7 @@ public final class ClassScope extends AbstractFrontendScope {
 
     /// Converts signal metadata into the value-side binding shape expected by the scope protocol.
     ///
-    /// Signals are treated as read-only instance members for the current S1 scope phase:
+    /// Signals are treated as read-only instance members:
     /// - `kind = SIGNAL` anchors the semantic category explicitly
     /// - `type = GdSignalType` carries the stable parameter signature
     /// - `declaration = SignalDef` lets later frontend stages recover owner-specific metadata
