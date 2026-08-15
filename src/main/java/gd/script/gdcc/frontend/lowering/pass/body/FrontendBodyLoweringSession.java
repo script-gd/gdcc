@@ -1131,6 +1131,18 @@ public final class FrontendBodyLoweringSession {
         return functionContext.owningClass().getName();
     }
 
+    /// Resolves the class that actually declared `functionName`, starting at `startClassName`.
+    @NotNull String requireDeclaringStaticOwnerName(@NotNull String startClassName, @NotNull String functionName) {
+        var lookup = classRegistry.findStaticFunctionInHierarchy(startClassName, functionName);
+        if (lookup == null) {
+            throw new IllegalStateException(
+                    "standalone static method-reference '" + startClassName + "." + functionName
+                            + "' is not a generated static function"
+            );
+        }
+        return lookup.ownerClass().getName();
+    }
+
     @NotNull String requireClassName(@Nullable GdType receiverType) {
         return switch (Objects.requireNonNull(receiverType, "receiverType must not be null")) {
             case GdObjectType(var className) -> className;

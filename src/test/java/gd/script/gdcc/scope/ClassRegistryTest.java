@@ -366,6 +366,23 @@ public class ClassRegistryTest {
     }
 
     @Test
+    void findStaticFunctionInHierarchyShouldPreferNearestDeclaringOwner() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var parent = new LirClassDef("StaticParent", "Node");
+        parent.addFunction(staticFunction("build", GdIntType.INT));
+        var child = new LirClassDef("StaticChild", "StaticParent");
+        registry.addGdccClass(parent);
+        registry.addGdccClass(child);
+
+        var lookup = registry.findStaticFunctionInHierarchy("StaticChild", "build");
+        assertNotNull(lookup);
+        assertEquals("StaticParent", lookup.ownerClass().getName());
+        assertEquals("build", lookup.function().getName());
+        assertTrue(lookup.function().isStatic());
+        assertNull(registry.findStaticFunctionInHierarchy("StaticChild", "missing"));
+    }
+
+    @Test
     void checkAssignableSupportsContainerCovariance() throws IOException {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         assertTrue(registry.checkAssignable(
@@ -690,6 +707,13 @@ public class ClassRegistryTest {
         for (var parameter : parameters) {
             function.addParameter(new LirParameterDef(parameter.name(), parameter.type(), parameter.defaultValueFunc(), function));
         }
+        return function;
+    }
+
+    private static LirFunctionDef staticFunction(String name, GdType returnType) {
+        var function = new LirFunctionDef(name);
+        function.setStatic(true);
+        function.setReturnType(returnType);
         return function;
     }
 }

@@ -111,7 +111,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                 case STATIC_METHOD -> block.appendNonTerminatorInstruction(new ConstructStandaloneCallableInsn(
                         resultSlotId,
                         StandaloneCallableKind.STATIC_GDCC,
-                        session.currentClassName(),
+                        session.requireDeclaringStaticOwnerName(session.currentClassName(), binding.symbolName()),
                         binding.symbolName()
                 ));
                 case UTILITY_FUNCTION -> block.appendNonTerminatorInstruction(new ConstructStandaloneCallableInsn(

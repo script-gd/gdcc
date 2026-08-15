@@ -49,6 +49,13 @@ public final class ClassRegistry implements Scope {
     ) {
     }
 
+    /// Static-function lookup result. Direct declarations win over inherited ones.
+    public record ClassStaticFunctionLookup(
+            @NotNull ClassDef ownerClass,
+            @NotNull FunctionDef function
+    ) {
+    }
+
     public record BuiltinClassConstantLookup(
             @NotNull ExtensionBuiltinClass ownerClass,
             @NotNull ExtensionBuiltinClass.ConstantInfo constant
@@ -1088,6 +1095,35 @@ public final class ClassRegistry implements Scope {
                         return new EngineClassSignalLookup(engineClass, signalInfo);
                     }
                 }
+            }
+            current = resolveSuperclass(current);
+        }
+        return null;
+    }
+
+    /// Looks up a static function starting at `className` and walking superclasses.
+    ///
+    /// Direct declarations win over inherited ones. The start node is resolved by
+    /// [resolveClassDefByName] so a GDCC, engine, or builtin name can all begin the walk.
+    /// Overloaded statics on the same declaring class still return the first match; callers that
+    /// must reject overloads re-check that class's function list.
+    public @Nullable ClassStaticFunctionLookup findStaticFunctionInHierarchy(
+            @NotNull String className,
+            @NotNull String functionName
+    ) {
+        var current = resolveClassDefByName(className);
+        var visited = new HashSet<String>();
+        while (current != null && visited.add(current.getName())) {
+            FunctionDef found = null;
+            for (var function : current.getFunctions()) {
+                if (!function.getName().equals(functionName) || !function.isStatic()) {
+                    continue;
+                }
+                found = function;
+                break;
+            }
+            if (found != null) {
+                return new ClassStaticFunctionLookup(current, found);
             }
             current = resolveSuperclass(current);
         }

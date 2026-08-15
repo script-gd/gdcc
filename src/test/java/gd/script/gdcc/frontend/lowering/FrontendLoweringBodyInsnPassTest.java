@@ -91,6 +91,7 @@ import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
@@ -5013,6 +5014,69 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersInheritedStaticMethodReferencesThroughDeclaringOwner() throws Exception {
+        var prepared = prepareContext(
+                List.of(
+                        new SourceFixture(
+                                "body_insn_inherited_static_parent.gd",
+                                """
+                                        class_name BodyInsnInheritedStaticParent
+                                        extends Node
+                                        
+                                        static func make_static():
+                                            return 1
+                                        """
+                        ),
+                        new SourceFixture(
+                                "body_insn_inherited_static_child.gd",
+                                """
+                                        class_name BodyInsnInheritedStaticChild
+                                        extends BodyInsnInheritedStaticParent
+                                        
+                                        func copy_qualified() -> Callable:
+                                            return BodyInsnInheritedStaticChild.make_static
+                                        
+                                        func copy_bare() -> Callable:
+                                            return make_static
+                                        """
+                        )
+                ),
+                Map.of(
+                        "BodyInsnInheritedStaticParent", "RuntimeBodyInsnInheritedStaticParent",
+                        "BodyInsnInheritedStaticChild", "RuntimeBodyInsnInheritedStaticChild"
+                ),
+                true
+        );
+        var qualifiedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnInheritedStaticChild",
+                "copy_qualified"
+        );
+        var bareContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnInheritedStaticChild",
+                "copy_bare"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var qualified = requireOnlyInstruction(qualifiedContext.targetFunction(), ConstructStandaloneCallableInsn.class);
+        var bare = requireOnlyInstruction(bareContext.targetFunction(), ConstructStandaloneCallableInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals(StandaloneCallableKind.STATIC_GDCC, qualified.kind()),
+                () -> assertEquals("RuntimeBodyInsnInheritedStaticParent", qualified.ownerName()),
+                () -> assertEquals("make_static", qualified.callableName()),
+                () -> assertEquals(StandaloneCallableKind.STATIC_GDCC, bare.kind()),
+                () -> assertEquals("RuntimeBodyInsnInheritedStaticParent", bare.ownerName()),
+                () -> assertEquals("make_static", bare.callableName())
+        );
+    }
+
+    @Test
     void runLowersQualifiedEngineStaticMethodReferenceIntoStandaloneCallable() throws Exception {
         var prepared = prepareContext(
                 "body_insn_engine_static_method_reference.gd",
@@ -5173,6 +5237,52 @@ class FrontendLoweringBodyInsnPassTest {
         );
         assertTrue(
                 exception.getMessage().contains("must lower through CallableLoadItem"),
+                exception.getMessage()
+        );
+    }
+
+    @Test
+    void runFailFastWhenResolvedSignalMemberReachesMemberLoadItem() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_signal_member_load_failfast.gd",
+                """
+                        class_name BodyInsnSignalMemberLoadFailFast
+                        extends Node
+                        
+                        var payload: int = 1
+                        
+                        func copy_other(other: BodyInsnSignalMemberLoadFailFast) -> int:
+                            return other.payload
+                        """,
+                Map.of("BodyInsnSignalMemberLoadFailFast", "RuntimeBodyInsnSignalMemberLoadFailFast"),
+                true
+        );
+        var copyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSignalMemberLoadFailFast",
+                "copy_other"
+        );
+        var memberLoad = requireSingleMemberLoadItem(copyContext.requireFrontendCfgGraph(), "payload");
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                memberLoad.anchor(),
+                FrontendResolvedMember.resolved(
+                        "payload",
+                        FrontendBindingKind.SIGNAL,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        new GdObjectType("BodyInsnSignalMemberLoadFailFast"),
+                        new GdSignalType(),
+                        new Object()
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+        assertTrue(
+                exception.getMessage().contains("must lower through SignalLoadItem"),
                 exception.getMessage()
         );
     }
@@ -8420,14 +8530,41 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     private static @NotNull PreparedContext prepareContext(
+            @NotNull List<SourceFixture> fixtures,
+            @NotNull Map<String, String> topLevelCanonicalNameMap,
+            boolean buildCfg
+    ) throws Exception {
+        return prepareContext(
+                fixtures,
+                topLevelCanonicalNameMap,
+                buildCfg,
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
+        );
+    }
+
+    private static @NotNull PreparedContext prepareContext(
             @NotNull String fileName,
             @NotNull String source,
             @NotNull Map<String, String> topLevelCanonicalNameMap,
             boolean buildCfg,
             @NotNull ClassRegistry classRegistry
     ) {
+        return prepareContext(
+                List.of(new SourceFixture(fileName, source)),
+                topLevelCanonicalNameMap,
+                buildCfg,
+                classRegistry
+        );
+    }
+
+    private static @NotNull PreparedContext prepareContext(
+            @NotNull List<SourceFixture> fixtures,
+            @NotNull Map<String, String> topLevelCanonicalNameMap,
+            boolean buildCfg,
+            @NotNull ClassRegistry classRegistry
+    ) {
         var diagnostics = new DiagnosticManager();
-        var module = parseModule(List.of(new SourceFixture(fileName, source)), topLevelCanonicalNameMap);
+        var module = parseModule(fixtures, topLevelCanonicalNameMap);
         var context = new FrontendLoweringContext(
                 module,
                 classRegistry,

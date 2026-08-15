@@ -939,6 +939,36 @@ class CConstructInsnGenTest {
     }
 
     @Test
+    @DisplayName("construct_standalone_callable should resolve inherited GDCC static to declaring owner")
+    void constructStandaloneCallableShouldResolveInheritedGdccStaticToDeclaringOwner() {
+        var parentClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var build = newFunction("build");
+        build.setStatic(true);
+        parentClass.addFunction(build);
+        var childClass = new LirClassDef("WorkerChild", "Worker", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = newFunction("construct_inherited_gdcc_static");
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb",
+                StandaloneCallableKind.STATIC_GDCC,
+                "WorkerChild",
+                "build"
+        ));
+        childClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(parentClass, childClass));
+        var codegen = newCodegen(module, List.of(parentClass, childClass), apiWithConstructibleObjectClasses());
+        var body = codegen.generateFuncBody(childClass, func);
+
+        assertTrue(body.contains("gdcc_new_standalone_callable("), body);
+        assertTrue(body.contains("u8\"static_gdcc\""), body);
+        assertTrue(body.contains("u8\"Worker\""), body);
+        assertTrue(body.contains("u8\"build\""), body);
+        assertFalse(body.contains("u8\"WorkerChild\""), body);
+    }
+
+    @Test
     @DisplayName("construct_standalone_callable should reject missing GDCC static symbols")
     void constructStandaloneCallableShouldRejectMissingGdccStatic() {
         var clazz = newTestClass();

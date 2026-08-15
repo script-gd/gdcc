@@ -915,7 +915,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             block.appendNonTerminatorInstruction(new ConstructStandaloneCallableInsn(
                     resultSlotId,
                     node.kind(),
-                    node.ownerName(),
+                    session.requireDeclaringStaticOwnerName(node.ownerName(), node.callableName()),
                     node.callableName()
             ));
             return block;

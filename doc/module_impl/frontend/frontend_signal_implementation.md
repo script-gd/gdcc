@@ -50,7 +50,7 @@
 | `sig.connect(cb[, flags])` / `sig.disconnect(cb)` | `connect` 返回 `int`，`disconnect` 返回 void | 既有 builtin `CallMethodInsn` |
 | Object/self 实例方法引用：`_handler`、`obj._handler` | `Callable(ObjectID, name)` | `construct_callable` |
 | 非 Dictionary builtin 实例方法：`vec.abs`、`array.clear` | `VariantCallable`（值拷贝 receiver） | 同一 `construct_callable` |
-| GDCC / engine 静态：`Worker.build`、`JSON.parse_string` | custom trampoline | `construct_standalone_callable` |
+| GDCC / engine 静态：`Worker.build`、`JSON.parse_string`、子类读取继承静态 | custom trampoline；owner 为声明类 | `construct_standalone_callable` |
 | utility：`print`、`lerp` | custom trampoline | `construct_standalone_callable` |
 
 仍拒绝：`dict.clear` 当方法引用、`Vector2.abs` / `Vector2.from_angle` type-meta、`Node.new` 当值、lambda、`await signal`。inherited GDCC 同名 signal 允许 nearest-child shadow；GDCC 不得覆盖 inherited engine/native signal。
@@ -159,7 +159,7 @@ operand 冻结为 `(VARIABLE, STRING)` min/max=2。旧 1-operand 非法。backen
 
 ### 7.3 `construct_standalone_callable`
 
-`$result = construct_standalone_callable "<kind>" "<owner_or_empty>" "<name>"`，`kind ∈ {utility, static_gdcc, static_engine}`。utility 的 owner 必须为空。C：`gdcc_new_standalone_callable` → `godot_callable_custom_create2`。构造失败（未知 utility、engine bind 缺失、GDCC 静态符号未生成）必须 compile/codegen fail-fast。
+`$result = construct_standalone_callable "<kind>" "<owner_or_empty>" "<name>"`，`kind ∈ {utility, static_gdcc, static_engine}`。utility 的 owner 必须为空。C：`gdcc_new_standalone_callable` → `godot_callable_custom_create2`。`static_gdcc` / `static_engine` 的 owner 必须是**声明该方法的类**；子类限定名或 bare 继承读取会经 `ClassRegistry.findStaticFunctionInHierarchy` 解析到声明类后再写入 LIR / ClassDB `class_call_static`。构造失败（未知 utility、engine bind 缺失、GDCC 静态符号未生成）必须 compile/codegen fail-fast。
 
 ### 7.4 注册
 
@@ -186,7 +186,8 @@ operand 冻结为 `(VARIABLE, STRING)` min/max=2。旧 1-operand 非法。backen
 
 - scope / semantic：`ClassScopeSignalResolutionTest`、`ScopeSignalResolverTest`、`FrontendClassSkeletonTest`、`FrontendAssignmentSemanticSupportTest`、`FrontendBodyOwnerProceduresExprTypeTest.analyzePublishesGdSignalTypeForBareAndReceiverSignalValueReads`、`FrontendChainReductionHelperTest`
 - LIR：`ConstructSignalInsnContractTest`、`ConstructCallableInsnContractTest`、`ConstructStandaloneCallableInsnContractTest`
-- backend：`CConstructInsnGenTest`、`CCodegenSignalRegistrationTest`、`GodotBuiltinGeneratorTest`、`CallMethodInsnGenTest`
+- backend：`CConstructInsnGenTest`（含 inherited GDCC static 解析到声明 owner）、`CCodegenSignalRegistrationTest`、`GodotBuiltinGeneratorTest`、`CallMethodInsnGenTest`
+- inherited static：`ClassRegistryTest.findStaticFunctionInHierarchyShouldPreferNearestDeclaringOwner`、`FrontendLoweringBodyInsnPassTest.runLowersInheritedStaticMethodReferencesThroughDeclaringOwner`
 - Variant：`FrontendVariantBoundaryCompatibilityTest.signalVariantBoundaryUsesExplicitPackUnpackNotAssignability`、`FrontendLoweringBodyInsnPassTest.runPacksAndUnpacksSignalAcrossExplicitVariantBoundaries`、`ClassRegistryTest.checkAssignableRejectsFrontendOnlyBoundaryConversions`
 - compile gate：`FrontendCompileCheckAnalyzerTest`（放行、Dictionary / type-meta 拒绝、callee exclusion、`lerp` 值读、`Node.new` / `await` 拒绝）
 - e2e（Zig + `GODOT_BIN` 可用时跳过否则 assumption skip）：

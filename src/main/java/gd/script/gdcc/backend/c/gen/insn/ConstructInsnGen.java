@@ -16,6 +16,7 @@ import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructionInstruction;
 import gd.script.gdcc.lir.insn.StandaloneCallableKind;
 import gd.script.gdcc.scope.ClassDef;
+import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.RefCountedStatus;
 import gd.script.gdcc.type.GdArrayType;
@@ -337,15 +338,22 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
             @NotNull String ownerName,
             @NotNull String callableName
     ) {
-        var classDef = bodyBuilder.classRegistry().resolveClassDefByName(ownerName);
-        if (classDef == null || !classDef.isGdccClass()) {
+        var startClass = bodyBuilder.classRegistry().resolveClassDefByName(ownerName);
+        if (startClass == null || !startClass.isGdccClass()) {
             throw bodyBuilder.invalidInsn(
                     "construct_standalone_callable static_gdcc owner '" + ownerName + "' is not a GDCC class"
             );
         }
-        var function = requireStaticFunction(bodyBuilder, classDef, callableName, "static_gdcc");
+        var lookup = requireStaticFunctionInHierarchy(bodyBuilder, ownerName, callableName, "static_gdcc");
+        if (!lookup.ownerClass().isGdccClass()) {
+            throw bodyBuilder.invalidInsn(
+                    "construct_standalone_callable static_gdcc '" + ownerName
+                            + "." + callableName + "' is not a generated static function"
+            );
+        }
+        var function = requireStaticFunction(bodyBuilder, lookup.ownerClass(), callableName, "static_gdcc");
         return new StandaloneCallableSpec(
-                classDef.getName(),
+                lookup.ownerClass().getName(),
                 function.getName(),
                 0L,
                 function.getParameterCount(),
@@ -359,8 +367,8 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
             @NotNull String ownerName,
             @NotNull String callableName
     ) {
-        var classDef = bodyBuilder.classRegistry().getClassDef(new GdObjectType(ownerName));
-        if (!(classDef instanceof ExtensionGdClass engineClass)) {
+        var lookup = requireStaticFunctionInHierarchy(bodyBuilder, ownerName, callableName, "static_engine");
+        if (!(lookup.ownerClass() instanceof ExtensionGdClass engineClass)) {
             throw bodyBuilder.invalidInsn(
                     "construct_standalone_callable static_engine owner '" + ownerName + "' is not an engine class"
             );
@@ -374,6 +382,22 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                 function.isVararg(),
                 !(function.getReturnType() instanceof GdVoidType)
         );
+    }
+
+    private @NotNull ClassRegistry.ClassStaticFunctionLookup requireStaticFunctionInHierarchy(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull String ownerName,
+            @NotNull String callableName,
+            @NotNull String kindToken
+    ) {
+        var lookup = bodyBuilder.classRegistry().findStaticFunctionInHierarchy(ownerName, callableName);
+        if (lookup == null) {
+            throw bodyBuilder.invalidInsn(
+                    "construct_standalone_callable " + kindToken + " '" + ownerName
+                            + "." + callableName + "' is not a generated static function"
+            );
+        }
+        return lookup;
     }
 
     private @NotNull FunctionDef requireStaticFunction(
