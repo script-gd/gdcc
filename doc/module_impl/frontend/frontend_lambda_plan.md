@@ -9,10 +9,12 @@
 
 ## 文档状态
 
-- 状态：阶段 A、B 已落地；C–I 尚未实施。supported executable body 内的 lambda 已完成
-  policy 翻转与 inventory 绑定（param / local / capture 名 + `Variant` 占位），
-  `lambdaPlans()` 仍不发布；resolver / interface / suite / lowering / backend 链路仍 fail-closed。
-- 更新时间：2026-08-17（阶段 B 落地：policy 翻转 + variable inventory 解封 + self capture）
+- 状态：阶段 A、B、C 已落地；D–I 尚未实施。lambda body 已成为 supported executable
+  suite：resolver / interface / suite 解封，nested resolve 经独立 `LAMBDA_RESOLUTION`
+  owner 首次发布完整 `FrontendLambdaPlan`（capture 声明处类型已填充并与 scope 同源）。
+  表达式类型（`GdCallableType`）、LIR 合成、CFG lowering、compile surface 仍 fail-closed。
+- 更新时间：2026-08-17（阶段 C 落地：resolver/interface/suite 解封 + capture 类型填充
+  + `lambdaPlans()` 首次发布）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/scope/**`
@@ -716,6 +718,15 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
   capture 名只出现在 `CallableScope` 的 `CAPTURE` 绑定上。
 
 ### 阶段 C — Policy / resolver / interface / suite 解封
+
+> 状态：已落地（2026-08-17）。resolver 已去掉 lambda AST 边与 kind 封口（callable scope
+> gate 改为 policy 驱动）；interface 在 `supportedBodyDepth > 0` 时 `recordCallable`；
+> suite 四个 helper 已加 `LambdaExpression` 分支；nested resolve 入口填充 capture
+> 声明处类型（`declarationSiteLocalSlotType` 严格 overlay 查询 + `resetCaptureType`）
+> 并经 `LAMBDA_RESOLUTION` / `FrontendLambdaResolutionPatch` 首次发布完整 plan；
+> `walkRootBounded` 剪枝保留；未 record 的 lambda 继续发 unsupported binding/chain。
+> `smallestContainingCallable` 已识别 `LambdaExpression`。已 record lambda 的表达式类型
+> 仍发布 UNSUPPORTED 但不发诊断（`GdCallableType` 属阶段 D）。
 
 **目标**：lambda body 成为 supported executable suite。shared `analyze()`
 进入 body 并发布普通表达式事实。

@@ -59,6 +59,7 @@ public record FrontendPatchTransaction(@NotNull List<FrontendOwnerPatch> patches
             case EXPR_TYPE -> 3;
             case FOR_ITERATION_RESOLUTION -> 4;
             case VAR_TYPE_POST -> 5;
+            case LAMBDA_RESOLUTION -> 6;
         };
     }
 

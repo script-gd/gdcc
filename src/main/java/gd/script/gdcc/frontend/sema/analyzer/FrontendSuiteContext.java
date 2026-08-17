@@ -1,6 +1,7 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.scope.BlockScope;
@@ -46,7 +47,8 @@ public record FrontendSuiteContext(
         @NotNull DiagnosticManager diagnosticManager,
         @NotNull ClassRegistry classRegistry,
         @Nullable FrontendCallableExportBatch exportBatch,
-        @Nullable GdType currentCallableReturnType
+        @Nullable GdType currentCallableReturnType,
+        @Nullable NestedLambdaResolver nestedLambdaResolver
 ) {
     public FrontendSuiteContext {
         Objects.requireNonNull(sourcePath, "sourcePath must not be null");
@@ -82,7 +84,8 @@ public record FrontendSuiteContext(
                 diagnosticManager,
                 classRegistry,
                 exportBatch,
-                currentCallableReturnType
+                currentCallableReturnType,
+                nestedLambdaResolver
         );
     }
 
@@ -98,5 +101,13 @@ public record FrontendSuiteContext(
             return FrontendVisibleValueDomain.EXECUTABLE_BODY;
         }
         return FrontendBodySemanticSupportPolicy.forBlockScopeKind(currentBlockScope.kind()).visibleValueDomain();
+    }
+
+    /// Triggers the nested suite resolution of a recorded lambda encountered by an enclosing
+    /// statement's owner procedure. Supplied by `FrontendSuiteResolver`; null in contexts that can
+    /// never contain a recorded lambda (property initializers stay fail-closed).
+    @FunctionalInterface
+    public interface NestedLambdaResolver {
+        void resolveNestedLambda(@NotNull FrontendSuiteContext outerContext, @NotNull LambdaExpression lambda);
     }
 }

@@ -15,6 +15,7 @@ import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryComp
 import gd.script.gdcc.frontend.sema.patch.FrontendChainBindingPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendExprTypePatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendForIterationResolutionPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendLambdaResolutionPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalTypeStabilizationPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
@@ -1270,6 +1271,7 @@ class FrontendAnalysisDataTest {
                     localSlotTypeUpdates
             );
             case VAR_TYPE_POST -> new FrontendVarTypePostPatch(slotTypes);
+            case LAMBDA_RESOLUTION -> new FrontendLambdaResolutionPatch(new FrontendAstSideTable<>());
         };
     }
 

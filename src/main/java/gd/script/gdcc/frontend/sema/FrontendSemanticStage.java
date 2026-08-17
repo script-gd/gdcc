@@ -11,5 +11,11 @@ public enum FrontendSemanticStage {
     /// (it consumes iterable/argument typed facts) and before var-type-post (which publishes the
     /// final source-facing iterator slot type).
     FOR_ITERATION_RESOLUTION,
-    VAR_TYPE_POST
+    VAR_TYPE_POST,
+    /// Lambda resolution: publishes the first complete `FrontendLambdaPlan` (declaration-site
+    /// capture types filled, `capturesSelf` aligned) keyed by the `LambdaExpression`. The owner is
+    /// the lambda's own nested suite resolution; the plan exports with the lambda's independent
+    /// callable batch before the enclosing statement's expr-type owner could publish a callable
+    /// type for the same node.
+    LAMBDA_RESOLUTION
 }

@@ -139,6 +139,11 @@ public class FrontendInterfacePhase {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
+            // Lambdas inside supported executable bodies become suite entries of their own; class
+            // level (property initializer) lambdas stay unpublished and fail-closed downstream.
+            if (supportedBodyDepth > 0) {
+                recordCallable(lambdaExpression, lambdaExpression.parameters(), lambdaExpression.body());
+            }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 

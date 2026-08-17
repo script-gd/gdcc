@@ -209,7 +209,7 @@ class FrontendSuiteResolverTest {
     }
 
     @Test
-    void forBodyResolvesWhileUnsupportedFeatureOwnedBodiesRemainFailClosed() throws Exception {
+    void forBodyAndLambdaResolveWhileUnsupportedFeatureOwnedBodiesRemainFailClosed() throws Exception {
         var phaseInput = phaseInput("suite_fail_closed.gd", """
                 class_name SuiteFailClosed
                 extends Node
@@ -276,13 +276,15 @@ class FrontendSuiteResolverTest {
 
         assertTrue(surface.suiteEntryRoots().containsSupportedBlock(forStatement.body()));
         assertFalse(surface.suiteEntryRoots().containsSupportedBlock(matchStatement.sections().getFirst().body()));
-        assertFalse(surface.suiteEntryRoots().containsSupportedBlock(lambdaExpression.body()));
+        assertTrue(surface.suiteEntryRoots().containsSupportedBlock(lambdaExpression.body()));
+        assertTrue(surface.suiteEntryRoots().containsCallableOwner(lambdaExpression));
         assertFalse(ownerProcedures.unsupportedRoots().contains(forStatement));
         assertTrue(ownerProcedures.unsupportedRoots().contains(matchStatement));
         assertTrue(ownerProcedures.unsupportedRoots().contains(answer));
         assertTrue(hasOwnerEvent(ownerProcedures.events(), fromFor));
         assertFalse(hasOwnerEvent(ownerProcedures.events(), fromMatch));
-        assertFalse(hasOwnerEvent(ownerProcedures.events(), fromLambda));
+        // The recorded lambda body resolves as its own suite and produces owner events.
+        assertTrue(hasOwnerEvent(ownerProcedures.events(), fromLambda));
         assertFalse(hasOwnerEvent(ownerProcedures.events(), answer));
         assertTrue(hasOwnerEvent(ownerProcedures.events(), callback));
         assertTrue(hasOwnerEvent(ownerProcedures.events(), after));
@@ -1924,6 +1926,7 @@ class FrontendSuiteResolverTest {
                 phaseInput.analysisData(),
                 phaseInput.diagnostics(),
                 phaseInput.registry(),
+                null,
                 null,
                 null
         );

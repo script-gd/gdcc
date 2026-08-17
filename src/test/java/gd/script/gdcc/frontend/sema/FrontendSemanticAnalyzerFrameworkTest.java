@@ -464,7 +464,12 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 IdentifierExpression.class,
                 identifierExpression -> identifierExpression.name().equals("player")
         );
-        assertNull(result.symbolBindings().get(lambdaPlayerUseSite));
+        // Lambda bodies are resolved through their own nested suite: the captured use site binds
+        // to the lambda's CAPTURE slot instead of staying unpublished.
+        assertEquals(
+                FrontendBindingKind.CAPTURE,
+                Objects.requireNonNull(result.symbolBindings().get(lambdaPlayerUseSite)).kind()
+        );
         assertEquals("move", Objects.requireNonNull(result.resolvedCalls().get(moveStep)).callableName());
         assertEquals(
                 FrontendCallResolutionStatus.RESOLVED,
@@ -472,11 +477,11 @@ class FrontendSemanticAnalyzerFrameworkTest {
         );
         assertEquals("get_player", Objects.requireNonNull(result.resolvedCalls().get(getPlayerCall)).callableName());
 
-        assertEquals(5, result.symbolBindings().size());
+        assertEquals(6, result.symbolBindings().size());
         assertEquals(2, result.resolvedMembers().size());
         assertEquals(2, result.resolvedCalls().size());
         assertEquals(
-                2,
+                1,
                 result.diagnostics().asList().stream()
                         .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_binding_subtree"))
                         .count()
@@ -488,13 +493,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
                         .count()
         );
         assertEquals(
-                2,
+                1,
                 result.diagnostics().asList().stream()
                         .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_chain_route"))
                         .count()
         );
         assertEquals(
-                1,
+                0,
                 result.diagnostics().asList().stream()
                         .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_expression_route"))
                         .count()
@@ -505,24 +510,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
                         && diagnostic.message().contains("parameter default")
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.unsupported_binding_subtree")
-                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && diagnostic.message().contains("lambda subtree")
-        ));
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.unsupported_chain_route")
                         && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                         && diagnostic.message().contains("parameter default")
-        ));
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.unsupported_chain_route")
-                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && diagnostic.message().contains("lambda subtree")
-        ));
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.unsupported_expression_route")
-                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && diagnostic.message().contains("Lambda expression typing is not supported")
         ));
     }
 

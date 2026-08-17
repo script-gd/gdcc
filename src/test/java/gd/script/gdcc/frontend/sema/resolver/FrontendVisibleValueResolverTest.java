@@ -23,6 +23,7 @@ import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -366,9 +367,9 @@ class FrontendVisibleValueResolverTest {
     }
 
     @Test
-    void resolveSealsLambdaBodyAsDeferredUnsupported() throws Exception {
-        var analyzedInput = analyzedInput("lambda_body_deferred.gd", """
-                class_name LambdaBodyDeferred
+    void resolveFindsOuterCaptureAcrossLambdaEdge() throws Exception {
+        var analyzedInput = analyzedInput("lambda_body_resolved.gd", """
+                class_name LambdaBodyResolved
                 extends Node
                 
                 func ping(seed: int):
@@ -385,12 +386,52 @@ class FrontendVisibleValueResolverTest {
                 FrontendVisibleValueDomain.EXECUTABLE_BODY
         ));
 
-        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
-        assertEquals(FrontendVisibleValueDomain.LAMBDA_SUBTREE, result.deferredBoundary().domain());
-        assertEquals(
-                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
-                result.deferredBoundary().reason()
-        );
+        // The lambda edge no longer seals: the use site sees the lambda's own CAPTURE binding,
+        // filled with the declaration-site type of the outer parameter.
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, result.status());
+        assertNotNull(result.visibleValue());
+        assertEquals(ScopeValueKind.CAPTURE, result.visibleValue().kind());
+        assertEquals(GdIntType.INT, result.visibleValue().type());
+        assertTrue(result.filteredHits().isEmpty());
+        assertNull(result.deferredBoundary());
+    }
+
+    @Test
+    void resolveFindsLambdaParameterAndLocalAcrossLambdaEdge() throws Exception {
+        var analyzedInput = analyzedInput("lambda_body_own_bindings.gd", """
+                class_name LambdaBodyOwnBindings
+                extends Node
+                
+                func ping():
+                    var f = func(step):
+                        var local := step
+                        return local
+                """);
+        var pingFunction = findFunction(analyzedInput.unit().ast(), "ping");
+        var lambda = findLambdaExpression(pingFunction.body());
+        var stepUseSite = findIdentifierExpression(lambda.body(), "step");
+        var localUseSite = findIdentifierExpression(lambda.body(), "local");
+        var resolver = new FrontendVisibleValueResolver(analyzedInput.analysisData());
+
+        var parameterResult = resolver.resolve(new FrontendVisibleValueResolveRequest(
+                "step",
+                stepUseSite,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ));
+        var localResult = resolver.resolve(new FrontendVisibleValueResolveRequest(
+                "local",
+                localUseSite,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ));
+
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, parameterResult.status());
+        assertNotNull(parameterResult.visibleValue());
+        assertEquals(ScopeValueKind.PARAMETER, parameterResult.visibleValue().kind());
+        assertNull(parameterResult.deferredBoundary());
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, localResult.status());
+        assertNotNull(localResult.visibleValue());
+        assertEquals(ScopeValueKind.LOCAL, localResult.visibleValue().kind());
+        assertNull(localResult.deferredBoundary());
     }
 
     @Test
@@ -789,6 +830,10 @@ class FrontendVisibleValueResolverTest {
                 IdentifierExpression.class,
                 identifierExpression -> identifierExpression.name().equals(name)
         );
+    }
+
+    private static @NotNull LambdaExpression findLambdaExpression(@NotNull Node root) {
+        return findNode(root, LambdaExpression.class, _ -> true);
     }
 
     private static <T extends Node> @NotNull T findNode(

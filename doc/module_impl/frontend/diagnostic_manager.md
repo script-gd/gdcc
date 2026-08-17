@@ -133,7 +133,7 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `forIterationPlans`
 - `typeTestTargets`
 - `containerLiteralPlans`
-- `lambdaPlans`（阶段 A 数据面已接线；阶段 B 起 lambda inventory 绑定进 scope，但 plan 仍不发布，首次发布在阶段 C nested resolve 入口）
+- `lambdaPlans`（阶段 A 数据面已接线；阶段 B 把 lambda inventory 绑定进 scope；阶段 C 起由 nested resolve 入口经独立 `LAMBDA_RESOLUTION` owner 首次发布完整 plan，capture 声明处类型已填充）
 
 其中：
 
@@ -229,7 +229,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.binding`
   - top binding 命中的 blocked / unknown / shadowing 诊断
 - `sema.unsupported_binding_subtree`
-  - top binding 对 parameter default、lambda、`match`、block-local `const` 等明确 unsupported subtree 的边界 error
+  - top binding 对 parameter default、`match`、block-local `const` 等明确 unsupported subtree 的边界 error
+  - 已 `recordCallable` 的 lambda 自阶段 C 起改走 nested suite resolution，不再发此诊断；未记录的 lambda（property initializer 等）继续按此边界 fail-closed
   - top binding 对 missing-scope / skipped subtree 的恢复诊断继续允许使用 warning
 - `sema.member_resolution`
   - chain binding 中 blocked / failed member step 的语义错误
@@ -349,6 +350,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `FrontendSemanticAnalyzer` 当前返回 `FrontendAnalysisData`
 - analyze 流程围绕同一份共享分析数据推进
 - interface/body suite resolver 路径会在每个 body statement boundary 刷新 `FrontendAnalysisData.diagnostics()`，让后一 statement 能读取 current-suite upstream diagnostic snapshot；suite export 在 patch transaction 应用后保留最终 body snapshot
+- 已 `recordCallable` 的 lambda 由外层 statement 的 top-binding owner 触发 nested suite resolution：独立 `FrontendCallableExportBatch` 立即应用，`LAMBDA_RESOLUTION` owner patch 首次发布 `lambdaPlans`（capture 声明处类型），body 事实与普通 suite 走同一 statement boundary 诊断刷新
 - analyze 现在已经具备独立的多 phase 主链路：
     - skeleton 结束后先发布 `updateModuleSkeleton(...)`
     - 再发布一次 pre-scope `updateDiagnostics(...)`

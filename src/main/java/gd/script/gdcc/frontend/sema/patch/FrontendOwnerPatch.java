@@ -25,7 +25,8 @@ public sealed interface FrontendOwnerPatch permits
         FrontendChainBindingPatch,
         FrontendExprTypePatch,
         FrontendForIterationResolutionPatch,
-        FrontendVarTypePostPatch {
+        FrontendVarTypePostPatch,
+        FrontendLambdaResolutionPatch {
     @NotNull FrontendSemanticStage stage();
 
     default @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings() {

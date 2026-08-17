@@ -6,6 +6,7 @@ import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.patch.FrontendChainBindingPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendExprTypePatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendForIterationResolutionPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendLambdaResolutionPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalTypeStabilizationPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
@@ -184,6 +185,30 @@ public final class FrontendTypedLexicalEnvironment {
         return null;
     }
 
+    /// Declaration-anchored local slot type lookup restricted to flushed overlay updates.
+    ///
+    /// Lambda capture filling runs mid-suite in the enclosing callable, when the physical slot is
+    /// still the inventory baseline. This query only matches already flushed
+    /// `LOCAL_TYPE_STABILIZATION` / `FOR_ITERATION_RESOLUTION` updates by scope + declaration
+    /// identity along the environment chain; unlike `localSlotType` it never falls back to
+    /// `slotType(astNode)` (which would read `VAR_TYPE_POST` / function summaries) or to the
+    /// physical slot. Callers substitute the declared/inventory baseline when this returns null.
+    public @Nullable GdType declarationSiteLocalSlotType(
+            @NotNull BlockScope blockScope,
+            @NotNull String name,
+            @NotNull Object declaration
+    ) {
+        var pendingType = pendingFacts.localSlotType(blockScope, name, declaration);
+        if (pendingType != null) {
+            return pendingType;
+        }
+        var committedType = committedFacts.localSlotType(blockScope, name, declaration);
+        if (committedType != null) {
+            return committedType;
+        }
+        return parent != null ? parent.declarationSiteLocalSlotType(blockScope, name, declaration) : null;
+    }
+
     public void putSymbolBinding(
             @NotNull FrontendSemanticStage owner,
             @NotNull Node astNode,
@@ -235,6 +260,28 @@ public final class FrontendTypedLexicalEnvironment {
                 plan,
                 "forIterationPlans",
                 FrontendForIterationPlan::samePlan
+        );
+    }
+
+    /// Publishes the first complete `FrontendLambdaPlan` for a nested-resolved lambda.
+    ///
+    /// The plan carries frozen declaration-site capture types; first-wins merge plus `samePlan`
+    /// conflict detection reject any later diverging payload for the same lambda node.
+    public void putLambdaPlan(
+            @NotNull FrontendSemanticStage owner,
+            @NotNull Node astNode,
+            @NotNull FrontendLambdaPlan plan
+    ) {
+        requireOwner(owner, FrontendSemanticStage.LAMBDA_RESOLUTION);
+        FrontendPublishedFactTypeGuard.checkLambdaPlan(plan);
+        putSideTable(
+                stableData.lambdaPlans(),
+                committedFacts.lambdaPlans,
+                pendingFacts.lambdaPlans,
+                astNode,
+                plan,
+                "lambdaPlans",
+                FrontendLambdaPlan::samePlan
         );
     }
 
@@ -554,6 +601,7 @@ public final class FrontendTypedLexicalEnvironment {
         private final @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets = new FrontendAstSideTable<>();
         private final @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans =
                 new FrontendAstSideTable<>();
+        private final @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans = new FrontendAstSideTable<>();
 
         private @Nullable FrontendResolvedCall resolvedCall(@NotNull Node astNode) {
             var chainCall = chainResolvedCalls.get(astNode);
@@ -630,6 +678,7 @@ public final class FrontendTypedLexicalEnvironment {
                     "containerLiteralPlans",
                     FrontendContainerLiteralPlan::samePlan
             );
+            mergeSideTable(lambdaPlans, incoming.lambdaPlans, "lambdaPlans", FrontendLambdaPlan::samePlan);
             localSlotTypeUpdates.addAll(incoming.localSlotTypeUpdates);
             forIterationSlotTypeUpdates.addAll(incoming.forIterationSlotTypeUpdates);
         }
@@ -646,6 +695,7 @@ public final class FrontendTypedLexicalEnvironment {
             FrontendPublishedFactTypeGuard.checkLocalSlotTypeUpdates(forIterationSlotTypeUpdates);
             FrontendPublishedFactTypeGuard.checkTypeTestTargets(typeTestTargets);
             FrontendPublishedFactTypeGuard.checkContainerLiteralPlans(containerLiteralPlans);
+            FrontendPublishedFactTypeGuard.checkLambdaPlans(lambdaPlans);
         }
 
         private @NotNull List<FrontendOwnerPatch> toOwnerPatches() {
@@ -676,6 +726,9 @@ public final class FrontendTypedLexicalEnvironment {
             if (!slotTypes.isEmpty()) {
                 patches.add(new FrontendVarTypePostPatch(slotTypes));
             }
+            if (!lambdaPlans.isEmpty()) {
+                patches.add(new FrontendLambdaResolutionPatch(lambdaPlans));
+            }
             return patches;
         }
 
@@ -690,7 +743,8 @@ public final class FrontendTypedLexicalEnvironment {
                     || !forIterationPlans.isEmpty()
                     || !forIterationSlotTypeUpdates.isEmpty()
                     || !typeTestTargets.isEmpty()
-                    || !containerLiteralPlans.isEmpty();
+                    || !containerLiteralPlans.isEmpty()
+                    || !lambdaPlans.isEmpty();
         }
 
         private void clear() {
@@ -705,6 +759,7 @@ public final class FrontendTypedLexicalEnvironment {
             forIterationSlotTypeUpdates.clear();
             typeTestTargets.clear();
             containerLiteralPlans.clear();
+            lambdaPlans.clear();
         }
 
         private static <V> void mergeSideTable(

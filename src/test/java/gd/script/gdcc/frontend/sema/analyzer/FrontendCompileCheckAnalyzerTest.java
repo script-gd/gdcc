@@ -882,7 +882,9 @@ class FrontendCompileCheckAnalyzerTest {
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
         );
-        assertEquals(4, unsupportedBindingDiagnostics.size());
+        // parameter default + block-local const + match stay fail-closed; the recorded lambda
+        // resolves through its own nested suite and no longer contributes a diagnostic.
+        assertEquals(3, unsupportedBindingDiagnostics.size());
     }
 
     @Test
@@ -1833,7 +1835,8 @@ class FrontendCompileCheckAnalyzerTest {
                 diagnostic.message().contains("Qualified method-reference 'clear'")
                         && !diagnostic.range().equals(FrontendRange.fromAstRange(dictStep.range()))
         ), compileDiagnostics::toString);
-        assertFalse(diagnosticsByCategory(compiled.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
+        // The recorded lambda no longer reports unsupported binding/chain subtrees (plan §3.3).
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
     }
 
     @Test
@@ -1852,14 +1855,16 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compiled = analyzeForCompile("compile_check_direct_lambda_connect.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        var unsupportedBindingDiagnostics = diagnosticsByCategory(
+        var unsupportedExpressionDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
-                "sema.unsupported_binding_subtree"
+                "sema.unsupported_expression_route"
         );
 
         assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
         assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
-        assertFalse(unsupportedBindingDiagnostics.isEmpty(), compiled.diagnostics()::toString);
+        // The recorded lambda body resolves, but the lambda expression type stays unsupported
+        // until the dedicated typing phase, so the connect argument remains blocked.
+        assertFalse(unsupportedExpressionDiagnostics.isEmpty(), compiled.diagnostics()::toString);
     }
 
     @Test

@@ -336,12 +336,9 @@ For iterator 与 parameter、外层 local 或 body local 冲突时仍发布 `sem
 
 后续最直接的增量工作包括：
 
-- lambda capture 声明处类型填充与 `lambdaPlans()` 首次发布（nested suite resolution 入口）
-- for iteration planning 与 iterator slot refinement
+- lambda 表达式类型发布（`GdCallableType`）与 lowering 链路（阶段 D+）
 - `match` pattern binding 与 section inventory
 - block-local `const` inventory
-- `frontend.sema.resolver.FrontendVisibleValueResolver`
-- `symbolBindings()` 的 use-site 发布
 - 参数默认值的真实语义接线
 
 ---

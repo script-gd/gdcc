@@ -236,9 +236,17 @@ class FrontendInterfacePhaseTest {
         assertEquals(GdVariantType.VARIANT, surface.typedLexicalBaseline().typeFor(fromFor));
         assertTrue(surface.suiteEntryRoots().containsSupportedBlock(forStatement.body()));
         assertFalse(surface.suiteEntryRoots().containsSupportedBlock(matchStatement.sections().getFirst().body()));
-        assertFalse(surface.suiteEntryRoots().containsSupportedBlock(lambda.body()));
+        // Lambda bodies inside supported executable bodies are now suite entries of their own.
+        assertTrue(surface.suiteEntryRoots().containsSupportedBlock(lambda.body()));
+        assertTrue(surface.suiteEntryRoots().containsCallableOwner(lambda));
         assertFalse(surface.bodyDeclarationIndex().containsBodyRoot(matchStatement.sections().getFirst().body()));
-        assertFalse(surface.bodyDeclarationIndex().containsBodyRoot(lambda.body()));
+        var lambdaDeclarations = surface.bodyDeclarationIndex().declarationsFor(lambda.body());
+        assertEquals(1, lambdaDeclarations.size());
+        assertEquals(
+                "from_lambda",
+                assertInstanceOf(VariableDeclaration.class, lambdaDeclarations.getFirst().declaration()).name()
+        );
+        assertEquals(FrontendBodyLocalDeclaration.Kind.ORDINARY_VAR, lambdaDeclarations.getFirst().kind());
         assertFalse(surface.typedLexicalBaseline().containsDeclaration(answer));
         assertTrue(surface.typedLexicalBaseline().containsDeclaration(callback));
     }
@@ -289,7 +297,7 @@ class FrontendInterfacePhaseTest {
     }
 
     @Test
-    void nestedForBodiesPublishInventoryWithoutOpeningLambdaMatchOrConstSubtrees() throws Exception {
+    void nestedForBodiesPublishInventoryAndLambdaBodiesWhileMatchOrConstSubtreesStayClosed() throws Exception {
         var phaseInput = phaseInput("interface_nested_for_boundaries.gd", """
                 class_name InterfaceNestedForBoundaries
                 extends Node
@@ -331,9 +339,11 @@ class FrontendInterfacePhaseTest {
         assertTrue(surface.suiteEntryRoots().containsSupportedBlock(innerFor.body()));
         assertTrue(surface.bodyDeclarationIndex().containsBodyRoot(outerFor.body()));
         assertTrue(surface.bodyDeclarationIndex().containsBodyRoot(innerFor.body()));
-        assertFalse(surface.suiteEntryRoots().containsSupportedBlock(lambda.body()));
+        // Lambda nested inside a supported for body is recorded as a suite entry as well.
+        assertTrue(surface.suiteEntryRoots().containsSupportedBlock(lambda.body()));
+        assertTrue(surface.suiteEntryRoots().containsCallableOwner(lambda));
         assertFalse(surface.suiteEntryRoots().containsSupportedBlock(matchStatement.sections().getFirst().body()));
-        assertFalse(surface.bodyDeclarationIndex().containsBodyRoot(lambda.body()));
+        assertTrue(surface.bodyDeclarationIndex().containsBodyRoot(lambda.body()));
         assertFalse(surface.bodyDeclarationIndex().containsBodyRoot(matchStatement.sections().getFirst().body()));
         assertFalse(surface.typedLexicalBaseline().containsDeclaration(blocked));
     }

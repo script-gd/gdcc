@@ -2,7 +2,6 @@ package gd.script.gdcc.frontend.sema.resolver;
 
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
-import gd.script.gdcc.frontend.scope.CallableScopeKind;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBodySemanticSupportPolicy;
 import gd.script.gdcc.frontend.sema.FrontendBodyDeclarationIndex;
@@ -11,9 +10,9 @@ import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeLookupResult;
 import gd.script.gdcc.scope.ScopeValue;
+import gd.script.gdcc.scope.ScopeValueKind;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
-import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchSection;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Parameter;
@@ -173,9 +172,6 @@ public final class FrontendVisibleValueResolver {
         return switch (parentNode) {
             case Parameter parameter when parameter.defaultValue() == childNode ->
                     structuralBoundary(FrontendBodySemanticSupportPolicy.PARAMETER_DEFAULT);
-            case LambdaExpression lambdaExpression when lambdaExpression.body() == childNode -> structuralBoundary(
-                    FrontendBodySemanticSupportPolicy.LAMBDA_SUBTREE
-            );
             case VariableDeclaration variableDeclaration when variableDeclaration.kind() == DeclarationKind.CONST
                     && variableDeclaration.value() == childNode
                     && isDeferredBlockLocalConst(variableDeclaration) -> structuralBoundary(
@@ -289,13 +285,24 @@ public final class FrontendVisibleValueResolver {
     ) {
         return switch (currentScope) {
             case BlockScope blockScope -> classifyUnsupportedCurrentBlockScopeBoundary(blockScope);
-            case CallableScope callableScope when callableScope.kind() == CallableScopeKind.LAMBDA_EXPRESSION ->
-                    unsupportedScopeBoundary(FrontendBodySemanticSupportPolicy.LAMBDA_SUBTREE);
+            case CallableScope callableScope -> classifyUnsupportedCurrentCallableScopeBoundary(callableScope);
             default -> new FrontendVisibleValueDeferredBoundary(
                     FrontendVisibleValueDomain.EXECUTABLE_BODY,
                     FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
             );
         };
+    }
+
+    /// Callable scopes follow the same policy-driven gate as block scopes: every callable kind that
+    /// publishes lexical inventory (functions, constructors, lambdas) resolves normally.
+    private @Nullable FrontendVisibleValueDeferredBoundary classifyUnsupportedCurrentCallableScopeBoundary(
+            @NotNull CallableScope callableScope
+    ) {
+        var policy = FrontendBodySemanticSupportPolicy.forCallableScopeKind(callableScope.kind());
+        if (policy.publishesLexicalInventory()) {
+            return null;
+        }
+        return unsupportedScopeBoundary(policy);
     }
 
     /// Deferred-boundary checks must follow AST identity, matching the rest of the resolver's
@@ -343,7 +350,13 @@ public final class FrontendVisibleValueResolver {
             return null;
         }
         if (declaration instanceof VariableDeclaration variableDeclaration) {
-            checkPublishedLocalInventory(variableDeclaration, value);
+            // The interface body inventory only indexes LOCAL bindings. A lambda CAPTURE keeps the
+            // outer declaration identity for provenance but is not part of that inventory, so the
+            // consistency check must not fire for it; the declaration-order visibility filter below
+            // still applies (plan §3.4: capture legality follows outer declaration order).
+            if (value.kind() == ScopeValueKind.LOCAL) {
+                checkPublishedLocalInventory(variableDeclaration, value);
+            }
             if (isVisibleLocal(variableDeclaration, useSite)) {
                 return null;
             }

@@ -9,6 +9,7 @@ import gd.script.gdcc.scope.ScopeLookupResult;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -78,6 +79,57 @@ public final class CallableScope extends AbstractFrontendScope {
         Objects.requireNonNull(type, "type");
         ensureCallableValueSlotAvailable(name);
         capturesByName.put(name, new ScopeValue(name, type, ScopeValueKind.CAPTURE, declaration, false, true, false));
+    }
+
+    /// Returns the capture bindings in frozen source order (insertion order).
+    ///
+    /// Lambda capture planning freezes operand order at first occurrence in source, so the LIR
+    /// `<captures>` list and the published `FrontendLambdaPlan` both iterate this view.
+    public @NotNull List<ScopeValue> captures() {
+        return List.copyOf(capturesByName.values());
+    }
+
+    /// Rewrites the type of an already-published capture binding.
+    ///
+    /// Mirrors `BlockScope.resetLocalType`: only an existing `CAPTURE` binding with the same
+    /// declaration identity is rewritten; missing, mismatched, or non-capture names remain a quiet
+    /// no-op because earlier phases may already have rejected the source with a diagnostic. Lambda
+    /// capture filling is monotonic `Variant -> exact`: rewriting one exact type to a different exact
+    /// type indicates a compiler bug and fails fast instead of silently diverging from the published
+    /// `FrontendLambdaPlan`.
+    public void resetCaptureType(
+            @NotNull String name,
+            @NotNull Object declaration,
+            @NotNull GdType type
+    ) {
+        Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(declaration, "declaration");
+        Objects.requireNonNull(type, "type");
+        var existing = capturesByName.get(name);
+        if (existing == null
+                || existing.kind() != ScopeValueKind.CAPTURE
+                || existing.declaration() != declaration) {
+            return;
+        }
+        if (!(existing.type() instanceof GdVariantType)
+                && (existing.type().getClass() != type.getClass()
+                || !existing.type().getTypeName().equals(type.getTypeName()))) {
+            throw new IllegalStateException(
+                    "capture '" + name + "' type already frozen to " + existing.type().getTypeName()
+            );
+        }
+        capturesByName.put(
+                name,
+                new ScopeValue(
+                        existing.name(),
+                        type,
+                        existing.kind(),
+                        existing.declaration(),
+                        existing.constant(),
+                        existing.writable(),
+                        existing.staticMember()
+                )
+        );
     }
 
     @Override

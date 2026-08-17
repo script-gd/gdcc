@@ -632,7 +632,9 @@ public final class FrontendAnalysisInspectionTool {
         private @Nullable Node smallestContainingCallable(@NotNull FrontendRange diagnosticRange) {
             Node winner = null;
             for (var node : visitOrder.keySet()) {
-                if (!(node instanceof FunctionDeclaration) && !(node instanceof ConstructorDeclaration)) {
+                if (!(node instanceof FunctionDeclaration)
+                        && !(node instanceof ConstructorDeclaration)
+                        && !(node instanceof LambdaExpression)) {
                     continue;
                 }
                 if (!contains(node.range(), diagnosticRange)) {
@@ -697,18 +699,21 @@ public final class FrontendAnalysisInspectionTool {
         private boolean hasUnsupportedOrDeferredAncestor(@NotNull Expression expression) {
             var current = parents.get(expression);
             while (current != null) {
-                if (current instanceof Parameter parameter && parameter.defaultValue() != null) {
-                    return true;
-                }
-                if (current instanceof LambdaExpression || current instanceof MatchStatement) {
-                    return true;
-                }
-                if (current instanceof dev.superice.gdparser.frontend.ast.ForStatement) {
-                    return true;
-                }
-                if (current instanceof VariableDeclaration variableDeclaration
-                        && variableDeclaration.kind() == dev.superice.gdparser.frontend.ast.DeclarationKind.CONST) {
-                    return true;
+                switch (current) {
+                    case Parameter parameter when parameter.defaultValue() != null -> {
+                        return true;
+                    }
+                    case MatchStatement _ -> {
+                        return true;
+                    }
+                    case dev.superice.gdparser.frontend.ast.ForStatement _ -> {
+                        return true;
+                    }
+                    case VariableDeclaration variableDeclaration when variableDeclaration.kind() == dev.superice.gdparser.frontend.ast.DeclarationKind.CONST -> {
+                        return true;
+                    }
+                    default -> {
+                    }
                 }
                 current = parents.get(current);
             }

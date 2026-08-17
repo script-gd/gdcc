@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema.analyzer;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -10,22 +11,34 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
+import gd.script.gdcc.frontend.scope.CallableScopeKind;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBodyStructuralCompleteness;
 import gd.script.gdcc.frontend.sema.FrontendInterfaceSurface;
+import gd.script.gdcc.frontend.sema.FrontendLambdaCapturePlan;
+import gd.script.gdcc.frontend.sema.FrontendLambdaPlan;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
+import gd.script.gdcc.frontend.sema.LambdaCaptureEntry;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendCallableReturnTypeSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.frontend.sema.patch.FrontendCallableExportBatch;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
+import gd.script.gdcc.scope.Scope;
+import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
+import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /// Body-suite coordinator for the staged semantic pipeline.
@@ -37,8 +50,33 @@ public class FrontendSuiteResolver {
     private static final @NotNull String UNSUPPORTED_BINDING_SUBTREE_CATEGORY =
             "sema.unsupported_binding_subtree";
     private static final @NotNull String UNSUPPORTED_CHAIN_ROUTE_CATEGORY = "sema.unsupported_chain_route";
+    /// Capture kind mirrored for the synthetic `self` capture (plan §3.5: parameter-shaped).
+    private static final @NotNull String SELF_CAPTURE_NAME = "self";
 
     private final @NotNull FrontendStatementResolver statementResolver;
+    /// Per-owning-class counters backing `_lambda_<k>` synthetic names; resolution order follows
+    /// source appearance order, so names stay stable across runs of the same module.
+    private final @NotNull Map<String, Integer> lambdaNameCountersByOwningClass = new HashMap<>();
+    /// Lazily built reverse view of `FrontendAnalysisData.scopesByAst()` (Scope → declaration
+    /// node), consumed only by `enclosingNonLambdaCallable(...)` when a lambda needs its nearest
+    /// non-lambda enclosing callable AST for the plan's `enclosingCallable` identity and the
+    /// inherited static/instance restriction.
+    ///
+    /// Construction rules (see `scopeToAstIndex`):
+    /// - one-shot build on first lambda resolution, keyed by scope identity (`IdentityHashMap`);
+    /// - only callable declaration nodes (`FunctionDeclaration` / `ConstructorDeclaration` /
+    ///   `LambdaExpression`) may occupy a `CallableScope` slot, because parameters and body nodes
+    ///   alias the same scope in the forward table;
+    /// - first-wins (`putIfAbsent`) among the surviving candidates.
+    ///
+    /// Boundaries:
+    /// - valid only because the forward table is frozen before this resolver runs:
+    ///   `FrontendScopeAnalyzer` is its sole writer, and the suite phase never adds node→scope
+    ///   entries (`resetCaptureType` rewrites scope-internal `ScopeValue`s, not the table);
+    /// - the cache lives and dies with this per-run resolver instance — no cross-run staleness;
+    /// - if a future phase ever publishes new node→scope entries mid-suite, this index must be
+    ///   invalidated or rebuilt instead of trusted.
+    private @Nullable Map<Scope, Node> cachedScopeToAstIndex;
 
     public FrontendSuiteResolver() {
         this(new FrontendStatementResolver(new FrontendBodyOwnerProcedures()));
@@ -60,7 +98,14 @@ public class FrontendSuiteResolver {
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
 
         for (var callableOwner : interfaceSurface.suiteEntryRoots().callableOwners()) {
-            resolveCallableOwner(interfaceSurface, callableOwner, classRegistry, analysisData, diagnosticManager);
+            // Recorded lambdas are resolved through the nested trigger while their enclosing
+            // statement is processed; the top-level loop must not resolve them a second time.
+            // Lambdas left unresolved (e.g. tests with custom owner procedures that never trigger
+            // the nested path) still resolve here with no enclosing overlay for capture filling.
+            if (callableOwner instanceof LambdaExpression && analysisData.lambdaPlans().containsKey(callableOwner)) {
+                continue;
+            }
+            resolveCallableOwner(interfaceSurface, callableOwner, classRegistry, analysisData, diagnosticManager, null);
         }
         for (var propertyInitializer : interfaceSurface.suiteEntryRoots().propertyInitializers()) {
             resolvePropertyInitializer(interfaceSurface, propertyInitializer, classRegistry, analysisData, diagnosticManager);
@@ -99,7 +144,8 @@ public class FrontendSuiteResolver {
             @NotNull Node callableOwner,
             @NotNull ClassRegistry classRegistry,
             @NotNull FrontendAnalysisData analysisData,
-            @NotNull DiagnosticManager diagnosticManager
+            @NotNull DiagnosticManager diagnosticManager,
+            @Nullable FrontendTypedLexicalEnvironment outerEnvironment
     ) {
         var body = callableBody(callableOwner);
         if (body == null) {
@@ -109,6 +155,11 @@ public class FrontendSuiteResolver {
         if (!(bodyScope instanceof BlockScope blockScope)) {
             throw new IllegalStateException("Suite entry callable body has no published BlockScope");
         }
+        // A lambda inherits its restriction / static context from the nearest enclosing non-lambda
+        // callable (plan §3.2); the same node is recorded as `enclosingCallable` in the plan.
+        var restrictionOwner = callableOwner instanceof LambdaExpression lambdaExpression
+                ? enclosingNonLambdaCallable(lambdaExpression, analysisData)
+                : callableOwner;
         var environment = new FrontendTypedLexicalEnvironment(
                 blockScope,
                 analysisData,
@@ -126,8 +177,8 @@ public class FrontendSuiteResolver {
                 body,
                 blockScope,
                 blockScope,
-                restrictionForCallable(callableOwner),
-                isStaticCallable(callableOwner),
+                restrictionForCallable(restrictionOwner),
+                isStaticCallable(restrictionOwner),
                 null,
                 interfaceSurface,
                 environment,
@@ -135,13 +186,217 @@ public class FrontendSuiteResolver {
                 diagnosticManager,
                 classRegistry,
                 exportBatch,
-                currentCallableReturnType
+                currentCallableReturnType,
+                this::resolveNestedLambdaOwner
         );
+        if (callableOwner instanceof LambdaExpression lambdaExpression) {
+            fillAndPublishLambdaPlan(context, lambdaExpression, restrictionOwner, outerEnvironment);
+        }
         runCallableEntryVarTypePost(context, callableOwner);
         resolveSuite(context, body);
         // Stable export is ordered but non-atomic: queued transactions are not preflighted together,
         // and a later failure does not roll back patches or transactions that were already applied.
         exportBatch.applyTo(analysisData);
+    }
+
+    /// Nested resolve trigger: the only production entry point for recorded lambdas (plan §3.2).
+    ///
+    /// The lambda resolves with its own independent export batch applied immediately at completion,
+    /// so its plan and body facts become stable before the enclosing statement's expr-type owner
+    /// could publish a callable type for the lambda node. The outer typed environment is threaded
+    /// through only for declaration-anchored capture type filling; the lambda's own environment
+    /// stays parentless so body resolution can never read outer locals past the capture boundary.
+    private void resolveNestedLambdaOwner(
+            @NotNull FrontendSuiteContext outerContext,
+            @NotNull LambdaExpression lambda
+    ) {
+        resolveCallableOwner(
+                outerContext.interfaceSurface(),
+                lambda,
+                outerContext.classRegistry(),
+                outerContext.analysisData(),
+                outerContext.diagnosticManager(),
+                outerContext.typedEnvironment()
+        );
+    }
+
+    /// Fills declaration-site capture types and publishes the first complete `FrontendLambdaPlan`.
+    ///
+    /// Runs at nested resolve entry, before any lambda body statement is processed (plan §3.4):
+    /// each capture type is resolved from its source binding — parameters keep their declared type,
+    /// outer captures keep their already frozen type, locals go through the enclosing typed
+    /// environment's declaration-anchored overlay (falling back to the inventory baseline), and a
+    /// leading `self` capture takes the enclosing class instance type. Every fill is mirrored to the
+    /// `CallableScope` capture binding via `resetCaptureType` so body type-check, which reads
+    /// captures without an overlay, stays same-source with the published plan.
+    private void fillAndPublishLambdaPlan(
+            @NotNull FrontendSuiteContext context,
+            @NotNull LambdaExpression lambda,
+            @NotNull Node enclosingCallable,
+            @Nullable FrontendTypedLexicalEnvironment outerEnvironment
+    ) {
+        var analysisData = context.analysisData();
+        if (!(analysisData.scopesByAst().get(lambda) instanceof CallableScope lambdaScope)) {
+            throw new IllegalStateException("Recorded lambda has no published CallableScope");
+        }
+        var owningClass = lambdaScope.owningClassOrNull();
+        if (owningClass == null) {
+            throw new IllegalStateException("Recorded lambda has no owning class");
+        }
+        var captures = new ArrayList<LambdaCaptureEntry>();
+        for (var capture : lambdaScope.captures()) {
+            var declaration = Objects.requireNonNull(
+                    capture.declaration(),
+                    "capture '" + capture.name() + "' has no source declaration"
+            );
+            var entry = fillCaptureType(lambdaScope, capture, declaration, owningClass.getName(), outerEnvironment);
+            lambdaScope.resetCaptureType(entry.name(), declaration, entry.type());
+            captures.add(entry);
+        }
+        var plan = new FrontendLambdaPlan(
+                lambda,
+                nextLambdaSyntheticName(owningClass.getName()),
+                FrontendLambdaCapturePlan.of(captures),
+                enclosingCallable,
+                owningClass.getName()
+        );
+        context.typedEnvironment().putLambdaPlan(FrontendSemanticStage.LAMBDA_RESOLUTION, lambda, plan);
+    }
+
+    private @NotNull LambdaCaptureEntry fillCaptureType(
+            @NotNull CallableScope lambdaScope,
+            @NotNull ScopeValue capture,
+            @NotNull Object declaration,
+            @NotNull String owningClassName,
+            @Nullable FrontendTypedLexicalEnvironment outerEnvironment
+    ) {
+        if (capture.name().equals(SELF_CAPTURE_NAME)) {
+            return new LambdaCaptureEntry(
+                    capture.name(),
+                    new GdObjectType(owningClassName),
+                    ScopeValueKind.PARAMETER,
+                    declaration
+            );
+        }
+        var source = requireCaptureSourceBinding(lambdaScope, capture, declaration);
+        var sourceType = switch (source.value().kind()) {
+            case PARAMETER, CAPTURE -> source.value().type();
+            case LOCAL -> declarationSiteLocalType(source, capture, outerEnvironment);
+            default -> throw new IllegalStateException(
+                    "capture '" + capture.name() + "' source kind must be PARAMETER/LOCAL/CAPTURE"
+            );
+        };
+        return new LambdaCaptureEntry(capture.name(), sourceType, source.value().kind(), declaration);
+    }
+
+    /// Reads the declaration-site type of a captured local: the enclosing environment's flushed
+    /// stabilization / for-iteration update for that exact declaration, or the inventory baseline
+    /// (explicit declared type or `Variant`) when no update exists. Never reads `VAR_TYPE_POST` or
+    /// post-declaration refinements (plan §3.4 read-path rules).
+    private static @NotNull GdType declarationSiteLocalType(
+            @NotNull CaptureSourceBinding source,
+            @NotNull ScopeValue capture,
+            @Nullable FrontendTypedLexicalEnvironment outerEnvironment
+    ) {
+        if (outerEnvironment != null && source.scope() instanceof BlockScope blockScope) {
+            var overlayType = outerEnvironment.declarationSiteLocalSlotType(
+                    blockScope,
+                    capture.name(),
+                    Objects.requireNonNull(capture.declaration(), "capture declaration must not be null")
+            );
+            if (overlayType != null) {
+                return overlayType;
+            }
+        }
+        return source.value().type();
+    }
+
+    /// Re-locates the binding a capture was planned from, walking innermost-first from the lambda
+    /// boundary. The hit must carry the same declaration identity the inventory phase recorded;
+    /// anything else means the scope graph drifted between phases and the compiler must fail fast.
+    private static @NotNull CaptureSourceBinding requireCaptureSourceBinding(
+            @NotNull CallableScope lambdaScope,
+            @NotNull ScopeValue capture,
+            @NotNull Object declaration
+    ) {
+        var current = lambdaScope.getParentScope();
+        while (current != null) {
+            var hit = current.resolveValueHere(capture.name());
+            if (hit != null) {
+                if (hit.declaration() != declaration) {
+                    throw new IllegalStateException(
+                            "capture '" + capture.name() + "' source binding declaration drifted"
+                    );
+                }
+                return new CaptureSourceBinding(current, hit);
+            }
+            current = current.getParentScope();
+        }
+        throw new IllegalStateException("capture '" + capture.name() + "' has no source binding");
+    }
+
+    private record CaptureSourceBinding(@NotNull Scope scope, @NotNull ScopeValue value) {
+    }
+
+    /// Finds the nearest enclosing non-lambda callable AST through the scope graph: the lambda's
+    /// callable scope parent chain leads to the enclosing `FUNCTION_DECLARATION` /
+    /// `CONSTRUCTOR_DECLARATION` scope, which maps back to its declaration node.
+    private @NotNull Node enclosingNonLambdaCallable(
+            @NotNull LambdaExpression lambda,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+        if (!(analysisData.scopesByAst().get(lambda) instanceof CallableScope lambdaScope)) {
+            throw new IllegalStateException("Recorded lambda has no published CallableScope");
+        }
+        var current = lambdaScope.getParentScope();
+        while (current != null) {
+            if (current instanceof CallableScope callableScope
+                    && callableScope.kind() != CallableScopeKind.LAMBDA_EXPRESSION) {
+                var node = scopeToAstIndex(analysisData).get(callableScope);
+                if (node == null) {
+                    throw new IllegalStateException("Enclosing callable scope has no AST declaration");
+                }
+                return node;
+            }
+            current = current.getParentScope();
+        }
+        throw new IllegalStateException("Lambda has no enclosing non-lambda callable");
+    }
+
+    /// Builds the scope → declaration-node reverse index once per run.
+    ///
+    /// The forward table is deliberately many-to-one: `visitCallableBoundary` records the callable
+    /// declaration itself and then every `Parameter` against the SAME `CallableScope`, so a naive
+    /// reverse `put` would let the last parameter silently shadow the declaration node (the
+    /// "parameter shadowing" bug). The reverse query is a semantic choice — "which node declares
+    /// this scope" — so construction encodes that policy in two steps:
+    ///
+    /// 1. Type filter: only callable declaration nodes are eligible candidates; parameters and
+    ///    other aliasing nodes never enter the index at all.
+    /// 2. First-wins: `scopesByAst` iterates in scope-analyzer publication order, and
+    ///    `visitCallableBoundary` always calls `recordScope(callableOwner, ...)` BEFORE walking
+    ///    the parameter list, so among the surviving candidates the first write for a scope IS
+    ///    its declaration node. `putIfAbsent` therefore deterministically keeps the declaration
+    ///    even if a future shape ever produced duplicate declaration candidates for one scope.
+    private @NotNull Map<Scope, Node> scopeToAstIndex(@NotNull FrontendAnalysisData analysisData) {
+        var index = cachedScopeToAstIndex;
+        if (index == null) {
+            index = new IdentityHashMap<>();
+            for (var entry : analysisData.scopesByAst().entrySet()) {
+                if (entry.getKey() instanceof FunctionDeclaration
+                        || entry.getKey() instanceof ConstructorDeclaration
+                        || entry.getKey() instanceof LambdaExpression) {
+                    index.putIfAbsent(entry.getValue(), entry.getKey());
+                }
+            }
+            cachedScopeToAstIndex = index;
+        }
+        return index;
+    }
+
+    private @NotNull String nextLambdaSyntheticName(@NotNull String owningClassName) {
+        var index = lambdaNameCountersByOwningClass.merge(owningClassName, 1, Integer::sum);
+        return "_lambda_" + (index - 1);
     }
 
     /// Publishes callable-entry var-type-post facts before the first body statement is resolved.
@@ -238,6 +493,8 @@ public class FrontendSuiteResolver {
                 diagnosticManager,
                 classRegistry,
                 null,
+                null,
+                // Property initializers stay fail-closed for lambdas: no nested resolve trigger.
                 null
         );
         statementResolver.resolvePropertyInitializer(context, propertyInitializer);
@@ -267,6 +524,7 @@ public class FrontendSuiteResolver {
         return switch (callableOwner) {
             case FunctionDeclaration functionDeclaration -> functionDeclaration.body();
             case ConstructorDeclaration constructorDeclaration -> constructorDeclaration.body();
+            case LambdaExpression lambdaExpression -> lambdaExpression.body();
             default -> null;
         };
     }
@@ -275,6 +533,7 @@ public class FrontendSuiteResolver {
         return switch (callableOwner) {
             case FunctionDeclaration functionDeclaration -> functionDeclaration.parameters();
             case ConstructorDeclaration constructorDeclaration -> constructorDeclaration.parameters();
+            case LambdaExpression lambdaExpression -> lambdaExpression.parameters();
             default -> List.of();
         };
     }
