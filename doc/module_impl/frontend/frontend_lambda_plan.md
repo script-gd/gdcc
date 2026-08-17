@@ -9,12 +9,15 @@
 
 ## 文档状态
 
-- 状态：阶段 A、B、C 已落地；D–I 尚未实施。lambda body 已成为 supported executable
+- 状态：阶段 A、B、C、D 已落地；E–I 尚未实施。lambda body 已成为 supported executable
   suite：resolver / interface / suite 解封，nested resolve 经独立 `LAMBDA_RESOLUTION`
-  owner 首次发布完整 `FrontendLambdaPlan`（capture 声明处类型已填充并与 scope 同源）。
-  表达式类型（`GdCallableType`）、LIR 合成、CFG lowering、compile surface 仍 fail-closed。
-- 更新时间：2026-08-17（阶段 C 落地：resolver/interface/suite 解封 + capture 类型填充
-  + `lambdaPlans()` 首次发布）
+  owner 首次发布完整 `FrontendLambdaPlan`（capture 声明处类型已填充并与 scope 同源）；
+  已 record lambda 的表达式类型首次发布 `RESOLVED(GdCallableType)`（silent 稳定化不解析
+  lambda initializer，`:=` slot 保持 inventory `Variant`），type-check 经显式 re-entry
+  walk 已 record lambda 的 body；compile gate 对 lambda 以形态级 `sema.compile_check`
+  blocker 保持 fail-closed。LIR 合成、CFG lowering、compile surface 解封仍留待后续阶段。
+- 更新时间：2026-08-17（阶段 D 落地：表达式类型 `GdCallableType` + type-check body walk
+  + compile gate 形态级 blocker）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/scope/**`
@@ -109,9 +112,9 @@ Parser AST 为 `dev.superice.gdparser.frontend.ast.LambdaExpression`，已提供
 | Suite owner | `FrontendSuiteResolver.callableBody/callableParameters` | 只认 Function/Constructor；lambda 返回 `null` / empty |
 | Visible value | `FrontendVisibleValueResolver` | AST 边 + current-scope backstop → `DEFERRED_UNSUPPORTED` / `LAMBDA_SUBTREE` |
 | Top / chain binding | `FrontendBodyOwnerProcedures` | `sema.unsupported_binding_subtree` / `sema.unsupported_chain_route`；`walkRootBounded` 剪枝 |
-| Expr typing | `FrontendExpressionSemanticSupport.resolveLambdaExpressionType` | `UNSUPPORTED`："Lambda expression typing is not supported..." |
-| Type-check | `FrontendTypeCheckAnalyzer.handleLambdaExpression` | `SKIP_CHILDREN` |
-| Compile surface | `FrontendCompileCheckAnalyzer.walkExpression` | 不进入 lambda；依赖上游 unsupported |
+| Expr typing | `FrontendExpressionSemanticSupport.resolveLambdaExpressionType` | **阶段 D 已翻面**：已 record → `RESOLVED(GdCallableType)`；未记录仍 `UNSUPPORTED` |
+| Type-check | `FrontendTypeCheckAnalyzer.handleLambdaExpression` | **阶段 D 已翻面**：walk 已 record lambda 的 body（plan 闸门 + 继承 restriction/static） |
+| Compile surface | `FrontendCompileCheckAnalyzer.walkExpression` | **阶段 D 起**形态级 `sema.compile_check` blocker；阶段 I 才解封 |
 | Inspection | `FrontendAnalysisInspectionTool.hasUnsupportedOrDeferredAncestor` | 把 `LambdaExpression` 硬编码为 deferred 祖先 |
 | Skeleton | `FrontendClassSkeletonBuilder.toLirFunction` | 只从 `FunctionDeclaration` 建 `LirFunctionDef` |
 | Func pre-pass | `FrontendLoweringFunctionPreparationPass.visitStatements` | 不扫描表达式里的 lambda |
@@ -789,6 +792,20 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
 
 ### 阶段 D — 表达式类型与 Callable 值
 
+> 状态：已落地（2026-08-17）。`resolveLambdaExpressionType` 新增 recorded 判定参数：
+> 已 record lambda 首次发布 `RESOLVED(GdCallableType)`（未参数化，与 method-as-value
+> 对齐）；未记录 lambda 保持 `UNSUPPORTED` + 既有 unsupported 诊断三路由。
+> `runLocalTypeStabilization` 对 lambda initializer 显式 fail-closed（slot 保持
+> inventory `Variant`，silent 路径不解析 lambda）；`publishExpressionType` 的
+> recorded-lambda 静默 UNSUPPORTED 分支已随 RESOLVED 化删除。
+> `FrontendTypeCheckAnalyzer` 新增 `scanNestedLambdaBodies` 显式 re-entry，
+> `handleLambdaExpression` 以 plan 存在性为闸门 walk body（继承 enclosing
+> restriction/static；return slot 暂为 `GdVariantType.VARIANT`，声明返回类型的
+> 检查留待阶段 E 合成函数落地）。`FrontendCompileCheckAnalyzer.walkExpression`
+> 对 lambda 改发形态级 `sema.compile_check` blocker（与 preload / get-node 同款
+> “已识别但 lowering 未落地”），analyzeForCompile 在阶段 I 前保持
+> “compile surface 上有 lambda 则 blocker”。
+
 **目标**：lambda 表达式发布稳定 `RESOLVED(GdCallableType)`。
 
 **实施内容**：
@@ -799,6 +816,43 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
   （或依赖 suite 已走完、此处只消费外层赋值兼容）。
 - 赋值 `var cb: Callable = func(): pass` 走既有 ordinary boundary。
 - `var x: int = func(): pass` 发既有 `sema.type_check` 不兼容。
+
+**落地记录**：
+
+- 表达式类型：`FrontendExpressionSemanticSupport.resolveLambdaExpressionType` 新增
+  `recordedLambda` 参数（调用点以
+  `suiteEntryRoots().containsCallableOwner(lambda)` 判定）。已 record lambda
+  经既有 EXPR_TYPE owner 单点首次发布 `RESOLVED(GdCallableType)`——满足
+  `sameExpressionType` 严格相等约束，无"先 UNSUPPORTED 再升级"的 patch 冲突。
+  `GdCallableType` 是 `GdMetaType`（非 compiler-only），通过 published-fact 类型守卫。
+- Silent 稳定化闸门：`runLocalTypeStabilization` 在 initializer 为
+  `LambdaExpression` 时直接返回——`var cb := func(): ...` 的 slot 保持
+  inventory `Variant`；`checkInferredLocalTypeConsistency` 对 Variant slot
+  短路灯塔，无需改动。阶段 D 不实现非 silent 写回。
+- Type-check body walk：`AstWalkerTypeCheckVisitor.scanNestedLambdaBodies`
+  镜像 loop-control 的 `scanNestedCallableBoundaries`，在 varDecl / return /
+  assert / expression statement / if / elif / while / for 八个语句 handler 上
+  扫描表达式载荷；`handleLambdaExpression` 以
+  `lambdaPlans().containsKey(lambda)` 为闸门（未记录 lambda 无 plan、无 body
+  事实，保持 fail-closed），经 `walkCallableBody(lambda, body, Variant,
+  currentRestriction, currentStaticContext)` 继承外层可调用上下文。
+- Compile gate：`walkExpression` 的 lambda 分支由静默跳过改为
+  `reportExplicitCompileBlock(lambda, expressionCompileBlockedMessage("Lambda expression"))`，
+  防止阶段 I 前带 lambda 的模块漏进 lowering。
+- 测试：翻转 `analyzeLeavesInferredLocalsAsVariantWhenInitializerCannotPublishStableType`
+  （initializer RESOLVED + slot 保持 Variant）、
+  `analyzeForCompileBlocksDirectLambdaConnectArgument`（unsupported_expression_route
+  清空，compile_check 恰为 lambda blocker）、
+  `analyzeForCompileSkipsExplicitCompileBlocksOutsideCompileSurface` /
+  `analyzeSkipsGenericCompileBlocksOutsideCompileSurface` /
+  `analyzeForCompileSkipsBareSignalValueReferencesOutsideCompileSurface`
+  （compile_check 恰为 1 条 lambda blocker，off-surface 事实仍不被扫描）；
+  `analyzeChecksOnlyExplicitOrdinaryLocalDeclaredSlotsAndSkipsUnstableInitializerFacts`
+  的 lambda fixture 行改为 `Worker.VALUE`（保持"跳过不稳定 initializer"的原意图）。
+  新增 `recordedLambdaPublishesCallableExpressionTypeAlongsidePlan`、
+  `analyzeChecksLambdaInitializersAgainstDeclaredSlots`、
+  `analyzeWalksRecordedLambdaBodiesWithInheritedCallableContext`、
+  `analyzeKeepsUnrecordedLambdaBodiesOutsideTypeCheckSurface`。
 
 **验收细则**：
 
@@ -1055,9 +1109,9 @@ FrontendCompileCheckAnalyzerTest,ConstructLambdaInsnGenTest,DomLirParserTest,Lir
 | `FrontendVisibleValueResolverTest.resolveSealsLambdaBodyAsDeferredUnsupported` | `LAMBDA_SUBTREE` | 可解析 |
 | `FrontendVisibleValueResolverTest.resolveRejectsSyntheticLambdaBody...` | current-scope 封口 | 不再因 kind 封口 |
 | `FrontendBodySemanticSupportPolicyTest` lambda 行 | `LAMBDA_SUBTREE` | **阶段 B** 即翻成 `EXECUTABLE_BODY` |
-| `FrontendTypeCheckAnalyzerTest` lambda initializer | `UNSUPPORTED` | `RESOLVED(Callable)` 或类型不兼容 |
-| `FrontendBodyOwnerProceduresExprTypeTest` inferred lambda local | `UNSUPPORTED` | `Callable` |
-| `FrontendCompileCheckAnalyzerTest.analyzeForCompileBlocksDirectLambdaConnectArgument` | unsupported binding，无 compile_check | 阶段 I 后 compile-ready |
+| `FrontendTypeCheckAnalyzerTest` lambda initializer | `UNSUPPORTED` | `RESOLVED(Callable)` 或类型不兼容（**阶段 D 已翻转**） |
+| `FrontendBodyOwnerProceduresExprTypeTest` inferred lambda local | `UNSUPPORTED` | `Callable`（**阶段 D 已翻转**，slot 保持 `Variant`） |
+| `FrontendCompileCheckAnalyzerTest.analyzeForCompileBlocksDirectLambdaConnectArgument` | unsupported binding，无 compile_check | 阶段 D：unsupported 清空 + 形态级 lambda blocker；阶段 I 后 compile-ready |
 | `FrontendCompileCheckAnalyzerTest.analyzeForCompileReleasesBuiltinAndStaticMethodReferences` 的 lambda_cb | unsupported binding | 无该 error |
 
 ### 6.2 必须保持

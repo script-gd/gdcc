@@ -877,7 +877,10 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_skipped_surface.gd", source);
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        assertEquals(0, compileDiagnostics.size());
+        // The lambda node itself sits on the compile surface and keeps its form-level blocker
+        // until lowering support lands; the explicit blocks inside its body stay skipped.
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Lambda expression"));
         var unsupportedBindingDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
@@ -1398,7 +1401,11 @@ class FrontendCompileCheckAnalyzerTest {
 
         runCompileCheck(preparedInput);
 
-        assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check").isEmpty());
+        // Only the form-level lambda blocker fires; the synthetic deferred/failed facts living
+        // inside the lambda body stay outside the compile surface and are never scanned.
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Lambda expression"));
     }
 
     @Test
@@ -1861,10 +1868,12 @@ class FrontendCompileCheckAnalyzerTest {
         );
 
         assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
-        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
-        // The recorded lambda body resolves, but the lambda expression type stays unsupported
-        // until the dedicated typing phase, so the connect argument remains blocked.
-        assertFalse(unsupportedExpressionDiagnostics.isEmpty(), compiled.diagnostics()::toString);
+        // The recorded lambda now publishes a resolved Callable type, so the connect argument no
+        // longer routes through the unsupported-expression boundary; compilation stays blocked
+        // only by the form-level lambda compile gate until lowering support lands (phase I).
+        assertEquals(1, compileDiagnostics.size(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.getFirst().message().contains("Lambda expression"));
+        assertTrue(unsupportedExpressionDiagnostics.isEmpty(), compiled.diagnostics()::toString);
     }
 
     @Test
@@ -1933,8 +1942,11 @@ class FrontendCompileCheckAnalyzerTest {
                 """;
 
         var compiled = analyzeForCompile("compile_check_signal_skipped_surface.gd", source);
-        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
-                () -> compiled.diagnostics().asList().toString());
+        // The bare signal references hidden inside the lambda body / match sections stay outside
+        // the compile surface; the only compile blocker is the lambda node itself (phase I gate).
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size(), () -> compiled.diagnostics().asList().toString());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Lambda expression"));
     }
 
     @Test

@@ -120,7 +120,7 @@ public class FrontendTypeCheckAnalyzer {
         }
     }
 
-        protected void visitOrdinaryLocalInitializer(
+    protected void visitOrdinaryLocalInitializer(
             @NotNull TypeCheckAccess access,
             @NotNull VariableDeclaration variableDeclaration
     ) {
@@ -1067,6 +1067,7 @@ public class FrontendTypeCheckAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleVariableDeclaration(
                 @NotNull VariableDeclaration variableDeclaration
         ) {
+            scanNestedLambdaBodies(variableDeclaration.value());
             if (supportedExecutableBlockDepth > 0) {
                 if (isOrdinaryLocalInitializer(variableDeclaration)) {
                     visitOrdinaryLocalInitializer(callbackAccess(), variableDeclaration);
@@ -1086,6 +1087,7 @@ public class FrontendTypeCheckAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             visitReturnStatement(callbackAccess(), returnStatement);
+            scanNestedLambdaBodies(returnStatement.value());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -1099,6 +1101,8 @@ public class FrontendTypeCheckAnalyzer {
             if (assertStatement.message() != null) {
                 visitNestedCastExpressions(access, assertStatement.message());
             }
+            scanNestedLambdaBodies(assertStatement.condition());
+            scanNestedLambdaBodies(assertStatement.message());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -1110,6 +1114,7 @@ public class FrontendTypeCheckAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             visitNestedCastExpressions(callbackAccess(), expressionStatement.expression());
+            scanNestedLambdaBodies(expressionStatement.expression());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -1119,6 +1124,7 @@ public class FrontendTypeCheckAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             visitConditionExpression(callbackAccess(), ifStatement.condition(), ifStatement);
+            scanNestedLambdaBodies(ifStatement.condition());
             walkSupportedExecutableBlock(ifStatement.body());
             for (var elifClause : ifStatement.elifClauses()) {
                 astWalker.walk(elifClause);
@@ -1135,6 +1141,7 @@ public class FrontendTypeCheckAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             visitConditionExpression(callbackAccess(), elifClause.condition(), elifClause);
+            scanNestedLambdaBodies(elifClause.condition());
             walkSupportedExecutableBlock(elifClause.body());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
@@ -1145,6 +1152,7 @@ public class FrontendTypeCheckAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             visitConditionExpression(callbackAccess(), whileStatement.condition(), whileStatement);
+            scanNestedLambdaBodies(whileStatement.condition());
             walkSupportedExecutableBlock(whileStatement.body());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
@@ -1159,18 +1167,59 @@ public class FrontendTypeCheckAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             visitForHeader(callbackAccess(), forStatement);
+            scanNestedLambdaBodies(forStatement.iterable());
             walkSupportedExecutableBlock(forStatement.body());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// Recorded lambdas re-enter here from `scanNestedLambdaBodies`: the body already resolved
+        /// through its nested suite, so type-check walks it as an independent callable island that
+        /// inherits the enclosing callable's restriction/static context (plan §3.2). The return
+        /// slot stays `Variant` until the synthetic-function phase resolves the declared return
+        /// type, so `return expr` stays compatible via the ordinary pack boundary and bare
+        /// `return` remains legal. Unrecorded lambdas (property initializer / parameter default /
+        /// skipped subtrees) publish no plan and no body facts, so they stay fail-closed.
         @Override
         public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
+            if (isNotPublished(lambdaExpression)
+                    || isNotPublished(lambdaExpression.body())
+                    || !analysisData.lambdaPlans().containsKey(lambdaExpression)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            walkCallableBody(
+                    lambdaExpression,
+                    lambdaExpression.body(),
+                    GdVariantType.VARIANT,
+                    currentRestriction,
+                    currentStaticContext
+            );
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
+        /// Lambda bodies are separate suite-entry roots that the statement walk never reaches, so
+        /// nested lambdas must be re-entered explicitly from the expression trees carrying them —
+        /// mirroring the loop-control analyzer's callable-boundary scan. The scan stops at each
+        /// lambda node; `handleLambdaExpression` decides whether its body has published facts.
+        private void scanNestedLambdaBodies(@Nullable Node node) {
+            if (node == null) {
+                return;
+            }
+            if (node instanceof LambdaExpression lambdaExpression) {
+                astWalker.walk(lambdaExpression);
+                return;
+            }
+            for (var child : node.getChildren()) {
+                if (child instanceof LambdaExpression lambdaExpression) {
+                    astWalker.walk(lambdaExpression);
+                    continue;
+                }
+                scanNestedLambdaBodies(child);
+            }
         }
 
         private void walkClassContainer(@NotNull Node classOwner, @NotNull List<Statement> statements) {

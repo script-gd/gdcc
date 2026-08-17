@@ -2602,7 +2602,8 @@ class FrontendBodyOwnerProceduresExprTypeTest {
 
         var deferredInitializerType = analyzed.analysisData().expressionTypes().get(deferredDeclaration.value());
         assertNotNull(deferredInitializerType);
-        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, deferredInitializerType.status());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, deferredInitializerType.status());
+        assertEquals("Callable", deferredInitializerType.publishedType().getTypeName());
 
         var unsupportedInitializerType = analyzed.analysisData().expressionTypes().get(unsupportedDeclaration.value());
         assertNotNull(unsupportedInitializerType);
@@ -2619,7 +2620,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                         analyzed,
                         deferredUse,
                         deferredDeclaration,
-                        FrontendExpressionTypeStatus.UNSUPPORTED
+                        FrontendExpressionTypeStatus.RESOLVED
                 )
         );
         assertSame(
@@ -2641,6 +2642,10 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                 )
         );
 
+        // Silent local stabilization never resolves lambda initializers (plan §3.2), so the
+        // `:=` slot keeps its inventory Variant even though the lambda itself resolved to
+        // `Callable`; refinement may only come from a non-silent write-back, which phase D
+        // deliberately does not add.
         assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("deferred_value").type());
         assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("unsupported_value").type());
         assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("blocked_value").type());

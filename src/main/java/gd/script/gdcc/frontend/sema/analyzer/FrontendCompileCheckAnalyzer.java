@@ -552,10 +552,10 @@ public class FrontendCompileCheckAnalyzer {
                 return;
             }
             switch (expression) {
-                case LambdaExpression _ -> {
-                    // Lambdas remain outside the current compile surface and keep their upstream
-                    // unsupported-subtree owner.
-                }
+                case LambdaExpression lambdaExpression -> reportExplicitCompileBlock(
+                        lambdaExpression,
+                        expressionCompileBlockedMessage("Lambda expression")
+                );
                 case ConditionalExpression conditionalExpression -> reportExplicitCompileBlock(
                         conditionalExpression,
                         conditionalCompileBlockedMessage()

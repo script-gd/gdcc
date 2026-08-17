@@ -466,8 +466,7 @@ class FrontendTypeCheckAnalyzerTest {
                     var skipped_blocked: int = self.payload
                     var skipped_deferred: int = 1 + 2
                     var skipped_failed: int = Worker
-                    var skipped_unsupported: int = func(offset: int):
-                        return offset
+                    var skipped_unsupported: int = Worker.VALUE
                 """);
 
         new FrontendTypeCheckAnalyzer().analyze(
@@ -529,6 +528,119 @@ class FrontendTypeCheckAnalyzerTest {
         assertTrue(diagnosticsByCategory(
                 preparedInput.diagnosticManager().snapshot(),
                 "sema.type_hint"
+        ).isEmpty());
+    }
+
+    @Test
+    void analyzeChecksLambdaInitializersAgainstDeclaredSlots() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_lambda_assignment.gd", """
+                class_name TypeCheckLambdaAssignment
+                extends RefCounted
+                
+                func ping():
+                    var cb: Callable = func(): pass
+                    var bad: int = func(): pass
+                    var inferred := func(): pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var callableInitializer = requireInitializerType(pingFunction.body().statements(), "cb", preparedInput);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, callableInitializer.status());
+        assertEquals("Callable", callableInitializer.publishedType().getTypeName());
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                requireInitializerType(pingFunction.body().statements(), "bad", preparedInput).status()
+        );
+
+        var typeCheckDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+        // The `Callable` slot accepts the lambda through the ordinary boundary and the `:=` slot
+        // packs into Variant, so only the `: int` slot reports the existing mismatch diagnostic.
+        assertEquals(1, typeCheckDiagnostics.size());
+        var mismatch = typeCheckDiagnostics.getFirst();
+        assertEquals(FrontendDiagnosticSeverity.ERROR, mismatch.severity());
+        assertTrue(mismatch.message().contains("bad"));
+        assertTrue(mismatch.message().contains("Callable"));
+        assertTrue(mismatch.message().contains("int"));
+    }
+
+    @Test
+    void analyzeWalksRecordedLambdaBodiesWithInheritedCallableContext() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_lambda_body_walk.gd", """
+                class_name TypeCheckLambdaBodyWalk
+                extends RefCounted
+                
+                func ping():
+                    var cb := func():
+                        var bad_local: int = "text"
+                        var nested := func():
+                            var inner_bad: int = 1.5
+                            return inner_bad
+                        return nested
+                    assert(true, func():
+                        var assert_bad: int = "msg"
+                        return "")
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var typeCheckDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+        // Both the outer and the nested lambda body are walked as independent callable islands,
+        // including the lambda carried by the assert-message position.
+        assertEquals(3, typeCheckDiagnostics.size(), typeCheckDiagnostics::toString);
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("bad_local") && diagnostic.message().contains("String")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("inner_bad") && diagnostic.message().contains("float")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("assert_bad") && diagnostic.message().contains("String")
+        ));
+    }
+
+    @Test
+    void analyzeKeepsUnrecordedLambdaBodiesOutsideTypeCheckSurface() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_lambda_unwalked.gd", """
+                class_name TypeCheckLambdaUnwalked
+                extends RefCounted
+                
+                var prop = func():
+                    var hidden_bad: int = "text"
+                
+                func ping(choice):
+                    match choice:
+                        0:
+                            var in_match = func():
+                                var match_bad: int = "text"
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        // Property-initializer and match-section lambdas are never recorded, so their bodies have
+        // no published facts and type-check must not descend into them.
+        assertTrue(diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
         ).isEmpty());
     }
 

@@ -278,7 +278,7 @@ package-private `probe(...)` 仅作为测试观察窗口存在，用来运行与
 以下输入当前仍不进入 local stabilization 的正式支持面：
 
 - parameter default
-- lambda / capture
+- lambda initializer / capture（lambda 计划阶段 D 起，lambda 表达式自身已能发布 `RESOLVED(GdCallableType)`，但 silent 稳定化对 lambda initializer 显式 fail-closed：`var cb := func(): ...` 的 slot 保持 inventory `Variant`，不写 side table、不发诊断、不触发 nested resolve；`:=` 精化只允许来自 nested resolve 完成后的非 silent 写回）
 - `match`
 - block-local `const`
 - class `const`

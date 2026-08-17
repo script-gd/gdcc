@@ -525,11 +525,18 @@ public final class FrontendExpressionSemanticSupport {
         ));
     }
 
+    /// Lambda typing contract (plan §3.3): a recorded lambda — one the interface phase registered
+    /// as a callable owner and whose body already resolved through its nested suite — publishes the
+    /// unparameterized `Callable` type, aligned with method-as-value / `construct_callable` facts.
+    /// Lambdas outside supported executable bodies (property initializers, parameter defaults,
+    /// skipped subtrees) stay fail-closed with the unsupported route. The nested-resolve trigger
+    /// itself lives in the top-binding owner (`tryResolveRecordedLambda`), not here.
     public @NotNull ExpressionSemanticResult resolveLambdaExpressionType(
             @NotNull LambdaExpression lambdaExpression,
             @NotNull NestedExpressionResolver nestedResolver,
             boolean resolveNestedChildren,
-            boolean finalizeWindow
+            boolean finalizeWindow,
+            boolean recordedLambda
     ) {
         var dependencyIssue = resolveNestedChildren
                 ? firstNestedDependencyIssue(lambdaExpression, nestedResolver, finalizeWindow)
@@ -537,8 +544,11 @@ public final class FrontendExpressionSemanticSupport {
         if (dependencyIssue != null) {
             return propagated(dependencyIssue);
         }
+        if (recordedLambda) {
+            return rootOutcome(FrontendExpressionType.resolved(new GdCallableType()));
+        }
         return rootOutcome(FrontendExpressionType.unsupported(
-                "Lambda expression typing is not supported by the current frontend expression-typing contract"
+                "Lambda expression typing is only supported inside a supported executable body"
         ));
     }
 

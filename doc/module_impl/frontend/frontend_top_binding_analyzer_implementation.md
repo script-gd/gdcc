@@ -381,7 +381,7 @@ builtin static namespace 当前仍 direct-only，因为 ExtensionAPI builtin met
 以下位置当前都必须显式封口，不能伪装成正常 binding miss：
 
 - parameter default subtree
-- lambda subtree
+- lambda subtree（仅未记录的 lambda：property initializer / parameter default / skipped subtree；已 `recordCallable` 的 lambda 自 lambda 计划阶段 C 起由 top-binding 触发 nested suite resolution，不再封口）
 - `match` subtree
 - block-local `const` initializer subtree
 - 任何缺少稳定 `scopesByAst()` 记录的 skipped subtree
@@ -465,7 +465,7 @@ builtin static namespace 当前仍 direct-only，因为 ExtensionAPI builtin met
 当前 `sema.unsupported_binding_subtree` 覆盖以下语义：
 
 - parameter default subtree
-- lambda subtree
+- lambda subtree（仅未记录的 lambda；已 `recordCallable` 的 lambda 自阶段 C 起走 nested suite resolution，不产生此 category）
 - `match` subtree
 - block-local `const` initializer subtree
 - missing-scope / skipped subtree
@@ -658,7 +658,9 @@ func ping(value):
         return value
 ```
 
-- lambda subtree 当前 deferred
+- 已 `recordCallable` 的 lambda 自 lambda 计划阶段 C/D 起转正：top-binding 触发 nested
+  suite resolution，表达式类型发布 `RESOLVED(GdCallableType)`；仅未记录位置
+  （property initializer / parameter default / skipped subtree）的 lambda 仍 deferred
 
 ```gdscript
 func ping():

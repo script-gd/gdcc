@@ -12,6 +12,7 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.frontend.sema.patch.FrontendLambdaResolutionPatch;
@@ -96,6 +97,106 @@ class FrontendLambdaSuiteResolutionTest {
             var binding = analysisData.analysisData().symbolBindings().get(useSite);
             assertNotNull(binding, name);
             assertEquals(FrontendBindingKind.CAPTURE, binding.kind(), name);
+        }
+        assertTrue(analysisData.diagnostics().asList().isEmpty());
+    }
+
+    @Test
+    void recordedLambdaPublishesCallableExpressionTypeAlongsidePlan() throws Exception {
+        var analysisData = analyze("lambda_expression_type.gd", """
+                class_name LambdaExpressionType
+                extends RefCounted
+                
+                func ping():
+                    var cb := func(x: int):
+                        return x
+                """);
+        var pingFunction = findFunction(analysisData.unit().ast(), "ping");
+        var lambda = findNode(pingFunction.body(), LambdaExpression.class, _ -> true);
+
+        // Phase C/D contract: the nested-resolved plan (LAMBDA_RESOLUTION owner) and the callable
+        // expression fact (EXPR_TYPE owner) coexist for the same recorded lambda node.
+        assertNotNull(analysisData.analysisData().lambdaPlans().get(lambda));
+        var expressionType = analysisData.analysisData().expressionTypes().get(lambda);
+        assertNotNull(expressionType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, expressionType.status());
+        assertEquals("Callable", expressionType.publishedType().getTypeName());
+
+        // Silent stabilization never resolves the lambda initializer, so the `:=` slot keeps its
+        // inventory Variant; only a non-silent write-back could refine it (phase D adds none).
+        var bodyScope = assertInstanceOf(
+                BlockScope.class,
+                analysisData.analysisData().scopesByAst().get(pingFunction.body())
+        );
+        assertEquals(GdVariantType.VARIANT, Objects.requireNonNull(bodyScope.resolveValue("cb")).type());
+
+        assertFalse(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_expression_route")
+        ));
+    }
+
+    @Test
+    void lambdaContainingMatchKeepsCallableTypeAndUpstreamMatchDiagnostics() throws Exception {
+        var analysisData = analyze("lambda_match_inside.gd", """
+                class_name LambdaMatchInside
+                extends RefCounted
+                
+                func ping():
+                    var cb := func():
+                        match 1:
+                            1:
+                                pass
+                """);
+        var pingFunction = findFunction(analysisData.unit().ast(), "ping");
+        var lambda = findNode(pingFunction.body(), LambdaExpression.class, _ -> true);
+
+        // A deferred `match` inside the body must not drag the lambda itself back to
+        // UNSUPPORTED: the plan and the Callable expression fact stay published, while the
+        // match keeps its own upstream diagnostic owners.
+        assertNotNull(analysisData.analysisData().lambdaPlans().get(lambda));
+        var expressionType = analysisData.analysisData().expressionTypes().get(lambda);
+        assertNotNull(expressionType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, expressionType.status());
+        assertEquals("Callable", expressionType.publishedType().getTypeName());
+        assertTrue(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_variable_inventory_subtree")
+        ));
+        assertTrue(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_binding_subtree")
+        ));
+        assertFalse(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_expression_route")
+        ));
+    }
+
+    @Test
+    void lambdaInContainerCallAndReturnPositionsAllResolve() throws Exception {
+        var analysisData = analyze("lambda_positions.gd", """
+                class_name LambdaPositions
+                extends RefCounted
+                
+                func foo(c):
+                    return c
+                
+                func ping():
+                    var arr = [func(): return 1]
+                    var cb = foo(func(): return 2)
+                    return func(): return 3
+                """);
+        var pingFunction = findFunction(analysisData.unit().ast(), "ping");
+        var lambdas = new ArrayList<LambdaExpression>();
+        collectMatchingNodes(pingFunction.body(), LambdaExpression.class, _ -> true, lambdas);
+
+        // Interface traversal reaches lambdas in every expression position (container element,
+        // call argument, return value); each one is recorded, nested-resolved, and publishes
+        // the unparameterized Callable type.
+        assertEquals(3, lambdas.size());
+        for (var lambda : lambdas) {
+            assertNotNull(analysisData.analysisData().lambdaPlans().get(lambda));
+            var expressionType = analysisData.analysisData().expressionTypes().get(lambda);
+            assertNotNull(expressionType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, expressionType.status());
+            assertEquals("Callable", expressionType.publishedType().getTypeName());
         }
         assertTrue(analysisData.diagnostics().asList().isEmpty());
     }
@@ -271,6 +372,10 @@ class FrontendLambdaSuiteResolutionTest {
         assertTrue(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.unsupported_chain_route")
                         && diagnostic.message().contains("lambda subtree")
+        ));
+        // Unrecorded lambdas keep the unsupported expression route with its diagnostic (§3.3).
+        assertTrue(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_expression_route")
         ));
     }
 

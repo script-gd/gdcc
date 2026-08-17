@@ -133,7 +133,7 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `forIterationPlans`
 - `typeTestTargets`
 - `containerLiteralPlans`
-- `lambdaPlans`（阶段 A 数据面已接线；阶段 B 把 lambda inventory 绑定进 scope；阶段 C 起由 nested resolve 入口经独立 `LAMBDA_RESOLUTION` owner 首次发布完整 plan，capture 声明处类型已填充）
+- `lambdaPlans`（阶段 A 数据面已接线；阶段 B 把 lambda inventory 绑定进 scope；阶段 C 起由 nested resolve 入口经独立 `LAMBDA_RESOLUTION` owner 首次发布完整 plan，capture 声明处类型已填充；阶段 D 起已 record lambda 的 `expressionTypes` 由 EXPR_TYPE owner 首次发布 `RESOLVED(GdCallableType)`）
 
 其中：
 
@@ -248,6 +248,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - expr analyzer 对 assignment / subscript / generic deferred expression 等 expression-only deferred root 的 warning
 - `sema.unsupported_expression_route`
   - expr analyzer 对当前明确不支持的 direct-callable-invocation 等 expression route 的 error
+  - 已 `recordCallable` 的 lambda 自阶段 D 起不再发此诊断（表达式类型已转正为 `RESOLVED(GdCallableType)`）；未记录的 lambda（property initializer / parameter default / skipped subtree）继续按此边界 fail-closed
 - `sema.discarded_expression`
   - expr analyzer 对 bare expression statement 中被丢弃的非 `void` 结果发出的 warning
 - `sema.unsafe_call_argument`
@@ -350,7 +351,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `FrontendSemanticAnalyzer` 当前返回 `FrontendAnalysisData`
 - analyze 流程围绕同一份共享分析数据推进
 - interface/body suite resolver 路径会在每个 body statement boundary 刷新 `FrontendAnalysisData.diagnostics()`，让后一 statement 能读取 current-suite upstream diagnostic snapshot；suite export 在 patch transaction 应用后保留最终 body snapshot
-- 已 `recordCallable` 的 lambda 由外层 statement 的 top-binding owner 触发 nested suite resolution：独立 `FrontendCallableExportBatch` 立即应用，`LAMBDA_RESOLUTION` owner patch 首次发布 `lambdaPlans`（capture 声明处类型），body 事实与普通 suite 走同一 statement boundary 诊断刷新
+- 已 `recordCallable` 的 lambda 由外层 statement 的 top-binding owner 触发 nested suite resolution：独立 `FrontendCallableExportBatch` 立即应用，`LAMBDA_RESOLUTION` owner patch 首次发布 `lambdaPlans`（capture 声明处类型），body 事实与普通 suite 走同一 statement boundary 诊断刷新；阶段 D 起该 lambda 节点的 `expressionTypes` 由 EXPR_TYPE owner 首次发布 `RESOLVED(GdCallableType)`，silent 局部稳定化不解析 lambda initializer（slot 保持 inventory `Variant`）
 - analyze 现在已经具备独立的多 phase 主链路：
     - skeleton 结束后先发布 `updateModuleSkeleton(...)`
     - 再发布一次 pre-scope `updateDiagnostics(...)`
@@ -363,7 +364,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - 调用 `FrontendVarTypePostAnalyzer.analyze(...)` 发布 callable-local `slotTypes()`
     - 调用 `FrontendAnnotationUsageAnalyzer.analyze(...)` 对 retained annotation 的合法挂载位置发出 `sema.annotation_usage`
     - 调用 `FrontendVirtualOverrideAnalyzer.analyze(...)` 对 engine virtual override 签名发出 `sema.virtual_override`
-    - 调用 `FrontendTypeCheckAnalyzer.analyze(...)` 对 ordinary local / class property / return typed contract 发出 `sema.type_check`，并对 property hint 发出 `sema.type_hint`
+    - 调用 `FrontendTypeCheckAnalyzer.analyze(...)` 对 ordinary local / class property / return typed contract 发出 `sema.type_check`，并对 property hint 发出 `sema.type_hint`；自阶段 D 起经 `scanNestedLambdaBodies` 显式 re-entry 遍历已 record lambda 的 body（plan 存在性为闸门，继承 enclosing callable 的 restriction/static context）
     - 调用 `FrontendLoopControlFlowAnalyzer.analyze(...)` 对非法 `break` / `continue` 发出 `sema.loop_control_flow`
     - 每个 phase 结束后都再次 `updateDiagnostics(...)`，把阶段边界快照刷新到最新 shared manager 状态
 - `analyzeForCompile(...)` 在共享 11 phase 之后追加：

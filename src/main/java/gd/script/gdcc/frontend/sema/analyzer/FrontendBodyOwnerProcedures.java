@@ -218,6 +218,13 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             return;
         }
         var initializer = variableDeclaration.value();
+        if (initializer instanceof LambdaExpression) {
+            // Silent stabilization must not resolve lambda initializers (plan §3.2): the slot
+            // keeps its inventory Variant, and any `:=` refinement to `Callable` may only come
+            // from a non-silent write-back after nested resolve completed — never from resolving
+            // the lambda expression on this silent path.
+            return;
+        }
         var guardedFailure = typeMetaOrdinaryValueInitializerFailure(context, initializer);
         if (guardedFailure == null) {
             guardedFailure = assignmentOrdinaryValueInitializerFailure(initializer);
@@ -1039,20 +1046,6 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             if (resolver.isRouteHeadOnlyTypeMeta(entry.getKey())) {
                 continue;
             }
-            if (entry.getKey() instanceof LambdaExpression lambdaExpression
-                    && context.interfaceSurface().suiteEntryRoots().containsCallableOwner(lambdaExpression)) {
-                // Recorded lambdas keep publishing the (still unsupported) expression fact so
-                // downstream readers keep their fail-fast publication contract, but the
-                // unsupported-route diagnostic is suppressed: the body already resolved through
-                // the nested suite, and the dedicated lambda typing phase upgrades this fact to
-                // the callable type.
-                context.typedEnvironment().putExpressionType(
-                        FrontendSemanticStage.EXPR_TYPE,
-                        entry.getKey(),
-                        entry.getValue()
-                );
-                continue;
-            }
             if (!resolver.isAssignmentTargetPrefixExpression(entry.getKey())
                     && resolver.rootOwnsExpressionDiagnostic(entry.getKey())) {
                 reportExpressionDiagnostic(context, resolver, entry.getKey(), entry.getValue());
@@ -1631,7 +1624,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                                 lambdaExpression,
                                 this::resolveExpressionType,
                                 false,
-                                finalizeWindow
+                                finalizeWindow,
+                                context.interfaceSurface()
+                                        .suiteEntryRoots()
+                                        .containsCallableOwner(lambdaExpression)
                         )
                         .expressionType();
                 case UnaryExpression unaryExpression -> expressionSemanticSupport
