@@ -622,7 +622,10 @@ class FrontendVisibleValueResolverTest {
     }
 
     @Test
-    void resolveRejectsSyntheticLambdaBodyCurrentScopeEvenWithoutLambdaAstBoundary() throws Exception {
+    void resolveAllowsSyntheticLambdaBodyCurrentScopeWithoutLambdaAstBoundary() throws Exception {
+        // Lambda Phase B flipped the LAMBDA_BODY policy to publish lexical inventory, so the
+        // current-scope backstop no longer seals a synthetic LAMBDA_BODY scope. Without a real
+        // lambda AST boundary the request resolves as an ordinary EXECUTABLE_BODY lookup.
         var analyzedInput = analyzedInput("synthetic_lambda_scope.gd", """
                 class_name SyntheticLambdaScope
                 extends Node
@@ -641,12 +644,9 @@ class FrontendVisibleValueResolverTest {
                 FrontendVisibleValueDomain.EXECUTABLE_BODY
         ));
 
-        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
-        assertEquals(FrontendVisibleValueDomain.LAMBDA_SUBTREE, result.deferredBoundary().domain());
-        assertEquals(
-                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
-                result.deferredBoundary().reason()
-        );
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, result.status());
+        assertNotNull(result.visibleValue());
+        assertEquals(ScopeValueKind.PARAMETER, result.visibleValue().kind());
     }
 
     @Test

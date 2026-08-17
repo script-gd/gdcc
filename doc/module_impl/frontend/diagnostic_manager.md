@@ -133,7 +133,7 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `forIterationPlans`
 - `typeTestTargets`
 - `containerLiteralPlans`
-- `lambdaPlans`（阶段 A 数据面已接线；生产 inventory 仍 fail-closed）
+- `lambdaPlans`（阶段 A 数据面已接线；阶段 B 起 lambda inventory 绑定进 scope，但 plan 仍不发布，首次发布在阶段 C nested resolve 入口）
 
 其中：
 
@@ -215,12 +215,13 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 其中 body/binding phase 新增 category 的语义固定为：
 
 - `sema.variable_binding`
-  - variable analyzer 对 duplicate parameter、duplicate local、same-callable local shadowing、scope kind mismatch 发出的恢复性 source error
+  - variable analyzer 对 duplicate parameter、duplicate local、same-callable local shadowing、capture 与既有 callable slot 冲突（如 lambda 参数名为 `self` 时又需捕获 `self`）、scope kind mismatch 发出的恢复性 source error
   - duplicate / shadowing local 的消息现在必须包含：当前声明位置、冲突声明位置、callable / block 归属、source path
 - `sema.unsupported_parameter_default_value`
   - variable analyzer 对 parameter default value 当前尚未接线时发出的 feature-boundary error
 - `sema.unsupported_variable_inventory_subtree`
-  - variable analyzer 对 lambda / `match` / block-local `const` inventory 边界发出的 feature-boundary error
+  - variable analyzer 对 `match` / block-local `const` inventory 边界发出的 feature-boundary error
+  - lambda 已在阶段 B 移出该边界：supported executable body 内的 lambda 会绑定 param / local / capture，不再发此诊断
 - `sema.variable_slot_publication`
   - var-type-post analyzer 对 supported callable-local `var` 因 earlier duplicate/shadowing reject 而无法发布 `slotTypes()` 时发出的 warning
   - warning message 若能在当前 callable 边界内找到幸存的 accepted local / parameter / capture，必须带出该幸存绑定的语义类别与声明位置

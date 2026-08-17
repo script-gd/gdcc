@@ -4,13 +4,21 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
+import gd.script.gdcc.frontend.scope.CallableScopeKind;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
+import gd.script.gdcc.frontend.sema.FrontendLambdaCapturePlan;
+import gd.script.gdcc.frontend.sema.FrontendLambdaCapturePlanner;
 import gd.script.gdcc.frontend.sema.FrontendModuleSkeleton;
+import gd.script.gdcc.frontend.sema.LambdaCaptureEntry;
+import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
+import gd.script.gdcc.scope.ScopeValueKind;
+import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
 import dev.superice.gdparser.frontend.ast.Block;
@@ -21,11 +29,13 @@ import dev.superice.gdparser.frontend.ast.ElifClause;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Parameter;
+import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -34,8 +44,14 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
+import java.util.function.Consumer;
 
 /// Frontend parameter/local inventory analyzer.
 ///
@@ -43,7 +59,9 @@ import java.util.Objects;
 /// - require skeleton, diagnostics, and top-level source scopes to be published first
 /// - write function/constructor parameters into `CallableScope`
 /// - write supported ordinary locals into `BlockScope`
-/// - keep lambda / `match` / block-local `const` inventory outside the current support boundary
+/// - bind lambda parameters/locals and derive `CAPTURE` bindings (names plus `sourceDeclaration`,
+///   `Variant` placeholder types) for lambdas inside supported executable bodies
+/// - keep `match` / block-local `const` inventory outside the current support boundary
 /// - emit explicit recovery diagnostics instead of letting unsupported inventory sources fail silently
 public class FrontendVariableAnalyzer {
     private static final @NotNull String VARIABLE_BINDING_CATEGORY = "sema.variable_binding";
@@ -95,7 +113,10 @@ public class FrontendVariableAnalyzer {
     /// - only source/class statement lists and supported executable blocks are descended into
     /// - function/constructor parameters are bound at the callable boundary
     /// - ordinary locals are bound only while the walker is inside a supported executable block
-    /// - lambda / `match` subtrees are pruned explicitly
+    /// - lambda inventories (parameters, locals, captures) are bound through
+    ///   [`bindLambdaInventory`](#bindLambdaInventory), usually reached via the boundary reporter
+    ///   because this walk does not descend into arbitrary expression children
+    /// - `match` subtrees are pruned explicitly
     /// - arbitrary expression children stay outside the binding walk
     private static final class AstWalkerVariableBinder implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
@@ -105,6 +126,20 @@ public class FrontendVariableAnalyzer {
         private final @NotNull ASTWalker astWalker;
         private final @NotNull UnsupportedVariableBoundaryReporter unsupportedBoundaryReporter;
         private @Nullable Node currentCallableOwner;
+        /// Nearest enclosing non-lambda callable (function/constructor) whose `self` a lambda may capture.
+        ///
+        /// Tracked separately from `currentCallableOwner` because nested lambdas replace the callable owner
+        /// while the `self` source stays the outermost instance callable of the chain.
+        private @Nullable Node currentSelfSourceCallable;
+        /// Completed per-lambda capture plans, keyed by AST identity, so an enclosing lambda can transfer
+        /// nested captures upward. Never leaves this analyzer run: Phase B must not
+        /// publish placeholder plans into `FrontendAnalysisData.lambdaPlans()`.
+        private final @NotNull IdentityHashMap<LambdaExpression, FrontendLambdaCapturePlan> lambdaCapturePlans =
+                new IdentityHashMap<>();
+        /// Idempotency guard: both the declaration walk and the boundary reporter can reach the same lambda,
+        /// but parameters/captures must be bound exactly once.
+        private final @NotNull Set<LambdaExpression> processedLambdas =
+               Collections.newSetFromMap(new IdentityHashMap<>());
         /// Counts how many supported executable-block boundaries the walker is currently inside.
         ///
         /// The counter acts as a narrow capability flag rather than a generic nesting metric:
@@ -129,7 +164,11 @@ public class FrontendVariableAnalyzer {
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager");
             this.astWalker = new ASTWalker(this);
-            unsupportedBoundaryReporter = new UnsupportedVariableBoundaryReporter(sourcePath, diagnosticManager);
+            unsupportedBoundaryReporter = new UnsupportedVariableBoundaryReporter(
+                    sourcePath,
+                    diagnosticManager,
+                    this::bindLambdaInventory
+            );
         }
 
         private void walk(@NotNull SourceFile sourceFile) {
@@ -247,9 +286,10 @@ public class FrontendVariableAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
-            // Unsupported feature-boundary diagnostics are emitted by
-            // `UnsupportedVariableBoundaryReporter`, which can scan expression subtrees without
-            // changing this binder's declaration-only walk.
+            // Lambda inventory (parameters, locals, captures) is part of the supported executable
+            // surface since Phase B. In practice the boundary reporter routes lambdas here because
+            // this binder never descends into expression children; binding stays idempotent either way.
+            bindLambdaInventory(lambdaExpression);
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -279,7 +319,13 @@ public class FrontendVariableAnalyzer {
                 return;
             }
             var previousCallableOwner = currentCallableOwner;
+            var previousSelfSourceCallable = currentSelfSourceCallable;
             currentCallableOwner = callableOwner;
+            // Only a named function/constructor can be the `self` source for lambda captures;
+            // a nested lambda keeps the enclosing non-lambda callable as its self source.
+            if (!(callableOwner instanceof LambdaExpression)) {
+                currentSelfSourceCallable = callableOwner;
+            }
             try {
                 for (var parameter : parameters) {
                     bindParameter(parameter);
@@ -287,10 +333,215 @@ public class FrontendVariableAnalyzer {
                 if (isNotPublished(body)) {
                     return;
                 }
-                unsupportedBoundaryReporter.report(body);
+                // Locals must be bound before the boundary scan: the scan binds nested lambdas
+                // whose capture planning resolves names against this callable's published locals.
                 walkSupportedExecutableBlock(body);
+                unsupportedBoundaryReporter.report(body);
             } finally {
                 currentCallableOwner = previousCallableOwner;
+                currentSelfSourceCallable = previousSelfSourceCallable;
+            }
+        }
+
+        /// Binds the complete inventory of one lambda inside a supported executable body:
+        /// parameters, body locals, nested-lambda inventories (via the boundary reporter), and
+        /// finally this lambda's own `CAPTURE` bindings.
+        ///
+        /// Capture planning is deliberately post-order (plan §3.4 rule 8): every nested lambda has
+        /// finished binding and planning before this lambda scans its own uses, so nested
+        /// parameter/local bindings can never be misread as captures of this lambda.
+        private void bindLambdaInventory(@NotNull LambdaExpression lambdaExpression) {
+            if (processedLambdas.contains(lambdaExpression) || isNotPublished(lambdaExpression)) {
+                return;
+            }
+            processedLambdas.add(lambdaExpression);
+            if (!(scopesByAst.get(lambdaExpression) instanceof CallableScope lambdaScope)
+                    || lambdaScope.kind() != CallableScopeKind.LAMBDA_EXPRESSION
+                    || !(scopesByAst.get(lambdaExpression.body()) instanceof BlockScope lambdaBodyScope)) {
+                reportBindingError(lambdaExpression, "Lambda expression has no published lambda scope inventory");
+                return;
+            }
+            bindCallableParameters(lambdaExpression, lambdaExpression.parameters(), lambdaExpression.body());
+            var capturePlan = planLambdaCaptures(lambdaExpression, lambdaScope, lambdaBodyScope);
+            lambdaCapturePlans.put(lambdaExpression, capturePlan);
+            for (var capture : capturePlan.captures()) {
+                defineCaptureGuarded(lambdaScope, capture, lambdaExpression);
+            }
+        }
+
+        /// Derives this lambda's ordered capture list from its own identifier uses plus captures
+        /// transferred from directly nested lambdas, keeping first-appearance source order (plan
+        /// §3.4 rule 6). A leading `self` entry is prepended when the body needs the enclosing
+        /// instance (§3.5).
+        private @NotNull FrontendLambdaCapturePlan planLambdaCaptures(
+                @NotNull LambdaExpression lambdaExpression,
+                @NotNull CallableScope lambdaScope,
+                @NotNull BlockScope lambdaBodyScope
+        ) {
+            var scanner = new LambdaCaptureSourceScanner(scopesByAst);
+            scanner.scan(lambdaExpression.body());
+            var capturesByName = new LinkedHashMap<String, LambdaCaptureEntry>();
+            var needsSelf = scanner.usesExplicitSelf;
+            for (var event : scanner.events) {
+                switch (event) {
+                    case LambdaCaptureSourceScanner.IdentifierEvent identifierEvent -> {
+                        var use = identifierEvent.use();
+                        if (capturesByName.containsKey(use.name())) {
+                            continue;
+                        }
+                        var ownCapture = captureForOwnUse(lambdaScope, use);
+                        if (ownCapture != null) {
+                            capturesByName.put(ownCapture.name(), ownCapture);
+                        }
+                    }
+                    case LambdaCaptureSourceScanner.NestedLambdaEvent nestedLambdaEvent -> {
+                        var childPlan = lambdaCapturePlans.get(nestedLambdaEvent.lambda());
+                        if (childPlan == null) {
+                            // The nested lambda failed to bind; its own diagnostics already exist.
+                            continue;
+                        }
+                        if (childPlan.capturesSelf()) {
+                            needsSelf = true;
+                        }
+                        for (var childCapture : childPlan.captures()) {
+                            if (FrontendLambdaCapturePlan.SELF_CAPTURE_NAME.equals(childCapture.name())) {
+                                // `self` is never merged by name; it is rebuilt as the leading entry.
+                                continue;
+                            }
+                            if (capturesByName.containsKey(childCapture.name())) {
+                                continue;
+                            }
+                            // Transfer only when the source lives outside this lambda and this
+                            // lambda does not shadow the name (planner returns null otherwise).
+                            var transferred = FrontendLambdaCapturePlanner.transferredCapture(
+                                    lambdaScope,
+                                    lambdaBodyScope,
+                                    childCapture
+                            );
+                            if (transferred != null) {
+                                capturesByName.put(transferred.name(), transferred);
+                            }
+                        }
+                    }
+                }
+            }
+            if (!needsSelf && usesImplicitInstanceMember(scanner.events, capturesByName.keySet())) {
+                needsSelf = true;
+            }
+            var entries = new ArrayList<LambdaCaptureEntry>();
+            var selfCapture = needsSelf ? buildSelfCaptureEntry(lambdaScope) : null;
+            if (selfCapture != null) {
+                entries.add(selfCapture);
+            }
+            entries.addAll(capturesByName.values());
+            return FrontendLambdaCapturePlan.of(entries);
+        }
+
+        /// Plans a capture for one bare identifier use of this lambda, reusing the pure planner
+        /// with a singleton use list so all capture decisions share one code path.
+        private @Nullable LambdaCaptureEntry captureForOwnUse(
+                @NotNull CallableScope lambdaScope,
+                @NotNull FrontendLambdaCapturePlanner.IdentifierUse use
+        ) {
+            var plan = FrontendLambdaCapturePlanner.planCaptures(lambdaScope, List.of(use));
+            return plan.captures().isEmpty() ? null : plan.captures().getFirst();
+        }
+
+        /// Implicit `self` is needed when a bare identifier that was not captured resolves to an
+        /// INSTANCE member (non-static property/signal value, or a non-static method overload) —
+        /// such uses need the instance receiver at runtime (plan §3.5). Static members and global
+        /// utility functions (`print`, `abs`, ...) never need a receiver and must not synthesize
+        /// a `self` capture.
+        private boolean usesImplicitInstanceMember(
+                @NotNull List<LambdaCaptureSourceScanner.LambdaCaptureEvent> events,
+                @NotNull Set<String> capturedNames
+        ) {
+            for (var event : events) {
+                if (!(event instanceof LambdaCaptureSourceScanner.IdentifierEvent(var use))) {
+                    continue;
+                }
+                if (capturedNames.contains(use.name())) {
+                    continue;
+                }
+                var valueResult = use.startingScope().resolveValue(use.name(), ResolveRestriction.unrestricted());
+                if (valueResult.isFound()) {
+                    var value = valueResult.requireValue();
+                    var kind = value.kind();
+                    if ((kind == ScopeValueKind.PROPERTY || kind == ScopeValueKind.SIGNAL)
+                            && !value.staticMember()) {
+                        return true;
+                    }
+                    continue;
+                }
+                var functionsResult = use.startingScope().resolveFunctions(use.name(), ResolveRestriction.unrestricted());
+                if (functionsResult.isAllowed()
+                        && functionsResult.requireValue().stream().anyMatch(function -> !function.isStatic())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// Builds the leading `self` capture entry, or `null` when `self` is unavailable here:
+        /// the enclosing non-lambda callable is static (the restriction diagnostic stays with the
+        /// body-typing phases, plan §3.5) or no owning class can be determined.
+        private @Nullable LambdaCaptureEntry buildSelfCaptureEntry(@NotNull CallableScope lambdaScope) {
+            var selfSourceCallable = currentSelfSourceCallable;
+            var instanceSelfSource = switch (selfSourceCallable) {
+                case FunctionDeclaration functionDeclaration when !functionDeclaration.isStatic() ->
+                        functionDeclaration;
+                case ConstructorDeclaration constructorDeclaration -> constructorDeclaration;
+                case null, default -> null;
+            };
+            if (instanceSelfSource == null) {
+                return null;
+            }
+            var owningClass = lambdaScope.owningClassOrNull();
+            if (owningClass == null) {
+                return null;
+            }
+            // `self` behaves like the enclosing callable's implicit parameter; all transfer layers
+            // share this same declaration identity and the enclosing class object type (§3.5).
+            return new LambdaCaptureEntry(
+                    FrontendLambdaCapturePlan.SELF_CAPTURE_NAME,
+                    new GdObjectType(owningClass.getName()),
+                    ScopeValueKind.PARAMETER,
+                    instanceSelfSource
+            );
+        }
+
+        /// Registers one capture on the lambda scope without letting user source reach
+        /// `CallableScope`'s fail-fast duplicate guard (plan §3.4 rule 7).
+        ///
+        /// Phase B registers the capture NAME with a `Variant` placeholder type plus the source
+        /// declaration identity; the declaration-site type replaces the placeholder during nested
+        /// suite resolution in a later phase.
+        private void defineCaptureGuarded(
+                @NotNull CallableScope lambdaScope,
+                @NotNull LambdaCaptureEntry capture,
+                @NotNull LambdaExpression lambdaExpression
+        ) {
+            var existingBinding = lambdaScope.resolveValueHere(capture.name());
+            if (existingBinding != null) {
+                if (existingBinding.kind() == ScopeValueKind.CAPTURE
+                        && existingBinding.declaration() == capture.sourceDeclaration()) {
+                    // Idempotent re-bind of the same capture (defensive; planning dedupes by name).
+                    return;
+                }
+                reportBindingError(
+                        lambdaExpression,
+                        "Capture '" + capture.name() + "' conflicts with existing "
+                                + describeShadowingTarget(existingBinding) + " in the same lambda"
+                );
+                return;
+            }
+            try {
+                lambdaScope.defineCapture(capture.name(), GdVariantType.VARIANT, capture.sourceDeclaration());
+            } catch (IllegalArgumentException exception) {
+                reportBindingError(
+                        lambdaExpression,
+                        "Duplicate capture '" + capture.name() + "' in the same lambda"
+                );
             }
         }
 
@@ -511,6 +762,7 @@ public class FrontendVariableAnalyzer {
             return switch (currentCallableOwner) {
                 case FunctionDeclaration functionDeclaration -> "function '" + functionDeclaration.name().trim() + "'";
                 case ConstructorDeclaration _ -> "constructor '_init'";
+                case LambdaExpression _ -> "lambda expression";
                 case null -> "callable";
                 default -> currentCallableOwner.getClass().getSimpleName();
             };
@@ -598,17 +850,26 @@ public class FrontendVariableAnalyzer {
     /// This reporter exists because the binder itself is declaration-directed and therefore skips
     /// arbitrary expression children. Without a separate scan, lambdas nested inside expressions
     /// such as local initializers or return values would remain completely silent.
+    ///
+    /// Since lambda Phase B, lambdas found inside supported executable bodies are no longer
+    /// reported; they are handed to the binder's lambda-inventory pipeline instead. The remaining
+    /// reported boundaries are `match` subtrees. Block-local `const` subtrees stay sealed here as
+    /// well: the binder already reports the declaration itself, and names inside such a subtree
+    /// belong to a not-yet-supported domain.
     private static final class UnsupportedVariableBoundaryReporter implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
         private final @NotNull DiagnosticManager diagnosticManager;
+        private final @NotNull Consumer<LambdaExpression> lambdaInventoryBinder;
         private final @NotNull ASTWalker astWalker;
 
         private UnsupportedVariableBoundaryReporter(
                 @NotNull Path sourcePath,
-                @NotNull DiagnosticManager diagnosticManager
+                @NotNull DiagnosticManager diagnosticManager,
+                @NotNull Consumer<LambdaExpression> lambdaInventoryBinder
         ) {
             this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager");
+            this.lambdaInventoryBinder = Objects.requireNonNull(lambdaInventoryBinder, "lambdaInventoryBinder");
             astWalker = new ASTWalker(this);
         }
 
@@ -642,31 +903,123 @@ public class FrontendVariableAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
-            reportUnsupportedBoundary(
-                    lambdaExpression,
-                    "Variable analysis does not support lambda subtrees yet; parameters, default values, locals, "
-                            + "and captures inside this lambda are not bound yet"
+            // Lambdas inside supported executable bodies are bound, not reported. The binder walks
+            // the lambda body itself, so this scan must not descend into it a second time.
+            lambdaInventoryBinder.accept(lambdaExpression);
+            return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleVariableDeclaration(
+                @NotNull VariableDeclaration variableDeclaration
+        ) {
+            // Block-local `const` inventory stays unsupported; the binder reports the declaration
+            // and nothing inside its initializer subtree may bind inventory here.
+            if (variableDeclaration.kind() == DeclarationKind.CONST) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            return FrontendASTTraversalDirective.CONTINUE;
+        }
+
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
+            diagnosticManager.error(
+                    UNSUPPORTED_VARIABLE_INVENTORY_SUBTREE_CATEGORY,
+                    "Variable analysis does not support `match` subtrees yet; pattern bindings and locals "
+                            + "declared inside match sections are not bound yet",
+                    sourcePath,
+                    FrontendRange.fromAstRange(matchStatement.range())
             );
+            return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
+    }
+
+    /// Collects capture-relevant events of one lambda body in source order.
+    ///
+    /// Two event kinds feed capture planning:
+    /// - bare identifier uses, each pre-bound to the scope that owns the use site
+    /// - direct nested lambdas, whose completed plans may transfer captures upward
+    ///
+    /// The scanner skips nested lambda bodies (bound and planned on their own), `match` subtrees,
+    /// and block-local `const` subtrees: names inside not-yet-supported domains must never become
+    /// captures (plan §3.4 "不可捕获"). Explicit `self` expressions are flagged separately because
+    /// `self` is not an identifier use.
+    private static final class LambdaCaptureSourceScanner implements ASTNodeHandler {
+        /// One source-ordered capture-relevant event inside a lambda body.
+        private sealed interface LambdaCaptureEvent {
+        }
+
+        /// Bare identifier use that may resolve to a capturable outer binding.
+        private record IdentifierEvent(
+                @NotNull FrontendLambdaCapturePlanner.IdentifierUse use
+        ) implements LambdaCaptureEvent {
+        }
+
+        /// Direct nested lambda whose own capture plan may transfer entries to this lambda.
+        private record NestedLambdaEvent(@NotNull LambdaExpression lambda) implements LambdaCaptureEvent {
+        }
+
+        private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
+        private final @NotNull ASTWalker astWalker;
+        private final @NotNull List<LambdaCaptureEvent> events = new ArrayList<>();
+        private boolean usesExplicitSelf;
+
+        private LambdaCaptureSourceScanner(@NotNull FrontendAstSideTable<Scope> scopesByAst) {
+            this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst");
+            astWalker = new ASTWalker(this);
+        }
+
+        private void scan(@NotNull Block lambdaBody) {
+            astWalker.walk(lambdaBody);
+        }
+
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleNode(@NotNull Node node) {
+            return FrontendASTTraversalDirective.CONTINUE;
+        }
+
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
+            events.add(new NestedLambdaEvent(lambdaExpression));
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
-            reportUnsupportedBoundary(
-                    matchStatement,
-                    "Variable analysis does not support `match` subtrees yet; pattern bindings and locals "
-                            + "declared inside match sections are not bound yet"
-            );
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
-        private void reportUnsupportedBoundary(@NotNull Node node, @NotNull String message) {
-            diagnosticManager.error(
-                    UNSUPPORTED_VARIABLE_INVENTORY_SUBTREE_CATEGORY,
-                    message,
-                    sourcePath,
-                    FrontendRange.fromAstRange(node.range())
-            );
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleVariableDeclaration(
+                @NotNull VariableDeclaration variableDeclaration
+        ) {
+            // The declaration name is a plain String, not an IdentifierExpression, so declaration
+            // sites never leak into uses; only the initializer of a supported `var` is scanned.
+            if (variableDeclaration.kind() == DeclarationKind.CONST) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            return FrontendASTTraversalDirective.CONTINUE;
+        }
+
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleIdentifierExpression(
+                @NotNull IdentifierExpression identifierExpression
+        ) {
+            var useSiteScope = scopesByAst.get(identifierExpression);
+            if (useSiteScope != null) {
+                events.add(new IdentifierEvent(new FrontendLambdaCapturePlanner.IdentifierUse(
+                        identifierExpression.name().trim(),
+                        useSiteScope
+                )));
+            }
+            return FrontendASTTraversalDirective.CONTINUE;
+        }
+
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleSelfExpression(@NotNull SelfExpression selfExpression) {
+            usesExplicitSelf = true;
+            return FrontendASTTraversalDirective.CONTINUE;
         }
     }
 }

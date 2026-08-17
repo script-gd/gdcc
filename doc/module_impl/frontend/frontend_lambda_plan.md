@@ -9,10 +9,10 @@
 
 ## 文档状态
 
-- 状态：阶段 A 已落地；B–I 尚未实施。当前生产代码对 lambda 全链路仍 fail-closed；
-  数据面（`FrontendLambdaPlan` / side table / planner 纯函数）、`func.ftl`
-  单 `_capture` 形参与 `DomLirSerializer` 真实 `<capture>` 已接线。
-- 更新时间：2026-08-17（阶段 A 落地；已冻结 capture 类型首次 publish 与独立 stage）
+- 状态：阶段 A、B 已落地；C–I 尚未实施。supported executable body 内的 lambda 已完成
+  policy 翻转与 inventory 绑定（param / local / capture 名 + `Variant` 占位），
+  `lambdaPlans()` 仍不发布；resolver / interface / suite / lowering / backend 链路仍 fail-closed。
+- 更新时间：2026-08-17（阶段 B 落地：policy 翻转 + variable inventory 解封 + self capture）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/scope/**`
@@ -658,6 +658,11 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
   **仍红字不变**（本阶段不翻 inventory）。
 
 ### 阶段 B — Policy 翻转 + Variable inventory 解封（仍不进 SuiteResolver）
+
+> 状态：已落地（2026-08-17）。policy 已翻转；`bindLambdaInventory` 按 post-order 绑定
+> param / local / capture（`Variant` 占位）；reporter 停止对 supported executable 内
+> lambda 报 inventory 错；`self` capture（显式 / 隐式 instance member / static 抑制）
+> 已接线；`lambdaPlans()` 保持为空。
 
 **目标**：lambda param / local / capture **名字**进入 scope；去掉
 `sema.unsupported_variable_inventory_subtree`。

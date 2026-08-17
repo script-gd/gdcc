@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 性质：长期事实源
-- 最后校对：2026-07-20（阶段 L：for iterator/body inventory 已转正，结构支持面不再依赖 typed gate）
+- 最后校对：2026-08-17（lambda 阶段 B：supported executable body 内的 lambda parameter / local / capture inventory 已转正，capture 类型仍为 `Variant` 占位）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -24,7 +24,8 @@
   - 不在这里实现完整 frontend binder / body
   - 不在这里写入 `symbolBindings()` 或表达式类型 side-table
   - 不在这里实现成员解析、调用解析或 use-site declaration-order 可见性
-  - 不在这里接入 lambda / `match` / block-local `const` 的完整 inventory
+  - 不在这里接入 `match` / block-local `const` 的完整 inventory
+  - 不在这里填充 lambda capture 的声明处类型（`Variant` 占位的替换发生在 nested suite resolution 入口）
   - 不改变 shared `Scope` lookup 协议
 
 ---
@@ -59,12 +60,12 @@
 - 把 `FunctionDeclaration` / `ConstructorDeclaration` 参数写入对应 `CallableScope`
 - 把 supported executable subtree 中的普通局部 `var` 写入对应 `BlockScope`
 - 为每个 `ForStatement` 在其 `FOR_BODY` scope 发布 iterator binding，并遍历 body 发布 ordinary local inventory
+- 为 supported executable body 内的 `LambdaExpression` 绑定完整 inventory：parameter -> lambda `CallableScope`、body local -> `LAMBDA_BODY` scope、capture 名（`Variant` 占位类型 + `sourceDeclaration`）-> lambda `CallableScope`
 - 对当前明确不支持的 variable-inventory 来源发出显式 error，避免静默跳过
 - 对 duplicate / shadowing / target scope kind mismatch 发布恢复性 diagnostic，并保持其他 subtree 继续处理
 
 `FrontendVariableAnalyzer` 明确不负责：
 
-- lambda parameter / local / capture inventory
 - `match` pattern binding 与 section local inventory
 - block-local `const` binding
 - 参数默认值表达式的类型/绑定分析
@@ -85,6 +86,9 @@
 - supported nested executable block 中的普通局部 `var` -> 对应 `BlockScope`
 - `ForStatement` iterator -> 对应 `FOR_BODY` scope，declaration identity 为 owning `ForStatement`
 - for body 中的普通局部 `var` -> 对应 `FOR_BODY` scope
+- lambda parameter -> lambda `CallableScope`
+- lambda body 中的普通局部 `var` -> `LAMBDA_BODY` scope
+- lambda capture 名 -> lambda `CallableScope`（`Variant` 占位类型，`sourceDeclaration` 指向外层绑定声明；`self` capture 的 declaration 为 enclosing 非 lambda callable 节点）
 
 当前支持写入 ordinary local `var` 的 `BlockScopeKind` 为：
 
@@ -96,14 +100,12 @@
 - `ELSE_BODY`
 - `WHILE_BODY`
 - `FOR_BODY`
+- `LAMBDA_BODY`
 
 ### 2.2 当前不写入的绑定
 
 以下 binding 仍明确保持 deferred：
 
-- lambda parameter
-- lambda local
-- lambda capture
 - `match` pattern binding
 - `match` section local
 - block-local `const`
@@ -112,6 +114,7 @@
 
 - class property / class const 不属于本 analyzer 的 callable-local inventory
 - block-local `const` 属于本 analyzer 已识别但当前明确 deferred 的输入
+- lambda capture 的名字与 `sourceDeclaration` 已写入 scope，但其声明处类型不在本阶段填充；scope 上的 `CAPTURE` 绑定保持 `Variant` 占位，且 `FrontendAnalysisData.lambdaPlans()` 在本 analyzer 完成后仍为空
 
 ### 2.3 与 `FrontendAnalysisData` 的关系
 
@@ -192,8 +195,23 @@
 需要特别注意：
 
 - binder 主遍历不会把 arbitrary expression subtree 当作 local-binding 域
-- lambda / `match` subtree 不会进入 binding walk；`ForStatement` 使用专用 iterator/body inventory path
+- lambda inventory 由 boundary reporter 在扫描 callable body 时发现并回调 `bindLambdaInventory` 完成（binder 主遍历不下钻表达式，因此 return / initializer 内的 lambda 也能到达）；`match` subtree 不进入 binding walk；`ForStatement` 使用专用 iterator/body inventory path
+- 同一 callable 内的 local binding 先于 boundary reporter 扫描执行，保证 lambda capture 推导时外层 local 已就位
 - unsupported feature-boundary error 由独立的 boundary reporter 扫描 callable body 后补发
+
+### 4.4 lambda inventory 管线
+
+`bindLambdaInventory` 对单个 lambda 的处理顺序固定为：
+
+1. bind 当前 lambda 的 parameters
+2. 走 `walkSupportedExecutableBlock` bind body ordinary locals
+3. boundary reporter 扫描 body：补发 `match` / block-local `const` 边界 error，并递归 bind 嵌套 lambda（post-order，嵌套 lambda 的 capture plan 先于外层完成）
+4. 用 `LambdaCaptureSourceScanner` 按源码顺序收集 body 内的 capture 相关事件：bare `IdentifierExpression` 使用点（绑定到 use-site scope）、直接嵌套 lambda、显式 `SelfExpression`；跳过嵌套 lambda / `match` / block-local `const` subtree
+5. 经 `FrontendLambdaCapturePlanner` 纯函数推导 own-use capture，再按事件顺序合并嵌套 lambda 的 transferred capture（同名首次出现者胜；中间层有同名 param/local 遮蔽时传递终止）
+6. `self` 处理：显式 `SelfExpression`、隐式 instance member（bare identifier 命中 enclosing class 的 PROPERTY / SIGNAL / method overload）、或任一嵌套 lambda 已捕获 `self` 时，生成名为 `self` 的 leading capture；static enclosing callable 不合成 `self` capture
+7. 通过守卫式 `defineCapture` 写入 scope：同名 CAPTURE 且同 sourceDeclaration 幂等跳过；与既有 param / capture 冲突发 `sema.variable_binding` 并跳过，绝不把用户源码打到 `IllegalArgumentException`
+
+本阶段写入的 capture 一律使用 `Variant` 占位类型；`FrontendAnalysisData.lambdaPlans()` 不发布任何占位 plan。
 
 ### 4.3 executable-context 判定
 
@@ -228,7 +246,6 @@
 - `sema.unsupported_parameter_default_value`
   - 参数默认值当前被忽略
 - `sema.unsupported_variable_inventory_subtree`
-  - lambda subtree 当前不支持
   - `match` subtree 当前不支持
   - block-local `const` 当前不支持
 
@@ -241,6 +258,7 @@
 - duplicate parameter
 - duplicate local in the same block
 - same-callable local shadowing parameter / outer local / future capture
+- lambda capture 与既有 callable slot（parameter / capture）冲突
 - supported declaration 的 target scope kind mismatch
 
 恢复规则固定为：
@@ -318,7 +336,7 @@ For iterator 与 parameter、外层 local 或 body local 冲突时仍发布 `sem
 
 后续最直接的增量工作包括：
 
-- lambda parameter / local / capture inventory
+- lambda capture 声明处类型填充与 `lambdaPlans()` 首次发布（nested suite resolution 入口）
 - for iteration planning 与 iterator slot refinement
 - `match` pattern binding 与 section inventory
 - block-local `const` inventory
@@ -335,6 +353,8 @@ For iterator 与 parameter、外层 local 或 body local 冲突时仍发布 `sem
 - `FrontendVariableAnalyzerTest`
   - parameter/local 正向写入
   - for iterator、body local、nested for 与冲突恢复 binding
+  - lambda parameter / local / capture 正向写入、嵌套 lambda capture 传递、`self` capture（显式 / 隐式 / static 抑制）
+  - lambda local / 中间层遮蔽负向路径、lambda 内 `match` / block-local `const` 边界、property-initializer lambda 不绑定、capture 与 `self` 参数冲突恢复
   - unsupported feature-boundary error
 - duplicate / shadowing / kind mismatch 负向路径
 - duplicate / shadowing local 详细 diagnostic message 锚点

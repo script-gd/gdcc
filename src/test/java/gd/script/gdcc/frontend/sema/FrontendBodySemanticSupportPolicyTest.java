@@ -23,7 +23,9 @@ class FrontendBodySemanticSupportPolicyTest {
                 BlockScopeKind.ELIF_BODY,
                 BlockScopeKind.ELSE_BODY,
                 BlockScopeKind.WHILE_BODY,
-                BlockScopeKind.FOR_BODY
+                BlockScopeKind.FOR_BODY,
+                // Lambda Phase B: lambda bodies publish lexical inventory (param/local/capture binding).
+                BlockScopeKind.LAMBDA_BODY
         );
 
         for (var kind : BlockScopeKind.values()) {
@@ -38,17 +40,10 @@ class FrontendBodySemanticSupportPolicyTest {
 
     @Test
     void unsupportedScopesKeepPreciseStructuralDomains() {
-        assertEquals(
-                FrontendBodySemanticSupportPolicy.LAMBDA_SUBTREE,
-                FrontendBodySemanticSupportPolicy.forBlockScopeKind(BlockScopeKind.LAMBDA_BODY)
-        );
+        // Lambda scopes left this deferred set in Phase B; only `match` keeps a block-scope deferred domain.
         assertEquals(
                 FrontendBodySemanticSupportPolicy.MATCH_SUBTREE,
                 FrontendBodySemanticSupportPolicy.forBlockScopeKind(BlockScopeKind.MATCH_SECTION_BODY)
-        );
-        assertEquals(
-                FrontendBodySemanticSupportPolicy.LAMBDA_SUBTREE,
-                FrontendBodySemanticSupportPolicy.forCallableScopeKind(CallableScopeKind.LAMBDA_EXPRESSION)
         );
 
         var deferredPolicies = Set.of(
@@ -84,7 +79,8 @@ class FrontendBodySemanticSupportPolicyTest {
                 BlockScopeKind.ELIF_BODY,
                 BlockScopeKind.ELSE_BODY,
                 BlockScopeKind.WHILE_BODY,
-                BlockScopeKind.FOR_BODY
+                BlockScopeKind.FOR_BODY,
+                BlockScopeKind.LAMBDA_BODY
         );
 
         for (var kind : BlockScopeKind.values()) {
@@ -97,7 +93,8 @@ class FrontendBodySemanticSupportPolicyTest {
     void bodyEntrySemanticEntryAgreesWithFirstCertificateGateForAllCallableScopeKinds() {
         var supportedCallableKinds = EnumSet.of(
                 CallableScopeKind.FUNCTION_DECLARATION,
-                CallableScopeKind.CONSTRUCTOR_DECLARATION
+                CallableScopeKind.CONSTRUCTOR_DECLARATION,
+                CallableScopeKind.LAMBDA_EXPRESSION
         );
 
         for (var kind : CallableScopeKind.values()) {

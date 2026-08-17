@@ -103,9 +103,12 @@ public enum FrontendBodySemanticSupportPolicy {
 
     /// Maps a block scope kind to its explicit structural body policy.
     ///
-    /// Function, constructor, ordinary block, conditional, loop, and `FOR_BODY` scopes are executable bodies.
-    /// Lambda and match-section scopes remain in their feature-specific deferred domains. The exhaustive switch is
-    /// intentional: a newly added block scope kind must make a compile-time-visible support choice here.
+    /// Function, constructor, ordinary block, conditional, loop, `FOR_BODY`, and `LAMBDA_BODY` scopes are
+    /// executable bodies. Match-section scopes remain in their feature-specific deferred domain. The exhaustive
+    /// switch is intentional: a newly added block scope kind must make a compile-time-visible support choice here.
+    ///
+    /// `LAMBDA_BODY` publishes lexical inventory since lambda Phase B (parameter/local/capture binding); its
+    /// suite-resolver entry stays unconsumed until `FrontendInterfacePhase` stops skipping lambda expressions.
     ///
     /// @param kind the block scope kind whose structural support is being queried
     /// @return the policy that controls inventory publication, suite entry, and visible-value domain
@@ -119,17 +122,19 @@ public enum FrontendBodySemanticSupportPolicy {
                  ELIF_BODY,
                  ELSE_BODY,
                  WHILE_BODY,
-                 FOR_BODY -> EXECUTABLE_BODY;
-            case LAMBDA_BODY -> LAMBDA_SUBTREE;
+                 FOR_BODY,
+                 LAMBDA_BODY -> EXECUTABLE_BODY;
             case MATCH_SECTION_BODY -> MATCH_SUBTREE;
         };
     }
 
     /// Maps a callable scope kind to its explicit structural body policy.
     ///
-    /// Function and constructor callables own executable bodies. Lambda callables remain deferred until their
-    /// parameter, capture, and body inventory are implemented as one feature-owned surface. As with block scopes,
-    /// the exhaustive switch prevents new callable kinds from receiving support by default.
+    /// Function, constructor, and lambda callables own executable bodies. As with block scopes, the exhaustive
+    /// switch prevents new callable kinds from receiving support by default.
+    ///
+    /// `LAMBDA_EXPRESSION` publishes lexical inventory since lambda Phase B; the resolver's lambda AST-edge and
+    /// callable-scope seals remain the fail-closed backstop until a later phase opens suite resolution.
     ///
     /// @param kind the callable scope kind whose structural support is being queried
     /// @return the policy for the callable's body/inventory boundary
@@ -138,8 +143,7 @@ public enum FrontendBodySemanticSupportPolicy {
             @NotNull CallableScopeKind kind
     ) {
         return switch (Objects.requireNonNull(kind, "kind")) {
-            case FUNCTION_DECLARATION, CONSTRUCTOR_DECLARATION -> EXECUTABLE_BODY;
-            case LAMBDA_EXPRESSION -> LAMBDA_SUBTREE;
+            case FUNCTION_DECLARATION, CONSTRUCTOR_DECLARATION, LAMBDA_EXPRESSION -> EXECUTABLE_BODY;
         };
     }
 }

@@ -235,11 +235,12 @@ class GodotBuiltinGeneratorTest {
     void renderBuiltinSupportShouldKeepCheckedInVarargWrappersInSync() throws IOException {
         var api = ExtensionApiLoader.loadDefault();
         var files = GodotBuiltinGenerator.renderBuiltinSupport(api);
-        var header = files.get("godot_builtin.h");
-        var source = files.get("godot_builtin.c");
+        var header = files.get("godot_builtin.h").replace("\r\n", "\n");
+        var source = files.get("godot_builtin.c").replace("\r\n", "\n");
         var checkedInRoot = Path.of("src/main/c/codegen/include_451/godot");
-        var checkedInHeader = Files.readString(checkedInRoot.resolve("godot_builtin.h"));
-        var checkedInSource = Files.readString(checkedInRoot.resolve("godot_builtin.c"));
+        // Checked-in files may use CRLF depending on git autocrlf; normalize before comparing.
+        var checkedInHeader = Files.readString(checkedInRoot.resolve("godot_builtin.h")).replace("\r\n", "\n");
+        var checkedInSource = Files.readString(checkedInRoot.resolve("godot_builtin.c")).replace("\r\n", "\n");
         var varargSymbols = GodotBuiltinGenerator.collectSymbols(api).stream()
                 .filter(GodotBindingSymbol::vararg)
                 .toList();

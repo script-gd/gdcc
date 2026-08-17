@@ -290,15 +290,15 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
-    void analyzeWarnsForDeferredLambdaSubtreesWhileBindingOuterLocal() throws Exception {
-        var phaseInput = publishedPhaseInput("phase4_lambda_deferred.gd", """
-                class_name LambdaVariableDeferred
+    void analyzeBindsLambdaParametersLocalsAndCapturesOuterValues() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_inventory.gd", """
+                class_name LambdaVariableBound
                 extends Node
                 
                 func ping(seed: int):
-                    var builder := func(item: int, fallback = item):
-                        var lambda_local := fallback
-                        return lambda_local
+                    var builder := func(item: int):
+                        var lambda_local := item
+                        return lambda_local + seed
                     return seed
                 """);
         var sourceFile = phaseInput.unit().ast();
@@ -316,29 +316,41 @@ class FrontendVariableAnalyzerTest {
         var builderLambda = assertInstanceOf(LambdaExpression.class, builderDeclaration.value());
         var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(builderLambda));
         var lambdaBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(builderLambda.body()));
+        var lambdaLocalDeclaration = findStatement(
+                builderLambda.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("lambda_local")
+        );
         var diagnosticsBefore = phaseInput.diagnostics().snapshot();
 
         new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
 
+        // Lambda inventory is fully bound since Phase B, so no boundary diagnostic may fire.
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
-        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
-        var error = newDiagnostics.getFirst();
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
 
-        assertEquals(1, newDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
-        assertEquals("sema.unsupported_variable_inventory_subtree", error.category());
-        assertTrue(error.message().contains("does not support lambda subtrees"));
-        assertTrue(error.message().contains("parameters, default values, locals, and captures"));
-        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), error.sourcePath());
-        assertEquals(FrontendRange.fromAstRange(builderLambda.range()), error.range());
-        assertNotNull(assertInstanceOf(
-                CallableScope.class,
-                phaseInput.analysisData().scopesByAst().get(pingFunction)
-        ).resolveValue("seed"));
+        var itemBinding = lambdaScope.resolveValue("item");
+        assertNotNull(itemBinding);
+        assertEquals(ScopeValueKind.PARAMETER, itemBinding.kind());
+        assertEquals(GdIntType.INT, itemBinding.type());
+        assertSame(builderLambda.parameters().getFirst(), itemBinding.declaration());
+
+        var lambdaLocalBinding = lambdaBodyScope.resolveValue("lambda_local");
+        assertNotNull(lambdaLocalBinding);
+        assertEquals(ScopeValueKind.LOCAL, lambdaLocalBinding.kind());
+        assertSame(lambdaLocalDeclaration, lambdaLocalBinding.declaration());
+
+        // Phase B registers the capture name with a Variant placeholder type; the declaration-site
+        // type replaces the placeholder during nested suite resolution in a later phase.
+        var seedCapture = lambdaScope.resolveValueHere("seed");
+        assertNotNull(seedCapture);
+        assertEquals(ScopeValueKind.CAPTURE, seedCapture.kind());
+        assertEquals(GdVariantType.VARIANT, seedCapture.type());
+        assertSame(pingFunction.parameters().getFirst(), seedCapture.declaration());
+
         assertNotNull(pingBodyScope.resolveValue("builder"));
-        assertNull(lambdaScope.resolveValue("item"));
-        assertNull(lambdaScope.resolveValue("fallback"));
-        assertNull(lambdaBodyScope.resolveValue("lambda_local"));
+        // Placeholder captures live only on the scope; no plan may be published in Phase B.
+        assertTrue(phaseInput.analysisData().lambdaPlans().isEmpty());
     }
 
     @Test
@@ -427,7 +439,7 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
-    void analyzeWarnsForDeferredLambdaSubtreesInsideReturnExpressions() throws Exception {
+    void analyzeBindsLambdaInsideReturnExpression() throws Exception {
         var phaseInput = publishedPhaseInput("phase4_lambda_return_expression.gd", """
                 class_name LambdaReturnExpression
                 extends Node
@@ -444,20 +456,521 @@ class FrontendVariableAnalyzerTest {
         );
         var returnStatement = assertInstanceOf(ReturnStatement.class, pingFunction.body().statements().getFirst());
         var returnedLambda = assertInstanceOf(LambdaExpression.class, returnStatement.value());
+        var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(returnedLambda));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        // Lambdas nested in arbitrary expressions are reached through the boundary reporter and
+        // must be bound exactly like statement-initializers, without any boundary diagnostic.
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
+        var seedCapture = lambdaScope.resolveValueHere("seed");
+        assertNotNull(seedCapture);
+        assertEquals(ScopeValueKind.CAPTURE, seedCapture.kind());
+        assertSame(pingFunction.parameters().getFirst(), seedCapture.declaration());
+    }
+
+    @Test
+    void analyzeTransfersNestedLambdaCapturesThroughIntermediateLambda() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_nested_capture.gd", """
+                class_name NestedLambdaCapture
+                extends Node
+                
+                func ping(seed: int):
+                    var outer := func():
+                        var mid := func():
+                            return seed
+                        return mid
+                    return outer
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var outerDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("outer")
+        );
+        var outerLambda = assertInstanceOf(LambdaExpression.class, outerDeclaration.value());
+        var midDeclaration = findStatement(
+                outerLambda.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("mid")
+        );
+        var midLambda = assertInstanceOf(LambdaExpression.class, midDeclaration.value());
+        var outerLambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(outerLambda));
+        var midLambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(midLambda));
         var diagnosticsBefore = phaseInput.diagnostics().snapshot();
 
         new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
 
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
-        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
-        var error = newDiagnostics.getFirst();
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
 
+        // The innermost lambda captures the outer parameter directly.
+        var midCapture = midLambdaScope.resolveValueHere("seed");
+        assertNotNull(midCapture);
+        assertEquals(ScopeValueKind.CAPTURE, midCapture.kind());
+        assertSame(pingFunction.parameters().getFirst(), midCapture.declaration());
+
+        // The intermediate lambda must re-export the same capture (nested transfer, plan §3.4
+        // rule 9): same name, same source declaration identity.
+        var outerCapture = outerLambdaScope.resolveValueHere("seed");
+        assertNotNull(outerCapture);
+        assertEquals(ScopeValueKind.CAPTURE, outerCapture.kind());
+        assertEquals(GdVariantType.VARIANT, outerCapture.type());
+        assertSame(pingFunction.parameters().getFirst(), outerCapture.declaration());
+    }
+
+    @Test
+    void analyzeDoesNotCaptureWhenLambdaLocalShadowsOuterLocal() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_local_shadow.gd", """
+                class_name LambdaLocalShadow
+                extends Node
+                
+                func ping():
+                    var x = 1
+                    var cb := func():
+                        var x = 2
+                        return x
+                    return x
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var outerXDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+        var cbDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("cb")
+        );
+        var cbLambda = assertInstanceOf(LambdaExpression.class, cbDeclaration.value());
+        var innerXDeclaration = findStatement(
+                cbLambda.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+        var pingBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(pingFunction.body()));
+        var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda));
+        var lambdaBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda.body()));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        // The shadowing local lives behind the lambda callable boundary, so it is legal and the
+        // outer `x` must NOT be captured (plan §3.4 self-shadowing rule).
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
+        assertNull(lambdaScope.resolveValueHere("x"));
+        var innerXBinding = lambdaBodyScope.resolveValueHere("x");
+        assertNotNull(innerXBinding);
+        assertEquals(ScopeValueKind.LOCAL, innerXBinding.kind());
+        assertSame(innerXDeclaration, innerXBinding.declaration());
+        var outerXBinding = pingBodyScope.resolveValueHere("x");
+        assertNotNull(outerXBinding);
+        assertSame(outerXDeclaration, outerXBinding.declaration());
+    }
+
+    @Test
+    void analyzeStopsCaptureTransferAtShadowingIntermediateLambda() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_transfer_shadow.gd", """
+                class_name LambdaTransferShadow
+                extends Node
+                
+                func ping(seed: int):
+                    var outer := func():
+                        var seed = 10
+                        var mid := func():
+                            return seed
+                        return mid
+                    return outer
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var outerDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("outer")
+        );
+        var outerLambda = assertInstanceOf(LambdaExpression.class, outerDeclaration.value());
+        var middleSeedDeclaration = findStatement(
+                outerLambda.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("seed")
+        );
+        var midDeclaration = findStatement(
+                outerLambda.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("mid")
+        );
+        var midLambda = assertInstanceOf(LambdaExpression.class, midDeclaration.value());
+        var outerLambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(outerLambda));
+        var midLambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(midLambda));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
+
+        // The inner lambda captures the INTERMEDIATE lambda's local, not the outer parameter.
+        var midCapture = midLambdaScope.resolveValueHere("seed");
+        assertNotNull(midCapture);
+        assertEquals(ScopeValueKind.CAPTURE, midCapture.kind());
+        assertSame(middleSeedDeclaration, midCapture.declaration());
+
+        // The intermediate lambda shadows the name with its own local, so the transfer chain
+        // terminates here: no capture may be inserted for the outer parameter (plan §3.4 rule 9).
+        assertNull(outerLambdaScope.resolveValueHere("seed"));
+    }
+
+    @Test
+    void analyzeStillReportsMatchAndBlockLocalConstInsideLambdaBody() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_deferred_boundaries.gd", """
+                class_name LambdaDeferredBoundaries
+                extends Node
+                
+                func ping(seed: int):
+                    var cb := func(item: int):
+                        match item:
+                            1:
+                                pass
+                        const k = seed
+                        return item
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var cbDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("cb")
+        );
+        var cbLambda = assertInstanceOf(LambdaExpression.class, cbDeclaration.value());
+        var matchStatement = findStatement(cbLambda.body().statements(), MatchStatement.class, _ -> true);
+        var constDeclaration = findStatement(
+                cbLambda.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("k")
+        );
+        var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda));
+        var lambdaBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda.body()));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        // `match` and block-local `const` stay deferred inside lambda bodies as well.
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
+        var matchError = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(matchStatement.range()));
+        var constError = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(constDeclaration.range()));
+        assertEquals(2, newDiagnostics.size());
+        assertEquals("sema.unsupported_variable_inventory_subtree", matchError.category());
+        assertTrue(matchError.message().contains("does not support `match` subtrees"));
+        assertEquals("sema.unsupported_variable_inventory_subtree", constError.category());
+        assertTrue(constError.message().contains("does not support block-local `const` declarations"));
+
+        // Supported lambda inventory is still bound around the deferred fragments.
+        var itemBinding = lambdaScope.resolveValue("item");
+        assertNotNull(itemBinding);
+        assertEquals(ScopeValueKind.PARAMETER, itemBinding.kind());
+
+        // Names inside the deferred `const` subtree must not leak into captures or locals.
+        assertNull(lambdaScope.resolveValueHere("seed"));
+        assertNull(lambdaScope.resolveValueHere("k"));
+        assertNull(lambdaBodyScope.resolveValueHere("k"));
+    }
+
+    @Test
+    void analyzeLeavesPropertyInitializerLambdaUnbound() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_property_initializer_lambda.gd", """
+                class_name PropertyInitializerLambda
+                extends Node
+                
+                var cb = func(item):
+                    return item
+                
+                func ping(seed: int):
+                    return seed
+                """);
+        var propertyDeclaration = findStatement(
+                phaseInput.unit().ast().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("cb")
+        );
+        var propertyLambda = assertInstanceOf(LambdaExpression.class, propertyDeclaration.value());
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        // The variable analyzer only inventories supported callable bodies. A property-initializer
+        // lambda is outside that reach: no inventory diagnostic (the property-initializer boundary
+        // diagnostic belongs to the binding/chain phases) and no binding may appear on its scope.
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
+        var lambdaScope = assertInstanceOf(
+                CallableScope.class,
+                phaseInput.analysisData().scopesByAst().get(propertyLambda)
+        );
+        assertNull(lambdaScope.resolveValueHere("item"));
+        assertTrue(phaseInput.analysisData().lambdaPlans().isEmpty());
+    }
+
+    @Test
+    void analyzeCapturesSelfForExplicitSelfUseInsideLambda() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_self_capture.gd", """
+                class_name LambdaSelfCapture
+                extends Node
+                
+                var hp: int = 0
+                
+                func ping():
+                    var cb := func():
+                        return self.hp
+                    return cb
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var cbDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("cb")
+        );
+        var cbLambda = assertInstanceOf(LambdaExpression.class, cbDeclaration.value());
+        var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
+
+        // §3.5: an explicit `self` use captures the enclosing instance under the name `self`,
+        // sourced at the enclosing callable. The scope binding keeps the Phase B Variant
+        // placeholder like every capture; the enclosing class object type is filled with all
+        // declaration-site capture types during nested suite resolution.
+        var selfCapture = lambdaScope.resolveValueHere("self");
+        assertNotNull(selfCapture);
+        assertEquals(ScopeValueKind.CAPTURE, selfCapture.kind());
+        assertEquals(GdVariantType.VARIANT, selfCapture.type());
+        assertSame(pingFunction, selfCapture.declaration());
+        assertTrue(phaseInput.analysisData().lambdaPlans().isEmpty());
+    }
+
+    @Test
+    void analyzeCapturesSelfForImplicitInstanceMemberUseInsideLambda() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_implicit_self.gd", """
+                class_name LambdaImplicitSelf
+                extends Node
+                
+                var hp: int = 0
+                
+                func ping():
+                    var cb := func():
+                        return hp
+                    return cb
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var cbDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("cb")
+        );
+        var cbLambda = assertInstanceOf(LambdaExpression.class, cbDeclaration.value());
+        var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
+
+        // A bare instance-property read needs the instance receiver: `hp` itself is not
+        // capturable (class member), so the lambda captures `self` instead (§3.5).
+        assertNull(lambdaScope.resolveValueHere("hp"));
+        var selfCapture = lambdaScope.resolveValueHere("self");
+        assertNotNull(selfCapture);
+        assertEquals(ScopeValueKind.CAPTURE, selfCapture.kind());
+        assertSame(pingFunction, selfCapture.declaration());
+    }
+
+    @Test
+    void analyzeDoesNotCaptureSelfInsideStaticFunction() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_static_self.gd", """
+                class_name LambdaStaticSelf
+                extends Node
+                
+                var hp: int = 0
+                
+                static func ping():
+                    var cb := func():
+                        return self.hp
+                    return cb
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var cbDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("cb")
+        );
+        var cbLambda = assertInstanceOf(LambdaExpression.class, cbDeclaration.value());
+        var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        // §3.5: a static enclosing callable never synthesizes a `self` capture; the restriction
+        // diagnostic for the illegal `self` use stays with the body-typing phases.
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
+        assertNull(lambdaScope.resolveValueHere("self"));
+    }
+
+    @Test
+    void analyzeDoesNotCaptureSelfForUtilityFunctionCallInsideLambda() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_utility_call.gd", """
+                class_name LambdaUtilityCall
+                extends Node
+                
+                func ping():
+                    var cb := func():
+                        print("hi")
+                    return cb
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var cbDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("cb")
+        );
+        var cbLambda = assertInstanceOf(LambdaExpression.class, cbDeclaration.value());
+        var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        // Global utility functions resolve without a receiver; they must not synthesize `self`.
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
+        assertNull(lambdaScope.resolveValueHere("self"));
+        assertNull(lambdaScope.resolveValueHere("print"));
+    }
+
+    @Test
+    void analyzeDoesNotCaptureSelfForStaticMembersInsideLambda() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_static_members.gd", """
+                class_name LambdaStaticMembers
+                extends Node
+                
+                static var counter: int = 0
+                
+                static func helper() -> int:
+                    return 1
+                
+                func ping():
+                    var cb := func():
+                        counter += helper()
+                        return counter
+                    return cb
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var cbDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("cb")
+        );
+        var cbLambda = assertInstanceOf(LambdaExpression.class, cbDeclaration.value());
+        var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        // Static property reads and static method calls need no instance receiver (§3.5), so no
+        // `self` capture may appear even though the names belong to the enclosing class.
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
+        assertNull(lambdaScope.resolveValueHere("self"));
+        assertNull(lambdaScope.resolveValueHere("counter"));
+        assertNull(lambdaScope.resolveValueHere("helper"));
+    }
+
+    @Test
+    void analyzeReportsCaptureConflictForSelfNamedParameterWithoutThrowing() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_self_param_conflict.gd", """
+                class_name LambdaSelfParamConflict
+                extends Node
+                
+                var hp: int = 0
+                
+                func ping():
+                    var cb := func(self):
+                        return self.hp
+                    return cb
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var cbDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("cb")
+        );
+        var cbLambda = assertInstanceOf(LambdaExpression.class, cbDeclaration.value());
+        var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        // Plan §3.4 rule 7: a capture that collides with an existing parameter slot must produce
+        // exactly one binding diagnostic and never reach CallableScope's fail-fast duplicate guard.
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
         assertEquals(1, newDiagnostics.size());
+        var error = newDiagnostics.getFirst();
         assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
-        assertEquals("sema.unsupported_variable_inventory_subtree", error.category());
-        assertTrue(error.message().contains("does not support lambda subtrees"));
-        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), error.sourcePath());
-        assertEquals(FrontendRange.fromAstRange(returnedLambda.range()), error.range());
+        assertEquals("sema.variable_binding", error.category());
+        assertTrue(error.message().contains("Capture 'self' conflicts with existing parameter 'self'"));
+        assertEquals(FrontendRange.fromAstRange(cbLambda.range()), error.range());
+
+        // The parameter binding wins; no capture may overwrite it.
+        var selfBinding = lambdaScope.resolveValueHere("self");
+        assertNotNull(selfBinding);
+        assertEquals(ScopeValueKind.PARAMETER, selfBinding.kind());
     }
 
     @Test
