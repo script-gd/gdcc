@@ -79,6 +79,7 @@ class FrontendAnalysisDataTest {
         assertTrue(analysisData.slotTypes().isEmpty());
         assertTrue(analysisData.typeTestTargets().isEmpty());
         assertTrue(analysisData.containerLiteralPlans().isEmpty());
+        assertTrue(analysisData.lambdaPlans().isEmpty());
         assertThrows(IllegalStateException.class, analysisData::moduleSkeleton);
         assertThrows(IllegalStateException.class, analysisData::diagnostics);
     }

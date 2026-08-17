@@ -6,6 +6,7 @@ import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
+import gd.script.gdcc.frontend.sema.FrontendLambdaPlan;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
@@ -32,6 +33,7 @@ public final class FrontendPublishedFactTypeGuard {
         checkForIterationPlans(patch.forIterationPlans());
         checkTypeTestTargets(patch.typeTestTargets());
         checkContainerLiteralPlans(patch.containerLiteralPlans());
+        checkLambdaPlans(patch.lambdaPlans());
         checkLocalSlotTypeUpdates(patch.localSlotTypeUpdates());
     }
 
@@ -131,6 +133,22 @@ public final class FrontendPublishedFactTypeGuard {
     ) {
         for (var plan : plans.values()) {
             checkContainerLiteralPlan(plan);
+        }
+    }
+
+    public static void checkLambdaPlans(@NotNull FrontendAstSideTable<FrontendLambdaPlan> plans) {
+        for (var plan : plans.values()) {
+            checkLambdaPlan(plan);
+        }
+    }
+
+    /// Lambda plans are source-facing ABI facts: every capture type must stay ordinary.
+    public static void checkLambdaPlan(@NotNull FrontendLambdaPlan plan) {
+        for (var capture : plan.captures()) {
+            checkNoCompilerOnlyLeak(
+                    capture.type(),
+                    "lambdaPlans() capture type for '" + capture.name() + "'"
+            );
         }
     }
 

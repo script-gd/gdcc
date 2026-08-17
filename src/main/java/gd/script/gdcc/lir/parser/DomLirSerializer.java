@@ -117,8 +117,16 @@ public final class DomLirSerializer implements LirSerializer {
                 }
                 fEl.appendChild(paramsEl);
 
-                // captures - we do not serialize capture bodies here; write empty container for forward-compat
+                // captures: lambda functions emit real <capture name type> in insertion order
                 Element capsEl = doc.createElement("captures");
+                if (fn.isLambda()) {
+                    for (var capture : fn.getCaptureList()) {
+                        Element cEl = doc.createElement("capture");
+                        cEl.setAttribute("name", capture.getName());
+                        cEl.setAttribute("type", renderTypeText(capture.getType(), LirTypeUseSite.FUNCTION_CAPTURE));
+                        capsEl.appendChild(cEl);
+                    }
+                }
                 fEl.appendChild(capsEl);
 
                 // return type

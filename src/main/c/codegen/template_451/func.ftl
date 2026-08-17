@@ -8,7 +8,7 @@ ${helper.renderGdTypeInC(func.returnType)} ${classDef.name}_${func.name}(
     <#list func.parameters as param>
         ${helper.renderGdTypeRefInC(param.type)} $${param.name}<#if param_has_next || func.captureCount gt 0>,</#if>
     </#list>
-    <#list func.captureList as capture>
+    <#if func.captureCount gt 0>
         <@lambdaCaptureName classDef func/>* _capture
-    </#list>
+    </#if>
 )</#macro>

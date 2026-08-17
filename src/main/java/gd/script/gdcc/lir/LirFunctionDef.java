@@ -52,7 +52,7 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
         this.isHidden = isHidden;
         this.annotations = new HashMap<>(Objects.requireNonNull(annotations));
         this.parameters = new ArrayList<>(Objects.requireNonNull(parameters));
-        this.captures = new HashMap<>(Objects.requireNonNull(captures));
+        this.captures = new LinkedHashMap<>(Objects.requireNonNull(captures));
         this.returnType = Objects.requireNonNull(returnType);
         this.variables = new HashMap<>(Objects.requireNonNull(variables));
         this.basicBlocks = new LinkedHashMap<>(basicBlocks);
@@ -85,7 +85,7 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
         this.isHidden = isHidden;
         this.annotations = new HashMap<>(Objects.requireNonNull(annotations));
         this.parameters = new ArrayList<>(Objects.requireNonNull(parameters));
-        this.captures = new HashMap<>(Objects.requireNonNull(captures));
+        this.captures = new LinkedHashMap<>(Objects.requireNonNull(captures));
         this.returnType = Objects.requireNonNull(returnType);
         this.variables = new HashMap<>(Objects.requireNonNull(variables));
         this.basicBlocks = new LinkedHashMap<>(basicBlocks);
@@ -101,7 +101,7 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
         this.isHidden = false;
         this.annotations = new HashMap<>();
         this.parameters = new ArrayList<>();
-        this.captures = new HashMap<>();
+        this.captures = new LinkedHashMap<>();
         this.variables = new HashMap<>();
         this.basicBlocks = new LinkedHashMap<>();
         this.entryBlockId = "";

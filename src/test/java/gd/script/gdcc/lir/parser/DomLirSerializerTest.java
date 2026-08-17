@@ -3,8 +3,6 @@ package gd.script.gdcc.lir.parser;
 import gd.script.gdcc.enums.LifecycleProvenance;
 import gd.script.gdcc.lir.*;
 import gd.script.gdcc.lir.insn.*;
-import gd.script.gdcc.lir.*;
-import gd.script.gdcc.lir.insn.*;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdccForArrayIterType;
 import gd.script.gdcc.type.GdccForDictionaryIterType;
@@ -148,5 +146,63 @@ public class DomLirSerializerTest {
         var exception = assertThrows(IllegalArgumentException.class, () -> serializer.serializeToString(module));
 
         assertTrue(exception.getMessage().contains("compiler-only type leaked into function return"), exception.getMessage());
+    }
+
+    @Test
+    public void serialize_module_writesOrderedLambdaCapturesAndRoundTrips() throws Exception {
+        var fn = new LirFunctionDef("_lambda_0", "entry");
+        fn.setLambda(true);
+        fn.setHidden(true);
+        fn.setStatic(true);
+        fn.setReturnType(new GdFloatType());
+        fn.addCapture(new LirCaptureDef("seed", new GdFloatType(), fn));
+        fn.addCapture(new LirCaptureDef("offset", new GdObjectType("Node"), fn));
+        fn.addBasicBlock(new LirBasicBlock("entry", List.of(new ReturnInsn(null))));
+
+        var cls = new LirClassDef("Hero", "Node", false, false, Map.of(), List.of(), List.of(), List.of(fn));
+        var module = new LirModule("m", List.of(cls));
+        var xml = new DomLirSerializer().serializeToString(module);
+
+        assertTrue(xml.contains("is_lambda=\"true\""), xml);
+        assertTrue(xml.contains("<capture name=\"seed\" type=\"float\"/>")
+                || xml.contains("<capture name=\"seed\" type=\"float\" />"), xml);
+        assertTrue(xml.contains("<capture name=\"offset\" type=\"Node\"/>")
+                || xml.contains("<capture name=\"offset\" type=\"Node\" />"), xml);
+        assertTrue(xml.indexOf("name=\"seed\"") < xml.indexOf("name=\"offset\""), xml);
+
+        var parsed = new DomLirParser(new gd.script.gdcc.scope.ClassRegistry(
+                gd.script.gdcc.gdextension.ExtensionApiLoader.loadDefault()
+        )).parse(xml);
+        var parsedFn = parsed.getClassDefs().getFirst().getFunctions().getFirst();
+        assertEquals(2, parsedFn.getCaptureCount());
+        var captures = parsedFn.getCaptureList();
+        assertEquals("seed", captures.getFirst().getName());
+        assertEquals("float", captures.getFirst().getType().getTypeName());
+        assertEquals("offset", captures.getLast().getName());
+        assertEquals("Node", captures.getLast().getType().getTypeName());
+    }
+
+    @Test
+    public void serialize_module_rejectsCompilerOnlyLambdaCapture() {
+        var fn = new LirFunctionDef("_lambda_0", "entry");
+        fn.setLambda(true);
+        fn.addCapture(new LirCaptureDef("iter", GdccForRangeIterType.FOR_RANGE_ITER, fn));
+        fn.addBasicBlock(new LirBasicBlock("entry", List.of(new ReturnInsn(null))));
+
+        var cls = new LirClassDef("Hero", "Node", false, false, Map.of(), List.of(), List.of(), List.of(fn));
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> new DomLirSerializer().serializeToString(new LirModule("m", List.of(cls)))
+        );
+        assertTrue(exception.getMessage().contains("compiler-only type leaked into function capture"), exception.getMessage());
+    }
+
+    @Test
+    public void addCaptureOnNonLambdaStillThrows() {
+        var fn = new LirFunctionDef("run");
+        assertThrows(
+                IllegalStateException.class,
+                () -> fn.addCapture(new LirCaptureDef("seed", new GdFloatType(), fn))
+        );
     }
 }

@@ -130,6 +130,10 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `resolvedMembers`
 - `resolvedCalls`
 - `slotTypes`
+- `forIterationPlans`
+- `typeTestTargets`
+- `containerLiteralPlans`
+- `lambdaPlans`（阶段 A 数据面已接线；生产 inventory 仍 fail-closed）
 
 其中：
 

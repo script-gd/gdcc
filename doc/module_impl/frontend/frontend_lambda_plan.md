@@ -9,10 +9,10 @@
 
 ## 文档状态
 
-- 状态：计划稿（尚未实施）。当前生产代码对 lambda 全链路 fail-closed；
-  scope 双层图、`CallableScope.defineCapture`、LIR `construct_lambda` /
-  `is_lambda` / `<captures>` 与 C 模板 capture struct 已预留但未接线。
-- 更新时间：2026-08-15
+- 状态：阶段 A 已落地；B–I 尚未实施。当前生产代码对 lambda 全链路仍 fail-closed；
+  数据面（`FrontendLambdaPlan` / side table / planner 纯函数）、`func.ftl`
+  单 `_capture` 形参与 `DomLirSerializer` 真实 `<capture>` 已接线。
+- 更新时间：2026-08-17（阶段 A 落地；已冻结 capture 类型首次 publish 与独立 stage）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/scope/**`
@@ -158,8 +158,8 @@ Godot self-lambda 的 object-id / disconnect-by-object 差异记入 §3.5 与 §
 | 阶段 | 组件 | 职责 |
 |------|------|------|
 | Scope | `FrontendScopeAnalyzer` | 已建双层图；本计划不改图形状 |
-| Inventory | `FrontendVariableAnalyzer` | bind lambda param/local；推导并 `defineCapture` |
-| Capture plan | 新增 `FrontendLambdaCapturePlan` | 冻结 capture 名、类型、来源 binding、是否含 `self` |
+| Inventory | `FrontendVariableAnalyzer` | bind lambda param/local；推导并 `defineCapture`（`Variant` 占位）。**不**写 `lambdaPlans()` |
+| Capture plan | 阶段 C 独立 owner | 在 nested resolve 入口填声明处类型后**第一次**发布 `FrontendLambdaPlan` |
 | Interface | `FrontendInterfacePhase` | 把 `LambdaExpression` 记为 callable owner；body 进 suite entry |
 | Suite | `FrontendSuiteResolver` | 把 lambda 当 nested callable owner 解析 |
 | Expr typing | `FrontendExpressionSemanticSupport` | 发布 `RESOLVED(GdCallableType)` |
@@ -359,15 +359,36 @@ Capture 类型等于外层被捕获绑定在其**声明语句完成时**的 sour
 `Variant` 占位。真实类型在 **该 lambda 自己的 nested suite resolution
 开始、其 body 语句尚未处理时** 填充，写入后立即冻结。
 
+**`lambdaPlans()` 首次发布（已冻结，2026-08-17）**：
+
+- 阶段 B **不得**把 `Variant` 占位写入 `FrontendAnalysisData.lambdaPlans()`。
+  inventory 只通过 `CallableScope.defineCapture` 暴露名字；inspection /
+  阶段 B 测试读 scope 上的 `CAPTURE` 绑定，不读 side table。
+- 阶段 C 在 nested resolve 入口填完声明处类型后，**第一次** publish
+  完整 `FrontendLambdaPlan`（`LambdaCaptureEntry.type` 已是声明处类型，
+  `capturesSelf` 已按 §3.5 与 leading `self` 对齐）。
+- `applyPatch` / `mergeSideTable` 保持 first-wins。禁止对同一
+  `LambdaExpression` 先发占位再 `withType` 走 patch 覆盖。
+  `LambdaCaptureEntry.withType` 只用于构造最终 plan 的本地组装，不是
+  side-table 回写 API。
+- 阶段 C 必须新增**独立** semantic stage + `OverlayFacts.lambdaPlans`
+  槽 + 专用 `FrontendOwnerPatch`（建议名 `LAMBDA_RESOLUTION` /
+  `FrontendLambdaResolutionPatch`）。**不得**把 plan 折进
+  `FrontendExprTypePatch`。`FrontendPatchTransaction.order` 必须给
+  该 stage 编号；位置在 inventory 之后、且必须能在外层 EXPR_TYPE
+  发布 `GdCallableType` **之前**随 nested resolve export。
+- lowering 只消费已发布的完整 plan；缺 plan 仍 fail-fast，禁止
+  现场从 scope 重推导。
+
 填充必须同时更新三处，禁止只写 plan 不写 scope：
 
-- `CaptureEntry.type`
-- LIR `<captures>`（lowering 时消费 plan）
+- `LambdaCaptureEntry.type`（随第一次 publish 写入 `lambdaPlans()`）
+- LIR `<captures>`（lowering 时消费 **已发布** plan，不再回读 scope）
 - 该 lambda `CallableScope` 上的 `CAPTURE` 绑定：新增
   `resetCaptureType`（镜像 `BlockScope.resetLocalType` 的单调
   `Variant → exact` 守卫与 declaration 身份校验）。body type-check
   经 `effectiveScopeValue` 读 CAPTURE 时**不会**套 overlay，因此
-  scope 绑定必须与 `CaptureEntry.type` 同源。
+  scope 绑定必须与 `LambdaCaptureEntry.type` 同源。
 
 **读取路径**（禁止读物理 scope slot，禁止回落 `slotTypes()` /
 `VAR_TYPE_POST`）：
@@ -418,7 +439,7 @@ planner 可能仍登记名字，但该条目不得进入 lowering；use-site
   函数末尾 slot 类型回写 `CAPTURE` / `FrontendLambdaPlan` / `<captures>`。
   即使后来断言 `x` 为其他具体类型，capture 仍是声明处类型。
 - 对 `var x = 1` 因看到 initializer `1` 而把 capture 写成 `int`。
-- 只更新 `CaptureEntry.type` 却让 `CallableScope` 的 CAPTURE 停在
+- 只更新 `LambdaCaptureEntry.type` 却让 `CallableScope` 的 CAPTURE 停在
   `Variant` 占位。
 - 引入 compiler-only 类型。`LirPublicAbiValidator` 继续拒绝
   compiler-only capture。
@@ -450,6 +471,9 @@ MVP 冻结：
 - 若 lambda body 出现显式 `SelfExpression`，或 instance restriction 下的
   implicit instance member / instance method 调用需要 receiver，则把
   enclosing executable 的 `self` 收为名为 `self` 的 capture。
+- `capturesSelf == true` **当且仅当** capture 列表的**第一项**名为 `self`。
+  其余 capture 仍按首次出现的源码顺序排在其后。不得把 `self` 插在中间，
+  也不得在没有 leading `self` 时把 flag 设为 true。
 - 该 capture 的类型是 enclosing class 的 `GdObjectType`（与函数 `self` 参数一致）。
 - lowering 把外层 `self` slot 作为 `construct_lambda` 的一个 capture operand。
 - 合成 lambda `LirFunctionDef` **不**再注入第二份 `ensureExecutableSelfParameter`；
@@ -526,7 +550,7 @@ IdentityHashMap<LambdaExpression, FrontendLambdaPlan>
 
 - `LambdaExpression` AST 身份
 - 合成名 `_lambda_<k>`
-- 有序列表 `captures: List<CaptureEntry(name, type, sourceKind, sourceDeclaration)>`
+- 有序列表 `captures: List<LambdaCaptureEntry(name, type, sourceKind, sourceDeclaration)>`
 - `capturesSelf: boolean`
 - enclosing callable AST
 - owning class canonical name
@@ -588,13 +612,39 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
 
 **目标**：先把 plan / side table / 命名 / 模板缺陷修掉，生产封口不变。
 
+**状态**：已落地（2026-08-17）。
+
 **实施内容**：
 
-- 新增 `FrontendLambdaPlan` / `FrontendLambdaCapturePlan` / `CaptureEntry`。
+- 新增 `FrontendLambdaPlan` / `FrontendLambdaCapturePlan` / `LambdaCaptureEntry`。
 - `FrontendAnalysisData` 增加 lambda plan map 的存取 API。
 - 单测 `ScopeCaptureShapeTest` 风格的 planner 纯函数测试可先用手工 scope 图。
 - 修复 `func.ftl`：`_capture` 只发射一次（纯模板修复，不改变语义封口）。
 - `DomLirSerializer` 写出真实 `<capture>`（可先用手工 LIR fixture 测）。
+
+**落地记录**：
+
+- 数据类：`LambdaCaptureEntry`、`FrontendLambdaCapturePlan`、`FrontendLambdaPlan`
+  （`frontend/sema`）。`LambdaCaptureEntry.withType` 只用于本地组装最终 plan，
+  不是 side-table 回写。`capturesSelf` 当且仅当列表第一项名为 `self`。
+- Side table：`FrontendAnalysisData.lambdaPlans()` /
+  `updateLambdaPlans(...)`，keyed by `LambdaExpression` identity。
+  现有 owner patch 通过 `FrontendOwnerPatch.lambdaPlans()` 默认空表接入
+  `applyPatch`；阶段 A 不新增 semantic stage，也不把 plan 折进
+  `FrontendExprTypePatch`。完整 plan 的第一次生产发布在阶段 C。
+- Planner：`FrontendLambdaCapturePlanner` 纯函数，输入手工 scope 图 +
+  有序 `IdentifierUse`；不写 scope / side table / 诊断。嵌套传递通过
+  `ParentLambda(callable, body)` 从父 lambda **body** 向上查找，避免
+  漏掉中间层 local 遮蔽。
+- `func.ftl`：`captureCount > 0` 时只发射一次 `_capture`。
+- `DomLirSerializer`：lambda 按 `getCaptureList()` 写出
+  `<capture name type>`；`LirFunctionDef.captures` 改为 `LinkedHashMap`
+  以冻结插入序。
+- 测试：`FrontendLambdaCapturePlannerTest`、
+  `FrontendLambdaPlanSideTableTest`、`FuncHeaderCaptureTemplateTest`、
+  `DomLirSerializerTest` 往返 / ABI / 非 lambda `addCapture`。
+  `FrontendVariableAnalyzerTest.analyzeWarnsForDeferredLambdaSubtrees*`
+  保持 fail-closed 红字断言。
 
 **验收细则**：
 
@@ -625,8 +675,10 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
   **supported executable 内**的 lambda 报 inventory 错。
 - 引入 planner：在 bind param/local 之后按 §3.4 innermost-first
   `defineCapture`。本阶段只登记名字 + `sourceDeclaration`，
-  `defineCapture` 的类型用 `Variant` 占位；真实类型按 §3.4 在
-  nested resolve 入口填充（阶段 C/D）。
+  `defineCapture` 的类型用 `Variant` 占位。**禁止**
+  `updateLambdaPlans` / overlay 发布占位 plan。真实类型与
+  `FrontendLambdaPlan` 的第一次 publish 按 §3.4 留到阶段 C
+  nested resolve 入口。
 - **本阶段不改** `FrontendInterfacePhase.handleLambdaExpression`（仍
   `SKIP_CHILDREN`），因此 `entersSuiteResolver=true` 无消费者。
 - property-init / parameter-default / skipped subtree 内的 lambda：
@@ -655,6 +707,8 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
   不是 variable inventory），不得 bind、不得 `recordCallable`。
 - negative path：lambda 参数与将捕获的同名冲突 → 一条
   `sema.variable_binding`，不抛异常。
+- negative path：本阶段结束时 `lambdaPlans()` 对任何 lambda 仍为空；
+  capture 名只出现在 `CallableScope` 的 `CAPTURE` 绑定上。
 
 ### 阶段 C — Policy / resolver / interface / suite 解封
 
@@ -671,8 +725,15 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
   `SKIP_CHILDREN`。
 - `FrontendSuiteResolver` 四个 helper 增加 `LambdaExpression`。
   `resolveCallableOwner` 对 lambda 必须在走 body 语句之前按 §3.4
-  填充 capture 类型（declaration-anchored overlay + `resetCaptureType`）。
-  该填充不是 body 进入条件。
+  填充 capture 类型（declaration-anchored overlay + `resetCaptureType`），
+  并经独立 `LAMBDA_RESOLUTION` owner 把完整 `FrontendLambdaPlan`
+  **第一次**写入 overlay → suite export → `lambdaPlans()`。
+  该填充 / publish 不是 body 进入条件。
+- 新增 `FrontendSemanticStage.LAMBDA_RESOLUTION`（或等价名）、
+  `FrontendLambdaResolutionPatch`、`OverlayFacts.lambdaPlans`。
+  `toOwnerPatches` / `mergeFrom` / `hasFacts` / `clear` /
+  `FrontendPublishedFactTypeGuard.checkOwnerPatch` 必须接线。
+  不得复用 `FrontendExprTypePatch` 或改 `mergeSideTable` 覆盖语义。
 - `FrontendBodyOwnerProcedures`：对**已 record** 的 lambda，把
   unsupported binding/chain 诊断换成 nested `resolveCallableOwner`
   触发。`walkRootBounded` 对 `LambdaExpression` 的剪枝**必须保留**，
@@ -697,6 +758,12 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
   **翻转**为可解析外层 capture / 当前 param / 当前 local。
 - happy path：lambda body 内 `return seed` 对 `seed` 发布
   `symbolBindings` + `CAPTURE`。
+- happy path：nested resolve 完成后 `lambdaPlans()[lambda]` 存在，
+  capture 类型是声明处类型（`var a := 1` → `int`，`var b = 1` →
+  `Variant`），且与 `CallableScope` 上对应 `CAPTURE` 同源。
+  阶段 B 结束时同一 key **仍不存在**。
+- negative path：对已发布 plan 再 patch 不同 payload 必须冲突；
+  不得靠 `withType` + `applyPatch` 覆盖。
 - negative path：`match` / const / parameter default 仍 `DEFERRED_UNSUPPORTED`。
 - negative path：合成 `LAMBDA_BODY` scope 不再被 current-scope backstop 误封
   （原 `resolveRejectsSyntheticLambdaBodyCurrentScope*` 翻转或改为
@@ -880,7 +947,7 @@ lambda body 走既有 CFG / body insn pass。
   未标注参数 → `Variant`；外层 `CAPTURE` 传递同源类型；`self` →
   enclosing `GdObjectType`；for 迭代器 → `FOR_ITERATION_RESOLUTION`
   已提交结果。负例：lambda 之后对 source 的断言不改变已冻结
-  capture 类型；`CallableScope` 的 CAPTURE 绑定与 `CaptureEntry.type`
+  capture 类型；`CallableScope` 的 CAPTURE 绑定与 `LambdaCaptureEntry.type`
   同源。
 
 ### 阶段 I — Compile gate 解封与文档吸收
@@ -1039,6 +1106,9 @@ FrontendCompileCheckAnalyzerTest,ConstructLambdaInsnGenTest,DomLirParserTest,Lir
    上按 `sourceDeclaration` 匹配的已 flush 稳定化 update，并同步
    `resetCaptureType`。不得读物理 scope slot，不得回落
    `VAR_TYPE_POST` / 函数末尾 overlay。
+   **首次 publish**：阶段 B 不写 `lambdaPlans()`；阶段 C 填完后
+   第一次发布完整 plan；独立 `LAMBDA_RESOLUTION` stage + overlay
+   槽 + patch；禁止 first-wins merge 上的 `withType` 回填。
 3. **嵌套 suite export**：lambda 的 `FrontendCallableExportBatch` 不得写进
    外层函数的 statement overlay。必须独立 apply。
 4. **表达式中的 lambda 与 Interface 遍历顺序**：必须测
