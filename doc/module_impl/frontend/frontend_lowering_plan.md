@@ -118,7 +118,6 @@
 
 - `for` 的 `OBJECT_CUSTOM`（Object `_iter_*`）；其余已注册 route 已闭环，见 `frontend_for_range_loop_implementation.md`
 - `match`
-- 外层 body 表达式树中的 `LambdaExpression`（lambda 计划阶段 F 的 `construct_lambda` item；lambda **body** 的 CFG/body lowering 已于阶段 E 经 `LAMBDA_BODY` context 接入共享管线）
 - `assert`
 - `ConditionalExpression`
 
@@ -224,7 +223,7 @@
 
 - `for` 的 `OBJECT_CUSTOM`（Object `_iter_*` 精确协议）仍属 post-MVP；其余已注册 route 已接入，见 `frontend_for_range_loop_implementation.md`
 - `match`
-- `lambda`
+- `lambda`（前端 sema/lowering 已于 lambda 计划阶段 A–F 落地至外层 `construct_lambda` + lambda body 全管线；C runtime/codegen 与 compile gate 解封仍属 post-MVP）
 - 参数默认值语义本身
 - block-local `const`
 - signal coroutine use-site（`await signal`；`.emit` / `.connect` 已闭环，见 `frontend_signal_support.md`）

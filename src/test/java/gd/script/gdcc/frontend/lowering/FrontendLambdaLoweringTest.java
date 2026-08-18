@@ -3,6 +3,9 @@ package gd.script.gdcc.frontend.lowering;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
+import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.LambdaConstructItem;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringBodyInsnPass;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringBuildCfgPass;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPass;
@@ -14,11 +17,14 @@ import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendLambdaPlan;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
+import gd.script.gdcc.lir.insn.ConstructLambdaInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -37,6 +43,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Phase E lambda shell-synthesis contract tests (frontend_lambda_plan.md §阶段E / §3.7).
+/// Phase F adds the outer-body construction contract (§阶段F): recorded lambda occurrences
+/// lower to `LambdaConstructItem` / `construct_lambda` with enclosing-frame capture operands.
 ///
 /// The compile gate still blocks lambdas in `analyzeForCompile` until phase I, so these tests run
 /// the shared `analyze()` pipeline and then drive the lowering passes manually — the same recipe
@@ -238,6 +246,273 @@ final class FrontendLambdaLoweringTest {
         var captureVariable = shell.getVariableById("seed");
         assertNotNull(captureVariable);
         assertEquals("int", captureVariable.type().getTypeName());
+    }
+
+    /// 阶段 F 验收 happy path：无 capture 的 lambda 在外层 body 产生一条
+    /// `construct_lambda "_lambda_0"`（无 capture operand），且 CFG item 不发布任何
+    /// operand value id、绝不走 `DirectSlotAliasValueItem`；`_lambda_0` shell 仍带参数与 return。
+    @Test
+    void outerBodyConstructsCapturelessLambdaValue() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_construct_plain.gd", """
+                class_name LambdaConstructPlain
+                extends RefCounted
+                
+                func ping():
+                    var cb := func(x: int):
+                        return x
+                    return cb
+                """);
+
+        var outerContext = requireExecutableContext(prepared.context(), "ping");
+        var item = requireSingleLambdaConstructItem(outerContext);
+        assertEquals("_lambda_0", item.lambdaName());
+        assertTrue(item.captureOperands().isEmpty());
+        assertTrue(item.operandValueIds().isEmpty());
+        var graph = outerContext.requireFrontendCfgGraph();
+        assertTrue(graph.nodeIds().stream()
+                .map(graph::requireNode)
+                .filter(FrontendCfgGraph.SequenceNode.class::isInstance)
+                .flatMap(node -> ((FrontendCfgGraph.SequenceNode) node).items().stream())
+                .noneMatch(DirectSlotAliasValueItem.class::isInstance));
+
+        var insn = requireSingleConstructLambdaInsn(outerContext.targetFunction());
+        assertEquals("_lambda_0", insn.lambdaName());
+        assertTrue(insn.captures().isEmpty());
+        assertNotNull(insn.resultId());
+        var shell = lambdaFunctions(requireClass(prepared, "LambdaConstructPlain"), 1).getFirst();
+        assertEquals(1, shell.getParameterCount());
+        assertEquals("x", shell.getParameter(0).name());
+        assertTrue(allInstructions(shell).stream().anyMatch(ReturnInsn.class::isInstance));
+    }
+
+    /// 阶段 F 验收 happy path：捕获外层 `seed` 时 insn 恰好携带 `$seed` operand；capture 类型
+    /// 仍是外层绑定的声明处类型（§3.4），而不是外层函数末尾的 slot 类型。
+    @Test
+    void outerBodyConstructInsnReadsCapturedLocalSlot() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_construct_capture.gd", """
+                class_name LambdaConstructCapture
+                extends RefCounted
+                
+                func ping():
+                    var seed := 40
+                    var cb := func():
+                        return seed + 2
+                    return cb
+                """);
+
+        var outerContext = requireExecutableContext(prepared.context(), "ping");
+        var item = requireSingleLambdaConstructItem(outerContext);
+        assertEquals(1, item.captureOperands().size());
+        var operand = assertInstanceOf(
+                LambdaConstructItem.VariableSlotOperand.class,
+                item.captureOperands().getFirst()
+        );
+        assertEquals("seed", operand.slotId());
+
+        var insn = requireSingleConstructLambdaInsn(outerContext.targetFunction());
+        assertEquals(List.of("seed"), captureOperandIds(insn));
+        var shell = lambdaFunctions(requireClass(prepared, "LambdaConstructCapture"), 1).getFirst();
+        assertEquals("int", shell.getCapture("seed").type().getTypeName());
+    }
+
+    /// 阶段 F 验收 happy path（§3.5）：使用外层实例成员的 lambda 以 leading `self` capture
+    /// 构造，item 侧是专用 `SelfSlotOperand.SELF_SLOT` descriptor（而非伪造的 SELF 标识符
+    /// 读取），insn 侧对应 `$self` operand。
+    @Test
+    void outerBodyConstructInsnUsesSelfSlotForSelfCapture() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_construct_self.gd", """
+                class_name LambdaConstructSelf
+                extends RefCounted
+                
+                func helper():
+                    return 1
+                
+                func ping():
+                    var cb := func():
+                        return helper()
+                    return cb
+                """);
+
+        var outerContext = requireExecutableContext(prepared.context(), "ping");
+        var item = requireSingleLambdaConstructItem(outerContext);
+        assertEquals(1, item.captureOperands().size());
+        assertSame(LambdaConstructItem.SelfSlotOperand.SELF_SLOT, item.captureOperands().getFirst());
+
+        var insn = requireSingleConstructLambdaInsn(outerContext.targetFunction());
+        assertEquals(List.of("self"), captureOperandIds(insn));
+        var shell = lambdaFunctions(requireClass(prepared, "LambdaConstructSelf"), 1).getFirst();
+        assertEquals("self", shell.getCaptureList().getFirst().getName());
+    }
+
+    /// 阶段 F 验收 happy path：嵌套 lambda 的 capture operand 从外层 lambda 的 CAPTURE slot
+    /// 按名读取——内层 `construct_lambda` 出现在外层 lambda body 中且 operand 名与外层
+    /// shell 的 capture 名一致。
+    @Test
+    void nestedLambdaConstructInsnReadsEnclosingCaptureSlot() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_construct_nested.gd", """
+                class_name LambdaConstructNested
+                extends RefCounted
+                
+                func ping():
+                    var seed := 40
+                    var outer := func():
+                        var inner := func():
+                            return seed + 2
+                        return inner
+                    return outer
+                """);
+
+        var outerContext = requireExecutableContext(prepared.context(), "ping");
+        var outerConstruct = requireSingleConstructLambdaInsn(outerContext.targetFunction());
+        assertEquals("_lambda_0", outerConstruct.lambdaName());
+        assertEquals(List.of("seed"), captureOperandIds(outerConstruct));
+
+        var lambdaContexts = requireLambdaContexts(prepared.context(), 2);
+        var outerLambdaContext = lambdaContexts.stream()
+                .filter(context -> context.targetFunction().getName().equals("_lambda_0"))
+                .findFirst()
+                .orElseThrow();
+        var innerConstruct = requireSingleConstructLambdaInsn(outerLambdaContext.targetFunction());
+        assertEquals("_lambda_1", innerConstruct.lambdaName());
+        assertEquals(List.of("seed"), captureOperandIds(innerConstruct));
+    }
+
+    /// 阶段 F 验收 happy path：return 位置的 lambda 把 preferred result value id 直接穿到
+    /// construct item 上，stop node 的 returnValueId 与 item 的 resultValueId 一致，insn 的
+    /// result slot 就是该 value id 对应的 `cfg_tmp_*`。
+    @Test
+    void returnPositionLambdaConstructThreadsPreferredResultId() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_construct_return.gd", """
+                class_name LambdaConstructReturn
+                extends RefCounted
+                
+                func ping():
+                    return func(x: int):
+                        return x
+                """);
+
+        var outerContext = requireExecutableContext(prepared.context(), "ping");
+        var item = requireSingleLambdaConstructItem(outerContext);
+        var graph = outerContext.requireFrontendCfgGraph();
+        var stopNode = graph.nodeIds().stream()
+                .map(graph::requireNode)
+                .filter(FrontendCfgGraph.StopNode.class::isInstance)
+                .map(FrontendCfgGraph.StopNode.class::cast)
+                .findFirst()
+                .orElseThrow();
+        assertEquals(item.resultValueId(), stopNode.returnValueIdOrNull());
+
+        var insn = requireSingleConstructLambdaInsn(outerContext.targetFunction());
+        assertEquals(FrontendBodyLoweringSupport.cfgTempSlotId(item.resultValueId()), insn.resultId());
+    }
+
+    /// 阶段 F 验收 negative path：进入 CFG 构建的 lowering-ready lambda 缺已发布 plan 时
+    /// builder fail-fast（prep pass 在更早处已有同类闸门，这里锚定 builder 自身的防御）。
+    @Test
+    void buildCfgFailsFastWhenLambdaPlanIsMissing() throws Exception {
+        var prepared = analyzeAndSkeleton("lambda_construct_missing_plan.gd", """
+                class_name LambdaConstructMissingPlan
+                extends RefCounted
+                
+                func ping():
+                    var cb := func():
+                        return 1
+                    return cb
+                """);
+        new FrontendLoweringFunctionPreparationPass().run(prepared.context());
+        var lambda = findNode(prepared.unit().ast(), LambdaExpression.class, _ -> true);
+        prepared.analysisData().lambdaPlans().remove(lambda);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBuildCfgPass().run(prepared.context())
+        );
+        assertTrue(exception.getMessage().contains("without a published lambda plan"), exception::getMessage);
+    }
+
+    /// 阶段 F 验收 negative path：plan→item 与 plan→shell 任一漂移（此处通过给 shell 手工
+    /// 追加 phantom capture 模拟）都会让 body lowering 在 item capture 数与 shell capture 数
+    /// 不一致时 fail-fast，而不是静默发射不匹配的 `construct_lambda`。
+    @Test
+    void bodyInsnFailsFastWhenItemCaptureCountDivergesFromShell() throws Exception {
+        var prepared = analyzeAndSkeleton("lambda_construct_count_mismatch.gd", """
+                class_name LambdaConstructCountMismatch
+                extends RefCounted
+                
+                func ping():
+                    var seed := 40
+                    var cb := func():
+                        return seed + 2
+                    return cb
+                """);
+        new FrontendLoweringFunctionPreparationPass().run(prepared.context());
+        var shell = lambdaFunctions(requireClass(prepared, "LambdaConstructCountMismatch"), 1).getFirst();
+        shell.addCapture(new LirCaptureDef("phantom", GdIntType.INT, shell));
+        new FrontendLoweringBuildCfgPass().run(prepared.context());
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+        assertTrue(exception.getMessage().contains("capture count mismatch"), exception::getMessage);
+        assertTrue(exception.getMessage().contains("_lambda_0"), exception::getMessage);
+    }
+
+    /// Phase F pipeline: unlike `prepareLambdaOnlyContexts`, the full context set stays published
+    /// so the outer executable body (lambda construction) and the lambda bodies both flow through
+    /// the CFG and body-insn passes.
+    private static @NotNull PreparedLambdaModule prepareFullPipelineContexts(
+            @NotNull String fileName,
+            @NotNull String source
+    ) throws Exception {
+        var prepared = analyzeAndSkeleton(fileName, source);
+        new FrontendLoweringFunctionPreparationPass().run(prepared.context());
+        new FrontendLoweringBuildCfgPass().run(prepared.context());
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        return prepared;
+    }
+
+    private static @NotNull FunctionLoweringContext requireExecutableContext(
+            @NotNull FrontendLoweringContext context,
+            @NotNull String functionName
+    ) {
+        return context.requireFunctionLoweringContexts().stream()
+                .filter(functionContext -> functionContext.kind() == FunctionLoweringContext.Kind.EXECUTABLE_BODY)
+                .filter(functionContext -> functionContext.targetFunction().getName().equals(functionName))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Executable context not found: " + functionName));
+    }
+
+    private static @NotNull LambdaConstructItem requireSingleLambdaConstructItem(
+            @NotNull FunctionLoweringContext functionContext
+    ) {
+        var graph = functionContext.requireFrontendCfgGraph();
+        var items = graph.nodeIds().stream()
+                .map(graph::requireNode)
+                .filter(FrontendCfgGraph.SequenceNode.class::isInstance)
+                .flatMap(node -> ((FrontendCfgGraph.SequenceNode) node).items().stream())
+                .filter(LambdaConstructItem.class::isInstance)
+                .map(LambdaConstructItem.class::cast)
+                .toList();
+        assertEquals(1, items.size());
+        return items.getFirst();
+    }
+
+    private static @NotNull ConstructLambdaInsn requireSingleConstructLambdaInsn(
+            @NotNull LirFunctionDef function
+    ) {
+        var insns = allInstructions(function).stream()
+                .filter(ConstructLambdaInsn.class::isInstance)
+                .map(ConstructLambdaInsn.class::cast)
+                .toList();
+        assertEquals(1, insns.size());
+        return insns.getFirst();
+    }
+
+    private static @NotNull List<String> captureOperandIds(@NotNull ConstructLambdaInsn insn) {
+        return insn.captures().stream()
+                .map(operand -> assertInstanceOf(LirInstruction.VariableOperand.class, operand).id())
+                .toList();
     }
 
     /// Runs the compile-ready CFG fixture through analysis/skeleton/preparation, then re-publishes

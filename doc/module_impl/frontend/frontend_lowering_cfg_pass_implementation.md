@@ -199,6 +199,7 @@ fully-terminated 的 `if` / `elif` / `else` 允许把 region `mergeId` 指向 `S
 - `SignalLoadItem`
 - `CallableLoadItem`
 - `StandaloneCallableLoadItem`
+- `LambdaConstructItem`（lambda 计划阶段 F 起）
 - `SubscriptLoadItem`
 - `CallItem`
 - `MergeValueItem`
@@ -217,6 +218,13 @@ fully-terminated 的 `if` / `elif` / `else` 允许把 region `mergeId` 指向 `S
 - `ForLoopNextItem`：读取并经独立 `nextTempSlotId` 更新 hidden state slot，`resultValueIdOrNull() == null` 且 `hasStandaloneMaterializationSlot() == false`
 
 item 携带的 operation descriptor 直接来自 `FrontendForLoweringContract`，lowering 不重新查询 route 或硬编码 intrinsic 名称。
+
+`LambdaConstructItem`（lambda 计划阶段 F 起）表示外层 body 中一处已 record lambda 的构造：
+
+- 持有 `lambdaAnchor`（`LambdaExpression`，materialization 结果类型取其 `RESOLVED(GdCallableType)`）、合成函数名、有序 `CaptureOperand` 列表与 `resultValueId`
+- capture operand 是外层 frame 的直接 slot 读，不经 value-id 数据流，故 `operandValueIds()` 恒为空：`VariableSlotOperand(slotId)` 按名读外层 `LOCAL_VAR` / `PARAMETER` / 外层 `CAPTURE` slot（slot id == capture 条目名）；leading `self` capture 用 `SelfSlotOperand.SELF_SLOT` 专用 descriptor，禁止伪造 `IdentifierExpression + SELF`
+- body lowering 发射 `ConstructLambdaInsn` 前在 owning class 上找回合成 shell 并端到端校验：shell 存在且 `is_lambda`、capture 数量一致、名序一致（operand slotId 按构造即 capture 名）；任一漂移 fail-fast
+- lambda body 本身的 CFG/insn 仍由阶段 E 的 `LAMBDA_BODY` context 承担，本 item 只承载外层构造点
 
 这里的核心合同是：
 
@@ -471,7 +479,7 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 - 为 executable body 发布 `frontendCfgRegions`
 - 为 compile-ready `for-in` 发布 `frontendForSourceIteratorSlots` 与 `frontendForIteratorStateSlots` registry
 - 对 property initializer 校验 `sourceOwner == property declaration`、`loweringRoot == initializer expression`
-- 对 lambda body（lambda 计划阶段 E 起）校验 `sourceOwner instanceof LambdaExpression`、`loweringRoot instanceof Block`，随后与 `EXECUTABLE_BODY` 共享同一 `publishExecutableBlockGraph`（`buildExecutableBody` + graph/region/for-slot 发布）；外层 body 表达式树中的 `LambdaExpression` 本身仍由 CFG builder fail-fast，等阶段 F 的 `construct_lambda` item 落地
+- 对 lambda body（lambda 计划阶段 E 起）校验 `sourceOwner instanceof LambdaExpression`、`loweringRoot instanceof Block`，随后与 `EXECUTABLE_BODY` 共享同一 `publishExecutableBlockGraph`（`buildExecutableBody` + graph/region/for-slot 发布）；外层 body 表达式树中的已 record `LambdaExpression` 自阶段 F 起由 CFG builder 建 `LambdaConstructItem`（缺已发布 plan 仍 fail-fast）
 
 当前不负责：
 
@@ -536,6 +544,7 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 - constructor materialization
 - `TypeTestExpression` (`is` / `is not`) with unified `is_instance_of` or folded bool lowering
 - callable-local slot type published contract
+- 已 record lambda 的外层构造（`LambdaConstructItem` → `construct_lambda`，lambda 计划阶段 F 起；C backend 对 `CONSTRUCT_LAMBDA` 的 codegen 仍属阶段 G）
 
 plain assignment 的 compile-ready surface 明确包含 direct explicit-self property assignment：
 

@@ -233,6 +233,11 @@ public final class FrontendBodyLoweringSupport {
                     CfgValueMaterializationKind.TEMP_SLOT,
                     null
             );
+            case LambdaConstructItem lambdaConstructItem -> new CfgValueMaterialization(
+                    requireExpressionType(analysisData, lambdaConstructItem.lambdaAnchor()),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
             case SubscriptLoadItem subscriptLoadItem -> new CfgValueMaterialization(
                     requireSubscriptResultType(analysisData, classRegistry, subscriptLoadItem, resolvedMaterializations),
                     CfgValueMaterializationKind.TEMP_SLOT,

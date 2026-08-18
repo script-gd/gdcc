@@ -23,7 +23,7 @@ import java.util.List;
 ///   call lowering can consume it without inventing a dead temp first
 public sealed interface ValueOpItem extends SequenceItem permits OpaqueExprValueItem, DirectSlotAliasValueItem,
         LocalDeclarationItem, AssignmentItem, CompoundAssignmentBinaryOpItem, MemberLoadItem, SignalLoadItem,
-        CallableLoadItem, StandaloneCallableLoadItem, SubscriptLoadItem,
+        CallableLoadItem, StandaloneCallableLoadItem, SubscriptLoadItem, LambdaConstructItem,
         CallItem, CastItem, TypeTestItem, MergeValueItem, BoolConstantItem, ForLoopInitItem,
         ForLoopShouldContinueItem, ForLoopGetItem, ForLoopNextItem, ContainerLiteralItem {
     /// Result value id published by this item, or `null` when the item only commits state.

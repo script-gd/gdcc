@@ -182,6 +182,12 @@ public final class FrontendBodyLoweringSession {
         return classRegistry;
     }
 
+    /// Sequence-item processors occasionally need the enclosing lowering context, e.g. resolving
+    /// a synthesized lambda shell on the owning class for the phase-F consistency check.
+    @NotNull FunctionLoweringContext functionContext() {
+        return functionContext;
+    }
+
     /// The top-binding owner procedure only publishes binding kind `SELF` for explicit
     /// `SelfExpression`. Any identifier node that still carries `SELF` means some earlier
     /// publication step leaked an impossible surface into lowering, so all body-lowering entry

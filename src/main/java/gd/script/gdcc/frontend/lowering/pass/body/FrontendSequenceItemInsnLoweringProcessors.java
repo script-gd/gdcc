@@ -14,6 +14,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopGetItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopInitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopNextItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopShouldContinueItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.LambdaConstructItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallableLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
@@ -42,6 +43,7 @@ import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructContainerLiteralInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.ConstructCallableInsn;
+import gd.script.gdcc.lir.insn.ConstructLambdaInsn;
 import gd.script.gdcc.lir.insn.ConstructSignalInsn;
 import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
@@ -123,6 +125,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 new FrontendSignalLoadInsnLoweringProcessor(),
                 new FrontendCallableLoadInsnLoweringProcessor(),
                 new FrontendStandaloneCallableLoadInsnLoweringProcessor(),
+                new FrontendLambdaConstructInsnLoweringProcessor(),
                 new FrontendSubscriptLoadInsnLoweringProcessor(),
                 new FrontendCompoundAssignmentBinaryInsnLoweringProcessor(),
                 new FrontendAssignmentInsnLoweringProcessor(),
@@ -917,6 +920,72 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     node.kind(),
                     session.requireDeclaringStaticOwnerName(node.ownerName(), node.callableName()),
                     node.callableName()
+            ));
+            return block;
+        }
+    }
+
+    /// Emits `construct_lambda` for an outer-body lambda occurrence (lambda plan phase F).
+    ///
+    /// The item carries only the synthetic name plus ordered enclosing-frame capture slot reads;
+    /// the processor re-validates the synthesized shell on the owning class (existence, capture
+    /// count, and name order) so a drifted plan/shell pair fails fast here instead of silently
+    /// emitting a mismatched instruction. Capture operand slot ids equal the capture entry names
+    /// by construction (the SELF_SLOT descriptor resolves to `SELF_CAPTURE_NAME`), which is what
+    /// makes the name-order cross-check meaningful.
+    private static final class FrontendLambdaConstructInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<LambdaConstructItem, Void> {
+        @Override
+        public @NotNull Class<LambdaConstructItem> nodeType() {
+            return LambdaConstructItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull LambdaConstructItem node,
+                @Nullable Void context
+        ) {
+            var lambdaFunction = session.functionContext().owningClass().getFunctions().stream()
+                    .filter(function -> function.getName().equals(node.lambdaName()))
+                    .findFirst()
+                    .orElse(null);
+            if (lambdaFunction == null || !lambdaFunction.isLambda()) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "lambda construct requires a synthesized lambda shell named '"
+                                + node.lambdaName() + "' on the owning class"
+                );
+            }
+            var shellCaptures = lambdaFunction.getCaptureList();
+            if (shellCaptures.size() != node.captureOperands().size()) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "lambda construct capture count mismatch: item carries "
+                                + node.captureOperands().size() + " operand(s) but shell '"
+                                + node.lambdaName() + "' declares " + shellCaptures.size() + " capture(s)"
+                );
+            }
+            for (var index = 0; index < shellCaptures.size(); index++) {
+                if (!shellCaptures.get(index).getName().equals(node.captureOperands().get(index).slotId())) {
+                    throw session.unsupportedSequenceItem(
+                            node,
+                            "lambda construct capture order mismatch at index " + index + ": item operand '"
+                                    + node.captureOperands().get(index).slotId() + "' but shell '"
+                                    + node.lambdaName() + "' declares capture '"
+                                    + shellCaptures.get(index).getName() + "'"
+                    );
+                }
+            }
+            var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
+            block.appendNonTerminatorInstruction(new ConstructLambdaInsn(
+                    resultSlotId,
+                    node.lambdaName(),
+                    node.captureOperands().stream()
+                            .<LirInstruction.Operand>map(operand ->
+                                    new LirInstruction.VariableOperand(operand.slotId()))
+                            .toList()
             ));
             return block;
         }

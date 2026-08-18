@@ -9,18 +9,21 @@
 
 ## 文档状态
 
-- 状态：阶段 A、B、C、D、E 已落地；F–I 尚未实施。lambda body 已成为 supported executable
+- 状态：阶段 A、B、C、D、E、F 已落地；G–I 尚未实施。lambda body 已成为 supported executable
   suite：resolver / interface / suite 解封，nested resolve 经独立 `LAMBDA_RESOLUTION`
-  owner 首次发布完整 `FrontendLambdaPlan`（capture 声明处类型已填充并与 scope 同源）；
+  owner 首次发布完整 `FrontendLambdaPlan`（capture 声明处类型与返回类型已填充并与 scope 同源）；
   已 record lambda 的表达式类型首次发布 `RESOLVED(GdCallableType)`（silent 稳定化不解析
   lambda initializer，`:=` slot 保持 inventory `Variant`），type-check 经显式 re-entry
-  walk 已 record lambda 的 body；prep pass 已按 plan 合成 hidden `_lambda_<k>` shell
-  （`is_lambda` + `is_hidden` + static、capture 与 plan 同源、无注入 `self` 参数），
-  并新增 `Kind.LAMBDA_BODY` 打通 CFG / body insn 两个 pass 的 lambda body 分支；compile
-  gate 对 lambda 以形态级 `sema.compile_check` blocker 保持 fail-closed。外层 body 的
-  `construct_lambda` lowering、C runtime、compile surface 解封仍留待后续阶段。
-- 更新时间：2026-08-18（阶段 E 落地：hidden `LirFunctionDef` 合成 + `Kind.LAMBDA_BODY`
-  + `_lambda_` 保留前缀）
+  walk 已 record lambda 的 body（return slot 即 plan 返回类型）；prep pass 已按 plan 合成
+  hidden `_lambda_<k>` shell（`is_lambda` + `is_hidden` + static、capture 与 plan 同源、
+  无注入 `self` 参数），并新增 `Kind.LAMBDA_BODY` 打通 CFG / body insn 两个 pass 的 lambda
+  body 分支；外层 body 的已 record lambda 经 `LambdaConstructItem` lowering 成
+  `construct_lambda "<name>" $capture...`（self capture 走专用 `SELF_SLOT` descriptor），
+  且 item 与 shell 的 capture 数/名序在 body lowering 处端到端校验。compile gate 对 lambda
+  以形态级 `sema.compile_check` blocker 保持 fail-closed；C runtime 与 compile surface
+  解封仍留待后续阶段。
+- 更新时间：2026-08-18（阶段 F 落地：`LambdaConstructItem` + `construct_lambda` 发射；
+  阶段 E 落地：hidden `LirFunctionDef` 合成 + `Kind.LAMBDA_BODY` + `_lambda_` 保留前缀）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/scope/**`
@@ -121,6 +124,7 @@ Parser AST 为 `dev.superice.gdparser.frontend.ast.LambdaExpression`，已提供
 | Inspection | `FrontendAnalysisInspectionTool.hasUnsupportedOrDeferredAncestor` | 把 `LambdaExpression` 硬编码为 deferred 祖先 |
 | Skeleton | `FrontendClassSkeletonBuilder.toLirFunction` | 只从 `FunctionDeclaration` 建 `LirFunctionDef`；**阶段 E 起** `_lambda_` 前缀并入 `RESERVED_PREFIXES`，source member 复用即 `sema.class_skeleton` + skip |
 | Func pre-pass | `FrontendLoweringFunctionPreparationPass.visitStatements` | **阶段 E 已翻面**：发现式 walk 可执行 body（含 lambda body 递归），按已发布 plan 合成 `_lambda_<k>` shell + `LAMBDA_BODY` 上下文；缺 plan fail-fast |
+| CFG construct | `FrontendCfgGraphBuilder.buildValue` | **阶段 F 已翻面**：已 record lambda → `LambdaConstructItem`（capture operand 按名读外层 slot，self 走 `SELF_SLOT` descriptor）；缺 plan 仍 fail-fast |
 | CFG alias | `FrontendCfgGraphBuilder.requireDirectSlotAliasRoot` | `CAPTURE` fail-fast |
 | C codegen | `ConstructInsnGen` | 无 `CONSTRUCT_LAMBDA` case |
 | DOM serialize | `DomLirSerializer` | **已修复**：`is_lambda` 函数序列化真实 `<capture name type>` 列表，`DomLirParser` 对称回读 |
@@ -990,6 +994,37 @@ lambda body 走既有 CFG / body insn pass。
 - negative path：`FrontendCfgGraphBuilderTest` 对 **外层**
   `CAPTURE` alias 的 fail-fast **保留**。
 - negative path：plan 与 CFG capture 数量不一致 → fail-fast。
+
+> 状态：已落地（2026-08-18）。
+>
+> - `LambdaConstructItem`（`cfg/item`）：持有 `lambdaAnchor`（`LambdaExpression`，供
+>   materialization 取 `RESOLVED(GdCallableType)` 结果类型）、合成名、有序
+>   `CaptureOperand` 列表与 `resultValueId`；`operandValueIds()` 为空（capture 是外层
+>   frame 的直接 slot 读，不经 value-id 数据流）。`CaptureOperand` 两个实现：
+>   `VariableSlotOperand(slotId)`（LOCAL/PARAMETER/外层 CAPTURE 按名读）与
+>   `SelfSlotOperand.SELF_SLOT`（enum 单例 descriptor，slotId 即
+>   `FrontendLambdaCapturePlan.SELF_CAPTURE_NAME`，不伪造 `IdentifierExpression + SELF`）。
+> - `FrontendCfgGraphBuilder.buildValue` 新增 `case LambdaExpression`：
+>   `buildLambdaConstructValue` 从 `lambdaPlans()` 取 plan（缺失即 fail-fast），按 plan
+>   顺序生成 operand（`capturesSelf` 时防御性校验 leading 项名为 `self`），
+>   `preferredResultValueId` 照常穿透。
+> - `FrontendBodyLoweringSupport.requireProducedValueMaterialization` 新增 case：结果类型
+>   取 `expressionTypes()[lambdaAnchor]`，`TEMP_SLOT`。
+> - `FrontendLambdaConstructInsnLoweringProcessor`（已注册进 sequence-item registry）：
+>   先在 owning class 上找回 shell 并端到端校验（存在且 `is_lambda`、capture 数一致、
+>   名序一致——operand slotId 按构造即 capture 名），再发射
+>   `ConstructLambdaInsn(cfg_tmp_<resultValueId>, name, captures…)`。`ConstructLambdaInsn`
+>   补了防御性 compact ctor（name 非 blank、captures 非空拷贝）。
+> - `FrontendBodyLoweringSession` 新增包级 `functionContext()` accessor 供 processor 取
+>   owning class。
+> - 测试（`FrontendLambdaLoweringTest` 新增 7 例）：无 capture / 本地 capture（`$seed`）/
+>   self capture（`SELF_SLOT` descriptor + `$self`）/ 嵌套外层 CAPTURE slot 读（内层 insn
+>   落在外层 lambda body，operand 名与外层 capture 同名）/ return 位置 preferred id 穿透；
+>   negative：builder 缺 plan fail-fast、item 与 shell capture 数不一致 fail-fast
+>   （手工给 shell 追加 phantom capture 模拟漂移）。既有
+>   `buildExecutableBodyFailsFastWhenReceiverBindingIsCaptureAliasRoot` 保持不变并通过。
+> - 外层 body 对 lambda 的其它表达式位置（如 call argument）走同一 `buildValue` 路径，
+>   无额外分支。
 
 ### 阶段 G — C runtime 与 codegen
 

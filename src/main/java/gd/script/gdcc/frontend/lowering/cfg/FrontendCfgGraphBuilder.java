@@ -15,6 +15,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopInitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopNextItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopShouldContinueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
+import gd.script.gdcc.frontend.lowering.cfg.item.LambdaConstructItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallableLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
@@ -42,6 +43,7 @@ import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
+import gd.script.gdcc.frontend.sema.FrontendLambdaCapturePlan;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
@@ -71,6 +73,7 @@ import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PassStatement;
@@ -859,6 +862,8 @@ public final class FrontendCfgGraphBuilder {
                     buildDictionaryLiteralValue(cursor, dictionaryExpression, preferredResultValueId);
             case TypeTestExpression typeTestExpression ->
                     buildTypeTestValue(cursor, typeTestExpression, preferredResultValueId);
+            case LambdaExpression lambdaExpression ->
+                    buildLambdaConstructValue(cursor, lambdaExpression, preferredResultValueId);
             case ConditionalExpression conditionalExpression -> buildConditionalExpressionValue(conditionalExpression);
             case UnaryExpression unaryExpression -> {
                 var operandBuild = buildValue(cursor, unaryExpression.operand(), null);
@@ -889,6 +894,53 @@ public final class FrontendCfgGraphBuilder {
             );
             default -> throw unsupportedReachableExpression(expression);
         };
+    }
+
+    /// Builds an outer-body occurrence of a recorded lambda as one `LambdaConstructItem` (lambda
+    /// plan phase F). The lambda body itself is lowered separately through its own `LAMBDA_BODY`
+    /// context; here only the enclosing-frame capture operands are collected in plan order.
+    ///
+    /// Operand sources follow the frozen plan entries: named slots for `LOCAL_VAR` / `PARAMETER` /
+    /// outer `CAPTURE` sources (slot id == capture entry name, the same names-always-match rule the
+    /// body session uses), and the dedicated `SELF_SLOT` descriptor for a leading `self` capture -
+    /// never a fabricated `IdentifierExpression` with a SELF binding.
+    private @NotNull ValueBuild buildLambdaConstructValue(
+            @NotNull BuildCursor cursor,
+            @NotNull LambdaExpression lambdaExpression,
+            @Nullable String preferredResultValueId
+    ) {
+        var plan = requireAnalysisData().lambdaPlans().get(lambdaExpression);
+        if (plan == null) {
+            throw new IllegalStateException(
+                    "Frontend CFG builder reached a lowering-ready LambdaExpression without a published lambda plan"
+            );
+        }
+        var capturePlan = plan.capturePlan();
+        var captures = capturePlan.captures();
+        var captureOperands = new ArrayList<LambdaConstructItem.CaptureOperand>(captures.size());
+        for (var index = 0; index < captures.size(); index++) {
+            var capture = captures.get(index);
+            if (capturePlan.capturesSelf() && index == 0) {
+                // The capture planner guarantees a leading SELF_CAPTURE_NAME entry when capturesSelf.
+                if (!capture.name().equals(FrontendLambdaCapturePlan.SELF_CAPTURE_NAME)) {
+                    throw new IllegalStateException(
+                            "Lambda plan for '" + plan.syntheticName()
+                                    + "' declares capturesSelf but its leading capture is '" + capture.name() + "'"
+                    );
+                }
+                captureOperands.add(LambdaConstructItem.SelfSlotOperand.SELF_SLOT);
+            } else {
+                captureOperands.add(new LambdaConstructItem.VariableSlotOperand(capture.name()));
+            }
+        }
+        var resultValueId = chooseResultValueId(preferredResultValueId);
+        cursor.currentSequence().items().add(new LambdaConstructItem(
+                lambdaExpression,
+                plan.syntheticName(),
+                captureOperands,
+                resultValueId
+        ));
+        return valueRootBuild(cursor, lambdaExpression, resultValueId);
     }
 
     /// Attribute chains are expanded step by step so later lowering receives explicit intermediate
