@@ -9,15 +9,18 @@
 
 ## 文档状态
 
-- 状态：阶段 A、B、C、D 已落地；E–I 尚未实施。lambda body 已成为 supported executable
+- 状态：阶段 A、B、C、D、E 已落地；F–I 尚未实施。lambda body 已成为 supported executable
   suite：resolver / interface / suite 解封，nested resolve 经独立 `LAMBDA_RESOLUTION`
   owner 首次发布完整 `FrontendLambdaPlan`（capture 声明处类型已填充并与 scope 同源）；
   已 record lambda 的表达式类型首次发布 `RESOLVED(GdCallableType)`（silent 稳定化不解析
   lambda initializer，`:=` slot 保持 inventory `Variant`），type-check 经显式 re-entry
-  walk 已 record lambda 的 body；compile gate 对 lambda 以形态级 `sema.compile_check`
-  blocker 保持 fail-closed。LIR 合成、CFG lowering、compile surface 解封仍留待后续阶段。
-- 更新时间：2026-08-17（阶段 D 落地：表达式类型 `GdCallableType` + type-check body walk
-  + compile gate 形态级 blocker）
+  walk 已 record lambda 的 body；prep pass 已按 plan 合成 hidden `_lambda_<k>` shell
+  （`is_lambda` + `is_hidden` + static、capture 与 plan 同源、无注入 `self` 参数），
+  并新增 `Kind.LAMBDA_BODY` 打通 CFG / body insn 两个 pass 的 lambda body 分支；compile
+  gate 对 lambda 以形态级 `sema.compile_check` blocker 保持 fail-closed。外层 body 的
+  `construct_lambda` lowering、C runtime、compile surface 解封仍留待后续阶段。
+- 更新时间：2026-08-18（阶段 E 落地：hidden `LirFunctionDef` 合成 + `Kind.LAMBDA_BODY`
+  + `_lambda_` 保留前缀）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/scope/**`
@@ -116,11 +119,11 @@ Parser AST 为 `dev.superice.gdparser.frontend.ast.LambdaExpression`，已提供
 | Type-check | `FrontendTypeCheckAnalyzer.handleLambdaExpression` | **阶段 D 已翻面**：walk 已 record lambda 的 body（plan 闸门 + 继承 restriction/static） |
 | Compile surface | `FrontendCompileCheckAnalyzer.walkExpression` | **阶段 D 起**形态级 `sema.compile_check` blocker；阶段 I 才解封 |
 | Inspection | `FrontendAnalysisInspectionTool.hasUnsupportedOrDeferredAncestor` | 把 `LambdaExpression` 硬编码为 deferred 祖先 |
-| Skeleton | `FrontendClassSkeletonBuilder.toLirFunction` | 只从 `FunctionDeclaration` 建 `LirFunctionDef` |
-| Func pre-pass | `FrontendLoweringFunctionPreparationPass.visitStatements` | 不扫描表达式里的 lambda |
+| Skeleton | `FrontendClassSkeletonBuilder.toLirFunction` | 只从 `FunctionDeclaration` 建 `LirFunctionDef`；**阶段 E 起** `_lambda_` 前缀并入 `RESERVED_PREFIXES`，source member 复用即 `sema.class_skeleton` + skip |
+| Func pre-pass | `FrontendLoweringFunctionPreparationPass.visitStatements` | **阶段 E 已翻面**：发现式 walk 可执行 body（含 lambda body 递归），按已发布 plan 合成 `_lambda_<k>` shell + `LAMBDA_BODY` 上下文；缺 plan fail-fast |
 | CFG alias | `FrontendCfgGraphBuilder.requireDirectSlotAliasRoot` | `CAPTURE` fail-fast |
 | C codegen | `ConstructInsnGen` | 无 `CONSTRUCT_LAMBDA` case |
-| DOM serialize | `DomLirSerializer` | 写空 `<captures/>`，丢失 capture 描述 |
+| DOM serialize | `DomLirSerializer` | **已修复**：`is_lambda` 函数序列化真实 `<capture name type>` 列表，`DomLirParser` 对称回读 |
 
 ### 1.4 Godot 参考（语义对齐，不复制 VM）
 
@@ -539,7 +542,10 @@ MVP 冻结：
   **禁止**再写 `setStatic(false)`。
 - 参数表 = lambda 源码参数（含类型）；**不含** `self` 参数。
 - `<captures>` = `FrontendLambdaCapturePlan` 冻结列表。
-- 返回类型 = `FrontendDeclaredTypeSupport.resolveTypeOrVariant(lambda.returnType())`。
+- 返回类型 = `FrontendDeclaredTypeSupport.resolveTypeOrVariant(lambda.returnType())` 语义，
+  但在 nested resolve 入口解析**一次**并随 `FrontendLambdaPlan.returnType` 首次发布；
+  type-check 的 return slot 与 lowering 的 shell 返回类型都消费该已发布值，禁止两处
+  各自重复解析（避免重复 `sema.type_resolution` 告警与双源漂移）。
 - 不进入 `ClassScope.defineFunction` / 不进 ClassDB bind。
 - 命名不得与用户函数或 `_field_init_` / `_field_getter_` / `_field_setter_` 冲突；
   `_lambda_` 前缀视为 compiler-owned（若用户声明同名前缀，skeleton 发
@@ -557,6 +563,7 @@ IdentityHashMap<LambdaExpression, FrontendLambdaPlan>
 - 合成名 `_lambda_<k>`
 - 有序列表 `captures: List<LambdaCaptureEntry(name, type, sourceKind, sourceDeclaration)>`
 - `capturesSelf: boolean`
+- `returnType`（声明返回类型，nested resolve 入口一次解析并冻结）
 - enclosing callable AST
 - owning class canonical name
 
@@ -905,6 +912,48 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
   不覆盖合成函数。
 - negative path：缺 `FrontendLambdaPlan` 的 lambda 进入该 pass → fail-fast，
   不静默跳过。
+
+**阶段 E 落地记录（2026-08-18）**：
+
+- `FunctionLoweringContext.Kind` 新增 `LAMBDA_BODY`：`sourceOwner` 为
+  `LambdaExpression`，`loweringRoot` 为其 body `Block`。编译器穷举 switch 强制
+  BuildCfg / BodyInsn 两个 pass 同时接线，不存在"静默跳过"窗口。
+- `FrontendLoweringFunctionPreparationPass`：每个 executable 上下文
+  建立后，经 `collectLambdaContexts` 发现式 walk 其 body（遇 lambda 则合成并递归进其
+  body 找嵌套）。发现的 lambda 必须携带已发布 plan，否则
+  `requireLambdaPlan` fail-fast（`IllegalStateException`）。property-initializer
+  表达式不在扫描面内（其 lambda 未记录且带有上游 error 诊断，pipeline 在 AnalysisPass
+  即停止）。
+- 合成（`synthesizeLambdaShell`）严格按 §3.7：`new LirFunctionDef(plan.syntheticName())`
+  → `setLambda(true)`（必须先于 `addCapture`）→ `setHidden(true)` → `setStatic(true)`
+  → 返回类型 = `plan.returnType()`（nested resolve 入口已由
+  `resolveTypeOrVariant(lambda.returnType(), lambdaScope, ...)` 解析一次并随 plan 发布；
+  type-check 的 return slot 与 shell 共用该值，未知标注只告警一次）→
+  参数取自 lambda `CallableScope` 的 PARAMETER 绑定（inventory 已解析的声明类型，
+  避免 lowering 二次解析产生重复告警；缺绑定即 fail-fast）→ 按 plan 顺序
+  `addCapture(new LirCaptureDef(name, type, function))` → `owningClass.addFunction`。
+  不调 `ensureExecutableSelfParameter`；`plan.owningClassCanonicalName()` 与发现处
+  class 不一致、或合成名与既有函数冲突（`_lambda_` 保留名规则的防御侧）均 fail-fast。
+- `FrontendLoweringBuildCfgPass`：`LAMBDA_BODY` 分支校验 `sourceOwner instanceof
+  LambdaExpression` 后，与 `EXECUTABLE_BODY` 共享新抽取的
+  `publishExecutableBlockGraph`（Block loweringRoot 校验 + shell-only 校验 +
+  `buildExecutableBody` + graph/region/for-slot 发布）。
+- `FrontendLoweringBodyInsnPass`：`LAMBDA_BODY` 并入
+  `EXECUTABLE_BODY, PROPERTY_INIT` 分支跑共享 `FrontendBodyLoweringSession`；
+  session 无 Kind 分支，`setStatic(true)` 使 `declareSelfSlotIfNeeded` 不产生
+  stray `self`，`addCapture` 预登记的 capture 变量与 body 内 CAPTURE 符号读取
+  （opaque `AssignInsn` 路由）衔接。
+- `FrontendSyntheticPropertyHelperSupport`：新增 `LAMBDA_FUNCTION_PREFIX = "_lambda_"`
+  并入 `RESERVED_PREFIXES`；诊断消息按前缀分支出 "reserved synthetic lambda-function
+  prefix" 文案（property-helper 既有文案与测试锚点不变）。
+- 边界说明：外层 body 表达式树中的 `LambdaExpression` 仍由 `FrontendCfgGraphBuilder`
+  fail-fast（阶段 F 才建 `construct_lambda` item），因此阶段 E 的 CFG/body 测试只把
+  LAMBDA_BODY 上下文送入后续 pass。
+- 测试：`FrontendLambdaLoweringTest`（7 例：嵌套合成/无 capture/self leading capture/
+  缺 plan fail-fast/合成名冲突 fail-fast/CFG 接线/body 接线）；
+  `FrontendClassSkeletonTest.buildRejectsReservedLambdaFunctionPrefixButKeepsBoundaryNamesAlive`；
+  `FrontendLoweringFunctionPreparationPassTest` 的 Kind 全集断言补 `LAMBDA_BODY`。
+  全套 1216 frontend 测试 + 全项目 `test` 任务均通过。
 
 ### 阶段 F — CFG + `construct_lambda` lowering
 

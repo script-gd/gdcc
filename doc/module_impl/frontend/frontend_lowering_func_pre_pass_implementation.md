@@ -33,10 +33,11 @@
 
 function pre-pass 是 `FrontendLoweringAnalysisPass` 与 `FrontendLoweringClassSkeletonPass` 之后的第三个固定 lowering pass。它只负责把 compile-ready 的 function-shaped lowering 单元整理成统一 scaffold，供后续 CFG/body lowering 继续消费。
 
-当前稳定覆盖的 lowering 单元只有两类：
+当前稳定覆盖的 lowering 单元有三类：
 
 - `EXECUTABLE_BODY`
 - `PROPERTY_INIT`
+- `LAMBDA_BODY`（lambda 计划阶段 E 起：每个已发布 `FrontendLambdaPlan` 的 lambda 合成 hidden `_lambda_<k>` shell 并发布对应 context）
 
 `PARAMETER_DEFAULT_INIT` 当前只保留模型槽位与合同，不实际收集。
 
@@ -80,12 +81,14 @@ pre-pass 不新增新的 public lowering 入口，也不接受 `FrontendAnalysis
 - `EXECUTABLE_BODY`
 - `PROPERTY_INIT`
 - `PARAMETER_DEFAULT_INIT`
+- `LAMBDA_BODY`
 
 冻结边界：
 
 - executable callable 使用 declaration-level owner，lowering root 是 body `Block`
 - property initializer 使用 property declaration 作为 owner，lowering root 是 initializer expression
 - future parameter default 使用 parameter/default declaration 作为 owner，lowering root 只指向 default-value expression
+- lambda 使用 `LambdaExpression` 作为 owner，lowering root 是其 body `Block`；target function 是本 pass 按 plan 合成的 hidden shell（`is_lambda` + `is_hidden` + static），self 仅以 §3.5 capture 存在，不得注入 `self` 参数
 - 后续 pass 必须统一经由 `FunctionLoweringContext.analysisData()` 读取：
   - `scopesByAst()`
   - `symbolBindings()`
@@ -112,7 +115,8 @@ pre-pass 不新增新的 public lowering 入口，也不接受 `FrontendAnalysis
 - 为 supported property initializer 发布 `PROPERTY_INIT` context
 - 在 `LirPropertyDef.initFunc` 缺失时补 `_field_init_<property>` hidden synthetic function shell
 - 当 `LirPropertyDef.initFunc` 已预先指向 synthetic shell 时，只在 shell 仍满足 property-signature 与 shell-only 合同时复用
-- `_field_init_` / `_field_getter_` / `_field_setter_` helper namespace 属于 compiler-owned synthetic surface；source member 若以这些前缀开头，必须早于本 pass 在 skeleton/scope 恢复边界被诊断并跳过
+- `_field_init_` / `_field_getter_` / `_field_setter_` / `_lambda_` namespace 属于 compiler-owned synthetic surface；source member 若以这些前缀开头，必须早于本 pass 在 skeleton/scope 恢复边界被诊断并跳过
+- 发现式 walk 每个 executable body（含 lambda body 递归）中的 `LambdaExpression`，按已发布 `FrontendLambdaPlan` 合成 hidden `_lambda_<k>` shell 并发布 `LAMBDA_BODY` context；发现的 lambda 缺 plan、plan 的 owning class 与发现处不一致、或合成名与既有函数冲突时 fail-fast
 
 `FrontendLoweringFunctionPreparationPass` 明确不负责：
 
@@ -223,8 +227,9 @@ function pre-pass 结束后，`LirModule` 仍必须保持 shell-only 中间态�
 
 - 在 owning class 上追加 hidden property-init synthetic shell
 - 对应 property 的 `initFunc` 指向该 shell
+- 按已发布 `FrontendLambdaPlan` 在 owning class 上追加 hidden synthesized lambda shell（lambda 计划阶段 E 起，`is_lambda` + `is_hidden` + static，capture 列表与 plan 同源）
 
-这条 shell-only 约束只适用于 pre-pass 产物，不得外推到默认 lowering pipeline 终态；后续 CFG/body pass 会继续把 executable body 与 supported property initializer 写成真实函数体。
+这条 shell-only 约束只适用于 pre-pass 产物，不得外推到默认 lowering pipeline 终态；后续 CFG/body pass 会继续把 executable body、supported property initializer 与 lambda body 写成真实函数体。
 
 当前 no-initializer property 的边界也固定为：
 
@@ -238,6 +243,7 @@ function pre-pass 结束后，`LirModule` 仍必须保持 shell-only 中间态�
 涉及 function pre-pass 合同的改动，至少要继续覆盖以下回归锚点：
 
 - compile-ready executable/property-init context 发布
+- lambda shell 合成与 `LAMBDA_BODY` context 发布（capture 列表与 plan 同源、无注入 `self` 参数）
 - context 总数与 kind 分布
 - executable callable 对应 owning class / target function / constructor `_init`
 - property initializer 对应 owning class / property / target init function
@@ -253,6 +259,7 @@ negative path 至少要锚定：
 
 - 缺失 published fact 时 fail-fast
 - shell-only contract 被破坏时 fail-fast
+- 发现的 lambda 缺已发布 `FrontendLambdaPlan`、plan owning class 与发现处不一致、或合成名与既有函数冲突时 fail-fast，不得静默跳过或覆盖
 - 不得把 pre-pass 的 shell-only 中间态误写成整个 lowering pipeline 的最终合同
 - 不存在 silent skip 掩盖协议破坏
 

@@ -61,6 +61,9 @@
   - 发布 expression-rooted frontend CFG graph
   - 不伪造 `Block` 或 property-init-only node kind
   - 复用同一套 body lowering session materialize `LirBasicBlock` / instruction
+- `LAMBDA_BODY`（lambda 计划阶段 E 起）
+  - 复用 executable-block 构图与共享 body session materialize lambda body
+  - 合成 shell 的 capture 变量已由 `addCapture` 预登记，body 内 CAPTURE 读取走 opaque 符号路由
 - `PARAMETER_DEFAULT_INIT`
   - 只保留 context kind 与模型槽位，不接入默认 pipeline
 
@@ -462,12 +465,13 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 
 当前只负责：
 
-- 消费 compile-ready `EXECUTABLE_BODY` / `PROPERTY_INIT` context
+- 消费 compile-ready `EXECUTABLE_BODY` / `PROPERTY_INIT` / `LAMBDA_BODY` context
 - 调用 `frontend.lowering.cfg` 下的 builder
 - 发布 `frontendCfgGraph`
 - 为 executable body 发布 `frontendCfgRegions`
 - 为 compile-ready `for-in` 发布 `frontendForSourceIteratorSlots` 与 `frontendForIteratorStateSlots` registry
 - 对 property initializer 校验 `sourceOwner == property declaration`、`loweringRoot == initializer expression`
+- 对 lambda body（lambda 计划阶段 E 起）校验 `sourceOwner instanceof LambdaExpression`、`loweringRoot instanceof Block`，随后与 `EXECUTABLE_BODY` 共享同一 `publishExecutableBlockGraph`（`buildExecutableBody` + graph/region/for-slot 发布）；外层 body 表达式树中的 `LambdaExpression` 本身仍由 CFG builder fail-fast，等阶段 F 的 `construct_lambda` item 落地
 
 当前不负责：
 
@@ -493,7 +497,7 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 
 当前内部组织也已经冻结为以下形状：
 
-- `FrontendLoweringBodyInsnPass` 本体只保留 compile-ready function context 调度；当前默认 pipeline 覆盖 executable-body 与 property-init，parameter-default 继续显式 fail-fast
+- `FrontendLoweringBodyInsnPass` 本体只保留 compile-ready function context 调度；当前默认 pipeline 覆盖 executable-body、property-init 与 lambda-body（阶段 E 起并入共享 session 分支；合成 shell 的 `setStatic(true)` 保证 `declareSelfSlotIfNeeded` 不产生 stray `self`），parameter-default 继续显式 fail-fast
 - 真实的 per-function lowering state 收口到 `frontend.lowering.pass.body.FrontendBodyLoweringSession`
 - CFG node、`SequenceItem`、opaque expression root、assignment target / attribute step 都通过 `FrontendInsnLoweringProcessor` 注册表按“当前节点实际类型”动态分派
 - `FrontendInsnLoweringProcessor` 现在还显式返回 lowering 结束后的当前 continuation block；`SequenceNode` 会把这个 block 一路传给后续 item，因此 writable-route runtime gate 生成的 synthetic `apply/skip/continue` blocks 不会把后续 lowering 误挂回原始 node entry block

@@ -34,7 +34,7 @@
   - 不在这里重做表达式求值、binding、member/call 解析或 scope 构建
   - 不在这里补 suite merge、missing-return、all-path return exhaustiveness 分析
   - 不在这里转正 `match`、parameter default、block-local `const`、class `const` 的正式 body 语义
-  - `lambda` body 遍历已于 lambda 计划阶段 D 落地：已 record lambda 经 `scanNestedLambdaBodies` 显式 re-entry 由 `handleLambdaExpression` walk body（以 `lambdaPlans()` 存在性为闸门，继承 enclosing callable 的 restriction/static context，return slot 暂为 `Variant`——声明返回类型的检查随阶段 E 合成函数落地）；未记录 lambda（property initializer / match / parameter default）保持 fail-closed，不进入 body
+  - `lambda` body 遍历已于 lambda 计划阶段 D 落地：已 record lambda 经 `scanNestedLambdaBodies` 显式 re-entry 由 `handleLambdaExpression` walk body（以 `lambdaPlans()` 存在性为闸门，继承 enclosing callable 的 restriction/static context）；阶段 E 起 return slot 为 `FrontendLambdaPlan.returnType()`（nested resolve 入口一次解析的声明返回类型），return 不匹配或声明非 void/Variant 下的 bare `return` 走普通 `sema.type_check` 诊断；未记录 lambda（property initializer / match / parameter default）保持 fail-closed，不进入 body
   - 不在这里实现或发布 `FrontendForIterationPlan`（它由 for-iteration resolution owner 发布）；type-check 只消费已发布 plan 做 route-aware header 校验（range arity / argument int slot / 显式 iterator element conversion）并遍历 for body，不重新推导 iterable route
   - 不在这里实现 property-side inference/backfill，也不在 type-check analyzer 内维护平行 implicit conversion 规则；`int -> float`、同维度 `Vector*i -> Vector*` 与 `StringName` / `String` 互转只通过 `frontend_implicit_conversion_matrix.md` 与 shared boundary helper 生效
   - 不在这里实现 frontend -> LIR 的 truthiness lowering 或 `@onready` 的 runtime / ready-time 语义

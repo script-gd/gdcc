@@ -118,7 +118,7 @@
 
 - `for` 的 `OBJECT_CUSTOM`（Object `_iter_*`）；其余已注册 route 已闭环，见 `frontend_for_range_loop_implementation.md`
 - `match`
-- `lambda`
+- 外层 body 表达式树中的 `LambdaExpression`（lambda 计划阶段 F 的 `construct_lambda` item；lambda **body** 的 CFG/body lowering 已于阶段 E 经 `LAMBDA_BODY` context 接入共享管线）
 - `assert`
 - `ConditionalExpression`
 

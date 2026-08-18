@@ -157,11 +157,13 @@ void run(FrontendLoweringContext context)
 - `EXECUTABLE_BODY`
 - `PROPERTY_INIT`
 - `PARAMETER_DEFAULT_INIT`
+- `LAMBDA_BODY`
 
 当前实现已实际发布：
 
 - `EXECUTABLE_BODY`
 - `PROPERTY_INIT`
+- `LAMBDA_BODY`（lambda 计划阶段 E 起：prep pass 按已发布 `FrontendLambdaPlan` 合成 hidden `_lambda_<k>` shell）
 
 `PARAMETER_DEFAULT_INIT` 当前只冻结模型，不实际收集。
 
@@ -253,6 +255,10 @@ void run(FrontendLoweringContext context)
   - `initFunc` 为空时当前兼容命名基线为 `_field_init_<property>`
   - 若 `initFunc` 已存在，对应 shell 必须保持 hidden、property-compatible 且无 body，才能继续复用
   - shell 仍无 basic block / `entryBlockId`
+- 同一 pass 允许按已发布 `FrontendLambdaPlan` 追加 hidden synthesized lambda shell（lambda 计划阶段 E 起）：
+  - 名称来自 plan 的 `_lambda_<k>`，`is_lambda` + `is_hidden` + static 同时为真
+  - 参数为源码参数（无注入 `self`），`<captures>` 与 plan 同源，shell 仍无 basic block / `entryBlockId`
+  - 发现的 lambda 缺 plan、owning class 不一致或合成名冲突时 fail-fast
 - 所有 `LirFunctionDef` 当前都保持 shell-only 状态：
   - `basicBlockCount == 0`
   - `entryBlockId` 为空

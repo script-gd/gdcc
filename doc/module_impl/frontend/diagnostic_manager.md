@@ -133,7 +133,7 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `forIterationPlans`
 - `typeTestTargets`
 - `containerLiteralPlans`
-- `lambdaPlans`（阶段 A 数据面已接线；阶段 B 把 lambda inventory 绑定进 scope；阶段 C 起由 nested resolve 入口经独立 `LAMBDA_RESOLUTION` owner 首次发布完整 plan，capture 声明处类型已填充；阶段 D 起已 record lambda 的 `expressionTypes` 由 EXPR_TYPE owner 首次发布 `RESOLVED(GdCallableType)`）
+- `lambdaPlans`（阶段 A 数据面已接线；阶段 B 把 lambda inventory 绑定进 scope；阶段 C 起由 nested resolve 入口经独立 `LAMBDA_RESOLUTION` owner 首次发布完整 plan，capture 声明处类型已填充；阶段 D 起已 record lambda 的 `expressionTypes` 由 EXPR_TYPE owner 首次发布 `RESOLVED(GdCallableType)`；阶段 E 起 plan 携带 `returnType`——nested resolve 入口一次解析的声明返回类型，type-check return slot 与 lowering shell 共用）
 
 其中：
 

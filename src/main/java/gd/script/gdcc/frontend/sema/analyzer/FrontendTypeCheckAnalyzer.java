@@ -1175,10 +1175,11 @@ public class FrontendTypeCheckAnalyzer {
         /// Recorded lambdas re-enter here from `scanNestedLambdaBodies`: the body already resolved
         /// through its nested suite, so type-check walks it as an independent callable island that
         /// inherits the enclosing callable's restriction/static context (plan §3.2). The return
-        /// slot stays `Variant` until the synthetic-function phase resolves the declared return
-        /// type, so `return expr` stays compatible via the ordinary pack boundary and bare
-        /// `return` remains legal. Unrecorded lambdas (property initializer / parameter default /
-        /// skipped subtrees) publish no plan and no body facts, so they stay fail-closed.
+        /// slot is the declared return type published on the `FrontendLambdaPlan` (phase E), so a
+        /// mismatched or bare `return` gets the ordinary `sema.type_check` diagnostics instead of
+        /// drifting against the synthesized shell's return boundary downstream. Unrecorded lambdas
+        /// (property initializer / parameter default / skipped subtrees) publish no plan and no
+        /// body facts, so they stay fail-closed.
         @Override
         public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
             if (isNotPublished(lambdaExpression)
@@ -1189,7 +1190,7 @@ public class FrontendTypeCheckAnalyzer {
             walkCallableBody(
                     lambdaExpression,
                     lambdaExpression.body(),
-                    GdVariantType.VARIANT,
+                    Objects.requireNonNull(analysisData.lambdaPlans().get(lambdaExpression)).returnType(),
                     currentRestriction,
                     currentStaticContext
             );

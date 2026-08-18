@@ -14,6 +14,7 @@ import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.scope.CallableScopeKind;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBodyStructuralCompleteness;
+import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendInterfaceSurface;
 import gd.script.gdcc.frontend.sema.FrontendLambdaCapturePlan;
 import gd.script.gdcc.frontend.sema.FrontendLambdaPlan;
@@ -253,10 +254,21 @@ public class FrontendSuiteResolver {
             lambdaScope.resetCaptureType(entry.name(), declaration, entry.type());
             captures.add(entry);
         }
+        // The declared return type resolves exactly once here, at nested-resolve entry: type-check
+        // (return slot) and lowering (shell return type) both consume the published plan value, so
+        // an unknown annotation warns once and the two consumers can never drift (plan §3.7).
+        var returnType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
+                lambda.returnType(),
+                lambdaScope,
+                analysisData.moduleSkeleton().topLevelCanonicalNameMap(),
+                context.sourcePath(),
+                context.diagnosticManager()
+        );
         var plan = new FrontendLambdaPlan(
                 lambda,
                 nextLambdaSyntheticName(owningClass.getName()),
                 FrontendLambdaCapturePlan.of(captures),
+                returnType,
                 enclosingCallable,
                 owningClass.getName()
         );

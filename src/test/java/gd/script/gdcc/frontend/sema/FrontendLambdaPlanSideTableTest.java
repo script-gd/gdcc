@@ -10,6 +10,7 @@ import gd.script.gdcc.exception.FrontendAnalysisPatchException;
 import gd.script.gdcc.frontend.sema.patch.FrontendTopBindingPatch;
 import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -57,6 +58,7 @@ class FrontendLambdaPlanSideTableTest {
                         )),
                         false
                 ),
+                GdVariantType.VARIANT,
                 emptyFunction(),
                 "Hero"
         ));
@@ -91,6 +93,7 @@ class FrontendLambdaPlanSideTableTest {
                         List.of(new LambdaCaptureEntry("seed", GdIntType.INT, ScopeValueKind.LOCAL, new Object())),
                         false
                 ),
+                GdVariantType.VARIANT,
                 emptyFunction(),
                 "Hero"
         );

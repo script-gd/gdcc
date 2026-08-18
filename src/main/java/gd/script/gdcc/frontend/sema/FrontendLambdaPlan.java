@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
@@ -15,6 +16,10 @@ import java.util.Objects;
 /// @param lambda                   AST identity of the lambda expression
 /// @param syntheticName            compiler-owned function name, conventionally `_lambda_<k>`
 /// @param capturePlan              ordered captures and `capturesSelf`
+/// @param returnType               declared return type resolved once at nested-resolve entry
+///                                  (`resolveTypeOrVariant` semantics); consumed identically by
+///                                  type-check (return slot) and lowering (shell return type) so the
+///                                  two cannot drift
 /// @param enclosingCallable        nearest non-lambda callable AST (`FunctionDeclaration` /
 ///                                  `ConstructorDeclaration`); identity, not a reconstructed node
 /// @param owningClassCanonicalName canonical name of the owning `LirClassDef`
@@ -22,6 +27,7 @@ public record FrontendLambdaPlan(
         @NotNull LambdaExpression lambda,
         @NotNull String syntheticName,
         @NotNull FrontendLambdaCapturePlan capturePlan,
+        @NotNull GdType returnType,
         @NotNull Node enclosingCallable,
         @NotNull String owningClassCanonicalName
 ) {
@@ -32,6 +38,7 @@ public record FrontendLambdaPlan(
             throw new IllegalArgumentException("syntheticName must not be blank");
         }
         Objects.requireNonNull(capturePlan, "capturePlan must not be null");
+        Objects.requireNonNull(returnType, "returnType must not be null");
         Objects.requireNonNull(enclosingCallable, "enclosingCallable must not be null");
         Objects.requireNonNull(owningClassCanonicalName, "owningClassCanonicalName must not be null");
         if (owningClassCanonicalName.isBlank()) {
@@ -54,6 +61,7 @@ public record FrontendLambdaPlan(
         Objects.requireNonNull(second, "second must not be null");
         return first.syntheticName().equals(second.syntheticName())
                 && FrontendLambdaCapturePlan.samePlan(first.capturePlan(), second.capturePlan())
+                && FrontendAnalysisData.sameType(first.returnType(), second.returnType())
                 && first.enclosingCallable() == second.enclosingCallable()
                 && first.owningClassCanonicalName().equals(second.owningClassCanonicalName());
     }

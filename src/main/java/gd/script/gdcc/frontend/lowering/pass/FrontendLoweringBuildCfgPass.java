@@ -9,6 +9,7 @@ import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 
@@ -31,6 +32,7 @@ public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass 
             validateTargetFunctionMembership(functionContext, lirModule);
             switch (functionContext.kind()) {
                 case EXECUTABLE_BODY -> publishStraightLineExecutableGraph(functionContext);
+                case LAMBDA_BODY -> publishLambdaBodyGraph(functionContext);
                 case PROPERTY_INIT -> publishPropertyInitializerGraph(functionContext);
                 case PARAMETER_DEFAULT_INIT -> throw new IllegalStateException(
                         "Frontend CFG build pass does not support parameter default initializer contexts yet"
@@ -44,6 +46,22 @@ public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass 
                 && !(functionContext.sourceOwner() instanceof ConstructorDeclaration)) {
             throw new IllegalStateException(describeContext(functionContext) + " must keep a callable declaration as sourceOwner");
         }
+        publishExecutableBlockGraph(functionContext);
+    }
+
+    /// Lambda bodies reuse the executable-block CFG build verbatim (lambda plan phase E): the
+    /// lowering root is the lambda's own `Block`, captures/parameters are ordinary published scope
+    /// facts by this point, and the synthetic shell stays the graph's only owner.
+    private void publishLambdaBodyGraph(@NotNull FunctionLoweringContext functionContext) {
+        if (!(functionContext.sourceOwner() instanceof LambdaExpression)) {
+            throw new IllegalStateException(
+                    describeContext(functionContext) + " must keep a lambda expression as sourceOwner"
+            );
+        }
+        publishExecutableBlockGraph(functionContext);
+    }
+
+    private void publishExecutableBlockGraph(@NotNull FunctionLoweringContext functionContext) {
         if (!(functionContext.loweringRoot() instanceof Block rootBlock)) {
             throw new IllegalStateException(describeContext(functionContext) + " must expose a Block loweringRoot");
         }

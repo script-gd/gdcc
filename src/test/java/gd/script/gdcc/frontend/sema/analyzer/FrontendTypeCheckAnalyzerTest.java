@@ -615,6 +615,84 @@ class FrontendTypeCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeChecksLambdaReturnAgainstPublishedDeclaredReturnType() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_lambda_return_slot.gd", """
+                class_name TypeCheckLambdaReturnSlot
+                extends RefCounted
+                
+                func ping():
+                    var cb := func() -> int:
+                        return "text"
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        // Phase E: the lambda return slot is the plan-published declared type, so a mismatching
+        // return value gets the ordinary return diagnostic instead of a Variant pass-through.
+        var typeCheckDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+        assertEquals(1, typeCheckDiagnostics.size(), typeCheckDiagnostics::toString);
+        assertTrue(typeCheckDiagnostics.getFirst().message()
+                .contains("Return value type 'String' is not assignable to callable return slot type 'int'"));
+    }
+
+    @Test
+    void analyzeRejectsBareReturnInLambdaWithDeclaredReturnType() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_lambda_bare_return.gd", """
+                class_name TypeCheckLambdaBareReturn
+                extends RefCounted
+                
+                func ping():
+                    var cb := func() -> int:
+                        return
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var typeCheckDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+        assertEquals(1, typeCheckDiagnostics.size(), typeCheckDiagnostics::toString);
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("Bare 'return' is only allowed"));
+    }
+
+    @Test
+    void analyzeAcceptsLambdaReturnMatchingDeclaredReturnType() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_lambda_return_ok.gd", """
+                class_name TypeCheckLambdaReturnOk
+                extends RefCounted
+                
+                func ping():
+                    var cb := func() -> int:
+                        return 1
+                    var plain := func():
+                        return
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertTrue(diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        ).isEmpty());
+    }
+
+    @Test
     void analyzeKeepsUnrecordedLambdaBodiesOutsideTypeCheckSurface() throws Exception {
         var preparedInput = prepareTypeCheckInput("type_check_lambda_unwalked.gd", """
                 class_name TypeCheckLambdaUnwalked

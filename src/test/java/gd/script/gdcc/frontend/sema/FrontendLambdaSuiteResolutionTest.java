@@ -327,6 +327,7 @@ class FrontendLambdaSuiteResolutionTest {
                 lambda,
                 "_lambda_99",
                 published.capturePlan(),
+                published.returnType(),
                 published.enclosingCallable(),
                 published.owningClassCanonicalName()
         );
@@ -344,6 +345,7 @@ class FrontendLambdaSuiteResolutionTest {
                 lambda,
                 published.syntheticName(),
                 published.capturePlan(),
+                published.returnType(),
                 published.enclosingCallable(),
                 published.owningClassCanonicalName()
         );

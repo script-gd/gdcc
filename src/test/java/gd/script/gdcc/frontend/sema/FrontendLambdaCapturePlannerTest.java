@@ -260,6 +260,7 @@ class FrontendLambdaCapturePlannerTest {
                 lambda,
                 "_lambda_0",
                 new FrontendLambdaCapturePlan(List.of(capture), false),
+                GdVariantType.VARIANT,
                 enclosing,
                 "Hero"
         );
@@ -267,6 +268,7 @@ class FrontendLambdaCapturePlannerTest {
                 lambda,
                 "_lambda_0",
                 new FrontendLambdaCapturePlan(List.of(capture.withType(GdIntType.INT)), false),
+                GdVariantType.VARIANT,
                 enclosing,
                 "Hero"
         );
@@ -276,6 +278,7 @@ class FrontendLambdaCapturePlannerTest {
                 lambda,
                 "_lambda_1",
                 first.capturePlan(),
+                first.returnType(),
                 enclosing,
                 "Hero"
         );

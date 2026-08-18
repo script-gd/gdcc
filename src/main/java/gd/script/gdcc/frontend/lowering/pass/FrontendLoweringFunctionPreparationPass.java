@@ -3,19 +3,24 @@ package gd.script.gdcc.frontend.lowering.pass;
 import gd.script.gdcc.frontend.lowering.FrontendLoweringContext;
 import gd.script.gdcc.frontend.lowering.FrontendLoweringPass;
 import gd.script.gdcc.frontend.lowering.FunctionLoweringContext;
+import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendLambdaPlan;
 import gd.script.gdcc.frontend.sema.FrontendSourceClassRelation;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
+import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.LirPropertyDef;
+import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdObjectType;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -32,8 +37,10 @@ import java.util.Objects;
 /// The pass keeps the current LIR in skeleton/shell form:
 /// - executable callables reuse their published `LirFunctionDef`
 /// - property initializers get hidden synthetic helper scaffolds
+/// - recorded lambdas get hidden synthesized `_lambda_<k>` shells from their published
+///   `FrontendLambdaPlan` (lambda plan phase E / §3.7)
 /// - no basic blocks or instructions are emitted yet; later CFG/body passes materialize the default
-///   pipeline's executable callable and property-init bodies
+///   pipeline's executable callable, property-init and lambda bodies
 public final class FrontendLoweringFunctionPreparationPass implements FrontendLoweringPass {
     /// Compiler-owned helper namespace. Source members that start with this prefix must already have
     /// been rejected by skeleton-driven skipped-subtree recovery before preparation runs.
@@ -99,10 +106,36 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
     ) {
         for (var statement : statements) {
             switch (statement) {
-                case FunctionDeclaration functionDeclaration ->
-                        contexts.add(buildExecutableContext(sourceClassRelation, owningClass, functionDeclaration, analysisData));
-                case ConstructorDeclaration constructorDeclaration ->
-                        contexts.add(buildExecutableContext(sourceClassRelation, owningClass, constructorDeclaration, analysisData));
+                case FunctionDeclaration functionDeclaration -> {
+                    contexts.add(buildExecutableContext(
+                            sourceClassRelation,
+                            owningClass,
+                            functionDeclaration,
+                            analysisData
+                    ));
+                    collectLambdaContexts(
+                            functionDeclaration.body(),
+                            sourceClassRelation,
+                            owningClass,
+                            analysisData,
+                            contexts
+                    );
+                }
+                case ConstructorDeclaration constructorDeclaration -> {
+                    contexts.add(buildExecutableContext(
+                            sourceClassRelation,
+                            owningClass,
+                            constructorDeclaration,
+                            analysisData
+                    ));
+                    collectLambdaContexts(
+                            constructorDeclaration.body(),
+                            sourceClassRelation,
+                            owningClass,
+                            analysisData,
+                            contexts
+                    );
+                }
                 case VariableDeclaration variableDeclaration -> {
                     var propertyInitContext = buildPropertyInitContextOrNull(
                             sourceClassRelation,
@@ -214,6 +247,167 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
                 initializerExpression,
                 analysisData
         );
+    }
+
+    /// Discovers every `LambdaExpression` reachable from a supported executable body and appends a
+    /// synthesized `LAMBDA_BODY` context for each one (lambda plan phase E). Discovered lambdas are
+    /// exactly the ones the interface phase records, so each must carry a published
+    /// `FrontendLambdaPlan`; a missing plan means published-fact corruption and fails fast instead
+    /// of silently skipping the lambda (plan §阶段E negative / §3.9). Nested lambdas are found by
+    /// recursing into each discovered lambda body. Property-initializer expressions stay outside
+    /// this scan surface: their lambdas are unrecorded and already carry upstream error
+    /// diagnostics, so the pipeline stops before preparation.
+    private void collectLambdaContexts(
+            @NotNull Node root,
+            @NotNull FrontendSourceClassRelation sourceClassRelation,
+            @NotNull LirClassDef owningClass,
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull List<FunctionLoweringContext> contexts
+    ) {
+        for (var child : root.getChildren()) {
+            if (child instanceof LambdaExpression lambdaExpression) {
+                contexts.add(buildLambdaContext(
+                        sourceClassRelation,
+                        owningClass,
+                        lambdaExpression,
+                        analysisData
+                ));
+                collectLambdaContexts(
+                        lambdaExpression.body(),
+                        sourceClassRelation,
+                        owningClass,
+                        analysisData,
+                        contexts
+                );
+                continue;
+            }
+            collectLambdaContexts(
+                    child,
+                    sourceClassRelation,
+                    owningClass,
+                    analysisData,
+                    contexts
+            );
+        }
+    }
+
+    private @NotNull FunctionLoweringContext buildLambdaContext(
+            @NotNull FrontendSourceClassRelation sourceClassRelation,
+            @NotNull LirClassDef owningClass,
+            @NotNull LambdaExpression lambdaExpression,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+        requirePublishedScope(lambdaExpression.body(), "lambda body", analysisData);
+        var plan = requireLambdaPlan(lambdaExpression, owningClass, analysisData);
+        if (!plan.owningClassCanonicalName().equals(owningClass.getName())) {
+            throw new IllegalStateException(
+                    "Lambda plan '"
+                            + plan.syntheticName()
+                            + "' belongs to class '"
+                            + plan.owningClassCanonicalName()
+                            + "' but was discovered while preparing '"
+                            + owningClass.getName()
+                            + "'"
+            );
+        }
+        var lambdaScope = requireLambdaCallableScope(lambdaExpression, analysisData);
+        var targetFunction = synthesizeLambdaShell(
+                owningClass,
+                lambdaExpression,
+                lambdaScope,
+                plan
+        );
+        return new FunctionLoweringContext(
+                FunctionLoweringContext.Kind.LAMBDA_BODY,
+                sourceClassRelation.unit().path(),
+                sourceClassRelation,
+                owningClass,
+                targetFunction,
+                lambdaExpression,
+                lambdaExpression.body(),
+                analysisData
+        );
+    }
+
+    private @NotNull FrontendLambdaPlan requireLambdaPlan(
+            @NotNull LambdaExpression lambdaExpression,
+            @NotNull LirClassDef owningClass,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+        var plan = analysisData.lambdaPlans().get(lambdaExpression);
+        if (plan == null) {
+            throw new IllegalStateException(
+                    "lambdaPlans() is missing a published FrontendLambdaPlan for LambdaExpression at "
+                            + lambdaExpression.range()
+                            + " while preparing class '"
+                            + owningClass.getName()
+                            + "'; recorded lambdas must publish a complete plan before lowering"
+            );
+        }
+        return plan;
+    }
+
+    private @NotNull CallableScope requireLambdaCallableScope(
+            @NotNull LambdaExpression lambdaExpression,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+        var scope = analysisData.scopesByAst().get(lambdaExpression);
+        if (!(scope instanceof CallableScope callableScope)) {
+            throw new IllegalStateException(
+                    "lambda expression scope has not been published for LambdaExpression@"
+                            + System.identityHashCode(lambdaExpression)
+            );
+        }
+        return callableScope;
+    }
+
+    /// Materializes the hidden lambda shell frozen by lambda plan §3.7:
+    /// `setLambda(true)` + `setHidden(true)` + `setStatic(true)`, source parameters with their
+    /// inventory-resolved types (no injected `self`; self only ever arrives as a §3.5 capture),
+    /// `<captures>` from the published plan, and the declared return type published on the plan.
+    /// `setLambda(true)` must precede `addCapture` because captures are only legal on lambda
+    /// functions.
+    private @NotNull LirFunctionDef synthesizeLambdaShell(
+            @NotNull LirClassDef owningClass,
+            @NotNull LambdaExpression lambdaExpression,
+            @NotNull CallableScope lambdaScope,
+            @NotNull FrontendLambdaPlan plan
+    ) {
+        if (owningClass.hasFunction(plan.syntheticName())) {
+            throw new IllegalStateException(
+                    "Class '"
+                            + owningClass.getName()
+                            + "' already declares a function named '"
+                            + plan.syntheticName()
+                            + "'; source members must be rejected by the reserved '_lambda_' prefix"
+            );
+        }
+        var function = new LirFunctionDef(plan.syntheticName());
+        function.setLambda(true);
+        function.setHidden(true);
+        function.setStatic(true);
+        function.setReturnType(plan.returnType());
+        for (var parameter : lambdaExpression.parameters()) {
+            var parameterName = parameter.name().trim();
+            var binding = lambdaScope.resolveValueHere(parameterName);
+            if (binding == null || binding.kind() != ScopeValueKind.PARAMETER) {
+                throw new IllegalStateException(
+                        "Lambda parameter '"
+                                + parameterName
+                                + "' has no published PARAMETER binding on its CallableScope; "
+                                + "variable inventory must bind every planned lambda parameter"
+                );
+            }
+            function.addParameter(new LirParameterDef(parameterName, binding.type(), null, function));
+            if (parameter.variadic()) {
+                function.setVararg(true);
+            }
+        }
+        for (var capture : plan.captures()) {
+            function.addCapture(new LirCaptureDef(capture.name(), capture.type(), function));
+        }
+        owningClass.addFunction(function);
+        return function;
     }
 
     private void requirePublishedScope(

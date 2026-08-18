@@ -1078,6 +1078,49 @@ class FrontendClassSkeletonTest {
         ));
     }
 
+    /// Lambda plan §3.7/§3.9: the `_lambda_` namespace is compiler-owned for synthesized lambda
+    /// shells, so source members reusing it are rejected like `_field_*` helpers. Boundary names
+    /// that merely contain the prefix (without the trailing separator) stay alive.
+    @Test
+    void buildRejectsReservedLambdaFunctionPrefixButKeepsBoundaryNamesAlive() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "reserved_lambda_names.gd"), """
+                class_name ReservedLambdaNames
+                extends RefCounted
+                
+                func _lambda_0():
+                    pass
+                
+                func _lambda():
+                    pass
+                
+                func ok():
+                    pass
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "ReservedLambdaNames");
+        var skeletonDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton"))
+                .toList();
+
+        assertNull(findFunctionByNameOrNull(classDef, "_lambda_0"));
+        assertNotNull(findFunctionByNameOrNull(classDef, "_lambda"));
+        assertNotNull(findFunctionByNameOrNull(classDef, "ok"));
+        assertEquals(1, skeletonDiagnostics.size());
+        assertTrue(skeletonDiagnostics.getFirst().message().contains("reserved synthetic lambda-function prefix"));
+        assertTrue(skeletonDiagnostics.getFirst().message().contains("_lambda_"));
+    }
+
     @Test
     void buildRejectsGdccSignalThatShadowsInheritedEngineSignalButKeepsOtherMembersAlive() throws IOException {
         var parserService = new GdScriptParserService();

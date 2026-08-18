@@ -64,7 +64,8 @@ class FrontendLoweringFunctionPreparationPassTest {
                 EnumSet.of(
                         FunctionLoweringContext.Kind.EXECUTABLE_BODY,
                         FunctionLoweringContext.Kind.PROPERTY_INIT,
-                        FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT
+                        FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
+                        FunctionLoweringContext.Kind.LAMBDA_BODY
                 ),
                 EnumSet.allOf(FunctionLoweringContext.Kind.class)
         );

@@ -19,7 +19,9 @@ public final class FrontendLoweringBodyInsnPass implements FrontendLoweringPass 
                 throw new IllegalStateException("Function lowering context must reuse the published analysis snapshot");
             }
             switch (functionContext.kind()) {
-                case EXECUTABLE_BODY, PROPERTY_INIT ->
+                // Lambda bodies share the executable-body session: the synthetic shell is static
+                // (no self slot) and carries its own published CFG graph (lambda plan phase E).
+                case EXECUTABLE_BODY, PROPERTY_INIT, LAMBDA_BODY ->
                         new FrontendBodyLoweringSession(functionContext, context.classRegistry()).run();
                 case PARAMETER_DEFAULT_INIT -> throw new IllegalStateException(
                         "Frontend body lowering pass does not support parameter default initializer contexts yet"
