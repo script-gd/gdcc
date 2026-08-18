@@ -631,7 +631,7 @@ class FrontendTypeCheckAnalyzerTest {
                 preparedInput.diagnosticManager()
         );
 
-        // Phase E: the lambda return slot is the plan-published declared type, so a mismatching
+        // The lambda return slot is the plan-published declared type, so a mismatching
         // return value gets the ordinary return diagnostic instead of a Variant pass-through.
         var typeCheckDiagnostics = diagnosticsByCategory(
                 preparedInput.diagnosticManager().snapshot(),

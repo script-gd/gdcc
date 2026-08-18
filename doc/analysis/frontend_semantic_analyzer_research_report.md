@@ -393,7 +393,7 @@
 
 1. **没有 frontend -> LIR lowering。** 当前语义主链仍止步于 side table、diagnostics 与 class skeleton；函数体不会继续产生 LIR。
 2. **compile-ready 与 shared semantic 仍然分离。** `FrontendCompileCheckAnalyzer` 已经提供 compile-only final gate，但 `ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression` 与 `assert` 仍需要在进入 lowering 前被显式封口。
-3. **若干 executable-body 域仍保持 deferred / unsupported。** 参数默认值、lambda capture、`match` pattern binding、block-local `const` 等尚未进入当前正式支持面。`for` iterator/body inventory 已在后续阶段 B/D0/L 转正，但 iteration planning 与 lowering route 仍未完成。
+3. **若干 executable-body 域仍保持 deferred / unsupported。** 参数默认值、`match` pattern binding、block-local `const` 等尚未进入当前正式支持面。已记录 lambda 的 param / local / capture inventory 与 compile gate 已转正。`for` iterator/body inventory 与已注册 route 的 lowering 已落地；`OBJECT_CUSTOM` 仍未注册 contract。
 4. **`self` 核心语义已经接通，但 signal use-site 与 coroutine 语义仍未闭环。** 当前代码已经支持 `self` 的 top binding 发布、static context fail-closed、property initializer fail-closed，以及将 `self` 解析为当前类实例 receiver；仍未形成稳定 frontend 合同的是 `.emit(...)`、`await signal` 等 signal/coroutine use-site，以及更完整的 context-sensitive diagnostics。
 5. **property initializer 仍不是完整实例初始化模型。** 当前支持面是“published subtree facts”，而不是 declaration-order / default-state / cycle-aware 的 class-member initializer 语义。
 6. **header superclass 的支持面仍受 MVP 限制。** path-based `extends`、autoload superclass、global-script-class superclass 与跨多个 gdcc module 的 superclass 绑定依然没有接通。

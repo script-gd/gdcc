@@ -102,7 +102,7 @@ Body procedure 必须是 root-bounded、statement-local 的实现。每个 owner
 - `WhileStatement`。
 - `ForStatement`：header-only statement boundary 完成后，通过普通 `resolveChildSuite(...)` 进入结构完整的 `FOR_BODY`。
 
-`MatchStatement`、`LambdaExpression` 与 block-local `const` 仍保持结构性 deferred / unsupported；它们不创建 lifecycle state，也不能因 typed result 改变 body entry。
+`MatchStatement` 与 block-local `const` 仍保持结构性 deferred / unsupported；它们不创建 lifecycle state，也不能因 typed result 改变 body entry。已记录 `LambdaExpression` 已转正为 nested callable owner；未记录 lambda 保持 fail-closed。
 
 ## 5. Statement 内 Owner 顺序
 
@@ -274,8 +274,8 @@ Guard 必须在 pending overlay write 时 fail-fast，不能等 suite export 时
 Resolver 保留三类彼此独立的结构检查：
 
 1. Request-domain hard boundary：只有 `EXECUTABLE_BODY` 进入 ordinary lookup。
-2. AST boundary：parameter default、lambda、match 与 block-local `const` 返回精确 deferred domain；for header/body edge 已转正。
-3. Current-scope backstop：lambda callable/body 与 match section body 即使 AST edge 缺失也继续 fail-closed；`FOR_BODY` 是 supported executable scope。
+2. AST boundary：parameter default、match 与 block-local `const` 返回精确 deferred domain；for header/body edge 与已记录 lambda AST 边已转正。
+3. Current-scope backstop：`MATCH_SECTION_BODY` 即使 AST edge 缺失也继续 fail-closed；`FOR_BODY` 与已记录 lambda 的 `LAMBDA_BODY` / `LAMBDA_EXPRESSION` 是 supported executable scope。未记录 lambda 保持 fail-closed。
 
 这些检查不读取 typed overlay 以决定结构支持，也没有 pending/published lifecycle。`FrontendSuiteContext` 根据 structural policy 创建 request；`FrontendSuiteResolver` 在进入 root/child body前使用 completeness certificate 验证 interface facts。Typed overlay 只改变过滤通过后的 effective type/binding payload。
 

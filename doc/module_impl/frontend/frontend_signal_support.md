@@ -51,11 +51,11 @@ Godot 对齐基线：runtime / GDExtension ABI / generated bindings 固定为 **
 | 非 Dictionary builtin 实例方法：`vec.abs`、`array.clear` | `VariantCallable`（值拷贝 receiver） | 同一 `construct_callable` |
 | GDCC / engine 静态：`Worker.build`、`JSON.parse_string`、子类读取继承静态 | custom trampoline；owner 为声明类 | `construct_standalone_callable` |
 | utility：`print`、`lerp` | custom trampoline | `construct_standalone_callable` |
+| 已记录 lambda：`func(...): ...`（supported executable body 内） | `Callable`（custom lambda callable + capture userdata） | `construct_lambda` |
 
 仍拒绝：
 
 - `await signal` 及任何协程挂起 / 恢复状态机
-- lambda / capture；`ConstructCallableInsn` / `construct_standalone_callable` 都不承接 lambda
 - builtin type-meta 方法当值（`Vector2.abs`、`Vector2.from_angle`）
 - 构造器当值（`Node.new`、`Inner.new`）
 - `dict.clear` 当方法引用（Godot 把它当 Dictionary key）
@@ -164,7 +164,7 @@ lowering 只消费 published facts。缺失 / 冲突 fact 必须 fail-fast，禁
 - Dictionary 实例 method-reference：`METHOD && BUILTIN && receiverType instanceof GdDictionaryType`
 - builtin type-meta static method-reference：`STATIC_METHOD && ownerKind == BUILTIN`
 
-已放行：signal 值读取、`.emit`、`.connect` / `.disconnect`、Object / self `METHOD` 值读取、非 Dictionary builtin 实例、GDCC / engine 静态、bare utility 值读取。static-context / type-meta signal 仍由 generic `UNSUPPORTED` / `BLOCKED` scan 拦截。
+已放行：signal 值读取、`.emit`、`.connect` / `.disconnect`、Object / self `METHOD` 值读取、非 Dictionary builtin 实例、GDCC / engine 静态、bare utility 值读取、已记录 lambda → `Callable`（`construct_lambda`）。static-context / type-meta signal 仍由 generic `UNSUPPORTED` / `BLOCKED` scan 拦截。
 
 约束：
 
@@ -173,7 +173,8 @@ lowering 只消费 published facts。缺失 / 冲突 fact 必须 fail-fast，禁
 - `BARE_VALUE_REFERENCE_BINDING_KINDS` 当前为空，扫描保留为 callee-exclusion hook；不得按 `GdSignalType` / `GdCallableType` 猜测局部变量。
 - `symbolBindings()` 同时键 `IdentifierExpression` / `LiteralExpression` / `SelfExpression`；bare blocker 只消费 identifier。
 - `DYNAMIC` 永远不是 compile blocker。
-- lambda / `await` / `Node.new` 当值继续走既有 deferred / unsupported / FAILED 路径。
+- `await` / `Node.new` 当值继续走既有 deferred / unsupported / FAILED 路径；未记录 lambda（property initializer / parameter default / skipped subtree）保持 fail-closed。
+- 已记录 lambda 放上 compile surface 并递归扫描 body facts（合同见 `frontend_lambda_implementation.md`）。
 
 ---
 
@@ -235,11 +236,19 @@ operand 冻结为 `(VARIABLE, STRING)` min/max=2。旧 1-operand 非法，由 op
 
 standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC / engine 静态方法，不实现 `CALL_STATIC_METHOD` CInsnGen。
 
-### 8.4 注册
+### 8.4 `construct_lambda`
 
-三个 opcode 都必须在 `ConstructInsnGen.getInsnOpcodes()` 中，否则 `CCodegen` 按 opcode 映射会抛 `Unsupported instruction opcode`。`CALL_STATIC_METHOD` 故意未注册。
+`$result = construct_lambda "<lambda_function_name>" $capture...`。已记录 lambda 经 `gdcc_new_lambda_callable(userdata, object_id, call, is_valid, free, get_argument_count)` → `godot_callable_custom_create2`，与 standalone 共享 token。完整 ABI / capture / prologue 合同见 `frontend_lambda_implementation.md` 与 `doc/gdcc_low_ir.md`。
 
-### 8.5 emit / connect
+- `object_id`：`capturesSelf == true`（capture 首项为 `self`）时绑 enclosing `self` 在 `construct_lambda` 求值点缓存的 `instance_id`（fat pointer cached，不由 raw 回推）；否则填 0。不得把 enclosing instance / singleton 偷偷填进非 self-capturing lambda。
+- `object_id != 0` 时 `is_valid_func` 必须经 ObjectDB（`godot_object_get_instance_from_id`）判定，实例 free 后连接自动失效。
+- 本小节只约束 `construct_lambda`；`construct_standalone_callable` 的 `object_id` 仍按其自身合同（§8.3）填 0，`construct_callable` 的 receiver 合同（§8.2）不变。
+
+### 8.5 注册
+
+四个 opcode（`construct_signal`、`construct_callable`、`construct_standalone_callable`、`construct_lambda`）都必须在 `ConstructInsnGen.getInsnOpcodes()` 中，否则 `CCodegen` 按 opcode 映射会抛 `Unsupported instruction opcode`。`CALL_STATIC_METHOD` 故意未注册。
+
+### 8.6 emit / connect
 
 - emit 走既有 BUILTIN vararg：`(const godot_Signal *self, const godot_Variant **argv, godot_int argc)`。零参渲染 `args[fixed + (argc > 0 ? argc : 1)]` + `(fixed + argc == 0) ? NULL : args`，避免零长度 VLA。`Signal.emit` 保留 `const self`。
 - `CBodyBuilder.renderVarargArgv` 拒绝未 pack 的 Signal；frontend 必须先发 `PackVariantInsn`。
@@ -247,7 +256,7 @@ standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC / engine 静�
 - Callable 值上的 `.call(...)` / `.bind(...)` 仍是 builtin `CallMethodInsn`。不实施“对未物化 method-ref 直接 `.bind`”的捷径。
 - `var unused: int = sig.emit()` 继续由 `sema.type_check` 按 void→int 拒绝。
 
-### 8.6 ClassDB 注册
+### 8.7 ClassDB 注册
 
 `entry.c.ftl` 的 `// Signals` 只迭代 `classDef.signals`。
 
@@ -296,6 +305,8 @@ standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC / engine 静�
   - `member/signal_inherited_and_engine.gd`
   - `member/signal_null_receiver.gd`
   - `member/callable_value_refs.gd`
+  - `member/signal_connect_lambda.gd`（recorded lambda 无参 `connect`/`emit` 冒烟；`object_id` / free-after-invalid 以 `ConstructLambdaInsnGenEngineTest` 为准）
+  - `lambda/signal_and_engine.gd`（带参 lambda `connect`/`emit`、`CONNECT_ONE_SHOT`、`Array.map`/`filter`）
   - `member/signal_interop_compiled_to_interpreted.gd`
   - `member/signal_interop_interpreted_to_compiled.gd`
   - `member/signal_interop_bidirectional.gd`

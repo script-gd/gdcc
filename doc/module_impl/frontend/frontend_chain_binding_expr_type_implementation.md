@@ -34,7 +34,7 @@
   - 不引入 whole-module fixpoint，不把 body 语义改造成多轮全局收敛
   - 不新增新的全局 side table，也不让已有 side table 互相越权
   - 不把 `FrontendBinding` 重塑为 usage-aware 模型
-  - 不在这里转正 parameter default、lambda、`match`、block-local `const`、class constant 的正式 body 语义
+  - 不在这里转正 parameter default、`match`、block-local `const`、class constant 的正式 body 语义；已记录 lambda 合同见 `frontend_lambda_implementation.md`
   - 不在这里实现 for iteration planning、iterator slot refinement 或 lowering route classification
   - 不在这里扩张 keyed builtin、numeric promotion 或其它 typed-boundary 兼容矩阵；`StringName` / `String` 互转由 `frontend_implicit_conversion_matrix.md` 与 shared boundary helper 独立管理
 
@@ -479,7 +479,7 @@ writable / compatibility 规则为：
 当前仍显式封口的 body-phase 边界包括：
 
 - parameter default
-- lambda subtree
+- 未记录 lambda subtree（property initializer / parameter default / skipped subtree；已记录 lambda 由 nested suite resolution 承接，见 `frontend_lambda_implementation.md`）
 - `match` subtree
 - block-local `const`
 - class constant

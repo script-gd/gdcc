@@ -20,7 +20,7 @@ public final class FrontendLoweringBodyInsnPass implements FrontendLoweringPass 
             }
             switch (functionContext.kind()) {
                 // Lambda bodies share the executable-body session: the synthetic shell is static
-                // (no self slot) and carries its own published CFG graph (lambda plan phase E).
+                // (no self slot) and carries its own published CFG graph.
                 case EXECUTABLE_BODY, PROPERTY_INIT, LAMBDA_BODY ->
                         new FrontendBodyLoweringSession(functionContext, context.classRegistry()).run();
                 case PARAMETER_DEFAULT_INIT -> throw new IllegalStateException(

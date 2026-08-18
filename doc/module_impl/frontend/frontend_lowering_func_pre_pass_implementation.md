@@ -37,7 +37,7 @@ function pre-pass 是 `FrontendLoweringAnalysisPass` 与 `FrontendLoweringClassS
 
 - `EXECUTABLE_BODY`
 - `PROPERTY_INIT`
-- `LAMBDA_BODY`（lambda 计划阶段 E 起：每个已发布 `FrontendLambdaPlan` 的 lambda 合成 hidden `_lambda_<k>` shell 并发布对应 context）
+- `LAMBDA_BODY`（每个已发布 `FrontendLambdaPlan` 的 lambda 合成 hidden `_lambda_<k>` shell 并发布对应 context）
 
 `PARAMETER_DEFAULT_INIT` 当前只保留模型槽位与合同，不实际收集。
 
@@ -88,7 +88,7 @@ pre-pass 不新增新的 public lowering 入口，也不接受 `FrontendAnalysis
 - executable callable 使用 declaration-level owner，lowering root 是 body `Block`
 - property initializer 使用 property declaration 作为 owner，lowering root 是 initializer expression
 - future parameter default 使用 parameter/default declaration 作为 owner，lowering root 只指向 default-value expression
-- lambda 使用 `LambdaExpression` 作为 owner，lowering root 是其 body `Block`；target function 是本 pass 按 plan 合成的 hidden shell（`is_lambda` + `is_hidden` + static），self 仅以 §3.5 capture 存在，不得注入 `self` 参数
+- lambda 使用 `LambdaExpression` 作为 owner，lowering root 是其 body `Block`；target function 是本 pass 按 plan 合成的 hidden shell（`is_lambda` + `is_hidden` + static），self 仅以 capture 存在，不得注入 `self` 参数
 - 后续 pass 必须统一经由 `FunctionLoweringContext.analysisData()` 读取：
   - `scopesByAst()`
   - `symbolBindings()`
@@ -227,7 +227,7 @@ function pre-pass 结束后，`LirModule` 仍必须保持 shell-only 中间态�
 
 - 在 owning class 上追加 hidden property-init synthetic shell
 - 对应 property 的 `initFunc` 指向该 shell
-- 按已发布 `FrontendLambdaPlan` 在 owning class 上追加 hidden synthesized lambda shell（lambda 计划阶段 E 起，`is_lambda` + `is_hidden` + static，capture 列表与 plan 同源）
+- 按已发布 `FrontendLambdaPlan` 在 owning class 上追加 hidden synthesized lambda shell（`is_lambda` + `is_hidden` + static，capture 列表与 plan 同源）
 
 这条 shell-only 约束只适用于 pre-pass 产物，不得外推到默认 lowering pipeline 终态；后续 CFG/body pass 会继续把 executable body、supported property initializer 与 lambda body 写成真实函数体。
 

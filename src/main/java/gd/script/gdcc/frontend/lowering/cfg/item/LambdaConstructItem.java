@@ -10,11 +10,11 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 import java.util.Objects;
 
-/// Outer-body construction of a recorded lambda value (lambda plan phase F).
+/// Outer-body construction of a recorded lambda value.
 ///
 /// The item carries the synthesized lambda function name plus the ordered capture operands read
 /// from the ENCLOSING frame; the lambda body itself lowers separately through its own
-/// `LAMBDA_BODY` context (phase E). Capture operands are direct enclosing-frame slot reads
+/// `LAMBDA_BODY` context. Capture operands are direct enclosing-frame slot reads
 /// modeled by `CaptureOperand` - a leading `self` capture uses the dedicated
 /// `SelfSlotOperand.SELF_SLOT` descriptor instead of a fabricated `IdentifierExpression` + SELF
 /// binding.

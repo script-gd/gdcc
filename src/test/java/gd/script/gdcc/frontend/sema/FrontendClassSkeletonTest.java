@@ -1078,7 +1078,7 @@ class FrontendClassSkeletonTest {
         ));
     }
 
-    /// Lambda plan §3.7/§3.9: the `_lambda_` namespace is compiler-owned for synthesized lambda
+    /// The `_lambda_` namespace is compiler-owned for synthesized lambda
     /// shells, so source members reusing it are rejected like `_field_*` helpers. Boundary names
     /// that merely contain the prefix (without the trailing separator) stay alive.
     @Test

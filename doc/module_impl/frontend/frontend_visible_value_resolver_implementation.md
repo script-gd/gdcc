@@ -23,7 +23,7 @@
   - 不修改 shared `Scope.resolveValue(...)` 协议
   - 不让 unsupported 子域伪装成正常 `NOT_FOUND`
   - 不在 resolver 内直接生产 diagnostics 或写入 `symbolBindings()`
-  - 不在当前 frontend 中为 parameter default、`match`、block-local `const` 提供正式 local inventory 解析（lambda body 已在 lambda 阶段 C 转正）
+  - 不在当前 frontend 中为 parameter default、`match`、block-local `const` 提供正式 local inventory 解析（lambda body 已转正）
 
 ---
 
@@ -65,7 +65,7 @@
   - `ELSE_BODY`
   - `WHILE_BODY`
   - `FOR_BODY`
-  - `LAMBDA_BODY`（lambda 阶段 C 起）
+  - `LAMBDA_BODY`
 - resolver 与 variable analyzer 必须共用同一 support matrix，不能各自维护名单
 
 ### 2.2 与 shared `Scope` 的分工
@@ -113,7 +113,7 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 - 任何 current scope 自身就是未发布 inventory 的 scope，例如：
   - `BlockScopeKind.MATCH_SECTION_BODY`
 
-这些域当前不能静默回退到 outer local / class property / global，也不能伪装成普通 `NOT_FOUND`。`ForStatement` 的 iterator type、iterable 与 body edge 已转正，`FOR_BODY` current scope 直接进入 normal lookup；lambda body 自阶段 C 起同样转正：`LAMBDA_BODY` / `LAMBDA_EXPRESSION` current scope 走 policy 驱动 gate（`EXECUTABLE_BODY` 放行），lambda AST 边不再封口，body 内 use-site 直接命中 lambda 自己的 `CAPTURE` / `PARAMETER` / `LOCAL` 绑定。body 内 identifier 的精化类型仍依赖 suite overlay 的 `effectiveBinding`：iterator 声明的 owning scope 必须是 `FOR_BODY` 对象身份（`scope_analyzer_implementation.md` §6.1），否则可能回落到 Interface baseline `Variant`。
+这些域当前不能静默回退到 outer local / class property / global，也不能伪装成普通 `NOT_FOUND`。`ForStatement` 的 iterator type、iterable 与 body edge 已转正，`FOR_BODY` current scope 直接进入 normal lookup；lambda body 同样转正：`LAMBDA_BODY` / `LAMBDA_EXPRESSION` current scope 走 policy 驱动 gate（`EXECUTABLE_BODY` 放行），lambda AST 边不再封口，body 内 use-site 直接命中 lambda 自己的 `CAPTURE` / `PARAMETER` / `LOCAL` 绑定。body 内 identifier 的精化类型仍依赖 suite overlay 的 `effectiveBinding`：iterator 声明的 owning scope 必须是 `FOR_BODY` 对象身份（`scope_analyzer_implementation.md` §6.1），否则可能回落到 Interface baseline `Variant`。
 
 ### 3.3 `ClassScope` / `ClassRegistry` 不是封口域
 

@@ -82,11 +82,17 @@ public class GdScriptUnitTestCompileRunnerTest {
             "initializer/local/vectori_to_vector_boundaries.gd",
             "initializer/property/int_to_float_boundaries.gd",
             "initializer/property/object_and_scalar.gd",
+            "lambda/captures.gd",
+            "lambda/control_flow_bodies.gd",
+            "lambda/self_nested_return.gd",
+            "lambda/signal_and_engine.gd",
+            "lambda/value_call_and_arity.gd",
             "member/builtin_property_access.gd",
             "member/builtin_property_writeback_color.gd",
             "member/builtin_property_writeback_vector3.gd",
             "member/callable_value_refs.gd",
             "member/compound_assignment.gd",
+            "member/signal_connect_lambda.gd",
             "member/signal_emit_connect.gd",
             "member/signal_inherited_and_engine.gd",
             "member/signal_interop_bidirectional.gd",
@@ -150,6 +156,7 @@ public class GdScriptUnitTestCompileRunnerTest {
     private static final List<String> CONSTRUCTOR_SCRIPT_PATHS = scriptPathsWithPrefix("constructor/");
     private static final List<String> CONTROL_FLOW_SCRIPT_PATHS = scriptPathsWithPrefix("control_flow/");
     private static final List<String> INITIALIZER_SCRIPT_PATHS = scriptPathsWithPrefix("initializer/");
+    private static final List<String> LAMBDA_SCRIPT_PATHS = scriptPathsWithPrefix("lambda/");
     private static final List<String> MEMBER_SCRIPT_PATHS = scriptPathsWithPrefix("member/");
     private static final List<String> RUNTIME_SCRIPT_PATHS = scriptPathsWithPrefix("runtime/");
     private static final List<String> SCENE_SCRIPT_PATHS = scriptPathsWithPrefix("scene/");
@@ -226,6 +233,14 @@ public class GdScriptUnitTestCompileRunnerTest {
         return compileAndValidateBundledUnitScripts(
                 INITIALIZER_SCRIPT_PATHS,
                 "Zig not found; skipping initializer GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesLambdaScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                LAMBDA_SCRIPT_PATHS,
+                "Zig not found; skipping lambda GDScript compile-run tests"
         );
     }
 

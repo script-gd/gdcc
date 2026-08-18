@@ -896,8 +896,8 @@ public final class FrontendCfgGraphBuilder {
         };
     }
 
-    /// Builds an outer-body occurrence of a recorded lambda as one `LambdaConstructItem` (lambda
-    /// plan phase F). The lambda body itself is lowered separately through its own `LAMBDA_BODY`
+    /// Builds an outer-body occurrence of a recorded lambda as one `LambdaConstructItem`.
+    /// The lambda body itself is lowered separately through its own `LAMBDA_BODY`
     /// context; here only the enclosing-frame capture operands are collected in plan order.
     ///
     /// Operand sources follow the frozen plan entries: named slots for `LOCAL_VAR` / `PARAMETER` /

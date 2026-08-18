@@ -558,7 +558,7 @@ frontend binder 侧的 declaration-order 可见性修正层，详见：
 - function / constructor body 与 supported nested block 中的 ordinary local `var` -> `BlockScope`
 - `ForStatement` iterator 与 for body ordinary local -> `FOR_BODY` scope；iterator declaration identity 与 fallback baseline 已冻结
 - same-callable parameter/local shadowing 在 variable phase 直接诊断并拒绝写入
-- 参数默认值、lambda、`match`、block-local `const` 继续 deferred
+- 参数默认值、`match`、block-local `const` 继续 deferred；已记录 lambda 的 param / local / capture inventory 已转正（见 `frontend_lambda_implementation.md`）
 
 后续 binder phase 在接线前或接线过程中仍需要冻结：
 
@@ -567,7 +567,7 @@ frontend binder 侧的 declaration-order 可见性修正层，详见：
 - ordinary local `var` initializer 已按 `FrontendVisibleValueResolver` 合同进入当前支持面，不再作为 binder 的前置阻塞项
 - for iteration planning 与 iterator exact slot refinement
 - `match` pattern binding 在 guard/body 中的可见性
-- lambda capture 是同 phase 落地还是继续 deferred
+- capture-backed live-slot alias 是否进入 publication surface（当前仍不开放）
 
 同时不要把这部分职责回流到 `FrontendScopeAnalyzer`，否则会破坏当前 `scope_analyzer_implementation.md` 已冻结的 phase 边界。
 

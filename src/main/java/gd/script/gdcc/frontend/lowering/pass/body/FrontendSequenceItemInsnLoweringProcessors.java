@@ -925,7 +925,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
     }
 
-    /// Emits `construct_lambda` for an outer-body lambda occurrence (lambda plan phase F).
+    /// Emits `construct_lambda` for an outer-body lambda occurrence.
     ///
     /// The item carries only the synthetic name plus ordered enclosing-frame capture slot reads;
     /// the processor re-validates the synthesized shell on the owning class (existence, capture

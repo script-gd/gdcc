@@ -24,7 +24,7 @@
   - `doc/analysis/frontend_segmented_type_resolution_pipeline_execution_summary.md`
 - 明确非目标：
   - 不在这里定义 `for-range` lowering 或 Godot range runtime 语义
-  - 不在这里转正 `lambda` / `match` / block-local `const`
+  - 不在这里转正 `match` / block-local `const`；已记录 `lambda` 的合同见 `frontend_lambda_implementation.md`
   - 不在这里定义 backend codegen 或 LIR intrinsic 合同
 
 ---
@@ -252,7 +252,8 @@ Suite 收敛后，committed overlay 构造为按 owner 有序的 patch transacti
 - `IfStatement` / `ElifClause` / `else`
 - `WhileStatement`
 - `ForStatement`（structural supported，header-first，body 通过 child-suite path 进入）
-- `MatchStatement`、`LambdaExpression`、block-local `const` 继续 deferred / unsupported
+- `MatchStatement`、block-local `const` 继续 deferred / unsupported
+- 已记录 `LambdaExpression`（supported executable body 内）已转正：nested suite resolution 发布 `FrontendLambdaPlan`；未记录 lambda 继续 deferred / unsupported
 
 ### 4.4 `TypedLexicalEnvironment` overlay
 
@@ -337,8 +338,8 @@ Per-owner patch merge 规则：
 三道结构检查：
 
 1. Request-domain hard boundary：`EXECUTABLE_BODY` 才进入 ordinary lookup。
-2. AST boundary：parameter default、lambda body、match pattern/guard/body 与 block-local `const` initializer 直接返回 structural deferred boundary；`ForStatement.body()`、iterator type 与 iterable edge 不封口。
-3. Current-scope backstop：`LAMBDA_BODY`、`MATCH_SECTION_BODY` 与 lambda callable scope 继续 fail-closed；`FOR_BODY` 是 supported executable scope。
+2. AST boundary：parameter default、match pattern/guard/body 与 block-local `const` initializer 直接返回 structural deferred boundary；`ForStatement.body()`、iterator type 与 iterable edge 不封口。已记录 lambda 的 AST 边不再封口。
+3. Current-scope backstop：`MATCH_SECTION_BODY` 继续 fail-closed；`FOR_BODY` 与已记录 lambda 的 `LAMBDA_BODY` / `LAMBDA_EXPRESSION` 是 supported executable scope。未记录 lambda 保持 fail-closed。
 
 Overlay 不得绕过 resolver filter：resolver 先按 request-domain gate、AST boundary、current-scope gate、declaration order 与 initializer self-reference 过滤候选 declaration，再从 `TypedLexicalEnvironment` 读取该候选的 effective type / binding payload。
 
@@ -376,7 +377,7 @@ interface phase、body statement、suite export、diagnostics-only phase 都有�
 
 ### R8：unsupported subtree 被过早打开
 
-support matrix 对 lambda、match、block-local `const`、parameter default 和 unknown/skipped structure 显式返回各自 deferred domain；新增 scope/AST kind 必须通过 exhaustive mapping 显式选择 policy。
+support matrix 对 match、block-local `const`、parameter default 和 unknown/skipped structure 显式返回各自 deferred domain；已记录 lambda 走 `EXECUTABLE_BODY` policy。新增 scope/AST kind 必须通过 exhaustive mapping 显式选择 policy。
 
 ### R9：compiler-only type 泄漏
 

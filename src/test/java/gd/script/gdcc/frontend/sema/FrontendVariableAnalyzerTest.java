@@ -325,7 +325,7 @@ class FrontendVariableAnalyzerTest {
 
         new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
 
-        // Lambda inventory is fully bound since Phase B, so no boundary diagnostic may fire.
+        // Lambda inventory is fully bound, so no boundary diagnostic may fire.
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
         assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
 
@@ -340,7 +340,7 @@ class FrontendVariableAnalyzerTest {
         assertEquals(ScopeValueKind.LOCAL, lambdaLocalBinding.kind());
         assertSame(lambdaLocalDeclaration, lambdaLocalBinding.declaration());
 
-        // Phase B registers the capture name with a Variant placeholder type; the declaration-site
+        // Inventory registers the capture name with a Variant placeholder type; the declaration-site
         // type replaces the placeholder during nested suite resolution in a later phase.
         var seedCapture = lambdaScope.resolveValueHere("seed");
         assertNotNull(seedCapture);
@@ -349,7 +349,7 @@ class FrontendVariableAnalyzerTest {
         assertSame(pingFunction.parameters().getFirst(), seedCapture.declaration());
 
         assertNotNull(pingBodyScope.resolveValue("builder"));
-        // Placeholder captures live only on the scope; no plan may be published in Phase B.
+        // Placeholder captures live only on the scope; inventory must not publish a plan.
         assertTrue(phaseInput.analysisData().lambdaPlans().isEmpty());
     }
 
@@ -516,7 +516,7 @@ class FrontendVariableAnalyzerTest {
         assertEquals(ScopeValueKind.CAPTURE, midCapture.kind());
         assertSame(pingFunction.parameters().getFirst(), midCapture.declaration());
 
-        // The intermediate lambda must re-export the same capture (nested transfer, plan §3.4
+        // The intermediate lambda must re-export the same capture (nested transfer,
         // rule 9): same name, same source declaration identity.
         var outerCapture = outerLambdaScope.resolveValueHere("seed");
         assertNotNull(outerCapture);
@@ -567,7 +567,7 @@ class FrontendVariableAnalyzerTest {
         new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
 
         // The shadowing local lives behind the lambda callable boundary, so it is legal and the
-        // outer `x` must NOT be captured (plan §3.4 self-shadowing rule).
+        // outer `x` must NOT be captured (self-shadowing rule).
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
         assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
         assertNull(lambdaScope.resolveValueHere("x"));
@@ -632,7 +632,7 @@ class FrontendVariableAnalyzerTest {
         assertSame(middleSeedDeclaration, midCapture.declaration());
 
         // The intermediate lambda shadows the name with its own local, so the transfer chain
-        // terminates here: no capture may be inserted for the outer parameter (plan §3.4 rule 9).
+        // terminates here: no capture may be inserted for the outer parameter.
         assertNull(outerLambdaScope.resolveValueHere("seed"));
     }
 
@@ -763,7 +763,7 @@ class FrontendVariableAnalyzerTest {
         assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
 
         // §3.5: an explicit `self` use captures the enclosing instance under the name `self`,
-        // sourced at the enclosing callable. The scope binding keeps the Phase B Variant
+        // sourced at the enclosing callable. The scope binding keeps the inventory Variant
         // placeholder like every capture; the enclosing class object type is filled with all
         // declaration-site capture types during nested suite resolution.
         var selfCapture = lambdaScope.resolveValueHere("self");

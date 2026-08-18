@@ -55,8 +55,8 @@ public final class FrontendAnalysisData {
     /// Published container-literal construction plans keyed by `ArrayExpression` / `DictionaryExpression`.
     /// Freezes element boundary decisions and duplicate-key issues for type-check / CFG / lowering.
     private final @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans;
-    /// Published lambda identity/capture plans keyed by `LambdaExpression`. Phase A only stores the
-    /// carrier; production inventory still stays fail-closed until Phase B.
+    /// Published lambda identity/capture plans keyed by `LambdaExpression`. Inventory never
+    /// publishes placeholder plans; the first entry is the complete `LAMBDA_RESOLUTION` payload.
     private final @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans;
 
     private FrontendAnalysisData(

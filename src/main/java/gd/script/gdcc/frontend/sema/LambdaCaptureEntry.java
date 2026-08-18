@@ -10,8 +10,8 @@ import java.util.Objects;
 /// One frozen lambda capture: source-facing name, declaration-site type, and the outer binding that
 /// produced it.
 ///
-/// Phase A only stores the payload. Later phases fill `type` from a `Variant` inventory placeholder
-/// to the declaration-site type via [`withType`](#withType); they must also call
+/// Inventory first records a `Variant` placeholder. Nested resolve fills `type` from the
+/// declaration-site type via [`withType`](#withType) and must also call
 /// `CallableScope.resetCaptureType` so the scope binding stays in sync.
 ///
 /// @param name              source identifier copied into the lambda (`self` uses this same shape)

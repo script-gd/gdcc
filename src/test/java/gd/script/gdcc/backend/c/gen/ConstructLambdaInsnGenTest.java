@@ -35,8 +35,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase G contract: `construct_lambda` emits `gdcc_new_lambda_callable` plus a capture
-/// heap block, and codegen fail-fasts when the lambda shell and operand list diverge.
+/// `construct_lambda` emits `gdcc_new_lambda_callable` plus a capture heap block, and
+/// codegen fail-fasts when the lambda shell and operand list diverge.
 final class ConstructLambdaInsnGenTest {
     @Test
     @DisplayName("construct_lambda opcode is registered on ConstructInsnGen")

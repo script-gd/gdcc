@@ -96,11 +96,11 @@ call result type 的正式真源是 call anchor 对应的 `analysisData.expressi
   - 同一个 payload 仅负责 exact route 的 post-call reverse commit
   - direct-slot mutating receiver 会直接发布 alias-backed receiver value，因此 exact route 继续只消费 dedicated `receiverValueIdOrNull`，而不是再由 call lowering 额外解释“synthetic CFG temp -> 真实源 slot”
   - 与之对应，non-mutating / runtime-open 的 direct-slot receiver 继续停留在 ordinary temp-backed value surface；frontend 不会把 alias publication 泛化到所有 identifier/self ordinary read
-  - 这里的 direct-slot publication surface 只包含 explicit `SelfExpression` 与 `IdentifierExpression + LOCAL_VAR/PARAMETER`；`CAPTURE` 目前仍留在 deferred lambda/capture 语义范围内，`receiverValueIdOrNull == null` 时由 `resolveInstanceCallReceiver(...)` fallback 到 `self` 的 implicit self receiver 仍属于 call execution fallback，不属于 alias publication
+  - 这里的 direct-slot publication surface 只包含 explicit `SelfExpression` 与 `IdentifierExpression + LOCAL_VAR/PARAMETER`；`CAPTURE` 虽已进入 lambda storage 合同，但仍不在 alias publication surface 内。`receiverValueIdOrNull == null` 时由 `resolveInstanceCallReceiver(...)` fallback 到 `self` 的 implicit self receiver 仍属于 call execution fallback，不属于 alias publication
   - `IdentifierExpression + SELF` 不是合法的 published receiver surface：当前 analyzer 只会对 explicit `SelfExpression` 发布 `SELF`，所以 builder 与 body lowering 遇到它都必须 fail-fast，而不是再把 identifier 静默恢复成 `"self"`
   - 对 identifier-backed direct-slot alias，builder 现在额外要求：后续 arguments 必须停留在 proven no-rebinding 子集；若参数包含 nested `CallExpression` / `AttributeCallStep` 或其它当前尚未证明安全的 effect-open surface，则回退 ordinary temp snapshot，而不是继续发布 live-slot alias
   - explicit `SelfExpression` 不受这条参数分类限制，因为它的稳定性来自 `self` slot 本身不可被用户代码重绑定
-  - `CAPTURE` 当前也不参与这条 identifier-backed alias 分类：在 lambda/capture lowering 真正落地前，这类 binding 若意外进入 alias path 必须直接 fail-fast
+  - `CAPTURE` 当前也不参与这条 identifier-backed alias 分类：lambda/capture storage 已落地，但 capture-backed live-slot alias 仍未开放；这类 binding 若意外进入 alias path 必须直接 fail-fast
 - mutating dynamic instance route 现在也正式纳入 receiver-side writeback 合同：
   - `FrontendCallMutabilitySupport` 对 `DYNAMIC_FALLBACK + INSTANCE` 保守返回 may-mutate
   - 这条保守策略不读取“方法名是否看起来 const-like”这类弱事实；例如 `size()`、`length()` 之类

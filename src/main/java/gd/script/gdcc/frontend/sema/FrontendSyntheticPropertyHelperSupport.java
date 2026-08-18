@@ -15,8 +15,8 @@ public final class FrontendSyntheticPropertyHelperSupport {
     public static final @NotNull String PROPERTY_INIT_PREFIX = "_field_init_";
     public static final @NotNull String PROPERTY_GETTER_PREFIX = "_field_getter_";
     public static final @NotNull String PROPERTY_SETTER_PREFIX = "_field_setter_";
-    /// Compiler-owned namespace for synthesized lambda shells (lambda plan §3.7). Source members
-    /// reusing it collide with the hidden `LirFunctionDef` materialized per `LambdaExpression`.
+    /// Compiler-owned namespace for synthesized lambda shells. Source members reusing it collide
+    /// with the hidden `LirFunctionDef` materialized per `LambdaExpression`.
     public static final @NotNull String LAMBDA_FUNCTION_PREFIX = "_lambda_";
     public static final @NotNull List<String> RESERVED_PREFIXES = List.of(
             PROPERTY_INIT_PREFIX,

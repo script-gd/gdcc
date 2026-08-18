@@ -20,7 +20,7 @@
 - 明确非目标：
   - 不在这里实现 `break` / `continue` 的 lowering
   - 不在这里修改 compile-only `FrontendCompileCheckAnalyzer` 的职责边界
-  - 不在这里为 `match` / `lambda` 补齐完整 body semantic 支持，也不实现 for iteration planning 或 lowering
+  - 不在这里为 `match` 补齐完整 body semantic 支持，也不实现 for iteration planning 或 lowering；已记录 lambda 是 callable boundary，本 analyzer 只重置 loop depth
   - 不在这里新增 side table 或改写已有 side table 结构
 
 ---

@@ -525,7 +525,7 @@ public final class FrontendExpressionSemanticSupport {
         ));
     }
 
-    /// Lambda typing contract (plan §3.3): a recorded lambda — one the interface phase registered
+    /// Lambda typing contract: a recorded lambda — one the interface phase registered
     /// as a callable owner and whose body already resolved through its nested suite — publishes the
     /// unparameterized `Callable` type, aligned with method-as-value / `construct_callable` facts.
     /// Lambdas outside supported executable bodies (property initializers, parameter defaults,

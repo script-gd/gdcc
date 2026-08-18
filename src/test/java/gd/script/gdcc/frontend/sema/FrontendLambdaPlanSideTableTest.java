@@ -21,8 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase A data-plane tests: lambda plans are a stable side table, compiler-only capture types
-/// stay rejected, and existing owner patches do not wipe or republish the table.
+/// Lambda plans are a stable side table: compiler-only capture types stay rejected, and
+/// existing owner patches do not wipe or republish the table.
 class FrontendLambdaPlanSideTableTest {
     private static final Range RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
 

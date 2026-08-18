@@ -24,7 +24,7 @@ class FrontendBodySemanticSupportPolicyTest {
                 BlockScopeKind.ELSE_BODY,
                 BlockScopeKind.WHILE_BODY,
                 BlockScopeKind.FOR_BODY,
-                // Lambda Phase B: lambda bodies publish lexical inventory (param/local/capture binding).
+                // Lambda bodies publish lexical inventory (param/local/capture binding).
                 BlockScopeKind.LAMBDA_BODY
         );
 
@@ -40,7 +40,7 @@ class FrontendBodySemanticSupportPolicyTest {
 
     @Test
     void unsupportedScopesKeepPreciseStructuralDomains() {
-        // Lambda scopes left this deferred set in Phase B; only `match` keeps a block-scope deferred domain.
+        // Lambda scopes are no longer in this deferred set; only `match` keeps a block-scope deferred domain.
         assertEquals(
                 FrontendBodySemanticSupportPolicy.MATCH_SUBTREE,
                 FrontendBodySemanticSupportPolicy.forBlockScopeKind(BlockScopeKind.MATCH_SECTION_BODY)

@@ -35,6 +35,7 @@ Rules:
 - `unit_test/validation` contains the Godot-side validation scripts.
 - Each compiled script must have a validation script with the same relative path.
 - Resource discovery is recursive, so nested directories are allowed and encouraged for grouping.
+- Recorded-lambda e2e pairs live under `lambda/` (value call / arity, captures, self+nested+return, control-flow bodies, signal / Array consumers). Keep `object_id` / free-after-invalid in `ConstructLambdaInsnGenEngineTest`; keep unrecorded-lambda negatives in focused frontend tests, not this suite.
 - `GdScriptUnitTestCompileRunnerTest.EXPECTED_SCRIPT_PATHS` must be updated whenever a resource
   pair is added or removed, so accidental fixture drift is caught before runtime execution.
 

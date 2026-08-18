@@ -49,7 +49,7 @@ public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass 
         publishExecutableBlockGraph(functionContext);
     }
 
-    /// Lambda bodies reuse the executable-block CFG build verbatim (lambda plan phase E): the
+    /// Lambda bodies reuse the executable-block CFG build verbatim: the
     /// lowering root is the lambda's own `Block`, captures/parameters are ordinary published scope
     /// facts by this point, and the synthetic shell stays the graph's only owner.
     private void publishLambdaBodyGraph(@NotNull FunctionLoweringContext functionContext) {

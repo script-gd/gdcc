@@ -151,7 +151,7 @@ record DictEntry(Expression key, Expression value, Range range)
 - vararg tail 没有具体 element slot 类型时。
 - 目标为 `Variant`。
 - expression statement。
-- 当前仍 deferred 的 conditional/lambda/match/default-argument 上下文。
+- 当前仍 deferred 的 conditional / 未记录 lambda / match / default-argument 上下文。已记录 lambda body 是 supported executable suite，其中的 typed literal 走普通 body 合同。
 
 ### 2.3 元素级兼容性
 
@@ -632,7 +632,7 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 `FrontendCompileCheckAnalyzer.walkExpression` **不再** 为 `ArrayExpression` / `DictionaryExpression` 建立显式 blocker；两者进入 default compile surface recursion。
 
 - 字面量不产生 `sema.compile_check`。
-- 当前仍被显式 intercept 的表达式固定为 `ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`；`LambdaExpression` 保持在 compile surface 之外。
+- 当前仍被显式 intercept 的表达式固定为 `ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`。已记录 `LambdaExpression`（published plan + body）已纳入 compile surface 并递归扫描 body；未记录 lambda 保持 fail-closed。合同见 `frontend_lambda_implementation.md`。
 - 移除 Array/Dictionary blocker 时不得顺带改变其他 feature 的 intercept 状态。
 
 ## 10. 核心实现落点

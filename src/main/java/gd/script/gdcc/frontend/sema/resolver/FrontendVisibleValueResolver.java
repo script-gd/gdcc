@@ -353,7 +353,7 @@ public final class FrontendVisibleValueResolver {
             // The interface body inventory only indexes LOCAL bindings. A lambda CAPTURE keeps the
             // outer declaration identity for provenance but is not part of that inventory, so the
             // consistency check must not fire for it; the declaration-order visibility filter below
-            // still applies (plan §3.4: capture legality follows outer declaration order).
+            // still applies (capture legality follows outer declaration order).
             if (value.kind() == ScopeValueKind.LOCAL) {
                 checkPublishedLocalInventory(variableDeclaration, value);
             }

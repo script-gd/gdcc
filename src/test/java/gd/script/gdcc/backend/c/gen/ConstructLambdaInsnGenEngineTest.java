@@ -41,7 +41,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase G e2e: generated lambda Callables must call, copy captures, and bind `object_id`.
+/// Generated lambda Callables must call, copy captures, and bind `object_id`.
 final class ConstructLambdaInsnGenEngineTest {
     @Test
     @DisplayName("construct_lambda should compile and run captureless / capture / self-object_id cases")

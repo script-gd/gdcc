@@ -33,10 +33,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase H inventory anchors (frontend_lambda_plan.md §阶段H / §3.2).
+/// Inventory anchors for recorded lambda parameter / local / capture binding.
 ///
-/// The existing `FrontendVariableAnalyzerTest` already covers the Phase B walk. This class
-/// keeps a smaller happy/negative pair so the named Phase H surface stays explicit.
+/// The existing `FrontendVariableAnalyzerTest` already covers the inventory walk. This class
+/// keeps a smaller happy/negative pair so the recorded-vs-unrecorded surface stays explicit.
 final class FrontendLambdaInventoryTest {
     @Test
     void analyzeBindsSupportedLambdaInventoryAndLeavesPlanUnpublished() throws Exception {

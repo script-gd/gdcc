@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Pure-function capture planner tests over hand-built scope graphs.
 ///
-/// These tests freeze §3.4 without opening production inventory: self-shadowing is not captured,
+/// These tests freeze capture derivation without opening production inventory: self-shadowing is not captured,
 /// class properties stay lexical, first-use order is preserved, and nested transfer stops at a
 /// shadowing parent.
 class FrontendLambdaCapturePlannerTest {

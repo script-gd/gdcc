@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase H expression-type anchors (frontend_lambda_plan.md §阶段H / §3.3).
+/// Expression-type anchors for recorded vs unrecorded lambdas.
 ///
 /// Recorded lambdas publish `RESOLVED(Callable)`. Unrecorded ones stay fail-closed without
 /// poisoning a sibling recorded lambda in the same module.

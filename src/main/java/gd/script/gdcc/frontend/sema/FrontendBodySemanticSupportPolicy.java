@@ -107,8 +107,8 @@ public enum FrontendBodySemanticSupportPolicy {
     /// executable bodies. Match-section scopes remain in their feature-specific deferred domain. The exhaustive
     /// switch is intentional: a newly added block scope kind must make a compile-time-visible support choice here.
     ///
-    /// `LAMBDA_BODY` publishes lexical inventory since lambda Phase B (parameter/local/capture binding); its
-    /// suite-resolver entry stays unconsumed until `FrontendInterfacePhase` stops skipping lambda expressions.
+    /// `LAMBDA_BODY` publishes lexical inventory (parameter/local/capture binding). Suite-resolver
+    /// entry is consumed only after `FrontendInterfacePhase` records the lambda as a callable owner.
     ///
     /// @param kind the block scope kind whose structural support is being queried
     /// @return the policy that controls inventory publication, suite entry, and visible-value domain
@@ -133,8 +133,8 @@ public enum FrontendBodySemanticSupportPolicy {
     /// Function, constructor, and lambda callables own executable bodies. As with block scopes, the exhaustive
     /// switch prevents new callable kinds from receiving support by default.
     ///
-    /// `LAMBDA_EXPRESSION` publishes lexical inventory since lambda Phase B; the resolver's lambda AST-edge and
-    /// callable-scope seals remain the fail-closed backstop until a later phase opens suite resolution.
+    /// `LAMBDA_EXPRESSION` publishes lexical inventory. Unrecorded lambdas stay fail-closed at the
+    /// resolver's AST-edge / callable-scope seals until interface records them as callable owners.
     ///
     /// @param kind the callable scope kind whose structural support is being queried
     /// @return the policy for the callable's body/inventory boundary

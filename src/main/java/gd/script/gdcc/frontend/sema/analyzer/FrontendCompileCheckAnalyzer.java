@@ -19,6 +19,7 @@ import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendForIterationRoute;
+import gd.script.gdcc.frontend.sema.FrontendLambdaPlan;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
@@ -78,6 +79,9 @@ import java.util.function.Predicate;
 /// The gate itself stays deliberately narrow:
 /// - explicit AST compile blocks for the currently recognized forms whose lowering/backend support
 ///   is not ready yet
+/// - recorded lambdas (published `lambdaPlans()` entry + published body) are released onto the
+///   compile surface and their bodies recursed; unrecorded lambdas (property initializer /
+///   parameter default / skipped subtree) stay fail-closed behind a form-level blocker
 /// - generic side-table scans over published `expressionTypes()` / `resolvedMembers()` /
 ///   `resolvedCalls()` facts that are still blocked/deferred/failed/unsupported on compile surface
 /// - feature-specific RESOLVED blockers for Signal.connect/disconnect and bare
@@ -139,6 +143,7 @@ public class FrontendCompileCheckAnalyzer {
                     analysisData.resolvedCalls(),
                     analysisData.slotTypes(),
                     analysisData.forIterationPlans(),
+                    analysisData.lambdaPlans(),
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
         }
@@ -158,6 +163,14 @@ public class FrontendCompileCheckAnalyzer {
         return Objects.requireNonNull(expressionKind, "expressionKind must not be null")
                 + " is recognized by the frontend but is blocked in compile mode because "
                 + "lowering support lands";
+    }
+
+    /// A lambda that reaches the compile surface without a published plan is unrecorded: property
+    /// initializer / parameter default / skipped subtrees never publish a plan or body facts. The
+    /// gate keeps those positions fail-closed instead of silently releasing them for lowering.
+    private static @NotNull String unrecordedLambdaCompileBlockedMessage() {
+        return "Lambda expression has no published lambda plan on this compile path and stays blocked in "
+                + "compile mode; only lambdas recorded inside supported executable bodies are compile-ready";
     }
 
     /// Route-not-ready blocker for a `for-in` whose iteration route has no registered lowering contract.
@@ -269,6 +282,7 @@ public class FrontendCompileCheckAnalyzer {
         private final @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls;
         private final @NotNull FrontendAstSideTable<GdType> slotTypes;
         private final @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans;
+        private final @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull Set<Node> compileSurfaceNodes = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -287,6 +301,7 @@ public class FrontendCompileCheckAnalyzer {
                 @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls,
                 @NotNull FrontendAstSideTable<GdType> slotTypes,
                 @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans,
+                @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath must not be null");
@@ -301,6 +316,7 @@ public class FrontendCompileCheckAnalyzer {
             this.resolvedCalls = Objects.requireNonNull(resolvedCalls, "resolvedCalls must not be null");
             this.slotTypes = Objects.requireNonNull(slotTypes, "slotTypes must not be null");
             this.forIterationPlans = Objects.requireNonNull(forIterationPlans, "forIterationPlans must not be null");
+            this.lambdaPlans = Objects.requireNonNull(lambdaPlans, "lambdaPlans must not be null");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
             astWalker = new ASTWalker(this);
         }
@@ -552,10 +568,7 @@ public class FrontendCompileCheckAnalyzer {
                 return;
             }
             switch (expression) {
-                case LambdaExpression lambdaExpression -> reportExplicitCompileBlock(
-                        lambdaExpression,
-                        expressionCompileBlockedMessage("Lambda expression")
-                );
+                case LambdaExpression lambdaExpression -> walkLambdaExpression(lambdaExpression);
                 case ConditionalExpression conditionalExpression -> reportExplicitCompileBlock(
                         conditionalExpression,
                         conditionalCompileBlockedMessage()
@@ -576,6 +589,22 @@ public class FrontendCompileCheckAnalyzer {
                     walkNestedExpressionChildren(expression);
                 }
             }
+        }
+
+        /// A recorded lambda (published plan + published body) is compile-ready: release its node onto
+        /// the surface and recurse into the body so its facts are scanned like any other executable
+        /// block. An unrecorded lambda (property initializer / parameter default / skipped subtree)
+        /// publishes no plan, so it stays fail-closed behind the form-level blocker; the gate never
+        /// silently releases a lambda that lacks the plan/synthetic-function/lowering contract facts.
+        private void walkLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
+            if (isNotPublished(lambdaExpression)
+                    || isNotPublished(lambdaExpression.body())
+                    || !lambdaPlans.containsKey(lambdaExpression)) {
+                reportExplicitCompileBlock(lambdaExpression, unrecordedLambdaCompileBlockedMessage());
+                return;
+            }
+            markCompileSurfaceNode(lambdaExpression);
+            walkSupportedExecutableBlock(lambdaExpression.body());
         }
 
         /// Some nodes such as `DictionaryExpression` wrap real expression payload under non-expression

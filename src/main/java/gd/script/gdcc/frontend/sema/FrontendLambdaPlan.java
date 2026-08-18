@@ -10,8 +10,9 @@ import java.util.Objects;
 
 /// Frozen semantic identity of one `LambdaExpression`.
 ///
-/// Keyed in `FrontendAnalysisData.lambdaPlans()` by the lambda AST node. Phase A only publishes the
-/// carrier; synthetic `_lambda_<k>` numbering and production inventory still belong to later phases.
+/// Keyed in `FrontendAnalysisData.lambdaPlans()` by the lambda AST node. The first published
+/// payload is already complete: synthetic `_lambda_<k>` name, declaration-site captures, and
+/// the once-resolved return type.
 ///
 /// @param lambda                   AST identity of the lambda expression
 /// @param syntheticName            compiler-owned function name, conventionally `_lambda_<k>`

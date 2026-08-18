@@ -163,7 +163,7 @@ void run(FrontendLoweringContext context)
 
 - `EXECUTABLE_BODY`
 - `PROPERTY_INIT`
-- `LAMBDA_BODY`（lambda 计划阶段 E 起：prep pass 按已发布 `FrontendLambdaPlan` 合成 hidden `_lambda_<k>` shell）
+- `LAMBDA_BODY`（prep pass 按已发布 `FrontendLambdaPlan` 合成 hidden `_lambda_<k>` shell）
 
 `PARAMETER_DEFAULT_INIT` 当前只冻结模型，不实际收集。
 
@@ -255,7 +255,7 @@ void run(FrontendLoweringContext context)
   - `initFunc` 为空时当前兼容命名基线为 `_field_init_<property>`
   - 若 `initFunc` 已存在，对应 shell 必须保持 hidden、property-compatible 且无 body，才能继续复用
   - shell 仍无 basic block / `entryBlockId`
-- 同一 pass 允许按已发布 `FrontendLambdaPlan` 追加 hidden synthesized lambda shell（lambda 计划阶段 E 起）：
+- 同一 pass 允许按已发布 `FrontendLambdaPlan` 追加 hidden synthesized lambda shell：
   - 名称来自 plan 的 `_lambda_<k>`，`is_lambda` + `is_hidden` + static 同时为真
   - 参数为源码参数（无注入 `self`），`<captures>` 与 plan 同源，shell 仍无 basic block / `entryBlockId`
   - 发现的 lambda 缺 plan、owning class 不一致或合成名冲突时 fail-fast
@@ -281,14 +281,12 @@ void run(FrontendLoweringContext context)
 
 此外，frontend MVP 仍未完整支持：
 
-- `lambda`
-- `for`
 - `match`
 - 参数默认值
 - block-local `const`
 - signal coroutine use-site（`await signal`；`.emit` / `.connect` 已闭环，见 `frontend_signal_support.md`）
 
-只要对应 lowering/backend 合同、实现和测试未闭环，这些边界就必须继续留在 compile gate，而不是在 lowering 中做局部放行。
+`lambda` 与 `for` 已进入 frontend shared body semantic 支持面：已记录 lambda 与已注册 for route 由 compile gate 放行，未记录 lambda / 未注册 for route 保持 fail-closed。只要对应 lowering/backend 合同、实现和测试未闭环，其余边界就必须继续留在 compile gate，而不是在 lowering 中做局部放行。
 
 ---
 

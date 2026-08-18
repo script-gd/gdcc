@@ -664,7 +664,7 @@ class FrontendVisibleValueResolverTest {
 
     @Test
     void resolveAllowsSyntheticLambdaBodyCurrentScopeWithoutLambdaAstBoundary() throws Exception {
-        // Lambda Phase B flipped the LAMBDA_BODY policy to publish lexical inventory, so the
+        // LAMBDA_BODY publishes lexical inventory, so the
         // current-scope backstop no longer seals a synthetic LAMBDA_BODY scope. Without a real
         // lambda AST boundary the request resolves as an ordinary EXECUTABLE_BODY lookup.
         var analyzedInput = analyzedInput("synthetic_lambda_scope.gd", """

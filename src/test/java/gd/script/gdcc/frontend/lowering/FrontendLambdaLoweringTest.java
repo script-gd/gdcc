@@ -42,19 +42,19 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase E lambda shell-synthesis contract tests (frontend_lambda_plan.md §阶段E / §3.7).
-/// Phase F adds the outer-body construction contract (§阶段F): recorded lambda occurrences
-/// lower to `LambdaConstructItem` / `construct_lambda` with enclosing-frame capture operands.
+/// Lambda shell-synthesis and outer-body construction contract tests.
+/// Recorded lambda occurrences lower to `LambdaConstructItem` / `construct_lambda`
+/// with enclosing-frame capture operands.
 ///
-/// The compile gate still blocks lambdas in `analyzeForCompile` until phase I, so these tests run
-/// the shared `analyze()` pipeline and then drive the lowering passes manually — the same recipe
-/// `FrontendLoweringFunctionPreparationPassTest` uses for non-lambda modules. Assertions anchor both
-/// directions: published plans materialize hidden `is_lambda` shells with faithful captures, while
-/// missing plans or name collisions fail fast instead of silently skipping synthesis.
+/// These tests run the shared `analyze()` pipeline and then drive the lowering passes
+/// manually — the same recipe `FrontendLoweringFunctionPreparationPassTest` uses for
+/// non-lambda modules. Assertions anchor both directions: published plans materialize
+/// hidden `is_lambda` shells with faithful captures, while missing plans or name
+/// collisions fail fast instead of silently skipping synthesis.
 final class FrontendLambdaLoweringTest {
 
-    /// 验收 happy path：一个含两层嵌套 lambda 的函数在 class 上得到两个 hidden `is_lambda` 函数，
-    /// capture 列表与已发布 plan 一致（外层按 §3.4 规则 5/9 传递 `seed`）。
+    /// Nested lambdas synthesize two hidden `is_lambda` shells whose capture lists match the
+    /// published plans (the outer layer transit-captures `seed`).
     @Test
     void synthesizesHiddenLambdaShellsForNestedLambdas() throws Exception {
         var prepared = analyzeAndSkeleton("lambda_shell_nested.gd", """
@@ -97,8 +97,9 @@ final class FrontendLambdaLoweringTest {
         }
     }
 
-    /// 验收 happy path：无 capture 的 lambda 没有 `<captures>` 条目，`getCaptureCount() == 0`，
-    /// 参数表保持源码形状（含类型、无注入 `self`），返回类型来自声明标注。
+    /// A captureless lambda has no `<captures>` entries, `getCaptureCount() == 0`, keeps the
+    /// source parameter shape (typed, no injected `self`), and takes its return type from the
+    /// declared annotation.
     @Test
     void synthesizesLambdaShellWithoutCapturesOrSelfParameter() throws Exception {
         var prepared = analyzeAndSkeleton("lambda_shell_plain.gd", """
@@ -128,8 +129,9 @@ final class FrontendLambdaLoweringTest {
         assertEquals("int", shell.getReturnType().getTypeName());
     }
 
-    /// 验收 happy path（§3.5）：引用外层实例方法的 lambda 把 `self` 作为 leading capture，类型为
-    /// enclosing class 的 `GdObjectType`；`setStatic(true)` 保证不注入第二份 `self` 参数。
+    /// A lambda that uses an enclosing instance method takes `self` as the leading capture,
+    /// typed as the enclosing class `GdObjectType`. `setStatic(true)` must not inject a second
+    /// `self` parameter.
     @Test
     void synthesizesLambdaShellWithLeadingSelfCapture() throws Exception {
         var prepared = analyzeAndSkeleton("lambda_shell_self.gd", """
@@ -162,7 +164,7 @@ final class FrontendLambdaLoweringTest {
         assertNull(shell.getParameter("self"));
     }
 
-    /// 验收 negative path：进入 preparation 的 lambda 缺已发布 plan → fail-fast，不静默跳过。
+    /// A lambda that reaches preparation without a published plan must fail fast, not skip.
     @Test
     void preparationFailsFastWhenLambdaPlanIsMissing() throws Exception {
         var prepared = analyzeAndSkeleton("lambda_missing_plan.gd", """
@@ -185,8 +187,8 @@ final class FrontendLambdaLoweringTest {
         assertTrue(exception.getMessage().contains("LambdaMissingPlan"), exception::getMessage);
     }
 
-    /// 验收 negative path 的防御侧：`_lambda_` 前缀在 skeleton 阶段已被保留名规则拦截，若合成名仍
-    /// 撞上既有函数则属于不变量破坏，preparation 必须 fail-fast 而不是覆盖既有函数。
+    /// The `_lambda_` prefix is already reserved at skeleton time. If the synthetic name still
+    /// collides with an existing function, preparation must fail fast instead of overwriting it.
     @Test
     void preparationFailsFastWhenSyntheticNameIsAlreadyTaken() throws Exception {
         var prepared = analyzeAndSkeleton("lambda_name_collision.gd", """
@@ -211,12 +213,13 @@ final class FrontendLambdaLoweringTest {
         assertTrue(exception.getMessage().contains(plan.syntheticName()), exception::getMessage);
     }
 
-    /// 阶段 E 接线：BuildCfgPass 接受 `sourceOwner instanceof LambdaExpression` +
-    /// `loweringRoot instanceof Block` 的 LAMBDA_BODY 上下文，body 复用 executable-block CFG 构建
-    /// （capture 读取经 opaque 符号路由），且函数仍保持 shell-only（块由 body pass 创建）。
+    /// BuildCfgPass accepts a `LAMBDA_BODY` context whose `sourceOwner` is a `LambdaExpression`
+    /// and `loweringRoot` is its `Block`. The body reuses the executable-block CFG build
+    /// (capture reads go through the opaque symbol route) and the function stays shell-only
+    /// (blocks are created by the body pass).
     ///
-    /// 注意：外层函数 body 的 LambdaExpression 表达式 lowering 属于阶段 F，因此这里只对 lambda
-    /// 上下文运行 CFG pass。
+    /// Outer-function `LambdaExpression` construction is a separate contract, so this test
+    /// only runs the CFG pass on the lambda context.
     @Test
     void buildCfgPublishesExecutableGraphForLambdaBodyContexts() throws Exception {
         var prepared = prepareLambdaOnlyContexts();
@@ -229,8 +232,8 @@ final class FrontendLambdaLoweringTest {
         assertTrue(lambdaContext.targetFunction().getEntryBlockId().isEmpty());
     }
 
-    /// 阶段 E 接线：BodyInsnPass 把 LAMBDA_BODY 并入共享 `FrontendBodyLoweringSession` 分支，
-    /// lambda body 与合成 shell 的变量面（capture 变量类型与 plan 同源）真实落地。
+    /// BodyInsnPass folds `LAMBDA_BODY` into the shared `FrontendBodyLoweringSession` branch,
+    /// so the lambda body and the synthesized shell share the same capture-variable types.
     @Test
     void bodyInsnMaterializesLambdaBodyThroughSharedSession() throws Exception {
         var prepared = prepareLambdaOnlyContexts();
@@ -248,9 +251,9 @@ final class FrontendLambdaLoweringTest {
         assertEquals("int", captureVariable.type().getTypeName());
     }
 
-    /// 阶段 F 验收 happy path：无 capture 的 lambda 在外层 body 产生一条
-    /// `construct_lambda "_lambda_0"`（无 capture operand），且 CFG item 不发布任何
-    /// operand value id、绝不走 `DirectSlotAliasValueItem`；`_lambda_0` shell 仍带参数与 return。
+    /// A captureless lambda produces one outer-body `construct_lambda "_lambda_0"` with no
+    /// capture operands. The CFG item publishes no operand value ids and never uses
+    /// `DirectSlotAliasValueItem`; the `_lambda_0` shell still keeps its parameters and return.
     @Test
     void outerBodyConstructsCapturelessLambdaValue() throws Exception {
         var prepared = prepareFullPipelineContexts("lambda_construct_plain.gd", """
@@ -285,8 +288,8 @@ final class FrontendLambdaLoweringTest {
         assertTrue(allInstructions(shell).stream().anyMatch(ReturnInsn.class::isInstance));
     }
 
-    /// 阶段 F 验收 happy path：捕获外层 `seed` 时 insn 恰好携带 `$seed` operand；capture 类型
-    /// 仍是外层绑定的声明处类型（§3.4），而不是外层函数末尾的 slot 类型。
+    /// Capturing the outer `seed` local emits exactly a `$seed` operand. The capture type is
+    /// the outer binding's declaration-site type, not the enclosing function's final slot type.
     @Test
     void outerBodyConstructInsnReadsCapturedLocalSlot() throws Exception {
         var prepared = prepareFullPipelineContexts("lambda_construct_capture.gd", """
@@ -315,9 +318,9 @@ final class FrontendLambdaLoweringTest {
         assertEquals("int", shell.getCapture("seed").type().getTypeName());
     }
 
-    /// 阶段 F 验收 happy path（§3.5）：使用外层实例成员的 lambda 以 leading `self` capture
-    /// 构造，item 侧是专用 `SelfSlotOperand.SELF_SLOT` descriptor（而非伪造的 SELF 标识符
-    /// 读取），insn 侧对应 `$self` operand。
+    /// A lambda that uses an enclosing instance member constructs with a leading `self`
+    /// capture. The item uses the dedicated `SelfSlotOperand.SELF_SLOT` descriptor (never a
+    /// fabricated SELF identifier) and the insn operand is `$self`.
     @Test
     void outerBodyConstructInsnUsesSelfSlotForSelfCapture() throws Exception {
         var prepared = prepareFullPipelineContexts("lambda_construct_self.gd", """
@@ -344,9 +347,9 @@ final class FrontendLambdaLoweringTest {
         assertEquals("self", shell.getCaptureList().getFirst().getName());
     }
 
-    /// 阶段 F 验收 happy path：嵌套 lambda 的 capture operand 从外层 lambda 的 CAPTURE slot
-    /// 按名读取——内层 `construct_lambda` 出现在外层 lambda body 中且 operand 名与外层
-    /// shell 的 capture 名一致。
+    /// A nested lambda reads its capture operand from the enclosing lambda's CAPTURE slot
+    /// by name: the inner `construct_lambda` lives in the outer lambda body and the operand
+    /// name matches the outer shell capture.
     @Test
     void nestedLambdaConstructInsnReadsEnclosingCaptureSlot() throws Exception {
         var prepared = prepareFullPipelineContexts("lambda_construct_nested.gd", """
@@ -377,9 +380,9 @@ final class FrontendLambdaLoweringTest {
         assertEquals(List.of("seed"), captureOperandIds(innerConstruct));
     }
 
-    /// 阶段 F 验收 happy path：return 位置的 lambda 把 preferred result value id 直接穿到
-    /// construct item 上，stop node 的 returnValueId 与 item 的 resultValueId 一致，insn 的
-    /// result slot 就是该 value id 对应的 `cfg_tmp_*`。
+    /// A return-position lambda threads the preferred result value id onto the construct
+    /// item. The stop node's returnValueId matches the item's resultValueId, and the insn
+    /// result slot is the corresponding `cfg_tmp_*`.
     @Test
     void returnPositionLambdaConstructThreadsPreferredResultId() throws Exception {
         var prepared = prepareFullPipelineContexts("lambda_construct_return.gd", """
@@ -406,8 +409,9 @@ final class FrontendLambdaLoweringTest {
         assertEquals(FrontendBodyLoweringSupport.cfgTempSlotId(item.resultValueId()), insn.resultId());
     }
 
-    /// 阶段 F 验收 negative path：进入 CFG 构建的 lowering-ready lambda 缺已发布 plan 时
-    /// builder fail-fast（prep pass 在更早处已有同类闸门，这里锚定 builder 自身的防御）。
+    /// A lowering-ready lambda that reaches CFG construction without a published plan must
+    /// fail fast in the builder (the prep pass already has the same gate; this anchors the
+    /// builder's own defense).
     @Test
     void buildCfgFailsFastWhenLambdaPlanIsMissing() throws Exception {
         var prepared = analyzeAndSkeleton("lambda_construct_missing_plan.gd", """
@@ -430,9 +434,9 @@ final class FrontendLambdaLoweringTest {
         assertTrue(exception.getMessage().contains("without a published lambda plan"), exception::getMessage);
     }
 
-    /// 阶段 F 验收 negative path：plan→item 与 plan→shell 任一漂移（此处通过给 shell 手工
-    /// 追加 phantom capture 模拟）都会让 body lowering 在 item capture 数与 shell capture 数
-    /// 不一致时 fail-fast，而不是静默发射不匹配的 `construct_lambda`。
+    /// If the plan→item and plan→shell capture lists drift (simulated here by appending a
+    /// phantom capture to the shell), body lowering must fail fast on the count mismatch
+    /// instead of silently emitting a mismatched `construct_lambda`.
     @Test
     void bodyInsnFailsFastWhenItemCaptureCountDivergesFromShell() throws Exception {
         var prepared = analyzeAndSkeleton("lambda_construct_count_mismatch.gd", """
@@ -458,9 +462,9 @@ final class FrontendLambdaLoweringTest {
         assertTrue(exception.getMessage().contains("_lambda_0"), exception::getMessage);
     }
 
-    /// Phase F pipeline: unlike `prepareLambdaOnlyContexts`, the full context set stays published
-    /// so the outer executable body (lambda construction) and the lambda bodies both flow through
-    /// the CFG and body-insn passes.
+    /// Unlike `prepareLambdaOnlyContexts`, the full context set stays published so the outer
+    /// executable body (lambda construction) and the lambda bodies both flow through the CFG
+    /// and body-insn passes.
     private static @NotNull PreparedLambdaModule prepareFullPipelineContexts(
             @NotNull String fileName,
             @NotNull String source

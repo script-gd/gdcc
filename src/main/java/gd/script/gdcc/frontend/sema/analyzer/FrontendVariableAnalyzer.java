@@ -132,14 +132,14 @@ public class FrontendVariableAnalyzer {
         /// while the `self` source stays the outermost instance callable of the chain.
         private @Nullable Node currentSelfSourceCallable;
         /// Completed per-lambda capture plans, keyed by AST identity, so an enclosing lambda can transfer
-        /// nested captures upward. Never leaves this analyzer run: Phase B must not
+        /// nested captures upward. Never leaves this analyzer run: inventory must not
         /// publish placeholder plans into `FrontendAnalysisData.lambdaPlans()`.
         private final @NotNull IdentityHashMap<LambdaExpression, FrontendLambdaCapturePlan> lambdaCapturePlans =
                 new IdentityHashMap<>();
         /// Idempotency guard: both the declaration walk and the boundary reporter can reach the same lambda,
         /// but parameters/captures must be bound exactly once.
         private final @NotNull Set<LambdaExpression> processedLambdas =
-               Collections.newSetFromMap(new IdentityHashMap<>());
+                Collections.newSetFromMap(new IdentityHashMap<>());
         /// Counts how many supported executable-block boundaries the walker is currently inside.
         ///
         /// The counter acts as a narrow capability flag rather than a generic nesting metric:
@@ -287,8 +287,8 @@ public class FrontendVariableAnalyzer {
         @Override
         public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
             // Lambda inventory (parameters, locals, captures) is part of the supported executable
-            // surface since Phase B. In practice the boundary reporter routes lambdas here because
-            // this binder never descends into expression children; binding stays idempotent either way.
+            // surface. In practice the boundary reporter routes lambdas here because this binder
+            // never descends into expression children; binding stays idempotent either way.
             bindLambdaInventory(lambdaExpression);
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
@@ -347,7 +347,7 @@ public class FrontendVariableAnalyzer {
         /// parameters, body locals, nested-lambda inventories (via the boundary reporter), and
         /// finally this lambda's own `CAPTURE` bindings.
         ///
-        /// Capture planning is deliberately post-order (plan §3.4 rule 8): every nested lambda has
+        /// Capture planning is deliberately post-order: every nested lambda has
         /// finished binding and planning before this lambda scans its own uses, so nested
         /// parameter/local bindings can never be misread as captures of this lambda.
         private void bindLambdaInventory(@NotNull LambdaExpression lambdaExpression) {
@@ -449,7 +449,7 @@ public class FrontendVariableAnalyzer {
 
         /// Implicit `self` is needed when a bare identifier that was not captured resolves to an
         /// INSTANCE member (non-static property/signal value, or a non-static method overload) —
-        /// such uses need the instance receiver at runtime (plan §3.5). Static members and global
+        /// such uses need the instance receiver at runtime. Static members and global
         /// utility functions (`print`, `abs`, ...) never need a receiver and must not synthesize
         /// a `self` capture.
         private boolean usesImplicitInstanceMember(
@@ -484,7 +484,7 @@ public class FrontendVariableAnalyzer {
 
         /// Builds the leading `self` capture entry, or `null` when `self` is unavailable here:
         /// the enclosing non-lambda callable is static (the restriction diagnostic stays with the
-        /// body-typing phases, plan §3.5) or no owning class can be determined.
+        /// body-typing phases) or no owning class can be determined.
         private @Nullable LambdaCaptureEntry buildSelfCaptureEntry(@NotNull CallableScope lambdaScope) {
             var selfSourceCallable = currentSelfSourceCallable;
             var instanceSelfSource = switch (selfSourceCallable) {
@@ -511,11 +511,11 @@ public class FrontendVariableAnalyzer {
         }
 
         /// Registers one capture on the lambda scope without letting user source reach
-        /// `CallableScope`'s fail-fast duplicate guard (plan §3.4 rule 7).
+        /// `CallableScope`'s fail-fast duplicate guard.
         ///
-        /// Phase B registers the capture NAME with a `Variant` placeholder type plus the source
-        /// declaration identity; the declaration-site type replaces the placeholder during nested
-        /// suite resolution in a later phase.
+        /// Inventory registers the capture NAME with a `Variant` placeholder type plus the source
+        /// declaration identity; nested suite resolution later replaces the placeholder with the
+        /// declaration-site type.
         private void defineCaptureGuarded(
                 @NotNull CallableScope lambdaScope,
                 @NotNull LambdaCaptureEntry capture,
@@ -851,11 +851,11 @@ public class FrontendVariableAnalyzer {
     /// arbitrary expression children. Without a separate scan, lambdas nested inside expressions
     /// such as local initializers or return values would remain completely silent.
     ///
-    /// Since lambda Phase B, lambdas found inside supported executable bodies are no longer
-    /// reported; they are handed to the binder's lambda-inventory pipeline instead. The remaining
-    /// reported boundaries are `match` subtrees. Block-local `const` subtrees stay sealed here as
-    /// well: the binder already reports the declaration itself, and names inside such a subtree
-    /// belong to a not-yet-supported domain.
+    /// Lambdas found inside supported executable bodies are no longer reported; they are handed
+    /// to the binder's lambda-inventory pipeline instead. The remaining reported boundaries are
+    /// `match` subtrees. Block-local `const` subtrees stay sealed here as well: the binder already
+    /// reports the declaration itself, and names inside such a subtree belong to a not-yet-supported
+    /// domain.
     private static final class UnsupportedVariableBoundaryReporter implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
         private final @NotNull DiagnosticManager diagnosticManager;
@@ -943,7 +943,7 @@ public class FrontendVariableAnalyzer {
     ///
     /// The scanner skips nested lambda bodies (bound and planned on their own), `match` subtrees,
     /// and block-local `const` subtrees: names inside not-yet-supported domains must never become
-    /// captures (plan §3.4 "不可捕获"). Explicit `self` expressions are flagged separately because
+    /// captures (those names stay ordinary lexical lookups). Explicit `self` expressions are flagged separately because
     /// `self` is not an identifier use.
     private static final class LambdaCaptureSourceScanner implements ASTNodeHandler {
         /// One source-ordered capture-relevant event inside a lambda body.

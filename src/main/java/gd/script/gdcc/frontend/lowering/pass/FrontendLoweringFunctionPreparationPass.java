@@ -38,7 +38,7 @@ import java.util.Objects;
 /// - executable callables reuse their published `LirFunctionDef`
 /// - property initializers get hidden synthetic helper scaffolds
 /// - recorded lambdas get hidden synthesized `_lambda_<k>` shells from their published
-///   `FrontendLambdaPlan` (lambda plan phase E / §3.7)
+///   `FrontendLambdaPlan`
 /// - no basic blocks or instructions are emitted yet; later CFG/body passes materialize the default
 ///   pipeline's executable callable, property-init and lambda bodies
 public final class FrontendLoweringFunctionPreparationPass implements FrontendLoweringPass {
@@ -250,10 +250,10 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
     }
 
     /// Discovers every `LambdaExpression` reachable from a supported executable body and appends a
-    /// synthesized `LAMBDA_BODY` context for each one (lambda plan phase E). Discovered lambdas are
+    /// synthesized `LAMBDA_BODY` context for each one. Discovered lambdas are
     /// exactly the ones the interface phase records, so each must carry a published
     /// `FrontendLambdaPlan`; a missing plan means published-fact corruption and fails fast instead
-    /// of silently skipping the lambda (plan §阶段E negative / §3.9). Nested lambdas are found by
+    /// of silently skipping the lambda. Nested lambdas are found by
     /// recursing into each discovered lambda body. Property-initializer expressions stay outside
     /// this scan surface: their lambdas are unrecorded and already carry upstream error
     /// diagnostics, so the pipeline stops before preparation.
@@ -361,9 +361,9 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
         return callableScope;
     }
 
-    /// Materializes the hidden lambda shell frozen by lambda plan §3.7:
+    /// Materializes the hidden lambda shell:
     /// `setLambda(true)` + `setHidden(true)` + `setStatic(true)`, source parameters with their
-    /// inventory-resolved types (no injected `self`; self only ever arrives as a §3.5 capture),
+    /// inventory-resolved types (no injected `self`; self only ever arrives as a capture),
     /// `<captures>` from the published plan, and the declared return type published on the plan.
     /// `setLambda(true)` must precede `addCapture` because captures are only legal on lambda
     /// functions.

@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 性质：长期事实源
-- 最后校对：2026-08-17（lambda 阶段 B：supported executable body 内的 lambda parameter / local / capture inventory 已转正，capture 类型仍为 `Variant` 占位）
+- 最后校对：2026-08-18（compile gate 已按 published plan 解封；本 analyzer 仍只负责 inventory，capture 声明处类型由 nested suite resolution 填充）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -336,7 +336,6 @@ For iterator 与 parameter、外层 local 或 body local 冲突时仍发布 `sem
 
 后续最直接的增量工作包括：
 
-- lambda 表达式类型发布（`GdCallableType`）与 lowering 链路（阶段 D+）
 - `match` pattern binding 与 section inventory
 - block-local `const` inventory
 - 参数默认值的真实语义接线

@@ -51,7 +51,7 @@ public class FrontendSuiteResolver {
     private static final @NotNull String UNSUPPORTED_BINDING_SUBTREE_CATEGORY =
             "sema.unsupported_binding_subtree";
     private static final @NotNull String UNSUPPORTED_CHAIN_ROUTE_CATEGORY = "sema.unsupported_chain_route";
-    /// Capture kind mirrored for the synthetic `self` capture (plan §3.5: parameter-shaped).
+    /// Capture kind mirrored for the synthetic `self` capture (parameter-shaped).
     private static final @NotNull String SELF_CAPTURE_NAME = "self";
 
     private final @NotNull FrontendStatementResolver statementResolver;
@@ -157,7 +157,7 @@ public class FrontendSuiteResolver {
             throw new IllegalStateException("Suite entry callable body has no published BlockScope");
         }
         // A lambda inherits its restriction / static context from the nearest enclosing non-lambda
-        // callable (plan §3.2); the same node is recorded as `enclosingCallable` in the plan.
+        // callable; the same node is recorded as `enclosingCallable` in the plan.
         var restrictionOwner = callableOwner instanceof LambdaExpression lambdaExpression
                 ? enclosingNonLambdaCallable(lambdaExpression, analysisData)
                 : callableOwner;
@@ -200,7 +200,7 @@ public class FrontendSuiteResolver {
         exportBatch.applyTo(analysisData);
     }
 
-    /// Nested resolve trigger: the only production entry point for recorded lambdas (plan §3.2).
+    /// Nested resolve trigger: the only production entry point for recorded lambdas.
     ///
     /// The lambda resolves with its own independent export batch applied immediately at completion,
     /// so its plan and body facts become stable before the enclosing statement's expr-type owner
@@ -223,7 +223,7 @@ public class FrontendSuiteResolver {
 
     /// Fills declaration-site capture types and publishes the first complete `FrontendLambdaPlan`.
     ///
-    /// Runs at nested resolve entry, before any lambda body statement is processed (plan §3.4):
+    /// Runs at nested resolve entry, before any lambda body statement is processed:
     /// each capture type is resolved from its source binding — parameters keep their declared type,
     /// outer captures keep their already frozen type, locals go through the enclosing typed
     /// environment's declaration-anchored overlay (falling back to the inventory baseline), and a
@@ -256,7 +256,7 @@ public class FrontendSuiteResolver {
         }
         // The declared return type resolves exactly once here, at nested-resolve entry: type-check
         // (return slot) and lowering (shell return type) both consume the published plan value, so
-        // an unknown annotation warns once and the two consumers can never drift (plan §3.7).
+        // an unknown annotation warns once and the two consumers can never drift.
         var returnType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 lambda.returnType(),
                 lambdaScope,
@@ -304,7 +304,7 @@ public class FrontendSuiteResolver {
     /// Reads the declaration-site type of a captured local: the enclosing environment's flushed
     /// stabilization / for-iteration update for that exact declaration, or the inventory baseline
     /// (explicit declared type or `Variant`) when no update exists. Never reads `VAR_TYPE_POST` or
-    /// post-declaration refinements (plan §3.4 read-path rules).
+    /// post-declaration refinements.
     private static @NotNull GdType declarationSiteLocalType(
             @NotNull CaptureSourceBinding source,
             @NotNull ScopeValue capture,

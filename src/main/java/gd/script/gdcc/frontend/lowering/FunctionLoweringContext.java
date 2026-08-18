@@ -289,7 +289,7 @@ public final class FunctionLoweringContext {
         PARAMETER_DEFAULT_INIT,
         /// Synthesized hidden lambda shell (`_lambda_<k>`): `sourceOwner` is the `LambdaExpression`
         /// and `loweringRoot` is its body `Block`. The body lowers through the same executable-body
-        /// pipeline, but self stays a §3.5 capture instead of an injected parameter.
+        /// pipeline, but self stays a capture instead of an injected parameter.
         LAMBDA_BODY
     }
 

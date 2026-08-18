@@ -61,7 +61,7 @@
   - 发布 expression-rooted frontend CFG graph
   - 不伪造 `Block` 或 property-init-only node kind
   - 复用同一套 body lowering session materialize `LirBasicBlock` / instruction
-- `LAMBDA_BODY`（lambda 计划阶段 E 起）
+- `LAMBDA_BODY`
   - 复用 executable-block 构图与共享 body session materialize lambda body
   - 合成 shell 的 capture 变量已由 `addCapture` 预登记，body 内 CAPTURE 读取走 opaque 符号路由
 - `PARAMETER_DEFAULT_INIT`
@@ -199,7 +199,7 @@ fully-terminated 的 `if` / `elif` / `else` 允许把 region `mergeId` 指向 `S
 - `SignalLoadItem`
 - `CallableLoadItem`
 - `StandaloneCallableLoadItem`
-- `LambdaConstructItem`（lambda 计划阶段 F 起）
+- `LambdaConstructItem`
 - `SubscriptLoadItem`
 - `CallItem`
 - `MergeValueItem`
@@ -219,12 +219,12 @@ fully-terminated 的 `if` / `elif` / `else` 允许把 region `mergeId` 指向 `S
 
 item 携带的 operation descriptor 直接来自 `FrontendForLoweringContract`，lowering 不重新查询 route 或硬编码 intrinsic 名称。
 
-`LambdaConstructItem`（lambda 计划阶段 F 起）表示外层 body 中一处已 record lambda 的构造：
+`LambdaConstructItem` 表示外层 body 中一处已 record lambda 的构造：
 
 - 持有 `lambdaAnchor`（`LambdaExpression`，materialization 结果类型取其 `RESOLVED(GdCallableType)`）、合成函数名、有序 `CaptureOperand` 列表与 `resultValueId`
 - capture operand 是外层 frame 的直接 slot 读，不经 value-id 数据流，故 `operandValueIds()` 恒为空：`VariableSlotOperand(slotId)` 按名读外层 `LOCAL_VAR` / `PARAMETER` / 外层 `CAPTURE` slot（slot id == capture 条目名）；leading `self` capture 用 `SelfSlotOperand.SELF_SLOT` 专用 descriptor，禁止伪造 `IdentifierExpression + SELF`
 - body lowering 发射 `ConstructLambdaInsn` 前在 owning class 上找回合成 shell 并端到端校验：shell 存在且 `is_lambda`、capture 数量一致、名序一致（operand slotId 按构造即 capture 名）；任一漂移 fail-fast
-- lambda body 本身的 CFG/insn 仍由阶段 E 的 `LAMBDA_BODY` context 承担，本 item 只承载外层构造点
+- lambda body 本身的 CFG/insn 仍由 `LAMBDA_BODY` context 承担，本 item 只承载外层构造点
 
 这里的核心合同是：
 
@@ -286,12 +286,12 @@ dynamic instance-call receiver 现也冻结为同一套 payload consumer：
 
 - direct-slot mutating receiver 已改为发布 alias-backed receiver value，而不是继续依赖 body lowering 额外解释“synthetic temp -> source slot”
 - 这条 direct-slot publication surface 只包含 explicit `SelfExpression`、`IdentifierExpression + LOCAL_VAR`、`IdentifierExpression + PARAMETER`
-- `IdentifierExpression + CAPTURE` 当前不在 alias publication surface 内。虽然 binding/scope 模型保留了 `CAPTURE` 这一类别，但 lambda/capture lowering 与 storage semantics 仍未冻结，不能提前把它视为 alias root
+- `IdentifierExpression + CAPTURE` 当前不在 alias publication surface 内。lambda/capture lowering 与 storage semantics 已落地（`construct_lambda` + capture block），但 capture-backed live-slot alias 仍未开放，不能提前把它视为 alias root
 - `IdentifierExpression + FrontendBindingKind.SELF` 在当前代码库中不是独立 source category：`FrontendTopBindingAnalyzer` 只会对 `SelfExpression` 发布 `SELF`，因此一旦这种 surface 泄漏到 builder 或 body lowering，二者都必须把它当作 contract violation 直接 fail-fast，而不是恢复成 `"self"`
 - `receiverValueIdOrNull == null` 时 fallback 到 `self` 的 implicit self receiver 不属于 payload-backed receiver publication，也不属于 direct-slot alias root
 - explicit `SelfExpression` 的 alias 安全性来自 `self` slot 不可被用户代码重绑定，因此不需要额外 argument no-rebinding 分类
 - `IdentifierExpression + LOCAL_VAR/PARAMETER` 只有在后续 arguments 全部落在 proven no-rebinding 子集时才允许 alias publication
-- `IdentifierExpression + CAPTURE` 在当前实现中必须 fail-fast，等 lambda/capture lowering 落地后再重新评估是否进入 alias eligibility
+- `IdentifierExpression + CAPTURE` 在当前实现中必须 fail-fast；capture-backed live-slot alias eligibility 仍未开放
 - 当前 CFG builder 已明确把 nested `CallExpression`、`AttributeCallStep` 和其它尚未证明 no-rebinding 的 effect-open expression kind 视为 snapshot fallback trigger：遇到这些参数时继续保留 ordinary `OpaqueExprValueItem(identifier)`，不再发布 live-slot alias
 
 其中 compound assignment 的 source-order 合同固定为：
@@ -479,7 +479,7 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 - 为 executable body 发布 `frontendCfgRegions`
 - 为 compile-ready `for-in` 发布 `frontendForSourceIteratorSlots` 与 `frontendForIteratorStateSlots` registry
 - 对 property initializer 校验 `sourceOwner == property declaration`、`loweringRoot == initializer expression`
-- 对 lambda body（lambda 计划阶段 E 起）校验 `sourceOwner instanceof LambdaExpression`、`loweringRoot instanceof Block`，随后与 `EXECUTABLE_BODY` 共享同一 `publishExecutableBlockGraph`（`buildExecutableBody` + graph/region/for-slot 发布）；外层 body 表达式树中的已 record `LambdaExpression` 自阶段 F 起由 CFG builder 建 `LambdaConstructItem`（缺已发布 plan 仍 fail-fast）
+- 对 lambda body 校验 `sourceOwner instanceof LambdaExpression`、`loweringRoot instanceof Block`，随后与 `EXECUTABLE_BODY` 共享同一 `publishExecutableBlockGraph`（`buildExecutableBody` + graph/region/for-slot 发布）；外层 body 表达式树中的已 record `LambdaExpression` 由 CFG builder 建 `LambdaConstructItem`（缺已发布 plan 仍 fail-fast）
 
 当前不负责：
 
@@ -505,7 +505,7 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 
 当前内部组织也已经冻结为以下形状：
 
-- `FrontendLoweringBodyInsnPass` 本体只保留 compile-ready function context 调度；当前默认 pipeline 覆盖 executable-body、property-init 与 lambda-body（阶段 E 起并入共享 session 分支；合成 shell 的 `setStatic(true)` 保证 `declareSelfSlotIfNeeded` 不产生 stray `self`），parameter-default 继续显式 fail-fast
+- `FrontendLoweringBodyInsnPass` 本体只保留 compile-ready function context 调度；当前默认 pipeline 覆盖 executable-body、property-init 与 lambda-body（并入共享 session 分支；合成 shell 的 `setStatic(true)` 保证 `declareSelfSlotIfNeeded` 不产生 stray `self`），parameter-default 继续显式 fail-fast
 - 真实的 per-function lowering state 收口到 `frontend.lowering.pass.body.FrontendBodyLoweringSession`
 - CFG node、`SequenceItem`、opaque expression root、assignment target / attribute step 都通过 `FrontendInsnLoweringProcessor` 注册表按“当前节点实际类型”动态分派
 - `FrontendInsnLoweringProcessor` 现在还显式返回 lowering 结束后的当前 continuation block；`SequenceNode` 会把这个 block 一路传给后续 item，因此 writable-route runtime gate 生成的 synthetic `apply/skip/continue` blocks 不会把后续 lowering 误挂回原始 node entry block
@@ -544,7 +544,7 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 - constructor materialization
 - `TypeTestExpression` (`is` / `is not`) with unified `is_instance_of` or folded bool lowering
 - callable-local slot type published contract
-- 已 record lambda 的外层构造（`LambdaConstructItem` → `construct_lambda`，lambda 计划阶段 F 起；C backend `CONSTRUCT_LAMBDA` 已于阶段 G 落地）
+- 已 record lambda 的外层构造（`LambdaConstructItem` → `construct_lambda`；C backend `CONSTRUCT_LAMBDA` 已落地）
 
 plain assignment 的 compile-ready surface 明确包含 direct explicit-self property assignment：
 

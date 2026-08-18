@@ -11,21 +11,19 @@
 
 在设计这些正向样例时，确认了多条当前仍然成立、且会直接影响测试写法的边界，以及少量已经修复、但需要从旧测试写法中清理掉的历史回归。
 
-## 1. `for` / `match` / `lambda` 仍不属于 frontend body semantic MVP
+## 1. `match` 仍不属于 frontend body semantic MVP；`for` / `lambda` 已转正
 
 事实来源：
 
 - `doc/module_impl/frontend/frontend_rules.md`
-  - 当前明确写明 `lambda`、`match`、`for` 不在 frontend body semantic MVP 正式支持面
-  - 相关子树仍按 deferred / unsupported boundary fail-closed
+  - `for` 已进入 frontend shared body semantic 支持面（route-aware compile gate）
+  - `lambda` 已进入 frontend shared body semantic 支持面（已记录 lambda 放行；property initializer / parameter default 中的未记录 lambda 仍 fail-closed）
+  - `match` 仍按结构性 deferred / unsupported boundary fail-closed
 
 对 test suite 的直接影响：
 
-- BFS / DFS、字符串扫描、数组求和等算法样例不能使用更自然的 `for item in items`
-- 新增图遍历与字符串处理用例统一改写为：
-  - `while` 循环
-  - 显式 index / queue cursor
-  - 递归 helper
+- recorded lambda 正向样例放在 `lambda/`；未记录 lambda / lambda 内 `match` 仍不进 suite
+- 历史算法样例（BFS / DFS 等）仍可继续用 `while` / 显式 index；新样例可以使用已转正的 `for`
 
 当前处理结论：
 

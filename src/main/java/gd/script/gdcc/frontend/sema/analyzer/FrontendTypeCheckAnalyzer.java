@@ -1174,8 +1174,8 @@ public class FrontendTypeCheckAnalyzer {
 
         /// Recorded lambdas re-enter here from `scanNestedLambdaBodies`: the body already resolved
         /// through its nested suite, so type-check walks it as an independent callable island that
-        /// inherits the enclosing callable's restriction/static context (plan §3.2). The return
-        /// slot is the declared return type published on the `FrontendLambdaPlan` (phase E), so a
+        /// inherits the enclosing callable's restriction/static context. The return
+        /// slot is the declared return type published on the `FrontendLambdaPlan`, so a
         /// mismatched or bare `return` gets the ordinary `sema.type_check` diagnostics instead of
         /// drifting against the synthesized shell's return boundary downstream. Unrecorded lambdas
         /// (property initializer / parameter default / skipped subtrees) publish no plan and no

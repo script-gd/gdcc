@@ -291,11 +291,11 @@ runtime-gated reverse commit 可能插入 `apply / skip / continue` block，因�
 
 ### 4.4 CAPTURE 的当前结论
 
-`CAPTURE` 当前保留在绑定/作用域模型里，但 lambda/capture lowering 与 capture storage semantics 仍未冻结，因此：
+`CAPTURE` 已进入 lambda storage 合同（`construct_lambda` + capture block 拷贝），但 **capture-backed live-slot alias surface 仍未开放**，因此：
 
 - `CAPTURE` 不参与 alias eligibility
 - 一旦 capture-backed identifier 进入 alias path，当前实现必须 fail-fast
-- future lambda 工程若要开放 capture alias，必须先建立独立的 storage / rebinding / alias-safety 证明链
+- 若未来要开放 capture alias，必须先建立独立的 storage / rebinding / alias-safety 证明链
 
 ## 5. writeback family 与 runtime helper 合同
 

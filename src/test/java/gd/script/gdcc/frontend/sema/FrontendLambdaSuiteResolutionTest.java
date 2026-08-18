@@ -40,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase C lambda suite-resolution contract tests (frontend_lambda_plan.md §阶段C).
+/// Lambda suite-resolution contract tests.
 ///
 /// Anchors both directions: recorded lambdas resolve through the nested trigger and publish the
 /// first complete `FrontendLambdaPlan` with declaration-site capture types mirrored onto the
@@ -114,7 +114,7 @@ class FrontendLambdaSuiteResolutionTest {
         var pingFunction = findFunction(analysisData.unit().ast(), "ping");
         var lambda = findNode(pingFunction.body(), LambdaExpression.class, _ -> true);
 
-        // Phase C/D contract: the nested-resolved plan (LAMBDA_RESOLUTION owner) and the callable
+        // The nested-resolved plan (LAMBDA_RESOLUTION owner) and the callable
         // expression fact (EXPR_TYPE owner) coexist for the same recorded lambda node.
         assertNotNull(analysisData.analysisData().lambdaPlans().get(lambda));
         var expressionType = analysisData.analysisData().expressionTypes().get(lambda);
@@ -123,7 +123,7 @@ class FrontendLambdaSuiteResolutionTest {
         assertEquals("Callable", expressionType.publishedType().getTypeName());
 
         // Silent stabilization never resolves the lambda initializer, so the `:=` slot keeps its
-        // inventory Variant; only a non-silent write-back could refine it (phase D adds none).
+        // inventory Variant; only a non-silent write-back after nested resolve could refine it.
         var bodyScope = assertInstanceOf(
                 BlockScope.class,
                 analysisData.analysisData().scopesByAst().get(pingFunction.body())

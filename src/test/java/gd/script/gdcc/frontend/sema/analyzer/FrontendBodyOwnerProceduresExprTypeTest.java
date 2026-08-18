@@ -2642,7 +2642,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                 )
         );
 
-        // Silent local stabilization never resolves lambda initializers (plan §3.2), so the
+        // Silent local stabilization never resolves lambda initializers, so the
         // `:=` slot keeps its inventory Variant even though the lambda itself resolved to
         // `Callable`; refinement may only come from a non-silent write-back, which phase D
         // deliberately does not add.

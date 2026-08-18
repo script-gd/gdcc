@@ -5,8 +5,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / type-check / loop-control / compile-check / exception 诊断链路已落地）
-- 更新时间：2026-08-14
+- 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / type-check / loop-control / compile-check / exception 诊断链路已落地；已记录 lambda 的 compile gate 已解封）
+- 更新时间：2026-08-18
 - 适用范围：
     - `src/main/java/gd/script/gdcc/frontend/diagnostic/**`
     - `src/main/java/gd/script/gdcc/frontend/parse/**`
@@ -17,6 +17,7 @@
     - `doc/module_impl/frontend/scope_architecture_refactor_plan.md`
     - `doc/module_impl/frontend/frontend_loop_control_flow_analyzer_implementation.md`
     - `doc/module_impl/frontend/frontend_compile_check_analyzer_implementation.md`
+    - `doc/module_impl/frontend/frontend_lambda_implementation.md`
     - `doc/analysis/frontend_semantic_analyzer_research_report.md`
 
 ---
@@ -133,7 +134,7 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `forIterationPlans`
 - `typeTestTargets`
 - `containerLiteralPlans`
-- `lambdaPlans`（阶段 A 数据面已接线；阶段 B 把 lambda inventory 绑定进 scope；阶段 C 起由 nested resolve 入口经独立 `LAMBDA_RESOLUTION` owner 首次发布完整 plan，capture 声明处类型已填充；阶段 D 起已 record lambda 的 `expressionTypes` 由 EXPR_TYPE owner 首次发布 `RESOLVED(GdCallableType)`；阶段 E 起 plan 携带 `returnType`——nested resolve 入口一次解析的声明返回类型，type-check return slot 与 lowering shell 共用）
+- `lambdaPlans`（nested resolve 入口经独立 `LAMBDA_RESOLUTION` owner 首次发布完整 plan，capture 声明处类型已填充；已 record lambda 的 `expressionTypes` 由 EXPR_TYPE owner 首次发布 `RESOLVED(GdCallableType)`；plan 携带 `returnType`——nested resolve 入口一次解析的声明返回类型，type-check return slot 与 lowering shell 共用）
 
 其中：
 
@@ -221,7 +222,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - variable analyzer 对 parameter default value 当前尚未接线时发出的 feature-boundary error
 - `sema.unsupported_variable_inventory_subtree`
   - variable analyzer 对 `match` / block-local `const` inventory 边界发出的 feature-boundary error
-  - lambda 已在阶段 B 移出该边界：supported executable body 内的 lambda 会绑定 param / local / capture，不再发此诊断
+  - lambda 已移出该边界：supported executable body 内的 lambda 会绑定 param / local / capture，不再发此诊断
 - `sema.variable_slot_publication`
   - var-type-post analyzer 对 supported callable-local `var` 因 earlier duplicate/shadowing reject 而无法发布 `slotTypes()` 时发出的 warning
   - warning message 若能在当前 callable 边界内找到幸存的 accepted local / parameter / capture，必须带出该幸存绑定的语义类别与声明位置
@@ -230,7 +231,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - top binding 命中的 blocked / unknown / shadowing 诊断
 - `sema.unsupported_binding_subtree`
   - top binding 对 parameter default、`match`、block-local `const` 等明确 unsupported subtree 的边界 error
-  - 已 `recordCallable` 的 lambda 自阶段 C 起改走 nested suite resolution，不再发此诊断；未记录的 lambda（property initializer 等）继续按此边界 fail-closed
+  - 已 `recordCallable` 的 lambda 改走 nested suite resolution，不再发此诊断；未记录的 lambda（property initializer 等）继续按此边界 fail-closed
   - top binding 对 missing-scope / skipped subtree 的恢复诊断继续允许使用 warning
 - `sema.member_resolution`
   - chain binding 中 blocked / failed member step 的语义错误
@@ -248,7 +249,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - expr analyzer 对 assignment / subscript / generic deferred expression 等 expression-only deferred root 的 warning
 - `sema.unsupported_expression_route`
   - expr analyzer 对当前明确不支持的 direct-callable-invocation 等 expression route 的 error
-  - 已 `recordCallable` 的 lambda 自阶段 D 起不再发此诊断（表达式类型已转正为 `RESOLVED(GdCallableType)`）；未记录的 lambda（property initializer / parameter default / skipped subtree）继续按此边界 fail-closed
+  - 已 `recordCallable` 的 lambda 不再发此诊断（表达式类型已转正为 `RESOLVED(GdCallableType)`）；未记录的 lambda（property initializer / parameter default / skipped subtree）继续按此边界 fail-closed
 - `sema.discarded_expression`
   - expr analyzer 对 bare expression statement 中被丢弃的非 `void` 结果发出的 warning
 - `sema.unsafe_call_argument`
@@ -283,13 +284,14 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.compile_check`
   - compile-only `FrontendCompileCheckAnalyzer` 对进入 lowering 前仍不可编译的 surface 发出的最终 error
   - 同时覆盖：
-    - 当前首批显式封口的 `assert`、`ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`，以及按 route-aware policy 处理的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression` 与 `CastExpression` 不属于显式封口列表
+    - 当前首批显式封口的 `assert`、`ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`，以及按 route-aware policy 处理的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression` 与已记录 `LambdaExpression` 不属于无条件显式封口列表
     - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
     - feature-specific RESOLVED blocker：当前仅 Dictionary 实例 method-reference（`METHOD && BUILTIN && GdDictionaryType`）与 builtin type-meta static method-reference（`STATIC_METHOD && ownerKind == BUILTIN`）。signal 值读取、`.emit`、`.connect`/`.disconnect`、Object/self `METHOD`、非 Dictionary builtin 实例、GDCC/engine 静态与 bare utility 值读取已放行。bare blocker 按 published `symbolBindings().kind()` 定位，必须排除 `CallExpression.callee()`。详见 `frontend_signal_support.md` 与 `frontend_compile_check_analyzer_implementation.md` §4.2。
     - supported callable-local `var` 因 `sema.variable_slot_publication` warning 仍缺失 `slotTypes()` 的 lowering-only fact 缺洞
   - `assert` 在这里仍只是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，不把它回退成 strict-bool `sema.type_check`
   - `ForStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `forIterationPlans()` 与 `ForLoweringContractRegistry`，已注册 lowering contract 的 route 放行并进入 body 重扫 facts，未注册 contract 的 route（当前 `OBJECT_CUSTOM`）在 statement root 发 route-not-ready blocker（说明缺少 lowering route，而非 `FOR_SUBTREE` unsupported）；已注册 route 的 CFG/body lowering 已落地
-  - 上述 3 类表达式（即 `ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`，不含 statement 级 `assert` 与 route-aware 的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression` 与 `CastExpression` 已完成 lowering/backend 闭环）属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
+  - 已记录 `LambdaExpression`（published `FrontendLambdaPlan` + body）放上 compile surface 并递归扫描 body facts；未记录 lambda 保持 fail-closed，且不得在上游 unsupported owner 上重复包一层 `sema.compile_check`。合同见 `frontend_lambda_implementation.md`
+  - 上述 3 类表达式（即 `ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`，不含 statement 级 `assert` 与 route-aware 的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression` 与已记录 `LambdaExpression` 已完成 lowering/backend 闭环）属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
   - `ConditionalExpression` 当前单独被列入这份清单，是因为真正的 value-merge / branch-result materialization 尚未接通；compile gate 必须继续拦截。CFG 构建已由 `FrontendLoweringBuildCfgPass` 承接，不再依赖已移除的 metadata-only `FrontendLoweringCfgPass`
   - `DYNAMIC` 不属于 compile blocker；它保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 未实现状态
   - 该 category 只属于 compile-only 入口，不属于默认共享语义 / inspection / 未来 LSP 入口
@@ -351,7 +353,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `FrontendSemanticAnalyzer` 当前返回 `FrontendAnalysisData`
 - analyze 流程围绕同一份共享分析数据推进
 - interface/body suite resolver 路径会在每个 body statement boundary 刷新 `FrontendAnalysisData.diagnostics()`，让后一 statement 能读取 current-suite upstream diagnostic snapshot；suite export 在 patch transaction 应用后保留最终 body snapshot
-- 已 `recordCallable` 的 lambda 由外层 statement 的 top-binding owner 触发 nested suite resolution：独立 `FrontendCallableExportBatch` 立即应用，`LAMBDA_RESOLUTION` owner patch 首次发布 `lambdaPlans`（capture 声明处类型），body 事实与普通 suite 走同一 statement boundary 诊断刷新；阶段 D 起该 lambda 节点的 `expressionTypes` 由 EXPR_TYPE owner 首次发布 `RESOLVED(GdCallableType)`，silent 局部稳定化不解析 lambda initializer（slot 保持 inventory `Variant`）
+- 已 `recordCallable` 的 lambda 由外层 statement 的 top-binding owner 触发 nested suite resolution：独立 `FrontendCallableExportBatch` 立即应用，`LAMBDA_RESOLUTION` owner patch 首次发布 `lambdaPlans`（capture 声明处类型），body 事实与普通 suite 走同一 statement boundary 诊断刷新；该 lambda 节点的 `expressionTypes` 由 EXPR_TYPE owner 首次发布 `RESOLVED(GdCallableType)`，silent 局部稳定化不解析 lambda initializer（slot 保持 inventory `Variant`）
 - analyze 现在已经具备独立的多 phase 主链路：
     - skeleton 结束后先发布 `updateModuleSkeleton(...)`
     - 再发布一次 pre-scope `updateDiagnostics(...)`
@@ -364,7 +366,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - 调用 `FrontendVarTypePostAnalyzer.analyze(...)` 发布 callable-local `slotTypes()`
     - 调用 `FrontendAnnotationUsageAnalyzer.analyze(...)` 对 retained annotation 的合法挂载位置发出 `sema.annotation_usage`
     - 调用 `FrontendVirtualOverrideAnalyzer.analyze(...)` 对 engine virtual override 签名发出 `sema.virtual_override`
-    - 调用 `FrontendTypeCheckAnalyzer.analyze(...)` 对 ordinary local / class property / return typed contract 发出 `sema.type_check`，并对 property hint 发出 `sema.type_hint`；自阶段 D 起经 `scanNestedLambdaBodies` 显式 re-entry 遍历已 record lambda 的 body（plan 存在性为闸门，继承 enclosing callable 的 restriction/static context）
+    - 调用 `FrontendTypeCheckAnalyzer.analyze(...)` 对 ordinary local / class property / return typed contract 发出 `sema.type_check`，并对 property hint 发出 `sema.type_hint`；经 `scanNestedLambdaBodies` 显式 re-entry 遍历已 record lambda 的 body（plan 存在性为闸门，继承 enclosing callable 的 restriction/static context）
     - 调用 `FrontendLoopControlFlowAnalyzer.analyze(...)` 对非法 `break` / `continue` 发出 `sema.loop_control_flow`
     - 每个 phase 结束后都再次 `updateDiagnostics(...)`，把阶段边界快照刷新到最新 shared manager 状态
 - `analyzeForCompile(...)` 在共享 11 phase 之后追加：

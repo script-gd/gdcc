@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Anchors the Phase A `func.ftl` contract: a lambda with more than one capture still emits
+/// Anchors the `func.ftl` contract: a lambda with more than one capture still emits
 /// exactly one `_capture` parameter. The capture struct itself still lists every field.
 class FuncHeaderCaptureTemplateTest {
     @Test

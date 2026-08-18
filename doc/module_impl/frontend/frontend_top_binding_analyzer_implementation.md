@@ -28,7 +28,7 @@
   - 不在这里发布 `resolvedMembers()`、`resolvedCalls()` 或 `expressionTypes()`
   - 不在这里解析显式 receiver 尾部成员或调用步骤
   - 不在这里建模 read / write / call / assignable / lvalue 语义
-  - 不在这里实现 parameter default、lambda、`match`、block-local `const` 的正式 binding
+  - 不在这里实现 parameter default、`match`、block-local `const` 的正式 binding；已记录 lambda 由 nested suite resolution 承接，合同见 `frontend_lambda_implementation.md`
   - 不在这里扩展 shared `Scope` 协议
   - 不在这里处理 class constant binding；该能力仍延后到 MVP 之后
 
@@ -145,7 +145,7 @@
 - `METHOD` 表示实例方法 overload set 的 function-like symbol category，可被 bare callee 与 value use-site 共同消费
 - `STATIC_METHOD` 表示静态方法 overload set 的 function-like symbol category，可被 bare callee 与 value use-site 共同消费
 - `CONSTANT` 仍保留在枚举中，但 class-level `const` 当前不属于本 analyzer 的正式支持面
-- `CAPTURE` 在当前支持面下通常不会正式产出，因为 lambda capture 仍 deferred
+- `CAPTURE` 由已记录 lambda 的 nested suite resolution 正式产出（声明处类型写入 `FrontendLambdaPlan` 与 scope）；本 analyzer 不在自己的 walk 里发明 capture binding
 
 ### 2.4 当前明确不发布的事实
 
@@ -381,7 +381,7 @@ builtin static namespace 当前仍 direct-only，因为 ExtensionAPI builtin met
 以下位置当前都必须显式封口，不能伪装成正常 binding miss：
 
 - parameter default subtree
-- lambda subtree（仅未记录的 lambda：property initializer / parameter default / skipped subtree；已 `recordCallable` 的 lambda 自 lambda 计划阶段 C 起由 top-binding 触发 nested suite resolution，不再封口）
+- lambda subtree（仅未记录的 lambda：property initializer / parameter default / skipped subtree；已 `recordCallable` 的 lambda 由 top-binding 触发 nested suite resolution，不再封口）
 - `match` subtree
 - block-local `const` initializer subtree
 - 任何缺少稳定 `scopesByAst()` 记录的 skipped subtree
@@ -465,7 +465,7 @@ builtin static namespace 当前仍 direct-only，因为 ExtensionAPI builtin met
 当前 `sema.unsupported_binding_subtree` 覆盖以下语义：
 
 - parameter default subtree
-- lambda subtree（仅未记录的 lambda；已 `recordCallable` 的 lambda 自阶段 C 起走 nested suite resolution，不产生此 category）
+- lambda subtree（仅未记录的 lambda；已 `recordCallable` 的 lambda 走 nested suite resolution，不产生此 category）
 - `match` subtree
 - block-local `const` initializer subtree
 - missing-scope / skipped subtree
@@ -658,7 +658,7 @@ func ping(value):
         return value
 ```
 
-- 已 `recordCallable` 的 lambda 自 lambda 计划阶段 C/D 起转正：top-binding 触发 nested
+- 已 `recordCallable` 的 lambda 已转正：top-binding 触发 nested
   suite resolution，表达式类型发布 `RESOLVED(GdCallableType)`；仅未记录位置
   （property initializer / parameter default / skipped subtree）的 lambda 仍 deferred
 
@@ -699,6 +699,6 @@ func ping():
 - explicit receiver 只绑定链头与 step/index arguments，不绑定尾部 segment
 - assignment 左右两侧都会递归进入 binding
 - ordinary local initializer 继续属于支持面
-- parameter default / lambda / `match` / block-local `const` 当前继续走 root-level unsupported error
+- parameter default / 未记录 lambda / `match` / block-local `const` 当前继续走 root-level unsupported error
 - for header/body use-site 通过普通 executable-body resolver path 发布 binding，且不依赖 iterable typed result 决定 body entry
 - skipped executable subtree 的 warning 当前按 root-level 发布，而不是静默跳过或逐 use-site 降级

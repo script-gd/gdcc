@@ -45,9 +45,9 @@ import java.util.List;
 /// - construct_object
 /// - construct_signal
 /// - construct_callable
-/// - construct_standalone_callable
-/// - construct_lambda
-public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction> {
+    /// - construct_standalone_callable
+    /// - construct_lambda
+    public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction> {
     private record ObjectConstructTarget(
             @NotNull GdObjectType constructedType,
             @NotNull ClassDef classDef,

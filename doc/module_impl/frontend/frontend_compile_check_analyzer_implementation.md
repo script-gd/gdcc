@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（compile-only final gate、for route-aware compile policy、显式 AST 封口、generic published-fact blocker、signal/method-reference feature-specific RESOLVED blocker、shared/compile 分流边界与 SuiteResolver stable facts 已落地）
-- 更新时间：2026-08-14（signal/Callable 值引用已闭环；compile gate 只拦 Dictionary 实例 method-ref 与 builtin type-meta static method-ref）
+- 状态：事实源维护中（compile-only final gate、for route-aware compile policy、显式 AST 封口、generic published-fact blocker、signal/method-reference feature-specific RESOLVED blocker、shared/compile 分流边界与 SuiteResolver stable facts 已落地；lambda compile gate 已按 published plan 解封）
+- 更新时间：2026-08-18（已记录 lambda 纳入 compile surface 并递归扫描 body facts；未记录 lambda 保持 fail-closed）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -19,6 +19,7 @@
   - `diagnostic_manager.md`
   - `frontend_chain_binding_expr_type_implementation.md`
   - `frontend_signal_support.md`
+  - `frontend_lambda_implementation.md`
   - `frontend_unary_binary_expr_semantic_implementation.md`
   - `frontend_type_check_analyzer_implementation.md`
   - `frontend_analysis_inspection_tool_implementation.md`
@@ -101,12 +102,14 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 以下区域继续保留 upstream owner，不被 compile gate 重新深入：
 
 - parameter default
-- lambda subtree
+- 未记录 lambda（property initializer / parameter default / skipped subtree 中缺 published `FrontendLambdaPlan` 的 `LambdaExpression`）
 - `match` subtree
 - block-local `const`
 - missing-scope / skipped subtree
 
 这条边界的目的不是“少报错”，而是避免 compile gate 把已经被上游明确封口的恢复域重新打平成 lowering surface。`ForStatement` 不属于该跳过集合：它已进入 shared semantic，compile gate 会按 route-aware policy 处理——已注册 lowering contract 的 route 会命中 statement root 并进入 body 重扫 facts，未注册 contract 的 route 则在 statement root 发 route-not-ready blocker。
+
+**已记录 lambda**（supported executable body 内、`lambdaPlans()` 已发布且 body 已发布的 `LambdaExpression`）同样不属于跳过集合：compile gate 会把它放上 compile surface 并像普通 executable block 一样递归扫描其 body facts。缺 published plan / body 的 lambda 保持 fail-closed（见 §3.3）。
 
 ---
 
@@ -162,6 +165,12 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - `GetNodeExpression`
 
 `ArrayExpression` / `DictionaryExpression` 不属于当前显式 compile-block 列表：shared semantic 发布 `FrontendContainerLiteralPlan`，CFG/body 经 `ContainerLiteralItem` 发射 `construct_container_literal`，backend `ContainerLiteralInsnGen` 已闭环（见 `frontend_container_literal_implementation.md`）。
+
+`LambdaExpression` 不再无条件形态级封口，而是按 published plan 分流：
+
+- **已记录 lambda**（`lambdaPlans()` 含该节点且 body 已发布）：放上 compile surface 并递归扫描 body facts（与普通 executable block 相同）。`construct_lambda` lowering 合同、合成 `_lambda_<k>` 函数与 C backend 均已落地（见 `frontend_lambda_implementation.md`）。
+- **未记录 lambda**（property initializer / parameter default / skipped subtree，缺 published plan）：保持形态级 `sema.compile_check` blocker，不静默放行；若上游已在同一 exact range 发布 unsupported 诊断，则按统一去重合同省略补发。
+- lambda body 内的 `match` 仍走 `handleMatchStatement` 跳过：compile 失败由上游 `sema.unsupported_binding_subtree` owner 持有，compile gate 不再额外包一层 `sema.compile_check`。
 
 `TypeTestExpression` 不属于当前显式 compile-block 列表：shared semantic 发布 `RESOLVED(bool)` + `typeTestTargets()`，body lowering 发射统一 `is_instance_of` / 常量 bool，backend `IsInstanceOfInsnGen` 分派 + runtime helpers 已落地。
 
@@ -413,6 +422,7 @@ compile gate 当前统一使用：
 `TypeTestExpression` 已从显式 compile-block 列表移除（见 `frontend_is_type_test_implementation.md`）。
 `CastExpression` 已从显式 compile-block 列表移除（见 `frontend_cast_expression_implementation.md`）。
 `ArrayExpression` / `DictionaryExpression` 已从显式 compile-block 列表移除（见 `frontend_container_literal_implementation.md`）。
+`LambdaExpression`（已记录、published plan + body）已从无条件形态级 compile-block 移除并纳入 compile surface；未记录 lambda 仍 fail-closed（见 `frontend_lambda_implementation.md`）。
 
 在满足这些条件之前，它们都必须继续由 compile-only gate 拦截，而不是因为“frontend 已识别”就提前放行。
 
@@ -436,6 +446,7 @@ compile gate 当前统一使用：
   - cast / type-test value-operand 传播去重：`missing as int` / `missing is int` / 链式 `(missing as int) as float` 不在 root 补 `sema.compile_check`
   - cast / type-test root-owned target failure 仍由 `sema.expression_resolution` 持有，exact-range 去重后无 root `compile_check`
   - for route-aware compile policy：`RANGE_CALL` / `INT_SHORTHAND` 凭已注册 contract 放行（无 `sema.compile_check`，且释放后进入 body 扫描其中 `assert` 等封口节点）；`GENERIC_VARIANT` 在 statement root 发 route-not-ready blocker 且说明缺少 lowering route；同一 ForStatement anchor 已有 upstream error 时不补发同级 `sema.compile_check`
+  - lambda compile gate：`sig.connect(func(): ...)` 直接实参放行（无 `compile_check`/unsupported）；已记录 lambda body 内 `preload`/`$Node`/`assert` 会被递归扫描并各自发 blocker；property-initializer / parameter-default 未记录 lambda 保持 fail-closed（上游 unsupported owner 持有，不补发 `compile_check`）；lambda body 内 `match` 仍由上游 `unsupported_binding_subtree` 持有，不被 `compile_check` 重复包一层
 - `FrontendSemanticAnalyzerFrameworkTest`
   - `analyze(...)` 与 `analyzeForCompile(...)` 的分离
   - compile gate 在 type-check 之后执行
@@ -454,7 +465,7 @@ compile gate 当前统一使用：
 
 - frontend -> LIR lowering 入口必须强制使用 `analyzeForCompile(...)`
 - lowering 在继续前必须检查 `diagnostics().hasErrors() == false`
-- `assert` 与 3 类显式拦截表达式（`ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`）的真正 lowering/backend 支持仍待后续补齐；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression` 与 `CastExpression` 已完成 shared semantic、CFG/body lowering 与 backend 闭环；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）
+- `assert` 与 3 类显式拦截表达式（`ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`）的真正 lowering/backend 支持仍待后续补齐；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression` 与 `CastExpression` 已完成 shared semantic、CFG/body lowering 与 backend 闭环；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）；已记录 `LambdaExpression` 的 shared semantic、`construct_lambda` lowering 与 C backend 已闭环，compile gate 按 published plan 放行并递归扫描 body
 
 若未来需要为 LSP 单独呈现 compile-only blocker，正确方向仍是：
 

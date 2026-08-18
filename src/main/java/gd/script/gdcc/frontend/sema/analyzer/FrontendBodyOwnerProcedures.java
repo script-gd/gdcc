@@ -132,7 +132,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     }
 
     /// Recorded lambdas resolve through the nested suite trigger instead of producing unsupported
-    /// binding/chain diagnostics (plan §3.2/§3.3). The trigger is idempotent per lambda node: the
+    /// binding/chain diagnostics. The trigger is idempotent per lambda node: the
     /// published plan doubles as the resolved marker. Unrecorded lambdas (property initializers,
     /// parameter defaults, skipped subtrees) stay fail-closed. `walkRootBounded` keeps pruning at
     /// the lambda node, so the enclosing owner never walks the body as an ordinary expression tree.
@@ -219,7 +219,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         }
         var initializer = variableDeclaration.value();
         if (initializer instanceof LambdaExpression) {
-            // Silent stabilization must not resolve lambda initializers (plan §3.2): the slot
+            // Silent stabilization must not resolve lambda initializers: the slot
             // keeps its inventory Variant, and any `:=` refinement to `Callable` may only come
             // from a non-silent write-back after nested resolve completed — never from resolving
             // the lambda expression on this silent path.
@@ -1023,15 +1023,6 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             return null;
         }
         return expectedType;
-    }
-
-    private static void publishExpressionType(
-            @NotNull FrontendSuiteContext context,
-            @NotNull BodyExpressionResolver resolver,
-            @NotNull Expression expression,
-            boolean allowStatementResult
-    ) {
-        publishExpressionType(context, resolver, expression, allowStatementResult, null);
     }
 
     private static void publishExpressionType(

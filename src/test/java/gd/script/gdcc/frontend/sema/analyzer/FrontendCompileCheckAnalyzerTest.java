@@ -25,6 +25,7 @@ import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -36,10 +37,13 @@ import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PreloadExpression;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.TypeTestExpression;
@@ -856,12 +860,7 @@ class FrontendCompileCheckAnalyzerTest {
                 func ping(seed = [1]):
                     var body_local = 0
                     var f = func():
-                        {"hp": body_local}
-                        preload("res://icon.svg")
-                        $Camera3D
-                        body_local as int
-                        body_local is int
-                        assert(body_local)
+                        pass
                     const answer = [body_local]
                     match body_local:
                         var bound when bound > 0:
@@ -877,10 +876,10 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_skipped_surface.gd", source);
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        // The lambda node itself sits on the compile surface and keeps its form-level blocker
-        // until lowering support lands; the explicit blocks inside its body stay skipped.
-        assertEquals(1, compileDiagnostics.size());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Lambda expression"));
+        // The recorded (clean-body) lambda is released onto the compile surface, so it no
+        // longer carries a form-level blocker; the explicit blocks nested inside the match stay
+        // skipped because match itself never enters the compile surface.
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
         var unsupportedBindingDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
@@ -1386,26 +1385,19 @@ class FrontendCompileCheckAnalyzerTest {
                 """);
         var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
         var defaultLiteral = assertInstanceOf(LiteralExpression.class, pingFunction.parameters().getFirst().defaultValue());
-        var callbackDeclaration = findVariable(pingFunction.body().statements(), "callback");
-        var lambdaExpression = assertInstanceOf(LambdaExpression.class, callbackDeclaration.value());
-        var lambdaLiteral = findNode(lambdaExpression, LiteralExpression.class, ignored -> true);
 
         preparedInput.analysisData().expressionTypes().put(
                 defaultLiteral,
                 FrontendExpressionType.deferred("synthetic default-value deferred expression")
         );
-        preparedInput.analysisData().expressionTypes().put(
-                lambdaLiteral,
-                FrontendExpressionType.failed("synthetic lambda failure")
-        );
 
         runCompileCheck(preparedInput);
 
-        // Only the form-level lambda blocker fires; the synthetic deferred/failed facts living
-        // inside the lambda body stay outside the compile surface and are never scanned.
+        // The synthetic deferred fact sits in a parameter default, which stays outside the compile
+        // surface and is never scanned; phase I releases the recorded lambda, whose clean body
+        // contributes no blocker either.
         var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
-        assertEquals(1, compileDiagnostics.size());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Lambda expression"));
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
     @Test
@@ -1842,12 +1834,17 @@ class FrontendCompileCheckAnalyzerTest {
                 diagnostic.message().contains("Qualified method-reference 'clear'")
                         && !diagnostic.range().equals(FrontendRange.fromAstRange(dictStep.range()))
         ), compileDiagnostics::toString);
-        // The recorded lambda no longer reports unsupported binding/chain subtrees (plan §3.3).
+        // The recorded lambda no longer reports unsupported binding/chain subtrees.
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
+        // The recorded lambda is released onto the compile surface, so it contributes no
+        // form-level lambda compile block either.
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
+                diagnostic.message().contains("Lambda expression")
+        ), compileDiagnostics::toString);
     }
 
     @Test
-    void analyzeForCompileBlocksDirectLambdaConnectArgument() throws Exception {
+    void analyzeForCompileReleasesDirectLambdaConnectArgument() throws Exception {
         var source = """
                 class_name CompileCheckDirectLambdaConnect
                 extends Node
@@ -1866,14 +1863,153 @@ class FrontendCompileCheckAnalyzerTest {
                 compiled.diagnostics(),
                 "sema.unsupported_expression_route"
         );
+        var unsupportedBindingDiagnostics = diagnosticsByCategory(
+                compiled.diagnostics(),
+                "sema.unsupported_binding_subtree"
+        );
 
+        // The lambda is recorded inside a supported executable body, so the gate releases
+        // it onto the compile surface and the connect argument compiles cleanly — no form-level
+        // lambda blocker, no unsupported expression route, no unsupported binding subtree.
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+        assertTrue(unsupportedExpressionDiagnostics.isEmpty(), unsupportedExpressionDiagnostics::toString);
+        assertTrue(unsupportedBindingDiagnostics.isEmpty(), unsupportedBindingDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileScansRecordedLambdaBodyExplicitBlocks() throws Exception {
+        var source = """
+                class_name CompileCheckLambdaBodyScan
+                extends Node
+                
+                func ping():
+                    var body_local = 0
+                    var f = func():
+                        preload("res://icon.svg")
+                        $Camera3D
+                        assert(body_local)
+                """;
+
+        var compiled = analyzeForCompile("compile_check_lambda_body_scan.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        var lambda = findNode(compiled.unit().ast(), LambdaExpression.class, ignored -> true);
+        var preload = findNode(compiled.unit().ast(), PreloadExpression.class, ignored -> true);
+        var getNode = findNode(compiled.unit().ast(), GetNodeExpression.class, ignored -> true);
+        var assertStatement = findNode(compiled.unit().ast(), AssertStatement.class, ignored -> true);
+        var lambdaRange = FrontendRange.fromAstRange(lambda.range());
+
+        // The gate recurses into the recorded lambda body: the body's preload / get-node / assert are
+        // compile-blocking facts now, while the lambda node itself carries no form-level blocker.
         assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
-        // The recorded lambda now publishes a resolved Callable type, so the connect argument no
-        // longer routes through the unsupported-expression boundary; compilation stays blocked
-        // only by the form-level lambda compile gate until lowering support lands (phase I).
-        assertEquals(1, compileDiagnostics.size(), compiled.diagnostics()::toString);
-        assertTrue(compileDiagnostics.getFirst().message().contains("Lambda expression"));
-        assertTrue(unsupportedExpressionDiagnostics.isEmpty(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
+                diagnostic.range().equals(lambdaRange)
+        ), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.range().equals(FrontendRange.fromAstRange(preload.range()))
+                        && diagnostic.message().contains("Preload expression")
+        ), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.range().equals(FrontendRange.fromAstRange(getNode.range()))
+                        && diagnostic.message().contains("Get-node expression")
+        ), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.range().equals(FrontendRange.fromAstRange(assertStatement.range()))
+                        && diagnostic.message().contains("assert statement")
+        ), compileDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileKeepsUnrecordedPropertyInitializerLambdaBlocked() throws Exception {
+        var source = """
+                class_name CompileCheckPropertyInitLambda
+                extends Node
+                
+                var cb = func():
+                    pass
+                """;
+
+        var compiled = analyzeForCompile("compile_check_property_init_lambda.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        var unsupportedExpressionDiagnostics = diagnosticsByCategory(
+                compiled.diagnostics(),
+                "sema.unsupported_expression_route"
+        );
+        var lambda = findNode(compiled.unit().ast(), LambdaExpression.class, ignored -> true);
+        var lambdaRange = FrontendRange.fromAstRange(lambda.range());
+
+        // A property-initializer lambda publishes no plan, so the gate must not release it onto the
+        // compile surface. Upstream resolution owns the failure through the unsupported
+        // lambda-subtree diagnostics; the compile gate adds no release and no duplicate blocker.
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+        assertTrue(unsupportedExpressionDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.range().equals(lambdaRange)
+                        && diagnostic.message().contains("Lambda expression")
+        ), unsupportedExpressionDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileKeepsUnrecordedParameterDefaultLambdaBlocked() throws Exception {
+        var source = """
+                class_name CompileCheckParamDefaultLambda
+                extends Node
+                
+                func ping(cb = func():
+                    preload("res://icon.svg")
+                ):
+                    pass
+                """;
+
+        var compiled = analyzeForCompile("compile_check_param_default_lambda.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        var unsupportedDefaultDiagnostics = diagnosticsByCategory(
+                compiled.diagnostics(),
+                "sema.unsupported_parameter_default_value"
+        );
+        var lambda = findNode(compiled.unit().ast(), LambdaExpression.class, ignored -> true);
+        var lambdaRange = FrontendRange.fromAstRange(lambda.range());
+
+        // Parameter defaults are not walked by the compile gate. An unrecorded default lambda must
+        // stay off the surface: compile still fails through the upstream default-value owner, the
+        // nested preload is not scanned, and the gate does not wrap a form-level compile_check.
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+        assertTrue(unsupportedDefaultDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.range().equals(lambdaRange)
+        ), unsupportedDefaultDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileLambdaBodyMatchFailsWithoutCompileCheckWrap() throws Exception {
+        var source = """
+                class_name CompileCheckLambdaBodyMatch
+                extends Node
+                
+                func ping():
+                    var x = 0
+                    var f = func():
+                        match x:
+                            1:
+                                pass
+                """;
+
+        var compiled = analyzeForCompile("compile_check_lambda_body_match.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        var unsupportedBindingDiagnostics = diagnosticsByCategory(
+                compiled.diagnostics(),
+                "sema.unsupported_binding_subtree"
+        );
+        var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
+
+        // The recorded lambda is released and its body recursed, but the match inside stays outside
+        // the compile surface: compilation fails through the upstream unsupported-binding owner and
+        // the gate does not wrap the match in an extra sema.compile_check diagnostic.
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+        assertTrue(unsupportedBindingDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.range().equals(FrontendRange.fromAstRange(matchStatement.range()))
+        ), unsupportedBindingDiagnostics::toString);
     }
 
     @Test
@@ -1942,11 +2078,11 @@ class FrontendCompileCheckAnalyzerTest {
                 """;
 
         var compiled = analyzeForCompile("compile_check_signal_skipped_surface.gd", source);
-        // The bare signal references hidden inside the lambda body / match sections stay outside
-        // the compile surface; the only compile blocker is the lambda node itself (phase I gate).
+        // The recorded lambda body is released onto the compile surface, but the bare signal /
+        // self-method value reads inside it are already compile-ready; the match section stays
+        // skipped. None of them contributes a compile blocker.
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        assertEquals(1, compileDiagnostics.size(), () -> compiled.diagnostics().asList().toString());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Lambda expression"));
+        assertTrue(compileDiagnostics.isEmpty(), () -> compiled.diagnostics().asList().toString());
     }
 
     @Test

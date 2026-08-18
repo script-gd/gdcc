@@ -17,8 +17,8 @@ import java.util.Objects;
 /// Pure capture derivation over an already-built scope graph.
 ///
 /// The planner only inspects identifier uses and existing `ScopeValue` bindings. It never writes
-/// scopes, never publishes side tables, and never emits diagnostics. Production inventory (Phase B)
-/// will call `defineCapture` from this result; Phase A tests feed hand-built graphs.
+/// scopes, never publishes side tables, and never emits diagnostics. Production inventory calls
+/// `defineCapture` from this result; focused tests may feed hand-built graphs.
 ///
 /// Algorithm (innermost-first, aligned with Godot, independent of Godot AST):
 /// 1. Look up each use from **that identifier's own scope**, not from the lambda `CallableScope.parent`.
@@ -132,8 +132,8 @@ public final class FrontendLambdaCapturePlanner {
     }
 
     /// Type recorded for a capture: the declaration-site type already stored on the resolved
-    /// `ScopeValue`. Phase A does not read physical slot overlays; later phases replace the
-    /// inventory `Variant` placeholder through `LambdaCaptureEntry.withType`.
+    /// `ScopeValue`. The planner does not read physical slot overlays; nested resolve replaces
+    /// the inventory `Variant` placeholder through `LambdaCaptureEntry.withType`.
     public static @NotNull GdType captureTypeOf(@NotNull ScopeValue sourceBinding) {
         return Objects.requireNonNull(sourceBinding, "sourceBinding must not be null").type();
     }
