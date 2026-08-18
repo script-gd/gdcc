@@ -68,16 +68,242 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
 // Methods for ${classDef.name}
 
 <#list classDef.functions as func>
-<#-- Lambda function -->
-<#if func.lambda>
+<#-- Lambda capture heap block. Empty structs are omitted so C stay portable. -->
+<#if func.lambda && func.captureCount gt 0>
 typedef struct <@lambdaCaptureName classDef func/> {
 <#list func.captureList as capture>
-    ${helper.renderGdTypeRefInC(capture.type)} ${capture.name};
+    ${helper.renderLambdaCaptureFieldTypeInC(capture.type)} ${capture.name};
 </#list>
 } <@lambdaCaptureName classDef func/>;
 </#if>
 <#-- Normal function -->
 <@funcHeader helper classDef func/>;
+<#if func.lambda>
+static GDExtensionInt ${helper.renderLambdaGetArgumentCountFuncName(classDef, func)}(void *userdata, GDExtensionBool *r_is_valid) {
+    (void)userdata;
+    if (r_is_valid != NULL) {
+        *r_is_valid = true;
+    }
+    return ${func.parameterCount};
+}
+
+static GDExtensionBool ${helper.renderLambdaIsValidFuncName(classDef, func)}(void *userdata) {
+<#if func.captureCount gt 0>
+    if (userdata == NULL) {
+        return false;
+    }
+    <#assign leadingCapture = func.captureList[0]>
+    <#if leadingCapture.name == "self" && helper.checkObjectType(leadingCapture.type)>
+    <@lambdaCaptureName classDef func/> *captures = (<@lambdaCaptureName classDef func/> *)userdata;
+    // ObjectDB is the authority: Godot disconnects / rejects calls when object_id is dead.
+    return godot_object_get_instance_from_id(captures->self.instance_id) != NULL;
+    <#else>
+    (void)userdata;
+    return true;
+    </#if>
+<#else>
+    (void)userdata;
+    return true;
+</#if>
+}
+
+static void ${helper.renderLambdaFreeFuncName(classDef, func)}(void *userdata) {
+<#if func.captureCount gt 0>
+    if (userdata == NULL) {
+        return;
+    }
+    <@lambdaCaptureName classDef func/> *captures = (<@lambdaCaptureName classDef func/> *)userdata;
+    <#list func.captureList as capture>
+        <#assign freeStmt = helper.renderLambdaCaptureFreeStmt(capture.type, "captures->" + capture.name)>
+        <#if freeStmt?has_content>
+    ${freeStmt}
+        </#if>
+    </#list>
+    godot_mem_free(userdata);
+<#else>
+    (void)userdata;
+</#if>
+}
+
+static void ${helper.renderLambdaCallFuncName(classDef, func)}(
+        void *userdata,
+        const GDExtensionConstVariantPtr *p_args,
+        GDExtensionInt p_argument_count,
+        GDExtensionVariantPtr r_return,
+        GDExtensionCallError *r_error) {
+    if (r_error != NULL) {
+        r_error->error = GDEXTENSION_CALL_OK;
+        r_error->argument = 0;
+        r_error->expected = 0;
+    }
+    if (p_argument_count < ${func.parameterCount}) {
+        godot_variant_new_nil(r_return);
+        if (r_error != NULL) {
+            r_error->error = GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS;
+            r_error->expected = ${func.parameterCount};
+        }
+        return;
+    }
+    if (p_argument_count > ${func.parameterCount}) {
+        godot_variant_new_nil(r_return);
+        if (r_error != NULL) {
+            r_error->error = GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS;
+            r_error->expected = ${func.parameterCount};
+        }
+        return;
+    }
+<#if func.captureCount gt 0>
+    if (userdata == NULL) {
+        godot_variant_new_nil(r_return);
+        if (r_error != NULL) {
+            r_error->error = GDEXTENSION_CALL_ERROR_INVALID_METHOD;
+        }
+        return;
+    }
+    <@lambdaCaptureName classDef func/> *captures = (<@lambdaCaptureName classDef func/> *)userdata;
+<#else>
+    (void)userdata;
+</#if>
+    <#list func.parameters as paramType>
+    <#if paramType.type.typeName != "Variant">
+    const GDExtensionVariantType arg${paramType_index}_type = godot_variant_get_type(p_args[${paramType_index}]);
+    if (!${helper.renderCallWrapperVariantTypeGate(paramType.type, "arg${paramType_index}_type")}) {
+        godot_variant_new_nil(r_return);
+        if (r_error != NULL) {
+            r_error->error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+            r_error->expected = GDEXTENSION_VARIANT_TYPE_${paramType.type.gdExtensionType.name()};
+            r_error->argument = ${paramType_index};
+        }
+        return;
+    }
+    </#if>
+    </#list>
+    <#list func.parameters as paramType>
+        <#if helper.needsTypedArrayCallGuard(paramType.type)>
+        <#assign probeVarName = "probe" + paramType_index>
+        <#assign expectedBuiltinType = helper.renderTypedArrayGuardBuiltinTypeLiteral(paramType.type)>
+        {
+            godot_Array ${probeVarName} = godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[${paramType_index}]);
+            godot_bool typed_mismatch = godot_Array_get_typed_builtin(&${probeVarName}) != ${expectedBuiltinType};
+            <#if helper.isTypedArrayGuardObjectLeaf(paramType.type)>
+                <#assign expectedClassNameExpr = helper.renderTypedArrayGuardClassNameExpr(paramType.type)>
+            if (!typed_mismatch) {
+                godot_StringName ${probeVarName}_class_name = godot_Array_get_typed_class_name(&${probeVarName});
+                godot_Variant ${probeVarName}_script = godot_Array_get_typed_script(&${probeVarName});
+                godot_Variant ${probeVarName}_script_nil = godot_new_Variant_nil();
+                godot_Variant ${probeVarName}_script_is_null_result;
+                godot_bool ${probeVarName}_script_is_null_valid = false;
+                godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &${probeVarName}_script, &${probeVarName}_script_nil, (GDExtensionUninitializedVariantPtr)&${probeVarName}_script_is_null_result, &${probeVarName}_script_is_null_valid);
+                const godot_bool ${probeVarName}_script_is_null = ${probeVarName}_script_is_null_valid && godot_new_bool_with_Variant(&${probeVarName}_script_is_null_result);
+                typed_mismatch = !godot_StringName_op_equal_StringName(&${probeVarName}_class_name, ${expectedClassNameExpr}) || !${probeVarName}_script_is_null;
+                if (${probeVarName}_script_is_null_valid) {
+                    godot_Variant_destroy(&${probeVarName}_script_is_null_result);
+                }
+                godot_Variant_destroy(&${probeVarName}_script_nil);
+                godot_Variant_destroy(&${probeVarName}_script);
+                godot_StringName_destroy(&${probeVarName}_class_name);
+            }
+            </#if>
+            godot_Array_destroy(&${probeVarName});
+            if (typed_mismatch) {
+                godot_variant_new_nil(r_return);
+                if (r_error != NULL) {
+                    r_error->error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+                    r_error->expected = GDEXTENSION_VARIANT_TYPE_ARRAY;
+                    r_error->argument = ${paramType_index};
+                }
+                return;
+            }
+        }
+        </#if>
+    </#list>
+    <#list func.parameters as paramType>
+        <#if helper.needsTypedDictionaryCallGuard(paramType.type)>
+        <#assign probeVarName = "probe" + paramType_index>
+        {
+            godot_Dictionary ${probeVarName} = godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[${paramType_index}]);
+            godot_bool typed_mismatch = false;
+            <#list ["key", "value"] as typedSide>
+                <#assign expectedBuiltinType = helper.renderTypedDictionaryGuardBuiltinTypeLiteral(paramType.type, typedSide)>
+            if (!typed_mismatch) {
+                typed_mismatch = godot_Dictionary_get_typed_${typedSide}_builtin(&${probeVarName}) != ${expectedBuiltinType};
+            }
+                <#if helper.isTypedDictionaryGuardObjectLeaf(paramType.type, typedSide)>
+                    <#assign expectedClassNameExpr = helper.renderTypedDictionaryGuardClassNameExpr(paramType.type, typedSide)>
+            if (!typed_mismatch) {
+                godot_StringName ${probeVarName}_${typedSide}_class_name = godot_Dictionary_get_typed_${typedSide}_class_name(&${probeVarName});
+                godot_Variant ${probeVarName}_${typedSide}_script = godot_Dictionary_get_typed_${typedSide}_script(&${probeVarName});
+                godot_Variant ${probeVarName}_${typedSide}_script_nil = godot_new_Variant_nil();
+                godot_Variant ${probeVarName}_${typedSide}_script_is_null_result;
+                godot_bool ${probeVarName}_${typedSide}_script_is_null_valid = false;
+                godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &${probeVarName}_${typedSide}_script, &${probeVarName}_${typedSide}_script_nil, (GDExtensionUninitializedVariantPtr)&${probeVarName}_${typedSide}_script_is_null_result, &${probeVarName}_${typedSide}_script_is_null_valid);
+                const godot_bool ${probeVarName}_${typedSide}_script_is_null = ${probeVarName}_${typedSide}_script_is_null_valid && godot_new_bool_with_Variant(&${probeVarName}_${typedSide}_script_is_null_result);
+                typed_mismatch = !godot_StringName_op_equal_StringName(&${probeVarName}_${typedSide}_class_name, ${expectedClassNameExpr}) || !${probeVarName}_${typedSide}_script_is_null;
+                if (${probeVarName}_${typedSide}_script_is_null_valid) {
+                    godot_Variant_destroy(&${probeVarName}_${typedSide}_script_is_null_result);
+                }
+                godot_Variant_destroy(&${probeVarName}_${typedSide}_script_nil);
+                godot_Variant_destroy(&${probeVarName}_${typedSide}_script);
+                godot_StringName_destroy(&${probeVarName}_${typedSide}_class_name);
+            }
+                </#if>
+            </#list>
+            godot_Dictionary_destroy(&${probeVarName});
+            if (typed_mismatch) {
+                godot_variant_new_nil(r_return);
+                if (r_error != NULL) {
+                    r_error->error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+                    r_error->expected = GDEXTENSION_VARIANT_TYPE_DICTIONARY;
+                    r_error->argument = ${paramType_index};
+                }
+                return;
+            }
+        }
+        </#if>
+    </#list>
+    <#list func.parameters as paramType>
+        <#assign argCleanupStmt = helper.renderCallWrapperDestroyStmt(paramType.type, "arg${paramType_index}")>
+        <#if paramType.type.typeName != "Variant">
+            <#assign argTypeExpr = "arg${paramType_index}_type">
+        <#else>
+            <#assign argTypeExpr = "NULL">
+        </#if>
+        <#if argCleanupStmt?has_content>
+        ${helper.renderGdTypeInC(paramType.type)} arg${paramType_index} = ${helper.renderCallWrapperUnpackExpr(paramType.type, "(GDExtensionVariantPtr)p_args[${paramType_index}]", argTypeExpr)};
+        <#else>
+        const ${helper.renderGdTypeInC(paramType.type)} arg${paramType_index} = ${helper.renderCallWrapperUnpackExpr(paramType.type, "(GDExtensionVariantPtr)p_args[${paramType_index}]", argTypeExpr)};
+        </#if>
+    </#list>
+    <#assign callArgs>
+        <#list func.parameters as paramType>${helper.renderValueRef(paramType.type, "arg${paramType_index}")}<#if paramType_has_next || func.captureCount gt 0>, </#if></#list><#if func.captureCount gt 0>captures</#if>
+    </#assign>
+    <#if func.returnType.typeName != "void">
+        ${helper.renderGdTypeInC(func.returnType)} r = ${classDef.name}_${func.name}(${callArgs?trim});
+        godot_Variant ret = ${helper.renderPackFunctionName(func.returnType)}(${helper.renderValueRef(func.returnType, "r")});
+        godot_variant_new_copy(r_return, &ret);
+        godot_Variant_destroy(&ret);
+        <#assign returnObjectConsumeStmt = helper.renderCallWrapperOwnedObjectReturnConsumeStmt(func.returnType, "r")>
+        <#if returnObjectConsumeStmt?has_content>
+        ${returnObjectConsumeStmt}
+        </#if>
+        <#assign returnCleanupStmt = helper.renderCallWrapperDestroyStmt(func.returnType, "r")>
+        <#if returnCleanupStmt?has_content>
+        ${returnCleanupStmt}
+        </#if>
+    <#else>
+        godot_variant_new_nil(r_return);
+        (${classDef.name}_${func.name}(${callArgs?trim}));
+    </#if>
+    <#assign argCount = func.parameters?size>
+    <#list func.parameters?reverse as paramType>
+        <#assign argIndex = argCount - paramType_index - 1>
+        <#assign argCleanupStmt = helper.renderCallWrapperDestroyStmt(paramType.type, "arg${argIndex}")>
+        <#if argCleanupStmt?has_content>
+        ${argCleanupStmt}
+        </#if>
+    </#list>
+}
+</#if>
 </#list>
 
 </#list>

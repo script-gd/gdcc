@@ -544,7 +544,7 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 - constructor materialization
 - `TypeTestExpression` (`is` / `is not`) with unified `is_instance_of` or folded bool lowering
 - callable-local slot type published contract
-- 已 record lambda 的外层构造（`LambdaConstructItem` → `construct_lambda`，lambda 计划阶段 F 起；C backend 对 `CONSTRUCT_LAMBDA` 的 codegen 仍属阶段 G）
+- 已 record lambda 的外层构造（`LambdaConstructItem` → `construct_lambda`，lambda 计划阶段 F 起；C backend `CONSTRUCT_LAMBDA` 已于阶段 G 落地）
 
 plain assignment 的 compile-ready surface 明确包含 direct explicit-self property assignment：
 

@@ -9,6 +9,7 @@ import gd.script.gdcc.lir.LirVariable;
 import gd.script.gdcc.lir.insn.ConstructArrayInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructDictionaryInsn;
+import gd.script.gdcc.lir.insn.ConstructLambdaInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.ConstructCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructSignalInsn;
@@ -45,6 +46,7 @@ import java.util.List;
 /// - construct_signal
 /// - construct_callable
 /// - construct_standalone_callable
+/// - construct_lambda
 public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction> {
     private record ObjectConstructTarget(
             @NotNull GdObjectType constructedType,
@@ -62,7 +64,8 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                 GdInstruction.CONSTRUCT_OBJECT,
                 GdInstruction.CONSTRUCT_SIGNAL,
                 GdInstruction.CONSTRUCT_CALLABLE,
-                GdInstruction.CONSTRUCT_STANDALONE_CALLABLE
+                GdInstruction.CONSTRUCT_STANDALONE_CALLABLE,
+                GdInstruction.CONSTRUCT_LAMBDA
         );
     }
 
@@ -161,6 +164,15 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                         );
                     }
                     emitConstructStandaloneCallable(bodyBuilder, target, resultVar, kind, ownerName, callableName);
+                }
+                case ConstructLambdaInsn(_, var lambdaName, var captures) -> {
+                    if (!(resultVar.type() instanceof GdCallableType)) {
+                        throw bodyBuilder.invalidInsn(
+                                "Result variable ID '" + resultVar.id()
+                                        + "' must be Callable type for construct_lambda"
+                        );
+                    }
+                    emitConstructLambda(bodyBuilder, target, resultVar, lambdaName, captures);
                 }
                 default -> throw bodyBuilder.invalidInsn(
                         "Unsupported construction instruction: " + instruction.opcode().opcode()
@@ -426,6 +438,139 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
             );
         }
         return found;
+    }
+
+    private void emitConstructLambda(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull CBodyBuilder.TargetRef target,
+            @NotNull LirVariable resultVar,
+            @NotNull String lambdaName,
+            @NotNull List<LirInstruction.Operand> captures
+    ) {
+        var lambda = resolveLambdaFunction(bodyBuilder, lambdaName);
+        var expectedCaptures = List.copyOf(lambda.getCaptures().values());
+        if (captures.size() != expectedCaptures.size()) {
+            throw bodyBuilder.invalidInsn(
+                    "construct_lambda '" + lambdaName + "' capture count "
+                            + captures.size() + " does not match function definition "
+                            + expectedCaptures.size()
+            );
+        }
+        for (var i = 0; i < expectedCaptures.size(); i++) {
+            var expected = expectedCaptures.get(i);
+            if (!(captures.get(i) instanceof LirInstruction.VariableOperand(var captureId))) {
+                throw bodyBuilder.invalidInsn(
+                        "construct_lambda '" + lambdaName + "' capture #" + (i + 1)
+                                + " must be a variable operand"
+                );
+            }
+            if (!expected.getName().equals(captureId)) {
+                throw bodyBuilder.invalidInsn(
+                        "construct_lambda '" + lambdaName + "' capture #" + (i + 1)
+                                + " expected '" + expected.getName() + "' but got '" + captureId + "'"
+                );
+            }
+            var captureVar = bodyBuilder.func().getVariableById(captureId);
+            if (captureVar == null) {
+                throw bodyBuilder.invalidInsn(
+                        "construct_lambda '" + lambdaName + "' capture variable '"
+                                + captureId + "' is not declared in the enclosing function"
+                );
+            }
+            if (!bodyBuilder.helper().context().classRegistry().checkAssignable(
+                    captureVar.type(),
+                    expected.getType()
+            )) {
+                throw bodyBuilder.invalidInsn(
+                        "construct_lambda '" + lambdaName + "' capture '" + captureId
+                                + "' type '" + captureVar.type().getTypeName()
+                                + "' is not assignable to '" + expected.getType().getTypeName() + "'"
+                );
+            }
+        }
+
+        var helper = bodyBuilder.helper();
+        var clazz = bodyBuilder.clazz();
+        var userdataExpr = "NULL";
+        if (!expectedCaptures.isEmpty()) {
+            var captureType = helper.renderLambdaCaptureTypeName(clazz, lambda);
+            var blockName = bodyBuilder.newTempVariable("lambda_captures", resultVar.type()).name() + "_block";
+            bodyBuilder.appendRaw(captureType + " *" + blockName
+                    + " = (" + captureType + " *)godot_mem_alloc(sizeof(" + captureType + "));\n");
+            bodyBuilder.appendRaw("if (" + blockName + " == NULL) {\n");
+            bodyBuilder.appendLine("    GDCC_PRINT_RUNTIME_ERROR(\"construct_lambda failed to allocate capture block\", __func__, __FILE__, __LINE__);");
+            bodyBuilder.appendRaw("} else {\n");
+            for (var capture : expectedCaptures) {
+                var sourceVar = bodyBuilder.func().getVariableById(capture.getName());
+                if (sourceVar == null) {
+                    throw bodyBuilder.invalidInsn(
+                            "construct_lambda '" + lambdaName + "' capture variable '"
+                                    + capture.getName() + "' is not declared in the enclosing function"
+                    );
+                }
+                var field = blockName + "->" + capture.getName();
+                if (capture.getType() instanceof GdObjectType objectType) {
+                    bodyBuilder.applyPropertyInitializerFirstWrite(
+                            field,
+                            objectType,
+                            "$" + sourceVar.id(),
+                            objectType,
+                            CBodyBuilder.PtrKind.FAT_PTR,
+                            CBodyBuilder.OwnershipKind.BORROWED
+                    );
+                } else {
+                    bodyBuilder.appendRaw(field + " = "
+                            + helper.renderLambdaCaptureCopyFromSlot(capture.getType(), sourceVar)
+                            + ";\n");
+                }
+            }
+            bodyBuilder.appendRaw("}\n");
+            userdataExpr = blockName;
+        }
+
+        var objectIdExpr = "0";
+        if (!expectedCaptures.isEmpty() && "self".equals(expectedCaptures.getFirst().getName())) {
+            var selfVar = bodyBuilder.func().getVariableById("self");
+            if (selfVar == null || !(selfVar.type() instanceof GdObjectType)) {
+                throw bodyBuilder.invalidInsn(
+                        "construct_lambda '" + lambdaName
+                                + "' captures self but the enclosing function has no object-typed self slot"
+                );
+            }
+            objectIdExpr = "$self.instance_id";
+        }
+
+        bodyBuilder.assignVar(
+                target,
+                bodyBuilder.valueOfExpr(
+                        "gdcc_new_lambda_callable("
+                                + userdataExpr + ", "
+                                + objectIdExpr + ", "
+                                + helper.renderLambdaCallFuncName(clazz, lambda) + ", "
+                                + helper.renderLambdaIsValidFuncName(clazz, lambda) + ", "
+                                + helper.renderLambdaFreeFuncName(clazz, lambda) + ", "
+                                + helper.renderLambdaGetArgumentCountFuncName(clazz, lambda)
+                                + ")",
+                        resultVar.type()
+                )
+        );
+    }
+
+    private @NotNull FunctionDef resolveLambdaFunction(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull String lambdaName
+    ) {
+        for (var function : bodyBuilder.clazz().getFunctions()) {
+            if (function.getName().equals(lambdaName)) {
+                if (!function.isLambda()) {
+                    throw bodyBuilder.invalidInsn(
+                            "construct_lambda target '" + lambdaName + "' exists but is not a lambda function"
+                    );
+                }
+                return function;
+            }
+        }
+        throw bodyBuilder.invalidInsn("construct_lambda target '" + lambdaName + "' is not defined on this class");
     }
 
     private @NotNull String escapeCString(@NotNull String value) {

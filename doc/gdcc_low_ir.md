@@ -246,10 +246,16 @@ $<result_id> = construct_standalone_callable "<kind>" "<owner_or_empty>" "<name>
 #### construct_lambda
 
 Constructs a new Callable from a lambda function in this compiling unit.
-For implementation, `godot_callable_custom_create2` is used.
-All captures are copied into a tmp struct and passed to the lambda via `callable_userdata`.
-If there are no captures, NULL is passed as `callable_userdata`.
-`free_func` in `GDExtensionCallableCustomInfo2` must be set to destruct the captures.
+Backend uses `gdcc_new_lambda_callable` → `godot_callable_custom_create2`.
+Captures are copied into a heap `${Class}_Capture_${func}` and stored as
+`callable_userdata`. If there are no captures, userdata is `NULL` and
+`free_func` is a no-op. With captures, `free_func` destroys each destroyable
+field and then `godot_mem_free`s the block.
+The generated lambda C function takes source parameters plus a trailing
+`_capture` pointer when `captureCount > 0`. After locals are declared and
+before `__prepare__`, the backend copies `_capture->name` into the matching
+`$name` slot. Capture locals are excluded from `__prepare__` default
+construction so destroyable types are not leaked.
 
 ```
 $<result_id> = construct_lambda "<lambda_function_name>" $<capture1_id> $<capture2_id> ...

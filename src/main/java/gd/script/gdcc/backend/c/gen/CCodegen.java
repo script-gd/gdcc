@@ -196,6 +196,42 @@ public class CCodegen implements Codegen {
         }
     }
 
+    /// Copies `_capture->name` into the matching lambda local before `__prepare__`.
+    /// Capture slots are excluded from default construction, so this is their first write.
+    private void emitLambdaCapturePrologue(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull LirClassDef clazz,
+            @NotNull LirFunctionDef func
+    ) {
+        if (!func.isLambda() || func.getCaptureCount() == 0) {
+            return;
+        }
+        for (var capture : func.getCaptures().values()) {
+            var local = func.getVariableById(capture.getName());
+            if (local == null) {
+                throw new IllegalStateException(
+                        "Lambda '" + clazz.getName() + "." + func.getName()
+                                + "' is missing the local slot for capture '" + capture.getName() + "'"
+                );
+            }
+            var sourceExpr = "_capture->" + capture.getName();
+            if (capture.getType() instanceof GdObjectType objectType) {
+                bodyBuilder.applyPropertyInitializerFirstWrite(
+                        "$" + local.id(),
+                        objectType,
+                        sourceExpr,
+                        objectType,
+                        CBodyBuilder.PtrKind.FAT_PTR,
+                        CBodyBuilder.OwnershipKind.BORROWED
+                );
+            } else {
+                bodyBuilder.appendRaw("$" + local.id() + " = "
+                        + helper.renderLambdaCaptureCopyExpr(capture.getType(), sourceExpr)
+                        + ";\n");
+            }
+        }
+    }
+
     private void generateFunctionPrepareBlock() {
         for (var classDef : module.getClassDefs()) {
             for (var func : classDef.getFunctions()) {
@@ -210,6 +246,9 @@ public class CCodegen implements Codegen {
                         .collect(HashSet<String>::new, HashSet::add, HashSet::addAll);
                 for (var variable : func.getVariables().values()) {
                     if (parameterNames.contains(variable.id())) {
+                        continue;
+                    }
+                    if (func.getCapture(variable.id()) != null) {
                         continue;
                     }
                     if (variable.ref()) {
@@ -468,6 +507,7 @@ public class CCodegen implements Codegen {
             throw new IllegalArgumentException("Function " + func.getName() + " has invalid entry block ID: " + func.getEntryBlockId());
         }
         var bodyBuilder = new CBodyBuilder(helper, clazz, func, usageBuffer);
+        emitLambdaCapturePrologue(bodyBuilder, clazz, func);
         // generate blocks
         bodyBuilder.appendRaw("goto " + func.getEntryBlockId() + ";\n");
         for (var bb : func) {

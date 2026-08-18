@@ -401,4 +401,40 @@ static inline godot_Callable gdcc_new_standalone_callable(
     return result;
 }
 
+/// Builds a lambda custom Callable. `object_id` is supplied by the caller from a cached
+/// fat-pointer `instance_id` when the lambda captures `self`; otherwise it must be `0`.
+/// This helper never recovers an ID from a raw object pointer.
+///
+/// `call_func` / `free_func` / `is_valid_func` / `get_argument_count_func` are generated
+/// per lambda. Hash / equal stay Godot's default (`call_func` + userdata pointer identity).
+static inline godot_Callable gdcc_new_lambda_callable(
+        void *userdata,
+        GDObjectInstanceID object_id,
+        GDExtensionCallableCustomCall call_func,
+        GDExtensionCallableCustomIsValid is_valid_func,
+        GDExtensionCallableCustomFree free_func,
+        GDExtensionCallableCustomGetArgumentCount get_argument_count_func
+) {
+    godot_Callable result;
+    if (call_func == NULL) {
+        memset(&result, 0, sizeof(result));
+        return result;
+    }
+    GDExtensionCallableCustomInfo2 info = {
+            .callable_userdata = userdata,
+            .token = class_library,
+            .object_id = object_id,
+            .call_func = call_func,
+            .is_valid_func = is_valid_func,
+            .free_func = free_func,
+            .hash_func = NULL,
+            .equal_func = NULL,
+            .less_than_func = NULL,
+            .to_string_func = NULL,
+            .get_argument_count_func = get_argument_count_func,
+    };
+    godot_callable_custom_create2((GDExtensionUninitializedTypePtr)&result, &info);
+    return result;
+}
+
 #endif //GDCC_CALLABLE_H

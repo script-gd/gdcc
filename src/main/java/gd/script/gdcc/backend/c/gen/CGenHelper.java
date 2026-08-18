@@ -375,6 +375,88 @@ public final class CGenHelper {
         };
     }
 
+    /// Capture-struct typedef name `${Class}_Capture_${func}` shared by `func.ftl` / `entry.h.ftl`.
+    public @NotNull String renderLambdaCaptureTypeName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return classDef.getName() + "_Capture_" + function.getName();
+    }
+
+    public @NotNull String renderLambdaImplName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return classDef.getName() + "_" + function.getName();
+    }
+
+    public @NotNull String renderLambdaCallFuncName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return renderLambdaImplName(classDef, function) + "_call";
+    }
+
+    public @NotNull String renderLambdaFreeFuncName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return renderLambdaImplName(classDef, function) + "_free";
+    }
+
+    public @NotNull String renderLambdaIsValidFuncName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return renderLambdaImplName(classDef, function) + "_is_valid";
+    }
+
+    public @NotNull String renderLambdaGetArgumentCountFuncName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return renderLambdaImplName(classDef, function) + "_get_argument_count";
+    }
+
+    /// Heap / local capture-struct field storage. Object captures stay fat pointers by value.
+    public @NotNull String renderLambdaCaptureFieldTypeInC(@NotNull GdType captureType) {
+        TypeCheckUtil.requireNonCompilerOnly(captureType, "lambda capture field");
+        return renderGdTypeInC(captureType);
+    }
+
+    /// First-write copy from an enclosing-function slot into the heap capture block.
+    /// Parameter slots are already pointers (`ref=true`); locals need an explicit address.
+    public @NotNull String renderLambdaCaptureCopyFromSlot(
+            @NotNull GdType captureType,
+            @NotNull LirVariable source
+    ) {
+        TypeCheckUtil.requireNonCompilerOnly(captureType, "lambda capture copy");
+        var valueExpr = "$" + source.id();
+        if (captureType instanceof GdObjectType || captureType instanceof GdPrimitiveType) {
+            return valueExpr;
+        }
+        var copyFunc = renderCopyAssignFunctionName(captureType);
+        if (copyFunc.isEmpty()) {
+            return valueExpr;
+        }
+        var sourcePtr = source.ref() ? valueExpr : "&(" + valueExpr + ")";
+        return copyFunc + "(" + sourcePtr + ")";
+    }
+
+    /// First-write copy from a value-shaped capture-struct field into the lambda-local slot.
+    public @NotNull String renderLambdaCaptureCopyExpr(@NotNull GdType captureType, @NotNull String sourceExpr) {
+        TypeCheckUtil.requireNonCompilerOnly(captureType, "lambda capture copy");
+        if (captureType instanceof GdObjectType || captureType instanceof GdPrimitiveType) {
+            return sourceExpr;
+        }
+        var copyFunc = renderCopyAssignFunctionName(captureType);
+        if (copyFunc.isEmpty()) {
+            return sourceExpr;
+        }
+        return copyFunc + "(&(" + sourceExpr + "))";
+    }
+
+    /// `free_func` cleanup for one heap capture field. Object fields release via the fat-pointer
+    /// live raw + cached `instance_id`; destroyable builtins use the ordinary destroy helper.
+    public @NotNull String renderLambdaCaptureFreeStmt(@NotNull GdType captureType, @NotNull String fieldExpr) {
+        TypeCheckUtil.requireNonCompilerOnly(captureType, "lambda capture free");
+        if (captureType instanceof GdObjectType objectType) {
+            var fatType = renderObjectFatPtrStorageType(objectType);
+            var liveExpr = fatType + "_live_object(" + fieldExpr + ")";
+            return switch (context.classRegistry().getRefCountedStatus(objectType)) {
+                case YES -> "release_object(" + liveExpr + ");";
+                case UNKNOWN -> "try_release_object(" + liveExpr + ", " + fieldExpr + ".instance_id);";
+                case NO -> "";
+            };
+        }
+        if (!captureType.isDestroyable()) {
+            return "";
+        }
+        return renderDestroyFunctionName(captureType) + "(&(" + fieldExpr + "));";
+    }
+
     public @NotNull String renderValueRef(@NotNull GdType gdType, @NotNull String v) {
         return switch (gdType) {
             // Fat pointer structs and primitives are value-shaped; other value types pass storage addresses.

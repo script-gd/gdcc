@@ -9,21 +9,25 @@
 
 ## 文档状态
 
-- 状态：阶段 A、B、C、D、E、F 已落地；G–I 尚未实施。lambda body 已成为 supported executable
-  suite：resolver / interface / suite 解封，nested resolve 经独立 `LAMBDA_RESOLUTION`
-  owner 首次发布完整 `FrontendLambdaPlan`（capture 声明处类型与返回类型已填充并与 scope 同源）；
-  已 record lambda 的表达式类型首次发布 `RESOLVED(GdCallableType)`（silent 稳定化不解析
-  lambda initializer，`:=` slot 保持 inventory `Variant`），type-check 经显式 re-entry
-  walk 已 record lambda 的 body（return slot 即 plan 返回类型）；prep pass 已按 plan 合成
-  hidden `_lambda_<k>` shell（`is_lambda` + `is_hidden` + static、capture 与 plan 同源、
-  无注入 `self` 参数），并新增 `Kind.LAMBDA_BODY` 打通 CFG / body insn 两个 pass 的 lambda
-  body 分支；外层 body 的已 record lambda 经 `LambdaConstructItem` lowering 成
+- 状态：阶段 A、B、C、D、E、F、G、H 已落地；I 尚未实施。lambda body 已成为 supported
+  executable suite：resolver / interface / suite 解封，nested resolve 经独立
+  `LAMBDA_RESOLUTION` owner 首次发布完整 `FrontendLambdaPlan`（capture 声明处类型与返回
+  类型已填充并与 scope 同源）；已 record lambda 的表达式类型首次发布
+  `RESOLVED(GdCallableType)`（silent 稳定化不解析 lambda initializer，`:=` slot 保持
+  inventory `Variant`），type-check 经显式 re-entry walk 已 record lambda 的 body
+  （return slot 即 plan 返回类型）；prep pass 已按 plan 合成 hidden `_lambda_<k>` shell
+  （`is_lambda` + `is_hidden` + static、capture 与 plan 同源、无注入 `self` 参数），
+  并新增 `Kind.LAMBDA_BODY` 打通 CFG / body insn 两个 pass 的 lambda body 分支；外层
+  body 的已 record lambda 经 `LambdaConstructItem` lowering 成
   `construct_lambda "<name>" $capture...`（self capture 走专用 `SELF_SLOT` descriptor），
-  且 item 与 shell 的 capture 数/名序在 body lowering 处端到端校验。compile gate 对 lambda
-  以形态级 `sema.compile_check` blocker 保持 fail-closed；C runtime 与 compile surface
-  解封仍留待后续阶段。
-- 更新时间：2026-08-18（阶段 F 落地：`LambdaConstructItem` + `construct_lambda` 发射；
-  阶段 E 落地：hidden `LirFunctionDef` 合成 + `Kind.LAMBDA_BODY` + `_lambda_` 保留前缀）
+  且 item 与 shell 的 capture 数/名序在 body lowering 处端到端校验。C backend 已注册
+  `CONSTRUCT_LAMBDA`：heap `${Class}_Capture_${func}` + `gdcc_new_lambda_callable`，
+  `object_id` 来自 cached `self.instance_id`（无 self 则为 0），lambda 入口 prologue
+  从 `_capture` 拷入 local，capture local 已从 `__prepare__` 默认构造排除。compile
+  gate 对 lambda 仍以形态级 `sema.compile_check` blocker 保持 fail-closed，解封属阶段 I。
+- 更新时间：2026-08-18（阶段 G/H 落地：`gdcc_new_lambda_callable` + `ConstructInsnGen`
+  `CONSTRUCT_LAMBDA` + 回归锚点；阶段 F 落地：`LambdaConstructItem` + `construct_lambda`
+  发射；阶段 E 落地：hidden `LirFunctionDef` 合成 + `Kind.LAMBDA_BODY` + `_lambda_` 保留前缀）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/scope/**`
@@ -126,7 +130,7 @@ Parser AST 为 `dev.superice.gdparser.frontend.ast.LambdaExpression`，已提供
 | Func pre-pass | `FrontendLoweringFunctionPreparationPass.visitStatements` | **阶段 E 已翻面**：发现式 walk 可执行 body（含 lambda body 递归），按已发布 plan 合成 `_lambda_<k>` shell + `LAMBDA_BODY` 上下文；缺 plan fail-fast |
 | CFG construct | `FrontendCfgGraphBuilder.buildValue` | **阶段 F 已翻面**：已 record lambda → `LambdaConstructItem`（capture operand 按名读外层 slot，self 走 `SELF_SLOT` descriptor）；缺 plan 仍 fail-fast |
 | CFG alias | `FrontendCfgGraphBuilder.requireDirectSlotAliasRoot` | `CAPTURE` fail-fast |
-| C codegen | `ConstructInsnGen` | 无 `CONSTRUCT_LAMBDA` case |
+| C codegen | `ConstructInsnGen` | **阶段 G 已翻面**：注册 `CONSTRUCT_LAMBDA`，分配 capture 块并调 `gdcc_new_lambda_callable`；未知名 / capture 数或名序不一致 fail-fast |
 | DOM serialize | `DomLirSerializer` | **已修复**：`is_lambda` 函数序列化真实 `<capture name type>` 列表，`DomLirParser` 对称回读 |
 
 ### 1.4 Godot 参考（语义对齐，不复制 VM）
@@ -590,10 +594,8 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
   不得解引用 `_capture->self`。
 - 用户可见 arity = lambda 源码参数个数（**不含** capture）。
 - `DomLirSerializer` 必须写出真实 `<capture name type>`，不得再写空节点。
-- `func.ftl` 现有 bug：`<#list func.captureList as capture>` 对 **每个**
-  capture 元素都发射一次 `_capture` 形参。`captureCount == 1` 碰巧正确；
-  `captureCount > 1` 会得到多个无逗号分隔的 `_capture` 形参。必须改成
-  `captureCount > 0` 时只发射一次。
+- `func.ftl` 的 `_capture` 重复形参 bug **已修复**（阶段 A）：`captureCount > 0`
+  时只发射一次 `_capture`，由 `FuncHeaderCaptureTemplateTest` 锚定。
 - lambda 函数 prologue：把 `_capture->name` 拷入 `LirFunctionDef` 为该
   capture 登记的 local `$name`（`addCapture` 已 `variables.put(name, ...)`）。
 - `CCodegen.generateFunctionPrepareBlock` 会给每个非参数 variable
@@ -1073,6 +1075,25 @@ lambda body 走既有 CFG / body insn pass。
 - negative path：未知 lambda 名 / capture 数与函数定义不一致 →
   codegen fail-fast，不生成半残 C。
 
+> 状态：已落地（2026-08-18）。
+>
+> - `gdcc_new_lambda_callable(...)` 加入 `gdcc_callable.h`：调用方传入 userdata /
+>   cached `object_id` / 四个 per-lambda 回调；hash/equal 留空，走 Godot 默认
+>   `call_func + userdata` 身份。
+> - `entry.h.ftl`：仅当 `captureCount > 0` 才发 `${Class}_Capture_${func}`（字段用
+>   `renderGdTypeInC`，对象为 fat pointer）；并生成 `_call` / `_free` /
+>   `_is_valid` / `_get_argument_count`。`capturesSelf` 的 `is_valid` 用
+>   `godot_object_get_instance_from_id(captures->self.instance_id)`。
+> - `ConstructInsnGen` 注册 `CONSTRUCT_LAMBDA`：按 shell 校验名序后分配 heap
+>   块、逐字段 copy（destroyable 走 copy helper；对象 first-write + retain）、
+>   调 helper。未知名 / 数量或名序不一致 / 无 self 槽却捕获 self →
+>   `InvalidInsnException`。
+> - `CCodegen.generateFunctionPrepareBlock` 跳过 `func.getCapture(name) != null`
+>   的 local；`generateFuncBody` 入口 prologue 把 `_capture->name` 拷入 `$name`。
+> - 测试：`ConstructLambdaInsnGenTest`（正反路径 + prepare/prologue + wrapper
+>   object_id/ObjectDB）与 `ConstructLambdaInsnGenEngineTest`（Zig + 可选
+>   `GODOT_BIN`：常量 / String capture / self `object_id` / free 后 invalid）。
+
 ### 阶段 H — 回归锚点补齐（仍可选择暂不解封 gate）
 
 **目标**：focused tests 覆盖 happy / negative；test_suite 仍可暂避 lambda，
@@ -1103,6 +1124,18 @@ lambda body 走既有 CFG / body insn pass。
   已提交结果。负例：lambda 之后对 source 的断言不改变已冻结
   capture 类型；`CallableScope` 的 CAPTURE 绑定与 `LambdaCaptureEntry.type`
   同源。
+
+> 状态：已落地（2026-08-18）。
+>
+> - 新建具名类：`FrontendLambdaInventoryTest`（supported inventory happy +
+>   property-initializer skip / sibling 继续）、`FrontendLambdaExpressionTypeTest`
+>   （recorded `RESOLVED(Callable)` + unrecorded 不污染 sibling）。
+> - 既有覆盖继续充当计划建议类：`FrontendLambdaCapturePlannerTest`、
+>   `FrontendLambdaSuiteResolutionTest`、`FrontendLambdaLoweringTest`、
+>   `ConstructLambdaInsnGenTest`。
+> - 未翻转：`FrontendCompileCheckAnalyzerTest.analyzeForCompileBlocksDirectLambdaConnectArgument`
+>   （阶段 I）、`FrontendLoopControlFlowAnalyzerTest.analyzeResetsOuterLoopDepthAtLambdaBoundary`。
+> - §3.4 类型表已由 suite / planner 测试锚定，本阶段不重写。
 
 ### 阶段 I — Compile gate 解封与文档吸收
 

@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Anchors the Phase A `func.ftl` contract: a lambda with more than one capture still emits
@@ -50,6 +51,16 @@ class FuncHeaderCaptureTemplateTest {
 
         assertEquals(1, countOccurrences(header, "_capture"), header);
         assertTrue(header.contains("godot_int seed;"), header);
+    }
+
+    @Test
+    void capturelessLambdaOmitsEmptyCaptureStructAndParameter() throws Exception {
+        var header = renderHeader(lambdaWithCaptures());
+
+        assertFalse(header.contains("typedef struct Hero_Capture__lambda_0"), header);
+        assertEquals(0, countOccurrences(header, "_capture"), header);
+        assertTrue(header.contains("Hero__lambda_0_call("), header);
+        assertTrue(header.contains("Hero__lambda_0_free("), header);
     }
 
     @Test
