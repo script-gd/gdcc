@@ -73,6 +73,7 @@
       - `Dictionary[K, V]` -> `Dictionary` / `Dictionary[Variant, Variant]`
       - `Dictionary[K1, V1]` -> `Dictionary[K2, V2]` when both key/value directions are assignable.
 - Other implicit promotions (for example numeric promotion) are not part of generic assignment compatibility and must be handled by dedicated lowering/instruction semantics.
+- Object identity equality (`==` / `!=` between two static object types) is a binary semantic rule, not assignment compatibility.
 - Compiler-only types are not part of the ordinary assignment-compatibility matrix; they are handled by LIR/backend-specific contracts and must not be treated as source-facing declared types.
 - For "TypeType", which is a type representing another type:
   - e.g. `var N = Node` where `N` is a "TypeType" representing the `Node` type.

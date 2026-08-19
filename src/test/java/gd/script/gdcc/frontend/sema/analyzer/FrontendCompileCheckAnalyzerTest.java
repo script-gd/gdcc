@@ -666,6 +666,64 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeForCompileLeavesTypedObjectIdentityEqualityOutOfCompileBlocks() throws Exception {
+        var source = """
+                class_name CompileCheckTypedObjectIdentityEquality
+                extends Node
+                
+                func same_node(left: Node, right: Node) -> bool:
+                    return left == right
+                
+                func object_vs_node(obj: Object, node: Node) -> bool:
+                    return obj != node
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_typed_object_identity_equality.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors(), () -> "Unexpected shared diagnostics: "
+                + sharedAnalyzed.diagnostics().asList());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_typed_object_identity_equality.gd", source);
+        assertFalse(compiled.diagnostics().hasErrors(), () -> "Unexpected compile diagnostics: "
+                + compiled.diagnostics().asList());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileKeepsTypedObjectIdentityOrderingBlocked() throws Exception {
+        var source = """
+                class_name CompileCheckObjectIdentityOrdering
+                extends Node
+                
+                func ping(left: Node, right: Node):
+                    return left < right
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_object_identity_ordering.gd", source);
+        var sharedExpressionDiagnostics = diagnosticsByCategory(
+                sharedAnalyzed.diagnostics(),
+                "sema.expression_resolution"
+        );
+
+        assertTrue(sharedAnalyzed.diagnostics().hasErrors());
+        assertEquals(1, sharedExpressionDiagnostics.size());
+        assertTrue(sharedExpressionDiagnostics.getFirst().message().contains("not defined for operand types"));
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_object_identity_ordering.gd", source);
+        var compiledExpressionDiagnostics = diagnosticsByCategory(
+                compiled.diagnostics(),
+                "sema.expression_resolution"
+        );
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertEquals(1, compiledExpressionDiagnostics.size());
+        assertTrue(compileDiagnostics.isEmpty());
+    }
+
+    @Test
     void analyzeForCompileLeavesShortCircuitBinaryExpressionsOnCompileSurface() throws Exception {
         var source = """
                 class_name CompileCheckShortCircuitBinary

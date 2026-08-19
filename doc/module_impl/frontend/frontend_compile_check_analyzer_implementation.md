@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（compile-only final gate、for route-aware compile policy、显式 AST 封口、generic published-fact blocker、signal/method-reference feature-specific RESOLVED blocker、shared/compile 分流边界与 SuiteResolver stable facts 已落地；lambda compile gate 已按 published plan 解封）
-- 更新时间：2026-08-18（已记录 lambda 纳入 compile surface 并递归扫描 body facts；未记录 lambda 保持 fail-closed）
+- 更新时间：2026-08-19
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -273,6 +273,8 @@ generic status scan 之外，compile gate 还保留一组 **RESOLVED feature-spe
 
 - 已稳定发布的 eager `UnaryExpression` / `BinaryExpression` 不会再因为“表达式家族尚未实现”被 compile gate 误封口
 - `RESOLVED` eager unary / binary 与 `DYNAMIC` eager unary / binary 一样，都不会命中 generic compile blocker
+- object/nil equality 与 object identity equality 在 shared semantic 发布 `RESOLVED(bool)` 后，compile gate 不得再把它们当作 not lowering-ready
+- object/object ordering 继续由上游 `sema.expression_resolution` 发布 `FAILED`，compile gate 消费该 fact，不新增独立 diagnostic 类别
 - `and/or` 虽然也会在 shared semantic 路径发布稳定 typed fact，但它们属于独立的显式 AST compile-block，而不是 generic published-fact blocker
 - `not in` 仍会因为 upstream 发布的是显式 `UNSUPPORTED` 而被 compile gate 阻断
 - `ConditionalExpression` 继续依赖显式 AST compile-block，而不是借 unary/binary 的转正被顺带放行
@@ -435,6 +437,8 @@ compile gate 当前统一使用：
 - `FrontendCompileCheckAnalyzerTest`
   - 显式 AST compile-block（当前 3 类：Conditional / Preload / GetNode；Array / Dictionary / Cast / TypeTest 已离开 intercept）
   - short-circuit binary 不再被 compile gate 误封口
+  - object/nil equality 与 object identity equality 不再触发 compile blocker
+  - object/object ordering 继续由上游 `sema.expression_resolution` 阻断，不新增 `sema.compile_check`
   - signal 值读取、`.emit`、`.connect/.disconnect`、Object/self `METHOD`、非 Dictionary builtin 实例、GDCC/engine 静态与 bare utility 值读取已放行；仍拦截 Dictionary 实例 method-ref 与 builtin type-meta static method-ref；callee-exclusion 与 `Signal`/`Callable` 局部变量不被类型猜测误伤
   - generic side-table blocker
   - property initializer island 上的 generic blocker

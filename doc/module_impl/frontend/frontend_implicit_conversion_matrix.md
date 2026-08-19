@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（Godot 规则已梳理，`String <-> StringName` feature gate 已完成实现闭合；ordinary typed boundary 的 semantic / lowering / backend constructor 与 GDExtension `call_func` inbound wrapper 合同已同步）
-- 更新时间：2026-05-29
+- 更新时间：2026-08-19
 - 适用范围：
   - `doc/module_impl/frontend/**`
   - `src/main/java/gd/script/gdcc/frontend/**`
@@ -17,6 +17,7 @@
   - `frontend_lowering_(un)pack_implementation.md`
   - `frontend_chain_binding_expr_type_implementation.md`
   - `frontend_type_check_analyzer_implementation.md`
+  - `frontend_unary_binary_expr_semantic_implementation.md`
   - `frontend_lowering_cfg_pass_implementation.md`
   - `doc/gdcc_type_system.md`
 - 主要事实来源：
@@ -63,6 +64,7 @@
 本文档不覆盖：
 
 - 运算符重载自己的参数/返回契约
+- object/nil equality 与 object identity equality；它们属于 binary semantic，见 `frontend_unary_binary_expr_semantic_implementation.md` §4.2，不得回写成 `checkAssignable` widening
 - `if` / `while` / `assert` 的 truthiness contract
 - runtime-dynamic `DYNAMIC` target 的开放语义
 - backend 对 `Variant` pack/unpack 的运行时校验

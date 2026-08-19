@@ -1125,6 +1125,74 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
+    void resolveBinaryExpressionTypeAcceptsObjectIdentityEqualitySpecialRule() throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_object_identity_binary.gd",
+                """
+                        class_name ExpressionSemanticSupportObjectIdentityBinary
+                        extends Node
+                        
+                        func ping(left: Node, right: Node, obj: Object, sprite: Sprite2D, label: Label, typed_variant: Variant, dynamic_value):
+                            left == right
+                            left != right
+                            obj == obj
+                            obj != left
+                            left == obj
+                            left < right
+                            left <= obj
+                            typed_variant == left
+                            dynamic_value == left
+                            self == left
+                            sprite == label
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var expressions = findFunction(analyzed.ast(), "ping").body().statements().stream()
+                .map(ExpressionStatement.class::cast)
+                .map(ExpressionStatement::expression)
+                .map(BinaryExpression.class::cast)
+                .toList();
+        var leftType = publishedResolver.resolve(expressions.getFirst().left(), false);
+        var selfType = publishedResolver.resolve(expressions.get(9).left(), false);
+        var spriteType = publishedResolver.resolve(expressions.get(10).left(), false);
+        var labelType = publishedResolver.resolve(expressions.get(10).right(), false);
+        assertEquals(new GdObjectType("Node"), leftType.publishedType());
+        assertEquals(new GdObjectType("ExpressionSemanticSupportObjectIdentityBinary"), selfType.publishedType());
+        assertEquals(new GdObjectType("Sprite2D"), spriteType.publishedType());
+        assertEquals(new GdObjectType("Label"), labelType.publishedType());
+
+        // Same-class, inheritance-related, unrelated, and GDCC/engine mixed pairs all resolve as identity bool.
+        for (var index : List.of(0, 1, 2, 3, 4, 9, 10)) {
+            var result = support.resolveBinaryExpressionType(expressions.get(index), publishedResolver, false);
+            assertAll(
+                    () -> assertTrue(result.rootOwnsOutcome()),
+                    () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, result.expressionType().status()),
+                    () -> assertEquals("bool", result.expressionType().publishedType().getTypeName())
+            );
+        }
+
+        for (var index : List.of(5, 6)) {
+            var result = support.resolveBinaryExpressionType(expressions.get(index), publishedResolver, false);
+            assertAll(
+                    () -> assertTrue(result.rootOwnsOutcome()),
+                    () -> assertEquals(FrontendExpressionTypeStatus.FAILED, result.expressionType().status()),
+                    () -> assertTrue(result.expressionType().detailReason().contains("not defined for operand types"))
+            );
+        }
+
+        for (var index : List.of(7, 8)) {
+            var result = support.resolveBinaryExpressionType(expressions.get(index), publishedResolver, false);
+            assertAll(
+                    () -> assertTrue(result.rootOwnsOutcome()),
+                    () -> assertEquals(FrontendExpressionTypeStatus.DYNAMIC, result.expressionType().status()),
+                    () -> assertEquals(GdVariantType.VARIANT, result.expressionType().publishedType())
+            );
+        }
+    }
+
+    @Test
     void resolveBinaryExpressionTypePreservesOperandOrderAndDependencyProvenance() throws Exception {
         var analyzed = analyze(
                 "expression_semantic_support_binary_order.gd",

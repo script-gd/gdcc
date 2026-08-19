@@ -22,6 +22,7 @@
   - `DYNAMIC` target 的 runtime-open assignment 语义
   - backend 对 `unpack_variant` 的运行时类型校验细节
   - builtin 单参数 stable `Variant` constructor special route 的 selection 语义
+  - object/nil equality 与 object identity equality；它们走 ordinary `BinaryOpInsn`，不经 `materializeFrontendBoundaryValue(...)`，见 `frontend_unary_binary_expr_semantic_implementation.md` §4.5
 - 若以下任一事实发生变化，至少要同步更新：
   - 本文档
   - `frontend_implicit_conversion_matrix.md`

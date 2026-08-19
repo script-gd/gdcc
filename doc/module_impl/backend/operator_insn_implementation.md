@@ -4,7 +4,7 @@
 
 - 状态：`Active`
 - 文档类型：`规范 / 事实源`
-- 更新时间：`2026-04-21`
+- 更新时间：`2026-08-19`
 - 适用范围：`backend.c` 中 `UNARY_OP`、`BINARY_OP` 的 C 代码生成与校验
 - 说明：本文件描述“已落地语义与约束”。如与历史文档或旧实现描述冲突，以本文件为准。
 
@@ -83,7 +83,10 @@
 
 ### 3.5 Object 比较特化（`==` / `!=`）
 
-仅当左右均为 `Object` 类型时生效（fat-pointer C1 normalized raw equality）：
+仅当左右均为 `Object` 类型时生效（fat-pointer C1 normalized raw equality）。
+frontend 对任意两个静态 `GdObjectType` 的 `==` / `!=` 发布 `RESOLVED(bool)`，见
+`frontend_unary_binary_expr_semantic_implementation.md` §4.2 / §4.5；本节只定义 lowering 之后的
+codegen，不回写 frontend 接受面。
 
 1. 两侧各自 materialize **equality-normalized raw**（`CBodyBuilder.renderEqualityNormalizedRaw`）：
    - 先用 `gdcc_object_is_null_raw_and_id(raw_sentinel, instance_id)` 判定 null ∪ freed；

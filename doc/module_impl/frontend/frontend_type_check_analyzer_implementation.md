@@ -249,6 +249,7 @@ condition 当前采用 Godot-compatible source contract：
 
 - `RESOLVED(bool)` 的 `!true`
 - `RESOLVED(bool)` 的 `payload and 1`
+- `RESOLVED(bool)` 的 `left == right`（object identity equality）
 - `DYNAMIC(Variant)` 的 `not payload`
 
 当前 type-check 不再把 condition 当作 strict `bool` slot 去做 assignment gate。也就是说：

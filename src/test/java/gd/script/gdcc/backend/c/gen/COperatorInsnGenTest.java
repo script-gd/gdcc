@@ -180,6 +180,30 @@ class COperatorInsnGenTest {
     }
 
     @Test
+    @DisplayName("engine Node == Node should reuse C1 equality-normalized raw pointers")
+    void engineNodeEqualUsesNormalizedRawComparison() {
+        var body = generateBody(
+                engineObjectApi(),
+                new BinaryOpInsn("result", GodotOperator.EQUAL, "left_node", "right_node"),
+                List.of(
+                        new VariableSpec("left_node", new GdObjectType("Node"), false),
+                        new VariableSpec("right_node", new GdObjectType("Node"), false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                )
+        );
+
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($left_node).ptr, $left_node.instance_id) ? NULL : (GDExtensionObjectPtr)($left_node).ptr)"),
+                body);
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($right_node).ptr, $right_node.instance_id) ? NULL : (GDExtensionObjectPtr)($right_node).ptr)"),
+                body);
+        assertTrue(body.contains(" == "), body);
+        assertFalse(body.contains(".instance_id =="), body);
+        assertFalse(body.contains("godot_object_get_instance_id("), body);
+    }
+
+    @Test
     @DisplayName("object non-==/!= compare should fail-fast")
     void objectNonEqualityCompareFailsFast() {
         var ex = assertThrows(

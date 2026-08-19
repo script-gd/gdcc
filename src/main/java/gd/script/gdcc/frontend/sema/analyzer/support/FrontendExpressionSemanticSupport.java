@@ -599,7 +599,8 @@ public final class FrontendExpressionSemanticSupport {
     }
 
     /// Binary operators split into two layers:
-    /// - source-level special rules (`and/or`, typed `Array[T] + Array[T]`, explicit `not in` boundary)
+    /// - source-level special rules (`and/or`, object/nil equality, object identity equality,
+    ///   typed `Array[T] + Array[T]`) plus the fail-closed `not in` boundary
     /// - ordinary builtin metadata lookup for the remaining exact pairs
     public @NotNull ExpressionSemanticResult resolveBinaryExpressionType(
             @NotNull BinaryExpression binaryExpression,
@@ -1755,6 +1756,10 @@ public final class FrontendExpressionSemanticSupport {
                 && isObjectNilEqualityPair(publishedLeftType, publishedRightType)) {
             return GdBoolType.BOOL;
         }
+        if ((operator == GodotOperator.EQUAL || operator == GodotOperator.NOT_EQUAL)
+                && isObjectObjectEqualityPair(publishedLeftType, publishedRightType)) {
+            return GdBoolType.BOOL;
+        }
         if (operator == GodotOperator.ADD
                 && publishedLeftType instanceof GdArrayType leftArrayType
                 && publishedRightType instanceof GdArrayType rightArrayType
@@ -1769,6 +1774,14 @@ public final class FrontendExpressionSemanticSupport {
         return leftType instanceof GdNilType && rightType instanceof GdNilType
                 || leftType instanceof GdObjectType && rightType instanceof GdNilType
                 || leftType instanceof GdNilType && rightType instanceof GdObjectType;
+    }
+
+    /// Identity equality gate for two static object types.
+    ///
+    /// Godot Variant `OBJECT/OBJECT` `==` / `!=` compares identity, not assignability.
+    /// Any `GdObjectType` pair is accepted; `GdVariantType` is excluded by `instanceof`.
+    private static boolean isObjectObjectEqualityPair(@NotNull GdType leftType, @NotNull GdType rightType) {
+        return leftType instanceof GdObjectType && rightType instanceof GdObjectType;
     }
 
     private static boolean isRuntimeOpenOperatorOperand(

@@ -1,11 +1,11 @@
 # Frontend Unary / Binary Expression 语义实现说明
 
-> 本文档作为 frontend `UnaryExpression` / `BinaryExpression` 语义分析的长期事实源，定义当前支持面、owner 边界、运算符规范化合同、稳定 typed contract、显式边界与后续工程需要继续遵守的约束。本文档替代原 `frontend_unary_binary_expr_semantic_plan.md`，不再保留阶段拆分、进度记录或已完成任务流水账。
+> 本文档作为 frontend `UnaryExpression` / `BinaryExpression` 语义分析的长期事实源，定义当前支持面、owner 边界、运算符规范化合同、稳定 typed contract、显式边界与后续工程需要继续遵守的约束。本文档替代原 `frontend_unary_binary_expr_semantic_plan.md` 与 `frontend_object_identity_equality_plan.md`，不再保留阶段拆分、进度记录或已完成任务流水账。
 
 ## 文档状态
 
-- 状态：事实源维护中（unary/binary shared semantic、analyzer 集成、type-check / compile-gate 消费路径已落地）
-- 更新时间：2026-06-23
+- 状态：事实源维护中
+- 更新时间：2026-08-19
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -14,6 +14,13 @@
   - `src/main/java/gd/script/gdcc/gdextension/ExtensionBuiltinClass.java`
   - `src/test/java/gd/script/gdcc/frontend/sema/**`
   - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/**`
+  - `src/test/java/gd/script/gdcc/frontend/lowering/FrontendLoweringBodyInsnPassTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/gen/COperatorInsnGenTest.java`
+  - `src/test/java/gd/script/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`
+  - `src/test/test_suite/unit_test/script/smoke/object_nil_equality.gd`
+  - `src/test/test_suite/unit_test/validation/smoke/object_nil_equality.gd`
+  - `src/test/test_suite/unit_test/script/smoke/object_identity_equality.gd`
+  - `src/test/test_suite/unit_test/validation/smoke/object_identity_equality.gd`
   - `src/test/java/gd/script/gdcc/enums/**`
 - 关联文档：
   - `doc/module_impl/common_rules.md`
@@ -21,12 +28,16 @@
   - `doc/module_impl/frontend/frontend_chain_binding_expr_type_implementation.md`
   - `doc/module_impl/frontend/frontend_type_check_analyzer_implementation.md`
   - `doc/module_impl/frontend/frontend_compile_check_analyzer_implementation.md`
+  - `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`
   - `doc/module_impl/backend/operator_insn_implementation.md`
   - `doc/gdcc_type_system.md`
 - 参考实现 / 事实依据：
   - Godot `modules/gdscript/gdscript_analyzer.cpp`
     - `and/or` 在 analyzer 中走 source-level 特判，结果固定为 `bool`
     - `Array + Array` 在元素类型已知且相同时保留 typed array 结果类型
+    - 静态类型 object 之间的 `==` / `!=` 在 analyzer 层即被接受并归约为 `bool`
+  - Godot `core/variant/variant_op.cpp`
+    - `OBJECT/OBJECT` 的 `OP_EQUAL` / `OP_NOT_EQUAL` 为 identity 比较，不要求两侧类相关
   - `E:/Projects/gdparser/vendor/tree-sitter-gdscript/grammar.js`
     - binary grammar 同时接受 `and` / `&&`、`or` / `||`、`in` / `not in`
     - unary grammar 同时接受 `not` / `!`
@@ -39,10 +50,12 @@
   - 不在这里引入 numeric promotion 或 typed-boundary widening；`StringName` / `String` 互转由 ordinary typed boundary helper 管理，unary / binary 语义不拥有这条规则
   - 不在这里把 compile-only blocker 反向回灌到 shared semantic 路径
   - 不在这里把 `not in` 提升为已支持语义；当前版本仍保持显式 unsupported 边界
-  - 不在这里放宽 object/nil ordering，如 `<`、`>`、`<=`、`>=`
-  - 不在这里把 object/nil equality 扩张成 assignment compatibility、parameter compatibility 或 slot compatibility 规则
+  - 不在这里放宽 object/nil 或 object/object ordering，如 `<`、`>`、`<=`、`>=`
+  - 不在这里把 object/nil equality 或 object identity equality 扩张成 assignment compatibility、parameter compatibility 或 slot compatibility 规则
+  - 不在这里把 binary semantic 耦合到 `ClassRegistry.checkAssignable(...)` 或任何继承链检查
   - 不在这里把 `object == null` 改写成 object validity 语义
   - 不在这里把 backend 更宽的 nil equality 接受面整体上提为 frontend source-level 合同
+  - 不在这里处理 `Signal.get_object()` binding；其返回 `Object` 是正确行为，identity equality 只消费该 published type
 
 ---
 
@@ -56,7 +69,7 @@ frontend 当前将 unary / binary 语义冻结在 shared expression helper，而
   - 负责 unary / binary 的局部纯语义求值
   - 不发布 side table
   - 不发 diagnostic
-- `FrontendExprTypeAnalyzer`
+- `FrontendBodyOwnerProcedures`（内部 `BodyExpressionResolver`）
   - 负责把 unary / binary 结果发布到 `expressionTypes()`
   - 负责 root-owned `FAILED` / `UNSUPPORTED` 的 expr-owned diagnostic
 - `FrontendChainBindingAnalyzer`
@@ -188,11 +201,10 @@ unary 当前有意保持保守精度：
    - 根节点只传播 upstream 结果
    - `rootOwnsOutcome = false`
 3. 对 exact / stable child：
-   - 先处理 source-level special rule
-   - 再处理普通 builtin metadata exact lookup
-4. 普通路由中，任一 operand 为 `DYNAMIC` 或 exact `Variant`
-   - 根节点保守发布 `DYNAMIC(Variant)`
-5. 普通 exact metadata 未命中
+   - 先处理 source-level special rule（`and/or`、object/nil equality、object identity equality、typed array preserve）
+   - 再处理 runtime-open：任一 operand 为 `DYNAMIC` 或 exact `Variant` 时，根节点保守发布 `DYNAMIC(Variant)`
+   - 最后处理普通 builtin metadata exact lookup
+4. 普通 exact metadata 未命中
    - 根节点发布 `FAILED`
 
 普通 binary route 必须保持顺序敏感：
@@ -203,7 +215,7 @@ unary 当前有意保持保守精度：
 
 ### 4.2 当前 source-level special rule
 
-binary 当前有三类 source-level special rule，不得强行回退到 extension metadata：
+binary 当前有四类 source-level special rule，不得强行回退到 extension metadata：
 
 1. `and/or`
    - 同时覆盖源码别名 `&&/||`
@@ -226,7 +238,19 @@ binary 当前有三类 source-level special rule，不得强行回退到 extensi
      `ClassRegistry.checkAssignable(...)`、type-check slot compatibility 或 compile gate
    - exact `Variant` / `DYNAMIC` operand 继续保持 runtime-open `DYNAMIC(Variant)` 路由，不被该规则提前收窄
    - backend 已有更宽 `NIL_COMPARISON` 接受面，但 frontend 当前合同不因此顺手放宽 `int == null`、
-     `String == null` 或 container 与 `null` 的 equality
+      `String == null` 或 container 与 `null` 的 equality
+4. object identity equality
+   - 只锚定 `==` / `!=`
+   - 命中条件：两侧 `publishedType` 均为 `GdObjectType`（只允许 `instanceof GdObjectType`，不得依赖 source-facing 类名文本）
+   - 覆盖同类、继承相关与继承无关任意静态 object pair（含 GDCC class 与 engine class 混合）；不要求 `checkAssignable`
+   - 命中后固定发布 `RESOLVED(bool)`
+   - 实现入口固定在 `FrontendExpressionSemanticSupport.resolveBinarySpecialReturnType(...)`，helper 为 `isObjectObjectEqualityPair(...)`
+   - helper 与 `isObjectNilEqualityPair(...)` 并列，保持 `isXxxPair` 命名；`resolveBinarySpecialReturnType(...)` 必须继续是不持有 `ClassRegistry` 的纯静态 helper
+   - 该规则属于 binary semantic，不是 ordinary typed-boundary widening；不得据此扩张
+     `ClassRegistry.checkAssignable(...)`、type-check slot compatibility 或 compile gate
+   - exact `Variant` / `DYNAMIC` operand 继续保持 runtime-open `DYNAMIC(Variant)` 路由；实践中 `DYNAMIC` 一律发布 `GdVariantType`，`GdVariantType` 不是 `GdObjectType`，天然不命中
+   - object/object ordering（`<` / `>` / `<=` / `>=`）必须继续走普通路由并最终 `FAILED`（`sema.expression_resolution`，detail 含 `not defined for operand types`）
+   - 该规则通过 `resolveBinaryOperatorResultType(...)` 自动覆盖 ordinary binary、compound assignment 复用点与 lowering temp typing；`==` / `!=` 不是 compound assignment operator
 
 ### 4.3 typed container 元数据匹配
 
@@ -256,13 +280,19 @@ binary metadata 路由当前统一按 raw builtin 名称参与匹配：
 
 当前版本尚未落地这条复合规则，因此 `not in` 仍是明确 feature boundary，而不是模糊 TODO。
 
-### 4.5 object/nil equality 的 lowering / backend 合同
+### 4.5 object equality 的 lowering / backend 合同
 
 object/nil equality 当前必须继续沿用既有 binary compare 主路径：
 
 - lowering 继续产出 `BinaryOpInsn`
 - backend 继续复用 `OperatorPath.NIL_COMPARISON`
 - 本合同不切换到 `variant_is_nil` / `object_is_null` 路线
+
+object identity equality 同样沿用这条 `BinaryOpInsn` 主路径，但不走 `NIL_COMPARISON`：
+
+- lowering 继续产出 `BinaryOpInsn`
+- backend 继续复用 `operator_insn_implementation.md` §3.5 的 object/object equality-normalized raw 比较
+- 本合同不新增独立 lowering / codegen 路线，也不把结果先 pack 成 `Variant`
 
 保持这条路由的原因是：
 
@@ -271,15 +301,18 @@ object/nil equality 当前必须继续沿用既有 binary compare 主路径：
 - runtime-open `Variant == null` 不能被简化成“只做 nil tag 检查”的更窄规则
 - 若切换到独立 low IR 路线，会把当前窄修复扩张成新的 rewrite / codegen 工程
 
-### 4.6 object/nil equality 的 Godot 语义边界
+### 4.6 object equality 的 Godot 语义边界
 
-当前 object/nil equality 文档只保留对实现边界有长期价值的 Godot 结论：
+当前 object equality 文档只保留对实现边界有长期价值的 Godot 结论：
 
 - `null` 是 literal，不是 ordinary builtin type
 - `Object` 作为 class family 参与语义，不是 ordinary builtin type name 映射的一部分
 - Godot/Variant runtime 为 `Object/Nil`、`Nil/Object`、`Nil/Nil` 注册了 equality / inequality evaluator
+- Godot/Variant runtime 对 `OBJECT/OBJECT` 的 `OP_EQUAL` / `OP_NOT_EQUAL` 是 identity 语义，不要求两侧类相关
 - backend 对部分非 object 类型与 `Nil` 也有既有运行时语义，但这不自动提升为 frontend 当前支持面
 - `object == null` 合法，不等于推荐用它判断对象是否已释放；对象有效性判断仍应与 equality 语义分离
+- `object == object` 合法，不等于 type equality 或 `is` / `as` 的继承判断
+- identity 合同从定义上不需要继承关系判断；不得用 `checkAssignable(...)` 门控这条规则
 
 因此后续实现、注释或文档不得把当前合同反向改写成：
 
@@ -291,11 +324,11 @@ object/nil equality 当前必须继续沿用既有 binary compare 主路径：
 
 ## 5. Downstream 消费合同
 
-### 5.1 `FrontendExprTypeAnalyzer`
+### 5.1 `FrontendBodyOwnerProcedures`
 
 当前 unary / binary 已经不再因为“表达式家族尚未实现”被发布为 `DEFERRED`。
 
-expr analyzer 当前需要继续保持：
+body expression resolver 当前需要继续保持：
 
 - 区分 root-owned 非成功结果与 upstream 传播结果
 - 只为 root-owned `FAILED` / `UNSUPPORTED` 补 expr-owned diagnostic
@@ -355,8 +388,9 @@ compile gate 当前只把以下状态视为 blocker：
   - `and/or` 合同
   - typed array preserve 正反例
   - object/nil equality 正反例
+  - object identity equality 正反例（同类、继承相关、继承无关、GDCC/engine 混合、ordering 拒绝、Variant/DYNAMIC 保持 runtime-open）
   - `not in` unsupported 边界
-- `FrontendExprTypeAnalyzerTest`
+- `FrontendBodyOwnerProcedures` / body expression resolver 路径
   - unary / binary 结果发布
   - root-owned 与 upstream-propagated 区分
 - `FrontendTypeCheckAnalyzerTest`
@@ -364,13 +398,18 @@ compile gate 当前只把以下状态视为 blocker：
 - `FrontendCompileCheckAnalyzerTest`
   - unary / binary resolved / dynamic route 不再触发 compile blocker
   - object/nil equality 不再触发 compile blocker
+  - object identity equality 不再触发 compile blocker
+  - object/object ordering 继续被 `sema.expression_resolution` 阻断
   - `ConditionalExpression` 继续被 compile-only block
 - `FrontendLoweringBodyInsnPassTest`
   - object/nil equality 继续进入 ordinary `BinaryOpInsn` lowering 路由
+  - object identity equality 进入 ordinary `BinaryOpInsn`，结果 `bool`，不经 `Pack/UnpackVariantInsn`
 - `COperatorInsnGenTest`
   - `Object/Nil`、`Nil/Object`、`Nil/Nil` 继续走 nil specialization codegen
+  - `Object/Object`、`Node/Node`、GDCC/engine 混合 pair 继续走 equality-normalized raw codegen
 - `GdScriptUnitTestCompileRunnerTest`
   - `object_nil_equality` smoke 资源保持端到端可编译与结果对齐
+  - `object_identity_equality` smoke 资源覆盖自反 `==`、不同实例 `!=`、`Node == Object`、`Signal.get_object() == node` 与 `null` 分支不误翻转
 
 后续若扩张 unary / binary 行为，测试必须继续同时覆盖：
 
@@ -403,31 +442,36 @@ compile gate 当前只把以下状态视为 blocker：
 - 不阻断 downstream 消费 stable fact
 - 不把当前事实源重新拉回“为实现阶段服务的计划文档”
 
-### 7.3 object/nil equality 仍是窄规则
+### 7.3 object equality 仍是窄规则
 
 当前 object/nil equality 的工程价值在于补齐 frontend 对已知静态安全组合的缺口，而不是把 backend
 更宽的 nil equality 运行时语义整体上提为 source-level 合同。
 
-后续若继续扩张这条规则，必须先重新论证：
+当前 object identity equality 按 Godot `OBJECT/OBJECT` identity 语义接受任意两个静态 `GdObjectType` pair，
+结果 `bool`。它不是 type equality，也不是 assignability。后续若继续扩张 equality 规则，必须再次论证：
 
-- 是否仍属于 binary semantic，而不是 typed-boundary widening
-- 是否会误伤 `Variant` / `DYNAMIC` 的 runtime-open 路由
-- 是否需要同步扩大 lowering、backend 与 smoke test 锚点
+- 是否仍属于 binary semantic：只回答 `==` / `!=` 的结果类型，不触碰 assignment / parameter / slot compatibility
+- 是否会误伤 `Variant` / `DYNAMIC` 的 runtime-open 路由：pair 检查必须继续基于 `instanceof GdObjectType`
+- lowering / backend 是否仍可复用既有 `BinaryOpInsn` 主路径；smoke 锚点 `object_nil_equality` 与 `object_identity_equality` 是否继续成立
 
 ### 7.4 smoke / end-to-end 锚点也属于合同的一部分
 
-object/nil equality 当前不只依赖 shared semantic 与 focused unit tests，还要求以下 smoke 事实继续成立：
+object equality 当前不只依赖 shared semantic 与 focused unit tests，还要求以下 smoke 事实继续成立：
 
 - `src/test/test_suite/unit_test/script/smoke/object_nil_equality.gd`
 - `src/test/test_suite/unit_test/validation/smoke/object_nil_equality.gd`
+- `src/test/test_suite/unit_test/script/smoke/object_identity_equality.gd`
+- `src/test/test_suite/unit_test/validation/smoke/object_identity_equality.gd`
 
 这些资源用于锚定：
 
 - typed object / `null` 双向 `==` / `!=` 的端到端结果
 - `null == null` / `null != null` 的稳定行为
 - 已存在对象与缺失对象的 true/false 分支不被误翻转
+- typed object / object identity `==` / `!=` 的端到端结果
+- `Node == Object` 与 `Signal.get_object() == node` 的 identity 语义
 
-后续若调整 object/nil equality 支持面，必须同步复核这些 smoke 资源，而不是只更新语义单测。
+后续若调整 object equality 支持面，必须同步复核这些 smoke 资源，而不是只更新语义单测。
 
 ### 7.5 `not in` 的真实成本高于 alias
 

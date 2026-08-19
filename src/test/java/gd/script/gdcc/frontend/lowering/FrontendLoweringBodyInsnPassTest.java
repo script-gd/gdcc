@@ -302,6 +302,45 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runKeepsTypedObjectIdentityEqualityOnBinaryOpRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_typed_object_identity_equality.gd",
+                """
+                        class_name BodyInsnTypedObjectIdentityEquality
+                        extends Node
+                        
+                        func same_node(left: Node, right: Node) -> bool:
+                            return left == right
+                        """,
+                Map.of("BodyInsnTypedObjectIdentityEquality", "RuntimeBodyInsnTypedObjectIdentityEquality"),
+                true
+        );
+        var sameNodeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedObjectIdentityEquality",
+                "same_node"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(sameNodeContext.targetFunction());
+        var comparisonInsn = requireOnlyInstruction(sameNodeContext.targetFunction(), BinaryOpInsn.class);
+        var function = sameNodeContext.targetFunction();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), () -> "Unexpected diagnostics: "
+                        + prepared.diagnostics().snapshot().asList()),
+                () -> assertEquals(GodotOperator.EQUAL, comparisonInsn.op()),
+                () -> assertEquals(GdBoolType.BOOL, requireVariableType(function, comparisonInsn.resultId())),
+                () -> assertInstanceOf(GdObjectType.class, requireVariableType(function, comparisonInsn.leftId())),
+                () -> assertInstanceOf(GdObjectType.class, requireVariableType(function, comparisonInsn.rightId())),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
     void runKeepsVariantUnpackAtFinalCompoundAssignmentStoreBoundary() throws Exception {
         var prepared = prepareContext(
                 "body_insn_compound_boundary.gd",
