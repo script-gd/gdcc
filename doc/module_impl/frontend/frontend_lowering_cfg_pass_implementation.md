@@ -304,9 +304,12 @@ dynamic instance-call receiver 现也冻结为同一套 payload consumer：
 
 value id 当前“基本单一定义”，但有一条刻意保留的窄例外：
 
-- 同一 outward-facing result value id 可以被多个 `MergeValueItem` 沿互斥路径写入
-- `MergeValueItem.sourceValueId` 必须来自同一个 `SequenceNode` 中更早出现的某个 `ValueOpItem.resultValueId`
-- graph publication 必须在发布时验证这条“同 sequence、先 producer 后 merge”合同；type collection / body lowering 不负责为跨 sequence 或逆序 merge source 做补救
+- 同一 outward-facing result value id 可以被多个 `MergeValueItem` 沿互斥路径写入（它们的 `mergeAnchor` 必须是同一个已发布 `RESOLVED/DYNAMIC` 的表达式节点，否则 `collectCfgValueMaterializations` fail-fast）
+- `MergeValueItem` 的合并槽类型由 `mergeAnchor` 的 `expressionTypes` 事实决定，而非单个 `sourceValueId` 的临时类型；因此同一 `resultValueId` 的多生产者已天然无类型冲突（同一 anchor 同一类型）
+- 正常情况下 `MergeValueItem.sourceValueId` 必须来自同一个 `SequenceNode` 中更早出现的某个 `ValueOpItem.resultValueId`
+- 窄例外：若某 `sourceValueId` 在全图范围内至少存在 1 个生产者且**全部**为 `MergeValueItem`（merge-of-merge），则允许作为跨 sequence 的 merge 源——该形状服务于嵌套三元的臂（内层 `resultValueId` 本身由双 `MergeValueItem` 产生）与 value 语境 `and/or` 臂；任何其它跨 sequence 源（opaque / call / 常量等）仍属非法；悬空 source（全图无生产者）仍 fail-fast
+- `MergeValueItem` 的写入由 `FrontendMergeValueInsnLoweringProcessor` 经统一 `materializeFrontendBoundaryValue(..., "merge_write")` 物化后 `AssignInsn(cfg_merge_*, materialized)`：`merge_write` 是 re-derive consumer（现场重查 ordinary typed-boundary 矩阵），与 assignment / return / local-init 同类；`bool→bool` 仍为 `ALLOW_DIRECT`，故 value 语境 `and/or` 的 LIR 形状保持 `LiteralBoolInsn` + `AssignInsn(cfg_merge_*, cfg_tmp_*)` 无额外 pack/unpack/intrinsic
+- graph publication 必须在发布时验证上述“同 sequence、先 producer 后 merge”及 merge-of-merge 窄例外；type collection / body lowering 不负责为其它跨 sequence 或逆序 merge source 做补救
 
 因此所有 consumer 都必须接受：
 

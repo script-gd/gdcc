@@ -107,8 +107,11 @@ public final class FrontendBodyLoweringSupport {
     ///
     /// This pass intentionally consumes the graph in published node/item order. Graph publication
     /// therefore must already have enforced the branch-result merge rule that every `MergeValueItem`
-    /// sources a value produced earlier in the same sequence node; this collector does not try to
-    /// recover from cross-sequence merge dependencies.
+    /// normally sources a value produced earlier in the same sequence node; the sole
+    /// cross-sequence exception is merge-of-merge (a source who's every global producer is itself a
+    /// `MergeValueItem`). This collector does not try to recover from other cross-sequence
+    /// dependencies, and it now anchors merge slots by the shared expression type rather than one
+    /// local source value.
     public static @NotNull SequencedMap<String, CfgValueMaterialization> collectCfgValueMaterializations(
             @NotNull FrontendCfgGraph graph,
             @NotNull FrontendAnalysisData analysisData,
@@ -189,7 +192,7 @@ public final class FrontendBodyLoweringSupport {
                     null
             );
             case MergeValueItem mergeValueItem -> new CfgValueMaterialization(
-                    requireResolvedValueType(resolvedMaterializations, mergeValueItem.sourceValueId()),
+                    requireMergeAnchorType(analysisData, mergeValueItem),
                     CfgValueMaterializationKind.MERGE_SLOT,
                     null
             );
@@ -294,6 +297,29 @@ public final class FrontendBodyLoweringSupport {
             );
         }
         return materialization;
+    }
+
+    /// Merge slots are typed by the outward-facing expression's published fact, not by one
+    /// concrete arm's source type. That keeps `and/or` and conditional merges stable across
+    /// multi-producer aliasing: all `MergeValueItem` instances that share one `resultValueId`
+    /// necessarily share the same `mergeAnchor`, so materializations that were previously forced
+    /// through `putIfAbsent` conflict checks become structurally contradiction-free.
+    private static @NotNull GdType requireMergeAnchorType(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull MergeValueItem mergeValueItem
+    ) {
+        var anchor = Objects.requireNonNull(mergeValueItem.mergeAnchor(), "mergeAnchor must not be null");
+        if (!(anchor instanceof Expression expression)) {
+            throw new IllegalStateException(
+                    "MergeValueItem anchor must be a lowering expression with a published type, but was "
+                            + anchor.getClass().getSimpleName()
+            );
+        }
+        return requireLoweringReadyExpressionType(
+                analysisData,
+                expression,
+                "MergeValueItem anchor '" + expression.getClass().getSimpleName() + "'"
+        );
     }
 
     private static @NotNull GdType requireExpressionType(

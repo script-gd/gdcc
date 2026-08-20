@@ -68,7 +68,7 @@ frontend 当前已经把 ordinary typed-boundary `(un)pack` 收敛成 compile-re
 
 ### 2.2 当前覆盖的 consumer
 
-ordinary boundary materialization 当前已经接通：
+ordinary boundary materialization 当前已经通过 `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)` 唯一入口接通：
 
 - local initializer
 - class property initializer
@@ -78,6 +78,7 @@ ordinary boundary materialization 当前已经接通：
 - vararg tail
 - return slot
 - subscript key/index
+- merge 写入（merge_write，re-derive consumer：FrontendMergeValueInsnLoweringProcessor 现场重查 ordinary typed-boundary 矩阵后 AssignInsn(cfg_merge_*, materialized)）
 
 其中 `subscript key/index` 包括 ordinary subscript read/write、assignment writable-route
 leaf read 与 reverse commit。lowering 必须先物化 key/index，再基于物化后的 slot type 选择

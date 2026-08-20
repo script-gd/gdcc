@@ -13,9 +13,11 @@ import java.util.Objects;
 /// `ConditionalExpression` must let both arms publish the same outward-facing result id before
 /// control flow rejoins. Making that write explicit keeps the parent contract one-way: children
 /// publish value ids, and parent items consume only those ids instead of re-reading child AST.
-/// `sourceValueId` is intentionally strict: graph publication requires it to come from a
-/// `ValueOpItem` that already appeared earlier in the same `SequenceNode`, so later type collection
-/// does not depend on cross-sequence traversal order.
+/// `sourceValueId` is normally strict: graph publication requires it to come from a
+/// `ValueOpItem` that already appeared earlier in the same `SequenceNode`. The sole
+/// cross-sequence exception is merge-of-merge: every global producer of that source id
+/// must itself be a `MergeValueItem`. Type collection now keys the shared slot by
+/// `mergeAnchor`'s published expression type, not by one arm's source type.
 /// This is also the only legal multi-definition form for one frontend value id: if a result value id
 /// has multiple producers, every producer must be a `MergeValueItem`. Future producer collection code
 /// must treat `resultValueId` as a merge-slot key with potentially multiple reaching writes, not as a

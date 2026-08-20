@@ -89,10 +89,12 @@
 - frontend CFG value id 默认仍是 single-definition 合同，但有一个刻意保留的例外：同一个 outward-facing merged result value id 可以由多个 `MergeValueItem` 在互斥路径上写入。
   - 若同一个 value id 出现多个 producer，则所有 producer 都必须是 `MergeValueItem`；`MergeValueItem.resultValueId` 不允许与 `OpaqueExprValueItem`、`CallItem`、`CastItem`、`BoolConstantItem` 等普通 producer 共享同一个 value id。
   - 任何按 value id 收集 producer 的代码、测试或 future lowering 都必须按“可能有多个 reaching producers”建模；不得把 merged result 当作可唯一反查的 SSA expression definition。
+- merge 槽类型以 `mergeAnchor` 的 `expressionTypes` 事实为准（同一 `resultValueId` 的多生产者共享同一 anchor，天然无类型冲突）；`MergeValueItem.sourceValueId` 正常需同 `SequenceNode` 内先产，窄例外见 `frontend_lowering_cfg_pass_implementation.md` 的 merge-of-merge 合同（全图 `MergeValueItem`-only 源可跨 sequence）。
 - `assert` 的 compile-only block 不改变这条 source-level 合同；真正的 backend / lowering 缺口必须继续留在 compile gate，而不是反向污染 shared type-check 规则。
 - backend/LIR 的 control-flow 仍保持 bool-only 边界；当未来接上 frontend -> LIR lowering 时，必须在 lowering 侧补上显式 truthiness / condition normalization，不得再反向把 frontend 收紧成 undocumented strict-bool dialect。
 - lowering 侧的 condition normalization 合同已经冻结：`bool` 直接 branch，`Variant` 只做 `unpack_variant -> bool temp -> GoIfInsn`，其余 stable type 必须先 `pack_variant` 再 `unpack_variant`，不得绕过这条路径。
 - body lowering 的 slot/materialization 命名必须固定：temp-backed CFG value 继续用 `cfg_tmp_<valueId>`，merge-backed value 继续用 `cfg_merge_<valueId>`，source-level local 直接沿用源码名；direct-slot alias value 与 statement-position resolved-void `CallItem` 则故意不声明独立 `cfg_tmp_*` 变量。
+- merge 写入（`merge_write`）继续复用 `materializeFrontendBoundaryValue(...)` 唯一入口：`FrontendMergeValueInsnLoweringProcessor` 将每臂 `sourceValueId` 的类型物化到 `mergeAnchor` 的 published 合并类型后 `AssignInsn(cfg_merge_<id>, materialized)`；`bool->bool` 为 `ALLOW_DIRECT`，故 value 语境 `and/or` 的 LIR 仍仅 `LiteralBoolInsn` + `AssignInsn(cfg_merge_*, cfg_tmp_*)`。
 - `OpaqueExprValueItem` 当前只允许承载 ordinary leaf / eager unary / 非短路 eager binary；`and` / `or`、assignment-as-opaque、以及绕过 dedicated item 的 attribute / call / subscript 必须视为协议违例。direct-slot mutating receiver 的 alias publication 现已通过独立 `DirectSlotAliasValueItem`。
 - direct-slot receiver alias 的安全性必须写成显式语义合同，而不是“扫描参数 AST 里有没有某个节点名”：
   - explicit `SelfExpression` 可直接 alias，因为 `self` slot 不可被用户代码重绑定

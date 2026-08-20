@@ -239,7 +239,11 @@ final class FrontendSequenceItemInsnLoweringProcessors {
     ///
     /// Merge items are the only legal multi-producer value ids in frontend CFG, so the processor
     /// always writes into `cfg_merge_<valueId>` rather than pretending the value still has a unique
-    /// SSA-like temp slot.
+    /// SSA-like temp slot. Branch results may be heterogeneously typed: the shared slot is typed by
+    /// the shared expression anchor, so each arm is converted through the single
+    /// `materializeFrontendBoundaryValue(..., "merge_write")` consumer before the final copy.
+    /// That consumer is intentionally re-derive (it re-queries the ordinary typed-boundary matrix at
+    /// lowering time) rather than frozen-decision, matching `assignment` / `return` / `local-init`.
     private static final class FrontendMergeValueInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<MergeValueItem, Void> {
         @Override
@@ -254,9 +258,19 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @NotNull MergeValueItem node,
                 @Nullable Void context
         ) {
+            var sourceType = session.requireValueType(node.sourceValueId());
+            var mergeType = session.requireValueType(node.resultValueId());
+            var sourceSlotId = session.slotIdForValue(node.sourceValueId());
+            var materializedSourceSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    sourceSlotId,
+                    sourceType,
+                    mergeType,
+                    "merge_write"
+            );
             block.appendNonTerminatorInstruction(new AssignInsn(
                     FrontendBodyLoweringSupport.mergeSlotId(node.resultValueId()),
-                    session.slotIdForValue(node.sourceValueId())
+                    materializedSourceSlotId
             ));
             return block;
         }

@@ -1,7 +1,7 @@
 # Frontend Conditional（Ternary）Expression 实施计划
 
 本文档是三元表达式 `value1 if condition else value2`（含嵌套）进入 compile-ready 支持面的实施计划与验收细则。
-状态：**Phase 0、1 已完成**；Phase 2–5 待实施。
+状态：**Phase 0、1、2 已完成**；Phase 3–5 待实施。
 
 ## 1. 目标与范围
 
@@ -175,6 +175,14 @@ GDCC 当前处理状态（全部为本仓库 `master` 现状）：
 验收：
 - 既有 CFG/body lowering 测试全绿（零修改）是本步核心验收。
 - `MergeValueItem` anchor 非表达式或无 published 类型时 fail-fast 的单测通过。
+
+
+Phase 2 done notes:
+- FrontendBodyLoweringSupport collectCfgValueMaterializations MergeValueItem now uses requireMergeAnchorType anchored at expressionTypes; and-or anchor BinaryExpression(RESOLVED bool), ternary anchor ConditionalExpression merged type.
+- FrontendMergeValueInsnLoweringProcessor now materializes via session.materializeFrontendBoundaryValue(..., merge_write) then AssignInsn(cfg_merge_*, materialized); bool to bool ALLOW_DIRECT keeps LIR shape.
+- FrontendCfgGraph.validateMergeSourceContracts relaxed to graph-wide merge-of-merge (at least 1 producer and all MergeValueItem), guards empty allMatch vacuum; dangling source still fail-fast.
+- Docs synced: frontend_lowering_cfg_pass_implementation value id contract, frontend_lowering_(un)pack consumer list, frontend_rules single-definition and slot contracts.
+- Tests anchored: FrontendCfgGraphTest.constructorAllowsMergeOfMergeAndRejectsDanglingOrNonMergeSources, FrontendBodyLoweringSupportTest.collectCfgValueMaterializationsAnchorsMergeSlotsByExpressionType / RejectsNonExpressionMergeAnchorOrMissingFact; existing and-or and constructorRejectsMergeSourceWithoutEarlierProducerInSameSequence stay red.
 
 ### Phase 3：CFG 构图实现
 

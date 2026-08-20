@@ -425,6 +425,84 @@ class FrontendCfgGraphTest {
     }
 
     @Test
+    void constructorAllowsMergeOfMergeAndRejectsDanglingOrNonMergeSources() {
+        // Phase 2 merge-of-merge contract: an inner merge result may be the source of an outer
+        // merge even though it was not published locally, but dangling or non-merge global sources
+        // must still fail-fast. This guards the narrow merge-of-merge relaxation and keeps the
+        // negative cases in constructorRejectsMergeSourceWithoutEarlierProducerInSameSequence red.
+        var mergeOfMergeNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        mergeOfMergeNodes.put(
+                "entry",
+                new FrontendCfgGraph.SequenceNode(
+                        "entry",
+                        List.of(new OpaqueExprValueItem(identifier("flag"), "v_cond")),
+                        "branch"
+                )
+        );
+        mergeOfMergeNodes.put("branch", new FrontendCfgGraph.BranchNode("branch", identifier("flag"), "v_cond", "left", "right"));
+        // Inner conditional arms write V_inner from two distinct local sources.
+        mergeOfMergeNodes.put(
+                "left",
+                new FrontendCfgGraph.SequenceNode(
+                        "left",
+                        List.of(
+                                new OpaqueExprValueItem(identifier("a"), "v_a"),
+                                new OpaqueExprValueItem(identifier("b"), "v_b"),
+                                new MergeValueItem(identifier("inner_left"), "v_a", "V_inner"),
+                                new MergeValueItem(identifier("inner_right"), "v_b", "V_inner")
+                        ),
+                        "merge_outer"
+                )
+        );
+        mergeOfMergeNodes.put(
+                "right",
+                new FrontendCfgGraph.SequenceNode(
+                        "right",
+                        List.of(new OpaqueExprValueItem(identifier("c"), "v_c")),
+                        "merge_outer"
+                )
+        );
+        // Outer merge sources V_inner cross-sequence; it is allowed because every global producer
+        // of V_inner is a MergeValueItem (the two inner arms).
+        mergeOfMergeNodes.put(
+                "merge_outer",
+                new FrontendCfgGraph.SequenceNode(
+                        "merge_outer",
+                        List.of(
+                                new OpaqueExprValueItem(identifier("c_local"), "v_c_local"),
+                                new MergeValueItem(identifier("outer_from_inner"), "V_inner", "V_outer"),
+                                new MergeValueItem(identifier("outer_from_right"), "v_c_local", "V_outer")
+                        ),
+                        "stop"
+                )
+        );
+
+        mergeOfMergeNodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, "V_outer"));
+
+        // Must not throw: V_inner global producers are merge-only.
+        var mergeOfMergeGraph = new FrontendCfgGraph("entry", mergeOfMergeNodes);
+        assertTrue(mergeOfMergeGraph.hasNode("merge_outer"));
+
+        // Dangling source: no producer anywhere in the graph -> still fail-fast, not vacuum-true.
+        var danglingNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        danglingNodes.put(
+                "entry",
+                new FrontendCfgGraph.SequenceNode(
+                        "entry",
+                        List.of(new MergeValueItem(identifier("dangling"), "V_missing", "V_outer2")),
+                        "stop"
+                )
+        );
+        danglingNodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, "V_outer2"));
+        var dangling = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("entry", danglingNodes)
+        );
+        assertTrue(dangling.getMessage().contains("produced earlier in the same sequence"), dangling.getMessage());
+        assertTrue(dangling.getMessage().contains("V_missing"), dangling.getMessage());
+    }
+
+    @Test
     void constructorRejectsPayloadBackedCallWithoutDedicatedReceiverValueSlot() {
         var routeAnchor = identifier("call");
         var invalidPayload = new FrontendWritableRoutePayload(

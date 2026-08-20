@@ -194,8 +194,8 @@ public record FrontendCfgGraph(
     /// That exception is deliberately narrow. If a value id has more than one producer, every producer
     /// must be a `MergeValueItem`; mixed definitions such as `OpaqueExprValueItem + MergeValueItem` or
     /// `CallItem + MergeValueItem` are rejected at graph publication time.
-    /// Each merge write must also source a value already produced earlier in the same sequence node, so
-    /// later type collection does not depend on cross-sequence traversal order.
+    /// Merge-source locality is enforced separately by `validateMergeSourceContracts`
+    /// (same-sequence producer, plus the narrow merge-of-merge exception).
     ///
     /// Any consumer that collects producers by value id must therefore handle multiple reaching
     /// producers instead of assuming a unique reverse lookup.
@@ -233,25 +233,61 @@ public record FrontendCfgGraph(
         }
     }
 
-    /// Merge-slot writes are only valid when the branch-local source value has already been produced in
-    /// the same sequence node. This makes the current short-circuit shape explicit and prevents type
-    /// collection from depending on cross-sequence traversal order.
+    /// Merge-slot writes are normally valid only when the branch-local source value has already
+    /// been produced earlier in the same sequence node. That keeps short-circuit shapes explicit
+    /// and prevents type collection from depending on cross-sequence traversal order.
+    ///
+    /// As a narrow exception, merge-of-merge is allowed: when the source value id has at least
+    /// one producer anywhere in the graph and every such producer is itself a `MergeValueItem`
+    /// (e.g. an inner conditional or a value-context `and/or` arm), the outer merge may source
+    /// that shared slot even though it was not published locally. Any other cross-sequence source
+    /// (opaque, call, const, ...) remains illegal, and a source with no producer anywhere still
+    /// fail-fasts. The implementation must build a graph-wide producer index before deciding,
+    /// and must not rely on an empty-stream `allMatch` vacuum (which would treat a dangling source
+    /// as trivially merge-only).
     private static void validateMergeSourceContracts(@NotNull Map<String, NodeDef> nodes) {
+        var producersByValueId = new LinkedHashMap<String, List<ValueOpItem>>();
+        for (var node : nodes.values()) {
+            if (!(node instanceof SequenceNode(_, var items, _))) {
+                continue;
+            }
+            for (var item : items) {
+                if (!(item instanceof ValueOpItem valueOpItem)) {
+                    continue;
+                }
+                var resultValueId = valueOpItem.resultValueIdOrNull();
+                if (resultValueId == null) {
+                    continue;
+                }
+                producersByValueId
+                        .computeIfAbsent(resultValueId, _ -> new ArrayList<>())
+                        .add(valueOpItem);
+            }
+        }
         for (var node : nodes.values()) {
             if (!(node instanceof SequenceNode(var nodeId, var items, _))) {
                 continue;
             }
             var locallyPublishedValueIds = new ArrayList<String>();
             for (var item : items) {
-                if (item instanceof MergeValueItem mergeValueItem
-                        && !locallyPublishedValueIds.contains(mergeValueItem.sourceValueId())) {
-                    throw new IllegalArgumentException(
-                            "Frontend CFG merge item in sequence '"
-                                    + nodeId
-                                    + "' must source a value produced earlier in the same sequence, but '"
-                                    + mergeValueItem.sourceValueId()
-                                    + "' has no prior local producer"
-                    );
+                if (item instanceof MergeValueItem mergeValueItem) {
+                    var sourceValueId = mergeValueItem.sourceValueId();
+                    var locallyProduced = locallyPublishedValueIds.contains(sourceValueId);
+                    var globallyProducedAsMergeOnly = false;
+                    var globalProducers = producersByValueId.get(sourceValueId);
+                    if (globalProducers != null && !globalProducers.isEmpty()) {
+                        globallyProducedAsMergeOnly =
+                                globalProducers.stream().allMatch(producer -> producer instanceof MergeValueItem);
+                    }
+                    if (!locallyProduced && !globallyProducedAsMergeOnly) {
+                        throw new IllegalArgumentException(
+                                "Frontend CFG merge item in sequence '"
+                                        + nodeId
+                                        + "' must source a value produced earlier in the same sequence, but '"
+                                        + sourceValueId
+                                        + "' has no prior local producer"
+                        );
+                    }
                 }
                 if (item instanceof ValueOpItem valueOpItem && valueOpItem.resultValueIdOrNull() != null) {
                     locallyPublishedValueIds.add(valueOpItem.resultValueIdOrNull());
@@ -269,7 +305,7 @@ public record FrontendCfgGraph(
                 if (!(item instanceof DirectSlotAliasValueItem aliasValueItem)) {
                     continue;
                 }
-                if (!(aliasValueItem.expression() instanceof Expression expression)) {
+                if (!(aliasValueItem.expression() instanceof Expression)) {
                     throw new IllegalArgumentException(
                             "Frontend CFG direct-slot alias in sequence '"
                                     + nodeId

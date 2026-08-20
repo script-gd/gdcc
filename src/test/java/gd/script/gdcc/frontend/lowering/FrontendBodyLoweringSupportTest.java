@@ -8,6 +8,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ContainerLiteralItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ValueOpItem;
 import gd.script.gdcc.frontend.parse.FrontendModule;
@@ -25,6 +26,10 @@ import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.PassStatement;
+import dev.superice.gdparser.frontend.ast.Point;
+import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -49,6 +54,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendBodyLoweringSupportTest {
+    private static final Range SYNTHETIC_RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
+    private static IdentifierExpression identifier(String name) {
+        return new IdentifierExpression(name, SYNTHETIC_RANGE);
+    }
+
     @Test
     void slotNamingAndSourceLocalSlotTypeStayStable() throws Exception {
         var analyzed = analyzeFunction(
@@ -623,6 +634,110 @@ class FrontendBodyLoweringSupportTest {
 
         assertTrue(exception.getMessage().contains("Compound assignment body-lowering contract"), exception.getMessage());
         assertTrue(exception.getMessage().contains("current target"), exception.getMessage());
+    }
+
+    @Test
+    void collectCfgValueMaterializationsAnchorsMergeSlotsByExpressionType() throws Exception {
+        // Phase 2 contract: merge slot type is the shared expression anchor's published fact, not one
+        // arm's source value type. This prevents putIfAbsent conflicts for heterogeneously-typed
+        // branches and keeps and-or bool merges contradiction-free.
+        var analyzed = analyzeFunction(
+                "body_lowering_support_merge_anchor.gd",
+                """
+                        class_name BodyLoweringSupportMergeAnchor
+                        extends RefCounted
+
+                        func consume(value: bool) -> bool:
+                            return value
+
+                        func helper(seed: int) -> bool:
+                            return seed > 0
+
+                        func ping(flag: bool, seed: int) -> bool:
+                            return consume(flag or helper(seed))
+                        """,
+                "ping",
+                Map.of("BodyLoweringSupportMergeAnchor", "RuntimeBodyLoweringSupportMergeAnchor")
+        );
+        var graph = new FrontendCfgGraphBuilder()
+                .buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+                .graph();
+        var reachableValueItems = collectReachableValueItems(graph);
+        var mergeItems = reachableValueItems.stream()
+                .filter(MergeValueItem.class::isInstance)
+                .map(MergeValueItem.class::cast)
+                .toList();
+        var anchorTypes = mergeItems.stream()
+                .map(item -> item.mergeAnchor().getClass().getSimpleName())
+                .distinct()
+                .toList();
+        var mergeResultIds = mergeItems.stream().map(MergeValueItem::resultValueId).distinct().toList();
+        assertAll(
+                () -> assertEquals(1, mergeResultIds.size(), "Expected one shared merge result id"),
+                () -> assertEquals(1, anchorTypes.size(), "Expected one shared anchor type"),
+                () -> assertEquals("BinaryExpression", anchorTypes.getFirst()),
+                () -> {
+                    var mergeResultId = mergeResultIds.getFirst();
+                    var mergeMaterialization = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                            graph, analyzed.analysisData(), new ClassRegistry(ExtensionApiLoader.loadDefault()))
+                            .get(mergeResultId);
+                    assertEquals(GdBoolType.BOOL, mergeMaterialization.type());
+                    assertEquals(FrontendBodyLoweringSupport.CfgValueMaterializationKind.MERGE_SLOT, mergeMaterialization.kind());
+                }
+        );
+    }
+
+    @Test
+    void collectCfgValueMaterializationsRejectsNonExpressionMergeAnchorOrMissingFact() throws Exception {
+        // Anchor must be a lowering expression with a RESOLVED or DYNAMIC published fact; non-expression
+        // anchors and anchors without a lowering-ready fact must fail-fast with an actionable message.
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var flagForNonExpression = identifier("flag_ne");
+        analysisData.expressionTypes().put(flagForNonExpression, gd.script.gdcc.frontend.sema.FrontendExpressionType.resolved(gd.script.gdcc.type.GdBoolType.BOOL));
+        var nonExpressionGraph = new FrontendCfgGraph(
+                "seq_0",
+                Map.of(
+                        "seq_0",
+                        new FrontendCfgGraph.SequenceNode("seq_0", List.of(
+                                new OpaqueExprValueItem(flagForNonExpression, "v0"),
+                                new MergeValueItem(new PassStatement(SYNTHETIC_RANGE), "v0", "merged0")
+                        ), "stop_1"),
+                        "stop_1",
+                        new FrontendCfgGraph.StopNode("stop_1", FrontendCfgGraph.StopKind.RETURN, "merged0")
+                )
+        );
+        var nonExpressionError = assertThrows(
+                IllegalStateException.class,
+                () -> FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                        nonExpressionGraph, analysisData, classRegistry
+                )
+        );
+        assertTrue(nonExpressionError.getMessage().contains("MergeValueItem anchor"), nonExpressionError.getMessage());
+
+        var anchor = identifier("missing_anchor");
+        var flagForMissingFact = identifier("flag_mf");
+        analysisData.expressionTypes().put(flagForMissingFact, gd.script.gdcc.frontend.sema.FrontendExpressionType.resolved(gd.script.gdcc.type.GdBoolType.BOOL));
+        var missingFactGraph = new FrontendCfgGraph(
+                "seq_1",
+                Map.of(
+                        "seq_1",
+                        new FrontendCfgGraph.SequenceNode("seq_1", List.of(
+                                new OpaqueExprValueItem(flagForMissingFact, "v1"),
+                                new MergeValueItem(anchor, "v1", "merged1")
+                        ), "stop_2"),
+                        "stop_2",
+                        new FrontendCfgGraph.StopNode("stop_2", FrontendCfgGraph.StopKind.RETURN, "merged1")
+                )
+        );
+        var missingFactError = assertThrows(
+                IllegalStateException.class,
+                () -> FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                        missingFactGraph, analysisData, classRegistry
+                )
+        );
+        assertTrue(missingFactError.getMessage().contains("Missing published expression type") || missingFactError.getMessage().contains("MergeValueItem anchor"), missingFactError.getMessage());
     }
 
     private static @NotNull List<ValueOpItem> collectReachableValueItems(@NotNull FrontendCfgGraph graph) {
