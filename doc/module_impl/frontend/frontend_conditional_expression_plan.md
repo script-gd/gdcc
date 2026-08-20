@@ -1,7 +1,7 @@
 # Frontend Conditional（Ternary）Expression 实施计划
 
 本文档是三元表达式 `value1 if condition else value2`（含嵌套）进入 compile-ready 支持面的实施计划与验收细则。
-状态：**计划待实施**（本文档先行，代码尚未改动）。
+状态：**Phase 0 已完成**；Phase 1–5 待实施。
 
 ## 1. 目标与范围
 
@@ -116,11 +116,22 @@ GDCC 当前处理状态（全部为本仓库 `master` 现状）：
 
 ### Phase 0：基线与解析锚点测试
 
+状态：**已完成**。产出 `src/test/java/gd/script/gdcc/frontend/parse/FrontendConditionalParseBehaviorTest.java`（经 `GdScriptParserService` 解析真实源码）。本步未改 parser / sema / CFG / compile gate。
+
 改动：
-- 新增 `src/test/java/gd/script/gdcc/frontend/parse/FrontendConditionalParseBehaviorTest.java`：经 `GdScriptParserService` 解析真实源码，锚定 `ConditionalExpression` 的 `left/condition/right` 字段映射、右结合嵌套、括号强制左结合、最低优先级（`a + b if c else d` 的 `left` 为 `BinaryExpression`）。本仓库此前无三元解析回归锚点（gdparser 侧 `CstToAstMapperTest` 未覆盖）。
+- 新增上述测试类：锚定 `ConditionalExpression` 的 `left/condition/right` 字段映射、右结合嵌套、括号强制左结合、最低优先级（`a + b if c else d` 的 `left` 为 `BinaryExpression`）。本仓库此前无三元解析回归锚点（gdparser 侧 `CstToAstMapperTest` 未覆盖）。
+
+已落地的断言（正/反）：
+- 字段映射：`yes if flag else no` → `left=yes` / `condition=flag` / `right=no`；`getChildren()=[condition, left, right]`（record 组件顺序 ≠ 源码顺序）。
+- 右结合：`a if c1 else b if c2 else d` 内层挂在 `outer.right`。
+- 括号左结合：`(a if c1 else b) if c2 else d` 内层挂在 `outer.left`（mapper 剥括号，无 `ParenthesizedExpression`）。
+- 显式右括号：`a if c1 else (b if c2 else d)` 与无括号右结合同构。
+- 最低优先级：`+` / `or` / `not` / `as` 均绑在 `left`；假值臂 `a if c else d + e` 的 `right` 为 `BinaryExpression("+")`；`or` 出现在 condition 槽时不被三元吸收。
+- 语句位：`if a if c else b:` 的 `IfStatement.condition` 为三元；同函数后续 `return` 仍解析。
+- 负例：缺 `else`、缺真值臂均发 `parse.lowering` ERROR（tolerant，不崩）。
 
 验收：
-- 新测试通过；`FrontendAnnotationParseBehaviorTest` 等既有 parse 测试不回归。
+- `pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendConditionalParseBehaviorTest,FrontendCastParseBehaviorTest,FrontendContainerLiteralParseBehaviorTest,FrontendAnnotationParseBehaviorTest,FrontendParseSmokeTest` 通过。
 - `./gradlew classes --no-daemon --info --console=plain` 编译通过。
 
 ### Phase 1：sema 类型推导
