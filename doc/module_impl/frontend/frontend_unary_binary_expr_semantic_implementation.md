@@ -86,7 +86,7 @@ frontend 当前将 unary / binary 语义冻结在 shared expression helper，而
 
 - `UnaryExpression` 已属于正式支持面
 - `BinaryExpression` 已属于正式支持面
-- `ConditionalExpression` 已属于正式支持面（专用 resolver + CFG 双语境构图 + `merge_write` boundary，见 `frontend_conditional_expression_plan.md`）
+- `ConditionalExpression` 已属于正式支持面（专用 resolver + CFG 双语境构图 + `merge_write` boundary，见 `frontend_conditional_expression_implementation.md`）
 
 这条边界意味着：
 
@@ -364,7 +364,7 @@ compile gate 当前只把以下状态视为 blocker：
 - `RESOLVED` unary / binary 不再命中 generic compile blocker
 - `DYNAMIC` unary / binary 同样不再命中 generic compile blocker
 - `not in` 仍会因为 upstream 发布 `UNSUPPORTED` 而被 compile gate 阻断
-- `ConditionalExpression` 已不再依赖显式 compile-only block：与 unary/binary 一样只依赖 published fact 是否 lowering-ready（见 `frontend_conditional_expression_plan.md`）
+- `ConditionalExpression` 已不再依赖显式 compile-only block：与 unary/binary 一样只依赖 published fact 是否 lowering-ready（见 `frontend_conditional_expression_implementation.md`）
 
 ---
 

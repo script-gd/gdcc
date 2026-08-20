@@ -180,7 +180,7 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - lowering 尚未就绪
 - 当前不能继续进入编译
 
-`ConditionalExpression` 已不属于当前显式 compile-block 列表：shared semantic 发布双臂合并类型（binary 式 root 重持有诊断），CFG value 语境走 branch-result merge、condition 语境走纯控制流展开，body lowering 经 `merge_write` boundary 物化，e2e 已闭环（见 `frontend_conditional_expression_plan.md`）。compile gate 现在只要求三元及其子树的 published facts 处于 lowering-ready 状态，未稳定 fact 仍由 generic `scanExpressionTypeCompileBlocks` 兜底阻断；arm/root 的 upstream error 经 exact-range 冲突去重覆盖，不再补发 `sema.compile_check`。
+`ConditionalExpression` 已不属于当前显式 compile-block 列表：shared semantic 发布双臂合并类型（binary 式 root 重持有诊断），CFG value 语境走 branch-result merge、condition 语境走纯控制流展开，body lowering 经 `merge_write` boundary 物化，e2e 已闭环（见 `frontend_conditional_expression_implementation.md`）。compile gate 现在只要求三元及其子树的 published facts 处于 lowering-ready 状态，未稳定 fact 仍由 generic `scanExpressionTypeCompileBlocks` 兜底阻断；arm/root 的 upstream error 经 exact-range 冲突去重覆盖，不再补发 `sema.compile_check`。
 
 short-circuit `BinaryExpression(and/or/&&/||)` 当前已经从显式 compile-block 列表中移除：
 
@@ -273,7 +273,7 @@ generic status scan 之外，compile gate 还保留一组 **RESOLVED feature-spe
 - object/object ordering 继续由上游 `sema.expression_resolution` 发布 `FAILED`，compile gate 消费该 fact，不新增独立 diagnostic 类别
 - `and/or` 虽然也会在 shared semantic 路径发布稳定 typed fact，但它们属于独立的显式 AST compile-block，而不是 generic published-fact blocker
 - `not in` 仍会因为 upstream 发布的是显式 `UNSUPPORTED` 而被 compile gate 阻断
-- `ConditionalExpression` 已不再依赖显式 AST compile-block：它与 unary/binary 一样只依赖 published fact 是否 lowering-ready（见 `frontend_conditional_expression_plan.md`）
+- `ConditionalExpression` 已不再依赖显式 AST compile-block：它与 unary/binary 一样只依赖 published fact 是否 lowering-ready（见 `frontend_conditional_expression_implementation.md`）
 
 ### 4.3 当前 compile anchor 规则
 
@@ -419,7 +419,7 @@ compile gate 当前统一使用：
 `TypeTestExpression` 已从显式 compile-block 列表移除（见 `frontend_is_type_test_implementation.md`）。
 `CastExpression` 已从显式 compile-block 列表移除（见 `frontend_cast_expression_implementation.md`）。
 `ArrayExpression` / `DictionaryExpression` 已从显式 compile-block 列表移除（见 `frontend_container_literal_implementation.md`）。
-`ConditionalExpression` 已从显式 compile-block 列表移除（见 `frontend_conditional_expression_plan.md`）。
+`ConditionalExpression` 已从显式 compile-block 列表移除（见 `frontend_conditional_expression_implementation.md`）。
 `LambdaExpression`（已记录、published plan + body）已从无条件形态级 compile-block 移除并纳入 compile surface；未记录 lambda 仍 fail-closed（见 `frontend_lambda_implementation.md`）。
 
 在满足这些条件之前，它们都必须继续由 compile-only gate 拦截，而不是因为“frontend 已识别”就提前放行。

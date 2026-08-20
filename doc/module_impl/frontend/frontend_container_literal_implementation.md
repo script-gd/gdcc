@@ -153,7 +153,7 @@ record DictEntry(Expression key, Expression value, Range range)
 - expression statement。
 - 未记录 lambda / match / default-argument 上下文。已记录 lambda body 是 supported executable suite，其中的 typed literal 走普通 body 合同。
 
-`ConditionalExpression` 本身不是独立的 typed-literal 来源，但会把外层 `expectedType` 原样转发给左右双臂（见 `frontend_conditional_expression_plan.md` §3.1），因此 `var a: Array[int] = [1] if c else [2]` 的双臂容器字面量仍可获得 contextual typed context。
+`ConditionalExpression` 本身不是独立的 typed-literal 来源，但会把外层 `expectedType` 原样转发给左右双臂（见 `frontend_conditional_expression_implementation.md` §2），因此 `var a: Array[int] = [1] if c else [2]` 的双臂容器字面量仍可获得 contextual typed context。
 
 ### 2.3 元素级兼容性
 
@@ -634,7 +634,7 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 `FrontendCompileCheckAnalyzer.walkExpression` **不再** 为 `ArrayExpression` / `DictionaryExpression` 建立显式 blocker；两者进入 default compile surface recursion。
 
 - 字面量不产生 `sema.compile_check`。
-- 当前仍被显式 intercept 的表达式固定为 `PreloadExpression`、`GetNodeExpression`。`ConditionalExpression` 已离开 intercept（见 `frontend_conditional_expression_plan.md`）。已记录 `LambdaExpression`（published plan + body）已纳入 compile surface 并递归扫描 body；未记录 lambda 保持 fail-closed。合同见 `frontend_lambda_implementation.md`。
+- 当前仍被显式 intercept 的表达式固定为 `PreloadExpression`、`GetNodeExpression`。`ConditionalExpression` 已离开 intercept（见 `frontend_conditional_expression_implementation.md`）。已记录 `LambdaExpression`（published plan + body）已纳入 compile surface 并递归扫描 body；未记录 lambda 保持 fail-closed。合同见 `frontend_lambda_implementation.md`。
 - 移除 Array/Dictionary blocker 时不得顺带改变其他 feature 的 intercept 状态。
 
 ## 10. 核心实现落点

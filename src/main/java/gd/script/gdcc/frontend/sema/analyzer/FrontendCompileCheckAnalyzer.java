@@ -565,7 +565,7 @@ public class FrontendCompileCheckAnalyzer {
                 case LambdaExpression lambdaExpression -> walkLambdaExpression(lambdaExpression);
                 // ConditionalExpression: compile-ready via branch-result merge (value context) and
                 // pure control-flow expansion (condition context); see
-                // frontend_conditional_expression_plan.md and
+                // frontend_conditional_expression_implementation.md and
                 // frontend_lowering_cfg_pass_implementation.md §5.1/§5.2.
                 // ArrayExpression / DictionaryExpression: compile-ready via ContainerLiteralItem +
                 // construct_container_literal (see frontend_container_literal_implementation.md).

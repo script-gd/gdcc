@@ -27,7 +27,7 @@
   - `doc/gdcc_c_backend.md`
 - 明确非目标：
   - 不在这里引入 high-level IR / sea-of-nodes
-  - 不在这里把 `ConditionalExpression` 解封为 compile-ready（本文档只冻结其 CFG 构图事实；compile gate 解封、body lowering 端到端与 e2e 已在 `frontend_conditional_expression_plan.md` Phase 4/5 完成）
+  - `ConditionalExpression` 的 compile-ready 全链路（compile gate 放行、body lowering 端到端与 e2e）不由本文档管辖，见 `frontend_conditional_expression_implementation.md`；本文档只冻结其相关的 CFG 构图事实与 merge 合同
   - 不在这里把 parameter default 接到 body pass
   - 不在这里让 lowering 重跑 chain reduction、call route 选择或表达式求值顺序推导
 
@@ -727,7 +727,7 @@ body-lowering 合同：
 `ConditionalExpression` 已进入 compile-ready body lowering 合同，不再属于 shell-only / temporary compile-block surface：
 
 - CFG 构图两种语境（value 语境 merge / condition 语境纯控制流展开）与 merge 槽合同见 §5.1/§5.2
-- compile gate 已解封（`walkExpression` 落入 default 递归），body lowering 经 `merge_write` boundary 物化，e2e（`ternary/` 用例对）已闭环；见 `frontend_conditional_expression_plan.md`
+- compile gate 已解封（`walkExpression` 落入 default 递归），body lowering 经 `merge_write` boundary 物化，e2e（`ternary/` 用例对）已闭环；见 `frontend_conditional_expression_implementation.md`
 
 当前 body lowering 明确保留 fail-fast 的路径包括：
 

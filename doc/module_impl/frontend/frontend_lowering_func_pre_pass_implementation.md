@@ -272,7 +272,7 @@ negative path 至少要锚定：
 - callable skeleton 匹配键未来可能需要从 `name + static + parameterCount` 升级
 - property initializer 的完整执行时序、实例状态可见性和初始化顺序仍未闭环
 - parameter default 的可见性、捕获、求值顺序，以及 instance-vs-static synthetic function 策略仍待专门设计
-- `ConditionalExpression` 已按 frontend CFG graph 双语境合同放行（value 语境 merge / condition 语境纯控制流展开，见 `frontend_conditional_expression_plan.md`）；后续新增 control-flow 表达式仍必须先冻结 CFG / condition-evaluation-region 合同再放行
+- `ConditionalExpression` 已按 frontend CFG graph 双语境合同放行（value 语境 merge / condition 语境纯控制流展开，见 `frontend_conditional_expression_implementation.md`）；后续新增 control-flow 表达式仍必须先冻结 CFG / condition-evaluation-region 合同再放行
 - truthiness / condition normalization 属于后续 CFG/body lowering 责任，不应下沉回 function pre-pass
 - 当前 `FrontendLoweringCfgPass` 与 `FunctionLoweringContext.cfgNodeBlocks` 仍属于迁移期过渡层；其中 `cfgNodeBlocks` 已显式标注弃用。后续 CFG 工程应在独立的 `frontend.lowering.cfg` 包中实施，并由 `FrontendLoweringBuildCfgPass` 构建，而不是继续扩展 legacy block-bundle metadata
 - backend 目前仍保留 no-initializer property 的默认 init shell 兜底；未来若要把这部分前移到 lowering，需要先统一 frontend/backend 对“默认值函数所有权”的合同

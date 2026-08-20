@@ -31,7 +31,7 @@
 - frontend CFG value id 现在额外冻结了 merge-slot 合同：一个 value id 若出现多个 producer，则所有 producer 都必须是 `MergeValueItem`；future producer collection 与 body lowering 不得把这类 merged result 当成唯一 SSA expression definition
 - compound assignment 已完成 shared semantic + CFG read-modify-write + body lowering 的全链路接通：`AssignmentItem` 继续只承载最终 store commit，当前值读取与 compound binary 结果由前置 value item 显式表达，compile-only gate 也已同步解封
 - callable-local slot type 现在也已进入 published fact 面：`FrontendVarTypePostAnalyzer` 会把 parameter / supported local `var` 的最终 slot type 写入 `FrontendAnalysisData.slotTypes()`，供 future body lowering 直接消费
-- condition-context `not` 已切到 target-flip 路径；`and` / `or` 已正式接通 shared-expression-core + branch-result merge 路径；`ConditionalExpression` 也已接通双语境构图（value 语境 merge / condition 语境纯控制流展开）并完成 compile gate 解封与 e2e 闭环（见 `frontend_conditional_expression_plan.md`）
+- condition-context `not` 已切到 target-flip 路径；`and` / `or` 已正式接通 shared-expression-core + branch-result merge 路径；`ConditionalExpression` 也已接通双语境构图（value 语境 merge / condition 语境纯控制流展开）并完成 compile gate 解封与 e2e 闭环（见 `frontend_conditional_expression_implementation.md`）
 - `PROPERTY_INIT` 当前已接通完整 frontend lowering：property initializer expression 通过独立 `FunctionLoweringContext` 复用同一套 value/short-circuit graph core，并在同一套 `FrontendBodyLoweringSession` 中 materialize 为真实 `LirBasicBlock` / `ReturnInsn`
 - executable-body `FrontendLoweringBodyInsnPass` 现在也已落地：实际 lowering state 收口在 `frontend.lowering.pass.body.FrontendBodyLoweringSession`，并通过 `FrontendInsnLoweringProcessor` 注册表按 CFG node / item / AST target 的实际类型分派处理，便于后续按节点扩面而不回退成单个巨型 pass
 
@@ -208,7 +208,7 @@
 
 - `TypeTestExpression` 与 `CastExpression` 已有独立的 compile-ready lowering/backend 合同并离开 temporary intercept 列表（见 `frontend_is_type_test_implementation.md`、`frontend_cast_expression_implementation.md`）
 - `ArrayExpression` / `DictionaryExpression` 已 compile-ready 并离开 temporary intercept（见 `frontend_container_literal_implementation.md`、`construct_container_literal_implementation.md`）
-- `ConditionalExpression` 已解除：frontend CFG 双语境构图、merge 槽合同、compile gate 解封、body lowering 与 e2e 均已闭环（见 `frontend_conditional_expression_plan.md`）
+- `ConditionalExpression` 已解除：frontend CFG 双语境构图、merge 槽合同、compile gate 解封、body lowering 与 e2e 均已闭环（见 `frontend_conditional_expression_implementation.md`）
 - `assert` 依赖 lowering/backend 的 statement 语义
 - runtime integration / static field 相关 blocker 均应在对应 lowering/backend 设计闭环后再解除
 - `for` 的 compile gate 为 route-aware policy：`ForLoweringContractRegistry` 中已注册 contract 的 route 放行，未注册 route（当前 `OBJECT_CUSTOM`）发 route-not-ready blocker；已注册 route 的 CFG/body lowering 已落地，见 `frontend_for_range_loop_implementation.md`

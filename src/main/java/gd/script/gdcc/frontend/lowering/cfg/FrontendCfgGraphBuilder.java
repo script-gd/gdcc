@@ -130,7 +130,6 @@ import java.util.Set;
 /// - value-context ternaries evaluate the condition, then only the selected arm, and merge the arm
 ///   value into one shared result id
 /// - condition-context ternaries expand as pure control flow and never produce a merge value
-/// The compile gate still intercepts ternaries until body lowering and e2e land.
 public final class FrontendCfgGraphBuilder {
     private @Nullable FrontendAnalysisData analysisData;
     private @Nullable LinkedHashMap<String, FrontendCfgGraph.NodeDef> nodes;

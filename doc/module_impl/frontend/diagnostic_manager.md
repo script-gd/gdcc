@@ -292,7 +292,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - `ForStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `forIterationPlans()` 与 `ForLoweringContractRegistry`，已注册 lowering contract 的 route 放行并进入 body 重扫 facts，未注册 contract 的 route（当前 `OBJECT_CUSTOM`）在 statement root 发 route-not-ready blocker（说明缺少 lowering route，而非 `FOR_SUBTREE` unsupported）；已注册 route 的 CFG/body lowering 已落地
   - 已记录 `LambdaExpression`（published `FrontendLambdaPlan` + body）放上 compile surface 并递归扫描 body facts；未记录 lambda 保持 fail-closed，且不得在上游 unsupported owner 上重复包一层 `sema.compile_check`。合同见 `frontend_lambda_implementation.md`
   - 上述 2 类表达式（即 `PreloadExpression`、`GetNodeExpression`，不含 statement 级 `assert` 与 route-aware 的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression`、`ConditionalExpression` 与已记录 `LambdaExpression` 已完成 lowering/backend 闭环）属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
-  - `ConditionalExpression` 已完成 shared semantic（双臂合并类型 + binary 式 root 重持有诊断）、CFG 双语境构图、body lowering `merge_write` 物化与 e2e 闭环，不再属 temporary intercept；未稳定三元 fact 仍由 generic published-fact blocker 兜底（见 `frontend_conditional_expression_plan.md`）
+  - `ConditionalExpression` 已完成 shared semantic（双臂合并类型 + binary 式 root 重持有诊断）、CFG 双语境构图、body lowering `merge_write` 物化与 e2e 闭环，不再属 temporary intercept；未稳定三元 fact 仍由 generic published-fact blocker 兜底（见 `frontend_conditional_expression_implementation.md`）
   - `DYNAMIC` 不属于 compile blocker；它保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 未实现状态
   - 该 category 只属于 compile-only 入口，不属于默认共享语义 / inspection / 未来 LSP 入口
 

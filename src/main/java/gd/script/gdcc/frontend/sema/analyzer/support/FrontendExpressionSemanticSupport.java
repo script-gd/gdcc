@@ -982,7 +982,7 @@ public final class FrontendExpressionSemanticSupport {
 
     /// Resolves `value as T` (CastExpression).
     ///
-    /// Shared semantic contract (Phase 1):
+    /// Shared semantic contract:
     /// - result type is hard target type when value is typing-stable and target text resolves
     /// - no side-table: result type itself carries the target (`RESOLVED(targetType)`)
     /// - unknown bare identifiers, `null`, `void`, empty, and malformed structured targets are
