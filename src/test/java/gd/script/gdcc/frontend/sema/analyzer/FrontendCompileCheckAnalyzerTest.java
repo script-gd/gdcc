@@ -58,6 +58,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.Predicate;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -124,9 +125,11 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compiled = analyzeForCompile("compile_check_explicit_blocks.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        // Remaining explicit intercepts: assert, conditional, preload, get-node.
-        // Array/Dictionary literals, CastExpression, and TypeTestExpression are not in the intercept set.
-        assertEquals(4, compileDiagnostics.size());
+        // Remaining explicit intercepts: assert, preload, get-node.
+        // Array/Dictionary literals, CastExpression, TypeTestExpression, and ConditionalExpression
+        // are compile-ready and not in the intercept set (the ternary stays in the source above as
+        // release evidence).
+        assertEquals(3, compileDiagnostics.size());
         assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                         && Objects.equals(
@@ -136,7 +139,7 @@ class FrontendCompileCheckAnalyzerTest {
                         && diagnostic.range() != null
         ));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("assert statement")));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Conditional expression")));
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Conditional expression")));
         assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Array literal")));
         assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Dictionary literal")));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Preload expression")));
@@ -1076,20 +1079,20 @@ class FrontendCompileCheckAnalyzerTest {
 
     @Test
     void analyzeSkipsCompileCheckWhenAnchorAlreadyHasPublishedError() throws Exception {
-        // Anchor on a still-blocked form so dedup is not vacuous after container-literal gate removal.
+        // Anchor on a still-blocked form so dedup is not vacuous after the conditional gate removal.
         var preparedInput = prepareCompileCheckInput("compile_check_existing_error.gd", """
                 class_name CompileCheckExistingError
                 extends Node
                 
                 func ping():
-                    1 if true else 0
+                    preload("res://icon.svg")
                 """);
-        var conditionalExpression = findNode(preparedInput.unit().ast(), ConditionalExpression.class, ignored -> true);
+        var preloadExpression = findNode(preparedInput.unit().ast(), PreloadExpression.class, ignored -> true);
         preparedInput.diagnosticManager().error(
                 "sema.synthetic",
                 "synthetic upstream error",
                 preparedInput.unit().path(),
-                FrontendRange.fromAstRange(conditionalExpression.range())
+                FrontendRange.fromAstRange(preloadExpression.range())
         );
         preparedInput.analysisData().updateDiagnostics(preparedInput.diagnosticManager().snapshot());
 
@@ -1104,19 +1107,20 @@ class FrontendCompileCheckAnalyzerTest {
 
     @Test
     void analyzeDeduplicatesAgainstLiveManagerSnapshotWhenAnalysisDataSnapshotIsStale() throws Exception {
+        // Anchor on a still-blocked form so dedup is not vacuous after the conditional gate removal.
         var preparedInput = prepareCompileCheckInput("compile_check_live_manager_upstream.gd", """
                 class_name CompileCheckLiveManagerUpstream
                 extends Node
                 
                 func ping():
-                    1 if true else 0
+                    $Camera3D
                 """);
-        var conditionalExpression = findNode(preparedInput.unit().ast(), ConditionalExpression.class, _ -> true);
+        var getNodeExpression = findNode(preparedInput.unit().ast(), GetNodeExpression.class, _ -> true);
         preparedInput.diagnosticManager().error(
                 "sema.synthetic",
                 "synthetic upstream error not yet copied to analysisData",
                 preparedInput.unit().path(),
-                FrontendRange.fromAstRange(conditionalExpression.range())
+                FrontendRange.fromAstRange(getNodeExpression.range())
         );
         assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.synthetic").isEmpty());
 
@@ -1128,6 +1132,82 @@ class FrontendCompileCheckAnalyzerTest {
         var finalSnapshot = preparedInput.diagnosticManager().snapshot();
         assertTrue(diagnosticsByCategory(finalSnapshot, "sema.compile_check").isEmpty());
         assertEquals(1, diagnosticsByCategory(finalSnapshot, "sema.synthetic").size());
+    }
+
+    @Test
+    void analyzeForCompileReleasesSupportedConditionalExpressionsWithoutCompileCheck() throws Exception {
+        var compiled = analyzeForCompile("compile_check_conditional_ready.gd", """
+                class_name CompileCheckConditionalReady
+                extends Node
+                
+                func ping(flag: bool, seed: int) -> int:
+                    var chosen = seed if flag else 0
+                    return chosen
+                """);
+
+        assertAll(
+                () -> assertFalse(compiled.diagnostics().hasErrors()),
+                () -> assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty()),
+                () -> assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution").isEmpty()),
+                () -> assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_expression_resolution").isEmpty())
+        );
+    }
+
+    @Test
+    void analyzeForCompileDeduplicatesFailedConditionalArmAgainstRepublishedRootDiagnostic() throws Exception {
+        var compiled = analyzeForCompile("compile_check_conditional_failed_arm.gd", """
+                class_name CompileCheckConditionalFailedArm
+                extends Node
+                
+                func ping(flag: bool):
+                    var failed_arm = missing_identifier if flag else 0
+                """);
+        var conditional = findNode(compiled.unit().ast(), ConditionalExpression.class, ignored -> true);
+        var missingArm = conditional.left();
+        var expressionDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution");
+
+        // Binary-style root re-ownership: one diagnostic at the unbound identifier arm plus one
+        // re-emitted at the conditional root, each anchored at its exact range. The gate's
+        // exact-range conflict dedup then suppresses the generic compile_check for both anchors.
+        assertAll(
+                () -> assertTrue(compiled.diagnostics().hasErrors()),
+                () -> assertEquals(2, expressionDiagnostics.size()),
+                () -> assertTrue(expressionDiagnostics.stream().anyMatch(diagnostic ->
+                        FrontendRange.fromAstRange(missingArm.range()).equals(diagnostic.range())
+                )),
+                () -> assertTrue(expressionDiagnostics.stream().anyMatch(diagnostic ->
+                        FrontendRange.fromAstRange(conditional.range()).equals(diagnostic.range())
+                )),
+                () -> assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty())
+        );
+    }
+
+    @Test
+    void analyzeForCompileKeepsUnsupportedConditionalRouteWithoutCompileCheck() throws Exception {
+        var compiled = analyzeForCompile("compile_check_conditional_void_arm.gd", """
+                class_name CompileCheckConditionalVoidArm
+                extends Node
+                
+                func void_helper() -> void:
+                    pass
+                
+                func ping(flag: bool):
+                    var void_arm = void_helper() if flag else void_helper()
+                """);
+        var conditional = findNode(compiled.unit().ast(), ConditionalExpression.class, ignored -> true);
+        var unsupportedDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.unsupported_expression_route");
+
+        // The void arm itself is RESOLVED(void) without diagnostics; only the conditional root owns
+        // a single unsupported route, and its upstream error suppresses the generic compile_check.
+        assertAll(
+                () -> assertTrue(compiled.diagnostics().hasErrors()),
+                () -> assertEquals(1, unsupportedDiagnostics.size()),
+                () -> assertEquals(
+                        FrontendRange.fromAstRange(conditional.range()),
+                        unsupportedDiagnostics.getFirst().range()
+                ),
+                () -> assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty())
+        );
     }
 
     @Test

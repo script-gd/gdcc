@@ -40,7 +40,6 @@ import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
-import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.ElifClause;
@@ -152,11 +151,6 @@ public class FrontendCompileCheckAnalyzer {
     private static @NotNull String assertCompileBlockedMessage() {
         return "assert statement is recognized by the frontend but is blocked in compile mode because "
                 + "lowering/backend support lands";
-    }
-
-    private static @NotNull String conditionalCompileBlockedMessage() {
-        return "Conditional expression is recognized by the frontend but is blocked in compile mode because "
-                + "lowering CFG support lands";
     }
 
     private static @NotNull String expressionCompileBlockedMessage(@NotNull String expressionKind) {
@@ -569,10 +563,10 @@ public class FrontendCompileCheckAnalyzer {
             }
             switch (expression) {
                 case LambdaExpression lambdaExpression -> walkLambdaExpression(lambdaExpression);
-                case ConditionalExpression conditionalExpression -> reportExplicitCompileBlock(
-                        conditionalExpression,
-                        conditionalCompileBlockedMessage()
-                );
+                // ConditionalExpression: compile-ready via branch-result merge (value context) and
+                // pure control-flow expansion (condition context); see
+                // frontend_conditional_expression_plan.md and
+                // frontend_lowering_cfg_pass_implementation.md §5.1/§5.2.
                 // ArrayExpression / DictionaryExpression: compile-ready via ContainerLiteralItem +
                 // construct_container_literal (see frontend_container_literal_implementation.md).
                 case PreloadExpression preloadExpression -> reportExplicitCompileBlock(

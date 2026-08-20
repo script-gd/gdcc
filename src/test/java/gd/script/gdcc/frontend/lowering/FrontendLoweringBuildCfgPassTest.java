@@ -4,6 +4,7 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
@@ -19,6 +20,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
@@ -36,6 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -450,6 +453,109 @@ class FrontendLoweringBuildCfgPassTest {
                 () -> assertNull(voidCall.resultValueIdOrNull()),
                 () -> assertFalse(voidCall.hasStandaloneMaterializationSlot()),
                 () -> assertEquals(returnValue.resultValueId(), stopNode.returnValueIdOrNull())
+        );
+    }
+
+    @Test
+    void runPublishesConditionalExpressionCfgGraphsAfterGateRelease() throws Exception {
+        var prepared = prepareContext(
+                "build_cfg_conditional_value.gd",
+                """
+                        class_name BuildCfgConditionalValue
+                        extends RefCounted
+                        
+                        var ready_choice: int = 3 if true else 4
+                        
+                        func ping(flag: bool, yes: int, no: int) -> int:
+                            return yes if flag else no
+                        """,
+                Map.of("BuildCfgConditionalValue", "RuntimeBuildCfgConditionalValue")
+        );
+
+        new FrontendLoweringBuildCfgPass().run(prepared.context());
+
+        var contexts = prepared.context().requireFunctionLoweringContexts();
+        var pingContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBuildCfgConditionalValue",
+                "ping"
+        );
+        var propertyContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBuildCfgConditionalValue",
+                "_field_init_ready_choice"
+        );
+        var pingFunction = requireFunctionDeclaration(prepared.module().units().getFirst().ast(), "ping");
+        var returnStatement = assertInstanceOf(ReturnStatement.class, pingFunction.body().statements().getFirst());
+        var conditional = assertInstanceOf(ConditionalExpression.class, returnStatement.value());
+        var readyChoiceProperty = requirePropertyDeclaration(prepared.module().units().getFirst().ast(), "ready_choice");
+        var propertyConditional = assertInstanceOf(ConditionalExpression.class, readyChoiceProperty.value());
+
+        var graph = pingContext.requireFrontendCfgGraph();
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode(graph.entryNodeId()));
+        var conditionBranch = assertInstanceOf(FrontendCfgGraph.BranchNode.class, graph.requireNode(entryNode.nextId()));
+        var trueArmSequence = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(conditionBranch.trueTargetId())
+        );
+        var falseArmSequence = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(conditionBranch.falseTargetId())
+        );
+        var trueMerge = assertInstanceOf(MergeValueItem.class, trueArmSequence.items().getLast());
+        var falseMerge = assertInstanceOf(MergeValueItem.class, falseArmSequence.items().getLast());
+        var mergeSequence = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(trueArmSequence.nextId())
+        );
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode(mergeSequence.nextId()));
+
+        var propertyGraph = propertyContext.requireFrontendCfgGraph();
+        var propertyEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                propertyGraph.requireNode(propertyGraph.entryNodeId())
+        );
+        var propertyBranch = assertInstanceOf(FrontendCfgGraph.BranchNode.class, propertyGraph.requireNode(propertyEntry.nextId()));
+        var propertyTrueArm = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                propertyGraph.requireNode(propertyBranch.trueTargetId())
+        );
+        var propertyFalseArm = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                propertyGraph.requireNode(propertyBranch.falseTargetId())
+        );
+        var propertyTrueMerge = assertInstanceOf(MergeValueItem.class, propertyTrueArm.items().getLast());
+        var propertyFalseMerge = assertInstanceOf(MergeValueItem.class, propertyFalseArm.items().getLast());
+        var propertyMergeSequence = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                propertyGraph.requireNode(propertyTrueArm.nextId())
+        );
+        var propertyStop = assertInstanceOf(FrontendCfgGraph.StopNode.class, propertyGraph.requireNode(propertyMergeSequence.nextId()));
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // Executable body: the ternary condition publishes one branch; both arms end in a
+                // merge write anchored at the whole conditional; the shared merge continuation feeds
+                // the return stop.
+                () -> assertEquals(conditional.condition(), conditionBranch.conditionRoot()),
+                () -> assertEquals(conditional, trueMerge.mergeAnchor()),
+                () -> assertEquals(conditional, falseMerge.mergeAnchor()),
+                () -> assertEquals(trueMerge.resultValueId(), falseMerge.resultValueId()),
+                () -> assertNotEquals(trueMerge.sourceValueId(), falseMerge.sourceValueId()),
+                () -> assertEquals(trueArmSequence.nextId(), falseArmSequence.nextId()),
+                () -> assertEquals(trueMerge.resultValueId(), stopNode.returnValueIdOrNull()),
+                () -> assertEquals(0, pingContext.targetFunction().getBasicBlockCount()),
+                // Property initializer: the same branch-result merge shape flows through the
+                // buildPropertyInitializer route after the gate release.
+                () -> assertEquals(propertyConditional.condition(), propertyBranch.conditionRoot()),
+                () -> assertEquals(propertyConditional, propertyTrueMerge.mergeAnchor()),
+                () -> assertEquals(propertyConditional, propertyFalseMerge.mergeAnchor()),
+                () -> assertEquals(propertyTrueMerge.resultValueId(), propertyFalseMerge.resultValueId()),
+                () -> assertEquals(propertyTrueArm.nextId(), propertyFalseArm.nextId()),
+                () -> assertEquals(propertyTrueMerge.resultValueId(), propertyStop.returnValueIdOrNull()),
+                () -> assertEquals(0, propertyContext.targetFunction().getBasicBlockCount())
         );
     }
 

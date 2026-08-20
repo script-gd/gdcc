@@ -44,8 +44,6 @@
   - `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/lowering/CstToAstMapper.java`
     - `UnaryExpression.operator()` / `BinaryExpression.operator()` 保存源码字面量，而不是 extension metadata canonical operator name
 - 明确非目标：
-  - 不在这里转正 `ConditionalExpression`
-  - 不在这里补 `ConditionalExpression` 的 lowering / CFG / compile-only 放行
   - 不在这里扩张 `Dictionary`、packed array family 或其他 container 的保型规则
   - 不在这里引入 numeric promotion 或 typed-boundary widening；`StringName` / `String` 互转由 ordinary typed boundary helper 管理，unary / binary 语义不拥有这条规则
   - 不在这里把 compile-only blocker 反向回灌到 shared semantic 路径
@@ -88,12 +86,12 @@ frontend 当前将 unary / binary 语义冻结在 shared expression helper，而
 
 - `UnaryExpression` 已属于正式支持面
 - `BinaryExpression` 已属于正式支持面
-- `ConditionalExpression` 继续保留在 remaining explicit-deferred / compile-only intercept 边界
+- `ConditionalExpression` 已属于正式支持面（专用 resolver + CFG 双语境构图 + `merge_write` boundary，见 `frontend_conditional_expression_plan.md`）
 
 这条边界意味着：
 
 - unary / binary 的 typed fact 可以继续向 type-check、property initializer、return gate 与 compile gate 传递
-- compile-only block 的剩余重心不再是 unary / binary，而是 `ConditionalExpression` 等明确尚未接通 lowering 的表达式家族
+- compile-only block 的剩余重心不再是 unary / binary / conditional，而是 `PreloadExpression` / `GetNodeExpression` 等明确尚未接通 lowering 的表达式家族
 
 ---
 
@@ -366,7 +364,7 @@ compile gate 当前只把以下状态视为 blocker：
 - `RESOLVED` unary / binary 不再命中 generic compile blocker
 - `DYNAMIC` unary / binary 同样不再命中 generic compile blocker
 - `not in` 仍会因为 upstream 发布 `UNSUPPORTED` 而被 compile gate 阻断
-- `ConditionalExpression` 继续依赖显式 compile-only block，而不是借 unary/binary 转正被顺带放行
+- `ConditionalExpression` 已不再依赖显式 compile-only block：与 unary/binary 一样只依赖 published fact 是否 lowering-ready（见 `frontend_conditional_expression_plan.md`）
 
 ---
 
@@ -400,7 +398,7 @@ compile gate 当前只把以下状态视为 blocker：
   - object/nil equality 不再触发 compile blocker
   - object identity equality 不再触发 compile blocker
   - object/object ordering 继续被 `sema.expression_resolution` 阻断
-  - `ConditionalExpression` 继续被 compile-only block
+  - `ConditionalExpression` 已放行：支持面三元零 compile_check，FAILED/UNSUPPORTED 三元经 upstream owner + exact-range 去重阻断
 - `FrontendLoweringBodyInsnPassTest`
   - object/nil equality 继续进入 ordinary `BinaryOpInsn` lowering 路由
   - object identity equality 进入 ordinary `BinaryOpInsn`，结果 `bool`，不经 `Pack/UnpackVariantInsn`

@@ -1028,6 +1028,253 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runMaterializesValueContextConditionalAsMergeSlotWritesWithHeterogeneousArmCast() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_conditional_merge.gd",
+                """
+                        class_name BodyInsnConditionalMerge
+                        extends RefCounted
+                        
+                        func homogeneous(flag: bool, yes: int, no: int) -> int:
+                            return yes if flag else no
+                        
+                        func mixed(flag: bool, seed: int) -> float:
+                            return seed if flag else 2.5
+                        """,
+                Map.of("BodyInsnConditionalMerge", "RuntimeBodyInsnConditionalMerge"),
+                true
+        );
+        var homogeneousContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConditionalMerge",
+                "homogeneous"
+        );
+        var mixedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConditionalMerge",
+                "mixed"
+        );
+        var homogeneousMergeValueId = requireSingleMergeValueId(homogeneousContext.requireFrontendCfgGraph());
+        var mixedMergeValueId = requireSingleMergeValueId(mixedContext.requireFrontendCfgGraph());
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var homogeneousFunction = homogeneousContext.targetFunction();
+        var mixedFunction = mixedContext.targetFunction();
+        var homogeneousInstructions = allInstructions(homogeneousFunction);
+        var mixedInstructions = allInstructions(mixedFunction);
+        var homogeneousMergeSlotId = "cfg_merge_" + homogeneousMergeValueId;
+        var mixedMergeSlotId = "cfg_merge_" + mixedMergeValueId;
+        var mixedMergeWrites = mixedInstructions.stream()
+                .filter(insn -> insn instanceof AssignInsn(var resultId, _) && resultId.equals(mixedMergeSlotId))
+                .map(AssignInsn.class::cast)
+                .toList();
+        var armCast = requireOnlyInstruction(mixedFunction, CallIntrinsicInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // Homogeneous int arms: one condition branch, two direct merge writes, merge read at
+                // the return, and no boundary conversions anywhere.
+                () -> assertEquals(1, countInstructions(homogeneousInstructions, GoIfInsn.class)),
+                () -> assertEquals(
+                        2,
+                        homogeneousInstructions.stream()
+                                .filter(insn -> insn instanceof AssignInsn(var resultId, _)
+                                        && resultId.equals(homogeneousMergeSlotId))
+                                .count()
+                ),
+                () -> assertTrue(homogeneousFunction.hasVariable(homogeneousMergeSlotId)),
+                () -> assertEquals(GdIntType.INT, requireVariableType(homogeneousFunction, homogeneousMergeSlotId)),
+                () -> assertEquals(homogeneousMergeSlotId, requireOnlyReturnInsn(homogeneousFunction).returnValueId()),
+                () -> assertEquals(0, countInstructions(homogeneousInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(homogeneousInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(homogeneousInstructions, CallIntrinsicInsn.class)),
+                // Heterogeneous arms: the int arm is intrinsically cast to the float merge slot type
+                // before its merge write; the float arm writes directly.
+                () -> assertEquals(1, countInstructions(mixedInstructions, GoIfInsn.class)),
+                () -> assertEquals(2, mixedMergeWrites.size()),
+                () -> assertEquals("c_int_to_float", armCast.intrinsicName()),
+                () -> assertEquals(GdFloatType.FLOAT, requireIntrinsicResultType(mixedFunction, armCast)),
+                () -> assertEquals(
+                        GdIntType.INT,
+                        requireVariableType(mixedFunction, onlyVariableOperandId(armCast.args()))
+                ),
+                () -> assertTrue(mixedMergeWrites.stream()
+                        .anyMatch(assign -> assign.sourceId().equals(armCast.resultId()))),
+                () -> assertEquals(GdFloatType.FLOAT, requireVariableType(mixedFunction, mixedMergeSlotId)),
+                () -> assertEquals(mixedMergeSlotId, requireOnlyReturnInsn(mixedFunction).returnValueId()),
+                () -> assertEquals(0, countInstructions(mixedInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(mixedInstructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runNormalizesConditionalConditionValuesAtBranchProcessors() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_conditional_condition_normalization.gd",
+                """
+                        class_name BodyInsnConditionalConditionNormalization
+                        extends RefCounted
+                        
+                        func variant_condition(box: Variant, yes: int, no: int) -> int:
+                            return yes if box else no
+                        
+                        func int_condition(count: int, yes: int, no: int) -> int:
+                            return yes if count else no
+                        """,
+                Map.of(
+                        "BodyInsnConditionalConditionNormalization",
+                        "RuntimeBodyInsnConditionalConditionNormalization"
+                ),
+                true
+        );
+        var variantContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConditionalConditionNormalization",
+                "variant_condition"
+        );
+        var intContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConditionalConditionNormalization",
+                "int_condition"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var variantInstructions = allInstructions(variantContext.targetFunction());
+        var intInstructions = allInstructions(intContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(0, countInstructions(variantInstructions, PackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(variantInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(variantInstructions, GoIfInsn.class)),
+                () -> assertEquals(1, countInstructions(intInstructions, PackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(intInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(intInstructions, GoIfInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersConditionContextConditionalAsPureControlFlowWithoutMergeSlots() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_conditional_condition_context.gd",
+                """
+                        class_name BodyInsnConditionalConditionContext
+                        extends RefCounted
+                        
+                        func branch_on_conditional(flag: bool, a: bool, b: bool) -> int:
+                            if a if flag else b:
+                                return 1
+                            return 2
+                        """,
+                Map.of("BodyInsnConditionalConditionContext", "RuntimeBodyInsnConditionalConditionContext"),
+                true
+        );
+        var branchContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConditionalConditionContext",
+                "branch_on_conditional"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = branchContext.targetFunction();
+        var instructions = allInstructions(function);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // Pure control-flow expansion: one branch for the outer condition plus one
+                // truthiness branch per arm, all reading branch-local temp slots.
+                () -> assertEquals(3, countInstructions(instructions, GoIfInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class)),
+                () -> assertFalse(instructions.stream().anyMatch(LiteralBoolInsn.class::isInstance)),
+                // No merge slot may exist anywhere in a condition-context conditional.
+                () -> assertFalse(instructions.stream().anyMatch(insn ->
+                        insn instanceof AssignInsn(var resultId, _) && resultId.startsWith("cfg_merge_")
+                )),
+                () -> assertTrue(function.getVariables().keySet().stream().noneMatch(name -> name.startsWith("cfg_merge_")))
+        );
+    }
+
+    @Test
+    void runLowersStatementPositionConditionalAndInferredLocalMergeSlots() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_conditional_statement_and_local.gd",
+                """
+                        class_name BodyInsnConditionalStatementAndLocal
+                        extends RefCounted
+                        
+                        func discard(flag: bool, seed: int) -> int:
+                            seed if flag else 0
+                            return seed
+                        
+                        func stabilize(flag: bool) -> float:
+                            var x := 1 if flag else 2.5
+                            return x
+                        """,
+                Map.of("BodyInsnConditionalStatementAndLocal", "RuntimeBodyInsnConditionalStatementAndLocal"),
+                true
+        );
+        var discardContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConditionalStatementAndLocal",
+                "discard"
+        );
+        var stabilizeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConditionalStatementAndLocal",
+                "stabilize"
+        );
+        var discardMergeValueId = requireSingleMergeValueId(discardContext.requireFrontendCfgGraph());
+        var stabilizeMergeValueId = requireSingleMergeValueId(stabilizeContext.requireFrontendCfgGraph());
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var discardFunction = discardContext.targetFunction();
+        var stabilizeFunction = stabilizeContext.targetFunction();
+        var discardInstructions = allInstructions(discardFunction);
+        var stabilizeInstructions = allInstructions(stabilizeFunction);
+        var discardMergeSlotId = "cfg_merge_" + discardMergeValueId;
+        var stabilizeMergeSlotId = "cfg_merge_" + stabilizeMergeValueId;
+        var stabilizeAssignSources = assignSourcesByTarget(stabilizeInstructions);
+        var stabilizeCast = requireOnlyInstruction(stabilizeFunction, CallIntrinsicInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // Statement position: the discarded conditional still materializes both arm writes
+                // into its merge slot, but the return keeps reading the original local.
+                () -> assertEquals(1, countInstructions(discardInstructions, GoIfInsn.class)),
+                () -> assertEquals(
+                        2,
+                        discardInstructions.stream()
+                                .filter(insn -> insn instanceof AssignInsn(var resultId, _)
+                                        && resultId.equals(discardMergeSlotId))
+                                .count()
+                ),
+                () -> assertNotEquals(discardMergeSlotId, requireOnlyReturnInsn(discardFunction).returnValueId()),
+                // Inferred local: slot stabilization picks the merged float type, the declaration-name
+                // preferred id becomes the merge slot id, and the local init copies it into `x`.
+                () -> assertEquals(GdFloatType.FLOAT, requireVariableType(stabilizeFunction, "x")),
+                () -> assertEquals("c_int_to_float", stabilizeCast.intrinsicName()),
+                () -> assertEquals(stabilizeMergeSlotId, stabilizeAssignSources.get("x")),
+                () -> assertTrue(stabilizeMergeSlotId.startsWith("cfg_merge_x_")),
+                // The return reads through the ordinary local-read temp, whose source is `x`.
+                () -> assertEquals("x", stabilizeAssignSources.get(requireOnlyReturnInsn(stabilizeFunction).returnValueId())),
+                () -> assertEquals(0, countInstructions(stabilizeInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(stabilizeInstructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
     void runFailsFastWhenConditionFactLeaksCompilerOnlyType() throws Exception {
         var prepared = prepareContext(
                 "body_insn_compiler_only_condition.gd",

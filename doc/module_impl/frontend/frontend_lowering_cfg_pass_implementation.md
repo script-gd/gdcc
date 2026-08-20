@@ -27,7 +27,7 @@
   - `doc/gdcc_c_backend.md`
 - 明确非目标：
   - 不在这里引入 high-level IR / sea-of-nodes
-  - 不在这里把 `ConditionalExpression` 解封为 compile-ready（本文档只冻结其 CFG 构图事实；compile gate 解封与 e2e 见 `frontend_conditional_expression_plan.md` Phase 4/5）
+  - 不在这里把 `ConditionalExpression` 解封为 compile-ready（本文档只冻结其 CFG 构图事实；compile gate 解封、body lowering 端到端与 e2e 已在 `frontend_conditional_expression_plan.md` Phase 4/5 完成）
   - 不在这里把 parameter default 接到 body pass
   - 不在这里让 lowering 重跑 chain reduction、call route 选择或表达式求值顺序推导
 
@@ -407,7 +407,8 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
   - 类型来源：对应 CFG producer item 消费的 published fact
 - merge result
   - 命名：`cfg_merge_<valueId>`
-  - 类型来源：merged result value id 的 published type
+  - 类型来源：merged result value id 的 published type（即 `mergeAnchor` 的 `expressionTypes` 事实）
+  - 生命周期：merge 槽是普通 LIR 变量，backend 不做 `cfg_merge_` 特判；destroyable 合并类型（`String` / `Array` / object 等）与 source-local / `cfg_tmp_*` 同策略——函数头声明并在 `__prepare__` 默认构造，每条互斥 merge 写入先 destroy 旧值再覆写，`__finally__` 作用域退出统一销毁（已由 `ternary/destroyable_arms` e2e 的 C 产物验收确认）
 - source-level local variable
   - 命名：沿用源码名
   - 类型来源：`analysisData.slotTypes()`
@@ -713,7 +714,6 @@ body-lowering 合同：
 当前仍保持 shell-only、compile-block 或 fail-fast 的部分包括：
 
 - `PARAMETER_DEFAULT_INIT` CFG / body lowering
-- `ConditionalExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
 - callable-value invocation
@@ -724,10 +724,10 @@ body-lowering 合同：
 
 `CastExpression` / `CastItem` 已进入 compile-ready body lowering 合同（decision→LIR 映射见 `frontend_cast_expression_implementation.md`），不再属于 shell-only / temporary fail-fast surface。
 
-其中 `ConditionalExpression` 继续 compile-block 的原因已经固定：
+`ConditionalExpression` 已进入 compile-ready body lowering 合同，不再属于 shell-only / temporary compile-block surface：
 
-- CFG 构图两种语境（value 语境 merge / condition 语境纯控制流展开）与 merge 槽合同已落地（见 §5.1/§5.2）
-- 但 compile gate 解封、body lowering 端到端与 e2e 验收尚未完成，解封前 `analyzeForCompile` 整链仍显式拦截（见 `frontend_conditional_expression_plan.md` Phase 4/5）
+- CFG 构图两种语境（value 语境 merge / condition 语境纯控制流展开）与 merge 槽合同见 §5.1/§5.2
+- compile gate 已解封（`walkExpression` 落入 default 递归），body lowering 经 `merge_write` boundary 物化，e2e（`ternary/` 用例对）已闭环；见 `frontend_conditional_expression_plan.md`
 
 当前 body lowering 明确保留 fail-fast 的路径包括：
 
@@ -766,7 +766,7 @@ body-lowering 合同：
 - `FrontendCompileCheckAnalyzerTest`
   - step-level / expression-level compile anchor
   - `AttributeSubscriptStep` published fact 的 compile blocker 行为
-  - `ConditionalExpression` 继续 compile-block
+  - `ConditionalExpression` 已放行（支持面三元零 compile_check；FAILED/UNSUPPORTED 三元经 upstream owner + exact-range 去重阻断）
   - parameterized gdcc constructor route 的 compile-only 兜底
 - `FrontendVarTypePostAnalyzerTest`
   - parameter / typed local / `:=` local 的 slot type publication

@@ -1,7 +1,7 @@
 # Frontend Conditional（Ternary）Expression 实施计划
 
 本文档是三元表达式 `value1 if condition else value2`（含嵌套）进入 compile-ready 支持面的实施计划与验收细则。
-状态：**Phase 0、1、2、3 已完成**；Phase 4–5 待实施。
+状态：**Phase 0–5 已完成**（README 支持面清单更新待用户许可）。
 
 ## 1. 目标与范围
 
@@ -211,6 +211,8 @@ Phase 3 done notes:
 
 ### Phase 4：compile gate 解封（代码侧）+ body lowering 端到端
 
+状态：**已完成**。gate 代码删除 + focused 测试落地；拦截清单文档划除仍留待 Phase 5（最小 e2e 通过后）。
+
 改动：
 - `FrontendCompileCheckAnalyzer`：删除显式拦截（§3.4）。**本步只做 gate 代码删除 + focused 测试**；`frontend_rules.md` / `frontend_compile_check_analyzer_implementation.md` 的拦截清单划除推迟到 Phase 5（见其前置条件）。
 - 测试：
@@ -224,7 +226,17 @@ Phase 3 done notes:
 - `analyzeForCompile` 对支持面内三元全程无 error；`FrontendCompileCheckAnalyzerTest`、`FrontendLoweringBodyInsnPassTest`、`FrontendLoweringBuildCfgPassTest` 全绿。
 - property initializer 中的三元（`var p = 1 if c else 2`）可走通 `buildPropertyInitializer` 路径。
 
+Phase 4 done notes:
+- `FrontendCompileCheckAnalyzer`：删除 `case ConditionalExpression` 显式拦截、`conditionalCompileBlockedMessage()` 与 import；三元落入 `default`（`markCompileSurfaceNode` + `walkNestedExpressionChildren`，`getChildren()=[condition,left,right]` 递归覆盖）；generic `scanExpressionTypeCompileBlocks` 兜底不变；`isCoveredByPropagatedValueOperandCompileBlock` 未扩展（维持 cast/type-test-only 不变量）。
+- `FrontendCompileCheckAnalyzerTest`：显式拦截计数测试改 3 条（assert/preload/get-node），三元留在源码中作放行证据（`noneMatch("Conditional expression")`）；两个 exact-range 去重锚点分别换为 `preload(...)`（PreloadExpression）与 `$Camera3D`（GetNodeExpression）；新增三例——支持面三元零 compile_check、FAILED 臂 binary 式重持有（arm+root 各一条 `sema.expression_resolution` 不同 range，exact-range 去重零 compile_check）、void 臂仅 root 一条 `sema.unsupported_expression_route` 压掉 compile_check。
+- `FrontendLoweringAnalysisPassTest`：拦截循环移除三元 case；新增 `lowerConditionalExpressionModuleKeepsPipelineRunningAfterGateRelease`（三元模块 pipeline 继续、零 compile_check）。
+- `FrontendLoweringBuildCfgPassTest`：新增 `runPublishesConditionalExpressionCfgGraphsAfterGateRelease`——executable body 与 property initializer（`var ready_choice: int = 3 if true else 4`）双语境的 branch-result merge 形状（conditionRoot 对齐、双 MergeValueItem 同 result/同 anchor、合流序列唯一、stop 返回合并 id、LIR shell 空）。
+- `FrontendLoweringBodyInsnPassTest`：新增四例——value 语境同型（GoIf=1、双 merge 写入、merge 槽 INT、return 读 merge 槽、零边界指令）与异型 `int→float`（`c_int_to_float` 出现在 int 臂 merge 写入前、merge 槽 FLOAT）；condition 归一化（Variant condition Pack=0/Unpack=1/GoIf=1，int condition Pack=1/Unpack=1/GoIf=1）；condition 语境纯控制流（GoIf=3、全图无 `cfg_merge_` 槽/变量、无 LiteralBool）；语句位丢弃（merge 槽仍双写、return 不读 merge 槽）与 `var x := 三元`（slot stabilization 取合并 float 类型、preferred id 成 merge 槽 `cfg_merge_x_*`、local init 拷贝、return 经 temp 读 `x`）。
+- 验证：`gd.script.gdcc.frontend.*` 1285 例全绿（含既有 and/or 短路 LIR 零修改回归）。
+
 ### Phase 5：e2e、文档最终化与全量验收
+
+状态：**已完成**。`ternary/` 最小 e2e 集合（9 对）经 Zig + Godot 实跑全绿；destroyable merge 槽生命周期经 C 产物验收；拦截清单文档划除完成。README 支持面清单更新不在 src/doc/tmp 授权范围，待用户许可。
 
 改动：
 - 参考 `cast/` e2e 对（`GdScriptUnitTestCompileRunnerTest`），新增 `ternary/` 用例对：基础同型、`int/float` 混合、嵌套右结合、括号左结合、对象父类合并、`null` 臂、condition 为非 bool stable 类型（如 `Variant`）、语句位丢弃、condition 语境三元。
@@ -236,6 +248,13 @@ Phase 3 done notes:
 - e2e 新增用例全部通过（Zig 不可用时按既有约定 skip）。
 - `./gradlew clean build --no-daemon --info --console=plain` 全绿。
 - 对照 Godot 行为的差集仅保留 §8 已记录项。
+
+Phase 5 done notes:
+- e2e（`src/test/test_suite/unit_test/{script,validation}/ternary/`，9 对，Zig + Godot 实跑全绿）：`basic_same_type`（int/String/bool 臂、`not` 臂、merge 值作 call 实参）、`mixed_int_float`（int/float 双向合并 + int/String→Variant merge 臂 pack）、`nested_associativity`（右结合 4 路径 + 括号左结合 4 路径）、`object_ancestor_merge`（Node2D/Node3D→Node 合并 + 对象相等消费）、`null_arm`（null/object→object）、`non_bool_condition`（Variant/int/float condition truthiness）、`statement_position_discard`（语句位丢弃 + 单臂求值副作用锚定）、`condition_context`（`if a if flag else b:` int/bool 臂 truthiness 分支）、`destroyable_arms`（String 臂 + Array 字面量臂）。
+- `GdScriptUnitTestCompileRunnerTest`：`EXPECTED_SCRIPT_PATHS` 新增 9 条 `ternary/` 路径（排序锚定），新增 `TERNARY_SCRIPT_PATHS` 与 `compilesAndValidatesTernaryScripts` 分类工厂（独立 Zig skip message）。
+- destroyable merge 槽生命周期验收（`ternary_destroyable_arms` C 产物）：`cfg_merge_*` 为普通 LIR 变量，backend 无 `cfg_merge_` 特判；String/Array merge 槽函数头声明 + `__prepare__` 默认构造、每互斥臂 destroy-then-write、`__finally__` 统一销毁，与 source-local / `cfg_tmp_*` 同策略，无漏毁；合同回写 `frontend_lowering_cfg_pass_implementation.md` §6.1。
+- 拦截清单划除与文档同步：`frontend_rules.md`（intercept 清单剩 Preload/GetNode）、`frontend_compile_check_analyzer_implementation.md`（§3.3/§4.2/§7/§8/§9）、`frontend_chain_binding_expr_type_implementation.md` §4.6、`frontend_unary_binary_expr_semantic_implementation.md`（非目标/§1.2/§5.3/§6）、`frontend_lowering_cfg_pass_implementation.md`（页眉/§9/测试基线）、`frontend_lowering_plan.md`、`frontend_lowering_skeleton_pre_pass_implementation.md`、`frontend_lowering_func_pre_pass_implementation.md`、`frontend_cast_expression_implementation.md`、`frontend_container_literal_implementation.md`、`construct_container_literal_implementation.md`、`diagnostic_manager.md`。
+- `README.md` 支持面清单更新需用户许可，未动。
 
 ## 5. 测试矩阵汇总
 

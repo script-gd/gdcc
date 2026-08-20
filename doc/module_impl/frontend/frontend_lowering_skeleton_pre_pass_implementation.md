@@ -272,12 +272,11 @@ void run(FrontendLoweringContext context)
 当前 compile-only gate 仍是 lowering 唯一合法前置门。以下内容仍由 compile gate 显式封口，不得在 lowering 中偷偷放行：
 
 - `assert`
-- `ConditionalExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
 - 脚本类 `static var`
 
-说明：`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression` 与 `CastExpression` 已离开 compile-only 显式封口列表（见对应事实源文档）。
+说明：`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression` 与 `ConditionalExpression` 已离开 compile-only 显式封口列表（见对应事实源文档）。
 
 此外，frontend MVP 仍未完整支持：
 

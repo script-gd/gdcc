@@ -284,15 +284,15 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.compile_check`
   - compile-only `FrontendCompileCheckAnalyzer` 对进入 lowering 前仍不可编译的 surface 发出的最终 error
   - 同时覆盖：
-    - 当前首批显式封口的 `assert`、`ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`，以及按 route-aware policy 处理的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression` 与已记录 `LambdaExpression` 不属于无条件显式封口列表
+    - 当前首批显式封口的 `assert`、`PreloadExpression`、`GetNodeExpression`，以及按 route-aware policy 处理的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression`、`ConditionalExpression` 与已记录 `LambdaExpression` 不属于无条件显式封口列表
     - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
     - feature-specific RESOLVED blocker：当前仅 Dictionary 实例 method-reference（`METHOD && BUILTIN && GdDictionaryType`）与 builtin type-meta static method-reference（`STATIC_METHOD && ownerKind == BUILTIN`）。signal 值读取、`.emit`、`.connect`/`.disconnect`、Object/self `METHOD`、非 Dictionary builtin 实例、GDCC/engine 静态与 bare utility 值读取已放行。bare blocker 按 published `symbolBindings().kind()` 定位，必须排除 `CallExpression.callee()`。详见 `frontend_signal_support.md` 与 `frontend_compile_check_analyzer_implementation.md` §4.2。
     - supported callable-local `var` 因 `sema.variable_slot_publication` warning 仍缺失 `slotTypes()` 的 lowering-only fact 缺洞
   - `assert` 在这里仍只是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，不把它回退成 strict-bool `sema.type_check`
   - `ForStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `forIterationPlans()` 与 `ForLoweringContractRegistry`，已注册 lowering contract 的 route 放行并进入 body 重扫 facts，未注册 contract 的 route（当前 `OBJECT_CUSTOM`）在 statement root 发 route-not-ready blocker（说明缺少 lowering route，而非 `FOR_SUBTREE` unsupported）；已注册 route 的 CFG/body lowering 已落地
   - 已记录 `LambdaExpression`（published `FrontendLambdaPlan` + body）放上 compile surface 并递归扫描 body facts；未记录 lambda 保持 fail-closed，且不得在上游 unsupported owner 上重复包一层 `sema.compile_check`。合同见 `frontend_lambda_implementation.md`
-  - 上述 3 类表达式（即 `ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`，不含 statement 级 `assert` 与 route-aware 的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression` 与已记录 `LambdaExpression` 已完成 lowering/backend 闭环）属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
-  - `ConditionalExpression` 当前单独被列入这份清单，是因为真正的 value-merge / branch-result materialization 尚未接通；compile gate 必须继续拦截。CFG 构建已由 `FrontendLoweringBuildCfgPass` 承接，不再依赖已移除的 metadata-only `FrontendLoweringCfgPass`
+  - 上述 2 类表达式（即 `PreloadExpression`、`GetNodeExpression`，不含 statement 级 `assert` 与 route-aware 的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression`、`ConditionalExpression` 与已记录 `LambdaExpression` 已完成 lowering/backend 闭环）属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
+  - `ConditionalExpression` 已完成 shared semantic（双臂合并类型 + binary 式 root 重持有诊断）、CFG 双语境构图、body lowering `merge_write` 物化与 e2e 闭环，不再属 temporary intercept；未稳定三元 fact 仍由 generic published-fact blocker 兜底（见 `frontend_conditional_expression_plan.md`）
   - `DYNAMIC` 不属于 compile blocker；它保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 未实现状态
   - 该 category 只属于 compile-only 入口，不属于默认共享语义 / inspection / 未来 LSP 入口
 

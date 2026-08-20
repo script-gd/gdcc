@@ -62,6 +62,40 @@ class FrontendLoweringAnalysisPassTest {
     }
 
     @Test
+    void lowerConditionalExpressionModuleKeepsPipelineRunningAfterGateRelease() throws Exception {
+        var module = parseModule(
+                "lowering_conditional_ready.gd",
+                """
+                        class_name LoweringConditionalReady
+                        extends RefCounted
+                        
+                        func ping(value) -> int:
+                            return 1 if value else 0
+                        """
+        );
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var diagnostics = new DiagnosticManager();
+        var continuationRan = new AtomicBoolean();
+        var manager = new FrontendLoweringPassManager(List.of(
+                new FrontendLoweringAnalysisPass(),
+                context -> {
+                    continuationRan.set(true);
+                    assertFalse(context.isStopRequested());
+                }
+        ));
+
+        var lowered = manager.lower(module, registry, diagnostics);
+
+        var compileDiagnostics = diagnostics.snapshot().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.compile_check"))
+                .toList();
+        assertNull(lowered);
+        assertTrue(continuationRan.get());
+        assertFalse(diagnostics.hasErrors());
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
+    @Test
     void lowerCompileBlockedModulesStopAfterAnalysisPassAndKeepCompileCheckDiagnostics() throws Exception {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
@@ -76,17 +110,6 @@ class FrontendLoweringAnalysisPassTest {
                                     assert(value, "blocked in compile mode")
                                 """,
                         "assert statement"
-                ),
-                new CompileBlockedCase(
-                        "lowering_blocked_conditional.gd",
-                        """
-                                class_name LoweringBlockedConditional
-                                extends RefCounted
-                                
-                                func ping(value):
-                                    return 1 if value else 0
-                                """,
-                        "Conditional expression"
                 ),
                 new CompileBlockedCase(
                         "lowering_blocked_static_property.gd",

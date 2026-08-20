@@ -27,6 +27,9 @@ GDCC is currently in an early alpha stage. Do not use it in production.
 - Common scalar, built-in, object, `Variant`, `Array`, `Dictionary`, and packed-array types.
 - Local variables, assignments, return typing, and ordinary `if` / `elif` / `while` control flow with `break` and `continue`.
 - Godot-style truthiness in conditions.
+- Ternary expressions (`value if condition else other`), including nested ternaries.
+- `for` loops over ranges, strings, arrays, dictionary keys, packed arrays, and generic `Variant` iterables.
+- Lambdas declared inside function bodies, including captures and `Callable` usage.
 - Property access and assignment on all built-in and engine object types.
 - Common function, method, constructor, and global calls, including statement-position `void` calls.
 - Basic container indexing for supported array, dictionary, packed-array, and typed container.
@@ -35,8 +38,8 @@ GDCC is currently in an early alpha stage. Do not use it in production.
 
 ## Unsupported or Limited
 
-- `for`, `match`, `lambda`, `await`, and coroutine flows.
-- Ternary expressions, `assert`, `preload`, and `get_node`. (Array/dictionary literals, casts, and type tests are compile-ready.)
+- `match`, `await`, and coroutine flows. (Object `_iter_*` iteration, and lambdas in property initializers or parameter defaults, remain unsupported.)
+- `assert`, `preload`, and `get_node`. (Array/dictionary literals, casts, type tests, and ternary expressions are compile-ready.)
 - `not in`, string `%` formatting, parameter defaults, local or class constants, and script-level `static var`.
 - Path-based `extends`, autoload superclass binding, global script class superclass binding, and multi-module superclass binding.
 - Built-in keyed access such as `vector["x"]`; use property-style access such as `vector.x` where supported.

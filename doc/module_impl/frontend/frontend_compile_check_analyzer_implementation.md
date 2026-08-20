@@ -27,7 +27,7 @@
 - 明确非目标：
   - 不在这里实现 frontend -> LIR lowering
   - 不在这里实现 `assert` 的 lowering 或 backend 语义
-  - 不在这里为 `ConditionalExpression`、`PreloadExpression`、`GetNodeExpression` 补 lowering（`ArrayExpression` / `DictionaryExpression` 已 compile-ready，不由本 gate 拦截）
+  - 不在这里为 `PreloadExpression`、`GetNodeExpression` 补 lowering（`ArrayExpression` / `DictionaryExpression` / `ConditionalExpression` 已 compile-ready，不由本 gate 拦截）
   - 不在这里把 compile-only blocker 反向回灌到 shared semantic / inspection / 未来 LSP 路径
   - 不在这里改写上游 analyzer 的 diagnostic owner，也不新增新的 semantic side table
 
@@ -160,7 +160,6 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 
 以下表达式当前同样由 compile gate 显式拦截：
 
-- `ConditionalExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
 
@@ -181,10 +180,7 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - lowering 尚未就绪
 - 当前不能继续进入编译
 
-其中 `ConditionalExpression` 还带有一条更具体的当前事实：
-
-- 它的 lowering 需要依赖 frontend CFG graph / condition-evaluation-region 合同冻结；`FrontendLoweringBuildCfgPass` 已能建图，但 value-merge / branch-result materialization 仍未接通，因此仍不足以支撑解封
-- 因此在 CFG 入口尚未定型前，compile gate 必须先把它挡在编译管线外
+`ConditionalExpression` 已不属于当前显式 compile-block 列表：shared semantic 发布双臂合并类型（binary 式 root 重持有诊断），CFG value 语境走 branch-result merge、condition 语境走纯控制流展开，body lowering 经 `merge_write` boundary 物化，e2e 已闭环（见 `frontend_conditional_expression_plan.md`）。compile gate 现在只要求三元及其子树的 published facts 处于 lowering-ready 状态，未稳定 fact 仍由 generic `scanExpressionTypeCompileBlocks` 兜底阻断；arm/root 的 upstream error 经 exact-range 冲突去重覆盖，不再补发 `sema.compile_check`。
 
 short-circuit `BinaryExpression(and/or/&&/||)` 当前已经从显式 compile-block 列表中移除：
 
@@ -277,7 +273,7 @@ generic status scan 之外，compile gate 还保留一组 **RESOLVED feature-spe
 - object/object ordering 继续由上游 `sema.expression_resolution` 发布 `FAILED`，compile gate 消费该 fact，不新增独立 diagnostic 类别
 - `and/or` 虽然也会在 shared semantic 路径发布稳定 typed fact，但它们属于独立的显式 AST compile-block，而不是 generic published-fact blocker
 - `not in` 仍会因为 upstream 发布的是显式 `UNSUPPORTED` 而被 compile gate 阻断
-- `ConditionalExpression` 继续依赖显式 AST compile-block，而不是借 unary/binary 的转正被顺带放行
+- `ConditionalExpression` 已不再依赖显式 AST compile-block：它与 unary/binary 一样只依赖 published fact 是否 lowering-ready（见 `frontend_conditional_expression_plan.md`）
 
 ### 4.3 当前 compile anchor 规则
 
@@ -417,13 +413,13 @@ compile gate 当前统一使用：
 
 - `assert`
 - `ForStatement`（route-aware compile policy：`ForLoweringContractRegistry` 中已注册的 route 放行并进入 body 重扫；未注册 route 在 statement root 拦截；已注册 route 的 CFG/body lowering 已落地，见 `frontend_for_range_loop_implementation.md`）
-- `ConditionalExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
 
 `TypeTestExpression` 已从显式 compile-block 列表移除（见 `frontend_is_type_test_implementation.md`）。
 `CastExpression` 已从显式 compile-block 列表移除（见 `frontend_cast_expression_implementation.md`）。
 `ArrayExpression` / `DictionaryExpression` 已从显式 compile-block 列表移除（见 `frontend_container_literal_implementation.md`）。
+`ConditionalExpression` 已从显式 compile-block 列表移除（见 `frontend_conditional_expression_plan.md`）。
 `LambdaExpression`（已记录、published plan + body）已从无条件形态级 compile-block 移除并纳入 compile surface；未记录 lambda 仍 fail-closed（见 `frontend_lambda_implementation.md`）。
 
 在满足这些条件之前，它们都必须继续由 compile-only gate 拦截，而不是因为“frontend 已识别”就提前放行。
@@ -435,7 +431,7 @@ compile gate 当前统一使用：
 当前 compile gate 的关键行为由以下 targeted tests 锁定：
 
 - `FrontendCompileCheckAnalyzerTest`
-  - 显式 AST compile-block（当前 3 类：Conditional / Preload / GetNode；Array / Dictionary / Cast / TypeTest 已离开 intercept）
+  - 显式 AST compile-block（当前 2 类：Preload / GetNode；Array / Dictionary / Cast / TypeTest / Conditional 已离开 intercept）
   - short-circuit binary 不再被 compile gate 误封口
   - object/nil equality 与 object identity equality 不再触发 compile blocker
   - object/object ordering 继续由上游 `sema.expression_resolution` 阻断，不新增 `sema.compile_check`
@@ -445,7 +441,7 @@ compile gate 当前统一使用：
   - shared-anchor 去重
   - surface 外 subtree 跳过
   - `DYNAMIC` 不误判为 blocker
-  - `ConditionalExpression` 只在 compile-only 路径被拦截，不污染 shared analyze
+  - `ConditionalExpression` 已放行：支持面三元零 `sema.compile_check`；FAILED 臂 binary 式 root 重持有（arm + root 各一条 `sema.expression_resolution`，exact-range 去重零 compile_check）；void 臂仅 root 一条 `sema.unsupported_expression_route` 压掉 compile_check
   - `assert` 继续保持 shared condition contract，只在 compile-only 路径被拦截
   - cast / type-test value-operand 传播去重：`missing as int` / `missing is int` / 链式 `(missing as int) as float` 不在 root 补 `sema.compile_check`
   - cast / type-test root-owned target failure 仍由 `sema.expression_resolution` 持有，exact-range 去重后无 root `compile_check`
@@ -469,7 +465,7 @@ compile gate 当前统一使用：
 
 - frontend -> LIR lowering 入口必须强制使用 `analyzeForCompile(...)`
 - lowering 在继续前必须检查 `diagnostics().hasErrors() == false`
-- `assert` 与 3 类显式拦截表达式（`ConditionalExpression`、`PreloadExpression`、`GetNodeExpression`）的真正 lowering/backend 支持仍待后续补齐；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression` 与 `CastExpression` 已完成 shared semantic、CFG/body lowering 与 backend 闭环；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）；已记录 `LambdaExpression` 的 shared semantic、`construct_lambda` lowering 与 C backend 已闭环，compile gate 按 published plan 放行并递归扫描 body
+- `assert` 与 2 类显式拦截表达式（`PreloadExpression`、`GetNodeExpression`）的真正 lowering/backend 支持仍待后续补齐；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression` 与 `ConditionalExpression` 已完成 shared semantic、CFG/body lowering 与 backend 闭环；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）；已记录 `LambdaExpression` 的 shared semantic、`construct_lambda` lowering 与 C backend 已闭环，compile gate 按 published plan 放行并递归扫描 body
 
 若未来需要为 LSP 单独呈现 compile-only blocker，正确方向仍是：
 

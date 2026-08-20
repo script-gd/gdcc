@@ -489,11 +489,12 @@ writable / compatibility 规则为：
 
   当前 remaining explicit-deferred expression set 固定为：
 
-- `ConditionalExpression`
 - `AwaitExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
 - `PatternBindingExpression`
+
+`ConditionalExpression` **已不在** deferred 集合中：shared semantic 经专用 `resolveConditionalExpressionType` 发布双臂合并类型（binary 式 root 重持有诊断）；CFG value 语境走 branch-result merge、condition 语境走纯控制流展开；body lowering 经 `merge_write` boundary 物化；compile gate 不再为其建立显式 blocker（见 `frontend_conditional_expression_plan.md`）。
 
 `ArrayExpression` / `DictionaryExpression` **已不在** deferred 集合中：shared semantic 发布 `FrontendContainerLiteralPlan`；CFG 建 `ContainerLiteralItem`；body lowering 发射 `construct_container_literal`；backend `ContainerLiteralInsnGen` 已闭环；compile gate 不再为其建立显式 blocker（见 `frontend_container_literal_implementation.md`）。
 

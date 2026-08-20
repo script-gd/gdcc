@@ -143,6 +143,15 @@ public class GdScriptUnitTestCompileRunnerTest {
             "subscript/dictionary_float_key_roundtrip.gd",
             "subscript/packed_array_mutation_roundtrip.gd",
             "subscript/string_stringname_dictionary_key_roundtrip.gd",
+            "ternary/basic_same_type.gd",
+            "ternary/condition_context.gd",
+            "ternary/destroyable_arms.gd",
+            "ternary/mixed_int_float.gd",
+            "ternary/nested_associativity.gd",
+            "ternary/non_bool_condition.gd",
+            "ternary/null_arm.gd",
+            "ternary/object_ancestor_merge.gd",
+            "ternary/statement_position_discard.gd",
             "type_test/builtin_type_test.gd",
             "type_test/container_type_test.gd",
             "type_test/is_not_test.gd",
@@ -163,6 +172,7 @@ public class GdScriptUnitTestCompileRunnerTest {
     private static final List<String> SCENE_SCRIPT_PATHS = scriptPathsWithPrefix("scene/");
     private static final List<String> SMOKE_SCRIPT_PATHS = scriptPathsWithPrefix("smoke/");
     private static final List<String> SUBSCRIPT_SCRIPT_PATHS = scriptPathsWithPrefix("subscript/");
+    private static final List<String> TERNARY_SCRIPT_PATHS = scriptPathsWithPrefix("ternary/");
     private static final List<String> TYPE_TEST_SCRIPT_PATHS = scriptPathsWithPrefix("type_test/");
     private static final int PHYSICS_FRAME_QUIT_AFTER_FRAMES = 60;
     private static final Set<String> PHYSICS_FRAME_SCRIPT_PATHS = Set.of(
@@ -282,6 +292,14 @@ public class GdScriptUnitTestCompileRunnerTest {
         return compileAndValidateBundledUnitScripts(
                 SUBSCRIPT_SCRIPT_PATHS,
                 "Zig not found; skipping subscript GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesTernaryScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                TERNARY_SCRIPT_PATHS,
+                "Zig not found; skipping ternary GDScript compile-run tests"
         );
     }
 
