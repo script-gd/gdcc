@@ -1523,7 +1523,7 @@ class FrontendBodyOwnerProceduresChainBindingTest {
                             return ""
                         
                         func ping(flag):
-                            self.build(1 if flag else 2).length
+                            self.build(preload("res://icon.svg")).length
                         """
         );
 
@@ -1534,7 +1534,7 @@ class FrontendBodyOwnerProceduresChainBindingTest {
 
         var deferredCall = analyzed.analysisData().resolvedCalls().get(buildStep);
         assertNotNull(deferredCall);
-        // Conditional expressions remain outside the current retry surface; after the one retry
+        // Preload expressions remain outside the current retry surface; after the one retry
         // window, the chain stays deferred and the suffix is not speculatively opened.
         assertEquals(FrontendCallResolutionStatus.DEFERRED, deferredCall.status());
         assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, deferredCall.callKind());
@@ -1545,7 +1545,7 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         var deferredDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution");
         assertEquals(1, deferredDiagnostics.size());
         assertTrue(deferredDiagnostics.getFirst().message().contains("Argument #1 type is still deferred"));
-        assertTrue(deferredDiagnostics.getFirst().message().contains("Conditional expression typing is deferred"));
+        assertTrue(deferredDiagnostics.getFirst().message().contains("Preload expression typing is deferred"));
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
     }

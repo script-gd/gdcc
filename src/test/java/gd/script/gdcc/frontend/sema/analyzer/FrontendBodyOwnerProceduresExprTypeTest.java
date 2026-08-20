@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema.analyzer;
 
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
@@ -28,6 +29,7 @@ import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
+import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -38,6 +40,7 @@ import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdVoidType;
@@ -1250,33 +1253,32 @@ class FrontendBodyOwnerProceduresExprTypeTest {
     }
 
     @Test
-    void analyzeReportsExprOwnedDeferredDiagnosticsForRemainingGenericMvpGaps() throws Exception {
+    void analyzePublishesConditionalExpressionTypesWithoutDeferredDiagnostics() throws Exception {
         var analyzed = analyze(
-                "expr_type_deferred_gaps.gd",
+                "expr_type_conditional_semantics.gd",
                 """
-                        class_name ExprTypeDeferredGaps
+                        class_name ExprTypeConditionalSemantics
                         extends RefCounted
                         
                         func ping(flag):
-                            1 if flag else 2
+                            var cond_value = 1 if flag else 2
                             [1, 2]
                         """
         );
 
         var pingFunction = findFunction(analyzed.ast(), "ping");
-        var conditionalRoot = assertInstanceOf(
-                ExpressionStatement.class,
-                pingFunction.body().statements().get(0)
-        ).expression();
+        var statements = pingFunction.body().statements();
+        var conditionalRoot = findVariable(statements, "cond_value").value();
         var arrayRoot = assertInstanceOf(
                 ExpressionStatement.class,
-                pingFunction.body().statements().get(1)
+                statements.get(1)
         ).expression();
-        assertEquals(
-                FrontendExpressionTypeStatus.DEFERRED,
-                analyzed.analysisData().expressionTypes().get(conditionalRoot).status()
-        );
-        // Array literals publish RESOLVED(Array); conditional remains deferred.
+
+        var conditionalType = analyzed.analysisData().expressionTypes().get(conditionalRoot);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, conditionalType.status());
+        assertEquals("int", conditionalType.publishedType().getTypeName());
+
+        // Array literals publish RESOLVED(Array); the conditional is no longer deferred.
         assertEquals(
                 FrontendExpressionTypeStatus.RESOLVED,
                 analyzed.analysisData().expressionTypes().get(arrayRoot).status()
@@ -1284,15 +1286,228 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         assertEquals("Array", analyzed.analysisData().expressionTypes().get(arrayRoot).publishedType().getTypeName());
         assertNotNull(analyzed.analysisData().containerLiteralPlans().get(arrayRoot));
 
-        var deferredDiagnostics = diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution");
-        assertEquals(1, deferredDiagnostics.size());
-        assertTrue(deferredDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains(
-                "Conditional expression typing is deferred"
-        )));
-        assertTrue(deferredDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains(
-                "Array literal typing is deferred"
-        )));
-        assertTrue(deferredDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("milestone-G")));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzePublishesNestedConditionalExpressionMergedTypes() throws Exception {
+        var analyzed = analyze(
+                "expr_type_nested_conditional.gd",
+                """
+                        class_name ExprTypeNestedConditional
+                        extends RefCounted
+                        
+                        func ping(c1, c2):
+                            var nested = 1 if c1 else 2.5 if c2 else 3
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var outer = assertInstanceOf(
+                ConditionalExpression.class,
+                findVariable(pingFunction.body().statements(), "nested").value()
+        );
+        // Right-associative: the inner ternary is the outer false arm.
+        var inner = assertInstanceOf(ConditionalExpression.class, outer.right());
+
+        var innerType = analyzed.analysisData().expressionTypes().get(inner);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, innerType.status());
+        assertEquals("float", innerType.publishedType().getTypeName());
+
+        var outerType = analyzed.analysisData().expressionTypes().get(outer);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, outerType.status());
+        assertEquals("float", outerType.publishedType().getTypeName());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeReportsConditionalRootAndArmDiagnosticsSeparately() throws Exception {
+        var analyzed = analyze(
+                "expr_type_conditional_diagnosis.gd",
+                """
+                        class_name ExprTypeConditionalDiagnosis
+                        extends RefCounted
+                        
+                        func void_func() -> void:
+                            pass
+                        
+                        func ping(flag):
+                            var failed_arm = missing_identifier if flag else 1
+                            var void_arm = void_func() if flag else 1
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var statements = pingFunction.body().statements();
+        var failedConditional = findVariable(statements, "failed_arm").value();
+        var voidConditional = findVariable(statements, "void_arm").value();
+
+        // The failed arm propagates FAILED to the conditional root (binary-style re-ownership).
+        assertEquals(
+                FrontendExpressionTypeStatus.FAILED,
+                analyzed.analysisData().expressionTypes().get(failedConditional).status()
+        );
+        // The void arm is RESOLVED(void); only the conditional root is UNSUPPORTED.
+        assertEquals(
+                FrontendExpressionTypeStatus.UNSUPPORTED,
+                analyzed.analysisData().expressionTypes().get(voidConditional).status()
+        );
+
+        // The unbound identifier arm itself is FAILED.
+        var missingArm = assertInstanceOf(ConditionalExpression.class, failedConditional).left();
+        assertEquals(
+                FrontendExpressionTypeStatus.FAILED,
+                analyzed.analysisData().expressionTypes().get(missingArm).status()
+        );
+
+        // One diagnostic at the unbound identifier arm plus one re-emitted at the conditional root,
+        // anchored at their exact ranges.
+        var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
+        assertEquals(2, expressionDiagnostics.size());
+        assertTrue(expressionDiagnostics.stream().anyMatch(diagnostic ->
+                FrontendRange.fromAstRange(missingArm.range()).equals(diagnostic.range())
+        ));
+        assertTrue(expressionDiagnostics.stream().anyMatch(diagnostic ->
+                FrontendRange.fromAstRange(failedConditional.range()).equals(diagnostic.range())
+        ));
+
+        // The void arm itself is RESOLVED(void) with no diagnostic of its own.
+        var voidArm = assertInstanceOf(ConditionalExpression.class, voidConditional).left();
+        var voidArmType = analyzed.analysisData().expressionTypes().get(voidArm);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, voidArmType.status());
+        assertInstanceOf(GdVoidType.class, voidArmType.publishedType());
+
+        // The root owns a single unsupported route, anchored at the void conditional root.
+        var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
+        assertEquals(1, unsupportedDiagnostics.size());
+        assertEquals(
+                FrontendRange.fromAstRange(voidConditional.range()),
+                unsupportedDiagnostics.getFirst().range()
+        );
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeReportsFailedConditionAtConditionalRoot() throws Exception {
+        var analyzed = analyze(
+                "expr_type_conditional_failed_condition.gd",
+                """
+                        class_name ExprTypeConditionalFailedCondition
+                        extends RefCounted
+                        
+                        func ping():
+                            var x = 1 if missing_condition else 2
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var conditional = findVariable(pingFunction.body().statements(), "x").value();
+        assertEquals(
+                FrontendExpressionTypeStatus.FAILED,
+                analyzed.analysisData().expressionTypes().get(conditional).status()
+        );
+
+        // One diagnostic at the unbound condition plus one re-emitted at the conditional root.
+        var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
+        assertEquals(2, expressionDiagnostics.size());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzePublishesContextualContainerArmTypesThroughExpectedType() throws Exception {
+        var analyzed = analyze(
+                "expr_type_conditional_contextual.gd",
+                """
+                        class_name ExprTypeConditionalContextual
+                        extends RefCounted
+                        
+                        func ping(c):
+                            var x: Array[int] = [1] if c else [2]
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var conditional = assertInstanceOf(
+                ConditionalExpression.class,
+                findVariable(pingFunction.body().statements(), "x").value()
+        );
+
+        // Both arms receive Array[int] as expected type, so the merge stays Array[int].
+        var conditionalType = analyzed.analysisData().expressionTypes().get(conditional);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, conditionalType.status());
+        var mergedArray = assertInstanceOf(GdArrayType.class, conditionalType.publishedType());
+        assertEquals("int", mergedArray.getValueType().getTypeName());
+
+        // Both container-literal arms publish a contextual plan.
+        assertNotNull(analyzed.analysisData().containerLiteralPlans().get(conditional.left()));
+        assertNotNull(analyzed.analysisData().containerLiteralPlans().get(conditional.right()));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzePassesExpectedTypeThroughNestedConditionalContainerArms() throws Exception {
+        var analyzed = analyze(
+                "expr_type_conditional_nested_contextual.gd",
+                """
+                        class_name ExprTypeConditionalNestedContextual
+                        extends RefCounted
+                        
+                        func ping(c1, c2):
+                            var x: Array[int] = [1] if c1 else [2] if c2 else [3]
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var outer = assertInstanceOf(
+                ConditionalExpression.class,
+                findVariable(pingFunction.body().statements(), "x").value()
+        );
+        // Right-associative: the inner ternary is the outer false arm.
+        var inner = assertInstanceOf(ConditionalExpression.class, outer.right());
+
+        // Both nesting levels keep the contextual Array[int] merge.
+        var outerType = analyzed.analysisData().expressionTypes().get(outer);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, outerType.status());
+        assertEquals("int", assertInstanceOf(GdArrayType.class, outerType.publishedType()).getValueType().getTypeName());
+        var innerType = analyzed.analysisData().expressionTypes().get(inner);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, innerType.status());
+        assertEquals("int", assertInstanceOf(GdArrayType.class, innerType.publishedType()).getValueType().getTypeName());
+
+        // All three container-literal arms publish a contextual plan.
+        assertNotNull(analyzed.analysisData().containerLiteralPlans().get(outer.left()));
+        assertNotNull(analyzed.analysisData().containerLiteralPlans().get(inner.left()));
+        assertNotNull(analyzed.analysisData().containerLiteralPlans().get(inner.right()));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeKeepsLaterStatementsTypingAfterFailedConditionalArm() throws Exception {
+        var analyzed = analyze(
+                "expr_type_conditional_negative.gd",
+                """
+                        class_name ExprTypeConditionalNegative
+                        extends RefCounted
+                        
+                        func ping(c):
+                            var x = missing if c else 1
+                            var y = 1
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var statements = pingFunction.body().statements();
+
+        // Error category is anchored on the failed arm / conditional root.
+        assertFalse(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertEquals(
+                FrontendExpressionTypeStatus.FAILED,
+                analyzed.analysisData().expressionTypes().get(findVariable(statements, "x").value()).status()
+        );
+
+        // The bad subtree is skipped: the following legal statement still publishes its type.
+        var yType = analyzed.analysisData().expressionTypes().get(findVariable(statements, "y").value());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, yType.status());
+        assertEquals("int", yType.publishedType().getTypeName());
     }
 
     @Test

@@ -30,6 +30,7 @@ import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.ScopeLookupStatus;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
@@ -1266,6 +1267,235 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
+    void resolveConditionalExpressionMergesArmTypesAcrossBoundaryMatrix() throws Exception {
+        var support = newBareSupport();
+        var stringType = GdStringType.STRING;
+        var stringNameType = GdStringNameType.STRING_NAME;
+
+        // Same-type arms stay unchanged.
+        assertEquals("String", mergeConditionalArms(support,
+                FrontendExpressionType.resolved(stringType),
+                FrontendExpressionType.resolved(stringType)).publishedType().getTypeName());
+
+        // int/float widens to float regardless of arm order.
+        assertEquals("float", mergeConditionalArms(support,
+                FrontendExpressionType.resolved(GdIntType.INT),
+                FrontendExpressionType.resolved(GdFloatType.FLOAT)).publishedType().getTypeName());
+        assertEquals("float", mergeConditionalArms(support,
+                FrontendExpressionType.resolved(GdFloatType.FLOAT),
+                FrontendExpressionType.resolved(GdIntType.INT)).publishedType().getTypeName());
+
+        // Object sub/super merges to the super class regardless of arm order.
+        var subClass = new GdObjectType("Node2D");
+        var superClass = new GdObjectType("Node");
+        assertEquals("Node", mergeConditionalArms(support,
+                FrontendExpressionType.resolved(subClass),
+                FrontendExpressionType.resolved(superClass)).publishedType().getTypeName());
+        assertEquals("Node", mergeConditionalArms(support,
+                FrontendExpressionType.resolved(superClass),
+                FrontendExpressionType.resolved(subClass)).publishedType().getTypeName());
+
+        // null/object merges to object regardless of arm order.
+        assertEquals("Object", mergeConditionalArms(support,
+                FrontendExpressionType.resolved(GdNilType.NIL),
+                FrontendExpressionType.resolved(GdObjectType.OBJECT)).publishedType().getTypeName());
+        assertEquals("Object", mergeConditionalArms(support,
+                FrontendExpressionType.resolved(GdObjectType.OBJECT),
+                FrontendExpressionType.resolved(GdNilType.NIL)).publishedType().getTypeName());
+
+        // Both-nil arms stay Nil instead of degrading to Variant.
+        var nilMerged = mergeConditionalArms(support,
+                FrontendExpressionType.resolved(GdNilType.NIL),
+                FrontendExpressionType.resolved(GdNilType.NIL));
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, nilMerged.status());
+        assertEquals(GdNilType.NIL, nilMerged.publishedType());
+
+        // Mutually incompatible scalar arms fall back to Variant without a diagnostic.
+        var incompatible = mergeConditionalArms(support,
+                FrontendExpressionType.resolved(GdIntType.INT),
+                FrontendExpressionType.resolved(stringType));
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, incompatible.status());
+        assertEquals(GdVariantType.VARIANT, incompatible.publishedType());
+
+        // Typed containers do not widen element scalars: Array[int]/Array[float] -> Variant.
+        var containerMismatch = mergeConditionalArms(support,
+                FrontendExpressionType.resolved(new GdArrayType(GdIntType.INT)),
+                FrontendExpressionType.resolved(new GdArrayType(GdFloatType.FLOAT)));
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, containerMismatch.status());
+        assertEquals(GdVariantType.VARIANT, containerMismatch.publishedType());
+
+        // String/StringName are mutually constructible; the first matching direction wins (left-biased).
+        assertEquals("String", mergeConditionalArms(support,
+                FrontendExpressionType.resolved(stringType),
+                FrontendExpressionType.resolved(stringNameType)).publishedType().getTypeName());
+        assertEquals("StringName", mergeConditionalArms(support,
+                FrontendExpressionType.resolved(stringNameType),
+                FrontendExpressionType.resolved(stringType)).publishedType().getTypeName());
+    }
+
+    @Test
+    void resolveConditionalExpressionPublishesDynamicForRuntimeOpenArmsAndUnsupportedForVoidArms() throws Exception {
+        var support = newBareSupport();
+
+        // A Variant arm keeps the merge runtime-open regardless of position.
+        var variantLeft = mergeConditionalArms(support,
+                FrontendExpressionType.resolved(GdVariantType.VARIANT),
+                FrontendExpressionType.resolved(GdIntType.INT));
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, variantLeft.status());
+        assertEquals(GdVariantType.VARIANT, variantLeft.publishedType());
+        var variantRight = mergeConditionalArms(support,
+                FrontendExpressionType.resolved(GdIntType.INT),
+                FrontendExpressionType.resolved(GdVariantType.VARIANT));
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, variantRight.status());
+
+        // A DYNAMIC-status arm also keeps the merge runtime-open.
+        var dynamicArm = mergeConditionalArms(support,
+                FrontendExpressionType.dynamic("synthetic runtime-open arm"),
+                FrontendExpressionType.resolved(GdIntType.INT));
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicArm.status());
+
+        // A void arm is an explicit unsupported boundary regardless of position.
+        var voidLeft = mergeConditionalArms(support,
+                FrontendExpressionType.resolved(GdVoidType.VOID),
+                FrontendExpressionType.resolved(GdIntType.INT));
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, voidLeft.status());
+        var voidRight = mergeConditionalArms(support,
+                FrontendExpressionType.resolved(GdIntType.INT),
+                FrontendExpressionType.resolved(GdVoidType.VOID));
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, voidRight.status());
+
+        // Ordering lock: a runtime-open arm is checked before the void boundary, so void+Variant
+        // stays DYNAMIC. This is intentional: at runtime the void arm evaluates to Variant nil,
+        // which the Variant merge slot holds, so the pair is runtime-open rather than unsupported.
+        var voidVariant = mergeConditionalArms(support,
+                FrontendExpressionType.resolved(GdVoidType.VOID),
+                FrontendExpressionType.resolved(GdVariantType.VARIANT));
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, voidVariant.status());
+    }
+
+    @Test
+    void resolveConditionalExpressionDoesNotResolveArmsWhenConditionIsUnstable() throws Exception {
+        var support = newBareSupport();
+        var resolvedArms = new ArrayList<String>();
+        var condition = identifier("condition_operand");
+        var left = identifier("left_arm");
+        var right = identifier("right_arm");
+        var conditional = new ConditionalExpression(condition, left, right, TINY);
+        FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver resolver =
+                (expression, finalizeWindow, expectedType) -> {
+                    if (expression == condition) {
+                        return FrontendExpressionType.failed("synthetic condition failure");
+                    }
+                    if (expression == left) {
+                        resolvedArms.add("left");
+                        return FrontendExpressionType.resolved(GdIntType.INT);
+                    }
+                    resolvedArms.add("right");
+                    return FrontendExpressionType.resolved(GdIntType.INT);
+                };
+
+        var result = support.resolveConditionalExpressionType(conditional, resolver, false, null);
+        assertFalse(result.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, result.expressionType().status());
+        assertTrue(resolvedArms.isEmpty(), "arms must not be resolved once the condition is unstable");
+    }
+
+    @Test
+    void resolveConditionalExpressionPropagatesUnstableOperandsWithoutRootOwnership() throws Exception {
+        var support = newBareSupport();
+        var failedArm = FrontendExpressionType.failed("synthetic arm failure");
+        var stableInt = FrontendExpressionType.resolved(GdIntType.INT);
+
+        // An unstable condition propagates before either arm is consulted.
+        var conditionFailed = resolveConditionalWithArmTypes(support, failedArm, stableInt, stableInt);
+        assertFalse(conditionFailed.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, conditionFailed.expressionType().status());
+
+        // An unstable left arm propagates.
+        var leftFailed = resolveConditionalWithArmTypes(support, stableInt, failedArm, stableInt);
+        assertFalse(leftFailed.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, leftFailed.expressionType().status());
+
+        // An unstable right arm propagates.
+        var rightFailed = resolveConditionalWithArmTypes(support, stableInt, stableInt, failedArm);
+        assertFalse(rightFailed.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, rightFailed.expressionType().status());
+    }
+
+    @Test
+    void resolveConditionalExpressionPassesExpectedTypeToBothArmsButNotToCondition() throws Exception {
+        var support = newBareSupport();
+        var expected = new GdArrayType(GdIntType.INT);
+        var receivedByLeft = new ArrayList<GdType>();
+        var receivedByRight = new ArrayList<GdType>();
+        var condition = identifier("condition_operand");
+        var left = identifier("left_arm");
+        var right = identifier("right_arm");
+        var conditional = new ConditionalExpression(condition, left, right, TINY);
+        FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver resolver =
+                (expression, finalizeWindow, expectedType) -> {
+                    if (expression == condition) {
+                        assertNull(expectedType, "condition must resolve in a pure control-flow context");
+                        return FrontendExpressionType.resolved(GdIntType.INT);
+                    }
+                    if (expression == left) {
+                        receivedByLeft.add(expectedType);
+                        return FrontendExpressionType.resolved(expected);
+                    }
+                    receivedByRight.add(expectedType);
+                    return FrontendExpressionType.resolved(expected);
+                };
+
+        var result = support.resolveConditionalExpressionType(conditional, resolver, false, expected);
+        assertTrue(result.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, result.expressionType().status());
+        assertEquals(expected, result.expressionType().publishedType());
+        assertEquals(List.of(expected), receivedByLeft);
+        assertEquals(List.of(expected), receivedByRight);
+    }
+
+    private static @NotNull FrontendExpressionType mergeConditionalArms(
+            @NotNull FrontendExpressionSemanticSupport support,
+            @NotNull FrontendExpressionType leftArm,
+            @NotNull FrontendExpressionType rightArm
+    ) {
+        var result = resolveConditionalWithArmTypes(
+                support,
+                FrontendExpressionType.resolved(GdIntType.INT),
+                leftArm,
+                rightArm
+        );
+        assertTrue(result.rootOwnsOutcome());
+        return result.expressionType();
+    }
+
+    private static @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult resolveConditionalWithArmTypes(
+            @NotNull FrontendExpressionSemanticSupport support,
+            @NotNull FrontendExpressionType conditionType,
+            @NotNull FrontendExpressionType leftArm,
+            @NotNull FrontendExpressionType rightArm
+    ) {
+        var condition = identifier("condition_operand");
+        var left = identifier("left_arm");
+        var right = identifier("right_arm");
+        var conditional = new ConditionalExpression(condition, left, right, TINY);
+        FrontendExpressionSemanticSupport.ContextualNestedExpressionResolver resolver =
+                (expression, finalizeWindow, expectedType) -> {
+                    if (expression == condition) {
+                        return conditionType;
+                    }
+                    if (expression == left) {
+                        return leftArm;
+                    }
+                    if (expression == right) {
+                        return rightArm;
+                    }
+                    throw new IllegalStateException("unexpected nested expression " + expression);
+                };
+        return support.resolveConditionalExpressionType(conditional, resolver, false, null);
+    }
+
+    @Test
     void resolveRemainingExplicitExpressionRoutesEnumerateRemainingDeferredKindsAndRejectParserRecoveryNodes()
             throws Exception {
         var support = newBareSupport();
@@ -1273,11 +1503,6 @@ class FrontendExpressionSemanticSupportTest {
         var typeRef = new TypeRef("String", TINY);
         var literal = integerLiteral("1");
         var cases = List.of(
-                new RemainingExpressionCase(
-                        new ConditionalExpression(identifier("flag"), integerLiteral("1"), integerLiteral("2"), TINY),
-                        FrontendExpressionTypeStatus.DEFERRED,
-                        "Conditional expression typing is deferred"
-                ),
                 new RemainingExpressionCase(
                         new AwaitExpression(identifier("signal_name"), TINY),
                         FrontendExpressionTypeStatus.DEFERRED,

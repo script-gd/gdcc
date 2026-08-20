@@ -1570,7 +1570,7 @@ class FrontendCompileCheckAnalyzerTest {
                     return ""
                 
                 func ping(flag):
-                    self.build(1 if flag else 2).length
+                    self.build(preload("res://icon.svg")).length
                 """;
 
         var shared = analyzeShared("deferred_compile_check.gd", source);
@@ -1588,7 +1588,7 @@ class FrontendCompileCheckAnalyzerTest {
         ));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
                 diagnostic.message().contains("remains deferred")
-                        || diagnostic.message().contains("Conditional expression")
+                        || diagnostic.message().contains("Preload expression")
         ));
     }
 

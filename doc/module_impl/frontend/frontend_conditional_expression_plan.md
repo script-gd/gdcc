@@ -1,7 +1,7 @@
 # Frontend Conditional（Ternary）Expression 实施计划
 
 本文档是三元表达式 `value1 if condition else value2`（含嵌套）进入 compile-ready 支持面的实施计划与验收细则。
-状态：**Phase 0 已完成**；Phase 1–5 待实施。
+状态：**Phase 0、1 已完成**；Phase 2–5 待实施。
 
 ## 1. 目标与范围
 
@@ -136,6 +136,8 @@ GDCC 当前处理状态（全部为本仓库 `master` 现状）：
 
 ### Phase 1：sema 类型推导
 
+状态：**已完成**。sema 三元类型推导落地，compile gate 仍拦截（Phase 4 解封）；CFG/lowering 未动。
+
 改动：
 - `FrontendExpressionSemanticSupport`：新增 `resolveConditionalExpressionType` + 私有静态 `resolveConditionalMergedType`；`resolveRemainingExplicitExpressionType` 移除 `ConditionalExpression` deferred 分支并更新穷举白名单。
 - `FrontendBodyOwnerProcedures.BodyExpressionResolver`：`computeExpressionType` 新增 `case ConditionalExpression`（contextual 透传 `expectedType`），包装方法**不**记录 `rootOwnsExpressionDiagnostics`（binary 式 root 重持有）。
@@ -150,6 +152,13 @@ GDCC 当前处理状态（全部为本仓库 `master` 现状）：
 验收：
 - 上述测试全部通过；`analyze(...)` 共享路径对 `1 if c else 2` 发布 `RESOLVED(int)`，无 `sema.deferred_expression_resolution`。
 - `FrontendExpressionSemanticSupportTest`、`FrontendTypeCheckAnalyzerTest`、`FrontendVariableAnalyzerTest` 不回归。
+
+落地说明（Phase 1 已完成）：
+- `resolveConditionalExpressionType` 实际签名为 `(ConditionalExpression, ContextualNestedExpressionResolver, boolean finalizeWindow, @Nullable GdType expectedType)`：`expectedType` 必须显式透传给双臂才能满足 §3.1 第 2 条与 contextual 容器测试，故在 §3.1 书写的三参签名基础上补充该参数（owner 包装以 `this::resolveExpressionTypeExpected` + 外层 `expectedType` 调用）。
+- `resolveConditionalMergedType` 判定顺序与 §3.1 一致：先 runtime-open（`DYNAMIC`/exact `Variant`→`DYNAMIC(Variant)`），再 `void` 臂→`UNSUPPORTED`，再双向 `determineFrontendBoundaryDecision` 归并（先 `right→left` 命中取 `left`，否则 `left→right` 命中取 `right`，否则 `RESOLVED(Variant)`）。`Nil/Nil` 经 `checkAssignable(Nil,Nil)` 同名为 `ALLOW_DIRECT` 自然落到 `RESOLVED(Nil)`。
+- `void`+`Variant` 边界已确认为 `DYNAMIC(Variant)`（非待复评项）：void 臂在运行时产出 Variant 的 `nil`，Variant 合并槽可承载，故该对是 runtime-open 而非 `UNSUPPORTED`。`void` 臂只有与**非 Variant** 具体类型配对时才落 `UNSUPPORTED`（具体合并槽无法承载 void 臂的 `nil`）。Phase 2 merge 槽物化对 void 臂按「产出 Variant nil」处理，不得反向收紧为拒绝。
+- 除计划点名的 `FrontendExpressionSemanticSupportTest` route 用例外，另有三处既有测试以三元作为「deferred 参数/未支持 kind」代理，随 Phase 1 一并改写为仍 deferred 的 `preload` 代理或新解析行为：`FrontendBodyOwnerProceduresChainBindingTest.analyzeKeepsDeferredArgumentBoundaryForRemainingUnsupportedExpressionKinds`、`FrontendCompileCheckAnalyzerTest.analyzeForCompileUpgradesDeferredWarningsIntoCompileBlockingErrors`、`FrontendBodyOwnerProceduresExprTypeTest` 原 `analyzeReportsExprOwnedDeferredDiagnosticsForRemainingGenericMvpGaps`（改写为 `analyzePublishesConditionalExpressionTypesWithoutDeferredDiagnostics`）。
+- compile gate（`FrontendCompileCheckAnalyzer.walkExpression` 的 `case ConditionalExpression`）与 CFG/lowering 未改，三元在 compile 模式仍被显式封口；`FrontendCompileCheckAnalyzerTest` 的去重用例与 `FrontendLoweringAnalysisPassTest` 的 `Conditional expression` 拦截用例因此继续通过。
 
 ### Phase 2：`MergeValueItem` 合同精炼
 

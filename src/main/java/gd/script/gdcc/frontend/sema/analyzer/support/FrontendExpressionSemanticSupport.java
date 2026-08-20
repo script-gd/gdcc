@@ -29,6 +29,7 @@ import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
+import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
@@ -697,6 +698,98 @@ public final class FrontendExpressionSemanticSupport {
         );
     }
 
+    /// Resolves `left if condition else right`.
+    ///
+    /// Shared semantic contract:
+    /// - the condition operand is resolved first without an expected type (pure control-flow
+    ///   context); a non-bool condition is accepted here and normalized during lowering
+    /// - both value arms are resolved through the contextual resolver with the outer expected type
+    ///   so nested container literals construct contextually (same pass-through as casts)
+    /// - once all three operands are stable the two arm types are merged via
+    ///   `resolveConditionalMergedType`
+    /// - this helper never emits diagnostics and never writes side tables
+    public @NotNull ExpressionSemanticResult resolveConditionalExpressionType(
+            @NotNull ConditionalExpression conditionalExpression,
+            @NotNull ContextualNestedExpressionResolver nestedResolver,
+            boolean finalizeWindow,
+            @Nullable GdType expectedType
+    ) {
+        Objects.requireNonNull(conditionalExpression, "conditionalExpression must not be null");
+        Objects.requireNonNull(nestedResolver, "nestedResolver must not be null");
+
+        var conditionType = nestedResolver.resolve(conditionalExpression.condition(), finalizeWindow, null);
+        var conditionIssue = firstNonResolvedDependency(conditionType);
+        if (conditionIssue != null) {
+            return propagated(conditionIssue);
+        }
+
+        var leftArmType = nestedResolver.resolve(conditionalExpression.left(), finalizeWindow, expectedType);
+        var leftIssue = firstNonResolvedDependency(leftArmType);
+        if (leftIssue != null) {
+            return propagated(leftIssue);
+        }
+
+        var rightArmType = nestedResolver.resolve(conditionalExpression.right(), finalizeWindow, expectedType);
+        var rightIssue = firstNonResolvedDependency(rightArmType);
+        if (rightIssue != null) {
+            return propagated(rightIssue);
+        }
+
+        return rootOutcome(resolveConditionalMergedType(classRegistry, leftArmType, rightArmType));
+    }
+
+    /// Merges the two stable arm types of a conditional expression into the outward-facing type.
+    ///
+    /// The rule mirrors Godot's bidirectional `is_type_compatible` ternary reduction but reuses the
+    /// GDCC ordinary typed-boundary matrix as the single source of truth:
+    /// - a runtime-open arm (`DYNAMIC` or exact `Variant`) keeps the result runtime-open; this also
+    ///   covers `void` paired with `Variant`, because the void arm evaluates to Variant `nil` at
+    ///   runtime and the Variant merge slot holds it
+    /// - a void arm paired with a non-Variant arm is an explicit unsupported boundary, because a
+    ///   concrete merge slot cannot materialize the void arm's `nil`
+    /// - otherwise the first boundary direction that allows conversion wins, so widening pairs such
+    ///   as `int`/`float` merge to `float` regardless of arm order
+    /// - mutually incompatible arms fall back to `RESOLVED(Variant)` without a diagnostic
+    ///   (Godot-compatible; no `INCOMPATIBLE_TERNARY` in the MVP)
+    private static @NotNull FrontendExpressionType resolveConditionalMergedType(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendExpressionType leftArmType,
+            @NotNull FrontendExpressionType rightArmType
+    ) {
+        Objects.requireNonNull(classRegistry, "classRegistry must not be null");
+        var publishedLeft = Objects.requireNonNull(
+                leftArmType.publishedType(),
+                "publishedType must not be null for a stable conditional left arm"
+        );
+        var publishedRight = Objects.requireNonNull(
+                rightArmType.publishedType(),
+                "publishedType must not be null for a stable conditional right arm"
+        );
+
+        if (isRuntimeOpenOperatorOperand(leftArmType, publishedLeft)
+                || isRuntimeOpenOperatorOperand(rightArmType, publishedRight)) {
+            return FrontendExpressionType.dynamic(
+                    "Runtime-open ternary arm routes the conditional expression through Variant semantics"
+            );
+        }
+        if (publishedLeft instanceof GdVoidType || publishedRight instanceof GdVoidType) {
+            return FrontendExpressionType.unsupported(
+                    "Conditional expression arms must produce materializable values; a void arm cannot merge"
+            );
+        }
+        if (FrontendVariantBoundaryCompatibility
+                .determineFrontendBoundaryDecision(classRegistry, publishedRight, publishedLeft)
+                .allows()) {
+            return FrontendExpressionType.resolved(publishedLeft);
+        }
+        if (FrontendVariantBoundaryCompatibility
+                .determineFrontendBoundaryDecision(classRegistry, publishedLeft, publishedRight)
+                .allows()) {
+            return FrontendExpressionType.resolved(publishedRight);
+        }
+        return FrontendExpressionType.resolved(GdVariantType.VARIANT);
+    }
+
     /// Exhaustive routing for the remaining explicitly deferred expression kinds.
     ///
     /// The analyzers intentionally keep dedicated entry points for the green paths such as
@@ -711,13 +804,6 @@ public final class FrontendExpressionSemanticSupport {
             boolean finalizeWindow
     ) {
         return switch (Objects.requireNonNull(expression, "expression must not be null")) {
-            case ConditionalExpression conditionalExpression -> resolveExplicitDeferredExpressionType(
-                    conditionalExpression,
-                    nestedResolver,
-                    resolveNestedChildren,
-                    "Conditional expression typing is deferred by the current frontend expression-typing contract",
-                    finalizeWindow
-            );
             case ArrayExpression arrayExpression -> resolveArrayExpressionType(
                     arrayExpression,
                     nestedResolver,
@@ -779,7 +865,8 @@ public final class FrontendExpressionSemanticSupport {
                  SubscriptExpression _,
                  LambdaExpression _,
                  UnaryExpression _,
-                 BinaryExpression _ -> throw new IllegalArgumentException(
+                 BinaryExpression _,
+                 ConditionalExpression _ -> throw new IllegalArgumentException(
                     "Expression kind '" + expression.getClass().getSimpleName()
                             + "' must use its dedicated semantic resolver"
             );

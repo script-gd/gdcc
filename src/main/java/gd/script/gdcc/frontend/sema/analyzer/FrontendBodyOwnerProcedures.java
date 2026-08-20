@@ -9,6 +9,7 @@ import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
+import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.DictionaryExpression;
@@ -1638,6 +1639,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 case TypeTestExpression typeTestExpression ->
                         resolveTypeTestExpressionType(typeTestExpression, finalizeWindow);
                 case CastExpression castExpression -> resolveCastExpressionType(castExpression, finalizeWindow);
+                case ConditionalExpression conditionalExpression ->
+                        resolveConditionalExpressionType(conditionalExpression, finalizeWindow, expectedType);
                 case ArrayExpression arrayExpression ->
                         resolveArrayExpressionType(arrayExpression, finalizeWindow, expectedType);
                 case DictionaryExpression dictionaryExpression ->
@@ -1681,6 +1684,21 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             // Propagated value-operand failures keep the upstream diagnostic owner.
             rootOwnsExpressionDiagnostics.put(castExpression, result.rootOwnsOutcome());
             return result.expressionType();
+        }
+
+        private @NotNull FrontendExpressionType resolveConditionalExpressionType(
+                @NotNull ConditionalExpression conditionalExpression,
+                boolean finalizeWindow,
+                @Nullable GdType expectedType
+        ) {
+            // Binary-style root re-ownership: no rootOwnsExpressionDiagnostics entry is recorded, so
+            // the conditional root stays root-owned (default true) and re-emits propagated outcomes.
+            return expressionSemanticSupport.resolveConditionalExpressionType(
+                    conditionalExpression,
+                    this::resolveExpressionTypeExpected,
+                    finalizeWindow,
+                    expectedType
+            ).expressionType();
         }
 
         private @NotNull FrontendExpressionType resolveArrayExpressionType(
