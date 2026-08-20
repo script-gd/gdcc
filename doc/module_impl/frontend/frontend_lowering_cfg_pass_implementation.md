@@ -27,7 +27,7 @@
   - `doc/gdcc_c_backend.md`
 - 明确非目标：
   - 不在这里引入 high-level IR / sea-of-nodes
-  - 不在这里放行 `ConditionalExpression`
+  - 不在这里把 `ConditionalExpression` 解封为 compile-ready（本文档只冻结其 CFG 构图事实；compile gate 解封与 e2e 见 `frontend_conditional_expression_plan.md` Phase 4/5）
   - 不在这里把 parameter default 接到 body pass
   - 不在这里让 lowering 重跑 chain reduction、call route 选择或表达式求值顺序推导
 
@@ -338,6 +338,9 @@ frontend CFG / body lowering 当前用以下方式闭合这组约束。
 - `and` / `or`
   - 直接展开短路分支
   - 每个 split 都绑定自己的 fragment-local `conditionValueId`
+- `ConditionalExpression`
+  - 纯控制流展开，不产生任何 merge 值：先测 `condition`，再对被选中臂做 truthiness 分支（两臂经 `buildCondition` 递归分发，外层 true/false target 原样透传）
+  - 因此 `if (a if c else b):` 的图中每个 `BranchNode.conditionValueId` 仍为 branch-local temp 槽，`emitConditionBranch` 归一化零改动；嵌套三元臂与 `and/or` 臂继续递归纯展开
 - 其他 condition
   - 先经由 `buildValue(...)` 求出 source value
   - 再发布 `BranchNode`
@@ -363,6 +366,15 @@ frontend CFG / body lowering 当前用以下方式闭合这组约束。
 
 - `BinaryOpInsn(AND)`
 - `BinaryOpInsn(OR)`
+
+`ConditionalExpression` 在 value context 中复用同一 branch-result merge 基建，固定形态是：
+
+- condition 子图（复用 `buildCondition`，`not` / `and/or` / 嵌套三元均走现有 condition 机制）
+- 两臂各自独立 `OpenSequence`，臂内以 `buildValue(..., null)` 求值（臂保留私有 temp）
+- 每臂末尾追加 `MergeValueItem(conditional, armResultId, sharedResultId)` 后发布，双臂合流到同一 merge continuation
+- `mergeAnchor` 为整条 `ConditionalExpression`，合并槽类型即 sema 发布的合并类型（§4 anchor 化合同）
+- 嵌套三元臂 / value 语境 `and/or` 臂返回未发布的内层 merge sequence，外层 merge 写入追加在同一 sequence 末尾（merge-of-merge 窄例外的服务对象）
+- `preferredResultValueId` 直接成为 `sharedResultId`（如 `var x = 三元` 的 `x_<n>` 槽），不额外产生中转 id
 
 ### 5.3 Bool-only normalization
 
@@ -714,8 +726,8 @@ body-lowering 合同：
 
 其中 `ConditionalExpression` 继续 compile-block 的原因已经固定：
 
-- graph 虽已具备分支区域与 merge slot 基础设施
-- 但 branch-result merge、ownership、evaluation-order 语义还没有单独冻结
+- CFG 构图两种语境（value 语境 merge / condition 语境纯控制流展开）与 merge 槽合同已落地（见 §5.1/§5.2）
+- 但 compile gate 解封、body lowering 端到端与 e2e 验收尚未完成，解封前 `analyzeForCompile` 整链仍显式拦截（见 `frontend_conditional_expression_plan.md` Phase 4/5）
 
 当前 body lowering 明确保留 fail-fast 的路径包括：
 

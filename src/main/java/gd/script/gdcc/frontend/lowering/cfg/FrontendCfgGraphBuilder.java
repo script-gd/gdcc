@@ -126,8 +126,11 @@ import java.util.Set;
 /// - value-context binaries materialize branch-local `true` / `false` writes into one merged result
 ///   slot before continuation rejoins
 ///
-/// `ConditionalExpression` still stays outside the current compile-ready surface until its
-/// branch-result merge contract is finalized.
+/// `ConditionalExpression` reuses the same branch-result merge infrastructure:
+/// - value-context ternaries evaluate the condition, then only the selected arm, and merge the arm
+///   value into one shared result id
+/// - condition-context ternaries expand as pure control flow and never produce a merge value
+/// The compile gate still intercepts ternaries until body lowering and e2e land.
 public final class FrontendCfgGraphBuilder {
     private @Nullable FrontendAnalysisData analysisData;
     private @Nullable LinkedHashMap<String, FrontendCfgGraph.NodeDef> nodes;
@@ -771,7 +774,7 @@ public final class FrontendCfgGraphBuilder {
             case BinaryExpression binaryExpression when isShortCircuitBinaryExpression(binaryExpression) ->
                     buildShortCircuitCondition(cursor, binaryExpression, trueTargetId, falseTargetId);
             case ConditionalExpression conditionalExpression ->
-                    buildConditionalExpressionCondition(conditionalExpression);
+                    buildConditionalExpressionCondition(cursor, conditionalExpression, trueTargetId, falseTargetId);
             default -> buildConditionFromValue(cursor, condition, trueTargetId, falseTargetId);
         };
     }
@@ -864,7 +867,11 @@ public final class FrontendCfgGraphBuilder {
                     buildTypeTestValue(cursor, typeTestExpression, preferredResultValueId);
             case LambdaExpression lambdaExpression ->
                     buildLambdaConstructValue(cursor, lambdaExpression, preferredResultValueId);
-            case ConditionalExpression conditionalExpression -> buildConditionalExpressionValue(conditionalExpression);
+            case ConditionalExpression conditionalExpression -> buildConditionalExpressionValue(
+                    cursor,
+                    conditionalExpression,
+                    preferredResultValueId
+            );
             case UnaryExpression unaryExpression -> {
                 var operandBuild = buildValue(cursor, unaryExpression.operand(), null);
                 yield emitOpaqueValue(
@@ -1474,14 +1481,97 @@ public final class FrontendCfgGraphBuilder {
         };
     }
 
-    private @NotNull ValueBuild buildConditionalExpressionValue(@NotNull ConditionalExpression conditionalExpression) {
-        throw unsupportedConditionalExpression(conditionalExpression);
+    /// Value-context ternary `left if condition else right` evaluates the condition first, then only
+    /// the selected arm, and merges the arm value into one shared result id.
+    ///
+    /// The shape mirrors value-context `and` / `or`: one condition subgraph, two arm sequences that
+    /// each end in a `MergeValueItem` write, and one merge continuation sequence. Arms build with a
+    /// `null` preferred id so each keeps a private temp; the shared id is only written through the
+    /// merge items, which keeps the multi-producer single-definition contract merge-only.
+    /// Nested ternary or value-context `and` / `or` arms recurse through `buildValue` and return an
+    /// unpublished inner merge sequence; the outer merge write is appended to that same sequence, so
+    /// the cross-sequence source stays legal under the merge-of-merge contract.
+    private @NotNull ValueBuild buildConditionalExpressionValue(
+            @NotNull BuildCursor cursor,
+            @NotNull ConditionalExpression conditionalExpression,
+            @Nullable String preferredResultValueId
+    ) {
+        var resultValueId = chooseResultValueId(preferredResultValueId);
+        var mergeSequence = new OpenSequence(nextSequenceId());
+        var trueArmCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        var falseArmCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+
+        var conditionBuild = buildCondition(
+                cursor,
+                conditionalExpression.condition(),
+                trueArmCursor.entryId(),
+                falseArmCursor.entryId()
+        );
+
+        publishMergedConditionalArmSequence(
+                trueArmCursor,
+                conditionalExpression,
+                conditionalExpression.left(),
+                resultValueId,
+                mergeSequence.id()
+        );
+        publishMergedConditionalArmSequence(
+                falseArmCursor,
+                conditionalExpression,
+                conditionalExpression.right(),
+                resultValueId,
+                mergeSequence.id()
+        );
+        return new ValueBuild(
+                new BuildCursor(conditionBuild.entryId(), mergeSequence),
+                conditionalExpression,
+                resultValueId,
+                null
+        );
     }
 
-    private @NotNull ConditionBuild buildConditionalExpressionCondition(
-            @NotNull ConditionalExpression conditionalExpression
+    /// Builds one ternary arm and publishes its final sequence with the merge write appended.
+    ///
+    /// `mergeAnchor` is the whole `ConditionalExpression`: the shared merge slot type is keyed by the
+    /// anchor's published merged type, so both arms write the same slot regardless of arm types.
+    private void publishMergedConditionalArmSequence(
+            @NotNull BuildCursor armCursor,
+            @NotNull ConditionalExpression mergeAnchor,
+            @NotNull Expression armExpression,
+            @NotNull String mergedResultValueId,
+            @NotNull String nextId
     ) {
-        throw unsupportedConditionalExpression(conditionalExpression);
+        var armBuild = buildValue(armCursor, armExpression, null);
+        var armSequence = armBuild.cursor().currentSequence();
+        armSequence.items().add(new MergeValueItem(mergeAnchor, armBuild.resultValueId(), mergedResultValueId));
+        publishSequenceNode(armSequence.id(), armSequence.items(), nextId);
+    }
+
+    /// Condition-context ternary expands as pure control flow and never produces a merge value.
+    ///
+    /// `if (a if c else b):` first tests `c`, then tests the selected arm's truthiness against the
+    /// outer targets. Arms recurse through `buildCondition`, so `not` / `and` / `or` / nested ternary
+    /// arms reuse the existing condition machinery and plain arms land in `buildConditionFromValue`
+    /// with a temp-slot value. Keeping `conditionValueId` temp-local is required: branch lowering
+    /// reads `cfg_tmp_<conditionValueId>` and the merge slot of a value-context build is never a
+    /// legal branch condition id.
+    private @NotNull ConditionBuild buildConditionalExpressionCondition(
+            @NotNull BuildCursor cursor,
+            @NotNull ConditionalExpression conditionalExpression,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var trueArmCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        var falseArmCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        var conditionBuild = buildCondition(
+                cursor,
+                conditionalExpression.condition(),
+                trueArmCursor.entryId(),
+                falseArmCursor.entryId()
+        );
+        buildCondition(trueArmCursor, conditionalExpression.left(), trueTargetId, falseTargetId);
+        buildCondition(falseArmCursor, conditionalExpression.right(), trueTargetId, falseTargetId);
+        return conditionBuild;
     }
 
     /// Plain assignment preserves target evaluation before RHS evaluation.
@@ -3108,15 +3198,6 @@ public final class FrontendCfgGraphBuilder {
                 "Binary operator '"
                         + binaryExpression.operator()
                         + "' must use the dedicated frontend CFG short-circuit path"
-        );
-    }
-
-    private static @NotNull IllegalStateException unsupportedConditionalExpression(
-            @NotNull ConditionalExpression conditionalExpression
-    ) {
-        return new IllegalStateException(
-                "ConditionalExpression must use the shared frontend CFG branch-result merge path, but that path is not implemented yet at "
-                        + conditionalExpression.range()
         );
     }
 

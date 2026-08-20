@@ -1,7 +1,7 @@
 # Frontend Conditional（Ternary）Expression 实施计划
 
 本文档是三元表达式 `value1 if condition else value2`（含嵌套）进入 compile-ready 支持面的实施计划与验收细则。
-状态：**Phase 0、1、2 已完成**；Phase 3–5 待实施。
+状态：**Phase 0、1、2、3 已完成**；Phase 4–5 待实施。
 
 ## 1. 目标与范围
 
@@ -21,14 +21,14 @@ parser 已就绪，无需改动 gdparser：
 - 映射（`E:/Projects/gdparser` 仓库 `src/main/java/dev/superice/gdparser/frontend/lowering/CstToAstMapper.java:669-678`）：原样透传，无字段交换。
 - 结合性：`prec.right` 保证右结合：`a if c1 else b if c2 else d` 解析为 `a if c1 else (b if c2 else d)`；`PREC.conditional=-1` 为最低优先级，故 `a + b if c else d` = `(a+b) if c else d`；`(a if c1 else b) if c2 else d` 需括号。
 
-GDCC 当前处理状态（全部为本仓库 `master` 现状）：
+GDCC 处理状态（下表为计划起草时快照；最新进度以状态头与各 Phase done notes 为准）：
 
 | 层 | 位置（均相对 `src/main/java/gd/script/gdcc/`） | 现状 |
 |---|---|---|
-| sema 类型推导 | `frontend/sema/analyzer/support/FrontendExpressionSemanticSupport.java:714-720` | `resolveRemainingExplicitExpressionType` 中走 `resolveExplicitDeferredExpressionType`，恒 `DEFERRED` |
-| body owner 分发 | `frontend/sema/analyzer/FrontendBodyOwnerProcedures.java:1645` | `computeExpressionType` 的 `default` 分支委托上行 deferred |
-| compile gate | `frontend/sema/analyzer/FrontendCompileCheckAnalyzer.java:572-575`（+`157-160` 消息） | `walkExpression` 显式 `sema.compile_check` 拦截，不递归子树 |
-| CFG 构图 | `frontend/lowering/cfg/FrontendCfgGraphBuilder.java:773-774, 867, 1477-1485, 3114-3121` | `buildConditionalExpressionValue/Condition` 均 `throw unsupportedConditionalExpression` |
+| sema 类型推导 | `frontend/sema/analyzer/support/FrontendExpressionSemanticSupport.java:714-720` | Phase 1 已落地：`resolveConditionalExpressionType` 发布合并类型（起草时为恒 `DEFERRED`） |
+| body owner 分发 | `frontend/sema/analyzer/FrontendBodyOwnerProcedures.java:1645` | Phase 1 已落地：`computeExpressionType` 专用 `case ConditionalExpression`（起草时为 default deferred） |
+| compile gate | `frontend/sema/analyzer/FrontendCompileCheckAnalyzer.java:572-575`（+`157-160` 消息） | `walkExpression` 显式 `sema.compile_check` 拦截，不递归子树（Phase 4 解封） |
+| CFG 构图 | `frontend/lowering/cfg/FrontendCfgGraphBuilder.java:776-777, 870-874, 1494-1575` | Phase 3 已落地：value 语境 branch-result merge / condition 语境纯控制流展开（起草时为 `throw unsupportedConditionalExpression`） |
 | sequence item lowering | `frontend/lowering/pass/body/FrontendSequenceItemInsnLoweringProcessors.java:310` | opaque 分类对 `ConditionalExpression` 标 `DEFER`（护栏，保留） |
 | 规则文档 | `frontend_rules.md`（compile intercept 清单条目）、`frontend_compile_check_analyzer_implementation.md` §3.3 | 显式列为 temporary compile intercept，解除前提为"CFG merge 合同稳定" |
 | 测试锚 | `FrontendCompileCheckAnalyzerTest.java:1087-1130`（`sema/analyzer/`）；`FrontendExpressionSemanticSupportTest.java:1277`（`sema/analyzer/support/`） | 仅锁定"拦截/deferred"现状，实施时需改写 |
@@ -186,6 +186,8 @@ Phase 2 done notes:
 
 ### Phase 3：CFG 构图实现
 
+状态：**已完成**。`FrontendCfgGraphBuilder` 两种语境构图落地，compile gate 仍拦截（Phase 4 解封）；`FrontendLoweringBuildCfgPassTest` 未动。
+
 改动：
 - `FrontendCfgGraphBuilder`：实现 `buildConditionalExpressionValue` / `buildConditionalExpressionCondition`（§3.3），更新两处调用点，移除/改造 `unsupportedConditionalExpression`。
 - 测试：
@@ -198,6 +200,14 @@ Phase 2 done notes:
 验收：
 - 新增图测试通过；既有 CFG 测试不回归。
 - 非法形态（如 sema 未发布类型时强行走 builder）仍 fail-fast。
+
+Phase 3 done notes:
+- `buildConditionalExpressionValue(cursor, expr, preferredResultValueId)`：`chooseResultValueId` 定共享结果 id（preferred 直接透传，如 `var x = 三元` 的 `x_<n>`），condition 经 `buildCondition` 分发到两臂独立 `OpenSequence`，臂经 `publishMergedConditionalArmSequence`（`buildValue(armCursor, arm, null)` + 末尾追加 `MergeValueItem(conditional, armResult, sharedResult)` 后发布）合流到 merge continuation；返回 `ValueBuild(BuildCursor(conditionBuild.entryId(), mergeSequence), ...)`。嵌套三元 / value 语境 `and/or` 臂返回未发布内层 merge sequence，外层 merge 写入追加同 sequence（merge-of-merge 窄例外的实际服务对象）。
+- `buildConditionalExpressionCondition(cursor, expr, trueTargetId, falseTargetId)`：纯控制流展开，先测 condition 再对选中臂 `buildCondition` 递归分发外层 targets，不产生任何 merge 值；注释显式记录 `emitConditionBranch` 读 `cfg_tmp_<conditionValueId>` 的约束（merge 槽不得作 branch condition id）。
+- 两处调用点补齐传参；`unsupportedConditionalExpression` 已删除。
+- 文档同步：`frontend_lowering_cfg_pass_implementation.md` §5.1（condition 语境三元条目）、§5.2（value 语境三元固定形态）、§9（compile-block 原因更新为"构图已落地、gate/e2e 未完成"）；拦截清单划除仍留待 Phase 5。
+- 测试锚定（均走 `analyzeSharedSemanticFunction`，不经 compile gate）：value 基础形状（双 MergeValueItem 同 result/同 anchor、臂 producer 对齐、合流序列唯一、stop 返回合并 id、无 BoolConstant）、preferred id 透传（`x_` 前缀）、condition 含 `not/and` 组合、右结合嵌套（4 merge、merge-of-merge 写入、内外 result id 唯一）、括号左嵌套、`and/or` 臂（merge-of-merge + 双 BoolConstant）；condition 语境三例（基础 / 嵌套三元臂 / `or` 臂）全图零 MergeValueItem 零 BoolConstant、臂 branch targets 对齐 if region；negative：sema FAILED 三元强行走 builder 抛 `IllegalStateException("not lowering-ready")`。
+- 验证：`FrontendCfgGraphBuilderTest`（66）+ `FrontendCfgGraphTest`（17）全绿；`gd.script.gdcc.frontend.lowering.*` + `FrontendCompileCheckAnalyzerTest` + `FrontendExpressionSemanticSupportTest` + `FrontendConditionalParseBehaviorTest` 共 563 例无回归（gate 拦截用例继续通过）。
 
 ### Phase 4：compile gate 解封（代码侧）+ body lowering 端到端
 
@@ -270,6 +280,6 @@ Phase 2 done notes:
 
 ## 9. 参考位置
 
-- 本仓库（均相对 `src/main/java/gd/script/gdcc/`）：`frontend/sema/analyzer/support/FrontendExpressionSemanticSupport.java:559-1063`；`frontend/sema/analyzer/FrontendBodyOwnerProcedures.java:1433-1722`；`frontend/lowering/cfg/FrontendCfgGraphBuilder.java:753-897, 1367-1485, 2468-2481, 3114-3121`；`frontend/lowering/cfg/FrontendCfgGraph.java:190-261`；`frontend/lowering/FrontendBodyLoweringSupport.java:106-297`；`frontend/lowering/pass/body/FrontendSequenceItemInsnLoweringProcessors.java:238-331`；`frontend/lowering/pass/body/FrontendBodyLoweringSession.java:824-929`；`frontend/lowering/pass/body/FrontendCfgNodeInsnLoweringProcessors.java:60-126`；`frontend/sema/analyzer/support/FrontendVariantBoundaryCompatibility.java`；`scope/ClassRegistry.java:890-915`；`frontend/sema/analyzer/FrontendCompileCheckAnalyzer.java:875-911, 986-1037`。
+- 本仓库（均相对 `src/main/java/gd/script/gdcc/`）：`frontend/sema/analyzer/support/FrontendExpressionSemanticSupport.java:559-1063`；`frontend/sema/analyzer/FrontendBodyOwnerProcedures.java:1433-1722`；`frontend/lowering/cfg/FrontendCfgGraphBuilder.java:756-904, 1376-1575, 2558-2571, 2757-2759`；`frontend/lowering/cfg/FrontendCfgGraph.java:190-261`；`frontend/lowering/FrontendBodyLoweringSupport.java:106-297`；`frontend/lowering/pass/body/FrontendSequenceItemInsnLoweringProcessors.java:238-331`；`frontend/lowering/pass/body/FrontendBodyLoweringSession.java:824-929`；`frontend/lowering/pass/body/FrontendCfgNodeInsnLoweringProcessors.java:60-126`；`frontend/sema/analyzer/support/FrontendVariantBoundaryCompatibility.java`；`scope/ClassRegistry.java:890-915`；`frontend/sema/analyzer/FrontendCompileCheckAnalyzer.java:875-911, 986-1037`。
 - Godot：`modules/gdscript/gdscript_analyzer.cpp` `reduce_ternary_op`（归约顺序、Variant 回退、双向兼容归并、常量折叠、`INCOMPATIBLE_TERNARY`）。
 - gdparser：`frontend/ast/ConditionalExpression.java`；`vendor/tree-sitter-gdscript/grammar.js:743-753`；`frontend/lowering/CstToAstMapper.java:669-678`。

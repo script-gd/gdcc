@@ -48,6 +48,7 @@ import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.CommentStatement;
+import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
@@ -2369,6 +2370,488 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
+    void buildExecutableBodyPublishesConditionalValueGraphWithMergedArms() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_conditional_value.gd",
+                """
+                        class_name CfgBuilderConditionalValue
+                        extends RefCounted
+                        
+                        func ping(flag: bool, yes: int, no: int) -> int:
+                            return yes if flag else no
+                        """,
+                "ping",
+                Map.of("CfgBuilderConditionalValue", "RuntimeCfgBuilderConditionalValue")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var conditional = assertInstanceOf(ConditionalExpression.class, returnStatement.value());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+
+        var conditionBranch = requireReachableBranchByConditionRoot(graph, graph.entryNodeId(), conditional.condition());
+        var trueArmSequence = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(conditionBranch.trueTargetId())
+        );
+        var falseArmSequence = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(conditionBranch.falseTargetId())
+        );
+        var trueMerge = assertInstanceOf(MergeValueItem.class, trueArmSequence.items().getLast());
+        var falseMerge = assertInstanceOf(MergeValueItem.class, falseArmSequence.items().getLast());
+        var valueItems = collectAllValueOpItems(graph);
+        var trueArmProducer = valueItems.stream()
+                .filter(item -> item.anchor() == conditional.left())
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing true arm producer"));
+        var falseArmProducer = valueItems.stream()
+                .filter(item -> item.anchor() == conditional.right())
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing false arm producer"));
+        var stopNode = requireSingleStopNode(graph);
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertSame(conditional.condition(), conditionBranch.conditionRoot()),
+                // Merge slot writes are the only multi-producer form for the shared result id.
+                () -> assertEquals(2, valueItems.stream().filter(MergeValueItem.class::isInstance).count()),
+                () -> assertTrue(valueItems.stream().noneMatch(BoolConstantItem.class::isInstance)),
+                () -> assertSame(conditional, trueMerge.mergeAnchor()),
+                () -> assertSame(conditional, falseMerge.mergeAnchor()),
+                () -> assertEquals(trueMerge.resultValueId(), falseMerge.resultValueId()),
+                () -> assertEquals(trueArmProducer.resultValueIdOrNull(), trueMerge.sourceValueId()),
+                () -> assertEquals(falseArmProducer.resultValueIdOrNull(), falseMerge.sourceValueId()),
+                () -> assertNotEquals(trueMerge.sourceValueId(), falseMerge.sourceValueId()),
+                // Both arms rejoin the same merge continuation, which feeds the return stop.
+                () -> assertEquals(trueArmSequence.nextId(), falseArmSequence.nextId()),
+                () -> assertEquals(trueMerge.resultValueId(), stopNode.returnValueIdOrNull())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyReusesPreferredResultValueIdForConditionalInitializer() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_conditional_initializer.gd",
+                """
+                        class_name CfgBuilderConditionalInitializer
+                        extends RefCounted
+                        
+                        func ping(flag: bool) -> int:
+                            var x = 1 if flag else 2
+                            return x
+                        """,
+                "ping",
+                Map.of("CfgBuilderConditionalInitializer", "RuntimeCfgBuilderConditionalInitializer")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+        var declarationItem = requireSingleSequenceItem(graph, LocalDeclarationItem.class);
+        var initializerId = requireNotNull(
+                declarationItem.initializerValueIdOrNull(),
+                "Conditional initializer must publish a value id"
+        );
+        var mergeItems = collectAllValueOpItems(graph).stream()
+                .filter(MergeValueItem.class::isInstance)
+                .map(MergeValueItem.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                // The declaration-name preferred id becomes the shared merge slot id directly.
+                () -> assertTrue(initializerId.startsWith("x_")),
+                () -> assertEquals(2, mergeItems.size()),
+                () -> assertEquals(initializerId, mergeItems.getFirst().resultValueId()),
+                () -> assertEquals(initializerId, mergeItems.getLast().resultValueId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesConditionalValueGraphForShortCircuitCondition() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_conditional_short_circuit_condition.gd",
+                """
+                        class_name CfgBuilderConditionalShortCircuitCondition
+                        extends RefCounted
+                        
+                        func ping(flag: bool, other: bool) -> int:
+                            return 1 if not flag and other else 2
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderConditionalShortCircuitCondition",
+                        "RuntimeCfgBuilderConditionalShortCircuitCondition"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var conditional = assertInstanceOf(ConditionalExpression.class, returnStatement.value());
+        var shortCircuit = assertInstanceOf(BinaryExpression.class, conditional.condition());
+        var negated = assertInstanceOf(UnaryExpression.class, shortCircuit.left());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+
+        var valueItems = collectAllValueOpItems(graph);
+        var mergeItems = valueItems.stream()
+                .filter(MergeValueItem.class::isInstance)
+                .map(MergeValueItem.class::cast)
+                .toList();
+        var flagBranch = requireReachableBranchByConditionRoot(graph, graph.entryNodeId(), negated.operand());
+        var otherBranch = requireReachableBranchByConditionRoot(graph, graph.entryNodeId(), shortCircuit.right());
+        var trueArmValueId = requireSingleProducerResultId(graph, conditional.left());
+        var trueArmSequence = requireSequenceContainingMergeWrite(graph, conditional, trueArmValueId);
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                // `not` keeps the operand as condition root and only swaps targets; the false arm of
+                // `flag` must skip the `other` test and land on the ternary's false arm sequence.
+                () -> assertEquals(flagBranch.trueTargetId(), otherBranch.falseTargetId()),
+                () -> assertEquals(trueArmSequence.id(), otherBranch.trueTargetId()),
+                () -> assertEquals(2, mergeItems.size()),
+                () -> assertEquals(mergeItems.getFirst().resultValueId(), mergeItems.getLast().resultValueId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesNestedConditionalValueGraphWithUniqueMergeIds() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_nested_conditional_value.gd",
+                """
+                        class_name CfgBuilderNestedConditionalValue
+                        extends RefCounted
+                        
+                        func ping(c1: bool, c2: bool, a: int, b: int, d: int) -> int:
+                            return a if c1 else b if c2 else d
+                        """,
+                "ping",
+                Map.of("CfgBuilderNestedConditionalValue", "RuntimeCfgBuilderNestedConditionalValue")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var outer = assertInstanceOf(ConditionalExpression.class, returnStatement.value());
+        var inner = assertInstanceOf(ConditionalExpression.class, outer.right());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+
+        var outerBranch = requireReachableBranchByConditionRoot(graph, graph.entryNodeId(), outer.condition());
+        var innerBranch = requireReachableBranchByConditionRoot(graph, outerBranch.falseTargetId(), inner.condition());
+        var mergeItems = collectAllValueOpItems(graph).stream()
+                .filter(MergeValueItem.class::isInstance)
+                .map(MergeValueItem.class::cast)
+                .toList();
+        var innerMerges = mergeItems.stream().filter(item -> item.mergeAnchor() == inner).toList();
+        var outerMerges = mergeItems.stream().filter(item -> item.mergeAnchor() == outer).toList();
+        var innerResultId = innerMerges.getFirst().resultValueId();
+        var stopNode = requireSingleStopNode(graph);
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(4, mergeItems.size()),
+                () -> assertEquals(2, innerMerges.size()),
+                () -> assertEquals(2, outerMerges.size()),
+                () -> assertEquals(innerResultId, innerMerges.getLast().resultValueId()),
+                // The inner merge result feeds the outer merge slot (merge-of-merge), and each
+                // nesting level keeps its own result id.
+                () -> assertTrue(outerMerges.stream().anyMatch(item -> item.sourceValueId().equals(innerResultId))),
+                () -> assertNotEquals(innerResultId, outerMerges.getFirst().resultValueId()),
+                () -> assertEquals(outerMerges.getFirst().resultValueId(), stopNode.returnValueIdOrNull()),
+                () -> assertNotEquals(innerBranch.conditionValueId(), outerBranch.conditionValueId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesParenthesizedLeftNestedConditionalValueGraph() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_left_nested_conditional_value.gd",
+                """
+                        class_name CfgBuilderLeftNestedConditionalValue
+                        extends RefCounted
+                        
+                        func ping(c1: bool, c2: bool, a: int, b: int, d: int) -> int:
+                            return (a if c1 else b) if c2 else d
+                        """,
+                "ping",
+                Map.of("CfgBuilderLeftNestedConditionalValue", "RuntimeCfgBuilderLeftNestedConditionalValue")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var outer = assertInstanceOf(ConditionalExpression.class, returnStatement.value());
+        var inner = assertInstanceOf(ConditionalExpression.class, outer.left());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+
+        var outerBranch = requireReachableBranchByConditionRoot(graph, graph.entryNodeId(), outer.condition());
+        var innerBranch = requireReachableBranchByConditionRoot(graph, outerBranch.trueTargetId(), inner.condition());
+        var mergeItems = collectAllValueOpItems(graph).stream()
+                .filter(MergeValueItem.class::isInstance)
+                .map(MergeValueItem.class::cast)
+                .toList();
+        var innerResultId = mergeItems.stream()
+                .filter(item -> item.mergeAnchor() == inner)
+                .findFirst()
+                .orElseThrow()
+                .resultValueId();
+        var outerMerges = mergeItems.stream().filter(item -> item.mergeAnchor() == outer).toList();
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(4, mergeItems.size()),
+                () -> assertTrue(outerMerges.stream().anyMatch(item -> item.sourceValueId().equals(innerResultId))),
+                () -> assertNotEquals(innerBranch.conditionValueId(), outerBranch.conditionValueId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesConditionalValueGraphWithShortCircuitArm() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_conditional_short_circuit_arm.gd",
+                """
+                        class_name CfgBuilderConditionalShortCircuitArm
+                        extends RefCounted
+                        
+                        func ping(a: bool, b: bool, c: bool, d: bool) -> bool:
+                            return (a or b) if c else d
+                        """,
+                "ping",
+                Map.of("CfgBuilderConditionalShortCircuitArm", "RuntimeCfgBuilderConditionalShortCircuitArm")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var conditional = assertInstanceOf(ConditionalExpression.class, returnStatement.value());
+        var orExpression = assertInstanceOf(BinaryExpression.class, conditional.left());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+
+        var outerBranch = requireReachableBranchByConditionRoot(graph, graph.entryNodeId(), conditional.condition());
+        var orLeftBranch = requireReachableBranchByConditionRoot(graph, outerBranch.trueTargetId(), orExpression.left());
+        var orRightBranch = requireReachableBranchByConditionRoot(graph, orLeftBranch.falseTargetId(), orExpression.right());
+        var valueItems = collectAllValueOpItems(graph);
+        var mergeItems = valueItems.stream()
+                .filter(MergeValueItem.class::isInstance)
+                .map(MergeValueItem.class::cast)
+                .toList();
+        var orMerges = mergeItems.stream().filter(item -> item.mergeAnchor() == orExpression).toList();
+        var conditionalMerges = mergeItems.stream().filter(item -> item.mergeAnchor() == conditional).toList();
+        var orResultId = orMerges.getFirst().resultValueId();
+        var conditionalResultId = conditionalMerges.getFirst().resultValueId();
+        // The or result is produced in the or write sequences but consumed by the ternary merge write
+        // in the or merge continuation, so its global producers must all be MergeValueItems for the
+        // cross-sequence merge-of-merge contract to accept the graph.
+        var orResultProducers = valueItems.stream()
+                .filter(item -> orResultId.equals(item.resultValueIdOrNull()))
+                .toList();
+        var conditionalOrMerge = requireSequenceContainingMergeWrite(graph, conditional, orResultId);
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(2, valueItems.stream().filter(BoolConstantItem.class::isInstance).count()),
+                () -> assertEquals(2, orMerges.size()),
+                () -> assertEquals(2, conditionalMerges.size()),
+                () -> assertEquals(orResultId, orMerges.getLast().resultValueId()),
+                () -> assertFalse(orResultProducers.isEmpty()),
+                () -> assertTrue(orResultProducers.stream().allMatch(MergeValueItem.class::isInstance)),
+                () -> assertTrue(
+                        conditionalMerges.stream().anyMatch(item -> item.sourceValueId().equals(orResultId))
+                ),
+                () -> assertNotEquals(orResultId, conditionalResultId),
+                // The ternary merge write for the or arm lands in the or merge continuation, which is
+                // the sequence both or write sequences flow into.
+                () -> assertEquals(
+                        conditionalOrMerge.id(),
+                        assertInstanceOf(
+                                FrontendCfgGraph.SequenceNode.class,
+                                graph.requireNode(orLeftBranch.trueTargetId())
+                        ).nextId()
+                ),
+                () -> assertNotEquals(orLeftBranch.conditionValueId(), orRightBranch.conditionValueId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyExpandsConditionalConditionAsPureControlFlow() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_conditional_condition.gd",
+                """
+                        class_name CfgBuilderConditionalCondition
+                        extends RefCounted
+                        
+                        func ping(a: bool, b: bool, c: bool) -> int:
+                            if a if c else b:
+                                return 1
+                            return 2
+                        """,
+                "ping",
+                Map.of("CfgBuilderConditionalCondition", "RuntimeCfgBuilderConditionalCondition")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var ifStatement = assertInstanceOf(IfStatement.class, rootBlock.statements().getFirst());
+        var conditional = assertInstanceOf(ConditionalExpression.class, ifStatement.condition());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+        var ifRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(ifStatement));
+
+        var conditionBranch = requireReachableBranchByConditionRoot(
+                graph,
+                ifRegion.conditionEntryId(),
+                conditional.condition()
+        );
+        var trueArmBranch = requireReachableBranchByConditionRoot(graph, conditionBranch.trueTargetId(), conditional.left());
+        var falseArmBranch = requireReachableBranchByConditionRoot(
+                graph,
+                conditionBranch.falseTargetId(),
+                conditional.right()
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                // Condition-context ternary never produces a merge value: every arm re-tests its
+                // truthiness against the outer if targets instead.
+                () -> assertTrue(collectAllValueOpItems(graph).stream().noneMatch(MergeValueItem.class::isInstance)),
+                () -> assertEquals(ifRegion.thenEntryId(), trueArmBranch.trueTargetId()),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), trueArmBranch.falseTargetId()),
+                () -> assertEquals(ifRegion.thenEntryId(), falseArmBranch.trueTargetId()),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), falseArmBranch.falseTargetId()),
+                () -> assertNotEquals(conditionBranch.conditionValueId(), trueArmBranch.conditionValueId()),
+                () -> assertNotEquals(conditionBranch.conditionValueId(), falseArmBranch.conditionValueId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyExpandsNestedConditionalConditionWithoutMergeValues() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_nested_conditional_condition.gd",
+                """
+                        class_name CfgBuilderNestedConditionalCondition
+                        extends RefCounted
+                        
+                        func ping(a: bool, b: bool, c: bool, c2: bool, d: bool) -> int:
+                            if a if c else b if c2 else d:
+                                return 1
+                            return 2
+                        """,
+                "ping",
+                Map.of("CfgBuilderNestedConditionalCondition", "RuntimeCfgBuilderNestedConditionalCondition")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var ifStatement = assertInstanceOf(IfStatement.class, rootBlock.statements().getFirst());
+        var outer = assertInstanceOf(ConditionalExpression.class, ifStatement.condition());
+        var inner = assertInstanceOf(ConditionalExpression.class, outer.right());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+        var ifRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(ifStatement));
+
+        var outerBranch = requireReachableBranchByConditionRoot(graph, ifRegion.conditionEntryId(), outer.condition());
+        var innerBranch = requireReachableBranchByConditionRoot(graph, outerBranch.falseTargetId(), inner.condition());
+        var innerTrueBranch = requireReachableBranchByConditionRoot(graph, innerBranch.trueTargetId(), inner.left());
+        var innerFalseBranch = requireReachableBranchByConditionRoot(graph, innerBranch.falseTargetId(), inner.right());
+        var branchCount = graph.nodeIds().stream()
+                .filter(nodeId -> graph.requireNode(nodeId) instanceof FrontendCfgGraph.BranchNode)
+                .count();
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(5, branchCount),
+                () -> assertTrue(collectAllValueOpItems(graph).stream().noneMatch(MergeValueItem.class::isInstance)),
+                () -> assertEquals(ifRegion.thenEntryId(), innerTrueBranch.trueTargetId()),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), innerTrueBranch.falseTargetId()),
+                () -> assertEquals(ifRegion.thenEntryId(), innerFalseBranch.trueTargetId()),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), innerFalseBranch.falseTargetId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyExpandsShortCircuitConditionalArmWithoutMergeValues() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_conditional_condition_short_circuit_arm.gd",
+                """
+                        class_name CfgBuilderConditionalConditionShortCircuitArm
+                        extends RefCounted
+                        
+                        func ping(a: bool, b: bool, c: bool, d: bool) -> int:
+                            if (a or b) if c else d:
+                                return 1
+                            return 2
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderConditionalConditionShortCircuitArm",
+                        "RuntimeCfgBuilderConditionalConditionShortCircuitArm"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var ifStatement = assertInstanceOf(IfStatement.class, rootBlock.statements().getFirst());
+        var conditional = assertInstanceOf(ConditionalExpression.class, ifStatement.condition());
+        var orExpression = assertInstanceOf(BinaryExpression.class, conditional.left());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+        var ifRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(ifStatement));
+
+        var conditionBranch = requireReachableBranchByConditionRoot(
+                graph,
+                ifRegion.conditionEntryId(),
+                conditional.condition()
+        );
+        var orLeftBranch = requireReachableBranchByConditionRoot(graph, conditionBranch.trueTargetId(), orExpression.left());
+        var orRightBranch = requireReachableBranchByConditionRoot(graph, orLeftBranch.falseTargetId(), orExpression.right());
+        var fallbackBranch = requireReachableBranchByConditionRoot(
+                graph,
+                conditionBranch.falseTargetId(),
+                conditional.right()
+        );
+        var valueItems = collectAllValueOpItems(graph);
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                // Condition-context `or` inside a condition-context ternary stays pure control flow:
+                // no merge slots and no bool constants anywhere in the graph.
+                () -> assertTrue(valueItems.stream().noneMatch(MergeValueItem.class::isInstance)),
+                () -> assertTrue(valueItems.stream().noneMatch(BoolConstantItem.class::isInstance)),
+                () -> assertEquals(ifRegion.thenEntryId(), orLeftBranch.trueTargetId()),
+                () -> assertEquals(ifRegion.thenEntryId(), orRightBranch.trueTargetId()),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), orRightBranch.falseTargetId()),
+                () -> assertEquals(ifRegion.thenEntryId(), fallbackBranch.trueTargetId()),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), fallbackBranch.falseTargetId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyFailsFastWhenConditionalTypeIsNotLoweringReady() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_conditional_missing_fact.gd",
+                """
+                        class_name CfgBuilderConditionalMissingFact
+                        extends RefCounted
+                        
+                        func ping(flag: bool) -> int:
+                            return missing if flag else 1
+                        """,
+                "ping",
+                Map.of("CfgBuilderConditionalMissingFact", "RuntimeCfgBuilderConditionalMissingFact")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
+        );
+
+        assertAll(
+                () -> assertTrue(analyzed.diagnostics().hasErrors()),
+                () -> assertTrue(exception.getMessage().contains("not lowering-ready"), exception.getMessage())
+        );
+    }
+
+    @Test
     void buildExecutableBodyPublishesShortCircuitConditionGraphWithoutEagerRightOperand() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_short_circuit_condition.gd",
@@ -3125,6 +3608,61 @@ class FrontendCfgGraphBuilderTest {
             }
         }
         throw new AssertionError("Missing reachable branch for condition root " + conditionRoot.getClass().getSimpleName());
+    }
+
+    private static @NotNull List<ValueOpItem> collectAllValueOpItems(@NotNull FrontendCfgGraph graph) {
+        return graph.nodeIds().stream()
+                .map(graph::requireNode)
+                .filter(FrontendCfgGraph.SequenceNode.class::isInstance)
+                .map(FrontendCfgGraph.SequenceNode.class::cast)
+                .flatMap(node -> node.items().stream())
+                .filter(ValueOpItem.class::isInstance)
+                .map(ValueOpItem.class::cast)
+                .toList();
+    }
+
+    private static FrontendCfgGraph.@NotNull StopNode requireSingleStopNode(@NotNull FrontendCfgGraph graph) {
+        var stops = graph.nodeIds().stream()
+                .map(graph::requireNode)
+                .filter(FrontendCfgGraph.StopNode.class::isInstance)
+                .map(FrontendCfgGraph.StopNode.class::cast)
+                .toList();
+        assertEquals(1, stops.size(), () -> "Expected exactly one StopNode in " + graph.nodeIds());
+        return stops.getFirst();
+    }
+
+    /// Resolves the single value id published by one plain (non-branchy) arm expression.
+    private static @NotNull String requireSingleProducerResultId(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull Expression armExpression
+    ) {
+        var resultIds = collectAllValueOpItems(graph).stream()
+                .filter(item -> item.anchor() == armExpression)
+                .map(ValueOpItem::resultValueIdOrNull)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        assertEquals(1, resultIds.size(), () -> "Expected exactly one producer id for arm " + armExpression);
+        return resultIds.getFirst();
+    }
+
+    /// Locates the sequence holding the ternary merge write for one source value id.
+    private static FrontendCfgGraph.@NotNull SequenceNode requireSequenceContainingMergeWrite(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull ConditionalExpression mergeAnchor,
+            @NotNull String sourceValueId
+    ) {
+        return graph.nodeIds().stream()
+                .map(graph::requireNode)
+                .filter(FrontendCfgGraph.SequenceNode.class::isInstance)
+                .map(FrontendCfgGraph.SequenceNode.class::cast)
+                .filter(node -> node.items().stream().anyMatch(item ->
+                        item instanceof MergeValueItem merge
+                                && merge.mergeAnchor() == mergeAnchor
+                                && merge.sourceValueId().equals(sourceValueId)
+                ))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing merge sequence for source " + sourceValueId));
     }
 
     private static <T> @NotNull T requireNotNull(T value, @NotNull String detail) {
