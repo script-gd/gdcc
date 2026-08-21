@@ -5,7 +5,9 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendBodyDeclarationIndex;
 import gd.script.gdcc.frontend.sema.FrontendBodyLocalDeclaration;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
@@ -71,6 +73,49 @@ class FrontendVisibleValueResolverTest {
         assertSame(pingFunction.parameters().getFirst(), result.visibleValue().declaration());
         assertTrue(result.filteredHits().isEmpty());
         assertNull(result.deferredBoundary());
+    }
+
+    @Test
+    void resolvePrefersCallableLocalShadowingBareGlobalEnumValue() throws Exception {
+        var analyzedInput = analyzedInput("shadow_global_enum_value.gd", """
+                class_name ShadowGlobalEnumValue
+                extends Node
+
+                func ping():
+                    var TYPE_NIL = 5
+                    return TYPE_NIL
+                """);
+        var useSite = findIdentifierExpression(analyzedInput.unit().ast(), "TYPE_NIL");
+        var declaration = findNode(
+                analyzedInput.unit().ast(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("TYPE_NIL")
+        );
+        var resolver = new FrontendVisibleValueResolver(analyzedInput.analysisData());
+
+        var result = resolver.resolve(new FrontendVisibleValueResolveRequest(
+                "TYPE_NIL",
+                useSite,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ));
+
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, result.status());
+        assertNotNull(result.visibleValue());
+        assertEquals(ScopeValueKind.LOCAL, result.visibleValue().kind());
+        assertSame(declaration, result.visibleValue().declaration());
+        assertTrue(result.filteredHits().isEmpty());
+
+        // Shadowing a global constant with a callable-local variable is legal: the variable
+        // analyzer's same-callable conflict check never reaches the global namespace, so no
+        // diagnostic is published and top binding resolves the use site to the local.
+        var errors = analyzedInput.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                .toList();
+        assertTrue(errors.isEmpty(), errors::toString);
+        var binding = analyzedInput.analysisData().symbolBindings().get(useSite);
+        assertNotNull(binding);
+        assertEquals(FrontendBindingKind.LOCAL_VAR, binding.kind());
+        assertSame(declaration, binding.declarationSite());
     }
 
     @Test

@@ -21,7 +21,6 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
@@ -223,7 +222,7 @@ public final class CBuiltinBuilder {
                     return;
                 }
                 case GdFloatType _ -> {
-                    bodyBuilder.assignExpr(target, normalizeFloatLiteral(literal), GdFloatType.FLOAT);
+                    bodyBuilder.assignExpr(target, CFloatLiteralSupport.normalizeSourceFloatLiteral(literal), GdFloatType.FLOAT);
                     return;
                 }
                 default -> {
@@ -676,7 +675,7 @@ public final class CBuiltinBuilder {
         if ("true".equals(argLiteral) || "false".equals(argLiteral)) {
             return GdBoolType.BOOL;
         }
-        if (isInfinityLiteral(argLiteral)) {
+        if (CFloatLiteralSupport.isNonFiniteFloatLiteral(argLiteral)) {
             return GdFloatType.FLOAT;
         }
         if (isNumericLiteral(argLiteral)) {
@@ -718,7 +717,7 @@ public final class CBuiltinBuilder {
                 return bodyBuilder.valueOfExpr("godot_new_Dictionary()", argType);
             }
             case GdFloatType _ -> {
-                return bodyBuilder.valueOfExpr(normalizeFloatLiteral(argLiteral), argType);
+                return bodyBuilder.valueOfExpr(CFloatLiteralSupport.normalizeSourceFloatLiteral(argLiteral), argType);
             }
             default -> {
                 return bodyBuilder.valueOfExpr(argLiteral, argType);
@@ -730,32 +729,12 @@ public final class CBuiltinBuilder {
         return switch (expectedType) {
             case GdBoolType _ -> "true".equals(argLiteral) || "false".equals(argLiteral);
             case GdIntType _ -> isIntegerLiteral(argLiteral);
-            case GdFloatType _ -> isNumericLiteral(argLiteral) || isInfinityLiteral(argLiteral);
+            case GdFloatType _ -> isNumericLiteral(argLiteral) || CFloatLiteralSupport.isNonFiniteFloatLiteral(argLiteral);
             case GdStringType _ -> isQuotedStringLiteral(argLiteral);
             case GdStringNameType _ -> isQuotedStringNameLiteral(argLiteral);
             case GdArrayType _ -> "[]".equals(argLiteral);
             case GdDictionaryType _ -> "{}".equals(argLiteral);
             default -> inferCtorArgType(argLiteral) != null;
-        };
-    }
-
-    private @NotNull String normalizeFloatLiteral(@NotNull String literal) {
-        var mappedInfinity = mapInfinityLiteral(literal);
-        if (mappedInfinity != null) {
-            return mappedInfinity;
-        }
-        return literal;
-    }
-
-    private boolean isInfinityLiteral(@NotNull String literal) {
-        return mapInfinityLiteral(literal) != null;
-    }
-
-    private @Nullable String mapInfinityLiteral(@NotNull String literal) {
-        return switch (literal.trim().toLowerCase(Locale.ROOT)) {
-            case "inf", "+inf" -> "godot_inf";
-            case "-inf" -> "-godot_inf";
-            default -> null;
         };
     }
 

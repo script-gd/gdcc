@@ -4,7 +4,7 @@
 > 本文档是「裸标识符访问全局枚举值、全局常量与 GDScript 语言预定义常量」的实施计划与事实源。
 > 实施完成后本文档转为冻结合同，阶段性步骤记录以 git 历史为准。
 >
-> 进度：Step 1 已完成（2026-08-21，scope 层索引与解析扩展落地，`ClassRegistryScopeTest` 16 用例全绿）；Step 2 / Step 3 未开始。
+> 进度：Step 1 已完成（2026-08-21，scope 层索引与解析扩展落地，`ClassRegistryScopeTest` 16 用例全绿）；Step 2 已完成（2026-08-21，body lowering 三分支物化 + `CFloatLiteralSupport` float 归一化落地，lowering/backend/sema 测试全绿）；Step 3 已完成（2026-08-21，表达式类型与遮蔽语义集成验证落地，全量回归通过）。
 
 ---
 
@@ -186,7 +186,7 @@
   - 无名组兜底：用手写 fixture（`ExtensionGlobalEnum(null, false, List.of(new ExtensionEnumValue("GDCC_TEST_ORPHAN", 7L)))`）验证无名组成员仍可裸解析。
 - 运行命令：`./gradlew test --tests ClassRegistryScopeTest --no-daemon --info --console=plain`。
 
-### Step 2：body lowering 物化扩展与后端 float 字面量归一化
+### Step 2：body lowering 物化扩展与后端 float 字面量归一化（已完成 2026-08-21）
 
 改动文件：
 
@@ -209,7 +209,19 @@
   - `./gradlew test --tests FrontendLoweringBodyInsnPassTest --no-daemon --info --console=plain`
   - `./gradlew test --tests CNewDataInsnGenTest --no-daemon --info --console=plain`
 
-### Step 3：表达式类型与遮蔽语义集成、全量回归
+实施记录：
+
+- lowering 三用例落在 `FrontendLoweringBodyInsnPassTest`（`runLowersBareGlobalEnumValueIdentifierIntoIntLiteral` / `runLowersBareGdScriptLanguageConstantIdentifierIntoFloatLiteral` / `runLowersBareExtremeConstantIdentifierIntoInt64Literal`），直接复用默认 API registry（`TYPE_NIL` 来自真实 `globalEnums`，`PI` / `INT64_MAX` 来自 Step 1 合成注册）。
+- 负向三件套拆分落点：`FrontendBodyOwnerProceduresExprTypeTest.analyzePublishesUnknownBindingForUnresolvedBareIdentifierWhileSiblingFactsSurvive`（1+2：`sema.binding` error + `UNKNOWN` + 兄弟 `OK` 事实存活）与 `FrontendCompileCheckAnalyzerTest.analyzeForCompileKeepsUnresolvedBareIdentifierAsUpstreamBindingErrorBlockingLowering`（3：upstream error 拥有 anchor、无重复 `sema.compile_check`、`hasErrors` 阻断 lowering）。
+- 审阅补强：新增 `CFloatLiteralSupportTest` 直接锚定 4.6 源文分类合同（`infinity` / `nan` 家族映射、大小写/空白归一、普通数字透传、有限 IEEE 值渲染），与 `CNewDataInsnGenTest` 的 IEEE 端到端断言互补不重复。
+
+### Step 3：表达式类型与遮蔽语义集成、全量回归（已完成 2026-08-21）
+
+实施记录：
+
+- 表达式类型断言落在 `FrontendBodyOwnerProceduresExprTypeTest.analyzePublishesBareGlobalConstantExpressionTypes`（`PI -> float`、`TYPE_NIL -> int`，证明 4.4 零改动成立）。
+- 遮蔽语义断言落在 `FrontendVisibleValueResolverTest.resolvePrefersCallableLocalShadowingBareGlobalEnumValue`（`var TYPE_NIL = 5` 后引用解析为 `LOCAL_VAR`，无冲突诊断，`findSameCallableConflict` 不达全局命名空间）。
+- 全量回归 `./gradlew clean build`：3227 用例中计划列名的既有基线与全部新增用例全绿；引擎集成测试 `IndexStoreInsnGenEngineTest` / `LoadStorePropertyInsnGenEngineInheritanceTest` 在全量构建高负载下偶发 `AccessDeniedException`（`test_project/bin` 内前一测试的 DLL 尚未被其后台清理虚拟线程释放），单独/顺序重跑稳定通过，与本计划改动无关（失败点在 `prepareProject` 文件删除，早于任何 codegen 逻辑）。
 
 改动文件：无（纯验证步）；若 Step 1/2 暴露类型流通问题再定点修复。
 

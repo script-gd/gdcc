@@ -21,6 +21,7 @@ import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -130,6 +131,78 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         assertNotNull(buildType);
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, buildType.status());
         assertEquals("String", buildType.publishedType().getTypeName());
+    }
+
+    @Test
+    void analyzePublishesUnknownBindingForUnresolvedBareIdentifierWhileSiblingFactsSurvive() throws Exception {
+        var analyzed = analyze(
+                "expr_type_unknown_bare_identifier.gd",
+                """
+                        class_name UnknownBareIdentifier
+                        extends RefCounted
+                        
+                        func ping() -> int:
+                            var ok_value: int = OK
+                            return TYPE_WHATEVER
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var unknownIdentifier = findNode(
+                pingFunction,
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("TYPE_WHATEVER")
+        );
+        var okIdentifier = findNode(
+                pingFunction,
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("OK")
+        );
+
+        var unknownBinding = analyzed.analysisData().symbolBindings().get(unknownIdentifier);
+        assertNotNull(unknownBinding);
+        assertEquals(FrontendBindingKind.UNKNOWN, unknownBinding.kind());
+
+        var okBinding = analyzed.analysisData().symbolBindings().get(okIdentifier);
+        assertNotNull(okBinding);
+        assertEquals(FrontendBindingKind.CONSTANT, okBinding.kind());
+        var okType = analyzed.analysisData().expressionTypes().get(okIdentifier);
+        assertNotNull(okType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, okType.status());
+        assertSame(GdIntType.INT, okType.publishedType());
+
+        var bindingErrors = diagnosticsByCategory(analyzed, "sema.binding");
+        assertEquals(1, bindingErrors.size());
+        assertTrue(bindingErrors.getFirst().message().contains("Unable to resolve value binding 'TYPE_WHATEVER'"));
+    }
+
+    @Test
+    void analyzePublishesBareGlobalConstantExpressionTypes() throws Exception {
+        var analyzed = analyze(
+                "expr_type_bare_global_constants.gd",
+                """
+                        class_name BareGlobalConstants
+                        extends RefCounted
+                        
+                        func ping() -> float:
+                            return PI
+                        
+                        func pong() -> int:
+                            return TYPE_NIL
+                        """
+        );
+
+        var piIdentifier = findNode(analyzed.ast(), IdentifierExpression.class, identifier -> identifier.name().equals("PI"));
+        var piType = analyzed.analysisData().expressionTypes().get(piIdentifier);
+        assertNotNull(piType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, piType.status());
+        assertSame(GdFloatType.FLOAT, piType.publishedType());
+
+        var typeNilIdentifier = findNode(analyzed.ast(), IdentifierExpression.class, identifier -> identifier.name().equals("TYPE_NIL"));
+        var typeNilType = analyzed.analysisData().expressionTypes().get(typeNilIdentifier);
+        assertNotNull(typeNilType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, typeNilType.status());
+        assertSame(GdIntType.INT, typeNilType.publishedType());
     }
 
     @Test

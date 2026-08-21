@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（request/result 合同、declaration-order 过滤、initializer 自引用过滤、结构性 deferred boundary、typed overlay-aware resolve、for header/body 解封与核心单元测试已落地）
-- 更新时间：2026-07-20（阶段 L：删除 typed-dependent readiness，resolver 只消费 structural policy、完整 inventory 与 typed overlay）
+- 更新时间：2026-08-21（补充 `ClassRegistry` 全局值命名空间五级解析顺序合同；此前为 2026-07-20 阶段 L：删除 typed-dependent readiness，resolver 只消费 structural policy、完整 inventory 与 typed overlay）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -208,11 +208,21 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 10. 离开 callable-local 层后，委托 shared `Scope.resolveValue(...)`
 11. 若 shared lookup 抛出 `ScopeLookupException`，必须原样传播
 
+全局 root（`ClassRegistry`）的 value 命名空间解析顺序冻结为五级（见 `frontend_global_constant_access_plan.md` §4.2）：
+
+1. `singletonByName`（singleton 名，如 `Engine` / `Input`）
+2. `globalEnumByName`（枚举组名，如 `Variant.Type`，kind 为 `GLOBAL_ENUM`）
+3. `globalConstantByName`（JSON `global_constants[]` + 编译器合成极值常量，kind 为 `CONSTANT`）
+4. `globalEnumValueByBareName`（全部枚举组成员的裸名扁平索引，kind 为 `CONSTANT`，类型 `int`；对齐引擎 `_global_constants_map`，重名 last-wins）
+5. `gdScriptLanguageConstantByName`（合成 GDScript 语言常量 `PI` / `TAU` / `INF` / `NAN`，kind 为 `CONSTANT`，类型 `float`）
+
+五个命名空间两两无交（构造期 guard，违反即 `IllegalStateException`），因此追加级只扩大支持面，不改变任何既有命中；type-meta 命名空间不受影响，`Variant.Type` 等枚举名解析保持不变。
+
 ### 5.1 declaration-order 规则
 
 - parameter 只在 executable callable body 内按“始终可见”处理
 - ordinary local `var` 只有在 declaration 结束位置早于 use-site 起始位置时才视为可见
-- class property / signal / class const / global enum / global constant / singleton 等 non-callable-local binding 不受 statement-order 过滤影响
+- class property / signal / class const / global enum / global constant / 全局枚举成员裸名 / GDScript 语言常量 / singleton 等 non-callable-local binding 不受 statement-order 过滤影响
 
 ### 5.2 initializer 自引用
 

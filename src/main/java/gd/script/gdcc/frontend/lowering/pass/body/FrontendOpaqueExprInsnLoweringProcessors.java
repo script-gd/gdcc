@@ -18,7 +18,9 @@ import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.util.StringUtil;
+import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
+import gd.script.gdcc.scope.GdScriptLanguageConstant;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -50,8 +52,8 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
     /// Resolves a bare identifier leaf through the already-published binding table.
     ///
     /// This processor is allowed to choose only among binding-backed runtime load routes
-    /// (local/parameter/capture/property/self/singleton); it must not re-run any scope lookup or
-    /// member inference.
+    /// (local/parameter/capture/property/self/singleton) and constant literal materialization;
+    /// it must not re-run any scope lookup or member inference.
     ///
     /// The top-binding owner procedure publishes `FrontendBindingKind.SELF` only for explicit
     /// `SelfExpression`. If an `IdentifierExpression` arrives here with binding kind `SELF`, some
@@ -129,8 +131,20 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                     ));
                 }
                 case CONSTANT -> {
+                    // Global constants materialize as pure literal instructions: int-valued
+                    // declarations (JSON global constants, synthesized extreme constants, and
+                    // bare global enum members) become `literal_int`, while the synthesized
+                    // GDScript language constants (`PI`/`TAU`/`INF`/`NAN`) become `literal_float`.
                     if (binding.declarationSite() instanceof ExtensionGlobalConstant globalConstant) {
                         block.appendNonTerminatorInstruction(new LiteralIntInsn(resultSlotId, globalConstant.value()));
+                        return block;
+                    }
+                    if (binding.declarationSite() instanceof ExtensionEnumValue enumValue) {
+                        block.appendNonTerminatorInstruction(new LiteralIntInsn(resultSlotId, enumValue.value()));
+                        return block;
+                    }
+                    if (binding.declarationSite() instanceof GdScriptLanguageConstant languageConstant) {
+                        block.appendNonTerminatorInstruction(new LiteralFloatInsn(resultSlotId, languageConstant.value()));
                         return block;
                     }
                     throw session.unsupportedSequenceItem(

@@ -8,9 +8,10 @@
 ## 文档状态
 
 - 状态：Implemented / Maintained
-- 更新时间：2026-05-27
+- 更新时间：2026-08-21
 - 适用范围：
   - `src/main/java/gd/script/gdcc/backend/c/gen/CBuiltinBuilder.java`
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CFloatLiteralSupport.java`
   - `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`
   - `src/main/java/gd/script/gdcc/backend/c/gen/CBodyBuilder.java`
   - `src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java`
@@ -230,7 +231,7 @@ target 生命周期由调用方控制。
 | -------------- | ----------------------- | ------------------------------------------------- |
 | `null`         | `Variant` target        | `godot_new_Variant_nil()`                         |
 | `null`         | Object target           | `NULL` Godot pointer                              |
-| bool/int/float | 对应 primitive target   | 直接写入，float 支持 `inf` / `+inf` / `-inf` 映射 |
+| bool/int/float | 对应 primitive target   | 直接写入，float 源文经 `CFloatLiteralSupport` 归一化（见下） |
 | `"..."`        | `NodePath` target       | `godot_new_NodePath_with_utf8_chars(u8"...")`     |
 | `"..."`        | 其他 string-like target | `valueOfStringPtrLiteral(...)`                    |
 | `&"..."`       | `StringName`            | `valueOfStringNamePtrLiteral(...)`                |
@@ -241,6 +242,23 @@ target 生命周期由调用方控制。
 
 空 literal、类型不匹配 literal、未知 constructor type、unsupported argument literal 都必须 fail-fast，
 不能生成半正确 C 代码。
+
+float 字面量归一化统一收敛在 `CFloatLiteralSupport`（`public final` + `public static`，跨
+`backend.c.gen` 与 `backend.c.gen.insn` 两包共享），它是非有限 float 值转合法 C 字面量的唯一事实源，
+不允许第二套平行实现：
+
+- 源文字符串分类（`CBuiltinBuilder` static constant / constructor 参数物化路径）：
+  `inf` / `+inf` / `infinity` / `+infinity` -> `godot_inf`，`-inf` / `-infinity` -> `-godot_inf`，
+  `nan` -> `NAN`（`<math.h>` 宏）；其余字面量原样透传。
+- IEEE double 值分类（`NewDataInsnGen` 的 `LiteralFloatInsn` 路径）：
+  `POSITIVE_INFINITY` -> `godot_inf`，`NEGATIVE_INFINITY` -> `-godot_inf`，`NaN` -> `NAN`，
+  其余 `Double.toString(value)`。`Double.toString` 对非有限值产出 `Infinity` / `NaN`，不是合法 C 字面量，
+  因此 `LiteralFloatInsn` 必须经该 helper 输出。
+- `godot_inf` 宏由 `src/main/c/codegen/include_451/godot/godot_builtin_types.h` 提供
+  （`#define godot_inf INFINITY`，同文件已 include `<math.h>`）；`NAN` 直接使用 `<math.h>` 标准宏，
+  不新增 `godot_nan`。
+- 原 `CBuiltinBuilder.isInfinityLiteral` 已更名为 `CFloatLiteralSupport.isNonFiniteFloatLiteral`
+  （语义变宽：`nan` 同样命中），constructor 参数类型推断与可物化性判定随之覆盖 `nan`。
 
 ### 5.3 Constructor Literal
 
@@ -294,6 +312,10 @@ constructor literal 流程：
   - utility default 参数补全与 `CBuiltinBuilder.materializeUtilityDefaultValue(...)` 协作
 - `src/test/java/gd/script/gdcc/backend/c/gen/CLoadStaticInsnGenTest.java`
   - builtin static constant literal 物化入口
+  - `INF` static literal -> `godot_inf` 归一化
+- `src/test/java/gd/script/gdcc/backend/c/gen/CNewDataInsnGenTest.java`
+  - `LiteralFloatInsn` 非有限值归一化：`POSITIVE_INFINITY -> godot_inf`、
+    `NEGATIVE_INFINITY -> -godot_inf`、`NaN -> NAN`（禁止断言 `Infinity` / `NaN` 原文）
 - `src/test/java/gd/script/gdcc/backend/c/gen/CGenHelperTest.java`
   - extension type 文本解析与 container hint 兼容规则
 - `src/test/java/gd/script/gdcc/backend/c/gen/binding/usage/GodotBindingUsageSessionTest.java`

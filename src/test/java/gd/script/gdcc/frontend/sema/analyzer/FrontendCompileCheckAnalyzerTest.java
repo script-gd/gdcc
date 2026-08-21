@@ -2376,6 +2376,33 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
+    @Test
+    void analyzeForCompileKeepsUnresolvedBareIdentifierAsUpstreamBindingErrorBlockingLowering() throws Exception {
+        var analyzed = analyzeForCompile(
+                "compile_check_unknown_bare_identifier.gd",
+                """
+                        class_name CompileCheckUnknownBareIdentifier
+                        extends RefCounted
+                        
+                        func ping() -> int:
+                            return TYPE_WHATEVER
+                        """
+        );
+
+        var bindingErrors = diagnosticsByCategory(analyzed.diagnostics(), "sema.binding");
+        var compileErrors = diagnosticsByCategory(analyzed.diagnostics(), "sema.compile_check");
+        assertAll(
+                () -> assertEquals(1, bindingErrors.size()),
+                () -> assertTrue(bindingErrors.getFirst().message().contains("Unable to resolve value binding 'TYPE_WHATEVER'")),
+                // The upstream binding error already owns the identifier range, so the gate must
+                // not add a second compile_check for the same root cause.
+                () -> assertTrue(compileErrors.isEmpty(), compileErrors::toString),
+                // The compile-only lowering precondition is `analyzeForCompile(...)` plus no
+                // errors; the binding error therefore keeps this module out of lowering.
+                () -> assertTrue(analyzed.diagnosticManager().hasErrors())
+        );
+    }
+
     private static @NotNull AnalyzedScript analyzeShared(
             @NotNull String fileName,
             @NotNull String source

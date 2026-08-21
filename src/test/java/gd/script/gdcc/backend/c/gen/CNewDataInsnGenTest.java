@@ -70,6 +70,27 @@ public class CNewDataInsnGenTest {
     }
 
     @Test
+    @DisplayName("literal_float should render positive infinity as godot_inf macro")
+    void literalFloatPositiveInfinityShouldRenderGodotInfMacro() {
+        var body = generateBody("f", GdFloatType.FLOAT, false, new LiteralFloatInsn("f", Double.POSITIVE_INFINITY));
+        assertTrue(body.contains("$f = godot_inf;"));
+    }
+
+    @Test
+    @DisplayName("literal_float should render negative infinity as negated godot_inf macro")
+    void literalFloatNegativeInfinityShouldRenderNegatedGodotInfMacro() {
+        var body = generateBody("f", GdFloatType.FLOAT, false, new LiteralFloatInsn("f", Double.NEGATIVE_INFINITY));
+        assertTrue(body.contains("$f = -godot_inf;"));
+    }
+
+    @Test
+    @DisplayName("literal_float should render NaN as math.h NAN macro")
+    void literalFloatNaNShouldRenderMathNanMacro() {
+        var body = generateBody("f", GdFloatType.FLOAT, false, new LiteralFloatInsn("f", Double.NaN));
+        assertTrue(body.contains("$f = NAN;"));
+    }
+
+    @Test
     @DisplayName("literal_null should assign a zeroed fat pointer to object variable")
     void literalNullShouldAssignNull() {
         var body = generateBody("obj", new GdObjectType("Node"), false, new LiteralNullInsn("obj"));

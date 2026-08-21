@@ -1,6 +1,7 @@
 package gd.script.gdcc.backend.c.gen.insn;
 
 import gd.script.gdcc.backend.c.gen.CBodyBuilder;
+import gd.script.gdcc.backend.c.gen.CFloatLiteralSupport;
 import gd.script.gdcc.backend.c.gen.CInsnGen;
 import gd.script.gdcc.enums.GdInstruction;
 import gd.script.gdcc.lir.LirVariable;
@@ -48,7 +49,13 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
             case LiteralStringNameInsn(_, var value) -> emitStringNameLiteral(bodyBuilder, resultVar, value);
             case LiteralStringInsn(_, var value) -> emitStringLiteral(bodyBuilder, resultVar, value);
             case LiteralFloatInsn(_, var value) ->
-                    bodyBuilder.assignExpr(requireWritableTarget(bodyBuilder, resultVar), Double.toString(value), GdFloatType.FLOAT);
+                    // Non-finite values must go through the shared normalizer: `Double.toString`
+                    // emits `Infinity` / `NaN`, which are not valid C literals.
+                    bodyBuilder.assignExpr(
+                            requireWritableTarget(bodyBuilder, resultVar),
+                            CFloatLiteralSupport.renderFloatLiteral(value),
+                            GdFloatType.FLOAT
+                    );
             case LiteralBoolInsn(_, var value) ->
                     bodyBuilder.assignExpr(requireWritableTarget(bodyBuilder, resultVar), Boolean.toString(value), GdBoolType.BOOL);
             case LiteralIntInsn(_, var value) ->

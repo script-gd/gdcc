@@ -57,6 +57,7 @@ import gd.script.gdcc.lir.insn.GotoInsn;
 import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
+import gd.script.gdcc.lir.insn.LiteralFloatInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralNilInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
@@ -7289,6 +7290,105 @@ class FrontendLoweringBodyInsnPassTest {
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
                 () -> assertEquals(4_294_967_296L, literalInsn.value()),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersBareGlobalEnumValueIdentifierIntoIntLiteral() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_bare_enum_value.gd",
+                """
+                        class_name BodyInsnBareEnumValue
+                        extends RefCounted
+                        
+                        func ping() -> int:
+                            return TYPE_NIL
+                        """,
+                Map.of("BodyInsnBareEnumValue", "RuntimeBodyInsnBareEnumValue"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnBareEnumValue",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var literalInsn = requireOnlyInstruction(pingContext.targetFunction(), LiteralIntInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pingContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(0L, literalInsn.value()),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersBareGdScriptLanguageConstantIdentifierIntoFloatLiteral() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_bare_language_constant.gd",
+                """
+                        class_name BodyInsnBareLanguageConstant
+                        extends RefCounted
+                        
+                        func ping() -> float:
+                            return PI
+                        """,
+                Map.of("BodyInsnBareLanguageConstant", "RuntimeBodyInsnBareLanguageConstant"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnBareLanguageConstant",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var literalInsn = requireOnlyInstruction(pingContext.targetFunction(), LiteralFloatInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pingContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(Math.PI, literalInsn.value()),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersBareExtremeConstantIdentifierIntoInt64Literal() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_bare_extreme_constant.gd",
+                """
+                        class_name BodyInsnBareExtremeConstant
+                        extends RefCounted
+                        
+                        func ping() -> int:
+                            return INT64_MAX
+                        """,
+                Map.of("BodyInsnBareExtremeConstant", "RuntimeBodyInsnBareExtremeConstant"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnBareExtremeConstant",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var literalInsn = requireOnlyInstruction(pingContext.targetFunction(), LiteralIntInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pingContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(Long.MAX_VALUE, literalInsn.value()),
                 () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId())
         );
     }
