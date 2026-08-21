@@ -16,6 +16,7 @@
   - `frontend_variable_analyzer_implementation.md`
   - `frontend_top_binding_analyzer_implementation.md`
   - `scope_analyzer_implementation.md`
+  - `frontend_global_constant_implementation.md`
   - `scope_architecture_refactor_plan.md`
   - `diagnostic_manager.md`
   - `doc/analysis/frontend_semantic_analyzer_research_report.md`
@@ -208,7 +209,7 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 10. 离开 callable-local 层后，委托 shared `Scope.resolveValue(...)`
 11. 若 shared lookup 抛出 `ScopeLookupException`，必须原样传播
 
-全局 root（`ClassRegistry`）的 value 命名空间解析顺序冻结为五级（见 `frontend_global_constant_access_plan.md` §4.2）：
+全局 root（`ClassRegistry`）的 value 命名空间解析顺序冻结为五级（见 `frontend_global_constant_implementation.md` §3.3）：
 
 1. `singletonByName`（singleton 名，如 `Engine` / `Input`）
 2. `globalEnumByName`（枚举组名，如 `Variant.Type`，kind 为 `GLOBAL_ENUM`）

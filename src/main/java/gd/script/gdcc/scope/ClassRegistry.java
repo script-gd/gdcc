@@ -288,7 +288,8 @@ public final class ClassRegistry implements Scope {
         return globalEnumByName.containsKey(name);
     }
 
-    /// Check whether a name refers to a top-level Godot global constant.
+    /// Check whether a name refers to a top-level Godot global constant, including compiler-synthesized
+    /// extreme-value entries registered into the same namespace.
     public boolean isGlobalConstant(@NotNull String name) {
         return globalConstantByName.containsKey(name);
     }
@@ -867,7 +868,8 @@ public final class ClassRegistry implements Scope {
         return globalEnumByName.get(name);
     }
 
-    /// Return the top-level ExtensionGlobalConstant object for a global constant name.
+    /// Return the top-level `ExtensionGlobalConstant` for a global constant name, including
+    /// compiler-synthesized extreme-value entries when the API dump does not provide them.
     public @Nullable ExtensionGlobalConstant findGlobalConstant(@NotNull String name) {
         return globalConstantByName.get(name);
     }

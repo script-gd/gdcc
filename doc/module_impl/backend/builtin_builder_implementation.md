@@ -257,8 +257,7 @@ float 字面量归一化统一收敛在 `CFloatLiteralSupport`（`public final` 
 - `godot_inf` 宏由 `src/main/c/codegen/include_451/godot/godot_builtin_types.h` 提供
   （`#define godot_inf INFINITY`，同文件已 include `<math.h>`）；`NAN` 直接使用 `<math.h>` 标准宏，
   不新增 `godot_nan`。
-- 原 `CBuiltinBuilder.isInfinityLiteral` 已更名为 `CFloatLiteralSupport.isNonFiniteFloatLiteral`
-  （语义变宽：`nan` 同样命中），constructor 参数类型推断与可物化性判定随之覆盖 `nan`。
+- `CFloatLiteralSupport.isNonFiniteFloatLiteral` 判定 `inf` 家族与 `nan`；constructor 参数类型推断与可物化性判定随之覆盖 `nan`。
 
 ### 5.3 Constructor Literal
 
