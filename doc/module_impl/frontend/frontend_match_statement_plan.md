@@ -31,12 +31,39 @@
 > 明确 suite 级 transaction 必须同时允许两个 stage 且 order 不得相同。
 > v5（2026-08-21，第四轮复核，Verdict: APPROVE）：修正「同序 fail-fast」过满措辞——
 > 当前 `checkOrder` 允许同序，fail-fast 只挂在重复 stage / order 回退上；同序作为设计约束禁止。
+> v6（2026-08-21，Step 1 实施实证修订）：parse 探针实证 R8——仅键省略值形态 `{"a", "b"}`
+> 在 gdparser 0.5.3 不可表示（键被丢弃并发 `parse.lowering` WARNING、映射为零 entry），
+> 从支持面删除；实证精化 R1——grammar 仅接受尾位 `..`，`[.., 1]` 直接 parse 错误而非
+> openEnded=true 歧义形态，字典同；Step 1 产物（`FrontendMatchSupport` / plan 模型 /
+> `FrontendMatchSupportTest` / `FrontendMatchParseBehaviorTest`）落地并锚定。
+> v7（2026-08-21，expression pattern 语义修订，经 Godot master 源码实证）：`CONSTANT_EXPRESSION`
+> route 改名并放宽为 `EXPRESSION`（对齐 Godot `PT_EXPRESSION` 1:1）——Godot analyzer 实证
+> （`gdscript_analyzer.cpp` `resolve_match_pattern`）expression pattern 合法当且仅当
+> `is_constant` 或形状为裸标识符/标识符根 attribute 链，非常量时**运行时求值比较**
+> （`gdscript_compiler.cpp` `_parse_match_pattern` PT_EXPRESSION）；gdcc 决策为有意超集：
+> 任意可求值表达式均为合法 pattern（不设形状白名单），常量性只决定 lowering 子模式
+> （常量比较 / 运行时比较），不再设 type-check 常量性校验；字典 key 保持 Godot 常量限定
+> 不放宽。详见 §1.2-2/3、§5.6、§5.9、§9 R9。
+> v8（2026-08-21，第五轮复核修订）：§5.9-1 运行时子模式的静态类型矩阵不得跳过
+> `buildValue` 求值（fold-to-false 不物化操作数仅限 LITERAL/常量子模式；运行时子模式
+> 到达测试段必求值以保留副作用，对齐 Godot 对合法 identifier/attribute pattern 的运行时
+> 求值）；R9 删除「副作用表达式 Godot 本来就不接受」的错误表述；§5.8 多 pattern OR 的
+> 「无副作用比较」旧口径改为惰性短路语义；inspection 条目 literal/constant 叶子改为
+> LITERAL/EXPRESSION 叶子；Step 2 改名回执扩为可勾选清单（Route/Support/PatternPlan
+> javadoc 与测试方法名/类头）；Step 3 验收拆清「省略 typeof ≠ 跳过求值」。
+> v9（2026-08-21，第六轮复核修订）：R7 可选优化收窄——「跳过建图」仅限 LITERAL /
+> 常量子模式的 body（测试片段已是无副作用常量 false 时）；运行时子模式即使测试结果为
+> 常量 false 也必须保留测试段的 `buildValue`，不得整段跳过；§5.9-1 三条弹头加
+> 子模式前缀，避免与 R7 误读叠加。
+> v10（2026-08-21）：改名回执（v7 清单）在 Step 1 补做完成——`CONSTANT_EXPRESSION` →
+> `EXPRESSION` 落实在 Step 1 产物（Route/Support/PatternPlan/SupportTest）并通过靶向测试；
+> 回执从 Step 2 改动清单迁移到 Step 1 状态块，§7 对应行标记已完成，Step 2 工作面保持干净。
 
 ---
 
 ## 文档状态
 
-- 状态：计划待实施（尚未开始；当前仅冻结计划本身）
+- 状态：Step 1 已完成（分类器、plan 模型与 parse 实证探针已落地，管线行为零变化）；Step 2-5 待实施
 - 更新时间：2026-08-21
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
@@ -91,18 +118,34 @@ match <value_expr>:
 
 - `value_expr`：任意表达式（subject），只求值一次。
 - 每个 section：`pattern_list` + 可选 `when` guard + 缩进 suite。逗号分隔多 pattern 为 **OR** 语义。
-- pattern 种类（Godot 内部 `PT_*`）：`LITERAL`（字面量）、`EXPRESSION`（常量表达式）、
+- pattern 种类（Godot 内部 `PT_*`）：`LITERAL`（字面量）、`EXPRESSION`（表达式 pattern：
+  常量 / 标识符 / attribute 链，gdcc 放宽为任意可求值表达式，见 §1.2-3）、
   `WILDCARD`（`_`）、`BIND`（`var x`）、`ARRAY`、`DICTIONARY`、`REST`（`..`，仅数组/字典内末尾）。
 
 ### 1.2 匹配语义（冻结事实）
 
 1. **求值顺序**：section 自上而下顺序测试，首个命中的 section 执行其 body，之后控制流走到
    `match` 语句之后；无 fallthrough；**无任何 section 命中时静默跳过**（no-op，不报错）。
-2. **字面量 / 常量表达式 pattern**：类型严格相等 —— `typeof(value) == typeof(pattern)` **且**
-   `Variant::OP_EQUAL` 值相等，二者同时成立才命中。唯一例外：`String` 与 `StringName` 交叉互通
-   （`"hello"` 命中 `&"hello"`）。`1` 不命中 `1.0`。
-3. **常量表达式约束**：expression pattern 必须是常量、标识符或属性链（如 `TYPE_FLOAT`、
-   `MyClass.MY_CONST`），否则 analyzer 报错；字典 pattern 的 key 必须是常量。
+2. **字面量 / expression pattern 的比较语义**：类型严格相等 —— `typeof(subject) ==
+   typeof(pattern 值)` **且** `Variant::OP_EQUAL` 值相等，二者同时成立才命中。唯一例外：
+   `String` 与 `StringName` 交叉互通（`"hello"` 命中 `&"hello"`）。`1` 不命中 `1.0`。
+   常量 pattern 的类型编译期已知；非常量 identifier/attribute pattern 在运行时对**两侧**
+   取 `typeof`（String/StringName 交叉为**双向**放行），且 pattern 表达式的求值发生在
+   该 pattern 的测试段内——section 自上而下、section 内多 pattern 从左到右，短路链保护，
+   未到达的 pattern 不求值（`gdscript_compiler.cpp` `_parse_match_pattern` 的
+   PT_LITERAL / PT_EXPRESSION 与 or/and 短路 codegen 结构实证）。
+3. **expression pattern 合法性（Godot 规则，`gdscript_analyzer.cpp`
+   `resolve_match_pattern` PT_EXPRESSION 实证）**：合法当且仅当 (a) 解析后
+   `is_constant`（含常量折叠：`const` 引用、枚举成员、常量构造/工具调用如
+   `Vector2(1,2)` / `sin(20)`、折叠二元 `1+2`、`preload` 等），或 (b) 形状为裸标识符 /
+   标识符根的 attribute 链（`y`、`obj.prop`、`A.B.C`；`self.prop` / `super.prop` 根为
+   Self/Super 节点，**不在**豁免内）。其余非常量形状（`f()`、`a+1`、`d["k"]` 等）报
+   `Expression in match pattern must be a constant expression, an identifier, or an
+   attribute access ("A.B").`。字典 pattern 的 key 单独要求 `is_constant`（无形状豁免），
+   违反报 `Expression in dictionary pattern key must be a constant.`。
+   **gdcc 决策（v7，见 §9 R9）**：pattern 位置不设形状白名单——任意可求值表达式均为
+   合法 pattern，非常量走运行时比较（行为与 Godot 的 PT_EXPRESSION  lowering 同构）；
+   字典 key 不放宽，保持 Godot 常量限定。
 4. **绑定 pattern `var x`**：无条件匹配（等价 wildcard）并把被测值绑定给新变量 `x`；
    顶层绑定整个 subject，数组/字典内嵌套绑定对应位置的子元素。
    - 类型：顶层 bind = subject 的静态类型（`type_constraint`，无则 `Variant`）；嵌套 bind = `Variant`。
@@ -139,7 +182,8 @@ pattern 形态对照表：
 | 字面量 `1` / `"a"` / `1.0` / `true` / `null` | `LiteralExpression(kind, sourceText)` | record 组件直接给 kind |
 | wildcard `_` | `IdentifierExpression("_")` | **仅按名字 `_` 判别**，无专用节点 |
 | 绑定 `var x` | `PatternBindingExpression(name)` | 必须带 `var`；裸 `x` 是 `IdentifierExpression`（常量/变量引用语义，不是绑定） |
-| 裸常量 / 枚举成员 | `IdentifierExpression` / `AttributeExpression`（如 `Variant.Type.TYPE_NIL`） | 走普通可见值/chain 解析 |
+| 裸标识符 / attribute chain（常量引用或运行时值引用） | `IdentifierExpression` / `AttributeExpression`（如 `Variant.Type.TYPE_NIL`、`y`、`obj.prop`） | 走普通可见值/chain 解析 |
+| 其他任意表达式（`f()`、`a+1`、`d["k"]` 等） | 普通 `Expression` 节点 | 同走普通解析；gdcc 超集放宽为合法 pattern（§9 R9） |
 | 数组 pattern `[1, _, var x]` | `ArrayExpression(elements, openEnded=true/false)` | `..` → `openEnded()==true` |
 | 字典 pattern `{"k": var v, ..}` | `DictionaryExpression(entries, openEnded)`，`DictEntry(key, value)` | 同上 |
 | 多 pattern `1, 2, 3:` | `MatchSection.patterns().size() > 1` | 列表长度 |
@@ -149,9 +193,11 @@ pattern 形态对照表：
 
 1. `_` 二义性：库把 `_` 降为普通 `IdentifierExpression`；gdcc **仅在 match pattern 递归上下文内**
    把 `_` 认作 wildcard，普通表达式上下文不受影响。
-2. 裸标识符不是绑定：只有 `PatternBindingExpression` 是绑定；裸小写标识符按常量表达式处理并走
-   普通解析，解析不到常量时由既有 `sema.binding` / chain 链路报错。
-3. `openEnded` 无位置信息：`[.., 1]` 与 `[1, ..]` 都得到 `openEnded=true`（见 §9 R1）。
+2. 裸标识符不是绑定：只有 `PatternBindingExpression` 是绑定；裸小写标识符是普通表达式引用，
+   走普通解析——解析为常量则常量比较，解析为普通可求值值（变量/成员等）则运行时比较
+   （§1.2-2/3，gdcc 超集见 §9 R9）；解析失败才由既有 `sema.binding` / chain 链路报错。
+3. `openEnded` 无位置信息：Step 1 实证 grammar 仅接受尾位 `..`（`[.., 1]` 为 parse 错误），
+   `openEnded==true` 一律对应尾位 `..`（见 §9 R1）。
 4. `openEnded` 在非 match 上下文同样出现：`frontend_container_literal_implementation.md` §2.6 已冻结
    「普通 executable 上下文的 `openEnded==true` 字面量必须 fail-closed」，本计划不改变该合同；
    match pattern 上下文是 `openEnded` 的唯一合法消费点。
@@ -208,9 +254,9 @@ branch scope」语义一致。缺口集中在 inventory → resolver → type-ch
 | `WILDCARD` | `_` | Step 2 | Step 3 |
 | `BINDING` | `var x`（含数组/字典内嵌套 `var x` 的**名字**进入 inventory） | Step 2 | Step 3（顶层）；嵌套 bind 随 Step 4 |
 | `LITERAL` | int/float/String/StringName/bool/null 字面量 | Step 2 | Step 3 |
-| `CONSTANT_EXPRESSION` | 裸全局常量/枚举成员/语言常量、限定式枚举 chain（`Variant.Type.TYPE_NIL`）等可解析为常量值的表达式 | Step 2 | Step 3 |
+| `EXPRESSION` | 任意可求值表达式：裸标识符 / attribute chain（常量或运行时值引用）、call、二元运算等（对齐 Godot `PT_EXPRESSION` 并放宽形状白名单，见 §1.2-3 与 §9 R9） | Step 2 | Step 3 |
 | `ARRAY` | `[p0, p1, ..]` | Step 2 | Step 4 |
-| `DICTIONARY` | `{"k": p, ..}` / `{"k": _}`（仅键省略值 `{"k"}` 形态以 Step 1 parse 实证为准，见 §9 R8） | Step 2 | Step 4 |
+| `DICTIONARY` | `{"k": p, ..}` / `{"k": _}`（仅键省略值形态经 Step 1 parse 实证确认不可表示，已从支持面删除，见 §9 R8） | Step 2 | Step 4 |
 
 - sema 面（Step 2）对**全部 route** 一次性毕业：inventory / binding / plan 发布不区分 route
   （对齐 for「plan 发布不依赖 lowering readiness」的三层解耦，见
@@ -227,8 +273,10 @@ branch scope」语义一致。缺口集中在 inventory → resolver → type-ch
 
 ### 4.2 非目标（本计划全程不变）
 
-见「文档状态 > 明确非目标」。补充：match subject 为 `void` call、pattern 中出现非常量函数调用等
-非法形态，全部由既有 expression / chain / type-check 合同兜底，不为 match 新增特殊规则。
+见「文档状态 > 明确非目标」。补充：match subject 为 `void` call、pattern 表达式解析失败
+（未声明标识符、非法 chain 等）等非法形态，全部由既有 expression / chain / type-check 合同
+兜底，不为 match 新增特殊规则。非常量表达式 pattern **不是**非法形态（v7 起任意可求值
+表达式均为合法 pattern，见 §1.2-3 与 §9 R9）。
 
 ---
 
@@ -251,7 +299,7 @@ FrontendMatchSectionPlan
 FrontendMatchPatternPlan
   patternNode      : Expression                // AST identity（LiteralExpression / IdentifierExpression /
                                                // PatternBindingExpression / ArrayExpression / DictionaryExpression）
-  route            : FrontendMatchPatternRoute // WILDCARD / BINDING / LITERAL / CONSTANT_EXPRESSION / ARRAY / DICTIONARY
+  route            : FrontendMatchPatternRoute // WILDCARD / BINDING / LITERAL / EXPRESSION / ARRAY / DICTIONARY
   bindings         : List<FrontendMatchBindingPlan>  // 该 pattern 内（含嵌套）的全部 bind
 
 FrontendMatchBindingPlan
@@ -268,12 +316,13 @@ FrontendMatchBindingPlan
   - `PatternBindingExpression` → `BINDING`；
   - `LiteralExpression` → `LITERAL`；
   - `ArrayExpression` / `DictionaryExpression` → `ARRAY` / `DICTIONARY`，元素/entry 递归分类；
-  - 其余 `Expression`（裸标识符、attribute chain 等）→ `CONSTANT_EXPRESSION`，其常量合法性不由
-    分类器判定，交给普通 binding/chain 解析与 §5.6 校验。
+  - 其余 `Expression`（裸标识符、attribute chain、call、二元运算等一切形态）→ `EXPRESSION`；
+    分类器只做 AST 形状分派，**常量性不决定合法性**（v7 起任意可求值表达式均合法，
+    §9 R9），只在 lowering 侧决定常量 / 运行时比较子模式（§5.9）。
 - route readiness 的唯一事实源是 `FrontendMatchSupport.isRouteLoweringReady(route)` 的静态集合，
   集合内容随步骤单调增长、**不得预置终态**：Step 1/2 为空集（全部 route 返回 false，
   保证 Step 2 的 fail-closed 中间态）；Step 3 加入
-  `WILDCARD / BINDING / LITERAL / CONSTANT_EXPRESSION`；Step 4 加入 `ARRAY / DICTIONARY`。
+  `WILDCARD / BINDING / LITERAL / EXPRESSION`；Step 4 加入 `ARRAY / DICTIONARY`。
   match route 不携带 operation descriptor 或 compiler-only state，因此**不**引入
   `ForLoweringContractRegistry` 式 registry 类；若未来 route 需要携带 lowering 描述符再升级
   （单调扩展，不得移除已就绪 route）。
@@ -354,12 +403,12 @@ FrontendMatchBindingPlan
   - `ARRAY` / `DICTIONARY`：节点本身只做结构递归，不发布 `FrontendContainerLiteralPlan` /
     `expressionTypes`；元素、字典 key 与 value 子 pattern 递归按本分派处理；
     `openEnded` 仅在此上下文合法（普通上下文的 fail-closed 合同不变）。
-  - `LITERAL` / `CONSTANT_EXPRESSION`：作为叶子表达式走普通 owner 管线
-    （top binding / chain / expr）；`CONSTANT_EXPRESSION` 的常量合法性由 §5.6-2 在
-    type-check 校验，分派层不预判。
+  - `LITERAL` / `EXPRESSION`：作为叶子表达式走普通 owner 管线
+    （top binding / chain / expr）；EXPRESSION 无形状白名单与常量性校验（v7，§9 R9），
+    合法性与解析失败诊断完全由普通管线承担，分派层不预判。
   - `runSupportedRoot` / `runTopBinding` 等 generic walk 不得以 `MatchStatement` /
-    `MatchSection` / 整棵 pattern 为 root 调用；pattern 中出现 lambda / 调用等非常量形态时
-    按 `CONSTANT_EXPRESSION` 叶子走普通管线（lambda 照常记录/解析），随后由 §5.6-2 拒绝，
+    `MatchSection` / 整棵 pattern 为 root 调用；pattern 中出现 lambda / 调用等任意形态时
+    按 `EXPRESSION` 叶子走普通管线（lambda 照常记录/解析，运行时求值比较），
     不在分派层特判。
 - `FrontendBodyOwnerProcedures.runUnsupported`（`:603-611`）的 `case MatchStatement` 删除；
   match 不再发 `sema.unsupported_binding_subtree` / `sema.unsupported_chain_route`。
@@ -429,13 +478,20 @@ FrontendMatchBindingPlan
 统一 owner 为 `sema.type_check`，锚定到违规 pattern / section 节点；以下规则全部对齐 Godot：
 
 1. **bind 与多 pattern 互斥**：section 的 `patterns().size() > 1` 且含 `BINDING` route → error。
-2. **常量表达式合法性**：`CONSTANT_EXPRESSION` route 的 pattern 必须解析为 `CONSTANT` binding
-   或既有常量 chain（`load_static` 路径）；普通 local/parameter/动态表达式 → error
-   （Godot: "Expression in match pattern must be a constant expression"）。
-   解析失败的 pattern 已有 upstream `sema.binding` / chain error 时不重复发错（owner 单一化）。
+2. **expression pattern 合法性（v7 超集）**：`EXPRESSION` route 一律合法——任意可求值
+   表达式（含 `f()`、`a+1`、`d["k"]`、`self.prop` 等 Godot 会拒绝的形状）都是合法
+   pattern，**不设**常量性/形状 type-check 校验（gdcc 有意超集，§9 R9）。pattern 表达式
+   解析失败（未声明标识符、非法 chain 等）时已有 upstream `sema.binding` / chain error，
+   不重复发错（owner 单一化）。pattern 表达式引用同 section 嵌套 bind（如 `[var a, a]`）
+   不设特殊规则——按普通可见性解析到 bind 槽，读取值为命中前的未赋值状态（对齐 Godot
+   的实际行为），实施时以锚点测试锁定。
 3. **guard 条件合同**：复用 Godot-compatible condition contract（`frontend_rules.md` L84）：
    只要求稳定 typed fact，允许非 `bool`，truthiness 归一化由 lowering 承接。
-4. **数组/字典子结构**：字典 key 必须是常量（同规则 2）；`openEnded` 合法性见 §9 R1。
+4. **数组/字典子结构**：字典 key 必须解析为常量（**保持 Godot 严格语义，不随 §9 R9
+   放宽**），否则报 Godot 原文 `Expression in dictionary pattern key must be a constant.`
+   （category = `sema.type_check`，锚定 key 节点）；gdcc 常量域 ⊂ Godot `is_constant`
+   域（无通用常量折叠），Godot 可折叠而 gdcc 不可折叠的 key 形态同样报此错，记为窄口径
+   常量域偏差（与 R1/R8 同级）；`openEnded` 合法性见 §9 R1。
 5. **始终 walk 全部 section body**（对齐 for「始终遍历 body，与 route 无关」），
    route-not-ready 不在这里发错（compile gate 职责）。
 6. 已有 upstream `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 事实时不追加诊断
@@ -485,12 +541,12 @@ subject 无独立「可匹配性」检查：任何稳定类型的 subject 都合
   - `WILDCARD`：无测试，body 即目标（等价常量 true；可用既有 `BoolConstantItem`）。
   - `BINDING`（顶层）：无测试；body 起始把 subject temp 经 `materializeFrontendBoundaryValue`
     物化到 bind 的 `slotTypes()` 类型后 `AssignInsn` 写入 bind 的 source slot（source 名）。
-  - `LITERAL` / `CONSTANT_EXPRESSION`：类型严格相等（§5.9）。
+  - `LITERAL` / `EXPRESSION`：类型严格相等（§5.9，EXPRESSION 分常量 / 运行时两个子模式）。
   - guard：pattern 命中后接 guard 的 `buildCondition` 展开（`and`/`or`/`not` 短路复用既有
     条件合同）；guard false 链到下一 section。
-  - 多 pattern OR：同 section 各 pattern 的命中端全部指向 body，未命中端串联
-    （pattern 测试均为无副作用比较，直接串联，不引入 value 语境 `BinaryOp(OR)`，
-    遵守 `frontend_rules.md` L108）。
+  - 多 pattern OR：同 section 各 pattern 的命中端全部指向 body，未命中端串联形成短路——
+    后一 pattern 仅在前者未命中时求值（运行时子模式可能有副作用，**禁止 eager 求值全部
+    pattern**），不引入 value 语境 `BinaryOp(OR)`，遵守 `frontend_rules.md` L108。
 - body lowering（bind 槽走 for 式 registry，**禁止**假设「policy 翻转后 source-local 预声明
   自动覆盖 bind」——`declareSourceLocalSlots()` 只扫 `LocalDeclarationItem`
   （`FrontendBodyLoweringSession.java:1312-1325`），且 `LocalDeclarationItem.declaration`
@@ -511,26 +567,51 @@ subject 无独立「可匹配性」检查：任何稳定类型的 subject 都合
   - 其余新 item 的 processor 在 `FrontendSequenceItemInsnLoweringProcessors` 注册；
     item 字段在 CFG build 时固化，body lowering 不得重查 AST。
 
-### 5.9 类型严格相等的 lowering 分解（LITERAL / CONSTANT_EXPRESSION）
+### 5.9 类型严格相等的 lowering 分解（LITERAL / EXPRESSION）
 
-对齐 Godot §1.2-2（`typeof` 相等 AND `OP_EQUAL` 值相等，String/StringName 交叉例外）：
+对齐 Godot §1.2-2（`typeof` 相等 AND `OP_EQUAL` 值相等，String/StringName 交叉例外）。
+`EXPRESSION` route 按 published facts 分两个子模式（**常量性只决定 lowering 策略，
+不决定合法性**）：解析为常量（`CONSTANT` binding / `load_static` chain / 语言常量）→
+**常量子模式**；否则（变量、成员、call、二元运算等任意可求值表达式）→ **运行时子模式**。
 
 1. **subject 静态类型已知且非 Variant**：类型比较在 CFG build 期静态折叠 —
-   - literal 类型族与 subject 静态类型一致 → 省略类型分支，只发值比较
-     `binary_op "EQUAL"`（操作数按既有 boundary 物化规则准备）；
-   - 不一致（如 subject `int` vs literal `"a"`，或 `int` vs `1.0`）→ 该 pattern 静态不可能命中，
-     测试片段折叠为常量 false（`BoolConstantItem`），body 仍然建图但不可达；不做 warning（非目标）。
+   - 【LITERAL / 常量子模式】pattern 侧类型族与 subject 静态类型一致 → 省略类型分支，
+     只发值比较 `binary_op "EQUAL"`（操作数按既有 boundary 物化规则准备）；
+   - 【LITERAL / 常量子模式】不一致（如 subject `int` vs literal `"a"`，或 `int` vs
+     `1.0`）→ 该 pattern 静态不可能命中，测试片段折叠为常量 false（`BoolConstantItem`），
+     body 仍然建图但不可达；不做 warning（非目标）。
+   - 【运行时子模式】：只要控制流到达该 pattern 测试段，就**必须** `buildValue(patternExpr)`
+     得到 `pv`，**不得因静态类型不兼容而跳过求值**（保留副作用，对齐 Godot 对合法
+     identifier/attribute pattern 的运行时求值）。静态类型只决定类型检查的形态：
+     两侧已知且兼容 / String↔StringName 交叉 → 省略 typeof 分支，只发值比较；
+     两侧已知且不兼容 → 仍求值 `pv`，测试结果接常量 false（R7 的「body 建图但不可达」
+     仍适用，但不跳过 `buildValue`）；任一侧 `Variant` / 未知 → 走第 2 条完整运行时链。
+     完全折叠为 false 且不物化 pattern 操作数，仅限 LITERAL / 常量子模式（无副作用）。
 2. **subject 为 Variant / 静态未知**：运行时分解为 `go_if` 短路链 —
-   - 先 materialize / pack 出 Variant subject；
-   - `t = get_variant_type $subject`；类型相等用 `literal_int <type_id>` + `binary_op "EQUAL"`；
-     String 家族 literal 的类型相等是 `(t == STRING) or (t == STRING_NAME)`，用两级 `BranchNode`
-     短路展开（禁 `BinaryOp(OR)`，同上）；
-   - 值相等用 `binary_op "EQUAL" $subject $patternOperand`；pattern 操作数来源：
-     `LITERAL` → 既有 `literal_*` 物化；裸全局常量/枚举成员/语言常量 → 复用 `frontend_global_constant_implementation.md` 的
-     `LiteralIntInsn` / `LiteralFloatInsn` 物化链；限定式枚举 chain → 既有 `load_static` 路径。
-   - `null` literal 走 `variant_is_nil` 特例（subject 非 Variant 时静态折叠：仅静态 `Nil` 可命中）。
-3. 常量值不需要编译期已知，只需要**类型已知 + 运行时可求值**（枚举 chain 的运行时 `load_static`
-   即属此类）；因此 `CONSTANT_EXPRESSION` 不要求 frontend 新增常量求值器。
+   - 先 materialize / pack 出 Variant subject；subject 的 `t = get_variant_type $subject`
+     每个 match 只求值一次并跨 pattern 复用（对齐 Godot compiler 的 `p_type_addr`）；
+   - **LITERAL / 常量子模式**：类型相等用 `literal_int <type_id>` + `binary_op "EQUAL"`；
+     String 家族的类型相等是 `(t == STRING) or (t == STRING_NAME)`，用两级 `BranchNode`
+     短路展开（禁 `BinaryOp(OR)`，同上）；值相等用
+     `binary_op "EQUAL" $subject $patternOperand`；pattern 操作数来源：`LITERAL` → 既有
+     `literal_*` 物化；裸全局常量/枚举成员/语言常量 → 复用
+     `frontend_global_constant_implementation.md` 的 `LiteralIntInsn` / `LiteralFloatInsn`
+     物化链；限定式枚举 chain → 既有 `load_static` 路径。
+   - **运行时子模式（v7 新增，对齐 Godot PT_EXPRESSION lowering）**：pattern 表达式经
+     `buildValue(patternExpr)` 求值为 temp `pv`——**求值时机冻结：只在控制流到达该
+     pattern 的测试段时求值**（section 自上而下、section 内多 pattern 从左到右，短路链
+     保护，未到达不求值；对齐 Godot compiler 的 or/and 短路 codegen 结构）；随后
+     `pt = get_variant_type $pv`，类型相等 = `(t == pt)` **或双向 String↔StringName 交叉**
+     （`(t == STRING && pt == STRING_NAME) || (t == STRING_NAME && pt == STRING)`，
+     两方向都查——区别于 LITERAL 的单向展开，因为 pattern 值类型编译期未知），同样用
+     `BranchNode` 短路链展开；值相等 `binary_op "EQUAL" $subject $pv`，与类型结果 AND。
+   - `null` literal 走 `variant_is_nil` 特例（subject 非 Variant 时静态折叠：仅静态 `Nil`
+     可命中）；运行时子模式求值为 `null` 不设特例，走通用路径（`pt == NIL` 比较自然覆盖）。
+3. 常量子模式不要求 frontend 新增常量求值器：常量值不需要编译期已知，只需要
+   **类型已知 + 运行时可求值**（枚举 chain 的运行时 `load_static` 即属此类）。
+4. Godot `is_constant` 域 ⊃ gdcc 常量域（无通用常量折叠）：`1+2`、`Vector2(1,2)`、
+   `sin(20)`、`-1` 等 Godot 可折叠形态在 gdcc 落入运行时子模式。对纯表达式（无副作用）
+   可观察行为与 Godot 等价，仅求值时机从编译期变为运行时（§9 R9）；这不是兼容性偏差。
 
 ### 5.10 数组/字典解构 lowering（Step 4，决策点）
 
@@ -545,7 +626,11 @@ subject 无独立「可匹配性」检查：任何稳定类型的 subject 都合
   backend，遵守 for 维护规则「先冻结 intrinsic 再注册 contract」。
 
 长度语义：无 `..` 时 `len == 元素数`，有 `..` 时 `len >= 元素数`（`..` 本身不计数、
-不捕获剩余元素，对齐 Godot §1.2-5/6）。字典省略值 pattern 的 entry 只做 `has` 检查。
+不捕获剩余元素，对齐 Godot §1.2-5/6）。字典 entry 恒带 value pattern（gdparser
+`DictEntry.value` 非 nullable，仅键形态经 R8 实证已移出支持面），故无需 `has`-only 分支。
+数组元素 / 字典 value pattern 递归继承完整 route 分派——含 `EXPRESSION` 运行时子模式
+（Godot 对嵌套 pattern 同样递归 `resolve_match_pattern`，§1.2-3 的合法性与比较语义在
+嵌套位置一致）；字典 key 保持常量限定（§5.6-4），key 无运行时求值路径。
 
 ### 5.11 Lambda 交互合同
 
@@ -578,6 +663,22 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
 > - 发现既有测试失败时，先查实现根因，不得改测试迁就错误行为。
 
 ### Step 1：规格冻结、`FrontendMatchSupport` 分类器与 parse 实证探针
+
+> 状态：已完成（2026-08-21）。产物：`FrontendMatchSupport` / `FrontendMatchPatternRoute` /
+> `FrontendMatchPlan` / `FrontendMatchSectionPlan` / `FrontendMatchPatternPlan` /
+> `FrontendMatchBindingPlan`（`gd.script.gdcc.frontend.sema`，未接入任何 analyzer）；
+> 测试 `FrontendMatchSupportTest`（13 项）与 `FrontendMatchParseBehaviorTest`（12 项 parse
+> 实证探针）；既有 match 锚点回归全绿，管线行为零变化。parse 实证结论已回写 §2 陷阱 3 与
+> §9 R1 / R8；`samePlan` 幂等合并随 Step 2 的 `matchPlans()` 侧表管道一并落地。
+> 改名回执（v7 清单）已于 2026-08-21 在本步完成，Step 2 不再携带该回执：
+> `FrontendMatchPatternRoute.CONSTANT_EXPRESSION` → `EXPRESSION`（枚举值 + javadoc：合法性由
+> 普通表达式管线承担，常量性只在 lowering 选子模式）；`FrontendMatchSupport`
+> （`LOWERING_READY_ROUTES` 注释、`classifyPatternRoute` javadoc 与 `default` 分支；
+> 字典 key 注释保持「keys are constant expressions, never patterns」不变——§5.6-4，
+> key 不在超集内）；`FrontendMatchPatternPlan` javadoc（`LITERAL / EXPRESSION leaves`）；
+> `FrontendMatchSupportTest`（断言、类头注释、方法名
+> `classifiesAttributeChainAndOtherExpressionsAsConstantExpression` → `...AsExpression`）。
+> `FrontendMatchSupportTest` / `FrontendMatchParseBehaviorTest` 靶向测试绿。
 
 改动：
 
@@ -621,8 +722,9 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
 - `FrontendAnalysisInspectionTool` 的 match 展示扩展，分两条处理
   （`hasUnsupportedOrDeferredAncestor` 只在节点 UNPUBLISHED 时经 `inferUnpublishedReason`
   调用，`FrontendAnalysisInspectionTool.java:433-447`）：
-  - 删除其中无条件的 `MatchStatement -> true` 分支：毕业后 subject / guard / literal /
-    constant 叶子均有 published 事实，不依赖该分支；保留它会继续把整棵 match 子树当作
+  - 删除其中无条件的 `MatchStatement -> true` 分支：毕业后 subject / guard /
+    `LITERAL` / `EXPRESSION` 叶子（含 call / 二元 / 变量引用）均有 published 事实，
+    不依赖该分支；保留它会继续把整棵 match 子树当作
     intentionally skipped（`ForStatement` 同类分支是既有脏点，不作为模板）；
   - 对合同内故意不发布的 pattern 节点（WILDCARD `_` / BINDING `var x` / ARRAY / DICTIONARY
     pattern 根），`inferUnpublishedReason` 新增「pattern-context 故意不发布」的专用 reason
@@ -636,7 +738,7 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
 - 文档同步（本步即做，不留到 Step 5）：`frontend_rules.md` L41 / L66 改为中间态措辞
   （match 进入 shared semantic 支持面；compile gate 按 route-aware 处理且尚无就绪 route）、
   **L123 同步**（match 进入 sema 支持面后，pattern 内全局常量/枚举裸访问不再 deferred，
-  改走普通 CONSTANT_EXPRESSION 合同）、`diagnostic_manager.md` §2.8、`frontend_resolution_pipeline_implementation.md`、
+  改走普通 EXPRESSION 合同）、`diagnostic_manager.md` §2.8、`frontend_resolution_pipeline_implementation.md`、
   `frontend_compile_check_analyzer_implementation.md`、`frontend_variable_analyzer_implementation.md`、
   `frontend_top_binding_analyzer_implementation.md`、`frontend_visible_value_resolver_implementation.md`、
   `frontend_type_check_analyzer_implementation.md`、`frontend_chain_binding_expr_type_implementation.md`、
@@ -651,7 +753,10 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
   - bind 重名 / 与外层 local 冲突的 `sema.variable_binding` 负向锚点；
   - bind 精化：subject 静态 `int` 时顶层 bind 精化为 `int`、subject `Variant` 时保持 `Variant`、
     嵌套 bind 恒 `Variant`；
-  - §5.6 五条校验各自的负向锚点（category = `sema.type_check` + 锚定节点 + 其余合法 section 仍发布 facts）；
+  - §5.6 校验锚点：bind 与多 pattern 互斥、字典 key 非常量（Godot 原文消息）各自的负向锚点
+    （category = `sema.type_check` + 锚定节点 + 其余合法 section 仍发布 facts）；
+    **v7 正向锚点**：任意表达式 pattern（裸变量标识符 / attribute chain / call / 二元运算）
+    均合法——无 type-check 诊断、expressionTypes 等 facts 正常发布；
   - pattern-context 分派负向锚点：`[1, ..]` pattern 不产生 `FrontendContainerLiteralPlan` /
     container FAILED 事实；`var x` pattern 不产生 expressionTypes 事实；`_` 不产生 binding 事实；
   - compile gate 中间态锚点：仅含合法 match 的脚本 `analyzeForCompile` 后 `hasErrors()==true`
@@ -673,7 +778,7 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
 
 改动（§5.8 - §5.9；compile gate 机制已在 Step 2 落地）：
 
-- route readiness 集合加入 `WILDCARD` / `BINDING` / `LITERAL` / `CONSTANT_EXPRESSION`；
+- route readiness 集合加入 `WILDCARD` / `BINDING` / `LITERAL` / `EXPRESSION`；
   `handleMatchStatement` 的就绪分支开始 mark compile surface 并重扫 facts；
 - `FrontendCfgGraphBuilder.processMatchStatement` + `FrontendMatchRegion` +
   `FrontendMatchBindSlot` registry + `MatchBindItem` 等测试用 `ValueOpItem`
@@ -696,9 +801,14 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
   `sema.variable_slot_publication` warning** 时补发 `sema.compile_check`；
   无 upstream warning 的缺洞不在 compile gate 兜底，由 CFG 跨表验证 fail-fast
   （对齐 §5.7 / `frontend_rules.md` L49）；
-- `FrontendLoweringBodyInsnPassTest`：`LITERAL`/`CONSTANT_EXPRESSION` 的
+- `FrontendLoweringBodyInsnPassTest`：`LITERAL`/`EXPRESSION` 常量子模式的
   `get_variant_type` + `binary_op EQUAL` 序列、String/StringName 交叉的两级短路、
   `BINDING` 的 `MatchBindItem` 物化 + `AssignInsn`、`null` literal 的 `variant_is_nil`；
+  `EXPRESSION` **运行时子模式**（v7）：`buildValue` 求值 + 双侧 `get_variant_type` 比较 +
+  **双向** String/StringName 交叉、求值时机惰性（未到达的 pattern 不求值，以 call 计数类
+  fixture 锚定）、pattern 静态类型已知且兼容时省略 typeof 分支但**仍** `buildValue` 求值、
+  静态不兼容时仍 `buildValue`（call/getter 计数 +1）且测试结果为常量 false——
+  完全跳过求值的 fold-to-false 仅限 LITERAL / 常量子模式；
 - e2e：新增 `src/test/resources/unit_test/script/control_flow/match_*` 正向 fixture
   （literal 命中 / wildcard 兜底 / 多 pattern OR / guard / bind 值使用 / 无命中 no-op），
   登记 `GdScriptUnitTestCompileRunnerTest.EXPECTED_SCRIPT_PATHS`；zig / Godot 可用时
@@ -741,6 +851,7 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
 
 | 测试（file:line） | 处置 | 步骤 |
 |---|---|---|
+| `FrontendMatchSupportTest`（Step 1 已落地） | ~~v7 改名回执~~ 已完成（Step 1 状态块）：`CONSTANT_EXPRESSION` → `EXPRESSION` 断言/类头/方法名同步；裸变量标识符正向分类锚点已存在（`value` 用例） | 1（已完成） |
 | `FrontendVisibleValueResolverTest.resolveRejectsSyntheticMatchSectionCurrentScopeEvenWithoutMatchAstBoundary`（679-708） | 反转为合成 `MATCH_SECTION_BODY` 放行（对齐 for 对偶） | 2 |
 | `FrontendVisibleValueResolverTest.resolveSealsMatchSectionBodyAsDeferredUnsupported`（739-765） | 改写为正向：bind 在 guard/body 可见、section 外不可见 | 2 |
 | `FrontendVariableAnalyzerTest.analyzeBindsForInventoryWhileMatchAndBlockLocalConstRemainUnsupported`（357-439） | 拆分：for 正向保留；match 半部改正向 inventory 断言；block-local const 半部保持负向 | 2 |
@@ -793,9 +904,13 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
 
 ## 9. 风险与开放问题
 
-- **R1 `..` 位置/唯一性无法从 AST 校验**：gdparser 0.5.3 只暴露 `openEnded` 布尔，`[.., 1]` 与
-  `[1, ..]` 不可区分。决策：接受为对 Godot 的已知偏差（静默视为 open-ended），并在文档与测试
-  中锚定；若后续 gdparser 暴露位置信息再补 type-check 校验。不为此升级/修改 parser 库。
+- **R1 `..` 位置/唯一性无法从 AST 校验**：gdparser 0.5.3 只暴露 `openEnded` 布尔。
+  Step 1 parse 实证（`FrontendMatchParseBehaviorTest.trailingRestParsesOpenEndedWhileLeadingRestFailsAtParse`）：
+  grammar 仅接受尾位 `..`——`[1, ..]` 映射 `openEnded=true`，`[.., 1]` 直接产生 parse 错误
+  （CST structural ERROR）而非 openEnded=true 歧义形态，字典同；与 Godot「`..` 必须是最后
+  元素」的拒绝结果一致（Godot 发语义错误，gdparser 发 parse 错误）。残留偏差仅为位置信息
+  不暴露（AST 无法区分 `..` 出现的精确位置）。决策：接受为对 Godot 的已知偏差并在测试中
+  锚定；若后续 gdparser 暴露位置信息再补 type-check 校验。不为此升级/修改 parser 库。
 - **R2 解构能力路线**（§5.10 路线 A vs B）：默认路线 A；若实施中证伪（typed boundary /
   dynamic dispatch 不满足），升级路线 B 属于「新增 intrinsic + C helper」的面扩展，
   需先冻结 `gdcc_lir_intrinsic.md` 并知会维护者。
@@ -816,12 +931,33 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
 - **R7 静态折叠的不可达 body**：§5.9-1 的常量 false 折叠会产生「建图但不可达」的 section body；
   风险点在 CFG 发布不变量（无入边 sequence 的 value 引用、region 锚点一致性），而非
   `ControlFlowIntegrityValidator`（其只校验 terminator/successor，不拒绝无入边块）。
-  实施 Step 3 时核对 CFG 不变量；必要时让静态 false 的 section 直接跳过建图，
-  把未命中链短路到下一 section。
-- **R8 字典仅键省略值形态可能不可表示**：gdparser 0.5.3 的 `DictEntry.value` 非 `@Nullable`，
-  mapper 对 entry 强制要求 value 字段；Godot 的 `{"a", "b"}` 仅键形态可能 parse 不出来。
-  处置：Step 1 parse 探针实证；不可表示则从支持面删除该形态（用户改写 `{"k": _}` 等价），
-  记录为与 R1 同级的 parser 偏差；**不得**为此修改/升级 gdparser（架构级，非目标）。
+  实施 Step 3 时核对 CFG 不变量。可选优化**仅限 LITERAL / 常量子模式**：其测试片段已是
+  无副作用的常量 false 时，可跳过 **body** 建图并把未命中链短路到下一 section。
+  运行时子模式即使测试结果为常量 false，也必须保留测试段的 `buildValue`（§5.9-1），
+  不得整段跳过。
+- **R8 字典仅键省略值形态不可表示（Step 1 parse 实证已确认）**：gdparser 0.5.3 的
+  `DictEntry.value` 非 `@Nullable`，mapper 对 entry 强制要求 value 字段。实证
+  （`FrontendMatchParseBehaviorTest.keyOnlyDictionaryEntryIsNotRepresentable`）：
+  Godot 的 `{"a", "b"}` 仅键形态被 grammar 接受为两个 `_primary_expression` 字典子节点，
+  但 mapper 丢弃键、发两条 `parse.lowering` WARNING 并映射为零 entry 字典——键存在语义
+  无法表示。处置：该形态已从支持面删除（用户改写 `{"k": _}` 等价），记录为与 R1 同级的
+  parser 偏差；**不得**为此修改/升级 gdparser（架构级，非目标）。
+- **R9 任意表达式 pattern 是 gdcc 对 Godot 的有意超集（v7 决策）**：Godot analyzer 对非
+  常量、非「裸标识符/标识符根 attribute 链」形状的 pattern 报错
+  （§1.2-3）；gdcc 不设形状白名单，任意可求值表达式均为合法 pattern，非常量走运行时
+  子模式（§5.9）。性质评估：
+  - **方向单向**：Godot 合法 ⇒ gdcc 合法且可观察行为一致——常量形态两侧等价（Godot 可
+    折叠而 gdcc 未折叠的纯表达式走运行时子模式，仅求值时机从编译期变为运行时）；非常量
+    identifier/attribute 形态（Godot 合法，可含 getter 副作用）两侧都在运行时求值，gdcc
+    不得静态跳过求值（§5.9-1 的运行时子模式矩阵）。逆不成立——使用 `f()` / `a+1` /
+    `d["k"]` / `self.prop` 等超集形态的脚本在 Godot 编辑器会报 analyzer 错误，
+    **不可移植**；
+  - 与 R1/R8 性质不同：那不是表达能力缺口，而是语义面主动放宽；不新增诊断（既无 error
+    也无 warning），如需 portability lint（标记 Godot 不可移植 pattern）另行立项；
+  - 字典 key 不在超集内：保持 Godot 常量限定（§5.6-4），因为 key 语义是 lookup 键值
+    而非值比较，且 Godot 对 key 无形状豁免；
+  - 求值时机合同已在 §5.9-2 冻结（逐 pattern 惰性、短路保护、subject 单次求值），
+    副作用 pattern 的行为因此是良定义的。
 
 ---
 
