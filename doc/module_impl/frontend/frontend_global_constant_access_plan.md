@@ -1,8 +1,10 @@
 # Frontend Global Constant Access Implementation
 
-> Updated: 2026-08-20
+> Updated: 2026-08-21
 > 本文档是「裸标识符访问全局枚举值、全局常量与 GDScript 语言预定义常量」的实施计划与事实源。
 > 实施完成后本文档转为冻结合同，阶段性步骤记录以 git 历史为准。
+>
+> 进度：Step 1 已完成（2026-08-21，scope 层索引与解析扩展落地，`ClassRegistryScopeTest` 16 用例全绿）；Step 2 / Step 3 未开始。
 
 ---
 
@@ -161,7 +163,7 @@
 
 ## 5. 分步骤实施
 
-### Step 1：scope 层索引与解析扩展
+### Step 1：scope 层索引与解析扩展（已完成 2026-08-21）
 
 改动文件：
 

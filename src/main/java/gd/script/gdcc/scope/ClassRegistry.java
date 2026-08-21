@@ -76,6 +76,14 @@ public final class ClassRegistry implements Scope {
     private final Map<String, ExtensionUtilityFunction> utilityByName = new HashMap<>();
     private final Map<String, ExtensionGlobalEnum> globalEnumByName = new HashMap<>();
     private final Map<String, ExtensionGlobalConstant> globalConstantByName = new HashMap<>();
+    /// Bare-name index over every global enum member, independent of the owning enum group name.
+    ///
+    /// Mirrors Godot's flat `_global_constants_map`: members of anonymous groups participate as
+    /// well, and duplicate bare names follow the engine's last-wins overwrite semantics.
+    private final Map<String, ExtensionEnumValue> globalEnumValueByBareName = new HashMap<>();
+    /// Compiler-synthesized GDScript language constants (`PI`/`TAU`/`INF`/`NAN`) that the engine
+    /// injects outside the GDExtension API dump. See [GdScriptLanguageConstant].
+    private final Map<String, GdScriptLanguageConstant> gdScriptLanguageConstantByName = new HashMap<>();
     private final Map<String, ExtensionSingleton> singletonByName = new HashMap<>();
     private final Map<String, GdObjectType> singletonTypeByName = new HashMap<>();
     private final Map<String, InvalidSingletonMetadata> invalidSingletonMetadataByName = new HashMap<>();
@@ -104,7 +112,16 @@ public final class ClassRegistry implements Scope {
             if (uf != null && uf.name() != null) utilityByName.put(uf.name(), uf);
         }
         for (var ge : api.globalEnums()) {
-            if (ge != null && ge.name() != null) globalEnumByName.put(ge.name(), ge);
+            if (ge == null) continue;
+            if (ge.name() != null) globalEnumByName.put(ge.name(), ge);
+            if (ge.values() == null) continue;
+            // Bare-name flattening is deliberately decoupled from group registration: members of
+            // anonymous groups still enter the engine's flat constant map and must stay resolvable.
+            for (var value : ge.values()) {
+                if (value != null && value.name() != null) {
+                    globalEnumValueByBareName.put(value.name(), value);
+                }
+            }
         }
         for (var globalConstant : api.globalConstants()) {
             if (globalConstant != null && globalConstant.name() != null) {
@@ -114,7 +131,73 @@ public final class ClassRegistry implements Scope {
         for (var s : api.singletons()) {
             if (s != null && s.name() != null) singletonByName.put(s.name(), s);
         }
+        registerSyntheticGdScriptLanguageConstants();
+        registerSyntheticExtremeConstants();
+        validateGlobalValueNamespacesDisjoint();
         validateSingletonMetadata();
+    }
+
+    /// Registers the GDScript language-level globals mirrored from Godot's
+    /// `GDScriptLanguage::init()`: the engine injects them directly, so they never appear in the
+    /// GDExtension API dump.
+    private void registerSyntheticGdScriptLanguageConstants() {
+        for (var constant : List.of(
+                new GdScriptLanguageConstant("PI", Math.PI),
+                new GdScriptLanguageConstant("TAU", Math.TAU),
+                new GdScriptLanguageConstant("INF", Double.POSITIVE_INFINITY),
+                new GdScriptLanguageConstant("NAN", Double.NaN)
+        )) {
+            gdScriptLanguageConstantByName.put(constant.name(), constant);
+        }
+    }
+
+    /// Registers the extreme-value constants introduced by Godot master (4.6+) as compiler-synthesized
+    /// forward facts: the current API dump does not provide them, but their values are fixed C++
+    /// numeric limits with no runtime dependency. JSON-provided entries keep priority via
+    /// [Map.putIfAbsent] once a future dump ships them.
+    private void registerSyntheticExtremeConstants() {
+        for (var constant : List.of(
+                new ExtensionGlobalConstant("INT8_MIN", -128L, false),
+                new ExtensionGlobalConstant("INT8_MAX", 127L, false),
+                new ExtensionGlobalConstant("INT16_MIN", -32768L, false),
+                new ExtensionGlobalConstant("INT16_MAX", 32767L, false),
+                new ExtensionGlobalConstant("INT32_MIN", -2147483648L, false),
+                new ExtensionGlobalConstant("INT32_MAX", 2147483647L, false),
+                new ExtensionGlobalConstant("INT64_MIN", -9223372036854775808L, false),
+                new ExtensionGlobalConstant("INT64_MAX", 9223372036854775807L, false),
+                new ExtensionGlobalConstant("UINT8_MAX", 255L, false),
+                new ExtensionGlobalConstant("UINT16_MAX", 65535L, false),
+                new ExtensionGlobalConstant("UINT32_MAX", 4294967295L, false)
+        )) {
+            globalConstantByName.putIfAbsent(constant.name(), constant);
+        }
+    }
+
+    /// Global value namespaces must stay pairwise disjoint so the fixed [resolveValueHere] order
+    /// never silently hides a hit from another namespace. Overlaps mean corrupted or conflicting
+    /// engine metadata, which is a programmer error rather than a user-facing diagnostic.
+    private void validateGlobalValueNamespacesDisjoint() {
+        var namespaces = List.of(
+                Map.entry("global enum values", globalEnumValueByBareName.keySet()),
+                Map.entry("GDScript language constants", gdScriptLanguageConstantByName.keySet()),
+                Map.entry("global constants", globalConstantByName.keySet()),
+                Map.entry("singletons", singletonByName.keySet()),
+                Map.entry("global enums", globalEnumByName.keySet())
+        );
+        for (var first = 0; first < namespaces.size(); first++) {
+            for (var second = first + 1; second < namespaces.size(); second++) {
+                var firstNamespace = namespaces.get(first);
+                var secondNamespace = namespaces.get(second);
+                for (var name : firstNamespace.getValue()) {
+                    if (secondNamespace.getValue().contains(name)) {
+                        throw new IllegalStateException(
+                                "Global value name '" + name + "' collides between "
+                                        + firstNamespace.getKey() + " and " + secondNamespace.getKey()
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Registry-owned singleton metadata failure.
@@ -309,6 +392,20 @@ public final class ClassRegistry implements Scope {
         if (globalConstant != null) {
             return ScopeLookupResult.foundAllowed(
                     new ScopeValue(name, GdIntType.INT, ScopeValueKind.CONSTANT, globalConstant, true, false, false)
+            );
+        }
+
+        var enumValue = globalEnumValueByBareName.get(name);
+        if (enumValue != null) {
+            return ScopeLookupResult.foundAllowed(
+                    new ScopeValue(name, GdIntType.INT, ScopeValueKind.CONSTANT, enumValue, true, false, false)
+            );
+        }
+
+        var languageConstant = gdScriptLanguageConstantByName.get(name);
+        if (languageConstant != null) {
+            return ScopeLookupResult.foundAllowed(
+                    new ScopeValue(name, GdFloatType.FLOAT, ScopeValueKind.CONSTANT, languageConstant, true, false, false)
             );
         }
 
@@ -773,6 +870,18 @@ public final class ClassRegistry implements Scope {
     /// Return the top-level ExtensionGlobalConstant object for a global constant name.
     public @Nullable ExtensionGlobalConstant findGlobalConstant(@NotNull String name) {
         return globalConstantByName.get(name);
+    }
+
+    /// Return the global enum member registered under its bare name, or `null` when no global enum
+    /// declares the member. Group-qualified enum access still goes through [findGlobalEnum].
+    public @Nullable ExtensionEnumValue findGlobalEnumValueByBareName(@NotNull String name) {
+        return globalEnumValueByBareName.get(name);
+    }
+
+    /// Return the compiler-synthesized GDScript language constant for a name, or `null` when the
+    /// name is not one of the language-level globals.
+    public @Nullable GdScriptLanguageConstant findGdScriptLanguageConstant(@NotNull String name) {
+        return gdScriptLanguageConstantByName.get(name);
     }
 
     /// Return the singleton's object type for a singleton name.

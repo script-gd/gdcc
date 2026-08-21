@@ -1,6 +1,7 @@
 package gd.script.gdcc.scope;
 
 import gd.script.gdcc.gdextension.ExtensionAPI;
+import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
@@ -10,14 +11,18 @@ import gd.script.gdcc.gdextension.ExtensionSingleton;
 import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.util.HashSet;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -174,6 +179,253 @@ public class ClassRegistryScopeTest {
         assertNull(registry.resolveValue("MissingSymbol"));
         assertTrue(registry.resolveFunctions("MissingSymbol").isEmpty());
         assertNull(registry.resolveTypeMeta("MissingSymbol"));
+    }
+
+    @Test
+    void bareGlobalEnumMemberNamesResolveToIntConstants() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var typeNil = registry.resolveValue("TYPE_NIL");
+        assertNotNull(typeNil);
+        assertEquals(ScopeValueKind.CONSTANT, typeNil.kind());
+        assertEquals(GdIntType.INT, typeNil.type());
+        assertTrue(typeNil.constant());
+        assertFalse(typeNil.writable());
+        var typeNilDeclaration = assertInstanceOf(ExtensionEnumValue.class, typeNil.declaration());
+        assertEquals("TYPE_NIL", typeNilDeclaration.name());
+        assertEquals(0L, typeNilDeclaration.value());
+
+        var okValue = requireBareConstantValue(registry, "OK", GdIntType.INT);
+        var ok = assertInstanceOf(ExtensionEnumValue.class, okValue.declaration());
+        assertEquals(0L, ok.value());
+        var keyAValue = requireBareConstantValue(registry, "KEY_A", GdIntType.INT);
+        var keyA = assertInstanceOf(ExtensionEnumValue.class, keyAValue.declaration());
+        assertEquals(65L, keyA.value());
+        var sideLeftValue = requireBareConstantValue(registry, "SIDE_LEFT", GdIntType.INT);
+        var sideLeft = assertInstanceOf(ExtensionEnumValue.class, sideLeftValue.declaration());
+        assertEquals(0L, sideLeft.value());
+
+        assertNull(registry.resolveTypeMeta("TYPE_NIL"));
+        assertNull(registry.resolveTypeMeta("KEY_A"));
+    }
+
+    @Test
+    void bareGdScriptLanguageConstantsResolveToFloatConstants() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var pi = registry.resolveValue("PI");
+        assertNotNull(pi);
+        assertEquals(ScopeValueKind.CONSTANT, pi.kind());
+        assertEquals(GdFloatType.FLOAT, pi.type());
+        assertTrue(pi.constant());
+        assertFalse(pi.writable());
+        assertEquals(Math.PI, assertInstanceOf(GdScriptLanguageConstant.class, pi.declaration()).value());
+
+        var tau = requireBareConstantValue(registry, "TAU", GdFloatType.FLOAT);
+        assertEquals(Math.TAU, assertInstanceOf(GdScriptLanguageConstant.class, tau.declaration()).value());
+
+        var inf = requireBareConstantValue(registry, "INF", GdFloatType.FLOAT);
+        assertEquals(Double.POSITIVE_INFINITY, assertInstanceOf(GdScriptLanguageConstant.class, inf.declaration()).value());
+
+        var nan = requireBareConstantValue(registry, "NAN", GdFloatType.FLOAT);
+        assertTrue(Double.isNaN(assertInstanceOf(GdScriptLanguageConstant.class, nan.declaration()).value()));
+    }
+
+    @Test
+    void syntheticExtremeConstantsResolveThroughGlobalConstantNamespace() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var int32Max = registry.resolveValue("INT32_MAX");
+        assertNotNull(int32Max);
+        assertEquals(ScopeValueKind.CONSTANT, int32Max.kind());
+        assertEquals(GdIntType.INT, int32Max.type());
+        var int32MaxDeclaration = assertInstanceOf(ExtensionGlobalConstant.class, int32Max.declaration());
+        assertEquals(2147483647L, int32MaxDeclaration.value());
+        assertFalse(int32MaxDeclaration.isBitfield());
+
+        var int64Min = requireBareConstantValue(registry, "INT64_MIN", GdIntType.INT);
+        assertEquals(-9223372036854775808L, assertInstanceOf(ExtensionGlobalConstant.class, int64Min.declaration()).value());
+        var uint32Max = requireBareConstantValue(registry, "UINT32_MAX", GdIntType.INT);
+        assertEquals(4294967295L, assertInstanceOf(ExtensionGlobalConstant.class, uint32Max.declaration()).value());
+
+        assertTrue(registry.isGlobalConstant("INT32_MAX"));
+        assertNotNull(registry.findGlobalConstant("UINT8_MAX"));
+    }
+
+    @Test
+    void jsonProvidedGlobalConstantsKeepPriorityOverSyntheticExtremeConstants() {
+        var api = new ExtensionAPI(
+                new ExtensionHeader(4, 6, 0, "dev", "test", "test", "single"),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGlobalConstant("INT32_MAX", 123L, true)),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var registry = new ClassRegistry(api);
+
+        var resolved = registry.resolveValue("INT32_MAX");
+        assertNotNull(resolved);
+        var declaration = assertInstanceOf(ExtensionGlobalConstant.class, resolved.declaration());
+        assertEquals(123L, declaration.value());
+        assertTrue(declaration.isBitfield());
+    }
+
+    @Test
+    void globalEnumNamesAndUnknownNamesKeepExistingResolution() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var variantType = registry.resolveValue("Variant.Type");
+        assertNotNull(variantType);
+        assertEquals(ScopeValueKind.GLOBAL_ENUM, variantType.kind());
+        assertEquals(GdIntType.INT, variantType.type());
+        assertInstanceOf(ExtensionGlobalEnum.class, variantType.declaration());
+
+        assertNull(registry.resolveValue("TYPE_WHATEVER"));
+        assertTrue(registry.resolveValue("GDCC_TEST_MISSING_BARE_NAME", ResolveRestriction.staticContext()).isNotFound());
+        assertNull(registry.findGlobalEnumValueByBareName("GDCC_TEST_MISSING_BARE_NAME"));
+        assertNull(registry.findGdScriptLanguageConstant("GDCC_TEST_MISSING_BARE_NAME"));
+    }
+
+    @Test
+    void defaultApiKeepsBareGlobalValueNamespacesUniqueAndDisjoint() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+
+        var bareEnumValueNames = new HashSet<String>();
+        for (var globalEnum : api.globalEnums()) {
+            for (var value : globalEnum.values()) {
+                assertTrue(
+                        bareEnumValueNames.add(value.name()),
+                        () -> "Duplicate bare global enum value name: " + value.name()
+                );
+            }
+        }
+
+        for (var singleton : api.singletons()) {
+            assertFalse(bareEnumValueNames.contains(singleton.name()), () -> "Enum value shadows singleton: " + singleton.name());
+        }
+        for (var globalEnum : api.globalEnums()) {
+            assertFalse(bareEnumValueNames.contains(globalEnum.name()), () -> "Enum value shadows enum group: " + globalEnum.name());
+        }
+        for (var globalConstant : api.globalConstants()) {
+            assertFalse(bareEnumValueNames.contains(globalConstant.name()), () -> "Enum value shadows global constant: " + globalConstant.name());
+        }
+        for (var languageConstantName : List.of("PI", "TAU", "INF", "NAN")) {
+            assertFalse(bareEnumValueNames.contains(languageConstantName), () -> "Enum value shadows language constant: " + languageConstantName);
+        }
+    }
+
+    @Test
+    void anonymousGlobalEnumGroupsStillExposeMembersByBareName() {
+        var api = new ExtensionAPI(
+                new ExtensionHeader(4, 4, 0, "stable", "test", "test", "single"),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGlobalEnum(null, false, List.of(
+                        new ExtensionEnumValue(null, 9L),
+                        new ExtensionEnumValue("GDCC_TEST_ORPHAN", 7L)
+                ))),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var registry = new ClassRegistry(api);
+
+        var orphan = registry.resolveValue("GDCC_TEST_ORPHAN");
+        assertNotNull(orphan);
+        assertEquals(ScopeValueKind.CONSTANT, orphan.kind());
+        assertEquals(GdIntType.INT, orphan.type());
+        assertEquals(7L, assertInstanceOf(ExtensionEnumValue.class, orphan.declaration()).value());
+        assertNull(registry.findGlobalEnumValueByBareName("GDCC_TEST_MISSING_BARE_NAME"));
+    }
+
+    @Test
+    void duplicateBareEnumValueNamesFollowLastWinsEngineSemantics() {
+        var api = new ExtensionAPI(
+                new ExtensionHeader(4, 4, 0, "stable", "test", "test", "single"),
+                List.of(),
+                List.of(),
+                List.of(
+                        new ExtensionGlobalEnum("FirstGroup", false, List.of(new ExtensionEnumValue("GDCC_TEST_DUP", 1L))),
+                        new ExtensionGlobalEnum("SecondGroup", false, List.of(new ExtensionEnumValue("GDCC_TEST_DUP", 2L)))
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var registry = new ClassRegistry(api);
+
+        var resolved = registry.resolveValue("GDCC_TEST_DUP");
+        assertNotNull(resolved);
+        assertEquals(2L, assertInstanceOf(ExtensionEnumValue.class, resolved.declaration()).value());
+    }
+
+    @Test
+    void overlappingGlobalValueNamespacesFailFastAtConstruction() {
+        var singletonCollisionApi = new ExtensionAPI(
+                new ExtensionHeader(4, 4, 0, "stable", "test", "test", "single"),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGlobalEnum("Group", false, List.of(new ExtensionEnumValue("GameSingleton", 1L)))),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionSingleton("GameSingleton", "Node")),
+                List.of()
+        );
+        var singletonCollision = assertThrows(IllegalStateException.class, () -> new ClassRegistry(singletonCollisionApi));
+        assertTrue(singletonCollision.getMessage().contains("GameSingleton"));
+
+        var languageConstantCollisionApi = new ExtensionAPI(
+                new ExtensionHeader(4, 4, 0, "stable", "test", "test", "single"),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGlobalEnum("Group", false, List.of(new ExtensionEnumValue("PI", 1L)))),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var languageConstantCollision = assertThrows(IllegalStateException.class, () -> new ClassRegistry(languageConstantCollisionApi));
+        assertTrue(languageConstantCollision.getMessage().contains("PI"));
+    }
+
+    @Test
+    void bareNameFindersExposeReadOnlyNamespaceQueries() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var typeNil = registry.findGlobalEnumValueByBareName("TYPE_NIL");
+        assertNotNull(typeNil);
+        assertEquals(0L, typeNil.value());
+        assertNull(registry.findGlobalEnumValueByBareName("Variant.Type"));
+
+        var pi = registry.findGdScriptLanguageConstant("PI");
+        assertNotNull(pi);
+        assertEquals(Math.PI, pi.value());
+        assertNull(registry.findGdScriptLanguageConstant("INT32_MAX"));
+    }
+
+    private static @NotNull ScopeValue requireBareConstantValue(
+            @NotNull ClassRegistry registry,
+            @NotNull String name,
+            @NotNull GdType expectedType
+    ) {
+        var value = registry.resolveValue(name);
+        assertNotNull(value, () -> "Expected bare global constant to resolve: " + name);
+        assertEquals(ScopeValueKind.CONSTANT, value.kind());
+        assertEquals(expectedType, value.type());
+        assertTrue(value.constant());
+        assertFalse(value.writable());
+        return value;
     }
 
     private static @NotNull ExtensionAPI createScopeFixtureApi() {
