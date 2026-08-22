@@ -221,8 +221,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.unsupported_parameter_default_value`
   - variable analyzer 对 parameter default value 当前尚未接线时发出的 feature-boundary error
 - `sema.unsupported_variable_inventory_subtree`
-  - variable analyzer 对 `match` / block-local `const` inventory 边界发出的 feature-boundary error
-  - lambda 已移出该边界：supported executable body 内的 lambda 会绑定 param / local / capture，不再发此诊断
+  - variable analyzer 对 block-local `const` inventory 边界发出的 feature-boundary error
+  - lambda 与 `match` 已移出该边界：supported executable body 内的 lambda / match section 会绑定 param / local / capture / pattern bind，不再发此诊断
 - `sema.variable_slot_publication`
   - var-type-post analyzer 对 supported callable-local `var` 因 earlier duplicate/shadowing reject 而无法发布 `slotTypes()` 时发出的 warning
   - warning message 若能在当前 callable 边界内找到幸存的 accepted local / parameter / capture，必须带出该幸存绑定的语义类别与声明位置
@@ -230,8 +230,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.binding`
   - top binding 命中的 blocked / unknown / shadowing 诊断
 - `sema.unsupported_binding_subtree`
-  - top binding 对 parameter default、`match`、block-local `const` 等明确 unsupported subtree 的边界 error
-  - 已 `recordCallable` 的 lambda 改走 nested suite resolution，不再发此诊断；未记录的 lambda（property initializer 等）继续按此边界 fail-closed
+  - top binding 对 parameter default、block-local `const` 等明确 unsupported subtree 的边界 error
+  - 已 `recordCallable` 的 lambda 与已毕业的 `match` 改走 nested / match-pattern resolution，不再发此诊断；未记录的 lambda（property initializer 等）继续按此边界 fail-closed
   - top binding 对 missing-scope / skipped subtree 的恢复诊断继续允许使用 warning
 - `sema.member_resolution`
   - chain binding 中 blocked / failed member step 的语义错误
@@ -270,6 +270,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.type_check`
   - type-check analyzer 对 ordinary local / class property / return typed contract 不兼容发出的 error
   - type-check analyzer 对静态已知不可迭代 hard type 发出的 `Unable to iterate on value of type "X"` error；锚定 iterable expression，不阻断 for body 遍历
+  - type-check analyzer 对 match 形状校验发出的 error：bind 与多 pattern 互斥、字典 pattern key 非常量（Godot 原文 `Expression in dictionary pattern key must be a constant.`）；锚定违规 section / key 节点，其余合法 section 继续发布 facts
   - `Variant`、`Object` 与静态未知 iterable 保持 runtime-open；已有 upstream 不稳定 typed fact 时不重复包装
 - `sema.type_hint`
   - type-check analyzer 对 property `:=` / 未声明显式类型 property 发出的手动显式类型提醒 warning
@@ -290,6 +291,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - supported callable-local `var` 因 `sema.variable_slot_publication` warning 仍缺失 `slotTypes()` 的 lowering-only fact 缺洞
   - `assert` 在这里仍只是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，不把它回退成 strict-bool `sema.type_check`
   - `ForStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `forIterationPlans()` 与 `ForLoweringContractRegistry`，已注册 lowering contract 的 route 放行并进入 body 重扫 facts，未注册 contract 的 route（当前 `OBJECT_CUSTOM`）在 statement root 发 route-not-ready blocker（说明缺少 lowering route，而非 `FOR_SUBTREE` unsupported）；已注册 route 的 CFG/body lowering 已落地
+  - `MatchStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `matchPlans()` 与 `FrontendMatchSupport.isRouteLoweringReady`；当前 ready set 为空，任何合法 match 在 statement root 发 route-not-ready blocker 且不重扫 body（Step 2 fail-closed 中间态）。plan 缺失时保持封口，由 upstream owner 持有诊断。同一 statement root 已有 upstream error 时省略 route-not-ready
   - 已记录 `LambdaExpression`（published `FrontendLambdaPlan` + body）放上 compile surface 并递归扫描 body facts；未记录 lambda 保持 fail-closed，且不得在上游 unsupported owner 上重复包一层 `sema.compile_check`。合同见 `frontend_lambda_implementation.md`
   - 上述 2 类表达式（即 `PreloadExpression`、`GetNodeExpression`，不含 statement 级 `assert` 与 route-aware 的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression`、`ConditionalExpression` 与已记录 `LambdaExpression` 已完成 lowering/backend 闭环）属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
   - `ConditionalExpression` 已完成 shared semantic（双臂合并类型 + binary 式 root 重持有诊断）、CFG 双语境构图、body lowering `merge_write` 物化与 e2e 闭环，不再属 temporary intercept；未稳定三元 fact 仍由 generic published-fact blocker 兜底（见 `frontend_conditional_expression_implementation.md`）

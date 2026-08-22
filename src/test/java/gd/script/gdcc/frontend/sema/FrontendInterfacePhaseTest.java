@@ -182,7 +182,7 @@ class FrontendInterfacePhaseTest {
     }
 
     @Test
-    void publishesForInventoryWhileUnsupportedFeatureOwnedBodiesStayExcluded() throws Exception {
+    void publishesForAndMatchInventoryWhileConstBodiesStayExcluded() throws Exception {
         var phaseInput = phaseInput("interface_pending_gates.gd", """
                 class_name InterfacePendingGates
                 extends Node
@@ -235,11 +235,15 @@ class FrontendInterfacePhaseTest {
         assertEquals(GdIntType.INT, surface.typedLexicalBaseline().typeFor(forStatement));
         assertEquals(GdVariantType.VARIANT, surface.typedLexicalBaseline().typeFor(fromFor));
         assertTrue(surface.suiteEntryRoots().containsSupportedBlock(forStatement.body()));
-        assertFalse(surface.suiteEntryRoots().containsSupportedBlock(matchStatement.sections().getFirst().body()));
+        var matchSectionBody = matchStatement.sections().getFirst().body();
+        assertTrue(surface.suiteEntryRoots().containsSupportedBlock(matchSectionBody));
+        assertTrue(surface.bodyDeclarationIndex().containsBodyRoot(matchSectionBody));
+        var matchDeclarations = surface.bodyDeclarationIndex().declarationsFor(matchSectionBody);
+        assertEquals(1, matchDeclarations.size());
+        assertEquals(FrontendBodyLocalDeclaration.Kind.ORDINARY_VAR, matchDeclarations.getFirst().kind());
         // Lambda bodies inside supported executable bodies are now suite entries of their own.
         assertTrue(surface.suiteEntryRoots().containsSupportedBlock(lambda.body()));
         assertTrue(surface.suiteEntryRoots().containsCallableOwner(lambda));
-        assertFalse(surface.bodyDeclarationIndex().containsBodyRoot(matchStatement.sections().getFirst().body()));
         var lambdaDeclarations = surface.bodyDeclarationIndex().declarationsFor(lambda.body());
         assertEquals(1, lambdaDeclarations.size());
         assertEquals(
@@ -297,7 +301,7 @@ class FrontendInterfacePhaseTest {
     }
 
     @Test
-    void nestedForBodiesPublishInventoryAndLambdaBodiesWhileMatchOrConstSubtreesStayClosed() throws Exception {
+    void nestedForBodiesPublishInventoryAndLambdaAndMatchBodiesWhileConstSubtreesStayClosed() throws Exception {
         var phaseInput = phaseInput("interface_nested_for_boundaries.gd", """
                 class_name InterfaceNestedForBoundaries
                 extends Node
@@ -342,9 +346,9 @@ class FrontendInterfacePhaseTest {
         // Lambda nested inside a supported for body is recorded as a suite entry as well.
         assertTrue(surface.suiteEntryRoots().containsSupportedBlock(lambda.body()));
         assertTrue(surface.suiteEntryRoots().containsCallableOwner(lambda));
-        assertFalse(surface.suiteEntryRoots().containsSupportedBlock(matchStatement.sections().getFirst().body()));
+        assertTrue(surface.suiteEntryRoots().containsSupportedBlock(matchStatement.sections().getFirst().body()));
         assertTrue(surface.bodyDeclarationIndex().containsBodyRoot(lambda.body()));
-        assertFalse(surface.bodyDeclarationIndex().containsBodyRoot(matchStatement.sections().getFirst().body()));
+        assertTrue(surface.bodyDeclarationIndex().containsBodyRoot(matchStatement.sections().getFirst().body()));
         assertFalse(surface.typedLexicalBaseline().containsDeclaration(blocked));
     }
 

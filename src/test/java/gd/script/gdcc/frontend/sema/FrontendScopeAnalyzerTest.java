@@ -354,7 +354,7 @@ class FrontendScopeAnalyzerTest {
     }
 
     @Test
-    void analyzeBuildsLoopAndMatchBranchScopesWhileLeavingDeferredBindingsUnfilled() throws Exception {
+    void analyzeBuildsLoopAndMatchBranchScopesWhileLeavingIteratorAndBindUnfilled() throws Exception {
         var analyzed = analyzeScopeOnly("""
                 class_name LoopAndMatchScopes
                 extends Node
@@ -413,6 +413,7 @@ class FrontendScopeAnalyzerTest {
         var fromMatch = findStatement(firstSection.body().statements(), VariableDeclaration.class, variable -> variable.name().equals("from_match"));
         assertSame(firstSectionScope, scopesByAst.get(fromMatch));
         assertSame(firstSectionScope, scopesByAst.get(fromMatch.value()));
+        // Scope phase still does not fill inventory; variable analysis publishes the bind later.
         assertNull(firstSectionScope.resolveValue("bound"));
 
         var secondSection = matchStatement.sections().get(1);

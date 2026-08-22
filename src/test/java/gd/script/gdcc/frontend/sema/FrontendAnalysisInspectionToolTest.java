@@ -159,6 +159,81 @@ class FrontendAnalysisInspectionToolTest {
         assertTrue(report.contains("`\"中文\"`"));
     }
 
+    @Test
+    void reportShowsPublishedMatchExpressionsAndPatternContextUnpublishedReason() throws Exception {
+        var report = inspect(
+                "match_inspection.gd",
+                """
+                        class_name MatchInspection
+                        extends Node
+                        
+                        func ping(value: int):
+                            match value:
+                                1:
+                                    pass
+                                var bound:
+                                    print(bound)
+                                [1, ..]:
+                                    pass
+                                _:
+                                    pass
+                        """
+        ).report();
+
+        assertTrue(report.contains("type.status = RESOLVED"), report);
+        assertTrue(report.contains("pattern-context node is intentionally not published as an ordinary value expression"), report);
+        assertFalse(report.contains("expression belongs to a subtree that is intentionally skipped, deferred, or unsupported")
+                && report.contains("`_`"));
+    }
+
+    @Test
+    void reportKeepsPatternContextReasonInsideForBody() throws Exception {
+        var report = inspect(
+                "match_inspection_in_for.gd",
+                """
+                        class_name MatchInspectionInFor
+                        extends Node
+                        
+                        func ping(values):
+                            for value in values:
+                                match value:
+                                    var bound:
+                                        pass
+                                    _:
+                                        pass
+                        """
+        ).report();
+
+        assertTrue(report.contains("pattern-context node is intentionally not published as an ordinary value expression"), report);
+        assertFalse(report.contains("expression belongs to a subtree that is intentionally skipped, deferred, or unsupported")
+                && report.contains("`bound`"));
+    }
+
+    @Test
+    void reportKeepsNestedDictionaryPatternReasonInsideForBody() throws Exception {
+        var report = inspect(
+                "match_inspection_nested_dict.gd",
+                """
+                        class_name MatchInspectionNestedDict
+                        extends Node
+                        
+                        func ping(values):
+                            for value in values:
+                                match value:
+                                    {"user": {"name": var nested}}:
+                                        pass
+                                    {"flag": _}:
+                                        pass
+                        """
+        ).report();
+
+        assertTrue(report.contains("pattern-context node is intentionally not published as an ordinary value expression"), report);
+        assertFalse(report.contains("expression belongs to a subtree that is intentionally skipped, deferred, or unsupported")
+                && report.contains("`nested`"));
+        assertFalse(report.contains("expression belongs to a subtree that is intentionally skipped, deferred, or unsupported")
+                && report.contains("`_`"));
+    }
+
     private static @NotNull InspectionOutput inspect(@NotNull String fileName, @NotNull String source) throws Exception {
         var tool = new FrontendAnalysisInspectionTool(defaultRegistry());
         var result = tool.inspectSingleScript("test_module", Path.of("tmp", fileName), source);

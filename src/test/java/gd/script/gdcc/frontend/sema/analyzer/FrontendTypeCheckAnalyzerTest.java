@@ -693,13 +693,37 @@ class FrontendTypeCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeKeepsUnrecordedLambdaBodiesOutsideTypeCheckSurface() throws Exception {
+    void analyzeKeepsUnrecordedPropertyInitializerLambdaBodiesOutsideTypeCheckSurface() throws Exception {
         var preparedInput = prepareTypeCheckInput("type_check_lambda_unwalked.gd", """
                 class_name TypeCheckLambdaUnwalked
                 extends RefCounted
                 
                 var prop = func():
                     var hidden_bad: int = "text"
+                
+                func ping():
+                    pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        // Property-initializer lambdas stay unrecorded, so their bodies have no published facts
+        // and type-check must not descend into them. Match-section lambdas are now recorded.
+        assertTrue(diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        ).isEmpty());
+    }
+
+    @Test
+    void analyzeWalksRecordedMatchSectionLambdaBodies() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_lambda_in_match.gd", """
+                class_name TypeCheckLambdaInMatch
+                extends RefCounted
                 
                 func ping(choice):
                     match choice:
@@ -714,12 +738,47 @@ class FrontendTypeCheckAnalyzerTest {
                 preparedInput.diagnosticManager()
         );
 
-        // Property-initializer and match-section lambdas are never recorded, so their bodies have
-        // no published facts and type-check must not descend into them.
-        assertTrue(diagnosticsByCategory(
+        assertEquals(1, diagnosticsByCategory(
                 preparedInput.diagnosticManager().snapshot(),
                 "sema.type_check"
-        ).isEmpty());
+        ).size());
+    }
+
+    @Test
+    void analyzeReportsHardInvalidCastInMatchSubjectAndExpressionPattern() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_match_cast.gd", """
+                class_name TypeCheckMatchCast
+                extends RefCounted
+                
+                func ping(value: int, other: int):
+                    match value as Node:
+                        1:
+                            pass
+                    match other:
+                        other as Node:
+                            pass
+                        2:
+                            var later := other
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+        assertEquals(2, diagnostics.size(), diagnostics::toString);
+        assertTrue(diagnostics.stream().allMatch(diagnostic -> diagnostic.message().contains("Invalid cast")));
+        var later = findNode(
+                findFunction(preparedInput.unit().ast(), "ping"),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("later")
+        );
+        assertNotNull(preparedInput.analysisData().slotTypes().get(later));
     }
 
     @Test

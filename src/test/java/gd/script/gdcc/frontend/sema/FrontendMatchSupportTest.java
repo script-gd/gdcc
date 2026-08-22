@@ -239,6 +239,28 @@ class FrontendMatchSupportTest {
     }
 
     @Test
+    void samePlanTreatsIdentityEqualPlansAsIdempotentAndDivergentRoutesAsConflict() {
+        var statement = matchStatement(section(List.of(intLiteral("1")), null));
+        var first = FrontendMatchSupport.buildPlan(statement);
+        var second = FrontendMatchSupport.buildPlan(statement);
+        assertTrue(FrontendMatchPlan.samePlan(first, second));
+
+        var divergent = new FrontendMatchPlan(
+                statement,
+                List.of(new FrontendMatchSectionPlan(
+                        statement.sections().getFirst(),
+                        List.of(new FrontendMatchPatternPlan(
+                                statement.sections().getFirst().patterns().getFirst(),
+                                FrontendMatchPatternRoute.EXPRESSION,
+                                List.of()
+                        )),
+                        false
+                ))
+        );
+        assertFalse(FrontendMatchPlan.samePlan(first, divergent));
+    }
+
+    @Test
     void noRouteIsLoweringReadyWhileReadySetIsEmpty() {
         // Fail-closed anchor for Step 1/2: the ready set starts empty and grows monotonically in
         // later steps; until then every match stays route-not-ready at the compile gate.

@@ -11,6 +11,7 @@ import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendLambdaCapturePlan;
 import gd.script.gdcc.frontend.sema.FrontendLambdaCapturePlanner;
+import gd.script.gdcc.frontend.sema.FrontendMatchSupport;
 import gd.script.gdcc.frontend.sema.FrontendModuleSkeleton;
 import gd.script.gdcc.frontend.sema.LambdaCaptureEntry;
 import gd.script.gdcc.scope.ResolveRestriction;
@@ -32,8 +33,10 @@ import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
+import dev.superice.gdparser.frontend.ast.MatchSection;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
@@ -61,7 +64,8 @@ import java.util.function.Consumer;
 /// - write supported ordinary locals into `BlockScope`
 /// - bind lambda parameters/locals and derive `CAPTURE` bindings (names plus `sourceDeclaration`,
 ///   `Variant` placeholder types) for lambdas inside supported executable bodies
-/// - keep `match` / block-local `const` inventory outside the current support boundary
+/// - bind match pattern bindings into each section `MATCH_SECTION_BODY` as `LOCAL` inventory
+/// - keep block-local `const` inventory outside the current support boundary
 /// - emit explicit recovery diagnostics instead of letting unsupported inventory sources fail silently
 public class FrontendVariableAnalyzer {
     private static final @NotNull String VARIABLE_BINDING_CATEGORY = "sema.variable_binding";
@@ -116,7 +120,7 @@ public class FrontendVariableAnalyzer {
     /// - lambda inventories (parameters, locals, captures) are bound through
     ///   [`bindLambdaInventory`](#bindLambdaInventory), usually reached via the boundary reporter
     ///   because this walk does not descend into arbitrary expression children
-    /// - `match` subtrees are pruned explicitly
+    /// - `match` section binds are published by [`bindMatchSectionBindings`](#bindMatchSectionBindings)
     /// - arbitrary expression children stay outside the binding walk
     private static final class AstWalkerVariableBinder implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
@@ -305,8 +309,13 @@ public class FrontendVariableAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
-            // The binder itself still treats `match` as an unsupported boundary; explicit user
-            // diagnostics are produced by the dedicated boundary reporter.
+            if (supportedExecutableBlockDepth <= 0 || isNotPublished(matchStatement)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            for (var section : matchStatement.sections()) {
+                bindMatchSectionBindings(section);
+                walkSupportedExecutableBlock(section.body());
+            }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -707,6 +716,55 @@ public class FrontendVariableAnalyzer {
             blockScope.defineLocal(iteratorName, iteratorType, forStatement);
         }
 
+        /// Publishes every `var x` bind in one match section, including binds nested in
+        /// array/dictionary patterns, as `LOCAL` inventory on the shared `MATCH_SECTION_BODY`.
+        /// Baseline type is always `Variant`; later `MATCH_PATTERN_RESOLUTION` may refine top-level
+        /// binds. Duplicate / shadowing reuse the ordinary callable-local `sema.variable_binding` owner.
+        private void bindMatchSectionBindings(@NotNull MatchSection section) {
+            var targetScope = scopesByAst.get(section);
+            if (!(targetScope instanceof BlockScope blockScope)
+                    || !FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind())) {
+                reportBindingError(section, "Match section has no supported `match` section body scope");
+                return;
+            }
+            for (var pattern : section.patterns()) {
+                for (var bindingPlan : FrontendMatchSupport.collectPatternBindings(pattern, true)) {
+                    bindMatchPatternBinding(blockScope, bindingPlan.declaration());
+                }
+            }
+        }
+
+        private void bindMatchPatternBinding(
+                @NotNull BlockScope blockScope,
+                @NotNull PatternBindingExpression patternBinding
+        ) {
+            var bindName = patternBinding.name();
+            var existingLocal = blockScope.resolveValueHere(bindName);
+            if (existingLocal != null) {
+                reportBindingError(
+                        patternBinding,
+                        "Duplicate pattern binding '" + bindName + "' in the same `match` section"
+                );
+                return;
+            }
+            var sameCallableConflict = findSameCallableConflict(blockScope, bindName);
+            if (sameCallableConflict != null) {
+                reportBindingError(
+                        patternBinding,
+                        "Pattern binding '" + bindName + "' in " + describeLocalContext(blockScope)
+                                + " shadows " + describeShadowingTarget(sameCallableConflict)
+                );
+            }
+            try {
+                blockScope.defineLocal(bindName, GdVariantType.VARIANT, patternBinding);
+            } catch (IllegalArgumentException exception) {
+                reportBindingError(
+                        patternBinding,
+                        "Duplicate pattern binding '" + bindName + "' in the same `match` section"
+                );
+            }
+        }
+
         /// Duplicate and shadowing locals are user-facing source errors rather than phase
         /// invariants. The message therefore carries both declaration locations plus the callable /
         /// block context so compile-only callers can stop before lowering while shared analysis keeps
@@ -852,10 +910,10 @@ public class FrontendVariableAnalyzer {
     /// such as local initializers or return values would remain completely silent.
     ///
     /// Lambdas found inside supported executable bodies are no longer reported; they are handed
-    /// to the binder's lambda-inventory pipeline instead. The remaining reported boundaries are
-    /// `match` subtrees. Block-local `const` subtrees stay sealed here as well: the binder already
-    /// reports the declaration itself, and names inside such a subtree belong to a not-yet-supported
-    /// domain.
+    /// to the binder's lambda-inventory pipeline instead. Match subtrees are bound by the main
+    /// walker, so this reporter no longer treats them as an unsupported inventory boundary.
+    /// Block-local `const` subtrees stay sealed here as well: the binder already reports the
+    /// declaration itself, and names inside such a subtree belong to a not-yet-supported domain.
     private static final class UnsupportedVariableBoundaryReporter implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
         private final @NotNull DiagnosticManager diagnosticManager;
@@ -921,18 +979,6 @@ public class FrontendVariableAnalyzer {
             return FrontendASTTraversalDirective.CONTINUE;
         }
 
-        @Override
-        public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
-            diagnosticManager.error(
-                    UNSUPPORTED_VARIABLE_INVENTORY_SUBTREE_CATEGORY,
-                    "Variable analysis does not support `match` subtrees yet; pattern bindings and locals "
-                            + "declared inside match sections are not bound yet",
-                    sourcePath,
-                    FrontendRange.fromAstRange(matchStatement.range())
-            );
-            return FrontendASTTraversalDirective.SKIP_CHILDREN;
-        }
-
     }
 
     /// Collects capture-relevant events of one lambda body in source order.
@@ -941,10 +987,11 @@ public class FrontendVariableAnalyzer {
     /// - bare identifier uses, each pre-bound to the scope that owns the use site
     /// - direct nested lambdas, whose completed plans may transfer captures upward
     ///
-    /// The scanner skips nested lambda bodies (bound and planned on their own), `match` subtrees,
-    /// and block-local `const` subtrees: names inside not-yet-supported domains must never become
-    /// captures (those names stay ordinary lexical lookups). Explicit `self` expressions are flagged separately because
-    /// `self` is not an identifier use.
+    /// The scanner skips nested lambda bodies (bound and planned on their own) and block-local
+    /// `const` subtrees: names inside not-yet-supported domains must never become captures.
+    /// Match sections are walked so bare identifiers and nested lambdas inside them participate
+    /// in capture planning. Explicit `self` expressions are flagged separately because `self`
+    /// is not an identifier use.
     private static final class LambdaCaptureSourceScanner implements ASTNodeHandler {
         /// One source-ordered capture-relevant event inside a lambda body.
         private sealed interface LambdaCaptureEvent {
@@ -982,11 +1029,6 @@ public class FrontendVariableAnalyzer {
         @Override
         public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
             events.add(new NestedLambdaEvent(lambdaExpression));
-            return FrontendASTTraversalDirective.SKIP_CHILDREN;
-        }
-
-        @Override
-        public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 

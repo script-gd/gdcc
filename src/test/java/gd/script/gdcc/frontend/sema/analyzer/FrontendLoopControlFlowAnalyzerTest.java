@@ -161,6 +161,53 @@ class FrontendLoopControlFlowAnalyzerTest {
     }
 
     @Test
+    void analyzeAllowsBreakAndContinueInsideMatchSectionWithinOuterLoop() throws Exception {
+        var result = analyzeShared("loop_control_match_in_loop.gd", """
+                class_name LoopControlMatchInLoop
+                extends Node
+                
+                func ping(values, choice):
+                    for value in values:
+                        match choice:
+                            1:
+                                continue
+                            _:
+                                break
+                """);
+
+        assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.loop_control_flow").isEmpty());
+        assertFalse(result.diagnostics().hasErrors());
+    }
+
+    @Test
+    void analyzeReportsBreakAndContinueInsideMatchWithoutOuterLoop() throws Exception {
+        var result = analyzeShared("loop_control_match_without_loop.gd", """
+                class_name LoopControlMatchWithoutLoop
+                extends Node
+                
+                func ping(choice):
+                    match choice:
+                        1:
+                            break
+                        _:
+                            continue
+                """);
+        var pingFunction = findFunction(result.unit().ast().statements(), "ping");
+        var breakStatement = findNode(pingFunction, BreakStatement.class, _ -> true);
+        var continueStatement = findNode(pingFunction, ContinueStatement.class, _ -> true);
+        var loopDiagnostics = diagnosticsByCategory(result.diagnostics(), "sema.loop_control_flow");
+
+        assertTrue(result.diagnostics().hasErrors());
+        assertEquals(2, loopDiagnostics.size());
+        assertTrue(loopDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.range().equals(result.rangeOf(breakStatement))
+        ));
+        assertTrue(loopDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.range().equals(result.rangeOf(continueStatement))
+        ));
+    }
+
+    @Test
     void analyzeResetsOuterLoopDepthAtLambdaBoundary() throws Exception {
         var result = analyzeShared("loop_control_lambda_boundary.gd", """
                 class_name LoopControlLambdaBoundary

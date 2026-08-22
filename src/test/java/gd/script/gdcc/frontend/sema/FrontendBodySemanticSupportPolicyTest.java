@@ -25,7 +25,8 @@ class FrontendBodySemanticSupportPolicyTest {
                 BlockScopeKind.WHILE_BODY,
                 BlockScopeKind.FOR_BODY,
                 // Lambda bodies publish lexical inventory (param/local/capture binding).
-                BlockScopeKind.LAMBDA_BODY
+                BlockScopeKind.LAMBDA_BODY,
+                BlockScopeKind.MATCH_SECTION_BODY
         );
 
         for (var kind : BlockScopeKind.values()) {
@@ -40,15 +41,8 @@ class FrontendBodySemanticSupportPolicyTest {
 
     @Test
     void unsupportedScopesKeepPreciseStructuralDomains() {
-        // Lambda scopes are no longer in this deferred set; only `match` keeps a block-scope deferred domain.
-        assertEquals(
-                FrontendBodySemanticSupportPolicy.MATCH_SUBTREE,
-                FrontendBodySemanticSupportPolicy.forBlockScopeKind(BlockScopeKind.MATCH_SECTION_BODY)
-        );
-
         var deferredPolicies = Set.of(
                 FrontendBodySemanticSupportPolicy.LAMBDA_SUBTREE,
-                FrontendBodySemanticSupportPolicy.MATCH_SUBTREE,
                 FrontendBodySemanticSupportPolicy.BLOCK_LOCAL_CONST_SUBTREE,
                 FrontendBodySemanticSupportPolicy.PARAMETER_DEFAULT,
                 FrontendBodySemanticSupportPolicy.UNKNOWN_OR_SKIPPED_SUBTREE
@@ -80,7 +74,8 @@ class FrontendBodySemanticSupportPolicyTest {
                 BlockScopeKind.ELSE_BODY,
                 BlockScopeKind.WHILE_BODY,
                 BlockScopeKind.FOR_BODY,
-                BlockScopeKind.LAMBDA_BODY
+                BlockScopeKind.LAMBDA_BODY,
+                BlockScopeKind.MATCH_SECTION_BODY
         );
 
         for (var kind : BlockScopeKind.values()) {
@@ -117,7 +112,6 @@ class FrontendBodySemanticSupportPolicyTest {
     void deferredPoliciesAreNotSupportedSuiteBodyRoots() {
         var deferredPolicies = Set.of(
                 FrontendBodySemanticSupportPolicy.LAMBDA_SUBTREE,
-                FrontendBodySemanticSupportPolicy.MATCH_SUBTREE,
                 FrontendBodySemanticSupportPolicy.BLOCK_LOCAL_CONST_SUBTREE,
                 FrontendBodySemanticSupportPolicy.PARAMETER_DEFAULT,
                 FrontendBodySemanticSupportPolicy.UNKNOWN_OR_SKIPPED_SUBTREE

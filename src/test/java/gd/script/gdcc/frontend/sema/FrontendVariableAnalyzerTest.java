@@ -354,7 +354,7 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
-    void analyzeBindsForInventoryWhileMatchAndBlockLocalConstRemainUnsupported() throws Exception {
+    void analyzeBindsForAndMatchInventoryWhileBlockLocalConstRemainUnsupported() throws Exception {
         var phaseInput = publishedPhaseInput("phase4_deferred_boundaries.gd", """
                 class_name DeferredBoundaries
                 extends Node
@@ -407,15 +407,9 @@ class FrontendVariableAnalyzerTest {
 
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
         var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
-        var matchWarning = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(matchStatement.range()));
         var constWarning = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(answerConst.range()));
 
-        assertEquals(2, newDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.ERROR, matchWarning.severity());
-        assertEquals("sema.unsupported_variable_inventory_subtree", matchWarning.category());
-        assertTrue(matchWarning.message().contains("does not support `match` subtrees"));
-        assertTrue(matchWarning.message().contains("pattern bindings"));
-        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), matchWarning.sourcePath());
+        assertEquals(1, newDiagnostics.size());
         assertEquals(FrontendDiagnosticSeverity.ERROR, constWarning.severity());
         assertEquals("sema.unsupported_variable_inventory_subtree", constWarning.category());
         assertTrue(constWarning.message().contains("does not support block-local `const` declarations"));
@@ -434,7 +428,19 @@ class FrontendVariableAnalyzerTest {
         assertNotNull(fromForBinding);
         assertEquals(GdVariantType.VARIANT, fromForBinding.type());
         assertSame(fromFor, fromForBinding.declaration());
-        assertNull(firstSectionScope.resolveValueHere("from_match"));
+        var boundBinding = firstSectionScope.resolveValueHere("bound");
+        assertNotNull(boundBinding);
+        assertEquals(GdVariantType.VARIANT, boundBinding.type());
+        assertEquals(ScopeValueKind.LOCAL, boundBinding.kind());
+        var fromMatch = findStatement(
+                matchStatement.sections().getFirst().body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("from_match")
+        );
+        var fromMatchBinding = firstSectionScope.resolveValueHere("from_match");
+        assertNotNull(fromMatchBinding);
+        assertEquals(GdVariantType.VARIANT, fromMatchBinding.type());
+        assertSame(fromMatch, fromMatchBinding.declaration());
         assertNull(pingBodyScope.resolveValueHere("answer"));
     }
 
@@ -637,7 +643,7 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
-    void analyzeStillReportsMatchAndBlockLocalConstInsideLambdaBody() throws Exception {
+    void analyzeBindsMatchInsideLambdaBodyWhileBlockLocalConstStayUnsupported() throws Exception {
         var phaseInput = publishedPhaseInput("phase4_lambda_deferred_boundaries.gd", """
                 class_name LambdaDeferredBoundaries
                 extends Node
@@ -673,16 +679,18 @@ class FrontendVariableAnalyzerTest {
 
         new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
 
-        // `match` and block-local `const` stay deferred inside lambda bodies as well.
+        // Match inventory is published inside lambda bodies; block-local `const` stays deferred.
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
         var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
-        var matchError = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(matchStatement.range()));
         var constError = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(constDeclaration.range()));
-        assertEquals(2, newDiagnostics.size());
-        assertEquals("sema.unsupported_variable_inventory_subtree", matchError.category());
-        assertTrue(matchError.message().contains("does not support `match` subtrees"));
+        assertEquals(1, newDiagnostics.size());
         assertEquals("sema.unsupported_variable_inventory_subtree", constError.category());
         assertTrue(constError.message().contains("does not support block-local `const` declarations"));
+        var matchSectionScope = assertInstanceOf(
+                BlockScope.class,
+                phaseInput.analysisData().scopesByAst().get(matchStatement.sections().getFirst())
+        );
+        assertNotNull(matchSectionScope);
 
         // Supported lambda inventory is still bound around the deferred fragments.
         var itemBinding = lambdaScope.resolveValue("item");

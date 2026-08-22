@@ -30,8 +30,9 @@
   - 不在这里做 property `:=` metadata backfill
   - 不在这里做 whole-module fixed-point
   - 不在这里做 CFG / control-flow merge aware local type refinement
-  - 不在这里转正 parameter default、lambda、capture、`match`、block-local `const`、class `const`
+  - 不在这里转正 parameter default、lambda、capture、block-local `const`、class `const`
   - 不在这里实现 for iteration planning 或 iterator slot refinement
+  - 不在这里处理 `PatternBindingExpression`：match bind 的 slot 精化由 `MATCH_PATTERN_RESOLUTION` 独占（declaration domain 互斥）
   - 不在这里新增公共 frontend API；如需 helper，优先保持在 analyzer/support 包内且不拥有 phase facts
 
 ---

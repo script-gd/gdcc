@@ -20,6 +20,8 @@ import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendForIterationRoute;
 import gd.script.gdcc.frontend.sema.FrontendLambdaPlan;
+import gd.script.gdcc.frontend.sema.FrontendMatchPlan;
+import gd.script.gdcc.frontend.sema.FrontendMatchSupport;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
@@ -30,6 +32,7 @@ import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.scope.Scope;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
+import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -42,6 +45,7 @@ import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.ElifClause;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -54,6 +58,7 @@ import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.PreloadExpression;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
@@ -81,6 +86,9 @@ import java.util.function.Predicate;
 /// - recorded lambdas (published `lambdaPlans()` entry + published body) are released onto the
 ///   compile surface and their bodies recursed; unrecorded lambdas (property initializer /
 ///   parameter default / skipped subtree) stay fail-closed behind a form-level blocker
+/// - `MatchStatement` is shared-semantic supported but compile-ready only when every pattern
+///   route is in `FrontendMatchSupport.isRouteLoweringReady`; Step 2 keeps that set empty, so
+///   every legal match is a statement-root route-not-ready blocker and the body is not rescanned
 /// - generic side-table scans over published `expressionTypes()` / `resolvedMembers()` /
 ///   `resolvedCalls()` facts that are still blocked/deferred/failed/unsupported on compile surface
 /// - feature-specific RESOLVED blockers for Signal.connect/disconnect and bare
@@ -142,6 +150,7 @@ public class FrontendCompileCheckAnalyzer {
                     analysisData.resolvedCalls(),
                     analysisData.slotTypes(),
                     analysisData.forIterationPlans(),
+                    analysisData.matchPlans(),
                     analysisData.lambdaPlans(),
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
@@ -174,6 +183,14 @@ public class FrontendCompileCheckAnalyzer {
         return "for-in loop is recognized by shared semantic analysis but is blocked in compile mode because its '"
                 + Objects.requireNonNull(route, "route must not be null")
                 + "' iteration route has no registered lowering contract yet";
+    }
+
+    /// Route-not-ready blocker for a `match` whose pattern routes are not yet lowering-ready.
+    /// Step 2 keeps the ready set empty, so every legal match receives this statement-root blocker
+    /// and the gate never rescans the body.
+    private static @NotNull String matchRouteNotReadyMessage() {
+        return "match statement is recognized by shared semantic analysis but is blocked in compile mode because "
+                + "no match pattern route is lowering-ready yet";
     }
 
     private static @NotNull String staticPropertyCompileBlockedMessage(@NotNull String propertyName) {
@@ -276,6 +293,7 @@ public class FrontendCompileCheckAnalyzer {
         private final @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls;
         private final @NotNull FrontendAstSideTable<GdType> slotTypes;
         private final @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans;
+        private final @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans;
         private final @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
@@ -295,6 +313,7 @@ public class FrontendCompileCheckAnalyzer {
                 @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls,
                 @NotNull FrontendAstSideTable<GdType> slotTypes,
                 @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans,
+                @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans,
                 @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
@@ -310,6 +329,7 @@ public class FrontendCompileCheckAnalyzer {
             this.resolvedCalls = Objects.requireNonNull(resolvedCalls, "resolvedCalls must not be null");
             this.slotTypes = Objects.requireNonNull(slotTypes, "slotTypes must not be null");
             this.forIterationPlans = Objects.requireNonNull(forIterationPlans, "forIterationPlans must not be null");
+            this.matchPlans = Objects.requireNonNull(matchPlans, "matchPlans must not be null");
             this.lambdaPlans = Objects.requireNonNull(lambdaPlans, "lambdaPlans must not be null");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
             astWalker = new ASTWalker(this);
@@ -511,10 +531,67 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
-        /// `match` remains outside compile mode until the lowering/backend route is implemented.
+        /// `match` is shared-semantic supported. Compile readiness is route-aware: if any pattern
+        /// route is not lowering-ready, the whole statement is blocked at the root and the body is
+        /// not rescanned. Missing plans keep the upstream owner (fail-closed, no extra diagnostic).
         @Override
         public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
+            if (supportedExecutableBlockDepth <= 0 || isNotPublished(matchStatement)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            var plan = matchPlans.get(matchStatement);
+            if (plan == null) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            if (!allMatchRoutesReady(plan)) {
+                reportExplicitCompileBlock(matchStatement, matchRouteNotReadyMessage());
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            markCompileSurfaceNode(matchStatement);
+            walkExpression(matchStatement.value());
+            for (var sectionPlan : plan.sections()) {
+                for (var patternPlan : sectionPlan.patterns()) {
+                    walkMatchPatternForCompileSurface(patternPlan.patternNode());
+                }
+                walkExpression(sectionPlan.section().guard());
+                walkSupportedExecutableBlock(sectionPlan.section().body());
+            }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
+        private static boolean allMatchRoutesReady(@NotNull FrontendMatchPlan plan) {
+            for (var sectionPlan : plan.sections()) {
+                for (var patternPlan : sectionPlan.patterns()) {
+                    if (!FrontendMatchSupport.isRouteLoweringReady(patternPlan.route())) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        /// LITERAL / EXPRESSION leaves enter the ordinary compile-surface expression walk.
+        /// WILDCARD / BINDING / ARRAY / DICTIONARY stay off that walk (no ordinary expression facts).
+        private void walkMatchPatternForCompileSurface(@NotNull Expression pattern) {
+            var route = FrontendMatchSupport.classifyPatternRoute(pattern);
+            switch (route) {
+                case WILDCARD, BINDING -> {
+                }
+                case ARRAY -> {
+                    var array = (ArrayExpression) pattern;
+                    for (var element : array.elements()) {
+                        walkMatchPatternForCompileSurface(element);
+                    }
+                }
+                case DICTIONARY -> {
+                    var dictionary = (DictionaryExpression) pattern;
+                    for (var entry : dictionary.entries()) {
+                        walkExpression(entry.key());
+                        walkMatchPatternForCompileSurface(entry.value());
+                    }
+                }
+                case LITERAL, EXPRESSION -> walkExpression(pattern);
+            }
         }
 
         /// Enter one published callable body without leaking executable depth into sibling declarations.
@@ -780,30 +857,48 @@ public class FrontendCompileCheckAnalyzer {
         /// Callable-local slot types are a lowering-only published fact. When the post analyzer had
         /// to warn that a supported declaration could not publish its slot type, compile mode must
         /// still stop even if the original publication issue was only emitted as a warning.
+        /// Pattern binds use the same latch once the match is on the compile surface.
         private void scanSlotTypeCompileBlocks() {
             for (var compileSurfaceNode : compileSurfaceNodes) {
-                if (!(compileSurfaceNode instanceof VariableDeclaration variableDeclaration)) {
+                if (compileSurfaceNode instanceof VariableDeclaration variableDeclaration) {
+                    scanMissingSlotType(
+                            variableDeclaration,
+                            isSupportedCallableLocalDeclaration(variableDeclaration),
+                            slotTypeCompileBlockedMessage(variableDeclaration)
+                    );
                     continue;
                 }
-                if (!isSupportedCallableLocalDeclaration(variableDeclaration) || slotTypes.containsKey(variableDeclaration)) {
-                    continue;
+                if (compileSurfaceNode instanceof PatternBindingExpression patternBinding) {
+                    scanMissingSlotType(
+                            patternBinding,
+                            isSupportedPatternBindDeclaration(patternBinding),
+                            slotTypeCompileBlockedMessage(patternBinding)
+                    );
                 }
-                var publicationDiagnostic = findPublishedDiagnosticAt(
-                        variableDeclaration,
-                        diagnostic -> diagnostic.severity() != FrontendDiagnosticSeverity.ERROR
-                                && NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES.contains(diagnostic.category())
-                );
-                if (publicationDiagnostic == null) {
-                    continue;
-                }
-                // The upstream warning explains why `slotTypes()` is missing, while compile mode
-                // still needs its own final hard stop before lowering starts.
-                reportCompileBlock(
-                        variableDeclaration,
-                        slotTypeCompileBlockedMessage(variableDeclaration, publicationDiagnostic),
-                        isNonConflictingPublishedDiagnostic(publicationDiagnostic)
-                );
             }
+        }
+
+        private void scanMissingSlotType(
+                @NotNull Node declaration,
+                boolean supported,
+                @NotNull java.util.function.Function<FrontendDiagnostic, String> message
+        ) {
+            if (!supported || slotTypes.containsKey(declaration)) {
+                return;
+            }
+            var publicationDiagnostic = findPublishedDiagnosticAt(
+                    declaration,
+                    diagnostic -> diagnostic.severity() != FrontendDiagnosticSeverity.ERROR
+                            && NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES.contains(diagnostic.category())
+            );
+            if (publicationDiagnostic == null) {
+                return;
+            }
+            reportCompileBlock(
+                    declaration,
+                    message.apply(publicationDiagnostic),
+                    isNonConflictingPublishedDiagnostic(publicationDiagnostic)
+            );
         }
 
         /// Attribute expression typing often mirrors the final member/call step fact, so compile
@@ -1043,12 +1138,20 @@ public class FrontendCompileCheckAnalyzer {
         }
 
         /// Compose the final compile-only hard-stop message for missing callable-local slot publication.
-        private static @NotNull String slotTypeCompileBlockedMessage(
-                @NotNull VariableDeclaration variableDeclaration,
-                @NotNull FrontendDiagnostic publicationDiagnostic
+        private static @NotNull java.util.function.Function<FrontendDiagnostic, String> slotTypeCompileBlockedMessage(
+                @NotNull VariableDeclaration variableDeclaration
         ) {
-            return "Local variable '"
+            return publicationDiagnostic -> "Local variable '"
                     + variableDeclaration.name().trim()
+                    + "' is missing a lowering-ready published slot type in compile mode: "
+                    + publicationDiagnostic.message();
+        }
+
+        private static @NotNull java.util.function.Function<FrontendDiagnostic, String> slotTypeCompileBlockedMessage(
+                @NotNull PatternBindingExpression patternBinding
+        ) {
+            return publicationDiagnostic -> "Pattern binding '"
+                    + patternBinding.name()
                     + "' is missing a lowering-ready published slot type in compile mode: "
                     + publicationDiagnostic.message();
         }
@@ -1069,6 +1172,11 @@ public class FrontendCompileCheckAnalyzer {
         private boolean isSupportedCallableLocalDeclaration(@NotNull VariableDeclaration variableDeclaration) {
             return variableDeclaration.kind() == DeclarationKind.VAR
                     && scopesByAst.get(variableDeclaration) instanceof BlockScope blockScope
+                    && FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind());
+        }
+
+        private boolean isSupportedPatternBindDeclaration(@NotNull PatternBindingExpression patternBinding) {
+            return scopesByAst.get(patternBinding) instanceof BlockScope blockScope
                     && FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind());
         }
 

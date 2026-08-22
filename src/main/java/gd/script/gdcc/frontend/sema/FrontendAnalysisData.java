@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
@@ -49,6 +50,10 @@ public final class FrontendAnalysisData {
     /// compile gate and CFG builder as the single route/element-type truth; never carries lowering
     /// protocol or compiler-only types.
     private final @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans;
+    /// Published match plans keyed by the owning `MatchStatement`. Consumed by type-check,
+    /// compile gate and CFG builder as the single route/binding truth; never carries lowering
+    /// protocol or compiler-only types.
+    private final @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans;
     /// Published type-test RHS targets keyed by the owning `TypeTestExpression`.
     /// Carries either a resolved `GdType` or an unresolved object class name for runtime checking.
     private final @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets;
@@ -69,6 +74,7 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls,
             @NotNull FrontendAstSideTable<GdType> slotTypes,
             @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans,
+            @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans,
             @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets,
             @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans,
             @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans
@@ -91,6 +97,7 @@ public final class FrontendAnalysisData {
                 forIterationPlans,
                 "forIterationPlans must not be null"
         );
+        this.matchPlans = Objects.requireNonNull(matchPlans, "matchPlans must not be null");
         this.typeTestTargets = Objects.requireNonNull(typeTestTargets, "typeTestTargets must not be null");
         this.containerLiteralPlans = Objects.requireNonNull(
                 containerLiteralPlans,
@@ -102,6 +109,7 @@ public final class FrontendAnalysisData {
     /// Creates an empty analysis data carrier with the full side-table topology already present.
     public static @NotNull FrontendAnalysisData bootstrap() {
         return new FrontendAnalysisData(
+                new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
@@ -169,6 +177,11 @@ public final class FrontendAnalysisData {
         replaceSideTableContents(this.forIterationPlans, forIterationPlans, "forIterationPlans");
     }
 
+    public void updateMatchPlans(@NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans) {
+        FrontendPublishedFactTypeGuard.checkMatchPlans(matchPlans);
+        replaceSideTableContents(this.matchPlans, matchPlans, "matchPlans");
+    }
+
     public void updateTypeTestTargets(@NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets) {
         FrontendPublishedFactTypeGuard.checkTypeTestTargets(typeTestTargets);
         replaceSideTableContents(this.typeTestTargets, typeTestTargets, "typeTestTargets");
@@ -201,6 +214,7 @@ public final class FrontendAnalysisData {
                 checkedPatch.expressionTypes(),
                 checkedPatch.slotTypes(),
                 checkedPatch.forIterationPlans(),
+                checkedPatch.matchPlans(),
                 checkedPatch.typeTestTargets(),
                 checkedPatch.containerLiteralPlans(),
                 checkedPatch.lambdaPlans(),
@@ -216,6 +230,7 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<FrontendExpressionType> patchExpressionTypes,
             @NotNull FrontendAstSideTable<GdType> patchSlotTypes,
             @NotNull FrontendAstSideTable<FrontendForIterationPlan> patchForIterationPlans,
+            @NotNull FrontendAstSideTable<FrontendMatchPlan> patchMatchPlans,
             @NotNull FrontendAstSideTable<FrontendTypeTestTarget> patchTypeTestTargets,
             @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> patchContainerLiteralPlans,
             @NotNull FrontendAstSideTable<FrontendLambdaPlan> patchLambdaPlans,
@@ -249,6 +264,12 @@ public final class FrontendAnalysisData {
                 FrontendForIterationPlan::samePlan
         );
         checkPatchConflicts(
+                matchPlans,
+                patchMatchPlans,
+                "matchPlans",
+                FrontendMatchPlan::samePlan
+        );
+        checkPatchConflicts(
                 typeTestTargets,
                 patchTypeTestTargets,
                 "typeTestTargets",
@@ -273,6 +294,7 @@ public final class FrontendAnalysisData {
         mergeSideTable(expressionTypes, patchExpressionTypes);
         mergeSideTable(slotTypes, patchSlotTypes);
         mergeSideTable(forIterationPlans, patchForIterationPlans);
+        mergeSideTable(matchPlans, patchMatchPlans);
         mergeSideTable(typeTestTargets, patchTypeTestTargets);
         mergeSideTable(containerLiteralPlans, patchContainerLiteralPlans);
         mergeSideTable(lambdaPlans, patchLambdaPlans);
@@ -326,6 +348,10 @@ public final class FrontendAnalysisData {
 
     public @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans() {
         return forIterationPlans;
+    }
+
+    public @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans() {
+        return matchPlans;
     }
 
     public @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets() {
@@ -396,14 +422,17 @@ public final class FrontendAnalysisData {
         if (localSlotTypeUpdates.isEmpty()) {
             return List.of();
         }
-        // Two disjoint slot-update owners share the Variant->exact rewrite rules: LOCAL_TYPE_STABILIZATION
-        // for ordinary `var :=` (VariableDeclaration identity) and FOR_ITERATION_RESOLUTION for the for-in
-        // iterator (owning ForStatement identity). Every other stage is rejected.
+        // Three disjoint slot-update owners share the Variant->exact rewrite rules:
+        // LOCAL_TYPE_STABILIZATION for ordinary `var :=` (VariableDeclaration identity),
+        // FOR_ITERATION_RESOLUTION for the for-in iterator (owning ForStatement identity),
+        // and MATCH_PATTERN_RESOLUTION for match binds (PatternBindingExpression identity).
+        // Every other stage is rejected.
         if (stage != FrontendSemanticStage.LOCAL_TYPE_STABILIZATION
-                && stage != FrontendSemanticStage.FOR_ITERATION_RESOLUTION) {
+                && stage != FrontendSemanticStage.FOR_ITERATION_RESOLUTION
+                && stage != FrontendSemanticStage.MATCH_PATTERN_RESOLUTION) {
             throw patchFailure(
-                    "Only LOCAL_TYPE_STABILIZATION or FOR_ITERATION_RESOLUTION patches may publish local slot "
-                            + "type updates, but got "
+                    "Only LOCAL_TYPE_STABILIZATION, FOR_ITERATION_RESOLUTION, or MATCH_PATTERN_RESOLUTION "
+                            + "patches may publish local slot type updates, but got "
                             + stage
             );
         }
@@ -433,6 +462,13 @@ public final class FrontendAnalysisData {
         if (stage == FrontendSemanticStage.LOCAL_TYPE_STABILIZATION && !(declaration instanceof VariableDeclaration)) {
             throw patchFailure(
                     "LOCAL_TYPE_STABILIZATION slot update must target a VariableDeclaration, but got "
+                            + declaration.getClass().getSimpleName()
+            );
+        }
+        if (stage == FrontendSemanticStage.MATCH_PATTERN_RESOLUTION
+                && !(declaration instanceof PatternBindingExpression)) {
+            throw patchFailure(
+                    "MATCH_PATTERN_RESOLUTION slot update must target a PatternBindingExpression, but got "
                             + declaration.getClass().getSimpleName()
             );
         }

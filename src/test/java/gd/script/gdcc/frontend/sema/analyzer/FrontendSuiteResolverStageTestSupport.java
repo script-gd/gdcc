@@ -1,6 +1,7 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdparser.frontend.ast.ForStatement;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
@@ -85,6 +86,16 @@ final class FrontendSuiteResolverStageTestSupport {
             ) {
                 if (checkedStages.contains(FrontendSemanticStage.FOR_ITERATION_RESOLUTION)) {
                     delegate.runForIterationResolution(context, forStatement);
+                }
+            }
+
+            @Override
+            public void runMatchPatternResolution(
+                    @NotNull FrontendSuiteContext context,
+                    @NotNull MatchStatement matchStatement
+            ) {
+                if (checkedStages.contains(FrontendSemanticStage.MATCH_PATTERN_RESOLUTION)) {
+                    delegate.runMatchPatternResolution(context, matchStatement);
                 }
             }
 

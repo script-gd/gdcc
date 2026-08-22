@@ -303,7 +303,7 @@ mapped top-level gdcc class 当前已同时满足：
 - `Parameter` 节点必须拥有 side-table scope 记录，但这不等价于 parameter 已经能通过 `CallableScope.resolveValue(...)` 被解析
 - `for` 的 `iteratorType` 与 `iterable` 在进入 loop body 之前按外层 scope 分析
 - `for` body 拥有独立 `BlockScope`；scope phase 不预填 iterator，后续 variable inventory phase 以 owning `ForStatement` 为 declaration identity 发布 iterator 与 body local
-- `MatchSection` 的 pattern、guard 与 body 共享同一个 branch scope，但 pattern binding 仍未注册成 local
+- `MatchSection` 的 pattern、guard 与 body 共享同一个 branch scope；pattern binding 由后续 variable inventory phase 以 `PatternBindingExpression` 为 declaration identity 发布到该 `MATCH_SECTION_BODY`
 
 后续若要实现 binder，必须在完整 scope graph 建成之后单独做 binding pass，而不是把 binding 写回夹进当前 walker。
 

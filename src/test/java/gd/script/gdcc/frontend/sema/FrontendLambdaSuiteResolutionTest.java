@@ -4,6 +4,7 @@ import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
@@ -44,7 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 ///
 /// Anchors both directions: recorded lambdas resolve through the nested trigger and publish the
 /// first complete `FrontendLambdaPlan` with declaration-site capture types mirrored onto the
-/// `CallableScope` bindings, while unrecorded lambdas (property initializers, match subtrees)
+/// `CallableScope` bindings, while unrecorded lambdas (property initializers)
 /// stay fail-closed and a diverging re-publish of the same lambda must conflict.
 class FrontendLambdaSuiteResolutionTest {
     @Test
@@ -136,7 +137,7 @@ class FrontendLambdaSuiteResolutionTest {
     }
 
     @Test
-    void lambdaContainingMatchKeepsCallableTypeAndUpstreamMatchDiagnostics() throws Exception {
+    void lambdaContainingMatchKeepsCallableTypeWithoutUnsupportedMatchDiagnostics() throws Exception {
         var analysisData = analyze("lambda_match_inside.gd", """
                 class_name LambdaMatchInside
                 extends RefCounted
@@ -150,18 +151,19 @@ class FrontendLambdaSuiteResolutionTest {
         var pingFunction = findFunction(analysisData.unit().ast(), "ping");
         var lambda = findNode(pingFunction.body(), LambdaExpression.class, _ -> true);
 
-        // A deferred `match` inside the body must not drag the lambda itself back to
-        // UNSUPPORTED: the plan and the Callable expression fact stay published, while the
-        // match keeps its own upstream diagnostic owners.
+        // Match inside a recorded lambda is shared-semantic supported: the plan and Callable
+        // expression fact stay published, and match no longer emits unsupported inventory/binding.
         assertNotNull(analysisData.analysisData().lambdaPlans().get(lambda));
         var expressionType = analysisData.analysisData().expressionTypes().get(lambda);
         assertNotNull(expressionType);
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, expressionType.status());
         assertEquals("Callable", expressionType.publishedType().getTypeName());
-        assertTrue(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
+        var matchStatement = findNode(lambda.body(), MatchStatement.class, _ -> true);
+        assertNotNull(analysisData.analysisData().matchPlans().get(matchStatement));
+        assertFalse(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.unsupported_variable_inventory_subtree")
         ));
-        assertTrue(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
+        assertFalse(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.unsupported_binding_subtree")
         ));
         assertFalse(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
@@ -382,7 +384,7 @@ class FrontendLambdaSuiteResolutionTest {
     }
 
     @Test
-    void lambdaInsideMatchSectionStaysUnrecordedAndFailClosed() throws Exception {
+    void lambdaInsideMatchSectionIsRecordedAndCapturesOuterChoice() throws Exception {
         var analysisData = analyze("lambda_match_boundary.gd", """
                 class_name LambdaMatchBoundary
                 extends Node
@@ -395,11 +397,14 @@ class FrontendLambdaSuiteResolutionTest {
                 """);
         var lambda = findNode(analysisData.unit().ast(), LambdaExpression.class, _ -> true);
 
-        assertNull(analysisData.analysisData().lambdaPlans().get(lambda));
-        assertTrue(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
+        var plan = analysisData.analysisData().lambdaPlans().get(lambda);
+        assertNotNull(plan);
+        assertEquals(1, plan.captures().size());
+        assertEquals("choice", plan.captures().getFirst().name());
+        assertFalse(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.unsupported_variable_inventory_subtree")
         ));
-        assertTrue(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
+        assertFalse(analysisData.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.unsupported_binding_subtree")
         ));
     }

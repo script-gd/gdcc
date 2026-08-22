@@ -12,8 +12,10 @@ import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
+import dev.superice.gdparser.frontend.ast.MatchSection;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
@@ -27,6 +29,7 @@ import gd.script.gdcc.frontend.sema.FrontendBodyDeclarationIndex;
 import gd.script.gdcc.frontend.sema.FrontendBodyLocalDeclaration;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendInterfaceSurface;
+import gd.script.gdcc.frontend.sema.FrontendMatchSupport;
 import gd.script.gdcc.frontend.sema.FrontendSuiteEntryRoots;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalBaseline;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -207,6 +210,13 @@ public class FrontendInterfacePhase {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
+            if (supportedBodyDepth <= 0 || isNotPublished(matchStatement)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            astWalker.walk(matchStatement.value());
+            for (var section : matchStatement.sections()) {
+                enterMatchSectionBody(section);
+            }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -273,8 +283,10 @@ public class FrontendInterfacePhase {
         /// Opens one supported body inventory list.
         ///
         /// For a `for` body, the iterator is published first as a synthetic 0th item at `sourceOrder == 0`
-        /// before walking body statements, so ordinary locals receive contiguous `sourceOrder >= 1`. That
-        /// shape is part of the Interface surface contract certified by [FrontendBodyStructuralCompleteness].
+        /// before walking body statements, so ordinary locals receive contiguous `sourceOrder >= 1`.
+        /// Match section bodies use a dedicated overload that inserts `PATTERN_BIND` entries first
+        /// rather than reusing the `ForStatement` owner parameter. That shape is part of the
+        /// Interface surface contract certified by [FrontendBodyStructuralCompleteness].
         private void enterSupportedBlock(@NotNull Block block, @Nullable ForStatement ownerFor) {
             var scope = scopesByAst.get(block);
             if (!(scope instanceof BlockScope blockScope)
@@ -336,6 +348,66 @@ public class FrontendInterfacePhase {
                     0
             ));
             typedBaselineBuilder.put(forStatement, binding.type());
+        }
+
+        /// Opens a match section body: records every pattern bind in source order as a contiguous
+        /// `PATTERN_BIND` prefix, then walks body statements so ordinary locals receive
+        /// `sourceOrder >= k`.
+        private void enterMatchSectionBody(@NotNull MatchSection section) {
+            var block = section.body();
+            var scope = scopesByAst.get(block);
+            if (!(scope instanceof BlockScope blockScope)
+                    || !FrontendExecutableInventorySupport.isSupportedSuiteBodyRoot(blockScope.kind())) {
+                return;
+            }
+            supportedBlocks.add(block);
+            sourcePathsByEntryRoot.put(block, currentSourcePath);
+            var previousDeclarations = currentBodyDeclarations;
+            var bodyDeclarations = new ArrayList<FrontendBodyLocalDeclaration>();
+            currentBodyDeclarations = bodyDeclarations;
+            supportedBodyDepth++;
+            try {
+                recordMatchPatternBindDeclarations(section, blockScope);
+                for (var pattern : section.patterns()) {
+                    astWalker.walk(pattern);
+                }
+                if (section.guard() != null) {
+                    astWalker.walk(section.guard());
+                }
+                walkStatements(block.statements());
+            } finally {
+                supportedBodyDepth--;
+                declarationsByBodyRoot.put(block, List.copyOf(bodyDeclarations));
+                currentBodyDeclarations = previousDeclarations;
+            }
+        }
+
+        private void recordMatchPatternBindDeclarations(
+                @NotNull MatchSection section,
+                @NotNull BlockScope blockScope
+        ) {
+            for (var pattern : section.patterns()) {
+                for (var bindingPlan : FrontendMatchSupport.collectPatternBindings(pattern, true)) {
+                    recordPatternBindDeclaration(bindingPlan.declaration(), blockScope);
+                }
+            }
+        }
+
+        private void recordPatternBindDeclaration(
+                @NotNull PatternBindingExpression patternBinding,
+                @NotNull BlockScope blockScope
+        ) {
+            var binding = blockScope.resolveValueHere(patternBinding.name());
+            if (binding == null || binding.declaration() != patternBinding) {
+                return;
+            }
+            currentBodyDeclarations.add(new FrontendBodyLocalDeclaration(
+                    patternBinding,
+                    binding,
+                    FrontendBodyLocalDeclaration.Kind.PATTERN_BIND,
+                    currentBodyDeclarations.size()
+            ));
+            typedBaselineBuilder.put(patternBinding, binding.type());
         }
 
         private void walkStatements(@NotNull List<Statement> statements) {

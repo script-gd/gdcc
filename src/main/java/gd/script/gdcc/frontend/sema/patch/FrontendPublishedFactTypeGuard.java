@@ -7,6 +7,7 @@ import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendLambdaPlan;
+import gd.script.gdcc.frontend.sema.FrontendMatchPlan;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
@@ -15,6 +16,8 @@ import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+
+import java.util.Objects;
 
 /// Shared compiler-only guard for every source-facing typed publication surface.
 ///
@@ -31,6 +34,7 @@ public final class FrontendPublishedFactTypeGuard {
         checkExpressionTypes(patch.expressionTypes());
         checkSlotTypes(patch.slotTypes());
         checkForIterationPlans(patch.forIterationPlans());
+        checkMatchPlans(patch.matchPlans());
         checkTypeTestTargets(patch.typeTestTargets());
         checkContainerLiteralPlans(patch.containerLiteralPlans());
         checkLambdaPlans(patch.lambdaPlans());
@@ -100,6 +104,20 @@ public final class FrontendPublishedFactTypeGuard {
         for (var plan : plans.values()) {
             checkForIterationPlan(plan);
         }
+    }
+
+    /// Match plans are structural only and carry no typed payload; the walk still exists so a future
+    /// typed field cannot silently skip the owner-patch guard.
+    public static void checkMatchPlans(@NotNull FrontendAstSideTable<FrontendMatchPlan> plans) {
+        for (var plan : plans.values()) {
+            checkMatchPlan(plan);
+        }
+    }
+
+    public static void checkMatchPlan(@NotNull FrontendMatchPlan plan) {
+        Objects.requireNonNull(plan, "plan must not be null");
+        Objects.requireNonNull(plan.statement(), "match plan statement must not be null");
+        Objects.requireNonNull(plan.sections(), "match plan sections must not be null");
     }
 
     /// The plan is a source-facing semantic fact: both semantic element and exposed iterator types

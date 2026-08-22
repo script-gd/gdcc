@@ -26,6 +26,7 @@ import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -677,7 +678,11 @@ class FrontendVisibleValueResolverTest {
     }
 
     @Test
-    void resolveRejectsSyntheticMatchSectionCurrentScopeEvenWithoutMatchAstBoundary() throws Exception {
+    void resolveAllowsSyntheticMatchSectionCurrentScopeWithoutMatchAstBoundary() throws Exception {
+        // MATCH_SECTION_BODY publishes lexical inventory, so the current-scope backstop no longer
+        // seals a synthetic MATCH_SECTION_BODY scope. Without a real match AST boundary the request
+        // resolves as an ordinary EXECUTABLE_BODY lookup (aligned with the FOR_BODY / LAMBDA_BODY
+        // dual tests).
         var analyzedInput = analyzedInput("synthetic_match_scope.gd", """
                 class_name SyntheticMatchScope
                 extends Node
@@ -699,12 +704,10 @@ class FrontendVisibleValueResolverTest {
                 FrontendVisibleValueDomain.EXECUTABLE_BODY
         ));
 
-        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
-        assertEquals(FrontendVisibleValueDomain.MATCH_SUBTREE, result.deferredBoundary().domain());
-        assertEquals(
-                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
-                result.deferredBoundary().reason()
-        );
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, result.status());
+        assertNotNull(result.visibleValue());
+        assertEquals(ScopeValueKind.PARAMETER, result.visibleValue().kind());
+        assertNull(result.deferredBoundary());
     }
 
     @Test
@@ -736,32 +739,49 @@ class FrontendVisibleValueResolverTest {
     }
 
     @Test
-    void resolveSealsMatchSectionBodyAsDeferredUnsupported() throws Exception {
-        var analyzedInput = analyzedInput("match_section_deferred.gd", """
-                class_name MatchSectionDeferred
+    void resolveAllowsMatchSectionBindInGuardAndBodyAndSealsOutsideSection() throws Exception {
+        var analyzedInput = analyzedInput("match_section_visible.gd", """
+                class_name MatchSectionVisible
                 extends Node
                 
                 func ping(value):
                     match value:
                         var bound when bound > 0:
                             print(bound)
+                    print(bound)
                 """);
         var pingFunction = findFunction(analyzedInput.unit().ast(), "ping");
-        var useSite = findIdentifierExpression(pingFunction.body(), "bound");
+        var matchStatement = findNode(pingFunction.body(), MatchStatement.class, _ -> true);
+        var guardUse = findIdentifierExpression(matchStatement.sections().getFirst().guard(), "bound");
+        var bodyUse = findIdentifierExpression(matchStatement.sections().getFirst().body(), "bound");
+        var afterUse = findIdentifierExpression(
+                pingFunction.body().statements().getLast(),
+                "bound"
+        );
         var resolver = new FrontendVisibleValueResolver(analyzedInput.analysisData());
 
-        var result = resolver.resolve(new FrontendVisibleValueResolveRequest(
+        var guardResult = resolver.resolve(new FrontendVisibleValueResolveRequest(
                 "bound",
-                useSite,
+                guardUse,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ));
+        var bodyResult = resolver.resolve(new FrontendVisibleValueResolveRequest(
+                "bound",
+                bodyUse,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ));
+        var afterResult = resolver.resolve(new FrontendVisibleValueResolveRequest(
+                "bound",
+                afterUse,
                 FrontendVisibleValueDomain.EXECUTABLE_BODY
         ));
 
-        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
-        assertEquals(FrontendVisibleValueDomain.MATCH_SUBTREE, result.deferredBoundary().domain());
-        assertEquals(
-                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
-                result.deferredBoundary().reason()
-        );
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, guardResult.status());
+        assertEquals(ScopeValueKind.LOCAL, guardResult.visibleValue().kind());
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, bodyResult.status());
+        assertEquals(ScopeValueKind.LOCAL, bodyResult.visibleValue().kind());
+        assertEquals(FrontendVisibleValueStatus.NOT_FOUND, afterResult.status());
+        assertNull(afterResult.visibleValue());
     }
 
     @Test

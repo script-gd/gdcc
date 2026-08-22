@@ -34,7 +34,7 @@
   - 不引入 whole-module fixpoint，不把 body 语义改造成多轮全局收敛
   - 不新增新的全局 side table，也不让已有 side table 互相越权
   - 不把 `FrontendBinding` 重塑为 usage-aware 模型
-  - 不在这里转正 parameter default、`match`、block-local `const`、class constant 的正式 body 语义；已记录 lambda 合同见 `frontend_lambda_implementation.md`
+  - 不在这里转正 parameter default、block-local `const`、class constant 的正式 body 语义；已记录 lambda 合同见 `frontend_lambda_implementation.md`。`match` 的 LITERAL / EXPRESSION 叶子仍走普通 chain/expr 管线，WILDCARD / BINDING / ARRAY / DICTIONARY 由 pattern-context 分派隔离，不得把整棵 pattern 交给本管线
   - 不在这里实现 for iteration planning、iterator slot refinement 或 lowering route classification
   - 不在这里扩张 keyed builtin、numeric promotion 或其它 typed-boundary 兼容矩阵；`StringName` / `String` 互转由 `frontend_implicit_conversion_matrix.md` 与 shared boundary helper 独立管理
 
@@ -480,7 +480,6 @@ writable / compatibility 规则为：
 
 - parameter default
 - 未记录 lambda subtree（property initializer / parameter default / skipped subtree；已记录 lambda 由 nested suite resolution 承接，见 `frontend_lambda_implementation.md`）
-- `match` subtree
 - block-local `const`
 - class constant
 - scope-local 手动 `type-meta`
@@ -492,7 +491,7 @@ writable / compatibility 规则为：
 - `AwaitExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
-- `PatternBindingExpression`
+- `PatternBindingExpression`（普通 expr typing 仍 deferred；match pattern 上下文由 pattern-context 分派接管，永不触发该分支）
 
 `ConditionalExpression` **已不在** deferred 集合中：shared semantic 经专用 `resolveConditionalExpressionType` 发布双臂合并类型（binary 式 root 重持有诊断）；CFG value 语境走 branch-result merge、condition 语境走纯控制流展开；body lowering 经 `merge_write` boundary 物化；compile gate 不再为其建立显式 blocker（见 `frontend_conditional_expression_implementation.md`）。
 

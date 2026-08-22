@@ -937,17 +937,21 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_skipped_surface.gd", source);
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        // The recorded (clean-body) lambda is released onto the compile surface, so it no
-        // longer carries a form-level blocker; the explicit blocks nested inside the match stay
-        // skipped because match itself never enters the compile surface.
-        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+        var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
+        // Match is now shared-semantic supported, so compile gate emits one route-not-ready
+        // blocker at the statement root and does not rescan nested preload/$Node/as/is/assert.
+        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
+        assertEquals(
+                FrontendRange.fromAstRange(matchStatement.range()),
+                compileDiagnostics.getFirst().range()
+        );
+        assertTrue(compileDiagnostics.getFirst().message().contains("no match pattern route is lowering-ready"));
         var unsupportedBindingDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
         );
-        // parameter default + block-local const + match stay fail-closed; the recorded lambda
-        // resolves through its own nested suite and no longer contributes a diagnostic.
-        assertEquals(3, unsupportedBindingDiagnostics.size());
+        // parameter default + block-local const stay fail-closed; match no longer contributes.
+        assertEquals(2, unsupportedBindingDiagnostics.size());
     }
 
     @Test
@@ -2140,14 +2144,62 @@ class FrontendCompileCheckAnalyzerTest {
         );
         var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
 
-        // The recorded lambda is released and its body recursed, but the match inside stays outside
-        // the compile surface: compilation fails through the upstream unsupported-binding owner and
-        // the gate does not wrap the match in an extra sema.compile_check diagnostic.
+        // The recorded lambda is released and its body recursed. Match inside is shared-semantic
+        // supported, so compile fails through the route-not-ready compile_check at the match root
+        // rather than an unsupported-binding wrap.
         assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
-        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
-        assertTrue(unsupportedBindingDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.range().equals(FrontendRange.fromAstRange(matchStatement.range()))
-        ), unsupportedBindingDiagnostics::toString);
+        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
+        assertEquals(
+                FrontendRange.fromAstRange(matchStatement.range()),
+                compileDiagnostics.getFirst().range()
+        );
+        assertTrue(compileDiagnostics.getFirst().message().contains("no match pattern route is lowering-ready"));
+        assertTrue(unsupportedBindingDiagnostics.isEmpty(), unsupportedBindingDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileDoesNotReWrapUpstreamErrorOnMatchRouteNotReady() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_match_upstream_error.gd", """
+                class_name CompileCheckMatchUpstreamError
+                extends Node
+                
+                func ping(value):
+                    match value:
+                        1:
+                            pass
+                """);
+        var matchStatement = findNode(preparedInput.unit().ast(), MatchStatement.class, ignored -> true);
+        preparedInput.diagnosticManager().error(
+                "sema.synthetic",
+                "synthetic upstream error owning the match statement anchor",
+                preparedInput.unit().path(),
+                FrontendRange.fromAstRange(matchStatement.range())
+        );
+        preparedInput.analysisData().updateDiagnostics(preparedInput.diagnosticManager().snapshot());
+
+        runCompileCheck(preparedInput);
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.compile_check").isEmpty());
+        assertEquals(1, diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.synthetic").size());
+    }
+
+    @Test
+    void analyzeForCompileKeepsMatchWithoutPublishedPlanFailClosedWithoutCompileCheck() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_match_missing_plan.gd", """
+                class_name CompileCheckMatchMissingPlan
+                extends Node
+                
+                func ping(value):
+                    match value:
+                        1:
+                            pass
+                """);
+        var matchStatement = findNode(preparedInput.unit().ast(), MatchStatement.class, ignored -> true);
+        preparedInput.analysisData().matchPlans().remove(matchStatement);
+
+        runCompileCheck(preparedInput);
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.compile_check").isEmpty());
     }
 
     @Test
@@ -2216,11 +2268,14 @@ class FrontendCompileCheckAnalyzerTest {
                 """;
 
         var compiled = analyzeForCompile("compile_check_signal_skipped_surface.gd", source);
-        // The recorded lambda body is released onto the compile surface, but the bare signal /
-        // self-method value reads inside it are already compile-ready; the match section stays
-        // skipped. None of them contributes a compile blocker.
+        // The recorded lambda body is released onto the compile surface, and its bare signal /
+        // self-method value reads are already compile-ready. Match is shared-semantic supported
+        // but still route-not-ready, so the only compile blocker is the match statement root.
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        assertTrue(compileDiagnostics.isEmpty(), () -> compiled.diagnostics().asList().toString());
+        var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
+        assertEquals(1, compileDiagnostics.size(), () -> compiled.diagnostics().asList().toString());
+        assertEquals(FrontendRange.fromAstRange(matchStatement.range()), compileDiagnostics.getFirst().range());
+        assertTrue(compileDiagnostics.getFirst().message().contains("no match pattern route is lowering-ready"));
     }
 
     @Test

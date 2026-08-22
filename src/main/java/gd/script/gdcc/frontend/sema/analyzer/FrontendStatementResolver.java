@@ -1,15 +1,19 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
+import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.BreakStatement;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ContinueStatement;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.ElifClause;
+import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IfStatement;
+import dev.superice.gdparser.frontend.ast.MatchSection;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PassStatement;
@@ -18,6 +22,7 @@ import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
 import gd.script.gdcc.frontend.sema.FrontendForLoopSupport;
+import gd.script.gdcc.frontend.sema.FrontendMatchSupport;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;
@@ -58,7 +63,7 @@ public class FrontendStatementResolver {
             case IfStatement ifStatement -> resolveIfStatement(context, ifStatement, childSuiteResolver);
             case WhileStatement whileStatement -> resolveWhileStatement(context, whileStatement, childSuiteResolver);
             case ForStatement forStatement -> resolveForStatement(context, forStatement, childSuiteResolver);
-            case MatchStatement matchStatement -> resolveUnsupportedRoot(context, matchStatement);
+            case MatchStatement matchStatement -> resolveMatchStatement(context, matchStatement, childSuiteResolver);
             case PassStatement _, BreakStatement _, ContinueStatement _ -> flushStatementBoundary(context);
             default -> resolveUnsupportedRoot(context, statement);
         }
@@ -125,6 +130,64 @@ public class FrontendStatementResolver {
         childSuiteResolver.resolveChildSuite(context, forStatement.body());
     }
 
+    /// Resolves one `match` statement: subject through the ordinary owner pipeline, then pattern
+    /// resolution + bind slot publication, then per-section pattern-context dispatch, guard, and
+    /// child-suite body. Pattern trees never enter the generic `runSupportedRoot` walk.
+    private void resolveMatchStatement(
+            @NotNull FrontendSuiteContext context,
+            @NotNull MatchStatement matchStatement,
+            @NotNull ChildSuiteResolver childSuiteResolver
+    ) {
+        runSupportedRoot(context, matchStatement.value());
+        ownerProcedures.runMatchPatternResolution(context, matchStatement);
+        ownerProcedures.runVarTypePost(context, matchStatement);
+        for (var section : matchStatement.sections()) {
+            resolveMatchSection(context, section, childSuiteResolver);
+        }
+        flushStatementBoundary(context);
+    }
+
+    private void resolveMatchSection(
+            @NotNull FrontendSuiteContext context,
+            @NotNull MatchSection section,
+            @NotNull ChildSuiteResolver childSuiteResolver
+    ) {
+        for (var pattern : section.patterns()) {
+            resolveMatchPattern(context, pattern);
+        }
+        if (section.guard() != null) {
+            runSupportedRoot(context, section.guard());
+        }
+        flushStatementBoundary(context);
+        childSuiteResolver.resolveChildSuite(context, section.body());
+    }
+
+    /// Pattern-context dispatch: WILDCARD / BINDING / ARRAY / DICTIONARY stay off the ordinary
+    /// expression pipeline; LITERAL / EXPRESSION leaves use `runSupportedRoot`. Nested array
+    /// elements and dictionary values recurse; dictionary keys are constant expressions and use
+    /// the ordinary pipeline.
+    private void resolveMatchPattern(@NotNull FrontendSuiteContext context, @NotNull Expression pattern) {
+        var route = FrontendMatchSupport.classifyPatternRoute(pattern);
+        switch (route) {
+            case WILDCARD, BINDING -> {
+            }
+            case ARRAY -> {
+                var array = (ArrayExpression) pattern;
+                for (var element : array.elements()) {
+                    resolveMatchPattern(context, element);
+                }
+            }
+            case DICTIONARY -> {
+                var dictionary = (DictionaryExpression) pattern;
+                for (var entry : dictionary.entries()) {
+                    runSupportedRoot(context, entry.key());
+                    resolveMatchPattern(context, entry.value());
+                }
+            }
+            case LITERAL, EXPRESSION -> runSupportedRoot(context, pattern);
+        }
+    }
+
     /// Routes the for-in iterable expression through the correct owner domain.
     ///
     /// A bare `range(...)` call is recognized purely by AST shape (callee is an
@@ -188,6 +251,12 @@ public class FrontendStatementResolver {
         }
 
         default void runForIterationResolution(@NotNull FrontendSuiteContext context, @NotNull ForStatement forStatement) {
+        }
+
+        default void runMatchPatternResolution(
+                @NotNull FrontendSuiteContext context,
+                @NotNull MatchStatement matchStatement
+        ) {
         }
 
         default void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {

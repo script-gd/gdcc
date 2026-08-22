@@ -48,10 +48,10 @@ frontend 当前正式支持的裸全局常量 surface 包括：
 ### 2.2 不属于当前合同
 
 - 限定式 `Variant.Type.TYPE_NIL` 等 chain 路径已支持，本表面不改变其 `load_static` 行为。
-- `match` 语句及其 pattern 中的常量引用：`match` 整体仍是 deferred boundary（`frontend_rules.md` MVP 约定），本表面不扩展。互通说明见 `frontend_match_statement_plan.md`。
+- `match` pattern 中的全局常量/枚举裸访问：`match` 已进入 shared semantic，LITERAL / EXPRESSION 叶子走普通 `EXPRESSION` 合同（本表面的 `CONSTANT` binding 在 pattern 位置同样生效）。互通说明见 `frontend_match_statement_plan.md`。
 - 类枚举成员的裸访问（如裸 `MOUSE_MODE_VISIBLE` 不带 `Input.` 前缀）：Godot 同样禁止，不支持。
 - class constant 的收集与绑定：整体延后；`CONSTANT` 分支对非全局 declaration 保持 fail-fast。
-- block-local `const` initializer、parameter default、`match` 等 deferred boundary 内使用裸全局常量：沿用既有 deferred 合同，不扩展。
+- block-local `const` initializer、parameter default 等 deferred boundary 内使用裸全局常量：沿用既有 deferred 合同，不扩展。
 - `store_static` / 对常量赋值：本就拒绝，不变。
 - 不新增任何 frontend 诊断与 diagnostic owner。
 - 不提供 `UINT64_MAX` / `UINT*_MIN`（引擎同样不存在，且 `UINT64_MAX` 超出 Godot `int64` 值域）。

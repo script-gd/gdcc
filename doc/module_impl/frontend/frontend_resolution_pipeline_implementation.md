@@ -52,7 +52,7 @@
 
 本决定优先于本文后续章节中所有与之冲突的旧 gate 设计，也约束所有后续新增或更新的 frontend feature 实施文档。
 
-- 所有待支持的 AST 节点必须在 body typed resolution 前无条件建立完整的结构性 lexical inventory。该 inventory 包括 body `BlockScope`、parameter、iterator、ordinary local 等 source-facing binding、`FrontendBodyDeclarationIndex` entry 与 typed baseline；不得等待 header 或 initializer 的 typed fact，也不得把 inventory publication 作为 typed fact 的副作用。
+- 所有待支持的 AST 节点必须在 body typed resolution 前无条件建立完整的结构性 lexical inventory。该 inventory 包括 body `BlockScope`、parameter、iterator、pattern bind、ordinary local 等 source-facing binding、`FrontendBodyDeclarationIndex` entry 与 typed baseline；不得等待 header 或 initializer 的 typed fact，也不得把 inventory publication 作为 typed fact 的副作用。
 - 类型事实只能用于 source-facing type refinement、semantic route 分类和 lowering / compile readiness。它们不得决定 body inventory 是否发布，也不得决定 `SuiteResolver` 或 `FrontendVisibleValueResolver` 是否进入一个已支持 body。
 - 后续 feature 不得新增 typed-dependent body entry gate。一个 AST 节点在其结构性 inventory path 尚未实现前可以整体保持 unsupported / deferred；一旦转正，其 body 必须无条件进入 shared semantic，不能通过 `PENDING`、`SUPPORTED`、`PUBLISHED` 或等价 typed readiness 状态延迟解封。
 - 新 feature 的实施顺序固定为：scope graph → 完整 lexical inventory → declaration index / baseline → `SuiteResolver` body entry → typed resolution → type refinement / lowering route。compile gate 的 route readiness 属于 lowering 边界，不是 semantic body entry gate。
@@ -252,8 +252,9 @@ Suite 收敛后，committed overlay 构造为按 owner 有序的 patch transacti
 - `IfStatement` / `ElifClause` / `else`
 - `WhileStatement`
 - `ForStatement`（structural supported，header-first，body 通过 child-suite path 进入）
-- `MatchStatement`、block-local `const` 继续 deferred / unsupported
-- 已记录 `LambdaExpression`（supported executable body 内）已转正：nested suite resolution 发布 `FrontendLambdaPlan`；未记录 lambda 继续 deferred / unsupported
+- `MatchStatement`（structural supported：subject → `MATCH_PATTERN_RESOLUTION` → `VAR_TYPE_POST` → 逐 section pattern-context 分派 / guard / child-suite body）
+- block-local `const` 继续 deferred / unsupported
+- 已记录 `LambdaExpression`（supported executable body 内，含 match section body）已转正：nested suite resolution 发布 `FrontendLambdaPlan`；未记录 lambda 继续 deferred / unsupported
 
 ### 4.4 `TypedLexicalEnvironment` overlay
 
@@ -338,8 +339,8 @@ Per-owner patch merge 规则：
 三道结构检查：
 
 1. Request-domain hard boundary：`EXECUTABLE_BODY` 才进入 ordinary lookup。
-2. AST boundary：parameter default、match pattern/guard/body 与 block-local `const` initializer 直接返回 structural deferred boundary；`ForStatement.body()`、iterator type 与 iterable edge 不封口。已记录 lambda 的 AST 边不再封口。
-3. Current-scope backstop：`MATCH_SECTION_BODY` 继续 fail-closed；`FOR_BODY` 与已记录 lambda 的 `LAMBDA_BODY` / `LAMBDA_EXPRESSION` 是 supported executable scope。未记录 lambda 保持 fail-closed。
+2. AST boundary：parameter default 与 block-local `const` initializer 直接返回 structural deferred boundary；`ForStatement.body()`、iterator type 与 iterable edge 不封口。已记录 lambda 的 AST 边不再封口。`MatchSection` pattern / guard / body 边不再封口。
+3. Current-scope backstop：`FOR_BODY`、`MATCH_SECTION_BODY` 与已记录 lambda 的 `LAMBDA_BODY` / `LAMBDA_EXPRESSION` 是 supported executable scope。未记录 lambda 保持 fail-closed。
 
 Overlay 不得绕过 resolver filter：resolver 先按 request-domain gate、AST boundary、current-scope gate、declaration order 与 initializer self-reference 过滤候选 declaration，再从 `TypedLexicalEnvironment` 读取该候选的 effective type / binding payload。
 

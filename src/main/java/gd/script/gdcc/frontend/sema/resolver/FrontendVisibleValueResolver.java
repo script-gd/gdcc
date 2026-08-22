@@ -13,7 +13,6 @@ import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
-import dev.superice.gdparser.frontend.ast.MatchSection;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.Statement;
@@ -177,13 +176,6 @@ public final class FrontendVisibleValueResolver {
                     && isDeferredBlockLocalConst(variableDeclaration) -> structuralBoundary(
                     FrontendBodySemanticSupportPolicy.BLOCK_LOCAL_CONST_SUBTREE
             );
-            case MatchSection matchSection when matchSection.body() == childNode -> structuralBoundary(
-                    FrontendBodySemanticSupportPolicy.MATCH_SUBTREE
-            );
-            case MatchSection matchSection when (matchSection.guard() == childNode
-                    || containsNodeIdentity(matchSection.patterns(), childNode)) -> structuralBoundary(
-                    FrontendBodySemanticSupportPolicy.MATCH_SUBTREE
-            );
             default -> null;
         };
     }
@@ -303,17 +295,6 @@ public final class FrontendVisibleValueResolver {
             return null;
         }
         return unsupportedScopeBoundary(policy);
-    }
-
-    /// Deferred-boundary checks must follow AST identity, matching the rest of the resolver's
-    /// parent/index tables, instead of relying on structural record equality.
-    private boolean containsNodeIdentity(@NotNull List<? extends Node> nodes, @NotNull Node targetNode) {
-        for (var node : nodes) {
-            if (node == targetNode) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private @Nullable FrontendVisibleValueDeferredBoundary classifyUnsupportedCurrentBlockScopeBoundary(

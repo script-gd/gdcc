@@ -15,10 +15,11 @@ import java.util.Objects;
 /// structure. Expression types, typed overlays, diagnostics, iteration routes, compile readiness, and lifecycle
 /// state are intentionally absent.
 ///
-/// [#EXECUTABLE_BODY] represents every body whose scope/inventory implementation is complete, including
-/// `FOR_BODY`. Unsupported or not-yet-implemented features receive a precise deferred domain instead of a pending
-/// or published lifecycle. [#FOR_HEADER] is a special structural location: it uses the surrounding executable
-/// lookup domain but owns no body inventory and does not itself enter the suite resolver.
+    /// [#EXECUTABLE_BODY] represents every body whose scope/inventory implementation is complete, including
+    /// `FOR_BODY` and `MATCH_SECTION_BODY`. Unsupported or not-yet-implemented features receive a precise deferred
+    /// domain instead of a pending or published lifecycle. [#FOR_HEADER] is a special structural location: it uses
+    /// the surrounding executable lookup domain but owns no body inventory and does not itself enter the suite
+    /// resolver.
 ///
 /// Mapping switches are exhaustive and deliberately have no `default` branch. Adding a new [BlockScopeKind] or
 /// [CallableScopeKind] therefore requires an explicit support decision rather than silently opening the new kind
@@ -27,7 +28,6 @@ public enum FrontendBodySemanticSupportPolicy {
     EXECUTABLE_BODY(true, true, FrontendVisibleValueDomain.EXECUTABLE_BODY),
     FOR_HEADER(false, false, FrontendVisibleValueDomain.EXECUTABLE_BODY),
     LAMBDA_SUBTREE(false, false, FrontendVisibleValueDomain.LAMBDA_SUBTREE),
-    MATCH_SUBTREE(false, false, FrontendVisibleValueDomain.MATCH_SUBTREE),
     BLOCK_LOCAL_CONST_SUBTREE(false, false, FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE),
     PARAMETER_DEFAULT(false, false, FrontendVisibleValueDomain.PARAMETER_DEFAULT),
     UNKNOWN_OR_SKIPPED_SUBTREE(false, false, FrontendVisibleValueDomain.UNKNOWN_OR_SKIPPED_SUBTREE);
@@ -103,9 +103,9 @@ public enum FrontendBodySemanticSupportPolicy {
 
     /// Maps a block scope kind to its explicit structural body policy.
     ///
-    /// Function, constructor, ordinary block, conditional, loop, `FOR_BODY`, and `LAMBDA_BODY` scopes are
-    /// executable bodies. Match-section scopes remain in their feature-specific deferred domain. The exhaustive
-    /// switch is intentional: a newly added block scope kind must make a compile-time-visible support choice here.
+    /// Function, constructor, ordinary block, conditional, loop, `FOR_BODY`, `LAMBDA_BODY`, and
+    /// `MATCH_SECTION_BODY` scopes are executable bodies. The exhaustive switch is intentional: a newly
+    /// added block scope kind must make a compile-time-visible support choice here.
     ///
     /// `LAMBDA_BODY` publishes lexical inventory (parameter/local/capture binding). Suite-resolver
     /// entry is consumed only after `FrontendInterfacePhase` records the lambda as a callable owner.
@@ -122,9 +122,9 @@ public enum FrontendBodySemanticSupportPolicy {
                  ELIF_BODY,
                  ELSE_BODY,
                  WHILE_BODY,
-                 FOR_BODY,
-                 LAMBDA_BODY -> EXECUTABLE_BODY;
-            case MATCH_SECTION_BODY -> MATCH_SUBTREE;
+                  FOR_BODY,
+                  LAMBDA_BODY,
+                  MATCH_SECTION_BODY -> EXECUTABLE_BODY;
         };
     }
 

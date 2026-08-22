@@ -33,8 +33,9 @@
   - 不在这里新增 `FrontendAnalysisData` side table
   - 不在这里重做表达式求值、binding、member/call 解析或 scope 构建
   - 不在这里补 suite merge、missing-return、all-path return exhaustiveness 分析
-  - 不在这里转正 `match`、parameter default、block-local `const`、class `const` 的正式 body 语义
-  - `lambda` body 遍历已落地：已 record lambda 经 `scanNestedLambdaBodies` 显式 re-entry 由 `handleLambdaExpression` walk body（以 `lambdaPlans()` 存在性为闸门，继承 enclosing callable 的 restriction/static context）；return slot 为 `FrontendLambdaPlan.returnType()`（nested resolve 入口一次解析的声明返回类型），return 不匹配或声明非 void/Variant 下的 bare `return` 走普通 `sema.type_check` 诊断；未记录 lambda（property initializer / match / parameter default）保持 fail-closed，不进入 body
+  - 不在这里转正 parameter default、block-local `const`、class `const` 的正式 body 语义
+  - `match` 形状校验已落地（bind 与多 pattern 互斥、字典 key 常量性）；EXPRESSION pattern 不设形状白名单；始终 walk 全部 section body，route-not-ready 不在这里发错
+  - `lambda` body 遍历已落地：已 record lambda 经 `scanNestedLambdaBodies` 显式 re-entry 由 `handleLambdaExpression` walk body（以 `lambdaPlans()` 存在性为闸门，继承 enclosing callable 的 restriction/static context）；return slot 为 `FrontendLambdaPlan.returnType()`（nested resolve 入口一次解析的声明返回类型），return 不匹配或声明非 void/Variant 下的 bare `return` 走普通 `sema.type_check` 诊断；未记录 lambda（property initializer / parameter default）保持 fail-closed，不进入 body。match section 内的 lambda 现已记录，会进入 body 遍历
   - 不在这里实现或发布 `FrontendForIterationPlan`（它由 for-iteration resolution owner 发布）；type-check 只消费已发布 plan 做 route-aware header 校验（range arity / argument int slot / 显式 iterator element conversion）并遍历 for body，不重新推导 iterable route
   - 不在这里实现 property-side inference/backfill，也不在 type-check analyzer 内维护平行 implicit conversion 规则；`int -> float`、同维度 `Vector*i -> Vector*` 与 `StringName` / `String` 互转只通过 `frontend_implicit_conversion_matrix.md` 与 shared boundary helper 生效
   - 不在这里实现 frontend -> LIR 的 truthiness lowering 或 `@onready` 的 runtime / ready-time 语义
@@ -413,7 +414,8 @@ owner 分工固定为：
 - property-side inference / metadata backfill
 - frontend -> LIR 的 truthiness / condition normalization
 - `@onready` runtime / ready-time lowering
-- `match`、parameter default、block-local `const`、class `const` 的正式 body semantics
+- parameter default、block-local `const`、class `const` 的正式 body semantics
+- `match` 形状校验已落地；ARRAY / DICTIONARY 的 compile-ready lowering 仍属后续步骤
 - for-in route-aware type-check 已落地：`handleForStatement(...)` 消费 `FrontendForIterationPlan` 校验 range arity / argument int slot / int shorthand stop / 显式 iterator element conversion，并遍历 for body。已注册 route 的 compile gate / CFG / body lowering 已闭环；`OBJECT_CUSTOM` 仍未注册 lowering contract。完整合同见 `frontend_for_range_loop_implementation.md`
 
 后续工程若继续扩展本区域，必须遵守以下约束：

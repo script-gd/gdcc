@@ -28,7 +28,7 @@
   - 不在这里发布 `resolvedMembers()`、`resolvedCalls()` 或 `expressionTypes()`
   - 不在这里解析显式 receiver 尾部成员或调用步骤
   - 不在这里建模 read / write / call / assignable / lvalue 语义
-  - 不在这里实现 parameter default、`match`、block-local `const` 的正式 binding；已记录 lambda 由 nested suite resolution 承接，合同见 `frontend_lambda_implementation.md`
+  - 不在这里实现 parameter default、block-local `const` 的正式 binding；已记录 lambda 由 nested suite resolution 承接，合同见 `frontend_lambda_implementation.md`。`match` 由 `resolveMatchStatement` 的 pattern-context 分派承接，LITERAL / EXPRESSION 叶子仍走本 analyzer 的普通管线
   - 不在这里扩展 shared `Scope` 协议
   - 不在这里处理 class constant binding；该能力仍延后到 MVP 之后
 
@@ -382,7 +382,6 @@ builtin static namespace 当前仍 direct-only，因为 ExtensionAPI builtin met
 
 - parameter default subtree
 - lambda subtree（仅未记录的 lambda：property initializer / parameter default / skipped subtree；已 `recordCallable` 的 lambda 由 top-binding 触发 nested suite resolution，不再封口）
-- `match` subtree
 - block-local `const` initializer subtree
 - 任何缺少稳定 `scopesByAst()` 记录的 skipped subtree
 
@@ -466,7 +465,6 @@ builtin static namespace 当前仍 direct-only，因为 ExtensionAPI builtin met
 
 - parameter default subtree
 - lambda subtree（仅未记录的 lambda；已 `recordCallable` 的 lambda 走 nested suite resolution，不产生此 category）
-- `match` subtree
 - block-local `const` initializer subtree
 - missing-scope / skipped subtree
 
@@ -699,6 +697,6 @@ func ping():
 - explicit receiver 只绑定链头与 step/index arguments，不绑定尾部 segment
 - assignment 左右两侧都会递归进入 binding
 - ordinary local initializer 继续属于支持面
-- parameter default / 未记录 lambda / `match` / block-local `const` 当前继续走 root-level unsupported error
+- parameter default / 未记录 lambda / block-local `const` 当前继续走 root-level unsupported error；`match` 已毕业，LITERAL / EXPRESSION 叶子走普通 binding 管线
 - for header/body use-site 通过普通 executable-body resolver path 发布 binding，且不依赖 iterable typed result 决定 body entry
 - skipped executable subtree 的 warning 当前按 root-level 发布，而不是静默跳过或逐 use-site 降级

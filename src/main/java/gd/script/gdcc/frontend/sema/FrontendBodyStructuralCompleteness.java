@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.BlockScopeKind;
@@ -54,6 +55,8 @@ public final class FrontendBodyStructuralCompleteness {
     /// 7. A `FOR_BODY` must contain exactly one iterator entry identified by its owning `ForStatement`, and
     ///    that entry must be the synthetic 0th item occupying `sourceOrder` 0 at the head of the body
     ///    inventory list.
+    /// 8. A `MATCH_SECTION_BODY` may contain zero or more `PATTERN_BIND` entries occupying a contiguous
+    ///    prefix (`sourceOrder 0..k-1`); ordinary locals follow at `sourceOrder >= k`.
     ///
     /// The method intentionally returns no boolean. A caller may enter a supported suite only after this method
     /// returns normally; any missing fact is an internal phase-order or publication error that must stop analysis.
@@ -116,6 +119,9 @@ public final class FrontendBodyStructuralCompleteness {
         if (expectedScope.kind() == BlockScopeKind.FOR_BODY) {
             requireForBodyIteratorInventory(body, declarations);
         }
+        if (expectedScope.kind() == BlockScopeKind.MATCH_SECTION_BODY) {
+            requireMatchSectionPatternBindInventory(body, declarations);
+        }
     }
 
     /// Requires one indexed body-local declaration to agree with all other published structural views.
@@ -164,6 +170,16 @@ public final class FrontendBodyStructuralCompleteness {
                     throw incomplete(body, "iterator declaration, binding, and `for` scope identities disagree");
                 }
             }
+            case PATTERN_BIND -> {
+                if (!(declaration instanceof PatternBindingExpression patternBinding)
+                        || analysisData.scopesByAst().get(patternBinding) != expectedScope
+                        || expectedScope.resolveValueHere(patternBinding.name()) != binding) {
+                    throw incomplete(
+                            body,
+                            "pattern-bind declaration, binding, and `match` section scope identities disagree"
+                    );
+                }
+            }
         }
     }
 
@@ -183,7 +199,8 @@ public final class FrontendBodyStructuralCompleteness {
             }
             if (!(value.declaration() instanceof Node declarationNode)
                     || (!(declarationNode instanceof VariableDeclaration)
-                    && !(declarationNode instanceof ForStatement))) {
+                    && !(declarationNode instanceof ForStatement)
+                    && !(declarationNode instanceof PatternBindingExpression))) {
                 throw incomplete(
                         body,
                         "scope inventory contains a local that is not a body declaration-index identity"
@@ -221,6 +238,28 @@ public final class FrontendBodyStructuralCompleteness {
         if (firstDeclaration.kind() != FrontendBodyLocalDeclaration.Kind.ITERATOR
                 || firstDeclaration.sourceOrder() != 0) {
             throw incomplete(body, "`for` body iterator must be the first declaration with sourceOrder 0");
+        }
+    }
+
+    /// Requires `PATTERN_BIND` entries, if any, to occupy a contiguous prefix at the head of the
+    /// `MATCH_SECTION_BODY` inventory. Ordinary locals may follow only after that prefix.
+    private static void requireMatchSectionPatternBindInventory(
+            @NotNull Block body,
+            @NotNull List<FrontendBodyLocalDeclaration> declarations
+    ) {
+        var seenOrdinary = false;
+        for (var declaration : declarations) {
+            if (declaration.kind() == FrontendBodyLocalDeclaration.Kind.PATTERN_BIND) {
+                if (seenOrdinary) {
+                    throw incomplete(body, "`match` section pattern binds must occupy a contiguous prefix");
+                }
+                continue;
+            }
+            if (declaration.kind() == FrontendBodyLocalDeclaration.Kind.ORDINARY_VAR) {
+                seenOrdinary = true;
+                continue;
+            }
+            throw incomplete(body, "`match` section declaration index contains an unexpected kind");
         }
     }
 

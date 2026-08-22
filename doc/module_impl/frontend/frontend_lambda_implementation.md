@@ -11,7 +11,8 @@
   `FrontendLambdaPlan` 首次发布、`RESOLVED(GdCallableType)`、hidden `_lambda_<k>` shell、
   `LambdaConstructItem` / `construct_lambda`、C custom Callable 与 compile gate 按 published plan
   放行已落地；property initializer / parameter default / skipped subtree 中的未记录 lambda
-  以及 lambda 自己的 parameter default、body 内 `match` / block-local `const` / `await` 仍 fail-closed）
+  以及 lambda 自己的 parameter default、body 内 block-local `const` / `await` 仍 fail-closed；
+  lambda 内 `match` 已随 match Step 2 进入 shared semantic）
 - 更新时间：2026-08-18
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
@@ -147,7 +148,7 @@ Parser AST 为 `dev.superice.gdparser.frontend.ast.LambdaExpression`，提供
 
 - property initializer、parameter default、class-level 表达式中的 lambda
 - lambda 自己的 parameter default
-- lambda body 内的 `match`、block-local `const`、`await`
+- lambda body 内的 block-local `const`、`await`（`match` 已进入 shared semantic，lambda 内 match 正常解析）
 - `CAPTURE` 作为 direct-slot alias root
 - 把 class member / global / utility / type-meta 收成 capture
 - 静态函数里使用 `self` 或 instance member（沿用既有 `ResolveRestriction`）
@@ -164,7 +165,7 @@ Parser AST 为 `dev.superice.gdparser.frontend.ast.LambdaExpression`，提供
 - `forCallableScopeKind(LAMBDA_EXPRESSION)` → `EXECUTABLE_BODY`
 
 `FrontendVisibleValueDomain.LAMBDA_SUBTREE` 枚举值保留，但生产路径不再映射到它。
-`MATCH_SUBTREE` / `PARAMETER_DEFAULT` / `BLOCK_LOCAL_CONST_SUBTREE` 不得被这次合同打开。
+`PARAMETER_DEFAULT` / `BLOCK_LOCAL_CONST_SUBTREE` 不得被这次合同打开。`MATCH_SECTION_BODY` 已映射为 `EXECUTABLE_BODY`（match 毕业，见 `frontend_match_statement_plan.md`）。
 
 `FrontendVariableAnalyzer.bindLocal` 经
 `FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(kind)`
@@ -463,8 +464,8 @@ userdata 结构体。这是 ABI 差异，不是语义差异；测试应对齐用
   body facts（与普通 executable block 相同）。
 - **未记录 lambda**：保持形态级 `sema.compile_check` blocker，不静默放行；若上游已在同一
   exact range 发布 unsupported 诊断，则按统一去重合同省略补发。
-- lambda body 内的 `match` 仍走上游 `sema.unsupported_binding_subtree` owner；compile gate
-  不得再包一层 `sema.compile_check`。
+- lambda body 内的 `match` 走 match 自己的 route-aware compile policy（当前 ready set 为空，
+  发锚定 match root 的 `sema.compile_check` route-not-ready），不再由 `sema.unsupported_binding_subtree` 持有。
 
 `FrontendAnalysisInspectionTool` 不再把 `LambdaExpression` 当作 deferred 祖先。
 
@@ -498,7 +499,7 @@ userdata 结构体。这是 ABI 差异，不是语义差异；测试应对齐用
 5. hidden lambda 函数不进 ClassDB；`is_lambda` 与 `is_hidden` 同时为真。
 6. 缺 published `FrontendLambdaPlan` 时 lowering fail-fast，禁止现场重推导。
 7. 诊断：一处根因一条 diagnostic；downstream 不得重复包。
-8. `match` / parameter default / block-local `const` / `await` 不得借这次改动进入支持面。
+8. parameter default / block-local `const` / `await` 不得借这次改动进入支持面。`match` 由独立计划毕业（`frontend_match_statement_plan.md`）。
 9. 修改本合同时必须同步 `frontend_rules.md`、compile-check 文档、
    `gdcc_low_ir.md`（若改 insn）、`gdcc_runtime_lib.md`（若改 helper）。
 
@@ -516,7 +517,7 @@ userdata 结构体。这是 ABI 差异，不是语义差异；测试应对齐用
 - `FrontendLambdaLoweringTest` — hidden shell 合成、`LAMBDA_BODY` CFG/body、外层 `construct_lambda`、缺 plan / 名冲突 / capture 数漂移 fail-fast
 - `ConstructLambdaInsnGenTest` — opcode 注册、capture 块、`object_id`、prepare/prologue、名序校验
 - `ConstructLambdaInsnGenEngineTest` — Zig + 可选 `GODOT_BIN`：常量 / String capture / self `object_id` / free 后 invalid
-- `FrontendCompileCheckAnalyzerTest` — 已记录放行、未记录 fail-closed、body 内 `match` 不被 `compile_check` 重复包
+- `FrontendCompileCheckAnalyzerTest` — 已记录放行、未记录 fail-closed、body 内 `match` 走 route-not-ready `sema.compile_check`
 - `FrontendClassSkeletonTest` — `_lambda_` reserved prefix
 - `FrontendLoopControlFlowAnalyzerTest.analyzeResetsOuterLoopDepthAtLambdaBoundary` — 仍是 callable boundary
 - `FrontendCfgGraphBuilderTest.buildExecutableBodyFailsFastWhenReceiverBindingIsCaptureAliasRoot` — alias 仍不开放
@@ -524,15 +525,15 @@ userdata 结构体。这是 ABI 差异，不是语义差异；测试应对齐用
 - e2e：`src/test/test_suite/unit_test/script/member/signal_connect_lambda.gd`
 
 必须保持 fail-closed 的现有锚点：全部 `FrontendScopeAnalyzerTest` 的 lambda 图形状、
-`ScopeCaptureShapeTest`、for / match / const 的 fail-closed 锚点、parameter default /
-match 内嵌套 lambda 的 compile-surface skip。
+`ScopeCaptureShapeTest`、for / const 的 fail-closed 锚点、parameter default 的 compile-surface skip。
+match 内嵌套 lambda 已随 match Step 2 转正。
 
 ---
 
 ## 8. 当前局限与后续
 
 - property initializer / parameter default / class-level 表达式中的 lambda 仍未 `recordCallable`。
-- lambda 自己的 parameter default、body 内 `match` / block-local `const` / `await` 仍 deferred。
+- lambda 自己的 parameter default、body 内 block-local `const` / `await` 仍 deferred。
 - `CAPTURE` 不进入 direct-slot alias publication。
 - 不实现 `Callable.bind` / `unbind`。
 - silent 局部稳定化不把 `var cb := func(): ...` 的 slot 精化为 `Callable`；若未来要打开，

@@ -38,6 +38,7 @@ import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
@@ -1047,7 +1048,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void defaultInterfaceBodyPipelineSupportsForWhileOtherUnsupportedSubtreesStayFailClosed() throws Exception {
+    void defaultInterfaceBodyPipelineSupportsForAndMatchWhileConstStayFailClosed() throws Exception {
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", "segmented_unsupported_equivalence.gd"), """
                 class_name SegmentedUnsupportedEquivalence
@@ -1082,12 +1083,18 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertNull(interfaceBody.slotTypes().get(blockedConst));
         assertEquals(GdVariantType.VARIANT, interfaceBody.slotTypes().get(hiddenLocal));
         assertEquals(FrontendBindingKind.LOCAL_VAR, interfaceBody.symbolBindings().get(hiddenUseSite).kind());
+        var matchStatement = findNode(pingFunction.body(), MatchStatement.class, _ -> true);
+        assertNotNull(interfaceBody.matchPlans().get(matchStatement));
         assertFalse(diagnosticsByCategory(interfaceBody.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
         assertTrue(interfaceBody.diagnostics().asList().stream().noneMatch(diagnostic ->
                 diagnostic.category().equals("sema.unsupported_variable_inventory_subtree")
                         && diagnostic.range().equals(FrontendRange.fromAstRange(
                         findNode(pingFunction.body(), ForStatement.class, _ -> true).range()
                 ))
+        ));
+        assertTrue(interfaceBody.diagnostics().asList().stream().noneMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_variable_inventory_subtree")
+                        && diagnostic.range().equals(FrontendRange.fromAstRange(matchStatement.range()))
         ));
         assertEquals(interfaceBodyDiagnostics.snapshot(), interfaceBody.diagnostics());
     }

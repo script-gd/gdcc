@@ -6,6 +6,7 @@ import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendLambdaPlan;
+import gd.script.gdcc.frontend.sema.FrontendMatchPlan;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
@@ -25,6 +26,7 @@ public sealed interface FrontendOwnerPatch permits
         FrontendChainBindingPatch,
         FrontendExprTypePatch,
         FrontendForIterationResolutionPatch,
+        FrontendMatchResolutionPatch,
         FrontendVarTypePostPatch,
         FrontendLambdaResolutionPatch {
     @NotNull FrontendSemanticStage stage();
@@ -50,6 +52,10 @@ public sealed interface FrontendOwnerPatch permits
     }
 
     default @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans() {
+        return FrontendPatchTables.emptySideTable();
+    }
+
+    default @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans() {
         return FrontendPatchTables.emptySideTable();
     }
 

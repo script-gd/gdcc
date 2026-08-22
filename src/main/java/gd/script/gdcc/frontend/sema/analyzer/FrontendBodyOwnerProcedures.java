@@ -22,6 +22,7 @@ import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
@@ -44,6 +45,9 @@ import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendForLoopSupport;
+import gd.script.gdcc.frontend.sema.FrontendMatchBindingPlan;
+import gd.script.gdcc.frontend.sema.FrontendMatchPlan;
+import gd.script.gdcc.frontend.sema.FrontendMatchSupport;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
@@ -355,6 +359,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             publishForIteratorSlotType(context, forStatement);
             return;
         }
+        if (root instanceof MatchStatement matchStatement) {
+            publishMatchBindSlotTypes(context, matchStatement);
+            return;
+        }
         if (!(root instanceof VariableDeclaration variableDeclaration)
                 || variableDeclaration.kind() != DeclarationKind.VAR) {
             return;
@@ -388,6 +396,20 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 plan
         );
         refineIteratorSlot(context, forStatement, plan);
+    }
+
+    @Override
+    public void runMatchPatternResolution(
+            @NotNull FrontendSuiteContext context,
+            @NotNull MatchStatement matchStatement
+    ) {
+        var plan = FrontendMatchSupport.buildPlan(matchStatement);
+        context.typedEnvironment().putMatchPlan(
+                FrontendSemanticStage.MATCH_PATTERN_RESOLUTION,
+                matchStatement,
+                plan
+        );
+        refineMatchBindSlots(context, matchStatement, plan);
     }
 
     private @Nullable GdType resolveDeclaredIteratorType(
@@ -473,6 +495,155 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 FrontendSemanticStage.VAR_TYPE_POST,
                 forStatement,
                 effectiveSlot.type()
+        );
+    }
+
+    /// Refines top-level binds via `MATCH_PATTERN_RESOLUTION` against the section
+    /// `MATCH_SECTION_BODY` identity. Nested binds stay `Variant`. Subject type must already be a
+    /// stable non-Variant fact; otherwise the bind keeps its inventory baseline.
+    private void refineMatchBindSlots(
+            @NotNull FrontendSuiteContext context,
+            @NotNull MatchStatement matchStatement,
+            @NotNull FrontendMatchPlan plan
+    ) {
+        var subjectType = resolveMatchSubjectType(context, matchStatement);
+        if (subjectType == null || subjectType instanceof GdVariantType) {
+            return;
+        }
+        if (subjectType instanceof GdVoidType || subjectType instanceof GdCompilerType) {
+            return;
+        }
+        for (var sectionPlan : plan.sections()) {
+            var sectionScope = context.analysisData().scopesByAst().get(sectionPlan.section());
+            if (!(sectionScope instanceof BlockScope blockScope)) {
+                continue;
+            }
+            for (var patternPlan : sectionPlan.patterns()) {
+                for (var bindingPlan : patternPlan.bindings()) {
+                    if (!bindingPlan.topLevel()) {
+                        continue;
+                    }
+                    refineMatchBindSlot(context, blockScope, bindingPlan, subjectType);
+                }
+            }
+        }
+    }
+
+    private void refineMatchBindSlot(
+            @NotNull FrontendSuiteContext context,
+            @NotNull BlockScope blockScope,
+            @NotNull FrontendMatchBindingPlan bindingPlan,
+            @NotNull GdType subjectType
+    ) {
+        var bindSlot = blockScope.resolveValueHere(bindingPlan.name());
+        if (bindSlot == null || bindSlot.declaration() != bindingPlan.declaration()) {
+            return;
+        }
+        var effectiveSlot = context.typedEnvironment().effectiveScopeValue(bindSlot, blockScope);
+        if (!(effectiveSlot.type() instanceof GdVariantType)) {
+            return;
+        }
+        context.typedEnvironment().addLocalSlotTypeUpdate(
+                FrontendSemanticStage.MATCH_PATTERN_RESOLUTION,
+                new FrontendLocalSlotTypeUpdate(
+                        blockScope,
+                        bindingPlan.name(),
+                        bindingPlan.declaration(),
+                        subjectType
+                )
+        );
+    }
+
+    private @Nullable GdType resolveMatchSubjectType(
+            @NotNull FrontendSuiteContext context,
+            @NotNull MatchStatement matchStatement
+    ) {
+        var expressionType = context.typedEnvironment().expressionType(matchStatement.value());
+        if (expressionType == null || expressionType.status() != FrontendExpressionTypeStatus.RESOLVED) {
+            return null;
+        }
+        return expressionType.publishedType();
+    }
+
+    /// Publishes source-facing `slotTypes()[PatternBindingExpression]` from the effective type on
+    /// the section `MATCH_SECTION_BODY`. Rejected binds (duplicate/shadowing) emit the ordinary
+    /// `sema.variable_slot_publication` warning so compile-gate hole scanning can upgrade them.
+    private void publishMatchBindSlotTypes(
+            @NotNull FrontendSuiteContext context,
+            @NotNull MatchStatement matchStatement
+    ) {
+        var plan = context.typedEnvironment().matchPlan(matchStatement);
+        if (plan == null) {
+            plan = context.analysisData().matchPlans().get(matchStatement);
+        }
+        if (plan == null) {
+            return;
+        }
+        for (var sectionPlan : plan.sections()) {
+            var sectionScope = context.analysisData().scopesByAst().get(sectionPlan.section());
+            if (!(sectionScope instanceof BlockScope blockScope)) {
+                continue;
+            }
+            for (var patternPlan : sectionPlan.patterns()) {
+                for (var bindingPlan : patternPlan.bindings()) {
+                    publishMatchBindSlotType(context, blockScope, bindingPlan.declaration());
+                }
+            }
+        }
+    }
+
+    private void publishMatchBindSlotType(
+            @NotNull FrontendSuiteContext context,
+            @NotNull BlockScope blockScope,
+            @NotNull PatternBindingExpression patternBinding
+    ) {
+        var slot = blockScope.resolveValueHere(patternBinding.name());
+        if (slot == null || slot.declaration() != patternBinding) {
+            reportRejectedPatternBindSlotPublication(context, blockScope, patternBinding, slot);
+            return;
+        }
+        var effectiveSlot = context.typedEnvironment().effectiveScopeValue(slot, blockScope);
+        context.typedEnvironment().putSlotType(
+                FrontendSemanticStage.VAR_TYPE_POST,
+                patternBinding,
+                effectiveSlot.type()
+        );
+    }
+
+    private void reportRejectedPatternBindSlotPublication(
+            @NotNull FrontendSuiteContext context,
+            @NotNull BlockScope blockScope,
+            @NotNull PatternBindingExpression patternBinding,
+            @Nullable ScopeValue currentLayerSlot
+    ) {
+        var survivingSlot = findSurvivingCallableLocalBinding(
+                blockScope,
+                patternBinding.name(),
+                currentLayerSlot
+        );
+        var message = new StringBuilder()
+                .append("Pattern binding '")
+                .append(patternBinding.name())
+                .append("' in ")
+                .append(describeLocalContext(blockScope, context.callableOwner()))
+                .append(" has no lowering-ready published slot type at ")
+                .append(formatRange(patternBinding))
+                .append(" in ")
+                .append(context.sourcePath())
+                .append("; the declaration was not accepted into callable-local inventory");
+        if (survivingSlot != null && survivingSlot.declaration() instanceof Node survivingDeclaration) {
+            message.append("; surviving slot currently resolves to ")
+                    .append(describeSurvivingDeclaration(survivingSlot))
+                    .append(" at ")
+                    .append(formatRange(survivingDeclaration));
+        } else {
+            message.append("; this usually means earlier variable analysis rejected the declaration as duplicate or shadowing");
+        }
+        context.diagnosticManager().warning(
+                VARIABLE_SLOT_PUBLICATION_CATEGORY,
+                message.toString(),
+                context.sourcePath(),
+                FrontendRange.fromAstRange(patternBinding.range())
         );
     }
 
@@ -599,15 +770,6 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             case VariableDeclaration variableDeclaration when variableDeclaration.value() != null -> {
                 reportUnsupportedBinding(context, variableDeclaration.value(), "block-local const initializer");
                 reportUnsupportedChain(context, variableDeclaration.value(), "block-local const initializer");
-            }
-            case MatchStatement matchStatement -> {
-                reportUnsupportedBinding(context, matchStatement, "match subtree");
-                reportUnsupportedChain(context, matchStatement, "match subtree");
-                // `match` sections remain sealed as a structurally deferred domain, but the subject
-                // expression belongs to the enclosing executable surface and must stay visible.
-                runTopBinding(context, matchStatement.value());
-                runChainBinding(context, matchStatement.value());
-                runExprType(context, matchStatement.value());
             }
             default -> {
             }

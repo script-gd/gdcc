@@ -67,6 +67,7 @@
   - `WHILE_BODY`
   - `FOR_BODY`
   - `LAMBDA_BODY`
+  - `MATCH_SECTION_BODY`
 - resolver 与 variable analyzer 必须共用同一 support matrix，不能各自维护名单
 
 ### 2.2 与 shared `Scope` 的分工
@@ -109,12 +110,10 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 
 - parameter default-value expression
 - block-local `const` initializer subtree
-- `match` pattern / guard / section body
 - 任何缺少稳定 scope 记录的 subtree
-- 任何 current scope 自身就是未发布 inventory 的 scope，例如：
-  - `BlockScopeKind.MATCH_SECTION_BODY`
+- 任何 current scope 自身就是未发布 inventory 的 scope（`MATCH_SECTION_BODY` 已毕业，不再属于此列）
 
-这些域当前不能静默回退到 outer local / class property / global，也不能伪装成普通 `NOT_FOUND`。`ForStatement` 的 iterator type、iterable 与 body edge 已转正，`FOR_BODY` current scope 直接进入 normal lookup；lambda body 同样转正：`LAMBDA_BODY` / `LAMBDA_EXPRESSION` current scope 走 policy 驱动 gate（`EXECUTABLE_BODY` 放行），lambda AST 边不再封口，body 内 use-site 直接命中 lambda 自己的 `CAPTURE` / `PARAMETER` / `LOCAL` 绑定。body 内 identifier 的精化类型仍依赖 suite overlay 的 `effectiveBinding`：iterator 声明的 owning scope 必须是 `FOR_BODY` 对象身份（`scope_analyzer_implementation.md` §6.1），否则可能回落到 Interface baseline `Variant`。
+这些域当前不能静默回退到 outer local / class property / global，也不能伪装成普通 `NOT_FOUND`。`ForStatement` 的 iterator type、iterable 与 body edge 已转正，`FOR_BODY` current scope 直接进入 normal lookup；lambda body 同样转正：`LAMBDA_BODY` / `LAMBDA_EXPRESSION` current scope 走 policy 驱动 gate（`EXECUTABLE_BODY` 放行），lambda AST 边不再封口，body 内 use-site 直接命中 lambda 自己的 `CAPTURE` / `PARAMETER` / `LOCAL` 绑定。`MatchSection` pattern / guard / body 的 AST 边与 `MATCH_SECTION_BODY` current-scope backstop 同样已解封：bind 在同一 section 的 guard / body 内可见，section 间与 `match` 之后由独立 `BlockScope` 自然不可见。body 内 identifier 的精化类型仍依赖 suite overlay 的 `effectiveBinding`：iterator 声明的 owning scope 必须是 `FOR_BODY` 对象身份（`scope_analyzer_implementation.md` §6.1），否则可能回落到 Interface baseline `Variant`。
 
 ### 3.3 `ClassScope` / `ClassRegistry` 不是封口域
 
@@ -183,7 +182,6 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 - `PARAMETER_DEFAULT`
 - `LAMBDA_SUBTREE`
 - `BLOCK_LOCAL_CONST_SUBTREE`
-- `MATCH_SUBTREE`
 - `UNKNOWN_OR_SKIPPED_SUBTREE`
 
 当前 `reason` 至少区分：
@@ -198,7 +196,7 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 `FrontendVisibleValueResolver.resolve(request)` 当前行为冻结为：
 
 1. 若 `request.domain != EXECUTABLE_BODY`，直接返回 `DEFERRED_UNSUPPORTED(domain = request.domain, reason = UNSUPPORTED_DOMAIN)`
-2. 先做 AST boundary 检测，识别 parameter default、block-local `const` initializer、`match` 等共享外层 scope 的 unsupported 子树；for header/body edge 与 lambda body edge 不封口
+2. 先做 AST boundary 检测，识别 parameter default、block-local `const` initializer 等共享外层 scope 的 unsupported 子树；for header/body edge、lambda body edge 与 match section pattern/guard/body edge 不封口
 3. 若 use-site 缺少 current scope 记录，返回 `DEFERRED_UNSUPPORTED`
 4. 对 current scope 执行 fail-closed 校验（block 与 callable scope 均走 policy 驱动 gate）；若 current scope 自身没有已发布 inventory，也返回 `DEFERRED_UNSUPPORTED`
 5. 在继续 outer fallback 之前，检查 enclosing supported block 中是否已经出现同名且当前可见的 block-local `const`；若存在，也必须封口为 `BLOCK_LOCAL_CONST_SUBTREE`

@@ -10,8 +10,14 @@ import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendForLoopSupport;
+import gd.script.gdcc.frontend.sema.FrontendMatchPlan;
+import gd.script.gdcc.frontend.sema.FrontendMatchPatternPlan;
+import gd.script.gdcc.frontend.sema.FrontendMatchPatternRoute;
+import gd.script.gdcc.frontend.sema.FrontendMatchSupport;
+import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendIterableSemantics;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendCallableReturnTypeSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
@@ -35,6 +41,7 @@ import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
+import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
@@ -49,6 +56,7 @@ import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
+import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
@@ -675,6 +683,141 @@ public class FrontendTypeCheckAnalyzer {
         };
     }
 
+    /// Match shape checks owned by `sema.type_check`. Body traversal is always performed by the
+    /// visitor regardless of route readiness; this helper only validates bind/multi-pattern mutex
+    /// and dictionary-key constantness.
+    protected void visitMatchStatement(
+            @NotNull TypeCheckAccess access,
+            @NotNull MatchStatement matchStatement
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(matchStatement, "matchStatement must not be null");
+        var plan = requirePublishedMatchPlan(access.analysisData(), matchStatement);
+        visitNestedCastExpressions(access, matchStatement.value());
+        for (var sectionPlan : plan.sections()) {
+            var section = sectionPlan.section();
+            if (section.guard() != null) {
+                visitConditionExpression(access, section.guard(), section);
+            }
+            var hasBinding = false;
+            for (var patternPlan : sectionPlan.patterns()) {
+                if (patternPlan.route() == FrontendMatchPatternRoute.BINDING
+                        || !patternPlan.bindings().isEmpty()) {
+                    hasBinding = true;
+                }
+                visitMatchPattern(access, patternPlan);
+            }
+            if (hasBinding && section.patterns().size() > 1) {
+                access.diagnosticManager().error(
+                        TYPE_CHECK_CATEGORY,
+                        "Pattern binding cannot be used with multiple patterns in the same match section",
+                        access.sourcePath(),
+                        FrontendRange.fromAstRange(section.range())
+                );
+            }
+        }
+    }
+
+    private void visitMatchPattern(
+            @NotNull TypeCheckAccess access,
+            @NotNull FrontendMatchPatternPlan patternPlan
+    ) {
+        switch (patternPlan.route()) {
+            case WILDCARD, BINDING -> {
+            }
+            case LITERAL, EXPRESSION -> visitNestedCastExpressions(access, patternPlan.patternNode());
+            case ARRAY -> {
+                var array = (ArrayExpression) patternPlan.patternNode();
+                for (var element : array.elements()) {
+                    visitMatchPattern(access, new FrontendMatchPatternPlan(
+                            element,
+                            FrontendMatchSupport.classifyPatternRoute(element),
+                            FrontendMatchSupport.collectPatternBindings(element, false)
+                    ));
+                }
+            }
+            case DICTIONARY -> {
+                var dictionary = (DictionaryExpression) patternPlan.patternNode();
+                for (var entry : dictionary.entries()) {
+                    visitNestedCastExpressions(access, entry.key());
+                    visitDictionaryPatternKey(access, entry.key());
+                    visitMatchPattern(access, new FrontendMatchPatternPlan(
+                            entry.value(),
+                            FrontendMatchSupport.classifyPatternRoute(entry.value()),
+                            FrontendMatchSupport.collectPatternBindings(entry.value(), false)
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Dictionary pattern keys keep Godot's constant-only contract (not in the expression-pattern
+    /// superset). Unstable keys keep their upstream owner; a stable non-constant key gets the
+    /// Godot-original message.
+    private void visitDictionaryPatternKey(@NotNull TypeCheckAccess access, @NotNull Expression key) {
+        if (!isStablePublishedFact(access.analysisData(), key)) {
+            return;
+        }
+        if (isConstantMatchKey(access.analysisData(), key)) {
+            return;
+        }
+        access.diagnosticManager().error(
+                TYPE_CHECK_CATEGORY,
+                "Expression in dictionary pattern key must be a constant.",
+                access.sourcePath(),
+                FrontendRange.fromAstRange(key.range())
+        );
+    }
+
+    private static boolean isStablePublishedFact(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Expression expression
+    ) {
+        var publishedType = analysisData.expressionTypes().get(expression);
+        if (publishedType == null) {
+            return false;
+        }
+        return switch (publishedType.status()) {
+            case RESOLVED, DYNAMIC -> true;
+            case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> false;
+        };
+    }
+
+    private static boolean isConstantMatchKey(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Expression key
+    ) {
+        if (key instanceof LiteralExpression) {
+            return true;
+        }
+        var binding = analysisData.symbolBindings().get(key);
+        if (binding != null && (binding.kind() == FrontendBindingKind.CONSTANT
+                || binding.kind() == FrontendBindingKind.LITERAL)) {
+            return true;
+        }
+        if (!(key instanceof AttributeExpression attributeExpression) || attributeExpression.steps().isEmpty()) {
+            return false;
+        }
+        var lastStep = attributeExpression.steps().getLast();
+        var member = analysisData.resolvedMembers().get(lastStep);
+        return member != null
+                && member.status() == FrontendMemberResolutionStatus.RESOLVED
+                && member.bindingKind() == FrontendBindingKind.CONSTANT;
+    }
+
+    private static @NotNull FrontendMatchPlan requirePublishedMatchPlan(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull MatchStatement matchStatement
+    ) {
+        Objects.requireNonNull(analysisData, "analysisData must not be null");
+        Objects.requireNonNull(matchStatement, "matchStatement must not be null");
+        var plan = analysisData.matchPlans().get(matchStatement);
+        if (plan != null) {
+            return plan;
+        }
+        throw new IllegalStateException("match plan has not been published for MatchStatement");
+    }
+
     /// The iteration plan is the single route/element-type truth and must already be published by the
     /// for-iteration resolution owner before type-check runs. A missing plan means the upstream phase
     /// boundary was not honored, so this path fails fast instead of silently skipping the header.
@@ -1199,6 +1342,18 @@ public class FrontendTypeCheckAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
+            if (supportedExecutableBlockDepth <= 0 || isNotPublished(matchStatement)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            visitMatchStatement(callbackAccess(), matchStatement);
+            scanNestedLambdaBodies(matchStatement.value());
+            for (var section : matchStatement.sections()) {
+                for (var pattern : section.patterns()) {
+                    scanNestedLambdaBodies(pattern);
+                }
+                scanNestedLambdaBodies(section.guard());
+                walkSupportedExecutableBlock(section.body());
+            }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 

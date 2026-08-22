@@ -63,8 +63,8 @@
 
 ## 文档状态
 
-- 状态：Step 1 已完成（分类器、plan 模型与 parse 实证探针已落地，管线行为零变化）；Step 2-5 待实施
-- 更新时间：2026-08-21
+- 状态：Step 1 已完成；Step 2 已完成（shared semantic 毕业 + 空 ready set 的 compile gate）；Step 3-5 待实施
+- 更新时间：2026-08-22
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -700,6 +700,12 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
 - 全部既有 match 锚点测试**保持绿色不变**（本步不改管线）。
 
 ### Step 2：shared semantic 毕业与空 ready set 的 compile gate
+
+> 状态：已完成（2026-08-22）。policy 翻转、`PATTERN_BIND` inventory / declaration index、
+> `MATCH_PATTERN_RESOLUTION` 门控链 6 项、pattern-context 分派、`runVarTypePost(match)`、
+> type-check 形状校验、空 ready set 的 route-aware compile gate、inspection 专用 reason、
+> §7 Step 2 锚点改写与 `FrontendMatchSemanticsTest` 均已落地。`LOWERING_READY_ROUTES`
+> 保持 `Set.of()`。文档同步条目已回写对应合同文档。
 
 改动（§5.2 - §5.7、§5.11、§5.12 全部 sema 侧与 compile gate 条目）：
 

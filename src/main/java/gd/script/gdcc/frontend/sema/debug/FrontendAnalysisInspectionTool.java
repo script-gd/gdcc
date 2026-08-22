@@ -5,10 +5,16 @@ import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
+import dev.superice.gdparser.frontend.ast.ElifClause;
 import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IfStatement;
+import dev.superice.gdparser.frontend.ast.ArrayExpression;
+import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
+import dev.superice.gdparser.frontend.ast.MatchSection;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Parameter;
@@ -16,6 +22,7 @@ import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.ast.WhileStatement;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
@@ -27,6 +34,7 @@ import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
+import gd.script.gdcc.frontend.sema.FrontendMatchSupport;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -297,11 +305,50 @@ public final class FrontendAnalysisInspectionTool {
                         || statement instanceof ConstructorDeclaration) {
                     continue;
                 }
-                if (!hasAnchorContent(statement)) {
-                    continue;
+                if (hasAnchorContent(statement)) {
+                    renderAnchor(statement, report, indent);
                 }
-                renderAnchor(statement, report, indent);
+                renderNestedStatementAnchors(statement, report, indent);
             }
+        }
+
+        /// Nested `match` / loop / branch bodies are not themselves function-level statements, so
+        /// their published and intentionally unpublished pattern facts would otherwise stay hidden.
+        /// Recursing here is display-only and does not change published analysis facts.
+        private void renderNestedStatementAnchors(
+                @NotNull Statement statement,
+                @NotNull StringBuilder report,
+                int indent
+        ) {
+            switch (statement) {
+                case ForStatement forStatement -> renderDirectAnchors(forStatement.body().statements(), report, indent);
+                case WhileStatement whileStatement ->
+                        renderDirectAnchors(whileStatement.body().statements(), report, indent);
+                case IfStatement ifStatement -> {
+                    renderDirectAnchors(ifStatement.body().statements(), report, indent);
+                    for (var elifClause : ifStatement.elifClauses()) {
+                        renderNestedElifAnchors(elifClause, report, indent);
+                    }
+                    if (ifStatement.elseBody() != null) {
+                        renderDirectAnchors(ifStatement.elseBody().statements(), report, indent);
+                    }
+                }
+                case MatchStatement matchStatement -> {
+                    for (var section : matchStatement.sections()) {
+                        renderDirectAnchors(section.body().statements(), report, indent);
+                    }
+                }
+                default -> {
+                }
+            }
+        }
+
+        private void renderNestedElifAnchors(
+                @NotNull ElifClause elifClause,
+                @NotNull StringBuilder report,
+                int indent
+        ) {
+            renderDirectAnchors(elifClause.body().statements(), report, indent);
         }
 
         private boolean hasAnchorContent(@NotNull Node anchor) {
@@ -677,10 +724,72 @@ public final class FrontendAnalysisInspectionTool {
             if (expression instanceof IdentifierExpression identifierExpression && isRouteHeadTypeMeta(identifierExpression)) {
                 return "route-head TYPE_META is intentionally not published as ordinary value expression";
             }
+            if (isIntentionallyUnpublishedMatchPattern(expression)) {
+                return "pattern-context node is intentionally not published as an ordinary value expression";
+            }
             if (hasUnsupportedOrDeferredAncestor(expression)) {
                 return "expression belongs to a subtree that is intentionally skipped, deferred, or unsupported";
             }
             return "expression is not published by the current frontend phase";
+        }
+
+        /// WILDCARD / BINDING / ARRAY / DICTIONARY pattern roots never publish ordinary expression
+        /// facts. Detected before ancestor skipped-subtree reasoning so a surrounding `ForStatement`
+        /// dirty point cannot rewrite the reason as skipped/unsupported.
+        private boolean isIntentionallyUnpublishedMatchPattern(@NotNull Expression expression) {
+            if (!isInsideMatchPatternTree(expression)) {
+                return false;
+            }
+            return switch (FrontendMatchSupport.classifyPatternRoute(expression)) {
+                case WILDCARD, BINDING, ARRAY, DICTIONARY -> true;
+                case LITERAL, EXPRESSION -> false;
+            };
+        }
+
+        /// True when `node` is a section-level pattern or a nested array-element / dictionary-value
+        /// pattern. Dictionary keys are constant expressions, not patterns, so they stay false.
+        private boolean isInsideMatchPatternTree(@Nullable Node node) {
+            var current = node;
+            while (current != null) {
+                var parent = parents.get(current);
+                if (parent instanceof MatchSection matchSection
+                        && containsNodeIdentity(matchSection.patterns(), current)) {
+                    return true;
+                }
+                if (parent instanceof ArrayExpression arrayExpression
+                        && containsNodeIdentity(arrayExpression.elements(), current)) {
+                    current = parent;
+                    continue;
+                }
+                if (parent instanceof DictionaryExpression dictionaryExpression
+                        && isDictionaryPatternValue(dictionaryExpression, current)) {
+                    current = parent;
+                    continue;
+                }
+                return false;
+            }
+            return false;
+        }
+
+        private boolean isDictionaryPatternValue(
+                @NotNull DictionaryExpression dictionary,
+                @NotNull Node node
+        ) {
+            for (var entry : dictionary.entries()) {
+                if (entry.value() == node) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean containsNodeIdentity(@NotNull List<? extends Node> nodes, @NotNull Node target) {
+            for (var node : nodes) {
+                if (node == target) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private boolean isRouteHeadTypeMeta(@NotNull IdentifierExpression identifierExpression) {
@@ -701,9 +810,6 @@ public final class FrontendAnalysisInspectionTool {
             while (current != null) {
                 switch (current) {
                     case Parameter parameter when parameter.defaultValue() != null -> {
-                        return true;
-                    }
-                    case MatchStatement _ -> {
                         return true;
                     }
                     case dev.superice.gdparser.frontend.ast.ForStatement _ -> {

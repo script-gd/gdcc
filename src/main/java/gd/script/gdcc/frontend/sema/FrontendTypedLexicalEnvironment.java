@@ -8,6 +8,7 @@ import gd.script.gdcc.frontend.sema.patch.FrontendExprTypePatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendForIterationResolutionPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendLambdaResolutionPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
+import gd.script.gdcc.frontend.sema.patch.FrontendMatchResolutionPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalTypeStabilizationPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendPatchTransaction;
@@ -117,6 +118,15 @@ public final class FrontendTypedLexicalEnvironment {
                 committedFacts.expressionTypes.get(astNode),
                 stableData.expressionTypes().get(astNode),
                 parent != null ? parent.expressionType(astNode) : null
+        );
+    }
+
+    public @Nullable FrontendMatchPlan matchPlan(@NotNull Node astNode) {
+        return firstNonNull(
+                pendingFacts.matchPlans.get(astNode),
+                committedFacts.matchPlans.get(astNode),
+                stableData.matchPlans().get(astNode),
+                parent != null ? parent.matchPlan(astNode) : null
         );
     }
 
@@ -240,6 +250,10 @@ public final class FrontendTypedLexicalEnvironment {
                 validateLocalSlotTypeUpdate(update);
                 pendingFacts.forIterationSlotTypeUpdates.add(update);
             }
+            case MATCH_PATTERN_RESOLUTION -> {
+                validateLocalSlotTypeUpdate(update);
+                pendingFacts.matchPatternSlotTypeUpdates.add(update);
+            }
             default -> throw FrontendAnalysisData.patchFailure(
                     owner + " cannot publish local slot type updates");
         }
@@ -260,6 +274,24 @@ public final class FrontendTypedLexicalEnvironment {
                 plan,
                 "forIterationPlans",
                 FrontendForIterationPlan::samePlan
+        );
+    }
+
+    public void putMatchPlan(
+            @NotNull FrontendSemanticStage owner,
+            @NotNull Node astNode,
+            @NotNull FrontendMatchPlan plan
+    ) {
+        requireOwner(owner, FrontendSemanticStage.MATCH_PATTERN_RESOLUTION);
+        FrontendPublishedFactTypeGuard.checkMatchPlan(plan);
+        putSideTable(
+                stableData.matchPlans(),
+                committedFacts.matchPlans,
+                pendingFacts.matchPlans,
+                astNode,
+                plan,
+                "matchPlans",
+                FrontendMatchPlan::samePlan
         );
     }
 
@@ -506,6 +538,8 @@ public final class FrontendTypedLexicalEnvironment {
                 return forBodyScope;
             }
         }
+        // Pattern binds already have `scopesByAst[PatternBindingExpression]` recorded as the
+        // section `MATCH_SECTION_BODY` object (same instance as `scopesByAst[section.body()]`).
         return stableData.scopesByAst().get(declarationNode);
     }
 
@@ -598,6 +632,8 @@ public final class FrontendTypedLexicalEnvironment {
         private final @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates = new ArrayList<>();
         private final @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans = new FrontendAstSideTable<>();
         private final @NotNull List<FrontendLocalSlotTypeUpdate> forIterationSlotTypeUpdates = new ArrayList<>();
+        private final @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans = new FrontendAstSideTable<>();
+        private final @NotNull List<FrontendLocalSlotTypeUpdate> matchPatternSlotTypeUpdates = new ArrayList<>();
         private final @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets = new FrontendAstSideTable<>();
         private final @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans =
                 new FrontendAstSideTable<>();
@@ -638,8 +674,17 @@ public final class FrontendTypedLexicalEnvironment {
                     name,
                     declaration
             );
-            return forIterationType != null
-                    ? forIterationType
+            if (forIterationType != null) {
+                return forIterationType;
+            }
+            var matchPatternType = findLocalSlotTypeUpdate(
+                    matchPatternSlotTypeUpdates,
+                    scope,
+                    name,
+                    declaration
+            );
+            return matchPatternType != null
+                    ? matchPatternType
                     : findLocalSlotTypeUpdate(localSlotTypeUpdates, scope, name, declaration);
         }
 
@@ -667,6 +712,12 @@ public final class FrontendTypedLexicalEnvironment {
                     FrontendForIterationPlan::samePlan
             );
             mergeSideTable(
+                    matchPlans,
+                    incoming.matchPlans,
+                    "matchPlans",
+                    FrontendMatchPlan::samePlan
+            );
+            mergeSideTable(
                     typeTestTargets,
                     incoming.typeTestTargets,
                     "typeTestTargets",
@@ -681,6 +732,7 @@ public final class FrontendTypedLexicalEnvironment {
             mergeSideTable(lambdaPlans, incoming.lambdaPlans, "lambdaPlans", FrontendLambdaPlan::samePlan);
             localSlotTypeUpdates.addAll(incoming.localSlotTypeUpdates);
             forIterationSlotTypeUpdates.addAll(incoming.forIterationSlotTypeUpdates);
+            matchPatternSlotTypeUpdates.addAll(incoming.matchPatternSlotTypeUpdates);
         }
 
         private void checkNoCompilerOnlyLeaks() {
@@ -693,6 +745,8 @@ public final class FrontendTypedLexicalEnvironment {
             FrontendPublishedFactTypeGuard.checkLocalSlotTypeUpdates(localSlotTypeUpdates);
             FrontendPublishedFactTypeGuard.checkForIterationPlans(forIterationPlans);
             FrontendPublishedFactTypeGuard.checkLocalSlotTypeUpdates(forIterationSlotTypeUpdates);
+            FrontendPublishedFactTypeGuard.checkMatchPlans(matchPlans);
+            FrontendPublishedFactTypeGuard.checkLocalSlotTypeUpdates(matchPatternSlotTypeUpdates);
             FrontendPublishedFactTypeGuard.checkTypeTestTargets(typeTestTargets);
             FrontendPublishedFactTypeGuard.checkContainerLiteralPlans(containerLiteralPlans);
             FrontendPublishedFactTypeGuard.checkLambdaPlans(lambdaPlans);
@@ -723,6 +777,9 @@ public final class FrontendTypedLexicalEnvironment {
             if (!forIterationPlans.isEmpty() || !forIterationSlotTypeUpdates.isEmpty()) {
                 patches.add(new FrontendForIterationResolutionPatch(forIterationPlans, forIterationSlotTypeUpdates));
             }
+            if (!matchPlans.isEmpty() || !matchPatternSlotTypeUpdates.isEmpty()) {
+                patches.add(new FrontendMatchResolutionPatch(matchPlans, matchPatternSlotTypeUpdates));
+            }
             if (!slotTypes.isEmpty()) {
                 patches.add(new FrontendVarTypePostPatch(slotTypes));
             }
@@ -742,6 +799,8 @@ public final class FrontendTypedLexicalEnvironment {
                     || !localSlotTypeUpdates.isEmpty()
                     || !forIterationPlans.isEmpty()
                     || !forIterationSlotTypeUpdates.isEmpty()
+                    || !matchPlans.isEmpty()
+                    || !matchPatternSlotTypeUpdates.isEmpty()
                     || !typeTestTargets.isEmpty()
                     || !containerLiteralPlans.isEmpty()
                     || !lambdaPlans.isEmpty();
@@ -757,6 +816,8 @@ public final class FrontendTypedLexicalEnvironment {
             localSlotTypeUpdates.clear();
             forIterationPlans.clear();
             forIterationSlotTypeUpdates.clear();
+            matchPlans.clear();
+            matchPatternSlotTypeUpdates.clear();
             typeTestTargets.clear();
             containerLiteralPlans.clear();
             lambdaPlans.clear();

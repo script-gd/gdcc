@@ -8,6 +8,10 @@ import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.MatchSection;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
+import dev.superice.gdparser.frontend.ast.PassStatement;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
@@ -16,6 +20,7 @@ import gd.script.gdcc.frontend.sema.patch.FrontendChainBindingPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendExprTypePatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendForIterationResolutionPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendLambdaResolutionPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendMatchResolutionPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalTypeStabilizationPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
@@ -43,7 +48,6 @@ import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
-import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.TypeRef;
@@ -1112,6 +1116,23 @@ class FrontendAnalysisDataTest {
                         List.of(new FrontendLocalSlotTypeUpdate(scope, "i", statement, GdIntType.INT))
                 ))
         );
+        var patternBinding = new PatternBindingExpression("bound", RANGE);
+        scope.defineLocal("bound", GdVariantType.VARIANT, patternBinding);
+        // MATCH_PATTERN_RESOLUTION must only target a PatternBindingExpression.
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(new FrontendMatchResolutionPatch(
+                        new FrontendAstSideTable<>(),
+                        List.of(new FrontendLocalSlotTypeUpdate(scope, "local", ordinaryDeclaration, GdIntType.INT))
+                ))
+        );
+        // LOCAL_TYPE_STABILIZATION must not target a PatternBindingExpression.
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(new FrontendLocalTypeStabilizationPatch(
+                        List.of(new FrontendLocalSlotTypeUpdate(scope, "bound", patternBinding, GdIntType.INT))
+                ))
+        );
     }
 
     @Test
@@ -1139,6 +1160,66 @@ class FrontendAnalysisDataTest {
         );
     }
 
+    @Test
+    void applyPatchPublishesMatchPlansWithoutReplacingStableSideTableReference() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var stableReference = analysisData.matchPlans();
+        var statement = matchStatement();
+        var plan = FrontendMatchSupport.buildPlan(statement);
+        var plans = new FrontendAstSideTable<FrontendMatchPlan>();
+        plans.put(statement, plan);
+
+        analysisData.applyPatch(new FrontendMatchResolutionPatch(plans, List.of()));
+
+        assertSame(stableReference, analysisData.matchPlans());
+        assertSame(plan, analysisData.matchPlans().get(statement));
+    }
+
+    @Test
+    void applyPatchAllowsIdempotentMatchPlanMerge() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var statement = matchStatement();
+        var plan = FrontendMatchSupport.buildPlan(statement);
+        analysisData.matchPlans().put(statement, plan);
+
+        var idempotentPlans = new FrontendAstSideTable<FrontendMatchPlan>();
+        idempotentPlans.put(statement, FrontendMatchSupport.buildPlan(statement));
+        analysisData.applyPatch(new FrontendMatchResolutionPatch(idempotentPlans, List.of()));
+
+        assertTrue(FrontendMatchPlan.samePlan(
+                plan,
+                Objects.requireNonNull(analysisData.matchPlans().get(statement))
+        ));
+    }
+
+    @Test
+    void patchTransactionOrdersMatchPatternResolutionBetweenForIterationAndVarTypePost() {
+        var forStatement = forStatement(bareRangeCall());
+        var forPlans = new FrontendAstSideTable<FrontendForIterationPlan>();
+        forPlans.put(forStatement, rangePlan(forStatement, forStatement.iterable()));
+        var matchStatement = matchStatement();
+        var matchPlans = new FrontendAstSideTable<FrontendMatchPlan>();
+        matchPlans.put(matchStatement, FrontendMatchSupport.buildPlan(matchStatement));
+        var slotTypes = new FrontendAstSideTable<GdType>();
+        slotTypes.put(forStatement, GdIntType.INT);
+
+        var analysisData = FrontendAnalysisData.bootstrap();
+        new FrontendPatchTransaction(List.of(
+                new FrontendForIterationResolutionPatch(forPlans, List.of()),
+                new FrontendMatchResolutionPatch(matchPlans, List.of()),
+                new FrontendVarTypePostPatch(slotTypes)
+        )).applyTo(analysisData);
+        assertSame(matchPlans.get(matchStatement), analysisData.matchPlans().get(matchStatement));
+
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> new FrontendPatchTransaction(List.of(
+                        new FrontendVarTypePostPatch(slotTypes),
+                        new FrontendMatchResolutionPatch(matchPlans, List.of())
+                ))
+        );
+    }
+
     private static PassStatement passNode() {
         return new PassStatement(RANGE);
     }
@@ -1153,6 +1234,16 @@ class FrontendAnalysisDataTest {
 
     private static @NotNull ForStatement forStatement(@NotNull Expression iterable) {
         return new ForStatement("i", null, iterable, new Block(List.of(passNode()), RANGE), RANGE);
+    }
+
+    private static @NotNull MatchStatement matchStatement() {
+        var section = new MatchSection(
+                List.of(new IdentifierExpression("_", RANGE)),
+                null,
+                new Block(List.of(passNode()), RANGE),
+                RANGE
+        );
+        return new MatchStatement(new IdentifierExpression("value", RANGE), List.of(section), RANGE);
     }
 
     private static @NotNull FrontendForIterationPlan rangePlan(
@@ -1267,6 +1358,10 @@ class FrontendAnalysisDataTest {
             case CHAIN_BINDING -> new FrontendChainBindingPatch(resolvedMembers, resolvedCalls);
             case EXPR_TYPE -> new FrontendExprTypePatch(expressionTypes, resolvedCalls);
             case FOR_ITERATION_RESOLUTION -> new FrontendForIterationResolutionPatch(
+                    new FrontendAstSideTable<>(),
+                    localSlotTypeUpdates
+            );
+            case MATCH_PATTERN_RESOLUTION -> new FrontendMatchResolutionPatch(
                     new FrontendAstSideTable<>(),
                     localSlotTypeUpdates
             );
