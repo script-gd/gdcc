@@ -11,14 +11,14 @@
 
 在设计这些正向样例时，确认了多条当前仍然成立、且会直接影响测试写法的边界，以及少量已经修复、但需要从旧测试写法中清理掉的历史回归。
 
-## 1. 已转正：`match` 已随 frontend match statement Step 4 毕业；`for` / `lambda` 已转正
+## 1. 已转正：`match` / `for` / `lambda` 已进入 frontend shared body semantic 支持面
 
 事实来源：
 
 - `doc/module_impl/frontend/frontend_rules.md`
   - `for` 已进入 frontend shared body semantic 支持面（route-aware compile gate）
   - `lambda` 已进入 frontend shared body semantic 支持面（已记录 lambda 放行；property initializer / parameter default 中的未记录 lambda 仍 fail-closed）
-  - `match` 已进入 frontend shared body semantic 支持面：`WILDCARD` / `BINDING` / `LITERAL` / `EXPRESSION` / `ARRAY` / `DICTIONARY` 六 route 全部进入 CFG/body lowering（合同见 `frontend_match_statement_plan.md`）
+  - `match` 已进入 frontend shared body semantic 支持面：`WILDCARD` / `BINDING` / `LITERAL` / `EXPRESSION` / `ARRAY` / `DICTIONARY` 六 route 全部进入 CFG/body lowering（合同见 `frontend_match_statement_implementation.md`）
 
 对 test suite 的直接影响：
 

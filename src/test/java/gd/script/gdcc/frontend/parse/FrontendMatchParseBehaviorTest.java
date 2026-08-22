@@ -22,8 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Freezes the gdparser 0.5.3 match-pattern AST contracts required by
-/// `frontend_match_statement_plan.md` Step 1 (parse empirical probes).
+/// Freezes the gdparser 0.5.3 match-pattern AST contracts used by match lowering.
 ///
 /// Scope is parser shape only: how match sections/patterns are represented, and which Godot
 /// pattern forms gdparser cannot represent (`[.., 1]` leading rest, key-only dictionary entries).

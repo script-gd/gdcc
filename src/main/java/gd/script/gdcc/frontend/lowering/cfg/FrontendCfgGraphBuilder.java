@@ -610,9 +610,9 @@ public final class FrontendCfgGraphBuilder {
     /// Subject `buildValue` runs once in the header. Sections are a miss-chained `BranchNode`
     /// spine: a hit enters that section's bind/guard/body path, a miss continues to the next
     /// section, and the last miss plus every body exit join at `mergeId` (or `TERMINAL_MERGE`
-    /// when every reachable path terminates). ARRAY / DICTIONARY destructuring lowers through the
-    /// route-A decomposition of plan §5.10: typeof gate, one container materialization, length
-    /// gate, then per-element/entry fetch with recursive sub-pattern tests.
+    /// when every reachable path terminates). ARRAY / DICTIONARY destructuring lowers through
+    /// typeof gate, one container materialization, length gate, then per-element/entry fetch
+    /// with recursive sub-pattern tests.
     private void processMatchStatement(@NotNull BlockState state, @NotNull MatchStatement matchStatement) {
         var plan = requireMatchPlan(matchStatement);
         requireMatchRoutesReady(plan);
@@ -1408,6 +1408,7 @@ public final class FrontendCfgGraphBuilder {
         return cursor.entryId();
     }
 
+    @SuppressWarnings("UnusedReturnValue")
     private @NotNull String publishRuntimeTypeGate(
             @NotNull BuildCursor cursor,
             @NotNull Expression pattern,

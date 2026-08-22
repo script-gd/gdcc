@@ -33,10 +33,9 @@ import java.util.Set;
 public final class FrontendMatchSupport {
     private static final String WILDCARD_NAME = "_";
 
-    /// Routes whose lowering is compile-ready. The set grows monotonically with the graduation
-    /// steps and must never lose an already-ready route: Step 3 admitted WILDCARD / BINDING /
-    /// LITERAL / EXPRESSION; Step 4 added ARRAY / DICTIONARY, completing all six routes. Match
-    /// routes carry no operation descriptors, so no registry class exists.
+    /// Routes whose lowering is compile-ready. The set grows monotonically and must never lose an
+    /// already-ready route. All six routes are currently ready. Match routes carry no operation
+    /// descriptors, so no registry class exists.
     private static final Set<FrontendMatchPatternRoute> LOWERING_READY_ROUTES = Set.of(
             FrontendMatchPatternRoute.WILDCARD,
             FrontendMatchPatternRoute.BINDING,
@@ -60,7 +59,7 @@ public final class FrontendMatchSupport {
     ///
     /// `_` is recognized by name (gdparser has no wildcard node); a bare identifier is not a
     /// binding but an EXPRESSION pattern. Any evaluable expression is a legal pattern (gdcc
-    /// deliberately extends Godot's identifier/attribute shape whitelist, see plan R9);
+    /// deliberately extends Godot's identifier/attribute shape whitelist);
     /// constantness only selects the lowering sub-mode (constant vs runtime comparison),
     /// never legality, and is never decided here.
     public static @NotNull FrontendMatchPatternRoute classifyPatternRoute(@NotNull Expression pattern) {

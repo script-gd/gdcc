@@ -939,8 +939,8 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
-        // ARRAY is compile-ready since Step 4: the match body joins the compile surface, so the
-        // nested preload / $Node / assert each report their own blocker and the match root stays clean.
+        // ARRAY is compile-ready: the match body joins the compile surface, so the nested
+        // preload / $Node / assert each report their own blocker and the match root stays clean.
         assertEquals(3, compileDiagnostics.size(), compileDiagnostics::toString);
         assertTrue(compileDiagnostics.stream().noneMatch(
                 diagnostic -> diagnostic.range().equals(FrontendRange.fromAstRange(matchStatement.range()))
@@ -2163,7 +2163,7 @@ class FrontendCompileCheckAnalyzerTest {
                 "sema.unsupported_binding_subtree"
         );
 
-        // LITERAL is compile-ready in Step 3, so a recorded-lambda body match is released.
+        // LITERAL is compile-ready, so a recorded-lambda body match is released.
         assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
         assertTrue(unsupportedBindingDiagnostics.isEmpty(), unsupportedBindingDiagnostics::toString);
         assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);

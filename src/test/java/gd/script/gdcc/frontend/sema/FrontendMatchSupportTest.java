@@ -27,11 +27,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Anchors `FrontendMatchSupport` pattern classification, bind collection and route readiness to
-/// `frontend_match_statement_plan.md`: the seven pattern shapes classify to their routes,
-/// bare identifiers are expression patterns (never bindings or wildcards), nested binds are
-/// collected in source order with cleared `topLevel`, dictionary keys never bind, and
-/// WILDCARD / BINDING / LITERAL / EXPRESSION are lowering-ready while ARRAY / DICTIONARY stay blocked.
+/// Anchors `FrontendMatchSupport` pattern classification, bind collection and route readiness:
+/// the seven pattern shapes classify to their routes, bare identifiers are expression patterns
+/// (never bindings or wildcards), nested binds are collected in source order with cleared
+/// `topLevel`, dictionary keys never bind, and all six routes are lowering-ready.
 class FrontendMatchSupportTest {
     private static final Range RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
 
@@ -66,7 +65,7 @@ class FrontendMatchSupportTest {
     void doesNotClassifyBareIdentifierAsWildcardOrBinding() {
         // Negative anchor: only the exact name `_` is a wildcard, and only `var name`
         // (PatternBindingExpression) is a binding; a bare identifier is an expression pattern,
-        // regardless of whether it names a constant or a runtime value (plan R9).
+        // regardless of whether it names a constant or a runtime value.
         assertEquals(
                 FrontendMatchPatternRoute.EXPRESSION,
                 FrontendMatchSupport.classifyPatternRoute(new IdentifierExpression("MY_CONST", RANGE))
@@ -262,7 +261,7 @@ class FrontendMatchSupportTest {
 
     @Test
     void allSixRoutesAreLoweringReady() {
-        // Step 3 admitted WILDCARD / BINDING / LITERAL / EXPRESSION; Step 4 added ARRAY / DICTIONARY.
+        // All six pattern routes are currently compile-ready.
         for (var route : FrontendMatchPatternRoute.values()) {
             assertTrue(FrontendMatchSupport.isRouteLoweringReady(route), route::toString);
         }

@@ -187,8 +187,9 @@ public class FrontendCompileCheckAnalyzer {
     }
 
     /// Route-not-ready blocker for a `match` whose pattern routes are not yet lowering-ready.
-    /// Step 3 admits WILDCARD / BINDING / LITERAL / EXPRESSION; ARRAY / DICTIONARY still
-    /// block the whole statement at the root and skip the body rescan.
+    /// The message names the missing lowering route rather than reporting the match as an
+    /// unsupported subtree. All six routes are currently ready; an unready route still blocks
+    /// the whole statement at the root and skips the body rescan.
     private static @NotNull String matchRouteNotReadyMessage() {
         return "match statement is recognized by shared semantic analysis but is blocked in compile mode because "
                 + "it contains a pattern route that is not lowering-ready yet";

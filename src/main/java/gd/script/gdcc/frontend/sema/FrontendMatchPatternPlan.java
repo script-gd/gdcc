@@ -12,7 +12,8 @@ import java.util.Objects;
 /// expression types, no intrinsic names and no lowering protocol. Pattern nodes of the WILDCARD /
 /// BINDING / ARRAY / DICTIONARY routes deliberately publish no ordinary expression facts; only
 /// LITERAL / EXPRESSION leaves participate in the regular binding/chain/expression
-/// pipeline (see `frontend_match_statement_plan.md` pattern-context dispatch contract).
+/// pipeline (see the pattern-context dispatch contract in
+/// `frontend_match_statement_implementation.md`).
 ///
 /// @param patternNode the pattern AST node; side-table and diagnostic anchor identity
 /// @param route       classified pattern route; the single fact consumers switch on

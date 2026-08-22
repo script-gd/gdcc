@@ -321,7 +321,7 @@ class FrontendMatchSemanticsTest {
                 """);
         var ping = findFunction(compiled.unit().ast(), "ping");
         var matchStatement = findNode(ping.body(), MatchStatement.class, _ -> true);
-        // ARRAY / DICTIONARY routes are compile-ready since Step 4: no route-not-ready blocker.
+        // ARRAY / DICTIONARY routes are compile-ready: no route-not-ready blocker.
         assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics().asList()::toString);
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());

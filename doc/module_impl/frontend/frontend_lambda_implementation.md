@@ -12,7 +12,7 @@
   `LambdaConstructItem` / `construct_lambda`、C custom Callable 与 compile gate 按 published plan
   放行已落地；property initializer / parameter default / skipped subtree 中的未记录 lambda
   以及 lambda 自己的 parameter default、body 内 block-local `const` / `await` 仍 fail-closed；
-  lambda 内 `match` 已随 match Step 2 进入 shared semantic）
+   lambda 内 `match` 已进入 shared semantic）
 - 更新时间：2026-08-18
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
@@ -165,7 +165,7 @@ Parser AST 为 `dev.superice.gdparser.frontend.ast.LambdaExpression`，提供
 - `forCallableScopeKind(LAMBDA_EXPRESSION)` → `EXECUTABLE_BODY`
 
 `FrontendVisibleValueDomain.LAMBDA_SUBTREE` 枚举值保留，但生产路径不再映射到它。
-`PARAMETER_DEFAULT` / `BLOCK_LOCAL_CONST_SUBTREE` 不得被这次合同打开。`MATCH_SECTION_BODY` 已映射为 `EXECUTABLE_BODY`（match 毕业，见 `frontend_match_statement_plan.md`）。
+`PARAMETER_DEFAULT` / `BLOCK_LOCAL_CONST_SUBTREE` 不得被这次合同打开。`MATCH_SECTION_BODY` 已映射为 `EXECUTABLE_BODY`（合同见 `frontend_match_statement_implementation.md`）。
 
 `FrontendVariableAnalyzer.bindLocal` 经
 `FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(kind)`
@@ -500,7 +500,7 @@ userdata 结构体。这是 ABI 差异，不是语义差异；测试应对齐用
 5. hidden lambda 函数不进 ClassDB；`is_lambda` 与 `is_hidden` 同时为真。
 6. 缺 published `FrontendLambdaPlan` 时 lowering fail-fast，禁止现场重推导。
 7. 诊断：一处根因一条 diagnostic；downstream 不得重复包。
-8. parameter default / block-local `const` / `await` 不得借这次改动进入支持面。`match` 由独立计划毕业（`frontend_match_statement_plan.md`）。
+8. parameter default / block-local `const` / `await` 不得借这次改动进入支持面。`match` 由独立合同管理（`frontend_match_statement_implementation.md`）。
 9. 修改本合同时必须同步 `frontend_rules.md`、compile-check 文档、
    `gdcc_low_ir.md`（若改 insn）、`gdcc_runtime_lib.md`（若改 helper）。
 
@@ -527,7 +527,7 @@ userdata 结构体。这是 ABI 差异，不是语义差异；测试应对齐用
 
 必须保持 fail-closed 的现有锚点：全部 `FrontendScopeAnalyzerTest` 的 lambda 图形状、
 `ScopeCaptureShapeTest`、for / const 的 fail-closed 锚点、parameter default 的 compile-surface skip。
-match 内嵌套 lambda 已随 match Step 2 转正。
+match 内嵌套 lambda 已转正。
 
 ---
 

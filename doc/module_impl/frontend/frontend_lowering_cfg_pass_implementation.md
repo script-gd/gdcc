@@ -564,7 +564,7 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 - `TypeTestExpression` (`is` / `is not`) with unified `is_instance_of` or folded bool lowering
 - callable-local slot type published contract
 - 已 record lambda 的外层构造（`LambdaConstructItem` → `construct_lambda`；C backend `CONSTRUCT_LAMBDA` 已落地）
-- `match` 全六 route（WILDCARD / BINDING / LITERAL / EXPRESSION / ARRAY / DICTIONARY；合同见 §3.2 与 `frontend_match_statement_plan.md`）
+- `match` 全六 route（WILDCARD / BINDING / LITERAL / EXPRESSION / ARRAY / DICTIONARY；合同见 §3.2 与 `frontend_match_statement_implementation.md`）
 
 plain assignment 的 compile-ready surface 明确包含 direct explicit-self property assignment：
 

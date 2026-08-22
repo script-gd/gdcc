@@ -11,11 +11,10 @@ import java.util.Objects;
 /// Materializes a match subject (or a nested fetched element) into a static `Array` / `Dictionary`
 /// slot after the destructuring typeof gate has passed.
 ///
-/// This is the Step 4 route-A boundary point (`frontend_match_statement_plan.md` §5.10): a Variant
-/// operand is unpacked once into the untyped container slot, while an already-static container
-/// operand keeps its published container type. Body lowering performs the boundary materialization
-/// and assigns the result into this item's temp slot; downstream length / key / fetch items then
-/// consume the static container value directly.
+/// A Variant operand is unpacked once into the untyped container slot, while an already-static
+/// container operand keeps its published container type. Body lowering performs the boundary
+/// materialization and assigns the result into this item's temp slot; downstream length / key /
+/// fetch items then consume the static container value directly.
 public record MatchContainerMaterializeItem(
         @NotNull Node containerAnchor,
         @NotNull String sourceValueId,

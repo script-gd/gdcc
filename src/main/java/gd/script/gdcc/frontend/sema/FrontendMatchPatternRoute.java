@@ -6,8 +6,8 @@ package gd.script.gdcc.frontend.sema;
 /// by type-check, compile gate and CFG builder so none of them re-derives pattern semantics from
 /// the AST. Classification is centralized in `FrontendMatchSupport`; whether a route is
 /// compile-ready is expressed separately by `FrontendMatchSupport.isRouteLoweringReady`, whose
-/// ready set grows monotonically with the graduation steps. Routes without lowering readiness
-/// stay classified here and are blocked at the compile gate as route-not-ready.
+/// ready set grows monotonically. All six routes are currently ready. Routes without lowering
+/// readiness stay classified here and are blocked at the compile gate as route-not-ready.
 public enum FrontendMatchPatternRoute {
     /// `_` wildcard: matches any subject. Recognized by identifier name only, and only inside the
     /// match pattern recursion context; `_` in ordinary expressions stays a normal identifier.
@@ -19,7 +19,7 @@ public enum FrontendMatchPatternRoute {
     LITERAL,
     /// Any non-literal expression pattern (bare identifier, attribute chain, call, binary op,
     /// ...). Any evaluable expression is a legal pattern (gdcc deliberately extends Godot's
-    /// shape whitelist, see plan R9); unresolvable expressions fail in the ordinary expression
+    /// shape whitelist); unresolvable expressions fail in the ordinary expression
     /// resolution pipeline, never here. Constantness only selects the lowering sub-mode
     /// (constant vs runtime comparison), never legality.
     EXPRESSION,

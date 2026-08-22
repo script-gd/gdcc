@@ -415,7 +415,7 @@ owner 分工固定为：
 - frontend -> LIR 的 truthiness / condition normalization
 - `@onready` runtime / ready-time lowering
 - parameter default、block-local `const`、class `const` 的正式 body semantics
-- `match` 形状校验已落地；ARRAY / DICTIONARY 的 compile-ready lowering 已随 Step 4 闭环（route-A 门闩链，见 `frontend_match_statement_plan.md`）
+- `match` 形状校验已落地；ARRAY / DICTIONARY 的 compile-ready lowering 已闭环（route-A 门闩链，见 `frontend_match_statement_implementation.md`）
 - for-in route-aware type-check 已落地：`handleForStatement(...)` 消费 `FrontendForIterationPlan` 校验 range arity / argument int slot / int shorthand stop / 显式 iterator element conversion，并遍历 for body。已注册 route 的 compile gate / CFG / body lowering 已闭环；`OBJECT_CUSTOM` 仍未注册 lowering contract。完整合同见 `frontend_for_range_loop_implementation.md`
 
 后续工程若继续扩展本区域，必须遵守以下约束：

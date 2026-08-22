@@ -20,6 +20,7 @@
   - `frontend_chain_binding_expr_type_implementation.md`
   - `frontend_signal_support.md`
   - `frontend_lambda_implementation.md`
+  - `frontend_match_statement_implementation.md`
   - `frontend_unary_binary_expr_semantic_implementation.md`
   - `frontend_type_check_analyzer_implementation.md`
   - `frontend_analysis_inspection_tool_implementation.md`
