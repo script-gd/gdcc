@@ -1,13 +1,21 @@
 package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
+import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
+import gd.script.gdcc.type.GdExtensionTypeEnum;
+import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdStringNameType;
+import gd.script.gdcc.type.GdStringType;
+import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -16,11 +24,9 @@ import java.util.Set;
 
 /// Pure classification and plan-construction helper for `match` statements.
 ///
-/// The helper only inspects the pattern AST shape; it never reads source text, resolves names,
-/// writes scopes or side tables, and never decides pattern legality (unresolvable expressions
-/// fail in the ordinary resolution pipeline). Route classification and
-/// bind collection therefore stay centralized here instead of being scattered across variable
-/// inventory, type-check, compile gate and CFG builder (aligned with `FrontendForLoopSupport`).
+/// Route classification and bind collection inspect only the pattern AST shape and never decide
+/// legality. Constantness / type-family helpers consume already-published analysis facts so
+/// type-check, compile gate and CFG builder share one source instead of re-deriving them.
 ///
 /// Pattern-context contract: `_` is a wildcard and `var x` is a binding only inside the match
 /// pattern recursion served by this helper; ordinary expression contexts are unaffected.
@@ -28,11 +34,15 @@ public final class FrontendMatchSupport {
     private static final String WILDCARD_NAME = "_";
 
     /// Routes whose lowering is compile-ready. The set grows monotonically with the graduation
-    /// steps and must never lose an already-ready route: Step 1/2 keep it empty so every legal
-    /// `match` stays route-not-ready at the compile gate (fail-closed intermediate state);
-    /// Step 3 adds WILDCARD / BINDING / LITERAL / EXPRESSION; Step 4 adds ARRAY /
-    /// DICTIONARY. Match routes carry no operation descriptors, so no registry class exists.
-    private static final Set<FrontendMatchPatternRoute> LOWERING_READY_ROUTES = Set.of();
+    /// steps and must never lose an already-ready route: Step 3 admits WILDCARD / BINDING /
+    /// LITERAL / EXPRESSION; Step 4 will add ARRAY / DICTIONARY. Match routes carry no
+    /// operation descriptors, so no registry class exists.
+    private static final Set<FrontendMatchPatternRoute> LOWERING_READY_ROUTES = Set.of(
+            FrontendMatchPatternRoute.WILDCARD,
+            FrontendMatchPatternRoute.BINDING,
+            FrontendMatchPatternRoute.LITERAL,
+            FrontendMatchPatternRoute.EXPRESSION
+    );
 
     private FrontendMatchSupport() {
     }
@@ -98,6 +108,89 @@ public final class FrontendMatchSupport {
             sections.add(new FrontendMatchSectionPlan(section, List.copyOf(patterns), section.guard() != null));
         }
         return new FrontendMatchPlan(statement, List.copyOf(sections));
+    }
+
+    /// Whether an EXPRESSION / dictionary-key operand is a compile-time constant from published
+    /// facts. Constantness only selects the match lowering sub-mode (and dictionary-key legality);
+    /// it never decides pattern legality.
+    public static boolean isConstantPatternOperand(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Expression expression
+    ) {
+        Objects.requireNonNull(analysisData, "analysisData must not be null");
+        Objects.requireNonNull(expression, "expression must not be null");
+        if (expression instanceof LiteralExpression) {
+            return true;
+        }
+        var binding = analysisData.symbolBindings().get(expression);
+        if (binding != null && (binding.kind() == FrontendBindingKind.CONSTANT
+                || binding.kind() == FrontendBindingKind.LITERAL)) {
+            return true;
+        }
+        if (!(expression instanceof AttributeExpression attributeExpression)
+                || attributeExpression.steps().isEmpty()) {
+            return false;
+        }
+        var lastStep = attributeExpression.steps().getLast();
+        var member = analysisData.resolvedMembers().get(lastStep);
+        return member != null
+                && member.status() == FrontendMemberResolutionStatus.RESOLVED
+                && member.bindingKind() == FrontendBindingKind.CONSTANT;
+    }
+
+    /// Published type of a lowering-ready expression, or `null` when the fact is missing / unstable.
+    public static @Nullable GdType publishedTypeOrNull(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Expression expression
+    ) {
+        Objects.requireNonNull(analysisData, "analysisData must not be null");
+        Objects.requireNonNull(expression, "expression must not be null");
+        var published = analysisData.expressionTypes().get(expression);
+        if (published == null) {
+            return null;
+        }
+        return switch (published.status()) {
+            case RESOLVED, DYNAMIC -> published.publishedType();
+            case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> null;
+        };
+    }
+
+    /// Godot `Variant.Type` family used by match type-strict equality.
+    ///
+    /// `Variant` / unknown types return `null` so callers keep a runtime type-family gate.
+    /// String and StringName stay distinct families; crossover is a separate match exception.
+    public static @Nullable GdExtensionTypeEnum typeFamilyOrNull(@Nullable GdType type) {
+        if (type == null || type instanceof GdVariantType) {
+            return null;
+        }
+        if (type instanceof GdNilType) {
+            return GdExtensionTypeEnum.NIL;
+        }
+        return type.getGdExtensionType();
+    }
+
+    /// String / StringName are the only Godot match type-family exception.
+    public static boolean isStringFamily(@Nullable GdExtensionTypeEnum family) {
+        return family == GdExtensionTypeEnum.STRING || family == GdExtensionTypeEnum.STRING_NAME;
+    }
+
+    public static boolean isStringLikeType(@Nullable GdType type) {
+        return type instanceof GdStringType || type instanceof GdStringNameType;
+    }
+
+    /// Static type-strict equality used by LITERAL / constant-submode tests.
+    ///
+    /// `null` means a family is unknown (`Variant` / unpublished), so the caller must keep a
+    /// runtime type-family gate rather than folding.
+    public static boolean familiesCompatibleForMatch(
+            @Nullable GdExtensionTypeEnum subjectFamily,
+            @Nullable GdExtensionTypeEnum patternFamily
+    ) {
+        if (subjectFamily == null || patternFamily == null) {
+            return false;
+        }
+        return subjectFamily == patternFamily
+                || (isStringFamily(subjectFamily) && isStringFamily(patternFamily));
     }
 
     private static void collectPatternBindingsInto(

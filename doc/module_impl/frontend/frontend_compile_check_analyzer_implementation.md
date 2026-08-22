@@ -106,7 +106,7 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - block-local `const`
 - missing-scope / skipped subtree
 
-这条边界的目的不是“少报错”，而是避免 compile gate 把已经被上游明确封口的恢复域重新打平成 lowering surface。`ForStatement` 不属于该跳过集合：它已进入 shared semantic，compile gate 会按 route-aware policy 处理——已注册 lowering contract 的 route 会命中 statement root 并进入 body 重扫 facts，未注册 contract 的 route 则在 statement root 发 route-not-ready blocker。`MatchStatement` 同样不属于该跳过集合：compile gate 读取 `matchPlans()`，任一 pattern route 未就绪（Step 2 ready set 为空）则在 statement root 发 route-not-ready blocker 且不重扫 body。
+这条边界的目的不是“少报错”，而是避免 compile gate 把已经被上游明确封口的恢复域重新打平成 lowering surface。`ForStatement` 不属于该跳过集合：它已进入 shared semantic，compile gate 会按 route-aware policy 处理——已注册 lowering contract 的 route 会命中 statement root 并进入 body 重扫 facts，未注册 contract 的 route 则在 statement root 发 route-not-ready blocker。`MatchStatement` 同样不属于该跳过集合：compile gate 读取 `matchPlans()`，`WILDCARD` / `BINDING` / `LITERAL` / `EXPRESSION` 放行并重扫 facts，含 `ARRAY` / `DICTIONARY` 的 match 在 statement root 发 route-not-ready blocker 且不重扫 body。
 
 **已记录 lambda**（supported executable body 内、`lambdaPlans()` 已发布且 body 已发布的 `LambdaExpression`）同样不属于跳过集合：compile gate 会把它放上 compile surface 并像普通 executable block 一样递归扫描其 body facts。缺 published plan / body 的 lambda 保持 fail-closed（见 §3.3）。
 
@@ -168,7 +168,7 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 
 - **已记录 lambda**（`lambdaPlans()` 含该节点且 body 已发布）：放上 compile surface 并递归扫描 body facts（与普通 executable block 相同）。`construct_lambda` lowering 合同、合成 `_lambda_<k>` 函数与 C backend 均已落地（见 `frontend_lambda_implementation.md`）。
 - **未记录 lambda**（property initializer / parameter default / skipped subtree，缺 published plan）：保持形态级 `sema.compile_check` blocker，不静默放行；若上游已在同一 exact range 发布 unsupported 诊断，则按统一去重合同省略补发。
-- lambda body 内的 `match` 走与外层相同的 route-aware policy：当前 ready set 为空，因此发锚定 match root 的 `sema.compile_check` route-not-ready，而不再由上游 `sema.unsupported_binding_subtree` 持有。
+- lambda body 内的 `match` 走与外层相同的 route-aware policy：`WILDCARD` / `BINDING` / `LITERAL` / `EXPRESSION` 放行并重扫 facts，`ARRAY` / `DICTIONARY` 在 match root 发 `sema.compile_check` route-not-ready 且不重扫 body，而不再由上游 `sema.unsupported_binding_subtree` 持有。
 
 `TypeTestExpression` 不属于当前显式 compile-block 列表：shared semantic 发布 `RESOLVED(bool)` + `typeTestTargets()`，body lowering 发射统一 `is_instance_of` / 常量 bool，backend `IsInstanceOfInsnGen` 分派 + runtime helpers 已落地。
 
@@ -445,7 +445,7 @@ compile gate 当前统一使用：
   - cast / type-test value-operand 传播去重：`missing as int` / `missing is int` / 链式 `(missing as int) as float` 不在 root 补 `sema.compile_check`
   - cast / type-test root-owned target failure 仍由 `sema.expression_resolution` 持有，exact-range 去重后无 root `compile_check`
   - for route-aware compile policy：`RANGE_CALL` / `INT_SHORTHAND` 凭已注册 contract 放行（无 `sema.compile_check`，且释放后进入 body 扫描其中 `assert` 等封口节点）；`GENERIC_VARIANT` 在 statement root 发 route-not-ready blocker 且说明缺少 lowering route；同一 ForStatement anchor 已有 upstream error 时不补发同级 `sema.compile_check`
-  - lambda compile gate：`sig.connect(func(): ...)` 直接实参放行（无 `compile_check`/unsupported）；已记录 lambda body 内 `preload`/`$Node`/`assert` 会被递归扫描并各自发 blocker；property-initializer / parameter-default 未记录 lambda 保持 fail-closed（上游 unsupported owner 持有，不补发 `compile_check`）；lambda body 内 `match` 仍由上游 `unsupported_binding_subtree` 持有，不被 `compile_check` 重复包一层
+  - lambda compile gate：`sig.connect(func(): ...)` 直接实参放行（无 `compile_check`/unsupported）；已记录 lambda body 内 `preload`/`$Node`/`assert` 会被递归扫描并各自发 blocker；property-initializer / parameter-default 未记录 lambda 保持 fail-closed（上游 unsupported owner 持有，不补发 `compile_check`）；lambda body 内 `match` 走 route-aware policy（首批四 route 放行，ARRAY/DICTIONARY 发 match-root `sema.compile_check`），不再由 `unsupported_binding_subtree` 持有
 - `FrontendSemanticAnalyzerFrameworkTest`
   - `analyze(...)` 与 `analyzeForCompile(...)` 的分离
   - compile gate 在 type-check 之后执行

@@ -14,6 +14,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ValueOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendForRegion;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendIfRegion;
+import gd.script.gdcc.frontend.lowering.cfg.region.FrontendMatchRegion;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendWhileRegion;
 import gd.script.gdcc.frontend.lowering.pass.body.FrontendBodyLoweringSession;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
@@ -52,9 +53,11 @@ import gd.script.gdcc.lir.insn.ConstructCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructSignalInsn;
 import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
 import gd.script.gdcc.lir.insn.StandaloneCallableKind;
+import gd.script.gdcc.lir.insn.GetVariantTypeInsn;
 import gd.script.gdcc.lir.insn.GoIfInsn;
 import gd.script.gdcc.lir.insn.GotoInsn;
 import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
+import gd.script.gdcc.lir.insn.VariantIsNilInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralFloatInsn;
@@ -111,6 +114,7 @@ import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
@@ -8718,6 +8722,224 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(whileRegion.exitId(), whileBreakGoto.targetBbId()),
                 () -> assertNotEquals(forRegion.exitId(), whileBreakGoto.targetBbId())
         );
+    }
+
+    @Test
+    void runLowersIntLiteralMatchIntoEqualWithoutGetVariantType() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_match_int_literal.gd",
+                """
+                        class_name BodyInsnMatchIntLiteral
+                        extends RefCounted
+                        
+                        func ping(value: int) -> int:
+                            match value:
+                                1:
+                                    return 10
+                                _:
+                                    return 0
+                        """,
+                Map.of("BodyInsnMatchIntLiteral", "RuntimeBodyInsnMatchIntLiteral"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMatchIntLiteral",
+                "ping"
+        );
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        var instructions = allInstructions(pingContext.targetFunction());
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(0, countInstructions(instructions, GetVariantTypeInsn.class)),
+                () -> assertTrue(countInstructions(instructions, BinaryOpInsn.class) >= 1)
+        );
+        assertTrue(allInstructions(pingContext.targetFunction()).stream()
+                .filter(BinaryOpInsn.class::isInstance)
+                .map(BinaryOpInsn.class::cast)
+                .anyMatch(insn -> insn.op() == GodotOperator.EQUAL));
+    }
+
+    @Test
+    void runLowersMatchBindIntoAssignOfSubject() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_match_bind.gd",
+                """
+                        class_name BodyInsnMatchBind
+                        extends RefCounted
+                        
+                        func ping(value: int) -> int:
+                            match value:
+                                var bound:
+                                    return bound
+                        """,
+                Map.of("BodyInsnMatchBind", "RuntimeBodyInsnMatchBind"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMatchBind",
+                "ping"
+        );
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        var function = pingContext.targetFunction();
+        assertEquals(GdIntType.INT, requireVariableType(function, "bound"));
+        assertTrue(assignSourcesByTarget(allInstructions(function)).containsKey("bound"));
+    }
+
+    @Test
+    void runLowersNullLiteralMatchIntoVariantIsNilOnVariantSubject() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_match_null.gd",
+                """
+                        class_name BodyInsnMatchNull
+                        extends RefCounted
+                        
+                        func ping(value) -> int:
+                            match value:
+                                null:
+                                    return 1
+                                _:
+                                    return 0
+                        """,
+                Map.of("BodyInsnMatchNull", "RuntimeBodyInsnMatchNull"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMatchNull",
+                "ping"
+        );
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        assertTrue(countInstructions(allInstructions(pingContext.targetFunction()), VariantIsNilInsn.class) >= 1);
+    }
+
+    @Test
+    void runLowersRuntimeExpressionPatternWithGetVariantTypeOnVariantSubject() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_match_runtime.gd",
+                """
+                        class_name BodyInsnMatchRuntime
+                        extends RefCounted
+                        
+                        func side() -> int:
+                            return 7
+                        
+                        func ping(value) -> int:
+                            match value:
+                                side():
+                                    return 1
+                                _:
+                                    return 0
+                        """,
+                Map.of("BodyInsnMatchRuntime", "RuntimeBodyInsnMatchRuntime"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMatchRuntime",
+                "ping"
+        );
+        var rootBlock = assertInstanceOf(Block.class, pingContext.loweringRoot());
+        var match = assertInstanceOf(MatchStatement.class, rootBlock.statements().getFirst());
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        var instructions = allInstructions(pingContext.targetFunction());
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(countInstructions(instructions, GetVariantTypeInsn.class) >= 2),
+                () -> assertInstanceOf(FrontendMatchRegion.class, pingContext.requireFrontendCfgRegion(match))
+        );
+        assertFalse(allInstructions(pingContext.targetFunction()).stream()
+                .filter(BinaryOpInsn.class::isInstance)
+                .map(BinaryOpInsn.class::cast)
+                .anyMatch(insn -> insn.op() == GodotOperator.OR || insn.op() == GodotOperator.AND));
+    }
+
+    @Test
+    void runLowersStringLiteralAgainstStringNameSubjectWithoutTypeof() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_match_string_name.gd",
+                """
+                        class_name BodyInsnMatchStringName
+                        extends RefCounted
+                        
+                        func ping(value: StringName) -> int:
+                            match value:
+                                "hello":
+                                    return 1
+                                _:
+                                    return 0
+                        """,
+                Map.of("BodyInsnMatchStringName", "RuntimeBodyInsnMatchStringName"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMatchStringName",
+                "ping"
+        );
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        var instructions = allInstructions(pingContext.targetFunction());
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(0, countInstructions(instructions, GetVariantTypeInsn.class)),
+                () -> assertTrue(instructions.stream()
+                        .filter(BinaryOpInsn.class::isInstance)
+                        .map(BinaryOpInsn.class::cast)
+                        .anyMatch(insn -> insn.op() == GodotOperator.EQUAL)),
+                () -> assertFalse(instructions.stream()
+                        .filter(BinaryOpInsn.class::isInstance)
+                        .map(BinaryOpInsn.class::cast)
+                        .anyMatch(insn -> insn.op() == GodotOperator.OR))
+        );
+    }
+
+    @Test
+    void runEvaluatesRuntimeOrPatternOnlyOnMissEdge() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_match_or_lazy.gd",
+                """
+                        class_name BodyInsnMatchOrLazy
+                        extends RefCounted
+                        
+                        func side() -> int:
+                            return 7
+                        
+                        func ping(value: int) -> int:
+                            match value:
+                                1, side():
+                                    return 1
+                                _:
+                                    return 0
+                        """,
+                Map.of("BodyInsnMatchOrLazy", "RuntimeBodyInsnMatchOrLazy"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMatchOrLazy",
+                "ping"
+        );
+        var rootBlock = assertInstanceOf(Block.class, pingContext.loweringRoot());
+        var match = assertInstanceOf(MatchStatement.class, rootBlock.statements().getFirst());
+        var region = assertInstanceOf(FrontendMatchRegion.class, pingContext.requireFrontendCfgRegion(match));
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        var headerBlock = requireBlock(pingContext.targetFunction(), region.headerEntryId());
+        var firstTest = requireBlock(pingContext.targetFunction(), region.sections().getFirst().testEntryId());
+        assertEquals(0, countInstructions(headerBlock.getInstructions(), CallMethodInsn.class)
+                + countInstructions(headerBlock.getInstructions(), CallGlobalInsn.class));
+        assertEquals(0, countInstructions(firstTest.getInstructions(), CallMethodInsn.class)
+                + countInstructions(firstTest.getInstructions(), CallGlobalInsn.class));
+        assertFalse(allInstructions(pingContext.targetFunction()).stream()
+                .filter(BinaryOpInsn.class::isInstance)
+                .map(BinaryOpInsn.class::cast)
+                .anyMatch(insn -> insn.op() == GodotOperator.OR));
     }
 
     @Test

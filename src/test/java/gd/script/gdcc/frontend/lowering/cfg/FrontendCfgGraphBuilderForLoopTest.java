@@ -733,7 +733,8 @@ class FrontendCfgGraphBuilderForLoopTest {
                 build.graph(),
                 build.regions(),
                 emptySourceSlots,
-                build.forIteratorStateSlots()
+                build.forIteratorStateSlots(),
+                build.matchBindSlots()
         ));
         // Anchor the missing-source-slot fail-fast path specifically, not just any validation error.
         assertTrue(message.contains("source-facing for-in iterator slot"), message);
@@ -760,7 +761,8 @@ class FrontendCfgGraphBuilderForLoopTest {
                 build.graph(),
                 build.regions(),
                 build.forSourceIteratorSlots(),
-                tamperedStateSlots
+                tamperedStateSlots,
+                build.matchBindSlots()
         ));
     }
 
@@ -802,7 +804,8 @@ class FrontendCfgGraphBuilderForLoopTest {
                 build.graph(),
                 build.regions(),
                 build.forSourceIteratorSlots(),
-                tamperedStateSlots
+                tamperedStateSlots,
+                build.matchBindSlots()
         ));
         // Anchor the duplicate-slot fail-fast path specifically, not just any validation error.
         assertTrue(message.contains("Duplicate"), message);

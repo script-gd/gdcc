@@ -10,14 +10,12 @@ import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
-import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendForLoopSupport;
 import gd.script.gdcc.frontend.sema.FrontendMatchPlan;
 import gd.script.gdcc.frontend.sema.FrontendMatchPatternPlan;
 import gd.script.gdcc.frontend.sema.FrontendMatchPatternRoute;
 import gd.script.gdcc.frontend.sema.FrontendMatchSupport;
-import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendIterableSemantics;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendCallableReturnTypeSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
@@ -41,7 +39,6 @@ import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
-import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
@@ -56,7 +53,6 @@ import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
-import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
@@ -787,22 +783,7 @@ public class FrontendTypeCheckAnalyzer {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull Expression key
     ) {
-        if (key instanceof LiteralExpression) {
-            return true;
-        }
-        var binding = analysisData.symbolBindings().get(key);
-        if (binding != null && (binding.kind() == FrontendBindingKind.CONSTANT
-                || binding.kind() == FrontendBindingKind.LITERAL)) {
-            return true;
-        }
-        if (!(key instanceof AttributeExpression attributeExpression) || attributeExpression.steps().isEmpty()) {
-            return false;
-        }
-        var lastStep = attributeExpression.steps().getLast();
-        var member = analysisData.resolvedMembers().get(lastStep);
-        return member != null
-                && member.status() == FrontendMemberResolutionStatus.RESOLVED
-                && member.bindingKind() == FrontendBindingKind.CONSTANT;
+        return FrontendMatchSupport.isConstantPatternOperand(analysisData, key);
     }
 
     private static @NotNull FrontendMatchPlan requirePublishedMatchPlan(

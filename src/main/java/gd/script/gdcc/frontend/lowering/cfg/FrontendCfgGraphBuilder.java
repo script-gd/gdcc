@@ -14,6 +14,11 @@ import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopGetItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopInitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopNextItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopShouldContinueItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.GetVariantTypeItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.IntConstantItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchBindItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchEqualItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.VariantIsNilItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import gd.script.gdcc.frontend.lowering.cfg.item.LambdaConstructItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
@@ -32,6 +37,8 @@ import gd.script.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendElifRegion;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendForRegion;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendIfRegion;
+import gd.script.gdcc.frontend.lowering.cfg.region.FrontendMatchRegion;
+import gd.script.gdcc.frontend.lowering.cfg.region.FrontendMatchSectionAnchors;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendWhileRegion;
 import gd.script.gdcc.frontend.lowering.ForLoweringContractRegistry;
 import gd.script.gdcc.frontend.lowering.FrontendForLoweringContract;
@@ -44,6 +51,12 @@ import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendLambdaCapturePlan;
+import gd.script.gdcc.frontend.sema.FrontendMatchBindingPlan;
+import gd.script.gdcc.frontend.sema.FrontendMatchPatternPlan;
+import gd.script.gdcc.frontend.sema.FrontendMatchPatternRoute;
+import gd.script.gdcc.frontend.sema.FrontendMatchPlan;
+import gd.script.gdcc.frontend.sema.FrontendMatchSectionPlan;
+import gd.script.gdcc.frontend.sema.FrontendMatchSupport;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
@@ -75,7 +88,10 @@ import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.MatchSection;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
@@ -87,6 +103,7 @@ import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
 import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdContainerType;
+import gd.script.gdcc.type.GdExtensionTypeEnum;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.type.GdVariantType;
@@ -119,6 +136,7 @@ import java.util.Set;
 /// - lexical-no-op `CommentStatement`, which stays compile-ready but publishes no CFG item
 /// - `if` / `elif` / `else`
 /// - `while`
+/// - `match` (WILDCARD / BINDING / LITERAL / EXPRESSION)
 /// - loop-local `break` / `continue`
 ///
 /// Short-circuit `and` / `or` now lower through explicit condition/value CFG paths:
@@ -136,6 +154,7 @@ public final class FrontendCfgGraphBuilder {
     private @Nullable FrontendAstSideTable<FrontendCfgRegion> regions;
     private @Nullable FrontendAstSideTable<FrontendForSourceIteratorSlot> forSourceIteratorSlots;
     private @Nullable FrontendAstSideTable<FrontendForIteratorStateSlot> forIteratorStateSlots;
+    private @Nullable FrontendAstSideTable<FrontendMatchBindSlot> matchBindSlots;
     private final @NotNull ArrayDeque<LoopFrame> loopStack = new ArrayDeque<>();
     private int nextSequenceIndex;
     private int nextBranchIndex;
@@ -221,6 +240,7 @@ public final class FrontendCfgGraphBuilder {
             case IfStatement ifStatement -> processIfStatement(state, ifStatement);
             case WhileStatement whileStatement -> processWhileStatement(state, whileStatement);
             case ForStatement forStatement -> processForStatement(state, forStatement);
+            case MatchStatement matchStatement -> processMatchStatement(state, matchStatement);
             case BreakStatement breakStatement ->
                     processLoopJump(state, breakStatement, requireLoopFrame().breakTargetId());
             case ContinueStatement continueStatement -> processLoopJump(
@@ -576,6 +596,716 @@ public final class FrontendCfgGraphBuilder {
 
         state.setCurrentSequence(exitSequence);
         state.setReachable(true);
+    }
+
+    /// Materializes one compile-ready `match` into an explicit frontend CFG.
+    ///
+    /// Subject `buildValue` runs once in the header. Sections are a miss-chained `BranchNode`
+    /// spine: a hit enters that section's bind/guard/body path, a miss continues to the next
+    /// section, and the last miss plus every body exit join at `mergeId` (or `TERMINAL_MERGE`
+    /// when every reachable path terminates). ARRAY / DICTIONARY must not reach this method;
+    /// the compile gate keeps those matches off the CFG surface.
+    private void processMatchStatement(@NotNull BlockState state, @NotNull MatchStatement matchStatement) {
+        var plan = requireMatchPlan(matchStatement);
+        requireMatchRoutesReady(plan);
+
+        var mergeSequence = new OpenSequence(nextSequenceId());
+        var sectionBodies = new ArrayList<BlockBuild>();
+        for (var sectionPlan : plan.sections()) {
+            sectionBodies.add(buildBlock(sectionPlan.section().body(), mergeSequence.id()));
+        }
+
+        var headerCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        var subjectBuild = buildValue(headerCursor, matchStatement.value(), null);
+        var subjectValueId = subjectBuild.resultValueId();
+        var subjectType = requirePublishedMatchValueType(matchStatement.value());
+        var subjectFamily = FrontendMatchSupport.typeFamilyOrNull(subjectType);
+        var workingCursor = subjectBuild.cursor();
+        String subjectTypeValueId = null;
+        if (needsSubjectTypeId(plan, subjectFamily)) {
+            var typeBuild = emitGetVariantType(workingCursor, matchStatement, subjectValueId);
+            workingCursor = typeBuild.cursor();
+            subjectTypeValueId = typeBuild.resultValueId();
+        }
+
+        var bindSlots = new ArrayList<FrontendMatchBindSlot>();
+        var sectionAnchors = new FrontendMatchSectionAnchors[plan.sections().size()];
+        var nextMissId = mergeSequence.id();
+        var anyBodyFallsThrough = false;
+        for (var index = plan.sections().size() - 1; index >= 0; index--) {
+            var sectionPlan = plan.sections().get(index);
+            var bodyBuild = sectionBodies.get(index);
+            anyBodyFallsThrough = anyBodyFallsThrough || bodyBuild.fallsThrough();
+            var sectionSlots = allocateMatchBindSlots(sectionPlan);
+            bindSlots.addAll(sectionSlots);
+            var sectionBuild = buildMatchSection(
+                    sectionPlan,
+                    sectionSlots,
+                    subjectValueId,
+                    subjectFamily,
+                    subjectTypeValueId,
+                    bodyBuild.entryId(),
+                    nextMissId
+            );
+            sectionAnchors[index] = new FrontendMatchSectionAnchors(
+                    sectionBuild.testEntryId(),
+                    sectionBuild.bodyEntryId()
+            );
+            nextMissId = sectionBuild.testEntryId();
+        }
+
+        var firstTestEntryId = plan.sections().isEmpty() ? mergeSequence.id() : sectionAnchors[0].testEntryId();
+        publishSequenceNode(
+                workingCursor.currentSequence().id(),
+                workingCursor.currentSequence().items(),
+                firstTestEntryId
+        );
+        var headerEntryId = workingCursor.entryId();
+
+        var missReachable = plan.sections().isEmpty()
+                || !isUnconditionalCatchAll(plan.sections().getLast());
+        var fallsThrough = anyBodyFallsThrough || missReachable;
+        var mergeId = fallsThrough
+                ? mergeSequence.id()
+                : publishStopNode(FrontendCfgGraph.StopKind.TERMINAL_MERGE, null);
+
+        attachStructuredEntry(state, headerEntryId);
+        requireRegions().put(
+                matchStatement,
+                new FrontendMatchRegion(headerEntryId, List.of(sectionAnchors), mergeId)
+        );
+        for (var bindSlot : bindSlots) {
+            requireMatchBindSlots().put(bindSlot.declaration(), bindSlot);
+        }
+
+        if (fallsThrough) {
+            state.setCurrentSequence(mergeSequence);
+            state.setReachable(true);
+            return;
+        }
+        state.setCurrentSequence(null);
+        state.setReachable(false);
+    }
+
+    private @NotNull MatchSectionBuild buildMatchSection(
+            @NotNull FrontendMatchSectionPlan sectionPlan,
+            @NotNull List<FrontendMatchBindSlot> bindSlots,
+            @NotNull String subjectValueId,
+            @Nullable GdExtensionTypeEnum subjectFamily,
+            @Nullable String subjectTypeValueId,
+            @NotNull String bodyStatementsEntryId,
+            @NotNull String nextMissId
+    ) {
+        var hitTargetId = bodyStatementsEntryId;
+        var bodyEntryId = bodyStatementsEntryId;
+        if (!bindSlots.isEmpty()) {
+            var bindSequence = new OpenSequence(nextSequenceId());
+            for (var bindSlot : bindSlots) {
+                bindSequence.items().add(new MatchBindItem(
+                        bindSlot.declaration(),
+                        subjectValueId,
+                        bindSlot.bindSlotId()
+                ));
+            }
+            // Bind commits on the hit path before the guard so `when` can read the new locals.
+            var afterBindId = bodyStatementsEntryId;
+            if (sectionPlan.hasGuard()) {
+                var guard = Objects.requireNonNull(sectionPlan.section().guard(), "guard");
+                afterBindId = buildCondition(guard, bodyStatementsEntryId, nextMissId).entryId();
+            }
+            publishSequenceNode(bindSequence.id(), bindSequence.items(), afterBindId);
+            hitTargetId = bindSequence.id();
+            bodyEntryId = bindSequence.id();
+        } else if (sectionPlan.hasGuard()) {
+            var guard = Objects.requireNonNull(sectionPlan.section().guard(), "guard");
+            hitTargetId = buildCondition(guard, bodyStatementsEntryId, nextMissId).entryId();
+        }
+
+        var nextPatternMissId = nextMissId;
+        var testEntryId = hitTargetId;
+        var patterns = sectionPlan.patterns();
+        for (var index = patterns.size() - 1; index >= 0; index--) {
+            var patternPlan = patterns.get(index);
+            testEntryId = buildMatchPatternTest(
+                    patternPlan,
+                    subjectValueId,
+                    subjectFamily,
+                    subjectTypeValueId,
+                    hitTargetId,
+                    nextPatternMissId
+            );
+            nextPatternMissId = testEntryId;
+        }
+        return new MatchSectionBuild(testEntryId, bodyEntryId);
+    }
+
+    private @NotNull String buildMatchPatternTest(
+            @NotNull FrontendMatchPatternPlan patternPlan,
+            @NotNull String subjectValueId,
+            @Nullable GdExtensionTypeEnum subjectFamily,
+            @Nullable String subjectTypeValueId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        return switch (patternPlan.route()) {
+            case WILDCARD, BINDING -> trueTargetId;
+            case LITERAL, EXPRESSION -> buildMatchValuePatternTest(
+                    patternPlan,
+                    subjectValueId,
+                    subjectFamily,
+                    subjectTypeValueId,
+                    trueTargetId,
+                    falseTargetId
+            );
+            case ARRAY, DICTIONARY -> throw new IllegalStateException(
+                    "match pattern route " + patternPlan.route() + " is not compile-ready"
+            );
+        };
+    }
+
+    private @NotNull String buildMatchValuePatternTest(
+            @NotNull FrontendMatchPatternPlan patternPlan,
+            @NotNull String subjectValueId,
+            @Nullable GdExtensionTypeEnum subjectFamily,
+            @Nullable String subjectTypeValueId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var pattern = patternPlan.patternNode();
+        if (patternPlan.route() == FrontendMatchPatternRoute.LITERAL && isNullLiteral(pattern)) {
+            return buildNullLiteralPatternTest(
+                    pattern,
+                    subjectValueId,
+                    subjectFamily,
+                    trueTargetId,
+                    falseTargetId
+            );
+        }
+        var constant = patternPlan.route() == FrontendMatchPatternRoute.LITERAL
+                || FrontendMatchSupport.isConstantPatternOperand(requireAnalysisData(), pattern);
+        var patternType = FrontendMatchSupport.publishedTypeOrNull(requireAnalysisData(), pattern);
+        var patternFamily = FrontendMatchSupport.typeFamilyOrNull(patternType);
+        if (constant) {
+            return buildConstantMatchPatternTest(
+                    pattern,
+                    subjectValueId,
+                    subjectFamily,
+                    subjectTypeValueId,
+                    patternFamily,
+                    trueTargetId,
+                    falseTargetId
+            );
+        }
+        return buildRuntimeMatchPatternTest(
+                pattern,
+                subjectValueId,
+                subjectFamily,
+                subjectTypeValueId,
+                patternFamily,
+                trueTargetId,
+                falseTargetId
+        );
+    }
+
+    private @NotNull String buildNullLiteralPatternTest(
+            @NotNull Expression pattern,
+            @NotNull String subjectValueId,
+            @Nullable GdExtensionTypeEnum subjectFamily,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        if (subjectFamily == GdExtensionTypeEnum.NIL) {
+            return trueTargetId;
+        }
+        if (subjectFamily != null) {
+            return falseTargetId;
+        }
+        var cursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        var nilBuild = emitVariantIsNil(cursor, pattern, subjectValueId);
+        return publishConditionBranch(
+                nilBuild.cursor().entryId(),
+                nilBuild.cursor().currentSequence(),
+                pattern,
+                nilBuild.resultValueId(),
+                trueTargetId,
+                falseTargetId
+        ).entryId();
+    }
+
+    private @NotNull String buildConstantMatchPatternTest(
+            @NotNull Expression pattern,
+            @NotNull String subjectValueId,
+            @Nullable GdExtensionTypeEnum subjectFamily,
+            @Nullable String subjectTypeValueId,
+            @Nullable GdExtensionTypeEnum patternFamily,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        if (subjectFamily != null && patternFamily != null
+                && !FrontendMatchSupport.familiesCompatibleForMatch(subjectFamily, patternFamily)) {
+            // LITERAL / constant-submode fold-to-false may skip operand materialization.
+            return falseTargetId;
+        }
+        var cursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        var patternValueBuild = buildValue(cursor, pattern, null);
+        var workingCursor = patternValueBuild.cursor();
+        if (subjectFamily == null || patternFamily == null) {
+            var typeId = requireSubjectTypeValueId(subjectTypeValueId, workingCursor, pattern, subjectValueId);
+            workingCursor = typeId.cursor();
+            var equalEntryId = nextSequenceId();
+            publishConstantTypeGate(
+                    workingCursor,
+                    pattern,
+                    typeId.resultValueId(),
+                    patternFamily,
+                    equalEntryId,
+                    falseTargetId
+            );
+            workingCursor = new BuildCursor(new OpenSequence(equalEntryId));
+        }
+        var equalBuild = emitMatchEqual(
+                workingCursor,
+                pattern,
+                subjectValueId,
+                patternValueBuild.resultValueId()
+        );
+        publishConditionBranch(
+                equalBuild.cursor().entryId(),
+                equalBuild.cursor().currentSequence(),
+                pattern,
+                equalBuild.resultValueId(),
+                trueTargetId,
+                falseTargetId
+        );
+        return cursor.entryId();
+    }
+
+    private @NotNull String buildRuntimeMatchPatternTest(
+            @NotNull Expression pattern,
+            @NotNull String subjectValueId,
+            @Nullable GdExtensionTypeEnum subjectFamily,
+            @Nullable String subjectTypeValueId,
+            @Nullable GdExtensionTypeEnum patternFamily,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var cursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        var patternValueBuild = buildValue(cursor, pattern, null);
+        var workingCursor = patternValueBuild.cursor();
+        if (subjectFamily != null && patternFamily != null
+                && !FrontendMatchSupport.familiesCompatibleForMatch(subjectFamily, patternFamily)) {
+            var falseBuild = emitBoolConstant(workingCursor, pattern, false);
+            return publishConditionBranch(
+                    cursor.entryId(),
+                    falseBuild.cursor().currentSequence(),
+                    pattern,
+                    falseBuild.resultValueId(),
+                    trueTargetId,
+                    falseTargetId
+            ).entryId();
+        }
+        if (subjectFamily != null && patternFamily != null) {
+            var equalBuild = emitMatchEqual(
+                    workingCursor,
+                    pattern,
+                    subjectValueId,
+                    patternValueBuild.resultValueId()
+            );
+            return publishConditionBranch(
+                    cursor.entryId(),
+                    equalBuild.cursor().currentSequence(),
+                    pattern,
+                    equalBuild.resultValueId(),
+                    trueTargetId,
+                    falseTargetId
+            ).entryId();
+        }
+        var subjectTypeId = requireSubjectTypeValueId(
+                subjectTypeValueId,
+                workingCursor,
+                pattern,
+                subjectValueId
+        );
+        workingCursor = subjectTypeId.cursor();
+        var patternTypeBuild = emitGetVariantType(workingCursor, pattern, patternValueBuild.resultValueId());
+        workingCursor = patternTypeBuild.cursor();
+        var equalEntryId = nextSequenceId();
+        publishRuntimeTypeGate(
+                workingCursor,
+                pattern,
+                subjectTypeId.resultValueId(),
+                patternTypeBuild.resultValueId(),
+                equalEntryId,
+                falseTargetId
+        );
+        var equalCursor = new BuildCursor(new OpenSequence(equalEntryId));
+        var equalBuild = emitMatchEqual(
+                equalCursor,
+                pattern,
+                subjectValueId,
+                patternValueBuild.resultValueId()
+        );
+        publishConditionBranch(
+                equalBuild.cursor().entryId(),
+                equalBuild.cursor().currentSequence(),
+                pattern,
+                equalBuild.resultValueId(),
+                trueTargetId,
+                falseTargetId
+        );
+        return cursor.entryId();
+    }
+
+    private @NotNull String publishConstantTypeGate(
+            @NotNull BuildCursor cursor,
+            @NotNull Expression pattern,
+            @NotNull String subjectTypeValueId,
+            @Nullable GdExtensionTypeEnum patternFamily,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        if (patternFamily != null && FrontendMatchSupport.isStringFamily(patternFamily)) {
+            return publishStringFamilyTypeGate(cursor, pattern, subjectTypeValueId, trueTargetId, falseTargetId);
+        }
+        if (patternFamily == null) {
+            throw new IllegalStateException("constant match pattern is missing a published type family");
+        }
+        var expected = emitIntConstant(cursor, pattern, patternFamily.ordinal());
+        var equalBuild = emitMatchEqual(
+                expected.cursor(),
+                pattern,
+                subjectTypeValueId,
+                expected.resultValueId()
+        );
+        return publishConditionBranch(
+                cursor.entryId(),
+                equalBuild.cursor().currentSequence(),
+                pattern,
+                equalBuild.resultValueId(),
+                trueTargetId,
+                falseTargetId
+        ).entryId();
+    }
+
+    private @NotNull String publishStringFamilyTypeGate(
+            @NotNull BuildCursor cursor,
+            @NotNull Expression pattern,
+            @NotNull String subjectTypeValueId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var stringNameCheckId = nextSequenceId();
+        var stringOrd = emitIntConstant(cursor, pattern, GdExtensionTypeEnum.STRING.ordinal());
+        var stringEqual = emitMatchEqual(
+                stringOrd.cursor(),
+                pattern,
+                subjectTypeValueId,
+                stringOrd.resultValueId()
+        );
+        publishConditionBranch(
+                cursor.entryId(),
+                stringEqual.cursor().currentSequence(),
+                pattern,
+                stringEqual.resultValueId(),
+                trueTargetId,
+                stringNameCheckId
+        );
+        var stringNameCursor = new BuildCursor(new OpenSequence(stringNameCheckId));
+        var stringNameOrd = emitIntConstant(
+                stringNameCursor,
+                pattern,
+                GdExtensionTypeEnum.STRING_NAME.ordinal()
+        );
+        var stringNameEqual = emitMatchEqual(
+                stringNameOrd.cursor(),
+                pattern,
+                subjectTypeValueId,
+                stringNameOrd.resultValueId()
+        );
+        publishConditionBranch(
+                stringNameCheckId,
+                stringNameEqual.cursor().currentSequence(),
+                pattern,
+                stringNameEqual.resultValueId(),
+                trueTargetId,
+                falseTargetId
+        );
+        return cursor.entryId();
+    }
+
+    private @NotNull String publishRuntimeTypeGate(
+            @NotNull BuildCursor cursor,
+            @NotNull Expression pattern,
+            @NotNull String subjectTypeValueId,
+            @NotNull String patternTypeValueId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var crossoverEntryId = nextSequenceId();
+        var sameType = emitMatchEqual(cursor, pattern, subjectTypeValueId, patternTypeValueId);
+        publishConditionBranch(
+                cursor.entryId(),
+                sameType.cursor().currentSequence(),
+                pattern,
+                sameType.resultValueId(),
+                trueTargetId,
+                crossoverEntryId
+        );
+        var crossoverCursor = new BuildCursor(new OpenSequence(crossoverEntryId));
+        publishBidirectionalStringCrossover(
+                crossoverCursor,
+                pattern,
+                subjectTypeValueId,
+                patternTypeValueId,
+                trueTargetId,
+                falseTargetId
+        );
+        return cursor.entryId();
+    }
+
+    private void publishBidirectionalStringCrossover(
+            @NotNull BuildCursor cursor,
+            @NotNull Expression pattern,
+            @NotNull String subjectTypeValueId,
+            @NotNull String patternTypeValueId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var stringOrd = GdExtensionTypeEnum.STRING.ordinal();
+        var stringNameOrd = GdExtensionTypeEnum.STRING_NAME.ordinal();
+        var secondDirectionId = nextSequenceId();
+        publishStringCrossoverArm(
+                cursor,
+                pattern,
+                subjectTypeValueId,
+                patternTypeValueId,
+                stringOrd,
+                stringNameOrd,
+                trueTargetId,
+                secondDirectionId
+        );
+        var secondCursor = new BuildCursor(new OpenSequence(secondDirectionId));
+        publishStringCrossoverArm(
+                secondCursor,
+                pattern,
+                subjectTypeValueId,
+                patternTypeValueId,
+                stringNameOrd,
+                stringOrd,
+                trueTargetId,
+                falseTargetId
+        );
+    }
+
+    private void publishStringCrossoverArm(
+            @NotNull BuildCursor cursor,
+            @NotNull Expression pattern,
+            @NotNull String subjectTypeValueId,
+            @NotNull String patternTypeValueId,
+            int subjectOrdinal,
+            int patternOrdinal,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var patternCheckId = nextSequenceId();
+        var subjectExpected = emitIntConstant(cursor, pattern, subjectOrdinal);
+        var subjectEqual = emitMatchEqual(
+                subjectExpected.cursor(),
+                pattern,
+                subjectTypeValueId,
+                subjectExpected.resultValueId()
+        );
+        publishConditionBranch(
+                cursor.entryId(),
+                subjectEqual.cursor().currentSequence(),
+                pattern,
+                subjectEqual.resultValueId(),
+                patternCheckId,
+                falseTargetId
+        );
+        var patternCursor = new BuildCursor(new OpenSequence(patternCheckId));
+        var patternExpected = emitIntConstant(patternCursor, pattern, patternOrdinal);
+        var patternEqual = emitMatchEqual(
+                patternExpected.cursor(),
+                pattern,
+                patternTypeValueId,
+                patternExpected.resultValueId()
+        );
+        publishConditionBranch(
+                patternCheckId,
+                patternEqual.cursor().currentSequence(),
+                pattern,
+                patternEqual.resultValueId(),
+                trueTargetId,
+                falseTargetId
+        );
+    }
+
+    private @NotNull List<FrontendMatchBindSlot> allocateMatchBindSlots(
+            @NotNull FrontendMatchSectionPlan sectionPlan
+    ) {
+        var slots = new ArrayList<FrontendMatchBindSlot>();
+        for (var patternPlan : sectionPlan.patterns()) {
+            for (var binding : patternPlan.bindings()) {
+                if (!binding.topLevel()) {
+                    throw new IllegalStateException(
+                            "nested match bind is not compile-ready at " + binding.declaration().range()
+                    );
+                }
+                slots.add(allocateMatchBindSlot(sectionPlan.section(), binding));
+            }
+        }
+        return List.copyOf(slots);
+    }
+
+    private @NotNull FrontendMatchBindSlot allocateMatchBindSlot(
+            @NotNull MatchSection section,
+            @NotNull FrontendMatchBindingPlan binding
+    ) {
+        var declaration = binding.declaration();
+        var exposedType = requireAnalysisData().slotTypes().get(declaration);
+        if (exposedType == null) {
+            throw new IllegalStateException(
+                    "Missing published slot type for match bind '" + binding.name() + "' at "
+                            + declaration.range()
+            );
+        }
+        if (exposedType instanceof GdCompilerType compilerOnlyType) {
+            throw new IllegalStateException(
+                    "match bind '" + binding.name() + "' must not use compiler-only type "
+                            + compilerOnlyType.getTypeName()
+            );
+        }
+        return new FrontendMatchBindSlot(declaration, section, binding.name(), exposedType);
+    }
+
+    private @NotNull FrontendMatchPlan requireMatchPlan(@NotNull MatchStatement matchStatement) {
+        var plan = requireAnalysisData().matchPlans().get(matchStatement);
+        if (plan == null) {
+            throw new IllegalStateException(
+                    "Missing published match plan for MatchStatement at " + matchStatement.range()
+            );
+        }
+        return plan;
+    }
+
+    private static void requireMatchRoutesReady(@NotNull FrontendMatchPlan plan) {
+        for (var sectionPlan : plan.sections()) {
+            for (var patternPlan : sectionPlan.patterns()) {
+                if (!FrontendMatchSupport.isRouteLoweringReady(patternPlan.route())) {
+                    throw new IllegalStateException(
+                            "match pattern route " + patternPlan.route() + " is not compile-ready"
+                    );
+                }
+            }
+        }
+    }
+
+    private boolean needsSubjectTypeId(
+            @NotNull FrontendMatchPlan plan,
+            @Nullable GdExtensionTypeEnum subjectFamily
+    ) {
+        if (subjectFamily != null) {
+            return false;
+        }
+        for (var sectionPlan : plan.sections()) {
+            for (var patternPlan : sectionPlan.patterns()) {
+                if (patternPlan.route() == FrontendMatchPatternRoute.LITERAL
+                        && isNullLiteral(patternPlan.patternNode())) {
+                    continue;
+                }
+                if (patternPlan.route() == FrontendMatchPatternRoute.LITERAL
+                        || patternPlan.route() == FrontendMatchPatternRoute.EXPRESSION) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isUnconditionalCatchAll(@NotNull FrontendMatchSectionPlan sectionPlan) {
+        if (sectionPlan.hasGuard() || sectionPlan.patterns().size() != 1) {
+            return false;
+        }
+        var route = sectionPlan.patterns().getFirst().route();
+        return route == FrontendMatchPatternRoute.WILDCARD || route == FrontendMatchPatternRoute.BINDING;
+    }
+
+    private static boolean isNullLiteral(@NotNull Expression expression) {
+        return expression instanceof LiteralExpression literal && "null".equals(literal.kind());
+    }
+
+    private @NotNull GdType requirePublishedMatchValueType(@NotNull Expression expression) {
+        var type = FrontendMatchSupport.publishedTypeOrNull(requireAnalysisData(), expression);
+        if (type == null) {
+            throw new IllegalStateException(
+                    "match value is missing a lowering-ready published type at " + expression.range()
+            );
+        }
+        return type;
+    }
+
+    private @NotNull ValueBuild requireSubjectTypeValueId(
+            @Nullable String subjectTypeValueId,
+            @NotNull BuildCursor cursor,
+            @NotNull Expression anchor,
+            @NotNull String subjectValueId
+    ) {
+        if (subjectTypeValueId != null) {
+            return new ValueBuild(cursor, anchor, subjectTypeValueId, null, null);
+        }
+        return emitGetVariantType(cursor, anchor, subjectValueId);
+    }
+
+    private @NotNull ValueBuild emitBoolConstant(
+            @NotNull BuildCursor cursor,
+            @NotNull Node anchor,
+            boolean value
+    ) {
+        var resultValueId = nextValueId();
+        cursor.currentSequence().items().add(new BoolConstantItem(anchor, value, resultValueId));
+        return new ValueBuild(cursor, anchor, resultValueId, null, null);
+    }
+
+    private @NotNull ValueBuild emitIntConstant(
+            @NotNull BuildCursor cursor,
+            @NotNull Node anchor,
+            long value
+    ) {
+        var resultValueId = nextValueId();
+        cursor.currentSequence().items().add(new IntConstantItem(anchor, value, resultValueId));
+        return new ValueBuild(cursor, anchor, resultValueId, null, null);
+    }
+
+    private @NotNull ValueBuild emitGetVariantType(
+            @NotNull BuildCursor cursor,
+            @NotNull Node anchor,
+            @NotNull String operandValueId
+    ) {
+        var resultValueId = nextValueId();
+        cursor.currentSequence().items().add(new GetVariantTypeItem(anchor, operandValueId, resultValueId));
+        return new ValueBuild(cursor, anchor, resultValueId, null, null);
+    }
+
+    private @NotNull ValueBuild emitMatchEqual(
+            @NotNull BuildCursor cursor,
+            @NotNull Node anchor,
+            @NotNull String leftValueId,
+            @NotNull String rightValueId
+    ) {
+        var resultValueId = nextValueId();
+        cursor.currentSequence().items().add(new MatchEqualItem(anchor, leftValueId, rightValueId, resultValueId));
+        return new ValueBuild(cursor, anchor, resultValueId, null, null);
+    }
+
+    private @NotNull ValueBuild emitVariantIsNil(
+            @NotNull BuildCursor cursor,
+            @NotNull Node anchor,
+            @NotNull String operandValueId
+    ) {
+        var resultValueId = nextValueId();
+        cursor.currentSequence().items().add(new VariantIsNilItem(anchor, operandValueId, resultValueId));
+        return new ValueBuild(cursor, anchor, resultValueId, null, null);
     }
 
     /// Publishes the body entry sequence that runs the get operation, committing the source-facing
@@ -2705,6 +3435,13 @@ public final class FrontendCfgGraphBuilder {
         return forIteratorStateSlots;
     }
 
+    private @NotNull FrontendAstSideTable<FrontendMatchBindSlot> requireMatchBindSlots() {
+        if (matchBindSlots == null) {
+            throw new IllegalStateException("Frontend match bind slots have not been initialized");
+        }
+        return matchBindSlots;
+    }
+
     private @NotNull LinkedHashMap<String, FrontendCfgGraph.NodeDef> requireNodes() {
         if (nodes == null) {
             throw new IllegalStateException("Frontend CFG nodes have not been initialized");
@@ -3224,6 +3961,135 @@ public final class FrontendCfgGraphBuilder {
         return copied;
     }
 
+    private static @NotNull FrontendAstSideTable<FrontendMatchBindSlot> copyMatchBindSlots(
+            @NotNull FrontendAstSideTable<FrontendMatchBindSlot> slots
+    ) {
+        var copied = new FrontendAstSideTable<FrontendMatchBindSlot>();
+        copied.putAll(slots);
+        return copied;
+    }
+
+    /// Cross-table validation for the match build artifact.
+    ///
+    /// Bind slots are keyed by `PatternBindingExpression` and must not leak into the ordinary
+    /// `LocalDeclarationItem` surface. Every published `FrontendMatchRegion` must have a matching
+    /// section-count, and every bind item must live at that section's body entry.
+    private static void validateMatchArtifacts(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull FrontendAstSideTable<FrontendCfgRegion> regions,
+            @NotNull FrontendAstSideTable<FrontendMatchBindSlot> bindSlots
+    ) {
+        var bindItems = collectMatchBindItems(graph);
+        for (var entry : regions.entrySet()) {
+            if (!(entry.getKey() instanceof MatchStatement matchStatement)
+                    || !(entry.getValue() instanceof FrontendMatchRegion region)) {
+                continue;
+            }
+            if (region.sections().isEmpty()) {
+                throw new IllegalStateException("match region must publish at least one section");
+            }
+            graph.requireNode(region.headerEntryId());
+            graph.requireNode(region.mergeId());
+            if (graph.requireNode(region.mergeId()) instanceof FrontendCfgGraph.StopNode stopNode
+                    && stopNode.kind() == FrontendCfgGraph.StopKind.TERMINAL_MERGE) {
+                for (var node : graph.nodes().values()) {
+                    switch (node) {
+                        case FrontendCfgGraph.SequenceNode(_, _, var nextId) -> {
+                            if (region.mergeId().equals(nextId)) {
+                                throw new IllegalStateException(
+                                        "TERMINAL_MERGE must not be a sequence nextId target"
+                                );
+                            }
+                        }
+                        case FrontendCfgGraph.BranchNode(_, _, _, var trueTargetId, var falseTargetId) -> {
+                            if (region.mergeId().equals(trueTargetId) || region.mergeId().equals(falseTargetId)) {
+                                throw new IllegalStateException(
+                                        "TERMINAL_MERGE must not be a branch target"
+                                );
+                            }
+                        }
+                        case FrontendCfgGraph.StopNode _ -> {
+                        }
+                    }
+                }
+            }
+            for (var sectionAnchors : region.sections()) {
+                graph.requireNode(sectionAnchors.testEntryId());
+                graph.requireNode(sectionAnchors.bodyEntryId());
+            }
+        }
+        for (var slotEntry : bindSlots.entrySet()) {
+            if (!(slotEntry.getKey() instanceof PatternBindingExpression declaration)) {
+                throw new IllegalStateException("match bind slot key must be a PatternBindingExpression");
+            }
+            var slot = slotEntry.getValue();
+            if (slot.declaration() != declaration) {
+                throw new IllegalStateException("match bind slot key/declaration identity diverged");
+            }
+            var bindItem = bindItems.get(declaration);
+            if (bindItem == null) {
+                throw new IllegalStateException(
+                        "Missing MatchBindItem for pattern bind '" + slot.bindSlotId() + "'"
+                );
+            }
+            if (!bindItem.bindSlotId().equals(slot.bindSlotId())
+                    || !bindItem.declaration().name().equals(slot.bindSlotId())) {
+                throw new IllegalStateException(
+                        "MatchBindItem slot id diverged from published bind slot '" + slot.bindSlotId() + "'"
+                );
+            }
+        }
+        for (var bindItem : bindItems.values()) {
+            if (!bindSlots.containsKey(bindItem.declaration())) {
+                throw new IllegalStateException(
+                        "MatchBindItem has no published bind slot for '" + bindItem.bindSlotId() + "'"
+                );
+            }
+        }
+        validateMatchBindsAbsentFromLocalDeclarationSurface(graph, bindSlots);
+    }
+
+    private static @NotNull Map<PatternBindingExpression, MatchBindItem> collectMatchBindItems(
+            @NotNull FrontendCfgGraph graph
+    ) {
+        var items = new LinkedHashMap<PatternBindingExpression, MatchBindItem>();
+        for (var node : graph.nodes().values()) {
+            if (!(node instanceof FrontendCfgGraph.SequenceNode sequenceNode)) {
+                continue;
+            }
+            for (var item : sequenceNode.items()) {
+                if (item instanceof MatchBindItem bindItem) {
+                    var previous = items.put(bindItem.declaration(), bindItem);
+                    if (previous != null) {
+                        throw new IllegalStateException(
+                                "Duplicate MatchBindItem for '" + bindItem.bindSlotId() + "'"
+                        );
+                    }
+                }
+            }
+        }
+        return items;
+    }
+
+    private static void validateMatchBindsAbsentFromLocalDeclarationSurface(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull FrontendAstSideTable<FrontendMatchBindSlot> bindSlots
+    ) {
+        for (var node : graph.nodes().values()) {
+            if (!(node instanceof FrontendCfgGraph.SequenceNode sequenceNode)) {
+                continue;
+            }
+            for (var item : sequenceNode.items()) {
+                if (item instanceof LocalDeclarationItem localDeclarationItem
+                        && bindSlots.containsKey(localDeclarationItem.declaration())) {
+                    throw new IllegalStateException(
+                            "match bind identity leaked onto LocalDeclarationItem surface"
+                    );
+                }
+            }
+        }
+    }
+
     /// Cross-table validation for the for-in build artifact.
     ///
     /// The graph alone cannot see the source-slot and hidden-state registries, so the build artifact
@@ -3542,6 +4408,7 @@ public final class FrontendCfgGraphBuilder {
         regions = new FrontendAstSideTable<>();
         forSourceIteratorSlots = new FrontendAstSideTable<>();
         forIteratorStateSlots = new FrontendAstSideTable<>();
+        matchBindSlots = new FrontendAstSideTable<>();
         loopStack.clear();
         nextSequenceIndex = 0;
         nextBranchIndex = 0;
@@ -3555,7 +4422,8 @@ public final class FrontendCfgGraphBuilder {
                 new FrontendCfgGraph(entryId, orderNodes(entryId)),
                 copyRegions(requireRegions()),
                 copyForSourceIteratorSlots(requireForSourceIteratorSlots()),
-                copyForIteratorStateSlots(requireForIteratorStateSlots())
+                copyForIteratorStateSlots(requireForIteratorStateSlots()),
+                copyMatchBindSlots(requireMatchBindSlots())
         );
     }
 
@@ -3563,7 +4431,8 @@ public final class FrontendCfgGraphBuilder {
             @NotNull FrontendCfgGraph graph,
             @NotNull FrontendAstSideTable<FrontendCfgRegion> regions,
             @NotNull FrontendAstSideTable<FrontendForSourceIteratorSlot> forSourceIteratorSlots,
-            @NotNull FrontendAstSideTable<FrontendForIteratorStateSlot> forIteratorStateSlots
+            @NotNull FrontendAstSideTable<FrontendForIteratorStateSlot> forIteratorStateSlots,
+            @NotNull FrontendAstSideTable<FrontendMatchBindSlot> matchBindSlots
     ) {
         public ExecutableBodyBuild {
             Objects.requireNonNull(graph, "graph must not be null");
@@ -3574,7 +4443,11 @@ public final class FrontendCfgGraphBuilder {
             forIteratorStateSlots = copyForIteratorStateSlots(
                     Objects.requireNonNull(forIteratorStateSlots, "forIteratorStateSlots must not be null")
             );
+            matchBindSlots = copyMatchBindSlots(
+                    Objects.requireNonNull(matchBindSlots, "matchBindSlots must not be null")
+            );
             validateForLoopArtifacts(graph, regions, forSourceIteratorSlots, forIteratorStateSlots);
+            validateMatchArtifacts(graph, regions, matchBindSlots);
         }
     }
 
@@ -3657,6 +4530,16 @@ public final class FrontendCfgGraphBuilder {
     ) {
         private ConditionBuild {
             entryId = FrontendCfgGraph.validateNodeId(entryId, "entryId");
+        }
+    }
+
+    private record MatchSectionBuild(
+            @NotNull String testEntryId,
+            @NotNull String bodyEntryId
+    ) {
+        private MatchSectionBuild {
+            testEntryId = FrontendCfgGraph.validateNodeId(testEntryId, "testEntryId");
+            bodyEntryId = FrontendCfgGraph.validateNodeId(bodyEntryId, "bodyEntryId");
         }
     }
 

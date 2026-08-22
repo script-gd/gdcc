@@ -42,6 +42,8 @@ public class CCodegen implements Codegen {
         registerInsnGen(new LineNumberInsnGen());
         registerInsnGen(new AssertObjectLiveInsnGen());
         registerInsnGen(new ObjectIsNullInsnGen());
+        registerInsnGen(new VariantIsNilInsnGen());
+        registerInsnGen(new GetVariantTypeInsnGen());
         registerInsnGen(new IsInstanceOfInsnGen());
         registerInsnGen(new BuiltinCastInsnGen());
         registerInsnGen(new ObjectCastInsnGen());

@@ -87,8 +87,9 @@ import java.util.function.Predicate;
 ///   compile surface and their bodies recursed; unrecorded lambdas (property initializer /
 ///   parameter default / skipped subtree) stay fail-closed behind a form-level blocker
 /// - `MatchStatement` is shared-semantic supported but compile-ready only when every pattern
-///   route is in `FrontendMatchSupport.isRouteLoweringReady`; Step 2 keeps that set empty, so
-///   every legal match is a statement-root route-not-ready blocker and the body is not rescanned
+///   route is in `FrontendMatchSupport.isRouteLoweringReady`; WILDCARD / BINDING / LITERAL /
+///   EXPRESSION are ready and their bodies are rescanned, while ARRAY / DICTIONARY still block
+///   the whole statement at the root
 /// - generic side-table scans over published `expressionTypes()` / `resolvedMembers()` /
 ///   `resolvedCalls()` facts that are still blocked/deferred/failed/unsupported on compile surface
 /// - feature-specific RESOLVED blockers for Signal.connect/disconnect and bare
@@ -186,11 +187,11 @@ public class FrontendCompileCheckAnalyzer {
     }
 
     /// Route-not-ready blocker for a `match` whose pattern routes are not yet lowering-ready.
-    /// Step 2 keeps the ready set empty, so every legal match receives this statement-root blocker
-    /// and the gate never rescans the body.
+    /// Step 3 admits WILDCARD / BINDING / LITERAL / EXPRESSION; ARRAY / DICTIONARY still
+    /// block the whole statement at the root and skip the body rescan.
     private static @NotNull String matchRouteNotReadyMessage() {
         return "match statement is recognized by shared semantic analysis but is blocked in compile mode because "
-                + "no match pattern route is lowering-ready yet";
+                + "it contains a pattern route that is not lowering-ready yet";
     }
 
     private static @NotNull String staticPropertyCompileBlockedMessage(@NotNull String propertyName) {
@@ -571,12 +572,14 @@ public class FrontendCompileCheckAnalyzer {
         }
 
         /// LITERAL / EXPRESSION leaves enter the ordinary compile-surface expression walk.
-        /// WILDCARD / BINDING / ARRAY / DICTIONARY stay off that walk (no ordinary expression facts).
+        /// BINDING is marked so missing `slotTypes()` can use the L49 hole upgrade; WILDCARD /
+        /// ARRAY / DICTIONARY stay off the ordinary expression walk.
         private void walkMatchPatternForCompileSurface(@NotNull Expression pattern) {
             var route = FrontendMatchSupport.classifyPatternRoute(pattern);
             switch (route) {
-                case WILDCARD, BINDING -> {
+                case WILDCARD -> {
                 }
+                case BINDING -> markCompileSurfaceNode(pattern);
                 case ARRAY -> {
                     var array = (ArrayExpression) pattern;
                     for (var element : array.elements()) {

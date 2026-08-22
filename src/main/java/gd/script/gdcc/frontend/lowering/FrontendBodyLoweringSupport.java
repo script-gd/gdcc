@@ -16,6 +16,7 @@ import gd.script.gdcc.frontend.sema.analyzer.support.FrontendSubscriptSemanticSu
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -191,6 +192,17 @@ public final class FrontendBodyLoweringSupport {
                     CfgValueMaterializationKind.TEMP_SLOT,
                     null
             );
+            case IntConstantItem _, GetVariantTypeItem _ -> new CfgValueMaterialization(
+                    GdIntType.INT,
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
+            case MatchEqualItem _, VariantIsNilItem _ -> new CfgValueMaterialization(
+                    GdBoolType.BOOL,
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
+            case MatchBindItem _ -> throw new IllegalStateException("MatchBindItem must not publish a result value id");
             case MergeValueItem mergeValueItem -> new CfgValueMaterialization(
                     requireMergeAnchorType(analysisData, mergeValueItem),
                     CfgValueMaterializationKind.MERGE_SLOT,

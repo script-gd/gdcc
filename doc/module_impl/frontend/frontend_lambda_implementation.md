@@ -464,8 +464,9 @@ userdata 结构体。这是 ABI 差异，不是语义差异；测试应对齐用
   body facts（与普通 executable block 相同）。
 - **未记录 lambda**：保持形态级 `sema.compile_check` blocker，不静默放行；若上游已在同一
   exact range 发布 unsupported 诊断，则按统一去重合同省略补发。
-- lambda body 内的 `match` 走 match 自己的 route-aware compile policy（当前 ready set 为空，
-  发锚定 match root 的 `sema.compile_check` route-not-ready），不再由 `sema.unsupported_binding_subtree` 持有。
+- lambda body 内的 `match` 走 match 自己的 route-aware compile policy（`WILDCARD` /
+  `BINDING` / `LITERAL` / `EXPRESSION` 放行，`ARRAY` / `DICTIONARY` 发锚定 match root 的
+  `sema.compile_check` route-not-ready），不再由 `sema.unsupported_binding_subtree` 持有。
 
 `FrontendAnalysisInspectionTool` 不再把 `LambdaExpression` 当作 deferred 祖先。
 
@@ -517,7 +518,7 @@ userdata 结构体。这是 ABI 差异，不是语义差异；测试应对齐用
 - `FrontendLambdaLoweringTest` — hidden shell 合成、`LAMBDA_BODY` CFG/body、外层 `construct_lambda`、缺 plan / 名冲突 / capture 数漂移 fail-fast
 - `ConstructLambdaInsnGenTest` — opcode 注册、capture 块、`object_id`、prepare/prologue、名序校验
 - `ConstructLambdaInsnGenEngineTest` — Zig + 可选 `GODOT_BIN`：常量 / String capture / self `object_id` / free 后 invalid
-- `FrontendCompileCheckAnalyzerTest` — 已记录放行、未记录 fail-closed、body 内 `match` 走 route-not-ready `sema.compile_check`
+- `FrontendCompileCheckAnalyzerTest` — 已记录放行、未记录 fail-closed、body 内首批四 route `match` 放行、ARRAY/DICTIONARY 走 match-root route-not-ready `sema.compile_check`
 - `FrontendClassSkeletonTest` — `_lambda_` reserved prefix
 - `FrontendLoopControlFlowAnalyzerTest.analyzeResetsOuterLoopDepthAtLambdaBoundary` — 仍是 callable boundary
 - `FrontendCfgGraphBuilderTest.buildExecutableBodyFailsFastWhenReceiverBindingIsCaptureAliasRoot` — alias 仍不开放

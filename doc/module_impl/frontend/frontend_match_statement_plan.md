@@ -63,7 +63,7 @@
 
 ## 文档状态
 
-- 状态：Step 1 已完成；Step 2 已完成（shared semantic 毕业 + 空 ready set 的 compile gate）；Step 3-5 待实施
+- 状态：Step 1 已完成；Step 2 已完成；Step 3 已完成（首批四 route CFG/body lowering）；Step 4-5 待实施
 - 更新时间：2026-08-22
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
@@ -782,6 +782,8 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
 
 ### Step 3：首批四 route 的 CFG/body lowering
 
+> 状态：已完成（2026-08-22）。`LOWERING_READY_ROUTES` 加入 `WILDCARD` / `BINDING` / `LITERAL` / `EXPRESSION`；`processMatchStatement` + `FrontendMatchRegion` + `FrontendMatchBindSlot` / `MatchBindItem` + `declareMatchBindSlots` 落地；ARRAY / DICTIONARY 仍 route-not-ready。文档同步条目已回写对应合同文档。
+
 改动（§5.8 - §5.9；compile gate 机制已在 Step 2 落地）：
 
 - route readiness 集合加入 `WILDCARD` / `BINDING` / `LITERAL` / `EXPRESSION`；
@@ -870,8 +872,8 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
 | `FrontendLambdaSuiteResolutionTest.lambdaInsideMatchSectionStaysUnrecordedAndFailClosed`（385-405） | 反转：lambdaPlans 非 null、capture 类型冻结断言 | 2 |
 | `FrontendBodySemanticSupportPolicyTest`（42-61 / 117-145 等） | `MATCH_SECTION_BODY` 移入 supported 集合；deferred domain 表删除 `MATCH_SUBTREE` | 2 |
 | `FrontendSemanticAnalyzerFrameworkTest.defaultInterfaceBodyPipelineSupportsForWhileOtherUnsupportedSubtreesStayFailClosed`（1050-1093） | match 半部转正（slotTypes/symbolBindings 正向断言），const 半部保持 | 2 |
-| `FrontendCompileCheckAnalyzerTest.analyzeForCompileSkipsExplicitCompileBlocksOutsideCompileSurface`（913-951） | 改写：`unsupported_binding_subtree` 计数 `==3` 改 `==2`（仅剩 parameter default + const）；match 收 1 条锚定 statement root 的 `sema.compile_check` route-not-ready；match 内 preload/`$Node`/`as`/`is`/`assert` 正常发布 shared facts 但不被 compile gate 重扫。Step 3 route-ready 后再次改写为放行 + 重扫断言 | 2（Step 3 再改） |
-| `FrontendCompileCheckAnalyzerTest.analyzeForCompileLambdaBodyMatchFailsWithoutCompileCheckWrap`（2122-2151） | 改写：lambda 内 match 无 `unsupported_binding_subtree`，改由 route-not-ready `sema.compile_check` 锚定。Step 3 route-ready 后反转为放行断言 | 2（Step 3 再改） |
+| `FrontendCompileCheckAnalyzerTest.analyzeForCompileSkipsExplicitCompileBlocksOutsideCompileSurface`（913-951） | 改写：ARRAY 形态保留 statement-root route-not-ready；另增 `matchReadyRoutesReleaseBodyOntoCompileSurface` 覆盖 ready route 重扫 assert | 3（已完成） |
+| `FrontendCompileCheckAnalyzerTest.analyzeForCompileLambdaBodyMatchFailsWithoutCompileCheckWrap`（2122-2151） | 改写：lambda 内 LITERAL match 放行，无 `sema.compile_check` / `unsupported_binding_subtree` | 3（已完成） |
 | `FrontendAnalysisInspectionToolTest` 相关展示探针（101-119 等） | 随 inspection 的 match 展示扩展更新 | 2 |
 
 原则：纯边界锚点（只为证明「match 不支持」）删除或改写为正向；复合场景锚点

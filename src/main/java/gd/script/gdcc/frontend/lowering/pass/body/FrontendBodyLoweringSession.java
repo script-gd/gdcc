@@ -5,6 +5,7 @@ import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.FunctionLoweringContext;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendForSourceIteratorSlot;
+import gd.script.gdcc.frontend.lowering.cfg.FrontendMatchBindSlot;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
@@ -56,6 +57,7 @@ import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
@@ -93,6 +95,7 @@ public final class FrontendBodyLoweringSession {
     private int writableRouteMaterializationCounter;
     private int writableRouteBlockCounter;
     private int forLoopConstantCounter;
+    private int matchHelperCounter;
 
     public FrontendBodyLoweringSession(
             @NotNull FunctionLoweringContext functionContext,
@@ -119,6 +122,7 @@ public final class FrontendBodyLoweringSession {
         declareSourceLocalSlots();
         declareCfgValueSlots();
         declareForLoopSlots();
+        declareMatchBindSlots();
         createBlocks();
         lowerBlocks();
     }
@@ -791,6 +795,44 @@ public final class FrontendBodyLoweringSession {
     /// The get processor consumes this to learn the final exposed iterator type. A missing artifact
     /// means CFG build never published the source slot, so the lookup fails fast instead of letting a
     /// processor invent a slot id or type.
+    @NotNull FrontendMatchBindSlot requireMatchBindSlot(@NotNull PatternBindingExpression declaration) {
+        var bindSlot = functionContext.matchBindSlotOrNull(
+                Objects.requireNonNull(declaration, "declaration must not be null")
+        );
+        if (bindSlot == null) {
+            throw new IllegalStateException(
+                    "Missing published match bind slot for PatternBindingExpression at " + declaration.range()
+            );
+        }
+        return bindSlot;
+    }
+
+    /// Allocates one match-lowering helper temp (`cfg_match_<purpose>_<n>`).
+    @NotNull String allocateMatchHelperTemp(@NotNull String purpose, @NotNull GdType type) {
+        var slotId = "cfg_match_"
+                + StringUtil.requireNonBlank(purpose, "purpose")
+                + "_"
+                + matchHelperCounter++;
+        ensureVariable(slotId, Objects.requireNonNull(type, "type must not be null"));
+        return slotId;
+    }
+
+    /// Returns the already-Variant slot, or packs the source into a match helper temp.
+    @NotNull String requireVariantSlot(
+            @NotNull LirBasicBlock block,
+            @NotNull String valueId,
+            @NotNull String purpose
+    ) {
+        var sourceSlotId = slotIdForValue(valueId);
+        var sourceType = requireValueType(valueId);
+        if (sourceType instanceof GdVariantType) {
+            return sourceSlotId;
+        }
+        var variantSlotId = allocateMatchHelperTemp(purpose, GdVariantType.VARIANT);
+        block.appendNonTerminatorInstruction(new PackVariantInsn(variantSlotId, sourceSlotId));
+        return variantSlotId;
+    }
+
     @NotNull FrontendForSourceIteratorSlot requireForSourceIteratorSlot(@NotNull ForStatement statement) {
         var sourceSlot = functionContext.forSourceIteratorSlotOrNull(
                 Objects.requireNonNull(statement, "statement must not be null")
@@ -1357,6 +1399,13 @@ public final class FrontendBodyLoweringSession {
         }
         for (var sourceSlot : functionContext.forSourceIteratorSlots().values()) {
             ensureVariable(sourceSlot.sourceIteratorSlotId(), sourceSlot.exposedType());
+        }
+    }
+
+    /// Predeclares source-facing match bind locals before any block is materialized.
+    private void declareMatchBindSlots() {
+        for (var bindSlot : functionContext.matchBindSlots().values()) {
+            ensureVariable(bindSlot.bindSlotId(), bindSlot.exposedType());
         }
     }
 

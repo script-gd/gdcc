@@ -43,6 +43,7 @@ import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.PreloadExpression;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.Statement;
@@ -924,7 +925,7 @@ class FrontendCompileCheckAnalyzerTest {
                         pass
                     const answer = [body_local]
                     match body_local:
-                        var bound when bound > 0:
+                        [1]:
                             [bound]
                             preload("res://icon.svg")
                             $Camera3D
@@ -938,20 +939,38 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
-        // Match is now shared-semantic supported, so compile gate emits one route-not-ready
-        // blocker at the statement root and does not rescan nested preload/$Node/as/is/assert.
+        // ARRAY stays route-not-ready: one statement-root blocker, nested preload/$Node/as/is/assert
+        // stay off the compile surface.
         assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
         assertEquals(
                 FrontendRange.fromAstRange(matchStatement.range()),
                 compileDiagnostics.getFirst().range()
         );
-        assertTrue(compileDiagnostics.getFirst().message().contains("no match pattern route is lowering-ready"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("pattern route that is not lowering-ready"));
         var unsupportedBindingDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
         );
         // parameter default + block-local const stay fail-closed; match no longer contributes.
         assertEquals(2, unsupportedBindingDiagnostics.size());
+    }
+
+    @Test
+    void matchReadyRoutesReleaseBodyOntoCompileSurface() throws Exception {
+        var source = """
+                class_name CompileCheckMatchReadySurface
+                extends Node
+                
+                func ping(value: int):
+                    match value:
+                        var bound when bound > 0:
+                            assert(bound)
+                """;
+
+        var compiled = analyzeForCompile("compile_check_match_ready_surface.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.getFirst().message().contains("assert"));
     }
 
     @Test
@@ -2142,19 +2161,11 @@ class FrontendCompileCheckAnalyzerTest {
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
         );
-        var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
 
-        // The recorded lambda is released and its body recursed. Match inside is shared-semantic
-        // supported, so compile fails through the route-not-ready compile_check at the match root
-        // rather than an unsupported-binding wrap.
-        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
-        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
-        assertEquals(
-                FrontendRange.fromAstRange(matchStatement.range()),
-                compileDiagnostics.getFirst().range()
-        );
-        assertTrue(compileDiagnostics.getFirst().message().contains("no match pattern route is lowering-ready"));
+        // LITERAL is compile-ready in Step 3, so a recorded-lambda body match is released.
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
         assertTrue(unsupportedBindingDiagnostics.isEmpty(), unsupportedBindingDiagnostics::toString);
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
     }
 
     @Test
@@ -2165,7 +2176,7 @@ class FrontendCompileCheckAnalyzerTest {
                 
                 func ping(value):
                     match value:
-                        1:
+                        [1]:
                             pass
                 """);
         var matchStatement = findNode(preparedInput.unit().ast(), MatchStatement.class, ignored -> true);
@@ -2196,6 +2207,56 @@ class FrontendCompileCheckAnalyzerTest {
                 """);
         var matchStatement = findNode(preparedInput.unit().ast(), MatchStatement.class, ignored -> true);
         preparedInput.analysisData().matchPlans().remove(matchStatement);
+
+        runCompileCheck(preparedInput);
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileUpgradesMissingBindSlotTypeWhenPublicationWarningExists() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_match_bind_slot_hole.gd", """
+                class_name CompileCheckMatchBindSlotHole
+                extends Node
+                
+                func ping(value: int):
+                    match value:
+                        var bound:
+                            pass
+                """);
+        var bind = findNode(preparedInput.unit().ast(), PatternBindingExpression.class, ignored -> true);
+        preparedInput.analysisData().slotTypes().remove(bind);
+        preparedInput.diagnosticManager().warning(
+                "sema.variable_slot_publication",
+                "synthetic bind slot publication warning",
+                preparedInput.unit().path(),
+                FrontendRange.fromAstRange(bind.range())
+        );
+        preparedInput.analysisData().updateDiagnostics(preparedInput.diagnosticManager().snapshot());
+
+        runCompileCheck(preparedInput);
+
+        var compileDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.compile_check"
+        );
+        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
+        assertEquals(FrontendRange.fromAstRange(bind.range()), compileDiagnostics.getFirst().range());
+    }
+
+    @Test
+    void analyzeForCompileDoesNotUpgradeMissingBindSlotTypeWithoutPublicationWarning() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_match_bind_slot_protocol.gd", """
+                class_name CompileCheckMatchBindSlotProtocol
+                extends Node
+                
+                func ping(value: int):
+                    match value:
+                        var bound:
+                            pass
+                """);
+        var bind = findNode(preparedInput.unit().ast(), PatternBindingExpression.class, ignored -> true);
+        preparedInput.analysisData().slotTypes().remove(bind);
 
         runCompileCheck(preparedInput);
 
@@ -2263,19 +2324,19 @@ class FrontendCompileCheckAnalyzerTest {
                         var hidden_signal = pinged
                         var hidden_method = _handler
                     match 0:
-                        var bound when bound == 0:
+                        [1]:
                             var hidden_match_signal = pinged
                 """;
 
         var compiled = analyzeForCompile("compile_check_signal_skipped_surface.gd", source);
         // The recorded lambda body is released onto the compile surface, and its bare signal /
-        // self-method value reads are already compile-ready. Match is shared-semantic supported
-        // but still route-not-ready, so the only compile blocker is the match statement root.
+        // self-method value reads are already compile-ready. ARRAY match stays route-not-ready,
+        // so the only compile blocker is the match statement root.
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
         assertEquals(1, compileDiagnostics.size(), () -> compiled.diagnostics().asList().toString());
         assertEquals(FrontendRange.fromAstRange(matchStatement.range()), compileDiagnostics.getFirst().range());
-        assertTrue(compileDiagnostics.getFirst().message().contains("no match pattern route is lowering-ready"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("pattern route that is not lowering-ready"));
     }
 
     @Test

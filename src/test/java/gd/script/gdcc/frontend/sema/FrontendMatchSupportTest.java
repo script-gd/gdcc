@@ -28,10 +28,10 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Anchors `FrontendMatchSupport` pattern classification, bind collection and route readiness to
-/// `frontend_match_statement_plan.md` Step 1: the seven pattern shapes classify to their routes,
+/// `frontend_match_statement_plan.md`: the seven pattern shapes classify to their routes,
 /// bare identifiers are expression patterns (never bindings or wildcards), nested binds are
-/// collected in source order with cleared `topLevel`, dictionary keys never bind, and the
-/// Step 1/2 lowering ready set stays empty (fail-closed).
+/// collected in source order with cleared `topLevel`, dictionary keys never bind, and
+/// WILDCARD / BINDING / LITERAL / EXPRESSION are lowering-ready while ARRAY / DICTIONARY stay blocked.
 class FrontendMatchSupportTest {
     private static final Range RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
 
@@ -261,12 +261,14 @@ class FrontendMatchSupportTest {
     }
 
     @Test
-    void noRouteIsLoweringReadyWhileReadySetIsEmpty() {
-        // Fail-closed anchor for Step 1/2: the ready set starts empty and grows monotonically in
-        // later steps; until then every match stays route-not-ready at the compile gate.
-        for (var route : FrontendMatchPatternRoute.values()) {
-            assertFalse(FrontendMatchSupport.isRouteLoweringReady(route), () -> "route " + route + " must not be ready yet");
-        }
+    void firstFourRoutesAreLoweringReadyWhileArrayAndDictionaryStayBlocked() {
+        // Step 3 admits WILDCARD / BINDING / LITERAL / EXPRESSION; ARRAY / DICTIONARY wait for Step 4.
+        assertTrue(FrontendMatchSupport.isRouteLoweringReady(FrontendMatchPatternRoute.WILDCARD));
+        assertTrue(FrontendMatchSupport.isRouteLoweringReady(FrontendMatchPatternRoute.BINDING));
+        assertTrue(FrontendMatchSupport.isRouteLoweringReady(FrontendMatchPatternRoute.LITERAL));
+        assertTrue(FrontendMatchSupport.isRouteLoweringReady(FrontendMatchPatternRoute.EXPRESSION));
+        assertFalse(FrontendMatchSupport.isRouteLoweringReady(FrontendMatchPatternRoute.ARRAY));
+        assertFalse(FrontendMatchSupport.isRouteLoweringReady(FrontendMatchPatternRoute.DICTIONARY));
     }
 
     private static @NotNull MatchStatement matchStatement(@NotNull MatchSection... sections) {

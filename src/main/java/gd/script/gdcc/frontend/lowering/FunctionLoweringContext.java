@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.lowering;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendForIteratorStateSlot;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendForSourceIteratorSlot;
+import gd.script.gdcc.frontend.lowering.cfg.FrontendMatchBindSlot;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
@@ -114,6 +115,14 @@ public final class FunctionLoweringContext {
     /// type stays restricted to hidden-slot metadata, LIR locals, intrinsic operand/result and backend
     /// C storage.
     private final @NotNull FrontendAstSideTable<FrontendForIteratorStateSlot> frontendForIteratorStateSlots =
+            new FrontendAstSideTable<>();
+
+    /// AST-keyed source-facing bind slots for compile-ready `match` pattern bindings.
+    ///
+    /// Published together with the frontend CFG graph/regions so body lowering can predeclare bind
+    /// locals from a validated registry. Keys are `PatternBindingExpression` identities; ordinary
+    /// `LocalDeclarationItem` scanning never covers them.
+    private final @NotNull FrontendAstSideTable<FrontendMatchBindSlot> frontendMatchBindSlots =
             new FrontendAstSideTable<>();
 
     public FunctionLoweringContext(
@@ -281,6 +290,29 @@ public final class FunctionLoweringContext {
 
     public @NotNull FrontendAstSideTable<FrontendForIteratorStateSlot> forIteratorStateSlots() {
         return frontendForIteratorStateSlots;
+    }
+
+    /// Publishes one AST-keyed match bind slot for this lowering unit.
+    ///
+    /// The mapping must remain one-to-one by `PatternBindingExpression` identity so body lowering
+    /// can predeclare the source-facing bind local from a validated registry.
+    public void publishMatchBindSlot(@NotNull Node astNode, @NotNull FrontendMatchBindSlot slot) {
+        Objects.requireNonNull(astNode, "astNode must not be null");
+        Objects.requireNonNull(slot, "slot must not be null");
+        if (frontendMatchBindSlots.containsKey(astNode)) {
+            throw new IllegalStateException(
+                    "Frontend match bind slot has already been published for " + describeCfgAstNode(astNode)
+            );
+        }
+        frontendMatchBindSlots.put(astNode, slot);
+    }
+
+    public @Nullable FrontendMatchBindSlot matchBindSlotOrNull(@NotNull Node astNode) {
+        return frontendMatchBindSlots.get(Objects.requireNonNull(astNode, "astNode must not be null"));
+    }
+
+    public @NotNull FrontendAstSideTable<FrontendMatchBindSlot> matchBindSlots() {
+        return frontendMatchBindSlots;
     }
 
     public enum Kind {

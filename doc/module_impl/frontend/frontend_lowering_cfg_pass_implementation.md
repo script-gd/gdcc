@@ -149,6 +149,9 @@ fully-terminated 的 `if` / `elif` / `else` 允许把 region `mergeId` 指向 `S
 - `FrontendElifRegion`
 - `FrontendWhileRegion`
 - `FrontendForRegion`
+- `FrontendMatchRegion`
+
+`FrontendMatchRegion` 记录 `match` 的 header（subject 单次求值）、每 section 的 `testEntryId` / `bodyEntryId`，以及 `mergeId`（全终止时为 `TERMINAL_MERGE`，不得作为 `goto` 目标）。顶层 `var x` bind 走独立 `frontendMatchBindSlots` registry（key = `PatternBindingExpression`，slot id = 源码名，类型来自 `slotTypes()`）；`MatchBindItem` 挂在 section body 入口序列头部。LITERAL / EXPRESSION 测试用 `MatchEqualItem` / `GetVariantTypeItem` / `IntConstantItem` / `VariantIsNilItem` / `BoolConstantItem`，多 pattern OR 与 String/StringName 交叉一律用 `BranchNode` 短路，禁止 value-context `BinaryOp(OR)`。
 
 `FrontendForRegion` 记录 `for-in` 循环的五个结构锚点与两个独立 iterator slot：`initEntryId`（即 `entryId()`，init 子图入口，物化 source operands 并运行 init operation 写入 hidden state slot）、`conditionEntryId`（should-continue 条件子图入口）、`bodyEntryId`（body 入口，运行 get operation 提交 source-facing iterator local 后再执行 body statements）、`updateEntryId`（运行 next operation 并跳回 condition，是 `continue` target）、`exitId`（`break` target）、`sourceIteratorSlotId` 与 `iteratorStateSlotId`。后两者是 slot reference，不是 frontend CFG node id，分别经由 source-slot registry 与 hidden-state registry 解析，且不共享 id/type/lifecycle。
 

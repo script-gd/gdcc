@@ -14,6 +14,11 @@ import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopGetItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopInitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopNextItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopShouldContinueItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.GetVariantTypeItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.IntConstantItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchBindItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchEqualItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.VariantIsNilItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.LambdaConstructItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallableLoadItem;
@@ -35,6 +40,7 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
+import gd.script.gdcc.lir.insn.GetVariantTypeInsn;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
@@ -50,6 +56,7 @@ import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryComp
 import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
+import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
@@ -63,6 +70,7 @@ import gd.script.gdcc.util.type.ExplicitCastSupport;
 import gd.script.gdcc.util.type.TypeTestFoldResult;
 import gd.script.gdcc.util.type.TypeTestFoldUtil;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
+import gd.script.gdcc.lir.insn.VariantIsNilInsn;
 import gd.script.gdcc.lir.insn.VariantGetNamedInsn;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
@@ -117,6 +125,11 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 new FrontendSourceAnchorInsnLoweringProcessor(),
                 new FrontendLocalDeclarationInsnLoweringProcessor(),
                 new FrontendBoolConstantInsnLoweringProcessor(),
+                new FrontendIntConstantInsnLoweringProcessor(),
+                new FrontendGetVariantTypeInsnLoweringProcessor(),
+                new FrontendMatchEqualInsnLoweringProcessor(),
+                new FrontendVariantIsNilInsnLoweringProcessor(),
+                new FrontendMatchBindInsnLoweringProcessor(),
                 new FrontendMergeValueInsnLoweringProcessor(),
                 new FrontendOpaqueExprValueInsnLoweringProcessor(),
                 new FrontendDirectSlotAliasInsnLoweringProcessor(),
@@ -231,6 +244,127 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
                     node.value()
             ));
+            return block;
+        }
+    }
+
+    private static final class FrontendIntConstantInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<IntConstantItem, Void> {
+        @Override
+        public @NotNull Class<IntConstantItem> nodeType() {
+            return IntConstantItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull IntConstantItem node,
+                @Nullable Void context
+        ) {
+            block.appendNonTerminatorInstruction(new LiteralIntInsn(
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    node.value()
+            ));
+            return block;
+        }
+    }
+
+    /// Packs a non-Variant operand then emits `get_variant_type`.
+    private static final class FrontendGetVariantTypeInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<GetVariantTypeItem, Void> {
+        @Override
+        public @NotNull Class<GetVariantTypeItem> nodeType() {
+            return GetVariantTypeItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull GetVariantTypeItem node,
+                @Nullable Void context
+        ) {
+            var variantSlotId = session.requireVariantSlot(block, node.operandValueId(), "variant_type");
+            block.appendNonTerminatorInstruction(new GetVariantTypeInsn(
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    variantSlotId
+            ));
+            return block;
+        }
+    }
+
+    private static final class FrontendMatchEqualInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<MatchEqualItem, Void> {
+        @Override
+        public @NotNull Class<MatchEqualItem> nodeType() {
+            return MatchEqualItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull MatchEqualItem node,
+                @Nullable Void context
+        ) {
+            block.appendNonTerminatorInstruction(new BinaryOpInsn(
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    GodotOperator.EQUAL,
+                    session.slotIdForValue(node.leftValueId()),
+                    session.slotIdForValue(node.rightValueId())
+            ));
+            return block;
+        }
+    }
+
+    private static final class FrontendVariantIsNilInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<VariantIsNilItem, Void> {
+        @Override
+        public @NotNull Class<VariantIsNilItem> nodeType() {
+            return VariantIsNilItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull VariantIsNilItem node,
+                @Nullable Void context
+        ) {
+            var variantSlotId = session.requireVariantSlot(block, node.operandValueId(), "is_nil");
+            block.appendNonTerminatorInstruction(new VariantIsNilInsn(
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    variantSlotId
+            ));
+            return block;
+        }
+    }
+
+    /// Materializes the match subject into the predeclared bind slot.
+    private static final class FrontendMatchBindInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<MatchBindItem, Void> {
+        @Override
+        public @NotNull Class<MatchBindItem> nodeType() {
+            return MatchBindItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull MatchBindItem node,
+                @Nullable Void context
+        ) {
+            var bindSlot = session.requireMatchBindSlot(node.declaration());
+            var materializedSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    session.slotIdForValue(node.subjectValueId()),
+                    session.requireValueType(node.subjectValueId()),
+                    bindSlot.exposedType(),
+                    "match_bind"
+            );
+            block.appendNonTerminatorInstruction(new AssignInsn(node.bindSlotId(), materializedSlotId));
             return block;
         }
     }

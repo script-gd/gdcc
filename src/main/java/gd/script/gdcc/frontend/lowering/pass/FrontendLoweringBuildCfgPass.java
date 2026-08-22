@@ -16,7 +16,7 @@ import org.jetbrains.annotations.NotNull;
 /// Frontend CFG graph publication pass.
 ///
 /// The current implementation materializes compile-ready executable bodies into the new frontend CFG
-/// graph, including structured `if` / `elif` / `while` regions and loop-control edges for
+/// graph, including structured `if` / `elif` / `while` / `match` regions and loop-control edges for
 /// `break` / `continue` plus explicit short-circuit `and` / `or` condition/value subgraphs.
 public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass {
     @Override
@@ -71,6 +71,7 @@ public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass 
         build.regions().forEach(functionContext::publishFrontendCfgRegion);
         build.forSourceIteratorSlots().forEach(functionContext::publishForSourceIteratorSlot);
         build.forIteratorStateSlots().forEach(functionContext::publishForIteratorStateSlot);
+        build.matchBindSlots().forEach(functionContext::publishMatchBindSlot);
     }
 
     private void publishPropertyInitializerGraph(@NotNull FunctionLoweringContext functionContext) {

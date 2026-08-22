@@ -19,7 +19,8 @@ public sealed interface FrontendCfgRegion
         FrontendIfRegion,
         FrontendElifRegion,
         FrontendWhileRegion,
-        FrontendForRegion {
+        FrontendForRegion,
+        FrontendMatchRegion {
     /// First graph node reached when control enters the source region.
     @NotNull String entryId();
 

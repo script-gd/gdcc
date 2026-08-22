@@ -41,8 +41,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Step 2 shared-semantic graduation anchors for `match`: visibility, inventory, bind refinement,
-/// pattern-context dispatch, type-check shape checks, compile-gate fail-closed, and lambda capture.
+/// Shared-semantic and compile-gate anchors for `match`: visibility, inventory, bind refinement,
+/// pattern-context dispatch, type-check shape checks, first-four-route compile readiness, and
+/// lambda capture. ARRAY / DICTIONARY remain route-not-ready.
 class FrontendMatchSemanticsTest {
     @Test
     void bindIsVisibleInGuardAndBodyButNotAcrossSectionsOrAfterMatch() {
@@ -263,16 +264,14 @@ class FrontendMatchSemanticsTest {
     }
 
     @Test
-    void analyzeForCompileBlocksLegalMatchWithRouteNotReadyAtStatementRoot() {
+    void analyzeForCompileBlocksArrayPatternMatchAtStatementRoot() {
         var compiled = analyzeForCompile("match_compile_gate.gd", """
                 class_name MatchCompileGate
                 extends Node
                 
-                func ping(value: int):
+                func ping(value):
                     match value:
-                        1:
-                            pass
-                        _:
+                        [1]:
                             pass
                 """);
         var ping = findFunction(compiled.unit().ast(), "ping");
@@ -281,33 +280,30 @@ class FrontendMatchSemanticsTest {
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
         assertEquals(FrontendRange.fromAstRange(matchStatement.range()), compileDiagnostics.getFirst().range());
-        assertTrue(compileDiagnostics.getFirst().message().contains("no match pattern route is lowering-ready"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("pattern route that is not lowering-ready"));
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
         assertNotNull(compiled.analysisData().matchPlans().get(matchStatement));
     }
 
     @Test
-    void compileGateOmitsRouteNotReadyWhenMatchStatementRangeAlreadyHasUpstreamError() {
-        var compiled = analyzeForCompile("match_compile_gate_type_check.gd", """
-                class_name MatchCompileGateTypeCheck
+    void analyzeForCompileReleasesFirstFourMatchRoutes() {
+        var compiled = analyzeForCompile("match_compile_gate_ready.gd", """
+                class_name MatchCompileGateReady
                 extends Node
                 
-                func ping(value):
+                func ping(value: int, other: int):
                     match value:
-                        var bound, 1:
+                        1:
+                            pass
+                        other:
+                            pass
+                        var bound:
+                            pass
+                        _:
                             pass
                 """);
-        var ping = findFunction(compiled.unit().ast(), "ping");
-        var matchStatement = findNode(ping.body(), MatchStatement.class, _ -> true);
-        var typeCheck = diagnosticsByCategory(compiled.diagnostics(), "sema.type_check");
-        assertFalse(typeCheck.isEmpty(), compiled.diagnostics().asList()::toString);
-        var compileAtRoot = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").stream()
-                .filter(diagnostic -> diagnostic.range().equals(FrontendRange.fromAstRange(matchStatement.range())))
-                .toList();
-        // Exact-range dedup only suppresses when an upstream error already owns the statement
-        // root. Pattern-shape type-check is section-anchored, so route-not-ready still lands
-        // on the statement (same as for's OBJECT_CUSTOM + iterable type-check split).
-        assertEquals(1, compileAtRoot.size(), compileAtRoot::toString);
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics().asList()::toString);
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
     }
 
     @Test
