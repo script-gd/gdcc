@@ -1305,10 +1305,6 @@ public final class FrontendCfgGraphBuilder {
         var patternTypeBuild = emitGetVariantType(workingCursor, pattern, patternValueBuild.resultValueId());
         workingCursor = patternTypeBuild.cursor();
         var equalEntryId = nextSequenceId();
-        // The gate wires its own branch targets (same-type -> equalEntryId, String/StringName
-        // crossover -> trueTargetId / falseTargetId); its returned entry id only follows the
-        // publish* chaining convention and is unneeded here because the continuation sequence is
-        // the already-known equalEntryId.
         publishRuntimeTypeGate(
                 workingCursor,
                 pattern,

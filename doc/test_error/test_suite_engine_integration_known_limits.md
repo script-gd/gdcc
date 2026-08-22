@@ -23,7 +23,7 @@
 对 test suite 的直接影响：
 
 - recorded lambda 正向样例放在 `lambda/`；未记录 lambda 仍不进 suite；lambda 内 `match` 六 route 已全部放行
-- `match` 正向样例放在 `control_flow/`：`match_bind_guard` / `match_literal_wildcard` / `match_array_destructure` / `match_dict_destructure` 已登记
+- `match` 正向样例放在 `control_flow/`：`match_bind_guard` / `match_literal_wildcard` / `match_array_destructure` / `match_dict_destructure` / `match_string_stringname` / `match_nested_containers` / `match_expression` / `match_lambda` / `match_control_flow_mix` / `match_mixed` 已登记
 - 历史算法样例（BFS / DFS 等）仍可继续用 `while` / 显式 index；新样例可以使用已转正的 `for` 与 `match`
 
 当前处理结论：

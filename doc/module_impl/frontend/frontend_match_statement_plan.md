@@ -835,8 +835,9 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
   fixture 锚定）、pattern 静态类型已知且兼容时省略 typeof 分支但**仍** `buildValue` 求值、
   静态不兼容时仍 `buildValue`（call/getter 计数 +1）且测试结果为常量 false——
   完全跳过求值的 fold-to-false 仅限 LITERAL / 常量子模式；
-- e2e：新增 `src/test/test_suite/unit_test/script/control_flow/match_*` 正向 fixture
-  （literal 命中 / wildcard 兜底 / 多 pattern OR / guard / bind 值使用 / 无命中 no-op），
+- e2e：`src/test/test_suite/unit_test/script/control_flow/match_*` 正向 fixture
+  （literal / wildcard / OR / guard / bind / 无命中 no-op / String·StringName 交叉 /
+  数组·字典官方形态 / 嵌套容器 / EXPRESSION / lambda / 与 for·while·if 混合），
   登记 `GdScriptUnitTestCompileRunnerTest.EXPECTED_SCRIPT_PATHS`；zig / Godot 可用时
   `GdScriptUnitTestCompileRunnerTest` 对应动态测试通过，环境缺失时按既有 Assumptions 跳过；
 - 回归：`FrontendCfgGraphBuilder*Test`、`FrontendLoweringBodyInsnPassTest`、

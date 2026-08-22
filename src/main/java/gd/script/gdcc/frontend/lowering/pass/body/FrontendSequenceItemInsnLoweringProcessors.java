@@ -370,13 +370,10 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @NotNull MatchBindItem node,
                 @Nullable Void context
         ) {
-            // Fail-fast on declaration identity only: the name-keyed function variable may have
-            // been declared by a same-name bind of another section, so the variable lookup alone
-            // could pass for a declaration that was never registered. The slot value is unused by
-            // design — materialization below targets the shared variable's declared type
-            // (possibly widened to Variant, see declareMatchBindSlots), not this declaration's
-            // own exposed type.
             var _ = session.requireMatchBindSlot(node.declaration());
+            // Same-name binds of distinct sections share one function variable whose declared type
+            // may be widened to Variant (see declareMatchBindSlots), so materialize into the
+            // declared slot type instead of this declaration's own exposed type.
             var declaredType = session.requireFunctionVariableType(node.bindSlotId());
             var materializedSlotId = session.materializeFrontendBoundaryValue(
                     block,
