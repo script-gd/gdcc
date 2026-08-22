@@ -131,6 +131,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -8940,6 +8941,303 @@ class FrontendLoweringBodyInsnPassTest {
                 .filter(BinaryOpInsn.class::isInstance)
                 .map(BinaryOpInsn.class::cast)
                 .anyMatch(insn -> insn.op() == GodotOperator.OR));
+    }
+
+    @Test
+    void runLowersArrayDestructureIntoSizeGateAndIndexedFetch() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_match_array.gd",
+                """
+                        class_name BodyInsnMatchArray
+                        extends RefCounted
+                        
+                        func ping(value) -> int:
+                            match value:
+                                [1, var x]:
+                                    return x
+                                _:
+                                    return 0
+                        """,
+                Map.of("BodyInsnMatchArray", "RuntimeBodyInsnMatchArray"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMatchArray",
+                "ping"
+        );
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // typeof gate + one unpack into the static Array slot.
+                () -> assertTrue(countInstructions(instructions, GetVariantTypeInsn.class) >= 1),
+                () -> assertTrue(instructions.stream()
+                        .filter(UnpackVariantInsn.class::isInstance)
+                        .map(UnpackVariantInsn.class::cast)
+                        .anyMatch(insn -> insn.resultId() != null
+                                && function.getVariableById(insn.resultId()) != null
+                                && function.getVariableById(insn.resultId()).type().getTypeName().equals("Array"))),
+                // Length gate: size() == 2.
+                () -> assertTrue(instructions.stream()
+                        .filter(CallMethodInsn.class::isInstance)
+                        .map(CallMethodInsn.class::cast)
+                        .anyMatch(insn -> insn.methodName().equals("size"))),
+                () -> assertTrue(instructions.stream()
+                        .filter(BinaryOpInsn.class::isInstance)
+                        .map(BinaryOpInsn.class::cast)
+                        .anyMatch(insn -> insn.op() == GodotOperator.EQUAL)),
+                // Two element fetches and the nested bind commit.
+                () -> assertEquals(2, countInstructions(instructions, VariantGetIndexedInsn.class)),
+                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(function, "x")),
+                () -> assertTrue(assignSourcesByTarget(instructions).containsKey("x"))
+        );
+    }
+
+    @Test
+    void runLowersOpenEndedArrayLengthGateWithGreaterEqual() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_match_array_rest.gd",
+                """
+                        class_name BodyInsnMatchArrayRest
+                        extends RefCounted
+                        
+                        func ping(value) -> int:
+                            match value:
+                                [1, ..]:
+                                    return 1
+                                _:
+                                    return 0
+                        """,
+                Map.of("BodyInsnMatchArrayRest", "RuntimeBodyInsnMatchArrayRest"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMatchArrayRest",
+                "ping"
+        );
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        var instructions = allInstructions(pingContext.targetFunction());
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(instructions.stream()
+                        .filter(BinaryOpInsn.class::isInstance)
+                        .map(BinaryOpInsn.class::cast)
+                        .anyMatch(insn -> insn.op() == GodotOperator.GREATER_EQUAL)),
+                () -> assertEquals(1, countInstructions(instructions, VariantGetIndexedInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersDictionaryPatternIntoHasGateAndKeyedFetch() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_match_dict.gd",
+                """
+                        class_name BodyInsnMatchDict
+                        extends RefCounted
+                        
+                        func ping(value) -> int:
+                            match value:
+                                {"k": var v}:
+                                    return v
+                                _:
+                                    return 0
+                        """,
+                Map.of("BodyInsnMatchDict", "RuntimeBodyInsnMatchDict"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMatchDict",
+                "ping"
+        );
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(instructions.stream()
+                        .filter(CallMethodInsn.class::isInstance)
+                        .map(CallMethodInsn.class::cast)
+                        .anyMatch(insn -> insn.methodName().equals("has"))),
+                () -> assertTrue(instructions.stream()
+                        .filter(CallMethodInsn.class::isInstance)
+                        .map(CallMethodInsn.class::cast)
+                        .anyMatch(insn -> insn.methodName().equals("size"))),
+                () -> assertEquals(1, countInstructions(instructions, VariantGetKeyedInsn.class)),
+                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(function, "v")),
+                () -> assertTrue(assignSourcesByTarget(instructions).containsKey("v"))
+        );
+    }
+
+    @Test
+    void runLowersNestedDictionaryInArrayWithBothFetchKinds() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_match_nested.gd",
+                """
+                        class_name BodyInsnMatchNested
+                        extends RefCounted
+                        
+                        func ping(value) -> int:
+                            match value:
+                                [{"k": var x}]:
+                                    return x
+                                _:
+                                    return 0
+                        """,
+                Map.of("BodyInsnMatchNested", "RuntimeBodyInsnMatchNested"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMatchNested",
+                "ping"
+        );
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        var instructions = allInstructions(pingContext.targetFunction());
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, countInstructions(instructions, VariantGetIndexedInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, VariantGetKeyedInsn.class)),
+                () -> assertTrue(instructions.stream()
+                        .filter(CallMethodInsn.class::isInstance)
+                        .map(CallMethodInsn.class::cast)
+                        .filter(insn -> insn.methodName().equals("size"))
+                        .count() >= 2)
+        );
+    }
+
+    @Test
+    void runLowersStaticallyTypedArraySubjectWithoutTypeofGate() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_match_typed_array.gd",
+                """
+                        class_name BodyInsnMatchTypedArray
+                        extends RefCounted
+                        
+                        func ping(value: Array) -> int:
+                            match value:
+                                [1]:
+                                    return 1
+                                _:
+                                    return 0
+                        """,
+                Map.of("BodyInsnMatchTypedArray", "RuntimeBodyInsnMatchTypedArray"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMatchTypedArray",
+                "ping"
+        );
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        var instructions = allInstructions(pingContext.targetFunction());
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // The static Array subject skips its own typeof gate; the single remaining
+                // get_variant_type belongs to the literal sub-test running on the fetched Variant
+                // element temp.
+                () -> assertEquals(1, countInstructions(instructions, GetVariantTypeInsn.class)),
+                () -> assertTrue(instructions.stream()
+                        .filter(CallMethodInsn.class::isInstance)
+                        .map(CallMethodInsn.class::cast)
+                        .anyMatch(insn -> insn.methodName().equals("size"))),
+                () -> assertEquals(1, countInstructions(instructions, VariantGetIndexedInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runFoldsArrayPatternWithIntSubjectWithoutDestructureInstructions() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_match_array_fold.gd",
+                """
+                        class_name BodyInsnMatchArrayFold
+                        extends RefCounted
+                        
+                        func ping(value: int) -> int:
+                            match value:
+                                [1, var x]:
+                                    return x
+                                _:
+                                    return 0
+                        """,
+                Map.of("BodyInsnMatchArrayFold", "RuntimeBodyInsnMatchArrayFold"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMatchArrayFold",
+                "ping"
+        );
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        var instructions = allInstructions(pingContext.targetFunction());
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(0, countInstructions(instructions, VariantGetIndexedInsn.class)),
+                () -> assertFalse(instructions.stream()
+                        .filter(CallMethodInsn.class::isInstance)
+                        .map(CallMethodInsn.class::cast)
+                        .anyMatch(insn -> insn.methodName().equals("size"))),
+                // The folded section keeps its pre-allocated bind slot so the still-built but
+                // unreachable body (`return x`) reads a declared variable.
+                () -> assertEquals(
+                        GdVariantType.VARIANT,
+                        requireVariableType(pingContext.targetFunction(), "x")
+                )
+        );
+    }
+
+    @Test
+    void runWidensSharedBindSlotToVariantAcrossSectionsWithDivergentExposedTypes() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_match_bind_name_collision.gd",
+                """
+                        class_name BodyInsnMatchBindNameCollision
+                        extends RefCounted
+                        
+                        func ping(value: Array) -> Variant:
+                            match value:
+                                [var bound]:
+                                    return bound
+                                var bound:
+                                    return bound
+                        """,
+                Map.of("BodyInsnMatchBindNameCollision", "RuntimeBodyInsnMatchBindNameCollision"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnMatchBindNameCollision",
+                "ping"
+        );
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+        var instructions = allInstructions(pingContext.targetFunction());
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // The nested destructuring bind is Variant while the top-level bind refines to the
+                // static Array subject type; both sections legally bind the same source name in
+                // their own scopes, so the shared function variable widens to Variant and the
+                // top-level commit packs the Array subject into it.
+                () -> assertEquals(
+                        GdVariantType.VARIANT,
+                        requireVariableType(pingContext.targetFunction(), "bound")
+                ),
+                () -> assertEquals(1, countInstructions(instructions, PackVariantInsn.class), () ->
+                        instructions.stream()
+                                .filter(PackVariantInsn.class::isInstance)
+                                .map(Object::toString)
+                                .collect(Collectors.joining("\n")))
+        );
     }
 
     @Test

@@ -261,14 +261,11 @@ class FrontendMatchSupportTest {
     }
 
     @Test
-    void firstFourRoutesAreLoweringReadyWhileArrayAndDictionaryStayBlocked() {
-        // Step 3 admits WILDCARD / BINDING / LITERAL / EXPRESSION; ARRAY / DICTIONARY wait for Step 4.
-        assertTrue(FrontendMatchSupport.isRouteLoweringReady(FrontendMatchPatternRoute.WILDCARD));
-        assertTrue(FrontendMatchSupport.isRouteLoweringReady(FrontendMatchPatternRoute.BINDING));
-        assertTrue(FrontendMatchSupport.isRouteLoweringReady(FrontendMatchPatternRoute.LITERAL));
-        assertTrue(FrontendMatchSupport.isRouteLoweringReady(FrontendMatchPatternRoute.EXPRESSION));
-        assertFalse(FrontendMatchSupport.isRouteLoweringReady(FrontendMatchPatternRoute.ARRAY));
-        assertFalse(FrontendMatchSupport.isRouteLoweringReady(FrontendMatchPatternRoute.DICTIONARY));
+    void allSixRoutesAreLoweringReady() {
+        // Step 3 admitted WILDCARD / BINDING / LITERAL / EXPRESSION; Step 4 added ARRAY / DICTIONARY.
+        for (var route : FrontendMatchPatternRoute.values()) {
+            assertTrue(FrontendMatchSupport.isRouteLoweringReady(route), route::toString);
+        }
     }
 
     private static @NotNull MatchStatement matchStatement(@NotNull MatchSection... sections) {

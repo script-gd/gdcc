@@ -80,9 +80,11 @@ import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /// Statement-local owner procedures used by the body SuiteResolver path.
@@ -513,6 +515,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         if (subjectType instanceof GdVoidType || subjectType instanceof GdCompilerType) {
             return;
         }
+        var divergentNames = collectDivergentMatchBindNames(plan);
         for (var sectionPlan : plan.sections()) {
             var sectionScope = context.analysisData().scopesByAst().get(sectionPlan.section());
             if (!(sectionScope instanceof BlockScope blockScope)) {
@@ -523,10 +526,34 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     if (!bindingPlan.topLevel()) {
                         continue;
                     }
+                    if (divergentNames.contains(bindingPlan.name())) {
+                        continue;
+                    }
                     refineMatchBindSlot(context, blockScope, bindingPlan, subjectType);
                 }
             }
         }
+    }
+
+    /// Same-name binds of distinct sections share one name-keyed function variable at lowering, so
+    /// a name carried by both a top-level bind (refined to the subject type) and a nested
+    /// destructuring bind (always Variant) would publish divergent types for one storage slot.
+    /// Godot match binds are untyped at runtime, and the frozen capture entry / scope binding /
+    /// slot type must agree with the shared storage, so such a name group keeps the Variant
+    /// inventory baseline for every member. Cross-match divergence cannot be seen from one plan and
+    /// is still unified at CFG build time.
+    private static @NotNull Set<String> collectDivergentMatchBindNames(@NotNull FrontendMatchPlan plan) {
+        var topLevelNames = new HashSet<String>();
+        var nestedNames = new HashSet<String>();
+        for (var sectionPlan : plan.sections()) {
+            for (var patternPlan : sectionPlan.patterns()) {
+                for (var bindingPlan : patternPlan.bindings()) {
+                    (bindingPlan.topLevel() ? topLevelNames : nestedNames).add(bindingPlan.name());
+                }
+            }
+        }
+        topLevelNames.retainAll(nestedNames);
+        return topLevelNames;
     }
 
     private void refineMatchBindSlot(

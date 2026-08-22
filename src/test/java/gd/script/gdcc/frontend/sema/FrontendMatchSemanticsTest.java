@@ -23,6 +23,7 @@ import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ScopeValueKind;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
@@ -42,8 +43,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Shared-semantic and compile-gate anchors for `match`: visibility, inventory, bind refinement,
-/// pattern-context dispatch, type-check shape checks, first-four-route compile readiness, and
-/// lambda capture. ARRAY / DICTIONARY remain route-not-ready.
+/// pattern-context dispatch, type-check shape checks, all-six-route compile readiness, and
+/// lambda capture.
 class FrontendMatchSemanticsTest {
     @Test
     void bindIsVisibleInGuardAndBodyButNotAcrossSectionsOrAfterMatch() {
@@ -144,6 +145,48 @@ class FrontendMatchSemanticsTest {
         assertEquals(GdIntType.INT, analyzed.analysisData().slotTypes().get(exact));
         assertEquals(GdVariantType.VARIANT, analyzed.analysisData().slotTypes().get(loose));
         assertEquals(GdVariantType.VARIANT, analyzed.analysisData().slotTypes().get(nested));
+    }
+
+    /// Same-name binds of distinct sections share one name-keyed function variable at lowering.
+    /// When one match mixes a nested destructuring bind (always Variant) with a top-level bind
+    /// (refinable) under the same name, the whole group keeps the Variant inventory baseline so
+    /// published slot types, scope bindings, and frozen lambda capture entries all agree with the
+    /// shared storage. Non-divergent names in the same match still refine.
+    @Test
+    void divergentSameNameBindGroupKeepsVariantBaselineWhileOtherBindsRefine() {
+        var analyzed = analyze("match_bind_divergent_group.gd", """
+                class_name MatchBindDivergentGroup
+                extends Node
+                
+                func ping(value: Array):
+                    match value:
+                        [var bound]:
+                            pass
+                        var bound:
+                            pass
+                        var whole:
+                            pass
+                """);
+        var ping = findFunction(analyzed.unit().ast(), "ping");
+        var matchStatement = findNode(ping.body(), MatchStatement.class, _ -> true);
+        var nestedBound = findNode(
+                matchStatement.sections().get(0),
+                PatternBindingExpression.class,
+                bind -> bind.name().equals("bound")
+        );
+        var topLevelBound = findNode(
+                matchStatement.sections().get(1),
+                PatternBindingExpression.class,
+                bind -> bind.name().equals("bound")
+        );
+        var whole = findNode(
+                matchStatement.sections().get(2),
+                PatternBindingExpression.class,
+                bind -> bind.name().equals("whole")
+        );
+        assertEquals(GdVariantType.VARIANT, analyzed.analysisData().slotTypes().get(nestedBound));
+        assertEquals(GdVariantType.VARIANT, analyzed.analysisData().slotTypes().get(topLevelBound));
+        assertInstanceOf(GdArrayType.class, analyzed.analysisData().slotTypes().get(whole));
     }
 
     @Test
@@ -264,7 +307,7 @@ class FrontendMatchSemanticsTest {
     }
 
     @Test
-    void analyzeForCompileBlocksArrayPatternMatchAtStatementRoot() {
+    void analyzeForCompileReleasesArrayPatternMatch() {
         var compiled = analyzeForCompile("match_compile_gate.gd", """
                 class_name MatchCompileGate
                 extends Node
@@ -273,14 +316,14 @@ class FrontendMatchSemanticsTest {
                     match value:
                         [1]:
                             pass
+                        {"k": var v, ..}:
+                            pass
                 """);
         var ping = findFunction(compiled.unit().ast(), "ping");
         var matchStatement = findNode(ping.body(), MatchStatement.class, _ -> true);
-        assertTrue(compiled.diagnostics().hasErrors());
-        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
-        assertEquals(FrontendRange.fromAstRange(matchStatement.range()), compileDiagnostics.getFirst().range());
-        assertTrue(compileDiagnostics.getFirst().message().contains("pattern route that is not lowering-ready"));
+        // ARRAY / DICTIONARY routes are compile-ready since Step 4: no route-not-ready blocker.
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics().asList()::toString);
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
         assertNotNull(compiled.analysisData().matchPlans().get(matchStatement));
     }

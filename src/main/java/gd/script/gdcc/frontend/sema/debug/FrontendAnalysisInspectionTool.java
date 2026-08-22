@@ -766,6 +766,14 @@ public final class FrontendAnalysisInspectionTool {
                     current = parent;
                     continue;
                 }
+                // DictEntry sits between a dictionary pattern and its key/value children. Only the
+                // value position is a (sub-)pattern, so skip straight to the owning dictionary;
+                // keys are constant expressions and must fall through to false.
+                if (parent instanceof dev.superice.gdparser.frontend.ast.DictEntry dictEntry
+                        && dictEntry.value() == current) {
+                    current = parents.get(dictEntry);
+                    continue;
+                }
                 return false;
             }
             return false;

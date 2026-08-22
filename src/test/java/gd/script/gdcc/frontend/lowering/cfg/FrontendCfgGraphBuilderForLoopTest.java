@@ -56,7 +56,7 @@ class FrontendCfgGraphBuilderForLoopTest {
                 """
                         class_name CfgForRangeCall
                         extends RefCounted
-
+                        
                         func ping() -> int:
                             var total := 0
                             for i in range(3):
@@ -145,7 +145,7 @@ class FrontendCfgGraphBuilderForLoopTest {
                 """
                         class_name CfgForIntShorthand
                         extends RefCounted
-
+                        
                         func ping(limit: int) -> int:
                             var total := 0
                             for i in limit:
@@ -192,7 +192,7 @@ class FrontendCfgGraphBuilderForLoopTest {
                 """
                         class_name CfgForRangeArgs
                         extends RefCounted
-
+                        
                         func ping(start: int, end: int, step: int) -> int:
                             var total := 0
                             for i in range(start, end, step):
@@ -236,7 +236,7 @@ class FrontendCfgGraphBuilderForLoopTest {
                 """
                         class_name CfgForBreakContinue
                         extends RefCounted
-
+                        
                         func ping(stop_now: bool, skip_now: bool) -> int:
                             var total := 0
                             for i in range(5):
@@ -284,7 +284,7 @@ class FrontendCfgGraphBuilderForLoopTest {
                 """
                         class_name CfgForNestedBreakContinue
                         extends RefCounted
-
+                        
                         func ping(stop_inner: bool, skip_inner: bool, stop_outer: bool) -> int:
                             var total := 0
                             for i in range(3):
@@ -355,7 +355,7 @@ class FrontendCfgGraphBuilderForLoopTest {
                 """
                         class_name CfgForNestedSibling
                         extends RefCounted
-
+                        
                         func ping() -> int:
                             var total := 0
                             for i in range(3):
@@ -410,7 +410,7 @@ class FrontendCfgGraphBuilderForLoopTest {
                 """
                         class_name CfgForHiddenSurface
                         extends RefCounted
-
+                        
                         func ping() -> int:
                             var total := 0
                             for i in range(3):
@@ -460,7 +460,7 @@ class FrontendCfgGraphBuilderForLoopTest {
                 """
                         class_name CfgForExplicitType
                         extends RefCounted
-
+                        
                         func ping() -> void:
                             for i: float in range(3):
                                 print(i)
@@ -489,7 +489,7 @@ class FrontendCfgGraphBuilderForLoopTest {
                 """
                         class_name CfgForReturnBody
                         extends RefCounted
-
+                        
                         func ping() -> int:
                             for i in range(3):
                                 return i
@@ -532,7 +532,7 @@ class FrontendCfgGraphBuilderForLoopTest {
                 """
                         class_name CfgForBreakBody
                         extends RefCounted
-
+                        
                         func ping() -> int:
                             var total := 0
                             for i in range(3):
@@ -580,7 +580,7 @@ class FrontendCfgGraphBuilderForLoopTest {
                 """
                         class_name CfgForPassBody
                         extends RefCounted
-
+                        
                         func ping() -> void:
                             for i in range(3):
                                 pass
@@ -734,7 +734,8 @@ class FrontendCfgGraphBuilderForLoopTest {
                 build.regions(),
                 emptySourceSlots,
                 build.forIteratorStateSlots(),
-                build.matchBindSlots()
+                build.matchBindSlots(),
+                build.foldedMatchBindDeclarations()
         ));
         // Anchor the missing-source-slot fail-fast path specifically, not just any validation error.
         assertTrue(message.contains("source-facing for-in iterator slot"), message);
@@ -762,7 +763,8 @@ class FrontendCfgGraphBuilderForLoopTest {
                 build.regions(),
                 build.forSourceIteratorSlots(),
                 tamperedStateSlots,
-                build.matchBindSlots()
+                build.matchBindSlots(),
+                build.foldedMatchBindDeclarations()
         ));
     }
 
@@ -773,7 +775,7 @@ class FrontendCfgGraphBuilderForLoopTest {
                 """
                         class_name CfgForDuplicateSlot
                         extends RefCounted
-
+                        
                         func ping() -> int:
                             var total := 0
                             for i in range(3):
@@ -805,7 +807,8 @@ class FrontendCfgGraphBuilderForLoopTest {
                 build.regions(),
                 build.forSourceIteratorSlots(),
                 tamperedStateSlots,
-                build.matchBindSlots()
+                build.matchBindSlots(),
+                build.foldedMatchBindDeclarations()
         ));
         // Anchor the duplicate-slot fail-fast path specifically, not just any validation error.
         assertTrue(message.contains("Duplicate"), message);
@@ -897,7 +900,7 @@ class FrontendCfgGraphBuilderForLoopTest {
                 """
                         class_name CfgForSimple
                         extends RefCounted
-
+                        
                         func ping() -> int:
                             var total := 0
                             for i in range(3):

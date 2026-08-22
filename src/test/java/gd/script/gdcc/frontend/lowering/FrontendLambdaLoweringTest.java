@@ -318,6 +318,76 @@ final class FrontendLambdaLoweringTest {
         assertEquals("int", shell.getCapture("seed").type().getTypeName());
     }
 
+    /// Regression anchor for divergent same-name match binds plus lambda capture: the array
+    /// pattern's nested bind (always Variant) and the top-level bind (refined to the subject type)
+    /// share one name-keyed storage slot, while the capture plan freezes the section-local
+    /// declaration-site type. Whatever storage/conversion strategy lowering picks, the construct
+    /// operand's resolved variable type must stay assignable to the shell capture type — the exact
+    /// boundary the C backend enforces on `construct_lambda`.
+    @Test
+    void outerBodyConstructInsnCaptureOperandStaysAssignableForDivergentSharedMatchBind() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_match_bind_capture.gd", """
+                class_name LambdaMatchBindCapture
+                extends RefCounted
+                
+                func ping(value: Array) -> Variant:
+                    match value:
+                        [var bound]:
+                            return bound
+                        var bound:
+                            var cb := func():
+                                return bound
+                            return cb
+                """);
+
+        var outerContext = requireExecutableContext(prepared.context(), "ping");
+        var insn = requireSingleConstructLambdaInsn(outerContext.targetFunction());
+        var shell = lambdaFunctions(requireClass(prepared, "LambdaMatchBindCapture"), 1).getFirst();
+        var shellCapture = shell.getCapture("bound");
+        assertNotNull(shellCapture);
+        var operand = assertInstanceOf(
+                LirInstruction.VariableOperand.class,
+                insn.captures().getFirst()
+        );
+        var operandVariable = outerContext.targetFunction().getVariableById(operand.id());
+        assertNotNull(operandVariable);
+        assertTrue(
+                new ClassRegistry(ExtensionApiLoader.loadDefault()).checkAssignable(
+                        operandVariable.type(),
+                        shellCapture.type()
+                ),
+                () -> "capture operand variable type '" + operandVariable.type().getTypeName()
+                        + "' is not assignable to shell capture type '" + shellCapture.type().getTypeName() + "'"
+        );
+    }
+
+    /// Cross-match same-name divergence surfaces only at CFG finishBuild, after lambda plans froze
+    /// their capture types. A lambda capturing such a bind with a non-Variant entry must fail fast
+    /// at the unify step instead of reaching the backend's `construct_lambda` boundary.
+    @Test
+    void buildCfgFailsFastWhenLambdaCapturesCrossMatchDivergentBind() throws Exception {
+        var prepared = analyzeAndSkeleton("lambda_cross_match_bind_capture.gd", """
+                class_name LambdaCrossMatchBindCapture
+                extends RefCounted
+                
+                func ping(value: Array, payload):
+                    match value:
+                        var bound:
+                            var cb := func():
+                                return bound
+                    match payload:
+                        [var bound]:
+                            pass
+                """);
+        new FrontendLoweringFunctionPreparationPass().run(prepared.context());
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBuildCfgPass().run(prepared.context())
+        );
+        assertTrue(exception.getMessage().contains("captures match bind 'bound'"), exception::getMessage);
+    }
+
     /// A lambda that uses an enclosing instance member constructs with a leading `self`
     /// capture. The item uses the dedicated `SelfSlotOperand.SELF_SLOT` descriptor (never a
     /// fabricated SELF identifier) and the insn operand is `$self`.

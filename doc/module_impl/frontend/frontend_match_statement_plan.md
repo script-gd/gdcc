@@ -1,6 +1,6 @@
 # Frontend Match Statement 实施计划
 
-> Updated: 2026-08-21
+> Updated: 2026-08-22
 > 本文档是 GDScript `match` 从结构性 deferred / unsupported 边界毕业进入 frontend 正式支持面的
 > 实施计划与验收基线。实施完成后本文档转为冻结合同（参照 `frontend_for_range_loop_implementation.md`
 > 的先例，阶段性进度以 git 历史为准）。
@@ -58,12 +58,30 @@
 > v10（2026-08-21）：改名回执（v7 清单）在 Step 1 补做完成——`CONSTANT_EXPRESSION` →
 > `EXPRESSION` 落实在 Step 1 产物（Route/Support/PatternPlan/SupportTest）并通过靶向测试；
 > 回执从 Step 2 改动清单迁移到 Step 1 状态块，§7 对应行标记已完成，Step 2 工作面保持干净。
+> v11（2026-08-22，Step 4 实施实证修订）：路线 A 实证可行并落地（路线 B 不启用）。实施期
+> 冻结三条新增设计决策——(1) bind 槽位在 section 建图前一次性预分配（对齐 Godot 在 pattern
+> 编译前创建 bind local），静态折叠的容器 pattern 保留槽位供不可达 body 读取但不提交
+> `MatchBindItem`，跨表验证以 `foldedMatchBindDeclarations` 集合豁免；容器 pattern 的静态
+> 折叠发生在 route 分派处（直接接 falseTarget，不发测试片段，子 pattern 表达式在运行时
+> typeof gate 失败时本就不会求值，折叠保持可观察行为）；(2) 同名跨 section bind 的
+> exposed type 分歧（顶层精化类型 vs 嵌套恒 `Variant`）在 `finishBuild` 统一为 `Variant`，
+> bind 读取经 `requireObservableValueType` 观察共享存储类型而非 per-use 发布类型；
+> (3) inspection 修复 DictEntry 父链穿越，嵌套 dict value 子 pattern 正确获得
+> pattern-context reason。
+> v12（2026-08-22，审阅驱动的 capture 合同修订）：v11 决策 (2) 的 `finishBuild` 统一会让 sema
+> 期已冻结的 lambda capture entry 类型（声明点精化类型）与重定型后的共享存储脱节，在 backend
+> `construct_lambda` 边界 fail-fast。修订为：同一 match 内的分歧名字组在 sema
+> `MATCH_PATTERN_RESOLUTION` 即预统一——整组保留 `Variant` 库存基线、不做顶层精化
+> （Godot match bind 本无运行时类型），capture entry / scope binding / `slotTypes()` / 存储
+> 天然一致；`finishBuild` 的 `unifyCollidingMatchBindSlotTypes` 只处理跨 match 同名分歧残余，
+> 且被重定型的 bind 若是某 lambda 的非 `Variant` capture 来源则 fail-fast（该 edge 场景
+> 暂不支持，诊断在 lowering 层给出而非穿透到 backend）。
 
 ---
 
 ## 文档状态
 
-- 状态：Step 1 已完成；Step 2 已完成；Step 3 已完成（首批四 route CFG/body lowering）；Step 4-5 待实施
+- 状态：Step 1-5 全部完成（2026-08-22）；`match` 六 route 毕业，本文档转为冻结合同
 - 更新时间：2026-08-22
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
@@ -817,7 +835,7 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
   fixture 锚定）、pattern 静态类型已知且兼容时省略 typeof 分支但**仍** `buildValue` 求值、
   静态不兼容时仍 `buildValue`（call/getter 计数 +1）且测试结果为常量 false——
   完全跳过求值的 fold-to-false 仅限 LITERAL / 常量子模式；
-- e2e：新增 `src/test/resources/unit_test/script/control_flow/match_*` 正向 fixture
+- e2e：新增 `src/test/test_suite/unit_test/script/control_flow/match_*` 正向 fixture
   （literal 命中 / wildcard 兜底 / 多 pattern OR / guard / bind 值使用 / 无命中 no-op），
   登记 `GdScriptUnitTestCompileRunnerTest.EXPECTED_SCRIPT_PATHS`；zig / Godot 可用时
   `GdScriptUnitTestCompileRunnerTest` 对应动态测试通过，环境缺失时按既有 Assumptions 跳过；
@@ -825,6 +843,13 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
   `FrontendCompileCheckAnalyzerTest` 全绿。
 
 ### Step 4：ARRAY / DICTIONARY 解构 route
+
+> 状态：已完成（2026-08-22）。`LOWERING_READY_ROUTES` 加入 `ARRAY` / `DICTIONARY`（六 route
+> 全就绪）；新增 `MatchContainerMaterializeItem` / `MatchLengthCheckItem` / `MatchHasKeyItem` /
+> `MatchElementFetchItem` 四个 `ValueOpItem` 与对应 body lowering processor；bind 槽位预分配、
+> 折叠豁免、同名 Variant 统一与 `requireObservableValueType` 落地（见 v11）；
+> `FrontendAnalysisInspectionTool` 的 DictEntry 父链修复；CFG/LIR/compile-gate/语义/inspection
+> 靶向测试与 `match_array_destructure` / `match_dict_destructure` e2e fixture 全绿。
 
 改动（§5.10）：路线 A 落地；route readiness 集合加入 `ARRAY` / `DICTIONARY`。
 文档同步（本步即做）：`frontend_rules.md` compile surface 措辞、
@@ -846,11 +871,23 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
 `doc/test_error/test_suite_engine_integration_known_limits.md` §1、`doc/benchmark.md`、
 `doc/test_suite.md` 更新，以及 §8 清单逐项核对关闭。
 
+> 状态：已完成（2026-08-22）。终态收口全部落地：`frontend_rules.md` MVP 支持约定转正 match 条目、
+> `test_suite_engine_integration_known_limits.md` §1 改写为「已转正」、`benchmark.md` 移除 match 限制措辞、
+> §8 清单逐项核对关闭（analyzer / lowering / container-literal / global-constant 各文档均已在 Step 2/3/4
+> 同步阶段回写，route B 未启用故无新增条目）。`test_suite.md` 无 match 限制文本；
+> 新 fixture 已按其配对规则登记进 `GdScriptUnitTestCompileRunnerTest.EXPECTED_SCRIPT_PATHS`。
+> 全量 `gradlew test` 3326 项中 3321 项绿，其余 5 项为已知 flake：backend 引擎集成测试
+> （`IndexStoreInsnGenEngineTest` / `LoadStorePropertyInsnGenEngineInheritanceTest`）在全量运行中间歇出现
+> Windows DLL 文件锁
+> `AccessDeniedException`（`construct_lambda_engine_debug_x86_64.dll` 被上一轮 Godot 进程占用；
+> 孤立重跑均绿；HEAD worktree 对照实验确认与本特性无逻辑关联），记为已知环境敏感点，不阻断毕业。
+
 验收：
 
 - 毕业三同时（`frontend_lowering_plan.md` §6）：lowering 产物稳定 + backend 可消费 +
   文档与正反测试同步，逐条核对；
-- 全量 `./gradlew clean build --no-daemon --info --console=plain` 绿；
+- 全量 `./gradlew clean build --no-daemon --info --console=plain` 绿
+  （已知环境例外：backend 引擎集成测试的 Windows DLL 文件锁 flake，见上方状态块）；
 - 本计划文档转为冻结合同（移除步骤进度，保留合同与边界）。
 
 ---
@@ -973,9 +1010,14 @@ match section body 内对外层循环的 `break` / `continue` 合法；无外层
 
 `match` 从 compile-only gate 移除全部 blocker、宣布毕业，必须同时满足：
 
-1. 首批四 route 的 lowering 已稳定产生产物（CFG region + LIR 序列经测试锁定）；
+1. 六 route 的 lowering 已稳定产生产物（CFG region + LIR 序列经测试锁定）；
 2. backend 已能消费该产物（e2e fixture 在 zig / Godot 环境编译运行通过）；
 3. 文档与正反测试全部同步（§7、§8 清单逐项关闭）。
 
-ARRAY / DICTIONARY route 毕业（Step 4）单独走同一判定；未毕业期间保持 route-not-ready
-fail-closed，不得以任何形式漏进 lowering。
+首批四 route 的毕业（Step 3）与 ARRAY / DICTIONARY route 的毕业（Step 4）均按此判定执行；
+未毕业期间未就绪 route 保持 route-not-ready fail-closed，不得以任何形式漏进 lowering。
+
+> 毕业判定关闭（2026-08-22）：(1) 六 route lowering 产物（CFG region + LIR 序列）经正反测试锁定 ✓；
+> (2) backend 消费经 `control_flow/match_bind_guard` / `match_literal_wildcard` / `match_array_destructure` /
+> `match_dict_destructure` e2e fixture 验证（编译期产物确定性测试 + 运行时 validate 配对）✓；
+> (3) 文档与正反测试全部同步，§7 / §8 清单逐项关闭 ✓。clean build 的 DLL 文件锁 flake 见 §6 Step 5 状态块。

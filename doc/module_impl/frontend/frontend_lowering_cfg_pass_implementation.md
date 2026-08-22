@@ -151,7 +151,7 @@ fully-terminated 的 `if` / `elif` / `else` 允许把 region `mergeId` 指向 `S
 - `FrontendForRegion`
 - `FrontendMatchRegion`
 
-`FrontendMatchRegion` 记录 `match` 的 header（subject 单次求值）、每 section 的 `testEntryId` / `bodyEntryId`，以及 `mergeId`（全终止时为 `TERMINAL_MERGE`，不得作为 `goto` 目标）。顶层 `var x` bind 走独立 `frontendMatchBindSlots` registry（key = `PatternBindingExpression`，slot id = 源码名，类型来自 `slotTypes()`）；`MatchBindItem` 挂在 section body 入口序列头部。LITERAL / EXPRESSION 测试用 `MatchEqualItem` / `GetVariantTypeItem` / `IntConstantItem` / `VariantIsNilItem` / `BoolConstantItem`，多 pattern OR 与 String/StringName 交叉一律用 `BranchNode` 短路，禁止 value-context `BinaryOp(OR)`。
+`FrontendMatchRegion` 记录 `match` 的 header（subject 单次求值）、每 section 的 `testEntryId` / `bodyEntryId`，以及 `mergeId`（全终止时为 `TERMINAL_MERGE`，不得作为 `goto` 目标）。所有 bind（顶层 `var x` 与解构嵌套 bind）走独立 `frontendMatchBindSlots` registry（key = `PatternBindingExpression`，slot id = 源码名，类型来自 `slotTypes()`），且在 section 建图前一次性预分配——与 Godot 在 pattern 编译前创建 bind local 一致，静态折叠的容器 pattern 也保留槽位供不可达 body 读取，只是不提交 `MatchBindItem`（跨表验证按 `foldedMatchBindDeclarations` 集合豁免）。同名 bind 的 exposed type 分歧（顶层精化类型 vs 嵌套恒 `Variant`）在 sema 的 `MATCH_PATTERN_RESOLUTION` 即预统一——同一 match 内分歧名字组整组保留 `Variant` 库存基线（Godot match bind 本无运行时类型）；跨 match 同名分歧只在 CFG `finishBuild` 统一为 `Variant`，被重定型的 bind 若是某 lambda 的非 `Variant` capture 来源则 fail-fast。bind 读取一律观察共享存储类型。顶层 `MatchBindItem` 挂在 section body 入口序列头部（guard 之前）；嵌套 bind 的 `MatchBindItem` 直接挂在取到元素的测试片段内，guard 同样可读。LITERAL / EXPRESSION 测试用 `MatchEqualItem` / `GetVariantTypeItem` / `IntConstantItem` / `VariantIsNilItem` / `BoolConstantItem`，多 pattern OR 与 String/StringName 交叉一律用 `BranchNode` 短路，禁止 value-context `BinaryOp(OR)`。ARRAY / DICTIONARY 解构按 route-A 分解为 `MatchContainerMaterializeItem`（typeof gate 后单次物化到静态容器槽）→ `MatchLengthCheckItem`（无 `..` 为 `==`，有 `..` 为 `>=`）→ 逐元素/entry 的 `MatchHasKeyItem`（仅字典）与 `MatchElementFetchItem` + 递归子测试；subject 静态族不兼容时整个容器 pattern 在分派处折叠到 miss 目标（无测试片段、不物化子表达式，子 pattern 表达式在运行时 typeof gate 失败时本就不会求值，折叠保持可观察行为）。
 
 `FrontendForRegion` 记录 `for-in` 循环的五个结构锚点与两个独立 iterator slot：`initEntryId`（即 `entryId()`，init 子图入口，物化 source operands 并运行 init operation 写入 hidden state slot）、`conditionEntryId`（should-continue 条件子图入口）、`bodyEntryId`（body 入口，运行 get operation 提交 source-facing iterator local 后再执行 body statements）、`updateEntryId`（运行 next operation 并跳回 condition，是 `continue` target）、`exitId`（`break` target）、`sourceIteratorSlotId` 与 `iteratorStateSlotId`。后两者是 slot reference，不是 frontend CFG node id，分别经由 source-slot registry 与 hidden-state registry 解析，且不共享 id/type/lifecycle。
 
@@ -564,6 +564,7 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 - `TypeTestExpression` (`is` / `is not`) with unified `is_instance_of` or folded bool lowering
 - callable-local slot type published contract
 - 已 record lambda 的外层构造（`LambdaConstructItem` → `construct_lambda`；C backend `CONSTRUCT_LAMBDA` 已落地）
+- `match` 全六 route（WILDCARD / BINDING / LITERAL / EXPRESSION / ARRAY / DICTIONARY；合同见 §3.2 与 `frontend_match_statement_plan.md`）
 
 plain assignment 的 compile-ready surface 明确包含 direct explicit-self property assignment：
 

@@ -34,14 +34,16 @@ public final class FrontendMatchSupport {
     private static final String WILDCARD_NAME = "_";
 
     /// Routes whose lowering is compile-ready. The set grows monotonically with the graduation
-    /// steps and must never lose an already-ready route: Step 3 admits WILDCARD / BINDING /
-    /// LITERAL / EXPRESSION; Step 4 will add ARRAY / DICTIONARY. Match routes carry no
-    /// operation descriptors, so no registry class exists.
+    /// steps and must never lose an already-ready route: Step 3 admitted WILDCARD / BINDING /
+    /// LITERAL / EXPRESSION; Step 4 added ARRAY / DICTIONARY, completing all six routes. Match
+    /// routes carry no operation descriptors, so no registry class exists.
     private static final Set<FrontendMatchPatternRoute> LOWERING_READY_ROUTES = Set.of(
             FrontendMatchPatternRoute.WILDCARD,
             FrontendMatchPatternRoute.BINDING,
             FrontendMatchPatternRoute.LITERAL,
-            FrontendMatchPatternRoute.EXPRESSION
+            FrontendMatchPatternRoute.EXPRESSION,
+            FrontendMatchPatternRoute.ARRAY,
+            FrontendMatchPatternRoute.DICTIONARY
     );
 
     private FrontendMatchSupport() {

@@ -1,12 +1,14 @@
 package gd.script.gdcc.frontend.lowering;
 
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
+import gd.script.gdcc.frontend.lowering.cfg.FrontendMatchBindSlot;
 import gd.script.gdcc.frontend.lowering.cfg.item.*;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.TypeTestItem;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
@@ -15,7 +17,9 @@ import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticS
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendSubscriptSemanticSupport;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.PropertyDef;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -26,7 +30,9 @@ import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -118,9 +124,27 @@ public final class FrontendBodyLoweringSupport {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull ClassRegistry classRegistry
     ) {
+        return collectCfgValueMaterializations(
+                graph,
+                analysisData,
+                classRegistry,
+                new FrontendAstSideTable<>()
+        );
+    }
+
+    /// `matchBindSlots` supplies the (possibly Variant-unified) declared type for alias reads of
+    /// match binds: same-name binds of distinct sections share one function variable, so a read
+    /// must observe the shared storage type rather than the per-declaration published type.
+    public static @NotNull SequencedMap<String, CfgValueMaterialization> collectCfgValueMaterializations(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendAstSideTable<FrontendMatchBindSlot> matchBindSlots
+    ) {
         Objects.requireNonNull(graph, "graph must not be null");
         Objects.requireNonNull(analysisData, "analysisData must not be null");
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
+        Objects.requireNonNull(matchBindSlots, "matchBindSlots must not be null");
         var materializations = new LinkedHashMap<String, CfgValueMaterialization>();
         for (var nodeId : graph.nodeIds()) {
             switch (graph.requireNode(nodeId)) {
@@ -131,7 +155,8 @@ public final class FrontendBodyLoweringSupport {
                                     materializations,
                                     valueOpItem,
                                     analysisData,
-                                    classRegistry
+                                    classRegistry,
+                                    matchBindSlots
                             );
                         }
                     }
@@ -149,8 +174,18 @@ public final class FrontendBodyLoweringSupport {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull ClassRegistry classRegistry
     ) {
+        return collectCfgValueSlotTypes(graph, analysisData, classRegistry, new FrontendAstSideTable<>());
+    }
+
+    /// Convenience projection for callers that only need the published runtime type.
+    public static @NotNull SequencedMap<String, GdType> collectCfgValueSlotTypes(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendAstSideTable<FrontendMatchBindSlot> matchBindSlots
+    ) {
         var valueTypes = new LinkedHashMap<String, GdType>();
-        for (var entry : collectCfgValueMaterializations(graph, analysisData, classRegistry).entrySet()) {
+        for (var entry : collectCfgValueMaterializations(graph, analysisData, classRegistry, matchBindSlots).entrySet()) {
             valueTypes.put(entry.getKey(), entry.getValue().type());
         }
         return valueTypes;
@@ -160,13 +195,20 @@ public final class FrontendBodyLoweringSupport {
             @NotNull SequencedMap<String, CfgValueMaterialization> materializations,
             @NotNull ValueOpItem item,
             @NotNull FrontendAnalysisData analysisData,
-            @NotNull ClassRegistry classRegistry
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendAstSideTable<FrontendMatchBindSlot> matchBindSlots
     ) {
         var resultValueId = item.resultValueIdOrNull();
         if (resultValueId == null) {
             return;
         }
-        var materialization = requireProducedValueMaterialization(item, analysisData, classRegistry, materializations);
+        var materialization = requireProducedValueMaterialization(
+                item,
+                analysisData,
+                classRegistry,
+                materializations,
+                matchBindSlots
+        );
         var previous = materializations.putIfAbsent(resultValueId, materialization);
         if (previous != null && !previous.equals(materialization)) {
             throw new IllegalStateException(
@@ -184,7 +226,8 @@ public final class FrontendBodyLoweringSupport {
             @NotNull ValueOpItem item,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull ClassRegistry classRegistry,
-            @NotNull SequencedMap<String, CfgValueMaterialization> resolvedMaterializations
+            @NotNull SequencedMap<String, CfgValueMaterialization> resolvedMaterializations,
+            @NotNull FrontendAstSideTable<FrontendMatchBindSlot> matchBindSlots
     ) {
         var materialization = switch (item) {
             case BoolConstantItem _ -> new CfgValueMaterialization(
@@ -203,18 +246,33 @@ public final class FrontendBodyLoweringSupport {
                     null
             );
             case MatchBindItem _ -> throw new IllegalStateException("MatchBindItem must not publish a result value id");
+            case MatchContainerMaterializeItem containerMaterializeItem -> new CfgValueMaterialization(
+                    requireMatchContainerMaterializeType(containerMaterializeItem, resolvedMaterializations),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
+            case MatchLengthCheckItem _, MatchHasKeyItem _ -> new CfgValueMaterialization(
+                    GdBoolType.BOOL,
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
+            case MatchElementFetchItem _ -> new CfgValueMaterialization(
+                    GdVariantType.VARIANT,
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
             case MergeValueItem mergeValueItem -> new CfgValueMaterialization(
                     requireMergeAnchorType(analysisData, mergeValueItem),
                     CfgValueMaterializationKind.MERGE_SLOT,
                     null
             );
             case DirectSlotAliasValueItem aliasValueItem -> new CfgValueMaterialization(
-                    requireOpaqueValueType(analysisData, aliasValueItem.expression()),
+                    requireObservableValueType(analysisData, aliasValueItem.expression(), matchBindSlots),
                     CfgValueMaterializationKind.SOURCE_SLOT_ALIAS,
                     aliasValueItem.expression()
             );
             case OpaqueExprValueItem opaqueExprValueItem -> new CfgValueMaterialization(
-                    requireOpaqueValueType(analysisData, opaqueExprValueItem.expression()),
+                    requireObservableValueType(analysisData, opaqueExprValueItem.expression(), matchBindSlots),
                     CfgValueMaterializationKind.TEMP_SLOT,
                     null
             );
@@ -334,6 +392,36 @@ public final class FrontendBodyLoweringSupport {
         );
     }
 
+    /// Result type of one destructuring container materialization.
+    ///
+    /// An operand that already carries a static container type of the pattern's own kind keeps it
+    /// (typed containers keep their element/value parameters); a Variant operand unpacks into the
+    /// untyped `Array` / `Dictionary` surface. Anything else is a protocol breach: the CFG builder
+    /// statically folds container patterns whose subject family can never match.
+    private static @NotNull GdType requireMatchContainerMaterializeType(
+            @NotNull MatchContainerMaterializeItem item,
+            @NotNull SequencedMap<String, CfgValueMaterialization> resolvedMaterializations
+    ) {
+        var sourceMaterialization = resolvedMaterializations.get(item.sourceValueId());
+        if (sourceMaterialization == null) {
+            throw new IllegalStateException(
+                    "MatchContainerMaterializeItem source '" + item.sourceValueId() + "' has no resolved materialization"
+            );
+        }
+        var sourceType = sourceMaterialization.type();
+        return switch (item.containerRoute()) {
+            case ARRAY -> sourceType instanceof GdArrayType
+                    ? sourceType
+                    : new GdArrayType(GdVariantType.VARIANT);
+            case DICTIONARY -> sourceType instanceof GdDictionaryType
+                    ? sourceType
+                    : new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
+            default -> throw new IllegalStateException(
+                    "MatchContainerMaterializeItem route must be ARRAY or DICTIONARY, but got " + item.containerRoute()
+            );
+        };
+    }
+
     private static @NotNull GdType requireExpressionType(
             @NotNull FrontendAnalysisData analysisData,
             @NotNull Expression expression
@@ -437,6 +525,28 @@ public final class FrontendBodyLoweringSupport {
         throw new IllegalStateException(
                 "Unsupported subscript anchor: " + subscriptLoadItem.anchor().getClass().getSimpleName()
         );
+    }
+
+    /// Resolves the observable type of one slot-backed value (alias reads and opaque identifier
+    /// leaves alike). A read of a match bind must observe the shared function variable's type from
+    /// the bind-slot registry: same-name binds of distinct sections are Variant-unified at CFG
+    /// build time, so the per-use published type may be narrower than the actual storage and
+    /// trusting it would emit boundary conversions against a Variant slot.
+    private static @NotNull GdType requireObservableValueType(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Expression expression,
+            @NotNull FrontendAstSideTable<FrontendMatchBindSlot> matchBindSlots
+    ) {
+        if (!matchBindSlots.isEmpty() && expression instanceof IdentifierExpression) {
+            var binding = analysisData.symbolBindings().get(expression);
+            if (binding != null && binding.declarationSite() instanceof PatternBindingExpression bindDeclaration) {
+                var bindSlot = matchBindSlots.get(bindDeclaration);
+                if (bindSlot != null) {
+                    return bindSlot.exposedType();
+                }
+            }
+        }
+        return requireOpaqueValueType(analysisData, expression);
     }
 
     /// Assignment-target prefixes may materialize identifier/self leaves through the opaque route

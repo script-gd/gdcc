@@ -117,7 +117,6 @@
 当前明确不纳入：
 
 - `for` 的 `OBJECT_CUSTOM`（Object `_iter_*`）；其余已注册 route 已闭环，见 `frontend_for_range_loop_implementation.md`
-- `match` 的 `ARRAY` / `DICTIONARY` 解构 route（首批四 route 已闭环，见 `frontend_match_statement_plan.md`）
 - `assert`
 
 建议实施内容：
@@ -220,7 +219,6 @@
 以下内容即使 body lowering 初步落地，也继续保持 post-MVP，不应混入已有 lowering pass 的局部放行：
 
 - `for` 的 `OBJECT_CUSTOM`（Object `_iter_*` 精确协议）仍属 post-MVP；其余已注册 route 已接入，见 `frontend_for_range_loop_implementation.md`
-- `match` 的 `ARRAY` / `DICTIONARY` 解构 route（首批四 route 已闭环，见 `frontend_match_statement_plan.md`）
 - 参数默认值语义本身
 - block-local `const`
 - signal coroutine use-site（`await signal`；`.emit` / `.connect` 已闭环，见 `frontend_signal_support.md`）

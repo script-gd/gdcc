@@ -8,12 +8,15 @@ import org.jetbrains.annotations.Nullable;
 import java.util.List;
 import java.util.Objects;
 
-/// Commits the match subject into one pattern-bind source slot before the section body runs.
+/// Commits one matched value into one pattern-bind source slot.
 ///
-/// The item is the match analogue of `ForLoopGetItem`: it lives at the section body-entry sequence
-/// head, consumes the already-evaluated subject temp, and publishes no ordinary result. Body
-/// lowering materializes the subject to `slotTypes()[PatternBindingExpression]` then `AssignInsn`
-/// into the predeclared bind slot. `LocalDeclarationItem` is not extended to carry this identity.
+/// The item is the match analogue of `ForLoopGetItem` and publishes no ordinary result. For a
+/// top-level `var x` it lives at the section body-entry sequence head and consumes the
+/// already-evaluated subject temp; for a nested destructuring bind it lives inside the pattern
+/// test fragment and consumes the freshly fetched element temp (committed before later element
+/// tests and before the guard, aligned with Godot's PT_BIND assignment). Body lowering
+/// materializes the operand to `slotTypes()[PatternBindingExpression]` then `AssignInsn` into the
+/// predeclared bind slot. `LocalDeclarationItem` is not extended to carry this identity.
 public record MatchBindItem(
         @NotNull PatternBindingExpression declaration,
         @NotNull String subjectValueId,

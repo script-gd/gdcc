@@ -925,7 +925,7 @@ class FrontendCompileCheckAnalyzerTest {
                         pass
                     const answer = [body_local]
                     match body_local:
-                        [1]:
+                        [1, var bound]:
                             [bound]
                             preload("res://icon.svg")
                             $Camera3D
@@ -939,14 +939,15 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
-        // ARRAY stays route-not-ready: one statement-root blocker, nested preload/$Node/as/is/assert
-        // stay off the compile surface.
-        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
-        assertEquals(
-                FrontendRange.fromAstRange(matchStatement.range()),
-                compileDiagnostics.getFirst().range()
-        );
-        assertTrue(compileDiagnostics.getFirst().message().contains("pattern route that is not lowering-ready"));
+        // ARRAY is compile-ready since Step 4: the match body joins the compile surface, so the
+        // nested preload / $Node / assert each report their own blocker and the match root stays clean.
+        assertEquals(3, compileDiagnostics.size(), compileDiagnostics::toString);
+        assertTrue(compileDiagnostics.stream().noneMatch(
+                diagnostic -> diagnostic.range().equals(FrontendRange.fromAstRange(matchStatement.range()))
+        ));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Preload expression")));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Get-node expression")));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("assert statement")));
         var unsupportedBindingDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
@@ -2330,13 +2331,10 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compiled = analyzeForCompile("compile_check_signal_skipped_surface.gd", source);
         // The recorded lambda body is released onto the compile surface, and its bare signal /
-        // self-method value reads are already compile-ready. ARRAY match stays route-not-ready,
-        // so the only compile blocker is the match statement root.
+        // self-method value reads are already compile-ready. The ARRAY match is compile-ready too,
+        // so its rescanned body adds no blocker either.
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
-        assertEquals(1, compileDiagnostics.size(), () -> compiled.diagnostics().asList().toString());
-        assertEquals(FrontendRange.fromAstRange(matchStatement.range()), compileDiagnostics.getFirst().range());
-        assertTrue(compileDiagnostics.getFirst().message().contains("pattern route that is not lowering-ready"));
+        assertEquals(0, compileDiagnostics.size(), () -> compiled.diagnostics().asList().toString());
     }
 
     @Test

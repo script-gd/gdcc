@@ -233,8 +233,7 @@ Bundled benchmark case families currently cover:
 Authoring constraints:
 
 - keep compiled benchmark scripts within the currently supported frontend and backend feature set
-- avoid unsupported constructs in compiled scripts such as `match`; `for` and recorded `lambda` are now compile-ready, but keep new cases on already-proven surfaces unless the benchmark is specifically exercising them
-- avoid array and dictionary literal patterns that compile mode still rejects
+- `for`, recorded `lambda`, and `match` (all six pattern routes, including ARRAY/DICTIONARY destructuring) are now compile-ready, but keep new cases on already-proven surfaces unless the benchmark is specifically exercising them
 - for stateful cases, reset reusable state in `prepare()` instead of relying on cross-sample carry-over
 - when `prepare()` rebuilds state, reset auxiliary counters and cached derived data there as well so
   `baseline()`, `benchmark()`, and `check()` all observe the same per-batch state

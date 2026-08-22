@@ -17,7 +17,11 @@ import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopShouldContinueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.GetVariantTypeItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.IntConstantItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MatchBindItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchContainerMaterializeItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchElementFetchItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MatchEqualItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchHasKeyItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MatchLengthCheckItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.VariantIsNilItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import gd.script.gdcc.frontend.lowering.cfg.item.LambdaConstructItem;
@@ -51,7 +55,6 @@ import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendLambdaCapturePlan;
-import gd.script.gdcc.frontend.sema.FrontendMatchBindingPlan;
 import gd.script.gdcc.frontend.sema.FrontendMatchPatternPlan;
 import gd.script.gdcc.frontend.sema.FrontendMatchPatternRoute;
 import gd.script.gdcc.frontend.sema.FrontendMatchPlan;
@@ -79,6 +82,7 @@ import dev.superice.gdparser.frontend.ast.CommentStatement;
 import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.ContinueStatement;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
+import dev.superice.gdparser.frontend.ast.DictEntry;
 import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.ElifClause;
 import dev.superice.gdparser.frontend.ast.Expression;
@@ -117,6 +121,8 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -136,7 +142,7 @@ import java.util.Set;
 /// - lexical-no-op `CommentStatement`, which stays compile-ready but publishes no CFG item
 /// - `if` / `elif` / `else`
 /// - `while`
-/// - `match` (WILDCARD / BINDING / LITERAL / EXPRESSION)
+/// - `match` (all six pattern routes, including ARRAY / DICTIONARY destructuring)
 /// - loop-local `break` / `continue`
 ///
 /// Short-circuit `and` / `or` now lower through explicit condition/value CFG paths:
@@ -155,6 +161,7 @@ public final class FrontendCfgGraphBuilder {
     private @Nullable FrontendAstSideTable<FrontendForSourceIteratorSlot> forSourceIteratorSlots;
     private @Nullable FrontendAstSideTable<FrontendForIteratorStateSlot> forIteratorStateSlots;
     private @Nullable FrontendAstSideTable<FrontendMatchBindSlot> matchBindSlots;
+    private @Nullable Set<PatternBindingExpression> foldedMatchBindDeclarations;
     private final @NotNull ArrayDeque<LoopFrame> loopStack = new ArrayDeque<>();
     private int nextSequenceIndex;
     private int nextBranchIndex;
@@ -603,8 +610,9 @@ public final class FrontendCfgGraphBuilder {
     /// Subject `buildValue` runs once in the header. Sections are a miss-chained `BranchNode`
     /// spine: a hit enters that section's bind/guard/body path, a miss continues to the next
     /// section, and the last miss plus every body exit join at `mergeId` (or `TERMINAL_MERGE`
-    /// when every reachable path terminates). ARRAY / DICTIONARY must not reach this method;
-    /// the compile gate keeps those matches off the CFG surface.
+    /// when every reachable path terminates). ARRAY / DICTIONARY destructuring lowers through the
+    /// route-A decomposition of plan §5.10: typeof gate, one container materialization, length
+    /// gate, then per-element/entry fetch with recursive sub-pattern tests.
     private void processMatchStatement(@NotNull BlockState state, @NotNull MatchStatement matchStatement) {
         var plan = requireMatchPlan(matchStatement);
         requireMatchRoutesReady(plan);
@@ -628,7 +636,6 @@ public final class FrontendCfgGraphBuilder {
             subjectTypeValueId = typeBuild.resultValueId();
         }
 
-        var bindSlots = new ArrayList<FrontendMatchBindSlot>();
         var sectionAnchors = new FrontendMatchSectionAnchors[plan.sections().size()];
         var nextMissId = mergeSequence.id();
         var anyBodyFallsThrough = false;
@@ -636,11 +643,8 @@ public final class FrontendCfgGraphBuilder {
             var sectionPlan = plan.sections().get(index);
             var bodyBuild = sectionBodies.get(index);
             anyBodyFallsThrough = anyBodyFallsThrough || bodyBuild.fallsThrough();
-            var sectionSlots = allocateMatchBindSlots(sectionPlan);
-            bindSlots.addAll(sectionSlots);
             var sectionBuild = buildMatchSection(
                     sectionPlan,
-                    sectionSlots,
                     subjectValueId,
                     subjectFamily,
                     subjectTypeValueId,
@@ -674,9 +678,6 @@ public final class FrontendCfgGraphBuilder {
                 matchStatement,
                 new FrontendMatchRegion(headerEntryId, List.of(sectionAnchors), mergeId)
         );
-        for (var bindSlot : bindSlots) {
-            requireMatchBindSlots().put(bindSlot.declaration(), bindSlot);
-        }
 
         if (fallsThrough) {
             state.setCurrentSequence(mergeSequence);
@@ -689,18 +690,31 @@ public final class FrontendCfgGraphBuilder {
 
     private @NotNull MatchSectionBuild buildMatchSection(
             @NotNull FrontendMatchSectionPlan sectionPlan,
-            @NotNull List<FrontendMatchBindSlot> bindSlots,
             @NotNull String subjectValueId,
             @Nullable GdExtensionTypeEnum subjectFamily,
             @Nullable String subjectTypeValueId,
             @NotNull String bodyStatementsEntryId,
             @NotNull String nextMissId
     ) {
+        // Every bind slot of the section is allocated up front, mirroring Godot creating bind
+        // locals before pattern compilation: a statically folded container pattern keeps its
+        // nested slots so the still-built but unreachable body can read them, while only the
+        // emitted test fragments commit the matching `MatchBindItem`s.
+        var topLevelSlots = new ArrayList<FrontendMatchBindSlot>();
+        for (var patternPlan : sectionPlan.patterns()) {
+            for (var binding : patternPlan.bindings()) {
+                var slot = allocateMatchBindSlot(sectionPlan.section(), binding.declaration());
+                if (binding.topLevel()) {
+                    topLevelSlots.add(slot);
+                }
+            }
+        }
+
         var hitTargetId = bodyStatementsEntryId;
         var bodyEntryId = bodyStatementsEntryId;
-        if (!bindSlots.isEmpty()) {
+        if (!topLevelSlots.isEmpty()) {
             var bindSequence = new OpenSequence(nextSequenceId());
-            for (var bindSlot : bindSlots) {
+            for (var bindSlot : topLevelSlots) {
                 bindSequence.items().add(new MatchBindItem(
                         bindSlot.declaration(),
                         subjectValueId,
@@ -748,31 +762,392 @@ public final class FrontendCfgGraphBuilder {
             @NotNull String falseTargetId
     ) {
         return switch (patternPlan.route()) {
+            // Top-level WILDCARD / BINDING need no test; the bind commits at the body entry.
             case WILDCARD, BINDING -> trueTargetId;
             case LITERAL, EXPRESSION -> buildMatchValuePatternTest(
-                    patternPlan,
+                    patternPlan.patternNode(),
+                    patternPlan.route(),
                     subjectValueId,
                     subjectFamily,
                     subjectTypeValueId,
                     trueTargetId,
                     falseTargetId
             );
-            case ARRAY, DICTIONARY -> throw new IllegalStateException(
-                    "match pattern route " + patternPlan.route() + " is not compile-ready"
+            case ARRAY -> {
+                // A subject whose static family can never be an Array folds to the miss target
+                // without a test fragment; the sub-patterns (including possible runtime
+                // expressions) would never evaluate behind the failed runtime typeof gate either,
+                // so the fold preserves observable behavior.
+                if (subjectFamily != null && subjectFamily != GdExtensionTypeEnum.ARRAY) {
+                    recordFoldedMatchBindDeclarations(patternPlan);
+                    yield falseTargetId;
+                }
+                yield buildMatchArrayPatternTest(
+                        (ArrayExpression) patternPlan.patternNode(),
+                        subjectValueId,
+                        subjectFamily,
+                        subjectTypeValueId,
+                        trueTargetId,
+                        falseTargetId
+                );
+            }
+            case DICTIONARY -> {
+                if (subjectFamily != null && subjectFamily != GdExtensionTypeEnum.DICTIONARY) {
+                    recordFoldedMatchBindDeclarations(patternPlan);
+                    yield falseTargetId;
+                }
+                yield buildMatchDictionaryPatternTest(
+                        (DictionaryExpression) patternPlan.patternNode(),
+                        subjectValueId,
+                        subjectFamily,
+                        subjectTypeValueId,
+                        trueTargetId,
+                        falseTargetId
+                );
+            }
+        };
+    }
+
+    /// Records the binds of a statically folded container pattern so the artifact validation
+    /// accepts their slots without a committed `MatchBindItem`.
+    private void recordFoldedMatchBindDeclarations(@NotNull FrontendMatchPatternPlan patternPlan) {
+        for (var binding : patternPlan.bindings()) {
+            requireFoldedMatchBindDeclarations().add(binding.declaration());
+        }
+    }
+
+    /// Recursive sub-pattern dispatch inside ARRAY / DICTIONARY destructuring.
+    ///
+    /// The tested value is always a freshly fetched Variant element temp, so no static family is
+    /// known and no shared type temp exists; value tests emit their own local `get_variant_type`
+    /// when they need one. A nested BINDING always matches and commits the element into its
+    /// pre-allocated bind slot right here in the test fragment, mirroring Godot's
+    /// `_parse_match_pattern` PT_BIND assignment under the accumulated short-circuit chain.
+    private @NotNull String buildNestedMatchPatternTest(
+            @NotNull Expression pattern,
+            @NotNull FrontendMatchPatternRoute route,
+            @NotNull String elementValueId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        return switch (route) {
+            case WILDCARD -> trueTargetId;
+            case BINDING -> {
+                var declaration = (PatternBindingExpression) pattern;
+                var bindSlot = requireMatchBindSlots().get(declaration);
+                if (bindSlot == null) {
+                    throw new IllegalStateException(
+                            "nested match bind '" + declaration.name() + "' at " + declaration.range()
+                                    + " has no pre-allocated bind slot"
+                    );
+                }
+                var bindSequence = new OpenSequence(nextSequenceId());
+                bindSequence.items().add(new MatchBindItem(declaration, elementValueId, bindSlot.bindSlotId()));
+                publishSequenceNode(bindSequence.id(), bindSequence.items(), trueTargetId);
+                yield bindSequence.id();
+            }
+            case LITERAL, EXPRESSION -> buildMatchValuePatternTest(
+                    pattern,
+                    route,
+                    elementValueId,
+                    null,
+                    null,
+                    trueTargetId,
+                    falseTargetId
+            );
+            case ARRAY -> buildMatchArrayPatternTest(
+                    (ArrayExpression) pattern,
+                    elementValueId,
+                    null,
+                    null,
+                    trueTargetId,
+                    falseTargetId
+            );
+            case DICTIONARY -> buildMatchDictionaryPatternTest(
+                    (DictionaryExpression) pattern,
+                    elementValueId,
+                    null,
+                    null,
+                    trueTargetId,
+                    falseTargetId
             );
         };
     }
 
-    private @NotNull String buildMatchValuePatternTest(
-            @NotNull FrontendMatchPatternPlan patternPlan,
+    /// Builds one ARRAY destructuring test chain:
+    /// `[typeof gate] -> materialize -> length gate -> per-element fetch + recursive sub-tests`.
+    ///
+    /// Every gate's miss edge lands on `falseTargetId`, so a failed length or element test falls
+    /// to the next section without running later element tests (short-circuit, aligned with Godot).
+    /// Statically incompatible subject families fold at the dispatch site instead of here.
+    private @NotNull String buildMatchArrayPatternTest(
+            @NotNull ArrayExpression pattern,
             @NotNull String subjectValueId,
             @Nullable GdExtensionTypeEnum subjectFamily,
             @Nullable String subjectTypeValueId,
             @NotNull String trueTargetId,
             @NotNull String falseTargetId
     ) {
-        var pattern = patternPlan.patternNode();
-        if (patternPlan.route() == FrontendMatchPatternRoute.LITERAL && isNullLiteral(pattern)) {
+        var containerValueId = nextValueId();
+        var elements = pattern.elements();
+        var nextId = trueTargetId;
+        for (var index = elements.size() - 1; index >= 0; index--) {
+            var element = elements.get(index);
+            var elementRoute = FrontendMatchSupport.classifyPatternRoute(element);
+            if (elementRoute == FrontendMatchPatternRoute.WILDCARD) {
+                // `_` matches anything, so it needs neither a fetch nor a test.
+                continue;
+            }
+            nextId = buildMatchArrayElementTest(
+                    element,
+                    elementRoute,
+                    index,
+                    containerValueId,
+                    nextId,
+                    falseTargetId
+            );
+        }
+        nextId = publishMatchLengthGate(
+                pattern,
+                containerValueId,
+                elements.size(),
+                pattern.openEnded(),
+                nextId,
+                falseTargetId
+        );
+        return publishMatchContainerMaterialize(
+                pattern,
+                subjectValueId,
+                FrontendMatchPatternRoute.ARRAY,
+                containerValueId,
+                subjectFamily,
+                subjectTypeValueId,
+                nextId,
+                falseTargetId
+        );
+    }
+
+    /// Builds one DICTIONARY destructuring test chain:
+    /// `[typeof gate] -> materialize -> length gate -> per-entry has(key) -> fetch + value test`.
+    ///
+    /// Entry keys are constants (type-check owns the Godot rule); a `_` value pattern degenerates
+    /// to the has-check alone and skips the fetch entirely.
+    private @NotNull String buildMatchDictionaryPatternTest(
+            @NotNull DictionaryExpression pattern,
+            @NotNull String subjectValueId,
+            @Nullable GdExtensionTypeEnum subjectFamily,
+            @Nullable String subjectTypeValueId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var containerValueId = nextValueId();
+        var entries = pattern.entries();
+        var nextId = trueTargetId;
+        for (var index = entries.size() - 1; index >= 0; index--) {
+            nextId = buildMatchDictionaryEntryTest(
+                    entries.get(index),
+                    containerValueId,
+                    nextId,
+                    falseTargetId
+            );
+        }
+        nextId = publishMatchLengthGate(
+                pattern,
+                containerValueId,
+                entries.size(),
+                pattern.openEnded(),
+                nextId,
+                falseTargetId
+        );
+        return publishMatchContainerMaterialize(
+                pattern,
+                subjectValueId,
+                FrontendMatchPatternRoute.DICTIONARY,
+                containerValueId,
+                subjectFamily,
+                subjectTypeValueId,
+                nextId,
+                falseTargetId
+        );
+    }
+
+    /// Publishes the typeof gate (only for a Variant / statically unknown subject) followed by the
+    /// single container materialization sequence that every later gate of this pattern consumes.
+    private @NotNull String publishMatchContainerMaterialize(
+            @NotNull Expression pattern,
+            @NotNull String sourceValueId,
+            @NotNull FrontendMatchPatternRoute containerRoute,
+            @NotNull String containerValueId,
+            @Nullable GdExtensionTypeEnum subjectFamily,
+            @Nullable String subjectTypeValueId,
+            @NotNull String nextId,
+            @NotNull String falseTargetId
+    ) {
+        var materializeSequence = new OpenSequence(nextSequenceId());
+        materializeSequence.items().add(new MatchContainerMaterializeItem(
+                pattern,
+                sourceValueId,
+                containerRoute,
+                containerValueId
+        ));
+        publishSequenceNode(materializeSequence.id(), materializeSequence.items(), nextId);
+        if (subjectFamily != null) {
+            return materializeSequence.id();
+        }
+        var expectedFamily = containerRoute == FrontendMatchPatternRoute.ARRAY
+                ? GdExtensionTypeEnum.ARRAY
+                : GdExtensionTypeEnum.DICTIONARY;
+        var gateCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        var typeId = requireSubjectTypeValueId(subjectTypeValueId, gateCursor, pattern, sourceValueId);
+        return publishConstantTypeGate(
+                typeId.cursor(),
+                pattern,
+                typeId.resultValueId(),
+                expectedFamily,
+                materializeSequence.id(),
+                falseTargetId
+        );
+    }
+
+    /// Publishes the length gate sequence plus its branch: `size() == count` for a closed pattern,
+    /// `size() >= count` for one ending with `..`.
+    private @NotNull String publishMatchLengthGate(
+            @NotNull Expression pattern,
+            @NotNull String containerValueId,
+            int expectedCount,
+            boolean openEnded,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var cursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        var resultValueId = nextValueId();
+        cursor.currentSequence().items().add(new MatchLengthCheckItem(
+                pattern,
+                containerValueId,
+                expectedCount,
+                openEnded,
+                resultValueId
+        ));
+        return publishConditionBranch(
+                cursor.entryId(),
+                cursor.currentSequence(),
+                pattern,
+                resultValueId,
+                trueTargetId,
+                falseTargetId
+        ).entryId();
+    }
+
+    /// Publishes one array element's fetch sequence (`variant_get_indexed` at lowering) chained
+    /// into the element's recursive sub-pattern test.
+    private @NotNull String buildMatchArrayElementTest(
+            @NotNull Expression element,
+            @NotNull FrontendMatchPatternRoute elementRoute,
+            int index,
+            @NotNull String containerValueId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var cursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        var indexBuild = emitIntConstant(cursor, element, index);
+        var fetch = emitMatchElementFetch(indexBuild.cursor(), element, containerValueId, indexBuild.resultValueId());
+        var subTestEntryId = buildNestedMatchPatternTest(
+                element,
+                elementRoute,
+                fetch.resultValueId(),
+                trueTargetId,
+                falseTargetId
+        );
+        publishSequenceNode(
+                fetch.cursor().currentSequence().id(),
+                fetch.cursor().currentSequence().items(),
+                subTestEntryId
+        );
+        return cursor.entryId();
+    }
+
+    /// Publishes one dictionary entry's `has(key)` gate, and behind its true edge the value fetch
+    /// plus the value pattern's recursive test. The key constant is materialized once in the gate
+    /// sequence and reused by the fetch.
+    private @NotNull String buildMatchDictionaryEntryTest(
+            @NotNull DictEntry entry,
+            @NotNull String containerValueId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        // The §5.6-4 key-constant rule is owned by type-check; a non-constant key reaching CFG
+        // means the analyzer pipeline broke, so fail fast instead of lowering a runtime key read.
+        if (!FrontendMatchSupport.isConstantPatternOperand(requireAnalysisData(), entry.key())) {
+            throw new IllegalStateException(
+                    "dictionary pattern key is not a published constant at " + entry.key().range()
+            );
+        }
+        var gateCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        var keyBuild = buildValue(gateCursor, entry.key(), null);
+        var hasBuild = emitMatchHasKey(keyBuild.cursor(), entry.key(), containerValueId, keyBuild.resultValueId());
+        var valuePattern = entry.value();
+        var valueRoute = FrontendMatchSupport.classifyPatternRoute(valuePattern);
+        var valueTestEntryId = trueTargetId;
+        if (valueRoute != FrontendMatchPatternRoute.WILDCARD) {
+            var fetchCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+            var fetch = emitMatchElementFetch(fetchCursor, valuePattern, containerValueId, keyBuild.resultValueId());
+            var subTestEntryId = buildNestedMatchPatternTest(
+                    valuePattern,
+                    valueRoute,
+                    fetch.resultValueId(),
+                    trueTargetId,
+                    falseTargetId
+            );
+            publishSequenceNode(
+                    fetch.cursor().currentSequence().id(),
+                    fetch.cursor().currentSequence().items(),
+                    subTestEntryId
+            );
+            valueTestEntryId = fetchCursor.entryId();
+        }
+        publishConditionBranch(
+                gateCursor.entryId(),
+                hasBuild.cursor().currentSequence(),
+                entry.key(),
+                hasBuild.resultValueId(),
+                valueTestEntryId,
+                falseTargetId
+        );
+        return gateCursor.entryId();
+    }
+
+    private @NotNull ValueBuild emitMatchHasKey(
+            @NotNull BuildCursor cursor,
+            @NotNull Node anchor,
+            @NotNull String dictionaryValueId,
+            @NotNull String keyValueId
+    ) {
+        var resultValueId = nextValueId();
+        cursor.currentSequence().items().add(new MatchHasKeyItem(anchor, dictionaryValueId, keyValueId, resultValueId));
+        return new ValueBuild(cursor, anchor, resultValueId, null, null);
+    }
+
+    private @NotNull ValueBuild emitMatchElementFetch(
+            @NotNull BuildCursor cursor,
+            @NotNull Node anchor,
+            @NotNull String containerValueId,
+            @NotNull String keyValueId
+    ) {
+        var resultValueId = nextValueId();
+        cursor.currentSequence().items().add(new MatchElementFetchItem(anchor, containerValueId, keyValueId, resultValueId));
+        return new ValueBuild(cursor, anchor, resultValueId, null, null);
+    }
+
+    private @NotNull String buildMatchValuePatternTest(
+            @NotNull Expression pattern,
+            @NotNull FrontendMatchPatternRoute route,
+            @NotNull String subjectValueId,
+            @Nullable GdExtensionTypeEnum subjectFamily,
+            @Nullable String subjectTypeValueId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        if (route == FrontendMatchPatternRoute.LITERAL && isNullLiteral(pattern)) {
             return buildNullLiteralPatternTest(
                     pattern,
                     subjectValueId,
@@ -781,7 +1156,7 @@ public final class FrontendCfgGraphBuilder {
                     falseTargetId
             );
         }
-        var constant = patternPlan.route() == FrontendMatchPatternRoute.LITERAL
+        var constant = route == FrontendMatchPatternRoute.LITERAL
                 || FrontendMatchSupport.isConstantPatternOperand(requireAnalysisData(), pattern);
         var patternType = FrontendMatchSupport.publishedTypeOrNull(requireAnalysisData(), pattern);
         var patternFamily = FrontendMatchSupport.typeFamilyOrNull(patternType);
@@ -930,6 +1305,10 @@ public final class FrontendCfgGraphBuilder {
         var patternTypeBuild = emitGetVariantType(workingCursor, pattern, patternValueBuild.resultValueId());
         workingCursor = patternTypeBuild.cursor();
         var equalEntryId = nextSequenceId();
+        // The gate wires its own branch targets (same-type -> equalEntryId, String/StringName
+        // crossover -> trueTargetId / falseTargetId); its returned entry id only follows the
+        // publish* chaining convention and is unneeded here because the continuation sequence is
+        // the already-known equalEntryId.
         publishRuntimeTypeGate(
                 workingCursor,
                 pattern,
@@ -1141,42 +1520,101 @@ public final class FrontendCfgGraphBuilder {
         );
     }
 
-    private @NotNull List<FrontendMatchBindSlot> allocateMatchBindSlots(
-            @NotNull FrontendMatchSectionPlan sectionPlan
-    ) {
-        var slots = new ArrayList<FrontendMatchBindSlot>();
-        for (var patternPlan : sectionPlan.patterns()) {
-            for (var binding : patternPlan.bindings()) {
-                if (!binding.topLevel()) {
-                    throw new IllegalStateException(
-                            "nested match bind is not compile-ready at " + binding.declaration().range()
-                    );
-                }
-                slots.add(allocateMatchBindSlot(sectionPlan.section(), binding));
-            }
-        }
-        return List.copyOf(slots);
-    }
-
+    /// Allocates the source-facing bind slot for one `var x` pattern binding.
+    ///
+    /// The exposed type comes from the `slotTypes()` side table published by
+    /// `MATCH_PATTERN_RESOLUTION`: refined subject type for top-level binds, always `Variant` for
+    /// nested destructuring binds.
     private @NotNull FrontendMatchBindSlot allocateMatchBindSlot(
             @NotNull MatchSection section,
-            @NotNull FrontendMatchBindingPlan binding
+            @NotNull PatternBindingExpression declaration
     ) {
-        var declaration = binding.declaration();
         var exposedType = requireAnalysisData().slotTypes().get(declaration);
         if (exposedType == null) {
             throw new IllegalStateException(
-                    "Missing published slot type for match bind '" + binding.name() + "' at "
+                    "Missing published slot type for match bind '" + declaration.name() + "' at "
                             + declaration.range()
             );
         }
         if (exposedType instanceof GdCompilerType compilerOnlyType) {
             throw new IllegalStateException(
-                    "match bind '" + binding.name() + "' must not use compiler-only type "
+                    "match bind '" + declaration.name() + "' must not use compiler-only type "
                             + compilerOnlyType.getTypeName()
             );
         }
-        return new FrontendMatchBindSlot(declaration, section, binding.name(), exposedType);
+        var slot = new FrontendMatchBindSlot(declaration, section, declaration.name(), exposedType);
+        requireMatchBindSlots().put(declaration, slot);
+        return slot;
+    }
+
+    /// Bind slots are keyed by source name, so same-name binds of distinct sections (each legal in
+    /// its own section scope) — or of different `match` statements in the same callable — share one
+    /// function variable; their lifetimes never overlap because only one section executes. When the
+    /// exposed types inside such a name group diverge (a top-level bind refined to the subject
+    /// static type vs a nested destructuring bind, which is always Variant), every slot of the
+    /// group is retyped to Variant so the registry, the declared variable, and every read/write
+    /// boundary agree on one storage type.
+    private void unifyCollidingMatchBindSlotTypes() {
+        var slots = requireMatchBindSlots();
+        var typesBySlotId = new LinkedHashMap<String, GdType>();
+        var divergentSlotIds = new LinkedHashSet<String>();
+        for (var slot : slots.values()) {
+            var previous = typesBySlotId.putIfAbsent(slot.bindSlotId(), slot.exposedType());
+            if (previous != null && !previous.equals(slot.exposedType())) {
+                divergentSlotIds.add(slot.bindSlotId());
+            }
+        }
+        if (divergentSlotIds.isEmpty()) {
+            return;
+        }
+        var retyped = new ArrayList<FrontendMatchBindSlot>();
+        for (var slot : slots.values()) {
+            if (!divergentSlotIds.contains(slot.bindSlotId())
+                    || slot.exposedType() instanceof GdVariantType) {
+                continue;
+            }
+            retyped.add(new FrontendMatchBindSlot(
+                    slot.declaration(),
+                    slot.section(),
+                    slot.bindSlotId(),
+                    GdVariantType.VARIANT
+            ));
+        }
+        requireNoTypedLambdaCaptureOnRetypedSlots(retyped);
+        for (var slot : retyped) {
+            slots.put(slot.declaration(), slot);
+        }
+    }
+
+    /// Same-match divergence is pre-unified at sema (the whole name group keeps the Variant
+    /// baseline, so capture entries freeze Variant too). Cross-match divergence surfaces only here,
+    /// after lambda plans froze their capture types — a lambda capturing one of these binds with a
+    /// non-Variant entry would collide with the retyped storage at the backend's
+    /// `construct_lambda` boundary, so fail fast at the layer that owns the decision.
+    private void requireNoTypedLambdaCaptureOnRetypedSlots(@NotNull List<FrontendMatchBindSlot> retyped) {
+        if (retyped.isEmpty()) {
+            return;
+        }
+        var retypedDeclarations = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (var slot : retyped) {
+            retypedDeclarations.add(slot.declaration());
+        }
+        for (var lambdaPlan : requireAnalysisData().lambdaPlans().values()) {
+            for (var capture : lambdaPlan.capturePlan().captures()) {
+                if (capture.type() instanceof GdVariantType) {
+                    continue;
+                }
+                if (capture.sourceDeclaration() != null
+                        && retypedDeclarations.contains(capture.sourceDeclaration())) {
+                    throw new IllegalStateException(
+                            "Lambda '" + lambdaPlan.syntheticName() + "' captures match bind '"
+                                    + capture.name() + "' with frozen type '" + capture.type().getTypeName()
+                                    + "', but same-name binds across match statements share Variant storage; "
+                                    + "capturing such a bind is not supported"
+                    );
+                }
+            }
+        }
     }
 
     private @NotNull FrontendMatchPlan requireMatchPlan(@NotNull MatchStatement matchStatement) {
@@ -1215,7 +1653,9 @@ public final class FrontendCfgGraphBuilder {
                     continue;
                 }
                 if (patternPlan.route() == FrontendMatchPatternRoute.LITERAL
-                        || patternPlan.route() == FrontendMatchPatternRoute.EXPRESSION) {
+                        || patternPlan.route() == FrontendMatchPatternRoute.EXPRESSION
+                        || patternPlan.route() == FrontendMatchPatternRoute.ARRAY
+                        || patternPlan.route() == FrontendMatchPatternRoute.DICTIONARY) {
                     return true;
                 }
             }
@@ -3442,6 +3882,13 @@ public final class FrontendCfgGraphBuilder {
         return matchBindSlots;
     }
 
+    private @NotNull Set<PatternBindingExpression> requireFoldedMatchBindDeclarations() {
+        if (foldedMatchBindDeclarations == null) {
+            throw new IllegalStateException("Frontend folded match bind declarations have not been initialized");
+        }
+        return foldedMatchBindDeclarations;
+    }
+
     private @NotNull LinkedHashMap<String, FrontendCfgGraph.NodeDef> requireNodes() {
         if (nodes == null) {
             throw new IllegalStateException("Frontend CFG nodes have not been initialized");
@@ -3969,40 +4416,51 @@ public final class FrontendCfgGraphBuilder {
         return copied;
     }
 
+    private static @NotNull Set<PatternBindingExpression> copyFoldedMatchBindDeclarations(
+            @NotNull Set<PatternBindingExpression> declarations
+    ) {
+        Set<PatternBindingExpression> copied = Collections.newSetFromMap(new IdentityHashMap<>());
+        copied.addAll(declarations);
+        return copied;
+    }
+
     /// Cross-table validation for the match build artifact.
     ///
     /// Bind slots are keyed by `PatternBindingExpression` and must not leak into the ordinary
     /// `LocalDeclarationItem` surface. Every published `FrontendMatchRegion` must have a matching
-    /// section-count, and every bind item must live at that section's body entry.
+    /// section-count. Top-level bind items live at the section body entry; nested destructuring
+    /// bind items live inside the pattern test fragment that fetches their element.
     private static void validateMatchArtifacts(
             @NotNull FrontendCfgGraph graph,
             @NotNull FrontendAstSideTable<FrontendCfgRegion> regions,
-            @NotNull FrontendAstSideTable<FrontendMatchBindSlot> bindSlots
+            @NotNull FrontendAstSideTable<FrontendMatchBindSlot> bindSlots,
+            @NotNull Set<PatternBindingExpression> foldedMatchBindDeclarations
     ) {
         var bindItems = collectMatchBindItems(graph);
         for (var entry : regions.entrySet()) {
-            if (!(entry.getKey() instanceof MatchStatement matchStatement)
-                    || !(entry.getValue() instanceof FrontendMatchRegion region)) {
+            if (!(entry.getKey() instanceof MatchStatement _) || !(entry.getValue() instanceof FrontendMatchRegion(
+                    var headerEntryId, var sections, var mergeId
+            ))) {
                 continue;
             }
-            if (region.sections().isEmpty()) {
+            if (sections.isEmpty()) {
                 throw new IllegalStateException("match region must publish at least one section");
             }
-            graph.requireNode(region.headerEntryId());
-            graph.requireNode(region.mergeId());
-            if (graph.requireNode(region.mergeId()) instanceof FrontendCfgGraph.StopNode stopNode
+            graph.requireNode(headerEntryId);
+            graph.requireNode(mergeId);
+            if (graph.requireNode(mergeId) instanceof FrontendCfgGraph.StopNode stopNode
                     && stopNode.kind() == FrontendCfgGraph.StopKind.TERMINAL_MERGE) {
                 for (var node : graph.nodes().values()) {
                     switch (node) {
                         case FrontendCfgGraph.SequenceNode(_, _, var nextId) -> {
-                            if (region.mergeId().equals(nextId)) {
+                            if (mergeId.equals(nextId)) {
                                 throw new IllegalStateException(
                                         "TERMINAL_MERGE must not be a sequence nextId target"
                                 );
                             }
                         }
                         case FrontendCfgGraph.BranchNode(_, _, _, var trueTargetId, var falseTargetId) -> {
-                            if (region.mergeId().equals(trueTargetId) || region.mergeId().equals(falseTargetId)) {
+                            if (mergeId.equals(trueTargetId) || mergeId.equals(falseTargetId)) {
                                 throw new IllegalStateException(
                                         "TERMINAL_MERGE must not be a branch target"
                                 );
@@ -4013,7 +4471,7 @@ public final class FrontendCfgGraphBuilder {
                     }
                 }
             }
-            for (var sectionAnchors : region.sections()) {
+            for (var sectionAnchors : sections) {
                 graph.requireNode(sectionAnchors.testEntryId());
                 graph.requireNode(sectionAnchors.bodyEntryId());
             }
@@ -4028,6 +4486,12 @@ public final class FrontendCfgGraphBuilder {
             }
             var bindItem = bindItems.get(declaration);
             if (bindItem == null) {
+                // A container pattern whose subject family can never match folds to the miss edge
+                // without a test fragment, so its nested binds keep their pre-allocated slots (the
+                // unreachable body still reads them) but commit no item.
+                if (foldedMatchBindDeclarations.contains(declaration)) {
+                    continue;
+                }
                 throw new IllegalStateException(
                         "Missing MatchBindItem for pattern bind '" + slot.bindSlotId() + "'"
                 );
@@ -4409,6 +4873,7 @@ public final class FrontendCfgGraphBuilder {
         forSourceIteratorSlots = new FrontendAstSideTable<>();
         forIteratorStateSlots = new FrontendAstSideTable<>();
         matchBindSlots = new FrontendAstSideTable<>();
+        foldedMatchBindDeclarations = Collections.newSetFromMap(new IdentityHashMap<>());
         loopStack.clear();
         nextSequenceIndex = 0;
         nextBranchIndex = 0;
@@ -4418,12 +4883,14 @@ public final class FrontendCfgGraphBuilder {
     }
 
     private @NotNull ExecutableBodyBuild finishBuild(@NotNull String entryId) {
+        unifyCollidingMatchBindSlotTypes();
         return new ExecutableBodyBuild(
                 new FrontendCfgGraph(entryId, orderNodes(entryId)),
                 copyRegions(requireRegions()),
                 copyForSourceIteratorSlots(requireForSourceIteratorSlots()),
                 copyForIteratorStateSlots(requireForIteratorStateSlots()),
-                copyMatchBindSlots(requireMatchBindSlots())
+                copyMatchBindSlots(requireMatchBindSlots()),
+                copyFoldedMatchBindDeclarations(requireFoldedMatchBindDeclarations())
         );
     }
 
@@ -4432,7 +4899,8 @@ public final class FrontendCfgGraphBuilder {
             @NotNull FrontendAstSideTable<FrontendCfgRegion> regions,
             @NotNull FrontendAstSideTable<FrontendForSourceIteratorSlot> forSourceIteratorSlots,
             @NotNull FrontendAstSideTable<FrontendForIteratorStateSlot> forIteratorStateSlots,
-            @NotNull FrontendAstSideTable<FrontendMatchBindSlot> matchBindSlots
+            @NotNull FrontendAstSideTable<FrontendMatchBindSlot> matchBindSlots,
+            @NotNull Set<PatternBindingExpression> foldedMatchBindDeclarations
     ) {
         public ExecutableBodyBuild {
             Objects.requireNonNull(graph, "graph must not be null");
@@ -4446,8 +4914,11 @@ public final class FrontendCfgGraphBuilder {
             matchBindSlots = copyMatchBindSlots(
                     Objects.requireNonNull(matchBindSlots, "matchBindSlots must not be null")
             );
+            foldedMatchBindDeclarations = copyFoldedMatchBindDeclarations(
+                    Objects.requireNonNull(foldedMatchBindDeclarations, "foldedMatchBindDeclarations must not be null")
+            );
             validateForLoopArtifacts(graph, regions, forSourceIteratorSlots, forIteratorStateSlots);
-            validateMatchArtifacts(graph, regions, matchBindSlots);
+            validateMatchArtifacts(graph, regions, matchBindSlots, foldedMatchBindDeclarations);
         }
     }
 

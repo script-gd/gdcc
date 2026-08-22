@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -603,7 +604,16 @@ public final class GodotGdextensionTestRunner {
                 if (path.equals(dir)) {
                     continue;
                 }
-                Files.deleteIfExists(path);
+                try {
+                    Files.deleteIfExists(path);
+                } catch (AccessDeniedException _) {
+                    try {
+                        Thread.sleep(1000);
+                        Files.deleteIfExists(path);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
             }
         }
     }

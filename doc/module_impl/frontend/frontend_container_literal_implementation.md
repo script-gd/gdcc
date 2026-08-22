@@ -234,7 +234,7 @@ Semantic 层负责直接可归约常量键的重复检查：
 - 不允许将其解释为尾逗号。
 - 不允许 lowering 忽略该字段继续构造普通容器。
 
-`match` pattern 是 `openEnded` 的唯一合法消费上下文：ARRAY / DICTIONARY pattern 由 pattern-context 分派递归处理，不发布 `FrontendContainerLiteralPlan`。详见 `frontend_match_statement_plan.md`。
+`match` pattern 是 `openEnded` 的唯一合法消费上下文：ARRAY / DICTIONARY pattern 由 pattern-context 分派递归处理，不发布 `FrontendContainerLiteralPlan`；其解构已落地为 route-A 门闩链（typeof gate → 容器物化 → 长度门 → 逐元素/entry fetch 与递归子测试），`..` 不计入长度要求（无 `..` 为 `==`，有 `..` 为 `>=`）。详见 `frontend_match_statement_plan.md`。
 
 ## 3. FrontendContainerLiteralPlan 与 expected-type 解析
 

@@ -11,24 +11,24 @@
 
 在设计这些正向样例时，确认了多条当前仍然成立、且会直接影响测试写法的边界，以及少量已经修复、但需要从旧测试写法中清理掉的历史回归。
 
-## 1. `match` 仍不属于 frontend body semantic MVP；`for` / `lambda` 已转正
+## 1. 已转正：`match` 已随 frontend match statement Step 4 毕业；`for` / `lambda` 已转正
 
 事实来源：
 
 - `doc/module_impl/frontend/frontend_rules.md`
   - `for` 已进入 frontend shared body semantic 支持面（route-aware compile gate）
   - `lambda` 已进入 frontend shared body semantic 支持面（已记录 lambda 放行；property initializer / parameter default 中的未记录 lambda 仍 fail-closed）
-  - `match` 仍按结构性 deferred / unsupported boundary fail-closed
+  - `match` 已进入 frontend shared body semantic 支持面：`WILDCARD` / `BINDING` / `LITERAL` / `EXPRESSION` / `ARRAY` / `DICTIONARY` 六 route 全部进入 CFG/body lowering（合同见 `frontend_match_statement_plan.md`）
 
 对 test suite 的直接影响：
 
-- recorded lambda 正向样例放在 `lambda/`；未记录 lambda / lambda 内 `match` 仍不进 suite
-- 历史算法样例（BFS / DFS 等）仍可继续用 `while` / 显式 index；新样例可以使用已转正的 `for`
+- recorded lambda 正向样例放在 `lambda/`；未记录 lambda 仍不进 suite；lambda 内 `match` 六 route 已全部放行
+- `match` 正向样例放在 `control_flow/`：`match_bind_guard` / `match_literal_wildcard` / `match_array_destructure` / `match_dict_destructure` 已登记
+- 历史算法样例（BFS / DFS 等）仍可继续用 `while` / 显式 index；新样例可以使用已转正的 `for` 与 `match`
 
 当前处理结论：
 
-- 这是 frontend 已知支持面边界，不是本轮新增测试暴露出的新回归
-- 因此本轮不把这些 case 写成 failing resource test，而是将正向样例约束在当前正式支持面内
+- 该支持面边界已关闭；剩余约束只剩未记录 lambda 与其它既有边界
 
 ## 3. 已修复：`Array` / `Dictionary` literal 已 compile-ready
 

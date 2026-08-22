@@ -109,7 +109,8 @@ public final class FrontendBodyLoweringSession {
         this.valueMaterializations = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
                 graph,
                 analysisData,
-                this.classRegistry
+                this.classRegistry,
+                functionContext.matchBindSlots()
         );
         this.cfgNodeProcessors = FrontendCfgNodeInsnLoweringProcessors.createRegistry();
         this.sequenceItemProcessors = FrontendSequenceItemInsnLoweringProcessors.createRegistry();
@@ -1403,6 +1404,11 @@ public final class FrontendBodyLoweringSession {
     }
 
     /// Predeclares source-facing match bind locals before any block is materialized.
+    ///
+    /// Bind slots are keyed by source name, so same-name binds of distinct sections (each legal in
+    /// its own section scope) share one function variable. The CFG builder has already
+    /// Variant-unified the exposed types of every divergent name group, so `ensureVariable`'s
+    /// consistency check doubles as the fail-fast guard for that contract.
     private void declareMatchBindSlots() {
         for (var bindSlot : functionContext.matchBindSlots().values()) {
             ensureVariable(bindSlot.bindSlotId(), bindSlot.exposedType());
