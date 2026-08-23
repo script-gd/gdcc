@@ -3,8 +3,9 @@
 This document is the current fact source for the C backend runtime library shipped under
 `src/main/c/codegen/include_451`. It replaces the historical `gdextension-lite` naming note:
 GDCC no longer vendors or compiles `gdextension-lite`; generated projects compile the current
-module `entry.c` plus `godot/godot_binding.c`, and include the `godot/**` and `gdcc/**` helper
-trees extracted by `CProjectBuilder`.
+module `entry.c` plus the runtime `.c` translation units `godot/godot_binding.c`,
+`gdcc/minicoro.c` and `gdcc/gdcc_coroutine.c`, and include the `godot/**` and `gdcc/**`
+helper trees extracted by `CProjectBuilder`.
 
 ## Runtime Layout
 
@@ -34,8 +35,9 @@ use public `godot_*` wrapper names, but the implementation is owned by GDCC.
 - `godot_fixed_binding.h` / `godot_fixed_binding.c`: generated fixed wrappers that GDCC needs
   even though they are not emitted by the generic built-in or utility generators.
 - `godot_binding.h` / `godot_binding.c`: the public runtime aggregation pair. The header includes
-  all generated Godot binding headers; the source includes the corresponding generated `.c` files
-  and is the single runtime `.c` file added to native compiler inputs.
+  all generated Godot binding headers; the source includes the corresponding generated `.c` files.
+  It is the only `godot/**` file added to native compiler inputs; the `gdcc/**` runtime `.c`
+  files (`minicoro.c`, `gdcc_coroutine.c`) are added alongside it (see §Coroutine Runtime).
 
 ### `gdcc/**`
 
@@ -116,9 +118,192 @@ extend the runtime-provided `godot_*` surface.
     - Do **not** use `godot_object_cast_to`, `gdcc_check_variant_type_object`, or plain
       `_fat_ptr_from_variant` as the class-check/cast mechanism.
   - GDScript `as` / LIR `builtin_cast` does **not** add a dedicated runtime helper: generators pack
-    the source once, call `godot_variant_construct` with the base Variant enum (parameterized
+  the source once, call `godot_variant_construct` with the base Variant enum (parameterized
     `Array[T]` / `Dictionary[K, V]` use ARRAY/DICTIONARY only), check `GDExtensionCallError`, then
     exact-unpack. Construct failure prints via `GDCC_PRINT_RUNTIME_ERROR` and default-returns.
+- `minicoro.h` / `minicoro.c`: vendored stackful coroutine library (upstream
+  `edubart/minicoro`, dual Public Domain / MIT No Attribution license; license header comment
+  is preserved in both files). See §Coroutine Runtime for the pinned version and locked
+  configuration.
+- `gdcc_coroutine.h` / `gdcc_coroutine.c`: GDCC-owned coroutine runtime helpers (`gdcc_coro_*`).
+  See §Coroutine Runtime for the full contract. Unlike the other `gdcc/**` helpers these two
+  files are not header-only: `gdcc_coroutine.c` is a real translation unit, added to native
+  compiler inputs together with `minicoro.c`.
+
+## Coroutine Runtime (minicoro + gdcc_coroutine)
+
+This section freezes the runtime contract for `await` / stackful coroutines. The frontend/LIR
+surface is documented in `gdcc_low_ir.md` §Coroutine Instructions; ownership clauses live in
+`gdcc_ownership_lifecycle_spec.md` §3.10; the per-coroutine-function hidden state class naming
+contract lives in `module_impl/frontend/gdcc_facing_class_name_contract.md` §1.3.
+
+### Vendored minicoro
+
+- Source: `edubart/minicoro`, single-file library, vendored as `gdcc/minicoro.h` +
+  `gdcc/minicoro.c`. The `.c` file only defines the locked configuration macros and
+  `MINICORO_IMPL`, then includes `minicoro.h`.
+- Pinned upstream commit: `02dad0f8b7cbb12fe6e216ae7a76db15ca55cd7b` (`main`, 2026-08).
+  Do not upgrade without re-verifying the backend/allocator semantics below.
+- License: dual Public Domain (Unlicense) / MIT No Attribution; the upstream license header
+  comment is kept verbatim in the vendored files.
+- Locked compile-time configuration (defined in `minicoro.c` before the include):
+  - `MCO_USE_ASM`: forces the assembly context-switch backend on every supported target.
+    The fiber backend (`MCO_USE_FIBERS`) is forbidden: it converts the calling thread to a
+    Windows fiber, which fails when Godot's main thread already is a fiber.
+  - `MCO_USE_VMEM_ALLOCATOR`: virtual-memory backed stack allocator.
+- Vmem commit semantics, verified against the pinned source:
+  - POSIX: `mmap(MAP_PRIVATE | MAP_ANONYMOUS)` reserves address space only; physical pages
+    materialize on demand. Reservation != commit.
+  - Windows: `VirtualAlloc(MEM_RESERVE | MEM_COMMIT)` commits the full reservation up front
+    (commit charge), while physical RAM pages are still demand-zero on first touch. The
+    "reservation != commit" property therefore holds for physical RAM but **not** for commit
+    charge on Windows.
+- Real minicoro API surface used by GDCC (verified against the pinned header):
+  - `mco_desc mco_desc_init(void (*func)(mco_coro *), size_t stack_size)`; `desc.user_data`
+    carries the coroutine frame (state object wrapper) pointer.
+  - `mco_result mco_create(mco_coro **out, mco_desc *desc)`: allocates + initializes only;
+    the coroutine starts at `MCO_SUSPENDED`. Failure (`!= MCO_SUCCESS`, e.g.
+    `MCO_OUT_OF_MEMORY`) is treated as OOM: the caller reports a runtime error and returns
+    the declared-type default value.
+  - `mco_result mco_resume(mco_coro *co)` / `mco_result mco_yield(mco_coro *co)`.
+  - `mco_state mco_status(mco_coro *co)`: `MCO_SUSPENDED` (not started or yielded),
+    `MCO_RUNNING`, `MCO_NORMAL` (active but resumed another coroutine), `MCO_DEAD`
+    (finished). Only `MCO_SUSPENDED` may be resumed; `MCO_DEAD` ends the lifecycle.
+  - `mco_result mco_destroy(mco_coro *co)`: only valid on `MCO_DEAD`/`MCO_SUSPENDED`
+    coroutines; GDCC only destroys `MCO_DEAD` ones.
+  - `void *mco_get_user_data(mco_coro *co)`: recovers the frame pointer inside the body.
+- Coroutine stack size is centralized as one constant, default 1 MiB reservation (engine
+  calls such as Variant/ClassDB/regex/JSON execute on the coroutine stack, so stack depth
+  is not statically bounded).
+
+### `gdcc_coroutine.h` / `gdcc_coroutine.c`
+
+All public names keep the `gdcc_*` namespace, so these helpers are outside the `godot_*`
+usage-buffer registration surface (see §Registering New Runtime-Provided Functions). Generic
+logic lives here; everything per-coroutine-function (state class wrapper, registration,
+typed-slot callbacks) is generated by the backend templates.
+
+- `gdcc_coro_state_header`: the common frame header embedded in every hidden state class
+  wrapper (the wrapper's first field is `_object`; the header follows it, never at offset 0):
+  - `magic` constant (`GDCC_CORO_STATE_MAGIC`) for `identify` validation.
+  - `desc`: pointer to the per-class `gdcc_coro_state_desc`.
+  - `obj`: `GDExtensionObjectPtr` back-pointer to the state object, filled at creation.
+  - `co`: `mco_coro *` (NULL until the entry thunk creates the coroutine).
+  - `done` / `cancel` flags.
+  - `result_cache`: `godot_Variant`, always in constructed state from `POSTINITIALIZE`
+    (zero-initialized storage is a nil Variant); `free_instance` destroys it
+    unconditionally. Because the storage is always constructed, every write into it must
+    follow the destroy-then-copy discipline: `godot_variant_destroy(&result_cache)` first,
+    then `godot_variant_new_copy(&result_cache, ...)`; never `new_copy` into constructed
+    storage, never `memset` over a live Variant.
+  - `waiters`: head of the waiter list (`gdcc_coro_waiter`).
+- `gdcc_coro_state_desc`: per-class descriptor carrying generated callbacks, so the generic
+  TU never touches typed frame fields:
+  - `pack_result(state)`: finalize step 1; packs the typed return slot into `result_cache`
+    (destroy-then-copy discipline above) and zeroes the slot. Void coroutines pack nil.
+  - `destroy_ret_slot(state)`: destroys the typed return slot content in place when the
+    cancel path left a default value in it; must tolerate a never-written slot.
+  - `emit_completed(state)`: finalize step 4; emits the `completed(result_cache)` signal on
+    `state->obj`.
+- `gdcc_coro_state_header_init(state, desc, obj)`: common-header initialization for the
+  generated `POSTINITIALIZE` path — zeroes the header (zeroed Variant storage is a
+  constructed nil Variant), then sets `magic` / `desc` / `obj`.
+- `gdcc_coro_state_free(state)`: the generic half of the state class `free_instance` —
+  reports a runtime error if the coroutine is not `MCO_DEAD` (contract violation; cancel at
+  `PREDELETE` guarantees it), `mco_destroy`, destroys the always-constructed
+  `result_cache`, and revokes `magic`. Typed parameter fields and wrapper freeing stay
+  generated-code responsibilities.
+- Dedicated instance-binding token: `gdcc_coro_binding_token()` returns the address of a
+  `gdcc_coroutine.c`-internal global. State objects carry two instance bindings: the standard
+  `class_library` one (like every GDCC class) plus this token bound to the header pointer.
+  Binding callbacks are all `NULL` (no lazy creation on get). The token is distinct per
+  loaded gdcc module, so a foreign module's state objects fall through to the
+  external-object duck-type path.
+- `gdcc_coro_state_identify(GDExtensionObjectPtr obj)`: O(1) pure-C check —
+  `godot_object_get_instance_binding(obj, gdcc_coro_binding_token(), NULL)` plus magic
+  validation; returns the header pointer or `NULL` for any non-state object.
+- `gdcc_coro_await_signal(godot_Signal *sig, godot_Variant *out, mco_coro *co,
+  gdcc_coro_state_header *self)`: connects `sig` one-shot (`CONNECT_ONE_SHOT == 4`) with a
+  custom Callable whose userdata carries `{co, out}` and holds a strong reference to the
+  awaiter's own state object (the final keep-alive edge of a suspended coroutine; released
+  in the Callable `free_func`), then `mco_yield(co)`. The Callable callback writes `*out`
+  per the resume-value rule (0 args → nil, 1 arg → the argument, N args → `Array` of all
+  arguments; callback arguments are only ever copied, never consumed) and then
+  `mco_resume(co)`. Connect failure is a deliberate deviation from Godot's
+  hang-forever-after-failed-connect: report a runtime error, fill `out` with nil, and
+  return **without** suspending.
+- `gdcc_coro_await_state(gdcc_coro_state_header *callee, godot_Variant *out, mco_coro *co,
+  gdcc_coro_state_header *self)`: static coroutine-call path. If `callee->done`, copies
+  `result_cache` into `out` and returns immediately (connect-after-done fast path, no
+  suspend). Otherwise pushes `{co, out, strong ref to self->obj}` onto `callee->waiters`
+  (callee → awaiter keep-alive edge) and yields; on resume, `out` has already been filled
+  by `gdcc_coro_finalize`. **Consume contract**: the call always consumes the call site's
+  OWNED reference to the callee state object — on the registered path it is released
+  *before* `mco_yield`, so the awaiter never holds the callee across a suspension and the
+  keep-alive graph stays a DAG (callee → awaiter only); the callee stays alive through its
+  own wait edges. The caller must not touch its callee reference after this call.
+- `gdcc_coro_await_dynamic(godot_Variant *operand, godot_Variant *out, mco_coro *co,
+  gdcc_coro_state_header *self)`: three-layer runtime dispatch:
+  1. `TYPE_SIGNAL` → extract the Signal and delegate to `gdcc_coro_await_signal`.
+  2. `TYPE_OBJECT` → liveness first (null payload passes through; freed object reports the
+     runtime error `"Trying to await on a freed object."`, fills nil, and returns without
+     suspending — aligned with Godot), then `gdcc_coro_state_identify`:
+     - hit (own state object) → shared waiter-channel core (`gdcc_coro_register_waiter`):
+       `done` fast path or direct C-level waiter registration (single-threaded
+       check-then-register is atomic, no connect-after-done window). On the registered
+       (suspend) path the operand's callee reference is released and `operand` is reset to
+       nil **before** yielding — the awaiter frame must not hold the callee across a
+       suspension (same no-cycle rule as `gdcc_coro_await_state`). On the done fast path
+       `operand` is left untouched;
+     - miss (external object) → build `Signal(obj, "completed")` and connect one-shot;
+       the connect error code **is** the existence check: objects without a `completed`
+       signal pass through (`out` = copy of the operand, no error, no suspend), while a
+       pre-connect allocation failure (`godot_ERR_OUT_OF_MEMORY`) reports a runtime error,
+       fills nil, and never passes through. This duck-type is deliberately wider than
+       Godot's strict `GDScriptFunctionState` class check; for interpreted function
+       states the behavior matches Godot exactly, including connect-after-done hanging.
+       Throughout the external-object suspension the awaiter frame keeps the `operand`
+       Variant retained (Signal connections do not keep the emitter alive —
+       Godot-aligned keep-alive direction).
+  3. Any other type (including nil) → pass through: `out` = copy of the operand, no suspend.
+- `gdcc_coro_finalize(gdcc_coro_state_header *state)`: the single completion exit, called
+  only from `mco_resume` return points that observed `MCO_DEAD` (entry thunk, signal
+  callback, waiter cascade). Never entered from the cancel path. Invariant order:
+  1. `desc->pack_result(state)` — typed return slot → `result_cache`, slot zeroed.
+  2. `done = true` — `done` and `result_cache` must be visible before any resume/emit.
+  3. Pop waiters one by one: `godot_variant_new_copy` one private copy into each waiter's
+     `out`, then `mco_resume` the waiter, then cascade `gdcc_coro_finalize` when the resumed
+     waiter returned `MCO_DEAD` (every completion-path resume return point applies this
+     `MCO_DEAD` check: entry thunk, signal callback, waiter cascade), and only then release
+     the waiter reference edge (releasing before the resume could drop the last keep-alive
+     edge mid-flight).
+  4. `desc->emit_completed(state)` last, for external listeners.
+  Finalize is re-entrant (waiter resumes may cascade nested finalizes); the early `done`
+  publication makes nested entry on the same state a no-op.
+- `gdcc_coro_cancel(gdcc_coro_state_header *state)`: the abandonment path, mutually
+  exclusive with finalize. Hooked from the state class `NOTIFICATION_PREDELETE` (never from
+  `free_instance`; the state class destructor must not touch frame fields). If `done` or
+  already cancelled, returns immediately. Otherwise: set `cancel = true`; when
+  `mco_status(co) == MCO_SUSPENDED`, `mco_resume(co)` — the body checks the flag right
+  after every await resume point and jumps straight to `__finally__` (the default
+  `_return_val` from `__prepare__` is already in place), cleans up stack-owned values, and
+  returns `MCO_DEAD`. Cancel must not finalize: no `done`, no pack, no emit, no waiter
+  resume — the waiter list is only popped to release awaiter reference edges, so abandoned
+  awaiters stay suspended forever (aligned with Godot `cancel_pending_functions`). A default
+  value the cancel path wrote into the typed return slot is destroyed in place through
+  `desc->destroy_ret_slot` and never reaches `result_cache`. `co == NULL` (state object
+  died before `mco_create`, e.g. OOM in the thunk) is tolerated: no resume, no cleanup of
+  never-initialized frame content.
+- `free_instance` of a state class asserts the coroutine is `MCO_DEAD` (via
+  `gdcc_coro_state_free`), then destroys the typed parameter fields and frees the wrapper.
+
+### Compile wiring
+
+`CProjectBuilder.buildProject(...)` appends `<includeRoot>/gdcc/minicoro.c` and
+`<includeRoot>/gdcc/gdcc_coroutine.c` to the native compiler inputs next to
+`<includeRoot>/godot/godot_binding.c`. The `godot_binding.c` aggregation structure is
+unchanged. Resource extraction already covers the whole `gdcc/**` tree, so the new files
+need no extra extraction rules.
 
 ## Binding Generator Overview
 

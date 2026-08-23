@@ -61,6 +61,21 @@ inner class canonical spelling 已冻结为：
 
 只要这三条同时成立，任何带 `__sub__` 的 gdcc class name 都可以被稳定识别为 canonical inner spelling，而不是合法源码类名。
 
+### 1.3 `_gdcc_coro_state_` 是 compiler-owned class 级保留前缀
+
+协程隐藏状态类（见 `frontend_await_minicoro_plan.md` §3.2）的 canonical name 派生公式冻结为：
+
+- `_gdcc_coro_state_<canonicalClass>__coro__<func>`
+
+其中 `<canonicalClass>` 是宿主类已经派生完成的 canonical name（宿主为 inner class 时自然携带 `__sub__` 拼接），`<func>` 是 LIR 函数名。分隔符 `__coro__` 是 gdcc 保留序列：只要 canonicalClass 一侧不含 `__coro__`，第一个 `__coro__` 出现位置即分隔点，公式对 (class, func) 单射（单下划线拼接会碰撞：`Foo`+`bar_baz` 与 `Foo_bar`+`baz`）。
+
+冻结约束：
+
+1. `_gdcc_coro_state_` 是 **class 级**保留前缀（既有 `RESERVED_PREFIXES` 只覆盖 member 级）；用户声明的 top-level / inner class `sourceName` 一旦以该前缀开头，skeleton 必须发 `sema.class_skeleton` 并跳过该 subtree，与 `__sub__` 违规同策略（§2.1）。
+2. 用户声明的 top-level / inner class `sourceName` 与 `topLevelCanonicalNameMap` 的 key / value 均不得包含 `__coro__`（与 `__sub__` 相同的输入边界，§1.2 / §2.1）；函数名不受此限——分隔点由 class 侧的不含性唯一确定。
+3. 隐藏状态类只有 canonical name：无 `sourceName`、不可被 source-facing `extends` 引用、不进入 source-facing registry，也不进入 `module.classDefs` 的用户类注册循环；由 backend 按 `coroutine == true` 函数集合单独生成。
+4. 状态类 identity 继续服从 §2.3 downstream canonical-only 合同；C 标识符表面经既有 `cIdentifier()` 清洗，不新增清洗规则（§2.4）。
+
 ---
 
 ## 2. 冻结合同
@@ -84,6 +99,8 @@ inner class canonical spelling 已冻结为：
   - 在 public API boundary fail-fast
   - 不允许把坏 canonical 延后泄漏到 registry / backend
 
+对 compiler-owned class 级保留前缀 `_gdcc_coro_state_` 与保留序列 `__coro__`（§1.3）的输入边界同样冻结：用户源码类名命中该前缀或包含该序列时，按上面「用户源码类名违规」的同一条路径处理；`topLevelCanonicalNameMap` 包含该序列时按上面 mapping 违规的同一条路径处理。
+
 ### 2.2 source-facing `extends` 协议
 
 header `extends` 继续是 frontend 自己的 source-facing 绑定协议，而不是 canonical text 输入口。
@@ -106,6 +123,7 @@ header `extends` 继续是 frontend 自己的 source-facing 绑定协议，而�
 
 下游 steady-state 继续只消费 canonical identity，不再保留 source-facing class spelling：
 
+- 协程隐藏状态类（`_gdcc_coro_state_` 前缀，§1.3）从创建起就只有 canonical identity，是本合同的天然实例
 - frontend relation / skeleton
   - `FrontendSourceClassRelation`
   - `FrontendInnerClassRelation`

@@ -491,7 +491,9 @@ class GdccCommandInputTest {
         assertEquals(
                 List.of(
                         normalizedOutputDir.resolve("entry.c"),
-                        normalizedOutputDir.resolve("include/godot/godot_binding.c")
+                        normalizedOutputDir.resolve("include/godot/godot_binding.c"),
+                        normalizedOutputDir.resolve("include/gdcc/minicoro.c"),
+                        normalizedOutputDir.resolve("include/gdcc/gdcc_coroutine.c")
                 ),
                 compiler.lastCFiles().stream().map(path -> path.toAbsolutePath().normalize()).toList()
         );

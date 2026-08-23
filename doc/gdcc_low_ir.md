@@ -583,6 +583,55 @@ intrinsic catalog are maintained in [GDCC LIR Intrinsic](gdcc_lir_intrinsic.md).
 $<result_id>? = call_intrinsic "<intrinsic_name>" $<arg1_id> $<arg2_id> ...
 ```
 
+### Coroutine Instructions
+
+#### await
+
+Suspends the enclosing coroutine function until the awaited operand produces a result, then
+publishes that result as the instruction value. Suspension is a runtime stack switch on the
+minicoro stackful coroutine frame; the instruction itself looks synchronous at the LIR level
+and does not split basic blocks.
+
+Rules:
+
+- `await` is only valid inside a function whose `coroutine` attribute is `true` (see
+  [Functions](#functions)). Backend validation fails fast with `InvalidInsnException` when an
+  `await` appears in a non-coroutine function.
+- The operand static type selects the dispatch path, frozen in
+  [GDCC Runtime Library](gdcc_runtime_lib.md) §Coroutine Runtime:
+  - `Signal` operand: one-shot signal wait (`gdcc_coro_await_signal`).
+  - Result of a call to a `coroutine="true"` GDCC instance method: internal coroutine ABI
+    (`gdcc_coro_await_state` on the hidden state object).
+  - `Variant` operand: runtime dispatch (`gdcc_coro_await_dynamic`).
+- An operand that is neither `Signal`-typed nor `Variant`-typed and is not paired with a
+  coroutine-call temporary pair is invalid: backend validation fails fast with
+  `InvalidInsnException`.
+- Internal coroutine-call ABI (frozen): a `call_method` on a `coroutine="true"` GDCC
+  instance method calls the callee's entry thunk, which takes an extra
+  `godot_Object **out_state` out parameter — written `NULL` on synchronous completion, or
+  the OWNED state object reference on suspension. The call result lands in a hidden
+  temporary pair derived from the await result variable name: `<result>__await_ret` (typed
+  return value) and `<result>__await_state` (state object pointer). The immediately
+  following `await` consumes that pair through `gdcc_coro_await_state` (which also releases
+  the state reference, see `gdcc_runtime_lib.md` §Coroutine Runtime). For a
+  statement-position (fire-and-forget) coroutine call, `out_state` is received into a
+  non-managed raw pointer — never a `CBodyBuilder`-managed slot — and is released
+  immediately when non-NULL (detach); the discarded return value follows ordinary discard
+  rules.
+- Result type is whatever the frontend published for the result variable: 0-arg signal →
+  `Variant`; 1-arg signal → the declared argument type; multi-arg signal → `Array[Variant]`;
+  coroutine call → callee declared return type; dynamic → `Variant`.
+- `await` is a value-producing instruction, not a terminator: `entryBlockId` and block
+  terminator integrity rules are unaffected.
+- Ownership clauses for the coroutine frame, the return-value storage state machine and the
+  cancel-resume path are frozen in
+  [GDCC C Backend Lifecycle and Ownership Specification](gdcc_ownership_lifecycle_spec.md)
+  §3.10.
+
+```
+$<result_id> = await $<operand_id>
+```
+
 ### Load/Store Instructions
 
 #### load_property
@@ -762,12 +811,17 @@ A Low IR file (which is a .xml format file) consists of 4 parts:
 
 ```xml
 <functions>
+    <!-- coroutine is optional, defaults to false -->
+    <!-- coroutine="true" marks a stackful-coroutine function: the backend emits an entry
+         thunk + minicoro body function + hidden state class for it (see §Coroutine
+         Instructions and gdcc_runtime_lib.md §Coroutine Runtime). -->
     <function name="<function_name>"
               is_static="false"
               is_abstract="false"
               is_lambda="false"
               is_vararg="false"
-              is_hidden="false">
+              is_hidden="false"
+              coroutine="false">
         <annotation key="<annotation_key>" value="<annotation_value>"/>
         <annotation key="<annotation_key>" value="<annotation_value>"/>
         <parameters>
@@ -862,7 +916,8 @@ Low IR:
                       is_abstract="false"
                       is_lambda="false"
                       is_vararg="false"
-                      is_hidden="false">
+                      is_hidden="false"
+                      coroutine="false">
                 <parameters>
                     <parameter name="self" type="RotatingCamera"/>
                 </parameters>

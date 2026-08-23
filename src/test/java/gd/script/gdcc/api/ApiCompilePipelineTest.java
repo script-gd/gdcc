@@ -156,7 +156,9 @@ class ApiCompilePipelineTest {
         assertEquals(
                 List.of(
                         normalizedProjectPath.resolve("entry.c"),
-                        normalizedProjectPath.resolve("include/godot/godot_binding.c")
+                        normalizedProjectPath.resolve("include/godot/godot_binding.c"),
+                        normalizedProjectPath.resolve("include/gdcc/minicoro.c"),
+                        normalizedProjectPath.resolve("include/gdcc/gdcc_coroutine.c")
                 ),
                 compiler.lastCFiles().stream().map(path -> path.toAbsolutePath().normalize()).toList()
         );

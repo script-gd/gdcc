@@ -128,7 +128,9 @@ public class CProjectBuilderSharedIncludeTest {
         assertEquals(
                 List.of(
                         projectDir.resolve("entry.c").toAbsolutePath().normalize(),
-                        expectedGodot.resolve("godot_binding.c")
+                        expectedGodot.resolve("godot_binding.c"),
+                        expectedGdcc.resolve("minicoro.c"),
+                        expectedGdcc.resolve("gdcc_coroutine.c")
                 ),
                 compiler.cFiles()
         );

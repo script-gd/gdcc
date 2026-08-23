@@ -32,9 +32,11 @@
 
 ## 当前最终状态
 
-GDCC 当前不 vendor、不解压、不编译 `gdextension-lite`。生成项目只编译本模块
-`entry.c` 与静态 runtime source `<includeRoot>/godot/godot_binding.c`，并包含
-`godot/**` 与 `gdcc/**` helper 树。
+GDCC 当前不 vendor、不解压、不编译 `gdextension-lite`。生成项目编译本模块
+`entry.c` 与静态 runtime source `<includeRoot>/godot/godot_binding.c`，外加协程
+runtime 的两个 `gdcc/**` translation unit（`<includeRoot>/gdcc/minicoro.c` 与
+`<includeRoot>/gdcc/gdcc_coroutine.c`，见 `doc/gdcc_runtime_lib.md` §Coroutine
+Runtime），并包含 `godot/**` 与 `gdcc/**` helper 树。
 
 `CCodegen.generate()` 稳定返回三个模块级 generated files：
 
@@ -103,7 +105,8 @@ native input。
 - aggregation pair：
   - `godot_binding.h` 聚合所有静态 Godot binding headers
   - `godot_binding.c` 聚合对应 `.c` files，并且是唯一加入 native compiler input 的
-    静态 runtime binding source
+    `godot/**` runtime binding source（`gdcc/**` 侧另有 `minicoro.c` 与
+    `gdcc_coroutine.c` 两个协程 runtime TU）
 
 `godot_initialize_interface(...)` 在 `gdextension_entry(...)` 内最早运行，通过 Godot
 提供的 `get_proc_address` eager resolve interface pointer table。缺失 interface entry
@@ -357,6 +360,8 @@ constant 这类模块变化 symbol 才进入 module-local。
 
 - 本轮 `CCodegen.generate()` 返回的 `.c` files
 - `<includeRoot>/godot/godot_binding.c`
+- `<includeRoot>/gdcc/minicoro.c`
+- `<includeRoot>/gdcc/gdcc_coroutine.c`
 
 不允许根据旧文件存在性把 `<includeRoot>/gdextension-lite/gdextension-lite-one.c` 加回
 `cFiles`。`ResourceExtractor` 的覆盖/新增语义不承担旧目录清理；旧工作区残留只作为构建
@@ -397,6 +402,11 @@ constant 这类模块变化 symbol 才进入 module-local。
 - `CProjectBuilderSharedIncludeTest` / `ApiCompilePipelineTest`
   - 编译输入包含 `godot_binding.c`
   - stale legacy vendor runtime source 不进入 `cFiles` 或 include dirs
+- `CProjectBuilderCoroutineRuntimeInputTest`
+  - `gdcc/minicoro.c` 与 `gdcc/gdcc_coroutine.c` 被提取并固定顺序进入 `cFiles`
+- `GdccCoroutineRuntimeSmokeTest`（zig-gated）
+  - 纯 C 层锚定 minicoro 往返、finalize 不变量、cancel 级联放弃、identify 拒绝与
+    dynamic 分派的非 engine 分支
 
 ## 风险与维护提醒
 

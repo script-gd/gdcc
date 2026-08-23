@@ -21,6 +21,13 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
     private static final String GDCC_INCLUDE_DIR_NAME = "gdcc";
     private static final String GODOT_INCLUDE_DIR_NAME = "godot";
     private static final String GODOT_RUNTIME_SOURCE_PATH = GODOT_INCLUDE_DIR_NAME + "/godot_binding.c";
+    /// GDCC-owned runtime translation units (coroutine support). Extracted with the rest of
+    /// the `gdcc/**` tree and compiled alongside `godot_binding.c`.
+    /// Contract: doc/gdcc_runtime_lib.md §Coroutine Runtime.
+    private static final List<String> GDCC_RUNTIME_SOURCE_PATHS = List.of(
+            GDCC_INCLUDE_DIR_NAME + "/minicoro.c",
+            GDCC_INCLUDE_DIR_NAME + "/gdcc_coroutine.c"
+    );
 
     private CCompiler cCompiler;
     private boolean ignoreSharedInclude;
@@ -80,7 +87,7 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
         var generatedFileWriteDuration = elapsedSince(generatedFileWriteStart);
 
         var compileInputStart = System.nanoTime();
-        // Native compiler inputs are exactly this codegen pass plus the fixed GDCC runtime source.
+        // Native compiler inputs are exactly this codegen pass plus the fixed runtime sources.
         // ResourceExtractor intentionally leaves stale files alone, so old vendor files are never scanned.
         var cFiles = new ArrayList<Path>();
         for (var generatedFile : generatedFiles) {
@@ -94,6 +101,13 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
             throw new IOException("Required Godot runtime binding source is missing: " + godotRuntimeSource);
         }
         cFiles.add(godotRuntimeSource);
+        for (var gdccRuntimeSourcePath : GDCC_RUNTIME_SOURCE_PATHS) {
+            var gdccRuntimeSource = includeRoot.resolve(gdccRuntimeSourcePath);
+            if (!Files.isRegularFile(gdccRuntimeSource)) {
+                throw new IOException("Required GDCC runtime source is missing: " + gdccRuntimeSource);
+            }
+            cFiles.add(gdccRuntimeSource);
+        }
 
         // include dir
         var includeDirs = List.of(

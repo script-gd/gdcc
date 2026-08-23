@@ -32,6 +32,7 @@ A writable storage location, including but not limited to:
 - Object fields (property backing fields)
 - Implicit return slot `_return_val`
 - Declared writable temporary variables (`TempVar`)
+- Coroutine frame owning fields (typed parameter fields, typed return slot; see 3.10)
 
 ### 2.3 Representation Conversion
 
@@ -113,6 +114,9 @@ Implementation note:
 - On the LIR surface, a non-`void` `__finally__` block must terminate with `ReturnInsn("_return_val")`.
   Direct `ReturnInsn(<user-var>)` in `__finally__` is invalid backend IR and is rejected before C emission.
 - `_return_val` is outside the LIR variable table auto-destruction scope (it is published through return flow).
+- Coroutine body functions keep this contract unchanged; their `__finally__` consumes `_return_val`
+  into the frame's typed return slot instead of a C `return` (that consume **is** the coroutine
+  function's real return publish, see 3.10).
 
 ### 3.5 Discard Rules
 
@@ -199,6 +203,78 @@ Interaction with `__prepare__` / `__finally__`:
 - `USER_EXPLICIT` is rejected in `__prepare__` and `__finally__` to avoid semantic collision with auto lifecycle flow.
 - Conflict is resolved by validation stage before code generation.
 
+### 3.10 Coroutine State Object and Frame Ownership
+
+Applies to functions marked `coroutine="true"` (see `gdcc_low_ir.md` §Coroutine Instructions).
+The coroutine frame and its Godot-visible state object are one entity; reference counting is
+delegated to the engine `RefCounted` mechanism (`Variant(Object)` store/load retains/releases
+automatically) — the compiler must not invent a manual frame refcount.
+
+Keep-alive edges have a fixed direction (no cycles):
+
+- Signal wait: the connection's custom Callable holds a reference to the awaiting coroutine's
+  **own** state object (root edge, aligned with Godot's `bind(retvalue)`).
+- Coroutine-chain wait: the callee's waiter node holds a reference to the **awaiter** state
+  object (callee → awaiter). The call site's OWNED callee reference is released by
+  `gdcc_coro_await_state` right after waiter registration and **before** the yield (dynamic
+  own-state path: the operand Variant's callee reference is released and the operand reset
+  to nil before the yield), so the callee stays alive through its own wait edges and the
+  awaiter never holds the callee across a suspension.
+- Dynamic external-object wait: the awaiter frame keeps the operand Variant (and therefore
+  the emitter object) retained for the whole suspension, because Signal connections do not
+  keep the emitter alive (aligned with Godot's keep-alive direction). This edge is
+  forbidden on the own-state path above.
+- A permanently suspended chain leaks, matching Godot semantics.
+
+Suspension never triggers the return path. `__finally__` runs exactly once, when the body
+function truly returns (including the cancel-resume path); locals live on the minicoro stack
+for their entire lifetime. The backend must not invent a second cleanup logic for coroutine
+functions.
+
+Parameters of a coroutine function:
+
+- The frame's typed parameter fields are the sole owning storage; **no parameter C slots are
+  generated**. Body parameter operands map directly to frame fields, and parameter writes
+  follow the ordinary slot-write rules (3.2) applied to those fields.
+- `__prepare__` does not initialize parameters and `__finally__` does not clean them; the
+  entry thunk fills them per slot-write rules (borrowed parameters are retained, destroyable
+  ones copied). Parameter fields are destroyed exactly once, by `free_instance` — the cancel
+  path never touches them (after cancel-resume the coroutine is `MCO_DEAD` and flows into
+  the same single `free_instance` cleanup).
+
+Return-value storage state machine (must not be violated):
+
+1. The body `__finally__` consumes `_return_val` into the typed return slot (`_return_val` is
+   considered cleared afterwards).
+2. `gdcc_coro_finalize`: packs the slot into `result_cache` **and zeroes the slot**, then sets
+   `done` — `done`/`result_cache` are visible before any waiter resume or `completed` emit.
+3. The entry thunk's `MCO_DEAD` fast path: finalize first if not yet done, then **move** the
+   result out of `result_cache`, then release the state object reference. The move-out
+   follows the `result_cache` destroy-then-copy discipline (`gdcc_runtime_lib.md` §Coroutine
+   Runtime): copy the result out, `godot_variant_destroy(&result_cache)`, and reset the
+   storage to a constructed nil (zeroed bytes) — never `memset` over a live Variant.
+4. `free_instance` only destroys the always-constructed `result_cache` (nil when never
+   finalized or already moved out), the typed parameter fields and the `mco_coro`; it must
+   not assume the typed return slot still holds a value.
+
+Signal-resume callback argument Variants are only copied, never consumed; each waiter receives
+its own `godot_variant_new_copy` of the result.
+
+Cancel-resume (abandonment path, e.g. emitter death dropping the last reference):
+
+- Hooked on the state class `NOTIFICATION_PREDELETE`, not on `free_instance`; the state class
+  destructor must not touch frame fields.
+- `gdcc_coro_cancel` is mutually exclusive with `gdcc_coro_finalize`: set `cancel`, resume a
+  `MCO_SUSPENDED` coroutine, and the body jumps straight to `__finally__` at the nearest await
+  resume point (the default `_return_val` from `__prepare__` is already in place), cleans up
+  stack-owned values, and returns `MCO_DEAD`.
+- Cancel never sets `done`, never packs `result_cache`, never emits, and never resumes
+  waiters — waiter edges are only released, so abandoned awaiters stay suspended forever
+  (aligned with Godot `cancel_pending_functions`). A default value written into the typed
+  return slot on the cancel path is destroyed in place.
+- The cancel check after every await resume point is generated uniformly by `AwaitInsnGen`;
+  the cancel path must not call any user code.
+
 ## 4. Alignment with Current Backend Structure
 
 ### 4.1 CBodyBuilder
@@ -212,6 +288,9 @@ Interaction with `__prepare__` / `__finally__`:
 - Keep `__prepare__` / `__finally__` framework unchanged.
 - `_return_val` is still generated and managed by `CBodyBuilder`, and must not be moved into variable-table auto-destruction.
 - Property initializer lowering may materialize helper-produced values, but constructor-time application of those values to backing fields remains a separate backend-owned route.
+- Coroutine body functions reuse the same `__prepare__` / `__finally__` framework unchanged;
+  coroutine frame fields (typed parameter fields, typed return slot) are not ordinary C local
+  slots and stay outside the variable-table auto-destruction scope, exactly like `_return_val`.
 
 ### 4.3 Instruction Generators
 
