@@ -15,6 +15,7 @@ import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdccCoroStateType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVoidType;
@@ -72,6 +73,30 @@ public class CDestructInsnGenTest {
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("gdcc_for_range_iter_destroy(&$iter);"), body);
         assertFalse(body.contains("godot_GdccForRangeIter_destroy"), body);
+    }
+
+    @Test
+    @DisplayName("destruct coroutine state value should call the slot destroy helper")
+    void destructCoroStateShouldCallSlotDestroyHelper() {
+        // Positive: destruct is one of the two legal consumers of a coroutine state reference;
+        // it lowers to the slot destroy helper on the slot address.
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("destruct_coro_state");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("state", GdccCoroStateType.CORO_STATE);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new DestructInsn("state", LifecycleProvenance.USER_EXPLICIT));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, List.of(workerClass), emptyApi());
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("gdcc_coro_state_slot_destroy(&$state);"), body);
+        assertFalse(body.contains("godot_GdccCoroState_destroy"), body);
     }
 
     @Test

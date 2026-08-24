@@ -205,10 +205,14 @@ Interaction with `__prepare__` / `__finally__`:
 
 ### 3.10 Coroutine State Object and Frame Ownership
 
-Applies to functions marked `coroutine="true"` (see `gdcc_low_ir.md` §Coroutine Instructions).
+Applies to functions marked `is_coroutine="true"` (see `gdcc_low_ir.md` §Coroutine Instructions).
 The coroutine frame and its Godot-visible state object are one entity; reference counting is
 delegated to the engine `RefCounted` mechanism (`Variant(Object)` store/load retains/releases
-automatically) — the compiler must not invent a manual frame refcount.
+automatically) — the compiler must not invent a manual frame refcount. At the LIR level the
+call site's state reference is a `compiler::GdccCoroState` variable (C storage
+`godot_Object*`) — a single-consumer owned value per `gdcc_low_ir.md` §Coroutine
+Instructions; crossing into or out of `Variant` happens only inside runtime helpers and
+engine-boundary wrappers, never in generated body code.
 
 Keep-alive edges have a fixed direction (no cycles):
 
@@ -246,19 +250,26 @@ Return-value storage state machine (must not be violated):
 
 1. The body `__finally__` consumes `_return_val` into the typed return slot (`_return_val` is
    considered cleared afterwards).
-2. `gdcc_coro_finalize`: packs the slot into `result_cache` **and zeroes the slot**, then sets
-   `done` — `done`/`result_cache` are visible before any waiter resume or `completed` emit.
-3. The entry thunk's `MCO_DEAD` fast path: finalize first if not yet done, then **move** the
-   result out of `result_cache`, then release the state object reference. The move-out
-   follows the `result_cache` destroy-then-copy discipline (`gdcc_runtime_lib.md` §Coroutine
-   Runtime): copy the result out, `godot_variant_destroy(&result_cache)`, and reset the
-   storage to a constructed nil (zeroed bytes) — never `memset` over a live Variant.
-4. `free_instance` only destroys the always-constructed `result_cache` (nil when never
-   finalized or already moved out), the typed parameter fields and the `mco_coro`; it must
-   not assume the typed return slot still holds a value.
+2. `gdcc_coro_finalize`: copies the slot into `result_cache` (copy, not move — the slot stays
+   live for the typed resume channel) and sets `done` — `done`/`result_cache` are visible
+   before any waiter resume or `completed` emit; each typed waiter then receives its resume
+   value through `desc->copy_ret_slot`, each Variant waiter through a
+   `godot_variant_new_copy` from `result_cache`.
+3. On `MCO_DEAD` the internal coroutine-start thunk finalizes (if not yet done) and returns
+   the OWNED `done` state object as-is — it never moves the typed return slot. Only the
+   ClassDB call/ptrcall wrapper performs the synchronous-completion fast path: **move** the
+   result directly out of the typed return slot through the state class's own generated
+   move accessor (`<state>__move_result`; the slot is left in a valid moved-from state),
+   then release the state object reference and return the declared value.
+4. `free_instance` destroys the always-constructed `result_cache`, the typed parameter
+   fields, the typed return slot via `desc->destroy_ret_slot` (exactly once on every path —
+   completion, ClassDB-wrapper synchronous fast path and cancel alike; tolerates
+   never-written and moved-from slots) and the `mco_coro` (skipped when `co == NULL` on the
+   OOM path).
 
-Signal-resume callback argument Variants are only copied, never consumed; each waiter receives
-its own `godot_variant_new_copy` of the result.
+Signal-resume callback argument Variants are only copied, never consumed; each Variant-kind
+waiter receives its own `godot_variant_new_copy` of the result, each typed waiter a
+`desc->copy_ret_slot` copy.
 
 Cancel-resume (abandonment path, e.g. emitter death dropping the last reference):
 
@@ -271,7 +282,8 @@ Cancel-resume (abandonment path, e.g. emitter death dropping the last reference)
 - Cancel never sets `done`, never packs `result_cache`, never emits, and never resumes
   waiters — waiter edges are only released, so abandoned awaiters stay suspended forever
   (aligned with Godot `cancel_pending_functions`). A default value written into the typed
-  return slot on the cancel path is destroyed in place.
+  return slot on the cancel path never reaches `result_cache`; it is left for the single
+  `free_instance` `desc->destroy_ret_slot` call (state machine rule 4).
 - The cancel check after every await resume point is generated uniformly by `AwaitInsnGen`;
   the cancel path must not call any user code.
 

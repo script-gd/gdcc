@@ -87,6 +87,21 @@ gdcc_coro_state_header *gdcc_coro_state_identify(GDExtensionObjectPtr obj);
 /// itself remain generated-code responsibilities.
 void gdcc_coro_state_free(gdcc_coro_state_header *state);
 
+/// Compiler-local slot helpers backing the `compiler::GdccCoroState` LIR variable type: an
+/// OWNED coroutine state object reference stored as `godot_Object *`. Generated code
+/// initializes every such local via `_slot_init` in `__prepare__` (call-and-assign shape:
+/// `$slot = gdcc_coro_state_slot_init();`) and destroys it via `_slot_destroy` from
+/// `destruct` / `__finally__`; `await` resets a consumed slot to NULL (moved-from), so the
+/// destroy helper tolerates NULL content.
+godot_Object *gdcc_coro_state_slot_init(void);
+
+/// Releases the OWNED state object reference held by the slot (RefCounted unreference;
+/// reaching zero drives the PREDELETE cancel path through object destruction) and resets
+/// the slot to NULL. A non-NULL value that is not a GDCC coroutine state object is a
+/// compiler bug: the single-consumer LIR contract guarantees only state references or NULL
+/// ever reach this slot.
+void gdcc_coro_state_slot_destroy(godot_Object **slot);
+
 /// Awaits a statically typed Signal: connects one-shot with a custom Callable holding a
 /// strong reference to the awaiter's own state object (the final keep-alive edge of a
 /// suspended coroutine), then yields. The signal callback writes `*out` per the

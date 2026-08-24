@@ -18,6 +18,7 @@ import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdccCoroStateType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdStringNameType;
@@ -92,6 +93,26 @@ public class CAssignInsnGenTest {
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("$dst = $src;"), body);
         assertFalse(body.contains("godot_new_GdccForRangeIter_with_GdccForRangeIter"), body);
+    }
+
+    @Test
+    @DisplayName("assign coroutine state value should fail fast (move-only, no copy channel)")
+    void assignCoroStateShouldFailFast() {
+        // Negative: the coroutine state type is move-only; an assign has no legal lowering and
+        // must fail at the codegen boundary instead of emitting a bitwise pointer copy.
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_coro_state");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("dst", GdccCoroStateType.CORO_STATE);
+        func.createAndAddVariable("src", GdccCoroStateType.CORO_STATE);
+        addEntryAssignAndReturn(func, new AssignInsn("dst", "src"));
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
+        assertTrue(ex.getMessage().contains("Move-only compiler-only type 'GdccCoroState' does not support copy assignment"), ex.getMessage());
     }
 
     @Test

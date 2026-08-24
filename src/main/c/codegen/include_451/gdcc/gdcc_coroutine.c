@@ -80,6 +80,23 @@ void gdcc_coro_state_free(gdcc_coro_state_header *state) {
     state->magic = 0;
 }
 
+godot_Object *gdcc_coro_state_slot_init(void) {
+    // Call-and-assign init shape ($slot = gdcc_coro_state_slot_init();): the initial value of
+    // an OWNED state reference slot is simply NULL.
+    return NULL;
+}
+
+void gdcc_coro_state_slot_destroy(godot_Object **slot) {
+    if (*slot == NULL) {
+        // Moved-from (consumed by await) or never written: nothing to release.
+        return;
+    }
+    // State objects are RefCounted; releasing the last reference destroys the object and
+    // drives the PREDELETE cancel-resume cleanup path (ownership spec §3.10).
+    release_object(*slot);
+    *slot = NULL;
+}
+
 /// One-shot signal wait userdata. Owns the strong reference to the awaiter's own state
 /// object for as long as the connection's Callable is alive; released by the free callback
 /// (one-shot fired, emitter died, or connect failure dropped the last Callable reference).

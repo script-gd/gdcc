@@ -37,8 +37,10 @@ Current MVP contract:
   - class `<properties>`
   - signal parameters
   - lambda captures
-- Concrete grammar instances include `compiler::GdccForRangeIter` and per-family
-  `compiler::GdccForPacked*ArrayIter` (e.g. `compiler::GdccForPackedInt32ArrayIter`).
+- Concrete grammar instances include `compiler::GdccForRangeIter`, per-family
+  `compiler::GdccForPacked*ArrayIter` (e.g. `compiler::GdccForPackedInt32ArrayIter`), and
+  `compiler::GdccCoroState` (hidden coroutine state object reference, see
+  [Coroutine Instructions](#coroutine-instructions)).
 
 ## Instructions
 
@@ -284,6 +286,9 @@ Types can be destruct:
 - Packed*Array
 - Object
 - Variant
+- `compiler::GdccCoroState` (destruction releases the owned state object reference —
+  this is the fire-and-forget detach for statement-position coroutine calls, see
+  [await](#await)); other compiler-only types follow their own registered destroy helper.
   All types not in the above list are stack allocated and do not need to be destructed.
   However, destructing them is a no-op and allowed.
 
@@ -553,6 +558,10 @@ $<result_id>? = call_global "<function_name>" $<arg1_id> $<arg2_id> ...
 
 Calls a method on an Object by method name.
 
+When the callee is an `is_coroutine="true"` GDCC instance method, the result is mandatory
+and is typed `compiler::GdccCoroState` (see [await](#await)); such a call is the only
+producer of `compiler::GdccCoroState` values.
+
 ```
 $<result_id>? = call_method "<method_name>" $<object_id> $<arg1_id> $<arg2_id> ...
 ```
@@ -594,33 +603,63 @@ and does not split basic blocks.
 
 Rules:
 
-- `await` is only valid inside a function whose `coroutine` attribute is `true` (see
+- `await` is only valid inside a function whose `is_coroutine` attribute is `true` (see
   [Functions](#functions)). Backend validation fails fast with `InvalidInsnException` when an
   `await` appears in a non-coroutine function.
 - The operand static type selects the dispatch path, frozen in
   [GDCC Runtime Library](gdcc_runtime_lib.md) §Coroutine Runtime:
   - `Signal` operand: one-shot signal wait (`gdcc_coro_await_signal`).
-  - Result of a call to a `coroutine="true"` GDCC instance method: internal coroutine ABI
-    (`gdcc_coro_await_state` on the hidden state object).
+  - `compiler::GdccCoroState` operand: static coroutine-call path
+    (`gdcc_coro_await_state` on the hidden state object). This compiler-only type is the
+    result type of every `call_method` whose callee is an `is_coroutine="true"` GDCC
+    instance method (see the ABI clause below) — such a call is the only producer of
+    `compiler::GdccCoroState` values.
   - `Variant` operand: runtime dispatch (`gdcc_coro_await_dynamic`).
-- An operand that is neither `Signal`-typed nor `Variant`-typed and is not paired with a
-  coroutine-call temporary pair is invalid: backend validation fails fast with
-  `InvalidInsnException`.
-- Internal coroutine-call ABI (frozen): a `call_method` on a `coroutine="true"` GDCC
-  instance method calls the callee's entry thunk, which takes an extra
-  `godot_Object **out_state` out parameter — written `NULL` on synchronous completion, or
-  the OWNED state object reference on suspension. The call result lands in a hidden
-  temporary pair derived from the await result variable name: `<result>__await_ret` (typed
-  return value) and `<result>__await_state` (state object pointer). The immediately
-  following `await` consumes that pair through `gdcc_coro_await_state` (which also releases
-  the state reference, see `gdcc_runtime_lib.md` §Coroutine Runtime). For a
-  statement-position (fire-and-forget) coroutine call, `out_state` is received into a
-  non-managed raw pointer — never a `CBodyBuilder`-managed slot — and is released
-  immediately when non-NULL (detach); the discarded return value follows ordinary discard
-  rules.
+- An operand that is neither `Signal`-typed nor `Variant`-typed nor
+  `compiler::GdccCoroState`-typed is invalid: backend validation fails fast with
+  `InvalidInsnException`. Dispatch is purely static-type-driven; no name-derived temporary
+  pairing or cross-instruction bookkeeping exists at the LIR/backend level.
+- Internal coroutine-call ABI (frozen): the backend generates two entry points for an
+  `is_coroutine="true"` GDCC instance method — an internal coroutine-start thunk that
+  always returns the OWNED state object reference (`godot_Object*`; on synchronous
+  completion the state object is already `done`), and the ClassDB call/ptrcall wrappers that
+  invoke the start thunk and keep the no-observable-state fast path internally. A
+  `call_method` on such a callee calls the start thunk and **must** declare a result
+  variable (backend fails fast with `InvalidInsnException` otherwise); the result variable
+  is declared with the compiler-only type `compiler::GdccCoroState` (C storage
+  `godot_Object*`), so the state reference is an ordinary typed LIR value with normal
+  ownership: an `await` consumes it through `gdcc_coro_await_state` (which releases the
+  reference, see `gdcc_runtime_lib.md` §Coroutine Runtime), while a statement-position
+  (fire-and-forget) call is expressed as destructing that result variable — releasing the
+  last call-site reference detaches the coroutine, which stays alive through its own wait
+  edges.
+- `compiler::GdccCoroState` values are single-consumer owned references. The only legal
+  consumers are `await` (consumes the reference and leaves the source slot in a moved-from
+  `NULL` state) and `destruct` (releases the reference — the fire-and-forget detach — with
+  `INTERNAL` provenance). They must not be copied or moved via `assign`, packed/unpacked
+  to/from `Variant`, passed as call arguments, returned, stored into properties or
+  containers, or marked `ref`; backend validation fails fast with `InvalidInsnException` on
+  any such use.
+- Typed result handoff: the value channel of the static coroutine-call path is typed, not
+  Variant-based. The awaiter passes a pointer to its own typed result storage
+  (`void *out_typed`, statically the callee's declared return type — the frontend-published
+  await result variable type must match it; for a `void` callee the storage is a
+  `godot_Variant` and the descriptor's `copy_ret_slot` specialization writes a constructed
+  nil) to `gdcc_coro_await_state`; both the done fast path and the waiter resume copy the
+  value out of the frame through the state class descriptor's generated `copy_ret_slot`
+  callback, so the await dispatch channel never casts to a concrete state wrapper type
+  outside the state class's own generated functions. The single exception is the ClassDB
+  wrapper's synchronous-completion fast path, which extracts the result through the state
+  class's own generated move accessor (`<state>__move_result`). The typed return slot outlives `done` (finalization copies —
+  never moves — into the Variant `result_cache`, which only feeds the `completed` signal
+  emission and dynamic awaits) and is destroyed exactly once at `free_instance`; the
+  detailed storage state machine is frozen in
+  [GDCC C Backend Lifecycle and Ownership Specification](gdcc_ownership_lifecycle_spec.md)
+  §3.10.
 - Result type is whatever the frontend published for the result variable: 0-arg signal →
   `Variant`; 1-arg signal → the declared argument type; multi-arg signal → `Array[Variant]`;
-  coroutine call → callee declared return type; dynamic → `Variant`.
+  coroutine call → callee declared return type, or `Variant` holding nil for a `void`
+  callee (mirroring Godot's `completed(nil)` emission); dynamic → `Variant`.
 - `await` is a value-producing instruction, not a terminator: `entryBlockId` and block
   terminator integrity rules are unaffected.
 - Ownership clauses for the coroutine frame, the return-value storage state machine and the
@@ -811,8 +850,8 @@ A Low IR file (which is a .xml format file) consists of 4 parts:
 
 ```xml
 <functions>
-    <!-- coroutine is optional, defaults to false -->
-    <!-- coroutine="true" marks a stackful-coroutine function: the backend emits an entry
+    <!-- is_coroutine is optional, defaults to false -->
+    <!-- is_coroutine="true" marks a stackful-coroutine function: the backend emits an entry
          thunk + minicoro body function + hidden state class for it (see §Coroutine
          Instructions and gdcc_runtime_lib.md §Coroutine Runtime). -->
     <function name="<function_name>"
@@ -821,7 +860,7 @@ A Low IR file (which is a .xml format file) consists of 4 parts:
               is_lambda="false"
               is_vararg="false"
               is_hidden="false"
-              coroutine="false">
+              is_coroutine="false">
         <annotation key="<annotation_key>" value="<annotation_value>"/>
         <annotation key="<annotation_key>" value="<annotation_value>"/>
         <parameters>
@@ -917,7 +956,7 @@ Low IR:
                       is_lambda="false"
                       is_vararg="false"
                       is_hidden="false"
-                      coroutine="false">
+                      is_coroutine="false">
                 <parameters>
                     <parameter name="self" type="RotatingCamera"/>
                 </parameters>

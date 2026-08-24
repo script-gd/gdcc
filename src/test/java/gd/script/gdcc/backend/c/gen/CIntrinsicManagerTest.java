@@ -4,6 +4,7 @@ import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
 import gd.script.gdcc.backend.c.gen.intrinsic.foriter.CForRangeIterIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.conversion.CIntToFloatIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.coro.CCoroStateRawInitIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.foriter.CForRangeIterRawInitIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.conversion.CVectorIToVectorIntrinsic;
 import gd.script.gdcc.enums.GodotVersion;
@@ -28,6 +29,7 @@ class CIntrinsicManagerTest {
 
         assertInstanceOf(CIntToFloatIntrinsic.class, manager.find(CIntToFloatIntrinsic.NAME));
         assertInstanceOf(CForRangeIterRawInitIntrinsic.class, manager.find(CForRangeIterRawInitIntrinsic.NAME));
+        assertInstanceOf(CCoroStateRawInitIntrinsic.class, manager.find(CCoroStateRawInitIntrinsic.NAME));
         assertInstanceOf(CForRangeIterIntrinsic.class, manager.find(CForRangeIterIntrinsic.INIT_NAME));
         assertInstanceOf(CForRangeIterIntrinsic.class, manager.find(CForRangeIterIntrinsic.SHOULD_CONTINUE_NAME));
         assertInstanceOf(CForRangeIterIntrinsic.class, manager.find(CForRangeIterIntrinsic.NEXT_NAME));

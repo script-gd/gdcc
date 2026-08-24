@@ -34,8 +34,8 @@ class GdCompilerTypeTest {
     }
 
     @Test
-    @org.junit.jupiter.api.DisplayName("GdCompilerType sealed permits match all iterator state types")
-    void sealedPermitsMatchKnownIteratorStateTypes() {
+    @org.junit.jupiter.api.DisplayName("GdCompilerType sealed permits match all compiler-only state types")
+    void sealedPermitsMatchKnownCompilerOnlyStateTypes() {
         assertEquals(
                 Set.of(
                         GdccForRangeIterType.class,
@@ -44,7 +44,8 @@ class GdCompilerTypeTest {
                         GdccForArrayIterType.class,
                         GdccForDictionaryIterType.class,
                         GdccForPackedArrayIterType.class,
-                        GdccForFloatIterType.class
+                        GdccForFloatIterType.class,
+                        GdccCoroStateType.class
                 ),
                 Arrays.stream(GdCompilerType.class.getPermittedSubclasses())
                         .collect(Collectors.toUnmodifiableSet())
@@ -145,6 +146,20 @@ class GdCompilerTypeTest {
     }
 
     @Test
+    @org.junit.jupiter.api.DisplayName("move-only compiler-only type forbids every copy channel")
+    void moveOnlyTypeForbidsEveryCopyChannel() {
+        var type = GdccCoroStateType.CORO_STATE;
+
+        // Move-only (single-consumer) ownership: no direct assignment, no copy helper; this
+        // exact configuration must pass contract validation instead of being rejected as a
+        // "missing copy helper" case.
+        assertFalse(type.isCopyable());
+        assertFalse(type.isDirectStructAssignmentSafe());
+        assertEquals("", type.getCCopyHelperName());
+        assertDoesNotThrow(type::validateCStorageContract);
+    }
+
+    @Test
     @org.junit.jupiter.api.DisplayName("compiler-only type must not produce godot_* default helper names")
     void mustNotProduceGodotDefaultHelpers() {
         for (var type : compilerTypes()) {
@@ -152,12 +167,19 @@ class GdCompilerTypeTest {
             var cInit = type.getCInitHelperName();
             var cDestroy = type.getCDestroyHelperName();
 
-            // All helper names must use gdcc_* namespace, not godot_* generated binding defaults.
-            assertFalse(cStorage.startsWith("godot_"), "C storage type must not use godot_* prefix: " + cStorage);
+            // Storage exception: a compiler type that wraps an engine object reference may name
+            // the engine pointer type directly (sole case today: GdccCoroStateType wraps
+            // godot_Object*). Every other compiler-only storage stays in the gdcc_* namespace.
+            if (type instanceof GdccCoroStateType) {
+                assertEquals("godot_Object*", cStorage);
+            } else {
+                assertFalse(cStorage.startsWith("godot_"), "C storage type must not use godot_* prefix: " + cStorage);
+                assertTrue(cStorage.startsWith("gdcc_"), "C storage type must use gdcc_* prefix: " + cStorage);
+            }
+
+            // Init/destroy helper names must always use gdcc_* namespace, never godot_* defaults.
             assertFalse(cInit.startsWith("godot_"), "C init helper must not use godot_* prefix: " + cInit);
             assertFalse(cDestroy.startsWith("godot_"), "C destroy helper must not use godot_* prefix: " + cDestroy);
-
-            assertTrue(cStorage.startsWith("gdcc_"), "C storage type must use gdcc_* prefix: " + cStorage);
             assertTrue(cInit.startsWith("gdcc_"), "C init helper must use gdcc_* prefix: " + cInit);
             assertTrue(cDestroy.startsWith("gdcc_"), "C destroy helper must use gdcc_* prefix: " + cDestroy);
         }
@@ -172,6 +194,7 @@ class GdCompilerTypeTest {
         all.add(GdccForDictionaryIterType.FOR_DICTIONARY_ITER);
         all.addAll(GdccForPackedArrayIterType.all());
         all.add(GdccForFloatIterType.FOR_FLOAT_ITER);
+        all.add(GdccCoroStateType.CORO_STATE);
         return List.copyOf(all);
     }
 

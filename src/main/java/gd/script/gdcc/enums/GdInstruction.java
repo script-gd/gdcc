@@ -76,6 +76,9 @@ public enum GdInstruction {
     CALL_STATIC_METHOD("call_static_method", ReturnKind.OPTIONAL, List.of(OperandKind.STRING, OperandKind.STRING, OperandKind.VARARGS), 2, Integer.MAX_VALUE),
     CALL_INTRINSIC("call_intrinsic", ReturnKind.OPTIONAL, List.of(OperandKind.STRING, OperandKind.VARARGS), 1, Integer.MAX_VALUE),
 
+    // Coroutine
+    AWAIT("await", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE), 1, 1),
+
     // Load/Store
     LOAD_PROPERTY("load_property", ReturnKind.REQUIRED, List.of(OperandKind.STRING, OperandKind.VARIABLE), 2, 2),
     STORE_PROPERTY("store_property", ReturnKind.NONE, List.of(OperandKind.STRING, OperandKind.VARIABLE, OperandKind.VARIABLE), 3, 3),

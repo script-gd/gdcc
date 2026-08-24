@@ -1,8 +1,11 @@
 package gd.script.gdcc.lir.parser;
 
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.exception.LirInsnParsingException;
+import gd.script.gdcc.lir.insn.AwaitInsn;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccCoroStateType;
 import gd.script.gdcc.type.GdccForArrayIterType;
 import gd.script.gdcc.type.GdccForDictionaryIterType;
 import gd.script.gdcc.type.GdccForFloatIterType;
@@ -388,6 +391,225 @@ public class DomLirParserTest {
 
         assertTrue(exception.getMessage().contains("Unknown compiler-only type text: compiler::UnknownIter"), exception.getMessage());
         assertFalse(exception.getMessage().contains("GdObjectType"), exception.getMessage());
+    }
+
+    @Test
+    public void parse_legacyXmlWithoutCoroutineAttributeReadsAsFalse() throws Exception {
+        // Backward compatibility: `is_coroutine` is optional and defaults to false, so LIR text
+        // written before the attribute existed must keep parsing as a plain sync function.
+        var xml = """
+                <ir>
+                  <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                    <functions>
+                      <function name="_init" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false">
+                        <parameters/>
+                        <captures/>
+                        <return_type type="void"/>
+                        <variables/>
+                        <basic_blocks entry="entry"><basic_block id="entry">return;</basic_block></basic_blocks>
+                      </function>
+                    </functions>
+                  </class_def>
+                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var mod = parser.parse(new StringReader(xml));
+        var fn = mod.getClassDefs().getFirst().getFunctions().getFirst();
+
+        assertFalse(fn.isCoroutine());
+    }
+
+    @Test
+    public void parse_allowsCoroStateTypeOnFunctionVariables() throws Exception {
+        // The erased coroutine-state type is legal exactly where every compiler-only type is:
+        // on function-local variables.
+        var xml = """
+                <ir>
+                  <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                    <functions>
+                      <function name="step" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false" is_coroutine="true">
+                        <parameters/>
+                        <captures/>
+                        <return_type type="void"/>
+                        <variables>
+                          <variable id="coro_state" type="compiler::GdccCoroState"/>
+                        </variables>
+                        <basic_blocks entry="entry"><basic_block id="entry">return;</basic_block></basic_blocks>
+                      </function>
+                    </functions>
+                  </class_def>
+                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var mod = parser.parse(new StringReader(xml));
+        var fn = mod.getClassDefs().getFirst().getFunctions().getFirst();
+
+        assertAll(
+                () -> assertTrue(fn.isCoroutine()),
+                () -> assertEquals(GdccCoroStateType.CORO_STATE,
+                        Objects.requireNonNull(fn.getVariableById("coro_state")).type())
+        );
+    }
+
+    @Test
+    public void parse_rejectsCoroStateTypeOnPublicAbiSurfaces() throws Exception {
+        // Same leak guard as every compiler-only type: the coroutine state type must never
+        // appear on public ABI surfaces.
+        var surfaces = java.util.Map.of(
+                "function parameter", """
+                        <ir>
+                          <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                            <functions>
+                              <function name="step" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false">
+                                <parameters>
+                                  <parameter name="state" type="compiler::GdccCoroState"/>
+                                </parameters>
+                                <captures/>
+                                <return_type type="void"/>
+                                <variables/>
+                                <basic_blocks entry="entry"><basic_block id="entry">return;</basic_block></basic_blocks>
+                              </function>
+                            </functions>
+                          </class_def>
+                        </ir>
+                        """,
+                "function return", """
+                        <ir>
+                          <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                            <functions>
+                              <function name="step" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="true">
+                                <parameters/>
+                                <captures/>
+                                <return_type type="compiler::GdccCoroState"/>
+                                <variables/>
+                                <basic_blocks entry="entry"><basic_block id="entry">return;</basic_block></basic_blocks>
+                              </function>
+                            </functions>
+                          </class_def>
+                        </ir>
+                        """
+        );
+
+        for (var entry : surfaces.entrySet()) {
+            var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+            var exception = assertThrows(IllegalArgumentException.class, () -> parser.parse(new StringReader(entry.getValue())), entry.getKey());
+
+            assertTrue(exception.getMessage().contains("compiler-only type leaked into " + entry.getKey()), exception.getMessage());
+        }
+    }
+
+    @Test
+    public void parse_explicitCoroutineFalseAttributeReadsAsFalse() throws Exception {
+        var xml = """
+                <ir>
+                  <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                    <functions>
+                      <function name="_init" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false" is_coroutine="false">
+                        <parameters/>
+                        <captures/>
+                        <return_type type="void"/>
+                        <variables/>
+                        <basic_blocks entry="entry"><basic_block id="entry">return;</basic_block></basic_blocks>
+                      </function>
+                    </functions>
+                  </class_def>
+                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var mod = parser.parse(new StringReader(xml));
+
+        assertFalse(mod.getClassDefs().getFirst().getFunctions().getFirst().isCoroutine());
+    }
+
+    @Test
+    public void parse_wronglyNamedCoroutineAttributeDoesNotEnableMarker() throws Exception {
+        // Anchors the exact snake_case attribute name and the lenient boolean convention
+        // shared by all LIR XML boolean attributes: only is_coroutine="true" enables the
+        // marker; a camelCase lookalike attribute is ignored and parses as false.
+        var xml = """
+                <ir>
+                  <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                    <functions>
+                      <function name="_init" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false" isCoroutine="true">
+                        <parameters/>
+                        <captures/>
+                        <return_type type="void"/>
+                        <variables/>
+                        <basic_blocks entry="entry"><basic_block id="entry">return;</basic_block></basic_blocks>
+                      </function>
+                    </functions>
+                  </class_def>
+                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var mod = parser.parse(new StringReader(xml));
+
+        assertFalse(mod.getClassDefs().getFirst().getFunctions().getFirst().isCoroutine());
+    }
+
+    @Test
+    public void parse_awaitInsnFromXml() throws Exception {
+        var xml = """
+                                <ir>
+                                  <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                                    <functions>
+                                      <function name="step" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false" is_coroutine="true">
+                                        <parameters/>
+                                        <captures/>
+                                        <return_type type="void"/>
+                                        <variables>
+                                          <variable id="target" type="Variant"/>
+                                          <variable id="0" type="Variant"/>
+                                        </variables>
+                                        <basic_blocks entry="entry"><basic_block id="entry">$0 = await $target;
+                return;</basic_block></basic_blocks>
+                                      </function>
+                                    </functions>
+                                  </class_def>
+                                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var mod = parser.parse(new StringReader(xml));
+        var fn = mod.getClassDefs().getFirst().getFunctions().getFirst();
+        var awaitInsn = assertInstanceOf(AwaitInsn.class,
+                fn.getBasicBlock("entry").getNonTerminatorInstructions().getFirst());
+
+        assertAll(
+                () -> assertEquals("0", awaitInsn.resultId()),
+                () -> assertEquals("target", awaitInsn.operandId())
+        );
+    }
+
+    @Test
+    public void parse_awaitWithoutResultFailsFast() throws Exception {
+        // XML-level negative: the textual form `await $target;` has no result target and must
+        // fail at parse time (result is REQUIRED by the LIR contract).
+        var xml = """
+                                <ir>
+                                  <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                                    <functions>
+                                      <function name="step" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false" is_coroutine="true">
+                                        <parameters/>
+                                        <captures/>
+                                        <return_type type="void"/>
+                                        <variables>
+                                          <variable id="target" type="Variant"/>
+                                        </variables>
+                                        <basic_blocks entry="entry"><basic_block id="entry">await $target;
+                return;</basic_block></basic_blocks>
+                                      </function>
+                                    </functions>
+                                  </class_def>
+                                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        assertThrows(LirInsnParsingException.class, () -> parser.parse(new StringReader(xml)));
     }
 
     @Test

@@ -94,6 +94,10 @@ public final class DomLirSerializer implements LirSerializer {
                 fEl.setAttribute("is_lambda", Boolean.toString(fn.isLambda()));
                 fEl.setAttribute("is_vararg", Boolean.toString(fn.isVararg()));
                 fEl.setAttribute("is_hidden", Boolean.toString(fn.isHidden()));
+                // Always written explicitly (`true`/`false`); `false` is a plain sync function.
+                // Awaiting instructions are only legal inside `is_coroutine="true"` functions
+                // (contract: gdcc_low_ir.md §Functions / §Coroutine Instructions).
+                fEl.setAttribute("is_coroutine", Boolean.toString(fn.isCoroutine()));
 
                 for (var e : fn.getAnnotations().entrySet()) {
                     Element ann = doc.createElement("annotation");

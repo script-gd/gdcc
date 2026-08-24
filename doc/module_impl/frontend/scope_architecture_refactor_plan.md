@@ -178,7 +178,7 @@
 
 - `self` 不作为隐式 `ScopeValue` 进入 lexical value namespace；当前由 top binding 直接发布 `SELF` binding，并由 chain receiver support 解析为当前类实例 receiver
 - `self` 在 static context 与 property initializer 中的 fail-closed 边界已经落地；相关非法用法的用户可见 diagnostics 仍由 frontend binder 各阶段负责，而不是由 `Scope` 协议承载
-- `signal` 的无 receiver 名称解析与 receiver-based metadata lookup 已纳入 `ClassScope` / `ScopeSignalResolver`。值读取 / `.emit` / `.connect` 已由 frontend binder 闭环（见 `frontend_signal_support.md`）；`await signal` 协程仍未闭环
+- `signal` 的无 receiver 名称解析与 receiver-based metadata lookup 已纳入 `ClassScope` / `ScopeSignalResolver`。值读取 / `.emit` / `.connect` 已由 frontend binder 闭环（见 `frontend_signal_support.md`）；`await signal` 协程仍未闭环（设计合同已由 `frontend_await_minicoro_plan.md` 冻结，frontend 落地见其第六/七步）
 
 ### 2.6 Shared resolver 已经成为前后端共享事实源
 

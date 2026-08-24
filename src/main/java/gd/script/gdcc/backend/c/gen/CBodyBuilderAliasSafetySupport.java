@@ -46,6 +46,15 @@ final class CBodyBuilderAliasSafetySupport {
             if (compilerType.isDirectStructAssignmentSafe()) {
                 return false;
             }
+            if (!compilerType.isCopyable()) {
+                // Defensive backstop: the ordinary assign flow already fails earlier with
+                // InvalidInsnException via CBodyBuilder.requireCopyAssignFunctionName. A borrowed
+                // move-only value (e.g. GdccCoroState) can never be copied into a stable carrier.
+                throw new IllegalStateException(
+                        "Move-only compiler-only type '" + compilerType.getTypeName()
+                                + "' cannot be copied for alias-safe overwrite"
+                );
+            }
             if (compilerType.getCCopyHelperName().isBlank()) {
                 throw new IllegalStateException(
                         "Compiler-only type '" + compilerType.getTypeName()

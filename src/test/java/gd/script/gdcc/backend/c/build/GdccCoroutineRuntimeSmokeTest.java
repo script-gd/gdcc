@@ -123,6 +123,30 @@ class GdccCoroutineRuntimeSmokeTest {
     }
 
     @Test
+    void coroStateSlotHelpersShouldHonorNullContract() throws IOException, InterruptedException {
+        // Anchors the compiler-local slot helper contract used by `compiler::GdccCoroState`
+        // codegen: init is the nullary call-and-assign shape yielding NULL, and destroy on a
+        // NULL (moved-from / never-written) slot is a no-op.
+        var source = """
+                #include <gdcc_coroutine.h>
+                #include <stdio.h>
+
+                int main(void) {
+                    godot_Object *slot = gdcc_coro_state_slot_init();
+                    if (slot != NULL) return 10;
+                    // Moved-from / never-written slot: destroy must be a no-op.
+                    gdcc_coro_state_slot_destroy(&slot);
+                    if (slot != NULL) return 11;
+                    printf("OK slot_helpers\\n");
+                    return 0;
+                }
+                """;
+        var execution = compileLinkAndRun("slot_helpers_probe", source, runtimeObjects);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertTrue(execution.output().contains("OK slot_helpers"), execution::diagnostic);
+    }
+
+    @Test
     void awaitStateFinalizeCascadeShouldHonorOrderingInvariants() throws IOException, InterruptedException {
         // Anchors: done fast path; finalize invariant order (pack -> done -> waiters ->
         // emit); one private Variant copy per waiter; resume BEFORE edge release; nested

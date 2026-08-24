@@ -73,7 +73,7 @@ inner class canonical spelling 已冻结为：
 
 1. `_gdcc_coro_state_` 是 **class 级**保留前缀（既有 `RESERVED_PREFIXES` 只覆盖 member 级）；用户声明的 top-level / inner class `sourceName` 一旦以该前缀开头，skeleton 必须发 `sema.class_skeleton` 并跳过该 subtree，与 `__sub__` 违规同策略（§2.1）。
 2. 用户声明的 top-level / inner class `sourceName` 与 `topLevelCanonicalNameMap` 的 key / value 均不得包含 `__coro__`（与 `__sub__` 相同的输入边界，§1.2 / §2.1）；函数名不受此限——分隔点由 class 侧的不含性唯一确定。
-3. 隐藏状态类只有 canonical name：无 `sourceName`、不可被 source-facing `extends` 引用、不进入 source-facing registry，也不进入 `module.classDefs` 的用户类注册循环；由 backend 按 `coroutine == true` 函数集合单独生成。
+3. 隐藏状态类只有 canonical name：无 `sourceName`、不可被 source-facing `extends` 引用、不进入 source-facing registry，也不进入 `module.classDefs` 的用户类注册循环；由 backend 按 `is_coroutine="true"` 函数集合单独生成。
 4. 状态类 identity 继续服从 §2.3 downstream canonical-only 合同；C 标识符表面经既有 `cIdentifier()` 清洗，不新增清洗规则（§2.4）。
 
 ---

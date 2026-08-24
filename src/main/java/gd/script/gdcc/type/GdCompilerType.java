@@ -14,8 +14,8 @@ import org.jetbrains.annotations.Nullable;
 /// destroyable non-object lifecycle, and non-nullable value semantics.
 public sealed interface GdCompilerType extends GdType
         permits GdccForRangeIterType, GdccForVariantIterType,
-                GdccForStringIterType, GdccForArrayIterType, GdccForDictionaryIterType,
-                GdccForPackedArrayIterType, GdccForFloatIterType {
+        GdccForStringIterType, GdccForArrayIterType, GdccForDictionaryIterType,
+        GdccForPackedArrayIterType, GdccForFloatIterType, GdccCoroStateType {
     // GdccForPackedArrayIterType is one sealed permit covering all 10 Packed* families.
 
     /// LIR-only text grammar: `compiler::<Name>`, recognized solely by the LIR parser/serializer.
@@ -43,6 +43,14 @@ public sealed interface GdCompilerType extends GdType
         return "";
     }
 
+    /// Compiler-only types are copyable by default. A move-only type (single-consumer ownership,
+    /// e.g. `GdccCoroStateType`) overrides this with `false`: no copy operation exists at all, so
+    /// neither direct struct assignment nor a copy helper is permitted, and any copy attempt must
+    /// fail fast at the codegen boundary instead of silently duplicating ownership.
+    default boolean isCopyable() {
+        return true;
+    }
+
     /// Direct struct assignment is the default compiler-only copy contract.
     /// Consumers read this semantic first instead of inferring behavior from an empty helper name.
     default boolean isDirectStructAssignmentSafe() {
@@ -53,6 +61,23 @@ public sealed interface GdCompilerType extends GdType
     /// to the wrong `godot_*` copy path.
     default void validateCStorageContract() {
         var copyHelperName = getCCopyHelperName();
+        if (!isCopyable()) {
+            // Move-only types must not expose any copy channel: a direct assignment would
+            // duplicate ownership bitwise, and a published copy helper would imply copyability.
+            if (isDirectStructAssignmentSafe()) {
+                throw new IllegalStateException(
+                        "Move-only compiler-only type '" + getTypeName()
+                                + "' must not enable direct struct assignment"
+                );
+            }
+            if (!copyHelperName.isBlank()) {
+                throw new IllegalStateException(
+                        "Move-only compiler-only type '" + getTypeName()
+                                + "' must not publish a copy helper: " + copyHelperName
+                );
+            }
+            return;
+        }
         if (isDirectStructAssignmentSafe() && !copyHelperName.isBlank()) {
             throw new IllegalStateException(
                     "Compiler-only type '" + getTypeName()

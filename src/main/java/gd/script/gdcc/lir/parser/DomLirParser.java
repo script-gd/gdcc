@@ -121,6 +121,11 @@ public final class DomLirParser implements LirParser {
                     var isLambdaF = Boolean.parseBoolean(fEl.getAttribute("is_lambda"));
                     var isVarargF = Boolean.parseBoolean(fEl.getAttribute("is_vararg"));
                     var isHiddenF = Boolean.parseBoolean(fEl.getAttribute("is_hidden"));
+                    // Optional per contract; absent attribute parses as false (plain sync function).
+                    // Like every other boolean attribute above, parsing is lenient
+                    // (`Boolean.parseBoolean`): only the exact text "true" enables the marker, any
+                    // other/missing value is false. The attribute name is exactly `is_coroutine`.
+                    var coroutineF = Boolean.parseBoolean(fEl.getAttribute("is_coroutine"));
 
                     var annotationsF = new HashMap<String, String>();
                     var annsF = fEl.getElementsByTagName("annotation");
@@ -135,6 +140,7 @@ public final class DomLirParser implements LirParser {
                     fn.setLambda(isLambdaF);
                     fn.setVararg(isVarargF);
                     fn.setHidden(isHiddenF);
+                    fn.setCoroutine(coroutineF);
                     fn.addAnnotations(annotationsF);
 
                     // parameters
@@ -272,6 +278,7 @@ public final class DomLirParser implements LirParser {
             case GdccForArrayIterType.LIR_TYPE_TEXT -> GdccForArrayIterType.FOR_ARRAY_ITER;
             case GdccForDictionaryIterType.LIR_TYPE_TEXT -> GdccForDictionaryIterType.FOR_DICTIONARY_ITER;
             case GdccForFloatIterType.LIR_TYPE_TEXT -> GdccForFloatIterType.FOR_FLOAT_ITER;
+            case GdccCoroStateType.LIR_TYPE_TEXT -> GdccCoroStateType.CORO_STATE;
             default -> {
                 var packed = GdccForPackedArrayIterType.findByLirTypeText(typeText);
                 if (packed != null) {

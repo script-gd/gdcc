@@ -55,7 +55,7 @@ Godot 对齐基线：runtime / GDExtension ABI / generated bindings 固定为 **
 
 仍拒绝：
 
-- `await signal` 及任何协程挂起 / 恢复状态机
+- `await signal` 及任何协程挂起 / 恢复状态机（设计合同已由 `frontend_await_minicoro_plan.md` 冻结——signal await 为 await MVP 三路径之一；本条拒绝状态维持到其第八步 compile gate 解封）
 - builtin type-meta 方法当值（`Vector2.abs`、`Vector2.from_angle`）
 - 构造器当值（`Node.new`、`Inner.new`）
 - `dict.clear` 当方法引用（Godot 把它当 Dictionary key）

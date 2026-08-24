@@ -12,6 +12,7 @@ import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdccForStringIterType;
 import gd.script.gdcc.type.GdccForVariantIterType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdVariantType;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -203,6 +204,92 @@ public class DomLirSerializerTest {
         assertThrows(
                 IllegalStateException.class,
                 () -> fn.addCapture(new LirCaptureDef("seed", new GdFloatType(), fn))
+        );
+    }
+
+    @Test
+    public void serialize_module_writesCoroutineAttributeAndAwaitInsnRoundTrip() throws Exception {
+        // Coroutine function whose body awaits a Variant (dynamic dispatch path); the XML
+        // round-trip must preserve both the `is_coroutine` function attribute and the await insn.
+        var fn = new LirFunctionDef("wait_dynamic", "entry");
+        fn.setCoroutine(true);
+        fn.createAndAddVariable("target", GdVariantType.VARIANT);
+        fn.createAndAddVariable("0", GdVariantType.VARIANT);
+        fn.addBasicBlock(new LirBasicBlock("entry", List.of(
+                new AwaitInsn("0", "target"),
+                new ReturnInsn(null)
+        )));
+
+        var cls = new LirClassDef("Hero", "Node", false, false, Map.of(), List.of(), List.of(), List.of(fn));
+        var module = new LirModule("m", List.of(cls));
+        var xml = new DomLirSerializer().serializeToString(module);
+
+        assertTrue(xml.contains("is_coroutine=\"true\""), xml);
+        assertTrue(xml.contains("$0 = await $target;"), xml);
+
+        var parsed = new DomLirParser(new gd.script.gdcc.scope.ClassRegistry(
+                gd.script.gdcc.gdextension.ExtensionApiLoader.loadDefault()
+        )).parse(xml);
+        var parsedFn = parsed.getClassDefs().getFirst().getFunctions().getFirst();
+        assertTrue(parsedFn.isCoroutine());
+        var parsedBlock = parsedFn.getBasicBlock("entry");
+        assertNotNull(parsedBlock);
+        var awaitInsn = assertInstanceOf(AwaitInsn.class, parsedBlock.getNonTerminatorInstructions().getFirst());
+        assertAll(
+                () -> assertEquals("0", awaitInsn.resultId()),
+                () -> assertEquals("target", awaitInsn.operandId())
+        );
+    }
+
+    @Test
+    public void serialize_module_coroutineDefaultsToFalseAndRoundTrips() throws Exception {
+        // Plain sync function: attribute serializes as false and parses back false.
+        var fn = new LirFunctionDef("sync_fn", "entry");
+        fn.addBasicBlock(new LirBasicBlock("entry", List.of(new ReturnInsn(null))));
+
+        var cls = new LirClassDef("Hero", "Node", false, false, Map.of(), List.of(), List.of(), List.of(fn));
+        var module = new LirModule("m", List.of(cls));
+        var xml = new DomLirSerializer().serializeToString(module);
+
+        assertTrue(xml.contains("is_coroutine=\"false\""), xml);
+
+        var parsed = new DomLirParser(new gd.script.gdcc.scope.ClassRegistry(
+                gd.script.gdcc.gdextension.ExtensionApiLoader.loadDefault()
+        )).parse(xml);
+        var parsedFn = parsed.getClassDefs().getFirst().getFunctions().getFirst();
+        assertFalse(parsedFn.isCoroutine());
+    }
+
+    @Test
+    public void serialize_module_coroStateVariableRoundTripsThroughXml() throws Exception {
+        // A coroutine function holding a `compiler::GdccCoroState` local (the static-path await
+        // operand shape): the variable must serialize with the compiler-only type text and parse
+        // back to the same singleton type.
+        var fn = new LirFunctionDef("wait_step", "entry");
+        fn.setCoroutine(true);
+        fn.createAndAddVariable("state", gd.script.gdcc.type.GdccCoroStateType.CORO_STATE);
+        fn.createAndAddVariable("0", GdVariantType.VARIANT);
+        fn.addBasicBlock(new LirBasicBlock("entry", List.of(
+                new AwaitInsn("0", "state"),
+                new ReturnInsn(null)
+        )));
+
+        var cls = new LirClassDef("Hero", "Node", false, false, Map.of(), List.of(), List.of(), List.of(fn));
+        var module = new LirModule("m", List.of(cls));
+        var xml = new DomLirSerializer().serializeToString(module);
+
+        assertTrue(xml.contains("type=\"compiler::GdccCoroState\""), xml);
+
+        var parsed = new DomLirParser(new gd.script.gdcc.scope.ClassRegistry(
+                gd.script.gdcc.gdextension.ExtensionApiLoader.loadDefault()
+        )).parse(xml);
+        var parsedFn = parsed.getClassDefs().getFirst().getFunctions().getFirst();
+        assertAll(
+                () -> assertTrue(parsedFn.isCoroutine()),
+                () -> assertEquals(gd.script.gdcc.type.GdccCoroStateType.CORO_STATE,
+                        java.util.Objects.requireNonNull(parsedFn.getVariableById("state")).type()),
+                () -> assertInstanceOf(AwaitInsn.class,
+                        parsedFn.getBasicBlock("entry").getNonTerminatorInstructions().getFirst())
         );
     }
 }

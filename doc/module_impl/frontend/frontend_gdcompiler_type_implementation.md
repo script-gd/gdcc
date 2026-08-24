@@ -88,8 +88,9 @@
 - `getCDestroyHelperName()`：destroy helper 名称
 - `isPassedByPointerInC()`：C helper 传参形状
 - `getCCopyHelperName()`：deep-copy helper 名称；当前空字符串仅表示“没有专用 copy helper”
+- `isCopyable()`：是否存在任何 copy 通道；move-only 类型（`GdccCoroStateType`）返回 `false`
 - `isDirectStructAssignmentSafe()`：是否允许 direct struct assignment
-- `validateCStorageContract()`：用于 consumer 侧 fail-fast 的一致性校验入口
+- `validateCStorageContract()`：用于 consumer 侧 fail-fast 的一致性校验入口（move-only 类型要求 `isCopyable() == false`、无 copy helper 且禁止 direct struct assignment）
 
 共享默认合同已经冻结为：
 
@@ -103,6 +104,19 @@ consumer 必须优先读取显式语义方法，而不是继续通过 `getTypeNa
 ### 2.2 `GdccForRangeIterType` 当前事实
 
 `GdccForRangeIterType` / `GdccForFloatIterType` 为 POD 状态（direct struct assignment）；其余 for-iterator state 含 refcounted 载荷，`isDirectStructAssignmentSafe() == false` 并提供 `gdcc_*_copy` helper。所有扩展规则以 `GdCompilerType` 抽象层为准，而不是继续复制某一 concrete type 的散点特判。
+
+### 2.3 `GdccCoroStateType` 当前事实
+
+协程状态对象引用类型（方案 A 合同，语义真源为 `gdcc_low_ir.md` §Coroutine Instructions 与 `gdcc_ownership_lifecycle_spec.md` §3.10；本节只登记类型边界事实）：
+
+- 定位：静态协程 `call_method` 产出的 OWNED 状态对象引用的擦除标记类型；只承载「OWNED 状态引用 + C 存储映射 + 所有权类别」，不携带 callee 身份与返回类型（typed 取值经运行时 desc 回调完成）。
+- LIR text：`compiler::GdccCoroState`（`GdccCoroStateType.LIR_TYPE_TEXT`），仅 `LirTypeUseSite.FUNCTION_VARIABLE` 可解析。
+- C storage：`godot_Object*`——唯一特许的非 `gdcc_*` 存储名，因为值本身就是 engine 对象引用；init/destroy helper 仍为 `gdcc_*`（`gdcc_coro_state_slot_init` 为 nullary call-and-assign 形态、`gdcc_coro_state_slot_destroy` 按地址取 `godot_Object **`，声明于 `gdcc_coroutine.h`）。
+- copy/assignment：move-only（`isCopyable() == false`），禁止 direct struct assignment 与 copy helper；任何 copy 尝试在 codegen 边界 fail-fast（`CGenHelper.renderCopyAssignFunctionName` 与 `CBodyBuilderAliasSafetySupport`）。
+- 传参形状：init 为 nullary call-and-assign；destroy 按地址传 `godot_Object **`（与 `isPassedByPointerInC()` 默认一致）。
+- 单消费者规则：仅 `await`（消费后置 moved-from `NULL`）与 `destruct`（释放引用）可消费；禁止 assign/copy、Variant pack/unpack、参数、return、property、容器存储与 `ref`（拦截复用既有 `LirPublicAbiValidator`、`InsnGenSupport` pack/unpack 边界与 move-only codegen 防线，无新增机制）。
+- 新 runtime helper：上述两个 slot helper（runtime 合同迁移的其余项见 `frontend_await_minicoro_plan.md` 第四步）。
+- 同步点：`GdCompilerType` permits、`DomLirParser.tryParseCompilerOnlyType` 注册、`GdCompilerTypeTest`（permits/storage 例外/move-only 合同）、`GdccCoroStateTypeTest`、LIR parser/serializer 与 ABI validator 测试锚点。
 
 ---
 
@@ -253,7 +267,7 @@ compiler-only 泄漏的错误信息应继续保持明确语义，例如 `compile
 
 当前与 compiler-only type 合同直接相关的稳定测试锚点包括：
 
-- 类型协议：`GdCompilerTypeTest`、`GdccForRangeIterTypeTest`
+- 类型协议：`GdCompilerTypeTest`、`GdccForRangeIterTypeTest`、`GdccCoroStateTypeTest`
 - frontend 边界：`FrontendVariantBoundaryCompatibilityTest`、`FrontendLocalTypeStabilizationAnalyzerTest`、`FrontendTypeCheckAnalyzerTest`、`FrontendBodyLoweringSessionTest`、`FrontendLoweringBodyInsnPassTest`、`FrontendWritableTypeWritebackSupportTest`
 - LIR parser / serializer / validator：`DomLirParserTest`、`DomLirSerializerTest`、`LirPublicAbiValidatorTest`、`SimpleLirBlockInsnParserTest`、`SimpleLirBlockInsnSerializerTest`
 - backend / intrinsic：`CGenHelperTest`、`CBodyBuilderPhaseBTest`、`CBodyBuilderPhaseCTest`、`CDestructInsnGenTest`、`CBodyBuilderAliasSafetySupportTest`、`CCodegenTest`、`CIntrinsicManagerTest`、`CallIntrinsicInsnGenTest`、`GdccForRangeIterIntrinsicTest`

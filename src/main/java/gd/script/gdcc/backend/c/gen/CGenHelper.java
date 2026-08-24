@@ -1031,6 +1031,14 @@ public final class CGenHelper {
         return switch (type) {
             case GdCompilerType compilerType -> {
                 compilerType.validateCStorageContract();
+                if (!compilerType.isCopyable()) {
+                    // Move-only types (e.g. GdccCoroState) have no copy channel at all; an assign
+                    // reaching this point is a contract violation and must not degrade into an
+                    // empty helper name in generated C.
+                    throw new IllegalArgumentException(
+                            "Move-only compiler-only type '" + compilerType.getTypeName()
+                                    + "' does not support copy assignment");
+                }
                 yield compilerType.getCCopyHelperName();
             }
             case GdObjectType _, GdPrimitiveType _ -> "";

@@ -21,6 +21,12 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
     private boolean isLambda;
     private boolean isVararg;
     private boolean isHidden;
+    /// Stackful-coroutine marker (contract: `gdcc_low_ir.md` §Functions). Defaults to `false`;
+    /// like `entryBlockId` it is not part of the bulk constructors and is set via setter.
+    /// Serialized as the XML function attribute `is_coroutine` (missing ⇔ `false`). The backend
+    /// generates entry thunk + minicoro body + hidden state class only when true, and `await`
+    /// instructions may only appear inside such functions.
+    private boolean isCoroutine;
     private Map<String, String> annotations;
     private final List<LirParameterDef> parameters;
     private final Map<String, LirCaptureDef> captures;
@@ -161,6 +167,17 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
 
     public void setHidden(boolean hidden) {
         isHidden = hidden;
+    }
+
+    /// Whether this function is a stackful coroutine (XML `is_coroutine`; default `false`).
+    public boolean isCoroutine() {
+        return isCoroutine;
+    }
+
+    /// Sets the coroutine marker. Frontend lowering sets this when semantic analysis proved the
+    /// function body suspends; the value is consumed by the C backend's coroutine codegen path.
+    public void setCoroutine(boolean coroutine) {
+        this.isCoroutine = coroutine;
     }
 
     public @NotNull Map<String, String> getAnnotations() {

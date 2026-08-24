@@ -9,6 +9,7 @@ import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.lir.LirSignalDef;
 import gd.script.gdcc.lir.insn.ReturnInsn;
+import gd.script.gdcc.type.GdccCoroStateType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
@@ -33,6 +34,27 @@ class LirPublicAbiValidatorTest {
         var module = new LirModule("m", List.of(newClassWith(function)));
 
         assertDoesNotThrow(() -> validator.validateModule(module));
+    }
+
+    @Test
+    @DisplayName("coroutine state type is legal on locals but rejected on function return")
+    void coroStateTypeFollowsSameCompilerOnlyBoundaries() {
+        // Positive: the erased coroutine-state type on a function-local variable is the one
+        // legal use site (LirTypeUseSite.FUNCTION_VARIABLE).
+        var localFn = newFunction("consume_state");
+        localFn.createAndAddVariable("state", GdccCoroStateType.CORO_STATE);
+        assertDoesNotThrow(() -> validator.validateModule(new LirModule("m", List.of(newClassWith(localFn)))));
+
+        // Negative: the same type on a function return surface is an ABI leak, even for hidden
+        // functions (hidden is not a backdoor around the ABI validator).
+        var returnFn = newFunction("produce_state");
+        returnFn.setHidden(true);
+        returnFn.setReturnType(GdccCoroStateType.CORO_STATE);
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> validator.validateModule(new LirModule("m", List.of(newClassWith(returnFn))))
+        );
+        assertTrue(exception.getMessage().contains("compiler-only type leaked into function return"), exception.getMessage());
     }
 
     @Test

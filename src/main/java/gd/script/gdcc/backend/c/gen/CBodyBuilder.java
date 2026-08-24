@@ -1025,7 +1025,7 @@ public final class CBodyBuilder {
 
         // Value-semantic types: need to copy
         // For String, StringName, Variant, Array, Dictionary, etc.
-        var copyFunc = helper.renderCopyAssignFunctionName(type);
+        var copyFunc = requireCopyAssignFunctionName(type);
         if (!copyFunc.isEmpty()) {
             // This is the proven-no-alias fast path used when the destination slot can consume the
             // copy result directly. may-alias overwrite routes must stage a separate stable carrier
@@ -1049,12 +1049,12 @@ public final class CBodyBuilder {
                 target,
                 value,
                 value.type(),
-                !helper.renderCopyAssignFunctionName(value.type()).isEmpty()
+                !requireCopyAssignFunctionName(value.type()).isEmpty()
         )) {
             return PreparedAssignmentRhs.ordinary(rhsResult);
         }
 
-        var copyFunc = helper.renderCopyAssignFunctionName(value.type());
+        var copyFunc = requireCopyAssignFunctionName(value.type());
         if (copyFunc.isEmpty()) {
             throw new IllegalStateException(
                     "Alias-safe stable carrier requires copy helper for type '" + value.type().getTypeName() + "'"
@@ -1097,7 +1097,7 @@ public final class CBodyBuilder {
         }
 
         // Value-semantic types: need to copy for return
-        var copyFunc = helper.renderCopyAssignFunctionName(type);
+        var copyFunc = requireCopyAssignFunctionName(type);
         if (!copyFunc.isEmpty()) {
             // Generate copy: godot_new_<Type>_with_<Type>(source_ptr)
             var sourcePtr = renderValueAddress(value);
@@ -1105,6 +1105,19 @@ public final class CBodyBuilder {
         }
 
         return new RenderResult(code, List.of());
+    }
+
+    /// Fetches the copy-assign helper name, translating contract violations into instruction
+    /// errors. `renderCopyAssignFunctionName` throws `IllegalArgumentException` for move-only
+    /// compiler-only types (e.g. `GdccCoroState`); at the instruction boundary that is an invalid
+    /// LIR instruction (single-consumer contract: `gdcc_low_ir.md` §Coroutine Instructions), so it
+    /// must surface as `InvalidInsnException` carrying function/block context.
+    private @NotNull String requireCopyAssignFunctionName(@NotNull GdType type) {
+        try {
+            return helper.renderCopyAssignFunctionName(type);
+        } catch (IllegalArgumentException ex) {
+            throw invalidInsn(ex.getMessage());
+        }
     }
 
     /// Compiler-only direct assignment is an explicit protocol, not an empty-helper side effect.

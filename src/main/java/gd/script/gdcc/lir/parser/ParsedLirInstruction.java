@@ -208,6 +208,21 @@ public record ParsedLirInstruction(
                     yield new CallIntrinsicInsn(resultId, iname, args);
                 }
 
+                case AWAIT -> {
+                    // Result is required by LIR contract; fail parse instead of NPE from the record.
+                    // Missing/extra/non-VARIABLE operands are already rejected by the generic shape
+                    // checks in SimpleLirBlockInsnParser from the GdInstruction metadata. This layer
+                    // only guarantees syntactic shape: operand type dispatch, result variable type,
+                    // single-consumer ownership, and the isCoroutine placement rule are all deferred
+                    // to the backend generator / validators.
+                    if (resultId == null) {
+                        throw new LirInsnParsingException(
+                                lineNumber, columnNumber, lirLine,
+                                "await requires a result variable");
+                    }
+                    yield new AwaitInsn(resultId, ((VariableOperand) operands.getFirst()).id());
+                }
+
                 case LOAD_PROPERTY ->
                         new LoadPropertyInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id());
                 case STORE_PROPERTY ->

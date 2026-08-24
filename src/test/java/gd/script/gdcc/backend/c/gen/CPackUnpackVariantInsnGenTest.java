@@ -16,6 +16,7 @@ import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccCoroStateType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
@@ -275,6 +276,54 @@ public class CPackUnpackVariantInsnGenTest {
         var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
         assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("compiler-only type leaked into Variant unpack target: GdccForRangeIter"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("pack_variant should reject coroutine state source")
+    void packVariantShouldRejectCoroStateSource() {
+        // Negative: the erased coroutine state type must never cross the Variant boundary.
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("pack_coro_state");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("result", GdVariantType.VARIANT);
+        func.createAndAddVariable("state", GdccCoroStateType.CORO_STATE);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new PackVariantInsn("result", "state"));
+        entry.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into Variant pack source variable 'state'"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("unpack_variant should reject coroutine state target")
+    void unpackVariantShouldRejectCoroStateTarget() {
+        // Negative: a Variant can never materialize a coroutine state reference.
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("unpack_coro_state");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("state", GdccCoroStateType.CORO_STATE);
+        func.createAndAddVariable("variant", GdVariantType.VARIANT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new UnpackVariantInsn("state", "variant"));
+        entry.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into Variant unpack target: GdccCoroState"), ex.getMessage());
     }
 
     private ExtensionAPI emptyApi() {

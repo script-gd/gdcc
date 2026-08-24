@@ -14,6 +14,7 @@ import gd.script.gdcc.backend.c.gen.intrinsic.foriter.CForVariantIterIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.foriter.CForVariantIterRawInitIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.conversion.CIntToFloatIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.conversion.CVectorIToVectorIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.coro.CCoroStateRawInitIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.foriter.packed.CForPackedArrayIterIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.foriter.packed.CForPackedArrayIterRawInitIntrinsic;
 import org.jetbrains.annotations.NotNull;
@@ -38,6 +39,7 @@ public final class CIntrinsicManager {
         put(entries, new CForArrayIterRawInitIntrinsic());
         put(entries, new CForDictionaryIterRawInitIntrinsic());
         put(entries, new CForFloatIterRawInitIntrinsic());
+        put(entries, new CCoroStateRawInitIntrinsic());
         put(entries, CForRangeIterIntrinsic.init());
         put(entries, CForRangeIterIntrinsic.shouldContinue());
         put(entries, CForRangeIterIntrinsic.next());

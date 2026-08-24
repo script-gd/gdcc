@@ -35,6 +35,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccCoroStateType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdFloatType;
@@ -315,6 +316,46 @@ public class CCodegenTest {
         assertTrue(cCode.contains("gdcc_for_range_iter $iter;"), cCode);
         assertTrue(cCode.contains("$iter = gdcc_for_range_iter_init();"), cCode);
         assertFalse(cCode.contains("godot_new_GdccForRangeIter"), cCode);
+    }
+
+    @Test
+    public void generateShouldEmitCoroStatePrepareInitCallForLocalVariables() {
+        // Coroutine state locals use the godot_Object* storage with the call-and-assign slot
+        // init helper; no fake godot_* constructor must appear.
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var func = new LirFunctionDef("prepare_coro_state_local");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("state", GdccCoroStateType.CORO_STATE);
+        var entryBlock = new LirBasicBlock("entry");
+        entryBlock.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entryBlock);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("coro_state_prepare", List.of(workerClass));
+        var classRegistry = new ClassRegistry(new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        ));
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var files = codegen.generate();
+        var cCode = generatedFileText(files, "entry.c");
+
+        assertTrue(cCode.contains("godot_Object* $state;"), cCode);
+        assertTrue(cCode.contains("$state = gdcc_coro_state_slot_init();"), cCode);
+        assertFalse(cCode.contains("godot_new_GdccCoroState"), cCode);
     }
 
     @Test

@@ -8,7 +8,7 @@
     - Container types: `GdArrayType`, `GdDictionaryType`, and `GdPacked*` variants.
 - Object/reference types: `GdObjectType`, `GdNodePathType`, `GdRidType`, `GdSignalType`, `GdCallableType`.
 - Meta/extension types: `GdMetaType`, `GdExtensionTypeEnum` for annotations and extension points.
-- Compiler-only types: `GdCompilerType` as the shared abstraction for backend-only storage types (for-iter state types including per-family `GdccForPackedArrayIterType` instances, etc.).
+- Compiler-only types: `GdCompilerType` as the shared abstraction for backend-only storage types (for-iter state types including per-family `GdccForPackedArrayIterType` instances, the coroutine state reference `GdccCoroStateType`, etc.).
 
 ## Compiler-only Types
 
@@ -19,6 +19,13 @@
   - ordinary user-facing semantic facts such as `expressionTypes()` and ordinary slot typing must not expose them
 - Concrete `GdCompilerType` examples include `GdccForRangeIterType` and per-family
   `GdccForPackedArrayIterType` instances (one state type per Packed*Array family).
+- `GdccCoroStateType` (`compiler::GdccCoroState`) is the erased marker type for an OWNED
+  coroutine state object reference: C storage is the engine pointer `godot_Object*` (the sole
+  sanctioned non-`gdcc_*` storage name, since the value genuinely wraps an engine object
+  reference; init/destroy helpers remain `gdcc_*`). It is move-only — no copy channel exists
+  (`isCopyable() == false`), and only `await` / `destruct` may consume the value. Full
+  semantics: `gdcc_low_ir.md` §Coroutine Instructions and `gdcc_ownership_lifecycle_spec.md`
+  §3.10.
 - Compiler-only types may participate in LIR/backend-local assignment and intrinsic contracts, but they are outside the ordinary frontend assignment/conversion matrix.
 
 ## Major Types (Summary)
