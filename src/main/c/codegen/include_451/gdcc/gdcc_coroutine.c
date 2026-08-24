@@ -216,36 +216,51 @@ void gdcc_coro_await_signal(godot_Signal *sig, godot_Variant *out, mco_coro *co,
 
 /// Registration outcome of the own-state waiter channel.
 typedef enum gdcc_coro_wait_reg {
-    GDCC_CORO_WAIT_DONE,       // result copied from result_cache, no suspend
+    GDCC_CORO_WAIT_DONE,       // result copied (typed slot or result_cache), no suspend
     GDCC_CORO_WAIT_REGISTERED, // waiter registered; caller must cut its callee edge + yield
-    GDCC_CORO_WAIT_FAILED      // runtime error reported + nil written, no suspend
+    GDCC_CORO_WAIT_FAILED      // runtime error reported, no suspend
 } gdcc_coro_wait_reg;
+
+/// Failure-path output policy: Variant channels resume with nil, while typed channels leave
+/// the awaiter's slot untouched so it keeps its `__prepare__` default (there is no typed
+/// nil to write). The caller reports the actual runtime error.
+static void gdcc_coro_wait_fail_out(gdcc_coro_waiter_kind kind, void *out) {
+    if (kind == GDCC_CORO_WAITER_VARIANT) {
+        memset(out, 0, sizeof(godot_Variant)); // nil
+    }
+}
 
 /// Shared core of the own-state waiter channel. Single-threaded: the check-then-register
 /// sequence is atomic, so there is no connect-after-done window.
-static gdcc_coro_wait_reg gdcc_coro_register_waiter(gdcc_coro_state_header *callee, godot_Variant *out, mco_coro *co, gdcc_coro_state_header *self) {
+static gdcc_coro_wait_reg gdcc_coro_register_waiter(gdcc_coro_state_header *callee, gdcc_coro_waiter_kind kind, void *out, mco_coro *co, gdcc_coro_state_header *self) {
     if (callee->done) {
         // Connect-after-done fast path: copy while the caller's reference keeps the callee
-        // alive; the caller releases that reference right after.
-        godot_variant_new_copy(out, &callee->result_cache);
+        // alive; the caller releases that reference right after. Typed waiters read the
+        // still-alive typed return slot; Variant waiters read the cached result Variant.
+        if (kind == GDCC_CORO_WAITER_TYPED) {
+            callee->desc->copy_ret_slot(callee, out);
+        } else {
+            godot_variant_new_copy(out, &callee->result_cache);
+        }
         return GDCC_CORO_WAIT_DONE;
     }
     if (callee->cancel) {
         // Unreachable by construction (the caller holds a callee reference, so PREDELETE
         // cannot have run); kept as a defensive guard because a cancelled callee never
         // resumes its waiters - suspending here would hang the awaiter forever.
-        GDCC_PRINT_RUNTIME_ERROR("gdcc: await on an abandoned coroutine state; resuming with nil without suspending",
+        GDCC_PRINT_RUNTIME_ERROR("gdcc: await on an abandoned coroutine state; resuming without suspending",
                 "gdcc_coro_register_waiter", NULL, 0);
-        memset(out, 0, sizeof(godot_Variant)); // nil
+        gdcc_coro_wait_fail_out(kind, out);
         return GDCC_CORO_WAIT_FAILED;
     }
     gdcc_coro_waiter *waiter = godot_mem_alloc(sizeof(gdcc_coro_waiter));
     if (waiter == NULL) {
         GDCC_PRINT_RUNTIME_ERROR("gdcc: out of memory allocating coroutine waiter",
                 "gdcc_coro_register_waiter", NULL, 0);
-        memset(out, 0, sizeof(godot_Variant)); // nil
+        gdcc_coro_wait_fail_out(kind, out);
         return GDCC_CORO_WAIT_FAILED;
     }
+    waiter->kind = kind;
     waiter->co = co;
     waiter->out = out;
     waiter->awaiter = (self != NULL) ? self->obj : NULL;
@@ -259,14 +274,16 @@ static gdcc_coro_wait_reg gdcc_coro_register_waiter(gdcc_coro_state_header *call
     return GDCC_CORO_WAIT_REGISTERED;
 }
 
-void gdcc_coro_await_state(gdcc_coro_state_header *callee, godot_Variant *out, mco_coro *co, gdcc_coro_state_header *self) {
+void gdcc_coro_await_state(gdcc_coro_state_header *callee, void *out_typed, mco_coro *co, gdcc_coro_state_header *self) {
     if (callee == NULL) {
-        GDCC_PRINT_RUNTIME_ERROR("gdcc: await on a null coroutine state; resuming with nil without suspending",
+        // Compiler bug by the single-consumer LIR contract (only state references or NULL
+        // may reach the slot, and await rejects a moved-from NULL). Report and keep the
+        // awaiter's default-initialized slot untouched.
+        GDCC_PRINT_RUNTIME_ERROR("gdcc: await on a null coroutine state; resuming without suspending",
                 "gdcc_coro_await_state", NULL, 0);
-        memset(out, 0, sizeof(godot_Variant)); // nil
         return;
     }
-    const gdcc_coro_wait_reg reg = gdcc_coro_register_waiter(callee, out, co, self);
+    const gdcc_coro_wait_reg reg = gdcc_coro_register_waiter(callee, GDCC_CORO_WAITER_TYPED, out_typed, co, self);
     // Consume contract: the call site's OWNED callee reference is always released here.
     // On the registered path it happens BEFORE the yield, so the awaiter never holds the
     // callee across a suspension - the keep-alive graph stays a DAG (callee -> awaiter
@@ -305,8 +322,9 @@ void gdcc_coro_await_dynamic(godot_Variant *operand, godot_Variant *out, mco_cor
             }
             gdcc_coro_state_header *callee = gdcc_coro_state_identify(obj);
             if (callee != NULL) {
-                // Own state object: direct C-level waiter channel, no Signal mechanism.
-                const gdcc_coro_wait_reg reg = gdcc_coro_register_waiter(callee, out, co, self);
+                // Own state object: direct C-level waiter channel, no Signal mechanism. The
+                // dynamic path always awaits through the Variant channel.
+                const gdcc_coro_wait_reg reg = gdcc_coro_register_waiter(callee, GDCC_CORO_WAITER_VARIANT, out, co, self);
                 if (reg == GDCC_CORO_WAIT_REGISTERED) {
                     // Cut the operand's callee reference and reset it to nil BEFORE yielding
                     // (the destroy performs the release): the awaiter frame must not hold
@@ -355,18 +373,23 @@ void gdcc_coro_finalize(gdcc_coro_state_header *state) {
         // on the same state a no-op (finalize is re-entrant by design).
         return;
     }
-    // (1) Pack the typed return slot into result_cache and zero the slot.
+    // (1) Copy the typed return slot into result_cache (the slot itself stays alive for
+    // typed waiters and the done fast path).
     state->desc->pack_result(state);
     // (2) Publish done: done/result_cache must be visible before any resume or emit.
     state->done = true;
-    // (3) Pop waiters: one private result copy each, resume FIRST, then release the edge
-    // (releasing before the resume could drop the awaiter's last keep-alive edge
-    // mid-flight). The node is already unlinked, so waiter resumes may safely cascade
-    // nested finalizes on their own states.
+    // (3) Pop waiters: one private result copy each, dispatched by waiter kind, resume
+    // FIRST, then release the edge (releasing before the resume could drop the awaiter's
+    // last keep-alive edge mid-flight). The node is already unlinked, so waiter resumes
+    // may safely cascade nested finalizes on their own states.
     while (state->waiters != NULL) {
         gdcc_coro_waiter *waiter = state->waiters;
         state->waiters = waiter->next;
-        godot_variant_new_copy(waiter->out, &state->result_cache);
+        if (waiter->kind == GDCC_CORO_WAITER_TYPED) {
+            state->desc->copy_ret_slot(state, waiter->out);
+        } else {
+            godot_variant_new_copy((godot_Variant *)waiter->out, &state->result_cache);
+        }
         mco_resume(waiter->co);
         // Resume return point contract: cascade finalize when the waiter's coroutine
         // returned MCO_DEAD. The strong edge is only released afterwards, so the awaiter
@@ -408,9 +431,7 @@ void gdcc_coro_cancel(gdcc_coro_state_header *state) {
         }
         godot_mem_free(waiter);
     }
-    // Destroy the cancel-path default written into the typed return slot in place; the
-    // generated callback tolerates a never-written slot (e.g. co == NULL above).
-    if (state->desc->destroy_ret_slot != NULL) {
-        state->desc->destroy_ret_slot(state);
-    }
+    // The typed return slot is deliberately NOT destroyed here: whatever the cancel-path
+    // `__finally__` wrote into it is destroyed by the generated `free_instance` (exactly
+    // one `desc->destroy_ret_slot` per state, tolerating never-written slots).
 }

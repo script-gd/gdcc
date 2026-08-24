@@ -33,6 +33,7 @@ public final class CBodyBuilder {
     private final @NotNull LirClassDef clazz;
     private final @NotNull LirFunctionDef func;
     private final @NotNull GodotBindingUsageBuffer usageBuffer;
+    private final @Nullable CCoroutineFrameContext coroContext;
     private final @NotNull StringBuilder out = new StringBuilder();
 
     private @Nullable LirBasicBlock currentBlock;
@@ -51,10 +52,52 @@ public final class CBodyBuilder {
                  @NotNull LirClassDef clazz,
                  @NotNull LirFunctionDef func,
                  @NotNull GodotBindingUsageBuffer usageBuffer) {
+        this(helper, clazz, func, usageBuffer, null);
+    }
+
+    CBodyBuilder(@NotNull CGenHelper helper,
+                 @NotNull LirClassDef clazz,
+                 @NotNull LirFunctionDef func,
+                 @NotNull GodotBindingUsageBuffer usageBuffer,
+                 @Nullable CCoroutineFrameContext coroContext) {
         this.helper = Objects.requireNonNull(helper);
         this.clazz = Objects.requireNonNull(clazz);
         this.func = Objects.requireNonNull(func);
         this.usageBuffer = Objects.requireNonNull(usageBuffer);
+        this.coroContext = coroContext;
+    }
+
+    /// True while rendering a `__coro_body` function: parameters live in typed frame fields
+    /// (no C slots), `_co` / the state header are addressable, and `__finally__` consumes
+    /// `_return_val` into the frame's typed return slot instead of a plain C return.
+    public boolean isCoroutineBody() {
+        return coroContext != null;
+    }
+
+    public @Nullable CCoroutineFrameContext coroutineContext() {
+        return coroContext;
+    }
+
+    /// Parameters of a coroutine body map to typed frame fields (ownership spec §3.10).
+    /// Public for instruction generators that must not apply the borrowed-ref rejection to them.
+    public boolean isCoroutineFrameParameter(@NotNull LirVariable variable) {
+        return coroContext != null && func.checkVariableParameter(variable.id());
+    }
+
+    /// C storage expression of a variable: `$<id>` for ordinary slots, the typed frame field
+    /// for parameters of a coroutine body (no parameter C slots exist there).
+    private @NotNull String renderVariableStorageExpr(@NotNull LirVariable variable) {
+        if (isCoroutineFrameParameter(variable)) {
+            return CCoroutineFrameContext.paramFieldAccessExpr(variable);
+        }
+        return "$" + variable.id();
+    }
+
+    /// Whether the variable keeps reference (pointer) semantics in generated C. Coroutine
+    /// parameters lose it: their frame fields are ordinary owning storage, so reads/writes /
+    /// address-of / argument passing follow the non-ref rules.
+    public boolean isEffectivelyRef(@NotNull LirVariable variable) {
+        return variable.ref() && !isCoroutineFrameParameter(variable);
     }
 
     public @NotNull CBodyBuilder setCurrentPosition(@NotNull LirBasicBlock block,
@@ -249,7 +292,7 @@ public final class CBodyBuilder {
     /// Reads from locals/parameters/fields remain `BORROWED` producers even when the value later
     /// needs pointer-shape conversion, because the conversion changes representation only.
     public @NotNull ValueRef valueOfVar(@NotNull LirVariable variable) {
-        return new VarValue(variable, resolvePtrKind(variable.type()));
+        return new VarValue(variable, resolvePtrKind(variable.type()), renderVariableStorageExpr(variable));
     }
 
     /// Creates a value reference by explicitly casting a variable expression to `castType`.
@@ -262,7 +305,7 @@ public final class CBodyBuilder {
             if (sourceObjectType.getTypeName().equals(targetObjectType.getTypeName())) {
                 return valueOfVar(variable);
             }
-            var sourceCode = "$" + variable.id();
+            var sourceCode = renderVariableStorageExpr(variable);
             var convertedCode = convertObjectValueIfNeeded(
                     sourceCode,
                     PtrKind.FAT_PTR,
@@ -276,7 +319,7 @@ public final class CBodyBuilder {
                     sourceType.getTypeName() + "' -> '" + castType.getTypeName() + "'");
         }
         var castTypeCode = helper.renderGdTypeInC(castType);
-        var castExpr = "(" + castTypeCode + ")$" + variable.id();
+        var castExpr = "(" + castTypeCode + ")" + renderVariableStorageExpr(variable);
         return valueOfExpr(castExpr, castType);
     }
 
@@ -344,11 +387,13 @@ public final class CBodyBuilder {
     /// Creates a target reference from a variable.
     ///
     /// Throws InvalidInsnException if the variable is a reference variable (ref=true).
+    /// Coroutine frame parameters are exempt: their `ref` flag describes the borrowed thunk
+    /// boundary, while the frame field itself is writable owning storage (§3.10).
     public @NotNull TargetRef targetOfVar(@NotNull LirVariable variable) {
-        if (variable.ref()) {
+        if (variable.ref() && !isCoroutineFrameParameter(variable)) {
             throw invalidInsn("Cannot assign to reference variable '" + variable.id() + "'");
         }
-        return new VarTargetRef(variable);
+        return new VarTargetRef(variable, renderVariableStorageExpr(variable), isEffectivelyRef(variable));
     }
 
     /// Creates an assignment-only target reference from a raw C lvalue expression.
@@ -724,7 +769,30 @@ public final class CBodyBuilder {
         if (returnType instanceof GdVoidType) {
             throw invalidInsn("Cannot return " + RETURN_SLOT_NAME + " from void function");
         }
+        if (coroContext != null) {
+            return returnTerminalCoroutine(returnType);
+        }
         out.append("return ").append(RETURN_SLOT_NAME).append(";\n");
+        return this;
+    }
+
+    /// Coroutine-body terminal: consume `_return_val` into the frame's typed return slot
+    /// (move semantics - `_return_val` is considered cleared afterwards, matching the ordinary
+    /// move-return contract) and return from the `void __coro_body` C function. `__finally__`
+    /// runs exactly once per coroutine lifetime (normal completion or cancel-resume), so the
+    /// destroy-before-overwrite guard for destroyable types is defensive by design.
+    private @NotNull CBodyBuilder returnTerminalCoroutine(@NotNull GdType returnType) {
+        if (returnType.isDestroyable()) {
+            var destroyOldStmt = helper.renderLambdaCaptureFreeStmt(returnType, CCoroutineFrameContext.retFieldExpr());
+            if (!destroyOldStmt.isEmpty()) {
+                out.append("if (").append(CCoroutineFrameContext.retInitializedExpr()).append(") {\n");
+                out.append(destroyOldStmt).append("\n");
+                out.append("}\n");
+            }
+        }
+        out.append(CCoroutineFrameContext.retFieldExpr()).append(" = ").append(RETURN_SLOT_NAME).append(";\n");
+        out.append(CCoroutineFrameContext.retInitializedExpr()).append(" = true;\n");
+        out.append("return;\n");
         return this;
     }
 
@@ -980,7 +1048,7 @@ public final class CBodyBuilder {
         }
 
         // Special handling for variable references that are already refs
-        if (value instanceof VarValue varValue && varValue.variable().ref()) {
+        if (value instanceof VarValue varValue && isEffectivelyRef(varValue.variable())) {
             // ref variables are already pointers, use as-is
             return new RenderResult(value.generateCode(), List.of());
         }
@@ -1169,7 +1237,7 @@ public final class CBodyBuilder {
         switch (value) {
             case VarValue varValue -> {
                 var code = value.generateCode();
-                if (varValue.variable().ref()) {
+                if (isEffectivelyRef(varValue.variable())) {
                     return new RenderResult(code, List.of());
                 }
                 return new RenderResult("&" + code, List.of());
@@ -1475,10 +1543,15 @@ public final class CBodyBuilder {
         }
     }
 
-    public record VarValue(@NotNull LirVariable variable, @NotNull PtrKind ptrKind) implements ValueRef {
+    public record VarValue(@NotNull LirVariable variable, @NotNull PtrKind ptrKind, @NotNull String code) implements ValueRef {
+        public VarValue(@NotNull LirVariable variable, @NotNull PtrKind ptrKind) {
+            this(variable, ptrKind, "$" + variable.id());
+        }
+
         public VarValue {
             Objects.requireNonNull(variable);
             Objects.requireNonNull(ptrKind);
+            Objects.requireNonNull(code);
         }
 
         @Override
@@ -1488,7 +1561,7 @@ public final class CBodyBuilder {
 
         @Override
         public @NotNull String generateCode() {
-            return "$" + variable.id();
+            return code;
         }
     }
 
@@ -1610,9 +1683,14 @@ public final class CBodyBuilder {
         boolean isRef();
     }
 
-    public record VarTargetRef(@NotNull LirVariable variable) implements TargetRef {
+    public record VarTargetRef(@NotNull LirVariable variable, @NotNull String code, boolean effectivelyRef) implements TargetRef {
+        public VarTargetRef(@NotNull LirVariable variable) {
+            this(variable, "$" + variable.id(), variable.ref());
+        }
+
         public VarTargetRef {
             Objects.requireNonNull(variable);
+            Objects.requireNonNull(code);
         }
 
         @Override
@@ -1622,12 +1700,12 @@ public final class CBodyBuilder {
 
         @Override
         public @NotNull String generateCode() {
-            return "$" + variable.id();
+            return code;
         }
 
         @Override
         public boolean isRef() {
-            return variable.ref();
+            return effectivelyRef;
         }
     }
 

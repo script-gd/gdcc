@@ -14,15 +14,42 @@ import java.util.Objects;
 /// `__sub__` is a gdcc-owned reserved sequence. Source-side guard rails, injected top-level
 /// canonical mapping, and inner canonical derivation all read this one fact so source/canonical
 /// spaces stay disjoint.
+///
+/// `_gdcc_coro_state_` is the compiler-owned class-level prefix of hidden coroutine state classes
+/// (canonical derivation formula `_gdcc_coro_state_<canonicalClass>__coro__<func>`, contract:
+/// `doc/module_impl/frontend/gdcc_facing_class_name_contract.md` §1.3); `__coro__` is the reserved
+/// separator inside that formula and is rejected at the same input boundaries as `__sub__`.
 public final class FrontendClassNameContract {
     public static final String INNER_CLASS_CANONICAL_SEPARATOR = "__sub__";
+    public static final String CORO_STATE_CLASS_PREFIX = "_gdcc_coro_state_";
+    public static final String CORO_STATE_CLASS_SEPARATOR = "__coro__";
 
     private FrontendClassNameContract() {
     }
 
     public static boolean containsReservedSequence(@NotNull String name) {
+        return reservedSequenceOrNull(name) != null;
+    }
+
+    /// Returns the first reserved sequence found in `name` (`__sub__` or `__coro__`), or null.
+    /// Function names are NOT subject to this check: the `__coro__` split point of the state-class
+    /// formula is uniquely determined by the class side not containing it (contract §1.3 rule 2).
+    public static String reservedSequenceOrNull(@NotNull String name) {
         Objects.requireNonNull(name, "name must not be null");
-        return name.contains(INNER_CLASS_CANONICAL_SEPARATOR);
+        if (name.contains(INNER_CLASS_CANONICAL_SEPARATOR)) {
+            return INNER_CLASS_CANONICAL_SEPARATOR;
+        }
+        if (name.contains(CORO_STATE_CLASS_SEPARATOR)) {
+            return CORO_STATE_CLASS_SEPARATOR;
+        }
+        return null;
+    }
+
+    /// Class-level reserved prefix for compiler-generated coroutine state classes; user-declared
+    /// class sourceNames must never start with it (contract §1.3 rule 1).
+    public static boolean startsWithCoroStateClassPrefix(@NotNull String name) {
+        Objects.requireNonNull(name, "name must not be null");
+        return name.startsWith(CORO_STATE_CLASS_PREFIX);
     }
 
     /// Derives the implicit top-level source class name used for scripts without `class_name`.
@@ -85,10 +112,10 @@ public final class FrontendClassNameContract {
 
     public static @NotNull String requireNoReservedSequence(@NotNull String name, @NotNull String label) {
         var nonBlankName = StringUtil.requireNonBlank(name, label);
-        if (containsReservedSequence(nonBlankName)) {
+        var reservedSequence = reservedSequenceOrNull(nonBlankName);
+        if (reservedSequence != null) {
             throw new IllegalArgumentException(
-                    label + " must not contain reserved gdcc class-name sequence '"
-                            + INNER_CLASS_CANONICAL_SEPARATOR + "'"
+                    label + " must not contain reserved gdcc class-name sequence '" + reservedSequence + "'"
             );
         }
         return nonBlankName;

@@ -22,6 +22,7 @@ import gd.script.gdcc.type.*;
 import gd.script.gdcc.util.CCodeFormatter;
 import freemarker.template.TemplateException;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -490,6 +491,33 @@ public class CCodegen implements Codegen {
         return true;
     }
 
+    /// Builds the coroutine frame context for a `__coro_body` render, or null for ordinary
+    /// synchronous functions. The state struct name is shared with the state-class templates.
+    private @Nullable CCoroutineFrameContext newCoroutineFrameContext(@NotNull LirClassDef clazz,
+                                                                      @NotNull LirFunctionDef func) {
+        if (!func.isCoroutine()) {
+            return null;
+        }
+        return new CCoroutineFrameContext(helper.renderCoroStateClassName(clazz, func));
+    }
+
+    /// Coroutine marker validation (`gdcc_low_ir.md` §Functions): MVP keeps await out of
+    /// lambdas (plan §3.5 fail-closed boundary), so a lambda carrying `is_coroutine` is
+    /// invalid LIR and fails fast here instead of drifting into state-class generation
+    /// without capture plumbing.
+    private void validateCoroutineMarkers() {
+        for (var classDef : module.getClassDefs()) {
+            for (var func : classDef.getFunctions()) {
+                if (func.isCoroutine() && func.isLambda()) {
+                    throw new IllegalArgumentException(
+                            "Coroutine function '" + func.getName() + "' in class '" + classDef.getName()
+                                    + "' must not be a lambda"
+                    );
+                }
+            }
+        }
+    }
+
     public @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
                                             @NotNull LirFunctionDef func) {
         return generateFuncBody(clazz, func, GodotBindingUsageBuffer.noOp());
@@ -508,7 +536,7 @@ public class CCodegen implements Codegen {
         if (!func.hasBasicBlock(func.getEntryBlockId())) {
             throw new IllegalArgumentException("Function " + func.getName() + " has invalid entry block ID: " + func.getEntryBlockId());
         }
-        var bodyBuilder = new CBodyBuilder(helper, clazz, func, usageBuffer);
+        var bodyBuilder = new CBodyBuilder(helper, clazz, func, usageBuffer, newCoroutineFrameContext(clazz, func));
         emitLambdaCapturePrologue(bodyBuilder, clazz, func);
         // generate blocks
         bodyBuilder.appendRaw("goto " + func.getEntryBlockId() + ";\n");
@@ -588,6 +616,7 @@ public class CCodegen implements Codegen {
         }
         // Validate ABI surfaces before backend synthesizes helpers or touches outward metadata.
         publicAbiValidator.validateModule(module);
+        this.validateCoroutineMarkers();
         this.generateDefaultGetterSetterInitialization();
         this.validatePropertyInitFunctionsReadyForCodegen();
         this.generateFunctionPrepareBlock();

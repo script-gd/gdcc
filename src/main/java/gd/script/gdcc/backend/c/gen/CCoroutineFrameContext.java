@@ -1,0 +1,58 @@
+package gd.script.gdcc.backend.c.gen;
+
+import gd.script.gdcc.lir.LirVariable;
+import org.jetbrains.annotations.NotNull;
+
+import java.util.Objects;
+
+/// Codegen context of one coroutine body function (`is_coroutine="true"`); present on
+/// `CBodyBuilder` only while rendering a `__coro_body` function. Contract:
+/// `doc/module_impl/frontend/frontend_await_minicoro_plan.md` §3.2 and
+/// `doc/gdcc_ownership_lifecycle_spec.md` §3.10.
+///
+/// The C spellings held here are the single source of truth shared by the generated body
+/// (`CBodyBuilder`) and the `entry.c.ftl` / `entry.h.ftl` coroutine sections (via
+/// `CGenHelper`): the state wrapper struct field names, the `_coro_state` frame pointer
+/// local, and the `_co` minicoro parameter of the body function.
+///
+/// Frame layout recap: typed parameter fields are the only owning storage for parameters
+/// (no parameter C slots exist in the body), and the typed return slot plus its initialized
+/// flag live next to the common `gdcc_coro_state_header`.
+public record CCoroutineFrameContext(@NotNull String stateStructName) {
+    /// Body-function local holding the state wrapper pointer (`mco_get_user_data(_co)`).
+    public static final String FRAME_LOCAL = "_coro_state";
+    /// Body-function minicoro parameter.
+    public static final String CO_PARAM = "_co";
+    /// Common header field of the wrapper struct.
+    public static final String HEADER_FIELD = "_coro_header";
+    /// Typed return slot field of the wrapper struct (non-void coroutines only).
+    public static final String RET_FIELD = "_coro_ret";
+    /// Written-flag guarding the typed return slot (non-void coroutines only).
+    public static final String RET_INITIALIZED_FIELD = "_coro_ret_initialized";
+    /// Typed parameter field prefix; the LIR parameter id (= source name) follows verbatim.
+    public static final String PARAM_FIELD_PREFIX = "_coro_param_";
+
+    public CCoroutineFrameContext {
+        Objects.requireNonNull(stateStructName, "stateStructName must not be null");
+    }
+
+    /// C expression of the typed parameter frame field for `variable` (must be a parameter).
+    public static @NotNull String paramFieldAccessExpr(@NotNull LirVariable variable) {
+        return FRAME_LOCAL + "->" + PARAM_FIELD_PREFIX + variable.id();
+    }
+
+    /// C expression of the coroutine's own common header, used by await/cancel rendering.
+    public static @NotNull String selfHeaderExpr() {
+        return "&" + FRAME_LOCAL + "->" + HEADER_FIELD;
+    }
+
+    /// C expression of the typed return slot field.
+    public static @NotNull String retFieldExpr() {
+        return FRAME_LOCAL + "->" + RET_FIELD;
+    }
+
+    /// C expression of the return-slot written flag.
+    public static @NotNull String retInitializedExpr() {
+        return FRAME_LOCAL + "->" + RET_INITIALIZED_FIELD;
+    }
+}

@@ -760,8 +760,19 @@ public final class FrontendClassSkeletonBuilder {
                 true
         );
         discoveredHeadersInOrder.add(topLevelHeader);
-        // Reject the reserved canonical separator at the source boundary so source-space names
-        // stay disjoint from canonical inner identities like `Outer__sub__Inner`.
+        // Reject compiler-owned class-level identities at the source boundary: the coroutine
+        // state-class prefix (contract §1.3 rule 1) and the reserved sequences (`__sub__` /
+        // `__coro__`), so source-space names stay disjoint from generated canonical identities.
+        if (FrontendClassNameContract.startsWithCoroStateClassPrefix(topLevelSourceName)) {
+            diagnosticManager.error(
+                    "sema.class_skeleton",
+                    reservedClassPrefixDiagnostic("Top-level", topLevelSourceName),
+                    unit.path(),
+                    topLevelHeader.range()
+            );
+            rejectDiscoveredSubtree(topLevelHeader, rejectedCandidates, rejectedSubtreeRoots);
+            return topLevelHeader;
+        }
         if (FrontendClassNameContract.containsReservedSequence(topLevelSourceName)) {
             diagnosticManager.error(
                     "sema.class_skeleton",
@@ -818,6 +829,25 @@ public final class FrontendClassSkeletonBuilder {
                         lexicalOwner,
                         classDeclaration,
                         null,
+                        null,
+                        StringUtil.trimToNull(classDeclaration.extendsTarget()),
+                        FrontendRange.fromAstRange(classDeclaration.range())
+                ));
+                rejectedSubtreeRoots.add(classDeclaration);
+                continue;
+            }
+            if (FrontendClassNameContract.startsWithCoroStateClassPrefix(innerClassName)) {
+                diagnosticManager.error(
+                        "sema.class_skeleton",
+                        reservedClassPrefixDiagnostic("Inner", innerClassName),
+                        unit.path(),
+                        FrontendRange.fromAstRange(classDeclaration.range())
+                );
+                rejectedCandidates.add(new RejectedClassHeader(
+                        unit,
+                        lexicalOwner,
+                        classDeclaration,
+                        innerClassName,
                         null,
                         StringUtil.trimToNull(classDeclaration.extendsTarget()),
                         FrontendRange.fromAstRange(classDeclaration.range())
@@ -1548,8 +1578,15 @@ public final class FrontendClassSkeletonBuilder {
 
     private @NotNull String reservedClassNameDiagnostic(@NotNull String classKind, @NotNull String className) {
         return classKind + " class name '" + className + "' contains reserved gdcc class-name sequence '"
-                + FrontendClassNameContract.INNER_CLASS_CANONICAL_SEPARATOR
-                + "'; this spelling is reserved for canonical inner-class names, so the skeleton subtree will be skipped";
+                + FrontendClassNameContract.reservedSequenceOrNull(className)
+                + "'; this spelling is reserved for compiler-generated canonical names, so the skeleton subtree will be skipped";
+    }
+
+    private @NotNull String reservedClassPrefixDiagnostic(@NotNull String classKind, @NotNull String className) {
+        return classKind + " class name '" + className + "' uses reserved gdcc class-name prefix '"
+                + FrontendClassNameContract.CORO_STATE_CLASS_PREFIX
+                + "'; this prefix is reserved for compiler-generated coroutine state classes,"
+                + " so the skeleton subtree will be skipped";
     }
 
     private @NotNull String describeLexicalOwner(@NotNull MutableClassHeader discoveredHeader) {

@@ -37,7 +37,7 @@ already exists, otherwise use the project's own `compiler-cache` directory.
 - Internal object values (`gdcc_<Type>_fat_ptr`) are passed by value (the fat struct itself). Raw Godot/wrapper
   pointers are still pointer values at ABI boundaries; nested pointer-to-pointer is avoided unless the ABI requires it.
 - There are 3 types: built-in types, engine types, and GDCC types, see [gdcc_type_system.md](gdcc_type_system.md) for more details.
-- Compiler-only storage types are backend-owned `GdType` implementations that do not belong to the source-facing type namespace. They are rendered with explicit `gdcc_*` storage/helper names and must never fall back to the default `godot_*` naming path.
+- Compiler-only storage types are backend-owned `GdType` implementations that do not belong to the source-facing type namespace. They are rendered with explicit `gdcc_*` storage/helper names and must never fall back to the default `godot_*` naming path - with one registered exception: `compiler::GdccCoroState` stores OWNED coroutine state object references as `godot_Object*` (its init/destroy helpers stay `gdcc_*`; see `gdcc_type_system.md` §Compiler-only Types).
 - Engine types and GDCC types are all Objects, built-in types are not Objects.
 - Only `godot_bool`, `godot_int` and `godot_float` can be used directly as C primitive types, they are always passed by value.
 - Variable `ref` semantics in generated C (mandatory):
@@ -103,7 +103,7 @@ already exists, otherwise use the project's own `compiler-cache` directory.
   - Object **values** map to `gdcc_<Type>_fat_ptr` for both engine and GDCC types.
   - GDCC **wrapper instances** keep the C struct name, e.g. `MyCustomGdClass` / `MyCustomGdClass*` at layout and
     registration boundaries; do not confuse wrapper pointers with object-value storage.
-  - Compiler-only types are mapped to their own explicit C storage names and helper names, not to generated `godot_*` ABI symbols.
+  - Compiler-only types are mapped to their own explicit C storage names and helper names, not to generated `godot_*` ABI symbols. The single registered exception is `compiler::GdccCoroState`, whose C storage is `godot_Object*` (helpers remain `gdcc_*`).
   - Other non-object types are mapped with a `godot_` prefix, e.g., `int` is mapped to `godot_int`, `String` is mapped to `godot_String`.
 - Always remember GDExtension API does not receive GDCC wrapper or fat-pointer values: lower to a validated live
   `godot_Object*` / `GDExtensionObjectPtr` (via `<Type>_fat_ptr_live_object` and, when needed, per-class

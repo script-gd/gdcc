@@ -43,12 +43,16 @@ public final class CGenHelper {
     private final @NotNull CIntrinsicManager intrinsicManager;
     private final @NotNull OperatorResolver operatorResolver = new OperatorResolver();
     private final @NotNull Set<BindingData> bindingDataSet = new HashSet<>();
+    private final boolean hasCoroutineFunctions;
 
     public CGenHelper(@NotNull CodegenContext context, @NotNull List<? extends ClassDef> classDefs) {
         this.context = context;
         this.builtinBuilder = new CBuiltinBuilder(this);
         this.intrinsicManager = new CIntrinsicManager();
         this.collectBindingData(classDefs);
+        this.hasCoroutineFunctions = classDefs.stream()
+                .flatMap(classDef -> classDef.getFunctions().stream())
+                .anyMatch(function -> function instanceof LirFunctionDef lirFunction && lirFunction.isCoroutine());
     }
 
     public record OperatorEvaluatorHelperSpec(
@@ -407,21 +411,24 @@ public final class CGenHelper {
     }
 
     /// First-write copy from an enclosing-function slot into the heap capture block.
-    /// Parameter slots are already pointers (`ref=true`); locals need an explicit address.
+    /// `sourceValueExpr` is the already-rendered storage expression of the source variable
+    /// (frame-aware: coroutine parameters render as frame fields); `sourceEffectivelyRef`
+    /// tells whether that expression is a borrowed pointer (sync parameters) or addressable
+    /// storage that needs an explicit `&`.
     public @NotNull String renderLambdaCaptureCopyFromSlot(
             @NotNull GdType captureType,
-            @NotNull LirVariable source
+            @NotNull String sourceValueExpr,
+            boolean sourceEffectivelyRef
     ) {
         TypeCheckUtil.requireNonCompilerOnly(captureType, "lambda capture copy");
-        var valueExpr = "$" + source.id();
         if (captureType instanceof GdObjectType || captureType instanceof GdPrimitiveType) {
-            return valueExpr;
+            return sourceValueExpr;
         }
         var copyFunc = renderCopyAssignFunctionName(captureType);
         if (copyFunc.isEmpty()) {
-            return valueExpr;
+            return sourceValueExpr;
         }
-        var sourcePtr = source.ref() ? valueExpr : "&(" + valueExpr + ")";
+        var sourcePtr = sourceEffectivelyRef ? sourceValueExpr : "&(" + sourceValueExpr + ")";
         return copyFunc + "(" + sourcePtr + ")";
     }
 
@@ -455,6 +462,155 @@ public final class CGenHelper {
             return "";
         }
         return renderDestroyFunctionName(captureType) + "(&(" + fieldExpr + "));";
+    }
+
+    // ==== Coroutine state class codegen (frontend_await_minicoro_plan.md §3.2-§3.4) ====
+    //
+    // Naming formula frozen in `gdcc_facing_class_name_contract.md` §1.3:
+    // `_gdcc_coro_state_<canonicalClass>__coro__<func>`. The backend owns this spelling directly
+    // (frontend constants guard the source side; importing them here would invert the layering).
+
+    /// True when at least one collected class contains an `is_coroutine="true"` function; lets
+    /// the templates keep sync-only modules byte-identical (no coroutine sections at all).
+    public boolean hasCoroutineFunctions() {
+        return hasCoroutineFunctions;
+    }
+
+    /// Canonical (and C-identifier-safe) hidden state class name for one coroutine function.
+    public @NotNull String renderCoroStateClassName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return "_gdcc_coro_state_" + classDef.getName() + "__coro__" + function.getName();
+    }
+
+    /// Minicoro body function: `void <Class>_<func>__coro_body(mco_coro *_co)`.
+    public @NotNull String renderCoroBodyFunctionName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return classDef.getName() + "_" + function.getName() + "__coro_body";
+    }
+
+    /// Internal coroutine-start thunk: creates the state object, fills the frame, creates and
+    /// resumes the minicoro, and always hands back the OWNED state object reference.
+    public @NotNull String renderCoroStartThunkName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return classDef.getName() + "_" + function.getName() + "__coro_start";
+    }
+
+    /// Accessor moving the typed return slot out for the engine-boundary sync fast path
+    /// (the slot is left moved-from; only called when `done` is already published).
+    public @NotNull String renderCoroMoveResultFuncName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return renderCoroStateClassName(classDef, function) + "__move_result";
+    }
+
+    public @NotNull String renderCoroStateDescName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return renderCoroStateClassName(classDef, function) + "_desc";
+    }
+
+    public @NotNull String renderCoroPackResultFuncName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return renderCoroStateClassName(classDef, function) + "_pack_result";
+    }
+
+    public @NotNull String renderCoroCopyRetSlotFuncName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return renderCoroStateClassName(classDef, function) + "_copy_ret_slot";
+    }
+
+    public @NotNull String renderCoroDestroyRetSlotFuncName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return renderCoroStateClassName(classDef, function) + "_destroy_ret_slot";
+    }
+
+    public @NotNull String renderCoroEmitCompletedFuncName(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return renderCoroStateClassName(classDef, function) + "_emit_completed";
+    }
+
+    /// `completed(result)` signal metadata: verbatim `GDScriptFunctionState` contract - one
+    /// `Variant` parameter, which automatically carries `PROPERTY_USAGE_NIL_IS_VARIANT`.
+    public @NotNull BoundMetadata renderCoroCompletedSignalMetadata() {
+        return renderSignalParameterMetadata(GdVariantType.VARIANT);
+    }
+
+    // Frame spellings shared with `CBodyBuilder` via `CCoroutineFrameContext` (single source).
+    public @NotNull String renderCoroParamFieldPrefix() {
+        return CCoroutineFrameContext.PARAM_FIELD_PREFIX;
+    }
+
+    public @NotNull String renderCoroHeaderField() {
+        return CCoroutineFrameContext.HEADER_FIELD;
+    }
+
+    public @NotNull String renderCoroRetField() {
+        return CCoroutineFrameContext.RET_FIELD;
+    }
+
+    public @NotNull String renderCoroRetInitializedField() {
+        return CCoroutineFrameContext.RET_INITIALIZED_FIELD;
+    }
+
+    public @NotNull String renderCoroFrameLocal() {
+        return CCoroutineFrameContext.FRAME_LOCAL;
+    }
+
+    public @NotNull String renderCoroCoParam() {
+        return CCoroutineFrameContext.CO_PARAM;
+    }
+
+    /// Retain one borrowed object value as it becomes an owning frame field copy
+    /// (mirror of `renderLambdaCaptureFreeStmt` in the retain direction).
+    public @NotNull String renderObjectRetainStmt(@NotNull GdObjectType objectType, @NotNull String fieldExpr) {
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        var liveExpr = fatType + "_live_object(" + fieldExpr + ")";
+        return switch (context.classRegistry().getRefCountedStatus(objectType)) {
+            case YES -> "own_object(" + liveExpr + ");";
+            case UNKNOWN -> "try_own_object(" + liveExpr + ", " + fieldExpr + ".instance_id);";
+            case NO -> "";
+        };
+    }
+
+    /// Start-thunk fill of one typed parameter frame field from the borrowed thunk argument
+    /// (ownership spec §3.10: borrowed parameters retain / destroyable values copy; the frame
+    /// field is the only owning storage and starts uninitialized, so this is a first write).
+    public @NotNull String renderCoroParamFillStmt(@NotNull GdType paramType,
+                                                   @NotNull String fieldExpr,
+                                                   @NotNull String borrowedArgExpr) {
+        TypeCheckUtil.requireNonCompilerOnly(paramType, "coroutine parameter field");
+        if (paramType instanceof GdPrimitiveType) {
+            return fieldExpr + " = " + borrowedArgExpr + ";";
+        }
+        if (paramType instanceof GdObjectType objectType) {
+            var retainStmt = renderObjectRetainStmt(objectType, fieldExpr);
+            return fieldExpr + " = " + borrowedArgExpr + ";"
+                    + (retainStmt.isEmpty() ? "" : " " + retainStmt);
+        }
+        // Value-semantic thunk parameters are already passed as storage pointers (ref shape),
+        // so the borrowed expression feeds the copy constructor directly.
+        return fieldExpr + " = " + renderCopyAssignFunctionName(paramType) + "(" + borrowedArgExpr + ");";
+    }
+
+    /// Statements of the generated `copy_ret_slot` desc callback for non-void coroutines:
+    /// slot-write into the awaiter's initialized typed result slot (release/destroy the old
+    /// value first - done fast path and waiter resume may overwrite a non-default slot), then
+    /// copy from the callee's preserved typed return slot. `outSlotExpr` is the raw `void *`.
+    public @NotNull String renderCoroCopyRetStmt(@NotNull GdType returnType,
+                                                 @NotNull String retFieldExpr,
+                                                 @NotNull String outSlotExpr) {
+        TypeCheckUtil.requireNonCompilerOnly(returnType, "coroutine copy_ret_slot");
+        if (returnType instanceof GdPrimitiveType) {
+            return "*(" + renderGdTypeInC(returnType) + " *)" + outSlotExpr + " = " + retFieldExpr + ";";
+        }
+        if (returnType instanceof GdObjectType objectType) {
+            var fatType = renderObjectFatPtrStorageType(objectType);
+            var outTyped = "(*(" + fatType + " *)" + outSlotExpr + ")";
+            var retainNewStmt = renderObjectRetainStmt(objectType, outTyped);
+            var releaseOldStmt = renderLambdaCaptureFreeStmt(objectType, "coro_out_old");
+            // Alias-safe slot-write discipline (same as CBodyBuilder.emitObjectSlotWrite):
+            // capture the old value first, retain the new one, and only then release the old.
+            return fatType + " coro_out_old = " + outTyped + ";\n"
+                    + outTyped + " = " + retFieldExpr + ";"
+                    + (retainNewStmt.isEmpty() ? "" : "\n" + retainNewStmt)
+                    + (releaseOldStmt.isEmpty() ? "" : "\n" + releaseOldStmt);
+        }
+        var cType = renderGdTypeInC(returnType);
+        var destroyOldStmt = returnType.isDestroyable()
+                ? renderDestroyFunctionName(returnType) + "((" + cType + " *)" + outSlotExpr + ");\n"
+                : "";
+        return destroyOldStmt
+                + "*(" + cType + " *)" + outSlotExpr + " = "
+                + renderCopyAssignFunctionName(returnType) + "(&(" + retFieldExpr + "));";
     }
 
     public @NotNull String renderValueRef(@NotNull GdType gdType, @NotNull String v) {

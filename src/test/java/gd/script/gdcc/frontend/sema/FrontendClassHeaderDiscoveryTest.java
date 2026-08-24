@@ -579,6 +579,142 @@ class FrontendClassHeaderDiscoveryTest {
     }
 
     @Test
+    void buildRejectsTopLevelClassNameUsingCoroStatePrefixAndKeepsOtherSources() throws IOException {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var reservedUnit = parserService.parseUnit(
+                Path.of("tmp", "reserved_coro_top_level.gd"),
+                """
+                        class_name _gdcc_coro_state_Fake
+                        extends RefCounted
+                        
+                        class InnerShouldDisappear:
+                            pass
+                        """,
+                diagnostics
+        );
+        var keepAliveUnit = parserService.parseUnit(
+                Path.of("tmp", "keep_alive.gd"),
+                """
+                        class_name KeepAlive
+                        extends RefCounted
+                        """,
+                diagnostics
+        );
+
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = buildSkeleton(
+                "header_discovery",
+                List.of(reservedUnit, keepAliveUnit),
+                Map.of(),
+                registry,
+                diagnostics,
+                analysisData
+        );
+
+        assertEquals(List.of("KeepAlive"), topLevelClassDefs(result).stream().map(LirClassDef::getName).toList());
+        assertEquals(List.of("KeepAlive"), result.allClassDefs().stream().map(LirClassDef::getName).toList());
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("Top-level class name '_gdcc_coro_state_Fake'")
+                        && diagnostic.message().contains("reserved gdcc class-name prefix '_gdcc_coro_state_'")
+        ));
+        assertTrue(analysisData.skippedSubtreeRoots().containsKey(reservedUnit.ast()));
+        assertNull(registry.findGdccClass("_gdcc_coro_state_Fake"));
+        assertNull(registry.findGdccClass("_gdcc_coro_state_Fake__sub__InnerShouldDisappear"));
+        assertNotNull(registry.findGdccClass("KeepAlive"));
+    }
+
+    @Test
+    void buildRejectsInnerClassNameUsingCoroStatePrefixButKeepsSiblings() throws IOException {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var outerUnit = parserService.parseUnit(
+                Path.of("tmp", "reserved_coro_inner.gd"),
+                """
+                        class_name OuterCoroReserved
+                        extends RefCounted
+                        
+                        class _gdcc_coro_state_Fake:
+                            class HiddenChild:
+                                pass
+                        
+                        class GoodInner:
+                            pass
+                        """,
+                diagnostics
+        );
+
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = buildSkeleton(
+                "header_discovery",
+                List.of(outerUnit),
+                Map.of(),
+                registry,
+                diagnostics,
+                analysisData
+        );
+
+        var outerRelation = findSourceRelation(result, "OuterCoroReserved");
+        var rejectedInner = findTopLevelInnerClass(outerUnit, "_gdcc_coro_state_Fake");
+        assertEquals(
+                List.of("OuterCoroReserved", "OuterCoroReserved__sub__GoodInner"),
+                result.allClassDefs().stream().map(LirClassDef::getName).toList()
+        );
+        assertEquals(
+                List.of("GoodInner"),
+                outerRelation.innerClassRelations().stream().map(FrontendInnerClassRelation::sourceName).toList()
+        );
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("Inner class name '_gdcc_coro_state_Fake'")
+                        && diagnostic.message().contains("reserved gdcc class-name prefix '_gdcc_coro_state_'")
+        ));
+        assertTrue(analysisData.skippedSubtreeRoots().containsKey(rejectedInner));
+        assertNotNull(registry.findGdccClass("OuterCoroReserved"));
+        assertNotNull(registry.findGdccClass("OuterCoroReserved__sub__GoodInner"));
+        assertNull(registry.findGdccClass("OuterCoroReserved__sub___gdcc_coro_state_Fake"));
+    }
+
+    @Test
+    void buildRejectsClassNameUsingCoroSeparatorSequence() throws IOException {
+        // `__coro__` is reserved at the same source boundary as `__sub__`
+        // (gdcc_facing_class_name_contract.md §1.3 rule 2).
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var reservedUnit = parserService.parseUnit(
+                Path.of("tmp", "reserved_coro_separator.gd"),
+                """
+                        class_name Hero__coro__Worker
+                        extends RefCounted
+                        """,
+                diagnostics
+        );
+
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = buildSkeleton(
+                "header_discovery",
+                List.of(reservedUnit),
+                Map.of(),
+                registry,
+                diagnostics,
+                analysisData
+        );
+
+        assertTrue(result.allClassDefs().isEmpty());
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("Top-level class name 'Hero__coro__Worker'")
+                        && diagnostic.message().contains("reserved gdcc class-name sequence '__coro__'")
+        ));
+        assertTrue(analysisData.skippedSubtreeRoots().containsKey(reservedUnit.ast()));
+        assertNull(registry.findGdccClass("Hero__coro__Worker"));
+    }
+
+    @Test
     void buildRejectsInnerClassNameUsingReservedSequenceButKeepsSiblingInnerClassAndOtherSources() throws IOException {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();

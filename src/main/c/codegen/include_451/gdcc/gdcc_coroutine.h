@@ -26,15 +26,29 @@ typedef struct gdcc_coro_state_header gdcc_coro_state_header;
 /// Per-state-class descriptor with generated callbacks, so this generic TU never touches
 /// typed frame fields. Generated once per coroutine function by the backend templates.
 typedef struct gdcc_coro_state_desc {
-    /// Finalize step 1: pack the typed return slot into `result_cache` and zero the slot.
-    /// Void coroutines pack nil. Always non-NULL in generated code.
+    /// Finalize step 1: COPY (not move) the typed return slot into `result_cache`; the slot
+    /// stays alive afterwards for typed waiters and the done fast path. Void coroutines
+    /// leave `result_cache` as nil. Always non-NULL in generated code.
     void (*pack_result)(gdcc_coro_state_header *state);
-    /// Destroy the typed return slot content in place (cancel path). Must tolerate a
-    /// never-written slot. Always non-NULL in generated code.
+    /// Copy the typed return slot into the awaiter's typed result storage (`out_typed`
+    /// points at the awaiter's default-initialized slot; slot-write discipline applies).
+    /// Void coroutines write a constructed nil Variant. Always non-NULL in generated code.
+    void (*copy_ret_slot)(gdcc_coro_state_header *state, void *out_typed);
+    /// Destroy the typed return slot content in place. Called exactly once from the
+    /// generated `free_instance` - NEVER from the cancel path - and must tolerate a
+    /// never-written or moved-from slot. Always non-NULL in generated code.
     void (*destroy_ret_slot)(gdcc_coro_state_header *state);
     /// Finalize step 4: emit `completed(result_cache)` on `state->obj`.
     void (*emit_completed)(gdcc_coro_state_header *state);
 } gdcc_coro_state_desc;
+
+/// Waiter output channel kind: the static internal ABI hands results over through the
+/// typed `copy_ret_slot` callback (zero Variant round-trip), while dynamic-path awaiters
+/// receive one private `godot_variant_new_copy` of `result_cache` each.
+typedef enum gdcc_coro_waiter_kind {
+    GDCC_CORO_WAITER_VARIANT, // out is a godot_Variant *
+    GDCC_CORO_WAITER_TYPED    // out is the awaiter's typed result slot address
+} gdcc_coro_waiter_kind;
 
 /// One suspended awaiter registered on a callee state object. The node owns a strong
 /// reference to the awaiter state object (callee -> awaiter keep-alive edge), released only
@@ -42,8 +56,9 @@ typedef struct gdcc_coro_state_desc {
 /// resuming). Nodes are pushed at the head; multiple waiters resume in LIFO order.
 typedef struct gdcc_coro_waiter {
     struct gdcc_coro_waiter *next;
+    gdcc_coro_waiter_kind kind; // selects the resume-value channel for `out`
     mco_coro *co;               // awaiter coroutine to resume
-    godot_Variant *out;         // awaiter result storage; written exactly once by finalize
+    void *out;                  // awaiter result storage (kind-selected); written exactly once by finalize
     GDExtensionObjectPtr awaiter; // strong edge to the awaiter state object (NULL in pure-C fixtures)
     // Awaiter frame header, used to cascade `gdcc_coro_finalize` when the resumed awaiter
     // returned MCO_DEAD. The strong `awaiter` edge above also keeps this node itself valid:
@@ -81,10 +96,12 @@ void gdcc_coro_state_header_init(gdcc_coro_state_header *state, const gdcc_coro_
 gdcc_coro_state_header *gdcc_coro_state_identify(GDExtensionObjectPtr obj);
 
 /// Tears down the generic frame parts from the state class `free_instance`: the coroutine
-/// must be MCO_DEAD by contract (cancel-resume at PREDELETE guarantees it); destroys the
-/// coroutine stack and the always-constructed `result_cache`, and revokes the magic so a
-/// dangling binding can never be re-identified. Typed parameter fields and the wrapper
-/// itself remain generated-code responsibilities.
+/// must be MCO_DEAD by contract (cancel-resume at PREDELETE guarantees it) or NULL (the
+/// entry thunk reported OOM before `mco_create`); destroys the coroutine stack and the
+/// always-constructed `result_cache`, and revokes the magic so a dangling binding can never
+/// be re-identified. The typed return slot (destroyed exactly once via
+/// `desc->destroy_ret_slot`), typed parameter fields and the wrapper itself remain
+/// generated-code responsibilities.
 void gdcc_coro_state_free(gdcc_coro_state_header *state);
 
 /// Compiler-local slot helpers backing the `compiler::GdccCoroState` LIR variable type: an
@@ -114,17 +131,21 @@ void gdcc_coro_state_slot_destroy(godot_Object **slot);
 void gdcc_coro_await_signal(godot_Signal *sig, godot_Variant *out, mco_coro *co, gdcc_coro_state_header *self);
 
 /// Awaits another GDCC coroutine's state object (static internal-ABI path).
-/// `callee->done` copies `result_cache` into `out` and returns immediately
-/// (connect-after-done fast path, no suspend). Otherwise registers `{co, out, strong ref
-/// to self->obj}` on the callee's waiter list and yields; `gdcc_coro_finalize` writes `out`
-/// and resumes. Same `self->cancel` post-condition as `gdcc_coro_await_signal`.
+/// `callee->done` copies the typed return slot through `desc->copy_ret_slot` and returns
+/// immediately (connect-after-done fast path, no suspend). Otherwise registers a
+/// typed-waiter `{co, out_typed, strong ref to self->obj}` on the callee's waiter list and
+/// yields; `gdcc_coro_finalize` writes `out_typed` through the same callback and resumes.
+/// Same `self->cancel` post-condition as `gdcc_coro_await_signal`.
+/// `out_typed` points at the awaiter's default-initialized typed result slot; failure
+/// paths (NULL/cancelled callee, waiter allocation OOM) report a runtime error and leave
+/// it untouched, so the slot keeps its `__prepare__` default - there is no typed nil.
 ///
 /// CONSUME CONTRACT: this call always consumes the call site's OWNED reference to the
 /// callee state object (`callee->obj`). On every path the reference is released before the
 /// coroutine may yield, so the awaiter never holds the callee across a suspension - the
 /// keep-alive graph stays a DAG (callee -> awaiter only) and the abandonment cascade stays
 /// reachable. The caller must not touch its callee reference after this call.
-void gdcc_coro_await_state(gdcc_coro_state_header *callee, godot_Variant *out, mco_coro *co, gdcc_coro_state_header *self);
+void gdcc_coro_await_state(gdcc_coro_state_header *callee, void *out_typed, mco_coro *co, gdcc_coro_state_header *self);
 
 /// Awaits a Variant operand (dynamic path), three-layer dispatch:
 /// 1. TYPE_SIGNAL -> extract and delegate to `gdcc_coro_await_signal`.
@@ -151,11 +172,12 @@ void gdcc_coro_await_dynamic(godot_Variant *operand, godot_Variant *out, mco_cor
 
 /// The single completion exit, called only from `mco_resume` return points that observed
 /// MCO_DEAD (entry thunk, signal callback, waiter cascade). Never entered from the cancel
-/// path. Invariant order: (1) pack the typed return slot into `result_cache` via
-/// `desc->pack_result` and zero the slot; (2) publish `done`; (3) pop waiters - one
-/// `godot_variant_new_copy` into each waiter's `out`, resume the waiter, cascade
-/// `gdcc_coro_finalize` when the resumed waiter returned MCO_DEAD, and only then release
-/// the reference edge; (4) `desc->emit_completed` last for external listeners.
+/// path. Invariant order: (1) COPY the typed return slot into `result_cache` via
+/// `desc->pack_result` - the slot stays alive for the typed channel; (2) publish `done`;
+/// (3) pop waiters - typed waiters receive the result through `desc->copy_ret_slot`,
+/// Variant waiters through one `godot_variant_new_copy` of `result_cache` each, resume the
+/// waiter, cascade `gdcc_coro_finalize` when the resumed waiter returned MCO_DEAD, and only
+/// then release the reference edge; (4) `desc->emit_completed` last for external listeners.
 /// Re-entrant by design: waiter resumes may cascade nested finalizes, and the early `done`
 /// publication makes nested entry on the same state a no-op.
 void gdcc_coro_finalize(gdcc_coro_state_header *state);
@@ -166,9 +188,10 @@ void gdcc_coro_finalize(gdcc_coro_state_header *state);
 /// body jumps to `__finally__` at the nearest await resume point and returns MCO_DEAD.
 /// Never finalizes: no `done`, no pack, no emit, and waiters are only popped to release
 /// their reference edges - abandoned awaiters stay suspended forever (aligned with Godot
-/// `cancel_pending_functions`). The cancel-path default written into the typed return slot
-/// is destroyed in place via `desc->destroy_ret_slot`. Tolerates `co == NULL` (state
-/// object died before `mco_create`, e.g. OOM in the entry thunk).
+/// `cancel_pending_functions`). Never touches the typed return slot: the cancel-path
+/// default written by the body's `__finally__` is destroyed by the generated
+/// `free_instance` (exactly one `desc->destroy_ret_slot` per state). Tolerates
+/// `co == NULL` (state object died before `mco_create`, e.g. OOM in the entry thunk).
 void gdcc_coro_cancel(gdcc_coro_state_header *state);
 
 #endif //GDCC_COROUTINE_H

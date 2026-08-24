@@ -93,5 +93,25 @@ class ApiCanonicalNameMapTest {
                 "topLevelCanonicalNameMap value must not contain reserved gdcc class-name sequence '__sub__'",
                 reservedValue.getMessage()
         );
+
+        // The coroutine state-class separator is reserved at the same input boundary
+        // (gdcc_facing_class_name_contract.md §1.3 rule 2).
+        var coroKey = assertThrows(
+                IllegalArgumentException.class,
+                () -> api.setTopLevelCanonicalNameMap("demo", java.util.Map.of("Hero__coro__Worker", "RuntimeHero"))
+        );
+        assertEquals(
+                "topLevelCanonicalNameMap key must not contain reserved gdcc class-name sequence '__coro__'",
+                coroKey.getMessage()
+        );
+
+        var coroValue = assertThrows(
+                IllegalArgumentException.class,
+                () -> api.setTopLevelCanonicalNameMap("demo", java.util.Map.of("Hero", "Runtime__coro__Worker"))
+        );
+        assertEquals(
+                "topLevelCanonicalNameMap value must not contain reserved gdcc class-name sequence '__coro__'",
+                coroValue.getMessage()
+        );
     }
 }

@@ -8,6 +8,11 @@
 #include <godot_binding.h>
 static GDExtensionClassLibraryPtr class_library = NULL;
 #include <gdcc_helper.h>
+<#if helper.hasCoroutineFunctions()>
+<#-- Coroutine runtime types (mco_coro, gdcc_coro_state_header/desc). Only modules with at -->
+<#-- least one `is_coroutine="true"` function see this include, keeping sync-only output stable. -->
+#include <gdcc_coroutine.h>
+</#if>
 
 struct GDExtensionInitializationStatus {
     godot_bool initialized;
@@ -308,6 +313,63 @@ static void ${helper.renderLambdaCallFuncName(classDef, func)}(
 
 </#list>
 
+<#if helper.hasCoroutineFunctions()>
+// Hidden coroutine state classes (frontend_await_minicoro_plan.md §3.2-§3.3)
+// One state class per `is_coroutine="true"` function: direct RefCounted child, runtime-only,
+// never exposed. The wrapper root field is `_object` (no GDCC `_super` chain); the common
+// `gdcc_coro_state_header` follows it and is exposed through the dedicated coroutine binding
+// token. Typed parameter fields are the only owning parameter storage; the typed return slot
+// plus its written flag sit behind it (non-void coroutines only).
+<#list module.classDefs as classDef>
+<#list classDef.functions as func>
+<#if func.coroutine>
+<#assign stateName = helper.renderCoroStateClassName(classDef, func)>
+typedef struct ${stateName} ${stateName};
+
+struct ${stateName} {
+    GDExtensionObjectPtr _object;
+    gdcc_coro_state_header ${helper.renderCoroHeaderField()};
+    <#list func.parameters as param>
+    ${helper.renderGdTypeInC(param.type)} ${helper.renderCoroParamFieldPrefix()}${param.name};
+    </#list>
+    <#if func.returnType.typeName != "void">
+    ${helper.renderGdTypeInC(func.returnType)} ${helper.renderCoroRetField()};
+    godot_bool ${helper.renderCoroRetInitializedField()};
+    </#if>
+};
+
+const GDExtensionInstanceBindingCallbacks ${stateName}_class_binding_callbacks = {
+    NULL,
+    NULL,
+    NULL,
+};
+
+GDExtensionObjectPtr ${stateName}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize);
+
+void ${stateName}_class_free_instance(void* p_class_userdata, GDExtensionClassInstancePtr p_instance);
+
+void ${stateName}_class_notification(GDExtensionClassInstancePtr p_instance, int32_t p_what, GDExtensionBool p_reversed);
+
+static void ${helper.renderCoroPackResultFuncName(classDef, func)}(gdcc_coro_state_header *coro_header);
+static void ${helper.renderCoroCopyRetSlotFuncName(classDef, func)}(gdcc_coro_state_header *coro_header, void *out_typed);
+static void ${helper.renderCoroDestroyRetSlotFuncName(classDef, func)}(gdcc_coro_state_header *coro_header);
+static void ${helper.renderCoroEmitCompletedFuncName(classDef, func)}(gdcc_coro_state_header *coro_header);
+<#if func.returnType.typeName != "void">
+${helper.renderGdTypeInC(func.returnType)} ${helper.renderCoroMoveResultFuncName(classDef, func)}(gdcc_coro_state_header *coro_header);
+</#if>
+
+void ${helper.renderCoroBodyFunctionName(classDef, func)}(mco_coro *${helper.renderCoroCoParam()});
+
+godot_Object* ${helper.renderCoroStartThunkName(classDef, func)}(
+    <#list func.parameters as param>
+        ${helper.renderGdTypeRefInC(param.type)} $${param.name}<#if param_has_next>,</#if>
+    </#list>
+);
+</#if>
+</#list>
+</#list>
+
+</#if>
 <#assign operatorEvaluatorHelperSpecs = helper.collectOperatorEvaluatorHelperSpecs(module)>
 <#if operatorEvaluatorHelperSpecs?size gt 0>
 // Operator evaluator helpers

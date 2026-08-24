@@ -57,6 +57,36 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
         ${classDef.name}_class_bind_methods();
     }
     </#list>
+    <#if helper.hasCoroutineFunctions()>
+    <#-- Hidden coroutine state classes: runtime-only, never script-exposed, direct RefCounted -->
+    <#-- children. Each registers its `completed(result)` signal (GDScriptFunctionState contract). -->
+    <#list module.classDefs as classDef>
+        <#list classDef.functions as func>
+            <#if func.coroutine>
+                <#assign stateName = helper.renderCoroStateClassName(classDef, func)>
+    {
+        GDExtensionClassCreationInfo5 creation_info = {};
+        creation_info.is_abstract = false;
+        creation_info.is_runtime = true;
+        creation_info.is_virtual = false;
+        creation_info.is_exposed = false;
+        creation_info.create_instance_func = ${stateName}_class_create_instance;
+        creation_info.free_instance_func = ${stateName}_class_free_instance;
+        creation_info.notification_func = ${stateName}_class_notification;
+        godot_classdb_register_extension_class5(class_library,
+                                                GD_STATIC_SN(u8"${stateName}"), GD_STATIC_SN(u8"RefCounted"),
+                                                &creation_info);
+        <#assign completedMetadata = helper.renderCoroCompletedSignalMetadata()>
+        GDExtensionPropertyInfo completed_args[] = {
+            gdcc_make_property_full(${completedMetadata.typeEnumLiteral}, GD_STATIC_SN(u8"result"), ${completedMetadata.hintEnumLiteral}, ${completedMetadata.hintStringExpr}, ${completedMetadata.classNameExpr}, ${completedMetadata.usageExpr}),
+        };
+        godot_classdb_register_extension_class_signal(class_library, GD_STATIC_SN(u8"${stateName}"), GD_STATIC_SN(u8"completed"), completed_args, 1);
+        gdcc_destruct_property(&completed_args[0]);
+    }
+            </#if>
+        </#list>
+    </#list>
+    </#if>
 }
 
 void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
@@ -263,6 +293,9 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
 // Methods for ${classDef.name}
 
 <#list classDef.functions as func>
+<#-- Coroutine functions are defined in the dedicated coroutine section below (body + start -->
+<#-- thunk + engine entry); this loop stays the plain synchronous function surface. -->
+<#if !func.coroutine>
 <@funcHeader helper classDef func/> {
     <#list func.variables?values as var>
         <#if !func.checkVariableParameter(var.id)>
@@ -271,6 +304,215 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
     </#list>
     ${bodyRender.generateFuncBody(classDef, func)}
 }
+</#if>
 </#list>
 
 </#list>
+
+<#if helper.hasCoroutineFunctions()>
+// Coroutine state class machinery, body functions, start thunks and engine entries
+// (frontend_await_minicoro_plan.md §3.2-§3.4; ownership state machine: ownership spec §3.10)
+<#list module.classDefs as classDef>
+<#list classDef.functions as func>
+<#if func.coroutine>
+<#assign stateName = helper.renderCoroStateClassName(classDef, func)>
+<#-- The desc object is defined before every use site (notification takes its address); -->
+<#-- the four callbacks it references are declared `static` in entry.h. -->
+static const gdcc_coro_state_desc ${helper.renderCoroStateDescName(classDef, func)} = {
+    .pack_result = ${helper.renderCoroPackResultFuncName(classDef, func)},
+    .copy_ret_slot = ${helper.renderCoroCopyRetSlotFuncName(classDef, func)},
+    .destroy_ret_slot = ${helper.renderCoroDestroyRetSlotFuncName(classDef, func)},
+    .emit_completed = ${helper.renderCoroEmitCompletedFuncName(classDef, func)},
+};
+
+GDExtensionObjectPtr ${stateName}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize) {
+    (void)p_class_userdata;
+    GDExtensionObjectPtr obj = godot_classdb_construct_object2(GD_STATIC_SN(u8"RefCounted"));
+    ${stateName}* self = godot_mem_alloc(sizeof(${stateName}));
+    self->_object = obj;
+    godot_object_set_instance(obj, GD_STATIC_SN(u8"${stateName}"), self);
+    godot_object_set_instance_binding(obj, class_library, self, &${stateName}_class_binding_callbacks);
+    // Dedicated coroutine token binding: `gdcc_coro_state_identify` reads the common header here.
+    godot_object_set_instance_binding(obj, gdcc_coro_binding_token(), &self->${helper.renderCoroHeaderField()}, &${stateName}_class_binding_callbacks);
+    if (p_notify_postinitialize) {
+        godot_Object_notification(obj, godot_Object_NOTIFICATION_POSTINITIALIZE(), false);
+    }
+    return obj;
+}
+
+void ${stateName}_class_free_instance(void* p_class_userdata, GDExtensionClassInstancePtr p_instance) {
+    (void)p_class_userdata;
+    if (p_instance == NULL) {
+        return;
+    }
+    ${stateName}* self = p_instance;
+    <#list func.parameters as param>
+        <#assign paramFreeStmt = helper.renderLambdaCaptureFreeStmt(param.type, "self->" + helper.renderCoroParamFieldPrefix() + param.name)>
+        <#if paramFreeStmt?has_content>
+    ${paramFreeStmt}
+        </#if>
+    </#list>
+    // The typed return slot is destroyed exactly once here (never from the cancel path).
+    ${helper.renderCoroDestroyRetSlotFuncName(classDef, func)}(&self->${helper.renderCoroHeaderField()});
+    gdcc_coro_state_free(&self->${helper.renderCoroHeaderField()});
+    godot_mem_free(self);
+}
+
+void ${stateName}_class_notification(GDExtensionClassInstancePtr p_instance, int32_t p_what, GDExtensionBool p_reversed) {
+    (void)p_reversed;
+    ${stateName}* self = p_instance;
+    if (p_what == godot_Object_NOTIFICATION_POSTINITIALIZE()) {
+        gdcc_coro_state_header_init(&self->${helper.renderCoroHeaderField()}, &${helper.renderCoroStateDescName(classDef, func)}, self->_object);
+<#if func.returnType.typeName != "void">
+        self->${helper.renderCoroRetInitializedField()} = false;
+</#if>
+    } else if (p_what == godot_Object_NOTIFICATION_PREDELETE()) {
+        // Abandonment path only: cancel-resume. Frame fields are left for free_instance;
+        // state classes deliberately have no user-destructor equivalent.
+        gdcc_coro_cancel(&self->${helper.renderCoroHeaderField()});
+    }
+}
+
+static void ${helper.renderCoroPackResultFuncName(classDef, func)}(gdcc_coro_state_header *coro_header) {
+<#if func.returnType.typeName == "void">
+    // Void coroutine: result_cache stays the constructed nil Variant.
+    (void)coro_header;
+<#else>
+    ${stateName}* self = (${stateName}*)((char*)coro_header - offsetof(${stateName}, ${helper.renderCoroHeaderField()}));
+    if (!self->${helper.renderCoroRetInitializedField()}) {
+        return;
+    }
+    // Copy (never move) the typed slot into result_cache; the slot stays alive for typed
+    // waiters and the done fast path. Destroy-then-write: result_cache is always constructed.
+    godot_Variant coro_packed = ${helper.renderPackFunctionName(func.returnType)}(${helper.renderValueRef(func.returnType, "self->" + helper.renderCoroRetField())});
+    godot_variant_destroy(&coro_header->result_cache);
+    coro_header->result_cache = coro_packed;
+</#if>
+}
+
+static void ${helper.renderCoroCopyRetSlotFuncName(classDef, func)}(gdcc_coro_state_header *coro_header, void *out_typed) {
+<#if func.returnType.typeName == "void">
+    // Void specialization: the awaiter's result slot is a Variant whose resume value is nil
+    // (aligned with Godot's completed(nil) for void coroutines).
+    (void)coro_header;
+    godot_variant_destroy((godot_Variant*)out_typed);
+    *(godot_Variant*)out_typed = godot_new_Variant_nil();
+<#else>
+    ${stateName}* self = (${stateName}*)((char*)coro_header - offsetof(${stateName}, ${helper.renderCoroHeaderField()}));
+    ${helper.renderCoroCopyRetStmt(func.returnType, "self->" + helper.renderCoroRetField(), "out_typed")}
+</#if>
+}
+
+static void ${helper.renderCoroDestroyRetSlotFuncName(classDef, func)}(gdcc_coro_state_header *coro_header) {
+<#if func.returnType.typeName == "void">
+    (void)coro_header;
+<#else>
+    ${stateName}* self = (${stateName}*)((char*)coro_header - offsetof(${stateName}, ${helper.renderCoroHeaderField()}));
+    if (!self->${helper.renderCoroRetInitializedField()}) {
+        return; // tolerates never-written and moved-from slots
+    }
+    <#assign retFreeStmt = helper.renderLambdaCaptureFreeStmt(func.returnType, "self->" + helper.renderCoroRetField())>
+    <#if retFreeStmt?has_content>
+    ${retFreeStmt}
+    </#if>
+    self->${helper.renderCoroRetInitializedField()} = false;
+</#if>
+}
+
+static void ${helper.renderCoroEmitCompletedFuncName(classDef, func)}(gdcc_coro_state_header *coro_header) {
+    // Emit `completed(result_cache)` on the state object (GDScriptFunctionState contract).
+    godot_StringName coro_completed_name = godot_new_StringName_with_utf8_chars("completed");
+    godot_Signal coro_completed_sig = godot_new_Signal_with_Object_StringName((godot_Object*)coro_header->obj, &coro_completed_name);
+    godot_StringName_destroy(&coro_completed_name);
+    const godot_Variant* coro_completed_argv[] = { &coro_header->result_cache };
+    godot_Signal_emit(&coro_completed_sig, coro_completed_argv, 1);
+    godot_Signal_destroy(&coro_completed_sig);
+}
+
+<#if func.returnType.typeName != "void">
+${helper.renderGdTypeInC(func.returnType)} ${helper.renderCoroMoveResultFuncName(classDef, func)}(gdcc_coro_state_header *coro_header) {
+    ${stateName}* self = (${stateName}*)((char*)coro_header - offsetof(${stateName}, ${helper.renderCoroHeaderField()}));
+    // Ownership moves to the caller (engine-boundary sync fast path); the slot is left
+    // moved-from so the single destroy_ret_slot in free_instance stays correct.
+    self->${helper.renderCoroRetInitializedField()} = false;
+    return self->${helper.renderCoroRetField()};
+}
+
+</#if>
+void ${helper.renderCoroBodyFunctionName(classDef, func)}(mco_coro *${helper.renderCoroCoParam()}) {
+    ${stateName}* ${helper.renderCoroFrameLocal()} = (${stateName}*)mco_get_user_data(${helper.renderCoroCoParam()});
+    <#list func.variables?values as var>
+        <#if !func.checkVariableParameter(var.id)>
+            ${helper.renderGdTypeInC(var.type)} $${var.id};
+        </#if>
+    </#list>
+    ${bodyRender.generateFuncBody(classDef, func)}
+}
+
+godot_Object* ${helper.renderCoroStartThunkName(classDef, func)}(
+    <#list func.parameters as param>
+        ${helper.renderGdTypeRefInC(param.type)} $${param.name}<#if param_has_next>,</#if>
+    </#list>
+) {
+    GDExtensionObjectPtr coro_state_obj = ${stateName}_class_create_instance(NULL, false);
+    gdcc_ref_counted_init_raw(coro_state_obj, true);
+    ${stateName}* coro_state = (${stateName}*)godot_object_get_instance_binding(coro_state_obj, class_library, &${stateName}_class_binding_callbacks);
+    <#list func.parameters as param>
+    ${helper.renderCoroParamFillStmt(param.type, "coro_state->" + helper.renderCoroParamFieldPrefix() + param.name, "$" + param.name)}
+    </#list>
+    mco_desc coro_desc = mco_desc_init(${helper.renderCoroBodyFunctionName(classDef, func)}, GDCC_CORO_STACK_SIZE);
+    coro_desc.user_data = coro_state;
+    if (mco_create(&coro_state->${helper.renderCoroHeaderField()}.co, &coro_desc) != MCO_SUCCESS) {
+        // OOM: report, then complete synchronously with the default result so callers still
+        // receive a well-formed done state object whose `co` is NULL (plan §3.2 entry thunk).
+        GDCC_PRINT_RUNTIME_ERROR("gdcc: failed to create coroutine stack (out of memory); completing with the default result", __func__, __FILE__, __LINE__);
+<#if func.returnType.typeName != "void">
+        coro_state->${helper.renderCoroRetField()} = ${helper.renderDefaultValueExprInC(func.returnType)};
+        coro_state->${helper.renderCoroRetInitializedField()} = true;
+</#if>
+        ${helper.renderCoroPackResultFuncName(classDef, func)}(&coro_state->${helper.renderCoroHeaderField()});
+        coro_state->${helper.renderCoroHeaderField()}.done = true;
+        return (godot_Object*)coro_state_obj;
+    }
+    mco_resume(coro_state->${helper.renderCoroHeaderField()}.co);
+    if (mco_status(coro_state->${helper.renderCoroHeaderField()}.co) == MCO_DEAD) {
+        gdcc_coro_finalize(&coro_state->${helper.renderCoroHeaderField()});
+    }
+    return (godot_Object*)coro_state_obj;
+}
+
+<#-- Engine entry: keeps the exact synchronous method name/signature, so ClassDB call/ptrcall -->
+<#-- wrappers and virtual wiring stay untouched; internally dispatches through the start thunk. -->
+<@funcHeader helper classDef func/> {
+    godot_Object* coro_state_obj = ${helper.renderCoroStartThunkName(classDef, func)}(<#list func.parameters as param>$${param.name}<#if param_has_next>, </#if></#list>);
+<#if func.returnType.typeName == "void">
+    // Void coroutine at the engine boundary: always detach; a suspended coroutine continues
+    // in the background (Godot-aligned), a synchronous one simply dies with the state object.
+    release_object(coro_state_obj);
+<#else>
+    gdcc_coro_state_header* coro_header = gdcc_coro_state_identify(coro_state_obj);
+    if (coro_header->done) {
+        // Synchronous completion fast path: no coroutine state escapes the engine boundary.
+        ${helper.renderGdTypeInC(func.returnType)} r = ${helper.renderCoroMoveResultFuncName(classDef, func)}(coro_header);
+        release_object(coro_state_obj);
+        return r;
+    }
+    <#if func.returnType.typeName == "Variant">
+    // Suspended: hand the state object out as a Variant (externally awaitable). The Variant
+    // retains the RefCounted state object, so the thunk's OWNED reference is released here.
+    godot_Variant r = godot_new_Variant_with_Object(coro_state_obj);
+    release_object(coro_state_obj);
+    return r;
+    <#else>
+    // Suspended with a typed non-Variant return: detach + default value + runtime error
+    // (deliberate deviation, plan §3.4 engine boundary); the coroutine continues detached.
+    release_object(coro_state_obj);
+    GDCC_PRINT_RUNTIME_ERROR("gdcc: coroutine method suspended at the engine boundary; typed non-Variant returns cannot carry the coroutine state, returning the default value", __func__, __FILE__, __LINE__);
+    return ${helper.renderDefaultValueExprInC(func.returnType)};
+    </#if>
+</#if>
+}
+</#if>
+</#list>
+</#list>
+</#if>

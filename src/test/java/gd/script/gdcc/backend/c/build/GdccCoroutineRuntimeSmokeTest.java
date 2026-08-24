@@ -50,12 +50,12 @@ class GdccCoroutineRuntimeSmokeTest {
         var source = """
                 #include <gdcc_coroutine.h>
                 #include <stdio.h>
-
+                
                 typedef struct ProbeCtx {
                     int value;
                     int yields;
                 } ProbeCtx;
-
+                
                 static void probe_body(mco_coro *co) {
                     ProbeCtx *ctx = mco_get_user_data(co);
                     ctx->value = 41;
@@ -64,7 +64,7 @@ class GdccCoroutineRuntimeSmokeTest {
                     ctx->value = 42;
                     ctx->yields++;
                 }
-
+                
                 int main(void) {
                     ProbeCtx ctx = {0, 0};
                     mco_desc desc = mco_desc_init(probe_body, GDCC_CORO_STACK_SIZE);
@@ -95,17 +95,17 @@ class GdccCoroutineRuntimeSmokeTest {
         var source = """
                 #include <gdcc_coroutine.h>
                 #include <stdio.h>
-
+                
                 static void probe_body(mco_coro *co) {
                     (void)co;
                 }
-
+                
                 static void *failing_alloc(size_t size, void *allocator_data) {
                     (void)size;
                     (void)allocator_data;
                     return NULL;
                 }
-
+                
                 int main(void) {
                     mco_desc desc = mco_desc_init(probe_body, GDCC_CORO_STACK_SIZE);
                     desc.alloc_cb = failing_alloc;
@@ -130,7 +130,7 @@ class GdccCoroutineRuntimeSmokeTest {
         var source = """
                 #include <gdcc_coroutine.h>
                 #include <stdio.h>
-
+                
                 int main(void) {
                     godot_Object *slot = gdcc_coro_state_slot_init();
                     if (slot != NULL) return 10;
@@ -148,51 +148,59 @@ class GdccCoroutineRuntimeSmokeTest {
 
     @Test
     void awaitStateFinalizeCascadeShouldHonorOrderingInvariants() throws IOException, InterruptedException {
-        // Anchors: done fast path; finalize invariant order (pack -> done -> waiters ->
-        // emit); one private Variant copy per waiter; resume BEFORE edge release; nested
-        // finalize cascade (S -> W1 -> X); waiters resumed before the external emit.
+        // Anchors: done fast path through `copy_ret_slot`; finalize invariant order
+        // (pack -> done -> waiters -> emit); waiter-kind dispatch (typed via copy_ret_slot,
+        // Variant via one private result_cache copy each); pack_result PRESERVES the typed
+        // return slot; resume BEFORE edge release; nested finalize cascade (S -> W1 -> X);
+        // waiters resumed before the external emit.
         var source = FAKE_ENGINE + """
                 
                 static FakeState g_S, g_W1, g_W2;
                 static mco_coro *g_s_co, *g_w1_co, *g_w2_co, *g_x_co;
-                static godot_Variant g_w1_out, g_w2_out, g_x_out, g_late_out;
-
+                static int64_t g_w1_out, g_x_out, g_late_out;
+                static godot_Variant g_w2_op, g_w2_out;
+                
                 static void s_body(mco_coro *co) {
                     log_event("s_yield");
                     mco_yield(co);
                     log_event("s_end");
                     fake_state_write_ret(&g_S, 42);
                 }
-
+                
                 static void w1_body(mco_coro *co) {
                     log_event("w1_await");
+                    // Typed channel: the awaiter's int64 result slot is handed over directly.
                     gdcc_coro_await_state(&g_S.header, &g_w1_out, co, &g_W1.header);
                     CHECK(!g_W1.header.cancel, "w1 must not be cancelled");
                     log_event("w1_resumed");
                     CHECK(g_S.header.done, "w1 resumed before done was published");
-                    CHECK(fake_variant_as_int(&g_w1_out) == 42, "w1 out must be a private copy of the result");
+                    CHECK(g_w1_out == 42, "w1 out must be a typed copy of the result");
                     CHECK(fake_refs_of((GDExtensionObjectPtr)&g_W1) == 1, "w1 edge must still be held during its resume");
                     fake_state_write_ret(&g_W1, 7);
                 }
-
+                
                 static void w2_body(mco_coro *co) {
                     log_event("w2_await");
-                    gdcc_coro_await_state(&g_S.header, &g_w2_out, co, &g_W2.header);
+                    // Variant channel through the dynamic dispatch: mixed with the typed
+                    // waiters above to anchor finalize's per-kind dispatch.
+                    fake_variant_set_object(&g_w2_op, g_S.fake_id);
+                    fake_add_ref((GDExtensionObjectPtr)&g_S); // the operand Variant's retain
+                    gdcc_coro_await_dynamic(&g_w2_op, &g_w2_out, co, &g_W2.header);
                     CHECK(!g_W2.header.cancel, "w2 must not be cancelled");
                     log_event("w2_resumed");
-                    CHECK(fake_variant_as_int(&g_w2_out) == 42, "w2 out must be a private copy of the result");
+                    CHECK(fake_variant_as_int(&g_w2_out) == 42, "w2 out must be a private Variant copy of the result");
                     CHECK(fake_refs_of((GDExtensionObjectPtr)&g_W2) == 1, "w2 edge must still be held during its resume");
                     fake_state_write_ret(&g_W2, 100);
                 }
-
+                
                 static void x_body(mco_coro *co) {
                     log_event("x_await");
                     // Raw coroutine awaiter without a state object: no edge, no cascade.
                     gdcc_coro_await_state(&g_W1.header, &g_x_out, co, NULL);
                     log_event("x_resumed");
-                    CHECK(fake_variant_as_int(&g_x_out) == 7, "x must receive W1's cascaded result");
+                    CHECK(g_x_out == 7, "x must receive W1's cascaded result through the typed channel");
                 }
-
+                
                 int main(void) {
                     if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
                     fake_state_init(&g_S, "S");
@@ -202,44 +210,48 @@ class GdccCoroutineRuntimeSmokeTest {
                     g_w1_co = fake_make_coro(w1_body, &g_W1);
                     g_w2_co = fake_make_coro(w2_body, &g_W2);
                     g_x_co = fake_make_coro(x_body, NULL);
-
+                
                     mco_resume(g_s_co);   // S reaches its suspension point
                     CHECK(mco_status(g_s_co) == MCO_SUSPENDED, "S must be suspended");
                     // Each awaiter's call site holds an OWNED callee reference (the thunk
                     // out_state); await_state must consume it before yielding.
                     fake_add_ref((GDExtensionObjectPtr)&g_S);
-                    mco_resume(g_w1_co);  // W1 registers on S and suspends
+                    mco_resume(g_w1_co);  // W1 registers a typed waiter on S and suspends
                     CHECK(fake_refs_of((GDExtensionObjectPtr)&g_S) == 1,
                             "await_state must cut the call-site callee edge before yielding");
                     fake_add_ref((GDExtensionObjectPtr)&g_W1); // X's call-site ref on W1
                     mco_resume(g_x_co);   // X registers on W1 and suspends
                     CHECK(fake_refs_of((GDExtensionObjectPtr)&g_W1) == 2,
                             "X's call-site ref must be consumed even without an awaiter edge");
-                    fake_add_ref((GDExtensionObjectPtr)&g_S);
-                    mco_resume(g_w2_co);  // W2 registers on S and suspends
+                    mco_resume(g_w2_co);  // W2 registers a Variant waiter on S and suspends
                     CHECK(fake_refs_of((GDExtensionObjectPtr)&g_S) == 1,
-                            "await_state must cut the call-site callee edge before yielding");
+                            "dynamic own-state must cut the operand callee edge before yielding");
                     fake_drop_ref((GDExtensionObjectPtr)&g_W1); // main detaches the awaiter creator refs
                     fake_drop_ref((GDExtensionObjectPtr)&g_W2);
-
+                
                     mco_resume(g_s_co);   // S runs to completion -> MCO_DEAD
                     CHECK(mco_status(g_s_co) == MCO_DEAD, "S must be dead after its second resume");
                     gdcc_coro_finalize(&g_S.header); // entry-thunk role: DEAD at a resume return point
-
-                    // Connect-after-done fast path: immediate copy, no suspend.
+                    CHECK(g_S.ret_initialized && g_S.ret_slot == 42,
+                            "pack_result must preserve the typed return slot for typed waiters");
+                
+                    // Connect-after-done fast path: immediate typed copy, no suspend.
                     fake_add_ref((GDExtensionObjectPtr)&g_S); // the call site's OWNED ref
                     gdcc_coro_await_state(&g_S.header, &g_late_out, g_s_co, NULL);
                     log_event("late_fast_path");
-                    CHECK(fake_variant_as_int(&g_late_out) == 42, "late await must read the cached result");
-
+                    CHECK(g_late_out == 42, "late await must read the preserved typed slot");
+                
                     CHECK(mco_status(g_x_co) == MCO_DEAD, "X must have completed through the cascade");
                     mco_destroy(g_x_co); // X is a raw coroutine: no state object owns its stack
                     fake_drop_ref((GDExtensionObjectPtr)&g_S); // main releases the last S reference
-
+                
                     CHECK(g_print_error_count == 0, "no runtime errors expected");
                     CHECK(g_mem_balance == 0, "waiter nodes must all be freed");
-                    CHECK(g_variant_copy_count == 7, "exact Variant copy budget of the finalize flow");
-                    CHECK(g_variant_destroy_count == 6, "three destroy-then-copy packs + three state frees");
+                    CHECK(g_variant_copy_count == 1, "only W2's Variant waiter copies from result_cache");
+                    CHECK(g_variant_destroy_count == 7,
+                            "three destroy-then-write packs + three state frees + one dynamic operand reset");
+                    CHECK(g_S.copy_ret_calls == 2 && g_W1.copy_ret_calls == 1 && g_W2.copy_ret_calls == 0,
+                            "typed channel usage: w1 + late await read S, x reads W1, Variant waiter never does");
                     printf("OK await_state_finalize\\n");
                     return 0;
                 }
@@ -256,14 +268,20 @@ class GdccCoroutineRuntimeSmokeTest {
                 "w2_resumed",
                 "pack_result:W2",
                 "emit:W2",
+                "destroy_slot:W2",
                 "free:W2",
+                "copy_ret:S",
                 "w1_resumed",
                 "pack_result:W1",
+                "copy_ret:W1",
                 "x_resumed",
                 "emit:W1",
+                "destroy_slot:W1",
                 "free:W1",
                 "emit:S",
+                "copy_ret:S",
                 "late_fast_path",
+                "destroy_slot:S",
                 "free:S"
         ));
         assertTrue(execution.output().contains("OK await_state_finalize"), execution::diagnostic);
@@ -273,14 +291,16 @@ class GdccCoroutineRuntimeSmokeTest {
     void cancelShouldCascadeAbandonmentWithoutFinalizeOrLeaks() throws IOException, InterruptedException {
         // Chain-abandonment anchor (A awaits B awaits emitter-held C; emitter dies):
         // every state is cancel-resumed into its cleanup path; never finalized, never
-        // emitted; awaiter `out` slots stay unwritten; waiter nodes never leak. Also
-        // covers cancel/finalize mutual exclusion, idempotent cancel, and co == NULL.
+        // emitted; awaiter typed `out` slots stay unwritten; waiter nodes never leak.
+        // Cancel NEVER destroys the typed return slot - the generated free_instance does
+        // (exactly once). Also covers cancel/finalize mutual exclusion, idempotent cancel,
+        // and co == NULL.
         var source = FAKE_ENGINE + """
                 
                 static FakeState g_A, g_B, g_C, g_D;
                 static mco_coro *g_a_co, *g_b_co, *g_c_co;
-                static godot_Variant g_a_out, g_b_out;
-
+                static int64_t g_a_out, g_b_out;
+                
                 static void c_body(mco_coro *co) {
                     log_event("c_start");
                     mco_yield(co); // suspended "on the emitter signal" (modeled by the emitter edge)
@@ -288,7 +308,7 @@ class GdccCoroutineRuntimeSmokeTest {
                     log_event("c_cleanup");
                     fake_state_write_ret(&g_C, 0); // __prepare__ default consumed by the __finally__ analog
                 }
-
+                
                 static void b_body(mco_coro *co) {
                     log_event("b_await");
                     gdcc_coro_await_state(&g_C.header, &g_b_out, co, &g_B.header);
@@ -296,7 +316,7 @@ class GdccCoroutineRuntimeSmokeTest {
                     log_event("b_cleanup");
                     fake_state_write_ret(&g_B, 0);
                 }
-
+                
                 static void a_body(mco_coro *co) {
                     log_event("a_await");
                     gdcc_coro_await_state(&g_B.header, &g_a_out, co, &g_A.header);
@@ -304,7 +324,7 @@ class GdccCoroutineRuntimeSmokeTest {
                     log_event("a_cleanup");
                     fake_state_write_ret(&g_A, 0);
                 }
-
+                
                 int main(void) {
                     if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
                     fake_state_init(&g_A, "A");
@@ -314,9 +334,9 @@ class GdccCoroutineRuntimeSmokeTest {
                     g_a_co = fake_make_coro(a_body, &g_A);
                     g_b_co = fake_make_coro(b_body, &g_B);
                     g_c_co = fake_make_coro(c_body, &g_C);
-                    memset(&g_a_out, 0xAA, sizeof(g_a_out));
-                    memset(&g_b_out, 0xAA, sizeof(g_b_out));
-
+                    g_a_out = -7; // sentinels: abandoned awaiter slots must stay untouched
+                    g_b_out = -7;
+                
                     mco_resume(g_c_co);                       // C suspends
                     fake_add_ref((GDExtensionObjectPtr)&g_C); // emitter connection edge
                     // B's call site holds the thunk's OWNED ref on C (the init ref), and
@@ -330,27 +350,34 @@ class GdccCoroutineRuntimeSmokeTest {
                     fake_drop_ref((GDExtensionObjectPtr)&g_A); // fire-and-forget root drop
                     CHECK(fake_refs_of((GDExtensionObjectPtr)&g_A) == 1,
                             "A must be held only by its wait edge");
-
+                
                     // Emitter dies: the last C reference drops and the abandonment cascade runs.
                     fake_drop_ref((GDExtensionObjectPtr)&g_C);
-
+                
                     CHECK(g_A.header.cancel && g_B.header.cancel && g_C.header.cancel, "every state must be cancelled");
                     CHECK(g_A.pack_calls == 0 && g_B.pack_calls == 0 && g_C.pack_calls == 0, "cancel must never pack");
                     CHECK(g_A.emit_calls == 0 && g_B.emit_calls == 0 && g_C.emit_calls == 0, "cancel must never emit");
-                    CHECK(fake_variant_is_sentinel(&g_a_out) && fake_variant_is_sentinel(&g_b_out),
-                            "abandoned awaiter out slots must stay unwritten");
-
+                    CHECK(g_a_out == -7 && g_b_out == -7, "abandoned awaiter out slots must stay unwritten");
+                    CHECK(g_A.destroy_slot_calls == 1 && g_B.destroy_slot_calls == 1 && g_C.destroy_slot_calls == 1,
+                            "the return slot is destroyed exactly once, by free_instance");
+                
                     gdcc_coro_cancel(&g_A.header);   // idempotent no-op after cancel+free
                     gdcc_coro_finalize(&g_C.header); // no-op: finalize is locked out after cancel
                     gdcc_coro_finalize(&g_A.header);
                     CHECK(g_A.pack_calls == 0 && g_C.pack_calls == 0, "post-cancel finalize must stay a no-op");
-
-                    fake_drop_ref((GDExtensionObjectPtr)&g_D); // PREDELETE with co == NULL must be tolerated
-
+                
+                    // Phase-split anchor: PREDELETE (cancel) must not touch the return slot;
+                    // free_instance destroys it exactly once - even with co == NULL.
+                    fake_fire_predelete((GDExtensionObjectPtr)&g_D);
+                    CHECK(g_D.header.cancel, "PREDELETE must run the cancel path");
+                    CHECK(g_D.destroy_slot_calls == 0, "cancel must never destroy the return slot");
+                    fake_free_instance((GDExtensionObjectPtr)&g_D);
+                    CHECK(g_D.destroy_slot_calls == 1, "free_instance destroys the return slot exactly once");
+                
                     CHECK(g_print_error_count == 0, "no runtime errors expected");
                     CHECK(g_mem_balance == 0, "waiter nodes must all be freed");
                     CHECK(g_variant_copy_count == 0, "no result copies on the abandonment path");
-                    CHECK(g_variant_destroy_count == 7, "three ret defaults + four result caches");
+                    CHECK(g_variant_destroy_count == 4, "only the four result caches are destroyed");
                     printf("OK cancel_cascade\\n");
                     return 0;
                 }
@@ -386,7 +413,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 static FakeState g_S1, g_S2;
                 static char g_foreign_storage;
                 static char g_foreign_token;
-
+                
                 int main(void) {
                     if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
                     fake_state_init(&g_S1, "S1");
@@ -402,7 +429,7 @@ class GdccCoroutineRuntimeSmokeTest {
                     CHECK(gdcc_coro_state_identify((GDExtensionObjectPtr)&g_S2) == NULL,
                             "magic mismatch must be rejected");
                     CHECK(gdcc_coro_state_identify(NULL) == NULL, "NULL must be rejected");
-
+                
                     fake_drop_ref((GDExtensionObjectPtr)&g_S1); // tidy teardown
                     g_S2.header.magic = GDCC_CORO_STATE_MAGIC;
                     fake_drop_ref((GDExtensionObjectPtr)&g_S2);
@@ -428,7 +455,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 static FakeState g_S5, g_W5;
                 static mco_coro *g_w5_co;
                 static godot_Variant g_op, g_out, g_w5_out, g_op5;
-
+                
                 static void w5_body(mco_coro *co) {
                     log_event("w5_await_dynamic");
                     gdcc_coro_await_dynamic(&g_op5, &g_w5_out, co, &g_W5.header);
@@ -437,22 +464,22 @@ class GdccCoroutineRuntimeSmokeTest {
                     CHECK(fake_variant_as_int(&g_w5_out) == 55, "dynamic own-state resume value mismatch");
                     fake_state_write_ret(&g_W5, 0);
                 }
-
+                
                 int main(void) {
                     if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
-
+                
                     // Non-object operand: pass-through copy, no suspend.
                     fake_variant_set_int(&g_op, 42);
                     memset(&g_out, 0xAA, sizeof(g_out));
                     gdcc_coro_await_dynamic(&g_op, &g_out, NULL, NULL);
                     CHECK(fake_variant_as_int(&g_out) == 42, "int operand must pass through");
-
+                
                     // Nil operand: pass-through.
                     memset(&g_op, 0, sizeof(g_op));
                     memset(&g_out, 0xAA, sizeof(g_out));
                     gdcc_coro_await_dynamic(&g_op, &g_out, NULL, NULL);
                     CHECK(fake_variant_type_of(&g_out) == GDEXTENSION_VARIANT_TYPE_NIL, "nil operand must pass through");
-
+                
                     // Null object payload: pass-through.
                     fake_variant_set_object(&g_op, 0);
                     memset(&g_out, 0xAA, sizeof(g_out));
@@ -460,7 +487,7 @@ class GdccCoroutineRuntimeSmokeTest {
                     CHECK(fake_variant_type_of(&g_out) == GDEXTENSION_VARIANT_TYPE_OBJECT
                                     && fake_variant_object_id_of(&g_out) == 0,
                             "null object payload must pass through");
-
+                
                     // Freed object: Godot-aligned runtime error, nil out, no suspend.
                     fake_register_freed_object(77);
                     fake_variant_set_object(&g_op, 77);
@@ -470,7 +497,14 @@ class GdccCoroutineRuntimeSmokeTest {
                     CHECK(strstr(g_last_error, "Trying to await on a freed object.") != NULL,
                             "freed object error message must match Godot");
                     CHECK(fake_variant_type_of(&g_out) == GDEXTENSION_VARIANT_TYPE_NIL, "freed object must resume with nil");
-
+                
+                    // Static-path NULL callee: runtime error, and the typed out slot keeps
+                    // its caller-side default (there is no typed nil to write).
+                    int64_t typed_out = -7;
+                    gdcc_coro_await_state(NULL, &typed_out, NULL, NULL);
+                    CHECK(g_print_error_count == 2, "null callee must report exactly one error");
+                    CHECK(typed_out == -7, "the typed failure path must leave the out slot untouched");
+                
                     // Own state object, still running: dynamic dispatch delegates to the
                     // direct C-level waiter channel.
                     fake_state_init(&g_S5, "S5");
@@ -489,7 +523,9 @@ class GdccCoroutineRuntimeSmokeTest {
                     gdcc_coro_finalize(&g_S5.header);
                     // w5 completed through the cascade (its coroutine stack is already
                     // destroyed by W5's state_free, so no mco_status check here).
-
+                    CHECK(g_S5.ret_initialized && g_S5.ret_slot == 55,
+                            "pack_result must preserve the typed return slot after finalize");
+                
                     // Own state object after completion: done fast path through the dynamic layer.
                     fake_variant_set_object(&g_op5, g_S5.fake_id);
                     fake_add_ref((GDExtensionObjectPtr)&g_S5); // the operand Variant's retain
@@ -499,7 +535,7 @@ class GdccCoroutineRuntimeSmokeTest {
                     CHECK(fake_variant_type_of(&g_op5) == GDEXTENSION_VARIANT_TYPE_OBJECT,
                             "the done fast path must leave the operand untouched");
                     godot_variant_destroy(&g_op5); // the frame eventually destructs the temp
-
+                
                     fake_drop_ref((GDExtensionObjectPtr)&g_S5); // main releases the last S5 reference
                     CHECK(g_mem_balance == 0, "waiter nodes must all be freed");
                     printf("OK await_dynamic\\n");
@@ -514,8 +550,10 @@ class GdccCoroutineRuntimeSmokeTest {
                 "w5_resumed",
                 "pack_result:W5",
                 "emit:W5",
+                "destroy_slot:W5",
                 "free:W5",
                 "emit:S5",
+                "destroy_slot:S5",
                 "free:S5"
         ));
         assertTrue(execution.output().contains("OK await_dynamic"), execution::diagnostic);
@@ -604,30 +642,30 @@ class GdccCoroutineRuntimeSmokeTest {
     private static final String FAKE_ENGINE = """
             #include <godot_binding.h>
             #include <gdcc_coroutine.h>
-
+            
             #include <stddef.h>
             #include <stdio.h>
             #include <stdlib.h>
             #include <string.h>
-
+            
             #define FAKE_VARIANT_TYPE_OFF 0
             #define FAKE_VARIANT_PAYLOAD_OFF 8
             #define FAKE_MAX_OBJECTS 16
             #define FAKE_MAX_BINDINGS 32
-
+            
             static int g_mem_balance = 0;
             static int g_variant_copy_count = 0;
             static int g_variant_destroy_count = 0;
             static int g_print_error_count = 0;
             static char g_last_error[256] = {0};
-
+            
             static void fail(const char *msg) {
                 printf("FAIL %s\\n", msg);
                 fflush(stdout);
                 exit(1);
             }
             #define CHECK(cond, msg) do { if (!(cond)) fail(msg); } while (0)
-
+            
             static void log_event(const char *event) {
                 printf("EV %s\\n", event);
                 fflush(stdout);
@@ -637,7 +675,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 snprintf(buf, sizeof(buf), fmt, arg);
                 log_event(buf);
             }
-
+            
             // ---------- fake Variant helpers ----------
             static void fake_variant_set_int(godot_Variant *v, int64_t value) {
                 memset(v, 0, sizeof(*v));
@@ -666,14 +704,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 memcpy(&id, (const char *)v + FAKE_VARIANT_PAYLOAD_OFF, 8);
                 return id;
             }
-            static int fake_variant_is_sentinel(const godot_Variant *v) {
-                const unsigned char *bytes = (const unsigned char *)v;
-                for (size_t i = 0; i < sizeof(*v); i++) {
-                    if (bytes[i] != 0xAA) return 0;
-                }
-                return 1;
-            }
-
+            
             // ---------- fake object / binding / refcount tables ----------
             static struct { GDObjectInstanceID id; GDExtensionObjectPtr ptr; int freed; } g_objects[FAKE_MAX_OBJECTS];
             static int g_object_count = 0;
@@ -681,7 +712,7 @@ class GdccCoroutineRuntimeSmokeTest {
             static int g_binding_count = 0;
             static struct { GDExtensionObjectPtr obj; int refs; } g_refs[FAKE_MAX_OBJECTS];
             static int g_ref_count = 0;
-
+            
             static void *fake_get_binding(GDExtensionObjectPtr obj, void *token, const GDExtensionInstanceBindingCallbacks *callbacks) {
                 (void)callbacks;
                 for (int i = 0; i < g_binding_count; i++) {
@@ -703,7 +734,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 g_bindings[g_binding_count].binding = binding;
                 g_binding_count++;
             }
-
+            
             static int fake_refs_index(GDExtensionObjectPtr obj) {
                 for (int i = 0; i < g_ref_count; i++) {
                     if (g_refs[i].obj == obj) return i;
@@ -717,45 +748,49 @@ class GdccCoroutineRuntimeSmokeTest {
             static void fake_add_ref(GDExtensionObjectPtr obj) {
                 g_refs[fake_refs_index(obj)].refs++;
             }
-
+            
             // ---------- fake coroutine state class (models one generated hidden state class) ----------
             typedef struct FakeState {
                 GDExtensionObjectPtr _object;  // wrapper root field; fake engine object = self address
                 gdcc_coro_state_header header; // common frame header
-                godot_Variant ret_slot;        // typed return slot model
+                int64_t ret_slot;              // typed return slot model (an int64-returning coroutine)
                 int ret_initialized;
                 const char *name;
                 GDObjectInstanceID fake_id;
                 int pack_calls;
+                int copy_ret_calls;
                 int destroy_slot_calls;
                 int emit_calls;
             } FakeState;
             #define FAKE_STATE_OF(h) ((FakeState *)((char *)(h) - offsetof(FakeState, header)))
-
+            
             static struct { GDExtensionObjectPtr obj; FakeState *state; int freed; } g_state_reg[FAKE_MAX_OBJECTS];
             static int g_state_reg_count = 0;
             static GDObjectInstanceID g_next_fake_id = 1000;
-
+            
             static void fake_pack_result(gdcc_coro_state_header *state) {
                 FakeState *fs = FAKE_STATE_OF(state);
                 log_eventf("pack_result:%s", fs->name);
                 fs->pack_calls++;
                 CHECK(fs->ret_initialized, "pack_result requires a written return slot");
-                // result_cache destroy-then-copy discipline: the storage is always
-                // constructed, so destroy the old (nil) value before copying.
+                // New contract: COPY the typed slot into result_cache (destroy-then-write
+                // discipline, the storage is always constructed) and KEEP the typed slot
+                // alive - typed waiters and the done fast path read it afterwards.
                 godot_variant_destroy(&state->result_cache);
-                godot_variant_new_copy(&state->result_cache, &fs->ret_slot);
-                memset(&fs->ret_slot, 0, sizeof(fs->ret_slot)); // zero the slot after packing
-                fs->ret_initialized = 0;
+                fake_variant_set_int(&state->result_cache, fs->ret_slot);
+            }
+            static void fake_copy_ret_slot(gdcc_coro_state_header *state, void *out_typed) {
+                FakeState *fs = FAKE_STATE_OF(state);
+                log_eventf("copy_ret:%s", fs->name);
+                fs->copy_ret_calls++;
+                CHECK(fs->ret_initialized, "copy_ret_slot requires a written return slot");
+                *(int64_t *)out_typed = fs->ret_slot; // int64: plain value copy, no destroy of the awaiter slot needed
             }
             static void fake_destroy_ret_slot(gdcc_coro_state_header *state) {
                 FakeState *fs = FAKE_STATE_OF(state);
                 log_eventf("destroy_slot:%s", fs->name);
                 fs->destroy_slot_calls++;
-                if (fs->ret_initialized) { // tolerates a never-written slot
-                    godot_variant_destroy(&fs->ret_slot);
-                    fs->ret_initialized = 0;
-                }
+                fs->ret_initialized = 0; // tolerates a never-written slot (idempotent for int64)
             }
             static void fake_emit_completed(gdcc_coro_state_header *state) {
                 FakeState *fs = FAKE_STATE_OF(state);
@@ -769,19 +804,20 @@ class GdccCoroutineRuntimeSmokeTest {
             }
             static const gdcc_coro_state_desc g_fake_desc = {
                     .pack_result = fake_pack_result,
+                    .copy_ret_slot = fake_copy_ret_slot,
                     .destroy_ret_slot = fake_destroy_ret_slot,
                     .emit_completed = fake_emit_completed,
             };
-
+            
             static void fake_state_write_ret(FakeState *fs, int64_t value) {
-                fake_variant_set_int(&fs->ret_slot, value);
+                fs->ret_slot = value;
                 fs->ret_initialized = 1;
             }
-
+            
             // Engine PREDELETE + instance-free emulation. The two phases stay separate,
             // mirroring production: NOTIFICATION_PREDELETE only runs `gdcc_coro_cancel`,
-            // and the instance destructor (`free_instance`) runs `gdcc_coro_state_free`
-            // later - the MCO_DEAD coroutine stack exists in between.
+            // and the instance destructor (`free_instance`) runs the typed-slot destroy and
+            // `gdcc_coro_state_free` later - the MCO_DEAD coroutine stack exists in between.
             static void fake_fire_predelete(GDExtensionObjectPtr obj) {
                 for (int i = 0; i < g_state_reg_count; i++) {
                     if (g_state_reg[i].obj == obj && !g_state_reg[i].freed) {
@@ -794,6 +830,9 @@ class GdccCoroutineRuntimeSmokeTest {
             static void fake_free_instance(GDExtensionObjectPtr obj) {
                 for (int i = 0; i < g_state_reg_count; i++) {
                     if (g_state_reg[i].obj == obj) {
+                        // Generated-code shape: the typed return slot is destroyed exactly
+                        // once here (never from cancel), then the generic frame teardown.
+                        fake_destroy_ret_slot(&g_state_reg[i].state->header);
                         gdcc_coro_state_free(&g_state_reg[i].state->header);
                         log_eventf("free:%s", g_state_reg[i].state->name);
                         return;
@@ -810,7 +849,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 }
                 return 0;
             }
-
+            
             static void fake_state_init(FakeState *fs, const char *name) {
                 memset(fs, 0, sizeof(*fs));
                 fs->_object = (GDExtensionObjectPtr)fs;
@@ -836,7 +875,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 // binding pointing at the common header.
                 fake_set_binding(fs->_object, gdcc_coro_binding_token(), &fs->header, NULL);
             }
-
+            
             static void fake_register_freed_object(GDObjectInstanceID id) {
                 if (g_object_count >= FAKE_MAX_OBJECTS) fail("fake table overflow");
                 static char g_freed_storage[FAKE_MAX_OBJECTS];
@@ -845,7 +884,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 g_objects[g_object_count].freed = 1;
                 g_object_count++;
             }
-
+            
             static mco_coro *fake_make_coro(void (*body)(mco_coro *), FakeState *owner) {
                 mco_desc desc = mco_desc_init(body, GDCC_CORO_STACK_SIZE);
                 desc.user_data = owner;
@@ -856,7 +895,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 }
                 return co;
             }
-
+            
             // ---------- fake GDExtension interface entry points ----------
             static void *fake_mem_alloc(size_t bytes) {
                 g_mem_balance++;
@@ -953,7 +992,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 }
                 fail("unexpected method bind ptrcall");
             }
-
+            
             static void fake_unused_interface(void) {
             }
             static GDExtensionInterfaceFunctionPtr fake_get_proc_address(const char *name) {

@@ -278,7 +278,9 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
             return new SelfOperand(bodyBuilder.valueOfVar(selfVar), null, false);
         }
         var selfStrategy = resolveSelfStrategy(bodyBuilder, selfVar, selfMode);
-        if (selfVar.ref() && selfStrategy == SelfStrategy.VALUE_SEMANTIC) {
+        // Coroutine frame parameters are writable owning storage (their `ref` flag only
+        // describes the borrowed thunk boundary), so the writeback path below is legal there.
+        if (selfVar.ref() && !bodyBuilder.isCoroutineFrameParameter(selfVar) && selfStrategy == SelfStrategy.VALUE_SEMANTIC) {
             throw bodyBuilder.invalidInsn("Index store self operand variable ID '" + selfVar.id() +
                     "' is a reference and requires writeback, which is not supported for type '" +
                     selfVar.type().getTypeName() + "'");
