@@ -3,6 +3,7 @@ package gd.script.gdcc.backend.c.build;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
 import gd.script.gdcc.enums.GodotVersion;
+import gd.script.gdcc.enums.LifecycleProvenance;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.lir.LirBasicBlock;
@@ -12,16 +13,21 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
+import gd.script.gdcc.lir.insn.AwaitInsn;
+import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructLambdaInsn;
+import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import gd.script.gdcc.type.GdccCoroStateType;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
@@ -85,7 +91,7 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
         schedule.setReturnType(GdVoidType.VOID);
         schedule.setCoroutine(true);
         schedule.addParameter(new LirParameterDef("self", new GdObjectType("SyntaxWorker"), null, schedule));
-        schedule.addParameter(new LirParameterDef("label", GdStringType.STRING, null, schedule));
+        schedule.addParameter(new LirParameterDef("label", new GdStringType(), null, schedule));
         schedule.createAndAddVariable("cb", new GdCallableType());
         var scheduleEntry = new LirBasicBlock("entry");
         scheduleEntry.appendInstruction(new ConstructLambdaInsn(
@@ -97,6 +103,41 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
         schedule.addBasicBlock(scheduleEntry);
         schedule.setEntryBlockId("entry");
         workerClass.addFunction(schedule);
+
+        // Await surface: all three dispatch paths plus statement-position detach inside one
+        // coroutine body, so the generated await C is compile-verified (frame-parameter
+        // addressing, staged Variant temps, typed out_typed slots, moved-from NULL reset).
+        var runAll = new LirFunctionDef("run_all");
+        runAll.setReturnType(GdVoidType.VOID);
+        runAll.setCoroutine(true);
+        runAll.addParameter(new LirParameterDef("self", new GdObjectType("SyntaxWorker"), null, runAll));
+        runAll.addParameter(new LirParameterDef("sig", new GdSignalType(), null, runAll));
+        runAll.addParameter(new LirParameterDef("dyn", GdVariantType.VARIANT, null, runAll));
+        runAll.createAndAddVariable("count", GdIntType.INT);
+        runAll.createAndAddVariable("label", GdStringType.STRING);
+        runAll.createAndAddVariable("res_v", GdVariantType.VARIANT);
+        runAll.createAndAddVariable("res_i", GdIntType.INT);
+        runAll.createAndAddVariable("state_fetch", GdccCoroStateType.CORO_STATE);
+        runAll.createAndAddVariable("state_sum", GdccCoroStateType.CORO_STATE);
+        runAll.createAndAddVariable("__coro_state_9", GdccCoroStateType.CORO_STATE);
+        var runAllEntry = new LirBasicBlock("entry");
+        runAllEntry.appendInstruction(new AwaitInsn("res_v", "sig"));
+        runAllEntry.appendInstruction(new CallMethodInsn("state_fetch", "fetch", "self", List.of()));
+        runAllEntry.appendInstruction(new AwaitInsn("res_v", "state_fetch"));
+        runAllEntry.appendInstruction(new CallMethodInsn(
+                "state_sum",
+                "sum_to",
+                "self",
+                List.of(new LirInstruction.VariableOperand("count"), new LirInstruction.VariableOperand("label"))
+        ));
+        runAllEntry.appendInstruction(new AwaitInsn("res_i", "state_sum"));
+        runAllEntry.appendInstruction(new AwaitInsn("res_v", "dyn"));
+        runAllEntry.appendInstruction(new CallMethodInsn("__coro_state_9", "fetch", "self", List.of()));
+        runAllEntry.appendInstruction(new DestructInsn("__coro_state_9", LifecycleProvenance.INTERNAL));
+        runAllEntry.setTerminator(new ReturnInsn(null));
+        runAll.addBasicBlock(runAllEntry);
+        runAll.setEntryBlockId("entry");
+        workerClass.addFunction(runAll);
 
         var module = new LirModule("coroutine_syntax_module", List.of(workerClass));
         // Callable default materialization in `__prepare__` validates against this metadata.
@@ -121,6 +162,8 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
                 List.of(),
                 List.of()
         ));
+        // GDCC-dispatch resolution of the coroutine start-thunk calls in `run_all`.
+        classRegistry.addGdccClass(workerClass);
         ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
         };
         var codegen = new gd.script.gdcc.backend.c.gen.CCodegen();

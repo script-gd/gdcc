@@ -208,6 +208,7 @@ class ObjectFatPtrDeclarationTest {
                     )),
                     null,
                     false,
+                    false,
                     false
             );
             var constructor = new EngineConstructorUsage("Node", "Node", "Node", false);

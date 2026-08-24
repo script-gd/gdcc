@@ -97,7 +97,9 @@ public final class BackendPropertyAccessResolver {
                     parameters,
                     methodBindSpec,
                     method.isVararg(),
-                    method.isStatic()
+                    method.isStatic(),
+                    // Engine property accessors are exact engine helpers, never GDCC coroutines.
+                    false
             );
         }
     }

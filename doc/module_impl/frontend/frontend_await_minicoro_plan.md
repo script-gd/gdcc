@@ -324,7 +324,13 @@ $<result_id> = await $<operand_id>
 
 ### 第五步：`AwaitInsnGen`（signal / static call / dynamic 三路径 + cancel 检查）
 
-- 状态：未开始
+- 状态：**已完成**（2026-08-24）
+- 完成内容：
+  - **新增 `AwaitInsnGen`**（注册进 `CCodegen` opcode 表）：三路径纯静态类型分派——`Signal` operand 渲染 `gdcc_coro_await_signal(&$sig, &out_temp, _co, &_coro_state->_coro_header)`（resume 值经未初始化 Variant temp 中转，helper 是 raw-overwrite 语义）；`compiler::GdccCoroState` operand 渲染 `gdcc_coro_state_identify($state)` → `$state = NULL;`（call 前置 moved-from，cancel-resume 不会观察到悬垂引用）→ `gdcc_coro_await_state(callee, &<typed result slot>, _co, ...)`；`Variant` operand 渲染 `gdcc_coro_await_dynamic(&$operand, &out_temp, _co, ...)`。每条路径 helper 调用后立即渲染 cancel 检查 `if (_coro_state->_coro_header.cancel) { goto __finally__; }`（新增 `CCoroutineFrameContext.cancelFlagExpr()` 拼写单一来源），signal/dynamic 路径的结果物化在 cancel 检查之后（cancel 时结果通道未写入）；Variant 结果经 `godot_new_Variant_with_Variant` callAssign（既有 slot-write：先 destroy 旧值）、typed 结果经既有 `unpackVariantAssign` unpack 边界、state 路径由 desc `copy_ret_slot` 直接写 typed 槽（无 Variant 往返）。
+  - **协程调用 ABI**：`BackendMethodCallResolver.ResolvedMethodCall` 新增 `coroutine` 字段（GDCC + `LirFunctionDef.isCoroutine()` 时 `cFunctionName` 渲染为 `renderCoroStartThunkName(...)`）；`CallMethodInsnGen` 新增 `emitCoroutineStartCall` 分支——调 start thunk 并以 `GdccCoroStateType.CORO_STATE` 写 result；fail-fast：static 协程（Post-MVP）、vararg 协程（thunk 定参签名）、缺 result、result 非 `compiler::GdccCoroState`。statement 位置 fire-and-forget 走普通生命周期：call 写 `__coro_state_<valueId>`（`__` 前缀满足 INTERNAL 命名限制）+ INTERNAL provenance `destruct` → `gdcc_coro_state_slot_destroy` 释放即 detach。
+  - **await 负例 fail-fast**：非协程函数内 await；operand 非 Signal/Variant/GdccCoroState；compiler-only result；dynamic 路径 result 非 Variant 或 result 与 operand 别名（helper 会 reset operand 槽）；state 路径 ref operand（单消费者 owning 槽会被置 NULL）。
+  - 测试锚点：`AwaitInsnGenTest`（16 tests：三路径字符串锚点 + 顺序锚点（identify<NULL 重置<await_state<cancel 检查；helper<cancel 检查<结果物化<temp destroy）+ overwrite 旧值 destroy 锚点 + 帧参数 result/operand 寻址 + 10 个负例）；`CallMethodInsnGenTest` 新增 7 tests（start thunk 调用/参数透传/overwrite 先 `gdcc_coro_state_slot_destroy`/statement-detach 顺序锚点/4 负例；`assertOrdered` 为 forward-scan 严格顺序语义，正确处理 overwrite destroy 与 detach destroy 同串两次出现）；`CCoroutineGeneratedCSyntaxSmokeTest` fixture 新增 `run_all` 协程（signal/state(Variant+int)/dynamic/INTERNAL destruct 全路径），zig 实际编译通过（skipped=0）。既有同步 codegen 测试全绿。
+  - 说明：`godot_Signal_connect(..., 4)` 与 `mco_yield` 按冻结设计位于 runtime TU（`gdcc_coroutine.c`），由第二步 `GdccCoroutineRuntimeSmokeTest` 锚定；生成代码侧锚点为 `gdcc_coro_await_*` 调用与 cancel 检查分支（`awaitShouldNotLeakSyncOnlyShapes` 反向断言生成代码不含 `godot_Signal_connect`/`mco_yield`）。
 
 目标：
 

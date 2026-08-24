@@ -12,6 +12,7 @@ import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import gd.script.gdcc.type.GdccCoroStateType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -195,6 +196,10 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                                         @NotNull LirVariable receiverVar,
                                         @NotNull List<LirVariable> argVars,
                                         @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
+        if (resolved.coroutine()) {
+            emitCoroutineStartCall(bodyBuilder, instruction, receiverVar, argVars, resolved);
+            return;
+        }
         if (resolved.isStatic()) {
             warnStaticMethodCall(bodyBuilder, receiverVar, resolved);
         }
@@ -228,6 +233,60 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         bodyBuilder.callAssign(target, resolved.cFunctionName(), returnType, fixedArgs, varargs);
         destroyTemporaryArgs(bodyBuilder, callArgs.temporaryArgs());
         bodyBuilder.recordUsedEngineMethodCall(resolved);
+    }
+
+    /// Internal coroutine-call ABI (`gdcc_low_ir.md` §Coroutine Instructions, plan §3.4): the
+    /// call targets the coroutine-start thunk (`<Class>_<method>__coro_start`, same parameter
+    /// shape as the ClassDB entry) and always writes the OWNED state object reference into the
+    /// result variable declared as `compiler::GdccCoroState`. The single-consumer value is then
+    /// consumed either by `await` (typed resume channel) or by an `INTERNAL` `destruct`
+    /// (statement-position fire-and-forget detach); this generator only produces it.
+    private void emitCoroutineStartCall(@NotNull CBodyBuilder bodyBuilder,
+                                        @NotNull CallMethodInsn instruction,
+                                        @NotNull LirVariable receiverVar,
+                                        @NotNull List<LirVariable> argVars,
+                                        @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
+        if (resolved.isStatic()) {
+            // Post-MVP: no CallStaticMethodInsn backend exists yet, and the start thunk takes
+            // the instance receiver; fail fast instead of silently emitting a broken call.
+            throw bodyBuilder.invalidInsn("Coroutine method '" + resolved.ownerClassName() + "." +
+                    resolved.methodName() + "' is static: static coroutine calls are not supported (Post-MVP)");
+        }
+        if (resolved.isVararg()) {
+            // The generated start thunk has a fixed-parameter signature; a vararg tail would
+            // produce a C call with more arguments than parameters.
+            throw bodyBuilder.invalidInsn("Coroutine method '" + resolved.ownerClassName() + "." +
+                    resolved.methodName() + "' is vararg: the coroutine start thunk is fixed-parameter only");
+        }
+        var callArgs = validateFixedArgsAndCompleteDefaults(bodyBuilder, receiverVar, resolved, argVars);
+        var target = resolveCoroutineStateResultTarget(bodyBuilder, instruction, resolved);
+        bodyBuilder.callAssign(target, resolved.cFunctionName(), GdccCoroStateType.CORO_STATE, callArgs.fixedArgs());
+        destroyTemporaryArgs(bodyBuilder, callArgs.temporaryArgs());
+        bodyBuilder.recordUsedEngineMethodCall(resolved);
+    }
+
+    /// The coroutine call MUST declare a result variable (the OWNED state reference has to be
+    /// accounted for even on the fire-and-forget path) and the variable MUST be declared with
+    /// the compiler-only `compiler::GdccCoroState` type — the only producer of that type.
+    private @NotNull CBodyBuilder.TargetRef resolveCoroutineStateResultTarget(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull CallMethodInsn instruction,
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
+        var resultId = instruction.resultId();
+        if (resultId == null) {
+            throw bodyBuilder.invalidInsn("Call on coroutine method '" + resolved.ownerClassName() + "." +
+                    resolved.methodName() + "' must declare a compiler::GdccCoroState result variable" +
+                    " (await consumes it; statement-position fire-and-forget destructs it)");
+        }
+        var resultVar = bodyBuilder.func().getVariableById(resultId);
+        if (resultVar == null) {
+            throw bodyBuilder.invalidInsn("Result variable ID '" + resultId + "' not found in function");
+        }
+        if (!(resultVar.type() instanceof GdccCoroStateType)) {
+            throw bodyBuilder.invalidInsn("Coroutine call result variable '" + resultId +
+                    "' must be declared compiler::GdccCoroState, got '" + resultVar.type().getTypeName() + "'");
+        }
+        return bodyBuilder.targetOfVar(resultVar);
     }
 
     private record CompletedCallArgs(@NotNull List<CBodyBuilder.ValueRef> fixedArgs,

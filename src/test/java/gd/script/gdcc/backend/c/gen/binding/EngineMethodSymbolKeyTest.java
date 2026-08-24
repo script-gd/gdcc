@@ -125,7 +125,8 @@ class EngineMethodSymbolKeyTest {
                         .toList(),
                 new BackendMethodCallResolver.EngineMethodBindSpec(hash, hashCompatibility),
                 isVararg,
-                isStatic
+                isStatic,
+                false
         );
     }
 }

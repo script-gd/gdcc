@@ -4,6 +4,7 @@ import gd.script.gdcc.backend.c.gen.CBodyBuilder;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodAbiSignature;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
+import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirVariable;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.scope.ParameterDef;
@@ -146,7 +147,8 @@ public final class BackendMethodCallResolver {
                                      @NotNull List<MethodParamSpec> parameters,
                                      @Nullable EngineMethodBindSpec engineMethodBindSpec,
                                      boolean isVararg,
-                                     boolean isStatic) {
+                                     boolean isStatic,
+                                     boolean coroutine) {
         public ResolvedMethodCall {
             Objects.requireNonNull(mode);
             Objects.requireNonNull(methodName);
@@ -216,6 +218,7 @@ public final class BackendMethodCallResolver {
                 List.of(),
                 null,
                 true,
+                false,
                 false
         );
     }
@@ -226,26 +229,36 @@ public final class BackendMethodCallResolver {
         var ownerClassName = resolved.ownerClass().getName();
         var parameters = toMethodParamSpecs(resolved);
         var engineMethodBindSpec = resolveEngineMethodBindSpec(bodyBuilder, resolved, mode);
+        // Internal coroutine-call ABI (`gdcc_low_ir.md` §Coroutine Instructions): a call on an
+        // `is_coroutine="true"` GDCC callee targets the coroutine-start thunk (which always
+        // hands back the OWNED state object reference) instead of the ClassDB entry, and the
+        // call result is the compiler-only `compiler::GdccCoroState` single-consumer value.
+        var coroutine = mode == DispatchMode.GDCC
+                && resolved.function() instanceof LirFunctionDef lirFunction
+                && lirFunction.isCoroutine();
         return new ResolvedMethodCall(
                 mode,
                 resolved.methodName(),
                 ownerClassName,
                 resolved.ownerType(),
-                renderMethodCFunctionName(
-                        mode,
-                        ownerClassName,
-                        resolved.methodName(),
-                        parameters,
-                        resolved.returnType(),
-                        engineMethodBindSpec,
-                        resolved.isVararg(),
-                        resolved.isStatic()
-                ),
+                coroutine
+                        ? bodyBuilder.helper().renderCoroStartThunkName(resolved.ownerClass(), resolved.function())
+                        : renderMethodCFunctionName(
+                                mode,
+                                ownerClassName,
+                                resolved.methodName(),
+                                parameters,
+                                resolved.returnType(),
+                                engineMethodBindSpec,
+                                resolved.isVararg(),
+                                resolved.isStatic()
+                        ),
                 resolved.returnType(),
                 parameters,
                 engineMethodBindSpec,
                 resolved.isVararg(),
-                resolved.isStatic()
+                resolved.isStatic(),
+                coroutine
         );
     }
 

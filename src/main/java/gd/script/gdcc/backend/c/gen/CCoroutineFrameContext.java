@@ -46,6 +46,14 @@ public record CCoroutineFrameContext(@NotNull String stateStructName) {
         return "&" + FRAME_LOCAL + "->" + HEADER_FIELD;
     }
 
+    /// C expression of the cancel flag polled right after every await resume point: a
+    /// cancel-resume returns from the runtime helper without writing the result channel, so
+    /// the generated body jumps straight to `__finally__` when this is set (ownership spec
+    /// §3.10 cancel-resume; `gdcc_coro_cancel` never finalizes).
+    public static @NotNull String cancelFlagExpr() {
+        return FRAME_LOCAL + "->" + HEADER_FIELD + ".cancel";
+    }
+
     /// C expression of the typed return slot field.
     public static @NotNull String retFieldExpr() {
         return FRAME_LOCAL + "->" + RET_FIELD;

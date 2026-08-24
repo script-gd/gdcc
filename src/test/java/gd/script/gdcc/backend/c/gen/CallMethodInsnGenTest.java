@@ -3,6 +3,7 @@ package gd.script.gdcc.backend.c.gen;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
 import gd.script.gdcc.enums.GodotVersion;
+import gd.script.gdcc.enums.LifecycleProvenance;
 import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
@@ -15,6 +16,7 @@ import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
+import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -31,6 +33,7 @@ import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import gd.script.gdcc.type.GdccCoroStateType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -1065,6 +1068,235 @@ class CallMethodInsnGenTest {
         );
         assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("compiler-only type leaked into dynamic call result target variable 'ret'"), ex.getMessage());
+    }
+
+    // ==== Coroutine internal ABI (frontend_await_minicoro_plan.md step 5) ====
+    // A call on an `isCoroutine` GDCC callee targets the coroutine-start thunk and publishes
+    // the OWNED state object reference as a compiler::GdccCoroState result.
+
+    @Test
+    @DisplayName("CALL_METHOD on a GDCC coroutine should call the start thunk into a GdccCoroState result")
+    void callMethodGdccCoroutineShouldCallStartThunk() {
+        var workerClass = newClass("Worker");
+        var fire = newFunction("fire");
+        fire.setCoroutine(true);
+        fire.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, fire));
+        entry(fire).appendInstruction(new ReturnInsn(null));
+        workerClass.addFunction(fire);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        caller.createAndAddVariable("state", GdccCoroStateType.CORO_STATE);
+        entry(caller).appendInstruction(new CallMethodInsn(
+                "state",
+                "fire",
+                "worker",
+                List.of()
+        ));
+        hostClass.addFunction(caller);
+
+        var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass));
+        // Overwrite discipline: the previously held state reference (or NULL) is released first.
+        assertTrue(body.contains("gdcc_coro_state_slot_destroy(&$state);"), body);
+        assertTrue(body.contains("$state = Worker_fire__coro_start($worker);"), body);
+        assertFalse(body.contains("Worker_fire($worker)"), body);
+        // Slot-write order: release the old reference BEFORE the new OWNED reference lands.
+        assertOrdered(body, "gdcc_coro_state_slot_destroy(&$state);", "$state = Worker_fire__coro_start($worker);");
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD on a GDCC coroutine should forward fixed arguments to the start thunk")
+    void callMethodGdccCoroutineShouldForwardArguments() {
+        var workerClass = newClass("Worker");
+        var sumTo = newFunction("sum_to");
+        sumTo.setCoroutine(true);
+        sumTo.setReturnType(GdIntType.INT);
+        sumTo.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, sumTo));
+        sumTo.addParameter(new LirParameterDef("count", GdIntType.INT, null, sumTo));
+        entry(sumTo).appendInstruction(new ReturnInsn("count"));
+        workerClass.addFunction(sumTo);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        caller.createAndAddVariable("count", GdIntType.INT);
+        caller.createAndAddVariable("state", GdccCoroStateType.CORO_STATE);
+        entry(caller).appendInstruction(new CallMethodInsn(
+                "state",
+                "sum_to",
+                "worker",
+                List.of(new LirInstruction.VariableOperand("count"))
+        ));
+        hostClass.addFunction(caller);
+
+        var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass));
+        assertTrue(body.contains("$state = Worker_sum_to__coro_start($worker, $count);"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD statement-position coroutine call should detach via INTERNAL destruct")
+    void callMethodGdccCoroutineStatementShouldDetachViaInternalDestruct() {
+        var workerClass = newClass("Worker");
+        var fire = newFunction("fire");
+        fire.setCoroutine(true);
+        fire.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, fire));
+        entry(fire).appendInstruction(new ReturnInsn(null));
+        workerClass.addFunction(fire);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        caller.createAndAddVariable("__coro_state_7", GdccCoroStateType.CORO_STATE);
+        entry(caller).appendInstruction(new CallMethodInsn(
+                "__coro_state_7",
+                "fire",
+                "worker",
+                List.of()
+        ));
+        // Fire-and-forget: releasing the last call-site reference detaches the coroutine,
+        // which stays alive through its own wait edges (plan §3.4 statement position).
+        entry(caller).appendInstruction(new DestructInsn("__coro_state_7", LifecycleProvenance.INTERNAL));
+        hostClass.addFunction(caller);
+
+        var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass));
+        assertTrue(body.contains("$__coro_state_7 = Worker_fire__coro_start($worker);"), body);
+        assertTrue(body.contains("gdcc_coro_state_slot_destroy(&$__coro_state_7);"), body);
+        // The state reference must be acquired before the detach release consumes it.
+        assertOrdered(
+                body,
+                "$__coro_state_7 = Worker_fire__coro_start($worker);",
+                "gdcc_coro_state_slot_destroy(&$__coro_state_7);"
+        );
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD on a GDCC coroutine without a result should fail fast")
+    void callMethodGdccCoroutineWithoutResultShouldFailFast() {
+        var workerClass = newClass("Worker");
+        var fire = newFunction("fire");
+        fire.setCoroutine(true);
+        fire.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, fire));
+        entry(fire).appendInstruction(new ReturnInsn(null));
+        workerClass.addFunction(fire);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        entry(caller).appendInstruction(new CallMethodInsn(
+                null,
+                "fire",
+                "worker",
+                List.of()
+        ));
+        hostClass.addFunction(caller);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass))
+        );
+        assertTrue(ex.getMessage().contains("must declare a compiler::GdccCoroState result variable"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD on a GDCC coroutine with a non-GdccCoroState result should fail fast")
+    void callMethodGdccCoroutineWithWrongResultTypeShouldFailFast() {
+        var workerClass = newClass("Worker");
+        var fire = newFunction("fire");
+        fire.setCoroutine(true);
+        fire.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, fire));
+        entry(fire).appendInstruction(new ReturnInsn(null));
+        workerClass.addFunction(fire);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        caller.createAndAddVariable("state", GdVariantType.VARIANT);
+        entry(caller).appendInstruction(new CallMethodInsn(
+                "state",
+                "fire",
+                "worker",
+                List.of()
+        ));
+        hostClass.addFunction(caller);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass))
+        );
+        assertTrue(ex.getMessage().contains("must be declared compiler::GdccCoroState"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD on a static GDCC coroutine should fail fast (Post-MVP)")
+    void callMethodGdccStaticCoroutineShouldFailFast() {
+        var workerClass = newClass("Worker");
+        var fire = newFunction("fire");
+        fire.setCoroutine(true);
+        fire.setStatic(true);
+        entry(fire).appendInstruction(new ReturnInsn(null));
+        workerClass.addFunction(fire);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        caller.createAndAddVariable("state", GdccCoroStateType.CORO_STATE);
+        entry(caller).appendInstruction(new CallMethodInsn(
+                "state",
+                "fire",
+                "worker",
+                List.of()
+        ));
+        hostClass.addFunction(caller);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass))
+        );
+        assertTrue(ex.getMessage().contains("static coroutine calls are not supported"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD on a vararg GDCC coroutine should fail fast (fixed-parameter start thunk)")
+    void callMethodGdccVarargCoroutineShouldFailFast() {
+        var workerClass = newClass("Worker");
+        var fire = newFunction("fire");
+        fire.setCoroutine(true);
+        fire.setVararg(true);
+        fire.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, fire));
+        entry(fire).appendInstruction(new ReturnInsn(null));
+        workerClass.addFunction(fire);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        caller.createAndAddVariable("state", GdccCoroStateType.CORO_STATE);
+        entry(caller).appendInstruction(new CallMethodInsn(
+                "state",
+                "fire",
+                "worker",
+                List.of()
+        ));
+        hostClass.addFunction(caller);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass))
+        );
+        assertTrue(ex.getMessage().contains("vararg"), ex.getMessage());
+    }
+
+    /// Asserts each fragment exists and appears strictly after the previous one: used where the
+    /// lifecycle contract is an ordering (release-before-overwrite, acquire-before-detach), not
+    /// mere presence. Each fragment is searched after the previous match, so repeated fragments
+    /// (e.g. a slot destroy that is also the detach statement) are matched as distinct occurrences.
+    private static void assertOrdered(String text, String... fragmentsInOrder) {
+        var searchFromIndex = 0;
+        for (var fragment : fragmentsInOrder) {
+            var index = text.indexOf(fragment, searchFromIndex);
+            assertTrue(index >= 0, () -> "Missing fragment: " + fragment + "\n" + text);
+            searchFromIndex = index + fragment.length();
+        }
     }
 
     private LirClassDef newClass(String name) {
