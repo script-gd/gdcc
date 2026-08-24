@@ -604,14 +604,21 @@ public final class GodotGdextensionTestRunner {
                 if (path.equals(dir)) {
                     continue;
                 }
-                try {
-                    Files.deleteIfExists(path);
-                } catch (AccessDeniedException _) {
+                var trailTimeRemaining = 5;
+                while (trailTimeRemaining > 0) {
                     try {
-                        Thread.sleep(1000);
                         Files.deleteIfExists(path);
-                    } catch (InterruptedException e) {
-                        throw new RuntimeException(e);
+                        break;
+                    } catch (AccessDeniedException e) {
+                        try {
+                            trailTimeRemaining--;
+                            if (trailTimeRemaining == 0) {
+                                throw e;
+                            }
+                            Thread.sleep(500);
+                        } catch (InterruptedException e2) {
+                            throw new RuntimeException(e2);
+                        }
                     }
                 }
             }
