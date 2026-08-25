@@ -5,6 +5,7 @@
 ## 文档状态
 
 - 方案说明：2026-08-23 已切换为「`completed` 信号 + Godot 可见状态对象」方案，并经一轮 review 修订。
+- 2026-08-25：R6 方向经方案对比后修订——放弃 capture block 引用计数，改采**逐调用拷贝入帧**；新增第九步（lambda 内 await）实施计划。
 - 更新时间：2026-08-25
 - 当前事实源：
   - `frontend_rules.md`
@@ -83,11 +84,11 @@
 | 动态/Variant await | `gdcc_coro_await_dynamic` 三层分派（§3.4）：Signal → signal 路径；自己的状态对象（独立 binding token 识别）→ done 检查 / C 层直接 waiter 通道；外部对象 → `Signal(obj, "completed")` connect，**以 connect 错误码作为存在性检测**，失败即穿透 | 编译期 fail-closed（放弃解释层 interop 与 Callable 路径）；`has_signal` 显式检测（多一次动态查询，与 connect 结果冗余） |
 | 外部对象的 `completed` duck-type | **有意宽于 Godot**（Godot VM 只认内部函数状态类，其余穿透；我们对任何带 `completed` 信号的对象都等待）：覆盖脚本显式暴露的 completed-state 对象、Callable 与第三方 GDExtension 协程。Godot 4 不允许脚本取得原生 GDScript function state，因此不承诺 direct interpreted-coroutine-state transfer；恰好带 `completed` 信号的无关对象也会被等待，属已接受偏离 | 严格内部类判定（扩展不可访问，且第三方协程无法互操作） |
 | connect-after-done | 三层处理（§3.4 dynamic 路径）：静态路径由 `done` 标志 + `copy_ret_slot` 类型化拷贝立即返回；dynamic 自己状态对象路径由 `done` 标志 + `result_cache` Variant 拷贝立即返回；外部 completed-state 对象无缓存协议，连接后不会收到已发信号并保持挂起 | 全局统一挂起（放弃已完成 fast path）；全局报错（偏离 Godot 语义） |
-| lambda / property init 内 await | MVP 继续 fail-closed；Callable 的 ABI 阻碍已被状态对象方案解除（`call_func` 挂起时返回状态对象 Variant 即可），剩余工作为捕获引用计数（R6），列为 MVP 后第一跟进项 | 同步开放（capture 生命周期需独立设计） |
+| lambda / property init 内 await | property init 维持 fail-closed；lambda body 内 await 由第九步开放：Callable 的 ABI 阻碍已被状态对象方案解除（`call_func` 挂起时返回状态对象 Variant 即可，dynamic await 天然消费），capture 生命周期按 R6 修订方向**逐调用拷贝入帧** | 同步开放（capture 生命周期需独立设计） |
 
 ### 3.2 协程函数模型
 
-- frontend 在语义阶段判定「函数直接包含真实 await」（见 §3.5 分类），把函数集合发布到 `FrontendAnalysisData` 新 side table；`FrontendLoweringClassSkeletonPass` 消费该事实，在 `LirFunctionDef` 上写入新属性（`isCoroutine()`，XML 序列化为 `is_coroutine` 函数属性）。
+- frontend 在语义阶段判定「函数直接包含真实 await」（见 §3.5 分类），把函数集合发布到 `FrontendAnalysisData` 新 side table；named/ctor 由 `FrontendLoweringClassSkeletonPass` 消费该事实，在 `LirFunctionDef` 上写入新属性（`isCoroutine()`，XML 序列化为 `is_coroutine` 函数属性）；lambda 的合成 shell 在 skeleton pass 时点尚不存在，由 `FrontendLoweringFunctionPreparationPass.buildLambdaContext` 在 shell 创建后按 identity-keyed lambda owner 集合补标（同时 `setCoroutine(true)` + `markCoroutineFunction`，见第九步）。
 - 隐藏状态类**不是**普通 `LirClassDef`，不进入 `module.classDefs` 用户类注册循环（该循环 `is_exposed` 硬编码为 true）；由 backend 按 `is_coroutine="true"` 函数集合在 `entry.c.ftl` / `entry.h.ftl` 另开专用生成循环。状态类只有 canonical 名、无 sourceName、不可 `extends`、不进 source-facing registry（R1/R15）。
 - backend 对每个 `is_coroutine="true"` 的函数生成（模板落点：`func.ftl` / `entry.c.ftl` / `entry.h.ftl`；wrapper struct 与 create/free 回调的生成方式参照现有用户类与 lambda capture struct，`entry.h.ftl:30-41,68-126`、`entry.c.ftl:39-59`）：
   1. **隐藏状态类** `_gdcc_coro_state_<canonicalClass>__coro__<func>`（**直接继承 `RefCounted`**，`is_exposed = false`、`is_runtime = true`；C 标识符映射与现有用户类模板走同一套 helper，不新增清洗规则）：wrapper struct 首字段为 `_object`（无 GDCC `_super` 链），帧字段紧随其后：公共头（magic 常量 + 类描述符指针 + `GDExtensionObjectPtr obj` 回指 + `mco_coro *` + `done` + `cancel` + 结果 Variant 缓存 + waiter 链表）+ 类型化参数字段 + 类型化返回槽。创建时只设置**一个** instance binding：模块私有协程 token → 公共头，callbacks 全 `NULL`。Godot 4.5.1 的 `set_instance_binding` 只写 slot zero；不得尝试第二次 set，也不得在持非递归 binding mutex 执行的 create callback 内递归 get。`object_set_instance(..., self)` 独立保存 notification/free_instance 所需 wrapper。
@@ -172,7 +173,8 @@ $<result_id> = await $<operand_id>
 | RESOLVED call、callee 非协程、返回其它静态类型 | callee 返回类型（void → `Variant` nil） | `sema.redundant_await` warning，await 退化为纯穿透 | 否 |
 | 其他静态已知非 signal 值 | — | error（fail-closed，diagnostic owner 为 expr analyzer 既有 category；对齐 Godot 的 warning 放宽留作 Post-MVP） | — |
 | `DYNAMIC` operand | `Variant` | 无（运行时分派，见 §3.4 dynamic 路径） | 是 |
-| lambda / property init / parameter default 内任何 await | — | error（既有 fail-closed 边界不变） | — |
+| lambda body 内 await | 与所在 owner 同规则 | 与 named 函数同规则（第九步开放；lambda 标记协程后 shell 同时 `setCoroutine(true)` 并 `markCoroutineFunction` 入册） | 按路由 |
+| property init / parameter default（含 lambda 自己的 default）内任何 await | — | error（既有 fail-closed 边界不变） | — |
 | statement 位置调用协程函数（fire-and-forget，仅 instance） | —（结果丢弃） | 无（对齐 Godot root-expression 放行） | 否（调用方不挂起） |
 | value 位置（非 await operand）调用协程函数 | — | compile gate error（对齐 Godot `must be called with "await"`） | — |
 
@@ -188,6 +190,7 @@ $<result_id> = await $<operand_id>
   - 挂起链在最终完成时逐边释放；永久挂起的链泄漏（与 Godot 语义一致）。
 - 挂起**不触发**返回路径；`__finally__` 只在 body 函数真实返回（含 cancel-resume 路径）时执行一次，局部变量整个生命周期由 minicoro 栈承载，backend 不得为协程函数发明第二套清理逻辑。
 - 参数：帧的类型化参数字段是唯一 owning 存储（thunk 按 slot-write 规则填入）；**不生成参数 C 槽**——body 内参数 operand 直接映射帧字段，参数写入按普通 slot-write 规则作用于帧字段；`__prepare__` 不初始化参数，`__finally__` 不清理参数；参数字段由 `free_instance` 恰好清理一次，cancel 路径不触碰。
+- lambda capture（第九步）：协程 lambda 的 typed capture 帧字段与参数同纪律——thunk 在调用边界从 `_capture` block 拷入（owning），body 直读/写帧字段，`__finally__` 不销毁，`free_instance` 恰好销毁一次；同步 lambda 的 `_capture` block 仍归 Callable userdata 独占，互不干涉及所有权。
 - **返回值存储状态机（不可违反）**：
   1. body `__finally__` 把 `_return_val` consume 进类型化返回槽（此后 `_return_val` 视为已清空）；
   2. `finalize`：`desc->pack_result` **拷贝**（不 move）进 `result_cache`，再置 `done`；类型化返回槽保持存活；
@@ -206,7 +209,7 @@ $<result_id> = await $<operand_id>
 | R3 | 挂起期间 `self` 等引擎对象死亡，恢复后访问已死实例 | MVP：依赖既有 `assert_object_live` 硬失败 + 文档化偏离；后续可用 `NOTIFICATION_PREDELETE` + 每实例 pending 帧列表实现主动取消（entry.h.ftl 已有 notification callback 挂点） | MVP 接受偏离，列 Post-MVP |
 | R4 | connect-after-done | 静态路径由 `done` 标志 + `copy_ret_slot` 类型化拷贝立即返回，dynamic 自己状态对象路径由 `done` 标志 + `result_cache` 拷贝立即返回（均优于 Godot 的静默挂起）；finalize 顺序不变量保证 `done`/`result_cache` 先于任何 resume/emit 可见 | 已纳入设计 |
 | R5 | 动态路径识别可等待对象 | 自己的状态对象：`gdcc_coro_state_identify`（专用 token + magic，纯 C）；外部对象：`connect` 返回错误码即存在性检测，失败穿透；duck-type 宽于 Godot 属有意偏离（§3.1） | 已纳入设计 |
-| R6 | lambda 捕获语义（创建时拷贝）与帧活过 Callable 释放的矛盾 | capture block 改引用计数，Callable userdata 与每个在飞状态对象各持一份；语义不变，生命周期闭合；同一 Callable 并发调用各自独立状态对象 | MVP 后第一跟进项（lambda await 前提） |
+| R6 | lambda 捕获语义（创建时拷贝）与帧活过 Callable 释放的矛盾 | **2026-08-25 修订**：放弃 capture block 引用计数，改采**逐调用拷贝入帧**——block 仍归 Callable userdata 独占（创建时快照语义不变），start thunk 在调用边界把 capture 逐字段拷入状态对象的类型化帧字段（新建 owning storage），body 直读帧字段，`free_instance` 恰好销毁一次；语义不变，生命周期显式闭合，无新 runtime 原语；同一 Callable 并发调用各自独立状态对象。引用环登记：形态 1（互相捕获的 lambda Callable 环）/形态 2（`self` 捕获 + 属性存 Callable）与 Godot 行为一致（Godot 同样不断环，master 留 orphaned-lambda TODO，GH-102327），接受；形态 3（捕获的共享可变容器/对象字段在挂起后回持 state：state → 帧字段 → `Array`/对象 → state——capture 是调用前快照，**非**填帧时帧中已有 `Variant(state)`；后果为永不 PREDELETE、cancel-resume 失效）为本方案特有，登记 known-limit，缓解并入 R3 主动取消 | 已纳入第九步 |
 | R7 | finalize 中恢复 waiter 的级联导致原生 C 栈深度增长 | 与 Godot VM resume 链同构，接受并文档化；必要时引入 trampoline 队列压平（不改语义） | 接受，列 Post-MVP 备选 |
 | R8 | 协程调用统一创建 Godot 状态对象的开销（内部通道同步完成也创建，换取单通道 ABI） | MVP 统一创建（简单正确）；后续可做「Godot 对象懒物化」：帧先以纯堆 struct 存在，仅在挂起/外部边界需要时补建 Object 与 binding（类型合同不变，仅改 thunk 内部） | 列 Post-MVP 优化 |
 | R9 | 每函数状态类的字段布局依赖模块 LIR，通用 runtime helper 无法承载 | 注册代码与 wrapper 由 `entry.c.ftl`/`entry.h.ftl` 生成（**专用生成循环**，不进 `module.classDefs` 用户循环）；`gdcc_coroutine.h/.c` 只承载通用逻辑 | 已纳入设计 |
@@ -492,16 +495,79 @@ $<result_id> = await $<operand_id>
 - negative path：
   - 既有全部测试无回归；文档中的「仍拒绝」清单不再包含已放行项。
 
+### 第九步：lambda 内 await（capture 逐调用拷贝入协程帧）
+
+- 状态：进行中（2026-08-25 立项）
+- 进度：
+  - [待办] 前端 sema 解封与 lambda 协程标记桥接。
+  - [待办] backend lambda 协程状态类与 capture 帧字段 codegen。
+  - [待办] lambda `call_func` done/suspend 分派。
+  - [待办] 测试翻转/新增、zig smoke、真机 engine test 与 e2e。
+  - [待办] 文档同步与最终 review。
+
+**方向决策（R6 修订，2026-08-25）**：lambda capture 生命周期放弃「capture block 引用计数化」，改采**逐调用拷贝入帧**：
+
+- capture block 仍由 Callable userdata 独占（创建时快照语义不变，`ConstructInsnGen` 零改动）；调用边界由 start thunk 把 capture 逐字段拷入状态对象的类型化帧字段（新建 owning storage）；body 像访问参数一样直读帧字段；`free_instance` 恰好销毁一次（与参数字段同纪律）。
+- 与现状语义逐点等价：创建时快照（拷贝源是 block 而非外层变量）、lambda 内写 capture 只改 per-call 副本、同一 Callable 并发调用各自独立帧。
+- 对比另两个候选：优于「借用至首次 resume」（后者依赖「prologue 先于首个 yield」与「call_func 期间 Callable 存活」两条无守护的隐式时序不变量）；优于「引用计数」（不引入新 runtime 原语，帧布局直接复用参数模式）。
+- 对齐 Godot 隐藏参数模型且更省：Godot 为 Callable `captures` → 调用栈 → 挂起时再拷入 `GDScriptFunctionState::state.stack` 共三次拷贝（`gdscript_vm.cpp` `OPCODE_AWAIT`；外部调研结论，未在本仓库核实）；GDCC 的 minicoro 栈/状态对象挂起后原样存活，只需两次拷贝且全程类型化（Godot 全程 Variant）。
+
+目标：
+
+- lambda body 内 await 全链路闭环（sema → LIR → C codegen → Godot 4.5.1 e2e）。property initializer / parameter default 内 await、lambda 自己的 parameter default、body 内 block-local `const` 维持既有 fail-closed 边界，不在本步。
+
+建议实施内容：
+
+1. **前端 sema 解封与协程标记桥接**
+   - `FrontendBodyOwnerProcedures.awaitFailClosedBoundaryReason()`（`FrontendBodyOwnerProcedures.java:1991-1999`）删除 lambda 分支，保留 property initializer 分支。
+   - 协程标记桥接（核心难点）：`requireEnclosingCallableFunction()`（`:2046-2066`）当前只接受 `FunctionDeclaration`/`ConstructorDeclaration`，对 `LambdaExpression` 在 `default` 分支抛 `IllegalStateException`；解封后**两条标记路径都必须改**：`SIGNAL`/`DYNAMIC` 路由不走 pending，直接 `markCoroutineFunction(requireEnclosingCallableFunction())`（`:1973-1976`）；`CALL` 路由经 `FrontendAwaitCallPending` 携带 `requireEnclosingCallableFunction()` 的结果（`:2033-2039`）。同时存在 lowering 侧事实源错位：lambda 合成 shell 在 `FrontendLoweringFunctionPreparationPass.synthesizeLambdaShell`（`:370-410`，不具名复用，重名直接 fail-fast）才创建，晚于 `FrontendLoweringClassSkeletonPass` 消费 `coroutineFunctions` 的时点；且 lowering 的协程判定读的是 `analysisData.coroutineFunctions().contains(function)`（`FrontendBodyLoweringSession.java:816-818`），不是 `LirFunctionDef.isCoroutine()`——只 `setCoroutine(true)` 不入册会在 `FrontendSequenceItemInsnLoweringProcessors.java:1570-1589` 的 marker 校验 fail-fast。落地形态：
+     - `FrontendAnalysisData` 新增 identity-keyed lambda 协程 owner 集合（按 `LambdaExpression` identity）；
+     - 解封后统一以 `context.callableOwner()` 分派：`FunctionDeclaration`/`ConstructorDeclaration` 仍走 skeleton name/static/arity lookup；`LambdaExpression` 写入 lambda owner 集合——`SIGNAL`/`DYNAMIC` 路径直接写入，`CALL` 路径由 `FrontendAwaitCallPending.enclosingFunction` 从单一 `LirFunctionDef` 扩展为可携带 lambda AST owner 的 handle 后随 pending 传递；嵌套 lambda 必须按当前 `context.callableOwner()` 标记自身，禁止用 `FrontendLambdaPlan.enclosingCallable()`（它指向最近**非 lambda** callable，会把嵌套 lambda 错误归属到外层普通函数）；
+     - `FrontendAwaitCoroutineAnalyzer` 的 caller 标记与 `isMarkedCoroutine` 查询对两种 owner 形态分派；fixed-point 完成后 lambda owner 映射到对应合成 shell；
+     - 在 `buildLambdaContext`（`:294-330`，此处持有 `analysisData`）于 `synthesizeLambdaShell` 返回后消费 lambda 协程标记：`shell.setCoroutine(true)` 与 `analysisData.markCoroutineFunction(shell)` **缺一不可**——前者是 LIR 事实（backend `func.isCoroutine()`/模板 `func.coroutine` 的唯一来源），后者是 lowering membership 的判定来源（`FrontendBodyLoweringSession.isTargetFunctionCoroutine()`）。
+   - compile gate 零改动确认：`walkLambdaExpression` 已递归扫已记录 lambda 的 body（`FrontendCompileCheckAnalyzer.java:729-738`；注意 `:635-641` 是只处理 named/ctor 的 `walkCallableBody`，勿混淆），`walkAwaitExpression` 与 coroutine-call 位置检查（value 位置/static 拦截、语句根 fire-and-forget 放行）对 lambda body 自动生效，合同不变。
+   - CFG/lowering 零改动确认：`buildAwaitValue`（`FrontendCfgGraphBuilder.java:2328-2359`）与普通函数共用同一 builder；`AwaitInsn` 三路径 lowering 复用。前提是 lambda shell 已入 `coroutineFunctions`，否则 `FrontendSequenceItemInsnLoweringProcessors.java:1570-1589` 的 marker 校验 fail-fast。
+   - 调用侧路由确认：lambda 协程被调用即 Callable dynamic call → `DYNAMIC` 路由 → `gdcc_coro_await_dynamic` 运行时 identify，无 ABI 改动；直接 `cb()` 形态仍 unsupported（`FrontendExpressionSemanticSupport.java:383-400`），不在本步开放。
+2. **backend lambda 协程状态类与 capture 帧字段**
+   - `CCodegen.validateCoroutineMarkers()`（`CCodegen.java:505-520`）移除 `isCoroutine && isLambda` fail-fast（同步更新 `:505-508` 注释中指向「plan §3.5 fail-closed」的表述）；`emitLambdaCapturePrologue()`（`:203-237`，当前只判 `isLambda && captureCount`，见 `:210`）必须在 `isCoroutine()` 时**早退**——body 无 `_capture` 参数，保留会生成未声明变量并造成重复所有权；其调用点在 coroutine `CBodyBuilder` 之后无条件触发（`:540-541`），不能靠调用侧规避；`ensureFunctionFinallyBlock`/`shouldInsertAutoGeneratedFinallyDestruct()`（`:444-493`）排除协程 capture（防 body `__finally__` 与 `free_instance` 双重销毁，与参数同一纪律）。
+   - `CBodyBuilder`：新增 `isCoroutineFrameCapture()`（镜像 `isCoroutineFrameParameter()`，`:83-85`）与 `renderVariableStorageExpr`（`:89-94`）的 capture 分支；capture 帧字段视为非 ref owning storage（`isEffectivelyRef()`/`:96-100` 与 `targetOfVar()`/`:387-397` 的 frame-storage 豁免同步扩展）；`IndexStoreInsnGen.java:283` 仅用 `isCoroutineFrameParameter`，capture 的 `ref` 恒为 false（`LirFunctionDef.addCapture`），当前不必改。返回捕获对象**保持** `resolveMovedObjectReturnSource`（`:874-889`）的 borrowed-return 启发式（`getCapture() != null` 分支不动）：协程帧字段虽是 owning，返回时仍走 retain 而非 move，否则 `free_instance` 会销毁 moved-from 字段、需额外状态机。
+   - `CCoroutineFrameContext`：新增 capture 字段前缀 `_coro_capture_` 与 `captureFieldAccessExpr()`；既有 header/cancel/return 表达式与状态类名无关，对 lambda 通用、零改动。
+   - `CGenHelper`：新增 `renderCoroCaptureFillStmt(...)`——**不得**照抄 `renderCoroParamFillStmt`（`:567-582`）的指针约定：其 value 分支假定参数已是 storage 指针（`renderGdTypeRefInC` 形状），而 `_capture->name` 是**值**，直接套用会把 struct 传给要指针的 copy-ctor。按 lambda prologue 纪律实现：primitive 直接赋值；object 赋值后 retain（source 为 `OwnershipKind.BORROWED`）；value type 复用 `renderLambdaCaptureCopyExpr`（`:436`，内部 `&(source)` 取址 copy-construct）。`free_instance` 的 capture 清理复用 `renderLambdaCaptureFreeStmt()`（`:450-465`，接受任意 `fieldExpr`，对 `self->_coro_capture_<name>` 类型正确）；`renderCoroStateClassName` 直接拼接即可覆盖 `_lambda_<n>` 合成名，不加 lambda 专用命名规则。
+   - `entry.h.ftl`：状态 struct（coroutine 段 `:316-370`）在参数字段之后按 capture plan 顺序追加 typed capture 字段（`self` 首位约定不重排）；thunk 声明尾部追加 `_capture` 尾参（captureless 不加）；coroutine lambda 不再生成普通函数声明——`:84-85` 的 `funcHeader` 当前**无条件**生成，目标条件为 `!func.coroutine || !func.lambda`。声明顺序修正**不得**把整段 coroutine 声明区搬到 methods 循环之前：start thunk 原型的 `_capture` 尾参类型 `Capture_*` typedef 在同一个 per-func 循环内、`call_func` 之前生成（`:75-83`），整块前移会让 capturing 协程 lambda 的原型引用未声明类型，C 编译失败。改为：在 per-func 循环内、`Capture_*` typedef 之后、`call_func` 之前，只对 coroutine lambda **前向声明**其 start thunk（或第一趟只吐全部 `Capture_*`、第二趟吐 coroutine 原型、第三趟吐 `call_func`）；coroutine 段仍原位生成完整定义。
+   - `entry.c.ftl`：状态类生成循环（`func.coroutine` 检查，`:65` 起）自动覆盖 lambda，确认 `func.hidden`/`func.lambda` 不干扰注册与生成；`free_instance`（`:344-360`）在参数清理后追加 capture 字段清理；body 局部声明（`:445-448`，当前只排除参数 `!func.checkVariableParameter`）必须同时排除 capture（与参数一样由 `CBodyBuilder` 映射到帧字段，否则 `$<id>` 局部槽与帧字段双存储）；start thunk（`:453-494`）在 `mco_create` 前逐字段填充 capture（OOM 路径由 `free_instance` 统一清理，与参数同纪律）；engine entry（`:496-538`，当前对**所有** `func.coroutine` 无条件生成）包 `!func.lambda` 是**硬前置**：漏掉则协程 lambda 会得到带 `_capture` 的 `Class__lambda_N` engine 定义、却调用无 `_capture` 形参的 start thunk，C 编译失败；状态类 ClassDB 注册（`:60-89`）对 coroutine lambda 保留。
+   - lambda `call_func`（`entry.h.ftl:133-310`）对 `func.coroutine && func.lambda` **只替换实现调用**：保留既有约 180 行外壳——`p_argument_count` 精确校验（`:144-158`）、userdata NULL 校验、typed Array/Dictionary guard（`:186-268`）、unpack 与调用后 args destroy（`:302-309`）；仅把 impl 调用点（`:286`/`:300`）换成 start thunk + done/suspend 分派，captures 作为 thunk 尾参而非普通 impl 尾参：thunk 返回 `NULL` → nil + 报错；`gdcc_coro_state_identify` 失败 → 报错并释放；`done` → 非 void 经 `__move_result` 取 typed 结果 pack 到 `r_return`（void 返回 nil）并释放状态对象；挂起 → 统一 `godot_new_Variant_with_Object` 返回状态对象 Variant（void/Variant/typed 返回一视同仁，与 named 协程 engine 入口对 typed 非 Variant 报错+detach **有意不同**：Callable 只有 Variant 返回通道）后释放 thunk 的 OWNED 引用。
+   - runtime 零改动确认：`gdcc_coroutine.h/.c` 不变——`gdcc_coro_state_desc` 回调集合够用，capture 帧字段析构完全由生成代码在 `free_instance` 承担；`AwaitInsnGen`/`CallMethodInsnGen`/`BackendMethodCallResolver`/`ConstructInsnGen` 的 capture block 构造均零改动。
+3. **测试**
+   - 翻转：`FrontendAwaitSemanticTest.awaitInsideLambdaFailsAndKeepsOtherSubtreesWorking`（`FrontendAwaitSemanticTest.java:280`，改为断言无 `sema.unsupported_expression_route`，且**归属双向钉住**：lambda owner/对应 `_lambda_*` shell 已标记协程，外层 named 函数 `bad` **未**标记——保留并反转现有 `assertFalse(coroutineNames.contains("bad"))` 锚点的语义，防止 `enclosingCallable()` 误标外层绿灯通过）；`FrontendExpressionSemanticSupportTest.resolveAwaitExpressionRejectsPlainValuesAndFailClosedBoundaries`（`:1861`，拆出 lambda boundary 分支，plain-value 负例保留）；`CCoroutineStateClassCodegenTest.coroutineLambdaShouldFailFast`（`:292-302`，改为正向生成锚点）。**保留不动**：`analyzeForCompileRejectsCoroutineCallInsideLambdaBody`（`FrontendAwaitSemanticTest.java:569`，lambda 内 value-position coroutine call 拦截合同不变）。
+   - 新增单测：`FrontendCompileCheckAnalyzerTest.analyzeForCompileAllowsAwaitInsideRecordedLambdaBody`；`FrontendLambdaLoweringTest.lambdaBodyAwaitLowersToCoroutineWithCapture`；`FrontendAwaitInsnLoweringTest.lambdaAwaitUsesCaptureBackedCoroutineFrame`；`CCoroutineStateClassCodegenTest.lambdaCoroutineFrameAndCallFuncShouldManageCaptureLifecycle`（帧 capture 字段 / thunk `_capture` 尾参 / `free_instance` 销毁顺序 / `call_func` done/suspend 分派的字符串与顺序锚点）；`ConstructLambdaInsnGenTest.coroutineLambdaCaptureShouldPassCaptureToStartThunk`（同步 lambda 的 `_capture` prologue 断言保持不动）；`DomLirSerializer`/`DomLirParser` 的 `is_lambda && is_coroutine` **组合** round-trip 测试（两标志各自已有独立覆盖，组合缺测）。
+   - zig smoke：`CCoroutineGeneratedCSyntaxSmokeTest` 新增 lambda 协程 + capture fixture（`zig cc -std=c23 -c` 实编译，验证 prototype 声明顺序、帧布局、`_capture` thunk 参数）。
+   - 真机 engine test：`ConstructLambdaInsnGenEngineTest` 新增 `constructCoroutineLambdaContinuesAfterCallableRelease`（调用 → 挂起 → 释放 Callable → 触发 signal → 恢复并读到 capture 帧字段；复用该类的 Zig/Godot 环境感知 skip 模式）。
+   - e2e fixtures（script/validation 成对并登记 `GdScriptUnitTestCompileRunnerTest`）：`lambda_await_capture.gd`（int/String 捕获 + signal 恢复值）；`lambda_await_capture_write.gd`（挂起前/后写 capture，只影响本次调用的帧，再次调用读到新快照）；`lambda_await_signal_connect_callback.gd`（`pinged.connect(func(): await other)`——engine 调 `call_func`、挂起返回的 state Variant 被信号回调丢弃后协程仍靠 await 等待边保活并恢复；这是 Callable ABI 主路径，与 GDCC 内部 `cb.call()` 通道不同，必须验收）；`lambda_await_concurrent_calls.gd`（同一 Callable 并发两次，帧与捕获隔离）；`lambda_await_released_callable.gd`（Callable 释放后挂起 lambda 继续运行——方案B 的核心验收）；`lambda_await_self_capture.gd`（self 身份 / `object_id` / 恢复行为）；`lambda_await_done_fast_path.gd` 与 `lambda_await_suspend_path.gd`（`call_func` 两分支）；`lambda_await_fire_and_forget_inner.gd`（lambda 内 statement 根调用 coroutine `inner()` 的 fire-and-forget 放行）；capture 含 String/Array 等需销毁类型的释放平衡；嵌套 lambda 协程 await 的恢复顺序。
+4. **文档同步**
+   - `frontend_lambda_implementation.md`：deferred 清单移除 lambda body 内 await；capture ABI 段补充协程形态的逐调用拷贝入帧合同。
+   - `frontend_rules.md`、`frontend_signal_support.md`、`README.md`：「仍拒绝」清单移除 lambda body 内 await（保留 property init / parameter default）。
+   - `gdcc_ownership_lifecycle_spec.md`：帧 capture 字段的 owning storage 与恰好一次销毁条款。
+   - `gdcc_runtime_lib.md`：确认 runtime 零改动后加标注。
+   - 本文档：R6 行、§3.1 lambda 行、Post-MVP 清单与本步立项同步更新。
+
+验收细则：
+
+- happy path：
+  - 上述单测 / 锚点 / zig smoke / 真机 engine test / e2e 全部通过（环境感知 skip 除外）；`./gradlew clean build --no-daemon --info --console=plain` 全绿。
+- negative path：
+  - 既有全部测试无回归；property initializer / parameter default 内 await 仍 fail-closed；lambda 内 value-position 与 static coroutine call 仍被 compile gate 拦截；同步 lambda 的 capture prologue/ABI 断言不变；文档「仍拒绝」清单与实际 gate 行为一致。
+- 最终 review-expert-a 复审无 BLOCKER/HIGH/MEDIUM。
+
 ---
 
 ## 5. 明确不纳入（Post-MVP Backlog）
 
-- **lambda 内 await（MVP 后第一跟进项）**：Callable ABI 阻碍已被状态对象方案解除（`call_func` 挂起时返回状态对象 Variant，动态 await 天然消费），剩余前提是 R6（capture block 引用计数化）与 per-lambda 状态类生成。
+- **lambda 内 await**：已立项为第九步（R6 修订为逐调用拷贝入帧），不再属于 backlog。
 - 静态方法协程调用（`await Worker.static_coro()`）：前提是补 `CallStaticMethodInsn` 的 backend 生成器（既有缺口，见 `frontend_signal_support.md`）。
 - value 位置调用协程函数（状态对象已是合法 Variant 值，放行本身简单，但需类型系统与诊断配套；statement 位置 fire-and-forget 已在 MVP 内）。
 - 静态已知非 signal 纯值的 `await x` 放宽为 warning + 穿透（对齐 Godot `REDUNDANT_AWAIT` 全集）；同期可评估「语法存在 AwaitExpression 即标记协程」的 Godot 严格对齐（§3.5 偏离的可选消除）。
 - 性能优化：Godot 状态对象懒物化（R8）、`mco_create`/栈复用池、`stack_size` 用户可配置项。
-- R3 主动取消：`NOTIFICATION_PREDELETE` + 每实例 pending 帧列表。
+- R3 主动取消：`NOTIFICATION_PREDELETE` + 每实例 pending 帧列表（亦是 R6 形态 3 引用环——挂起 lambda 状态经捕获的共享可变容器/对象字段回持导致永不 PREDELETE——的兜底取消机制，Godot `cancel_pending_functions` 同构）。
 - R7 trampoline 恢复队列（仅在恢复级联栈深度成为实际问题时）。
 - 多线程/多 `_Thread_local` 协程调度（MVP 假设引擎主线程单线程恢复）。
 
