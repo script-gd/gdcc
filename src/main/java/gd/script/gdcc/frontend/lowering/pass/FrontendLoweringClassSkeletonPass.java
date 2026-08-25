@@ -13,7 +13,19 @@ import org.jetbrains.annotations.NotNull;
 public final class FrontendLoweringClassSkeletonPass implements FrontendLoweringPass {
     @Override
     public void run(@NotNull FrontendLoweringContext context) {
-        var moduleSkeleton = context.requireAnalysisData().moduleSkeleton();
+        var analysisData = context.requireAnalysisData();
+        var moduleSkeleton = analysisData.moduleSkeleton();
+        // Sema marks coroutine callables on the same `LirFunctionDef` shell objects the skeleton
+        // already published (`FrontendAnalysisData.coroutineFunctions`, identity-keyed), so the
+        // attribute propagates by object identity without any name-based lookup. The set is
+        // monotonic: functions absent from it keep the default `false`.
+        for (var classDef : moduleSkeleton.allClassDefs()) {
+            for (var functionDef : classDef.getFunctions()) {
+                if (analysisData.coroutineFunctions().contains(functionDef)) {
+                    functionDef.setCoroutine(true);
+                }
+            }
+        }
         context.publishLirModule(new LirModule(
                 moduleSkeleton.moduleName(),
                 moduleSkeleton.allClassDefs()

@@ -7,6 +7,7 @@ import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendForSourceIteratorSlot;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendMatchBindSlot;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.AwaitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
@@ -65,9 +66,11 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.SequencedMap;
+import java.util.Set;
 
 /// Stateful carrier for one function-body lowering run.
 ///
@@ -88,6 +91,11 @@ public final class FrontendBodyLoweringSession {
     private final @NotNull LirFunctionDef function;
     private final @NotNull ClassRegistry classRegistry;
     private final @NotNull SequencedMap<String, FrontendBodyLoweringSupport.CfgValueMaterialization> valueMaterializations;
+    /// Value ids consumed as await operands. A coroutine call whose result is in this set is
+    /// awaited (ownership moves into the await); any other coroutine call result is a discarded
+    /// statement-position value that must be detached through an INTERNAL destruct right after
+    /// the call (`frontend_await_minicoro_plan.md` §3.4 fire-and-forget).
+    private final @NotNull Set<String> awaitOperandValueIds;
     private final @NotNull FrontendInsnLoweringProcessorRegistry<FrontendCfgGraph.NodeDef, Void> cfgNodeProcessors;
     private final @NotNull FrontendInsnLoweringProcessorRegistry<SequenceItem, Void> sequenceItemProcessors;
     private final @NotNull FrontendInsnLoweringProcessorRegistry<Expression, OpaqueExprLoweringContext> opaqueExprProcessors;
@@ -112,6 +120,7 @@ public final class FrontendBodyLoweringSession {
                 this.classRegistry,
                 functionContext.matchBindSlots()
         );
+        this.awaitOperandValueIds = collectAwaitOperandValueIds(graph);
         this.cfgNodeProcessors = FrontendCfgNodeInsnLoweringProcessors.createRegistry();
         this.sequenceItemProcessors = FrontendSequenceItemInsnLoweringProcessors.createRegistry();
         this.opaqueExprProcessors = FrontendOpaqueExprInsnLoweringProcessors.createRegistry();
@@ -206,6 +215,13 @@ public final class FrontendBodyLoweringSession {
                 StringUtil.requireNonBlank(contractDetail, "contractDetail")
                         + " must use explicit SelfExpression instead of identifier binding kind SELF"
         );
+    }
+
+    /// Nullable sibling of `requireResolvedCall` for dispatch sites where a missing fact selects a
+    /// different route instead of being an invariant violation (e.g. await operand classification:
+    /// only call-shaped operands ever carry a call fact).
+    @Nullable FrontendResolvedCall findResolvedCallOrNull(@NotNull Node callAnchor) {
+        return analysisData.resolvedCalls().get(Objects.requireNonNull(callAnchor, "callAnchor must not be null"));
     }
 
     /// Consumes one lowering-ready published call fact.
@@ -776,11 +792,44 @@ public final class FrontendBodyLoweringSession {
         return switch (materialization.kind()) {
             case TEMP_SLOT -> FrontendBodyLoweringSupport.cfgTempSlotId(valueId);
             case MERGE_SLOT -> FrontendBodyLoweringSupport.mergeSlotId(valueId);
+            case CORO_STATE_SLOT -> FrontendBodyLoweringSupport.coroStateSlotId(valueId);
             case SOURCE_SLOT_ALIAS -> resolveDirectWritableRootSlot(Objects.requireNonNull(
                     materialization.aliasSourceAnchorOrNull(),
                     "SOURCE_SLOT_ALIAS materialization must carry aliasSourceAnchorOrNull"
             ));
         };
+    }
+
+    /// Whether the given value id is consumed as an await operand anywhere in this graph.
+    boolean isAwaitOperandValue(@NotNull String valueId) {
+        return awaitOperandValueIds.contains(valueId);
+    }
+
+    /// Whether the published exact call at `callAnchor` targets a sema-marked coroutine. Pure
+    /// consumption of the frozen side table; lowering never re-derives coroutine-ness.
+    boolean isCoroutineCall(@NotNull Node callAnchor) {
+        return analysisData.isPublishedCoroutineCall(callAnchor);
+    }
+
+    /// Whether the lowering target function itself is sema-marked as a coroutine. Await
+    /// instructions are only legal inside such functions (the backend independently enforces this).
+    boolean isTargetFunctionCoroutine() {
+        return analysisData.coroutineFunctions().contains(function);
+    }
+
+    private static @NotNull Set<String> collectAwaitOperandValueIds(@NotNull FrontendCfgGraph graph) {
+        var valueIds = new HashSet<String>();
+        for (var node : graph.nodes().values()) {
+            if (!(node instanceof FrontendCfgGraph.SequenceNode sequenceNode)) {
+                continue;
+            }
+            for (var item : sequenceNode.items()) {
+                if (item instanceof AwaitItem awaitItem && awaitItem.operandValueIdOrNull() != null) {
+                    valueIds.add(awaitItem.operandValueIdOrNull());
+                }
+            }
+        }
+        return valueIds;
     }
 
     @NotNull String resultSlotId(@NotNull OpaqueExprValueItem item) {
@@ -1377,6 +1426,8 @@ public final class FrontendBodyLoweringSession {
                         ensureVariable(FrontendBodyLoweringSupport.cfgTempSlotId(valueId), materialization.type());
                 case MERGE_SLOT ->
                         ensureVariable(FrontendBodyLoweringSupport.mergeSlotId(valueId), materialization.type());
+                case CORO_STATE_SLOT ->
+                        ensureVariable(FrontendBodyLoweringSupport.coroStateSlotId(valueId), materialization.type());
                 case SOURCE_SLOT_ALIAS -> {
                     // Alias-backed values intentionally reuse an existing trusted source slot instead of
                     // declaring a second `cfg_tmp_*` variable that call lowering would never truly consume.

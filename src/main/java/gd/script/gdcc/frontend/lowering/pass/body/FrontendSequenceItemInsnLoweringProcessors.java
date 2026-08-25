@@ -1,9 +1,11 @@
 package gd.script.gdcc.frontend.lowering.pass.body;
 
 import gd.script.gdcc.enums.GodotOperator;
+import gd.script.gdcc.enums.LifecycleProvenance;
 import gd.script.gdcc.frontend.lowering.FrontendBodyLoweringSupport;
 import gd.script.gdcc.frontend.lowering.FrontendCallMutabilitySupport;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.AwaitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
@@ -36,6 +38,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.TypeTestItem;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
+import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
@@ -43,6 +46,7 @@ import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.AssignInsn;
+import gd.script.gdcc.lir.insn.AwaitInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.GetVariantTypeInsn;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
@@ -56,11 +60,13 @@ import gd.script.gdcc.lir.insn.ConstructCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructLambdaInsn;
 import gd.script.gdcc.lir.insn.ConstructSignalInsn;
 import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
+import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
 import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
+import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
@@ -72,8 +78,11 @@ import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import gd.script.gdcc.type.GdSignalType;
+import gd.script.gdcc.type.GdccCoroStateType;
 import gd.script.gdcc.util.type.ExplicitCastSupport;
 import gd.script.gdcc.util.type.TypeTestFoldResult;
 import gd.script.gdcc.util.type.TypeTestFoldUtil;
@@ -84,6 +93,7 @@ import gd.script.gdcc.lir.insn.VariantIsNilInsn;
 import gd.script.gdcc.lir.insn.VariantGetNamedInsn;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
+import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
@@ -94,6 +104,7 @@ import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PreloadExpression;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.Statement;
@@ -157,6 +168,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 new FrontendCompoundAssignmentBinaryInsnLoweringProcessor(),
                 new FrontendAssignmentInsnLoweringProcessor(),
                 new FrontendCastInsnLoweringProcessor(),
+                new FrontendAwaitInsnLoweringProcessor(),
                 new FrontendContainerLiteralInsnLoweringProcessor(),
                 new FrontendTypeTestInsnLoweringProcessor(),
                 new FrontendForLoopInitInsnLoweringProcessor(),
@@ -727,14 +739,14 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                         block,
                         node,
                         resolvedCall,
-                        requireMaterializedResultSlotId(node, "constructor call")
+                        requireMaterializedResultSlotId(session, node, "constructor call")
                 );
                 case DYNAMIC_FALLBACK -> lowerDynamicInstanceCall(
                         session,
                         block,
                         node,
                         resolvedCall,
-                        requireMaterializedResultSlotId(node, "dynamic call")
+                        requireMaterializedResultSlotId(session, node, "dynamic call")
                 );
                 case UNKNOWN -> throw session.unsupportedSequenceItem(
                         node,
@@ -754,12 +766,35 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var arguments = session.materializeCallArguments(block, node, resolvedCall);
             session.emitAssertObjectLiveIfNeeded(block, receiverSlotId);
             block.appendNonTerminatorInstruction(new CallMethodInsn(
-                    emittedExactResultSlotIdOrNull(node, resolvedCall),
+                    emittedExactResultSlotIdOrNull(session, node, resolvedCall),
                     resolvedCall.callableName(),
                     receiverSlotId,
                     arguments
             ));
-            return continueAfterReceiverWriteback(session, block, mutatingReceiverRoute, receiverSlotId);
+            var continuation = continueAfterReceiverWriteback(session, block, mutatingReceiverRoute, receiverSlotId);
+            return emitCoroutineDetachIfNeeded(session, continuation, node);
+        }
+
+        /// Fire-and-forget contract (`frontend_await_minicoro_plan.md` §3.4): a coroutine call whose
+        /// result is not consumed by an await releases the call-site OWNED state reference right
+        /// after the call; the coroutine frame stays alive through its own wait edges. Awaited
+        /// results skip the destruct because the await moves the reference out of the slot.
+        private @NotNull LirBasicBlock emitCoroutineDetachIfNeeded(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock continuation,
+                @NotNull CallItem node
+        ) {
+            var resultValueId = node.resultValueIdOrNull();
+            if (resultValueId == null
+                    || !session.isCoroutineCall(node.anchor())
+                    || session.isAwaitOperandValue(resultValueId)) {
+                return continuation;
+            }
+            continuation.appendNonTerminatorInstruction(new DestructInsn(
+                    session.slotIdForValue(resultValueId),
+                    LifecycleProvenance.INTERNAL
+            ));
+            return continuation;
         }
 
         private @NotNull LirBasicBlock lowerStaticMethodCall(
@@ -771,14 +806,14 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var arguments = session.materializeCallArguments(block, node, resolvedCall);
             if (resolvedCall.receiverType() == null) {
                 block.appendNonTerminatorInstruction(new CallGlobalInsn(
-                        emittedExactResultSlotIdOrNull(node, resolvedCall),
+                        emittedExactResultSlotIdOrNull(session, node, resolvedCall),
                         resolvedCall.callableName(),
                         arguments
                 ));
                 return block;
             }
             block.appendNonTerminatorInstruction(new CallStaticMethodInsn(
-                    emittedExactResultSlotIdOrNull(node, resolvedCall),
+                    emittedExactResultSlotIdOrNull(session, node, resolvedCall),
                     session.requireStaticReceiverName(resolvedCall.receiverType()),
                     resolvedCall.callableName(),
                     arguments
@@ -863,19 +898,31 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         /// Exact call routes may legally omit a result slot only for resolved-void statement calls.
-        /// Any non-void exact route that reaches body lowering without a published result id is still
-        /// an invariant violation instead of a signal to silently drop the value.
+        /// Coroutine callees are the one exception: the internal coroutine ABI always yields the
+        /// OWNED state object reference, so even a void coroutine call requires its
+        /// `compiler::GdccCoroState` result slot. Any other non-void exact route that reaches body
+        /// lowering without a published result id is still an invariant violation instead of a
+        /// signal to silently drop the value.
         private @Nullable String emittedExactResultSlotIdOrNull(
+                @NotNull FrontendBodyLoweringSession session,
                 @NotNull CallItem node,
                 @NotNull FrontendResolvedCall resolvedCall
         ) {
+            if (session.isCoroutineCall(node.anchor())) {
+                return requireMaterializedResultSlotId(
+                        session,
+                        node,
+                        "coroutine call '" + resolvedCall.callableName() + "'"
+                );
+            }
             if (resolvedCall.returnType() instanceof GdVoidType) {
                 return null;
             }
-            return requireMaterializedResultSlotId(node, "non-void exact call '" + resolvedCall.callableName() + "'");
+            return requireMaterializedResultSlotId(session, node, "non-void exact call '" + resolvedCall.callableName() + "'");
         }
 
         private @NotNull String requireMaterializedResultSlotId(
+                @NotNull FrontendBodyLoweringSession session,
                 @NotNull CallItem node,
                 @NotNull String contractDetail
         ) {
@@ -883,7 +930,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             if (resultValueId == null) {
                 throw new IllegalStateException(contractDetail + " must publish resultValueIdOrNull before body lowering");
             }
-            return FrontendBodyLoweringSupport.cfgTempSlotId(resultValueId);
+            return session.slotIdForValue(resultValueId);
         }
 
         /// Returns the block that later lowering must keep appending to after post-call receiver
@@ -1464,6 +1511,175 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var targetType = session.requireValueType(node.resultValueId());
             session.emitExplicitCast(block, node, resultSlotId, sourceSlotId, sourceType, targetType);
             return block;
+        }
+    }
+
+    /// Lowers one await suspension point strictly from frozen facts (`frontend_await_minicoro_plan.md`
+    /// 第七步).
+    ///
+    /// Dispatch first recognizes the redundant-call shape from the published call fact (a RESOLVED
+    /// call to a statically known non-coroutine callee, per `sema.redundant_await`): the await
+    /// degrades to a plain pass-through of the call result and no `AwaitInsn` is emitted — the
+    /// enclosing function is not a coroutine, so a suspending instruction would be illegal. This
+    /// check must run before slot-type dispatch because such a callee may legally declare
+    /// `Signal`/`Variant` returns. The remaining shapes dispatch on the materialized slot type:
+    /// - `compiler::GdccCoroState` operand (produced only by a coroutine call) → state-channel
+    ///   `AwaitInsn`; the enclosing function is necessarily sema-marked as a coroutine.
+    /// - `Signal` operand → signal-channel `AwaitInsn`.
+    /// - `Variant` operand → runtime-dynamic `AwaitInsn`.
+    /// A missing operand value id means the redundant-void-call shape (result resumes as nil).
+    /// Anything outside these shapes is a sema/lowering protocol violation and fails fast.
+    private static final class FrontendAwaitInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<AwaitItem, Void> {
+        @Override
+        public @NotNull Class<AwaitItem> nodeType() {
+            return AwaitItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull AwaitItem node,
+                @Nullable Void context
+        ) {
+            var resultType = session.requireValueType(node.resultValueId());
+            var resultSlotId = session.slotIdForValue(node.resultValueId());
+            var operandValueId = node.operandValueIdOrNull();
+            if (operandValueId == null) {
+                return lowerVoidRedundantAwait(session, block, node, resultType, resultSlotId);
+            }
+            var operandType = session.requireValueType(operandValueId);
+            var operandSlotId = session.slotIdForValue(operandValueId);
+            // The redundant-call check must win over slot-type dispatch: a RESOLVED non-coroutine
+            // call whose declared return type is Signal (or Variant) keeps the CALL route on the
+            // sema side, so the enclosing function is not coroutine-marked and the await must
+            // degrade to a pass-through instead of emitting an illegal suspending instruction.
+            // No overlap with the coroutine path: CORO_STATE slots only come from marked callees.
+            if (isRedundantAwaitOperandCall(session, node)) {
+                return lowerRedundantAwaitPassthrough(
+                        session, block, resultSlotId, operandSlotId, operandType, resultType
+                );
+            }
+            if (operandType instanceof GdccCoroStateType || operandType instanceof GdSignalType) {
+                return emitAwaitInsn(session, block, node, resultSlotId, operandSlotId, operandType);
+            }
+            if (operandType instanceof GdVariantType) {
+                return emitAwaitInsn(session, block, node, resultSlotId, operandSlotId, operandType);
+            }
+            throw session.unsupportedSequenceItem(
+                    node,
+                    "await operand of type " + operandType.getTypeName()
+                            + " has no published signal/coroutine/dynamic route; sema should have rejected it"
+            );
+        }
+
+        /// Shared suspend-instruction emission with the coroutine-context invariant: sema marks
+        /// every function containing a signal/dynamic/coroutine-call await, so an unmarked target
+        /// means the skeleton pass or the fixed-point pass dropped the fact.
+        private @NotNull LirBasicBlock emitAwaitInsn(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull AwaitItem node,
+                @NotNull String resultSlotId,
+                @NotNull String operandSlotId,
+                @NotNull GdType operandType
+        ) {
+            if (!session.isTargetFunctionCoroutine()) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "await on " + operandType.getTypeName()
+                                + " operand requires the enclosing function to be marked as a coroutine"
+                );
+            }
+            block.appendNonTerminatorInstruction(new AwaitInsn(resultSlotId, operandSlotId));
+            return block;
+        }
+
+        /// Redundant await on a statically known non-coroutine call: pure pass-through of the call
+        /// result into the await result slot (both are typed by the same callee return type, so the
+        /// boundary materialization is a direct assign in practice). The route itself was decided
+        /// by the caller from the published call fact, so the item node is not needed here.
+        private @NotNull LirBasicBlock lowerRedundantAwaitPassthrough(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull String resultSlotId,
+                @NotNull String operandSlotId,
+                @NotNull GdType operandType,
+                @NotNull GdType resultType
+        ) {
+            var materializedOperandSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    operandSlotId,
+                    operandType,
+                    resultType,
+                    "await_redundant_passthrough"
+            );
+            block.appendNonTerminatorInstruction(new AssignInsn(resultSlotId, materializedOperandSlotId));
+            return block;
+        }
+
+        /// Void-callee redundant await: the call already ran for side effects on the no-result
+        /// path; the resume value is nil (Godot `REDUNDANT_AWAIT` on void calls).
+        private @NotNull LirBasicBlock lowerVoidRedundantAwait(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull AwaitItem node,
+                @NotNull GdType resultType,
+                @NotNull String resultSlotId
+        ) {
+            var operandCall = awaitOperandResolvedCallOrNull(session, node);
+            if (operandCall == null
+                    || !(operandCall.returnType() instanceof GdVoidType)
+                    || !(resultType instanceof GdVariantType)) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "await without an operand value requires a resolved-void non-coroutine call operand"
+                                + " and a Variant result"
+                );
+            }
+            block.appendNonTerminatorInstruction(new LiteralNullInsn(resultSlotId));
+            return block;
+        }
+
+        /// An await operand counts as a redundant-await call when it is call-shaped, has a RESOLVED
+        /// exact call fact, and its callee is not a sema-marked coroutine. DYNAMIC fallback routes
+        /// are deliberately excluded: they keep the runtime-dynamic await path.
+        private boolean isRedundantAwaitOperandCall(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull AwaitItem node
+        ) {
+            var operandCall = awaitOperandResolvedCallOrNull(session, node);
+            return operandCall != null
+                    && operandCall.status() == FrontendCallResolutionStatus.RESOLVED
+                    && !session.isCoroutineCall(requireAwaitOperandCallAnchor(node));
+        }
+
+        private @Nullable FrontendResolvedCall awaitOperandResolvedCallOrNull(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull AwaitItem node
+        ) {
+            var anchor = awaitOperandCallAnchorOrNull(node);
+            return anchor == null ? null : session.findResolvedCallOrNull(anchor);
+        }
+
+        private @NotNull Node requireAwaitOperandCallAnchor(@NotNull AwaitItem node) {
+            return Objects.requireNonNull(
+                    awaitOperandCallAnchorOrNull(node),
+                    "redundant await passthrough requires a call-shaped operand anchor"
+            );
+        }
+
+        /// Mirrors the sema-side await operand anchoring: bare calls key on the `CallExpression`,
+        /// chain calls on their last `AttributeCallStep`.
+        private @Nullable Node awaitOperandCallAnchorOrNull(@NotNull AwaitItem node) {
+            return switch (node.expression().value()) {
+                case CallExpression callExpression -> callExpression;
+                case AttributeExpression attributeExpression
+                        when !attributeExpression.steps().isEmpty()
+                        && attributeExpression.steps().getLast() instanceof AttributeCallStep callStep -> callStep;
+                default -> null;
+            };
         }
     }
 

@@ -4,6 +4,7 @@ import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.frontend.lowering.FrontendCallMutabilitySupport;
 import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.AwaitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
@@ -73,6 +74,7 @@ import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
+import dev.superice.gdparser.frontend.ast.AwaitExpression;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.BreakStatement;
@@ -2025,6 +2027,7 @@ public final class FrontendCfgGraphBuilder {
                     preferredResultValueId
             );
             case CastExpression castExpression -> buildCastValue(cursor, castExpression, preferredResultValueId);
+            case AwaitExpression awaitExpression -> buildAwaitValue(cursor, awaitExpression, preferredResultValueId);
             case ArrayExpression arrayExpression ->
                     buildArrayLiteralValue(cursor, arrayExpression, preferredResultValueId);
             case DictionaryExpression dictionaryExpression ->
@@ -2320,6 +2323,39 @@ public final class FrontendCfgGraphBuilder {
                 resultValueId
         ));
         return new ValueBuild(operandBuild.cursor(), castExpression, resultValueId, null);
+    }
+
+    /// Await expressions keep the same "operand first, then one result item" shape as casts: the
+    /// operand (signal read, call, or Variant value) is built as an ordinary value, then one
+    /// `AwaitItem` marks the suspension point. No control-flow split happens here — suspension is
+    /// a runtime stack switch, so the item stays an ordinary value item (`AwaitInsn` is not a
+    /// terminator). The published await result type was already classified by sema; this builder
+    /// never re-derives it.
+    private @NotNull ValueBuild buildAwaitValue(
+            @NotNull BuildCursor cursor,
+            @NotNull AwaitExpression awaitExpression,
+            @Nullable String preferredResultValueId
+    ) {
+        var operand = awaitExpression.value();
+        var voidCallAnchor = discardedResolvedVoidCallAnchorOrNull(operand);
+        if (voidCallAnchor != null && !requireAnalysisData().isPublishedCoroutineCall(voidCallAnchor)) {
+            // Redundant await on a resolved-void non-coroutine call: the call still runs for its
+            // side effects through the no-result path, but there is no operand value to pass
+            // through. Godot resumes such awaits with nil, so the item carries no operand id and
+            // body lowering materializes nil into the (always Variant) result slot.
+            var voidCursor = buildDiscardedResolvedVoidCall(cursor, operand);
+            var voidResultValueId = chooseResultValueId(preferredResultValueId);
+            voidCursor.currentSequence().items().add(new AwaitItem(awaitExpression, null, voidResultValueId));
+            return new ValueBuild(voidCursor, awaitExpression, voidResultValueId, null);
+        }
+        var operandBuild = buildValue(cursor, operand, null);
+        var resultValueId = chooseResultValueId(preferredResultValueId);
+        operandBuild.cursor().currentSequence().items().add(new AwaitItem(
+                awaitExpression,
+                operandBuild.resultValueId(),
+                resultValueId
+        ));
+        return new ValueBuild(operandBuild.cursor(), awaitExpression, resultValueId, null);
     }
 
     /// Array literals evaluate elements in source order, then append one dedicated container item.
@@ -3939,7 +3975,15 @@ public final class FrontendCfgGraphBuilder {
     }
 
     private boolean isDiscardedResolvedVoidCallExpression(@NotNull Expression expression) {
-        return discardedResolvedVoidCallAnchorOrNull(expression) != null;
+        var anchor = discardedResolvedVoidCallAnchorOrNull(expression);
+        if (anchor == null) {
+            return false;
+        }
+        // A resolved-void coroutine call still needs a published result value: the backend
+        // coroutine ABI requires the `compiler::GdccCoroState` result slot (fire-and-forget then
+        // detaches it through an INTERNAL destruct), so statement-position coroutine calls stay on
+        // the ordinary value-building path instead of the no-result discarded-call path.
+        return !requireAnalysisData().isPublishedCoroutineCall(anchor);
     }
 
     private @Nullable Node discardedResolvedVoidCallAnchorOrNull(@NotNull Expression expression) {
@@ -4237,7 +4281,8 @@ public final class FrontendCfgGraphBuilder {
             @NotNull String callSurface
     ) {
         if (publishedCall.status() == FrontendCallResolutionStatus.RESOLVED
-                && publishedCall.returnType() instanceof GdVoidType) {
+                && publishedCall.returnType() instanceof GdVoidType
+                && !requireAnalysisData().isPublishedCoroutineCall(callAnchor)) {
             throw new IllegalStateException(
                     "Value-required "
                             + callSurface

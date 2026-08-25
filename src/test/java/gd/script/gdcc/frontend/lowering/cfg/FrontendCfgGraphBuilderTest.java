@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.lowering.cfg;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.AwaitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
@@ -1167,6 +1168,180 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals(receiver.resultValueId(), signalLoad.receiverValueId()),
                 () -> assertEquals(signalLoad.resultValueId(), stopNode.returnValueIdOrNull()),
                 () -> assertTrue(entryNode.items().stream().noneMatch(MemberLoadItem.class::isInstance))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesAwaitItemForSignalAwait() throws Exception {
+        // Shared sema path (compile gate keeps the await blocker until step 8): the await operand
+        // builds as an ordinary signal load, then one AwaitItem marks the suspension point.
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_await_signal.gd",
+                """
+                        class_name CfgBuilderAwaitSignal
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func run():
+                            var result = await pinged
+                        """,
+                "run",
+                Map.of("CfgBuilderAwaitSignal", "RuntimeCfgBuilderAwaitSignal")
+        );
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        // A bare signal-identifier read stays an opaque value at CFG level; body lowering
+        // materializes the Signal from the published binding (the existing bare-signal route).
+        var operand = entryNode.items().stream()
+                .filter(OpaqueExprValueItem.class::isInstance)
+                .map(OpaqueExprValueItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing operand OpaqueExprValueItem in " + entryNode.items()));
+        var awaitItem = entryNode.items().stream()
+                .filter(AwaitItem.class::isInstance)
+                .map(AwaitItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing AwaitItem in " + entryNode.items()));
+        var declaration = entryNode.items().stream()
+                .filter(LocalDeclarationItem.class::isInstance)
+                .map(LocalDeclarationItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing LocalDeclarationItem in " + entryNode.items()));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertEquals(operand.resultValueId(), awaitItem.operandValueIdOrNull()),
+                () -> assertEquals(List.of(operand.resultValueId()), awaitItem.operandValueIds()),
+                () -> assertEquals(
+                        declaration.initializerValueIdOrNull(),
+                        awaitItem.resultValueId(),
+                        "the variable-initializer preferred id flows through to the await result"
+                ),
+                () -> assertTrue(awaitItem.resultValueId().startsWith("result_"), awaitItem.resultValueId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesAwaitItemConsumingCoroutineCallResult() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_await_call.gd",
+                """
+                        class_name CfgBuilderAwaitCall
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func inner():
+                            await pinged
+                        
+                        func run():
+                            var result = await inner()
+                        """,
+                "run",
+                Map.of("CfgBuilderAwaitCall", "RuntimeCfgBuilderAwaitCall")
+        );
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var callItem = entryNode.items().stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing CallItem in " + entryNode.items()));
+        var awaitItem = entryNode.items().stream()
+                .filter(AwaitItem.class::isInstance)
+                .map(AwaitItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing AwaitItem in " + entryNode.items()));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertNotNull(callItem.resultValueIdOrNull(), "coroutine call must publish a result value"),
+                () -> assertEquals(callItem.resultValueIdOrNull(), awaitItem.operandValueIdOrNull())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesOperandlessAwaitItemForVoidRedundantCall() throws Exception {
+        // `-> void` non-coroutine callee: the call runs on the no-result statement path and the
+        // await carries no operand id; body lowering materializes nil as the resume value.
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_await_void_redundant.gd",
+                """
+                        class_name CfgBuilderAwaitVoidRedundant
+                        extends Node
+                        
+                        func inner() -> void:
+                            pass
+                        
+                        func run():
+                            var result = await inner()
+                        """,
+                "run",
+                Map.of("CfgBuilderAwaitVoidRedundant", "RuntimeCfgBuilderAwaitVoidRedundant")
+        );
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var callItem = entryNode.items().stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing CallItem in " + entryNode.items()));
+        var awaitItem = entryNode.items().stream()
+                .filter(AwaitItem.class::isInstance)
+                .map(AwaitItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing AwaitItem in " + entryNode.items()));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertNull(callItem.resultValueIdOrNull(), "void call keeps the no-result shape"),
+                () -> assertNull(awaitItem.operandValueIdOrNull()),
+                () -> assertTrue(awaitItem.operandValueIds().isEmpty()),
+                () -> assertNotNull(awaitItem.resultValueIdOrNull())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyKeepsVoidCoroutineStatementCallOnValuePath() throws Exception {
+        // Regression anchor: a statement-position resolved-void call normally takes the no-result
+        // path, but a void coroutine call must still publish its state result value (the backend
+        // coroutine ABI requires it; fire-and-forget detaches it through an INTERNAL destruct).
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_void_coroutine_statement.gd",
+                """
+                        class_name CfgBuilderVoidCoroutineStatement
+                        extends Node
+                        
+                        signal pinged
+                        
+                        func fire():
+                            await pinged
+                        
+                        func run():
+                            fire()
+                        """,
+                "run",
+                Map.of("CfgBuilderVoidCoroutineStatement", "RuntimeCfgBuilderVoidCoroutineStatement")
+        );
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var callItem = entryNode.items().stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing CallItem in " + entryNode.items()));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertNotNull(
+                        callItem.resultValueIdOrNull(),
+                        "void coroutine statement call must keep its coroutine-state result value"
+                )
         );
     }
 

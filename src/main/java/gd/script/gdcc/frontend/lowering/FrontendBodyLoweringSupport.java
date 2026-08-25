@@ -24,6 +24,7 @@ import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import gd.script.gdcc.type.GdccCoroStateType;
 import gd.script.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
@@ -53,6 +54,12 @@ public final class FrontendBodyLoweringSupport {
         return "cfg_merge_" + StringUtil.requireNonBlank(valueId, "valueId");
     }
 
+    /// Coroutine-call state slots use the `__coro_state_` prefix so the fire-and-forget detach
+    /// destruct satisfies the INTERNAL-provenance naming rule (`__`-prefixed compiler internals).
+    public static @NotNull String coroStateSlotId(@NotNull String valueId) {
+        return "__coro_state_" + StringUtil.requireNonBlank(valueId, "valueId");
+    }
+
     public static @NotNull String sourceLocalSlotId(@NotNull VariableDeclaration declaration) {
         Objects.requireNonNull(declaration, "declaration must not be null");
         return StringUtil.requireNonBlank(declaration.name(), "declaration.name()");
@@ -69,7 +76,11 @@ public final class FrontendBodyLoweringSupport {
     public enum CfgValueMaterializationKind {
         TEMP_SLOT,
         MERGE_SLOT,
-        SOURCE_SLOT_ALIAS
+        SOURCE_SLOT_ALIAS,
+        /// `compiler::GdccCoroState`-typed result slot of a coroutine call: standalone slot like
+        /// `TEMP_SLOT`, but named `__coro_state_<valueId>` so the statement-position detach
+        /// destruct passes the INTERNAL-provenance naming rule.
+        CORO_STATE_SLOT
     }
 
     /// Published runtime facts for one frontend CFG value id.
@@ -281,11 +292,7 @@ public final class FrontendBodyLoweringSupport {
                     CfgValueMaterializationKind.TEMP_SLOT,
                     null
             );
-            case CallItem callItem -> new CfgValueMaterialization(
-                    requireCallReturnType(analysisData, callItem.anchor()),
-                    CfgValueMaterializationKind.TEMP_SLOT,
-                    null
-            );
+            case CallItem callItem -> requireCallItemMaterialization(analysisData, callItem);
             case MemberLoadItem memberLoadItem -> new CfgValueMaterialization(
                     requireMemberResultType(analysisData, memberLoadItem.anchor()),
                     CfgValueMaterializationKind.TEMP_SLOT,
@@ -318,6 +325,11 @@ public final class FrontendBodyLoweringSupport {
             );
             case CastItem castItem -> new CfgValueMaterialization(
                     requireExpressionType(analysisData, castItem.expression()),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
+            case AwaitItem awaitItem -> new CfgValueMaterialization(
+                    requireExpressionType(analysisData, awaitItem.expression()),
                     CfgValueMaterializationKind.TEMP_SLOT,
                     null
             );
@@ -438,6 +450,28 @@ public final class FrontendBodyLoweringSupport {
             case CallItem callItem -> "call '" + callItem.callableName() + "'";
             default -> item.getClass().getSimpleName() + " anchored at " + item.anchor().getClass().getSimpleName();
         };
+    }
+
+    /// Coroutine calls carry the OWNED state object reference, not the declared return value: the
+    /// await consumer (or the statement-position detach destruct) unwraps it. The compiler-only
+    /// slot type is also what routes the backend call generator to the coroutine-start thunk ABI,
+    /// so it applies even when the callee's declared return type is void.
+    private static @NotNull CfgValueMaterialization requireCallItemMaterialization(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull CallItem callItem
+    ) {
+        if (analysisData.isPublishedCoroutineCall(callItem.anchor())) {
+            return new CfgValueMaterialization(
+                    GdccCoroStateType.CORO_STATE,
+                    CfgValueMaterializationKind.CORO_STATE_SLOT,
+                    null
+            );
+        }
+        return new CfgValueMaterialization(
+                requireCallReturnType(analysisData, callItem.anchor()),
+                CfgValueMaterializationKind.TEMP_SLOT,
+                null
+        );
     }
 
     private static @NotNull GdType requireCallReturnType(

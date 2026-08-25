@@ -420,6 +420,17 @@ public final class FrontendAnalysisData {
         awaitCallPendings.add(Objects.requireNonNull(pending, "pending must not be null"));
     }
 
+    /// Whether the published exact call at `callAnchor` targets a callable already marked as a
+    /// coroutine. Pure read over two frozen tables (`resolvedCalls` + `coroutineFunctions`);
+    /// non-exact routes and non-`LirFunctionDef` declaration sites can never be GDCC coroutines.
+    public boolean isPublishedCoroutineCall(@NotNull Node callAnchor) {
+        var publishedCall = resolvedCalls().get(Objects.requireNonNull(callAnchor, "callAnchor must not be null"));
+        return publishedCall != null
+                && publishedCall.status() == FrontendCallResolutionStatus.RESOLVED
+                && publishedCall.declarationSite() instanceof LirFunctionDef calleeFunction
+                && coroutineFunctions.contains(calleeFunction);
+    }
+
     /// Refreshes published local bindings after a verified local-slot rewrite.
     ///
     /// This helper intentionally updates only the `resolvedValue` payload. The binding kind, source

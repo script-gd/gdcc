@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.lowering;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraphBuilder;
+import gd.script.gdcc.frontend.lowering.cfg.item.AwaitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ContainerLiteralItem;
@@ -15,16 +16,24 @@ import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
+import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
+import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import gd.script.gdcc.type.GdccCoroStateType;
+import dev.superice.gdparser.frontend.ast.AwaitExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.PassStatement;
@@ -48,6 +57,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -646,13 +656,13 @@ class FrontendBodyLoweringSupportTest {
                 """
                         class_name BodyLoweringSupportMergeAnchor
                         extends RefCounted
-
+                        
                         func consume(value: bool) -> bool:
                             return value
-
+                        
                         func helper(seed: int) -> bool:
                             return seed > 0
-
+                        
                         func ping(flag: bool, seed: int) -> bool:
                             return consume(flag or helper(seed))
                         """,
@@ -679,7 +689,7 @@ class FrontendBodyLoweringSupportTest {
                 () -> {
                     var mergeResultId = mergeResultIds.getFirst();
                     var mergeMaterialization = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
-                            graph, analyzed.analysisData(), new ClassRegistry(ExtensionApiLoader.loadDefault()))
+                                    graph, analyzed.analysisData(), new ClassRegistry(ExtensionApiLoader.loadDefault()))
                             .get(mergeResultId);
                     assertEquals(GdBoolType.BOOL, mergeMaterialization.type());
                     assertEquals(FrontendBodyLoweringSupport.CfgValueMaterializationKind.MERGE_SLOT, mergeMaterialization.kind());
@@ -738,6 +748,175 @@ class FrontendBodyLoweringSupportTest {
                 )
         );
         assertTrue(missingFactError.getMessage().contains("Missing published expression type") || missingFactError.getMessage().contains("MergeValueItem anchor"), missingFactError.getMessage());
+    }
+
+    @Test
+    void collectCfgValueMaterializationsTypesAwaitResultFromPublishedExpressionType() throws Exception {
+        // Await results are ordinary temp slots typed by the published await classification
+        // (signal resume type / callee return type / Variant), never re-derived at lowering time.
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var target = identifier("target");
+        analysisData.expressionTypes().put(
+                target,
+                gd.script.gdcc.frontend.sema.FrontendExpressionType.resolved(GdVariantType.VARIANT)
+        );
+        var awaitExpression = new AwaitExpression(target, SYNTHETIC_RANGE);
+        analysisData.expressionTypes().put(
+                awaitExpression,
+                gd.script.gdcc.frontend.sema.FrontendExpressionType.resolved(GdIntType.INT)
+        );
+        var graph = new FrontendCfgGraph(
+                "seq_0",
+                Map.of(
+                        "seq_0",
+                        new FrontendCfgGraph.SequenceNode("seq_0", List.of(
+                                new OpaqueExprValueItem(target, "v0"),
+                                new AwaitItem(awaitExpression, "v0", "v1")
+                        ), "stop_1"),
+                        "stop_1",
+                        new FrontendCfgGraph.StopNode("stop_1", FrontendCfgGraph.StopKind.RETURN, "v1")
+                )
+        );
+
+        var materializations = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                graph, analysisData, new ClassRegistry(ExtensionApiLoader.loadDefault())
+        );
+        var awaitMaterialization = materializations.get("v1");
+        assertAll(
+                () -> assertNotNull(awaitMaterialization),
+                () -> assertEquals(GdIntType.INT, awaitMaterialization.type()),
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.CfgValueMaterializationKind.TEMP_SLOT,
+                        awaitMaterialization.kind()
+                )
+        );
+    }
+
+    @Test
+    void collectCfgValueMaterializationsRejectsAwaitItemWithoutPublishedType() throws Exception {
+        // Missing published facts are invariant violations (plan negative path): lowering must
+        // fail fast instead of re-deriving the await classification.
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var target = identifier("target");
+        analysisData.expressionTypes().put(
+                target,
+                gd.script.gdcc.frontend.sema.FrontendExpressionType.resolved(GdVariantType.VARIANT)
+        );
+        var awaitExpression = new AwaitExpression(target, SYNTHETIC_RANGE);
+        var graph = new FrontendCfgGraph(
+                "seq_0",
+                Map.of(
+                        "seq_0",
+                        new FrontendCfgGraph.SequenceNode("seq_0", List.of(
+                                new OpaqueExprValueItem(target, "v0"),
+                                new AwaitItem(awaitExpression, "v0", "v1")
+                        ), "stop_1"),
+                        "stop_1",
+                        new FrontendCfgGraph.StopNode("stop_1", FrontendCfgGraph.StopKind.RETURN, "v1")
+                )
+        );
+
+        var error = assertThrows(
+                IllegalStateException.class,
+                () -> FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                        graph, analysisData, new ClassRegistry(ExtensionApiLoader.loadDefault())
+                )
+        );
+        assertTrue(error.getMessage().contains("Missing published expression type"), error.getMessage());
+    }
+
+    @Test
+    void collectCfgValueMaterializationsTypesCoroutineCallResultAsCoroStateSlot() throws Exception {
+        // A call whose callee is sema-marked as a coroutine carries the OWNED state reference, so
+        // its result slot is `compiler::GdccCoroState` typed and `__coro_state_` named (the latter
+        // keeps the statement-position detach destruct inside the INTERNAL naming contract).
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var calleeFunction = new LirFunctionDef("inner");
+        var callAnchor = new CallExpression(identifier("inner"), List.of(), SYNTHETIC_RANGE);
+        analysisData.resolvedCalls().put(callAnchor, FrontendResolvedCall.resolved(
+                "inner",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.GDCC,
+                new GdObjectType("Host"),
+                GdVoidType.VOID,
+                List.of(),
+                calleeFunction
+        ));
+        analysisData.markCoroutineFunction(calleeFunction);
+        var graph = new FrontendCfgGraph(
+                "seq_0",
+                Map.of(
+                        "seq_0",
+                        new FrontendCfgGraph.SequenceNode("seq_0", List.of(
+                                new CallItem(callAnchor, "inner", null, List.of(), "v0")
+                        ), "stop_1"),
+                        "stop_1",
+                        new FrontendCfgGraph.StopNode("stop_1", FrontendCfgGraph.StopKind.RETURN, null)
+                )
+        );
+
+        var materializations = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                graph, analysisData, new ClassRegistry(ExtensionApiLoader.loadDefault())
+        );
+        var callMaterialization = materializations.get("v0");
+        assertAll(
+                () -> assertNotNull(callMaterialization),
+                () -> assertEquals(GdccCoroStateType.CORO_STATE, callMaterialization.type()),
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.CfgValueMaterializationKind.CORO_STATE_SLOT,
+                        callMaterialization.kind()
+                ),
+                () -> assertEquals("__coro_state_v0", FrontendBodyLoweringSupport.coroStateSlotId("v0"))
+        );
+    }
+
+    @Test
+    void collectCfgValueMaterializationsKeepsUnmarkedCallResultAsOrdinaryTemp() throws Exception {
+        // Sibling anchor for the coroutine branch: without the sema coroutine mark the identical
+        // call stays an ordinary temp typed by the published return type (int here, even though
+        // the coroutine variant above intentionally used void).
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var calleeFunction = new LirFunctionDef("inner");
+        var callAnchor = new CallExpression(identifier("inner"), List.of(), SYNTHETIC_RANGE);
+        analysisData.resolvedCalls().put(callAnchor, FrontendResolvedCall.resolved(
+                "inner",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.GDCC,
+                new GdObjectType("Host"),
+                GdIntType.INT,
+                List.of(),
+                calleeFunction
+        ));
+        analysisData.expressionTypes().put(
+                callAnchor,
+                gd.script.gdcc.frontend.sema.FrontendExpressionType.resolved(GdIntType.INT)
+        );
+        var graph = new FrontendCfgGraph(
+                "seq_0",
+                Map.of(
+                        "seq_0",
+                        new FrontendCfgGraph.SequenceNode("seq_0", List.of(
+                                new CallItem(callAnchor, "inner", null, List.of(), "v0")
+                        ), "stop_1"),
+                        "stop_1",
+                        new FrontendCfgGraph.StopNode("stop_1", FrontendCfgGraph.StopKind.RETURN, "v0")
+                )
+        );
+
+        var materializations = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                graph, analysisData, new ClassRegistry(ExtensionApiLoader.loadDefault())
+        );
+        var callMaterialization = materializations.get("v0");
+        assertAll(
+                () -> assertNotNull(callMaterialization),
+                () -> assertEquals(GdIntType.INT, callMaterialization.type()),
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.CfgValueMaterializationKind.TEMP_SLOT,
+                        callMaterialization.kind()
+                )
+        );
     }
 
     private static @NotNull List<ValueOpItem> collectReachableValueItems(@NotNull FrontendCfgGraph graph) {

@@ -395,7 +395,19 @@ $<result_id> = await $<operand_id>
 
 ### 第七步：CFG `AwaitItem` 与 body lowering
 
-- 状态：未开始
+- 状态：**已完成**（2026-08-25）
+- 完成内容：
+  - **CFG 层**：新 value item `AwaitItem`（`expression` + 可空 `operandValueIdOrNull` + `resultValueId`，sealed `ValueOpItem` permits 登记）；`FrontendCfgGraphBuilder.buildValue(...)` 新增 `AwaitExpression` case（`buildAwaitValue`：先构建 operand 普通 value，再发布 item，不拆分控制流，result id 沿用 `chooseResultValueId` 合同）。**statement 根 resolved-void 协程调用不再走 discarded-void 无结果路径**（`isDiscardedResolvedVoidCallExpression` 排除协程 callee；`checkValueProducingCall` 同步豁免）——backend 协程 ABI 要求 void 协程调用也必须携带 `compiler::GdccCoroState` 结果槽。
+  - **void callee 的 redundant await**（`await voidNonCoroutineFn()`，sema 合法、warning + Variant 结果）：operand 走 discarded-void 路径只保留副作用调用，`AwaitItem` 不带 operand id，body lowering 直接 `LiteralNullInsn` 物化 nil 结果（对齐 Godot `REDUNDANT_AWAIT` 于 void 调用的恢复值）。
+  - **materialization**（`FrontendBodyLoweringSupport`）：协程 `CallItem` 结果物化为 `GdccCoroStateType.CORO_STATE` + 新 kind `CORO_STATE_SLOT`（slot 命名 `__coro_state_<valueId>`，满足 INTERNAL provenance destruct 的 `__` 前缀命名限制）；`AwaitItem` 结果按 published await 类型走普通 `TEMP_SLOT`。判定经 `FrontendAnalysisData.isPublishedCoroutineCall(anchor)`（`resolvedCalls` + `coroutineFunctions` 两表纯读，identity 命中）。
+  - **body lowering**：`FrontendSequenceItemInsnLoweringProcessors` 注册 `AwaitItem` 处理器——按 operand 物化槽类型 + published call fact 分派：CORO_STATE/Signal → `AwaitInsn`；Variant 无 RESOLVED 非协程 call fact → dynamic `AwaitInsn`；RESOLVED 非协程 call → redundant 穿透（`materializeFrontendBoundaryValue` + `AssignInsn`，**不发 AwaitInsn**，enclosing 函数非协程，suspend 指令在此处非法）；无 operand → void redundant nil 物化。invariant fail-fast：发 `AwaitInsn` 但 target function 未被 sema 标记协程、或非 signal/coroutine/dynamic 路由缺失。`CallItem` processor：协程 callee 一律要求结果槽（含 void），fire-and-forget（结果未被任何 `AwaitItem` 消费，session 预计算 `awaitOperandValueIds`）在调用后追加 `DestructInsn(slot, INTERNAL)` 即 detach；await 消费的路径不 destruct（引用 move 进 await）。
+  - **skeleton pass**：`FrontendLoweringClassSkeletonPass` 发布 module 前消费 `coroutineFunctions`，按 object identity 给命中 shell `setCoroutine(true)`（无名称查找；不在集合中的函数保持默认 `false`）。
+  - 测试锚点：`FrontendAwaitInsnLoweringTest`（新，17 tests：signal 裸标识符/attribute 两形态、1 参 signal 类型化结果、协程调用 await（`__coro_state_` 槽 + AwaitInsn 顺序 + 无 destruct）、void 协程 await Variant、dynamic、redundant 穿透（无 AwaitInsn + warning 仍在）、Signal 返回非协程调用的 redundant 回归、void redundant nil、fire-and-forget INTERNAL destruct 顺序锚点、void 协程 statement 调用回归锚点、链式协程调用 await、单函数多 await 槽位区分、if 分支内 await、entryBlockId + `ControlFlowIntegrityValidator` + serializer/parser round-trip；负例：static 协程调用 await 的「未标记协程」invariant fail-fast、手工图的非法 operand 类型 dispatch fail-fast）；`FrontendCfgGraphBuilderTest` 新增 4 tests（AwaitItem 形状与 preferred id 流转、协程调用 operand 连接、void redundant 无 operand、void 协程 statement 结果值回归）；`FrontendBodyLoweringSupportTest` 新增 4 tests（await 结果类型物化、缺 published fact fail-fast、协程 CallItem CORO_STATE_SLOT、未标记对照组普通 TEMP_SLOT）；`FrontendLoweringClassSkeletonPassTest` 新增协程标记传播测试（含 `_init`、inner-class、identity `assertSame` 与默认 false 对照）。frontend+lir+backend 回归全绿。
+  - review-expert-a 一轮复核修复（2026-08-25，REQUEST_CHANGES → 全项处理）：
+    - **[BLOCKER]** `AwaitItem` 处理器分派顺序修正：redundant-call 判定（published call fact）必须先于槽类型分派——`-> Signal` 的非协程调用（如 `await copy_signal()`）在 sema 侧是 CALL/redundant 路由（caller 不标协程），修复前会被 Signal 槽类型误判为真挂起并在「未标记协程」invariant 处崩溃。修复后 CORO_STATE 槽仍只可能来自已标记协程调用，两路径无重叠。回归锚：`redundantAwaitOnSignalReturningCallLowersToPassThrough`。
+    - **[MEDIUM]** 补 body lowering 负例覆盖：static 协程调用 await 的 invariant fail-fast（sema-only 管线真实构造）与非法 operand 类型的 dispatch fail-fast（手工图混合构造）。
+    - **[SUGGESTION]** 补高价值形态锚点：链式 `await other.inner()`（AttributeCallStep 锚点）、单函数多 await（独立 `__coro_state_*` 槽）、if 分支体内 await（跨 sequence 的 awaitOperandValueIds 全图扫描）、skeleton 的 `_init` 与 inner-class 协程标记。
+- 已知边界：lambda/property init 内 await 在 sema 已 fail-closed，lowering 不可达；static 协程调用由 compile gate 拦截（第六步），sema-only 路径若强行 lowering 会在「target function 未标记协程」invariant 处 fail-fast（已有测试锚定）。
 
 目标：
 

@@ -5,6 +5,7 @@ import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPass;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
@@ -18,6 +19,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -109,6 +111,84 @@ class FrontendLoweringClassSkeletonPassTest {
                 assertTrue(function.getEntryBlockId().isEmpty(), clazz.getName() + "::" + function.getName());
             }
         }
+    }
+
+    @Test
+    void lowerPropagatesCoroutineMarksOntoFunctionSkeletons() throws Exception {
+        // Sema-only fixture: the compile gate keeps its await blocker until step 8, so coroutine
+        // mark propagation is exercised through the shared analyze(...) path. The pass consumes
+        // `FrontendAnalysisData.coroutineFunctions` — an identity set over the same LirFunctionDef
+        // shells the skeleton already publishes — so no name lookup is involved.
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "coro_skeleton.gd",
+                        """
+                                class_name CoroSkeleton
+                                extends Node
+
+                                signal pinged
+
+                                func _init():
+                                    await pinged
+
+                                func inner():
+                                    await pinged
+
+                                func run():
+                                    await inner()
+
+                                func sync_helper() -> int:
+                                    return 1
+
+                                class Inner:
+                                    extends Node
+
+                                    signal inner_pinged
+
+                                    func watch():
+                                        await inner_pinged
+                                """
+                )),
+                Map.of()
+        );
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected semantic errors: " + diagnostics.snapshot());
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+
+        new FrontendLoweringClassSkeletonPass().run(context);
+
+        var lirModule = context.requireLirModule();
+        var topLevelFunctions = lirModule.getClassDefs().getFirst().getFunctions().stream()
+                .collect(java.util.stream.Collectors.toMap(LirFunctionDef::getName, function -> function));
+        var innerClassDef = lirModule.getClassDefs().stream()
+                .filter(classDef -> classDef.getName().endsWith("__sub__Inner"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing inner class def"));
+        assertAll(
+                () -> assertTrue(topLevelFunctions.get("inner").isCoroutine()),
+                () -> assertTrue(topLevelFunctions.get("run").isCoroutine(),
+                        "awaiting a marked coroutine call marks the caller (fixed-point pass)"),
+                () -> assertTrue(topLevelFunctions.get("_init").isCoroutine(),
+                        "a constructor containing await follows the general marking rule"),
+                () -> assertFalse(topLevelFunctions.get("sync_helper").isCoroutine(),
+                        "unmarked functions keep the default false"),
+                () -> assertTrue(
+                        innerClassDef.getFunctions().stream()
+                                .filter(function -> function.getName().equals("watch"))
+                                .findFirst()
+                                .orElseThrow()
+                                .isCoroutine(),
+                        "inner-class functions are covered via allClassDefs()"
+                ),
+                () -> assertSame(
+                        analysisData.moduleSkeleton().allClassDefs().getFirst(),
+                        lirModule.getClassDefs().getFirst(),
+                        "the module publishes the same shells sema marked"
+                )
+        );
     }
 
     @Test
