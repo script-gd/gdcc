@@ -419,6 +419,12 @@ class GdccCoroutineRuntimeSmokeTest {
                     fake_state_init(&g_S1, "S1");
                     CHECK(gdcc_coro_state_identify((GDExtensionObjectPtr)&g_S1) == &g_S1.header,
                             "a live state object must identify back to its header");
+                    int reject_count = g_binding_set_reject_count;
+                    fake_set_binding((GDExtensionObjectPtr)&g_S1, &g_foreign_token, &g_S2.header, NULL);
+                    CHECK(g_binding_set_reject_count == reject_count + 1,
+                            "set_instance_binding must reject a second slot-zero write");
+                    CHECK(gdcc_coro_state_identify((GDExtensionObjectPtr)&g_S1) == &g_S1.header,
+                            "rejected slot-zero overwrite must preserve the coroutine token binding");
                     CHECK(gdcc_coro_state_identify((GDExtensionObjectPtr)&g_foreign_storage) == NULL,
                             "object without the token binding must be rejected");
                     fake_set_binding((GDExtensionObjectPtr)&g_foreign_storage, &g_foreign_token, &g_S1.header, NULL);
@@ -657,6 +663,7 @@ class GdccCoroutineRuntimeSmokeTest {
             static int g_variant_copy_count = 0;
             static int g_variant_destroy_count = 0;
             static int g_print_error_count = 0;
+            static int g_binding_set_reject_count = 0;
             static char g_last_error[256] = {0};
             
             static void fail(const char *msg) {
@@ -713,26 +720,31 @@ class GdccCoroutineRuntimeSmokeTest {
             static struct { GDExtensionObjectPtr obj; int refs; } g_refs[FAKE_MAX_OBJECTS];
             static int g_ref_count = 0;
             
-            static void *fake_get_binding(GDExtensionObjectPtr obj, void *token, const GDExtensionInstanceBindingCallbacks *callbacks) {
-                (void)callbacks;
-                for (int i = 0; i < g_binding_count; i++) {
-                    if (g_bindings[i].obj == obj && g_bindings[i].token == token) return g_bindings[i].binding;
-                }
-                return NULL;
-            }
-            static void fake_set_binding(GDExtensionObjectPtr obj, void *token, void *binding, const GDExtensionInstanceBindingCallbacks *callbacks) {
-                (void)callbacks;
-                for (int i = 0; i < g_binding_count; i++) {
-                    if (g_bindings[i].obj == obj && g_bindings[i].token == token) {
-                        g_bindings[i].binding = binding;
-                        return;
-                    }
-                }
+            static void fake_append_binding(GDExtensionObjectPtr obj, void *token, void *binding) {
                 if (g_binding_count >= FAKE_MAX_BINDINGS) fail("binding table overflow");
                 g_bindings[g_binding_count].obj = obj;
                 g_bindings[g_binding_count].token = token;
                 g_bindings[g_binding_count].binding = binding;
                 g_binding_count++;
+            }
+            static void *fake_get_binding(GDExtensionObjectPtr obj, void *token, const GDExtensionInstanceBindingCallbacks *callbacks) {
+                for (int i = 0; i < g_binding_count; i++) {
+                    if (g_bindings[i].obj == obj && g_bindings[i].token == token) return g_bindings[i].binding;
+                }
+                if (callbacks == NULL || callbacks->create_callback == NULL) return NULL;
+                void *binding = callbacks->create_callback(token, obj);
+                if (binding != NULL) fake_append_binding(obj, token, binding);
+                return binding;
+            }
+            static void fake_set_binding(GDExtensionObjectPtr obj, void *token, void *binding, const GDExtensionInstanceBindingCallbacks *callbacks) {
+                (void)callbacks;
+                for (int i = 0; i < g_binding_count; i++) {
+                    if (g_bindings[i].obj == obj && g_bindings[i].binding != NULL) {
+                        g_binding_set_reject_count++;
+                        return;
+                    }
+                }
+                fake_append_binding(obj, token, binding);
             }
             
             static int fake_refs_index(GDExtensionObjectPtr obj) {
@@ -871,8 +883,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 g_state_reg[g_state_reg_count].state = fs;
                 g_state_reg[g_state_reg_count].freed = 0;
                 g_state_reg_count++;
-                // Same dual-binding shape as production: the dedicated coroutine token
-                // binding pointing at the common header.
+                // Match production: the dedicated token owns the only slot-zero binding.
                 fake_set_binding(fs->_object, gdcc_coro_binding_token(), &fs->header, NULL);
             }
             

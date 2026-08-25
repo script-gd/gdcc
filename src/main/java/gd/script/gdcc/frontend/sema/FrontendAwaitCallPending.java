@@ -11,12 +11,13 @@ import java.util.Objects;
 /// Working entry for an `await <call>` whose coroutine classification is deferred to the
 /// post-suite fixed-point pass (`FrontendAwaitCoroutineAnalyzer`).
 ///
-/// The await's result type is already published during `EXPR_TYPE` (callee return type, `Variant`
-/// for void callees); what remains undecided at that point is whether the callee is a coroutine,
-/// because the callee's own body may be resolved after the caller's. The fixed-point pass consumes
-/// these entries: a coroutine callee marks `enclosingFunction`; a statically known non-coroutine
-/// callee produces the `sema.redundant_await` warning. A coroutine callee reached through a
-/// `STATIC_METHOD` call produces neither — the compile gate owns that diagnosis.
+/// The await's provisional result type is published during `EXPR_TYPE` (callee return type,
+/// `Variant` for void callees); what remains undecided is whether the callee is a coroutine because
+/// its body may be resolved after the caller's. The fixed-point pass consumes these entries: a
+/// coroutine callee marks `enclosingFunction`; a non-coroutine Signal return refines the await result
+/// and marks the caller, a Variant return marks the caller without refinement, and only another hard
+/// return type produces `sema.redundant_await`. A coroutine callee reached through a `STATIC_METHOD`
+/// call produces none of these — the compile gate owns that diagnosis.
 public record FrontendAwaitCallPending(
         @NotNull AwaitExpression awaitExpression,
         @NotNull LirFunctionDef enclosingFunction,

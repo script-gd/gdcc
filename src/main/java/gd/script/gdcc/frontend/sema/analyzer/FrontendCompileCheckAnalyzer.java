@@ -172,14 +172,6 @@ public class FrontendCompileCheckAnalyzer {
                 + "lowering support lands";
     }
 
-    /// Await-specific compile blocker (`frontend_await_minicoro_plan.md` step 6): shared semantics
-    /// already classified the await; the gate blocks it only because coroutine lowering is not ready
-    /// yet. This replaces the generic DEFERRED interception for awaits and stays until step 8.
-    private static @NotNull String awaitCompileBlockedMessage() {
-        return "Await expression is recognized and classified by shared semantic analysis but is "
-                + "blocked in compile mode because coroutine lowering support is not ready yet";
-    }
-
     /// §3.5: a coroutine reached through a static-method call is rejected at every position; the
     /// backend has no `CallStaticMethodInsn` coroutine route in the MVP.
     private static @NotNull String staticCoroutineCallCompileBlockedMessage(@NotNull String callableName) {
@@ -705,14 +697,7 @@ public class FrontendCompileCheckAnalyzer {
                         getNodeExpression,
                         expressionCompileBlockedMessage("Get-node expression")
                 );
-                // Await is blocked wholesale at its root until coroutine lowering lands; the operand
-                // subtree is skipped, so the coroutine-call position check never double-reports the
-                // legal await-operand position. A static coroutine call operand still earns its own
-                // §3.5 blocker because the post-pass deliberately leaves that diagnostic to the gate.
-                case AwaitExpression awaitExpression -> {
-                    reportExplicitCompileBlock(awaitExpression, awaitCompileBlockedMessage());
-                    reportStaticCoroutineCallBlock(coroutineCallAnchorFor(awaitExpression.value()));
-                }
+                case AwaitExpression awaitExpression -> walkAwaitExpression(awaitExpression);
                 default -> {
                     markCompileSurfaceNode(expression);
                     rememberBareCallCallee(expression);
@@ -720,6 +705,20 @@ public class FrontendCompileCheckAnalyzer {
                     walkNestedExpressionChildren(expression);
                 }
             }
+        }
+
+        /// Await is compile-ready after step 8. Its root and operand must enter the ordinary
+        /// published-fact scan, but the operand's top-level instance coroutine call is a legal
+        /// await position rather than an ordinary value position. Recording that anchor through the
+        /// static-call check also identity-deduplicates a trailing AttributeCallStep during descent;
+        /// intermediate calls remain value positions and are still checked recursively.
+        private void walkAwaitExpression(@NotNull AwaitExpression awaitExpression) {
+            markCompileSurfaceNode(awaitExpression);
+            var operand = awaitExpression.value();
+            markCompileSurfaceNode(operand);
+            rememberBareCallCallee(operand);
+            reportStaticCoroutineCallBlock(coroutineCallAnchorFor(operand));
+            walkNestedExpressionChildren(operand);
         }
 
         /// A recorded lambda (published plan + published body) is compile-ready: release its node onto
@@ -921,8 +920,7 @@ public class FrontendCompileCheckAnalyzer {
 
         /// §3.5 position rules for calls to GDCC coroutine functions: static coroutine calls are
         /// rejected at every position; instance calls are legal only at a statement root
-        /// (fire-and-forget) or under an await operand — the latter never reaches this check while
-        /// the await blocker skips its subtree.
+        /// (fire-and-forget) or as the top-level operand handled by `walkAwaitExpression`.
         private void checkCoroutineCallPosition(@Nullable Node callAnchor, boolean statementRoot) {
             var call = coroutineCallAtOrNull(callAnchor);
             if (call == null) {
@@ -937,8 +935,7 @@ public class FrontendCompileCheckAnalyzer {
             }
         }
 
-        /// Static coroutine calls stay compile-blocked even under an await operand (§3.5); the
-        /// dedicated message is emitted in addition to the generic await blocker.
+        /// Static coroutine calls stay compile-blocked even under an await operand (§3.5).
         private void reportStaticCoroutineCallBlock(@Nullable Node callAnchor) {
             var call = coroutineCallAtOrNull(callAnchor);
             if (call != null && call.callKind() == FrontendCallResolutionKind.STATIC_METHOD) {

@@ -1,7 +1,6 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdparser.frontend.ast.AwaitExpression;
-import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.SourceFile;
@@ -44,9 +43,9 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_signal_no_params.gd", """
                 class_name AwaitSignalNoParams
                 extends Node
-                
+
                 signal pinged
-                
+
                 func ping():
                     await pinged
                 """);
@@ -65,10 +64,10 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_signal_params.gd", """
                 class_name AwaitSignalParams
                 extends Node
-                
+
                 signal one(value: int)
                 signal two(a: int, b: String)
-                
+
                 func ping():
                     var first = await one
                     var second = await two
@@ -94,7 +93,7 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_engine_signal.gd", """
                 class_name AwaitEngineSignal
                 extends Node
-                
+
                 func ping(other: AwaitEngineSignal):
                     await other.ready
                 """);
@@ -113,7 +112,7 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_dynamic_operand.gd", """
                 class_name AwaitDynamicOperand
                 extends Node
-                
+
                 func ping(target):
                     await target
                 """);
@@ -134,12 +133,12 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_coroutine_call.gd", """
                 class_name AwaitCoroutineCall
                 extends Node
-                
+
                 signal pinged
-                
+
                 func outer():
                     var result = await inner()
-                
+
                 func inner() -> int:
                     await pinged
                     return 1
@@ -160,12 +159,12 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_void_coroutine_call.gd", """
                 class_name AwaitVoidCoroutineCall
                 extends Node
-                
+
                 signal pinged
-                
+
                 func outer():
                     var result = await inner()
-                
+
                 func inner():
                     await pinged
                 """);
@@ -183,15 +182,15 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_coroutine_chain.gd", """
                 class_name AwaitCoroutineChain
                 extends Node
-                
+
                 signal pinged
-                
+
                 func first():
                     await second()
-                
+
                 func second():
                     await third()
-                
+
                 func third():
                     await pinged
                 """);
@@ -208,10 +207,10 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_non_coroutine_call.gd", """
                 class_name AwaitNonCoroutineCall
                 extends Node
-                
+
                 func user():
                     var result = await plain()
-                
+
                 func plain() -> String:
                     return "x"
                 """);
@@ -233,7 +232,7 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_engine_call.gd", """
                 class_name AwaitEngineCall
                 extends Node
-                
+
                 func user():
                     var result = await get_name()
                 """);
@@ -254,13 +253,13 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_plain_value.gd", """
                 class_name AwaitPlainValue
                 extends Node
-                
+
                 signal pinged
-                
+
                 func bad():
                     var counter := 1
                     await counter
-                
+
                 func good():
                     await pinged
                 """);
@@ -282,13 +281,13 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_inside_lambda.gd", """
                 class_name AwaitInsideLambda
                 extends Node
-                
+
                 signal pinged
-                
+
                 func bad():
                     var callback = func():
                         await pinged
-                
+
                 func good():
                     await pinged
                 """);
@@ -311,11 +310,11 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_inside_property_initializer.gd", """
                 class_name AwaitInsidePropertyInitializer
                 extends Node
-                
+
                 signal pinged
-                
+
                 var pending = await 1
-                
+
                 func good():
                     await pinged
                 """);
@@ -331,27 +330,23 @@ class FrontendAwaitSemanticTest {
         );
     }
 
-    /// `analyzeForCompile` keeps blocking even classification-legal awaits with the await-specific
-    /// blocker until step 8 unblocks lowering; the generic DEFERRED path no longer applies.
+    /// Step 8 releases classification-legal awaits through the compile-only gate.
     @Test
-    void analyzeForCompileBlocksClassifiedAwaitWithDedicatedBlocker() throws Exception {
+    void analyzeForCompileAllowsClassifiedAwait() throws Exception {
         var compiled = analyzeForCompile("await_gate_blocker.gd", """
                 class_name AwaitGateBlocker
                 extends Node
-                
+
                 signal pinged
-                
+
                 func ping():
                     await pinged
                 """);
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         assertAll(
-                () -> assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString),
-                () -> assertTrue(
-                        compileDiagnostics.stream().anyMatch(d -> d.message().contains("Await expression")),
-                        compileDiagnostics::toString
-                )
+                () -> assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString),
+                () -> assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString)
         );
     }
 
@@ -360,12 +355,12 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_value_position.gd", """
                 class_name AwaitGateValuePosition
                 extends Node
-                
+
                 signal pinged
-                
+
                 func outer():
                     var state = inner()
-                
+
                 func inner():
                     await pinged
                 """);
@@ -382,26 +377,25 @@ class FrontendAwaitSemanticTest {
     }
 
     /// Godot root-expression rule: a statement-root instance coroutine call is fire-and-forget and
-    /// must not produce a coroutine-position diagnostic (the await blocker in `inner` still fires
-    /// until step 8, which is the only expected compile error here).
+    /// must not produce a coroutine-position diagnostic.
     @Test
     void analyzeForCompileAllowsStatementPositionCoroutineCall() throws Exception {
         var compiled = analyzeForCompile("await_gate_statement_position.gd", """
                 class_name AwaitGateStatementPosition
                 extends Node
-                
+
                 signal pinged
-                
+
                 func outer():
                     inner()
-                
+
                 func inner():
                     await pinged
                 """);
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         assertAll(
-                () -> assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString),
+                () -> assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString),
                 () -> assertTrue(
                         compileDiagnostics.stream().noneMatch(d -> d.message().contains("is a coroutine")),
                         compileDiagnostics::toString
@@ -414,10 +408,10 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_static_coroutine.gd", """
                 class_name AwaitGateStaticCoroutine
                 extends Node
-                
+
                 static func worker(target):
                     await target
-                
+
                 func outer():
                     worker(1)
                 """);
@@ -433,18 +427,17 @@ class FrontendAwaitSemanticTest {
         );
     }
 
-    /// Unannotated functions declare a `Variant` return; `await` on such a call must stay on the
-    /// call route (warning + pass-through) instead of falling into the dynamic route, so the
-    /// redundant-await bookkeeping still applies.
+    /// Unannotated functions declare a `Variant` return. Even when the callee is not a coroutine,
+    /// the returned runtime value may be a Signal, so Godot keeps the caller on dynamic await.
     @Test
-    void awaitCallWithUnannotatedVariantReturnWarnsWithoutMarking() throws Exception {
+    void awaitCallWithUnannotatedVariantReturnMarksCallerWithoutRedundantWarning() throws Exception {
         var analyzed = analyze("await_variant_return_call.gd", """
                 class_name AwaitVariantReturnCall
                 extends Node
-                
+
                 func inner():
                     return 1
-                
+
                 func user():
                     var state = await inner()
                 """);
@@ -454,8 +447,63 @@ class FrontendAwaitSemanticTest {
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics()::toString),
                 () -> assertEquals("Variant", awaitType.publishedType().getTypeName()),
-                () -> assertEquals(1, redundant.size(), analyzed.diagnostics()::toString),
-                () -> assertFalse(coroutineNames(analyzed).contains("user"))
+                () -> assertTrue(redundant.isEmpty(), analyzed.diagnostics()::toString),
+                () -> assertTrue(coroutineNames(analyzed).contains("user"))
+        );
+    }
+
+    @Test
+    void variantReturningAwaitPropagatesCoroutineMarkingTransitively() throws Exception {
+        var analyzed = analyze("await_variant_transitive.gd", """
+                class_name AwaitVariantTransitive
+                extends Node
+
+                func outer():
+                    return await middle()
+
+                func middle():
+                    return await leaf()
+
+                func leaf():
+                    return 1
+                """);
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics()::toString),
+                () -> assertEquals(Set.of("middle", "outer"), coroutineNames(analyzed)),
+                () -> assertTrue(
+                        diagnosticsByCategory(analyzed.diagnostics(), "sema.redundant_await").isEmpty(),
+                        analyzed.diagnostics()::toString
+                )
+        );
+    }
+
+    /// A non-coroutine call returning Signal awaits that returned signal. Its await result is the
+    /// signal resume payload, not the Signal object returned by the callee.
+    @Test
+    void awaitNonCoroutineSignalReturningCallUsesSignalResumeType() throws Exception {
+        var analyzed = analyze("await_signal_return_call.gd", """
+                class_name AwaitSignalReturnCall
+                extends Node
+
+                signal counted(value: int)
+
+                func signal_value() -> Signal:
+                    return counted
+
+                func user():
+                    var result: Variant = await signal_value()
+                """);
+
+        var awaitType = awaitTypeOf(analyzed, "user");
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics()::toString),
+                () -> assertEquals("Variant", awaitType.publishedType().getTypeName()),
+                () -> assertTrue(coroutineNames(analyzed).contains("user")),
+                () -> assertTrue(
+                        diagnosticsByCategory(analyzed.diagnostics(), "sema.redundant_await").isEmpty(),
+                        analyzed.diagnostics()::toString
+                )
         );
     }
 
@@ -466,13 +514,13 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_variant_coroutine_call.gd", """
                 class_name AwaitVariantCoroutineCall
                 extends Node
-                
+
                 signal pinged
-                
+
                 func inner() -> Variant:
                     await pinged
                     return 1
-                
+
                 func user():
                     var state = await inner()
                 """);
@@ -489,17 +537,16 @@ class FrontendAwaitSemanticTest {
         );
     }
 
-    /// §3.5: a static coroutine call stays compile-blocked even as an await operand; the dedicated
-    /// static blocker must accompany the generic await blocker.
+    /// §3.5: a static coroutine call stays compile-blocked even as an await operand.
     @Test
     void analyzeForCompileRejectsAwaitedStaticCoroutineCall() throws Exception {
         var compiled = analyzeForCompile("await_gate_awaited_static.gd", """
                 class_name AwaitGateAwaitedStatic
                 extends Node
-                
+
                 static func worker(target):
                     await target
-                
+
                 func outer():
                     await worker(1)
                 """);
@@ -507,10 +554,6 @@ class FrontendAwaitSemanticTest {
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         assertAll(
                 () -> assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString),
-                () -> assertTrue(
-                        compileDiagnostics.stream().anyMatch(d -> d.message().contains("Await expression")),
-                        compileDiagnostics::toString
-                ),
                 () -> assertTrue(
                         compileDiagnostics.stream().anyMatch(d -> d.message().contains("Static coroutine function")
                                 && d.message().contains("worker")),
@@ -527,14 +570,14 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_lambda_body.gd", """
                 class_name AwaitGateLambdaBody
                 extends Node
-                
+
                 signal pinged
-                
+
                 func outer():
                     pinged.connect(func():
                         var state = inner()
                     )
-                
+
                 func inner():
                     await pinged
                 """);
@@ -557,13 +600,13 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_nested_value_position.gd", """
                 class_name AwaitGateNestedValuePosition
                 extends Node
-                
+
                 signal pinged
-                
+
                 func collect():
                     var states = [inner()]
                     return inner()
-                
+
                 func inner():
                     await pinged
                 """);
@@ -578,6 +621,40 @@ class FrontendAwaitSemanticTest {
         );
     }
 
+    /// Releasing the await root must not hide coroutine calls nested inside the operand's argument
+    /// list. Only the top-level awaited call receives the await-position exemption.
+    @Test
+    void analyzeForCompileRejectsCoroutineCallNestedInsideAwaitOperand() throws Exception {
+        var compiled = analyzeForCompile("await_gate_nested_operand_call.gd", """
+                class_name AwaitGateNestedOperandCall
+                extends Node
+
+                signal pinged
+
+                func passthrough(value: Variant) -> Variant:
+                    return value
+
+                func outer():
+                    await passthrough(inner())
+
+                func inner():
+                    await pinged
+                """);
+
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        assertAll(
+                () -> assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString),
+                () -> assertEquals(
+                        1,
+                        compileDiagnostics.stream()
+                                .filter(d -> d.message().contains("is a coroutine")
+                                        && d.message().contains("inner"))
+                                .count(),
+                        compileDiagnostics::toString
+                )
+        );
+    }
+
     /// An intermediate chain call is a value position even when the chain itself is the statement
     /// root: `inner().name` must flag the `inner()` call step.
     @Test
@@ -585,12 +662,12 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_intermediate_chain.gd", """
                 class_name AwaitGateIntermediateChain
                 extends Node
-                
+
                 signal pinged
-                
+
                 func outer():
                     inner().name
-                
+
                 func inner():
                     await pinged
                 """);
@@ -614,12 +691,12 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_intermediate_call_step.gd", """
                 class_name AwaitGateIntermediateCallStep
                 extends Node
-                
+
                 signal pinged
-                
+
                 func outer():
                     self.inner().name
-                
+
                 func inner():
                     await pinged
                 """);
@@ -642,19 +719,19 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_chained_statement_root.gd", """
                 class_name AwaitGateChainedStatementRoot
                 extends Node
-                
+
                 signal pinged
-                
+
                 func outer():
                     self.inner()
-                
+
                 func inner():
                     await pinged
                 """);
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         assertAll(
-                () -> assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString),
+                () -> assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString),
                 () -> assertTrue(
                         compileDiagnostics.stream().noneMatch(d -> d.message().contains("is a coroutine")),
                         compileDiagnostics::toString

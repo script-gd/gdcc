@@ -59,7 +59,7 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
     </#list>
     <#if helper.hasCoroutineFunctions()>
     <#-- Hidden coroutine state classes: runtime-only, never script-exposed, direct RefCounted -->
-    <#-- children. Each registers its `completed(result)` signal (GDScriptFunctionState contract). -->
+    <#-- children. Each registers the engine-internal coroutine `completed(result)` signal shape. -->
     <#list module.classDefs as classDef>
         <#list classDef.functions as func>
             <#if func.coroutine>
@@ -331,9 +331,10 @@ GDExtensionObjectPtr ${stateName}_class_create_instance(void* p_class_userdata, 
     ${stateName}* self = godot_mem_alloc(sizeof(${stateName}));
     self->_object = obj;
     godot_object_set_instance(obj, GD_STATIC_SN(u8"${stateName}"), self);
-    godot_object_set_instance_binding(obj, class_library, self, &${stateName}_class_binding_callbacks);
-    // Dedicated coroutine token binding: `gdcc_coro_state_identify` reads the common header here.
-    godot_object_set_instance_binding(obj, gdcc_coro_binding_token(), &self->${helper.renderCoroHeaderField()}, &${stateName}_class_binding_callbacks);
+    // Hidden states need only their module-private identity binding. `set_instance` above,
+    // not this binding, supplies the wrapper pointer to notification/free_instance callbacks.
+    godot_object_set_instance_binding(obj, gdcc_coro_binding_token(),
+        &self->${helper.renderCoroHeaderField()}, &${stateName}_class_binding_callbacks);
     if (p_notify_postinitialize) {
         godot_Object_notification(obj, godot_Object_NOTIFICATION_POSTINITIALIZE(), false);
     }
@@ -420,7 +421,7 @@ static void ${helper.renderCoroDestroyRetSlotFuncName(classDef, func)}(gdcc_coro
 }
 
 static void ${helper.renderCoroEmitCompletedFuncName(classDef, func)}(gdcc_coro_state_header *coro_header) {
-    // Emit `completed(result_cache)` on the state object (GDScriptFunctionState contract).
+    // Emit the engine-internal coroutine `completed(result)` signal shape on the state object.
     godot_StringName coro_completed_name = godot_new_StringName_with_utf8_chars("completed");
     godot_Signal coro_completed_sig = godot_new_Signal_with_Object_StringName((godot_Object*)coro_header->obj, &coro_completed_name);
     godot_StringName_destroy(&coro_completed_name);
@@ -455,8 +456,19 @@ godot_Object* ${helper.renderCoroStartThunkName(classDef, func)}(
     </#list>
 ) {
     GDExtensionObjectPtr coro_state_obj = ${stateName}_class_create_instance(NULL, false);
+    if (coro_state_obj == NULL) {
+        GDCC_PRINT_RUNTIME_ERROR("gdcc: failed to create coroutine state object", __func__, __FILE__, __LINE__);
+        return NULL;
+    }
     gdcc_ref_counted_init_raw(coro_state_obj, true);
-    ${stateName}* coro_state = (${stateName}*)godot_object_get_instance_binding(coro_state_obj, class_library, &${stateName}_class_binding_callbacks);
+    gdcc_coro_state_header *coro_header = gdcc_coro_state_identify(coro_state_obj);
+    if (coro_header == NULL) {
+        GDCC_PRINT_RUNTIME_ERROR("gdcc: coroutine state object is missing its identity binding", __func__, __FILE__, __LINE__);
+        release_object(coro_state_obj);
+        return NULL;
+    }
+    ${stateName}* coro_state = (${stateName}*)((char*)coro_header
+        - offsetof(${stateName}, ${helper.renderCoroHeaderField()}));
     <#list func.parameters as param>
     ${helper.renderCoroParamFillStmt(param.type, "coro_state->" + helper.renderCoroParamFieldPrefix() + param.name, "$" + param.name)}
     </#list>
@@ -485,12 +497,24 @@ godot_Object* ${helper.renderCoroStartThunkName(classDef, func)}(
 <#-- wrappers and virtual wiring stay untouched; internally dispatches through the start thunk. -->
 <@funcHeader helper classDef func/> {
     godot_Object* coro_state_obj = ${helper.renderCoroStartThunkName(classDef, func)}(<#list func.parameters as param>$${param.name}<#if param_has_next>, </#if></#list>);
+    if (coro_state_obj == NULL) {
+<#if func.returnType.typeName == "void">
+        return;
+<#else>
+        return ${helper.renderDefaultValueExprInC(func.returnType)};
+</#if>
+    }
 <#if func.returnType.typeName == "void">
     // Void coroutine at the engine boundary: always detach; a suspended coroutine continues
     // in the background (Godot-aligned), a synchronous one simply dies with the state object.
     release_object(coro_state_obj);
 <#else>
     gdcc_coro_state_header* coro_header = gdcc_coro_state_identify(coro_state_obj);
+    if (coro_header == NULL) {
+        release_object(coro_state_obj);
+        GDCC_PRINT_RUNTIME_ERROR("gdcc: coroutine start returned an invalid state object", __func__, __FILE__, __LINE__);
+        return ${helper.renderDefaultValueExprInC(func.returnType)};
+    }
     if (coro_header->done) {
         // Synchronous completion fast path: no coroutine state escapes the engine boundary.
         ${helper.renderGdTypeInC(func.returnType)} r = ${helper.renderCoroMoveResultFuncName(classDef, func)}(coro_header);

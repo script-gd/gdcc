@@ -85,7 +85,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("missing_compile_check_diagnostics.gd", """
                 class_name MissingCompileCheckDiagnostics
                 extends Node
-                
+
                 func ping():
                     pass
                 """);
@@ -105,10 +105,10 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckExplicitBlocks
                 extends Node
-                
+
                 var property_array = [1]
                 var property_preload = preload("res://icon.svg")
-                
+
                 func ping(value):
                     assert(value, "compile-only gate")
                     1 if value else 0
@@ -155,10 +155,10 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckContainerLiterals
                 extends RefCounted
-                
+
                 var scores: Array[int] = [1, 2]
                 var labels: Dictionary[String, int] = {"a": 1}
-                
+
                 func probe(value: int) -> Array:
                     var mixed = [value, "x", true]
                     var nested = [[1], {"k": 2}]
@@ -183,7 +183,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckCastExpression
                 extends RefCounted
-                
+
                 func probe(value: int) -> float:
                     return value as float
                 """;
@@ -205,7 +205,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_cast_propagated_operand.gd", """
                 class_name CompileCheckCastPropagatedOperand
                 extends RefCounted
-                
+
                 func probe() -> int:
                     var y = missing as int
                     return y
@@ -235,7 +235,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_type_test_propagated_operand.gd", """
                 class_name CompileCheckTypeTestPropagatedOperand
                 extends RefCounted
-                
+
                 func probe() -> bool:
                     var y = missing is int
                     return y
@@ -266,7 +266,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_chained_cast_propagated_operand.gd", """
                 class_name CompileCheckChainedCastPropagatedOperand
                 extends RefCounted
-                
+
                 func probe() -> float:
                     var y = (missing as int) as float
                     return y
@@ -296,7 +296,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_cast_unknown_target.gd", """
                 class_name CompileCheckCastUnknownTarget
                 extends RefCounted
-                
+
                 func probe(value: int):
                     var y = value as MissingType
                 """);
@@ -322,7 +322,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_type_test_invalid_target.gd", """
                 class_name CompileCheckTypeTestInvalidTarget
                 extends RefCounted
-                
+
                 func probe(value: int) -> bool:
                     return value is null
                 """);
@@ -352,7 +352,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckAssertContract
                 extends RefCounted
-                
+
                 func ping():
                     assert(1, "frontend still accepts truthy source conditions")
                 """;
@@ -376,7 +376,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckVirtualOverride
                 extends Node
-                
+
                 func _process(delta) -> void:
                     pass
                 """;
@@ -412,9 +412,9 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_static_self_assignment_target.gd", """
                 class_name CompileCheckStaticSelfAssignmentTarget
                 extends RefCounted
-                
+
                 var hp: int = 0
-                
+
                 static func ping_static() -> void:
                     self.hp = 1
                 """);
@@ -442,7 +442,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_duplicate_local.gd", """
                 class_name CompileCheckDuplicateLocal
                 extends RefCounted
-                
+
                 func ping():
                     var value := 1
                     var value := 2
@@ -471,7 +471,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_shadowing_local.gd", """
                 class_name CompileCheckShadowingLocal
                 extends RefCounted
-                
+
                 func ping(seed: int):
                     var value := seed
                     if seed > 0:
@@ -498,9 +498,9 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckStaticPropertyDeclaration
                 extends RefCounted
-                
+
                 static var shared: int = 1
-                
+
                 static func build() -> int:
                     return shared
                 """;
@@ -526,9 +526,9 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckStaticPropertyWithoutInitializer
                 extends RefCounted
-                
+
                 static var shared: int
-                
+
                 static func set_shared(value: int):
                     shared = value
                 """;
@@ -553,7 +553,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckStaticPropertyInitializerSubtree
                 extends Node
-                
+
                 static var shared = [1]
                 """;
 
@@ -574,7 +574,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckUnaryBinaryResolved
                 extends RefCounted
-                
+
                 func ping(
                     items_a: Array[int],
                     items_b: Array[int],
@@ -605,13 +605,13 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckTypedObjectNilEquality
                 extends RefCounted
-                
+
                 class Point extends RefCounted:
                     var next: Point = null
-                
+
                 func has_next(point: Point) -> bool:
                     return point.next != null
-                
+
                 func count(point: Point) -> int:
                     var total := 0
                     var current: Point = point
@@ -639,10 +639,10 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckObjectNilOrdering
                 extends RefCounted
-                
+
                 class Point extends RefCounted:
                     pass
-                
+
                 func ping(point: Point):
                     return point < null
                 """;
@@ -674,10 +674,10 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckTypedObjectIdentityEquality
                 extends Node
-                
+
                 func same_node(left: Node, right: Node) -> bool:
                     return left == right
-                
+
                 func object_vs_node(obj: Object, node: Node) -> bool:
                     return obj != node
                 """;
@@ -700,7 +700,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckObjectIdentityOrdering
                 extends Node
-                
+
                 func ping(left: Node, right: Node):
                     return left < right
                 """;
@@ -732,10 +732,10 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckShortCircuitBinary
                 extends RefCounted
-                
+
                 func helper(value):
                     return value
-                
+
                 func ping(left, right):
                     var both := left and helper(right)
                     return left or right
@@ -757,9 +757,9 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckCompoundAssignment
                 extends RefCounted
-                
+
                 var hp: int = 0
-                
+
                 func ping():
                     hp += 1
                 """;
@@ -780,11 +780,11 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckStaticMethodRoute
                 extends RefCounted
-                
+
                 class Worker:
                     static func build() -> Worker:
                         return Worker.new()
-                
+
                 var worker := Worker.build()
                 """;
 
@@ -804,10 +804,10 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name MappedWorker
                 extends RefCounted
-                
+
                 static func build() -> MappedWorker:
                     return MappedWorker.new()
-                
+
                 var worker := MappedWorker.build()
                 """;
 
@@ -835,11 +835,11 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_parameterized_gdcc_constructor.gd", """
                 class_name CompileCheckParameterizedCtor
                 extends RefCounted
-                
+
                 class Worker:
                     func _init(value: int):
                         pass
-                
+
                 func build(seed):
                     return Worker.new(seed)
                 """);
@@ -865,11 +865,11 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_parameterized_gdcc_constructor_regression.gd", """
                         class_name CompileCheckParameterizedCtorRegression
                         extends RefCounted
-                
+
                         class Worker:
                             func _init(value: int):
                                 pass
-                
+
                         func build(seed):
                             return Worker.new(seed)
                 """);
@@ -915,10 +915,10 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckSkippedSurface
                 extends Node
-                
+
                 func helper():
                     pass
-                
+
                 func ping(seed = [1]):
                     var body_local = 0
                     var f = func():
@@ -961,7 +961,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckMatchReadySurface
                 extends Node
-                
+
                 func ping(value: int):
                     match value:
                         var bound when bound > 0:
@@ -979,7 +979,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckForBridge
                 extends Node
-                
+
                 func ping(values):
                     for item in values:
                         var copy := item
@@ -1004,7 +1004,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckForRangeReleased
                 extends Node
-                
+
                 func ping():
                     for i in range(3):
                         var copy := i
@@ -1022,7 +1022,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckForIntShorthandReleased
                 extends Node
-                
+
                 func ping():
                     for i in 5:
                         var copy := i
@@ -1040,7 +1040,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckForRangeBodyScanned
                 extends Node
-                
+
                 func ping():
                     for i in range(3):
                         assert(i)
@@ -1058,7 +1058,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_for_upstream_error.gd", """
                 class_name CompileCheckForUpstreamError
                 extends Node
-                
+
                 func ping(values):
                     for item in values:
                         var copy := item
@@ -1083,7 +1083,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_for_missing_plan.gd", """
                 class_name CompileCheckForMissingPlan
                 extends Node
-                
+
                 func ping():
                     for i in range(3):
                         var copy := i
@@ -1107,7 +1107,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_existing_error.gd", """
                 class_name CompileCheckExistingError
                 extends Node
-                
+
                 func ping():
                     preload("res://icon.svg")
                 """);
@@ -1135,7 +1135,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_live_manager_upstream.gd", """
                 class_name CompileCheckLiveManagerUpstream
                 extends Node
-                
+
                 func ping():
                     $Camera3D
                 """);
@@ -1163,7 +1163,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_conditional_ready.gd", """
                 class_name CompileCheckConditionalReady
                 extends Node
-                
+
                 func ping(flag: bool, seed: int) -> int:
                     var chosen = seed if flag else 0
                     return chosen
@@ -1182,7 +1182,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_conditional_failed_arm.gd", """
                 class_name CompileCheckConditionalFailedArm
                 extends Node
-                
+
                 func ping(flag: bool):
                     var failed_arm = missing_identifier if flag else 0
                 """);
@@ -1211,10 +1211,10 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_conditional_void_arm.gd", """
                 class_name CompileCheckConditionalVoidArm
                 extends Node
-                
+
                 func void_helper() -> void:
                     pass
-                
+
                 func ping(flag: bool):
                     var void_arm = void_helper() if flag else void_helper()
                 """);
@@ -1239,13 +1239,13 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_published_facts.gd", """
                 class_name CompileCheckPublishedFacts
                 extends RefCounted
-                
+
                 class Worker:
                     var payload: int = 1
-                
+
                     func read() -> int:
                         return 1
-                
+
                 func ping(worker: Worker):
                     var copy = worker
                     var payload_copy = worker.payload
@@ -1330,11 +1330,11 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_shared_anchor.gd", """
                 class_name CompileCheckSharedAnchor
                 extends RefCounted
-                
+
                 class Worker:
                     func read() -> int:
                         return 1
-                
+
                 func ping(worker: Worker):
                     var value = worker.read()
                 """);
@@ -1375,10 +1375,10 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_bare_call_fact.gd", """
                 class_name CompileCheckBareCallFact
                 extends RefCounted
-                
+
                 func helper(value: int) -> int:
                     return value
-                
+
                 static func ping_static(value: int):
                     helper(value)
                 """);
@@ -1414,10 +1414,10 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_attribute_subscript_step.gd", """
                 class_name CompileCheckAttributeSubscriptStep
                 extends RefCounted
-                
+
                 class Worker:
                     var payloads: Dictionary[int, int]
-                
+
                 func ping(worker: Worker, seed: int):
                     var value = worker.payloads[seed]
                 """);
@@ -1449,17 +1449,17 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_property_initializer_facts.gd", """
                 class_name CompileCheckPropertyInitializerFacts
                 extends RefCounted
-                
+
                 class Handle:
                     func read() -> int:
                         return 1
-                
+
                 class Worker:
                     var handle: Handle = Handle.new()
-                
+
                     static func build() -> Worker:
                         return Worker.new()
-                
+
                 var expr_value: int = 1
                 var member_value := Worker.build().handle
                 var call_value := Worker.build().handle.read()
@@ -1539,7 +1539,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_outside_surface.gd", """
                 class_name CompileCheckOutsideSurface
                 extends Node
-                
+
                 func ping(seed = 1):
                     var callback = func():
                         return 2
@@ -1567,13 +1567,13 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_dynamic_surface.gd", """
                 class_name CompileCheckDynamicSurface
                 extends RefCounted
-                
+
                 class Worker:
                     var payload: int = 1
-                
+
                     func read() -> int:
                         return 1
-                
+
                 func ping(worker: Worker):
                     var copy = worker
                     var payload_copy = worker.payload
@@ -1636,7 +1636,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_dynamic_member_publication_drift.gd", """
                 class_name CompileCheckDynamicMemberPublicationDrift
                 extends RefCounted
-                
+
                 func zero() -> Vector3:
                     return Vector3.ZERO
                 """);
@@ -1669,10 +1669,10 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name DeferredCompileCheck
                 extends RefCounted
-                
+
                 func build(value: int) -> String:
                     return ""
-                
+
                 func ping(flag):
                     self.build(preload("res://icon.svg")).length
                 """;
@@ -1701,9 +1701,9 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckBareSignalValue
                 extends Node
-                
+
                 signal pinged
-                
+
                 func ping():
                     var copied = pinged
                 """;
@@ -1724,9 +1724,9 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckReceiverSignalValue
                 extends Node
-                
+
                 signal pinged
-                
+
                 func ping(other: CompileCheckReceiverSignalValue):
                     var from_other = other.pinged
                     var from_self = self.pinged
@@ -1744,9 +1744,9 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckStaticSignalValue
                 extends Node
-                
+
                 signal pinged
-                
+
                 static func copy_signal() -> Signal:
                     return pinged
                 """;
@@ -1764,9 +1764,9 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckBareSignalAssignment
                 extends Node
-                
+
                 signal pinged
-                
+
                 func bad():
                     pinged = null
                 """;
@@ -1804,12 +1804,12 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckSignalMethods
                 extends Node
-                
+
                 signal pinged
-                
+
                 func _handler():
                     pass
-                
+
                 func ping(sig: Signal, other: CompileCheckSignalMethods):
                     sig.emit()
                     sig.connect(_handler)
@@ -1831,9 +1831,9 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckSignalEmitReleased
                 extends Node
-                
+
                 signal pinged(count: int)
-                
+
                 func ping(sig: Signal, label: String, vec: Vector3):
                     sig.emit()
                     sig.emit(1)
@@ -1853,13 +1853,13 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckBareValueReferences
                 extends RefCounted
-                
+
                 func helper(value):
                     return value
-                
+
                 static func make_static():
                     return 1
-                
+
                 func ping():
                     var method_ref = helper
                     var static_ref = make_static
@@ -1879,7 +1879,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckLerpValueReference
                 extends Node
-                
+
                 func ping():
                     var utility_ref = lerp
                     lerp(0.0, 1.0, 0.5)
@@ -1898,7 +1898,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckConstructorValueReference
                 extends Node
-                
+
                 func ping():
                     var ctor_ref = Node.new
                 """;
@@ -1921,15 +1921,15 @@ class FrontendCompileCheckAnalyzerTest {
                 compiled.diagnostics().asList()::toString);
     }
 
-    /// `await signal` remains a compile-blocked deferred expression.
+    /// Step 8 releases classified signal await onto the compile surface.
     @Test
-    void analyzeForCompileBlocksAwaitSignal() throws Exception {
+    void analyzeForCompileAllowsAwaitSignal() throws Exception {
         var source = """
                 class_name CompileCheckAwaitSignal
                 extends Node
-                
+
                 signal pinged
-                
+
                 func ping():
                     await pinged
                 """;
@@ -1937,15 +1937,34 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_await_signal.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
-        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
-        assertFalse(compileDiagnostics.isEmpty(), compiled.diagnostics()::toString);
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileAllowsDynamicAndCoroutineCallAwaits() throws Exception {
+        var source = """
+                class_name CompileCheckAwaitRoutes
+                extends Node
+
+                signal pinged
+
+                func inner() -> int:
+                    await pinged
+                    return 7
+
+                func await_call() -> int:
+                    return await inner()
+
+                func await_dynamic(value: Variant) -> Variant:
+                    return await value
+                """;
+
+        var compiled = analyzeForCompile("compile_check_await_routes.gd", source);
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
         assertTrue(
-                compileDiagnostics.stream().anyMatch(diagnostic ->
-                        diagnostic.message().contains("Await")
-                                || diagnostic.message().contains("await")
-                                || diagnostic.message().contains("deferred")
-                ),
-                compileDiagnostics::toString
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                compiled.diagnostics()::toString
         );
     }
 
@@ -1954,10 +1973,10 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckUnsupportedMethodReferences
                 extends Node
-                
+
                 static func make_static():
                     return 1
-                
+
                 func ping(vec: Vector2, dict: Dictionary):
                     var builtin_ref = vec.abs
                     var static_ref = CompileCheckUnsupportedMethodReferences.make_static
@@ -1969,7 +1988,7 @@ class FrontendCompileCheckAnalyzerTest {
                     var lambda_cb = func():
                         pass
                     pinged.connect(lambda_cb)
-                
+
                 signal pinged
                 """;
 
@@ -2010,9 +2029,9 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckDirectLambdaConnect
                 extends Node
-                
+
                 signal pinged
-                
+
                 func ping(sig: Signal):
                     sig.connect(func():
                         pass
@@ -2044,7 +2063,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckLambdaBodyScan
                 extends Node
-                
+
                 func ping():
                     var body_local = 0
                     var f = func():
@@ -2086,7 +2105,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckPropertyInitLambda
                 extends Node
-                
+
                 var cb = func():
                     pass
                 """;
@@ -2116,7 +2135,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckParamDefaultLambda
                 extends Node
-                
+
                 func ping(cb = func():
                     preload("res://icon.svg")
                 ):
@@ -2147,7 +2166,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckLambdaBodyMatch
                 extends Node
-                
+
                 func ping():
                     var x = 0
                     var f = func():
@@ -2174,7 +2193,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_match_upstream_error.gd", """
                 class_name CompileCheckMatchUpstreamError
                 extends Node
-                
+
                 func ping(value):
                     match value:
                         [1]:
@@ -2200,7 +2219,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_match_missing_plan.gd", """
                 class_name CompileCheckMatchMissingPlan
                 extends Node
-                
+
                 func ping(value):
                     match value:
                         1:
@@ -2219,7 +2238,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_match_bind_slot_hole.gd", """
                 class_name CompileCheckMatchBindSlotHole
                 extends Node
-                
+
                 func ping(value: int):
                     match value:
                         var bound:
@@ -2250,7 +2269,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_match_bind_slot_protocol.gd", """
                 class_name CompileCheckMatchBindSlotProtocol
                 extends Node
-                
+
                 func ping(value: int):
                     match value:
                         var bound:
@@ -2269,13 +2288,13 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckSignalCalleeExclusion
                 extends RefCounted
-                
+
                 func helper(value):
                     return value
-                
+
                 static func make_static(value):
                     return value
-                
+
                 func ping(left, right):
                     var both := left and helper(right)
                     make_static(right)
@@ -2297,7 +2316,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckSignalTypeGuessing
                 extends RefCounted
-                
+
                 func ping(sig: Signal, cb: Callable):
                     var copied_signal: Signal = sig
                     var copied_callable: Callable = cb
@@ -2314,12 +2333,12 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckSignalSkippedSurface
                 extends Node
-                
+
                 signal pinged
-                
+
                 func _handler():
                     pass
-                
+
                 func ping(seed = pinged, handler = _handler):
                     var f = func():
                         var hidden_signal = pinged
@@ -2342,9 +2361,9 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_dynamic_signal_facts.gd", """
                 class_name CompileCheckDynamicSignalFacts
                 extends Node
-                
+
                 signal pinged
-                
+
                 func ping(other: CompileCheckDynamicSignalFacts):
                     var receiver_signal = other.pinged
                     other.pinged.emit()
@@ -2398,9 +2417,9 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_signal_resolved_regression.gd", """
                 class_name CompileCheckSignalResolvedRegression
                 extends Node
-                
+
                 signal pinged
-                
+
                 func ping(other: CompileCheckSignalResolvedRegression, handler: Callable):
                     var receiver_signal = other.pinged
                     other.pinged.connect(handler)
@@ -2458,9 +2477,9 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_bare_signal_binding_regression.gd", """
                 class_name CompileCheckBareSignalBindingRegression
                 extends Node
-                
+
                 signal pinged
-                
+
                 func ping():
                     var copied = pinged
                 """);
@@ -2497,7 +2516,7 @@ class FrontendCompileCheckAnalyzerTest {
                 """
                         class_name CompileCheckUnknownBareIdentifier
                         extends RefCounted
-                        
+
                         func ping() -> int:
                             return TYPE_WHATEVER
                         """

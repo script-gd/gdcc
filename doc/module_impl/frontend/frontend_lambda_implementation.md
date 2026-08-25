@@ -12,8 +12,10 @@
   `LambdaConstructItem` / `construct_lambda`、C custom Callable 与 compile gate 按 published plan
   放行已落地；property initializer / parameter default / skipped subtree 中的未记录 lambda
   以及 lambda 自己的 parameter default、body 内 block-local `const` / `await` 仍 fail-closed；
+  普通 executable function 的 await 已由 `frontend_await_minicoro_plan.md` 第六至八步闭环，
+  不改变 lambda capture/state-class 尚未实现这一独立边界；
    lambda 内 `match` 已进入 shared semantic）
-- 更新时间：2026-08-18
+- 更新时间：2026-08-25
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/scope/**`

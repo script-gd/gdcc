@@ -1790,6 +1790,74 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
+    void resolveAwaitExpressionUsesAwaitableReturnRoutesForExternalCalls() throws Exception {
+        var support = newBareSupport();
+        var callOperand = new CallExpression(identifier("external"), List.of(), TINY);
+        var signalCall = FrontendResolvedCall.resolved(
+                "external_signal",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendReceiverKind.INSTANCE,
+                null,
+                null,
+                new GdSignalType(List.of(GdIntType.INT)),
+                List.of(),
+                new Object()
+        );
+        var signalResult = support.resolveAwaitExpressionType(
+                new AwaitExpression(callOperand, TINY),
+                (expression, finalizeWindow) -> FrontendExpressionType.resolved(signalCall.returnType()),
+                expression -> expression == callOperand ? signalCall : null,
+                null,
+                false
+        );
+
+        var variantCall = FrontendResolvedCall.resolved(
+                "external_variant",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendReceiverKind.INSTANCE,
+                null,
+                null,
+                GdVariantType.VARIANT,
+                List.of(),
+                new Object()
+        );
+        var variantResult = support.resolveAwaitExpressionType(
+                new AwaitExpression(callOperand, TINY),
+                resolvedVariantResolver(),
+                expression -> expression == callOperand ? variantCall : null,
+                null,
+                false
+        );
+
+        var voidCall = FrontendResolvedCall.resolved(
+                "external_void",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendReceiverKind.INSTANCE,
+                null,
+                null,
+                GdVoidType.VOID,
+                List.of(),
+                new Object()
+        );
+        var voidResult = support.resolveAwaitExpressionType(
+                new AwaitExpression(callOperand, TINY),
+                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdVoidType.VOID),
+                expression -> expression == callOperand ? voidCall : null,
+                null,
+                false
+        );
+
+        assertAll(
+                () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.SIGNAL, signalResult.route()),
+                () -> assertEquals("int", signalResult.expressionType().publishedType().getTypeName()),
+                () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.DYNAMIC, variantResult.route()),
+                () -> assertEquals("Variant", variantResult.expressionType().publishedType().getTypeName()),
+                () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.CALL, voidResult.route()),
+                () -> assertEquals("Variant", voidResult.expressionType().publishedType().getTypeName())
+        );
+    }
+
+    @Test
     void resolveAwaitExpressionRejectsPlainValuesAndFailClosedBoundaries() throws Exception {
         var support = newBareSupport();
 

@@ -385,43 +385,32 @@ class FrontendAwaitInsnLoweringTest {
     }
 
     @Test
-    void redundantAwaitOnSignalReturningCallLowersToPassThrough() throws Exception {
-        // Regression anchor (review BLOCKER): a RESOLVED non-coroutine call keeps the CALL route
-        // even when its declared return type is `Signal`, so lowering must pass the result through
-        // instead of dispatching on the Signal slot type into an illegal AwaitInsn.
+    void signalReturningNonCoroutineCallLowersToSignalAwait() throws Exception {
+        // Godot awaits the Signal returned by a synchronous function. The call remains ordinary,
+        // while its Signal result feeds the signal-channel AwaitInsn in the coroutine caller.
         var context = lowerModule("""
                 class_name AwaitLoweringSignalReturningCall
                 extends Node
 
-                signal pinged
+                signal counted(value: int)
 
                 func copy_signal() -> Signal:
-                    return pinged
+                    return counted
 
                 func run():
-                    var result = await copy_signal()
+                    var result: Variant = await copy_signal()
                 """);
         var run = requireFunction(context, "run");
         var call = requireOnly(run, CallMethodInsn.class);
+        var awaitInsn = requireOnly(run, AwaitInsn.class);
 
         assertAll(
-                () -> assertFalse(run.isCoroutine(), "redundant await must not mark the caller"),
-                () -> assertEquals(0, count(run, AwaitInsn.class)),
-                () -> {
-                    var passthrough = allInstructions(run).stream()
-                            .filter(AssignInsn.class::isInstance)
-                            .map(AssignInsn.class::cast)
-                            .filter(insn -> insn.sourceId().equals(call.resultId()))
-                            .toList();
-                    assertEquals(1, passthrough.size(), () -> "Missing passthrough assign in " + allInstructions(run));
-                    assertInstanceOf(
-                            GdSignalType.class,
-                            requireVariableType(run, passthrough.getFirst().resultId()),
-                            "await result keeps the callee's declared Signal return type"
-                    );
-                },
+                () -> assertTrue(run.isCoroutine(), "signal-returning await must mark the caller"),
+                () -> assertEquals(call.resultId(), awaitInsn.operandId()),
+                () -> assertInstanceOf(GdSignalType.class, requireVariableType(run, call.resultId())),
+                () -> assertEquals("Variant", requireVariableType(run, awaitInsn.resultId()).getTypeName()),
                 () -> assertTrue(
-                        context.requireAnalysisData().diagnostics().asList().stream().anyMatch(
+                        context.requireAnalysisData().diagnostics().asList().stream().noneMatch(
                                 diagnostic -> diagnostic.category().equals("sema.redundant_await")
                         )
                 )

@@ -4,7 +4,10 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAwaitCallPending;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticSupport;
 import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.type.GdSignalType;
+import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
@@ -18,12 +21,15 @@ import java.util.Objects;
 /// propagates transitive markings to a fixed point: coroutine markings are monotonic, so iterating
 /// until no progress terminates after at most call-chain-depth rounds regardless of source order.
 ///
-/// Afterwards every remaining pending has a statically known non-coroutine callee:
-/// - instance/constructor call → `sema.redundant_await` warning (aligns Godot `REDUNDANT_AWAIT`);
-/// - static call to a coroutine → consumed silently, the compile gate owns that diagnosis (§3.5).
+/// Signal/Variant-returning calls are suspension-capable even when the callee is not a coroutine,
+/// so they mark their caller during the fixed point and remain pending only long enough to determine
+/// whether a Signal result needs refinement. Afterwards only hard-typed non-coroutine calls produce
+/// `sema.redundant_await`; static calls to a coroutine are consumed silently because the compile gate
+/// owns that diagnosis (§3.5).
 ///
-/// The pass mutates only the monotonic coroutine set and emits warnings; it never rewrites
-/// published expression facts (await result types were already published at `EXPR_TYPE`).
+/// The pass mutates the monotonic coroutine set, refines non-coroutine Signal-call await results,
+/// and emits warnings. Variant-call results stay `Variant`; only hard-typed non-coroutine calls
+/// become redundant awaits.
 public final class FrontendAwaitCoroutineAnalyzer {
     public void analyze(
             @NotNull FrontendAnalysisData analysisData,
@@ -38,6 +44,9 @@ public final class FrontendAwaitCoroutineAnalyzer {
             var nextRound = new ArrayList<FrontendAwaitCallPending>();
             for (var pending : remaining) {
                 if (!isMarkedCoroutine(analysisData, pending)) {
+                    if (hasRuntimeAwaitableReturn(pending)) {
+                        progressed |= analysisData.markCoroutineFunction(pending.enclosingFunction());
+                    }
                     nextRound.add(pending);
                     continue;
                 }
@@ -49,6 +58,17 @@ public final class FrontendAwaitCoroutineAnalyzer {
             remaining = nextRound;
         }
         for (var pending : remaining) {
+            var returnType = pending.calleeFunction().getReturnType();
+            if (returnType instanceof GdSignalType signalType) {
+                analysisData.refineResolvedAwaitExpressionType(
+                        pending.awaitExpression(),
+                        FrontendExpressionSemanticSupport.signalAwaitResultType(signalType)
+                );
+                continue;
+            }
+            if (returnType instanceof GdVariantType) {
+                continue;
+            }
             FrontendBodyOwnerProcedures.reportRedundantAwait(
                     diagnosticManager,
                     pending.sourcePath(),
@@ -64,5 +84,10 @@ public final class FrontendAwaitCoroutineAnalyzer {
     ) {
         return pending.calleeFunction() instanceof LirFunctionDef lirCallee
                 && analysisData.coroutineFunctions().contains(lirCallee);
+    }
+
+    private static boolean hasRuntimeAwaitableReturn(@NotNull FrontendAwaitCallPending pending) {
+        var returnType = pending.calleeFunction().getReturnType();
+        return returnType instanceof GdSignalType || returnType instanceof GdVariantType;
     }
 }

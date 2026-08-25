@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 方案说明：2026-08-23 已切换为「`completed` 信号 + Godot 可见状态对象」方案，并经一轮 review 修订。
-- 更新时间：2026-08-23
+- 更新时间：2026-08-25
 - 当前事实源：
   - `frontend_rules.md`
   - `frontend_signal_support.md`
@@ -50,15 +50,15 @@
   - 多个 signal 参数 → 返回包含全部参数的 `Array`
 - `await <call>`：调用目标函数；若目标不是协程（从不挂起），await 直接返回其返回值，**不发生挂起**；若目标是协程且挂起，awaiter 挂起直到目标完成，恢复值为其返回值。
 - `await` 一个静态已知的非 signal、非 call 表达式：Godot 发 `REDUNDANT_AWAIT` warning 并立即返回该值（不挂起）。
-- 协程性是按函数判定的：只有函数体**直接**包含 await 的函数才是协程函数（Godot 以「语法上存在 AwaitExpression」标记 `is_coroutine`，含 `await 1` 这类冗余写法）；调用协程而不 await 的调用方自身不会变成协程，而是立即拿到一个 function-state 值。
-- 解释执行层通过 `GDScriptFunctionState`（RefCounted，带 `completed` signal）表示挂起的协程；engine 边界调用一个挂起的 void 方法（如 `_ready` 中 await）时，返回值被丢弃，协程由 signal 连接保活并在后台继续。
+- 协程性是按函数判定的：Godot 对函数体含 `AwaitExpression` 的函数建立内部 coroutine 状态；statement 位置可 fire-and-forget，value 位置必须显式 `await`。Godot 4 官方文档明确指出，与旧版 `yield` 不同，脚本调用方**不能取得原生 function-state 对象**，以保证声明返回类型不会在运行时被状态对象替换。
+- 解释执行层内部仍使用带 `completed` signal 的函数状态承载挂起，但该对象不是 Godot 4 的公开脚本互操作面；engine 边界调用一个挂起的 void 方法（如 `_ready` 中 await）时，返回值被丢弃，协程由内部 signal 连接保活并在后台继续。
 - 非 await 位置调用协程（来源 `gdscript_analyzer.cpp` `reduce_call`、`gdscript_vm.cpp` `OPCODE_AWAIT`、`gdscript_function.cpp`）：
   - statement（root expression）位置：**合法**，fire-and-forget；裸调用先同步执行到第一个真正挂起点，之后由 signal 连接绑定的 state 引用保活并在触发时恢复；脚本 reload / 实例销毁时经 pending state 列表清理。
   - value 位置（`var x = foo()`、实参、运算等）：分析器报错 `Function "foo()" is a coroutine, so it must be called with "await".`（判定条件 `call_type.is_coroutine && !p_is_await && !p_is_root`）。
   - 同步完成路径不创建 state，直接返回普通返回值；state 只在真正挂起时创建。
-  - `GDScriptFunctionState.completed` 固定为单参数信号 `completed(result)`（参数注册为 `Variant::NIL + PROPERTY_USAGE_NIL_IS_VARIANT`），void 协程也以 `nil` 单参发射；协程链上的后续 state 继承前一 state 的 `completed`，最终返回值沿链传播。
+  - engine 内部函数状态的 `completed` 固定为单参数信号 `completed(result)`（参数注册为 `Variant::NIL + PROPERTY_USAGE_NIL_IS_VARIANT`），void 协程也以 `nil` 单参发射；协程链上的后续 state 继承前一 state 的 `completed`，最终返回值沿链传播。
 - `OPCODE_AWAIT` 的精确分派（`gdscript_vm.cpp:2530-2638`，本文动态路径的直接对齐对象）：
-  - 操作数是 Object 且通过 `GDScriptFunctionState` **严格类判定**（`is_class_ptr`）→ 改写为 `Signal(obj, "completed")` 后走 signal 路径；**任意其他带 `completed` 信号的普通 Object 不命中该判定，直接穿透**；
+  - 操作数是 Object 且通过 engine-internal function-state **严格类判定**（`is_class_ptr`）→ 改写为 `Signal(obj, "completed")` 后走 signal 路径；**任意其他带 `completed` 信号的普通 Object 不命中该判定，直接穿透**；
   - 操作数不是 Signal（含普通 Object、int、nil 等一切类型）→ **立即把操作数本身写入结果**，不挂起、不报错（redundant await 的运行时形态）；
   - 操作数是已释放对象 → runtime error `"Trying to await on a freed object."`；
   - **没有** `is_valid()` / done 检查：await 一个已完成的状态对象时 connect 成功但信号永不再发射，awaiter 永久静默挂起——connect-after-done 在 Godot 中就是挂起语义；
@@ -76,13 +76,13 @@
 | IR 表达 | 新增一等 `await` LIR 指令 | `call_intrinsic`（intrinsic 合同是同步单值 helper，await 具有挂起语义，应为一等指令并写入 `gdcc_low_ir.md`） |
 | CFG 表达 | 新增普通 value item `AwaitItem`，不拆分控制流 | continuation 拆分（有栈协程下无必要） |
 | 协程函数 codegen | 每个协程函数生成「入口 thunk + minicoro body 函数 + 隐藏状态类」 | 调用点内联建栈（违背封装，无法支撑 engine 边界） |
-| 挂起状态表示 | **每个协程函数（未来含 lambda）生成一个隐藏 RefCounted 类**（`_gdcc_coro_state_` 前缀，`is_exposed = false`、`is_runtime = true`），其实例 wrapper 即协程帧：携带参数、返回槽、`done` 标志、结果 Variant 缓存、waiter 链表、`mco_coro*`；对外暴露 `completed(result)` 单参信号（逐字对齐 `GDScriptFunctionState` 合同）。**wrapper 根字段为 `_object`（无 GDCC `_super` 链），公共头不占 offset 0，帧公共头经独立 instance binding token（非 `class_library`）暴露**，与 `explicit_c_inheritance_layout_contract.md` 不冲突 | 编译器内部纯 C struct（无法跨 engine/动态边界观察，gdcc↔gdcc 动态 await 与解释层互操作无法闭环）；单一全局状态类（无法按函数携带类型化参数字段）；magic 放 wrapper offset 0（破坏首字段合同，`identify` 与普通 wrapper 互相误判） |
+| 挂起状态表示 | **每个协程函数（未来含 lambda）生成一个隐藏 RefCounted 类**（`_gdcc_coro_state_` 前缀，`is_exposed = false`、`is_runtime = true`），其实例 wrapper 即协程帧：携带参数、返回槽、`done` 标志、结果 Variant 缓存、waiter 链表、`mco_coro*`；对外暴露 engine-internal shape 的 `completed(result)` 单参信号。**wrapper 根字段为 `_object`（无 GDCC `_super` 链），公共头不占 offset 0，帧公共头经独立 instance binding token（非 `class_library`）暴露**，与 `explicit_c_inheritance_layout_contract.md` 不冲突 | 编译器内部纯 C struct（无法跨 engine/动态边界观察，gdcc↔gdcc 动态 await 与显式 completed-state 互操作无法闭环）；单一全局状态类（无法按函数携带类型化参数字段）；magic 放 wrapper offset 0（破坏首字段合同，`identify` 与普通 wrapper 互相误判） |
 | 挂起协程的放弃路径（emitter 死亡等原因导致引用归零） | **cancel-resume**：状态类的 `NOTIFICATION_PREDELETE`（destructor 触碰帧字段之前）发现 `MCO_SUSPENDED` 时置 cancel 标志并 `mco_resume`，body 在每个 await 恢复点检查标志并直跳 `__finally__`（默认值已在 `__prepare__` 就绪），清理栈上 OWNED 值后以 `MCO_DEAD` 返回；cancel 与 finalize **互斥**（不置 done、不 emit、不 resume waiter——waiter 仅释放引用，awaiter 永久挂起，对齐 Godot `cancel_pending_functions`）；`free_instance` 只处理 DEAD 或 `co == NULL`（OOM）协程 | 直接 `mco_destroy`（丢弃协程栈 = 栈上 OWNED 值永不消费，违反 `gdcc_ownership_lifecycle_spec.md`）；把 managed local 镜像到帧（放弃 C 形状不变）；挂在 `free_instance`（对象已在拆解，resume 时机过晚且与 finalize 时序冲突） |
 | 协程函数调用点 | await operand 位置或 statement 位置（fire-and-forget，对齐 Godot root-expression 合同）；其余 value 位置由 compile gate 拒绝 | 允许 value 位置返回 state 值（语义放行本身简单——state 已是 Variant 值——但需类型系统配套，留作 Post-MVP 候选） |
 | 内部调用 ABI | **单通道 + 显式类型**：协程 `call_method` 的 result 变量以 compiler-only 类型 `compiler::GdccCoroState`（C 存储 `godot_Object*`）声明；内部 coroutine-start thunk 总是交还 OWNED 状态对象引用（同步完成时状态已 `done`）；await 侧静态分派纯由 operand 静态类型驱动：done fast path + C 层直接 waiter 登记均经状态类 desc 的 `copy_ret_slot` 生成回调取值（类型化通道，零 Variant 往返），**零运行时类型检测、零跨指令簿记**；无状态 fast path 仅保留在 engine 边界 wrapper 内部 | Variant 载体 + 隐藏临时对（多一次 pack/unpack，且表达不了 done 语义）；名称派生临时对 + out 参数双通道（backend 需维护跨指令 context，违反统一类型系统目标）；内部路径统一走 `completed` 信号（不必要的 Signal/connect/emit 开销） |
 | 动态/Variant await | `gdcc_coro_await_dynamic` 三层分派（§3.4）：Signal → signal 路径；自己的状态对象（独立 binding token 识别）→ done 检查 / C 层直接 waiter 通道；外部对象 → `Signal(obj, "completed")` connect，**以 connect 错误码作为存在性检测**，失败即穿透 | 编译期 fail-closed（放弃解释层 interop 与 Callable 路径）；`has_signal` 显式检测（多一次动态查询，与 connect 结果冗余） |
-| 外部对象的 `completed` duck-type | **有意宽于 Godot**（Godot 严格类判定只认 `GDScriptFunctionState`，其余穿透；我们对任何带 `completed` 信号的对象都等待）：这是覆盖解释层协程与 Callable 路径的必要扩展，已在 §2 标注基线差异；其代价是 await 一个恰好带 `completed` 信号的无关对象会等待该信号（含 connect-after-done 挂起），作为已接受的偏离文档化 | 严格 `is_class("GDScriptFunctionState")` 判定（多一次动态调用，且未来第三方 GDExtension 协程无法互操作） |
-| connect-after-done | 三层处理（§3.4 dynamic 路径）：静态路径由 `done` 标志 + `copy_ret_slot` 类型化拷贝立即返回；dynamic 自己状态对象路径由 `done` 标志 + `result_cache` Variant 拷贝立即返回；外部对象路径挂起（对 `GDScriptFunctionState` 逐字对齐 Godot，见 §2） | 全局统一挂起（放弃已完成 fast path）；全局报错（偏离 Godot 语义） |
+| 外部对象的 `completed` duck-type | **有意宽于 Godot**（Godot VM 只认内部函数状态类，其余穿透；我们对任何带 `completed` 信号的对象都等待）：覆盖脚本显式暴露的 completed-state 对象、Callable 与第三方 GDExtension 协程。Godot 4 不允许脚本取得原生 GDScript function state，因此不承诺 direct interpreted-coroutine-state transfer；恰好带 `completed` 信号的无关对象也会被等待，属已接受偏离 | 严格内部类判定（扩展不可访问，且第三方协程无法互操作） |
+| connect-after-done | 三层处理（§3.4 dynamic 路径）：静态路径由 `done` 标志 + `copy_ret_slot` 类型化拷贝立即返回；dynamic 自己状态对象路径由 `done` 标志 + `result_cache` Variant 拷贝立即返回；外部 completed-state 对象无缓存协议，连接后不会收到已发信号并保持挂起 | 全局统一挂起（放弃已完成 fast path）；全局报错（偏离 Godot 语义） |
 | lambda / property init 内 await | MVP 继续 fail-closed；Callable 的 ABI 阻碍已被状态对象方案解除（`call_func` 挂起时返回状态对象 Variant 即可），剩余工作为捕获引用计数（R6），列为 MVP 后第一跟进项 | 同步开放（capture 生命周期需独立设计） |
 
 ### 3.2 协程函数模型
@@ -90,7 +90,7 @@
 - frontend 在语义阶段判定「函数直接包含真实 await」（见 §3.5 分类），把函数集合发布到 `FrontendAnalysisData` 新 side table；`FrontendLoweringClassSkeletonPass` 消费该事实，在 `LirFunctionDef` 上写入新属性（`isCoroutine()`，XML 序列化为 `is_coroutine` 函数属性）。
 - 隐藏状态类**不是**普通 `LirClassDef`，不进入 `module.classDefs` 用户类注册循环（该循环 `is_exposed` 硬编码为 true）；由 backend 按 `is_coroutine="true"` 函数集合在 `entry.c.ftl` / `entry.h.ftl` 另开专用生成循环。状态类只有 canonical 名、无 sourceName、不可 `extends`、不进 source-facing registry（R1/R15）。
 - backend 对每个 `is_coroutine="true"` 的函数生成（模板落点：`func.ftl` / `entry.c.ftl` / `entry.h.ftl`；wrapper struct 与 create/free 回调的生成方式参照现有用户类与 lambda capture struct，`entry.h.ftl:30-41,68-126`、`entry.c.ftl:39-59`）：
-  1. **隐藏状态类** `_gdcc_coro_state_<canonicalClass>__coro__<func>`（**直接继承 `RefCounted`**，`is_exposed = false`、`is_runtime = true`；C 标识符映射与现有用户类模板走同一套 helper，不新增清洗规则）：wrapper struct 首字段为 `_object`（无 GDCC `_super` 链），帧字段紧随其后：公共头（magic 常量 + 类描述符指针 + `GDExtensionObjectPtr obj` 回指 + `mco_coro *` + `done` + `cancel` + 结果 Variant 缓存 + waiter 链表）+ 类型化参数字段 + 类型化返回槽。创建时设置**两个** instance binding（callbacks 均与 `entry.h.ftl:46-50` 一致为全 `NULL`，防止 get 时惰性创建）：标准 `class_library` binding（与其他 gdcc 类一致）+ 专用协程 token binding（指向公共头，供 `gdcc_coro_state_identify` 使用）。
+  1. **隐藏状态类** `_gdcc_coro_state_<canonicalClass>__coro__<func>`（**直接继承 `RefCounted`**，`is_exposed = false`、`is_runtime = true`；C 标识符映射与现有用户类模板走同一套 helper，不新增清洗规则）：wrapper struct 首字段为 `_object`（无 GDCC `_super` 链），帧字段紧随其后：公共头（magic 常量 + 类描述符指针 + `GDExtensionObjectPtr obj` 回指 + `mco_coro *` + `done` + `cancel` + 结果 Variant 缓存 + waiter 链表）+ 类型化参数字段 + 类型化返回槽。创建时只设置**一个** instance binding：模块私有协程 token → 公共头，callbacks 全 `NULL`。Godot 4.5.1 的 `set_instance_binding` 只写 slot zero；不得尝试第二次 set，也不得在持非递归 binding mutex 执行的 create callback 内递归 get。`object_set_instance(..., self)` 独立保存 notification/free_instance 所需 wrapper。
   2. **body 函数**：`void <Class>_<name>__coro_body(mco_coro *_co)`，函数体与现有同步形态**完全一致**（同样的 `__prepare__` / `__finally__`、同样的指令生成），区别仅是：
      - 参数访问：**不生成参数 C 槽**。body 内对参数变量的读写由 codegen 直接映射到帧的类型化参数字段（`mco_get_user_data(_co)` 取得 wrapper，参数 operand 渲染为帧字段访问表达式）；帧字段是唯一 owning 存储，参数写入按普通 slot-write 规则作用于帧字段；`__prepare__` 不初始化参数（thunk 已填充），`__finally__` 不清理参数；参数字段由 `free_instance` 恰好清理一次（cancel 路径不触碰；cancel-resume 后协程即为 `MCO_DEAD`，同样汇入 `free_instance`）——杜绝参数槽与帧字段双份存储导致的双重释放；
      - 非 void 时 `__finally__` 把 `_return_val` **consume** 进帧的类型化返回槽而不是 `return`（此后 `_return_val` 视为已清空，与普通 move-return 合同一致）；
@@ -138,7 +138,9 @@ $<result_id> = await $<operand_id>
   ```c
   // $state 的 C 槽：godot_Object*（compiler::GdccCoroState）
   gdcc_coro_state_header *callee = gdcc_coro_state_identify($state);
-  $state = NULL; // 所有权转移给 await；源槽留 moved-from NULL
+  if (callee != NULL) {
+      $state = NULL; // 识别成功才转移所有权；失败时由 __finally__ 释放源槽
+  }
   // await 结果槽类型 = callee 声明返回类型（frontend 发布；void callee 为 Variant nil）
   gdcc_coro_await_state(callee, &<typed result slot>, _co, <self header>);
   // done fast path 与 waiter 恢复值均经 desc->copy_ret_slot 类型化写入结果槽；
@@ -151,7 +153,7 @@ $<result_id> = await $<operand_id>
   1. `TYPE_SIGNAL` → 提取 Signal 走 `gdcc_coro_await_signal` 路径；
   2. `TYPE_OBJECT` → 先校验对象存活（已释放 → runtime error，对齐 Godot `"Trying to await on a freed object."`）；再 `gdcc_coro_state_identify`：
      - 命中（自己的状态对象）→ `done` 则拷贝缓存结果立即返回（不触碰 operand），否则 C 层直接 waiter 登记（**不经过 Signal 机制**，单线程下 check-then-register 天然原子，connect-after-done 窗口不存在），并在 yield 前释放 operand 的 callee 引用、把 operand 重置为 nil；
-     - 未命中（外部对象）→ 构造 `Signal(obj, "completed")` 并 connect one-shot，**connect 返回错误码即存在性检测**（无 `completed` 信号 → 穿透返回操作数本身，对齐 Godot redundant await 运行时形态；但 connect 之前的 OOM 分配失败不得穿透——发 runtime error、填 nil、不挂起）。注意这是**有意宽于 Godot 严格类判定**的 duck-type（§3.1）：对解释层 `GDScriptFunctionState` 行为与 Godot 逐字一致（含 connect-after-done 挂起）；对恰好带 `completed` 信号的无关对象会等待该信号，属已接受偏离。await 外部状态期间，awaiter 帧持有该对象 Variant（Signal 不保活 emitter，对齐 Godot `bind(retvalue)` 的保活方向）。
+     - 未命中（外部对象）→ 构造 `Signal(obj, "completed")` 并 connect one-shot，**connect 返回错误码即存在性检测**（无 `completed` 信号 → 穿透返回操作数本身，对齐 Godot redundant await 运行时形态；但 connect 之前的 OOM 分配失败不得穿透——发 runtime error、填 nil、不挂起）。这是**有意宽于 Godot 内部类判定**的 duck-type（§3.1），用于脚本显式暴露的 completed-state 对象及第三方扩展；Godot 4 原生 GDScript coroutine state 不可由脚本取得。await 外部状态期间，awaiter 帧持有该对象 Variant（Signal 不保活 emitter，对齐 Godot `bind(retvalue)` 的保活方向）。
   3. 其他一切类型（含 nil）→ 穿透：`out` 拷贝 `operand` 立即返回。
 - **engine 边界**（`entry.c.ftl` 的 call/ptrcall wrapper 调用协程入口）：存在**两类入口**——内部 coroutine-start thunk（GDCC 内部调用方专用，总是返回 OWNED 状态对象）与 ClassDB 注册的 call/ptrcall wrapper（保持 Godot 方法签名，内部调 start thunk 并自行处理同步完成 fast path）。挂起时按返回通道分派：
   - Variant call wrapper：把状态对象包成 `Variant(OBJECT)` 返回——外部可观察（解释层可 `await state.completed`，C++ 可手动 connect）；同步完成返回普通值。
@@ -165,14 +167,16 @@ $<result_id> = await $<operand_id>
 | RESOLVED `GdSignalType` | 0 参 → `Variant`；1 参 → 声明参数类型（经 unpack 边界）；多参 → `Array[Variant]`；参数类型未知 → `Variant` | 无 | 是 |
 | RESOLVED instance call 且 callee 为已标记 GDCC 协程函数 | 非 void → callee 声明返回类型；void → `Variant`（恢复值为 nil，对齐 Godot `completed(nil)`） | 无 | 是 |
 | RESOLVED 静态方法 call 且 callee 为已标记 GDCC 协程函数（**任何位置**，含 statement 根表达式） | — | compile gate error（backend `CallStaticMethodInsn` 无生成器，既有缺口；Post-MVP 解除） | — |
-| RESOLVED call 且 callee 静态已知非协程 | callee 返回类型 | `sema.redundant_await` warning（对齐 Godot `REDUNDANT_AWAIT`），await 退化为纯穿透 | 否 |
+| RESOLVED call、callee 非协程、返回 `GdSignalType` | 0/1/多参与签名未知规则同直接 signal await | 无；等待 call 返回的 signal | 是 |
+| RESOLVED call、callee 非协程、返回 `Variant`/未标注 | `Variant` | 无；运行时按返回值动态分派 | 是 |
+| RESOLVED call、callee 非协程、返回其它静态类型 | callee 返回类型（void → `Variant` nil） | `sema.redundant_await` warning，await 退化为纯穿透 | 否 |
 | 其他静态已知非 signal 值 | — | error（fail-closed，diagnostic owner 为 expr analyzer 既有 category；对齐 Godot 的 warning 放宽留作 Post-MVP） | — |
 | `DYNAMIC` operand | `Variant` | 无（运行时分派，见 §3.4 dynamic 路径） | 是 |
 | lambda / property init / parameter default 内任何 await | — | error（既有 fail-closed 边界不变） | — |
 | statement 位置调用协程函数（fire-and-forget，仅 instance） | —（结果丢弃） | 无（对齐 Godot root-expression 放行） | 否（调用方不挂起） |
 | value 位置（非 await operand）调用协程函数 | — | compile gate error（对齐 Godot `must be called with "await"`） | — |
 
-有意偏离：await 静态已知非协程调用**不**把 enclosing 函数标记为协程（无可挂起点，省协程开销）。该偏离仅影响 GDCC 调用方；解释层看 GDCC 方法时以 ClassDB 元数据为准，本 MVP 不发布 coroutine 标志，故解释层对这类函数的裸调/`await` 行为与 GDCC 一致（都立即拿到值）。
+有意偏离仅限返回其它静态硬类型的 redundant await：这类调用**不**把 enclosing 函数标记为协程（无可挂起点，省协程开销）。Signal/Variant 返回仍可能挂起，必须标记并分别走 signal/runtime-dynamic await。
 
 ### 3.6 所有权与生命周期约束（对接 `gdcc_ownership_lifecycle_spec.md`）
 
@@ -291,13 +295,13 @@ $<result_id> = await $<operand_id>
 - 状态：**已完成**（2026-08-24；review-expert-a 三轮复审，第 3 轮 APPROVE）
 - 完成内容：
   - **runtime 合同迁移**（第二步初版 → 新合同）：`gdcc_coro_state_desc` 增 `copy_ret_slot`；waiter 节点分 `GDCC_CORO_WAITER_TYPED` / `GDCC_CORO_WAITER_VARIANT`（`out` 改 `void *`）；`gdcc_coro_await_state` 签名改 `void *out_typed`（done fast path 经 `desc->copy_ret_slot`；失败路径保留 out 默认值，不再写 nil Variant）；`gdcc_coro_finalize` 按 waiter 种类分派（typed 经 `copy_ret_slot`，Variant 经 `godot_variant_new_copy`）；`gdcc_coro_cancel` 移除 `destroy_ret_slot` 调用；`GdccCoroutineRuntimeSmokeTest` 按新合同翻转（fixture 改 `int64_t` typed 槽 + `copy_ret_calls` 计数；finalize 混合 typed/Variant waiter；pack 保留返回槽锚点；cancel 的 destroy 归属 free_instance 的相分离锚点；NULL callee typed 失败路径负例）。
-  - **隐藏状态类生成循环**（`entry.h.ftl` / `entry.c.ftl`，与 `module.classDefs` 用户类循环并列，`helper.hasCoroutineFunctions()` 门控保证 sync-only 模块输出逐字节不变）：wrapper struct（`_object` 根字段 + `gdcc_coro_state_header` + `_coro_param_*` 类型化参数字段 + `_coro_ret`/`_coro_ret_initialized` 返回槽，非 void 才有返回槽）；`create_instance2`（双 binding：标准 `class_library` + `gdcc_coro_binding_token()`）；`_class_notification`（POSTINITIALIZE → `gdcc_coro_state_header_init` + flag 清零；PREDELETE → 仅 `gdcc_coro_cancel`，无用户 destructor 路径）；`free_instance`（参数字段逐一释放 → `destroy_ret_slot` 恰好一次 → `gdcc_coro_state_free` → `mem_free`）；desc 四回调（`pack_result` 拷贝进 `result_cache` 保留槽 / `copy_ret_slot` 按 primitive/value-semantic/object 三类 slot-write / void 特化写 nil Variant / `destroy_ret_slot` 容忍未写入与 moved-from / `emit_completed` 经 `godot_Signal_emit`）；`move_result`（move 出返回槽并清 flag）；ClassDB 注册（`is_exposed = false`、`is_runtime = true`、`godot_classdb_register_extension_class5`、父类 `RefCounted`）；`completed(result)` 信号（`renderCoroCompletedSignalMetadata()` → `NIL_IS_VARIANT`）。
+  - **隐藏状态类生成循环**（`entry.h.ftl` / `entry.c.ftl`，与 `module.classDefs` 用户类循环并列，`helper.hasCoroutineFunctions()` 门控保证 sync-only 模块输出逐字节不变）：wrapper struct（`_object` 根字段 + `gdcc_coro_state_header` + `_coro_param_*` 类型化参数字段 + `_coro_ret`/`_coro_ret_initialized` 返回槽，非 void 才有返回槽）；`create_instance2`（唯一 binding：`gdcc_coro_binding_token()` → header；wrapper 仍由 `object_set_instance` 提供）；`_class_notification`（POSTINITIALIZE → `gdcc_coro_state_header_init` + flag 清零；PREDELETE → 仅 `gdcc_coro_cancel`，无用户 destructor 路径）；`free_instance`（参数字段逐一释放 → `destroy_ret_slot` 恰好一次 → `gdcc_coro_state_free` → `mem_free`）；desc 四回调（`pack_result` 拷贝进 `result_cache` 保留槽 / `copy_ret_slot` 按 primitive/value-semantic/object 三类 slot-write / void 特化写 nil Variant / `destroy_ret_slot` 容忍未写入与 moved-from / `emit_completed` 经 `godot_Signal_emit`）；`move_result`（move 出返回槽并清 flag）；ClassDB 注册（`is_exposed = false`、`is_runtime = true`、`godot_classdb_register_extension_class5`、父类 `RefCounted`）；`completed(result)` 信号（`renderCoroCompletedSignalMetadata()` → `NIL_IS_VARIANT`）。
   - **body 函数与参数帧映射**：`void <Class>_<func>__coro_body(mco_coro *_co)`；新增 `CCoroutineFrameContext`（帧拼写单一来源：`_coro_state`/`_co`/`_coro_header`/`_coro_ret`/`_coro_ret_initialized`/`_coro_param_` 前缀）；`CBodyBuilder` 持可空上下文，`renderVariableStorageExpr`/`isEffectivelyRef` 把参数 operand 渲染为帧字段（无参数 C 槽、可写、`&` 取址按非 ref 规则）；`__finally__` 的 `returnTerminal` 改为 consume `_return_val` 进 `_coro_ret`（move + flag）后 `return;`；`__prepare__/__finally__` 既有参数跳过逻辑自然生效。
   - **入口 thunk 与 engine 边界**：`godot_Object* <Class>_<func>__coro_start(...)`（create_instance2 + `gdcc_ref_counted_init_raw` → 参数按 borrowed retain/拷贝填入帧 → `mco_create`（OOM → runtime error → 默认值写槽 → pack → 置 done → 返回 `co == NULL` 的 OWNED 状态对象）→ `mco_resume` → `MCO_DEAD` 时 `gdcc_coro_finalize` → 返回 OWNED 状态对象）；engine 入口函数**保持与同步函数同名同签名**（`<Class>_<func>`），内部调 start thunk 后三分支（done → `move_result`；挂起 + void → detach；挂起 + Variant → 状态对象包 Variant；挂起 + typed 非 Variant → detach + 零值 + runtime error），因此 BindingData、call/ptrcall wrapper、virtual 接线零变化。
   - **R1 class 级保留前缀**：`FrontendClassNameContract` 增 `CORO_STATE_CLASS_PREFIX`/`CORO_STATE_CLASS_SEPARATOR` 与 `reservedSequenceOrNull`/`startsWithCoroStateClassPrefix`（`__coro__` 与 `__sub__` 同输入边界）；`FrontendClassSkeletonBuilder` 的 top-level/inner header discovery 拒绝 `_gdcc_coro_state_` 前缀 sourceName（`sema.class_skeleton` + 跳过 subtree）。
   - **Java 支撑**：`CGenHelper` 协程命名/拼写 helper 与 `renderCoroParamFillStmt`/`renderCoroCopyRetStmt`/`renderObjectRetainStmt`/`renderCoroCompletedSignalMetadata`；`CCodegen` 注入帧上下文 + `validateCoroutineMarkers`（lambda 协程标记 fail-fast）；`gdcc_c_backend.md` compiler-only 存储表述缩窄（`godot_Object*` 例外）。
   - **复审修复轮**（review-expert-a 两轮，均已修复并由测试/编译锚定）：第 1 轮——① `entry.c.ftl` desc 定义移到 `create_instance` 之前（notification 取其地址；原顺序「先用后声明」无法通过 C 编译）→ 由 zig 实际编译锚定；② `.ref()` 借引用拒绝漏网两处 → 帧参数豁免（`IndexStoreInsnGen` 的 value-semantic self 写回路径、lambda capture 的 `"$"+id` 槽拼写 → 改经 `bodyBuilder.valueOfVar` 帧感知渲染 + `isEffectivelyRef`；`CGenHelper.renderLambdaCaptureCopyFromSlot` 签名改 `(type, sourceExpr, effectivelyRef)`；`CBodyBuilder.isCoroutineFrameParameter`/`isEffectivelyRef` 转 public）；③ `renderCoroCopyRetStmt` object 分支改 alias-safe 顺序（capture-old → assign → retain-new → release-old，与 `CBodyBuilder.emitObjectSlotWrite` 同一纪律）。第 2 轮——④ `ConstructInsnGen` 的 lambda `object_id` 残留 `$self.instance_id` 硬编码 → 改 `bodyBuilder.valueOfVar(selfVar) + ".instance_id"`（方法 lambda 必捕获 self，协程 body 无 `$self` 槽，原样会生成未声明标识符）。
-- 测试锚点：`CCoroutineStateClassCodegenTest`（状态类注册/双 binding/信号 metadata/desc 回调/body 帧映射/thunk 三分支与 OOM/engine 入口三分支/void 特化/同模块同步函数不变/sync-only 模块零协程表面；**顺序锚点**：int/Variant engine done 分支 `move_result` 先于 `release_object`、thunk self 填入先于 retain、String `copy_ret_slot` destroy 先于 copy、object `copy_ret_slot` capture→assign→retain→release 严格顺序；**帧参数正向锚点**：String 参数 `variant_set` 写回不触借引用拒绝且 pack/writeback 寻址帧字段、lambda 捕获 self/String 参数经帧字段 + `object_id` 取 `_coro_param_self.instance_id`，同步形态 `$self.instance_id`/`$self` 槽不出现在协程 body；负例：lambda 协程标记 IAE、shell 协程 `InvalidControlFlowGraphException`、builder 级参数帧映射）；`CCoroutineGeneratedCSyntaxSmokeTest`（zig 门控：全分支 fixture 模块——含 lambda 捕获协程——的生成 `entry.c` 以 `zig cc -c` 实际编译通过，锚定声明顺序/类型正确性；zig 0.16 的 `-fsyntax-only` 对 quoted include 误报 `FileNotFound`，故用 `-c`）；`GdccCoroutineRuntimeSmokeTest`（新合同翻转，7 tests，zig 环境 skipped=0）；`FrontendClassHeaderDiscoveryTest`（top-level/inner 前缀拒绝、`__coro__` 序列拒绝）；`ApiCanonicalNameMapTest`（mapping key/value 的 `__coro__` IAE）；既有同步 codegen 测试全部保持绿色。
+- 测试锚点：`CCoroutineStateClassCodegenTest`（状态类注册/单 token binding/信号 metadata/desc 回调/body 帧映射/thunk 三分支与 OOM/engine 入口三分支/void 特化/同模块同步函数不变/sync-only 模块零协程表面；**顺序锚点**：int/Variant engine done 分支 `move_result` 先于 `release_object`、thunk self 填入先于 retain、String `copy_ret_slot` destroy 先于 copy、object `copy_ret_slot` capture→assign→retain→release 严格顺序；**帧参数正向锚点**：String 参数 `variant_set` 写回不触借引用拒绝且 pack/writeback 寻址帧字段、lambda 捕获 self/String 参数经帧字段 + `object_id` 取 `_coro_param_self.instance_id`，同步形态 `$self.instance_id`/`$self` 槽不出现在协程 body；负例：lambda 协程标记 IAE、shell 协程 `InvalidControlFlowGraphException`、builder 级参数帧映射）；`CCoroutineGeneratedCSyntaxSmokeTest`（zig 门控：全分支 fixture 模块——含 lambda 捕获协程——的生成 `entry.c` 以 `zig cc -c` 实际编译通过，锚定声明顺序/类型正确性；zig 0.16 的 `-fsyntax-only` 对 quoted include 误报 `FileNotFound`，故用 `-c`）；`GdccCoroutineRuntimeSmokeTest`（新合同翻转，7 tests，zig 环境 skipped=0）；`FrontendClassHeaderDiscoveryTest`（top-level/inner 前缀拒绝、`__coro__` 序列拒绝）；`ApiCanonicalNameMapTest`（mapping key/value 的 `__coro__` IAE）；既有同步 codegen 测试全部保持绿色。
 - 已知跟进项（复审第 3 轮遗留 SUGGESTION，当前不可达、非行为错误）：各 insn gen 对**指令 result 槽**的 `resultVar.ref()` 直判未统一为 `bodyBuilder.isEffectivelyRef`（`ConstructInsnGen`/`CallGlobalInsnGen`/`CallMethodInsnGen`/`OperatorInsnGen`/`IndexLoadInsnGen`/`LoadPropertyInsnGen`/`NewDataInsnGen`）。frontend lowering 写参数恒走 temp + `AssignInsn`（已帧感知），result 不会直指参数槽；手写 LIR 若违反该合同，result 槽 fail-fast 是保守安全方向。若未来 lowering 允许 result 直指参数，需统一改 `isEffectivelyRef` 并让 `NewData` in-place 分支不对已初始化帧字段跳 destroy。
 
 目标：
@@ -306,7 +310,7 @@ $<result_id> = await $<operand_id>
 
 建议实施内容：
 
-- `func.ftl` / `entry.c.ftl` / `entry.h.ftl` 增加协程**专用生成循环**（与 `module.classDefs` 用户类循环并列）：状态类 wrapper struct（`_object` 根字段 + 帧字段）、`create_instance2`/`free_instance`（双 binding；`free_instance` 接受 `MCO_DEAD` 或 `co == NULL`（OOM）：`co != NULL` 断言 DEAD 并 `mco_destroy`，`co == NULL` 跳过，其余字段照常清理）、`NOTIFICATION_PREDELETE` 开头调用 `gdcc_coro_cancel`（destructor 不触碰帧字段）、ClassDB 注册（`is_exposed = false`、`is_runtime = true`）、`completed(result)` 信号注册（经 `CGenHelper.renderSignalParameterMetadata(Variant)`，自动携带 `NIL_IS_VARIANT`）、body 函数签名与参数 operand 到帧字段的直接映射、返回槽写回、入口 thunk（双入口签名 + `mco_create` / `mco_resume` / `MCO_DEAD` fast path / 边界分派）。
+- `func.ftl` / `entry.c.ftl` / `entry.h.ftl` 增加协程**专用生成循环**（与 `module.classDefs` 用户类循环并列）：状态类 wrapper struct（`_object` 根字段 + 帧字段）、`create_instance2`/`free_instance`（单 token binding；`free_instance` 接受 `MCO_DEAD` 或 `co == NULL`（OOM）：`co != NULL` 断言 DEAD 并 `mco_destroy`，`co == NULL` 跳过，其余字段照常清理）、`NOTIFICATION_PREDELETE` 开头调用 `gdcc_coro_cancel`（destructor 不触碰帧字段）、ClassDB 注册（`is_exposed = false`、`is_runtime = true`）、`completed(result)` 信号注册（经 `CGenHelper.renderSignalParameterMetadata(Variant)`，自动携带 `NIL_IS_VARIANT`）、body 函数签名与参数 operand 到帧字段的直接映射、返回槽写回、入口 thunk（双入口签名 + `mco_create` / `mco_resume` / `MCO_DEAD` fast path / 边界分派）。
 - **runtime 合同迁移**（第二步初版 → 新合同）：`gdcc_coro_state_desc` 增 `copy_ret_slot`；waiter 节点分 typed/Variant 两种；`gdcc_coro_await_state` 签名改 `void *out_typed`；`pack_result` 从「打包并清零返回槽」改为「拷贝进 `result_cache` 并保留返回槽」（typed waiter 与 done fast path 正确性的前提）；`gdcc_coro_finalize` 按 waiter 种类分派（typed 经 `copy_ret_slot`，Variant 经 `godot_variant_new_copy`）；`gdcc_coro_cancel` 移除对返回槽的 `destroy_ret_slot` 调用；`free_instance` 统一销毁返回槽（恰好一次）并容忍 `co == NULL`；`GdccCoroutineRuntimeSmokeTest` 按新合同翻转（typed waiter 拷贝、finalize 后返回槽仍存活可供 typed waiter 与 done fast path 复制、cancel 不触碰返回槽、OOM done 状态、`co == NULL` free_instance、返回槽全程仅由 `free_instance` 销毁一次）。
 - `CCodegen` / `CBodyBuilder` 提供「当前函数为协程 body」上下文，供后续 `AwaitInsnGen` 渲染 `_co` 与帧访问。
 - engine 边界 wrapper 对协程函数接入口 thunk，按 §3.4 engine 边界三分支处理挂起返回。
@@ -315,7 +319,7 @@ $<result_id> = await $<operand_id>
 验收细则：
 
 - happy path：
-  - backend 单测用手写 LIR（无 frontend）断言：状态类注册含 `is_exposed = false` 与 `is_runtime = true`、走 `godot_classdb_register_extension_class5`、`completed` 信号参数经 `renderSignalParameterMetadata`（断言含 `godot_PROPERTY_USAGE_NIL_IS_VARIANT`，不与裸整数比相等）、类名前缀 `_gdcc_coro_state_`、创建路径设置两个 instance binding、body 函数以 `mco_coro *_co` 签名生成、thunk 含 `mco_status(...) == MCO_DEAD` 分支、`__prepare__`/`__finally__` 仍只在 body 函数内出现一次、参数 operand 直接映射帧字段（无参数 C 槽、无 memcpy）、cancel 挂接在 `NOTIFICATION_PREDELETE` 且状态类 destructor 不触碰帧字段。
+  - backend 单测用手写 LIR（无 frontend）断言：状态类注册含 `is_exposed = false` 与 `is_runtime = true`、走 `godot_classdb_register_extension_class5`、`completed` 信号参数经 `renderSignalParameterMetadata`（断言含 `godot_PROPERTY_USAGE_NIL_IS_VARIANT`，不与裸整数比相等）、类名前缀 `_gdcc_coro_state_`、创建路径只设置一个模块私有 coroutine token binding、body 函数以 `mco_coro *_co` 签名生成、thunk 含 `mco_status(...) == MCO_DEAD` 分支、`__prepare__`/`__finally__` 仍只在 body 函数内出现一次、参数 operand 直接映射帧字段（无参数 C 槽、无 memcpy）、cancel 挂接在 `NOTIFICATION_PREDELETE` 且状态类 destructor 不触碰帧字段。
   - 同步函数的既有 codegen 测试全部保持绿色（逐字节不变）。
 - negative path：
   - 协程函数缺 entry block / shell-only 时沿用既有 fail-fast；不得为协程函数静默补 body。
@@ -326,7 +330,7 @@ $<result_id> = await $<operand_id>
 
 - 状态：**已完成**（2026-08-24）
 - 完成内容：
-  - **新增 `AwaitInsnGen`**（注册进 `CCodegen` opcode 表）：三路径纯静态类型分派——`Signal` operand 渲染 `gdcc_coro_await_signal(&$sig, &out_temp, _co, &_coro_state->_coro_header)`（resume 值经未初始化 Variant temp 中转，helper 是 raw-overwrite 语义）；`compiler::GdccCoroState` operand 渲染 `gdcc_coro_state_identify($state)` → `$state = NULL;`（call 前置 moved-from，cancel-resume 不会观察到悬垂引用）→ `gdcc_coro_await_state(callee, &<typed result slot>, _co, ...)`；`Variant` operand 渲染 `gdcc_coro_await_dynamic(&$operand, &out_temp, _co, ...)`。每条路径 helper 调用后立即渲染 cancel 检查 `if (_coro_state->_coro_header.cancel) { goto __finally__; }`（新增 `CCoroutineFrameContext.cancelFlagExpr()` 拼写单一来源），signal/dynamic 路径的结果物化在 cancel 检查之后（cancel 时结果通道未写入）；Variant 结果经 `godot_new_Variant_with_Variant` callAssign（既有 slot-write：先 destroy 旧值）、typed 结果经既有 `unpackVariantAssign` unpack 边界、state 路径由 desc `copy_ret_slot` 直接写 typed 槽（无 Variant 往返）。
+  - **新增 `AwaitInsnGen`**（注册进 `CCodegen` opcode 表）：三路径纯静态类型分派——`Signal` operand 渲染 `gdcc_coro_await_signal(&$sig, &out_temp, _co, &_coro_state->_coro_header)`（resume 值经未初始化 Variant temp 中转，helper 是 raw-overwrite 语义）；`compiler::GdccCoroState` operand 先 `gdcc_coro_state_identify($state)`，仅识别成功才把 `$state` 置 `NULL` 并由 `gdcc_coro_await_state` 消费 OWNED 引用；识别失败时保留槽给 `__finally__` 释放，避免泄漏；`Variant` operand 渲染 `gdcc_coro_await_dynamic(&$operand, &out_temp, _co, ...)`。每条路径 helper 调用后立即渲染 cancel 检查 `if (_coro_state->_coro_header.cancel) { goto __finally__; }`（新增 `CCoroutineFrameContext.cancelFlagExpr()` 拼写单一来源），signal/dynamic 路径的结果物化在 cancel 检查之后（cancel 时结果通道未写入）；Variant 结果经 `godot_new_Variant_with_Variant` callAssign（既有 slot-write：先 destroy 旧值）、typed 结果经既有 `unpackVariantAssign` unpack 边界、state 路径由 desc `copy_ret_slot` 直接写 typed 槽（无 Variant 往返）。
   - **协程调用 ABI**：`BackendMethodCallResolver.ResolvedMethodCall` 新增 `coroutine` 字段（GDCC + `LirFunctionDef.isCoroutine()` 时 `cFunctionName` 渲染为 `renderCoroStartThunkName(...)`）；`CallMethodInsnGen` 新增 `emitCoroutineStartCall` 分支——调 start thunk 并以 `GdccCoroStateType.CORO_STATE` 写 result；fail-fast：static 协程（Post-MVP）、vararg 协程（thunk 定参签名）、缺 result、result 非 `compiler::GdccCoroState`。statement 位置 fire-and-forget 走普通生命周期：call 写 `__coro_state_<valueId>`（`__` 前缀满足 INTERNAL 命名限制）+ INTERNAL provenance `destruct` → `gdcc_coro_state_slot_destroy` 释放即 detach。
   - **await 负例 fail-fast**：非协程函数内 await；operand 非 Signal/Variant/GdccCoroState；compiler-only result；dynamic 路径 result 非 Variant 或 result 与 operand 别名（helper 会 reset operand 槽）；state 路径 ref operand（单消费者 owning 槽会被置 NULL）。
   - 测试锚点：`AwaitInsnGenTest`（16 tests：三路径字符串锚点 + 顺序锚点（identify<NULL 重置<await_state<cancel 检查；helper<cancel 检查<结果物化<temp destroy）+ overwrite 旧值 destroy 锚点 + 帧参数 result/operand 寻址 + 10 个负例）；`CallMethodInsnGenTest` 新增 7 tests（start thunk 调用/参数透传/overwrite 先 `gdcc_coro_state_slot_destroy`/statement-detach 顺序锚点/4 负例；`assertOrdered` 为 forward-scan 严格顺序语义，正确处理 overwrite destroy 与 detach destroy 同串两次出现）；`CCoroutineGeneratedCSyntaxSmokeTest` fixture 新增 `run_all` 协程（signal/state(Variant+int)/dynamic/INTERNAL destruct 全路径），zig 实际编译通过（skipped=0）。既有同步 codegen 测试全绿。
@@ -346,7 +350,7 @@ $<result_id> = await $<operand_id>
 验收细则：
 
 - happy path：
-  - 生成代码字符串锚点测试：`godot_Signal_connect(..., 4)`、`mco_yield`、每个 await 后的 `cancel` 检查分支、`gdcc_coro_await_state` 的 typed `out_typed` 通道、await 后源状态槽清为 moved-from `NULL`、statement-detach（`destruct` + `INTERNAL` provenance → release）均出现；结果物化走既有 slot-write helper。
+  - 生成代码字符串锚点测试：`godot_Signal_connect(..., 4)`、`mco_yield`、每个 await 后的 `cancel` 检查分支、`gdcc_coro_await_state` 的 typed `out_typed` 通道、identify 成功后源状态槽清为 moved-from `NULL`（失败时保留给 `__finally__` 释放）、statement-detach（`destruct` + `INTERNAL` provenance → release）均出现；结果物化走既有 slot-write helper。
   - 手写 LIR → C 的端到端 codegen 测试覆盖 signal / 同步完成 call / 挂起 call / dynamic / statement-detach 五种形态；done fast path 与 waiter resume 均覆盖目标槽预含非默认值（需按 slot-write 纪律覆盖旧值）的用例。
 - negative path：
   - `await` 出现在非协程函数 → `InvalidInsnException`；operand 既非 Signal/Variant 又非 `compiler::GdccCoroState` → `InvalidInsnException`；协程 call 缺 result → `InvalidInsnException`；`compiler::GdccCoroState` 被 assign/pack/传参/return/存储/ref 消费 → `InvalidInsnException`；未注册 opcode fail-fast。
@@ -357,14 +361,14 @@ $<result_id> = await $<operand_id>
 - 完成内容：
   - **await 专用分类器**：`FrontendExpressionSemanticSupport.resolveAwaitExpressionType(...)`（纯函数，不发诊断不写表）——operand 先经 nested resolver 解析、非稳定结果原样传播；`DYNAMIC`/静态 `Variant` operand → `RESOLVED(Variant)`（对齐 unary/binary 的 Variant runtime-dynamic 先例）；`GdSignalType` → 0 参 `Variant`/1 参声明类型/多参 `GdArrayType(Variant)`（本类型系统中即 generic Array）；exact call → 立即发布 callee 返回类型（void callee 一律 `Variant`）并携带 `FrontendResolvedCall` 交给 owner；其余静态已知值 → `UNSUPPORTED`。`resolveRemainingExplicitExpressionType` 的 await 分支已移除并转入 dedicated-resolver 拒绝清单。
   - **owner 接线**（`FrontendBodyOwnerProcedures`）：`computeExpressionType` 新增 `AwaitExpression` 分支；fail-closed 边界（lambda body / property initializer → `sema.unsupported_expression_route`，由既有 `reportExpressionDiagnostic` 自动发射）；signal/dynamic 路由经 `requireEnclosingCallableFunction()`（name+static+arity 匹配 skeleton，同 `FrontendCallableReturnTypeSupport` 模式）把 enclosing `LirFunctionDef` 记入 `FrontendAnalysisData.coroutineFunctions`；exact-call operand 一律记录 `FrontendAwaitCallPending`（新 record：await 节点/enclosing/callee/callKind/sourcePath）——**不做现场协程判定**，因为 callee body 可能晚于 caller 解析。
-  - **跨 owner 不动点**：新 `FrontendAwaitCoroutineAnalyzer` 接入 `FrontendSemanticAnalyzer` 管线（suite resolution 之后、annotation usage 之前；内部实例化，无注入构造签名变更）：单调集合上迭代至无进展，callee 已标记 → 标记 enclosing（传递链、前向引用均覆盖）；static coroutine call 消耗但不标记不告警（compile gate 拥有该诊断）；其余剩余 pending → `sema.redundant_await` warning（engine/builtin/utility/GDCC 非协程 callee 统一单出口；非 `FunctionDef` 锚点的 exact call 由 owner 立即告警）。跨模块场景不存在（当前无跨模块元数据共享，`ClassRegistry` 仅含本模块 GDCC 类），无需处理。
-  - **compile gate**（`FrontendCompileCheckAnalyzer`）：`walkExpression` 新增 `AwaitExpression` 专用 blocker（分类合法但 lowering 未就绪；跳过 operand 子树避免重复诊断）；新增语句根位置跟踪（`walkingStatementRootExpression`，仅 `ExpressionStatement` 直接根表达式消费）+ `checkCoroutineCallPosition`：callee 经 `resolvedCalls`（bare call 键 `CallExpression`、链式键末位 `AttributeCallStep`）命中 `coroutineFunctions` 时——static → 任意位置报 `sema.compile_check`；instance 非语句根 → 报「is a coroutine, so it can't be called without 'await'…」（对齐 Godot）；语句根 instance → 放行（fire-and-forget）。
+  - **跨 owner 不动点**：新 `FrontendAwaitCoroutineAnalyzer` 接入 `FrontendSemanticAnalyzer` 管线（suite resolution 之后、annotation usage 之前）：单调集合上迭代至无进展，callee 已标记 → 标记 enclosing；static coroutine call 由 compile gate 拥有诊断。第八步前置纠偏后，callee 未标记时继续按返回类型分流：Signal/Variant 标记 caller 并走真实 await，只有其它静态硬类型发 `sema.redundant_await`。
+  - **compile gate（第六步历史形态，第八步已移除 await 专用 blocker）**：当时 `walkExpression` 新增 `AwaitExpression` 专用 blocker（分类合法但 lowering 未就绪；跳过 operand 子树避免重复诊断）；新增语句根位置跟踪（`walkingStatementRootExpression`，仅 `ExpressionStatement` 直接根表达式消费）+ `checkCoroutineCallPosition`：callee 经 `resolvedCalls`（bare call 键 `CallExpression`、链式键末位 `AttributeCallStep`）命中 `coroutineFunctions` 时——static → 任意位置报 `sema.compile_check`；instance 非语句根 → 报「is a coroutine, so it can't be called without 'await'…」（对齐 Godot）；语句根 instance → 放行（fire-and-forget）。当前 gate 合同见第八步。
   - **side table**：`FrontendAnalysisData` 新增 `coroutineFunctions`（`LirFunctionDef` identity 单调集合，键选型理由：所有消费方持有的都是 `FunctionDef`——resolvedCall declarationSite / lowering shell；非 AST-keyed 因 `FrontendAstSideTable` 拒绝非 Node 键且无需 patch 冲突检测）与 `awaitCallPendings`（transient 工作列表，post-pass 消费并清空，非 lowering 事实）。
   - **文档**：`diagnostic_manager.md` 登记 `sema.redundant_await`。
   - 测试：`FrontendAwaitSemanticTest`（新，14 tests：signal 0/1/多参与 engine signal、dynamic operand、协程调用（caller-before-callee 前向引用）、void 协程 Variant 结果、三级传递链、GDCC/engine 非协程 warning 穿透且不标记、静态纯值/lambda/property-init 负例（category + 坏子树跳过 + 兄弟子树继续）、compile gate 四例（专用 blocker、value 位置、语句根放行、static 任意位置））；`FrontendExpressionSemanticSupportTest` 翻转 deferred 断言并新增 5 个分类器纯单测（signal 参数计数、dynamic/Variant、exact call pending 携带、纯值/边界拒绝、依赖传播 rootOwnsOutcome=false）。frontend 包 1399 tests 全绿。
   - 已知边界说明：property initializer 内 await 若 operand 本身被 property-init MVP 规则 BLOCKED（如实例 signal），诊断由既有上游规则承担，boundary error 不再重复发射（依赖传播优先）；`_init` 内 await 未特殊禁止（计划未列），沿用一般规则。参数默认值不经过 body 表达式 typing，既有 fail-closed 边界不变。
 - review-expert-a 一轮复核修复（2026-08-25，REQUEST_CHANGES → 全项处理）：
-  - **[BLOCKER]** 分类顺序修正：exact call 路由（含 callee 返回 `Variant`，即未标注返回类型的常态）现在先于静态 Variant 值判定；仅 `DYNAMIC` status 或无 call 事实的静态 `Variant` 值走 DYNAMIC 路由，且 pending 只记录 `RESOLVED` call。修复前 `func inner(): return 1` + `await inner()` 会被误标协程且漏发 `sema.redundant_await`。
+  - **[BLOCKER，后于第八步纠偏]** 当时将 exact call 路由（含 `Variant` 返回）统一优先于返回类型分派；第八步对照 Godot 官方 `reduce_await` 后确认，该优先级只适用于“callee 是否为协程”的延迟判定，不能把非协程 Signal/Variant 返回降为 redundant。现合同见 §3.5 三行细分。
   - **[HIGH]** compile gate 位置检查改按 call 锚点驱动：链式中间 `AttributeCallStep`（如 `inner().name`、`obj.coro().other()`）在 nested walk 中以 value 位置检查；锚点 identity 去重集防止链根末步被语句根检查与 nested walk 重复诊断。
   - **[HIGH]** `walkingStatementRootExpression` 改为 walkExpression 入口即消费到局部变量并立即清零，lambda body 等嵌套形态不再继承语句根特权（防御性修复：裸 lambda 语句根当前在前端为 unsupported 形态）。
   - **[MEDIUM]** `await` 静态协程调用补发专用 static blocker：gate 的 `AwaitExpression` 分支在通用 await blocker 之外，对 operand 的 static coroutine call 锚点补发「Static coroutine function」诊断（不动点 pass 对该 pending 静默消耗的合同不变）。
@@ -400,11 +404,11 @@ $<result_id> = await $<operand_id>
   - **CFG 层**：新 value item `AwaitItem`（`expression` + 可空 `operandValueIdOrNull` + `resultValueId`，sealed `ValueOpItem` permits 登记）；`FrontendCfgGraphBuilder.buildValue(...)` 新增 `AwaitExpression` case（`buildAwaitValue`：先构建 operand 普通 value，再发布 item，不拆分控制流，result id 沿用 `chooseResultValueId` 合同）。**statement 根 resolved-void 协程调用不再走 discarded-void 无结果路径**（`isDiscardedResolvedVoidCallExpression` 排除协程 callee；`checkValueProducingCall` 同步豁免）——backend 协程 ABI 要求 void 协程调用也必须携带 `compiler::GdccCoroState` 结果槽。
   - **void callee 的 redundant await**（`await voidNonCoroutineFn()`，sema 合法、warning + Variant 结果）：operand 走 discarded-void 路径只保留副作用调用，`AwaitItem` 不带 operand id，body lowering 直接 `LiteralNullInsn` 物化 nil 结果（对齐 Godot `REDUNDANT_AWAIT` 于 void 调用的恢复值）。
   - **materialization**（`FrontendBodyLoweringSupport`）：协程 `CallItem` 结果物化为 `GdccCoroStateType.CORO_STATE` + 新 kind `CORO_STATE_SLOT`（slot 命名 `__coro_state_<valueId>`，满足 INTERNAL provenance destruct 的 `__` 前缀命名限制）；`AwaitItem` 结果按 published await 类型走普通 `TEMP_SLOT`。判定经 `FrontendAnalysisData.isPublishedCoroutineCall(anchor)`（`resolvedCalls` + `coroutineFunctions` 两表纯读，identity 命中）。
-  - **body lowering**：`FrontendSequenceItemInsnLoweringProcessors` 注册 `AwaitItem` 处理器——按 operand 物化槽类型 + published call fact 分派：CORO_STATE/Signal → `AwaitInsn`；Variant 无 RESOLVED 非协程 call fact → dynamic `AwaitInsn`；RESOLVED 非协程 call → redundant 穿透（`materializeFrontendBoundaryValue` + `AssignInsn`，**不发 AwaitInsn**，enclosing 函数非协程，suspend 指令在此处非法）；无 operand → void redundant nil 物化。invariant fail-fast：发 `AwaitInsn` 但 target function 未被 sema 标记协程、或非 signal/coroutine/dynamic 路由缺失。`CallItem` processor：协程 callee 一律要求结果槽（含 void），fire-and-forget（结果未被任何 `AwaitItem` 消费，session 预计算 `awaitOperandValueIds`）在调用后追加 `DestructInsn(slot, INTERNAL)` 即 detach；await 消费的路径不 destruct（引用 move 进 await）。
+  - **body lowering**：`FrontendSequenceItemInsnLoweringProcessors` 注册 `AwaitItem` 处理器——CORO_STATE/Signal/Variant operand 发 `AwaitInsn`；仅返回其它静态硬类型的 RESOLVED 非协程 call 做 redundant 穿透；无 operand 的 void redundant 物化 nil。发 suspend 指令前检查 target function 协程标记，其它非法路由 fail-fast。`CallItem` processor：协程 callee 一律要求结果槽（含 void），fire-and-forget（结果未被任何 `AwaitItem` 消费，session 预计算 `awaitOperandValueIds`）在调用后追加 `DestructInsn(slot, INTERNAL)` 即 detach；await 消费的路径不 destruct（引用 move 进 await）。
   - **skeleton pass**：`FrontendLoweringClassSkeletonPass` 发布 module 前消费 `coroutineFunctions`，按 object identity 给命中 shell `setCoroutine(true)`（无名称查找；不在集合中的函数保持默认 `false`）。
-  - 测试锚点：`FrontendAwaitInsnLoweringTest`（新，17 tests：signal 裸标识符/attribute 两形态、1 参 signal 类型化结果、协程调用 await（`__coro_state_` 槽 + AwaitInsn 顺序 + 无 destruct）、void 协程 await Variant、dynamic、redundant 穿透（无 AwaitInsn + warning 仍在）、Signal 返回非协程调用的 redundant 回归、void redundant nil、fire-and-forget INTERNAL destruct 顺序锚点、void 协程 statement 调用回归锚点、链式协程调用 await、单函数多 await 槽位区分、if 分支内 await、entryBlockId + `ControlFlowIntegrityValidator` + serializer/parser round-trip；负例：static 协程调用 await 的「未标记协程」invariant fail-fast、手工图的非法 operand 类型 dispatch fail-fast）；`FrontendCfgGraphBuilderTest` 新增 4 tests（AwaitItem 形状与 preferred id 流转、协程调用 operand 连接、void redundant 无 operand、void 协程 statement 结果值回归）；`FrontendBodyLoweringSupportTest` 新增 4 tests（await 结果类型物化、缺 published fact fail-fast、协程 CallItem CORO_STATE_SLOT、未标记对照组普通 TEMP_SLOT）；`FrontendLoweringClassSkeletonPassTest` 新增协程标记传播测试（含 `_init`、inner-class、identity `assertSame` 与默认 false 对照）。frontend+lir+backend 回归全绿。
+  - 测试锚点：`FrontendAwaitInsnLoweringTest` 覆盖 signal、协程状态、dynamic、硬类型/void redundant、Signal 返回非协程调用、fire-and-forget、链式/多 await/分支/round-trip 与 fail-fast 负例；`FrontendCfgGraphBuilderTest`、`FrontendBodyLoweringSupportTest`、`FrontendLoweringClassSkeletonPassTest` 保持 CFG/materialization/skeleton 合同。第八步纠偏另补 Signal/Variant 正向、void 对照与传递标记测试。
   - review-expert-a 一轮复核修复（2026-08-25，REQUEST_CHANGES → 全项处理）：
-    - **[BLOCKER]** `AwaitItem` 处理器分派顺序修正：redundant-call 判定（published call fact）必须先于槽类型分派——`-> Signal` 的非协程调用（如 `await copy_signal()`）在 sema 侧是 CALL/redundant 路由（caller 不标协程），修复前会被 Signal 槽类型误判为真挂起并在「未标记协程」invariant 处崩溃。修复后 CORO_STATE 槽仍只可能来自已标记协程调用，两路径无重叠。回归锚：`redundantAwaitOnSignalReturningCallLowersToPassThrough`。
+    - **[BLOCKER，后于第八步纠偏]** 当时把 redundant-call 判定提前以容纳 Signal 返回调用；Godot 官方文档明确该调用必须等待返回的 Signal。第八步已翻转回归为 `signalReturningNonCoroutineCallLowersToSignalAwait`，并在 sema 侧标记 caller，从根因上消除“未标记协程却发 AwaitInsn”。
     - **[MEDIUM]** 补 body lowering 负例覆盖：static 协程调用 await 的 invariant fail-fast（sema-only 管线真实构造）与非法 operand 类型的 dispatch fail-fast（手工图混合构造）。
     - **[SUGGESTION]** 补高价值形态锚点：链式 `await other.inner()`（AttributeCallStep 锚点）、单函数多 await（独立 `__coro_state_*` 槽）、if 分支体内 await（跨 sequence 的 awaitOperandValueIds 全图扫描）、skeleton 的 `_init` 与 inner-class 协程标记。
 - 已知边界：lambda/property init 内 await 在 sema 已 fail-closed，lowering 不可达；static 协程调用由 compile gate 拦截（第六步），sema-only 路径若强行 lowering 会在「target function 未标记协程」invariant 处 fail-fast（已有测试锚定）。
@@ -429,7 +433,33 @@ $<result_id> = await $<operand_id>
 
 ### 第八步：compile gate 解封、文档同步与 e2e
 
-- 状态：未开始
+- 状态：**已完成**（2026-08-25）
+- 进度：
+  - [已完成] gate 解封前语义纠偏：Godot 官方 `gdscript_basics.rst` 与
+    `gdscript_analyzer.cpp::reduce_await` 明确规定，非协程调用返回 `Signal` 时仍等待该
+    signal，返回 `Variant` 时保持 runtime-dynamic；第六/七步将两者误并入 redundant
+    passthrough。已按返回类型修正 fixed point、Signal 结果类型精化与 lowering 分派；新增
+    Signal/Variant 正向、void/hard-type 对照及传递标记测试，不新增 IR/runtime 路径。
+  - [已完成] await 专用 compile blocker 移除：await root/operand 进入 published-fact scan，
+    顶层 instance coroutine call 获得 await-position 豁免；static coroutine、operand 内嵌套
+    coroutine call、value-position call 与既有 fail-closed 边界仍阻断。gate 正反测试全绿。
+  - [已完成] Godot 4.5.1 instance-binding 合同纠偏：真实 e2e 证明第二次
+    `set_instance_binding` 会被拒绝，而 `get(..., create_callback)` 的 callback 在持有非递归
+    binding mutex 时递归 get 会死锁。hidden state 改为唯一的模块私有 coroutine token binding
+    （payload 为 header）；notification/free_instance 继续由独立 `object_set_instance` 的 wrapper
+    承载。start/wrapper/await 识别失败路径补齐 NULL 与 OWNED 槽保护。
+  - [已完成] 16 组 Godot 4.5.1 test-suite e2e 全绿：signal 基础/参数/engine、立即与
+    挂起 coroutine call、loop、dynamic signal/late state、显式 interpreted completed-state
+    duck-type、compiled state completed signal、fire-and-forget、signal/coroutine/dynamic 嵌套、
+    recursive await、emitter release、connect failure、typed engine boundary。
+  - [已完成] 官方 Godot 4 文档交叉核对：脚本不能取得原生 GDScript coroutine function-state
+    对象；interpreted interop 合同收窄为脚本显式暴露的 `completed(result)` duck-type 对象。
+  - [已完成] `frontend_rules.md`、signal/lowering/lambda/compile-check/class-name/diagnostic、
+    runtime、旧 scope/chain 交叉引用及 README 已同步当前支持面。
+  - [已完成] targeted semantic/gate/lowering/backend/runtime tests、16 组 Godot e2e、IntelliJ
+    build 与 `clean build` 全绿。
+  - [已完成] 最终 review-expert-a 复审 `APPROVE`：无 BLOCKER/HIGH/MEDIUM；两处 LOW
+    历史注释漂移已同步修正，无行为改动。
 
 目标：
 
@@ -447,9 +477,11 @@ $<result_id> = await $<operand_id>
   - `coroutine/await_loop.gd`（循环内多次 await；局部多 Array/Dictionary 兼作栈压测）
   - `coroutine/await_dynamic_signal.gd`（Variant 持有的 signal 上动态 await）
   - `coroutine/await_dynamic_late.gd`（Variant 持有的自己的状态对象在完成后再 await → done fast path 立即返回缓存结果）
-  - `coroutine/await_interop_interpreted.gd`（await 解释脚本的协程返回值，经 `Signal(state, "completed")` 连接）
+  - `coroutine/await_interop_interpreted.gd`（await 解释脚本显式构造的 `completed(result)` 状态对象；Godot 4 不公开原生 GDScript coroutine state）
   - `coroutine/interop_state_completed_signal.gd`（解释层 GDScript 侧 `await obj.coro().completed` 或手动 connect gdcc 状态对象的 `completed`）
   - `coroutine/await_fire_and_forget.gd`（statement 位置调用协程，signal 触发后协程仍继续执行）
+  - `coroutine/await_signal_nested.gd`（返回 Signal 的非协程调用 + coroutine chain 嵌套）
+  - `coroutine/await_recursive.gd`（递归 coroutine await 与级联 finalize）
   - 负例 e2e / 集成锚点：emitter 释放导致挂起协程放弃（cancel-resume，无泄漏、无崩溃）；typed 非 Variant engine 调用挂起的偏离行为（零值 + runtime error，协程后台跑完）；signal connect 失败不挂起。
 - 同步更新：`frontend_rules.md`（MVP 约定 await 条款 + class 级保留前缀）、`frontend_signal_support.md`（「仍拒绝 await signal」条款与 compile gate 清单）、`frontend_lowering_plan.md`（Post-MVP 中移除 `await signal`）、`frontend_lambda_implementation.md`（lambda await 维持 fail-closed 的交叉引用）、`frontend_compile_check_analyzer_implementation.md`、`gdcc_facing_class_name_contract.md`、`diagnostic_manager.md`、`README.md`（如列有协程缺口）。
 

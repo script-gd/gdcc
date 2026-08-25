@@ -75,6 +75,7 @@ inner class canonical spelling 已冻结为：
 2. 用户声明的 top-level / inner class `sourceName` 与 `topLevelCanonicalNameMap` 的 key / value 均不得包含 `__coro__`（与 `__sub__` 相同的输入边界，§1.2 / §2.1）；函数名不受此限——分隔点由 class 侧的不含性唯一确定。
 3. 隐藏状态类只有 canonical name：无 `sourceName`、不可被 source-facing `extends` 引用、不进入 source-facing registry，也不进入 `module.classDefs` 的用户类注册循环；由 backend 按 `is_coroutine="true"` 函数集合单独生成。
 4. 状态类 identity 继续服从 §2.3 downstream canonical-only 合同；C 标识符表面经既有 `cIdentifier()` 清洗，不新增清洗规则（§2.4）。
+5. hidden state 的 Godot instance binding 只使用模块私有 coroutine token，payload 为公共 header；`class_library` binding 不参与状态识别。wrapper 仍由独立 `object_set_instance` 保存，故 canonical identity 与 notification/free_instance ABI 不变。
 
 ---
 

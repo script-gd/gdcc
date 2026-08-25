@@ -79,9 +79,10 @@ public final class AwaitInsnGen implements CInsnGen<AwaitInsn> {
 
     /// Static coroutine-call path (plan §3.4): identify the state header through the dedicated
     /// binding token, hand the call site's OWNED reference to `gdcc_coro_await_state` (which
-    /// releases it internally, even on the done fast path) and leave the source slot in the
-    /// moved-from `NULL` state BEFORE the call, so a cancel-resume never observes a dangling
-    /// reference. The typed result slot is written by the state class descriptor's
+    /// releases it internally, even on the done fast path), and leave the source slot in the
+    /// moved-from `NULL` state before the call. If recognition fails, the slot remains owned
+    /// so `__finally__` releases it instead of leaking it. The typed result slot is written by
+    /// the state class descriptor's
     /// `copy_ret_slot`, which itself destroys/releases the old slot value on overwrite.
     private void emitStateAwait(@NotNull CBodyBuilder bodyBuilder,
                                 @NotNull LirVariable operandVar,
@@ -101,7 +102,9 @@ public final class AwaitInsnGen implements CInsnGen<AwaitInsn> {
                 + "_" + bodyBuilder.currentInsnIndex();
         bodyBuilder.appendLine("gdcc_coro_state_header *" + calleeTemp
                 + " = gdcc_coro_state_identify(" + stateSlot + ");");
-        bodyBuilder.appendLine(stateSlot + " = NULL;");
+        bodyBuilder.appendLine("if (" + calleeTemp + " != NULL) {");
+        bodyBuilder.appendLine("    " + stateSlot + " = NULL;");
+        bodyBuilder.appendLine("}");
         bodyBuilder.appendLine("gdcc_coro_await_state(" + calleeTemp + ", " + resultAddress + ", "
                 + CCoroutineFrameContext.CO_PARAM + ", " + CCoroutineFrameContext.selfHeaderExpr() + ");");
         emitCancelCheck(bodyBuilder);

@@ -38,7 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Step-4 anchors of the await plan (`frontend_await_minicoro_plan.md` §4 step 4): handwritten
-/// LIR with `is_coroutine="true"` generates the hidden state class (registration, dual binding,
+/// LIR with `is_coroutine="true"` generates the hidden state class (registration, identity binding,
 /// `completed` signal, desc callbacks), the minicoro body function (frame-mapped parameters, no
 /// parameter C slots, `_return_val` consumed into the typed return slot), the coroutine-start
 /// thunk (OOM path included) and the engine entry three-branch dispatch - while synchronous
@@ -76,7 +76,7 @@ class CCoroutineStateClassCodegenTest {
                 "GD_STATIC_SN(u8\"RefCounted\")",
                 "godot_classdb_register_extension_class5("
         );
-        // `completed(result)` signal with the NIL_IS_VARIANT usage (GDScriptFunctionState contract).
+        // `completed(result)` signal with the engine-internal NIL_IS_VARIANT usage.
         assertContainsAll(
                 cCode,
                 "GD_STATIC_SN(u8\"completed\")",
@@ -84,12 +84,17 @@ class CCoroutineStateClassCodegenTest {
                 "godot_classdb_register_extension_class_signal("
         );
 
-        // ---- create_instance2: dual instance binding (class_library + dedicated coroutine token) ----
+        // ---- create_instance2: one slot-zero binding under the module-private coroutine token ----
         assertContainsAll(
                 cCode,
-                "godot_object_set_instance_binding(obj, class_library, self, &_gdcc_coro_state_Worker__coro__sum_to_class_binding_callbacks)",
-                "godot_object_set_instance_binding(obj, gdcc_coro_binding_token(), &self->_coro_header, &_gdcc_coro_state_Worker__coro__sum_to_class_binding_callbacks)"
+                "godot_object_set_instance_binding(obj, gdcc_coro_binding_token()",
+                "&self->_coro_header, &_gdcc_coro_state_Worker__coro__sum_to_class_binding_callbacks)"
         );
+        var createBody = resolveFunctionBodyByPrefix(cCode,
+                "GDExtensionObjectPtr _gdcc_coro_state_Worker__coro__sum_to_class_create_instance(");
+        assertEquals(1, countOccurrences(createBody, "godot_object_set_instance_binding("), createBody);
+        assertFalse(createBody.contains("godot_object_get_instance_binding("), createBody);
+        assertFalse(hCode.contains("class_coro_binding_create"), hCode);
 
         // ---- notification: POSTINITIALIZE header init, PREDELETE cancel-resume only ----
         var notificationBody = resolveFunctionBodyByPrefix(cCode, "void _gdcc_coro_state_Worker__coro__sum_to_class_notification(");
@@ -155,8 +160,12 @@ class CCoroutineStateClassCodegenTest {
         assertContainsAll(
                 thunkBody,
                 "_gdcc_coro_state_Worker__coro__sum_to_class_create_instance(NULL, false)",
+                "if (coro_state_obj == NULL)",
                 "gdcc_ref_counted_init_raw(coro_state_obj, true)",
-                "godot_object_get_instance_binding(coro_state_obj, class_library, &_gdcc_coro_state_Worker__coro__sum_to_class_binding_callbacks)",
+                "gdcc_coro_state_header *coro_header = gdcc_coro_state_identify(coro_state_obj)",
+                "if (coro_header == NULL)",
+                "release_object(coro_state_obj);",
+                "offsetof(_gdcc_coro_state_Worker__coro__sum_to, _coro_header)",
                 "coro_state->_coro_param_count = $count;",
                 "coro_state->_coro_param_label = godot_new_String_with_String($label);",
                 "coro_state->_coro_param_self = $self;",
@@ -183,7 +192,10 @@ class CCoroutineStateClassCodegenTest {
         assertContainsAll(
                 engineEntryBody,
                 "Worker_sum_to__coro_start(",
+                "if (coro_state_obj == NULL)",
                 "gdcc_coro_state_identify(coro_state_obj)",
+                "if (coro_header == NULL)",
+                "coroutine start returned an invalid state object",
                 "if (coro_header->done)",
                 "_gdcc_coro_state_Worker__coro__sum_to__move_result(coro_header)",
                 "release_object(coro_state_obj);",
@@ -192,11 +204,11 @@ class CCoroutineStateClassCodegenTest {
                 "return 0;"
         );
         // Same ordering contract as the Variant branch: move the typed result out first.
-        assertTrue(
-                engineEntryBody.indexOf("_gdcc_coro_state_Worker__coro__sum_to__move_result(coro_header)")
-                        < engineEntryBody.indexOf("release_object(coro_state_obj);"),
-                engineEntryBody
-        );
+        var typedMoveIndex = engineEntryBody.indexOf(
+                "_gdcc_coro_state_Worker__coro__sum_to__move_result(coro_header)");
+        assertTrue(typedMoveIndex >= 0, engineEntryBody);
+        assertTrue(engineEntryBody.indexOf("release_object(coro_state_obj);", typedMoveIndex) > typedMoveIndex,
+                engineEntryBody);
 
         // ---- engine entry (Variant): suspended hands the state object out as a Variant ----
         var variantEngineBody = resolveFunctionBodyByPrefix(cCode, "godot_Variant Worker_fetch(");
@@ -208,11 +220,11 @@ class CCoroutineStateClassCodegenTest {
                 "return r;"
         );
         // The done fast path moves the typed result out before releasing the state reference.
-        assertTrue(
-                variantEngineBody.indexOf("_gdcc_coro_state_Worker__coro__fetch__move_result(coro_header)")
-                        < variantEngineBody.indexOf("release_object(coro_state_obj);"),
-                variantEngineBody
-        );
+        var variantMoveIndex = variantEngineBody.indexOf(
+                "_gdcc_coro_state_Worker__coro__fetch__move_result(coro_header)");
+        assertTrue(variantMoveIndex >= 0, variantEngineBody);
+        assertTrue(variantEngineBody.indexOf("release_object(coro_state_obj);", variantMoveIndex) > variantMoveIndex,
+                variantEngineBody);
 
         // ---- engine entry (String): value-semantic copy channel destroys the old value first ----
         var stringCopyRetBody = resolveFunctionBodyByPrefix(cCode, "void _gdcc_coro_state_Worker__coro__display_name_copy_ret_slot(");

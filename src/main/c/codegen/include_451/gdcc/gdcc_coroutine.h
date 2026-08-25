@@ -156,8 +156,8 @@ void gdcc_coro_await_state(gdcc_coro_state_header *callee, void *out_typed, mco_
 ///    `gdcc_coro_await_state`, which would release the callee reference a second time),
 ///    external objects connect one-shot to `Signal(obj, "completed")` where the connect
 ///    error code IS the existence check - objects without that signal pass the operand
-///    through (deliberately wider duck-type than Godot's strict GDScriptFunctionState
-///    class check), while a pre-connect allocation failure reports an error instead of
+///    through (deliberately wider duck-type than Godot's internal function-state class
+///    check), while a pre-connect allocation failure reports an error instead of
 ///    passing through.
 /// 3. Any other type (including nil) -> pass through: copy the operand into `out`.
 /// Same `self->cancel` post-condition as `gdcc_coro_await_signal`.

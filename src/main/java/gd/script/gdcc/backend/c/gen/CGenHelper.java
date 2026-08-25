@@ -518,7 +518,7 @@ public final class CGenHelper {
         return renderCoroStateClassName(classDef, function) + "_emit_completed";
     }
 
-    /// `completed(result)` signal metadata: verbatim `GDScriptFunctionState` contract - one
+    /// `completed(result)` signal metadata: the engine-internal coroutine signal shape - one
     /// `Variant` parameter, which automatically carries `PROPERTY_USAGE_NIL_IS_VARIANT`.
     public @NotNull BoundMetadata renderCoroCompletedSignalMetadata() {
         return renderSignalParameterMetadata(GdVariantType.VARIANT);

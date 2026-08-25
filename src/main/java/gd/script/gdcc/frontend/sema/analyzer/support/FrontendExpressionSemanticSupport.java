@@ -919,10 +919,10 @@ public final class FrontendExpressionSemanticSupport {
     /// `failClosedBoundaryReason` is non-null when the await sits in a lambda body or property
     /// initializer: the MVP keeps those contexts fail-closed after the operand itself was resolved.
     ///
-    /// Exact-call operands classify as `CALL` with the callee return type published immediately
-    /// (`Variant` for void callees); whether the callee is a coroutine — and therefore whether the
-    /// enclosing callable is marked or a `sema.redundant_await` warning is due — is decided by the
-    /// post-suite fixed-point pass, because the callee's own body may be resolved after the caller's.
+    /// Exact calls to a GDCC function classify as `CALL` with a provisional callee return type
+    /// (`Variant` for void callees); whether the callee is a coroutine is decided by the post-suite
+    /// fixed-point pass. Exact external calls cannot become GDCC coroutines, so Signal/Variant
+    /// returns immediately reuse the ordinary signal/dynamic await routes.
     /// A statically Variant operand takes the dynamic route, mirroring the unary/binary rule that
     /// exact `Variant` values stay runtime-dynamic.
     public @NotNull AwaitSemanticResult resolveAwaitExpressionType(
@@ -947,7 +947,10 @@ public final class FrontendExpressionSemanticSupport {
                     null
             );
         }
-        var publishedOperandType = operandType.publishedType();
+        var publishedOperandType = Objects.requireNonNull(
+                operandType.publishedType(),
+                "stable await operand type must publish a type"
+        );
         if (operandType.status() == FrontendExpressionTypeStatus.DYNAMIC) {
             return new AwaitSemanticResult(
                     FrontendExpressionType.resolved(GdVariantType.VARIANT),
@@ -956,15 +959,33 @@ public final class FrontendExpressionSemanticSupport {
                     null
             );
         }
-        // An exact call keeps its own route even when the callee returns `Variant`: unannotated
-        // functions declare `Variant` returns, so the call route must win over the dynamic one
-        // for redundant-await detection and coroutine marking to work.
+        // A GDCC exact call keeps its own route while its callee's coroutine status is pending.
+        // External call sites cannot become GDCC coroutines, so their awaitable return type is
+        // already sufficient to select Signal/Variant runtime dispatch.
         var operandCall = operandCallLookup.apply(awaitExpression.value());
         if (operandCall != null && operandCall.status() == FrontendCallResolutionStatus.RESOLVED) {
             var returnType = operandCall.returnType();
             var resultType = returnType == null || returnType instanceof GdVoidType
                     ? GdVariantType.VARIANT
                     : returnType;
+            if (!(operandCall.declarationSite() instanceof LirFunctionDef)) {
+                if (returnType instanceof GdSignalType signalType) {
+                    return new AwaitSemanticResult(
+                            FrontendExpressionType.resolved(signalAwaitResultType(signalType)),
+                            true,
+                            AwaitRoute.SIGNAL,
+                            null
+                    );
+                }
+                if (returnType instanceof GdVariantType) {
+                    return new AwaitSemanticResult(
+                            FrontendExpressionType.resolved(GdVariantType.VARIANT),
+                            true,
+                            AwaitRoute.DYNAMIC,
+                            null
+                    );
+                }
+            }
             return new AwaitSemanticResult(
                     FrontendExpressionType.resolved(resultType),
                     true,
@@ -1001,7 +1022,7 @@ public final class FrontendExpressionSemanticSupport {
 
     /// Resume-value rule for signal awaits: no parameters resume with nil (`Variant`), a single
     /// parameter resumes with its declared type, and multiple parameters resume as `Array[Variant]`.
-    private static @NotNull GdType signalAwaitResultType(@NotNull GdSignalType signalType) {
+    public static @NotNull GdType signalAwaitResultType(@NotNull GdSignalType signalType) {
         var parameterTypes = signalType.parameterTypes();
         return switch (parameterTypes.size()) {
             case 0 -> GdVariantType.VARIANT;

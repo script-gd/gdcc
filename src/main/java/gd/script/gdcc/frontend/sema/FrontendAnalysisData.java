@@ -1,5 +1,6 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.AwaitExpression;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
@@ -76,11 +77,11 @@ public final class FrontendAnalysisData {
     /// (await-of-coroutine-call). The set is only read after suite resolution completes, so the
     /// per-owner export-batch discipline does not apply to it.
     private final @NotNull Set<LirFunctionDef> coroutineFunctions;
-    /// Transient working list of await expressions whose operand is an exact call: the await's
-    /// result type is already published during `EXPR_TYPE` (callee return type), but whether the
-    /// callee is a coroutine can depend on markings published by later owners, so the
-    /// coroutine-vs-redundant decision is deferred to the post-suite fixed-point pass that consumes
-    /// and clears these entries. Never a published fact for lowering.
+    /// Transient working list of await expressions whose operand is an exact call: `EXPR_TYPE`
+    /// publishes a provisional callee-return result, but later owners can still determine that the
+    /// callee is a coroutine. The post-suite fixed point consumes and clears these entries, refines
+    /// non-coroutine Signal-call results, preserves Variant dynamic results, and marks only other
+    /// hard returns as redundant. Never itself a published fact for lowering.
     private final @NotNull List<FrontendAwaitCallPending> awaitCallPendings;
 
     private FrontendAnalysisData(
@@ -400,6 +401,24 @@ public final class FrontendAnalysisData {
     /// newly added so the await fixed-point pass can detect progress.
     public boolean markCoroutineFunction(@NotNull LirFunctionDef functionDef) {
         return coroutineFunctions.add(Objects.requireNonNull(functionDef, "functionDef must not be null"));
+    }
+
+    /// Refines an exact-call await after the post-suite coroutine fixed point. This is required for
+    /// a non-coroutine callee returning `Signal`: before the fixed point the result provisionally
+    /// has the callee return type, while afterwards it becomes the signal's resume-value type.
+    public void refineResolvedAwaitExpressionType(
+            @NotNull AwaitExpression awaitExpression,
+            @NotNull GdType refinedType
+    ) {
+        var checkedAwait = Objects.requireNonNull(awaitExpression, "awaitExpression must not be null");
+        var checkedType = Objects.requireNonNull(refinedType, "refinedType must not be null");
+        var current = expressionTypes.get(checkedAwait);
+        if (current == null || current.status() != FrontendExpressionTypeStatus.RESOLVED) {
+            throw new IllegalStateException(
+                    "Await result refinement requires an existing RESOLVED expression fact"
+            );
+        }
+        expressionTypes.put(checkedAwait, FrontendExpressionType.resolved(checkedType));
     }
 
     /// Working list consumed by the post-suite await coroutine pass; not a stable fact. Mutation

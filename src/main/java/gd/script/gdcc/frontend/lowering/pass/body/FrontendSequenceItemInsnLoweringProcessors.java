@@ -1517,12 +1517,10 @@ final class FrontendSequenceItemInsnLoweringProcessors {
     /// Lowers one await suspension point strictly from frozen facts (`frontend_await_minicoro_plan.md`
     /// 第七步).
     ///
-    /// Dispatch first recognizes the redundant-call shape from the published call fact (a RESOLVED
-    /// call to a statically known non-coroutine callee, per `sema.redundant_await`): the await
-    /// degrades to a plain pass-through of the call result and no `AwaitInsn` is emitted — the
-    /// enclosing function is not a coroutine, so a suspending instruction would be illegal. This
-    /// check must run before slot-type dispatch because such a callee may legally declare
-    /// `Signal`/`Variant` returns. The remaining shapes dispatch on the materialized slot type:
+    /// Dispatch follows the materialized operand type. Signal/Variant-returning non-coroutine calls
+    /// remain suspension-capable (Godot dynamically awaits their returned value), while a RESOLVED
+    /// non-coroutine call with any other static return type is the true redundant passthrough shape.
+    /// The supported shapes are:
     /// - `compiler::GdccCoroState` operand (produced only by a coroutine call) → state-channel
     ///   `AwaitInsn`; the enclosing function is necessarily sema-marked as a coroutine.
     /// - `Signal` operand → signal-channel `AwaitInsn`.
@@ -1551,20 +1549,15 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             }
             var operandType = session.requireValueType(operandValueId);
             var operandSlotId = session.slotIdForValue(operandValueId);
-            // The redundant-call check must win over slot-type dispatch: a RESOLVED non-coroutine
-            // call whose declared return type is Signal (or Variant) keeps the CALL route on the
-            // sema side, so the enclosing function is not coroutine-marked and the await must
-            // degrade to a pass-through instead of emitting an illegal suspending instruction.
-            // No overlap with the coroutine path: CORO_STATE slots only come from marked callees.
+            if (operandType instanceof GdSignalType || operandType instanceof GdVariantType) {
+                return emitAwaitInsn(session, block, node, resultSlotId, operandSlotId, operandType);
+            }
             if (isRedundantAwaitOperandCall(session, node)) {
                 return lowerRedundantAwaitPassthrough(
                         session, block, resultSlotId, operandSlotId, operandType, resultType
                 );
             }
-            if (operandType instanceof GdccCoroStateType || operandType instanceof GdSignalType) {
-                return emitAwaitInsn(session, block, node, resultSlotId, operandSlotId, operandType);
-            }
-            if (operandType instanceof GdVariantType) {
+            if (operandType instanceof GdccCoroStateType) {
                 return emitAwaitInsn(session, block, node, resultSlotId, operandSlotId, operandType);
             }
             throw session.unsupportedSequenceItem(

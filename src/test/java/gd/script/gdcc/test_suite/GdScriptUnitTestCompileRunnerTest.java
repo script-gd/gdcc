@@ -82,6 +82,22 @@ public class GdScriptUnitTestCompileRunnerTest {
             "control_flow/nested_for_while_break_continue.gd",
             "control_flow/recursive_factorial.gd",
             "control_flow/while_break_continue.gd",
+            "coroutine/await_call_immediate.gd",
+            "coroutine/await_call_suspend.gd",
+            "coroutine/await_dynamic_late.gd",
+            "coroutine/await_dynamic_signal.gd",
+            "coroutine/await_emitter_release.gd",
+            "coroutine/await_engine_signal.gd",
+            "coroutine/await_fire_and_forget.gd",
+            "coroutine/await_interop_interpreted.gd",
+            "coroutine/await_loop.gd",
+            "coroutine/await_recursive.gd",
+            "coroutine/await_signal_args.gd",
+            "coroutine/await_signal_basic.gd",
+            "coroutine/await_signal_connect_failure.gd",
+            "coroutine/await_signal_nested.gd",
+            "coroutine/await_typed_engine_boundary.gd",
+            "coroutine/interop_state_completed_signal.gd",
             "initializer/local/arithmetic_chain.gd",
             "initializer/local/constructors_and_constants.gd",
             "initializer/local/int_to_float_boundaries.gd",
@@ -175,6 +191,7 @@ public class GdScriptUnitTestCompileRunnerTest {
     private static final List<String> COLLECTION_SCRIPT_PATHS = scriptPathsWithPrefix("collection/");
     private static final List<String> CONSTRUCTOR_SCRIPT_PATHS = scriptPathsWithPrefix("constructor/");
     private static final List<String> CONTROL_FLOW_SCRIPT_PATHS = scriptPathsWithPrefix("control_flow/");
+    private static final List<String> COROUTINE_SCRIPT_PATHS = scriptPathsWithPrefix("coroutine/");
     private static final List<String> INITIALIZER_SCRIPT_PATHS = scriptPathsWithPrefix("initializer/");
     private static final List<String> LAMBDA_SCRIPT_PATHS = scriptPathsWithPrefix("lambda/");
     private static final List<String> MEMBER_SCRIPT_PATHS = scriptPathsWithPrefix("member/");
@@ -246,6 +263,14 @@ public class GdScriptUnitTestCompileRunnerTest {
         return compileAndValidateBundledUnitScripts(
                 CONTROL_FLOW_SCRIPT_PATHS,
                 "Zig not found; skipping control-flow GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesCoroutineScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                COROUTINE_SCRIPT_PATHS,
+                "Zig not found; skipping coroutine GDScript compile-run tests"
         );
     }
 

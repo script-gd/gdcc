@@ -178,7 +178,7 @@
 
 - `self` 不作为隐式 `ScopeValue` 进入 lexical value namespace；当前由 top binding 直接发布 `SELF` binding，并由 chain receiver support 解析为当前类实例 receiver
 - `self` 在 static context 与 property initializer 中的 fail-closed 边界已经落地；相关非法用法的用户可见 diagnostics 仍由 frontend binder 各阶段负责，而不是由 `Scope` 协议承载
-- `signal` 的无 receiver 名称解析与 receiver-based metadata lookup 已纳入 `ClassScope` / `ScopeSignalResolver`。值读取 / `.emit` / `.connect` 已由 frontend binder 闭环（见 `frontend_signal_support.md`）；`await signal` 协程仍未闭环（设计合同已由 `frontend_await_minicoro_plan.md` 冻结，frontend 落地见其第六/七步）
+- `signal` 的无 receiver 名称解析与 receiver-based metadata lookup 已纳入 `ClassScope` / `ScopeSignalResolver`。值读取 / `.emit` / `.connect` 与普通 executable function 中的 `await signal` 已闭环（见 `frontend_signal_support.md`、`frontend_await_minicoro_plan.md`）。
 
 ### 2.6 Shared resolver 已经成为前后端共享事实源
 
@@ -503,7 +503,7 @@ signal 路径必须继续遵守当前 scope 架构的分层边界：
 
 当前方案是工程化折中，不是最终 parity 终点。若未来目标转向更高 Godot 一致性，必须重新设计 parent/view 模型，而不是在现有 `ClassScope` 上继续堆条件分支。
 
-### 6.4 `self` 尚未纳入当前 `Scope` 协议；`await signal` 仍未闭环
+### 6.4 `self` 与 signal await 后续维护边界
 
 当前 restriction parity 不能宣称已经完整覆盖 Godot 的 static-context 语义。后续 analyzer / binder 工作仍需补齐；signal 的 scope/resolver 冻结合同见 §4.5，值读取与 `.emit`/`.connect` 见 `frontend_signal_support.md`。
 

@@ -1,8 +1,8 @@
 # Frontend Signal Support
 
-> Updated: 2026-08-15
+> Updated: 2026-08-25
 >
-> 本文档是 GdScript `signal` 一等值、`Signal.emit/connect/disconnect` 与方法 / utility 值引用 → `Callable`（不含 `await signal` 协程）在 frontend、LIR、C backend 与 runtime helper 全链路的事实源。
+> 本文档是 GdScript `signal` 一等值、`Signal.emit/connect/disconnect`、`await signal` 与方法 / utility 值引用 → `Callable` 在 frontend、LIR、C backend 与 runtime helper 全链路的事实源。
 > 不再记录阶段性步骤、完成进度或实施流水账；若合同变化，应直接改写当前状态。
 
 ## 1. 维护合同
@@ -52,10 +52,11 @@ Godot 对齐基线：runtime / GDExtension ABI / generated bindings 固定为 **
 | GDCC / engine 静态：`Worker.build`、`JSON.parse_string`、子类读取继承静态 | custom trampoline；owner 为声明类 | `construct_standalone_callable` |
 | utility：`print`、`lerp` | custom trampoline | `construct_standalone_callable` |
 | 已记录 lambda：`func(...): ...`（supported executable body 内） | `Callable`（custom lambda callable + capture userdata） | `construct_lambda` |
+| `await sig` / `await signal_returning_call()` | 0 参数 → nil、1 参数 → 参数值、多参数 → Array；函数标记协程 | `await` + minicoro runtime |
 
 仍拒绝：
 
-- `await signal` 及任何协程挂起 / 恢复状态机（设计合同已由 `frontend_await_minicoro_plan.md` 冻结——signal await 为 await MVP 三路径之一；本条拒绝状态维持到其第八步 compile gate 解封）
+- lambda / property initializer 内 await、static coroutine call 与 value-position coroutine call；普通 executable function 的 signal/dynamic/instance-call await 已闭环
 - builtin type-meta 方法当值（`Vector2.abs`、`Vector2.from_angle`）
 - 构造器当值（`Node.new`、`Inner.new`）
 - `dict.clear` 当方法引用（Godot 把它当 Dictionary key）
@@ -173,7 +174,7 @@ lowering 只消费 published facts。缺失 / 冲突 fact 必须 fail-fast，禁
 - `BARE_VALUE_REFERENCE_BINDING_KINDS` 当前为空，扫描保留为 callee-exclusion hook；不得按 `GdSignalType` / `GdCallableType` 猜测局部变量。
 - `symbolBindings()` 同时键 `IdentifierExpression` / `LiteralExpression` / `SelfExpression`；bare blocker 只消费 identifier。
 - `DYNAMIC` 永远不是 compile blocker。
-- `await` / `Node.new` 当值继续走既有 deferred / unsupported / FAILED 路径；未记录 lambda（property initializer / parameter default / skipped subtree）保持 fail-closed。
+- 合法 `await` root 与 operand 进入 published-fact scan；顶层 instance coroutine call 获得 await-position 豁免。static coroutine、operand 内嵌套 coroutine call 与 value-position coroutine call 仍阻断；`Node.new` 当值及未记录 lambda（property initializer / parameter default / skipped subtree）保持 fail-closed。
 - 已记录 lambda 放上 compile surface 并递归扫描 body facts（合同见 `frontend_lambda_implementation.md`）。
 
 ---
@@ -298,7 +299,7 @@ standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC / engine 静�
 - backend：`CConstructInsnGenTest`（含 inherited GDCC static 解析到声明 owner、未注册 opcode 负例）、`CCodegenSignalRegistrationTest`、`GodotBuiltinGeneratorTest`、`CallMethodInsnGenTest`
 - inherited static：`ClassRegistryTest.findStaticFunctionInHierarchyShouldPreferNearestDeclaringOwner`、`FrontendLoweringBodyInsnPassTest.runLowersInheritedStaticMethodReferencesThroughDeclaringOwner`
 - Variant：`FrontendVariantBoundaryCompatibilityTest.signalVariantBoundaryUsesExplicitPackUnpackNotAssignability`、`FrontendLoweringBodyInsnPassTest.runPacksAndUnpacksSignalAcrossExplicitVariantBoundaries`、`ClassRegistryTest.checkAssignableRejectsFrontendOnlyBoundaryConversions`
-- compile gate：`FrontendCompileCheckAnalyzerTest`（放行、Dictionary / type-meta 拒绝、callee exclusion、`lerp` 值读、`Node.new` / `await` 拒绝）
+- compile gate：`FrontendCompileCheckAnalyzerTest`（signal/dynamic/instance-call await 放行，static/nested/value-position coroutine call 拒绝，Dictionary / type-meta 拒绝、callee exclusion、`lerp` 值读、`Node.new` 拒绝）
 - e2e（Zig + `GODOT_BIN` 可用时跑，否则 assumption skip）：
   - `member/signal_value_read.gd`
   - `member/signal_emit_connect.gd`

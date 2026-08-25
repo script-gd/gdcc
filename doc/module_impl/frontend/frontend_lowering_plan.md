@@ -221,7 +221,7 @@
 - `for` 的 `OBJECT_CUSTOM`（Object `_iter_*` 精确协议）仍属 post-MVP；其余已注册 route 已接入，见 `frontend_for_range_loop_implementation.md`
 - 参数默认值语义本身
 - block-local `const`
-- signal coroutine use-site（`await signal`；`.emit` / `.connect` 已闭环，见 `frontend_signal_support.md`）——注意：await 整体设计已由 `frontend_await_minicoro_plan.md` 单独立项冻结（signal await 属其 MVP 三路径之一），本条 Post-MVP 归类仅对既有 body lowering pass 的局部放行有效
+- lambda / property initializer 内 await 与 static coroutine call；普通 executable function 的 signal/dynamic/instance-call await 已由 `frontend_await_minicoro_plan.md` 闭环
 - property initializer 中依赖实例状态的完整初始化时序语义
 
 其中参数默认值需要额外明确：

@@ -5,8 +5,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / type-check / loop-control / compile-check / exception 诊断链路已落地；已记录 lambda 的 compile gate 已解封）
-- 更新时间：2026-08-18
+- 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / type-check / loop-control / compile-check / exception 诊断链路已落地；已记录 lambda 与合法 await 的 compile gate 已解封）
+- 更新时间：2026-08-25
 - 适用范围：
     - `src/main/java/gd/script/gdcc/frontend/diagnostic/**`
     - `src/main/java/gd/script/gdcc/frontend/parse/**`
@@ -261,7 +261,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - 与 `expressionTypes()` 中的 `RESOLVED(targetType)` 并存；不阻断 compile，不属于 compile-only gate
   - `value as Variant` 不发此 warning；hard invalid pair 由 `sema.type_check` error 处理
 - `sema.redundant_await`
-  - await 语义对「operand 是 callee 静态已知非协程的 exact call」发出的 warning（对齐 Godot `REDUNDANT_AWAIT`），await 退化为纯穿透，enclosing 函数**不**标记协程
+  - await 语义对「operand 是 callee 静态已知非协程、且返回类型既非 Signal 也非 Variant 的 exact call」发出的 warning（对齐 Godot `REDUNDANT_AWAIT`），await 退化为纯穿透，enclosing 函数**不**标记协程
+  - 非协程 call 返回 Signal 时等待该 Signal；返回 Variant/未标注时走 runtime-dynamic await。两者均不发本 warning，并把 enclosing 函数标记为协程
   - GDCC callee 由 post-suite 不动点 pass（`FrontendAwaitCoroutineAnalyzer`）在确认 callee 始终未标记后发出；非 `FunctionDef` 锚定的 exact call（如 builtin 构造器 owner 锚点）由 EXPR_TYPE owner 直接发出
   - `await` 静态已知非 signal 纯值仍是 error（`sema.unsupported_expression_route`），不走本 warning
 - `sema.virtual_override`

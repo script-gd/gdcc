@@ -86,7 +86,7 @@ class AwaitInsnGenTest {
     }
 
     @Test
-    @DisplayName("AWAIT on compiler::GdccCoroState should identify, move-from NULL, then typed-channel await")
+    @DisplayName("AWAIT on compiler::GdccCoroState should move-from only after successful identification")
     void awaitStateShouldConsumeOwnedReference() {
         var func = newCoroutine("run");
         func.createAndAddVariable("state", GdccCoroStateType.CORO_STATE);
@@ -98,16 +98,18 @@ class AwaitInsnGenTest {
         assertContainsAll(
                 body,
                 "gdcc_coro_state_header *__gdcc_await_callee_entry_0 = gdcc_coro_state_identify($state);",
+                "if (__gdcc_await_callee_entry_0 != NULL) {",
                 "$state = NULL;",
                 "gdcc_coro_await_state(__gdcc_await_callee_entry_0, &$res, _co, &_coro_state->_coro_header);",
                 "if (_coro_state->_coro_header.cancel) {"
         );
-        // Ownership transfer order: the slot is reset to moved-from NULL before the helper
-        // consumes the reference, so a cancel-resume never sees a dangling pointer. The cancel
-        // check must follow the helper call (a cancel-resume returns without writing out).
+        // Ownership transfer order: a recognized slot is reset before the helper consumes the
+        // reference. An unrecognized slot stays owned for __finally__; the cancel check follows
+        // the helper call because a cancel-resume returns without writing out.
         assertOrdered(
                 body,
                 "gdcc_coro_state_identify($state)",
+                "if (__gdcc_await_callee_entry_0 != NULL)",
                 "$state = NULL;",
                 "gdcc_coro_await_state(",
                 "_coro_state->_coro_header.cancel"

@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（compile-only final gate、for route-aware compile policy、显式 AST 封口、generic published-fact blocker、signal/method-reference feature-specific RESOLVED blocker、shared/compile 分流边界与 SuiteResolver stable facts 已落地；lambda compile gate 已按 published plan 解封）
-- 更新时间：2026-08-19
+- 状态：事实源维护中（compile-only final gate、for route-aware compile policy、显式 AST 封口、generic published-fact blocker、signal/method-reference feature-specific RESOLVED blocker、shared/compile 分流边界与 SuiteResolver stable facts 已落地；lambda 与合法 await compile gate 已按 published facts 解封）
+- 更新时间：2026-08-25
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -170,6 +170,12 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - **已记录 lambda**（`lambdaPlans()` 含该节点且 body 已发布）：放上 compile surface 并递归扫描 body facts（与普通 executable block 相同）。`construct_lambda` lowering 合同、合成 `_lambda_<k>` 函数与 C backend 均已落地（见 `frontend_lambda_implementation.md`）。
 - **未记录 lambda**（property initializer / parameter default / skipped subtree，缺 published plan）：保持形态级 `sema.compile_check` blocker，不静默放行；若上游已在同一 exact range 发布 unsupported 诊断，则按统一去重合同省略补发。
 - lambda body 内的 `match` 走与外层相同的 route-aware policy：`WILDCARD` / `BINDING` / `LITERAL` / `EXPRESSION` / `ARRAY` / `DICTIONARY` 六 route 全部放行并重扫 facts，不再由上游 `sema.unsupported_binding_subtree` 持有。
+
+`AwaitExpression` 不再拥有专用 compile blocker。合法 await root 与 operand 进入普通
+published-fact scan；operand 顶层已解析的 instance coroutine call 只在 await-position 获得
+豁免。static coroutine call、operand 内嵌套的 coroutine call、非 await value-position 的
+coroutine call，以及 lambda/property initializer 等既有 fail-closed 边界继续阻断。compile
+gate 只消费 `FrontendAwaitCoroutineAnalyzer` 发布的稳定 coroutine/type facts，不重新分类 await。
 
 `TypeTestExpression` 不属于当前显式 compile-block 列表：shared semantic 发布 `RESOLVED(bool)` + `typeTestTargets()`，body lowering 发射统一 `is_instance_of` / 常量 bool，backend `IsInstanceOfInsnGen` 分派 + runtime helpers 已落地。
 
