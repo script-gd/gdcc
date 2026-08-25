@@ -1882,13 +1882,15 @@ class FrontendExpressionSemanticSupportTest {
                 new AwaitExpression(identifier("pinged"), TINY),
                 (expression, finalizeWindow) -> FrontendExpressionType.resolved(new GdSignalType()),
                 _ -> null,
-                "Await expressions are not supported inside lambda bodies yet",
+                // The lambda boundary was unblocked by plan step 9; the property-initializer
+                // boundary stays fail-closed and anchors the classifier's reason pass-through.
+                "Await expressions are not supported inside property initializers",
                 false
         );
         assertAll(
                 () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.NONE, boundaryResult.route()),
                 () -> assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, boundaryResult.expressionType().status()),
-                () -> assertTrue(boundaryResult.expressionType().detailReason().contains("lambda bodies"))
+                () -> assertTrue(boundaryResult.expressionType().detailReason().contains("property initializers"))
         );
     }
 

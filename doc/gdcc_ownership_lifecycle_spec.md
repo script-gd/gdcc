@@ -246,6 +246,20 @@ Parameters of a coroutine function:
   path never touches them (after cancel-resume the coroutine is `MCO_DEAD` and flows into
   the same single `free_instance` cleanup).
 
+Captures of a coroutine lambda follow the same per-call frame discipline:
+
+- The frame's typed `_coro_capture_<name>` fields are the sole owning storage for captures;
+  no `_capture` prologue locals are generated and the body's `__finally__` never touches
+  them. Body capture operands map directly to frame fields.
+- The start thunk copies each field out of the Callable-owned capture block before
+  `mco_create` (primitives assigned, objects retained from a BORROWED source, value types
+  copy-constructed); the capture block itself remains owned solely by the Callable userdata
+  and is freed independently by its `free_func` — releasing the Callable while suspended
+  therefore never invalidates the frame.
+- Capture fields are destroyed exactly once, by `free_instance` after the parameter fields;
+  the cancel path flows into the same single cleanup. Writes to a capture name inside the
+  lambda hit only that call's frame copy, matching copy-on-capture semantics.
+
 Return-value storage state machine (must not be violated):
 
 1. The body `__finally__` consumes `_return_val` into the typed return slot (`_return_val` is
@@ -262,10 +276,11 @@ Return-value storage state machine (must not be violated):
    move accessor (`<state>__move_result`; the slot is left in a valid moved-from state),
    then release the state object reference and return the declared value.
 4. `free_instance` destroys the always-constructed `result_cache`, the typed parameter
-   fields, the typed return slot via `desc->destroy_ret_slot` (exactly once on every path —
-   completion, ClassDB-wrapper synchronous fast path and cancel alike; tolerates
-   never-written and moved-from slots) and the `mco_coro` (skipped when `co == NULL` on the
-   OOM path).
+   fields, the typed coroutine-lambda `_coro_capture_*` fields (exactly once, after the
+   parameter fields), the typed return slot via `desc->destroy_ret_slot` (exactly once on
+   every path — completion, ClassDB-wrapper synchronous fast path and cancel alike;
+   tolerates never-written and moved-from slots) and the `mco_coro` (skipped when
+   `co == NULL` on the OOM path).
 
 Signal-resume callback argument Variants are only copied, never consumed; each Variant-kind
 waiter receives its own `godot_variant_new_copy` of the result, each typed waiter a

@@ -84,20 +84,30 @@ public final class CBodyBuilder {
         return coroContext != null && func.checkVariableParameter(variable.id());
     }
 
+    /// Captures of a coroutine lambda body map to typed frame fields (plan 第九步): the start
+    /// thunk copies the capture block into per-call owning frame fields, so the body never sees
+    /// the `_capture` block. Mirrors `isCoroutineFrameParameter`; false for non-coroutine bodies.
+    public boolean isCoroutineFrameCapture(@NotNull LirVariable variable) {
+        return coroContext != null && func.getCapture(variable.id()) != null;
+    }
+
     /// C storage expression of a variable: `$<id>` for ordinary slots, the typed frame field
-    /// for parameters of a coroutine body (no parameter C slots exist there).
+    /// for parameters/captures of a coroutine body (no parameter/capture C slots exist there).
     private @NotNull String renderVariableStorageExpr(@NotNull LirVariable variable) {
         if (isCoroutineFrameParameter(variable)) {
             return CCoroutineFrameContext.paramFieldAccessExpr(variable);
+        }
+        if (isCoroutineFrameCapture(variable)) {
+            return CCoroutineFrameContext.captureFieldAccessExpr(variable);
         }
         return "$" + variable.id();
     }
 
     /// Whether the variable keeps reference (pointer) semantics in generated C. Coroutine
-    /// parameters lose it: their frame fields are ordinary owning storage, so reads/writes /
-    /// address-of / argument passing follow the non-ref rules.
+    /// parameters/captures lose it: their frame fields are ordinary owning storage, so
+    /// reads/writes / address-of / argument passing follow the non-ref rules.
     public boolean isEffectivelyRef(@NotNull LirVariable variable) {
-        return variable.ref() && !isCoroutineFrameParameter(variable);
+        return variable.ref() && !isCoroutineFrameParameter(variable) && !isCoroutineFrameCapture(variable);
     }
 
     public @NotNull CBodyBuilder setCurrentPosition(@NotNull LirBasicBlock block,
@@ -387,10 +397,10 @@ public final class CBodyBuilder {
     /// Creates a target reference from a variable.
     ///
     /// Throws InvalidInsnException if the variable is a reference variable (ref=true).
-    /// Coroutine frame parameters are exempt: their `ref` flag describes the borrowed thunk
-    /// boundary, while the frame field itself is writable owning storage (§3.10).
+    /// Coroutine frame parameters/captures are exempt: their `ref` flag describes the borrowed
+    /// thunk boundary, while the frame field itself is writable owning storage (§3.10).
     public @NotNull TargetRef targetOfVar(@NotNull LirVariable variable) {
-        if (variable.ref() && !isCoroutineFrameParameter(variable)) {
+        if (variable.ref() && !isCoroutineFrameParameter(variable) && !isCoroutineFrameCapture(variable)) {
             throw invalidInsn("Cannot assign to reference variable '" + variable.id() + "'");
         }
         return new VarTargetRef(variable, renderVariableStorageExpr(variable), isEffectivelyRef(variable));

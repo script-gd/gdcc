@@ -392,6 +392,12 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
         return checkVariableParameter(Integer.toString(id));
     }
 
+    /// Whether the variable with the given id is a lambda capture. Always false for non-lambda
+    /// functions: `getCapture` itself refuses captures on non-lambda functions.
+    public boolean checkVariableCapture(@NotNull String id) {
+        return getCapture(id) != null;
+    }
+
     /**
      * Remove variable by id. Parameter and capture variables cannot be removed.
      *

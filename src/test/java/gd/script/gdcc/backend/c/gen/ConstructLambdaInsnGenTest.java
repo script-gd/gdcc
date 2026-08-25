@@ -199,6 +199,58 @@ final class ConstructLambdaInsnGenTest {
     }
 
     @Test
+    @DisplayName("coroutine lambda keeps construct_lambda capture surface and hands the block to the start thunk")
+    void coroutineLambdaCaptureShouldPassCaptureToStartThunk() throws Exception {
+        // Plan step 9: `ConstructInsnGen` is deliberately untouched — the outer body still
+        // allocates and fills the capture block exactly like a synchronous lambda. The coroutine
+        // difference shows up only at the Callable invocation boundary: `call_func` forwards the
+        // block as the start thunk's `_capture` tail argument, and the body reads typed frame
+        // fields instead of running a `_capture->` prologue copy.
+        var clazz = newTestClass();
+        var lambda = new LirFunctionDef("_lambda_0", "entry");
+        lambda.setLambda(true);
+        lambda.setHidden(true);
+        lambda.setStatic(true);
+        lambda.setCoroutine(true);
+        lambda.setReturnType(GdStringType.STRING);
+        lambda.addCapture(new LirCaptureDef("label", GdStringType.STRING, lambda));
+        lambda.addCapture(new LirCaptureDef("seed", GdIntType.INT, lambda));
+        var lambdaEntry = new LirBasicBlock("entry");
+        lambdaEntry.appendInstruction(new ReturnInsn("label"));
+        lambda.addBasicBlock(lambdaEntry);
+        clazz.addFunction(lambda);
+
+        var maker = newFunction("make");
+        maker.createAndAddVariable("label", GdStringType.STRING);
+        maker.createAndAddVariable("seed", GdIntType.INT);
+        maker.createAndAddVariable("cb", new GdCallableType());
+        entry(maker).appendInstruction(new LiteralStringInsn("label", "seed"));
+        entry(maker).appendInstruction(new LiteralIntInsn("seed", 7));
+        entry(maker).appendInstruction(new ConstructLambdaInsn(
+                "cb",
+                "_lambda_0",
+                List.of(new LirInstruction.VariableOperand("label"), new LirInstruction.VariableOperand("seed"))
+        ));
+        entry(maker).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(maker);
+
+        var files = generateFiles(clazz);
+        var entryC = generatedFileText(files, "entry.c");
+        var entryH = generatedFileText(files, "entry.h");
+
+        // Outer-body construction surface is identical to the synchronous shape.
+        assertTrue(entryC.contains("gdcc_new_lambda_callable("), entryC);
+        assertTrue(entryC.contains("godot_mem_alloc(sizeof(Worker_Capture__lambda_0))"), entryC);
+        assertTrue(entryC.contains("godot_new_String_with_String(&($label))"), entryC);
+        // call_func enters the start thunk with the capture block as the tail argument.
+        assertTrue(entryH.contains("Worker__lambda_0__coro_start(captures)"), entryH);
+        // The coroutine body reads the typed capture frame field...
+        assertTrue(entryC.contains("_coro_state->_coro_capture_label"), entryC);
+        // ...and never runs the synchronous `_capture->` prologue first-write into a local slot.
+        assertFalse(entryC.contains("$label = godot_new_String_with_String(&(_capture->label));"), entryC);
+    }
+
+    @Test
     @DisplayName("non-self-capturing lambda wrappers keep object_id 0 and no ObjectDB check")
     void nonSelfCapturingLambdaWrappersKeepStandaloneValidity() throws Exception {
         var clazz = newTestClass();

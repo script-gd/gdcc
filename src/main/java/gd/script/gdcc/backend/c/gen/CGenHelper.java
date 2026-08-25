@@ -529,6 +529,10 @@ public final class CGenHelper {
         return CCoroutineFrameContext.PARAM_FIELD_PREFIX;
     }
 
+    public @NotNull String renderCoroCaptureFieldPrefix() {
+        return CCoroutineFrameContext.CAPTURE_FIELD_PREFIX;
+    }
+
     public @NotNull String renderCoroHeaderField() {
         return CCoroutineFrameContext.HEADER_FIELD;
     }
@@ -579,6 +583,25 @@ public final class CGenHelper {
         // Value-semantic thunk parameters are already passed as storage pointers (ref shape),
         // so the borrowed expression feeds the copy constructor directly.
         return fieldExpr + " = " + renderCopyAssignFunctionName(paramType) + "(" + borrowedArgExpr + ");";
+    }
+
+    /// Start-thunk fill of one typed capture frame field of a coroutine lambda from the borrowed
+    /// `_capture->name` block field (plan 第九步: per-call copy into fresh owning frame storage;
+    /// the capture block itself stays owned by the Callable userdata). Unlike
+    /// `renderCoroParamFillStmt`, capture block fields are plain *values*, not storage pointers,
+    /// so value-semantic copies must take the field address — delegated to
+    /// `renderLambdaCaptureCopyExpr`, which copy-constructs `&(source)`; primitives assign
+    /// directly and object fields retain the borrowed value after assignment.
+    public @NotNull String renderCoroCaptureFillStmt(@NotNull GdType captureType,
+                                                     @NotNull String fieldExpr,
+                                                     @NotNull String sourceFieldExpr) {
+        TypeCheckUtil.requireNonCompilerOnly(captureType, "coroutine capture field");
+        if (captureType instanceof GdObjectType objectType) {
+            var retainStmt = renderObjectRetainStmt(objectType, fieldExpr);
+            return fieldExpr + " = " + sourceFieldExpr + ";"
+                    + (retainStmt.isEmpty() ? "" : " " + retainStmt);
+        }
+        return fieldExpr + " = " + renderLambdaCaptureCopyExpr(captureType, sourceFieldExpr) + ";";
     }
 
     /// Statements of the generated `copy_ret_slot` desc callback for non-void coroutines:

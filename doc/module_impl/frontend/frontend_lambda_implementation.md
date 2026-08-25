@@ -10,10 +10,10 @@
 - 状态：事实源维护中（scope 双层图、lexical inventory、nested suite resolution、
   `FrontendLambdaPlan` 首次发布、`RESOLVED(GdCallableType)`、hidden `_lambda_<k>` shell、
   `LambdaConstructItem` / `construct_lambda`、C custom Callable 与 compile gate 按 published plan
-  放行已落地；property initializer / parameter default / skipped subtree 中的未记录 lambda
-  以及 lambda 自己的 parameter default、body 内 block-local `const` / `await` 仍 fail-closed；
-  普通 executable function 的 await 已由 `frontend_await_minicoro_plan.md` 第六至八步闭环，
-  不改变 lambda capture/state-class 尚未实现这一独立边界；
+  放行已落地；lambda body 内 `await` 已由 `frontend_await_minicoro_plan.md` 第九步闭环
+  （协程 lambda 经 Callable ABI 走 done/suspend 分派，capture 逐调用拷贝入协程帧，
+  见 §3.8 末段）；property initializer / parameter default / skipped subtree 中的未记录 lambda
+  以及 lambda 自己的 parameter default、body 内 block-local `const` 仍 fail-closed；
    lambda 内 `match` 已进入 shared semantic）
 - 更新时间：2026-08-25
 - 适用范围：
@@ -49,7 +49,8 @@
   - `doc/module_impl/frontend/frontend_gdcompiler_type_implementation.md`
   - `doc/test_error/test_suite_engine_integration_known_limits.md`
 - 明确非目标：
-  - 不在此转正 `match`、parameter default、block-local `const`、`await`
+  - 不在此转正 `match`、parameter default、block-local `const`
+    （`await` 后来已由 `frontend_await_minicoro_plan.md` 第九步独立闭环，见 §3.8 末段）
   - 不实现 Godot `OPCODE_CREATE_SELF_LAMBDA` / `GDScriptLambdaSelfCallable` 的独立 opcode；
     `self` 走既有 `construct_lambda` capture，`capturesSelf` 时 custom Callable 的 `object_id`
     绑 enclosing instance（见 §3.5）
@@ -150,7 +151,8 @@ Parser AST 为 `dev.superice.gdparser.frontend.ast.LambdaExpression`，提供
 
 - property initializer、parameter default、class-level 表达式中的 lambda
 - lambda 自己的 parameter default
-- lambda body 内的 block-local `const`、`await`（`match` 已进入 shared semantic，lambda 内 match 正常解析）
+- lambda body 内的 block-local `const`（`match` 已进入 shared semantic，lambda 内 match 正常解析；
+  `await` 已由第九步闭环，见 §3.8 末段）
 - `CAPTURE` 作为 direct-slot alias root
 - 把 class member / global / utility / type-meta 收成 capture
 - 静态函数里使用 `self` 或 instance member（沿用既有 `ResolveRestriction`）
@@ -437,6 +439,23 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
   `gdcc_ownership_lifecycle_spec.md`。不必复刻 Godot “已释放则变 null” 的调试打印，
   但不得 double-free。
 
+协程形态（body 内含 `await`，`frontend_await_minicoro_plan.md` 第九步）不复用上述
+`_capture` prologue 路径，ABI 改为逐调用拷贝入协程帧：
+
+- 状态类帧在参数字段之后按 capture plan 顺序追加 `_coro_capture_<name>` typed 字段
+  （`self` 首位约定不重排）；capture 帧字段是 owning storage。
+- `call_func` 不调用普通 impl：改调 start thunk（`_capture` 为尾参），thunk 在
+  `mco_create` 前把 capture 逐字段拷入帧（primitive 直接赋值、object 赋值后 retain、
+  value type 取址 copy-construct），OOM 路径由 `free_instance` 统一清理。
+- body 无 `_capture` 形参与 prologue，直读 `_coro_state->_coro_capture_<name>`；
+  `free_instance` 在参数字段清理后恰好销毁每个 capture 字段一次。
+- coroutine lambda 不生成普通 engine entry；`call_func` 在 thunk 返回后按
+  `gdcc_coro_state_identify` + `done` 分派：done → 取 typed 结果 pack（void 返回 nil）
+  并释放状态对象；suspend → 返回状态对象 Variant（Callable 只有 Variant 返回通道，
+  与 named 协程 engine 入口对 typed 非 Variant 报错+detach 有意不同）。
+- 语义与同步路径逐点等价：构造时快照（拷贝源是 capture block）、lambda 内写 capture
+  只改本次调用的帧副本、同一 Callable 并发调用各自独立帧。
+
 Godot 把 capture 作为**前缀实参**喂给 `GDScriptFunction::call`；GDCC 把 capture 放进
 userdata 结构体。这是 ABI 差异，不是语义差异；测试应对齐用户可见 arity 与 capture 值，
 而不是对齐 Godot 调用约定。
@@ -502,7 +521,9 @@ userdata 结构体。这是 ABI 差异，不是语义差异；测试应对齐用
 5. hidden lambda 函数不进 ClassDB；`is_lambda` 与 `is_hidden` 同时为真。
 6. 缺 published `FrontendLambdaPlan` 时 lowering fail-fast，禁止现场重推导。
 7. 诊断：一处根因一条 diagnostic；downstream 不得重复包。
-8. parameter default / block-local `const` / `await` 不得借这次改动进入支持面。`match` 由独立合同管理（`frontend_match_statement_implementation.md`）。
+8. parameter default / block-local `const` 不得借这次改动进入支持面；`await` 由
+   `frontend_await_minicoro_plan.md` 第九步的独立合同管理（协程形态见 §3.8 末段）。
+   `match` 由独立合同管理（`frontend_match_statement_implementation.md`）。
 9. 修改本合同时必须同步 `frontend_rules.md`、compile-check 文档、
    `gdcc_low_ir.md`（若改 insn）、`gdcc_runtime_lib.md`（若改 helper）。
 
@@ -536,7 +557,7 @@ match 内嵌套 lambda 已转正。
 ## 8. 当前局限与后续
 
 - property initializer / parameter default / class-level 表达式中的 lambda 仍未 `recordCallable`。
-- lambda 自己的 parameter default、body 内 block-local `const` / `await` 仍 deferred。
+- lambda 自己的 parameter default、body 内 block-local `const` 仍 deferred。
 - `CAPTURE` 不进入 direct-slot alias publication。
 - 不实现 `Callable.bind` / `unbind`。
 - silent 局部稳定化不把 `var cb := func(): ...` 的 slot 精化为 `Callable`；若未来要打开，

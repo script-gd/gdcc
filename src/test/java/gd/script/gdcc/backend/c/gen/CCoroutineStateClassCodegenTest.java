@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -289,16 +290,142 @@ class CCoroutineStateClassCodegenTest {
     }
 
     @Test
-    void coroutineLambdaShouldFailFast() {
+    void coroutineLambdaShouldGenerateStateClassSurface() {
+        // Plan step 9 flipped the old `isCoroutine && isLambda` fail-fast into positive codegen:
+        // a capturing coroutine lambda gets its hidden state class with typed capture frame
+        // fields, a start thunk carrying the `_capture` tail parameter, and no plain
+        // function/engine-entry surface (the Callable ABI enters through the thunk).
         var workerClass = new LirClassDef("Worker", "RefCounted");
-        var lambda = newFunction("_lambda_0", GdVoidType.VOID);
+        var lambda = newFunction("_lambda_0", GdIntType.INT);
         lambda.setLambda(true);
+        lambda.setHidden(true);
+        lambda.setStatic(true);
         lambda.setCoroutine(true);
-        entry(lambda).setTerminator(new ReturnInsn(null));
+        lambda.addCapture(new LirCaptureDef("seed", GdIntType.INT, lambda));
+        entry(lambda).setTerminator(new ReturnInsn("seed"));
         workerClass.addFunction(lambda);
 
-        var ex = assertThrows(IllegalArgumentException.class, () -> generate(workerClass));
-        assertTrue(ex.getMessage().contains("must not be a lambda"), ex.getMessage());
+        var files = generate(workerClass);
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
+
+        assertContainsAll(
+                hCode,
+                "typedef struct Worker_Capture__lambda_0",
+                "godot_int _coro_capture_seed;",
+                "godot_Object* Worker__lambda_0__coro_start(",
+                "Worker_Capture__lambda_0* _capture"
+        );
+        // The state class is registered like any other coroutine's, lambda or not.
+        assertTrue(cCode.contains("GD_STATIC_SN(u8\"_gdcc_coro_state_Worker__coro___lambda_0\")"), cCode);
+        // No plain function declaration or engine entry for the coroutine lambda.
+        assertFalse(hCode.contains("godot_int Worker__lambda_0("), hCode);
+        assertFalse(cCode.contains("godot_int Worker__lambda_0("), cCode);
+    }
+
+    @Test
+    void lambdaCoroutineFrameAndCallFuncShouldManageCaptureLifecycle() {
+        // Full capture-lifecycle anchors for a coroutine lambda (plan step 9): typed capture
+        // frame fields in capture-plan order (`self` first), thunk-side per-call copies with
+        // per-type discipline (primitive assign / value copy-construct from the field address /
+        // object assign + retain), exactly-once destroys in free_instance after the parameter
+        // sweep, frame-field body mapping without `_capture` or `$`-slot leakage, and the
+        // call_func done/suspend dispatch.
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var lambda = newFunction("_lambda_0", GdIntType.INT);
+        lambda.setLambda(true);
+        lambda.setHidden(true);
+        lambda.setStatic(true);
+        lambda.setCoroutine(true);
+        lambda.addCapture(new LirCaptureDef("self", new GdObjectType("Worker"), lambda));
+        lambda.addCapture(new LirCaptureDef("seed", GdIntType.INT, lambda));
+        lambda.addCapture(new LirCaptureDef("label", GdStringType.STRING, lambda));
+        entry(lambda).setTerminator(new ReturnInsn("seed"));
+        workerClass.addFunction(lambda);
+
+        var files = generate(workerClass);
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
+
+        // ---- State struct: capture frame fields in capture order, ahead of the return slot ----
+        var structBody = resolveFunctionBodyByPrefix(hCode, "struct _gdcc_coro_state_Worker__coro___lambda_0 {");
+        var selfIndex = structBody.indexOf("_coro_capture_self;");
+        var seedIndex = structBody.indexOf("_coro_capture_seed;");
+        var labelIndex = structBody.indexOf("_coro_capture_label;");
+        var retIndex = structBody.indexOf("_coro_ret;");
+        assertAll(
+                () -> assertTrue(selfIndex >= 0, structBody),
+                () -> assertTrue(selfIndex < seedIndex && seedIndex < labelIndex, structBody),
+                () -> assertTrue(labelIndex < retIndex, structBody)
+        );
+
+        // ---- Forward declarations precede call_func (C declaration-before-use) ----
+        var thunkDeclIndex = hCode.indexOf("godot_Object* Worker__lambda_0__coro_start(");
+        var moveResultDeclIndex = hCode.indexOf("_gdcc_coro_state_Worker__coro___lambda_0__move_result(gdcc_coro_state_header *coro_header);");
+        var callFuncIndex = hCode.indexOf("static void Worker__lambda_0_call(");
+        assertAll(
+                () -> assertTrue(thunkDeclIndex >= 0 && thunkDeclIndex < callFuncIndex, hCode),
+                () -> assertTrue(moveResultDeclIndex >= 0 && moveResultDeclIndex < callFuncIndex, hCode)
+        );
+
+        // ---- Start thunk: capture block tail parameter + per-call frame fill before mco_create ----
+        var thunkBody = resolveFunctionBodyByPrefix(cCode, "godot_Object* Worker__lambda_0__coro_start(");
+        assertContainsAll(
+                thunkBody,
+                "Worker_Capture__lambda_0* _capture",
+                "coro_state->_coro_capture_self = _capture->self;",
+                "own_object(",
+                "coro_state->_coro_capture_seed = _capture->seed;",
+                "coro_state->_coro_capture_label = godot_new_String_with_String(&(_capture->label));"
+        );
+        // Object fill assigns first and retains the fresh frame field copy afterwards.
+        var selfFillIndex = thunkBody.indexOf("coro_state->_coro_capture_self = _capture->self;");
+        assertTrue(thunkBody.indexOf("own_object(", selfFillIndex) > selfFillIndex, thunkBody);
+        // All capture fills happen before the minicoro is created (OOM path sweeps them via
+        // free_instance, same discipline as parameter fields).
+        var createIndex = thunkBody.indexOf("mco_create(");
+        assertAll(
+                () -> assertTrue(selfFillIndex >= 0 && selfFillIndex < createIndex, thunkBody),
+                () -> assertTrue(thunkBody.indexOf("coro_state->_coro_capture_label =") < createIndex, thunkBody)
+        );
+
+        // ---- free_instance: capture destroys after the parameter sweep, before the ret slot ----
+        var freeBody = resolveFunctionBodyByPrefix(cCode, "void _gdcc_coro_state_Worker__coro___lambda_0_class_free_instance(");
+        assertContainsAll(
+                freeBody,
+                "release_object(",
+                "_live_object(self->_coro_capture_self)",
+                "godot_String_destroy(&(self->_coro_capture_label));"
+        );
+        var captureFreeIndex = freeBody.indexOf("godot_String_destroy(&(self->_coro_capture_label));");
+        var retDestroyIndex = freeBody.indexOf("_destroy_ret_slot(&self->_coro_header);");
+        assertAll(
+                () -> assertTrue(captureFreeIndex >= 0, freeBody),
+                () -> assertTrue(captureFreeIndex < retDestroyIndex, freeBody)
+        );
+
+        // ---- Body: captures map to frame fields; no `_capture` block, no `$`-slot copies ----
+        var body = resolveFunctionBodyByPrefix(cCode, "void Worker__lambda_0__coro_body(");
+        assertTrue(body.contains("_return_val = _coro_state->_coro_capture_seed;"), body);
+        assertFalse(body.contains("$seed"), body);
+        assertFalse(body.contains("_capture->"), body);
+
+        // ---- call_func: start thunk dispatch with captures as the tail argument ----
+        var callFuncBody = resolveFunctionBodyByPrefix(hCode, "static void Worker__lambda_0_call(");
+        assertContainsAll(
+                callFuncBody,
+                "godot_Object* coro_state_obj = Worker__lambda_0__coro_start(captures);",
+                "if (coro_state_obj == NULL)",
+                "gdcc_coro_state_header* coro_header = gdcc_coro_state_identify(coro_state_obj);",
+                "coro_header->done",
+                "godot_int r = _gdcc_coro_state_Worker__coro___lambda_0__move_result(coro_header);",
+                "godot_new_Variant_with_int(r)",
+                "godot_new_Variant_with_Object(coro_state_obj)",
+                "godot_variant_new_copy(r_return, &coro_state_variant);",
+                "release_object(coro_state_obj);"
+        );
+        // The plain synchronous impl call is gone from the coroutine dispatch.
+        assertFalse(callFuncBody.contains("Worker__lambda_0(captures)"), callFuncBody);
     }
 
     @Test

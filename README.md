@@ -38,7 +38,7 @@ GDCC is currently in an early alpha stage. Do not use it in production.
 
 ## Unsupported or Limited
 
-- Await inside lambdas/property initializers, static coroutine calls, and coroutine calls in ordinary value positions. Signal/dynamic/instance coroutine await and statement-position fire-and-forget are supported. (Object `_iter_*` iteration, and lambdas in property initializers or parameter defaults, remain unsupported.)
+- Lambdas in property initializers or parameter defaults.
 - `assert`, `preload`, and `get_node`. (Array/dictionary literals, casts, type tests, and ternary expressions are compile-ready.)
 - `not in`, string `%` formatting, parameter defaults, local or class constants, and script-level `static var`.
 - Path-based `extends`, autoload superclass binding, global script class superclass binding, and multi-module superclass binding.

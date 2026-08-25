@@ -353,6 +353,14 @@ void ${stateName}_class_free_instance(void* p_class_userdata, GDExtensionClassIn
     ${paramFreeStmt}
         </#if>
     </#list>
+    <#-- Coroutine lambda capture frame fields: same exactly-once destroy discipline as the -->
+    <#-- parameter fields above (plan 第九步; the capture block itself stays with the Callable). -->
+    <#list func.captureList as capture>
+        <#assign captureFreeStmt = helper.renderLambdaCaptureFreeStmt(capture.type, "self->" + helper.renderCoroCaptureFieldPrefix() + capture.name)>
+        <#if captureFreeStmt?has_content>
+    ${captureFreeStmt}
+        </#if>
+    </#list>
     // The typed return slot is destroyed exactly once here (never from the cancel path).
     ${helper.renderCoroDestroyRetSlotFuncName(classDef, func)}(&self->${helper.renderCoroHeaderField()});
     gdcc_coro_state_free(&self->${helper.renderCoroHeaderField()});
@@ -443,18 +451,16 @@ ${helper.renderGdTypeInC(func.returnType)} ${helper.renderCoroMoveResultFuncName
 void ${helper.renderCoroBodyFunctionName(classDef, func)}(mco_coro *${helper.renderCoroCoParam()}) {
     ${stateName}* ${helper.renderCoroFrameLocal()} = (${stateName}*)mco_get_user_data(${helper.renderCoroCoParam()});
     <#list func.variables?values as var>
-        <#if !func.checkVariableParameter(var.id)>
+        <#-- Parameters and coroutine-lambda captures live in typed frame fields addressed -->
+        <#-- through `CBodyBuilder`; declaring local C slots for them would double the storage. -->
+        <#if !func.checkVariableParameter(var.id) && !func.checkVariableCapture(var.id)>
             ${helper.renderGdTypeInC(var.type)} $${var.id};
         </#if>
     </#list>
     ${bodyRender.generateFuncBody(classDef, func)}
 }
 
-godot_Object* ${helper.renderCoroStartThunkName(classDef, func)}(
-    <#list func.parameters as param>
-        ${helper.renderGdTypeRefInC(param.type)} $${param.name}<#if param_has_next>,</#if>
-    </#list>
-) {
+<@coroStartThunkHeader helper classDef func/> {
     GDExtensionObjectPtr coro_state_obj = ${stateName}_class_create_instance(NULL, false);
     if (coro_state_obj == NULL) {
         GDCC_PRINT_RUNTIME_ERROR("gdcc: failed to create coroutine state object", __func__, __FILE__, __LINE__);
@@ -471,6 +477,12 @@ godot_Object* ${helper.renderCoroStartThunkName(classDef, func)}(
         - offsetof(${stateName}, ${helper.renderCoroHeaderField()}));
     <#list func.parameters as param>
     ${helper.renderCoroParamFillStmt(param.type, "coro_state->" + helper.renderCoroParamFieldPrefix() + param.name, "$" + param.name)}
+    </#list>
+    <#-- Coroutine lambda captures (plan 第九步): per-call copy from the borrowed `_capture` -->
+    <#-- block into fresh owning frame fields. Filled before `mco_create` so the OOM path is -->
+    <#-- still cleaned by the uniform `free_instance` field sweep. -->
+    <#list func.captureList as capture>
+    ${helper.renderCoroCaptureFillStmt(capture.type, "coro_state->" + helper.renderCoroCaptureFieldPrefix() + capture.name, "_capture->" + capture.name)}
     </#list>
     mco_desc coro_desc = mco_desc_init(${helper.renderCoroBodyFunctionName(classDef, func)}, GDCC_CORO_STACK_SIZE);
     coro_desc.user_data = coro_state;
@@ -495,6 +507,9 @@ godot_Object* ${helper.renderCoroStartThunkName(classDef, func)}(
 
 <#-- Engine entry: keeps the exact synchronous method name/signature, so ClassDB call/ptrcall -->
 <#-- wrappers and virtual wiring stay untouched; internally dispatches through the start thunk. -->
+<#-- Coroutine lambdas are excluded: they have no ClassDB surface at all — the Callable ABI's -->
+<#-- `call_func` (entry.h) enters the start thunk directly with the capture block tail argument. -->
+<#if !func.lambda>
 <@funcHeader helper classDef func/> {
     godot_Object* coro_state_obj = ${helper.renderCoroStartThunkName(classDef, func)}(<#list func.parameters as param>$${param.name}<#if param_has_next>, </#if></#list>);
     if (coro_state_obj == NULL) {
@@ -536,6 +551,7 @@ godot_Object* ${helper.renderCoroStartThunkName(classDef, func)}(
     </#if>
 </#if>
 }
+</#if>
 </#if>
 </#list>
 </#list>

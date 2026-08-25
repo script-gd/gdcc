@@ -36,6 +36,7 @@ import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAwaitCallPending;
+import gd.script.gdcc.frontend.sema.FrontendAwaitCoroutineOwner;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendBodySemanticSupportPolicy;
@@ -1972,7 +1973,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             rootOwnsExpressionDiagnostics.put(awaitExpression, result.rootOwnsOutcome());
             switch (result.route()) {
                 case SIGNAL, DYNAMIC -> context.analysisData()
-                        .markCoroutineFunction(requireEnclosingCallableFunction());
+                        .markCoroutineOwner(requireAwaitCoroutineOwner());
                 case CALL -> recordAwaitCallPending(
                         awaitExpression,
                         Objects.requireNonNull(
@@ -1986,12 +1987,11 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             return result.expressionType();
         }
 
-        /// MVP fail-closed boundary: lambda bodies and property initializers reject await. Parameter
-        /// defaults never reach body expression typing, so they keep their existing boundary.
+        /// Fail-closed boundary: property initializers reject await (plan §3.5). Lambda bodies were
+        /// unblocked by 第九步 — their owners are marked through the lambda owner set and bridged to
+        /// the synthesized shell during lowering preparation. Parameter defaults never reach body
+        /// expression typing, so they keep their existing boundary.
         private @Nullable String awaitFailClosedBoundaryReason() {
-            if (context.callableOwner() instanceof LambdaExpression) {
-                return "Await expressions are not supported inside lambda bodies yet";
-            }
             if (context.propertyInitializerContext() != null) {
                 return "Await expressions are not supported inside property initializers";
             }
@@ -2032,17 +2032,29 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             }
             context.analysisData().addAwaitCallPending(new FrontendAwaitCallPending(
                     awaitExpression,
-                    requireEnclosingCallableFunction(),
+                    requireAwaitCoroutineOwner(),
                     calleeFunction,
                     operandCall.callKind(),
                     context.sourcePath()
             ));
         }
 
+        /// Resolves the coroutine-marking handle of the enclosing callable owner. Lambda owners
+        /// (including nested lambdas, which carry their own identity as `context.callableOwner()`)
+        /// are keyed by AST identity — never by `FrontendLambdaPlan.enclosingCallable()`, which
+        /// would misattribute the marking to the nearest non-lambda callable; named/constructor
+        /// owners map to their skeleton `LirFunctionDef`.
+        private @NotNull FrontendAwaitCoroutineOwner requireAwaitCoroutineOwner() {
+            if (context.callableOwner() instanceof LambdaExpression lambdaExpression) {
+                return new FrontendAwaitCoroutineOwner.Lambda(lambdaExpression);
+            }
+            return new FrontendAwaitCoroutineOwner.NamedFunction(requireEnclosingCallableFunction());
+        }
+
         /// Maps the enclosing callable AST owner to its skeleton `LirFunctionDef` by the same
-        /// name/static/arity triple the skeleton builder used when creating it. Only callable owners
-        /// with a skeleton function reach here: lambda and property-initializer contexts are
-        /// short-circuited by the fail-closed boundary before any marking.
+        /// name/static/arity triple the skeleton builder used when creating it. Only named
+        /// function/constructor owners have a skeleton at sema time; lambda owners never reach
+        /// here — `requireAwaitCoroutineOwner()` handles them by AST identity first.
         private @NotNull LirFunctionDef requireEnclosingCallableFunction() {
             var callableOwner = context.callableOwner();
             var owningClass = context.currentScope().owningClassOrNull();

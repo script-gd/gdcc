@@ -29,7 +29,9 @@ import java.util.Objects;
 ///
 /// The pass mutates the monotonic coroutine set, refines non-coroutine Signal-call await results,
 /// and emits warnings. Variant-call results stay `Variant`; only hard-typed non-coroutine calls
-/// become redundant awaits.
+/// become redundant awaits. Caller marking dispatches through `markCoroutineOwner`: lambda callers
+/// join the identity-keyed owner set and are bridged to their shell during lowering preparation
+/// (plan 第九步).
 public final class FrontendAwaitCoroutineAnalyzer {
     public void analyze(
             @NotNull FrontendAnalysisData analysisData,
@@ -45,7 +47,7 @@ public final class FrontendAwaitCoroutineAnalyzer {
             for (var pending : remaining) {
                 if (!isMarkedCoroutine(analysisData, pending)) {
                     if (hasRuntimeAwaitableReturn(pending)) {
-                        progressed |= analysisData.markCoroutineFunction(pending.enclosingFunction());
+                        progressed |= analysisData.markCoroutineOwner(pending.enclosingOwner());
                     }
                     nextRound.add(pending);
                     continue;
@@ -53,7 +55,7 @@ public final class FrontendAwaitCoroutineAnalyzer {
                 if (pending.callKind() == FrontendCallResolutionKind.STATIC_METHOD) {
                     continue;
                 }
-                progressed |= analysisData.markCoroutineFunction(pending.enclosingFunction());
+                progressed |= analysisData.markCoroutineOwner(pending.enclosingOwner());
             }
             remaining = nextRound;
         }
@@ -78,6 +80,9 @@ public final class FrontendAwaitCoroutineAnalyzer {
         }
     }
 
+    /// Callee-side coroutine check. Exact-call callees are always named `LirFunctionDef` shells:
+    /// lambda invocations go through the dynamic Callable route (`AwaitRoute.DYNAMIC`), never the
+    /// exact-call pending route, so no lambda-owner dispatch is needed here.
     private static boolean isMarkedCoroutine(
             @NotNull FrontendAnalysisData analysisData,
             @NotNull FrontendAwaitCallPending pending

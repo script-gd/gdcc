@@ -56,7 +56,7 @@ Godot 对齐基线：runtime / GDExtension ABI / generated bindings 固定为 **
 
 仍拒绝：
 
-- lambda / property initializer 内 await、static coroutine call 与 value-position coroutine call；普通 executable function 的 signal/dynamic/instance-call await 已闭环
+- property initializer / parameter default 内 await、static coroutine call 与 value-position coroutine call；普通 executable function 与已记录 lambda body 的 signal/dynamic/instance-call await 已闭环（lambda 内 await 见 `frontend_await_minicoro_plan.md` 第九步）
 - builtin type-meta 方法当值（`Vector2.abs`、`Vector2.from_angle`）
 - 构造器当值（`Node.new`、`Inner.new`）
 - `dict.clear` 当方法引用（Godot 把它当 Dictionary key）

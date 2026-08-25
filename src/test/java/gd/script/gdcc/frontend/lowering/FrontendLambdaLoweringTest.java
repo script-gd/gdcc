@@ -21,6 +21,7 @@ import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
+import gd.script.gdcc.lir.insn.AwaitInsn;
 import gd.script.gdcc.lir.insn.ConstructLambdaInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -35,6 +36,7 @@ import java.util.List;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -316,6 +318,59 @@ final class FrontendLambdaLoweringTest {
         assertEquals(List.of("seed"), captureOperandIds(insn));
         var shell = lambdaFunctions(requireClass(prepared, "LambdaConstructCapture"), 1).getFirst();
         assertEquals("int", shell.getCapture("seed").type().getTypeName());
+    }
+
+    /// Plan step 9: a recorded lambda body containing a real await marks the lambda owner by AST
+    /// identity during sema; the function-preparation pass bridges the marking onto the freshly
+    /// synthesized shell — both the `isCoroutine` LIR attribute (backend surface) and the
+    /// `coroutineFunctions` membership (body-lowering marker check). Attribution is pinned in
+    /// both directions: the enclosing named function stays non-coroutine, and the outer body's
+    /// `construct_lambda` capture surface is unchanged.
+    @Test
+    void lambdaBodyAwaitLowersToCoroutineWithCapture() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_body_await.gd", """
+                class_name LambdaBodyAwait
+                extends Node
+                
+                signal pinged
+                
+                func watch():
+                    var seed := 40
+                    var cb := func():
+                        var resumed = await pinged
+                        return seed + 2
+                    return cb
+                """);
+
+        var lambdaContext = requireLambdaContexts(prepared.context(), 1).getFirst();
+        var lambda = assertInstanceOf(LambdaExpression.class, lambdaContext.sourceOwner());
+        var plan = requirePlan(prepared.analysisData(), lambda);
+        var shell = lambdaContext.targetFunction();
+
+        // The bridge keeps both coroutine facts in sync on the lambda shell only. (No
+        // `assertLambdaShellShape` here: the full pipeline already ran the body pass, so the
+        // shell-only block-count contract no longer applies.)
+        assertEquals(plan.syntheticName(), shell.getName());
+        assertTrue(shell.isLambda());
+        assertTrue(shell.isCoroutine());
+        assertTrue(prepared.analysisData().coroutineFunctions().contains(shell));
+        var outerContext = requireExecutableContext(prepared.context(), "watch");
+        assertFalse(outerContext.targetFunction().isCoroutine());
+
+        // The capture plan survives coroutine marking: awaiting the class signal `pinged` pulls
+        // in the leading `self` capture, then the source-level `seed` read follows.
+        assertEquals(
+                List.of("self", "seed"),
+                shell.getCaptureList().stream().map(capture -> capture.getName()).toList()
+        );
+
+        // The outer body still constructs the Callable with plain `$self`/`$seed` operands.
+        var constructInsn = requireSingleConstructLambdaInsn(outerContext.targetFunction());
+        assertEquals(List.of("self", "seed"), captureOperandIds(constructInsn));
+
+        // The await lowered into the shell body exactly once.
+        var awaits = allInstructions(shell).stream().filter(AwaitInsn.class::isInstance).toList();
+        assertEquals(1, awaits.size());
     }
 
     /// Regression anchor for divergent same-name match binds plus lambda capture: the array

@@ -242,6 +242,53 @@ public class DomLirSerializerTest {
     }
 
     @Test
+    public void serialize_module_writesLambdaCoroutineCombinationAndRoundTrips() throws Exception {
+        // Plan step 9 combination: `is_lambda="true"` and `is_coroutine="true"` are orthogonal
+        // markers that coexist on one synthesized shell — alongside ordered <captures> and an
+        // await body. Each marker had independent coverage; the combination was uncovered.
+        var fn = new LirFunctionDef("_lambda_0", "entry");
+        fn.setLambda(true);
+        fn.setHidden(true);
+        fn.setStatic(true);
+        fn.setCoroutine(true);
+        fn.setReturnType(GdVariantType.VARIANT);
+        fn.addCapture(new LirCaptureDef("seed", new GdFloatType(), fn));
+        fn.createAndAddVariable("target", GdVariantType.VARIANT);
+        fn.createAndAddVariable("0", GdVariantType.VARIANT);
+        fn.addBasicBlock(new LirBasicBlock("entry", List.of(
+                new AwaitInsn("0", "target"),
+                new ReturnInsn(null)
+        )));
+
+        var cls = new LirClassDef("Hero", "Node", false, false, Map.of(), List.of(), List.of(), List.of(fn));
+        var module = new LirModule("m", List.of(cls));
+        var xml = new DomLirSerializer().serializeToString(module);
+
+        assertTrue(xml.contains("is_lambda=\"true\""), xml);
+        assertTrue(xml.contains("is_coroutine=\"true\""), xml);
+        assertTrue(xml.contains("<capture name=\"seed\" type=\"float\"/>")
+                || xml.contains("<capture name=\"seed\" type=\"float\" />"), xml);
+        assertTrue(xml.contains("$0 = await $target;"), xml);
+
+        var parsed = new DomLirParser(new gd.script.gdcc.scope.ClassRegistry(
+                gd.script.gdcc.gdextension.ExtensionApiLoader.loadDefault()
+        )).parse(xml);
+        var parsedFn = parsed.getClassDefs().getFirst().getFunctions().getFirst();
+        var parsedAwait = assertInstanceOf(
+                AwaitInsn.class,
+                parsedFn.getBasicBlock("entry").getNonTerminatorInstructions().getFirst()
+        );
+        assertAll(
+                () -> assertTrue(parsedFn.isLambda()),
+                () -> assertTrue(parsedFn.isCoroutine()),
+                () -> assertEquals(1, parsedFn.getCaptureCount()),
+                () -> assertEquals("seed", parsedFn.getCaptureList().getFirst().getName()),
+                () -> assertEquals("0", parsedAwait.resultId()),
+                () -> assertEquals("target", parsedAwait.operandId())
+        );
+    }
+
+    @Test
     public void serialize_module_coroutineDefaultsToFalseAndRoundTrips() throws Exception {
         // Plain sync function: attribute serializes as false and parses back false.
         var fn = new LirFunctionDef("sync_fn", "entry");

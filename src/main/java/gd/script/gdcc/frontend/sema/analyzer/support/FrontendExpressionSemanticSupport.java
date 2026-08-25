@@ -916,8 +916,9 @@ public final class FrontendExpressionSemanticSupport {
 
     /// Dedicated await classifier (`frontend_await_minicoro_plan.md` §3.5). The operand is resolved
     /// through the nested resolver first and its non-stable outcome propagates unchanged.
-    /// `failClosedBoundaryReason` is non-null when the await sits in a lambda body or property
-    /// initializer: the MVP keeps those contexts fail-closed after the operand itself was resolved.
+    /// `failClosedBoundaryReason` is non-null when the await sits in a property initializer:
+    /// that context stays fail-closed after the operand itself was resolved (lambda bodies were
+    /// unblocked by plan step 9 and route through the normal owner marking).
     ///
     /// Exact calls to a GDCC function classify as `CALL` with a provisional callee return type
     /// (`Variant` for void callees); whether the callee is a coroutine is decided by the post-suite

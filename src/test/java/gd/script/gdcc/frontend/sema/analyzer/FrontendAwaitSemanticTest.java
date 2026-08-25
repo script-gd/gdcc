@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdparser.frontend.ast.AwaitExpression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
@@ -277,7 +278,7 @@ class FrontendAwaitSemanticTest {
     }
 
     @Test
-    void awaitInsideLambdaFailsAndKeepsOtherSubtreesWorking() throws Exception {
+    void awaitInsideLambdaMarksLambdaOwnerOnlyAndKeepsOtherSubtreesWorking() throws Exception {
         var analyzed = analyze("await_inside_lambda.gd", """
                 class_name AwaitInsideLambda
                 extends Node
@@ -294,12 +295,22 @@ class FrontendAwaitSemanticTest {
 
         var unsupported = diagnosticsByCategory(analyzed.diagnostics(), "sema.unsupported_expression_route");
         var coroutineNames = coroutineNames(analyzed);
+        var lambdaOwners = analyzed.analysisData().coroutineLambdaOwners();
+        // Identity pinning: the marked owner must be exactly the lambda declared inside `bad`
+        // (its shell does not exist at sema time; the lowering bridge asserts the shell side).
+        var badFunction = findFunction(analyzed.ast(), "bad");
+        assertNotNull(badFunction, "function 'bad' must exist");
+        var lambdaInBad = findLambda(badFunction);
+        assertNotNull(lambdaInBad, "function 'bad' must contain the lambda");
+        var lambdaInBadFinal = lambdaInBad;
         assertAll(
-                () -> assertTrue(analyzed.diagnostics().hasErrors(), analyzed.diagnostics()::toString),
-                () -> assertTrue(
-                        unsupported.stream().anyMatch(d -> d.message().contains("lambda bodies")),
-                        analyzed.diagnostics()::toString
-                ),
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics()::toString),
+                () -> assertTrue(unsupported.isEmpty(), analyzed.diagnostics()::toString),
+                // Attribution is pinned in both directions: the lambda owner (by AST identity)
+                // is marked, while the enclosing named function `bad` stays unmarked — a marking
+                // that leaked through `enclosingCallable()` would wrongly turn `bad` into one.
+                () -> assertEquals(1, lambdaOwners.size(), analyzed.diagnostics()::toString),
+                () -> assertTrue(lambdaOwners.contains(lambdaInBadFinal)),
                 () -> assertFalse(coroutineNames.contains("bad")),
                 () -> assertTrue(coroutineNames.contains("good"))
         );
@@ -793,6 +804,19 @@ class FrontendAwaitSemanticTest {
         }
         for (var child : node.getChildren()) {
             var found = findFunction(child, name);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private static LambdaExpression findLambda(@NotNull Node node) {
+        if (node instanceof LambdaExpression lambdaExpression) {
+            return lambdaExpression;
+        }
+        for (var child : node.getChildren()) {
+            var found = findLambda(child);
             if (found != null) {
                 return found;
             }

@@ -1,6 +1,4 @@
-<#macro lambdaCaptureName classDef func>
-${classDef.name}_Capture_${func.name}
-</#macro>
+<#macro lambdaCaptureName classDef func>${classDef.name}_Capture_${func.name}</#macro>
 <#macro funcHeader helper classDef func>
 <#-- @ftlvariable name="func" type="gd.script.gdcc.scope.FunctionDef" -->
 <#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
@@ -9,6 +7,21 @@ ${helper.renderGdTypeInC(func.returnType)} ${classDef.name}_${func.name}(
         ${helper.renderGdTypeRefInC(param.type)} $${param.name}<#if param_has_next || func.captureCount gt 0>,</#if>
     </#list>
     <#if func.captureCount gt 0>
+        <@lambdaCaptureName classDef func/>* _capture
+    </#if>
+)</#macro>
+<#-- Coroutine start thunk signature (plan §3.2): single declaration source shared by the
+     coroutine section prototype and the forward declaration a coroutine lambda's call_func
+     needs. Capturing lambdas take the borrowed capture block as the `_capture` tail parameter
+     (per-call copy into the state frame happens inside the thunk); captureless ones omit it. -->
+<#macro coroStartThunkHeader helper classDef func>
+<#-- @ftlvariable name="func" type="gd.script.gdcc.scope.FunctionDef" -->
+<#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
+godot_Object* ${helper.renderCoroStartThunkName(classDef, func)}(
+    <#list func.parameters as param>
+        ${helper.renderGdTypeRefInC(param.type)} $${param.name}<#if param_has_next || (func.lambda && func.captureCount gt 0)>,</#if>
+    </#list>
+    <#if func.lambda && func.captureCount gt 0>
         <@lambdaCaptureName classDef func/>* _capture
     </#if>
 )</#macro>

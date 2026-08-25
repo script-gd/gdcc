@@ -16,8 +16,9 @@ import java.util.Objects;
 /// local, and the `_co` minicoro parameter of the body function.
 ///
 /// Frame layout recap: typed parameter fields are the only owning storage for parameters
-/// (no parameter C slots exist in the body), and the typed return slot plus its initialized
-/// flag live next to the common `gdcc_coro_state_header`.
+/// (no parameter C slots exist in the body), coroutine-lambda capture fields follow the same
+/// discipline (copied per call by the start thunk, destroyed by `free_instance`), and the typed
+/// return slot plus its initialized flag live next to the common `gdcc_coro_state_header`.
 public record CCoroutineFrameContext(@NotNull String stateStructName) {
     /// Body-function local holding the state wrapper pointer (`mco_get_user_data(_co)`).
     public static final String FRAME_LOCAL = "_coro_state";
@@ -31,6 +32,11 @@ public record CCoroutineFrameContext(@NotNull String stateStructName) {
     public static final String RET_INITIALIZED_FIELD = "_coro_ret_initialized";
     /// Typed parameter field prefix; the LIR parameter id (= source name) follows verbatim.
     public static final String PARAM_FIELD_PREFIX = "_coro_param_";
+    /// Typed capture field prefix of a coroutine lambda (plan 第九步): the start thunk copies
+    /// each `_capture->name` field into its own owning frame field at the call boundary, and the
+    /// body addresses those fields exactly like parameter fields. The LIR capture id (= source
+    /// name) follows verbatim.
+    public static final String CAPTURE_FIELD_PREFIX = "_coro_capture_";
 
     public CCoroutineFrameContext {
         Objects.requireNonNull(stateStructName, "stateStructName must not be null");
@@ -39,6 +45,11 @@ public record CCoroutineFrameContext(@NotNull String stateStructName) {
     /// C expression of the typed parameter frame field for `variable` (must be a parameter).
     public static @NotNull String paramFieldAccessExpr(@NotNull LirVariable variable) {
         return FRAME_LOCAL + "->" + PARAM_FIELD_PREFIX + variable.id();
+    }
+
+    /// C expression of the typed capture frame field for `variable` (must be a lambda capture).
+    public static @NotNull String captureFieldAccessExpr(@NotNull LirVariable variable) {
+        return FRAME_LOCAL + "->" + CAPTURE_FIELD_PREFIX + variable.id();
     }
 
     /// C expression of the coroutine's own common header, used by await/cancel rendering.

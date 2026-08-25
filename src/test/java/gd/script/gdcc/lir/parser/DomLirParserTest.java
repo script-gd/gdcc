@@ -586,6 +586,49 @@ public class DomLirParserTest {
     }
 
     @Test
+    public void parse_lambdaCoroutineCombinationFromXml() throws Exception {
+        // Plan step 9 combination, parse direction pinned independently of the serializer:
+        // `is_lambda="true"` + `is_coroutine="true"` on one shell with ordered captures and an
+        // await body must both survive.
+        var xml = """
+                                <ir>
+                                  <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                                    <functions>
+                                      <function name="_lambda_0" is_static="true" is_abstract="false" is_lambda="true" is_vararg="false" is_hidden="true" is_coroutine="true">
+                                        <parameters/>
+                                        <captures>
+                                          <capture name="seed" type="float"/>
+                                        </captures>
+                                        <return_type type="Variant"/>
+                                        <variables>
+                                          <variable id="target" type="Variant"/>
+                                          <variable id="0" type="Variant"/>
+                                        </variables>
+                                        <basic_blocks entry="entry"><basic_block id="entry">$0 = await $target;
+                return;</basic_block></basic_blocks>
+                                      </function>
+                                    </functions>
+                                  </class_def>
+                                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var mod = parser.parse(new StringReader(xml));
+        var fn = mod.getClassDefs().getFirst().getFunctions().getFirst();
+        var awaitInsn = assertInstanceOf(AwaitInsn.class,
+                fn.getBasicBlock("entry").getNonTerminatorInstructions().getFirst());
+
+        assertAll(
+                () -> assertTrue(fn.isLambda()),
+                () -> assertTrue(fn.isCoroutine()),
+                () -> assertEquals(1, fn.getCaptureCount()),
+                () -> assertEquals("seed", fn.getCaptureList().getFirst().getName()),
+                () -> assertEquals("0", awaitInsn.resultId()),
+                () -> assertEquals("target", awaitInsn.operandId())
+        );
+    }
+
+    @Test
     public void parse_awaitWithoutResultFailsFast() throws Exception {
         // XML-level negative: the textual form `await $target;` has no result target and must
         // fail at parse time (result is REQUIRED by the LIR contract).

@@ -149,6 +149,70 @@ class FrontendAwaitInsnLoweringTest {
     }
 
     @Test
+    void lambdaAwaitUsesCaptureBackedCoroutineFrame() throws Exception {
+        var context = lowerModule("""
+                class_name AwaitLoweringLambdaCapture
+                extends Node
+
+                signal pinged
+
+                func watch():
+                    var seed := 40
+                    var cb := func():
+                        var resumed = await pinged
+                        return seed + 2
+                    cb.call()
+                """);
+        var lambdaShell = requireLambdaFunction(context, "_lambda_0");
+        var watch = requireFunction(context, "watch");
+        var awaitInsn = requireOnly(lambdaShell, AwaitInsn.class);
+
+        assertAll(
+                () -> assertTrue(lambdaShell.isLambda()),
+                () -> assertTrue(lambdaShell.isCoroutine(),
+                        "await in a lambda body marks the synthesized shell (plan step 9)"),
+                () -> assertFalse(watch.isCoroutine(),
+                        "the enclosing named function is not the suspend owner"),
+                () -> assertNotNull(lambdaShell.getCapture("seed"),
+                        "the capture plan survives coroutine marking; backend maps it to a frame field"),
+                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(lambdaShell, awaitInsn.resultId()),
+                        "0-param signal await resumes with Variant")
+        );
+    }
+
+    @Test
+    void nestedLambdaAwaitMarksInnermostLambdaOnly() throws Exception {
+        // The owner set is keyed by the lambda's own AST identity: a nested lambda's await must
+        // mark the inner shell, never the outer lambda or the enclosing named function — a
+        // marking derived from `FrontendLambdaPlan.enclosingCallable()` (nearest non-lambda
+        // callable) would wrongly leak outward.
+        var context = lowerModule("""
+                class_name AwaitLoweringNestedLambda
+                extends Node
+
+                signal pinged
+
+                func watch():
+                    var outer := func():
+                        var inner := func():
+                            var resumed = await pinged
+                        inner.call()
+                    outer.call()
+                """);
+        var outerShell = requireLambdaFunction(context, "_lambda_0");
+        var innerShell = requireLambdaFunction(context, "_lambda_1");
+        var watch = requireFunction(context, "watch");
+
+        assertAll(
+                () -> assertTrue(innerShell.isCoroutine(), "the inner lambda owns the await"),
+                () -> assertFalse(outerShell.isCoroutine(), "the outer lambda only invokes the inner Callable"),
+                () -> assertFalse(watch.isCoroutine()),
+                () -> assertEquals(1, count(innerShell, AwaitInsn.class)),
+                () -> assertEquals(0, count(outerShell, AwaitInsn.class))
+        );
+    }
+
+    @Test
     void voidCoroutineCallAwaitPublishesVariantResult() throws Exception {
         var context = lowerModule("""
                 class_name AwaitLoweringVoidCoroutineCall
@@ -659,6 +723,20 @@ class FrontendAwaitInsnLoweringTest {
                 .filter(function -> function.getName().equals(functionName))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Missing executable body function " + functionName));
+    }
+
+    /// Lambda bodies lower under their synthesized `_lambda_<n>` shells (`LAMBDA_BODY` contexts),
+    /// so the ordinary executable-body lookup cannot see them.
+    private static @NotNull LirFunctionDef requireLambdaFunction(
+            @NotNull FrontendLoweringContext context,
+            @NotNull String functionName
+    ) {
+        return context.requireFunctionLoweringContexts().stream()
+                .filter(candidate -> candidate.kind() == FunctionLoweringContext.Kind.LAMBDA_BODY)
+                .map(FunctionLoweringContext::targetFunction)
+                .filter(function -> function.getName().equals(functionName))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing lambda body function " + functionName));
     }
 
     private static @NotNull GdType requireVariableType(

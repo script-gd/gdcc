@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.AwaitExpression;
 import dev.superice.gdparser.frontend.ast.ForStatement;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -77,6 +78,13 @@ public final class FrontendAnalysisData {
     /// (await-of-coroutine-call). The set is only read after suite resolution completes, so the
     /// per-owner export-batch discipline does not apply to it.
     private final @NotNull Set<LirFunctionDef> coroutineFunctions;
+    /// Monotonic identity set of lambda owners (`LambdaExpression`) whose bodies directly contain
+    /// a real await or await a call to another coroutine (`frontend_await_minicoro_plan.md` 第九步).
+    /// Keyed by AST identity because the synthetic `_lambda_<n>` shell does not exist during sema;
+    /// the lowering function-preparation pass bridges each marked owner to its freshly synthesized
+    /// shell (`setCoroutine(true)` + `markCoroutineFunction(shell)` — both are required: the former
+    /// is the LIR/backend fact, the latter is the lowering membership source).
+    private final @NotNull Set<LambdaExpression> coroutineLambdaOwners;
     /// Transient working list of await expressions whose operand is an exact call: `EXPR_TYPE`
     /// publishes a provisional callee-return result, but later owners can still determine that the
     /// callee is a coroutine. The post-suite fixed point consumes and clears these entries, refines
@@ -99,6 +107,7 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans,
             @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans,
             @NotNull Set<LirFunctionDef> coroutineFunctions,
+            @NotNull Set<LambdaExpression> coroutineLambdaOwners,
             @NotNull List<FrontendAwaitCallPending> awaitCallPendings
     ) {
         this.annotationsByAst = Objects.requireNonNull(annotationsByAst, "annotationsByAst must not be null");
@@ -127,6 +136,10 @@ public final class FrontendAnalysisData {
         );
         this.lambdaPlans = Objects.requireNonNull(lambdaPlans, "lambdaPlans must not be null");
         this.coroutineFunctions = Objects.requireNonNull(coroutineFunctions, "coroutineFunctions must not be null");
+        this.coroutineLambdaOwners = Objects.requireNonNull(
+                coroutineLambdaOwners,
+                "coroutineLambdaOwners must not be null"
+        );
         this.awaitCallPendings = Objects.requireNonNull(awaitCallPendings, "awaitCallPendings must not be null");
     }
 
@@ -146,6 +159,7 @@ public final class FrontendAnalysisData {
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
+                Collections.newSetFromMap(new IdentityHashMap<>()),
                 Collections.newSetFromMap(new IdentityHashMap<>()),
                 new ArrayList<>()
         );
@@ -401,6 +415,31 @@ public final class FrontendAnalysisData {
     /// newly added so the await fixed-point pass can detect progress.
     public boolean markCoroutineFunction(@NotNull LirFunctionDef functionDef) {
         return coroutineFunctions.add(Objects.requireNonNull(functionDef, "functionDef must not be null"));
+    }
+
+    /// Read-only view of the lambda coroutine owner set; mutation goes through
+    /// `markCoroutineLambdaOwner` / `markCoroutineOwner`. Consumed by the lowering
+    /// function-preparation pass when it synthesizes each lambda shell.
+    public @NotNull Set<LambdaExpression> coroutineLambdaOwners() {
+        return Collections.unmodifiableSet(coroutineLambdaOwners);
+    }
+
+    /// Marks a lambda owner as a coroutine by AST identity. Idempotent and monotonic; returns
+    /// true when the marking was newly added so the await fixed-point pass can detect progress.
+    public boolean markCoroutineLambdaOwner(@NotNull LambdaExpression lambdaExpression) {
+        return coroutineLambdaOwners.add(
+                Objects.requireNonNull(lambdaExpression, "lambdaExpression must not be null")
+        );
+    }
+
+    /// Marks an await's enclosing callable owner as a coroutine, dispatching on the owner shape:
+    /// named/constructor skeletons join `coroutineFunctions` directly; lambda owners join
+    /// `coroutineLambdaOwners` and are bridged to their shell during lowering preparation.
+    public boolean markCoroutineOwner(@NotNull FrontendAwaitCoroutineOwner owner) {
+        return switch (Objects.requireNonNull(owner, "owner must not be null")) {
+            case FrontendAwaitCoroutineOwner.NamedFunction(var function) -> markCoroutineFunction(function);
+            case FrontendAwaitCoroutineOwner.Lambda(var lambda) -> markCoroutineLambdaOwner(lambda);
+        };
     }
 
     /// Refines an exact-call await after the post-suite coroutine fixed point. This is required for

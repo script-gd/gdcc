@@ -92,12 +92,47 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
         schedule.setCoroutine(true);
         schedule.addParameter(new LirParameterDef("self", new GdObjectType("SyntaxWorker"), null, schedule));
         schedule.addParameter(new LirParameterDef("label", new GdStringType(), null, schedule));
+        schedule.addParameter(new LirParameterDef("seed", GdIntType.INT, null, schedule));
         schedule.createAndAddVariable("cb", new GdCallableType());
         var scheduleEntry = new LirBasicBlock("entry");
         scheduleEntry.appendInstruction(new ConstructLambdaInsn(
                 "cb",
                 "_lambda_0",
                 List.of(new LirInstruction.VariableOperand("self"), new LirInstruction.VariableOperand("label"))
+        ));
+
+        // Coroutine lambda (plan step 9): captures + an in-body await compile-verify the
+        // `_coro_capture_*` frame fields, the `_capture` start-thunk tail parameter, the
+        // forward-declaration ordering ahead of `call_func`, and the done/suspend dispatch —
+        // string anchors alone cannot see C declaration-order or type errors here.
+        var coroLambda = new LirFunctionDef("_lambda_1", "entry");
+        coroLambda.setLambda(true);
+        coroLambda.setHidden(true);
+        coroLambda.setStatic(true);
+        coroLambda.setCoroutine(true);
+        coroLambda.setReturnType(GdIntType.INT);
+        coroLambda.addCapture(new LirCaptureDef("self", new GdObjectType("SyntaxWorker"), coroLambda));
+        coroLambda.addCapture(new LirCaptureDef("seed", GdIntType.INT, coroLambda));
+        coroLambda.addCapture(new LirCaptureDef("label", GdStringType.STRING, coroLambda));
+        coroLambda.createAndAddVariable("dyn", GdVariantType.VARIANT);
+        coroLambda.createAndAddVariable("await_res", GdVariantType.VARIANT);
+        var coroLambdaEntry = new LirBasicBlock("entry");
+        coroLambdaEntry.appendInstruction(new AwaitInsn("await_res", "dyn"));
+        coroLambdaEntry.setTerminator(new ReturnInsn("seed"));
+        coroLambda.addBasicBlock(coroLambdaEntry);
+        workerClass.addFunction(coroLambda);
+
+        // Construct the coroutine lambda from the coroutine frame parameters (capture sources
+        // render as frame fields through the frame-aware copy path).
+        schedule.createAndAddVariable("cb2", new GdCallableType());
+        scheduleEntry.appendInstruction(new ConstructLambdaInsn(
+                "cb2",
+                "_lambda_1",
+                List.of(
+                        new LirInstruction.VariableOperand("self"),
+                        new LirInstruction.VariableOperand("seed"),
+                        new LirInstruction.VariableOperand("label")
+                )
         ));
         scheduleEntry.setTerminator(new ReturnInsn(null));
         schedule.addBasicBlock(scheduleEntry);

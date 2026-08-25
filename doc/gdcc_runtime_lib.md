@@ -135,7 +135,11 @@ extend the runtime-provided `godot_*` surface.
 This section freezes the runtime contract for `await` / stackful coroutines. The frontend/LIR
 surface is documented in `gdcc_low_ir.md` §Coroutine Instructions; ownership clauses live in
 `gdcc_ownership_lifecycle_spec.md` §3.10; the per-coroutine-function hidden state class naming
-contract lives in `module_impl/frontend/gdcc_facing_class_name_contract.md` §1.3.
+contract lives in `module_impl/frontend/gdcc_facing_class_name_contract.md` §1.3. Coroutine
+lambdas (`await` inside a lambda body, `frontend_await_minicoro_plan.md` step 9) required **no
+runtime changes**: their capture frame fields are filled and destroyed entirely by generated
+code (start thunk / `free_instance`), and the existing `gdcc_coro_state_desc` callback set
+already covers them.
 
 ### Vendored minicoro
 
