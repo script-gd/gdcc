@@ -16,6 +16,7 @@ import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
+import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
 import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
@@ -38,6 +39,7 @@ import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
@@ -82,6 +84,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendExpressionSemanticSupportTest {
@@ -1504,11 +1507,6 @@ class FrontendExpressionSemanticSupportTest {
         var literal = integerLiteral("1");
         var cases = List.of(
                 new RemainingExpressionCase(
-                        new AwaitExpression(identifier("signal_name"), TINY),
-                        FrontendExpressionTypeStatus.DEFERRED,
-                        "Await expression typing is deferred"
-                ),
-                new RemainingExpressionCase(
                         new PreloadExpression(stringLiteral("\"res://icon.svg\""), TINY),
                         FrontendExpressionTypeStatus.DEFERRED,
                         "Preload expression typing is deferred"
@@ -1603,6 +1601,246 @@ class FrontendExpressionSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, dictionaryResult.expressionType().status());
         assertEquals("Dictionary", dictionaryResult.expressionType().publishedType().getTypeName());
         assertNotNull(dictionaryResult.publishedContainerLiteralPlanOrNull());
+
+        // Await is no longer a deferred remaining route: it owns a dedicated classifier
+        // (`frontend_await_minicoro_plan.md` 第六步) and the generic bucket must reject it.
+        var awaitExpression = new AwaitExpression(identifier("signal_name"), TINY);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> support.resolveRemainingExplicitExpressionType(
+                        awaitExpression,
+                        nestedResolver,
+                        true,
+                        false
+                )
+        );
+    }
+
+    @Test
+    void resolveAwaitExpressionClassifiesSignalOperandsByParameterCount() throws Exception {
+        var support = newBareSupport();
+
+        var noParamSignal = new AwaitExpression(identifier("pinged"), TINY);
+        var noParamResult = support.resolveAwaitExpressionType(
+                noParamSignal,
+                (expression, finalizeWindow) -> FrontendExpressionType.resolved(new GdSignalType()),
+                _ -> null,
+                null,
+                false
+        );
+        assertAll(
+                () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.SIGNAL, noParamResult.route()),
+                () -> assertTrue(noParamResult.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, noParamResult.expressionType().status()),
+                () -> assertEquals("Variant", noParamResult.expressionType().publishedType().getTypeName())
+        );
+
+        var oneParamSignal = new AwaitExpression(identifier("pinged"), TINY);
+        var oneParamResult = support.resolveAwaitExpressionType(
+                oneParamSignal,
+                (expression, finalizeWindow) -> FrontendExpressionType.resolved(
+                        new GdSignalType(List.of(GdIntType.INT))
+                ),
+                _ -> null,
+                null,
+                false
+        );
+        assertAll(
+                () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.SIGNAL, oneParamResult.route()),
+                () -> assertEquals("int", oneParamResult.expressionType().publishedType().getTypeName())
+        );
+
+        var multiParamSignal = new AwaitExpression(identifier("pinged"), TINY);
+        var multiParamResult = support.resolveAwaitExpressionType(
+                multiParamSignal,
+                (expression, finalizeWindow) -> FrontendExpressionType.resolved(
+                        new GdSignalType(List.of(GdIntType.INT, GdStringType.STRING))
+                ),
+                _ -> null,
+                null,
+                false
+        );
+        var multiParamType = assertInstanceOf(
+                GdArrayType.class,
+                multiParamResult.expressionType().publishedType()
+        );
+        assertAll(
+                () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.SIGNAL, multiParamResult.route()),
+                // `Array[Variant]` is the generic array in this type system (Variant element).
+                () -> assertTrue(multiParamType.isGenericArray()),
+                () -> assertInstanceOf(GdVariantType.class, multiParamType.getValueType())
+        );
+    }
+
+    @Test
+    void resolveAwaitExpressionClassifiesDynamicAndVariantOperandsAsVariant() throws Exception {
+        var support = newBareSupport();
+
+        var dynamicAwait = new AwaitExpression(identifier("target"), TINY);
+        var dynamicResult = support.resolveAwaitExpressionType(
+                dynamicAwait,
+                (expression, finalizeWindow) -> FrontendExpressionType.dynamic("runtime-dynamic operand"),
+                _ -> null,
+                null,
+                false
+        );
+        assertAll(
+                () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.DYNAMIC, dynamicResult.route()),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, dynamicResult.expressionType().status()),
+                () -> assertEquals("Variant", dynamicResult.expressionType().publishedType().getTypeName())
+        );
+
+        // A statically Variant-typed operand takes the same runtime-dynamic route, mirroring the
+        // unary/binary rule that exact Variant values stay runtime-dynamic.
+        var variantAwait = new AwaitExpression(identifier("target"), TINY);
+        var variantResult = support.resolveAwaitExpressionType(
+                variantAwait,
+                resolvedVariantResolver(),
+                _ -> null,
+                null,
+                false
+        );
+        assertAll(
+                () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.DYNAMIC, variantResult.route()),
+                () -> assertEquals("Variant", variantResult.expressionType().publishedType().getTypeName())
+        );
+    }
+
+    @Test
+    void resolveAwaitExpressionClassifiesExactCallOperandsAsPendingCall() throws Exception {
+        var support = newBareSupport();
+        var callee = new LirFunctionDef("worker");
+        callee.setReturnType(GdIntType.INT);
+        var operandCall = FrontendResolvedCall.resolved(
+                "worker",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendReceiverKind.INSTANCE,
+                null,
+                null,
+                GdIntType.INT,
+                List.of(),
+                callee
+        );
+        var callOperand = new CallExpression(identifier("worker"), List.of(), TINY);
+
+        var result = support.resolveAwaitExpressionType(
+                new AwaitExpression(callOperand, TINY),
+                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdIntType.INT),
+                expression -> expression == callOperand ? operandCall : null,
+                null,
+                false
+        );
+        assertAll(
+                () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.CALL, result.route()),
+                () -> assertSame(operandCall, result.operandCallOrNull()),
+                () -> assertEquals("int", result.expressionType().publishedType().getTypeName())
+        );
+
+        // Void callees publish Variant: the resume channel yields nil either way.
+        var voidCall = FrontendResolvedCall.resolved(
+                "worker",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendReceiverKind.INSTANCE,
+                null,
+                null,
+                GdVoidType.VOID,
+                List.of(),
+                callee
+        );
+        var voidResult = support.resolveAwaitExpressionType(
+                new AwaitExpression(callOperand, TINY),
+                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdVoidType.VOID),
+                expression -> expression == callOperand ? voidCall : null,
+                null,
+                false
+        );
+        assertEquals("Variant", voidResult.expressionType().publishedType().getTypeName());
+    }
+
+    /// Unannotated callees resolve to a `Variant` return, and that combination must still take the
+    /// call route: redundant-await detection and coroutine marking depend on the pending call.
+    @Test
+    void resolveAwaitExpressionKeepsCallRouteWhenCalleeReturnsVariant() throws Exception {
+        var support = newBareSupport();
+        var callee = new LirFunctionDef("worker");
+        var variantCall = FrontendResolvedCall.resolved(
+                "worker",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendReceiverKind.INSTANCE,
+                null,
+                null,
+                GdVariantType.VARIANT,
+                List.of(),
+                callee
+        );
+        var callOperand = new CallExpression(identifier("worker"), List.of(), TINY);
+
+        var result = support.resolveAwaitExpressionType(
+                new AwaitExpression(callOperand, TINY),
+                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdVariantType.VARIANT),
+                expression -> expression == callOperand ? variantCall : null,
+                null,
+                false
+        );
+        assertAll(
+                () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.CALL, result.route()),
+                () -> assertSame(variantCall, result.operandCallOrNull()),
+                () -> assertEquals("Variant", result.expressionType().publishedType().getTypeName())
+        );
+    }
+
+    @Test
+    void resolveAwaitExpressionRejectsPlainValuesAndFailClosedBoundaries() throws Exception {
+        var support = newBareSupport();
+
+        var plainValueResult = support.resolveAwaitExpressionType(
+                new AwaitExpression(identifier("counter"), TINY),
+                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdIntType.INT),
+                _ -> null,
+                null,
+                false
+        );
+        assertAll(
+                () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.NONE, plainValueResult.route()),
+                () -> assertTrue(plainValueResult.rootOwnsOutcome()),
+                () -> assertEquals(
+                        FrontendExpressionTypeStatus.UNSUPPORTED,
+                        plainValueResult.expressionType().status()
+                ),
+                () -> assertTrue(plainValueResult.expressionType().detailReason().contains("not a Signal"))
+        );
+
+        var boundaryResult = support.resolveAwaitExpressionType(
+                new AwaitExpression(identifier("pinged"), TINY),
+                (expression, finalizeWindow) -> FrontendExpressionType.resolved(new GdSignalType()),
+                _ -> null,
+                "Await expressions are not supported inside lambda bodies yet",
+                false
+        );
+        assertAll(
+                () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.NONE, boundaryResult.route()),
+                () -> assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, boundaryResult.expressionType().status()),
+                () -> assertTrue(boundaryResult.expressionType().detailReason().contains("lambda bodies"))
+        );
+    }
+
+    @Test
+    void resolveAwaitExpressionPropagatesOperandDependencyIssues() throws Exception {
+        var support = newBareSupport();
+        var dependencyIssue = FrontendExpressionType.blocked(GdIntType.INT, "operand still blocked");
+        var result = support.resolveAwaitExpressionType(
+                new AwaitExpression(identifier("blocked_operand"), TINY),
+                (expression, finalizeWindow) -> dependencyIssue,
+                _ -> null,
+                null,
+                false
+        );
+        assertAll(
+                () -> assertEquals(FrontendExpressionSemanticSupport.AwaitRoute.NONE, result.route()),
+                // Propagated outcomes stay owned by the upstream dependency, not by the await root.
+                () -> assertFalse(result.rootOwnsOutcome()),
+                () -> assertSame(dependencyIssue, result.expressionType())
+        );
     }
 
     @Test

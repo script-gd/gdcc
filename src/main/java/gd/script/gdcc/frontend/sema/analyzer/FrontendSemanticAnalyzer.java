@@ -35,6 +35,10 @@ public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer;
     private final @NotNull FrontendInterfacePhase interfacePhase;
     private final @NotNull FrontendSuiteResolver suiteResolver;
+    /// Post-suite await coroutine fixed-point pass. Instantiated internally: it is a pure function
+    /// of the published analysis data and needs no test seam beyond the pipeline itself.
+    private final @NotNull FrontendAwaitCoroutineAnalyzer awaitCoroutineAnalyzer =
+            new FrontendAwaitCoroutineAnalyzer();
 
     public FrontendSemanticAnalyzer() {
         this(
@@ -229,6 +233,13 @@ public final class FrontendSemanticAnalyzer {
         // SuiteResolver's per-owner export transaction.
         var interfaceSurface = interfacePhase.analyze(classRegistry, analysisData);
         suiteResolver.resolve(interfaceSurface, classRegistry, analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Await coroutine resolution runs once all callable owners resolved: signal/dynamic awaits
+        // already marked their enclosing callables during EXPR_TYPE, and this pass propagates
+        // transitive await-of-coroutine-call markings to a fixed point, then owns the
+        // `sema.redundant_await` warnings for statically known non-coroutine callees.
+        awaitCoroutineAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
         // Annotation-usage validation consumes retained annotations plus the published class/scope

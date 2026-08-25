@@ -9,6 +9,7 @@ import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendPublishedFactTypeGuard;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
+import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
@@ -19,8 +20,11 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /// Unified frontend analysis data container shared across semantic phases.
 ///
@@ -63,6 +67,21 @@ public final class FrontendAnalysisData {
     /// Published lambda identity/capture plans keyed by `LambdaExpression`. Inventory never
     /// publishes placeholder plans; the first entry is the complete `LAMBDA_RESOLUTION` payload.
     private final @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans;
+    /// Monotonic identity set of GDCC callables proven to be coroutines, i.e. directly containing a
+    /// real await (signal/dynamic route) or awaiting a call to another coroutine. Keyed by the
+    /// callable's skeleton `LirFunctionDef` — not by AST node — because every downstream consumer
+    /// (await coroutine fixed-point, compile-gate position checks, lowering skeleton pass) only ever
+    /// holds the `FunctionDef` from a resolved call or the lowering shell. Entries are added during
+    /// `EXPR_TYPE` (signal/dynamic awaits) and by the post-suite await coroutine fixed-point pass
+    /// (await-of-coroutine-call). The set is only read after suite resolution completes, so the
+    /// per-owner export-batch discipline does not apply to it.
+    private final @NotNull Set<LirFunctionDef> coroutineFunctions;
+    /// Transient working list of await expressions whose operand is an exact call: the await's
+    /// result type is already published during `EXPR_TYPE` (callee return type), but whether the
+    /// callee is a coroutine can depend on markings published by later owners, so the
+    /// coroutine-vs-redundant decision is deferred to the post-suite fixed-point pass that consumes
+    /// and clears these entries. Never a published fact for lowering.
+    private final @NotNull List<FrontendAwaitCallPending> awaitCallPendings;
 
     private FrontendAnalysisData(
             @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst,
@@ -77,7 +96,9 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans,
             @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets,
             @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans,
-            @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans
+            @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans,
+            @NotNull Set<LirFunctionDef> coroutineFunctions,
+            @NotNull List<FrontendAwaitCallPending> awaitCallPendings
     ) {
         this.annotationsByAst = Objects.requireNonNull(annotationsByAst, "annotationsByAst must not be null");
         this.skippedSubtreeRoots = Objects.requireNonNull(
@@ -104,6 +125,8 @@ public final class FrontendAnalysisData {
                 "containerLiteralPlans must not be null"
         );
         this.lambdaPlans = Objects.requireNonNull(lambdaPlans, "lambdaPlans must not be null");
+        this.coroutineFunctions = Objects.requireNonNull(coroutineFunctions, "coroutineFunctions must not be null");
+        this.awaitCallPendings = Objects.requireNonNull(awaitCallPendings, "awaitCallPendings must not be null");
     }
 
     /// Creates an empty analysis data carrier with the full side-table topology already present.
@@ -121,7 +144,9 @@ public final class FrontendAnalysisData {
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
-                new FrontendAstSideTable<>()
+                new FrontendAstSideTable<>(),
+                Collections.newSetFromMap(new IdentityHashMap<>()),
+                new ArrayList<>()
         );
     }
 
@@ -364,6 +389,35 @@ public final class FrontendAnalysisData {
 
     public @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans() {
         return lambdaPlans;
+    }
+
+    /// Read-only view of the coroutine callable set; mutation goes through `markCoroutineFunction`.
+    public @NotNull Set<LirFunctionDef> coroutineFunctions() {
+        return Collections.unmodifiableSet(coroutineFunctions);
+    }
+
+    /// Marks a callable as a coroutine. Idempotent and monotonic; returns true when the marking was
+    /// newly added so the await fixed-point pass can detect progress.
+    public boolean markCoroutineFunction(@NotNull LirFunctionDef functionDef) {
+        return coroutineFunctions.add(Objects.requireNonNull(functionDef, "functionDef must not be null"));
+    }
+
+    /// Working list consumed by the post-suite await coroutine pass; not a stable fact. Mutation
+    /// goes through `addAwaitCallPending` / `drainAwaitCallPendings` only.
+    public @NotNull List<FrontendAwaitCallPending> awaitCallPendings() {
+        return Collections.unmodifiableList(awaitCallPendings);
+    }
+
+    /// Returns a snapshot of all recorded await-call pendings and clears the working list; used by
+    /// the post-suite fixed-point pass as the single consumer.
+    public @NotNull List<FrontendAwaitCallPending> drainAwaitCallPendings() {
+        var drained = List.copyOf(awaitCallPendings);
+        awaitCallPendings.clear();
+        return drained;
+    }
+
+    public void addAwaitCallPending(@NotNull FrontendAwaitCallPending pending) {
+        awaitCallPendings.add(Objects.requireNonNull(pending, "pending must not be null"));
     }
 
     /// Refreshes published local bindings after a verified local-slot rewrite.

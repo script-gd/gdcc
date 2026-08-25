@@ -353,7 +353,25 @@ $<result_id> = await $<operand_id>
 
 ### 第六步：frontend 语义与诊断分类（compile gate 保持拦截）
 
-- 状态：未开始
+- 状态：**已完成**（2026-08-25）
+- 完成内容：
+  - **await 专用分类器**：`FrontendExpressionSemanticSupport.resolveAwaitExpressionType(...)`（纯函数，不发诊断不写表）——operand 先经 nested resolver 解析、非稳定结果原样传播；`DYNAMIC`/静态 `Variant` operand → `RESOLVED(Variant)`（对齐 unary/binary 的 Variant runtime-dynamic 先例）；`GdSignalType` → 0 参 `Variant`/1 参声明类型/多参 `GdArrayType(Variant)`（本类型系统中即 generic Array）；exact call → 立即发布 callee 返回类型（void callee 一律 `Variant`）并携带 `FrontendResolvedCall` 交给 owner；其余静态已知值 → `UNSUPPORTED`。`resolveRemainingExplicitExpressionType` 的 await 分支已移除并转入 dedicated-resolver 拒绝清单。
+  - **owner 接线**（`FrontendBodyOwnerProcedures`）：`computeExpressionType` 新增 `AwaitExpression` 分支；fail-closed 边界（lambda body / property initializer → `sema.unsupported_expression_route`，由既有 `reportExpressionDiagnostic` 自动发射）；signal/dynamic 路由经 `requireEnclosingCallableFunction()`（name+static+arity 匹配 skeleton，同 `FrontendCallableReturnTypeSupport` 模式）把 enclosing `LirFunctionDef` 记入 `FrontendAnalysisData.coroutineFunctions`；exact-call operand 一律记录 `FrontendAwaitCallPending`（新 record：await 节点/enclosing/callee/callKind/sourcePath）——**不做现场协程判定**，因为 callee body 可能晚于 caller 解析。
+  - **跨 owner 不动点**：新 `FrontendAwaitCoroutineAnalyzer` 接入 `FrontendSemanticAnalyzer` 管线（suite resolution 之后、annotation usage 之前；内部实例化，无注入构造签名变更）：单调集合上迭代至无进展，callee 已标记 → 标记 enclosing（传递链、前向引用均覆盖）；static coroutine call 消耗但不标记不告警（compile gate 拥有该诊断）；其余剩余 pending → `sema.redundant_await` warning（engine/builtin/utility/GDCC 非协程 callee 统一单出口；非 `FunctionDef` 锚点的 exact call 由 owner 立即告警）。跨模块场景不存在（当前无跨模块元数据共享，`ClassRegistry` 仅含本模块 GDCC 类），无需处理。
+  - **compile gate**（`FrontendCompileCheckAnalyzer`）：`walkExpression` 新增 `AwaitExpression` 专用 blocker（分类合法但 lowering 未就绪；跳过 operand 子树避免重复诊断）；新增语句根位置跟踪（`walkingStatementRootExpression`，仅 `ExpressionStatement` 直接根表达式消费）+ `checkCoroutineCallPosition`：callee 经 `resolvedCalls`（bare call 键 `CallExpression`、链式键末位 `AttributeCallStep`）命中 `coroutineFunctions` 时——static → 任意位置报 `sema.compile_check`；instance 非语句根 → 报「is a coroutine, so it can't be called without 'await'…」（对齐 Godot）；语句根 instance → 放行（fire-and-forget）。
+  - **side table**：`FrontendAnalysisData` 新增 `coroutineFunctions`（`LirFunctionDef` identity 单调集合，键选型理由：所有消费方持有的都是 `FunctionDef`——resolvedCall declarationSite / lowering shell；非 AST-keyed 因 `FrontendAstSideTable` 拒绝非 Node 键且无需 patch 冲突检测）与 `awaitCallPendings`（transient 工作列表，post-pass 消费并清空，非 lowering 事实）。
+  - **文档**：`diagnostic_manager.md` 登记 `sema.redundant_await`。
+  - 测试：`FrontendAwaitSemanticTest`（新，14 tests：signal 0/1/多参与 engine signal、dynamic operand、协程调用（caller-before-callee 前向引用）、void 协程 Variant 结果、三级传递链、GDCC/engine 非协程 warning 穿透且不标记、静态纯值/lambda/property-init 负例（category + 坏子树跳过 + 兄弟子树继续）、compile gate 四例（专用 blocker、value 位置、语句根放行、static 任意位置））；`FrontendExpressionSemanticSupportTest` 翻转 deferred 断言并新增 5 个分类器纯单测（signal 参数计数、dynamic/Variant、exact call pending 携带、纯值/边界拒绝、依赖传播 rootOwnsOutcome=false）。frontend 包 1399 tests 全绿。
+  - 已知边界说明：property initializer 内 await 若 operand 本身被 property-init MVP 规则 BLOCKED（如实例 signal），诊断由既有上游规则承担，boundary error 不再重复发射（依赖传播优先）；`_init` 内 await 未特殊禁止（计划未列），沿用一般规则。参数默认值不经过 body 表达式 typing，既有 fail-closed 边界不变。
+- review-expert-a 一轮复核修复（2026-08-25，REQUEST_CHANGES → 全项处理）：
+  - **[BLOCKER]** 分类顺序修正：exact call 路由（含 callee 返回 `Variant`，即未标注返回类型的常态）现在先于静态 Variant 值判定；仅 `DYNAMIC` status 或无 call 事实的静态 `Variant` 值走 DYNAMIC 路由，且 pending 只记录 `RESOLVED` call。修复前 `func inner(): return 1` + `await inner()` 会被误标协程且漏发 `sema.redundant_await`。
+  - **[HIGH]** compile gate 位置检查改按 call 锚点驱动：链式中间 `AttributeCallStep`（如 `inner().name`、`obj.coro().other()`）在 nested walk 中以 value 位置检查；锚点 identity 去重集防止链根末步被语句根检查与 nested walk 重复诊断。
+  - **[HIGH]** `walkingStatementRootExpression` 改为 walkExpression 入口即消费到局部变量并立即清零，lambda body 等嵌套形态不再继承语句根特权（防御性修复：裸 lambda 语句根当前在前端为 unsupported 形态）。
+  - **[MEDIUM]** `await` 静态协程调用补发专用 static blocker：gate 的 `AwaitExpression` 分支在通用 await blocker 之外，对 operand 的 static coroutine call 锚点补发「Static coroutine function」诊断（不动点 pass 对该 pending 静默消耗的合同不变）。
+  - **[MEDIUM]** 补齐负例组合测试：未标注返回/`-> Variant` callee 的 call 路由、await 静态协程、lambda body 内协程调用（`signal.connect(func(): ...)` 支持形态）、容器/return 嵌套 value 位置、链式中间步、链式语句根放行。
+  - **[SUGGESTION]** `awaitCallPendings()` 改为 unmodifiable view + `drainAwaitCallPendings()` 单消费者语义。
+  - 顺带发现（预存问题，未在本步修复）：**裸 lambda 作为语句根**（`func(): ...` 直接作为 ExpressionStatement）会在 `FrontendSuiteResolver` 崩溃（`IllegalStateException: Function skeleton has not been published for <anonymous>`），与 await 无关，需另行立项。
+- review-expert-a 二轮复核（2026-08-25）：**APPROVE**，五条原发现全部 RESOLVED；按复核建议补 `analyzeForCompileRejectsIntermediateAttributeCallStep`（`self.inner().name` 真正命中中间 `AttributeCallStep` 路径；`inner().name` 实际覆盖的是 CallExpression-as-object 形态，两测例并存）。复核确认留给第八步的已知点：await 整棵 operand 被 skip，解封 await 时需 walk operand 子树但跳过主 call 锚点。
 
 目标：
 

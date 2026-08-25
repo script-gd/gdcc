@@ -5,6 +5,7 @@ import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
+import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
@@ -27,6 +28,7 @@ import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -125,6 +127,34 @@ public final class FrontendExpressionSemanticSupport {
                 @Nullable FrontendResolvedCall publishedCallOrNull
         ) {
             this(expressionType, rootOwnsOutcome, publishedCallOrNull, null, null);
+        }
+    }
+
+    /// Await classification routes per `frontend_await_minicoro_plan.md` §3.5.
+    public enum AwaitRoute {
+        /// No classification happened: the outcome was propagated from the operand or produced by
+        /// the fail-closed context boundary / unsupported-operand rule.
+        NONE,
+        /// Operand is a statically known `Signal` value; result type follows the signal parameters.
+        SIGNAL,
+        /// Operand is runtime-dynamic (`DYNAMIC` status or statically `Variant`); result is Variant.
+        DYNAMIC,
+        /// Operand is an exact call; whether the callee is a coroutine is decided by the post-suite
+        /// await coroutine pass, which consumes the carried `operandCallOrNull`.
+        CALL
+    }
+
+    /// Dedicated await classification payload: the type to publish for the await node plus the
+    /// route metadata the owner analyzer needs for coroutine marking / pending recording.
+    public record AwaitSemanticResult(
+            @NotNull FrontendExpressionType expressionType,
+            boolean rootOwnsOutcome,
+            @NotNull AwaitRoute route,
+            @Nullable FrontendResolvedCall operandCallOrNull
+    ) {
+        public AwaitSemanticResult {
+            Objects.requireNonNull(expressionType, "expressionType must not be null");
+            Objects.requireNonNull(route, "route must not be null");
         }
     }
 
@@ -814,13 +844,6 @@ public final class FrontendExpressionSemanticSupport {
                     nestedResolver,
                     finalizeWindow
             );
-            case AwaitExpression awaitExpression -> resolveExplicitDeferredExpressionType(
-                    awaitExpression,
-                    nestedResolver,
-                    resolveNestedChildren,
-                    "Await expression typing is deferred by the current frontend expression-typing contract",
-                    finalizeWindow
-            );
             case PreloadExpression preloadExpression -> resolveExplicitDeferredExpressionType(
                     preloadExpression,
                     nestedResolver,
@@ -861,6 +884,7 @@ public final class FrontendExpressionSemanticSupport {
                  IdentifierExpression _,
                  AttributeExpression _,
                  AssignmentExpression _,
+                 AwaitExpression _,
                  CallExpression _,
                  SubscriptExpression _,
                  LambdaExpression _,
@@ -888,6 +912,102 @@ public final class FrontendExpressionSemanticSupport {
             return propagated(dependencyIssue);
         }
         return rootOutcome(FrontendExpressionType.deferred(detailReason));
+    }
+
+    /// Dedicated await classifier (`frontend_await_minicoro_plan.md` §3.5). The operand is resolved
+    /// through the nested resolver first and its non-stable outcome propagates unchanged.
+    /// `failClosedBoundaryReason` is non-null when the await sits in a lambda body or property
+    /// initializer: the MVP keeps those contexts fail-closed after the operand itself was resolved.
+    ///
+    /// Exact-call operands classify as `CALL` with the callee return type published immediately
+    /// (`Variant` for void callees); whether the callee is a coroutine — and therefore whether the
+    /// enclosing callable is marked or a `sema.redundant_await` warning is due — is decided by the
+    /// post-suite fixed-point pass, because the callee's own body may be resolved after the caller's.
+    /// A statically Variant operand takes the dynamic route, mirroring the unary/binary rule that
+    /// exact `Variant` values stay runtime-dynamic.
+    public @NotNull AwaitSemanticResult resolveAwaitExpressionType(
+            @NotNull AwaitExpression awaitExpression,
+            @NotNull NestedExpressionResolver nestedResolver,
+            @NotNull Function<Expression, FrontendResolvedCall> operandCallLookup,
+            @Nullable String failClosedBoundaryReason,
+            boolean finalizeWindow
+    ) {
+        Objects.requireNonNull(awaitExpression, "awaitExpression must not be null");
+        Objects.requireNonNull(operandCallLookup, "operandCallLookup must not be null");
+        var operandType = nestedResolver.resolve(awaitExpression.value(), finalizeWindow);
+        var dependencyIssue = firstNonResolvedDependency(operandType);
+        if (dependencyIssue != null) {
+            return new AwaitSemanticResult(dependencyIssue, false, AwaitRoute.NONE, null);
+        }
+        if (failClosedBoundaryReason != null) {
+            return new AwaitSemanticResult(
+                    FrontendExpressionType.unsupported(failClosedBoundaryReason),
+                    true,
+                    AwaitRoute.NONE,
+                    null
+            );
+        }
+        var publishedOperandType = operandType.publishedType();
+        if (operandType.status() == FrontendExpressionTypeStatus.DYNAMIC) {
+            return new AwaitSemanticResult(
+                    FrontendExpressionType.resolved(GdVariantType.VARIANT),
+                    true,
+                    AwaitRoute.DYNAMIC,
+                    null
+            );
+        }
+        // An exact call keeps its own route even when the callee returns `Variant`: unannotated
+        // functions declare `Variant` returns, so the call route must win over the dynamic one
+        // for redundant-await detection and coroutine marking to work.
+        var operandCall = operandCallLookup.apply(awaitExpression.value());
+        if (operandCall != null && operandCall.status() == FrontendCallResolutionStatus.RESOLVED) {
+            var returnType = operandCall.returnType();
+            var resultType = returnType == null || returnType instanceof GdVoidType
+                    ? GdVariantType.VARIANT
+                    : returnType;
+            return new AwaitSemanticResult(
+                    FrontendExpressionType.resolved(resultType),
+                    true,
+                    AwaitRoute.CALL,
+                    operandCall
+            );
+        }
+        if (publishedOperandType instanceof GdSignalType signalType) {
+            return new AwaitSemanticResult(
+                    FrontendExpressionType.resolved(signalAwaitResultType(signalType)),
+                    true,
+                    AwaitRoute.SIGNAL,
+                    null
+            );
+        }
+        if (publishedOperandType instanceof GdVariantType) {
+            return new AwaitSemanticResult(
+                    FrontendExpressionType.resolved(GdVariantType.VARIANT),
+                    true,
+                    AwaitRoute.DYNAMIC,
+                    null
+            );
+        }
+        return new AwaitSemanticResult(
+                FrontendExpressionType.unsupported(
+                        "Await operand of type '" + publishedOperandType.getTypeName()
+                                + "' is not a Signal or a call to a coroutine function"
+                ),
+                true,
+                AwaitRoute.NONE,
+                null
+        );
+    }
+
+    /// Resume-value rule for signal awaits: no parameters resume with nil (`Variant`), a single
+    /// parameter resumes with its declared type, and multiple parameters resume as `Array[Variant]`.
+    private static @NotNull GdType signalAwaitResultType(@NotNull GdSignalType signalType) {
+        var parameterTypes = signalType.parameterTypes();
+        return switch (parameterTypes.size()) {
+            case 0 -> GdVariantType.VARIANT;
+            case 1 -> parameterTypes.getFirst();
+            default -> new GdArrayType(GdVariantType.VARIANT);
+        };
     }
 
     /// Resolves an array literal (generic or contextual) through `FrontendContainerLiteralSemanticSupport`.

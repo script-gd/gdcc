@@ -206,6 +206,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - expr analyzer 对 `CastExpression` 在 source 为 `Variant` / `DYNAMIC` 且 target 非 `Variant` 时发出的 warning
   - 与 `expressionTypes()` 中的 `RESOLVED(targetType)` 并存；不阻断 compile，不属于 compile-only gate
   - `value as Variant` 不发此 warning；hard invalid pair 由 `sema.type_check` error 处理
+- `sema.redundant_await`
 - `sema.virtual_override`
 - `sema.type_check`
 - `sema.type_hint`
@@ -259,6 +260,10 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - expr analyzer 对 `CastExpression` 在 source 为 `Variant` / `DYNAMIC` 且 target 非 `Variant` 时发出的 warning
   - 与 `expressionTypes()` 中的 `RESOLVED(targetType)` 并存；不阻断 compile，不属于 compile-only gate
   - `value as Variant` 不发此 warning；hard invalid pair 由 `sema.type_check` error 处理
+- `sema.redundant_await`
+  - await 语义对「operand 是 callee 静态已知非协程的 exact call」发出的 warning（对齐 Godot `REDUNDANT_AWAIT`），await 退化为纯穿透，enclosing 函数**不**标记协程
+  - GDCC callee 由 post-suite 不动点 pass（`FrontendAwaitCoroutineAnalyzer`）在确认 callee 始终未标记后发出；非 `FunctionDef` 锚定的 exact call（如 builtin 构造器 owner 锚点）由 EXPR_TYPE owner 直接发出
+  - `await` 静态已知非 signal 纯值仍是 error（`sema.unsupported_expression_route`），不走本 warning
 - `sema.virtual_override`
   - shared `FrontendVirtualOverrideAnalyzer` 对命中父类 engine virtual 名称的 source method 发出的 source-level error
   - 当前固定校验：

@@ -26,6 +26,7 @@ import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
+import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdType;
@@ -39,6 +40,7 @@ import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
+import dev.superice.gdparser.frontend.ast.AwaitExpression;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
@@ -153,6 +155,7 @@ public class FrontendCompileCheckAnalyzer {
                     analysisData.forIterationPlans(),
                     analysisData.matchPlans(),
                     analysisData.lambdaPlans(),
+                    analysisData.coroutineFunctions(),
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
         }
@@ -167,6 +170,28 @@ public class FrontendCompileCheckAnalyzer {
         return Objects.requireNonNull(expressionKind, "expressionKind must not be null")
                 + " is recognized by the frontend but is blocked in compile mode because "
                 + "lowering support lands";
+    }
+
+    /// Await-specific compile blocker (`frontend_await_minicoro_plan.md` step 6): shared semantics
+    /// already classified the await; the gate blocks it only because coroutine lowering is not ready
+    /// yet. This replaces the generic DEFERRED interception for awaits and stays until step 8.
+    private static @NotNull String awaitCompileBlockedMessage() {
+        return "Await expression is recognized and classified by shared semantic analysis but is "
+                + "blocked in compile mode because coroutine lowering support is not ready yet";
+    }
+
+    /// §3.5: a coroutine reached through a static-method call is rejected at every position; the
+    /// backend has no `CallStaticMethodInsn` coroutine route in the MVP.
+    private static @NotNull String staticCoroutineCallCompileBlockedMessage(@NotNull String callableName) {
+        return "Static coroutine function '" + callableName
+                + "' is blocked in compile mode: static coroutine calls are not supported yet";
+    }
+
+    /// §3.5, aligned with Godot's `must be called with "await"`: an instance coroutine call is only
+    /// legal as a statement root expression (fire-and-forget) or as an await operand.
+    private static @NotNull String valuePositionCoroutineCallCompileBlockedMessage(@NotNull String callableName) {
+        return "Function '" + callableName
+                + "' is a coroutine, so it can't be called without 'await' outside a statement root expression";
     }
 
     /// A lambda that reaches the compile surface without a published plan is unrecorded: property
@@ -297,12 +322,20 @@ public class FrontendCompileCheckAnalyzer {
         private final @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans;
         private final @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans;
         private final @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans;
+        private final @NotNull Set<LirFunctionDef> coroutineFunctions;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull Set<Node> compileSurfaceNodes = Collections.newSetFromMap(new IdentityHashMap<>());
         private final @NotNull Set<Node> handledAnchors = Collections.newSetFromMap(new IdentityHashMap<>());
         private final @NotNull Set<Node> bareCallCallees = Collections.newSetFromMap(new IdentityHashMap<>());
+        /// Coroutine-call position checks dedupe by call anchor: a chain root checks its trailing
+        /// call step with statement-root privilege, and the later nested walk must not re-report it.
+        private final @NotNull Set<Node> checkedCoroutineCallAnchors =
+                Collections.newSetFromMap(new IdentityHashMap<>());
         private int supportedExecutableBlockDepth;
+        /// True only while walking the direct root expression of an `ExpressionStatement`; the first
+        /// walked expression consumes the flag so nested children stay in value position (§3.5).
+        private boolean walkingStatementRootExpression;
 
         /// Capture the shared semantic facts for one source file and prepare a dedicated walker.
         private AstWalkerCompileCheckVisitor(
@@ -317,6 +350,7 @@ public class FrontendCompileCheckAnalyzer {
                 @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans,
                 @NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans,
                 @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans,
+                @NotNull Set<LirFunctionDef> coroutineFunctions,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath must not be null");
@@ -333,6 +367,7 @@ public class FrontendCompileCheckAnalyzer {
             this.forIterationPlans = Objects.requireNonNull(forIterationPlans, "forIterationPlans must not be null");
             this.matchPlans = Objects.requireNonNull(matchPlans, "matchPlans must not be null");
             this.lambdaPlans = Objects.requireNonNull(lambdaPlans, "lambdaPlans must not be null");
+            this.coroutineFunctions = Objects.requireNonNull(coroutineFunctions, "coroutineFunctions must not be null");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
             astWalker = new ASTWalker(this);
         }
@@ -410,7 +445,14 @@ public class FrontendCompileCheckAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             markCompileSurfaceNode(expressionStatement);
-            walkExpression(expressionStatement.expression());
+            // The direct root expression of a statement is the only fire-and-forget position where
+            // an instance coroutine call is legal without `await` (§3.5, Godot root-expression rule).
+            walkingStatementRootExpression = true;
+            try {
+                walkExpression(expressionStatement.expression());
+            } finally {
+                walkingStatementRootExpression = false;
+            }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -642,6 +684,11 @@ public class FrontendCompileCheckAnalyzer {
             if (expression == null) {
                 return;
             }
+            // Consume the statement-root flag before descending: only the direct root call may keep
+            // fire-and-forget privilege; lambda bodies and nested operands always count as value
+            // positions.
+            var statementRoot = walkingStatementRootExpression;
+            walkingStatementRootExpression = false;
             switch (expression) {
                 case LambdaExpression lambdaExpression -> walkLambdaExpression(lambdaExpression);
                 // ConditionalExpression: compile-ready via branch-result merge (value context) and
@@ -658,9 +705,18 @@ public class FrontendCompileCheckAnalyzer {
                         getNodeExpression,
                         expressionCompileBlockedMessage("Get-node expression")
                 );
+                // Await is blocked wholesale at its root until coroutine lowering lands; the operand
+                // subtree is skipped, so the coroutine-call position check never double-reports the
+                // legal await-operand position. A static coroutine call operand still earns its own
+                // §3.5 blocker because the post-pass deliberately leaves that diagnostic to the gate.
+                case AwaitExpression awaitExpression -> {
+                    reportExplicitCompileBlock(awaitExpression, awaitCompileBlockedMessage());
+                    reportStaticCoroutineCallBlock(coroutineCallAnchorFor(awaitExpression.value()));
+                }
                 default -> {
                     markCompileSurfaceNode(expression);
                     rememberBareCallCallee(expression);
+                    checkCoroutineCallPosition(coroutineCallAnchorFor(expression), statementRoot);
                     walkNestedExpressionChildren(expression);
                 }
             }
@@ -690,6 +746,11 @@ public class FrontendCompileCheckAnalyzer {
                 if (child instanceof Expression childExpression) {
                     walkExpression(childExpression);
                     continue;
+                }
+                if (child instanceof AttributeCallStep) {
+                    // Intermediate chain calls never inherit statement-root privilege, so calls such
+                    // as `obj.coro().other()` are checked here as value positions.
+                    checkCoroutineCallPosition(child, false);
                 }
                 markCompileSurfaceNode(child);
                 walkNestedExpressionChildren(child);
@@ -856,6 +917,62 @@ public class FrontendCompileCheckAnalyzer {
                     && callExpression.callee() instanceof IdentifierExpression callee) {
                 bareCallCallees.add(callee);
             }
+        }
+
+        /// §3.5 position rules for calls to GDCC coroutine functions: static coroutine calls are
+        /// rejected at every position; instance calls are legal only at a statement root
+        /// (fire-and-forget) or under an await operand — the latter never reaches this check while
+        /// the await blocker skips its subtree.
+        private void checkCoroutineCallPosition(@Nullable Node callAnchor, boolean statementRoot) {
+            var call = coroutineCallAtOrNull(callAnchor);
+            if (call == null) {
+                return;
+            }
+            if (call.callKind() == FrontendCallResolutionKind.STATIC_METHOD) {
+                reportCompileBlock(callAnchor, staticCoroutineCallCompileBlockedMessage(call.callableName()));
+                return;
+            }
+            if (!statementRoot) {
+                reportCompileBlock(callAnchor, valuePositionCoroutineCallCompileBlockedMessage(call.callableName()));
+            }
+        }
+
+        /// Static coroutine calls stay compile-blocked even under an await operand (§3.5); the
+        /// dedicated message is emitted in addition to the generic await blocker.
+        private void reportStaticCoroutineCallBlock(@Nullable Node callAnchor) {
+            var call = coroutineCallAtOrNull(callAnchor);
+            if (call != null && call.callKind() == FrontendCallResolutionKind.STATIC_METHOD) {
+                reportCompileBlock(callAnchor, staticCoroutineCallCompileBlockedMessage(call.callableName()));
+            }
+        }
+
+        /// Resolve the call fact at the anchor when it names a marked GDCC coroutine function.
+        private @Nullable FrontendResolvedCall coroutineCallAtOrNull(@Nullable Node callAnchor) {
+            if (callAnchor == null || !checkedCoroutineCallAnchors.add(callAnchor)) {
+                return null;
+            }
+            var call = resolvedCalls.get(callAnchor);
+            if (call == null
+                    || !(call.declarationSite() instanceof LirFunctionDef callee)
+                    || !coroutineFunctions.contains(callee)) {
+                return null;
+            }
+            return call;
+        }
+
+        /// The exact call anchor of this expression: bare calls publish keyed by the
+        /// `CallExpression`, chain calls keyed by their trailing `AttributeCallStep`.
+        private @Nullable Node coroutineCallAnchorFor(@NotNull Expression expression) {
+            if (expression instanceof CallExpression) {
+                return expression;
+            }
+            if (expression instanceof AttributeExpression attributeExpression) {
+                var steps = attributeExpression.steps();
+                if (!steps.isEmpty() && steps.getLast() instanceof AttributeCallStep callStep) {
+                    return callStep;
+                }
+            }
+            return null;
         }
 
         /// Callable-local slot types are a lowering-only published fact. When the post analyzer had
