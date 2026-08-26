@@ -270,157 +270,157 @@ void godot_Variant_destroy(godot_Variant *self) {
     godot_variant_destroy((GDExtensionVariantPtr)self);
 }
 
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector2, godot_Vector2, GDEXTENSION_VARIANT_TYPE_VECTOR2, (godot_Vector2){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedColorArray, godot_PackedColorArray, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, (godot_PackedColorArray){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector2, const godot_Vector2 *, GDEXTENSION_VARIANT_TYPE_VECTOR2)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(float, godot_float, GDEXTENSION_VARIANT_TYPE_FLOAT, (godot_float)0)
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_VALUE(float, godot_float, GDEXTENSION_VARIANT_TYPE_FLOAT)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector2i, godot_Vector2i, GDEXTENSION_VARIANT_TYPE_VECTOR2I, (godot_Vector2i){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector2i, const godot_Vector2i *, GDEXTENSION_VARIANT_TYPE_VECTOR2I)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector3, godot_Vector3, GDEXTENSION_VARIANT_TYPE_VECTOR3, (godot_Vector3){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector3, const godot_Vector3 *, GDEXTENSION_VARIANT_TYPE_VECTOR3)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector4, godot_Vector4, GDEXTENSION_VARIANT_TYPE_VECTOR4, (godot_Vector4){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector4, const godot_Vector4 *, GDEXTENSION_VARIANT_TYPE_VECTOR4)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedColorArray, const godot_PackedColorArray *, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY)
 
 GDCC_DEFINE_VARIANT_TO_TYPE(Rect2, godot_Rect2, GDEXTENSION_VARIANT_TYPE_RECT2, (godot_Rect2){ 0 })
 
 GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Rect2, const godot_Rect2 *, GDEXTENSION_VARIANT_TYPE_RECT2)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedColorArray, godot_PackedColorArray, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, (godot_PackedColorArray){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector4, godot_Vector4, GDEXTENSION_VARIANT_TYPE_VECTOR4, (godot_Vector4){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedColorArray, const godot_PackedColorArray *, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector4, const godot_Vector4 *, GDEXTENSION_VARIANT_TYPE_VECTOR4)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(RID, godot_RID, GDEXTENSION_VARIANT_TYPE_RID, (godot_RID){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector3, godot_Vector3, GDEXTENSION_VARIANT_TYPE_VECTOR3, (godot_Vector3){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(RID, const godot_RID *, GDEXTENSION_VARIANT_TYPE_RID)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector3, const godot_Vector3 *, GDEXTENSION_VARIANT_TYPE_VECTOR3)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(Array, godot_Array, GDEXTENSION_VARIANT_TYPE_ARRAY, (godot_Array){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector2i, godot_Vector2i, GDEXTENSION_VARIANT_TYPE_VECTOR2I, (godot_Vector2i){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Array, const godot_Array *, GDEXTENSION_VARIANT_TYPE_ARRAY)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector2i, const godot_Vector2i *, GDEXTENSION_VARIANT_TYPE_VECTOR2I)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(Transform3D, godot_Transform3D, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, (godot_Transform3D){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(float, godot_float, GDEXTENSION_VARIANT_TYPE_FLOAT, (godot_float)0)
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Transform3D, const godot_Transform3D *, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D)
+GDCC_DEFINE_VARIANT_FROM_TYPE_VALUE(float, godot_float, GDEXTENSION_VARIANT_TYPE_FLOAT)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(Plane, godot_Plane, GDEXTENSION_VARIANT_TYPE_PLANE, (godot_Plane){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector2, godot_Vector2, GDEXTENSION_VARIANT_TYPE_VECTOR2, (godot_Vector2){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Plane, const godot_Plane *, GDEXTENSION_VARIANT_TYPE_PLANE)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector2, const godot_Vector2 *, GDEXTENSION_VARIANT_TYPE_VECTOR2)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(Quaternion, godot_Quaternion, GDEXTENSION_VARIANT_TYPE_QUATERNION, (godot_Quaternion){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(Color, godot_Color, GDEXTENSION_VARIANT_TYPE_COLOR, (godot_Color){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Quaternion, const godot_Quaternion *, GDEXTENSION_VARIANT_TYPE_QUATERNION)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedFloat64Array, godot_PackedFloat64Array, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY, (godot_PackedFloat64Array){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedFloat64Array, const godot_PackedFloat64Array *, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedStringArray, godot_PackedStringArray, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY, (godot_PackedStringArray){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedStringArray, const godot_PackedStringArray *, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Dictionary, godot_Dictionary, GDEXTENSION_VARIANT_TYPE_DICTIONARY, (godot_Dictionary){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Dictionary, const godot_Dictionary *, GDEXTENSION_VARIANT_TYPE_DICTIONARY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedVector4Array, godot_PackedVector4Array, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY, (godot_PackedVector4Array){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedVector4Array, const godot_PackedVector4Array *, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedInt64Array, godot_PackedInt64Array, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY, (godot_PackedInt64Array){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedInt64Array, const godot_PackedInt64Array *, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector3i, godot_Vector3i, GDEXTENSION_VARIANT_TYPE_VECTOR3I, (godot_Vector3i){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector3i, const godot_Vector3i *, GDEXTENSION_VARIANT_TYPE_VECTOR3I)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedVector2Array, godot_PackedVector2Array, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY, (godot_PackedVector2Array){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedVector2Array, const godot_PackedVector2Array *, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(NodePath, godot_NodePath, GDEXTENSION_VARIANT_TYPE_NODE_PATH, (godot_NodePath){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(NodePath, const godot_NodePath *, GDEXTENSION_VARIANT_TYPE_NODE_PATH)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(String, godot_String, GDEXTENSION_VARIANT_TYPE_STRING, (godot_String){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(String, const godot_String *, GDEXTENSION_VARIANT_TYPE_STRING)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Callable, godot_Callable, GDEXTENSION_VARIANT_TYPE_CALLABLE, (godot_Callable){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Callable, const godot_Callable *, GDEXTENSION_VARIANT_TYPE_CALLABLE)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Signal, godot_Signal, GDEXTENSION_VARIANT_TYPE_SIGNAL, (godot_Signal){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Signal, const godot_Signal *, GDEXTENSION_VARIANT_TYPE_SIGNAL)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Rect2i, godot_Rect2i, GDEXTENSION_VARIANT_TYPE_RECT2I, (godot_Rect2i){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Rect2i, const godot_Rect2i *, GDEXTENSION_VARIANT_TYPE_RECT2I)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Projection, godot_Projection, GDEXTENSION_VARIANT_TYPE_PROJECTION, (godot_Projection){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Projection, const godot_Projection *, GDEXTENSION_VARIANT_TYPE_PROJECTION)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Basis, godot_Basis, GDEXTENSION_VARIANT_TYPE_BASIS, (godot_Basis){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Basis, const godot_Basis *, GDEXTENSION_VARIANT_TYPE_BASIS)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(StringName, godot_StringName, GDEXTENSION_VARIANT_TYPE_STRING_NAME, (godot_StringName){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(StringName, const godot_StringName *, GDEXTENSION_VARIANT_TYPE_STRING_NAME)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedFloat32Array, godot_PackedFloat32Array, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, (godot_PackedFloat32Array){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedFloat32Array, const godot_PackedFloat32Array *, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(AABB, godot_AABB, GDEXTENSION_VARIANT_TYPE_AABB, (godot_AABB){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(AABB, const godot_AABB *, GDEXTENSION_VARIANT_TYPE_AABB)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Object, godot_Object *, GDEXTENSION_VARIANT_TYPE_OBJECT, NULL)
-
-GDCC_DEFINE_VARIANT_FROM_OBJECT(Object, godot_Object *, GDEXTENSION_VARIANT_TYPE_OBJECT)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(bool, godot_bool, GDEXTENSION_VARIANT_TYPE_BOOL, false)
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_VALUE(bool, godot_bool, GDEXTENSION_VARIANT_TYPE_BOOL)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Transform2D, godot_Transform2D, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, (godot_Transform2D){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Transform2D, const godot_Transform2D *, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector4i, godot_Vector4i, GDEXTENSION_VARIANT_TYPE_VECTOR4I, (godot_Vector4i){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector4i, const godot_Vector4i *, GDEXTENSION_VARIANT_TYPE_VECTOR4I)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedInt32Array, godot_PackedInt32Array, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY, (godot_PackedInt32Array){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedInt32Array, const godot_PackedInt32Array *, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(int, godot_int, GDEXTENSION_VARIANT_TYPE_INT, (godot_int)0)
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_VALUE(int, godot_int, GDEXTENSION_VARIANT_TYPE_INT)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedByteArray, godot_PackedByteArray, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, (godot_PackedByteArray){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedByteArray, const godot_PackedByteArray *, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Color, const godot_Color *, GDEXTENSION_VARIANT_TYPE_COLOR)
 
 GDCC_DEFINE_VARIANT_TO_TYPE(PackedVector3Array, godot_PackedVector3Array, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY, (godot_PackedVector3Array){ 0 })
 
 GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedVector3Array, const godot_PackedVector3Array *, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(Color, godot_Color, GDEXTENSION_VARIANT_TYPE_COLOR, (godot_Color){ 0 })
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedByteArray, godot_PackedByteArray, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, (godot_PackedByteArray){ 0 })
 
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Color, const godot_Color *, GDEXTENSION_VARIANT_TYPE_COLOR)
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedByteArray, const godot_PackedByteArray *, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(int, godot_int, GDEXTENSION_VARIANT_TYPE_INT, (godot_int)0)
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_VALUE(int, godot_int, GDEXTENSION_VARIANT_TYPE_INT)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedInt32Array, godot_PackedInt32Array, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY, (godot_PackedInt32Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedInt32Array, const godot_PackedInt32Array *, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector4i, godot_Vector4i, GDEXTENSION_VARIANT_TYPE_VECTOR4I, (godot_Vector4i){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector4i, const godot_Vector4i *, GDEXTENSION_VARIANT_TYPE_VECTOR4I)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Transform2D, godot_Transform2D, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, (godot_Transform2D){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Transform2D, const godot_Transform2D *, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(bool, godot_bool, GDEXTENSION_VARIANT_TYPE_BOOL, false)
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_VALUE(bool, godot_bool, GDEXTENSION_VARIANT_TYPE_BOOL)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Object, godot_Object *, GDEXTENSION_VARIANT_TYPE_OBJECT, NULL)
+
+GDCC_DEFINE_VARIANT_FROM_OBJECT(Object, godot_Object *, GDEXTENSION_VARIANT_TYPE_OBJECT)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(AABB, godot_AABB, GDEXTENSION_VARIANT_TYPE_AABB, (godot_AABB){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(AABB, const godot_AABB *, GDEXTENSION_VARIANT_TYPE_AABB)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedFloat32Array, godot_PackedFloat32Array, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, (godot_PackedFloat32Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedFloat32Array, const godot_PackedFloat32Array *, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(StringName, godot_StringName, GDEXTENSION_VARIANT_TYPE_STRING_NAME, (godot_StringName){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(StringName, const godot_StringName *, GDEXTENSION_VARIANT_TYPE_STRING_NAME)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Basis, godot_Basis, GDEXTENSION_VARIANT_TYPE_BASIS, (godot_Basis){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Basis, const godot_Basis *, GDEXTENSION_VARIANT_TYPE_BASIS)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Projection, godot_Projection, GDEXTENSION_VARIANT_TYPE_PROJECTION, (godot_Projection){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Projection, const godot_Projection *, GDEXTENSION_VARIANT_TYPE_PROJECTION)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Rect2i, godot_Rect2i, GDEXTENSION_VARIANT_TYPE_RECT2I, (godot_Rect2i){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Rect2i, const godot_Rect2i *, GDEXTENSION_VARIANT_TYPE_RECT2I)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Signal, godot_Signal, GDEXTENSION_VARIANT_TYPE_SIGNAL, (godot_Signal){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Signal, const godot_Signal *, GDEXTENSION_VARIANT_TYPE_SIGNAL)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Callable, godot_Callable, GDEXTENSION_VARIANT_TYPE_CALLABLE, (godot_Callable){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Callable, const godot_Callable *, GDEXTENSION_VARIANT_TYPE_CALLABLE)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(String, godot_String, GDEXTENSION_VARIANT_TYPE_STRING, (godot_String){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(String, const godot_String *, GDEXTENSION_VARIANT_TYPE_STRING)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(NodePath, godot_NodePath, GDEXTENSION_VARIANT_TYPE_NODE_PATH, (godot_NodePath){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(NodePath, const godot_NodePath *, GDEXTENSION_VARIANT_TYPE_NODE_PATH)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedVector2Array, godot_PackedVector2Array, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY, (godot_PackedVector2Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedVector2Array, const godot_PackedVector2Array *, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector3i, godot_Vector3i, GDEXTENSION_VARIANT_TYPE_VECTOR3I, (godot_Vector3i){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector3i, const godot_Vector3i *, GDEXTENSION_VARIANT_TYPE_VECTOR3I)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedInt64Array, godot_PackedInt64Array, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY, (godot_PackedInt64Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedInt64Array, const godot_PackedInt64Array *, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedVector4Array, godot_PackedVector4Array, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY, (godot_PackedVector4Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedVector4Array, const godot_PackedVector4Array *, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Dictionary, godot_Dictionary, GDEXTENSION_VARIANT_TYPE_DICTIONARY, (godot_Dictionary){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Dictionary, const godot_Dictionary *, GDEXTENSION_VARIANT_TYPE_DICTIONARY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedStringArray, godot_PackedStringArray, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY, (godot_PackedStringArray){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedStringArray, const godot_PackedStringArray *, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedFloat64Array, godot_PackedFloat64Array, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY, (godot_PackedFloat64Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedFloat64Array, const godot_PackedFloat64Array *, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Quaternion, godot_Quaternion, GDEXTENSION_VARIANT_TYPE_QUATERNION, (godot_Quaternion){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Quaternion, const godot_Quaternion *, GDEXTENSION_VARIANT_TYPE_QUATERNION)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Plane, godot_Plane, GDEXTENSION_VARIANT_TYPE_PLANE, (godot_Plane){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Plane, const godot_Plane *, GDEXTENSION_VARIANT_TYPE_PLANE)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Transform3D, godot_Transform3D, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, (godot_Transform3D){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Transform3D, const godot_Transform3D *, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Array, godot_Array, GDEXTENSION_VARIANT_TYPE_ARRAY, (godot_Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Array, const godot_Array *, GDEXTENSION_VARIANT_TYPE_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(RID, godot_RID, GDEXTENSION_VARIANT_TYPE_RID, (godot_RID){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(RID, const godot_RID *, GDEXTENSION_VARIANT_TYPE_RID)
 
 static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_bool_AND_Object = NULL;
 
@@ -1885,50 +1885,50 @@ godot_PackedByteArray godot_String_hex_decode(const godot_String *self) {
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_String_num_scientific = NULL;
 
-godot_String godot_String_num_scientific(godot_String *self, godot_float number) {
+godot_String godot_String_num_scientific(godot_float number) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_String_num_scientific, GDEXTENSION_VARIANT_TYPE_STRING, "num_scientific", 2710373411LL, NULL, 0, "godot_String_num_scientific", "String", return (godot_String){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&number);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_String_num_scientific, self, args, godot_String, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_String_num_scientific, NULL, args, godot_String, 1);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_String_num = NULL;
 
-godot_String godot_String_num(godot_String *self, godot_float number, godot_int decimals) {
+godot_String godot_String_num(godot_float number, godot_int decimals) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_String_num, GDEXTENSION_VARIANT_TYPE_STRING, "num", 1555901022LL, NULL, 0, "godot_String_num", "String", return (godot_String){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&number, (GDExtensionConstTypePtr)&decimals);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_String_num, self, args, godot_String, 2);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_String_num, NULL, args, godot_String, 2);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_String_num_int64 = NULL;
 
-godot_String godot_String_num_int64(godot_String *self, godot_int number, godot_int base, godot_bool capitalize_hex) {
+godot_String godot_String_num_int64(godot_int number, godot_int base, godot_bool capitalize_hex) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_String_num_int64, GDEXTENSION_VARIANT_TYPE_STRING, "num_int64", 2111271071LL, NULL, 0, "godot_String_num_int64", "String", return (godot_String){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&number, (GDExtensionConstTypePtr)&base, (GDExtensionConstTypePtr)&capitalize_hex);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_String_num_int64, self, args, godot_String, 3);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_String_num_int64, NULL, args, godot_String, 3);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_String_num_uint64 = NULL;
 
-godot_String godot_String_num_uint64(godot_String *self, godot_int number, godot_int base, godot_bool capitalize_hex) {
+godot_String godot_String_num_uint64(godot_int number, godot_int base, godot_bool capitalize_hex) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_String_num_uint64, GDEXTENSION_VARIANT_TYPE_STRING, "num_uint64", 2111271071LL, NULL, 0, "godot_String_num_uint64", "String", return (godot_String){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&number, (GDExtensionConstTypePtr)&base, (GDExtensionConstTypePtr)&capitalize_hex);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_String_num_uint64, self, args, godot_String, 3);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_String_num_uint64, NULL, args, godot_String, 3);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_String_chr = NULL;
 
-godot_String godot_String_chr(godot_String *self, godot_int code) {
+godot_String godot_String_chr(godot_int code) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_String_chr, GDEXTENSION_VARIANT_TYPE_STRING, "chr", 897497541LL, NULL, 0, "godot_String_chr", "String", return (godot_String){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&code);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_String_chr, self, args, godot_String, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_String_chr, NULL, args, godot_String, 1);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_String_humanize_size = NULL;
 
-godot_String godot_String_humanize_size(godot_String *self, godot_int size) {
+godot_String godot_String_humanize_size(godot_int size) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_String_humanize_size, GDEXTENSION_VARIANT_TYPE_STRING, "humanize_size", 897497541LL, NULL, 0, "godot_String_humanize_size", "String", return (godot_String){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&size);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_String_humanize_size, self, args, godot_String, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_String_humanize_size, NULL, args, godot_String, 1);
 }
 
 static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_NOT = NULL;
@@ -2874,10 +2874,10 @@ godot_Vector2 godot_Vector2_maxf(const godot_Vector2 *self, godot_float with_arg
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Vector2_from_angle = NULL;
 
-godot_Vector2 godot_Vector2_from_angle(godot_Vector2 *self, godot_float angle) {
+godot_Vector2 godot_Vector2_from_angle(godot_float angle) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Vector2_from_angle, GDEXTENSION_VARIANT_TYPE_VECTOR2, "from_angle", 889263119LL, NULL, 0, "godot_Vector2_from_angle", "Vector2", return (godot_Vector2){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&angle);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Vector2_from_angle, self, args, godot_Vector2, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Vector2_from_angle, NULL, args, godot_Vector2, 1);
 }
 
 static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_NEGATE = NULL;
@@ -4454,10 +4454,10 @@ godot_Vector3 godot_Vector3_maxf(const godot_Vector3 *self, godot_float with_arg
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Vector3_octahedron_decode = NULL;
 
-godot_Vector3 godot_Vector3_octahedron_decode(godot_Vector3 *self, const godot_Vector2 * uv) {
+godot_Vector3 godot_Vector3_octahedron_decode(const godot_Vector2 * uv) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Vector3_octahedron_decode, GDEXTENSION_VARIANT_TYPE_VECTOR3, "octahedron_decode", 3991820552LL, NULL, 0, "godot_Vector3_octahedron_decode", "Vector3", return (godot_Vector3){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)uv);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Vector3_octahedron_decode, self, args, godot_Vector3, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Vector3_octahedron_decode, NULL, args, godot_Vector3, 1);
 }
 
 static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_NEGATE = NULL;
@@ -7004,10 +7004,10 @@ godot_Vector3 godot_Quaternion_get_euler(const godot_Quaternion *self, godot_int
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Quaternion_from_euler = NULL;
 
-godot_Quaternion godot_Quaternion_from_euler(godot_Quaternion *self, const godot_Vector3 * euler) {
+godot_Quaternion godot_Quaternion_from_euler(const godot_Vector3 * euler) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Quaternion_from_euler, GDEXTENSION_VARIANT_TYPE_QUATERNION, "from_euler", 4053467903LL, NULL, 0, "godot_Quaternion_from_euler", "Quaternion", return (godot_Quaternion){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)euler);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Quaternion_from_euler, self, args, godot_Quaternion, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Quaternion_from_euler, NULL, args, godot_Quaternion, 1);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Quaternion_get_axis = NULL;
@@ -7720,26 +7720,26 @@ godot_Quaternion godot_Basis_get_rotation_quaternion(const godot_Basis *self) {
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Basis_looking_at = NULL;
 
-godot_Basis godot_Basis_looking_at(godot_Basis *self, const godot_Vector3 * target, const godot_Vector3 * up, godot_bool use_model_front) {
+godot_Basis godot_Basis_looking_at(const godot_Vector3 * target, const godot_Vector3 * up, godot_bool use_model_front) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Basis_looking_at, GDEXTENSION_VARIANT_TYPE_BASIS, "looking_at", 3728732505LL, NULL, 0, "godot_Basis_looking_at", "Basis", return (godot_Basis){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)target, (GDExtensionConstTypePtr)up, (GDExtensionConstTypePtr)&use_model_front);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Basis_looking_at, self, args, godot_Basis, 3);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Basis_looking_at, NULL, args, godot_Basis, 3);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Basis_from_scale = NULL;
 
-godot_Basis godot_Basis_from_scale(godot_Basis *self, const godot_Vector3 * scale) {
+godot_Basis godot_Basis_from_scale(const godot_Vector3 * scale) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Basis_from_scale, GDEXTENSION_VARIANT_TYPE_BASIS, "from_scale", 3703240166LL, NULL, 0, "godot_Basis_from_scale", "Basis", return (godot_Basis){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)scale);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Basis_from_scale, self, args, godot_Basis, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Basis_from_scale, NULL, args, godot_Basis, 1);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Basis_from_euler = NULL;
 
-godot_Basis godot_Basis_from_euler(godot_Basis *self, const godot_Vector3 * euler, godot_int order) {
+godot_Basis godot_Basis_from_euler(const godot_Vector3 * euler, godot_int order) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Basis_from_euler, GDEXTENSION_VARIANT_TYPE_BASIS, "from_euler", 2802321791LL, NULL, 0, "godot_Basis_from_euler", "Basis", return (godot_Basis){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)euler, (GDExtensionConstTypePtr)&order);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Basis_from_euler, self, args, godot_Basis, 2);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Basis_from_euler, NULL, args, godot_Basis, 2);
 }
 
 static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Basis_NOT = NULL;
@@ -8268,82 +8268,82 @@ void godot_Projection_set_w(godot_Projection *self, const godot_Vector4 * value)
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Projection_create_depth_correction = NULL;
 
-godot_Projection godot_Projection_create_depth_correction(godot_Projection *self, godot_bool flip_y) {
+godot_Projection godot_Projection_create_depth_correction(godot_bool flip_y) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Projection_create_depth_correction, GDEXTENSION_VARIANT_TYPE_PROJECTION, "create_depth_correction", 1228516048LL, NULL, 0, "godot_Projection_create_depth_correction", "Projection", return (godot_Projection){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&flip_y);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_depth_correction, self, args, godot_Projection, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_depth_correction, NULL, args, godot_Projection, 1);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Projection_create_light_atlas_rect = NULL;
 
-godot_Projection godot_Projection_create_light_atlas_rect(godot_Projection *self, const godot_Rect2 * rect) {
+godot_Projection godot_Projection_create_light_atlas_rect(const godot_Rect2 * rect) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Projection_create_light_atlas_rect, GDEXTENSION_VARIANT_TYPE_PROJECTION, "create_light_atlas_rect", 2654950662LL, NULL, 0, "godot_Projection_create_light_atlas_rect", "Projection", return (godot_Projection){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)rect);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_light_atlas_rect, self, args, godot_Projection, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_light_atlas_rect, NULL, args, godot_Projection, 1);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Projection_create_perspective = NULL;
 
-godot_Projection godot_Projection_create_perspective(godot_Projection *self, godot_float fovy, godot_float aspect, godot_float z_near, godot_float z_far, godot_bool flip_fov) {
+godot_Projection godot_Projection_create_perspective(godot_float fovy, godot_float aspect, godot_float z_near, godot_float z_far, godot_bool flip_fov) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Projection_create_perspective, GDEXTENSION_VARIANT_TYPE_PROJECTION, "create_perspective", 390915442LL, NULL, 0, "godot_Projection_create_perspective", "Projection", return (godot_Projection){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&fovy, (GDExtensionConstTypePtr)&aspect, (GDExtensionConstTypePtr)&z_near, (GDExtensionConstTypePtr)&z_far, (GDExtensionConstTypePtr)&flip_fov);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_perspective, self, args, godot_Projection, 5);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_perspective, NULL, args, godot_Projection, 5);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Projection_create_perspective_hmd = NULL;
 
-godot_Projection godot_Projection_create_perspective_hmd(godot_Projection *self, godot_float fovy, godot_float aspect, godot_float z_near, godot_float z_far, godot_bool flip_fov, godot_int eye, godot_float intraocular_dist, godot_float convergence_dist) {
+godot_Projection godot_Projection_create_perspective_hmd(godot_float fovy, godot_float aspect, godot_float z_near, godot_float z_far, godot_bool flip_fov, godot_int eye, godot_float intraocular_dist, godot_float convergence_dist) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Projection_create_perspective_hmd, GDEXTENSION_VARIANT_TYPE_PROJECTION, "create_perspective_hmd", 2857674800LL, NULL, 0, "godot_Projection_create_perspective_hmd", "Projection", return (godot_Projection){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&fovy, (GDExtensionConstTypePtr)&aspect, (GDExtensionConstTypePtr)&z_near, (GDExtensionConstTypePtr)&z_far, (GDExtensionConstTypePtr)&flip_fov, (GDExtensionConstTypePtr)&eye, (GDExtensionConstTypePtr)&intraocular_dist, (GDExtensionConstTypePtr)&convergence_dist);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_perspective_hmd, self, args, godot_Projection, 8);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_perspective_hmd, NULL, args, godot_Projection, 8);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Projection_create_for_hmd = NULL;
 
-godot_Projection godot_Projection_create_for_hmd(godot_Projection *self, godot_int eye, godot_float aspect, godot_float intraocular_dist, godot_float display_width, godot_float display_to_lens, godot_float oversample, godot_float z_near, godot_float z_far) {
+godot_Projection godot_Projection_create_for_hmd(godot_int eye, godot_float aspect, godot_float intraocular_dist, godot_float display_width, godot_float display_to_lens, godot_float oversample, godot_float z_near, godot_float z_far) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Projection_create_for_hmd, GDEXTENSION_VARIANT_TYPE_PROJECTION, "create_for_hmd", 4184144994LL, NULL, 0, "godot_Projection_create_for_hmd", "Projection", return (godot_Projection){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&eye, (GDExtensionConstTypePtr)&aspect, (GDExtensionConstTypePtr)&intraocular_dist, (GDExtensionConstTypePtr)&display_width, (GDExtensionConstTypePtr)&display_to_lens, (GDExtensionConstTypePtr)&oversample, (GDExtensionConstTypePtr)&z_near, (GDExtensionConstTypePtr)&z_far);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_for_hmd, self, args, godot_Projection, 8);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_for_hmd, NULL, args, godot_Projection, 8);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Projection_create_orthogonal = NULL;
 
-godot_Projection godot_Projection_create_orthogonal(godot_Projection *self, godot_float left, godot_float right, godot_float bottom, godot_float top, godot_float z_near, godot_float z_far) {
+godot_Projection godot_Projection_create_orthogonal(godot_float left, godot_float right, godot_float bottom, godot_float top, godot_float z_near, godot_float z_far) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Projection_create_orthogonal, GDEXTENSION_VARIANT_TYPE_PROJECTION, "create_orthogonal", 3707929169LL, NULL, 0, "godot_Projection_create_orthogonal", "Projection", return (godot_Projection){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)&right, (GDExtensionConstTypePtr)&bottom, (GDExtensionConstTypePtr)&top, (GDExtensionConstTypePtr)&z_near, (GDExtensionConstTypePtr)&z_far);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_orthogonal, self, args, godot_Projection, 6);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_orthogonal, NULL, args, godot_Projection, 6);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Projection_create_orthogonal_aspect = NULL;
 
-godot_Projection godot_Projection_create_orthogonal_aspect(godot_Projection *self, godot_float size, godot_float aspect, godot_float z_near, godot_float z_far, godot_bool flip_fov) {
+godot_Projection godot_Projection_create_orthogonal_aspect(godot_float size, godot_float aspect, godot_float z_near, godot_float z_far, godot_bool flip_fov) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Projection_create_orthogonal_aspect, GDEXTENSION_VARIANT_TYPE_PROJECTION, "create_orthogonal_aspect", 390915442LL, NULL, 0, "godot_Projection_create_orthogonal_aspect", "Projection", return (godot_Projection){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&size, (GDExtensionConstTypePtr)&aspect, (GDExtensionConstTypePtr)&z_near, (GDExtensionConstTypePtr)&z_far, (GDExtensionConstTypePtr)&flip_fov);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_orthogonal_aspect, self, args, godot_Projection, 5);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_orthogonal_aspect, NULL, args, godot_Projection, 5);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Projection_create_frustum = NULL;
 
-godot_Projection godot_Projection_create_frustum(godot_Projection *self, godot_float left, godot_float right, godot_float bottom, godot_float top, godot_float z_near, godot_float z_far) {
+godot_Projection godot_Projection_create_frustum(godot_float left, godot_float right, godot_float bottom, godot_float top, godot_float z_near, godot_float z_far) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Projection_create_frustum, GDEXTENSION_VARIANT_TYPE_PROJECTION, "create_frustum", 3707929169LL, NULL, 0, "godot_Projection_create_frustum", "Projection", return (godot_Projection){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)&right, (GDExtensionConstTypePtr)&bottom, (GDExtensionConstTypePtr)&top, (GDExtensionConstTypePtr)&z_near, (GDExtensionConstTypePtr)&z_far);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_frustum, self, args, godot_Projection, 6);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_frustum, NULL, args, godot_Projection, 6);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Projection_create_frustum_aspect = NULL;
 
-godot_Projection godot_Projection_create_frustum_aspect(godot_Projection *self, godot_float size, godot_float aspect, const godot_Vector2 * offset, godot_float z_near, godot_float z_far, godot_bool flip_fov) {
+godot_Projection godot_Projection_create_frustum_aspect(godot_float size, godot_float aspect, const godot_Vector2 * offset, godot_float z_near, godot_float z_far, godot_bool flip_fov) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Projection_create_frustum_aspect, GDEXTENSION_VARIANT_TYPE_PROJECTION, "create_frustum_aspect", 1535076251LL, NULL, 0, "godot_Projection_create_frustum_aspect", "Projection", return (godot_Projection){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&size, (GDExtensionConstTypePtr)&aspect, (GDExtensionConstTypePtr)offset, (GDExtensionConstTypePtr)&z_near, (GDExtensionConstTypePtr)&z_far, (GDExtensionConstTypePtr)&flip_fov);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_frustum_aspect, self, args, godot_Projection, 6);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_frustum_aspect, NULL, args, godot_Projection, 6);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Projection_create_fit_aabb = NULL;
 
-godot_Projection godot_Projection_create_fit_aabb(godot_Projection *self, const godot_AABB * aabb) {
+godot_Projection godot_Projection_create_fit_aabb(const godot_AABB * aabb) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Projection_create_fit_aabb, GDEXTENSION_VARIANT_TYPE_PROJECTION, "create_fit_aabb", 2264694907LL, NULL, 0, "godot_Projection_create_fit_aabb", "Projection", return (godot_Projection){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)aabb);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_fit_aabb, self, args, godot_Projection, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_create_fit_aabb, NULL, args, godot_Projection, 1);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Projection_determinant = NULL;
@@ -8386,10 +8386,10 @@ godot_Projection godot_Projection_jitter_offseted(const godot_Projection *self, 
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Projection_get_fovy = NULL;
 
-godot_float godot_Projection_get_fovy(godot_Projection *self, godot_float fovx, godot_float aspect) {
+godot_float godot_Projection_get_fovy(godot_float fovx, godot_float aspect) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Projection_get_fovy, GDEXTENSION_VARIANT_TYPE_PROJECTION, "get_fovy", 3514207532LL, NULL, 0, "godot_Projection_get_fovy", "Projection", return (godot_float)0);
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&fovx, (GDExtensionConstTypePtr)&aspect);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_get_fovy, self, args, godot_float, 2);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Projection_get_fovy, NULL, args, godot_float, 2);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Projection_get_z_far = NULL;
@@ -9032,74 +9032,74 @@ godot_bool godot_Color_is_equal_approx(const godot_Color *self, const godot_Colo
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Color_hex = NULL;
 
-godot_Color godot_Color_hex(godot_Color *self, godot_int hex) {
+godot_Color godot_Color_hex(godot_int hex) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Color_hex, GDEXTENSION_VARIANT_TYPE_COLOR, "hex", 351421375LL, NULL, 0, "godot_Color_hex", "Color", return (godot_Color){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&hex);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_hex, self, args, godot_Color, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_hex, NULL, args, godot_Color, 1);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Color_hex64 = NULL;
 
-godot_Color godot_Color_hex64(godot_Color *self, godot_int hex) {
+godot_Color godot_Color_hex64(godot_int hex) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Color_hex64, GDEXTENSION_VARIANT_TYPE_COLOR, "hex64", 351421375LL, NULL, 0, "godot_Color_hex64", "Color", return (godot_Color){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&hex);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_hex64, self, args, godot_Color, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_hex64, NULL, args, godot_Color, 1);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Color_html = NULL;
 
-godot_Color godot_Color_html(godot_Color *self, const godot_String * rgba) {
+godot_Color godot_Color_html(const godot_String * rgba) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Color_html, GDEXTENSION_VARIANT_TYPE_COLOR, "html", 2500054655LL, NULL, 0, "godot_Color_html", "Color", return (godot_Color){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)rgba);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_html, self, args, godot_Color, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_html, NULL, args, godot_Color, 1);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Color_html_is_valid = NULL;
 
-godot_bool godot_Color_html_is_valid(godot_Color *self, const godot_String * color) {
+godot_bool godot_Color_html_is_valid(const godot_String * color) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Color_html_is_valid, GDEXTENSION_VARIANT_TYPE_COLOR, "html_is_valid", 2942997125LL, NULL, 0, "godot_Color_html_is_valid", "Color", return false);
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)color);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_html_is_valid, self, args, godot_bool, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_html_is_valid, NULL, args, godot_bool, 1);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Color_from_string = NULL;
 
-godot_Color godot_Color_from_string(godot_Color *self, const godot_String * str, const godot_Color * default_arg) {
+godot_Color godot_Color_from_string(const godot_String * str, const godot_Color * default_arg) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Color_from_string, GDEXTENSION_VARIANT_TYPE_COLOR, "from_string", 3755044230LL, NULL, 0, "godot_Color_from_string", "Color", return (godot_Color){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)str, (GDExtensionConstTypePtr)default_arg);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_from_string, self, args, godot_Color, 2);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_from_string, NULL, args, godot_Color, 2);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Color_from_hsv = NULL;
 
-godot_Color godot_Color_from_hsv(godot_Color *self, godot_float h, godot_float s, godot_float v, godot_float alpha) {
+godot_Color godot_Color_from_hsv(godot_float h, godot_float s, godot_float v, godot_float alpha) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Color_from_hsv, GDEXTENSION_VARIANT_TYPE_COLOR, "from_hsv", 1573799446LL, NULL, 0, "godot_Color_from_hsv", "Color", return (godot_Color){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&h, (GDExtensionConstTypePtr)&s, (GDExtensionConstTypePtr)&v, (GDExtensionConstTypePtr)&alpha);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_from_hsv, self, args, godot_Color, 4);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_from_hsv, NULL, args, godot_Color, 4);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Color_from_ok_hsl = NULL;
 
-godot_Color godot_Color_from_ok_hsl(godot_Color *self, godot_float h, godot_float s, godot_float l, godot_float alpha) {
+godot_Color godot_Color_from_ok_hsl(godot_float h, godot_float s, godot_float l, godot_float alpha) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Color_from_ok_hsl, GDEXTENSION_VARIANT_TYPE_COLOR, "from_ok_hsl", 1573799446LL, NULL, 0, "godot_Color_from_ok_hsl", "Color", return (godot_Color){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&h, (GDExtensionConstTypePtr)&s, (GDExtensionConstTypePtr)&l, (GDExtensionConstTypePtr)&alpha);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_from_ok_hsl, self, args, godot_Color, 4);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_from_ok_hsl, NULL, args, godot_Color, 4);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Color_from_rgbe9995 = NULL;
 
-godot_Color godot_Color_from_rgbe9995(godot_Color *self, godot_int rgbe) {
+godot_Color godot_Color_from_rgbe9995(godot_int rgbe) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Color_from_rgbe9995, GDEXTENSION_VARIANT_TYPE_COLOR, "from_rgbe9995", 351421375LL, NULL, 0, "godot_Color_from_rgbe9995", "Color", return (godot_Color){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&rgbe);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_from_rgbe9995, self, args, godot_Color, 1);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_from_rgbe9995, NULL, args, godot_Color, 1);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Color_from_rgba8 = NULL;
 
-godot_Color godot_Color_from_rgba8(godot_Color *self, godot_int r8, godot_int g8, godot_int b8, godot_int a8) {
+godot_Color godot_Color_from_rgba8(godot_int r8, godot_int g8, godot_int b8, godot_int a8) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Color_from_rgba8, GDEXTENSION_VARIANT_TYPE_COLOR, "from_rgba8", 3072934735LL, NULL, 0, "godot_Color_from_rgba8", "Color", return (godot_Color){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)&r8, (GDExtensionConstTypePtr)&g8, (GDExtensionConstTypePtr)&b8, (GDExtensionConstTypePtr)&a8);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_from_rgba8, self, args, godot_Color, 4);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_from_rgba8, NULL, args, godot_Color, 4);
 }
 
 static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_NEGATE = NULL;
@@ -11071,10 +11071,10 @@ void godot_Callable_destroy(godot_Callable *self) {
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Callable_create = NULL;
 
-godot_Callable godot_Callable_create(godot_Callable *self, const godot_Variant * variant, const godot_StringName * method) {
+godot_Callable godot_Callable_create(const godot_Variant * variant, const godot_StringName * method) {
     GDCC_RESOLVE_BUILTIN_METHOD_CACHE(gdcc_builtin_method_Callable_create, GDEXTENSION_VARIANT_TYPE_CALLABLE, "create", 1709381114LL, NULL, 0, "godot_Callable_create", "Callable", return (godot_Callable){ 0 });
     GDCC_BUILTIN_METHOD_ARGS(args, (GDExtensionConstTypePtr)variant, (GDExtensionConstTypePtr)method);
-    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Callable_create, self, args, godot_Callable, 2);
+    GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Callable_create, NULL, args, godot_Callable, 2);
 }
 
 static GDExtensionPtrBuiltInMethod gdcc_builtin_method_Callable_callv = NULL;

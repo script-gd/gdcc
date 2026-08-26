@@ -25,6 +25,7 @@ import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.AwaitInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
+import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructSignalInsn;
 import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
@@ -584,46 +585,71 @@ class FrontendAwaitInsnLoweringTest {
         );
     }
 
+    /// Plan 第十步: `await` on a static coroutine call lowers to `CallStaticMethodInsn` + `AwaitInsn`
+    /// and the caller is marked as a coroutine — the fixed point no longer skips static callees.
     @Test
-    void staticCoroutineCallAwaitFailsFastAtLowering() throws Exception {
-        // Negative invariant anchor: a static coroutine call is consumed by the fixed-point pass
-        // without marking the caller (the compile gate owns the user diagnostic, step 6). If such a
-        // shape still reaches body lowering (sema-only path), the processor must fail fast instead
-        // of emitting an AwaitInsn into a non-coroutine function.
-        var diagnostics = new DiagnosticManager();
-        var unit = new GdScriptParserService().parseUnit(
-                Path.of("tmp", "await_static_coroutine_lowering.gd"),
-                """
-                        class_name AwaitLoweringStaticCoroutine
-                        extends Node
+    void staticCoroutineCallAwaitLowersToCallStaticMethodInsn() throws Exception {
+        var context = lowerModule("""
+                class_name AwaitLoweringStaticCoroutine
+                extends Node
 
-                        static func s_coro(target):
-                            await target
+                static func s_coro(target):
+                    await target
 
-                        func run():
-                            var result = await AwaitLoweringStaticCoroutine.s_coro(1)
-                        """,
-                diagnostics
+                func run():
+                    var result = await AwaitLoweringStaticCoroutine.s_coro(1)
+                """);
+        var run = requireFunction(context, "run");
+        var worker = requireFunction(context, "s_coro");
+        var call = requireOnly(run, CallStaticMethodInsn.class);
+        var awaitInsn = requireOnly(run, AwaitInsn.class);
+
+        assertAll(
+                () -> assertTrue(worker.isCoroutine()),
+                () -> assertTrue(run.isCoroutine(), "awaited static coroutine call must mark the caller"),
+                () -> assertEquals("AwaitLoweringStaticCoroutine", call.className()),
+                () -> assertEquals("s_coro", call.methodName()),
+                () -> assertNotNull(call.resultId()),
+                () -> assertTrue(call.resultId().startsWith("__coro_state_"), call.resultId()),
+                () -> assertEquals(call.resultId(), awaitInsn.operandId()),
+                () -> assertEquals(0, count(run, DestructInsn.class),
+                        "awaited state reference must not be detached"),
+                () -> new ControlFlowIntegrityValidator().validateFunction(run)
         );
-        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
-        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var module = new FrontendModule("test_module", List.of(unit), Map.of());
-        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
-        assertFalse(diagnostics.hasErrors(), () -> "Unexpected semantic errors: " + diagnostics.snapshot());
+    }
 
-        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
-        context.publishAnalysisData(analysisData);
-        new FrontendLoweringClassSkeletonPass().run(context);
-        new FrontendLoweringFunctionPreparationPass().run(context);
-        new FrontendLoweringBuildCfgPass().run(context);
+    /// Plan 第十步: a statement-root static coroutine call is fire-and-forget — the caller stays
+    /// non-coroutine, the call keeps its state result slot, and the reference detaches via an
+    /// `INTERNAL` destruct right after the call, same discipline as the instance route.
+    @Test
+    void staticCoroutineStatementCallKeepsStateResultAndDetaches() throws Exception {
+        var context = lowerModule("""
+                class_name AwaitLoweringStaticFireAndForget
+                extends Node
 
-        var error = assertThrows(
-                IllegalStateException.class,
-                () -> new FrontendLoweringBodyInsnPass().run(context)
-        );
-        assertTrue(
-                error.getMessage().contains("marked as a coroutine"),
-                () -> "Expected coroutine-mark invariant, got: " + error.getMessage()
+                static func s_coro(target):
+                    await target
+
+                func run():
+                    AwaitLoweringStaticFireAndForget.s_coro(1)
+                """);
+        var run = requireFunction(context, "run");
+        var call = requireOnly(run, CallStaticMethodInsn.class);
+        var destruct = requireOnly(run, DestructInsn.class);
+
+        assertAll(
+                () -> assertFalse(run.isCoroutine(), "fire-and-forget must not mark the caller"),
+                () -> assertEquals(0, count(run, AwaitInsn.class)),
+                () -> assertNotNull(call.resultId(), "statement-position coroutine call keeps a state result slot"),
+                () -> assertTrue(call.resultId().startsWith("__coro_state_"), call.resultId()),
+                () -> assertEquals(
+                        GdccCoroStateType.CORO_STATE,
+                        requireVariableType(run, call.resultId())
+                ),
+                () -> assertEquals(call.resultId(), destruct.variableId()),
+                () -> assertEquals(LifecycleProvenance.INTERNAL, destruct.provenance()),
+                () -> assertOrdered(run, call, destruct),
+                () -> new ControlFlowIntegrityValidator().validateFunction(run)
         );
     }
 

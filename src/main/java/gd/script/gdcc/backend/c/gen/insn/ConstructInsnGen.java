@@ -273,7 +273,9 @@ import java.util.List;
                 bodyBuilder.assignVar(
                         target,
                         bodyBuilder.valueOfExpr(
-                                "godot_Callable_create(NULL, "
+                                // Callable.create is a static builtin method: its wrapper takes no
+                                // self parameter (frontend_await_minicoro_plan.md 第十步).
+                                "godot_Callable_create("
                                         + receiverArg
                                         + ", "
                                         + CBodyBuilder.renderStaticStringNameLiteral(methodName)

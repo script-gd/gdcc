@@ -227,7 +227,8 @@ Operand schema stays `(VARIABLE, STRING)` min/max=2. The old one-operand form is
 `$receiver` type dispatch:
 
 - `GdObjectType` → `godot_new_Callable_with_Object_StringName`
-- non-Object builtin → pack a temporary Variant, then `godot_Callable_create(NULL, &tmp, name)`
+- non-Object builtin → pack a temporary Variant, then `godot_Callable_create(&tmp, name)`
+  (the static wrapper takes no `self` parameter; its ptrcall base is NULL internally)
 - `Variant` / static / utility → illegal
   The result is a destroyable builtin value and does not keep the receiver alive.
 
@@ -559,8 +560,9 @@ $<result_id>? = call_global "<function_name>" $<arg1_id> $<arg2_id> ...
 Calls a method on an Object by method name.
 
 When the callee is an `is_coroutine="true"` GDCC instance method, the result is mandatory
-and is typed `compiler::GdccCoroState` (see [await](#await)); such a call is the only
-producer of `compiler::GdccCoroState` values.
+and is typed `compiler::GdccCoroState` (see [await](#await)); `call_method` on an instance
+coroutine and `call_static_method` on a static coroutine are the only producers of
+`compiler::GdccCoroState` values.
 
 ```
 $<result_id>? = call_method "<method_name>" $<object_id> $<arg1_id> $<arg2_id> ...
@@ -577,7 +579,15 @@ $<result_id>? = call_super_method "<method_name>" $<object_id> $<arg1_id> $<arg2
 
 #### call_static_method
 
-Calls a static method on a class by class name and method name.
+Calls a static method on a class by class name and method name. `<class_name>` is the receiver
+canonical name (GDCC class, inner class `Outer__sub__Inner`, engine class, or builtin type name);
+the backend resolves it through `ClassRegistry.resolveTypeMeta` + the shared static method resolver
+and always emits the exact GDCC/engine/builtin route (no receiver, no dynamic fallback). When the
+callee is a marked GDCC coroutine, the call targets the coroutine-start thunk and the result must
+be a `compiler::GdccCoroState` variable, following the same coroutine ABI as `call_method`.
+
+The C backend implements this opcode through `CallStaticMethodInsnGen`
+(`frontend_await_minicoro_plan.md` 第十步).
 
 ```
 $<result_id>? = call_static_method "<class_name>" "<method_name>" $<arg1_id> $<arg2_id> ...
@@ -612,19 +622,21 @@ Rules:
   - `compiler::GdccCoroState` operand: static coroutine-call path
     (`gdcc_coro_await_state` on the hidden state object). This compiler-only type is the
     result type of every `call_method` whose callee is an `is_coroutine="true"` GDCC
-    instance method (see the ABI clause below) — such a call is the only producer of
-    `compiler::GdccCoroState` values.
+    instance method, and of every `call_static_method` whose callee is an
+    `is_coroutine="true"` GDCC static method (see the ABI clause below) — such calls are
+    the only producers of `compiler::GdccCoroState` values.
   - `Variant` operand: runtime dispatch (`gdcc_coro_await_dynamic`).
 - An operand that is neither `Signal`-typed nor `Variant`-typed nor
   `compiler::GdccCoroState`-typed is invalid: backend validation fails fast with
   `InvalidInsnException`. Dispatch is purely static-type-driven; no name-derived temporary
   pairing or cross-instruction bookkeeping exists at the LIR/backend level.
 - Internal coroutine-call ABI (frozen): the backend generates two entry points for an
-  `is_coroutine="true"` GDCC instance method — an internal coroutine-start thunk that
+  `is_coroutine="true"` GDCC method (instance or static) — an internal coroutine-start thunk that
   always returns the OWNED state object reference (`godot_Object*`; on synchronous
   completion the state object is already `done`), and the ClassDB call/ptrcall wrappers that
   invoke the start thunk and keep the no-observable-state fast path internally. A
-  `call_method` on such a callee calls the start thunk and **must** declare a result
+  `call_method` / `call_static_method` on such a callee calls the start thunk and **must**
+  declare a result
   variable (backend fails fast with `InvalidInsnException` otherwise); the result variable
   is declared with the compiler-only type `compiler::GdccCoroState` (C storage
   `godot_Object*`), so the state reference is an ordinary typed LIR value with normal

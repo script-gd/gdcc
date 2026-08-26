@@ -148,7 +148,7 @@
 - `src/test/java/gd/script/gdcc/backend/c/build/FrontendVoidReturnCallIntegrationTest.java`
   - broader end-to-end void-return call contract
   - discarded global `print(...)`、non-bare attribute void call、property-backed writable-route writeback、`Node.new()` constructor boundary
-  - static type-meta head `Node.print_orphan_nodes()` 继续以 negative build 方式锚定当前 `CALL_STATIC_METHOD` backend gap
+  - static type-meta head `Node.print_orphan_nodes()` 已翻转为正向构建锚点（`CALL_STATIC_METHOD` 由 `CallStaticMethodInsnGen` 生成，见 `frontend_await_minicoro_plan.md` 第十步）
 - `src/test/java/gd/script/gdcc/backend/c/gen/CallMethodInsnGenEngineTest.java`
   - 真实运行覆盖与生成文本断言（含 vararg、跨 GDCC 调用、父类类型变量触发动态回退）
 - `src/test/java/gd/script/gdcc/backend/c/gen/CBodyBuilderPhaseCTest.java`
@@ -172,6 +172,6 @@
 
 ## 非目标（当前不做）
 
-- `CALL_SUPER_METHOD` / `CALL_STATIC_METHOD` / `CALL_INTRINSIC` 的完整实现
+- `CALL_SUPER_METHOD` / `CALL_INTRINSIC` 的完整实现（`CALL_STATIC_METHOD` 已由 `frontend_await_minicoro_plan.md` 第十步落地 `CallStaticMethodInsnGen`）
 - 对全局类型解析系统做大范围重构
 - 放宽 fail-fast 到“尽量生成”策略

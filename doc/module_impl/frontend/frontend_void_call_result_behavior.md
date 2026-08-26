@@ -44,10 +44,10 @@
   - `CallMethodInsn(null, ...)`
   - `CallGlobalInsn(null, ...)`
   - `CallStaticMethodInsn(null, ...)`
-- backend 当前只对以下 surface 提供正式 codegen 与 guard rail：
+- backend 当前对以下 surface 提供正式 codegen 与 guard rail：
   - `CallMethodInsn`
   - `CallGlobalInsn`
-- `CALL_STATIC_METHOD` 仍没有 backend generator；当前只保留 frontend/LIR 侧的 no-result 合同，并通过 negative build baseline 锚定 backend gap。
+  - `CallStaticMethodInsn`（`frontend_await_minicoro_plan.md` 第十步落地 `CallStaticMethodInsnGen`）
 - backend `__prepare__` 当前会跳过 `GdVoidType` 变量；这条行为只服务于避免误导性 `construct_builtin(void)` 偏航，不代表 backend 接受“void result slot 仍存在”的坏 IR。
 - backend 对坏 IR 的 guard rail 继续保留：
   - void method/global call 若仍携带 `resultId`，必须 fail-fast
@@ -180,15 +180,13 @@ frontend 的修复不应放松这些防线；它们的职责是拦截未来坏 L
 
 ### 5.3 static type-meta head 边界
 
-当前 frontend / LIR 侧已经遵守：
+当前 frontend / LIR / backend 侧已经遵守：
 
 - static resolved-void call 仍 emitted 为 `resultId = null`
-
-但 backend 当前仍没有 `CALL_STATIC_METHOD` generator，因此长期事实必须写清楚：
-
+- `CALL_STATIC_METHOD` 已由 `CallStaticMethodInsnGen` 正式生成（第十步）：static type-meta head
+  `Node.print_orphan_nodes()` 从 negative build baseline 翻转为正向构建锚点
+  （`FrontendVoidReturnCallIntegrationTest.staticVoidReturnTypeMetaHeadBuildsThroughEngineStaticHelper`）
 - constructor boundary `Node.new()` 是当前已支持、已回归覆盖的正向 surface
-- static type-meta head `Node.print_orphan_nodes()` 当前只作为 negative build baseline
-- 不得把它写成“已经支持，只是暂未测试”
 
 ## 6. 回归测试分层
 
@@ -224,7 +222,7 @@ frontend 的修复不应放松这些防线；它们的职责是拦截未来坏 L
 - non-bare attribute void call
 - property-backed `Array.push_back(...)` writable-route writeback
 - `Node.new()` constructor boundary
-- static type-meta head `Node.print_orphan_nodes()` negative build baseline
+- static type-meta head `Node.print_orphan_nodes()` 正向构建锚点（`CALL_STATIC_METHOD` 由 `CallStaticMethodInsnGen` 生成，第十步翻转）
 
 这组测试的职责是防止回归再次只锁在 `Array.push_back` 单一路径上。
 
@@ -232,7 +230,7 @@ frontend 的修复不应放松这些防线；它们的职责是拦截未来坏 L
 
 - 不要重新把 discarded resolved-void call 当成普通 temp-backed value surface
 - 不要为了“兼容更多坏 path”放宽 value-required void call 的 fail-fast
-- 不要把 `CALL_STATIC_METHOD` backend gap 写成“已支持只是未覆盖”
+- 不要把 `CALL_STATIC_METHOD` 已支持面写回 backend gap（第十步已落地 `CallStaticMethodInsnGen`）
 - 若 future compile surface 放行新的 ordinary call route，必须先明确：
   - 它是否属于 statement-position resolved-void no-result 例外
   - 它在 CFG、body lowering 与 backend 上分别如何体现

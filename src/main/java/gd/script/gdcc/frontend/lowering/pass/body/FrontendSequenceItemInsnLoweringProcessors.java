@@ -804,13 +804,17 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @NotNull FrontendResolvedCall resolvedCall
         ) {
             var arguments = session.materializeCallArguments(block, node, resolvedCall);
+            // The receiverType == null branch is the utility route (`CallGlobalInsn`); same-class
+            // `worker(1)` calls go through `CallStaticMethodInsn`. Utility callees are never
+            // coroutines, so the detach on that branch is a no-op — hooking both branches keeps
+            // static fire-and-forget on the same discipline as instance without special-casing.
             if (resolvedCall.receiverType() == null) {
                 block.appendNonTerminatorInstruction(new CallGlobalInsn(
                         emittedExactResultSlotIdOrNull(session, node, resolvedCall),
                         resolvedCall.callableName(),
                         arguments
                 ));
-                return block;
+                return emitCoroutineDetachIfNeeded(session, block, node);
             }
             block.appendNonTerminatorInstruction(new CallStaticMethodInsn(
                     emittedExactResultSlotIdOrNull(session, node, resolvedCall),
@@ -818,7 +822,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     resolvedCall.callableName(),
                     arguments
             ));
-            return block;
+            return emitCoroutineDetachIfNeeded(session, block, node);
         }
 
         private @NotNull LirBasicBlock lowerConstructorCall(

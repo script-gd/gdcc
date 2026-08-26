@@ -172,15 +172,9 @@ public class FrontendCompileCheckAnalyzer {
                 + "lowering support lands";
     }
 
-    /// §3.5: a coroutine reached through a static-method call is rejected at every position; the
-    /// backend has no `CallStaticMethodInsn` coroutine route in the MVP.
-    private static @NotNull String staticCoroutineCallCompileBlockedMessage(@NotNull String callableName) {
-        return "Static coroutine function '" + callableName
-                + "' is blocked in compile mode: static coroutine calls are not supported yet";
-    }
-
-    /// §3.5, aligned with Godot's `must be called with "await"`: an instance coroutine call is only
-    /// legal as a statement root expression (fire-and-forget) or as an await operand.
+    /// §3.5, aligned with Godot's `must be called with "await"`: a coroutine call (instance or
+    /// static — static calls were unblocked in plan 第十步) is only legal as a statement root
+    /// expression (fire-and-forget) or as an await operand.
     private static @NotNull String valuePositionCoroutineCallCompileBlockedMessage(@NotNull String callableName) {
         return "Function '" + callableName
                 + "' is a coroutine, so it can't be called without 'await' outside a statement root expression";
@@ -438,7 +432,8 @@ public class FrontendCompileCheckAnalyzer {
             }
             markCompileSurfaceNode(expressionStatement);
             // The direct root expression of a statement is the only fire-and-forget position where
-            // an instance coroutine call is legal without `await` (§3.5, Godot root-expression rule).
+            // a coroutine call (instance or static, plan 第十步) is legal without `await`
+            // (§3.5, Godot root-expression rule).
             walkingStatementRootExpression = true;
             try {
                 walkExpression(expressionStatement.expression());
@@ -708,16 +703,17 @@ public class FrontendCompileCheckAnalyzer {
         }
 
         /// Await is compile-ready after step 8. Its root and operand must enter the ordinary
-        /// published-fact scan, but the operand's top-level instance coroutine call is a legal
-        /// await position rather than an ordinary value position. Recording that anchor through the
-        /// static-call check also identity-deduplicates a trailing AttributeCallStep during descent;
-        /// intermediate calls remain value positions and are still checked recursively.
+        /// published-fact scan, and the operand's top-level coroutine call (instance or static,
+        /// plan 第十步) is a legal await position rather than an ordinary value position. Recording
+        /// that anchor through the shared position check also identity-deduplicates a trailing
+        /// AttributeCallStep during descent; intermediate calls remain value positions and are
+        /// still checked recursively.
         private void walkAwaitExpression(@NotNull AwaitExpression awaitExpression) {
             markCompileSurfaceNode(awaitExpression);
             var operand = awaitExpression.value();
             markCompileSurfaceNode(operand);
             rememberBareCallCallee(operand);
-            reportStaticCoroutineCallBlock(coroutineCallAnchorFor(operand));
+            checkCoroutineCallPosition(coroutineCallAnchorFor(operand), true);
             walkNestedExpressionChildren(operand);
         }
 
@@ -918,28 +914,16 @@ public class FrontendCompileCheckAnalyzer {
             }
         }
 
-        /// §3.5 position rules for calls to GDCC coroutine functions: static coroutine calls are
-        /// rejected at every position; instance calls are legal only at a statement root
-        /// (fire-and-forget) or as the top-level operand handled by `walkAwaitExpression`.
+        /// §3.5 position rules for calls to GDCC coroutine functions: static and instance calls
+        /// share one contract (plan 第十步) — legal only at a statement root (fire-and-forget) or
+        /// as the top-level operand handled by `walkAwaitExpression`.
         private void checkCoroutineCallPosition(@Nullable Node callAnchor, boolean statementRoot) {
             var call = coroutineCallAtOrNull(callAnchor);
             if (call == null) {
                 return;
             }
-            if (call.callKind() == FrontendCallResolutionKind.STATIC_METHOD) {
-                reportCompileBlock(callAnchor, staticCoroutineCallCompileBlockedMessage(call.callableName()));
-                return;
-            }
             if (!statementRoot) {
                 reportCompileBlock(callAnchor, valuePositionCoroutineCallCompileBlockedMessage(call.callableName()));
-            }
-        }
-
-        /// Static coroutine calls stay compile-blocked even under an await operand (§3.5).
-        private void reportStaticCoroutineCallBlock(@Nullable Node callAnchor) {
-            var call = coroutineCallAtOrNull(callAnchor);
-            if (call != null && call.callKind() == FrontendCallResolutionKind.STATIC_METHOD) {
-                reportCompileBlock(callAnchor, staticCoroutineCallCompileBlockedMessage(call.callableName()));
             }
         }
 

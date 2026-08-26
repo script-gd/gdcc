@@ -537,6 +537,8 @@ final class GodotBuiltinGenerator {
                 out.append("return ").append(GodotBindingSupport.zeroReturn(method.returnType()));
             }
             out.append(");\n");
+            // Static builtin ptrcall ignores the instance base; the wrapper has no `self`, so pass NULL.
+            var baseExpr = method.isStatic() ? "NULL" : "self";
             if (method.isVararg()) {
                 // Runtime argv cannot use GDCC_BUILTIN_METHOD_ARGS (static initializer).
                 // Length is always >= 1 so argc==0 never emits a zero-length VLA.
@@ -544,10 +546,10 @@ final class GodotBuiltinGenerator {
                 var countExpr = arguments.size() + " + argc";
                 var argsPtrExpr = "(" + arguments.size() + " + argc == 0) ? NULL : args";
                 if (GodotBindingSupport.isVoid(method.returnType())) {
-                    out.append("    GDCC_BUILTIN_METHOD_VOID(").append(cacheName).append(", self, ")
+                    out.append("    GDCC_BUILTIN_METHOD_VOID(").append(cacheName).append(", ").append(baseExpr).append(", ")
                             .append(argsPtrExpr).append(", ").append(countExpr).append(");\n");
                 } else {
-                    out.append("    GDCC_BUILTIN_METHOD_RETURN(").append(cacheName).append(", self, ")
+                    out.append("    GDCC_BUILTIN_METHOD_RETURN(").append(cacheName).append(", ").append(baseExpr).append(", ")
                             .append(argsPtrExpr).append(", ").append(returnType).append(", ")
                             .append(countExpr).append(");\n");
                 }
@@ -559,16 +561,16 @@ final class GodotBuiltinGenerator {
                 }
                 if (GodotBindingSupport.isVoid(method.returnType())) {
                     if (arguments.isEmpty()) {
-                        out.append("    GDCC_BUILTIN_METHOD_VOID0(").append(cacheName).append(", self);\n");
+                        out.append("    GDCC_BUILTIN_METHOD_VOID0(").append(cacheName).append(", ").append(baseExpr).append(");\n");
                     } else {
-                        out.append("    GDCC_BUILTIN_METHOD_VOID(").append(cacheName).append(", self, args, ")
+                        out.append("    GDCC_BUILTIN_METHOD_VOID(").append(cacheName).append(", ").append(baseExpr).append(", args, ")
                                 .append(arguments.size()).append(");\n");
                     }
                 } else if (arguments.isEmpty()) {
-                    out.append("    GDCC_BUILTIN_METHOD_RETURN0(").append(cacheName).append(", self, ")
+                    out.append("    GDCC_BUILTIN_METHOD_RETURN0(").append(cacheName).append(", ").append(baseExpr).append(", ")
                             .append(returnType).append(");\n");
                 } else {
-                    out.append("    GDCC_BUILTIN_METHOD_RETURN(").append(cacheName).append(", self, args, ")
+                    out.append("    GDCC_BUILTIN_METHOD_RETURN(").append(cacheName).append(", ").append(baseExpr).append(", args, ")
                             .append(returnType).append(", ").append(arguments.size()).append(");\n");
                 }
             }
@@ -925,11 +927,13 @@ final class GodotBuiltinGenerator {
                     continue;
                 }
                 var parameters = new ArrayList<GodotBindingSymbol.Parameter>();
-                parameters.add(new GodotBindingSymbol.Parameter(
-                        "self",
-                        (method.isConst() ? "const " : "") + GodotBindingSupport.cType(builtin.name()) + " *",
-                        method.isConst() ? GodotBindingSymbol.Abi.CONST_TYPE_PTR : GodotBindingSymbol.Abi.MUTABLE_TYPE_PTR
-                ));
+                if (!method.isStatic()) {
+                    parameters.add(new GodotBindingSymbol.Parameter(
+                            "self",
+                            (method.isConst() ? "const " : "") + GodotBindingSupport.cType(builtin.name()) + " *",
+                            method.isConst() ? GodotBindingSymbol.Abi.CONST_TYPE_PTR : GodotBindingSymbol.Abi.MUTABLE_TYPE_PTR
+                    ));
+                }
                 parameters.addAll(parameters(GodotBindingSupport.list(method.arguments())));
                 if (method.isVararg()) {
                     parameters.add(new GodotBindingSymbol.Parameter(
@@ -1182,13 +1186,21 @@ final class GodotBuiltinGenerator {
                 @NotNull ExtensionBuiltinClass.ClassMethod method
         ) {
             var params = new ArrayList<String>();
-            params.add((method.isConst() ? "const " : "") + GodotBindingSupport.cType(builtin.name()) + " *self");
+            // Static builtin methods have no instance receiver; the wrapper signature starts at the
+            // first declared argument and the ptrcall base is NULL (frontend_await_minicoro_plan.md
+            // 第十步, decision record 1).
+            if (!method.isStatic()) {
+                params.add((method.isConst() ? "const " : "") + GodotBindingSupport.cType(builtin.name()) + " *self");
+            }
             for (var argument : GodotBindingSupport.list(method.arguments())) {
                 params.add(GodotBindingSupport.renderPublicParameter(argument.type(), argument.name()));
             }
             if (method.isVararg()) {
                 params.add("const godot_Variant **argv");
                 params.add("godot_int argc");
+            }
+            if (params.isEmpty()) {
+                return "void";
             }
             return String.join(", ", params);
         }

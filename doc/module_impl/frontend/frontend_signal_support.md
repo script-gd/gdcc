@@ -56,11 +56,10 @@ Godot 对齐基线：runtime / GDExtension ABI / generated bindings 固定为 **
 
 仍拒绝：
 
-- property initializer / parameter default 内 await、static coroutine call 与 value-position coroutine call；普通 executable function 与已记录 lambda body 的 signal/dynamic/instance-call await 已闭环（lambda 内 await 见 `frontend_await_minicoro_plan.md` 第九步）
+- property initializer / parameter default 内 await 与 value-position coroutine call；普通 executable function 与已记录 lambda body 的 signal/dynamic/instance-call/static-call await 已闭环（lambda 内 await 见 `frontend_await_minicoro_plan.md` 第九步，static coroutine call 见第十步）
 - builtin type-meta 方法当值（`Vector2.abs`、`Vector2.from_angle`）
 - 构造器当值（`Node.new`、`Inner.new`）
 - `dict.clear` 当方法引用（Godot 把它当 Dictionary key）
-- `CALL_STATIC_METHOD` 完整 backend（`CallStaticMethodInsn` → CInsnGen）；静态方法 **调用** 与静态方法 **引用** 分开
 - Callable `bind` / `unbind` / RPC callable 的新 lowering；已物化的 `Callable` 走既有 builtin `CallMethodInsn`
 - 按 signal 声明签名对 `emit` 做静态 arity / type 拒绝
 - 自定义 `signal` 作为 type annotation 扩展
@@ -85,7 +84,7 @@ inherited GDCC 同名 signal 允许 nearest-child shadow；GDCC 不得覆盖 inh
 | 源码形态 | Godot | 运行时表示 | GDCC 出口 |
 | --- | --- | --- | --- |
 | Object / self 实例方法 | 允许 | `Callable(Object*, StringName)` | `godot_new_Callable_with_Object_StringName` |
-| builtin 实例方法 | 允许 | `VariantCallable`，receiver 按值拷进 userdata | `godot_Callable_create(NULL, &tmp, name)` |
+| builtin 实例方法 | 允许 | `VariantCallable`，receiver 按值拷进 userdata | `godot_Callable_create(&tmp, name)`（wrapper 无 self 形参，ptrcall base 在 wrapper 内为 NULL，第十步决策记录 1） |
 | `Dictionary.clear` 等 keyed 成员 | 否（当 key） | 必须显式 `Callable.create(dict, &"clear")` | 继续拒绝 `dict.clear` 当方法引用 |
 | builtin type-meta 方法 | 否 | analyzer 在 builtin meta 上只认 constant / enum | 继续拒绝 |
 | GDCC / script 静态方法 | 允许 | `Callable(script_obj, name)` | `godot_callable_custom_create2` trampoline |
@@ -174,7 +173,7 @@ lowering 只消费 published facts。缺失 / 冲突 fact 必须 fail-fast，禁
 - `BARE_VALUE_REFERENCE_BINDING_KINDS` 当前为空，扫描保留为 callee-exclusion hook；不得按 `GdSignalType` / `GdCallableType` 猜测局部变量。
 - `symbolBindings()` 同时键 `IdentifierExpression` / `LiteralExpression` / `SelfExpression`；bare blocker 只消费 identifier。
 - `DYNAMIC` 永远不是 compile blocker。
-- 合法 `await` root 与 operand 进入 published-fact scan；顶层 instance coroutine call 获得 await-position 豁免。static coroutine、operand 内嵌套 coroutine call 与 value-position coroutine call 仍阻断；`Node.new` 当值及未记录 lambda（property initializer / parameter default / skipped subtree）保持 fail-closed。
+- 合法 `await` root 与 operand 进入 published-fact scan；顶层 instance 与 static coroutine call 均获得 await-position 豁免（static 由第十步开放）。operand 内嵌套 coroutine call 与 value-position coroutine call 仍阻断；`Node.new` 当值及未记录 lambda（property initializer / parameter default / skipped subtree）保持 fail-closed。
 - 已记录 lambda 放上 compile surface 并递归扫描 body facts（合同见 `frontend_lambda_implementation.md`）。
 
 ---
@@ -217,10 +216,10 @@ operand 冻结为 `(VARIABLE, STRING)` min/max=2。旧 1-operand 非法，由 op
 | `$receiver` | C 出口 | liveness |
 | --- | --- | --- |
 | `GdObjectType` | `godot_new_Callable_with_Object_StringName` | Object liveness |
-| 非 Object builtin | 临时 Variant + `godot_Callable_create(NULL, &tmp, name)`，立刻 destroy | 无 Object guard |
+| 非 Object builtin | 临时 Variant + `godot_Callable_create(&tmp, name)`，立刻 destroy | 无 Object guard |
 | `Variant` / 无 receiver | **拒绝** | — |
 
-`godot_Callable_create` 的 `self` 是 unused static-method receiver，必须传 `NULL`。禁止把 static / utility 或伪造 Object 塞进本 opcode。builtin 分支在 generator 内 pack 临时 Variant，不另插 `PackVariantInsn`。
+`godot_Callable_create` wrapper 无 `self` 形参；ptrcall base 在 wrapper 内为 `NULL`（第十步决策记录 1）。禁止把 static / utility 或伪造 Object 塞进本 opcode。builtin 分支在 generator 内 pack 临时 Variant，不另插 `PackVariantInsn`。
 
 `FrontendChainReductionHelper.resolveInstanceMethodReference` 仍把裸 `dict.clear` 发布为 `RESOLVED METHOD + INSTANCE + BUILTIN + Dictionary`。compile gate / CFG 必须按 `receiverType instanceof GdDictionaryType` 拒绝，不得误发 builtin 分支。`dict.clear()` 调用面仍走 builtin method call。
 
@@ -235,7 +234,7 @@ operand 冻结为 `(VARIABLE, STRING)` min/max=2。旧 1-operand 非法，由 op
 
 `gdcc_standalone_callable_spec_of` 按 `(kind, owner, name)` 线性去重；每条 spec 单独 `godot_mem_alloc`，指针数组倍增。`deinitialize` 调 `gdcc_standalone_callable_registry_destroy_all()`。`free_func` 是 no-op（多份 Callable 共享同一 spec）。OOM 返回空 Callable。
 
-standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC / engine 静态方法，不实现 `CALL_STATIC_METHOD` CInsnGen。
+standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC / engine 静态方法（该路径保持原样）；`CALL_STATIC_METHOD` 的 CInsnGen 已由 `frontend_await_minicoro_plan.md` 第十步落地（`CallStaticMethodInsnGen`），与本 trampoline 是两条独立通道。
 
 ### 8.4 `construct_lambda`
 
@@ -247,7 +246,7 @@ standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC / engine 静�
 
 ### 8.5 注册
 
-四个 opcode（`construct_signal`、`construct_callable`、`construct_standalone_callable`、`construct_lambda`）都必须在 `ConstructInsnGen.getInsnOpcodes()` 中，否则 `CCodegen` 按 opcode 映射会抛 `Unsupported instruction opcode`。`CALL_STATIC_METHOD` 故意未注册。
+四个 opcode（`construct_signal`、`construct_callable`、`construct_standalone_callable`、`construct_lambda`）都必须在 `ConstructInsnGen.getInsnOpcodes()` 中，否则 `CCodegen` 按 opcode 映射会抛 `Unsupported instruction opcode`。`CALL_STATIC_METHOD` 已由 `CallStaticMethodInsnGen` 注册（第十步）。
 
 ### 8.6 emit / connect
 
@@ -288,7 +287,7 @@ standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC / engine 静�
 - 诊断必须走 `DiagnosticManager` + skip subtree；普通源码错误不得当异常控制流。
 - 继承 signal 不得重复注册；engine signal 只读、不注册、冲突被拒。
 - 新 `gdcc_*` helper 必须按 `gdcc_runtime_lib.md` 登记。
-- 不要顺便实现 `CALL_STATIC_METHOD` backend；那是独立缺口。
+- `CALL_STATIC_METHOD` backend 已由 `frontend_await_minicoro_plan.md` 第十步落地（`CallStaticMethodInsnGen`）；静态方法 **调用**（`call_static_method`）与静态方法 **引用**（`construct_standalone_callable` trampoline）是两条独立通道，改动其一不得波及另一。
 
 ---
 
@@ -299,7 +298,7 @@ standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC / engine 静�
 - backend：`CConstructInsnGenTest`（含 inherited GDCC static 解析到声明 owner、未注册 opcode 负例）、`CCodegenSignalRegistrationTest`、`GodotBuiltinGeneratorTest`、`CallMethodInsnGenTest`
 - inherited static：`ClassRegistryTest.findStaticFunctionInHierarchyShouldPreferNearestDeclaringOwner`、`FrontendLoweringBodyInsnPassTest.runLowersInheritedStaticMethodReferencesThroughDeclaringOwner`
 - Variant：`FrontendVariantBoundaryCompatibilityTest.signalVariantBoundaryUsesExplicitPackUnpackNotAssignability`、`FrontendLoweringBodyInsnPassTest.runPacksAndUnpacksSignalAcrossExplicitVariantBoundaries`、`ClassRegistryTest.checkAssignableRejectsFrontendOnlyBoundaryConversions`
-- compile gate：`FrontendCompileCheckAnalyzerTest`（signal/dynamic/instance-call await 放行，static/nested/value-position coroutine call 拒绝，Dictionary / type-meta 拒绝、callee exclusion、`lerp` 值读、`Node.new` 拒绝）
+- compile gate：`FrontendCompileCheckAnalyzerTest`（signal/dynamic/instance-call/static-call await 放行，nested/value-position coroutine call 拒绝，Dictionary / type-meta 拒绝、callee exclusion、`lerp` 值读、`Node.new` 拒绝）
 - e2e（Zig + `GODOT_BIN` 可用时跑，否则 assumption skip）：
   - `member/signal_value_read.gd`
   - `member/signal_emit_connect.gd`

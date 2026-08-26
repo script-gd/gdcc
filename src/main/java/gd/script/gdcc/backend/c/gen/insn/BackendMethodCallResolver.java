@@ -190,6 +190,42 @@ public final class BackendMethodCallResolver {
         };
     }
 
+    /// Static counterpart of `resolve(...)` (`frontend_await_minicoro_plan.md` 第十步).
+    ///
+    /// `className` is the receiver canonical name published by lowering (GDCC class, inner class
+    /// `Outer__sub__Inner`, engine class, or builtin type name); it is restored to a `ScopeTypeMeta`
+    /// through `ClassRegistry.resolveTypeMeta` — never `getClassDef(new GdObjectType(...))`, which
+    /// misses builtin owners. The shared static resolver can only produce `Resolved`/`Failed` (no
+    /// dynamic fallback exists for static calls), and the emitted C symbol/start thunk names the
+    /// declaring owner class (`resolved.ownerClass()`), which differs from `className` under
+    /// inheritance.
+    public static @NotNull ResolvedMethodCall resolveStatic(@NotNull CBodyBuilder bodyBuilder,
+                                                            @NotNull String className,
+                                                            @NotNull String methodName,
+                                                            @NotNull List<LirVariable> argVars) {
+        for (var i = 0; i < argVars.size(); i++) {
+            InsnGenSupport.rejectCompilerOnlyType(bodyBuilder, argVars.get(i).type(), "call_static_method argument #" + (i + 1));
+        }
+
+        var receiverTypeMeta = bodyBuilder.classRegistry().resolveTypeMeta(className);
+        if (receiverTypeMeta == null) {
+            throw bodyBuilder.invalidInsn("Static method owner type '" + className + "' was not found");
+        }
+        var argTypes = argVars.stream().map(LirVariable::type).toList();
+        var result = ScopeMethodResolver.resolveStaticMethod(
+                bodyBuilder.classRegistry(),
+                receiverTypeMeta,
+                methodName,
+                argTypes
+        );
+        return switch (result) {
+            case ScopeMethodResolver.Resolved resolved -> toResolvedMethodCall(bodyBuilder, resolved.method());
+            case ScopeMethodResolver.DynamicFallback _ -> throw bodyBuilder.invalidInsn(
+                    "Static method '" + className + "." + methodName + "' unexpectedly resolved to dynamic dispatch");
+            case ScopeMethodResolver.Failed failed -> throw bodyBuilder.invalidInsn(failed.message());
+        };
+    }
+
     private static @NotNull DispatchMode toDispatchMode(@NotNull ScopeMethodResolver.DynamicKind dynamicKind) {
         return switch (dynamicKind) {
             case OBJECT_DYNAMIC -> DispatchMode.OBJECT_DYNAMIC;

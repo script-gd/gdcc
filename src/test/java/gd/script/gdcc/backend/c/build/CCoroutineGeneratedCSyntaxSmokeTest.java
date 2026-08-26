@@ -15,6 +15,7 @@ import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.insn.AwaitInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
+import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructLambdaInsn;
 import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
@@ -72,6 +73,13 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
                 "peer"));
         workerClass.addFunction(coroutine("fetch", GdVariantType.VARIANT, List.of(), null));
         workerClass.addFunction(coroutine("wait_done", GdVoidType.VOID, List.of(), null));
+
+        // Named static coroutines (plan step 10): no `self` parameter, so the frame/state object,
+        // start thunk and ClassDB wrapper compile-verify the receiver-free shape.
+        workerClass.addFunction(staticCoroutine("static_sum", GdIntType.INT,
+                List.of(param("count", GdIntType.INT)),
+                "count"));
+        workerClass.addFunction(staticCoroutine("static_fetch", GdVariantType.VARIANT, List.of(), null));
 
         // Lambda capturing self + a String frame parameter: compile-verifies the frame-aware
         // capture copy and the `_coro_param_self.instance_id` object_id channel.
@@ -154,7 +162,9 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
         runAll.createAndAddVariable("res_i", GdIntType.INT);
         runAll.createAndAddVariable("state_fetch", GdccCoroStateType.CORO_STATE);
         runAll.createAndAddVariable("state_sum", GdccCoroStateType.CORO_STATE);
+        runAll.createAndAddVariable("state_static_sum", GdccCoroStateType.CORO_STATE);
         runAll.createAndAddVariable("__coro_state_9", GdccCoroStateType.CORO_STATE);
+        runAll.createAndAddVariable("__coro_state_10", GdccCoroStateType.CORO_STATE);
         var runAllEntry = new LirBasicBlock("entry");
         runAllEntry.appendInstruction(new AwaitInsn("res_v", "sig"));
         runAllEntry.appendInstruction(new CallMethodInsn("state_fetch", "fetch", "self", List.of()));
@@ -166,9 +176,20 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
                 List.of(new LirInstruction.VariableOperand("count"), new LirInstruction.VariableOperand("label"))
         ));
         runAllEntry.appendInstruction(new AwaitInsn("res_i", "state_sum"));
+        // Static coroutine call surface (plan step 10): awaited typed result and statement-position
+        // fire-and-forget detach, both receiver-free.
+        runAllEntry.appendInstruction(new CallStaticMethodInsn(
+                "state_static_sum",
+                "SyntaxWorker",
+                "static_sum",
+                List.of(new LirInstruction.VariableOperand("count"))
+        ));
+        runAllEntry.appendInstruction(new AwaitInsn("res_i", "state_static_sum"));
         runAllEntry.appendInstruction(new AwaitInsn("res_v", "dyn"));
         runAllEntry.appendInstruction(new CallMethodInsn("__coro_state_9", "fetch", "self", List.of()));
         runAllEntry.appendInstruction(new DestructInsn("__coro_state_9", LifecycleProvenance.INTERNAL));
+        runAllEntry.appendInstruction(new CallStaticMethodInsn("__coro_state_10", "SyntaxWorker", "static_fetch", List.of()));
+        runAllEntry.appendInstruction(new DestructInsn("__coro_state_10", LifecycleProvenance.INTERNAL));
         runAllEntry.setTerminator(new ReturnInsn(null));
         runAll.addBasicBlock(runAllEntry);
         runAll.setEntryBlockId("entry");
@@ -235,6 +256,33 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
 
     private static @NotNull ParamSpec param(String name, GdType type) {
         return new ParamSpec(name, type);
+    }
+
+    /// Static coroutines take no `self` parameter (plan step 10); the returned-variable shape is
+    /// otherwise identical to the instance `coroutine(...)` fixture.
+    private static @NotNull LirFunctionDef staticCoroutine(String name,
+                                                           GdType returnType,
+                                                           List<ParamSpec> extraParams,
+                                                           String returnedVariableId) {
+        var func = new LirFunctionDef(name);
+        func.setStatic(true);
+        func.setReturnType(returnType);
+        func.setCoroutine(true);
+        for (var parameter : extraParams) {
+            func.addParameter(new LirParameterDef(parameter.name(), parameter.type(), null, func));
+        }
+        var entry = new LirBasicBlock("entry");
+        if (returnType instanceof GdVoidType) {
+            entry.setTerminator(new ReturnInsn(null));
+        } else if (returnedVariableId != null) {
+            entry.setTerminator(new ReturnInsn(returnedVariableId));
+        } else {
+            func.createAndAddVariable("v", GdVariantType.VARIANT);
+            entry.setTerminator(new ReturnInsn("v"));
+        }
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        return func;
     }
 
     private static @NotNull LirFunctionDef coroutine(String name,

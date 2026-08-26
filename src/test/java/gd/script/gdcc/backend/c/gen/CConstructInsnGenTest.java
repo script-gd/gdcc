@@ -20,7 +20,7 @@ import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.backend.c.gen.insn.ConstructInsnGen;
 import gd.script.gdcc.enums.GdInstruction;
 import gd.script.gdcc.lir.insn.AssertObjectLiveInsn;
-import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
+import gd.script.gdcc.lir.insn.CallSuperMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructArrayInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructDictionaryInsn;
@@ -717,17 +717,19 @@ class CConstructInsnGenTest {
         assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_STANDALONE_CALLABLE));
     }
 
-    /// CALL_STATIC_METHOD has no CInsnGen. Dispatch must throw, not skip the insn.
+    /// CALL_SUPER_METHOD has no CInsnGen (CALL_STATIC_METHOD got one in plan 第十步, so the
+    /// unregistered-opcode probe moved to the remaining gap). Dispatch must throw, not skip the insn.
     @Test
     @DisplayName("CCodegen must fail-fast when an opcode is not registered on any CInsnGen")
     void unregisteredOpcodeFailsDispatchInsteadOfSkipping() {
         var clazz = newTestClass();
-        var func = newFunction("unregistered_static_call");
+        var func = newFunction("unregistered_super_call");
+        func.createAndAddVariable("self", new GdObjectType("Node"));
         func.createAndAddVariable("result", GdVariantType.VARIANT);
-        entry(func).appendInstruction(new CallStaticMethodInsn(
+        entry(func).appendInstruction(new CallSuperMethodInsn(
                 "result",
-                "JSON",
-                "parse_string",
+                "queue_free",
+                "self",
                 List.of()
         ));
         clazz.addFunction(func);
@@ -736,7 +738,7 @@ class CConstructInsnGenTest {
                 UnsupportedOperationException.class,
                 () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
         );
-        assertTrue(thrown.getMessage().contains("call_static_method"), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("call_super_method"), thrown.getMessage());
     }
 
     @Test
@@ -819,7 +821,9 @@ class CConstructInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
-        assertTrue(body.contains("godot_Callable_create(NULL,"), body);
+        // Callable.create is a static builtin wrapper: no self parameter since plan 第十步.
+        assertTrue(body.contains("godot_Callable_create("), body);
+        assertFalse(body.contains("godot_Callable_create(NULL"), body);
         assertTrue(body.contains("GD_STATIC_SN(u8\"abs\")"), body);
         assertTrue(body.contains("godot_Variant_destroy("), body);
         assertFalse(body.contains("godot_new_Callable_with_Object_StringName("), body);

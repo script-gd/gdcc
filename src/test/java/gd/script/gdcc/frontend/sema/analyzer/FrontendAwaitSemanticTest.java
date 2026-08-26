@@ -414,8 +414,11 @@ class FrontendAwaitSemanticTest {
         );
     }
 
+    /// Plan 第十步: a statement-root static coroutine call is fire-and-forget, same as instance —
+    /// no compile diagnostic, and the caller is NOT marked (no await pending is produced, so the
+    /// fixed point never propagates; §3.5 "否（调用方不挂起）").
     @Test
-    void analyzeForCompileRejectsStaticCoroutineCallEvenAtStatementRoot() throws Exception {
+    void analyzeForCompileAllowsStaticCoroutineCallAtStatementRoot() throws Exception {
         var compiled = analyzeForCompile("await_gate_static_coroutine.gd", """
                 class_name AwaitGateStaticCoroutine
                 extends Node
@@ -429,12 +432,12 @@ class FrontendAwaitSemanticTest {
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         assertAll(
-                () -> assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString),
+                () -> assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString),
                 () -> assertTrue(
-                        compileDiagnostics.stream().anyMatch(d -> d.message().contains("Static coroutine function")
-                                && d.message().contains("worker")),
+                        compileDiagnostics.stream().noneMatch(d -> d.message().contains("is a coroutine")),
                         compileDiagnostics::toString
-                )
+                ),
+                () -> assertFalse(coroutineNames(compiled).contains("outer"), compiled.diagnostics()::toString)
         );
     }
 
@@ -548,9 +551,10 @@ class FrontendAwaitSemanticTest {
         );
     }
 
-    /// §3.5: a static coroutine call stays compile-blocked even as an await operand.
+    /// Plan 第十步: an awaited static coroutine call is a legal await operand; the caller suspends
+    /// through it, so the fixed point must mark the caller as a coroutine.
     @Test
-    void analyzeForCompileRejectsAwaitedStaticCoroutineCall() throws Exception {
+    void analyzeForCompileAllowsAwaitedStaticCoroutineCall() throws Exception {
         var compiled = analyzeForCompile("await_gate_awaited_static.gd", """
                 class_name AwaitGateAwaitedStatic
                 extends Node
@@ -564,11 +568,130 @@ class FrontendAwaitSemanticTest {
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         assertAll(
+                () -> assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString),
+                () -> assertTrue(
+                        compileDiagnostics.stream().noneMatch(d -> d.message().contains("is a coroutine")),
+                        compileDiagnostics::toString
+                ),
+                () -> assertTrue(coroutineNames(compiled).contains("outer"), compiled.diagnostics()::toString)
+        );
+    }
+
+    /// Fail-closed regression: a static coroutine call in a value position (neither await operand
+    /// nor statement root) stays rejected with Godot's `must be called with "await"` contract,
+    /// exactly like an instance call.
+    @Test
+    void analyzeForCompileRejectsValuePositionStaticCoroutineCall() throws Exception {
+        var compiled = analyzeForCompile("await_gate_value_position_static.gd", """
+                class_name AwaitGateValuePositionStatic
+                extends Node
+
+                static func worker(target):
+                    await target
+
+                func outer():
+                    var state = worker(1)
+                """);
+
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        assertAll(
                 () -> assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString),
                 () -> assertTrue(
-                        compileDiagnostics.stream().anyMatch(d -> d.message().contains("Static coroutine function")
+                        compileDiagnostics.stream().anyMatch(d -> d.message().contains("is a coroutine")
                                 && d.message().contains("worker")),
                         compileDiagnostics::toString
+                )
+        );
+    }
+
+    /// Static caller marking goes through the same pending route as instance callers: `outer` is
+    /// resolved before the callee's coroutine marking exists, so the post-suite fixed point must
+    /// propagate it.
+    @Test
+    void awaitStaticCoroutineCallMarksStaticCallerThroughPending() throws Exception {
+        var analyzed = analyze("await_static_pending_mark.gd", """
+                class_name AwaitStaticPendingMark
+                extends Node
+
+                signal pinged
+
+                static func outer(peer: AwaitStaticPendingMark):
+                    var result = await AwaitStaticPendingMark.inner(peer)
+
+                static func inner(peer: AwaitStaticPendingMark) -> int:
+                    await peer.pinged
+                    return 1
+                """);
+
+        var coroutineNames = coroutineNames(analyzed);
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics()::toString),
+                () -> assertTrue(coroutineNames.contains("inner"), analyzed.diagnostics()::toString),
+                () -> assertTrue(coroutineNames.contains("outer"), analyzed.diagnostics()::toString)
+        );
+    }
+
+    /// Static-to-static two-level chain with caller-before-callee source order: `second` is only
+    /// known as a coroutine after `third` propagates, so `first` requires a second fixed-point round.
+    @Test
+    void awaitStaticCoroutineChainPropagatesMarkingTransitively() throws Exception {
+        var analyzed = analyze("await_static_chain.gd", """
+                class_name AwaitStaticChain
+                extends Node
+
+                signal pinged
+
+                static func first(target):
+                    await AwaitStaticChain.second(target)
+
+                static func second(target):
+                    await AwaitStaticChain.third(target)
+
+                static func third(target):
+                    await target
+                """);
+
+        var coroutineNames = coroutineNames(analyzed);
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics()::toString),
+                () -> assertTrue(
+                        coroutineNames.containsAll(List.of("first", "second", "third")),
+                        analyzed.diagnostics()::toString
+                )
+        );
+    }
+
+    /// Mixed chain: a static caller awaiting an instance coroutine through an explicit receiver and
+    /// an instance caller awaiting a static coroutine must both be marked — the fixed point no
+    /// longer distinguishes the two call kinds.
+    @Test
+    void awaitMixedStaticInstanceChainPropagatesMarking() throws Exception {
+        var analyzed = analyze("await_mixed_static_instance_chain.gd", """
+                class_name AwaitMixedStaticInstanceChain
+                extends Node
+
+                signal pinged
+
+                static func static_caller(peer: AwaitMixedStaticInstanceChain):
+                    await peer.instance_leaf()
+
+                func instance_caller():
+                    await AwaitMixedStaticInstanceChain.static_leaf(self)
+
+                static func static_leaf(target):
+                    await target
+
+                func instance_leaf():
+                    await pinged
+                """);
+
+        var coroutineNames = coroutineNames(analyzed);
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics()::toString),
+                () -> assertTrue(
+                        coroutineNames.containsAll(
+                                List.of("static_caller", "instance_caller", "static_leaf", "instance_leaf")),
+                        analyzed.diagnostics()::toString
                 )
         );
     }

@@ -36,7 +36,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// End-to-end anchors for discarded void-return call contracts beyond the former Array-only probe.
@@ -161,8 +160,11 @@ public class FrontendVoidReturnCallIntegrationTest {
         );
     }
 
+    /// Plan 第十步 flipped this baseline: `CALL_STATIC_METHOD` has a backend generator now, so a
+    /// discarded static type-meta head void call (`Node.print_orphan_nodes()`) must build instead
+    /// of failing on an unsupported opcode.
     @Test
-    void staticVoidReturnTypeMetaHeadStillFailsAtUnsupportedBackendOpcode(@TempDir Path tempDir) throws Exception {
+    void staticVoidReturnTypeMetaHeadBuildsThroughEngineStaticHelper(@TempDir Path tempDir) throws Exception {
         var lowered = lowerModule(
                 "frontend_static_void_return_type_meta_head",
                 tempDir.resolve("static_void_return_type_meta_head.gd"),
@@ -192,13 +194,12 @@ public class FrontendVoidReturnCallIntegrationTest {
         );
         var codegen = prepareCodegen(projectInfo, lowered);
 
-        var exception = assertThrows(
-                RuntimeException.class,
-                () -> new CProjectBuilder(fakeCompiler()).buildProject(projectInfo, codegen)
-        );
+        var buildResult = new CProjectBuilder(fakeCompiler()).buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), () -> "Static void call should build. Build log:\n" + buildResult.buildLog());
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
         assertTrue(
-                containsMessageInCauseChain(exception, "Unsupported instruction opcode: call_static_method"),
-                () -> renderCauseChain(exception)
+                entrySource.contains("gdcc_engine_call_static_node_print_orphan_nodes"),
+                () -> "Expected the engine static helper call in generated code:\n" + entrySource
         );
     }
 
@@ -350,24 +351,6 @@ public class FrontendVoidReturnCallIntegrationTest {
             instructions.addAll(basicBlock.getInstructions());
         }
         return instructions;
-    }
-
-    private static boolean containsMessageInCauseChain(@NotNull Throwable throwable, @NotNull String expectedFragment) {
-        for (var current = throwable; current != null; current = current.getCause()) {
-            var message = current.getMessage();
-            if (message != null && message.contains(expectedFragment)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static @NotNull String renderCauseChain(@NotNull Throwable throwable) {
-        var lines = new ArrayList<String>();
-        for (var current = throwable; current != null; current = current.getCause()) {
-            lines.add(current.getClass().getSimpleName() + ": " + current.getMessage());
-        }
-        return String.join("\ncaused by: ", lines);
     }
 
     private static @NotNull String voidReturnCallEdgeTestScript() {

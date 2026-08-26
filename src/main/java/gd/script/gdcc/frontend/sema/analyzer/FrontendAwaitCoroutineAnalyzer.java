@@ -3,7 +3,6 @@ package gd.script.gdcc.frontend.sema.analyzer;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAwaitCallPending;
-import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticSupport;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.type.GdSignalType;
@@ -24,8 +23,9 @@ import java.util.Objects;
 /// Signal/Variant-returning calls are suspension-capable even when the callee is not a coroutine,
 /// so they mark their caller during the fixed point and remain pending only long enough to determine
 /// whether a Signal result needs refinement. Afterwards only hard-typed non-coroutine calls produce
-/// `sema.redundant_await`; static calls to a coroutine are consumed silently because the compile gate
-/// owns that diagnosis (§3.5).
+/// `sema.redundant_await`. Static coroutine callees propagate to their callers exactly like instance
+/// ones (plan 第十步): the static call is a legal await operand / statement root, so the caller
+/// suspends through it and must be compiled as a coroutine too.
 ///
 /// The pass mutates the monotonic coroutine set, refines non-coroutine Signal-call await results,
 /// and emits warnings. Variant-call results stay `Variant`; only hard-typed non-coroutine calls
@@ -50,9 +50,6 @@ public final class FrontendAwaitCoroutineAnalyzer {
                         progressed |= analysisData.markCoroutineOwner(pending.enclosingOwner());
                     }
                     nextRound.add(pending);
-                    continue;
-                }
-                if (pending.callKind() == FrontendCallResolutionKind.STATIC_METHOD) {
                     continue;
                 }
                 progressed |= analysisData.markCoroutineOwner(pending.enclosingOwner());

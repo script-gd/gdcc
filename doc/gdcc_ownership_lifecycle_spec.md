@@ -214,6 +214,12 @@ call site's state reference is a `compiler::GdccCoroState` variable (C storage
 Instructions; crossing into or out of `Variant` happens only inside runtime helpers and
 engine-boundary wrappers, never in generated body code.
 
+Static coroutine functions have no source-level `self` receiver (see
+`frontend_await_minicoro_plan.md` 第十步). Their state object and frame therefore contain no
+implicit `self` field; this does not change the ownership or keep-alive rules below — any explicit
+object parameter is retained only through its ordinary parameter storage, and the state object is
+kept alive by the same wait edges as instance coroutines.
+
 Keep-alive edges have a fixed direction (no cycles):
 
 - Signal wait: the connection's custom Callable holds a reference to the awaiting coroutine's

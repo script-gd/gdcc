@@ -21,6 +21,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Objects;
 
 /// C code generator for `CALL_METHOD`.
 ///
@@ -40,7 +41,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
     public void generateCCode(@NotNull CBodyBuilder bodyBuilder) {
         var instruction = bodyBuilder.getCurrentInsn(this);
         var receiverVar = resolveReceiverVar(bodyBuilder, instruction.objectId());
-        var argVars = resolveArgumentVariables(bodyBuilder, instruction, instruction.args());
+        var argVars = resolveArgumentVariables(bodyBuilder, instruction.methodName(), instruction.args(), "call_method");
 
         var resolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, instruction.methodName(), argVars);
         switch (resolved.mode()) {
@@ -197,14 +198,33 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                                         @NotNull List<LirVariable> argVars,
                                         @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
         if (resolved.coroutine()) {
-            emitCoroutineStartCall(bodyBuilder, instruction, receiverVar, argVars, resolved);
+            if (resolved.isStatic()) {
+                // Guard rail for anomalous IR: lowering emits `CallStaticMethodInsn` for static
+                // coroutine calls, so a `call_method` resolving to one is an invariant violation.
+                throw bodyBuilder.invalidInsn("Coroutine method '" + resolved.ownerClassName() + "." +
+                        resolved.methodName() + "' is static: static coroutine calls are not supported" +
+                        " via call_method (anomalous IR; static calls lower to call_static_method)");
+            }
+            emitCoroutineStartCall(bodyBuilder, instruction.resultId(), receiverVar, argVars, resolved, "CALL_METHOD");
             return;
         }
         if (resolved.isStatic()) {
             warnStaticMethodCall(bodyBuilder, receiverVar, resolved);
         }
+        emitResolvedCall(bodyBuilder, instruction.resultId(), receiverVar, argVars, resolved, "CALL_METHOD");
+    }
 
-        var callArgs = validateFixedArgsAndCompleteDefaults(bodyBuilder, receiverVar, resolved, argVars);
+    /// Shared exact-signature call flow for `CALL_METHOD`/`CALL_STATIC_METHOD`: default completion,
+    /// vararg collection, void/result handling and engine-usage recording. `receiverVar` is null
+    /// exactly on the static route; `validateFixedArgsAndCompleteDefaults` enforces the receiver
+    /// contract against `resolved.isStatic()`.
+    static void emitResolvedCall(@NotNull CBodyBuilder bodyBuilder,
+                                 @Nullable String resultId,
+                                 @Nullable LirVariable receiverVar,
+                                 @NotNull List<LirVariable> argVars,
+                                 @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
+                                 @NotNull String insnName) {
+        var callArgs = validateFixedArgsAndCompleteDefaults(bodyBuilder, receiverVar, resolved, argVars, insnName);
         var fixedCount = resolved.parameters().size();
         var fixedArgs = callArgs.fixedArgs();
 
@@ -219,7 +239,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
         var returnType = resolved.returnType();
         if (returnType instanceof GdVoidType) {
-            if (instruction.resultId() != null) {
+            if (resultId != null) {
                 throw bodyBuilder.invalidInsn("Method '" + resolved.ownerClassName() + "." + resolved.methodName() +
                         "' has no return value but resultId is provided");
             }
@@ -229,7 +249,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
             return;
         }
 
-        var target = resolveResultTarget(bodyBuilder, instruction, resolved);
+        var target = resolveResultTarget(bodyBuilder, resultId, resolved);
         bodyBuilder.callAssign(target, resolved.cFunctionName(), returnType, fixedArgs, varargs);
         destroyTemporaryArgs(bodyBuilder, callArgs.temporaryArgs());
         bodyBuilder.recordUsedEngineMethodCall(resolved);
@@ -241,25 +261,22 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
     /// result variable declared as `compiler::GdccCoroState`. The single-consumer value is then
     /// consumed either by `await` (typed resume channel) or by an `INTERNAL` `destruct`
     /// (statement-position fire-and-forget detach); this generator only produces it.
-    private void emitCoroutineStartCall(@NotNull CBodyBuilder bodyBuilder,
-                                        @NotNull CallMethodInsn instruction,
-                                        @NotNull LirVariable receiverVar,
-                                        @NotNull List<LirVariable> argVars,
-                                        @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
-        if (resolved.isStatic()) {
-            // Post-MVP: no CallStaticMethodInsn backend exists yet, and the start thunk takes
-            // the instance receiver; fail fast instead of silently emitting a broken call.
-            throw bodyBuilder.invalidInsn("Coroutine method '" + resolved.ownerClassName() + "." +
-                    resolved.methodName() + "' is static: static coroutine calls are not supported (Post-MVP)");
-        }
+    /// Shared with `CallStaticMethodInsnGen`: `receiverVar` is null on the static route, whose
+    /// start thunk has no receiver parameter (plan 第十步).
+    static void emitCoroutineStartCall(@NotNull CBodyBuilder bodyBuilder,
+                                       @Nullable String resultId,
+                                       @Nullable LirVariable receiverVar,
+                                       @NotNull List<LirVariable> argVars,
+                                       @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
+                                       @NotNull String insnName) {
         if (resolved.isVararg()) {
             // The generated start thunk has a fixed-parameter signature; a vararg tail would
             // produce a C call with more arguments than parameters.
             throw bodyBuilder.invalidInsn("Coroutine method '" + resolved.ownerClassName() + "." +
                     resolved.methodName() + "' is vararg: the coroutine start thunk is fixed-parameter only");
         }
-        var callArgs = validateFixedArgsAndCompleteDefaults(bodyBuilder, receiverVar, resolved, argVars);
-        var target = resolveCoroutineStateResultTarget(bodyBuilder, instruction, resolved);
+        var callArgs = validateFixedArgsAndCompleteDefaults(bodyBuilder, receiverVar, resolved, argVars, insnName);
+        var target = resolveCoroutineStateResultTarget(bodyBuilder, resultId, resolved);
         bodyBuilder.callAssign(target, resolved.cFunctionName(), GdccCoroStateType.CORO_STATE, callArgs.fixedArgs());
         destroyTemporaryArgs(bodyBuilder, callArgs.temporaryArgs());
         bodyBuilder.recordUsedEngineMethodCall(resolved);
@@ -268,11 +285,10 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
     /// The coroutine call MUST declare a result variable (the OWNED state reference has to be
     /// accounted for even on the fire-and-forget path) and the variable MUST be declared with
     /// the compiler-only `compiler::GdccCoroState` type — the only producer of that type.
-    private @NotNull CBodyBuilder.TargetRef resolveCoroutineStateResultTarget(
+    static @NotNull CBodyBuilder.TargetRef resolveCoroutineStateResultTarget(
             @NotNull CBodyBuilder bodyBuilder,
-            @NotNull CallMethodInsn instruction,
+            @Nullable String resultId,
             @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
-        var resultId = instruction.resultId();
         if (resultId == null) {
             throw bodyBuilder.invalidInsn("Call on coroutine method '" + resolved.ownerClassName() + "." +
                     resolved.methodName() + "' must declare a compiler::GdccCoroState result variable" +
@@ -289,9 +305,9 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         return bodyBuilder.targetOfVar(resultVar);
     }
 
-    private record CompletedCallArgs(@NotNull List<CBodyBuilder.ValueRef> fixedArgs,
-                                     @NotNull List<CBodyBuilder.TempVar> temporaryArgs) {
-        private CompletedCallArgs {
+    record CompletedCallArgs(@NotNull List<CBodyBuilder.ValueRef> fixedArgs,
+                             @NotNull List<CBodyBuilder.TempVar> temporaryArgs) {
+        CompletedCallArgs {
             fixedArgs = List.copyOf(fixedArgs);
             temporaryArgs = List.copyOf(temporaryArgs);
         }
@@ -312,10 +328,11 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                 bodyBuilder.currentInsnIndex());
     }
 
-    private @NotNull CompletedCallArgs validateFixedArgsAndCompleteDefaults(@NotNull CBodyBuilder bodyBuilder,
-                                                                            @NotNull LirVariable receiverVar,
-                                                                            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
-                                                                            @NotNull List<LirVariable> argVars) {
+    static @NotNull CompletedCallArgs validateFixedArgsAndCompleteDefaults(@NotNull CBodyBuilder bodyBuilder,
+                                                                           @Nullable LirVariable receiverVar,
+                                                                           @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
+                                                                           @NotNull List<LirVariable> argVars,
+                                                                           @NotNull String insnName) {
         var providedCount = argVars.size();
         var fixedCount = resolved.parameters().size();
         if (!resolved.isVararg() && providedCount > fixedCount) {
@@ -325,11 +342,15 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
         var fixedArgs = new ArrayList<CBodyBuilder.ValueRef>(fixedCount + (resolved.isStatic() ? 0 : 1));
         if (!resolved.isStatic()) {
+            if (receiverVar == null) {
+                throw bodyBuilder.invalidInsn(insnName + " on instance method '" + resolved.ownerClassName() + "." +
+                        resolved.methodName() + "' requires a receiver variable");
+            }
             fixedArgs.add(BackendPropertyAccessResolver.renderReceiverValue(
                     bodyBuilder,
                     receiverVar,
                     resolved.ownerType(),
-                    "CALL_METHOD",
+                    insnName,
                     "method owner",
                     ""
             ));
@@ -369,7 +390,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
             bodyBuilder.declareTempVar(temp);
             switch (param.defaultKind()) {
                 case LITERAL -> materializeLiteralDefault(bodyBuilder, resolved, param, temp, i + 1);
-                case FUNCTION -> materializeFunctionDefault(bodyBuilder, receiverVar, resolved, param, temp, i + 1);
+                case FUNCTION -> materializeFunctionDefault(bodyBuilder, receiverVar, resolved, param, temp, i + 1, insnName);
                 case NONE -> throw bodyBuilder.invalidInsn("Method '" + resolved.ownerClassName() + "." +
                         resolved.methodName() + "' parameter #" + (i + 1) +
                         " has no default value metadata");
@@ -381,11 +402,11 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         return new CompletedCallArgs(fixedArgs, temporaryArgs);
     }
 
-    private void materializeLiteralDefault(@NotNull CBodyBuilder bodyBuilder,
-                                           @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
-                                           @NotNull BackendMethodCallResolver.MethodParamSpec param,
-                                           @NotNull CBodyBuilder.TempVar temp,
-                                           int parameterIndexBaseOne) {
+    static void materializeLiteralDefault(@NotNull CBodyBuilder bodyBuilder,
+                                          @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
+                                          @NotNull BackendMethodCallResolver.MethodParamSpec param,
+                                          @NotNull CBodyBuilder.TempVar temp,
+                                          int parameterIndexBaseOne) {
         var literal = param.defaultLiteral();
         if (literal == null || literal.isBlank()) {
             throw bodyBuilder.invalidInsn("Method '" + resolved.ownerClassName() + "." + resolved.methodName() +
@@ -400,12 +421,16 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         );
     }
 
-    private void materializeFunctionDefault(@NotNull CBodyBuilder bodyBuilder,
-                                            @NotNull LirVariable receiverVar,
-                                            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
-                                            @NotNull BackendMethodCallResolver.MethodParamSpec param,
-                                            @NotNull CBodyBuilder.TempVar temp,
-                                            int parameterIndexBaseOne) {
+    /// `receiverVar` is null on the static route (`CALL_STATIC_METHOD`); a non-static
+    /// `default_value_func` consumes the receiver, so that combination is rejected rather than
+    /// silently dereferencing a missing receiver.
+    static void materializeFunctionDefault(@NotNull CBodyBuilder bodyBuilder,
+                                           @Nullable LirVariable receiverVar,
+                                           @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
+                                           @NotNull BackendMethodCallResolver.MethodParamSpec param,
+                                           @NotNull CBodyBuilder.TempVar temp,
+                                           int parameterIndexBaseOne,
+                                           @NotNull String insnName) {
         var defaultFunctionName = param.defaultFunctionName();
         if (defaultFunctionName == null || defaultFunctionName.isBlank()) {
             throw bodyBuilder.invalidInsn("Method '" + resolved.ownerClassName() + "." + resolved.methodName() +
@@ -419,15 +444,26 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         }
 
         var defaultFunction = findDefaultFunction(bodyBuilder, ownerClassDef.getFunctions(), resolved, defaultFunctionName);
+        if (!defaultFunction.isStatic() && receiverVar == null) {
+            // Static route (`CALL_STATIC_METHOD`): an instance default_value_func consumes the
+            // receiver the static call does not have — reject before the generic contract check
+            // so the diagnostic names the actual mismatch.
+            throw bodyBuilder.invalidInsn(insnName + " default_value_func '" + defaultFunctionName +
+                    "' of method '" + resolved.ownerClassName() + "." + resolved.methodName() +
+                    "' is an instance function but the call has no receiver");
+        }
         validateDefaultFunctionContract(bodyBuilder, resolved, receiverVar, param, defaultFunction, parameterIndexBaseOne);
 
         var defaultCallArgs = new ArrayList<CBodyBuilder.ValueRef>(1);
         if (!defaultFunction.isStatic()) {
+            // Non-null by the guard above: an instance default_value_func on the receiver-less
+            // static route was already rejected. requireNonNull only pins the invariant for
+            // data-flow analysis; it cannot fire.
             defaultCallArgs.add(BackendPropertyAccessResolver.renderReceiverValue(
                     bodyBuilder,
-                    receiverVar,
+                    Objects.requireNonNull(receiverVar),
                     new GdObjectType(resolved.ownerClassName()),
-                    "CALL_METHOD",
+                    insnName,
                     "method owner",
                     ""
             ));
@@ -436,10 +472,10 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         bodyBuilder.callAssign(temp, defaultCFunctionName, param.type(), defaultCallArgs);
     }
 
-    private @NotNull FunctionDef findDefaultFunction(@NotNull CBodyBuilder bodyBuilder,
-                                                     @NotNull List<? extends FunctionDef> ownerFunctions,
-                                                     @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
-                                                     @NotNull String defaultFunctionName) {
+    static @NotNull FunctionDef findDefaultFunction(@NotNull CBodyBuilder bodyBuilder,
+                                                    @NotNull List<? extends FunctionDef> ownerFunctions,
+                                                    @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
+                                                    @NotNull String defaultFunctionName) {
         FunctionDef found = null;
         for (var function : ownerFunctions) {
             if (!defaultFunctionName.equals(function.getName())) {
@@ -460,12 +496,12 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         return found;
     }
 
-    private void validateDefaultFunctionContract(@NotNull CBodyBuilder bodyBuilder,
-                                                 @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
-                                                 @NotNull LirVariable receiverVar,
-                                                 @NotNull BackendMethodCallResolver.MethodParamSpec param,
-                                                 @NotNull FunctionDef defaultFunction,
-                                                 int parameterIndexBaseOne) {
+    static void validateDefaultFunctionContract(@NotNull CBodyBuilder bodyBuilder,
+                                                @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
+                                                @Nullable LirVariable receiverVar,
+                                                @NotNull BackendMethodCallResolver.MethodParamSpec param,
+                                                @NotNull FunctionDef defaultFunction,
+                                                int parameterIndexBaseOne) {
         if (defaultFunction.isVararg()) {
             throw bodyBuilder.invalidInsn("Method '" + resolved.ownerClassName() + "." + resolved.methodName() +
                     "' parameter #" + parameterIndexBaseOne + " default_value_func '" +
@@ -480,7 +516,8 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         }
         if (!defaultFunction.isStatic()) {
             var selfParam = defaultFunction.getParameter(0);
-            if (selfParam == null || !bodyBuilder.classRegistry().checkAssignable(receiverVar.type(), selfParam.getType())) {
+            if (receiverVar == null || selfParam == null
+                    || !bodyBuilder.classRegistry().checkAssignable(receiverVar.type(), selfParam.getType())) {
                 throw bodyBuilder.invalidInsn("Method '" + resolved.ownerClassName() + "." + resolved.methodName() +
                         "' parameter #" + parameterIndexBaseOne + " default_value_func '" +
                         defaultFunction.getName() + "' has incompatible receiver parameter type");
@@ -494,22 +531,22 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         }
     }
 
-    private void destroyTemporaryArgs(@NotNull CBodyBuilder bodyBuilder,
-                                      @NotNull List<CBodyBuilder.TempVar> temporaryArgs) {
+    static void destroyTemporaryArgs(@NotNull CBodyBuilder bodyBuilder,
+                                     @NotNull List<CBodyBuilder.TempVar> temporaryArgs) {
         for (var i = temporaryArgs.size() - 1; i >= 0; i--) {
             bodyBuilder.destroyTempVar(temporaryArgs.get(i));
         }
     }
 
-    private void destroyDefaultTemps(@NotNull CBodyBuilder bodyBuilder,
-                                     @NotNull List<CBodyBuilder.TempVar> temps) {
+    private static void destroyDefaultTemps(@NotNull CBodyBuilder bodyBuilder,
+                                            @NotNull List<CBodyBuilder.TempVar> temps) {
         destroyTemporaryArgs(bodyBuilder, temps);
     }
 
-    private void validateVarargs(@NotNull CBodyBuilder bodyBuilder,
-                                 @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
-                                 @NotNull List<LirVariable> argVars,
-                                 int fixedCount) {
+    static void validateVarargs(@NotNull CBodyBuilder bodyBuilder,
+                                @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
+                                @NotNull List<LirVariable> argVars,
+                                int fixedCount) {
         for (var i = fixedCount; i < argVars.size(); i++) {
             var argType = argVars.get(i).type();
             if (!bodyBuilder.classRegistry().checkAssignable(argType, GdVariantType.VARIANT)) {
@@ -533,30 +570,30 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         return receiverVar;
     }
 
-    private @NotNull List<LirVariable> resolveArgumentVariables(@NotNull CBodyBuilder bodyBuilder,
-                                                                @NotNull CallMethodInsn instruction,
-                                                                @NotNull List<LirInstruction.Operand> operands) {
+    static @NotNull List<LirVariable> resolveArgumentVariables(@NotNull CBodyBuilder bodyBuilder,
+                                                               @NotNull String methodName,
+                                                               @NotNull List<LirInstruction.Operand> operands,
+                                                               @NotNull String insnName) {
         var out = new ArrayList<LirVariable>(operands.size());
         for (var i = 0; i < operands.size(); i++) {
             var operand = operands.get(i);
             if (!(operand instanceof LirInstruction.VariableOperand(var argId))) {
-                throw bodyBuilder.invalidInsn("Argument #" + (i + 1) + " of method '" + instruction.methodName() +
+                throw bodyBuilder.invalidInsn("Argument #" + (i + 1) + " of method '" + methodName +
                         "' must be a variable operand");
             }
             var argVar = bodyBuilder.func().getVariableById(argId);
             if (argVar == null) {
                 throw bodyBuilder.invalidInsn("Argument variable ID '" + argId + "' not found in function");
             }
-            InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, argVar, "call_method argument #" + (i + 1));
+            InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, argVar, insnName + " argument #" + (i + 1));
             out.add(argVar);
         }
         return out;
     }
 
-    private @NotNull CBodyBuilder.TargetRef resolveResultTarget(@NotNull CBodyBuilder bodyBuilder,
-                                                                @NotNull CallMethodInsn instruction,
-                                                                @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
-        var resultId = instruction.resultId();
+    static @NotNull CBodyBuilder.TargetRef resolveResultTarget(@NotNull CBodyBuilder bodyBuilder,
+                                                               @Nullable String resultId,
+                                                               @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
         if (resultId == null) {
             return bodyBuilder.discardRef();
         }
