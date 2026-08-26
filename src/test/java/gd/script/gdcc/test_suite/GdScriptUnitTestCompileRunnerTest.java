@@ -186,6 +186,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/virtual/ready_called_once.gd",
             "scene/nested_node_refcounted_scene.gd",
             "smoke/basic_arithmetic.gd",
+            "smoke/not_in_membership.gd",
             "smoke/object_identity_equality.gd",
             "smoke/object_nil_equality.gd",
             "subscript/array_roundtrip.gd",

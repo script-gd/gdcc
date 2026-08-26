@@ -360,7 +360,7 @@ detail 中保留实际 owner。builtin metadata 当前没有 superclass edge，�
 - 同 class 非静态依赖在 MVP 中仍需显式封口；不要把 property initializer 的 published subtree support 误写成完整实例初始化语义
 - 这里的 published support surface 只表示 side-table 可发布；它不自动承诺同 class non-static property / method / signal / `self` 已在 property initializer 中具备稳定语义
 - 当前 MVP 已通过 T0.5 显式收口：property initializer 不支持访问同 class 下的 non-static 内容；这些路径必须 fail-closed，而不是继续假装存在 declaration-order / default-state / cycle-aware 语义
-- `BinaryExpression` 当前已转正，但源码运算符 `not in` 仍不在当前版本支持面内；frontend 会显式发布 `UNSUPPORTED`，而不是把它静默当成 `in`
+- `BinaryExpression` 当前已转正；源码运算符 `not in` 也已按复合规则 `not (lhs in rhs)` 进入支持面（sema 在枚举工厂前拦截，不静默当成 `in`），见 `frontend_not_in_operator_plan.md`
 
 当前 expression-only 恢复出口也已冻结：
 
@@ -377,7 +377,7 @@ detail 中保留实际 owner。builtin metadata 当前没有 superclass edge，�
   - 左右操作数按固定顺序求值并匹配 metadata；普通 exact route 保持顺序敏感
   - `and` / `or` 与 `&&` / `||` 走 source-level special rule：操作数只需满足 condition contract，结果固定为 `bool`
   - `Array[T] + Array[T]` 仅在两侧元素类型都存在且相同的情况下保留 `Array[T]`
-  - `not in` 当前属于独立的显式 `UNSUPPORTED` 边界，不能静默按 `in` 处理
+  - `not in` 走独立的源码层复合规则（先按 `in` 分析配对再逻辑取反，结果恒 `bool`），不能静默按 `in` 处理；见 `frontend_not_in_operator_plan.md`
 
 ### 4.3 subscript / container typing
 
@@ -505,7 +505,7 @@ writable / compatibility 规则为：
 
 - 每类 remaining deferred node 都必须带单独命名的 deferred reason
 - `UnknownExpression` 当前显式视为 parser-recovery `UNSUPPORTED`，不再伪装成 generic deferred fallback
-- `not in` 虽然属于 `BinaryExpression` 的源码 grammar，但当前版本不支持；它不属于 remaining deferred，而是独立的显式 `UNSUPPORTED` 边界
+- `not in` 属于 `BinaryExpression` 的源码 grammar，已按复合规则 `not (lhs in rhs)` 支持（`frontend_not_in_operator_plan.md`）；它不属于 remaining deferred，也不是 `UNSUPPORTED` 边界
 
 ---
 

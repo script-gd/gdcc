@@ -47,7 +47,7 @@
   - 不在这里扩张 `Dictionary`、packed array family 或其他 container 的保型规则
   - 不在这里引入 numeric promotion 或 typed-boundary widening；`StringName` / `String` 互转由 ordinary typed boundary helper 管理，unary / binary 语义不拥有这条规则
   - 不在这里把 compile-only blocker 反向回灌到 shared semantic 路径
-  - 不在这里把 `not in` 提升为已支持语义；当前版本仍保持显式 unsupported 边界
+  - 不在这里把 `not in` 做成枚举 alias 或 synthetic AST；`not in` 已按源码层复合规则 `not (lhs in rhs)` 支持（见 §4.4 与 `frontend_not_in_operator_plan.md`）
   - 不在这里放宽 object/nil 或 object/object ordering，如 `<`、`>`、`<=`、`>=`
   - 不在这里把 object/nil equality 或 object identity equality 扩张成 assignment compatibility、parameter compatibility 或 slot compatibility 规则
   - 不在这里把 binary semantic 耦合到 `ClassRegistry.checkAssignable(...)` 或任何继承链检查
@@ -85,7 +85,7 @@ frontend 当前将 unary / binary 语义冻结在 shared expression helper，而
 当前 frontend body phase 中：
 
 - `UnaryExpression` 已属于正式支持面
-- `BinaryExpression` 已属于正式支持面
+- `BinaryExpression` 已属于正式支持面（含源码运算符 `not in`，按 §4.4 复合规则处理）
 - `ConditionalExpression` 已属于正式支持面（专用 resolver + CFG 双语境构图 + `merge_write` boundary，见 `frontend_conditional_expression_implementation.md`）
 
 这条边界意味着：
@@ -141,6 +141,8 @@ frontend 当前将 unary / binary 语义冻结在 shared expression helper，而
 - source 工厂当前必须拒绝 `not in`
 
 `not in` 不得被静默映射成 `IN`。那样会直接丢掉源码层的逻辑取反语义，并把“独立的语义复合规则”错误降级成“普通 alias”。
+
+该复合规则已落地：sema 在调用 source 工厂之前拦截 `"not in"` 并按 `not (lhs in rhs)` 处理（见 §4.4）。因此工厂的 fail-closed 不再表现为用户可见的 unsupported 边界，而是继续充当防 alias 退化的内部护栏。
 
 ---
 
@@ -260,23 +262,16 @@ binary metadata 路由当前统一按 raw builtin 名称参与匹配：
 
 这保证 metadata lookup 与 extension API 的 builtin owner 协议一致，不会因为 frontend 侧 richer generic type text 失配。
 
-### 4.4 `not in` 当前边界
+### 4.4 `not in` 复合规则
 
-`not in` 当前必须继续视为显式 `UNSUPPORTED`：
+`not in` 已按源码层复合规则 `not (lhs in rhs)` 落地，长期事实源为 `frontend_not_in_operator_plan.md`。规则要点：
 
-- frontend 已识别它是合法源码运算符
-- frontend 当前不支持它的语义分析
-- frontend 不得把它悄悄降成 `in`
-- frontend 不得仅因为理论结果为 `bool` 就发布 `RESOLVED(bool)`
+- 保持原始 `BinaryExpression("not in", ...)` 根节点流经 sema 与 lowering；不引入 synthetic AST，不引入新的 `NOT_IN` metadata/operator 枚举
+- sema 在枚举工厂前拦截 `"not in"`：先按内层 `in` 规则分析操作数配对，内层 `FAILED` 原样传播（诊断锚定 `'in'` 配对，与 Godot 消息风格一致）；内层 `RESOLVED` 或 `DYNAMIC` 则发布 `RESOLVED(bool)`（对 `bool` 查 unary `NOT` metadata 的防御性查询，恒命中）
+- lowering 在 generic `BinaryOpInsn` 路径前特判 `"not in"`，产出 `BinaryOpInsn(IN, 固定 bool 中间槽) -> UnaryOpInsn(NOT)`；中间槽必须经 `session.allocateWritableRouteTemp(...)` 分配且固定 `bool`（backend unary `NOT` 只有 `NOT + bool` 路径，Variant 结果槽无法通过校验）
+- condition 语境（`if a not in b:`）不做分支翻转优化，走普通 `buildConditionFromValue(...)` 先求值再分支
 
-当前推荐的正式支持路径仍是：
-
-- 保持原始 `BinaryExpression("not in", ...)` 根节点
-- 在 binary 分发层实现复合规则 `not (lhs in rhs)`
-- 不引入 synthetic AST
-- 不引入新的 `NOT_IN` metadata/operator 枚举
-
-当前版本尚未落地这条复合规则，因此 `not in` 仍是明确 feature boundary，而不是模糊 TODO。
+维护约束：sema 结果必须保持 `RESOLVED(bool)` / `FAILED` 两态，不得回退为 `DYNAMIC(Variant)`；`GodotOperator.fromSourceLexeme("not in", ...)` 必须继续 fail-closed，任何把它加进枚举别名表的改动都是架构错误。
 
 ### 4.5 object equality 的 lowering / backend 合同
 
@@ -363,7 +358,7 @@ compile gate 当前只把以下状态视为 blocker：
 
 - `RESOLVED` unary / binary 不再命中 generic compile blocker
 - `DYNAMIC` unary / binary 同样不再命中 generic compile blocker
-- `not in` 仍会因为 upstream 发布 `UNSUPPORTED` 而被 compile gate 阻断
+- `not in` 经 §4.4 复合规则发布 `RESOLVED(bool)`（非法配对为 `FAILED`），同样不再命中 generic compile blocker
 - `ConditionalExpression` 已不再依赖显式 compile-only block：与 unary/binary 一样只依赖 published fact 是否 lowering-ready（见 `frontend_conditional_expression_implementation.md`）
 
 ---
@@ -387,7 +382,7 @@ compile gate 当前只把以下状态视为 blocker：
   - typed array preserve 正反例
   - object/nil equality 正反例
   - object identity equality 正反例（同类、继承相关、继承无关、GDCC/engine 混合、ordering 拒绝、Variant/DYNAMIC 保持 runtime-open）
-  - `not in` unsupported 边界
+  - `not in` 复合规则正反例（typed / dynamic / Variant 恒 `RESOLVED(bool)`，非法配对 `FAILED` 且消息锚定 `'in'`）
 - `FrontendBodyOwnerProcedures` / body expression resolver 路径
   - unary / binary 结果发布
   - root-owned 与 upstream-propagated 区分
@@ -473,14 +468,15 @@ object equality 当前不只依赖 shared semantic 与 focused unit tests，还�
 
 ### 7.5 `not in` 的真实成本高于 alias
 
-`not in` 后续若要转正，至少同时涉及：
+`not in` 已按复合规则落地（见 §4.4 与 `frontend_not_in_operator_plan.md`），其实际成本分布证实了它不能被当成“多映射一个别名”的小修：
 
-- source operator normalization 边界
-- `in` 共享 containment contract
-- root anchor / diagnostic owner 维持
-- compile gate 与 downstream 消费者的一致性
+- source operator normalization 边界（枚举工厂继续 fail-closed，防止 alias 退化）
+- `in` 共享 containment contract 的复用（非法配对诊断锚定 `'in'`）
+- root anchor / diagnostic owner 维持（两段式发布，不引入 synthetic 节点）
+- compile gate 与 downstream 消费者的一致性（`RESOLVED(bool)` 直接放行；backend unary `NOT` 仅 `bool` 路径约束中间槽类型）
+- backend metadata 匹配层对 typed 容器操作数的归一化（`Array[int]` -> plain `Array` 条目，步骤 5 smoke 实测暴露并修复）
 
-因此它不能被当成“多映射一个别名”的小修。当前文档明确保留这条工程反思，目的是防止后续实现又把它错误简化回 alias。
+本文档保留这条工程反思，目的是防止后续改动又把它错误简化回 alias。
 
 ### 7.6 文档维护约束
 

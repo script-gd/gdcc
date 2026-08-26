@@ -316,7 +316,7 @@ public final class OperatorResolver {
         if (builtinClass == null) {
             return null;
         }
-        var normalizedRightType = normalizeTypeName(rightType.getTypeName());
+        var normalizedRightType = normalizeTypeName(operatorOperandTypeName(rightType));
         for (var i = 0; i < builtinClass.operators().size(); i++) {
             var classOperator = builtinClass.operators().get(i);
             if (classOperator == null) {
@@ -398,8 +398,20 @@ public final class OperatorResolver {
 
     private @Nullable ExtensionBuiltinClass findBuiltinClass(@NotNull ClassRegistry classRegistry,
                                                              @NotNull GdType type) {
-        var typeName = type.getTypeName();
-        return classRegistry.findBuiltinClass(typeName);
+        return classRegistry.findBuiltinClass(operatorOperandTypeName(type));
+    }
+
+    /// Operator metadata is keyed by the plain container class name: typed arrays and typed
+    /// dictionaries share the `Array` / `Dictionary` metadata entries. This mirrors the
+    /// frontend sema operand-name contract so both layers resolve the same signatures.
+    private static @NotNull String operatorOperandTypeName(@NotNull GdType operandType) {
+        if (operandType instanceof GdArrayType) {
+            return "Array";
+        }
+        if (operandType instanceof GdDictionaryType) {
+            return "Dictionary";
+        }
+        return operandType.getTypeName();
     }
 
     private void warnMetadataEntry(@NotNull CBodyBuilder bodyBuilder,

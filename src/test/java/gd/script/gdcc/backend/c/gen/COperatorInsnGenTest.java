@@ -21,6 +21,7 @@ import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdArrayType;
+import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
@@ -923,6 +924,80 @@ class COperatorInsnGenTest {
         assertFalse(body.contains("pow_int("), body);
     }
 
+    @Test
+    @DisplayName("IN(int, Array[int]) should match the plain Array metadata entry")
+    void inIntTypedArrayMatchesPlainArrayMetadata() {
+        var body = generateBody(
+                typedContainerOperatorApi(),
+                new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdIntType.INT, false),
+                        new VariableSpec("right", new GdArrayType(GdIntType.INT), false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                )
+        );
+
+        assertTrue(body.contains("gdcc_eval_binary_in_int_array_int_to_bool($left, &$right)"), body);
+        assertFalse(body.contains("godot_variant_evaluate"), body);
+    }
+
+    @Test
+    @DisplayName("IN(String, Dictionary[String, int]) should match the plain Dictionary metadata entry")
+    void inStringTypedDictionaryMatchesPlainDictionaryMetadata() {
+        var body = generateBody(
+                typedContainerOperatorApi(),
+                new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdStringType.STRING, false),
+                        new VariableSpec("right", new GdDictionaryType(GdStringType.STRING, GdIntType.INT), false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                )
+        );
+
+        assertTrue(body.contains("gdcc_eval_binary_in_string_dictionary_string_int_to_bool(&$left, &$right)"), body);
+        assertFalse(body.contains("godot_variant_evaluate"), body);
+    }
+
+    @Test
+    @DisplayName("Array[int] == Array[int] should resolve the plain Array owner class metadata")
+    void typedArrayEqualityResolvesPlainArrayOwnerMetadata() {
+        var body = generateBody(
+                typedContainerOperatorApi(),
+                new BinaryOpInsn("result", GodotOperator.EQUAL, "left", "right"),
+                List.of(
+                        new VariableSpec("left", new GdArrayType(GdIntType.INT), false),
+                        new VariableSpec("right", new GdArrayType(GdIntType.INT), false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                )
+        );
+
+        assertTrue(body.contains("gdcc_eval_binary_equal_array_int_array_int_to_bool(&$left, &$right)"), body);
+        assertFalse(body.contains("godot_variant_evaluate"), body);
+    }
+
+    @Test
+    @DisplayName("container normalization should still fail-fast when the plain metadata entry is missing")
+    void typedContainerNormalizationFailsWhenPlainMetadataMissing() {
+        // The int owner class exists (only `in Array`), so the lookup reaches the normalized
+        // rhs match: `Dictionary[String, int]` -> `Dictionary`, whose plain entry is absent.
+        // This anchors that normalization never invents a match for genuinely missing entries.
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(
+                        typedContainerOperatorApi(),
+                        new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
+                        List.of(
+                                new VariableSpec("left", GdIntType.INT, false),
+                                new VariableSpec("right", new GdDictionaryType(GdStringType.STRING, GdIntType.INT), false),
+                                new VariableSpec("result", GdBoolType.BOOL, false)
+                        )
+                )
+        );
+
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Binary operator metadata is missing for signature (int, IN, Dictionary[String, int])"), ex.getMessage());
+    }
+
     private @NotNull String generateBody(@NotNull ExtensionAPI api,
                                          @NotNull LirInstruction instruction,
                                          @NotNull List<VariableSpec> variableSpecs) {
@@ -1229,6 +1304,60 @@ class COperatorInsnGenTest {
                 List.of(),
                 List.of(),
                 List.of(intBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    /// Mirrors the real Godot metadata shape: containment/equality entries are keyed by the
+    /// plain container class name (`Array` / `Dictionary`), while the frontend publishes
+    /// precisely-typed container operands such as `Array[int]`.
+    private @NotNull ExtensionAPI typedContainerOperatorApi() {
+        var intBuiltin = new ExtensionBuiltinClass(
+                "int",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("in", "Array", "bool")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var stringBuiltin = new ExtensionBuiltinClass(
+                "String",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("in", "Dictionary", "bool")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var arrayBuiltin = new ExtensionBuiltinClass(
+                "Array",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("==", "Array", "bool")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(intBuiltin, stringBuiltin, arrayBuiltin),
                 List.of(),
                 List.of(),
                 List.of()

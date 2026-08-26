@@ -4,25 +4,25 @@
 
 ## 文档状态
 
-- 状态：**实施中（步骤 1、2 及其配套测试步骤 3、4 已落地；步骤 5、6 待实施）**
+- 状态：**已落地**（2026-08-27；步骤 1-6 全部完成，验收细则保留为回归锚点）
 - 创建时间：2026-08-26
 - 步骤状态：
   - 步骤 1（sema 复合规则）：**已完成**（2026-08-26）——`resolveBinaryOperatorResultType(...)` 在枚举工厂前拦截 `"not in"` 并委托 `resolveNotInOperatorResultType(...)`；`resolveUnaryExactReturnType(...)` 已静态化；`FrontendExpressionSemanticSupportTest` / `FrontendBodyOwnerProceduresExprTypeTest` / `GodotOperatorTest` 全绿。
-  - 步骤 2（lowering 复合指令）：**已完成**（2026-08-26）——`FrontendBinaryOpaqueExprInsnLoweringProcessor.lower(...)` 在 generic 路径前特判 `"not in"`，产出 `BinaryOpInsn(IN, 固定 bool 中间槽) -> UnaryOpInsn(NOT)`；backend 零改动成立。
+  - 步骤 2（lowering 复合指令）：**已完成**（2026-08-26）——`FrontendBinaryOpaqueExprInsnLoweringProcessor.lower(...)` 在 generic 路径前特判 `"not in"`，产出 `BinaryOpInsn(IN, 固定 bool 中间槽) -> UnaryOpInsn(NOT)`；未新增 backend 路线（步骤 5 发现的 backend 预存 metadata 匹配缺口另行记录）。
   - 步骤 3（sema 层测试）：**已完成**（随步骤 1 验收同步落地）
   - 步骤 4（lowering 测试）：**已完成**（2026-08-26）——新增 typed value / dynamic value / condition 三个语境测试，`FrontendLoweringBodyInsnPassTest` 全绿；另以 `gd.script.gdcc.frontend.*` 全包回归兜底通过。
-  - 步骤 5（端到端 test_suite 锚点）：未开始
-  - 步骤 6（文档同步）：未开始
+  - 步骤 5（端到端 test_suite 锚点）：**已完成**（2026-08-27）——新增 `smoke/not_in_membership.gd` script + validation 孪生文件（bitmask 锚定 typed/dynamic/value/condition 及 `not (a in b)` 等价性）并注册 `EXPECTED_SCRIPT_PATHS`。smoke 首跑暴露出 backend 预存缺口：`OperatorResolver` 用 `rightType.getTypeName()`（如 `Array[int]`）匹配 metadata 的 plain `Array`/`Dictionary` 条目必然失败，普通 `x in Array[int]` 同样受影响；已按 sema `operatorOperandTypeName` 合同在 `OperatorResolver` 内做容器名归一化修复（左操作数 owner class 查询与右操作数匹配两处），并补 `COperatorInsnGenTest` 正反测试。`GdScriptUnitTestCompileRunnerTest`（含新 smoke，真实 zig+godot 环境运行通过）、`CCodegenTest`、`COperatorInsnGenTest`、`COperatorInsnGenEngineTest` 全绿。
+  - 步骤 6（文档同步）：**已完成**（2026-08-27）——`frontend_unary_binary_expr_semantic_implementation.md`（非目标条目、§1.2、§2.3、§4.4 整节改写、§5.3、§6、§7.5）、`frontend_rules.md`、`frontend_chain_binding_expr_type_implementation.md`（3 处）、`frontend_type_check_analyzer_implementation.md`、`frontend_compile_check_analyzer_implementation.md`、`frontend_is_type_test_implementation.md` 均已同步；`diagnostic_manager.md` 核实无需改动；本文档状态转为"已落地"。
 - Godot 对齐基线：Godot 4.x（`modules/gdscript`）
 - 关联文档：
-  - `frontend_unary_binary_expr_semantic_implementation.md`（运算符语义主合同，§4.4 当前冻结 `not in` 为 `UNSUPPORTED`）
+  - `frontend_unary_binary_expr_semantic_implementation.md`（运算符语义主合同，§4.4 已记录 `not in` 复合规则）
   - `frontend_is_type_test_implementation.md`（`is not` 的正向测试 + `UnaryOpInsn(NOT)` 复合 lowering 先例）
-  - `frontend_rules.md`（MVP 支持约定中的 `not in` 条目当前声明不支持）
+  - `frontend_rules.md`（MVP 支持约定中的 `not in` 条目已更新为复合规则支持）
   - `doc/module_impl/common_rules.md`
 
 ## 1. 背景与目标
 
-GDScript 的 `a not in b` 是合法源码运算符，语义严格等价于 `not (a in b)`。gdcc 当前在 sema 层将其显式发布为 `UNSUPPORTED`（compile blocker），本计划将其完整落地为 compile-ready 特性。
+GDScript 的 `a not in b` 是合法源码运算符，语义严格等价于 `not (a in b)`。gdcc 原在 sema 层将其显式发布为 `UNSUPPORTED`（compile blocker）；本计划已将其完整落地为 compile-ready 特性（2026-08-27），§3 保留落地前的链路分析作为历史记录。
 
 目标：
 
@@ -180,7 +180,8 @@ source: a not in b
 验收细则：
 
 - `./gradlew test --tests GdScriptUnitTestCompileRunnerTest --no-daemon --info --console=plain` 全绿（该测试依赖 zig/godot 环境，按既有约定环境不可用时跳过并记录）；
-- `CCodegenTest` 与 `COperatorInsnGenTest` 不修改且全绿（backend 零改动的回归证明；前者已覆盖 typed `IN -> bool -> NOT` 复合形态，smoke 用例负责 dynamic 复合路径的真实验收）。
+- `CCodegenTest` 不修改且全绿（已覆盖 typed `IN -> bool -> NOT` 复合形态，smoke 用例负责 dynamic 复合路径的真实验收）；
+- `COperatorInsnGenTest` 允许增补 typed 容器归一化用例并全绿。注：步骤 5 实测发现 `OperatorResolver` 对 typed 容器操作数的 metadata 匹配预存缺口并做了归一化修复——这是对既有 `in` 通路的缺陷修正，不新增 codegen 路线，D6 仍成立（落地记录见文档状态步骤 5 与 R2）。
 
 ### 步骤 6：文档同步
 
@@ -221,7 +222,7 @@ source: a not in b
 风险与缓解：
 
 - **R1（`resolveUnaryExactReturnType` 静态化触碰共享代码）**：仅一个既有调用点（第 622 行），改动机械；用步骤 1 编译 + sema 测试兜底。
-- **R2（dynamic 操作数的 backend 通路）**：已核实 `godot_variant_evaluate` 对非 Variant 结果槽做 type-check + unpack（`OperatorInsnGen.java:305-331`），`IN -> bool` 与 `NOT bool -> bool` 均为既有路径；步骤 4 dynamic lowering 测试与步骤 5 smoke 用例双重兜底。
+- **R2（dynamic 操作数的 backend 通路）**：已核实 `godot_variant_evaluate` 对非 Variant 结果槽做 type-check + unpack（`OperatorInsnGen.java:305-331`），`IN -> bool` 与 `NOT bool -> bool` 均为既有路径；步骤 4 dynamic lowering 测试与步骤 5 smoke 用例双重兜底。**步骤 5 实测另暴露出 typed 容器 rhs 的 metadata 匹配预存缺口（`Array[int]` 不匹配 plain `Array` 条目），已在 `OperatorResolver` 归一化修复，见步骤 5 状态记录。**
 - **R3（condition 语境行为回退）**：D5 不改 CFG 代码，行为由既有 condition normalization 合同保证；步骤 4 条件语境测试兜底。
 - **R4（递归调用自身导致死循环）**：内层递归固定传 `"in"`，不会重入 `"not in"` 分支；`not in` 不可能出现在 compound assignment 中，`resolveBinaryOperatorResultType(...)` 的另一调用方不受影响。
 
