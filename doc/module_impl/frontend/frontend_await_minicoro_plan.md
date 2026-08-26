@@ -6,7 +6,8 @@
 
 - 方案说明：2026-08-23 已切换为「`completed` 信号 + Godot 可见状态对象」方案，并经一轮 review 修订。
 - 2026-08-25：R6 方向经方案对比后修订——放弃 capture block 引用计数，改采**逐调用拷贝入帧**；新增第九步（lambda 内 await）实施计划。
-- 更新时间：2026-08-25
+- 2026-08-26：新增第十步（静态方法协程调用）实施计划——经五路并行子代理调研确认唯一硬阻塞为 `CallStaticMethodInsn` 无 backend generator，sema 标记链路与模板/runtime 已就绪；第十步经 review-expert-a 两轮审阅修订（修正测试预言、`resolveStatic` 入口 API、gate 去重登记语义、builtin wrapper 决策依据与文档同步清单），两项实施前决策点已由维护者确认（修正 builtin generator 去 `self`；engine/builtin static 直调一并验收）。
+- 更新时间：2026-08-26
 - 当前事实源：
   - `frontend_rules.md`
   - `frontend_signal_support.md`
@@ -134,7 +135,7 @@ $<result_id> = await $<operand_id>
 ```
 
 - **signal 路径**：operand 静态类型为 `GdSignalType`。frontend 按既有 signal 读取路径物化 Signal 值后接 `await` 指令；backend `AwaitInsnGen` 渲染 `gdcc_coro_await_signal(...)`；结果经既有 (un)pack 边界从 `Variant` 物化到 frontend 发布的结果类型。
-- **static call 路径**：operand 是对已标记协程函数的 **instance 调用**（MVP 不含静态方法调用，见 §3.5）。`call_method` 指令本身不变；backend 的 call 生成器（`BackendMethodCallResolver` 的 `GDCC` dispatch）识别 callee 的 `isCoroutine` 标记，改走内部协程 ABI：调用 coroutine-start thunk，result 变量（必须存在，否则 fail-fast）以 `compiler::GdccCoroState` 声明并接收 OWNED 状态对象引用（同步完成时状态已 `done`）。紧随的 `await` 指令按 operand 静态类型分派渲染 `gdcc_coro_await_state(...)`，结果槽形态固定为：
+- **static call 路径**：operand 是对已标记协程函数的 **instance 调用**（`call_method`）或 **static 调用**（`call_static_method`；已立项为第十步，当前仍被 gate 拦截，见 §3.5）——await 始终按 operand 静态类型分派，不 pattern-match call 指令。`call_method` 指令本身不变；backend 的 call 生成器（`BackendMethodCallResolver` 的 `GDCC` dispatch）识别 callee 的 `isCoroutine` 标记，改走内部协程 ABI：调用 coroutine-start thunk，result 变量（必须存在，否则 fail-fast）以 `compiler::GdccCoroState` 声明并接收 OWNED 状态对象引用（同步完成时状态已 `done`）。紧随的 `await` 指令按 operand 静态类型分派渲染 `gdcc_coro_await_state(...)`，结果槽形态固定为：
 
   ```c
   // $state 的 C 槽：godot_Object*（compiler::GdccCoroState）
@@ -167,7 +168,7 @@ $<result_id> = await $<operand_id>
 | --- | --- | --- | --- |
 | RESOLVED `GdSignalType` | 0 参 → `Variant`；1 参 → 声明参数类型（经 unpack 边界）；多参 → `Array[Variant]`；参数类型未知 → `Variant` | 无 | 是 |
 | RESOLVED instance call 且 callee 为已标记 GDCC 协程函数 | 非 void → callee 声明返回类型；void → `Variant`（恢复值为 nil，对齐 Godot `completed(nil)`） | 无 | 是 |
-| RESOLVED 静态方法 call 且 callee 为已标记 GDCC 协程函数（**任何位置**，含 statement 根表达式） | — | compile gate error（backend `CallStaticMethodInsn` 无生成器，既有缺口；Post-MVP 解除） | — |
+| RESOLVED 静态方法 call 且 callee 为已标记 GDCC 协程函数（**任何位置**，含 statement 根表达式） | — | compile gate error（backend `CallStaticMethodInsn` 无生成器，既有缺口；第十步解除） | — |
 | RESOLVED call、callee 非协程、返回 `GdSignalType` | 0/1/多参与签名未知规则同直接 signal await | 无；等待 call 返回的 signal | 是 |
 | RESOLVED call、callee 非协程、返回 `Variant`/未标注 | `Variant` | 无；运行时按返回值动态分派 | 是 |
 | RESOLVED call、callee 非协程、返回其它静态类型 | callee 返回类型（void → `Variant` nil） | `sema.redundant_await` warning，await 退化为纯穿透 | 否 |
@@ -175,7 +176,7 @@ $<result_id> = await $<operand_id>
 | `DYNAMIC` operand | `Variant` | 无（运行时分派，见 §3.4 dynamic 路径） | 是 |
 | lambda body 内 await | 与所在 owner 同规则 | 与 named 函数同规则（第九步开放；lambda 标记协程后 shell 同时 `setCoroutine(true)` 并 `markCoroutineFunction` 入册） | 按路由 |
 | property init / parameter default（含 lambda 自己的 default）内任何 await | — | error（既有 fail-closed 边界不变） | — |
-| statement 位置调用协程函数（fire-and-forget，仅 instance） | —（结果丢弃） | 无（对齐 Godot root-expression 放行） | 否（调用方不挂起） |
+| statement 位置调用协程函数（fire-and-forget，仅 instance；static 已立项为第十步） | —（结果丢弃） | 无（对齐 Godot root-expression 放行） | 否（调用方不挂起） |
 | value 位置（非 await operand）调用协程函数 | — | compile gate error（对齐 Godot `must be called with "await"`） | — |
 
 有意偏离仅限返回其它静态硬类型的 redundant await：这类调用**不**把 enclosing 函数标记为协程（无可挂起点，省协程开销）。Signal/Variant 返回仍可能挂起，必须标记并分别走 signal/runtime-dynamic await。
@@ -559,12 +560,84 @@ $<result_id> = await $<operand_id>
   - 既有全部测试无回归；property initializer / parameter default 内 await 仍 fail-closed；lambda 内 value-position 与 static coroutine call 仍被 compile gate 拦截；同步 lambda 的 capture prologue/ABI 断言不变；文档「仍拒绝」清单与实际 gate 行为一致。
 - 最终 review-expert-a 复审无 BLOCKER/HIGH/MEDIUM。
 
+### 第十步：静态方法协程调用（`await Worker.static_coro()`，`CallStaticMethodInsn` backend 落地）
+
+- 状态：已立项（2026-08-26；基于五路并行 explore 子代理全链路调研，以下事实均已核实到 file:line）
+- 进度：
+  - [待实施] backend `BackendMethodCallResolver` 新增 static 解析入口 + 新建 `CallStaticMethodInsnGen` 并注册
+  - [待实施] 修正 `GodotBuiltinGenerator`：builtin static wrapper 不再生成 `self` 形参（决策记录 1）
+  - [待实施] frontend sema 不动点传播解锁（删除 static 静默消费分支）
+  - [待实施] compile gate 放行 static 协程调用（await operand + statement 根），lowering 补 static fire-and-forget detach
+  - [待实施] 测试翻转/新增、zig smoke 与真机 e2e
+  - [待实施] 文档同步与复审
+
+目标：
+
+- `static func` 协程的调用闭环：await operand（typed/void 结果）与 statement 根 fire-and-forget 两种位置；sema 不动点传播 → compile gate 放行 → lowering → C codegen → Godot 4.5.1 e2e。static 协程函数体本身（无 self 的帧/状态对象/模板生成）已就绪，本步只需打通调用侧。
+- 同一 generator 顺带解锁普通（非协程）static 直调（决策记录 2：三分支一并验收）：GDCC 类直调 C 符号、engine 类走既有 static method bind helper、builtin 类直调修正后的无 `self` wrapper；两个 `CallStaticMethodInsn` negative baseline 一并翻转。
+- 保持 fail-closed：value 位置（非 await operand、非 statement 根）的协程调用对 static 与 instance 一视同仁地拒绝；property initializer / parameter default 边界不变。
+
+调研结论（2026-08-26）：
+
+- **唯一硬阻塞是 backend**：`CallStaticMethodInsn` 有 LIR 模型（`CallStaticMethodInsn.java:10-25`）、opcode（`GdInstruction.java:76`）、LIR parser（`ParsedLirInstruction.java:197-202`）与 lowering 产出（`FrontendSequenceItemInsnLoweringProcessors.java:800-821`），但 `CCodegen.INSN_GENS`（`CCodegen.java:41-70`）无对应 generator，命中即在 `CCodegen.java:544-547` 抛 unsupported。缺口由两个 negative baseline 锚定：`CConstructInsnGenTest.java:720-740`、`FrontendVoidReturnCallIntegrationTest.java:164-203`。
+- **sema 侧接近零缺口**：static 函数体内 `await 他对象.signal` / dynamic await 已支持并直接标记（`FrontendBodyOwnerProcedures.java:1966-1987`）；owner 解析按 name+static+arity 查 skeleton（`:2065-2089`）；`markCoroutineFunction` 无 static 限制（`FrontendAnalysisData.java:409-418`）；pending 已携带 static callee 的 `calleeFunction`（`FrontendBodyOwnerProcedures.java:2021-2039`）。唯一特判在不动点：`FrontendAwaitCoroutineAnalyzer.java:55-57` 对已标记 static callee 的 pending 静默 `continue`（不传播 caller 标记）。
+- **compile gate 是唯一前端拦截**：`FrontendCompileCheckAnalyzer.java:929-932`（任意位置）与 `:938-944`（await operand，经 `:720` 调用）；value-position 拒绝在 `:933-935`，与 static 无关、必须保留。
+- **lowering 基本就绪**：static 函数不注入 self（`FrontendLoweringFunctionPreparationPass.java:499-507`）；`isCoroutineCall` 判定不查 callKind（`FrontendAnalysisData.java:481-490`）；`emittedExactResultSlotIdOrNull` 对协程 static call 已发 `GdccCoroState` slot（`FrontendSequenceItemInsnLoweringProcessors.java:900-933`）；await lowering/codegen 全程 value/type 驱动、不 pattern-match call insn 类型（`AwaitInsnGen.java:38-56`）。唯一缺口：`lowerStaticMethodCall`（`:800-821`）未挂 `emitCoroutineDetachIfNeeded`（`:782-798`），static fire-and-forget 缺 detach destruct。
+- **模板与 runtime 零改动**：`func.coroutine` 与 `func.static` 是模板模型的两个独立维度（`LirFunctionDef.java:17-29,132-180`）；state struct 无固定 self 字段（`entry.h.ftl:377-405`）、start thunk 参数来自 `func.parameters`（`entry.c.ftl:451-505`）、`free_instance` 对无 self 的 static 安全（`:344-368`）、ClassDB wrapper 的 suspend→Variant 分派对 named static coroutine 同样生成（`entry.c.ftl:508-551`，条件仅 `func.coroutine && !func.lambda`）、static 注册 flag 已有（`entry.h.ftl:740-745`）。static lambda 协程（hidden shell 恒 static）已在线上证明无 self 协程路径。
+- **engine static 直调的 runtime 底座已存在**：`engine_method_binds.h.ftl:101-185` 的 static helper 不带 receiver、bind call/ptrcall 传 NULL instance（`:162-173`、`:309-357`），`EngineMethodSymbolKey.java:48-61` 的 helper 命名已含 static 维度；`CallMethodInsnGen` 兼容路径（`:203-205`、`:300-336`）已证明 helper 可用。
+- **builtin static wrapper 带 `self` 形参**：`GodotBuiltinGenerator.java:1180-1194` 对 builtin static wrapper 仍无条件生成 `self` 形参（`object_value_fat_pointer_implementation.md:530-537` 约束的是 ClassDB registered wrapper 的 `p_instance`，与该 C wrapper 是不同表面，不能作为改动依据）——已决策修正 generator（见决策记录 1 与实施内容 2 的 BUILTIN 分支）。
+
+建议实施内容：
+
+1. **backend：`BackendMethodCallResolver` 新增 static 解析入口**
+   - 新增 `resolveStatic(bodyBuilder, className, methodName, argVars)`：`CallStaticMethodInsn.className` 是**接收者 canonical 名**（`GdObjectType` 类名 / 嵌套类 `Outer__sub__Inner` / engine 类名 / builtin 类型名，见 `FrontendBodyLoweringSession.java:1253-1266`），先经 `ClassRegistry.resolveTypeMeta(className)`（`ClassRegistry.java:511-513`，覆盖全局枚举 / GDCC / engine / builtin）还原为 `ScopeTypeMeta`（null → `invalidInsn`），再调既有 `ScopeMethodResolver.resolveStaticMethod(registry, typeMeta, methodName, argTypes)`（`ScopeMethodResolver.java:288-299`——首参是 `ScopeTypeMeta`，**不是** `GdType`/`ClassDef`；禁用 `getClassDef(new GdObjectType(className))`，它对 builtin 恒 null）。
+   - static 解析只可能返回 `Resolved` / `Failed`（`ScopeMethodResolver.java:397-405` 从不产生 `DynamicFallback`）：`Resolved` → 复用 `toResolvedMethodCall(...)`（`BackendMethodCallResolver.java:226-263`，已与 receiver 无关，自带协程 start thunk 命名 `:236-261`）；`Failed` → `invalidInsn`。**明确禁止 static 动态回退**。
+   - C 符号与 start thunk 一律取 `resolved.ownerClass()`（**实际声明类**，禁止用 insn.className 拼符号——继承层级下二者不同）；`isStatic` 标志沿用。instance 入口 `resolve(...)`（`:163-191`）不动。
+2. **backend：新建 `CallStaticMethodInsnGen` 并注册**
+   - `getInsnOpcodes()` 返回 `CALL_STATIC_METHOD`；在 `CCodegen.java:41-70` 静态注册块注册（置于 `CallMethodInsnGen` 附近）；unsupported 分发（`:544-547`）无需改动。
+   - 无 receiver；fixed args 天然不含 self（对照 `CallMethodInsnGen.java:315-335` 的 `!resolved.isStatic()` 分支）；default 参数补全、vararg 打包、result 校验复用 `CallMethodInsnGen` 的私有 helper（按需提取为包内共享 static，避免复制）。注意 `materializeFunctionDefault` / `validateDefaultFunctionContract`（`CallMethodInsnGen.java:403-437,463-488`）在非 static `default_value_func` 时消费 receiver：共享 helper 的 receiver 形参改 `@Nullable`，static 调用遇到非 static `default_value_func` 直接 `invalidInsn`。
+   - GDCC 分支：直接 C 符号 `<declaringOwner>_<method>`（规则见 `BackendMethodCallResolver.java:377-398`）；`resolved.coroutine()` 时复刻 `emitCoroutineStartCall`（`CallMethodInsnGen.java:238-290`）减去 receiver 与 static fail-fast：result 必须存在且为 `compiler::GdccCoroState`、协程 vararg fail-fast、`callAssign` 目标类型固定 `GdccCoroStateType.CORO_STATE`（旧 state 先销毁由 `CBodyBuilder.callAssign` 既有逻辑承载）。
+   - ENGINE 分支：经 `EngineMethodSymbolKey`（static 维度已有）+ `bodyBuilder.recordUsedEngineMethodCall(resolved)`（`CBodyBuilder.java:271`——漏调则 static helper 不生成）生成 static helper 调用；bind accessor/helper 模板零改动（`engine_method_binds.h.ftl:76-173`）。
+   - BUILTIN 分支（决策记录 1）：先修正 `GodotBuiltinGenerator.java:1180-1194`——`isStatic` 方法不再生成 `self` 形参，wrapper 首参直接从调用参数开始；`CallStaticMethodInsnGen` 直调修正后的 wrapper（无 receiver、无 NULL 占位）。实施时先确认无既有调用点/测试依赖 static builtin wrapper 的 `self` 形参（generator golden 测试、standalone callable 路径等），若有同步适配。
+   - `CallMethodInsnGen.java:249-254` 的 static-coroutine fail-fast **保留**为 guard rail（lowering 只会对 static 调用发 `CallStaticMethodInsn`；`call_method` 解析到 static 协程属异常 IR），其测试 `CallMethodInsnGenTest.java:1230-1257` 保持不动。
+3. **frontend sema：不动点传播解锁**
+   - 删除 `FrontendAwaitCoroutineAnalyzer.java:55-57` 的 static 静默消费分支（static 与 instance 共用 `:58` 的 `markCoroutineOwner`）；删除因此闲置的 `FrontendCallResolutionKind` import（`:6`）；更新类注释 `:27-28`（static 由 gate 独立诊断的前提已不存在）。
+   - `FrontendAwaitCallPending`、pending 记录点、owner 解析均零改动（调研结论已确认 static calleeFunction 就位）。
+4. **frontend compile gate 放行 + lowering detach**
+   - 删除 `FrontendCompileCheckAnalyzer.java:929-932`（static 任意位置阻断）；static 协程调用随后自然落入 `:933-935`——statement 根放行、value 位置拒绝（与 instance 同合同）。
+   - `walkAwaitExpression` 的 `:720` 调用点：直接改调 `checkCoroutineCallPosition(coroutineCallAnchorFor(operand), true)`——await operand 与 statement 根共用特权位；非协程 callee 时 `coroutineCallAtOrNull` 返回 null 自然 no-op，无需 static 特判。随后删除 `reportStaticCoroutineCallBlock`（`:938-944`）、`staticCoroutineCallCompileBlockedMessage`（`:175-180`）与过时注释（`:921-923`）。**禁止**把登记逻辑改成 static-only：`coroutineCallAtOrNull`（`:947-958`）对**所有**协程 callee 把 anchor 写入 `checkedCoroutineCallAnchors`，instance `await obj.coro()` 在 `:752` 的 value-position 豁免正依赖此登记（chained operand 的 trailing `AttributeCallStep` 身份去重）。
+   - `lowerStaticMethodCall`（`FrontendSequenceItemInsnLoweringProcessors.java:800-822`）两个 return 分支统一挂 `emitCoroutineDetachIfNeeded`（`:782-798`），static fire-and-forget 与 instance 同纪律（call 写 `GdccCoroState` slot → `INTERNAL` destruct 释放调用点引用 → 协程靠自身 wait 边保活）。注意 `receiverType == null` 分支是 utility 路由（`CallGlobalInsn`），同类 `worker(1)` 走 `CallStaticMethodInsn`；utility 上 `isCoroutineCall` 恒 false、detach 自然 no-op——挂两分支只为不漏，**不要**为此改 `CallGlobalInsnGen`。
+5. **测试翻转与新增**
+   - 翻转：`FrontendAwaitSemanticTest.java:417-439`（statement 根 static 协程调用 → 正向：无 `sema.compile_check` 错误、且 `outer` **未**入 `coroutineFunctions`——fire-and-forget 不产生 await pending，不动点不标记调用方，与 §3.5「否（调用方不挂起）」一致；对照 instance 版本 `:392-415` 同样只查无错误）与 `:551-573`（await operand static 协程调用 → 正向：无 compile 错误且 caller 被标记协程）；`FrontendAwaitInsnLoweringTest.java:587-628`（→ 正向：`await static_coro()` 降出 `CallStaticMethodInsn` + `AwaitInsn` 且 caller 标记协程）；`CConstructInsnGenTest.java:720-740`（原以 `CallStaticMethodInsn` 为「未注册 opcode」示例——改用其它未注册 opcode 或删除）；`FrontendVoidReturnCallIntegrationTest.java:164-203`（static void 直调不再 unsupported → 改正向构建锚点）。
+   - 新增单测：`CallStaticMethodInsnGenTest`（GDCC 普通 static 直调 golden、static 协程 start thunk + state slot + fire-and-forget destruct 顺序锚点、engine static helper 调用、**builtin static 直调修正后的无 `self` wrapper**、default 参数补全、协程 vararg/缺 state slot 的 `InvalidInsnException`、**继承层级** `Child.inherited_static_coro()` → start thunk / C 符号取 `Parent` 声明类名）；`GodotBuiltinGenerator` 测试翻转/新增（static wrapper 无 `self` 形参 golden）；sema 传播测试（static caller 经 pending 标记、static→static 两级链第二轮传播、static→instance 混合链）；gate 负向回归（value 位置 static 协程调用仍报 `must be called with "await"`）。
+   - zig smoke：`CCoroutineGeneratedCSyntaxSmokeTest` 新增具名 static 协程 + static 直调 fixture（`zig cc -std=c23 -c` 实编译）。
+   - 真机 e2e（script/validation 成对、登记 `GdScriptUnitTestCompileRunnerTest`）：`static_await_typed_result.gd`（`var v: int = await Worker.static_coro()`，typed 结果跨 static 边界）；`static_await_signal.gd`（static 协程内 `await 他对象.signal`）；`static_await_fire_and_forget.gd`（statement 根调用，共享 signal 恢复顺序）；`static_await_chain.gd`（static 协程 await 另一 static 协程，不动点跨 static-static 传播）；`static_await_called_from_godot.gd`（validation 侧经 ClassDB 直调 static 协程，验收 wrapper suspend→Variant 通道——**fixture 的 static 协程必须返回 Variant**：typed 非 Variant 在 suspend 时是 detach + runtime error 的刻意偏差，void 在 `:522-525` 无条件 detach、到不了该通道，`entry.c.ftl:539-551`；void ClassDB 调用若需覆盖另开 detach fixture）；`static_await_lambda_interop.gd`（lambda 协程 await static 协程，与第九步特性交叉）；另加 2 组普通 static 直调 e2e 验收 generator 顺带解锁面（决策记录 2）：engine static 直调（如 `JSON.parse_string`）与 builtin static 直调（如 `Color.from_hsv` typed 结果）。
+6. **文档同步**
+   - 本文档：§3.4 static call 路径改写为「instance 走 `CallMethodInsn`、static 走 `CallStaticMethodInsn`，await 仍按 operand 静态类型分派」、§3.5 分类表 static 协程行与 fire-and-forget 行的 static 限定、Post-MVP backlog 条目移除。
+   - `frontend_rules.md`（「仍拒绝」清单 static coroutine call 条目）、`frontend_compile_check_analyzer_implementation.md`（gate 规则段）、`frontend_void_call_result_behavior.md:35-53,181-191`（negative baseline 表述翻正）、`frontend_signal_support.md`（static 调用/引用边界段；§8.3 `:238`「不实现 `CALL_STATIC_METHOD` CInsnGen」与 §8.5 `:250`「故意未注册」两处表述同步翻正——§8.3 的 standalone trampoline 经 `ClassDB.class_call_static` 路径保持原样）、`gdcc_low_ir.md` 的 `CALL_STATIC_METHOD` 条目（补 backend 已支持）。
+   - `call_method_implementation.md`：非目标节（`:173-175`）移除 `CALL_STATIC_METHOD`、`:148-151` 的 `Node.print_orphan_nodes()` negative baseline 表述翻正。
+   - `gdcc_ownership_lifecycle_spec.md`：补 static 协程无 source-level self、状态对象保活边不变的说明。
+
+决策记录（2026-08-26 已确认，不再待决）：
+
+1. **builtin static wrapper 的 `self` 形参**：修正 `GodotBuiltinGenerator`，`isStatic` wrapper 不生成 `self` 形参（放弃 NULL-self 透传与 `godot_variant_call_static` 退路）。理由：static builtin wrapper 此前无任何调用面（`CALL_STATIC_METHOD` 未注册），签名修正零兼容负担，且与 engine/GDCC 两分支的「static 无 receiver」形态对齐。
+2. **engine/builtin static 直调纳入本步**：generator 落地后 GDCC/engine/builtin 三分支一并验收，含 engine（如 `JSON.parse_string`）与 builtin（如 `Color.from_hsv`）普通 static 直调 e2e；不在 generator 内设 ENGINE/BUILTIN fail-fast 限制。
+
+验收细则：
+
+- happy path：
+  - 上述单测 / 翻转 / zig smoke / e2e 全部通过（环境感知 skip 除外）；`./gradlew clean build --no-daemon --info --console=plain` 全绿。
+  - 真机验收 static 协程三形态：await 恢复 typed 结果、fire-and-forget 后台完成、Godot 侧 ClassDB 调用 static 协程拿到完成后的结果值。
+- negative path：
+  - 既有全部测试无回归；value 位置 static 协程调用仍被 compile gate 拦截（`must be called with "await"` 文案）；`call_method` 解析到 static 协程的 guard rail（`CallMethodInsnGen.java:249-254`）与其测试不变；property initializer / parameter default 内 await 仍 fail-closed；engine/builtin 普通 static 直调结果与解释器行为一致。
+- 最终 review-expert-a 复审无 BLOCKER/HIGH/MEDIUM。
+
 ---
 
 ## 5. 明确不纳入（Post-MVP Backlog）
 
 - **lambda 内 await**：已立项为第九步（R6 修订为逐调用拷贝入帧），不再属于 backlog。
-- 静态方法协程调用（`await Worker.static_coro()`）：前提是补 `CallStaticMethodInsn` 的 backend 生成器（既有缺口，见 `frontend_signal_support.md`）。
+- **静态方法协程调用（`await Worker.static_coro()`）**：已立项为第十步（含 `CallStaticMethodInsn` backend generator 落地与普通 static 直调解锁），不再属于 backlog。
 - value 位置调用协程函数（状态对象已是合法 Variant 值，放行本身简单，但需类型系统与诊断配套；statement 位置 fire-and-forget 已在 MVP 内）。
 - 静态已知非 signal 纯值的 `await x` 放宽为 warning + 穿透（对齐 Godot `REDUNDANT_AWAIT` 全集）；同期可评估「语法存在 AwaitExpression 即标记协程」的 Godot 严格对齐（§3.5 偏离的可选消除）。
 - 性能优化：Godot 状态对象懒物化（R8）、`mco_create`/栈复用池、`stack_size` 用户可配置项。
