@@ -21,6 +21,7 @@ import gd.script.gdcc.util.StringUtil;
 import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.scope.GdScriptLanguageConstant;
+import gd.script.gdcc.type.GdBoolType;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -281,7 +282,9 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
     /// Finalizes eager binary expressions from the two operand slots already published by CFG build.
     ///
     /// Short-circuit `and/or` never reaches this processor; if they do, that means the opaque-item
-    /// classifier or compile gate has been bypassed.
+    /// classifier or compile gate has been bypassed. Source-level `not in` is lowered as the
+    /// composite pair `BinaryOpInsn(IN)` + `UnaryOpInsn(NOT)`, mirroring the sema rule
+    /// `not (lhs in rhs)` without any dedicated opcode.
     private static final class FrontendBinaryOpaqueExprInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<BinaryExpression, FrontendBodyLoweringSession.OpaqueExprLoweringContext> {
         @Override
@@ -298,6 +301,27 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
         ) {
             var item = requireContext(context);
             session.requireOpaqueOperandCount(item, 2);
+            // `not in` must be intercepted before the generic path: `GodotOperator.fromSourceLexeme`
+            // stays fail-closed for it, and the C backend has no `NOT_IN` opcode. The intermediate
+            // slot is fixed to `bool` because the runtime `in` result is always a bool (typed and
+            // dynamic operands alike — the backend already evaluates `IN` over Variant operands and
+            // unpacks the bool result), and backend unary `NOT` only ships the `NOT + bool`
+            // specialization.
+            if ("not in".equals(node.operator())) {
+                var positiveSlotId = session.allocateWritableRouteTemp("not_in_positive", GdBoolType.BOOL);
+                block.appendNonTerminatorInstruction(new BinaryOpInsn(
+                        positiveSlotId,
+                        GodotOperator.IN,
+                        session.slotIdForValue(item.operandValueIds().getFirst()),
+                        session.slotIdForValue(item.operandValueIds().getLast())
+                ));
+                block.appendNonTerminatorInstruction(new UnaryOpInsn(
+                        session.resultSlotId(item),
+                        GodotOperator.NOT,
+                        positiveSlotId
+                ));
+                return block;
+            }
             block.appendNonTerminatorInstruction(new BinaryOpInsn(
                     session.resultSlotId(item),
                     GodotOperator.fromSourceLexeme(node.operator(), GodotOperator.OperatorArity.BINARY),

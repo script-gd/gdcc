@@ -4,8 +4,15 @@
 
 ## 文档状态
 
-- 状态：**计划阶段（未实施）**
+- 状态：**实施中（步骤 1、2 及其配套测试步骤 3、4 已落地；步骤 5、6 待实施）**
 - 创建时间：2026-08-26
+- 步骤状态：
+  - 步骤 1（sema 复合规则）：**已完成**（2026-08-26）——`resolveBinaryOperatorResultType(...)` 在枚举工厂前拦截 `"not in"` 并委托 `resolveNotInOperatorResultType(...)`；`resolveUnaryExactReturnType(...)` 已静态化；`FrontendExpressionSemanticSupportTest` / `FrontendBodyOwnerProceduresExprTypeTest` / `GodotOperatorTest` 全绿。
+  - 步骤 2（lowering 复合指令）：**已完成**（2026-08-26）——`FrontendBinaryOpaqueExprInsnLoweringProcessor.lower(...)` 在 generic 路径前特判 `"not in"`，产出 `BinaryOpInsn(IN, 固定 bool 中间槽) -> UnaryOpInsn(NOT)`；backend 零改动成立。
+  - 步骤 3（sema 层测试）：**已完成**（随步骤 1 验收同步落地）
+  - 步骤 4（lowering 测试）：**已完成**（2026-08-26）——新增 typed value / dynamic value / condition 三个语境测试，`FrontendLoweringBodyInsnPassTest` 全绿；另以 `gd.script.gdcc.frontend.*` 全包回归兜底通过。
+  - 步骤 5（端到端 test_suite 锚点）：未开始
+  - 步骤 6（文档同步）：未开始
 - Godot 对齐基线：Godot 4.x（`modules/gdscript`）
 - 关联文档：
   - `frontend_unary_binary_expr_semantic_implementation.md`（运算符语义主合同，§4.4 当前冻结 `not in` 为 `UNSUPPORTED`）

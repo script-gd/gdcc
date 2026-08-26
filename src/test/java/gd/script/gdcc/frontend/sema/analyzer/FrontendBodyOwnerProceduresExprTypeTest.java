@@ -1677,7 +1677,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                             var mixed_int_float := 1 + 1.0
                             var mixed_float_int := 1.0 + 1
                             var invalid: int = "hello" & 1
-                            var unsupported = 1 not in ints_a
+                            var not_in_membership = 1 not in ints_a
                         """
         );
 
@@ -1738,9 +1738,12 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         var invalid = analyzed.analysisData().expressionTypes().get(findVariable(statements, "invalid").value());
         assertEquals(FrontendExpressionTypeStatus.FAILED, invalid.status());
 
-        var unsupported = analyzed.analysisData().expressionTypes().get(findVariable(statements, "unsupported").value());
-        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, unsupported.status());
-        assertTrue(unsupported.detailReason().contains("must not be silently normalized to 'in'"));
+        // `not in` now resolves through the composite rule `not (lhs in rhs)` and publishes bool.
+        var notInMembership = analyzed.analysisData().expressionTypes().get(
+                findVariable(statements, "not_in_membership").value()
+        );
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, notInMembership.status());
+        assertEquals("bool", notInMembership.publishedType().getTypeName());
 
         var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
         assertEquals(3, expressionDiagnostics.size());
@@ -1754,9 +1757,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                 "Binary operator '&' is not defined for operand types 'String' and 'int'"
         )));
 
-        var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
-        assertEquals(1, unsupportedDiagnostics.size());
-        assertTrue(unsupportedDiagnostics.getFirst().message().contains("not in"));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
 
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());

@@ -963,7 +963,7 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
-    void resolveBinaryExpressionTypePublishesMetadataDynamicSpecialAndUnsupportedOutcomes() throws Exception {
+    void resolveBinaryExpressionTypePublishesMetadataDynamicSpecialAndNotInOutcomes() throws Exception {
         var analyzed = analyze(
                 "expression_semantic_support_binary.gd",
                 """
@@ -994,6 +994,9 @@ class FrontendExpressionSemanticSupportTest {
                             ints_a + raw_array
                             1 not in ints_a
                             "hello" & 1
+                            dynamic_value not in ints_a
+                            typed_variant not in ints_a
+                            "hello" not in 1
                         """
         );
 
@@ -1048,15 +1051,28 @@ class FrontendExpressionSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, typedUntypedArrayResult.expressionType().status());
         assertEquals("Array", typedUntypedArrayResult.expressionType().publishedType().getTypeName());
 
-        var notInResult = support.resolveBinaryExpressionType(expressions.get(14), publishedResolver, false);
-        assertTrue(notInResult.rootOwnsOutcome());
-        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, notInResult.expressionType().status());
-        assertTrue(notInResult.expressionType().detailReason().contains("must not be silently normalized to 'in'"));
+        // Composite rule: a stable inner `in` pairing always publishes `bool`, even when the
+        // operands are runtime-open (dynamic / Variant), because the runtime `in` result is
+        // always a bool and only the legality check is deferred to runtime.
+        for (var index : List.of(14, 16, 17)) {
+            var notInResult = support.resolveBinaryExpressionType(expressions.get(index), publishedResolver, false);
+            assertTrue(notInResult.rootOwnsOutcome());
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, notInResult.expressionType().status());
+            assertEquals("bool", notInResult.expressionType().publishedType().getTypeName());
+        }
 
         var invalidResult = support.resolveBinaryExpressionType(expressions.get(15), publishedResolver, false);
         assertTrue(invalidResult.rootOwnsOutcome());
         assertEquals(FrontendExpressionTypeStatus.FAILED, invalidResult.expressionType().status());
         assertTrue(invalidResult.expressionType().detailReason().contains("not defined for operand types 'String' and 'int'"));
+
+        // An illegal `not in` pairing fails with the diagnostic anchored on the inner `in` pair.
+        var invalidNotInResult = support.resolveBinaryExpressionType(expressions.get(18), publishedResolver, false);
+        assertTrue(invalidNotInResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, invalidNotInResult.expressionType().status());
+        assertTrue(invalidNotInResult.expressionType().detailReason().contains(
+                "Binary operator 'in' is not defined for operand types 'String' and 'int'"
+        ));
     }
 
     @Test

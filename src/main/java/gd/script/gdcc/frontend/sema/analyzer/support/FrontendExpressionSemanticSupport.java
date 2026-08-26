@@ -619,7 +619,7 @@ public final class FrontendExpressionSemanticSupport {
             return rootOutcome(FrontendExpressionType.failed(ex.getMessage()));
         }
 
-        var returnType = resolveUnaryExactReturnType(operator, publishedOperandType);
+        var returnType = resolveUnaryExactReturnType(classRegistry, operator, publishedOperandType);
         if (returnType != null) {
             return rootOutcome(FrontendExpressionType.resolved(returnType));
         }
@@ -631,7 +631,7 @@ public final class FrontendExpressionSemanticSupport {
 
     /// Binary operators split into two layers:
     /// - source-level special rules (`and/or`, object/nil equality, object identity equality,
-    ///   typed `Array[T] + Array[T]`) plus the fail-closed `not in` boundary
+    ///   typed `Array[T] + Array[T]`) plus the source-level composite rule (`not in`)
     /// - ordinary builtin metadata lookup for the remaining exact pairs
     public @NotNull ExpressionSemanticResult resolveBinaryExpressionType(
             @NotNull BinaryExpression binaryExpression,
@@ -675,11 +675,10 @@ public final class FrontendExpressionSemanticSupport {
         var publishedLeftType = requireStableOperatorOperandType("leftOperandType", leftOperandType);
         var publishedRightType = requireStableOperatorOperandType("rightOperandType", rightOperandType);
 
+        // `not in` is intercepted before the enum factory on purpose: `GodotOperator` stays
+        // fail-closed for it, and its typing follows the composite rule `not (lhs in rhs)`.
         if ("not in".equals(actualOperatorText)) {
-            return FrontendExpressionType.unsupported(
-                    "Binary operator 'not in' is recognized but still uses an explicit unsupported boundary; "
-                            + "it must not be silently normalized to 'in'"
-            );
+            return resolveNotInOperatorResultType(classRegistry, leftOperandType, rightOperandType);
         }
 
         final GodotOperator operator;
@@ -726,6 +725,38 @@ public final class FrontendExpressionSemanticSupport {
                         + "' is not defined for operand types '" + publishedLeftType.getTypeName()
                         + "' and '" + publishedRightType.getTypeName() + "'"
         );
+    }
+
+    /// Composite typing rule for source-level `a not in b`, typed exactly as `not (a in b)`.
+    ///
+    /// The inner `in` pairing reuses the ordinary binary pipeline so diagnostics keep anchoring the
+    /// `in` operand pair (same message style as Godot). A stable inner outcome always publishes
+    /// `bool`: the runtime `in` result is always a `bool`, even for runtime-open operands — those
+    /// only mean "not judged illegal at compile time", they do not change the result type.
+    /// Publishing `DYNAMIC(Variant)` here is forbidden because the C backend only ships the
+    /// `NOT + bool` specialization for unary `NOT` and has no Variant evaluator path for it.
+    private static @NotNull FrontendExpressionType resolveNotInOperatorResultType(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendExpressionType leftOperandType,
+            @NotNull FrontendExpressionType rightOperandType
+    ) {
+        var innerResult = resolveBinaryOperatorResultType(classRegistry, "in", leftOperandType, rightOperandType);
+        // Inner recursion always passes literal "in", so it can never re-enter this branch; with
+        // stable operands it can only produce RESOLVED / DYNAMIC / FAILED. Anything other than
+        // RESOLVED / DYNAMIC (FAILED in practice) propagates unchanged to keep diagnostics anchored.
+        if (innerResult.status() != FrontendExpressionTypeStatus.RESOLVED
+                && innerResult.status() != FrontendExpressionTypeStatus.DYNAMIC) {
+            return innerResult;
+        }
+        // Defensive metadata probe: the unary `NOT + bool` entry always exists in extension
+        // metadata, so the published type is `bool` in practice; only a broken registry misses.
+        var notReturnType = resolveUnaryExactReturnType(classRegistry, GodotOperator.NOT, GdBoolType.BOOL);
+        if (notReturnType == null) {
+            return FrontendExpressionType.failed(
+                    "Unary operator 'not' is not defined for operand type 'bool'"
+            );
+        }
+        return FrontendExpressionType.resolved(notReturnType);
     }
 
     /// Resolves `left if condition else right`.
@@ -1932,7 +1963,8 @@ public final class FrontendExpressionSemanticSupport {
 
     /// Typed containers keep richer source-level names such as `Array[int]`, but operator metadata
     /// is still owned by the raw builtin classes and uses raw operand names for matching.
-    private @Nullable GdType resolveUnaryExactReturnType(
+    private static @Nullable GdType resolveUnaryExactReturnType(
+            @NotNull ClassRegistry classRegistry,
             @NotNull GodotOperator operator,
             @NotNull GdType operandType
     ) {

@@ -9373,6 +9373,142 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersNotInAsInPlusUnaryNotForTypedOperands() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_not_in_membership_typed.gd",
+                """
+                        class_name BodyInsnNotInMembershipTyped
+                        extends Node
+                        
+                        func probe(ints_a: Array[int]) -> bool:
+                            return 1 not in ints_a
+                        """,
+                Map.of("BodyInsnNotInMembershipTyped", "RuntimeBodyInsnNotInMembershipTyped"),
+                true
+        );
+        var probeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNotInMembershipTyped",
+                "probe"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = probeContext.targetFunction();
+        var inInsn = requireOnlyInstruction(function, BinaryOpInsn.class);
+        var notInsn = requireOnlyInstruction(function, UnaryOpInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GodotOperator.IN, inInsn.op()),
+                () -> assertTrue(inInsn.resultId().startsWith("cfg_writable_not_in_positive_")),
+                () -> assertEquals(GdBoolType.BOOL, requireVariableType(function, inInsn.resultId())),
+                () -> assertEquals(GodotOperator.NOT, notInsn.op()),
+                () -> assertEquals(inInsn.resultId(), notInsn.operandId()),
+                () -> assertEquals(GdBoolType.BOOL, requireVariableType(function, notInsn.resultId())),
+                // The negated value is the published expression result consumed by the return.
+                () -> assertEquals(notInsn.resultId(), requireOnlyReturnInsn(function).returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersNotInAsInPlusUnaryNotForDynamicOperands() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_not_in_membership_dynamic.gd",
+                """
+                        class_name BodyInsnNotInMembershipDynamic
+                        extends Node
+                        
+                        func probe(dynamic_value, ints_a: Array[int]) -> bool:
+                            return dynamic_value not in ints_a
+                        """,
+                Map.of("BodyInsnNotInMembershipDynamic", "RuntimeBodyInsnNotInMembershipDynamic"),
+                true
+        );
+        var probeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNotInMembershipDynamic",
+                "probe"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = probeContext.targetFunction();
+        var inInsn = requireOnlyInstruction(function, BinaryOpInsn.class);
+        var notInsn = requireOnlyInstruction(function, UnaryOpInsn.class);
+
+        // Runtime-open operands keep the same composite shape; the intermediate slot stays `bool`
+        // because the backend evaluates `IN` over Variant operands and unpacks the bool result.
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GodotOperator.IN, inInsn.op()),
+                () -> assertTrue(inInsn.resultId().startsWith("cfg_writable_not_in_positive_")),
+                () -> assertEquals(GdBoolType.BOOL, requireVariableType(function, inInsn.resultId())),
+                () -> assertEquals(GodotOperator.NOT, notInsn.op()),
+                () -> assertEquals(inInsn.resultId(), notInsn.operandId()),
+                () -> assertEquals(GdBoolType.BOOL, requireVariableType(function, notInsn.resultId())),
+                () -> assertEquals(notInsn.resultId(), requireOnlyReturnInsn(function).returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersNotInConditionThroughValueThenBranch() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_not_in_condition.gd",
+                """
+                        class_name BodyInsnNotInCondition
+                        extends Node
+                        
+                        func probe(ints_a: Array[int]) -> int:
+                            if 1 not in ints_a:
+                                return 1
+                            return 0
+                        """,
+                Map.of("BodyInsnNotInCondition", "RuntimeBodyInsnNotInCondition"),
+                true
+        );
+        var probeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNotInCondition",
+                "probe"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = probeContext.targetFunction();
+        var instructions = allInstructions(function);
+        var inInsn = requireOnlyInstruction(function, BinaryOpInsn.class);
+        var notInsn = requireOnlyInstruction(function, UnaryOpInsn.class);
+        var branch = requireOnlyInstruction(function, GoIfInsn.class);
+
+        // Condition context does not flip branches: the expression is evaluated as a value first
+        // (`IN` strictly before `NOT`), and the branch tests the published (already negated) bool
+        // result with the original true/false targets (then: `return 1`, else: `return 0`).
+        var thenBlock = requireBlock(function, branch.trueBbId());
+        var elseBlock = requireBlock(function, branch.falseBbId());
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GodotOperator.IN, inInsn.op()),
+                () -> assertEquals(GodotOperator.NOT, notInsn.op()),
+                () -> assertEquals(inInsn.resultId(), notInsn.operandId()),
+                () -> assertTrue(
+                        instructions.indexOf(inInsn) >= 0 && instructions.indexOf(inInsn) < instructions.indexOf(notInsn),
+                        "BinaryOpInsn(IN) must precede UnaryOpInsn(NOT) in the lowered instruction stream"
+                ),
+                () -> assertEquals(notInsn.resultId(), branch.conditionVarId()),
+                () -> assertTrue(thenBlock.getInstructions().stream().anyMatch(
+                        insn -> insn instanceof LiteralIntInsn literalIntInsn && literalIntInsn.value() == 1L
+                )),
+                () -> assertTrue(elseBlock.getInstructions().stream().anyMatch(
+                        insn -> insn instanceof LiteralIntInsn literalIntInsn && literalIntInsn.value() == 0L
+                ))
+        );
+    }
+
+    @Test
     void runFoldsExactBuiltinTypeTestToConstantInUnifiedPass() throws Exception {
         var prepared = prepareContext(
                 "body_insn_type_test_fold.gd",
