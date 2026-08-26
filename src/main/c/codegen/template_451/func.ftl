@@ -10,7 +10,7 @@ ${helper.renderGdTypeInC(func.returnType)} ${classDef.name}_${func.name}(
         <@lambdaCaptureName classDef func/>* _capture
     </#if>
 )</#macro>
-<#-- Coroutine start thunk signature (plan §3.2): single declaration source shared by the
+<#-- Coroutine start thunk signature (frontend_await_implementation.md §5): single declaration source shared by the
      coroutine section prototype and the forward declaration a coroutine lambda's call_func
      needs. Capturing lambdas take the borrowed capture block as the `_capture` tail parameter
      (per-call copy into the state frame happens inside the thunk); captureless ones omit it. -->

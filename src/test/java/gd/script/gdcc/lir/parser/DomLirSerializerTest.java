@@ -243,7 +243,7 @@ public class DomLirSerializerTest {
 
     @Test
     public void serialize_module_writesLambdaCoroutineCombinationAndRoundTrips() throws Exception {
-        // Plan step 9 combination: `is_lambda="true"` and `is_coroutine="true"` are orthogonal
+        // Lambda+coroutine combination: `is_lambda="true"` and `is_coroutine="true"` are orthogonal
         // markers that coexist on one synthesized shell — alongside ordered <captures> and an
         // await body. Each marker had independent coverage; the combination was uncovered.
         var fn = new LirFunctionDef("_lambda_0", "entry");

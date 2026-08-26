@@ -10,7 +10,7 @@
 - 状态：事实源维护中（scope 双层图、lexical inventory、nested suite resolution、
   `FrontendLambdaPlan` 首次发布、`RESOLVED(GdCallableType)`、hidden `_lambda_<k>` shell、
   `LambdaConstructItem` / `construct_lambda`、C custom Callable 与 compile gate 按 published plan
-  放行已落地；lambda body 内 `await` 已由 `frontend_await_minicoro_plan.md` 第九步闭环
+  放行已落地；lambda body 内 `await` 已由 `frontend_await_implementation.md` 闭环
   （协程 lambda 经 Callable ABI 走 done/suspend 分派，capture 逐调用拷贝入协程帧，
   见 §3.8 末段）；property initializer / parameter default / skipped subtree 中的未记录 lambda
   以及 lambda 自己的 parameter default、body 内 block-local `const` 仍 fail-closed；
@@ -50,7 +50,7 @@
   - `doc/test_error/test_suite_engine_integration_known_limits.md`
 - 明确非目标：
   - 不在此转正 `match`、parameter default、block-local `const`
-    （`await` 后来已由 `frontend_await_minicoro_plan.md` 第九步独立闭环，见 §3.8 末段）
+    （`await` 由 `frontend_await_implementation.md` 独立闭环，见 §3.8 末段）
   - 不实现 Godot `OPCODE_CREATE_SELF_LAMBDA` / `GDScriptLambdaSelfCallable` 的独立 opcode；
     `self` 走既有 `construct_lambda` capture，`capturesSelf` 时 custom Callable 的 `object_id`
     绑 enclosing instance（见 §3.5）
@@ -439,7 +439,7 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
   `gdcc_ownership_lifecycle_spec.md`。不必复刻 Godot “已释放则变 null” 的调试打印，
   但不得 double-free。
 
-协程形态（body 内含 `await`，`frontend_await_minicoro_plan.md` 第九步）不复用上述
+协程形态（body 内含 `await`，见 `frontend_await_implementation.md`）不复用上述
 `_capture` prologue 路径，ABI 改为逐调用拷贝入协程帧：
 
 - 状态类帧在参数字段之后按 capture plan 顺序追加 `_coro_capture_<name>` typed 字段
@@ -522,7 +522,7 @@ userdata 结构体。这是 ABI 差异，不是语义差异；测试应对齐用
 6. 缺 published `FrontendLambdaPlan` 时 lowering fail-fast，禁止现场重推导。
 7. 诊断：一处根因一条 diagnostic；downstream 不得重复包。
 8. parameter default / block-local `const` 不得借这次改动进入支持面；`await` 由
-   `frontend_await_minicoro_plan.md` 第九步的独立合同管理（协程形态见 §3.8 末段）。
+   `frontend_await_implementation.md` 的独立合同管理（协程形态见 §3.8 末段）。
    `match` 由独立合同管理（`frontend_match_statement_implementation.md`）。
 9. 修改本合同时必须同步 `frontend_rules.md`、compile-check 文档、
    `gdcc_low_ir.md`（若改 insn）、`gdcc_runtime_lib.md`（若改 helper）。

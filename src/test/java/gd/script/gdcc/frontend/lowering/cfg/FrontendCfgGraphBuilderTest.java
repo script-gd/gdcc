@@ -1173,7 +1173,7 @@ class FrontendCfgGraphBuilderTest {
 
     @Test
     void buildExecutableBodyPublishesAwaitItemForSignalAwait() throws Exception {
-        // Shared sema path (compile gate keeps the await blocker until step 8): the await operand
+        // Shared sema path: the await operand
         // builds as an ordinary signal load, then one AwaitItem marks the suspension point.
         var analyzed = analyzeSharedSemanticFunction(
                 "cfg_builder_await_signal.gd",

@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Pipeline-level tests for `frontend_await_minicoro_plan.md` 第六步: await operand classification
+/// Pipeline-level tests for `frontend_await_implementation.md` §8: await operand classification
 /// (§3.5), coroutine function marking with order-independent transitive propagation, the
 /// `sema.redundant_await` warning, the fail-closed lambda/property-initializer boundaries, and the
 /// compile-gate await blocker plus coroutine-call position rules.
@@ -44,9 +44,9 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_signal_no_params.gd", """
                 class_name AwaitSignalNoParams
                 extends Node
-
+                
                 signal pinged
-
+                
                 func ping():
                     await pinged
                 """);
@@ -65,10 +65,10 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_signal_params.gd", """
                 class_name AwaitSignalParams
                 extends Node
-
+                
                 signal one(value: int)
                 signal two(a: int, b: String)
-
+                
                 func ping():
                     var first = await one
                     var second = await two
@@ -94,7 +94,7 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_engine_signal.gd", """
                 class_name AwaitEngineSignal
                 extends Node
-
+                
                 func ping(other: AwaitEngineSignal):
                     await other.ready
                 """);
@@ -113,7 +113,7 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_dynamic_operand.gd", """
                 class_name AwaitDynamicOperand
                 extends Node
-
+                
                 func ping(target):
                     await target
                 """);
@@ -134,12 +134,12 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_coroutine_call.gd", """
                 class_name AwaitCoroutineCall
                 extends Node
-
+                
                 signal pinged
-
+                
                 func outer():
                     var result = await inner()
-
+                
                 func inner() -> int:
                     await pinged
                     return 1
@@ -160,12 +160,12 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_void_coroutine_call.gd", """
                 class_name AwaitVoidCoroutineCall
                 extends Node
-
+                
                 signal pinged
-
+                
                 func outer():
                     var result = await inner()
-
+                
                 func inner():
                     await pinged
                 """);
@@ -183,15 +183,15 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_coroutine_chain.gd", """
                 class_name AwaitCoroutineChain
                 extends Node
-
+                
                 signal pinged
-
+                
                 func first():
                     await second()
-
+                
                 func second():
                     await third()
-
+                
                 func third():
                     await pinged
                 """);
@@ -208,10 +208,10 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_non_coroutine_call.gd", """
                 class_name AwaitNonCoroutineCall
                 extends Node
-
+                
                 func user():
                     var result = await plain()
-
+                
                 func plain() -> String:
                     return "x"
                 """);
@@ -233,7 +233,7 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_engine_call.gd", """
                 class_name AwaitEngineCall
                 extends Node
-
+                
                 func user():
                     var result = await get_name()
                 """);
@@ -254,13 +254,13 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_plain_value.gd", """
                 class_name AwaitPlainValue
                 extends Node
-
+                
                 signal pinged
-
+                
                 func bad():
                     var counter := 1
                     await counter
-
+                
                 func good():
                     await pinged
                 """);
@@ -282,13 +282,13 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_inside_lambda.gd", """
                 class_name AwaitInsideLambda
                 extends Node
-
+                
                 signal pinged
-
+                
                 func bad():
                     var callback = func():
                         await pinged
-
+                
                 func good():
                     await pinged
                 """);
@@ -321,11 +321,11 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_inside_property_initializer.gd", """
                 class_name AwaitInsidePropertyInitializer
                 extends Node
-
+                
                 signal pinged
-
+                
                 var pending = await 1
-
+                
                 func good():
                     await pinged
                 """);
@@ -341,15 +341,15 @@ class FrontendAwaitSemanticTest {
         );
     }
 
-    /// Step 8 releases classification-legal awaits through the compile-only gate.
+    /// Classification-legal awaits pass the compile-only gate.
     @Test
     void analyzeForCompileAllowsClassifiedAwait() throws Exception {
         var compiled = analyzeForCompile("await_gate_blocker.gd", """
                 class_name AwaitGateBlocker
                 extends Node
-
+                
                 signal pinged
-
+                
                 func ping():
                     await pinged
                 """);
@@ -366,12 +366,12 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_value_position.gd", """
                 class_name AwaitGateValuePosition
                 extends Node
-
+                
                 signal pinged
-
+                
                 func outer():
                     var state = inner()
-
+                
                 func inner():
                     await pinged
                 """);
@@ -394,12 +394,12 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_statement_position.gd", """
                 class_name AwaitGateStatementPosition
                 extends Node
-
+                
                 signal pinged
-
+                
                 func outer():
                     inner()
-
+                
                 func inner():
                     await pinged
                 """);
@@ -414,18 +414,18 @@ class FrontendAwaitSemanticTest {
         );
     }
 
-    /// Plan 第十步: a statement-root static coroutine call is fire-and-forget, same as instance —
+    /// A statement-root static coroutine call is fire-and-forget, same as instance —
     /// no compile diagnostic, and the caller is NOT marked (no await pending is produced, so the
-    /// fixed point never propagates; §3.5 "否（调用方不挂起）").
+    /// fixed point never propagates; the caller does not suspend).
     @Test
     void analyzeForCompileAllowsStaticCoroutineCallAtStatementRoot() throws Exception {
         var compiled = analyzeForCompile("await_gate_static_coroutine.gd", """
                 class_name AwaitGateStaticCoroutine
                 extends Node
-
+                
                 static func worker(target):
                     await target
-
+                
                 func outer():
                     worker(1)
                 """);
@@ -448,10 +448,10 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_variant_return_call.gd", """
                 class_name AwaitVariantReturnCall
                 extends Node
-
+                
                 func inner():
                     return 1
-
+                
                 func user():
                     var state = await inner()
                 """);
@@ -471,13 +471,13 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_variant_transitive.gd", """
                 class_name AwaitVariantTransitive
                 extends Node
-
+                
                 func outer():
                     return await middle()
-
+                
                 func middle():
                     return await leaf()
-
+                
                 func leaf():
                     return 1
                 """);
@@ -499,12 +499,12 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_signal_return_call.gd", """
                 class_name AwaitSignalReturnCall
                 extends Node
-
+                
                 signal counted(value: int)
-
+                
                 func signal_value() -> Signal:
                     return counted
-
+                
                 func user():
                     var result: Variant = await signal_value()
                 """);
@@ -528,13 +528,13 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_variant_coroutine_call.gd", """
                 class_name AwaitVariantCoroutineCall
                 extends Node
-
+                
                 signal pinged
-
+                
                 func inner() -> Variant:
                     await pinged
                     return 1
-
+                
                 func user():
                     var state = await inner()
                 """);
@@ -551,17 +551,17 @@ class FrontendAwaitSemanticTest {
         );
     }
 
-    /// Plan 第十步: an awaited static coroutine call is a legal await operand; the caller suspends
+    /// An awaited static coroutine call is a legal await operand; the caller suspends
     /// through it, so the fixed point must mark the caller as a coroutine.
     @Test
     void analyzeForCompileAllowsAwaitedStaticCoroutineCall() throws Exception {
         var compiled = analyzeForCompile("await_gate_awaited_static.gd", """
                 class_name AwaitGateAwaitedStatic
                 extends Node
-
+                
                 static func worker(target):
                     await target
-
+                
                 func outer():
                     await worker(1)
                 """);
@@ -585,10 +585,10 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_value_position_static.gd", """
                 class_name AwaitGateValuePositionStatic
                 extends Node
-
+                
                 static func worker(target):
                     await target
-
+                
                 func outer():
                     var state = worker(1)
                 """);
@@ -612,12 +612,12 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_static_pending_mark.gd", """
                 class_name AwaitStaticPendingMark
                 extends Node
-
+                
                 signal pinged
-
+                
                 static func outer(peer: AwaitStaticPendingMark):
                     var result = await AwaitStaticPendingMark.inner(peer)
-
+                
                 static func inner(peer: AwaitStaticPendingMark) -> int:
                     await peer.pinged
                     return 1
@@ -638,15 +638,15 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_static_chain.gd", """
                 class_name AwaitStaticChain
                 extends Node
-
+                
                 signal pinged
-
+                
                 static func first(target):
                     await AwaitStaticChain.second(target)
-
+                
                 static func second(target):
                     await AwaitStaticChain.third(target)
-
+                
                 static func third(target):
                     await target
                 """);
@@ -669,18 +669,18 @@ class FrontendAwaitSemanticTest {
         var analyzed = analyze("await_mixed_static_instance_chain.gd", """
                 class_name AwaitMixedStaticInstanceChain
                 extends Node
-
+                
                 signal pinged
-
+                
                 static func static_caller(peer: AwaitMixedStaticInstanceChain):
                     await peer.instance_leaf()
-
+                
                 func instance_caller():
                     await AwaitMixedStaticInstanceChain.static_leaf(self)
-
+                
                 static func static_leaf(target):
                     await target
-
+                
                 func instance_leaf():
                     await pinged
                 """);
@@ -704,14 +704,14 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_lambda_body.gd", """
                 class_name AwaitGateLambdaBody
                 extends Node
-
+                
                 signal pinged
-
+                
                 func outer():
                     pinged.connect(func():
                         var state = inner()
                     )
-
+                
                 func inner():
                     await pinged
                 """);
@@ -734,13 +734,13 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_nested_value_position.gd", """
                 class_name AwaitGateNestedValuePosition
                 extends Node
-
+                
                 signal pinged
-
+                
                 func collect():
                     var states = [inner()]
                     return inner()
-
+                
                 func inner():
                     await pinged
                 """);
@@ -762,15 +762,15 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_nested_operand_call.gd", """
                 class_name AwaitGateNestedOperandCall
                 extends Node
-
+                
                 signal pinged
-
+                
                 func passthrough(value: Variant) -> Variant:
                     return value
-
+                
                 func outer():
                     await passthrough(inner())
-
+                
                 func inner():
                     await pinged
                 """);
@@ -796,12 +796,12 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_intermediate_chain.gd", """
                 class_name AwaitGateIntermediateChain
                 extends Node
-
+                
                 signal pinged
-
+                
                 func outer():
                     inner().name
-
+                
                 func inner():
                     await pinged
                 """);
@@ -825,12 +825,12 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_intermediate_call_step.gd", """
                 class_name AwaitGateIntermediateCallStep
                 extends Node
-
+                
                 signal pinged
-
+                
                 func outer():
                     self.inner().name
-
+                
                 func inner():
                     await pinged
                 """);
@@ -853,12 +853,12 @@ class FrontendAwaitSemanticTest {
         var compiled = analyzeForCompile("await_gate_chained_statement_root.gd", """
                 class_name AwaitGateChainedStatementRoot
                 extends Node
-
+                
                 signal pinged
-
+                
                 func outer():
                     self.inner()
-
+                
                 func inner():
                     await pinged
                 """);

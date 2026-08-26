@@ -204,7 +204,7 @@ public class CCodegen implements Codegen {
     /// Copies `_capture->name` into the matching lambda local before `__prepare__`.
     /// Capture slots are excluded from default construction, so this is their first write.
     /// Coroutine lambdas skip this entirely: their body has no `_capture` parameter — the start
-    /// thunk copies captures into typed frame fields at the call boundary instead (plan 第九步),
+    /// thunk copies captures into typed frame fields at the call boundary instead,
     /// and the body reads/writes the frame fields directly via `CBodyBuilder`.
     private void emitLambdaCapturePrologue(
             @NotNull CBodyBuilder bodyBuilder,

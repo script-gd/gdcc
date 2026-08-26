@@ -38,7 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Step-4 anchors of the await plan (`frontend_await_minicoro_plan.md` §4 step 4): handwritten
+/// Coroutine state-class codegen anchors (`frontend_await_implementation.md` §5): handwritten
 /// LIR with `is_coroutine="true"` generates the hidden state class (registration, identity binding,
 /// `completed` signal, desc callbacks), the minicoro body function (frame-mapped parameters, no
 /// parameter C slots, `_return_val` consumed into the typed return slot), the coroutine-start
@@ -291,7 +291,7 @@ class CCoroutineStateClassCodegenTest {
 
     @Test
     void coroutineLambdaShouldGenerateStateClassSurface() {
-        // Plan step 9 flipped the old `isCoroutine && isLambda` fail-fast into positive codegen:
+        // The `isCoroutine && isLambda` combination is positive codegen:
         // a capturing coroutine lambda gets its hidden state class with typed capture frame
         // fields, a start thunk carrying the `_capture` tail parameter, and no plain
         // function/engine-entry surface (the Callable ABI enters through the thunk).
@@ -325,7 +325,7 @@ class CCoroutineStateClassCodegenTest {
 
     @Test
     void lambdaCoroutineFrameAndCallFuncShouldManageCaptureLifecycle() {
-        // Full capture-lifecycle anchors for a coroutine lambda (plan step 9): typed capture
+        // Full capture-lifecycle anchors for a coroutine lambda: typed capture
         // frame fields in capture-plan order (`self` first), thunk-side per-call copies with
         // per-type discipline (primitive assign / value copy-construct from the field address /
         // object assign + retain), exactly-once destroys in free_instance after the parameter

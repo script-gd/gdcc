@@ -1602,8 +1602,8 @@ class FrontendExpressionSemanticSupportTest {
         assertEquals("Dictionary", dictionaryResult.expressionType().publishedType().getTypeName());
         assertNotNull(dictionaryResult.publishedContainerLiteralPlanOrNull());
 
-        // Await is no longer a deferred remaining route: it owns a dedicated classifier
-        // (`frontend_await_minicoro_plan.md` 第六步) and the generic bucket must reject it.
+        // Await is not a deferred remaining route: it owns a dedicated classifier
+        // (`frontend_await_implementation.md` §8) and the generic bucket must reject it.
         var awaitExpression = new AwaitExpression(identifier("signal_name"), TINY);
         assertThrows(
                 IllegalArgumentException.class,
@@ -1882,7 +1882,7 @@ class FrontendExpressionSemanticSupportTest {
                 new AwaitExpression(identifier("pinged"), TINY),
                 (expression, finalizeWindow) -> FrontendExpressionType.resolved(new GdSignalType()),
                 _ -> null,
-                // The lambda boundary was unblocked by plan step 9; the property-initializer
+                // The lambda boundary accepts await; the property-initializer
                 // boundary stays fail-closed and anchors the classifier's reason pass-through.
                 "Await expressions are not supported inside property initializers",
                 false

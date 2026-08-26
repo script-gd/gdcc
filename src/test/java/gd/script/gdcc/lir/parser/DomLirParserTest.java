@@ -587,7 +587,7 @@ public class DomLirParserTest {
 
     @Test
     public void parse_lambdaCoroutineCombinationFromXml() throws Exception {
-        // Plan step 9 combination, parse direction pinned independently of the serializer:
+        // Lambda+coroutine combination, parse direction pinned independently of the serializer:
         // `is_lambda="true"` + `is_coroutine="true"` on one shell with ordered captures and an
         // await body must both survive.
         var xml = """

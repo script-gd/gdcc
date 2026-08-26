@@ -488,7 +488,7 @@ writable / compatibility 规则为：
 
   当前 remaining explicit-deferred expression set 固定为：
 
-- `AwaitExpression` 已由 `frontend_await_minicoro_plan.md` 第六至八步闭环；普通 executable function 中的合法 signal/dynamic/instance-call await 进入 compile-ready surface
+- `AwaitExpression` 已闭环（`frontend_await_implementation.md`）；普通 executable function 与已记录 lambda body 中的合法 signal/dynamic/instance/static-call await 进入 compile-ready surface
 - `PreloadExpression`
 - `GetNodeExpression`
 - `PatternBindingExpression`（普通 expr typing 仍 deferred；match pattern 上下文由 pattern-context 分派接管，永不触发该分支）

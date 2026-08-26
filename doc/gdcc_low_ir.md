@@ -587,7 +587,7 @@ callee is a marked GDCC coroutine, the call targets the coroutine-start thunk an
 be a `compiler::GdccCoroState` variable, following the same coroutine ABI as `call_method`.
 
 The C backend implements this opcode through `CallStaticMethodInsnGen`
-(`frontend_await_minicoro_plan.md` 第十步).
+(see `frontend_await_implementation.md`).
 
 ```
 $<result_id>? = call_static_method "<class_name>" "<method_name>" $<arg1_id> $<arg2_id> ...

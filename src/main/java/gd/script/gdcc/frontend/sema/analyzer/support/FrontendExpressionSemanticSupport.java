@@ -130,7 +130,7 @@ public final class FrontendExpressionSemanticSupport {
         }
     }
 
-    /// Await classification routes per `frontend_await_minicoro_plan.md` §3.5.
+    /// Await classification routes per `frontend_await_implementation.md` §8.
     public enum AwaitRoute {
         /// No classification happened: the outcome was propagated from the operand or produced by
         /// the fail-closed context boundary / unsupported-operand rule.
@@ -914,11 +914,11 @@ public final class FrontendExpressionSemanticSupport {
         return rootOutcome(FrontendExpressionType.deferred(detailReason));
     }
 
-    /// Dedicated await classifier (`frontend_await_minicoro_plan.md` §3.5). The operand is resolved
+    /// Dedicated await classifier (`frontend_await_implementation.md` §8). The operand is resolved
     /// through the nested resolver first and its non-stable outcome propagates unchanged.
     /// `failClosedBoundaryReason` is non-null when the await sits in a property initializer:
-    /// that context stays fail-closed after the operand itself was resolved (lambda bodies were
-    /// unblocked by plan step 9 and route through the normal owner marking).
+    /// that context stays fail-closed after the operand itself was resolved (lambda bodies accept
+    /// await and route through the normal owner marking).
     ///
     /// Exact calls to a GDCC function classify as `CALL` with a provisional callee return type
     /// (`Variant` for void callees); whether the callee is a coroutine is decided by the post-suite

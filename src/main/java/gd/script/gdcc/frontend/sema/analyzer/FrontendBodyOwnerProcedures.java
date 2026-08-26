@@ -120,7 +120,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     private static final @NotNull String UNSUPPORTED_CHAIN_ROUTE_CATEGORY = "sema.unsupported_chain_route";
     private static final @NotNull String UNSUPPORTED_EXPRESSION_ROUTE_CATEGORY = "sema.unsupported_expression_route";
     /// Warning owner for `await` on a call whose callee is a statically known non-coroutine
-    /// (`frontend_await_minicoro_plan.md` §3.5; aligns Godot `REDUNDANT_AWAIT`).
+    /// (`frontend_await_implementation.md` §8; aligns Godot `REDUNDANT_AWAIT`).
     public static final @NotNull String REDUNDANT_AWAIT_CATEGORY = "sema.redundant_await";
 
     private FrontendAnalysisData cachedAnalysisData;
@@ -1954,7 +1954,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             return result.expressionType();
         }
 
-        /// Await owner hook (`frontend_await_minicoro_plan.md` 第六步): the pure classification lives
+        /// Await owner hook: the pure classification lives
         /// in `FrontendExpressionSemanticSupport`; this wrapper owns the side effects — coroutine
         /// marking for signal/dynamic routes and pending recording for exact-call operands. The
         /// call-operand coroutine decision never happens here: the callee's own body may resolve
@@ -1987,8 +1987,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             return result.expressionType();
         }
 
-        /// Fail-closed boundary: property initializers reject await (plan §3.5). Lambda bodies were
-        /// unblocked by 第九步 — their owners are marked through the lambda owner set and bridged to
+        /// Fail-closed boundary: property initializers reject await. Lambda bodies accept await —
+        /// their owners are marked through the lambda owner set and bridged to
         /// the synthesized shell during lowering preparation. Parameter defaults never reach body
         /// expression typing, so they keep their existing boundary.
         private @Nullable String awaitFailClosedBoundaryReason() {

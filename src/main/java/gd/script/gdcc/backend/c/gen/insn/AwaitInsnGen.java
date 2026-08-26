@@ -15,7 +15,7 @@ import java.util.EnumSet;
 import java.util.List;
 
 /// C code generator for `AWAIT` (contract: `gdcc_low_ir.md` §Coroutine Instructions,
-/// `frontend_await_minicoro_plan.md` §3.4, ownership spec §3.10).
+/// `frontend_await_implementation.md` §7, ownership spec §3.10).
 ///
 /// Dispatch is purely static-type-driven by the operand; no cross-instruction bookkeeping:
 /// - `Signal` operand → `gdcc_coro_await_signal` (one-shot connect, resume value staged
@@ -77,7 +77,7 @@ public final class AwaitInsnGen implements CInsnGen<AwaitInsn> {
         bodyBuilder.destroyTempVar(outTemp);
     }
 
-    /// Static coroutine-call path (plan §3.4): identify the state header through the dedicated
+    /// Static coroutine-call path: identify the state header through the dedicated
     /// binding token, hand the call site's OWNED reference to `gdcc_coro_await_state` (which
     /// releases it internally, even on the done fast path), and leave the source slot in the
     /// moved-from `NULL` state before the call. If recognition fails, the slot remains owned

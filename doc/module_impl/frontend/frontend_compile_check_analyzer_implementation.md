@@ -172,8 +172,8 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - lambda body 内的 `match` 走与外层相同的 route-aware policy：`WILDCARD` / `BINDING` / `LITERAL` / `EXPRESSION` / `ARRAY` / `DICTIONARY` 六 route 全部放行并重扫 facts，不再由上游 `sema.unsupported_binding_subtree` 持有。
 
 `AwaitExpression` 不再拥有专用 compile blocker。合法 await root 与 operand 进入普通
-published-fact scan；operand 顶层已解析的 coroutine call（instance 或 static，static 由
-`frontend_await_minicoro_plan.md` 第十步开放）只在 await-position 获得豁免。operand 内嵌套的
+published-fact scan；operand 顶层已解析的 coroutine call（instance 或 static，见
+`frontend_await_implementation.md` §8）只在 await-position 获得豁免。operand 内嵌套的
 coroutine call、非 await value-position 的 coroutine call，以及 lambda/property initializer 等
 既有 fail-closed 边界继续阻断。compile gate 只消费 `FrontendAwaitCoroutineAnalyzer` 发布的稳定
 coroutine/type facts，不重新分类 await。

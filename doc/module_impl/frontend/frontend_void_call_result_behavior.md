@@ -47,7 +47,7 @@
 - backend 当前对以下 surface 提供正式 codegen 与 guard rail：
   - `CallMethodInsn`
   - `CallGlobalInsn`
-  - `CallStaticMethodInsn`（`frontend_await_minicoro_plan.md` 第十步落地 `CallStaticMethodInsnGen`）
+  - `CallStaticMethodInsn`（`CallStaticMethodInsnGen`）
 - backend `__prepare__` 当前会跳过 `GdVoidType` 变量；这条行为只服务于避免误导性 `construct_builtin(void)` 偏航，不代表 backend 接受“void result slot 仍存在”的坏 IR。
 - backend 对坏 IR 的 guard rail 继续保留：
   - void method/global call 若仍携带 `resultId`，必须 fail-fast

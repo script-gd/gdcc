@@ -7,7 +7,7 @@ import java.util.Objects;
 
 /// Codegen context of one coroutine body function (`is_coroutine="true"`); present on
 /// `CBodyBuilder` only while rendering a `__coro_body` function. Contract:
-/// `doc/module_impl/frontend/frontend_await_minicoro_plan.md` §3.2 and
+/// `doc/module_impl/frontend/frontend_await_implementation.md` §5 and
 /// `doc/gdcc_ownership_lifecycle_spec.md` §3.10.
 ///
 /// The C spellings held here are the single source of truth shared by the generated body
@@ -32,7 +32,7 @@ public record CCoroutineFrameContext(@NotNull String stateStructName) {
     public static final String RET_INITIALIZED_FIELD = "_coro_ret_initialized";
     /// Typed parameter field prefix; the LIR parameter id (= source name) follows verbatim.
     public static final String PARAM_FIELD_PREFIX = "_coro_param_";
-    /// Typed capture field prefix of a coroutine lambda (plan 第九步): the start thunk copies
+    /// Typed capture field prefix of a coroutine lambda: the start thunk copies
     /// each `_capture->name` field into its own owning frame field at the call boundary, and the
     /// body addresses those fields exactly like parameter fields. The LIR capture id (= source
     /// name) follows verbatim.

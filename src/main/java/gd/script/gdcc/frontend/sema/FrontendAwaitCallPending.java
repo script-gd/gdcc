@@ -20,7 +20,7 @@ import java.util.Objects;
 ///
 /// `enclosingOwner` is a `FrontendAwaitCoroutineOwner` handle: named/constructor owners carry
 /// their skeleton `LirFunctionDef`, while lambda owners carry the `LambdaExpression` identity
-/// because their shell is only synthesized during lowering (plan 第九步).
+/// because their shell is only synthesized during lowering.
 public record FrontendAwaitCallPending(
         @NotNull AwaitExpression awaitExpression,
         @NotNull FrontendAwaitCoroutineOwner enclosingOwner,

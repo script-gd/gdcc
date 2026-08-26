@@ -115,7 +115,7 @@ consumer 必须优先读取显式语义方法，而不是继续通过 `getTypeNa
 - copy/assignment：move-only（`isCopyable() == false`），禁止 direct struct assignment 与 copy helper；任何 copy 尝试在 codegen 边界 fail-fast（`CGenHelper.renderCopyAssignFunctionName` 与 `CBodyBuilderAliasSafetySupport`）。
 - 传参形状：init 为 nullary call-and-assign；destroy 按地址传 `godot_Object **`（与 `isPassedByPointerInC()` 默认一致）。
 - 单消费者规则：仅 `await`（消费后置 moved-from `NULL`）与 `destruct`（释放引用）可消费；禁止 assign/copy、Variant pack/unpack、参数、return、property、容器存储与 `ref`（拦截复用既有 `LirPublicAbiValidator`、`InsnGenSupport` pack/unpack 边界与 move-only codegen 防线，无新增机制）。
-- 新 runtime helper：上述两个 slot helper（runtime 合同迁移的其余项见 `frontend_await_minicoro_plan.md` 第四步）。
+- 新 runtime helper：上述两个 slot helper（runtime 合同见 `frontend_await_implementation.md` 与 `gdcc_runtime_lib.md`）。
 - 同步点：`GdCompilerType` permits、`DomLirParser.tryParseCompilerOnlyType` 注册、`GdCompilerTypeTest`（permits/storage 例外/move-only 合同）、`GdccCoroStateTypeTest`、LIR parser/serializer 与 ABI validator 测试锚点。
 
 ---

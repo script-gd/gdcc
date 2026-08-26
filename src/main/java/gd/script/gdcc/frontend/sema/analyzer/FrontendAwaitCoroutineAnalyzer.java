@@ -12,7 +12,7 @@ import org.jetbrains.annotations.NotNull;
 import java.util.ArrayList;
 import java.util.Objects;
 
-/// Post-suite await coroutine resolution pass (`frontend_await_minicoro_plan.md` 第六步).
+/// Post-suite await coroutine resolution pass (`frontend_await_implementation.md` §8).
 ///
 /// During `EXPR_TYPE`, `await <call>` operands are recorded as pendings because the callee's own
 /// body — and therefore its coroutine marking — may be resolved after the caller's. This pass runs
@@ -24,14 +24,13 @@ import java.util.Objects;
 /// so they mark their caller during the fixed point and remain pending only long enough to determine
 /// whether a Signal result needs refinement. Afterwards only hard-typed non-coroutine calls produce
 /// `sema.redundant_await`. Static coroutine callees propagate to their callers exactly like instance
-/// ones (plan 第十步): the static call is a legal await operand / statement root, so the caller
+/// ones: the static call is a legal await operand / statement root, so the caller
 /// suspends through it and must be compiled as a coroutine too.
 ///
 /// The pass mutates the monotonic coroutine set, refines non-coroutine Signal-call await results,
 /// and emits warnings. Variant-call results stay `Variant`; only hard-typed non-coroutine calls
 /// become redundant awaits. Caller marking dispatches through `markCoroutineOwner`: lambda callers
-/// join the identity-keyed owner set and are bridged to their shell during lowering preparation
-/// (plan 第九步).
+/// join the identity-keyed owner set and are bridged to their shell during lowering preparation.
 public final class FrontendAwaitCoroutineAnalyzer {
     public void analyze(
             @NotNull FrontendAnalysisData analysisData,

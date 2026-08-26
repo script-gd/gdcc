@@ -112,7 +112,7 @@ final class ConstructLambdaInsnGenEngineTest {
     @Test
     @DisplayName("suspended coroutine lambda resumes from its capture frame after the Callable is released")
     void constructCoroutineLambdaContinuesAfterCallableRelease() throws IOException, InterruptedException {
-        // Plan step 9 core acceptance on a real engine: a coroutine lambda is invoked through
+        // Core acceptance on a real engine: a coroutine lambda is invoked through
         // the Callable ABI, suspends on a signal, and then both the Callable (capture block) and
         // the returned state handle are released. The suspended coroutine must stay alive purely
         // on its signal-wait edge (the one-shot connection's custom Callable holds the self state

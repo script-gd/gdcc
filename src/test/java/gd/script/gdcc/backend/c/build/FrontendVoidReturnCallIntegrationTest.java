@@ -160,7 +160,7 @@ public class FrontendVoidReturnCallIntegrationTest {
         );
     }
 
-    /// Plan 第十步 flipped this baseline: `CALL_STATIC_METHOD` has a backend generator now, so a
+    /// `CALL_STATIC_METHOD` has a backend generator, so a
     /// discarded static type-meta head void call (`Node.print_orphan_nodes()`) must build instead
     /// of failing on an unsupported opcode.
     @Test

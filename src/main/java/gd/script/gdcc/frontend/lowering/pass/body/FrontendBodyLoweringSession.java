@@ -94,7 +94,7 @@ public final class FrontendBodyLoweringSession {
     /// Value ids consumed as await operands. A coroutine call whose result is in this set is
     /// awaited (ownership moves into the await); any other coroutine call result is a discarded
     /// statement-position value that must be detached through an INTERNAL destruct right after
-    /// the call (`frontend_await_minicoro_plan.md` §3.4 fire-and-forget).
+    /// the call (`frontend_await_implementation.md` §7 fire-and-forget).
     private final @NotNull Set<String> awaitOperandValueIds;
     private final @NotNull FrontendInsnLoweringProcessorRegistry<FrontendCfgGraph.NodeDef, Void> cfgNodeProcessors;
     private final @NotNull FrontendInsnLoweringProcessorRegistry<SequenceItem, Void> sequenceItemProcessors;

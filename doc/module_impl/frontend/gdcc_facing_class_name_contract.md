@@ -63,7 +63,7 @@ inner class canonical spelling 已冻结为：
 
 ### 1.3 `_gdcc_coro_state_` 是 compiler-owned class 级保留前缀
 
-协程隐藏状态类（见 `frontend_await_minicoro_plan.md` §3.2）的 canonical name 派生公式冻结为：
+协程隐藏状态类（见 `frontend_await_implementation.md` §5）的 canonical name 派生公式冻结为：
 
 - `_gdcc_coro_state_<canonicalClass>__coro__<func>`
 

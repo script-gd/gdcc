@@ -1187,8 +1187,8 @@ final class GodotBuiltinGenerator {
         ) {
             var params = new ArrayList<String>();
             // Static builtin methods have no instance receiver; the wrapper signature starts at the
-            // first declared argument and the ptrcall base is NULL (frontend_await_minicoro_plan.md
-            // 第十步, decision record 1).
+            // first declared argument and the ptrcall base is NULL
+            // (frontend_await_implementation.md §4, decision 9).
             if (!method.isStatic()) {
                 params.add((method.isConst() ? "const " : "") + GodotBindingSupport.cType(builtin.name()) + " *self");
             }

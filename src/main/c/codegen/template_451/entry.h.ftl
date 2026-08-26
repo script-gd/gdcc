@@ -295,7 +295,7 @@ static void ${helper.renderLambdaCallFuncName(classDef, func)}(
         <#list func.parameters as paramType>${helper.renderValueRef(paramType.type, "arg${paramType_index}")}<#if paramType_has_next || func.captureCount gt 0>, </#if></#list><#if func.captureCount gt 0>captures</#if>
     </#assign>
     <#if func.coroutine>
-    <#-- Coroutine lambda (frontend_await_minicoro_plan.md 第九步): the Callable ABI enters -->
+    <#-- Coroutine lambda (frontend_await_implementation.md §5): the Callable ABI enters -->
     <#-- through the start thunk with the capture block as the tail argument, then dispatches -->
     <#-- on done/suspend. A suspended coroutine always hands the state object out as a Variant -->
     <#-- regardless of the declared return type (the Callable ABI has only a Variant return -->
@@ -375,7 +375,7 @@ static void ${helper.renderLambdaCallFuncName(classDef, func)}(
 </#list>
 
 <#if helper.hasCoroutineFunctions()>
-// Hidden coroutine state classes (frontend_await_minicoro_plan.md §3.2-§3.3)
+// Hidden coroutine state classes (frontend_await_implementation.md §5-§6)
 // One state class per `is_coroutine="true"` function: direct RefCounted child, runtime-only,
 // never exposed. The wrapper root field is `_object` (no GDCC `_super` chain); the common
 // `gdcc_coro_state_header` follows it and is exposed through the dedicated coroutine binding
@@ -393,7 +393,7 @@ struct ${stateName} {
     <#list func.parameters as param>
     ${helper.renderGdTypeInC(param.type)} ${helper.renderCoroParamFieldPrefix()}${param.name};
     </#list>
-    <#-- Coroutine lambda captures (plan 第九步): per-call owning copies filled by the start -->
+    <#-- Coroutine lambda captures: per-call owning copies filled by the start -->
     <#-- thunk from the borrowed capture block; destroyed exactly once by free_instance. -->
     <#list func.captureList as capture>
     ${helper.renderLambdaCaptureFieldTypeInC(capture.type)} ${helper.renderCoroCaptureFieldPrefix()}${capture.name};

@@ -201,7 +201,7 @@ final class ConstructLambdaInsnGenTest {
     @Test
     @DisplayName("coroutine lambda keeps construct_lambda capture surface and hands the block to the start thunk")
     void coroutineLambdaCaptureShouldPassCaptureToStartThunk() throws Exception {
-        // Plan step 9: `ConstructInsnGen` is deliberately untouched — the outer body still
+        // `ConstructInsnGen` is deliberately coroutine-agnostic — the outer body still
         // allocates and fills the capture block exactly like a synchronous lambda. The coroutine
         // difference shows up only at the Callable invocation boundary: `call_func` forwards the
         // block as the start thunk's `_capture` tail argument, and the body reads typed frame

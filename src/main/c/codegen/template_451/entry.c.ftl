@@ -311,7 +311,7 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
 
 <#if helper.hasCoroutineFunctions()>
 // Coroutine state class machinery, body functions, start thunks and engine entries
-// (frontend_await_minicoro_plan.md §3.2-§3.4; ownership state machine: ownership spec §3.10)
+// (frontend_await_implementation.md §5-§7; ownership state machine: ownership spec §3.10)
 <#list module.classDefs as classDef>
 <#list classDef.functions as func>
 <#if func.coroutine>
@@ -354,7 +354,7 @@ void ${stateName}_class_free_instance(void* p_class_userdata, GDExtensionClassIn
         </#if>
     </#list>
     <#-- Coroutine lambda capture frame fields: same exactly-once destroy discipline as the -->
-    <#-- parameter fields above (plan 第九步; the capture block itself stays with the Callable). -->
+    <#-- parameter fields above; the capture block itself stays with the Callable. -->
     <#list func.captureList as capture>
         <#assign captureFreeStmt = helper.renderLambdaCaptureFreeStmt(capture.type, "self->" + helper.renderCoroCaptureFieldPrefix() + capture.name)>
         <#if captureFreeStmt?has_content>
@@ -478,7 +478,7 @@ void ${helper.renderCoroBodyFunctionName(classDef, func)}(mco_coro *${helper.ren
     <#list func.parameters as param>
     ${helper.renderCoroParamFillStmt(param.type, "coro_state->" + helper.renderCoroParamFieldPrefix() + param.name, "$" + param.name)}
     </#list>
-    <#-- Coroutine lambda captures (plan 第九步): per-call copy from the borrowed `_capture` -->
+    <#-- Coroutine lambda captures: per-call copy from the borrowed `_capture` -->
     <#-- block into fresh owning frame fields. Filled before `mco_create` so the OOM path is -->
     <#-- still cleaned by the uniform `free_instance` field sweep. -->
     <#list func.captureList as capture>
@@ -488,7 +488,7 @@ void ${helper.renderCoroBodyFunctionName(classDef, func)}(mco_coro *${helper.ren
     coro_desc.user_data = coro_state;
     if (mco_create(&coro_state->${helper.renderCoroHeaderField()}.co, &coro_desc) != MCO_SUCCESS) {
         // OOM: report, then complete synchronously with the default result so callers still
-        // receive a well-formed done state object whose `co` is NULL (plan §3.2 entry thunk).
+        // receive a well-formed done state object whose `co` is NULL (start thunk contract).
         GDCC_PRINT_RUNTIME_ERROR("gdcc: failed to create coroutine stack (out of memory); completing with the default result", __func__, __FILE__, __LINE__);
 <#if func.returnType.typeName != "void">
         coro_state->${helper.renderCoroRetField()} = ${helper.renderDefaultValueExprInC(func.returnType)};
@@ -544,7 +544,7 @@ void ${helper.renderCoroBodyFunctionName(classDef, func)}(mco_coro *${helper.ren
     return r;
     <#else>
     // Suspended with a typed non-Variant return: detach + default value + runtime error
-    // (deliberate deviation, plan §3.4 engine boundary); the coroutine continues detached.
+    // (deliberate deviation, frontend_await_implementation.md §7.5 engine boundary); the coroutine continues detached.
     release_object(coro_state_obj);
     GDCC_PRINT_RUNTIME_ERROR("gdcc: coroutine method suspended at the engine boundary; typed non-Variant returns cannot carry the coroutine state, returning the default value", __func__, __FILE__, __LINE__);
     return ${helper.renderDefaultValueExprInC(func.returnType)};

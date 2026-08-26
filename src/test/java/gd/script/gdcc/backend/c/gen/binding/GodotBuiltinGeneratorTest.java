@@ -109,7 +109,7 @@ class GodotBuiltinGeneratorTest {
         );
     }
 
-    /// Plan 第十步 (decision record 1): static builtin methods have no instance receiver, so their
+    /// Static builtin methods have no instance receiver, so their
     /// wrappers drop the `self` parameter entirely and pass NULL as the ptrcall base.
     @Test
     void renderBuiltinSupportShouldEmitStaticMethodWrappersWithoutSelf() throws IOException {
@@ -121,19 +121,19 @@ class GodotBuiltinGeneratorTest {
         var fromAngleBody = functionBody(source, "godot_Vector2 godot_Vector2_from_angle(");
         assertAll(
                 () -> assertTrue(header.contains(
-                        "godot_Color godot_Color_from_hsv(godot_float h, godot_float s, godot_float v, godot_float alpha);"),
+                                "godot_Color godot_Color_from_hsv(godot_float h, godot_float s, godot_float v, godot_float alpha);"),
                         header),
                 () -> assertFalse(header.contains("godot_Color_from_hsv(godot_Color *self"), header),
                 () -> assertTrue(header.contains("godot_Vector2 godot_Vector2_from_angle(godot_float angle);"), header),
                 () -> assertTrue(header.contains(
-                        "godot_Callable godot_Callable_create(const godot_Variant * variant, const godot_StringName * method);"),
+                                "godot_Callable godot_Callable_create(const godot_Variant * variant, const godot_StringName * method);"),
                         header),
                 () -> assertFalse(header.contains("godot_Callable_create(godot_Callable *self"), header),
                 () -> assertTrue(fromHsvBody.contains(
-                        "GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_from_hsv, NULL, args, godot_Color, 4);"),
+                                "GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Color_from_hsv, NULL, args, godot_Color, 4);"),
                         fromHsvBody),
                 () -> assertTrue(fromAngleBody.contains(
-                        "GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Vector2_from_angle, NULL, args, godot_Vector2, 1);"),
+                                "GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_Vector2_from_angle, NULL, args, godot_Vector2, 1);"),
                         fromAngleBody)
         );
 

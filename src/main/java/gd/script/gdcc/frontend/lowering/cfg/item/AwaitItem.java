@@ -9,8 +9,8 @@ import org.jetbrains.annotations.Nullable;
 import java.util.List;
 import java.util.Objects;
 
-/// Await placeholder for one already-materialized operand value (`frontend_await_minicoro_plan.md`
-/// 第七步).
+/// Await placeholder for one already-materialized operand value
+/// (`frontend_await_implementation.md` §9).
 ///
 /// The operand is always built first as an ordinary value (signal read, call result, or Variant
 /// value); this item only makes the suspension point explicit in data-flow form. Body lowering

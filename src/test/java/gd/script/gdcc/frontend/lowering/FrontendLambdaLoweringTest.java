@@ -320,7 +320,7 @@ final class FrontendLambdaLoweringTest {
         assertEquals("int", shell.getCapture("seed").type().getTypeName());
     }
 
-    /// Plan step 9: a recorded lambda body containing a real await marks the lambda owner by AST
+    /// A recorded lambda body containing a real await marks the lambda owner by AST
     /// identity during sema; the function-preparation pass bridges the marking onto the freshly
     /// synthesized shell — both the `isCoroutine` LIR attribute (backend surface) and the
     /// `coroutineFunctions` membership (body-lowering marker check). Attribution is pinned in

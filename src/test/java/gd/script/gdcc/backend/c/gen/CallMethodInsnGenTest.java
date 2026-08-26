@@ -1070,7 +1070,7 @@ class CallMethodInsnGenTest {
         assertTrue(ex.getMessage().contains("compiler-only type leaked into dynamic call result target variable 'ret'"), ex.getMessage());
     }
 
-    // ==== Coroutine internal ABI (frontend_await_minicoro_plan.md step 5) ====
+    // ==== Coroutine internal ABI (frontend_await_implementation.md §10) ====
     // A call on an `isCoroutine` GDCC callee targets the coroutine-start thunk and publishes
     // the OWNED state object reference as a compiler::GdccCoroState result.
 
@@ -1155,7 +1155,7 @@ class CallMethodInsnGenTest {
                 List.of()
         ));
         // Fire-and-forget: releasing the last call-site reference detaches the coroutine,
-        // which stays alive through its own wait edges (plan §3.4 statement position).
+        // which stays alive through its own wait edges (statement-root position).
         entry(caller).appendInstruction(new DestructInsn("__coro_state_7", LifecycleProvenance.INTERNAL));
         hostClass.addFunction(caller);
 

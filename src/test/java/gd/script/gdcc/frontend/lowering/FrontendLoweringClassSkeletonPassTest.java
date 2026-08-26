@@ -115,8 +115,8 @@ class FrontendLoweringClassSkeletonPassTest {
 
     @Test
     void lowerPropagatesCoroutineMarksOntoFunctionSkeletons() throws Exception {
-        // Sema-only fixture: the compile gate keeps its await blocker until step 8, so coroutine
-        // mark propagation is exercised through the shared analyze(...) path. The pass consumes
+        // Sema-only fixture: coroutine mark propagation is exercised through the shared
+        // analyze(...) path. The pass consumes
         // `FrontendAnalysisData.coroutineFunctions` — an identity set over the same LirFunctionDef
         // shells the skeleton already publishes — so no name lookup is involved.
         var diagnostics = new DiagnosticManager();
@@ -127,26 +127,26 @@ class FrontendLoweringClassSkeletonPassTest {
                         """
                                 class_name CoroSkeleton
                                 extends Node
-
+                                
                                 signal pinged
-
+                                
                                 func _init():
                                     await pinged
-
+                                
                                 func inner():
                                     await pinged
-
+                                
                                 func run():
                                     await inner()
-
+                                
                                 func sync_helper() -> int:
                                     return 1
-
+                                
                                 class Inner:
                                     extends Node
-
+                                
                                     signal inner_pinged
-
+                                
                                     func watch():
                                         await inner_pinged
                                 """

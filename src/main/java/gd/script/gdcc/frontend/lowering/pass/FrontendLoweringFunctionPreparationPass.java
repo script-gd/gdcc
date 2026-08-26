@@ -317,7 +317,7 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
                 lambdaScope,
                 plan
         );
-        // Coroutine bridge (plan 第九步): lambda shells are synthesized here, long after the
+        // Coroutine bridge: lambda shells are synthesized here, long after the
         // skeleton pass consumed `coroutineFunctions`, so sema records lambda owners by AST
         // identity in `coroutineLambdaOwners`. A marked owner needs both facts: `setCoroutine`
         // is the LIR/backend attribute, while `markCoroutineFunction` feeds the body-lowering

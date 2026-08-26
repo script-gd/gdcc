@@ -45,9 +45,9 @@ import java.util.List;
 /// - construct_object
 /// - construct_signal
 /// - construct_callable
-    /// - construct_standalone_callable
-    /// - construct_lambda
-    public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction> {
+/// - construct_standalone_callable
+/// - construct_lambda
+public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction> {
     private record ObjectConstructTarget(
             @NotNull GdObjectType constructedType,
             @NotNull ClassDef classDef,
@@ -274,7 +274,7 @@ import java.util.List;
                         target,
                         bodyBuilder.valueOfExpr(
                                 // Callable.create is a static builtin method: its wrapper takes no
-                                // self parameter (frontend_await_minicoro_plan.md 第十步).
+                                // self parameter.
                                 "godot_Callable_create("
                                         + receiverArg
                                         + ", "
@@ -526,10 +526,10 @@ import java.util.List;
                 } else {
                     bodyBuilder.appendRaw(field + " = "
                             + helper.renderLambdaCaptureCopyFromSlot(
-                                    capture.getType(),
-                                    sourceExpr,
-                                    bodyBuilder.isEffectivelyRef(sourceVar)
-                            )
+                            capture.getType(),
+                            sourceExpr,
+                            bodyBuilder.isEffectivelyRef(sourceVar)
+                    )
                             + ";\n");
                 }
             }

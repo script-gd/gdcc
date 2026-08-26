@@ -38,7 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// `CALL_STATIC_METHOD` backend contract (`frontend_await_minicoro_plan.md` 第十步): receiver-free
+/// `CALL_STATIC_METHOD` backend contract (`frontend_await_implementation.md`): receiver-free
 /// exact dispatch for GDCC/engine/builtin static methods, the static coroutine start-thunk ABI
 /// (state slot, no receiver), and fail-fast invariants (no dynamic fallback, no instance default
 /// functions, fixed-parameter start thunk).

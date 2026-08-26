@@ -55,11 +55,11 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Body-lowering contract for `await` (`frontend_await_minicoro_plan.md` 第七步).
+/// Body-lowering contract for `await` (`frontend_await_implementation.md` §9).
 ///
-/// The compile gate keeps its await blocker until step 8, so these tests drive the lowering
-/// pipeline manually on top of shared `analyze(...)` (the same gate-bypassing pattern used by
-/// `FrontendTypeTestInsnLoweringTest`): skeleton → function preparation → CFG → body insn pass.
+/// These tests drive the lowering pipeline manually on top of shared `analyze(...)` (the same
+/// pattern used by `FrontendTypeTestInsnLoweringTest`): skeleton → function preparation → CFG →
+/// body insn pass.
 /// This also anchors that `FrontendLoweringClassSkeletonPass` propagates the sema coroutine marks
 /// onto `LirFunctionDef.isCoroutine`.
 class FrontendAwaitInsnLoweringTest {
@@ -69,9 +69,9 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringSignalBasic
                 extends Node
-
+                
                 signal pinged
-
+                
                 func run():
                     var result = await pinged
                 """);
@@ -94,9 +94,9 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringSignalTyped
                 extends Node
-
+                
                 signal pinged(count: int)
-
+                
                 func run():
                     var count = await pinged
                 """);
@@ -115,13 +115,13 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringCallSuspend
                 extends Node
-
+                
                 signal pinged
-
+                
                 func inner() -> int:
                     await pinged
                     return 1
-
+                
                 func run():
                     var result = await inner()
                 """);
@@ -154,9 +154,9 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringLambdaCapture
                 extends Node
-
+                
                 signal pinged
-
+                
                 func watch():
                     var seed := 40
                     var cb := func():
@@ -171,7 +171,7 @@ class FrontendAwaitInsnLoweringTest {
         assertAll(
                 () -> assertTrue(lambdaShell.isLambda()),
                 () -> assertTrue(lambdaShell.isCoroutine(),
-                        "await in a lambda body marks the synthesized shell (plan step 9)"),
+                        "await in a lambda body marks the synthesized shell"),
                 () -> assertFalse(watch.isCoroutine(),
                         "the enclosing named function is not the suspend owner"),
                 () -> assertNotNull(lambdaShell.getCapture("seed"),
@@ -190,9 +190,9 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringNestedLambda
                 extends Node
-
+                
                 signal pinged
-
+                
                 func watch():
                     var outer := func():
                         var inner := func():
@@ -218,12 +218,12 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringVoidCoroutineCall
                 extends Node
-
+                
                 signal pinged
-
+                
                 func inner():
                     await pinged
-
+                
                 func run():
                     var result = await inner()
                 """);
@@ -244,9 +244,9 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringSignalAttribute
                 extends Node
-
+                
                 signal pinged
-
+                
                 func run(other: AwaitLoweringSignalAttribute):
                     var result = await other.pinged
                 """);
@@ -266,7 +266,7 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringDynamic
                 extends Node
-
+                
                 func run(target):
                     var result = await target
                 """);
@@ -285,10 +285,10 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringRedundantCall
                 extends Node
-
+                
                 func inner() -> int:
                     return 1
-
+                
                 func run():
                     var result: int = await inner()
                 """);
@@ -325,10 +325,10 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringVoidRedundant
                 extends Node
-
+                
                 func inner() -> void:
                     pass
-
+                
                 func run():
                     var result = await inner()
                 """);
@@ -353,13 +353,13 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringFireAndForget
                 extends Node
-
+                
                 signal pinged
-
+                
                 func inner() -> int:
                     await pinged
                     return 1
-
+                
                 func run():
                     inner()
                 """);
@@ -385,12 +385,12 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringVoidFireAndForget
                 extends Node
-
+                
                 signal pinged
-
+                
                 func fire():
                     await pinged
-
+                
                 func run():
                     fire()
                 """);
@@ -416,13 +416,13 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringRoundTrip
                 extends Node
-
+                
                 signal pinged
-
+                
                 func inner() -> int:
                     await pinged
                     return 1
-
+                
                 func run():
                     var result = await inner()
                 """);
@@ -456,12 +456,12 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringSignalReturningCall
                 extends Node
-
+                
                 signal counted(value: int)
-
+                
                 func copy_signal() -> Signal:
                     return counted
-
+                
                 func run():
                     var result: Variant = await copy_signal()
                 """);
@@ -489,13 +489,13 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringChainCall
                 extends Node
-
+                
                 signal pinged
-
+                
                 func inner() -> int:
                     await pinged
                     return 1
-
+                
                 func run(other: AwaitLoweringChainCall):
                     var result: int = await other.inner()
                 """);
@@ -518,12 +518,12 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringMultiAwait
                 extends Node
-
+                
                 signal pinged
-
+                
                 func inner():
                     await pinged
-
+                
                 func run():
                     await inner()
                     await inner()
@@ -561,12 +561,12 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringBranch
                 extends Node
-
+                
                 signal pinged
-
+                
                 func inner():
                     await pinged
-
+                
                 func run(flag: bool):
                     if flag:
                         await inner()
@@ -585,17 +585,17 @@ class FrontendAwaitInsnLoweringTest {
         );
     }
 
-    /// Plan 第十步: `await` on a static coroutine call lowers to `CallStaticMethodInsn` + `AwaitInsn`
-    /// and the caller is marked as a coroutine — the fixed point no longer skips static callees.
+    /// `await` on a static coroutine call lowers to `CallStaticMethodInsn` + `AwaitInsn`
+    /// and the caller is marked as a coroutine — the fixed point covers static callees too.
     @Test
     void staticCoroutineCallAwaitLowersToCallStaticMethodInsn() throws Exception {
         var context = lowerModule("""
                 class_name AwaitLoweringStaticCoroutine
                 extends Node
-
+                
                 static func s_coro(target):
                     await target
-
+                
                 func run():
                     var result = await AwaitLoweringStaticCoroutine.s_coro(1)
                 """);
@@ -618,7 +618,7 @@ class FrontendAwaitInsnLoweringTest {
         );
     }
 
-    /// Plan 第十步: a statement-root static coroutine call is fire-and-forget — the caller stays
+    /// A statement-root static coroutine call is fire-and-forget — the caller stays
     /// non-coroutine, the call keeps its state result slot, and the reference detaches via an
     /// `INTERNAL` destruct right after the call, same discipline as the instance route.
     @Test
@@ -626,10 +626,10 @@ class FrontendAwaitInsnLoweringTest {
         var context = lowerModule("""
                 class_name AwaitLoweringStaticFireAndForget
                 extends Node
-
+                
                 static func s_coro(target):
                     await target
-
+                
                 func run():
                     AwaitLoweringStaticFireAndForget.s_coro(1)
                 """);
@@ -665,7 +665,7 @@ class FrontendAwaitInsnLoweringTest {
                 """
                         class_name AwaitLoweringBadOperand
                         extends Node
-
+                        
                         func run():
                             pass
                         """,
@@ -712,8 +712,8 @@ class FrontendAwaitInsnLoweringTest {
         );
     }
 
-    /// Runs sema (shared, non-compile path) then the four lowering passes manually; the compile
-    /// gate keeps its await blocker until step 8, so tests wire the pipeline themselves.
+    /// Runs sema (shared, non-compile path) then the four lowering passes manually; tests wire
+    /// the pipeline themselves instead of going through the compile gate.
     private static @NotNull FrontendLoweringContext lowerModule(@NotNull String source) throws Exception {
         var diagnostics = new DiagnosticManager();
         var unit = new GdScriptParserService().parseUnit(

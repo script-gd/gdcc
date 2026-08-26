@@ -7,7 +7,7 @@ import org.jetbrains.annotations.NotNull;
 import java.util.Objects;
 
 /// Identity handle of the callable owner that an `await` coroutine marking targets
-/// (`frontend_await_minicoro_plan.md` 第九步).
+/// (`frontend_await_implementation.md` §8).
 ///
 /// Named functions and constructors already have their skeleton `LirFunctionDef` published by the
 /// time `EXPR_TYPE` classifies an await, so they are carried directly. Lambda owners instead carry

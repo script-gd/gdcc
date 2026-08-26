@@ -255,14 +255,14 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         bodyBuilder.recordUsedEngineMethodCall(resolved);
     }
 
-    /// Internal coroutine-call ABI (`gdcc_low_ir.md` §Coroutine Instructions, plan §3.4): the
+    /// Internal coroutine-call ABI (`gdcc_low_ir.md` §Coroutine Instructions): the
     /// call targets the coroutine-start thunk (`<Class>_<method>__coro_start`, same parameter
     /// shape as the ClassDB entry) and always writes the OWNED state object reference into the
     /// result variable declared as `compiler::GdccCoroState`. The single-consumer value is then
     /// consumed either by `await` (typed resume channel) or by an `INTERNAL` `destruct`
     /// (statement-position fire-and-forget detach); this generator only produces it.
     /// Shared with `CallStaticMethodInsnGen`: `receiverVar` is null on the static route, whose
-    /// start thunk has no receiver parameter (plan 第十步).
+    /// start thunk has no receiver parameter.
     static void emitCoroutineStartCall(@NotNull CBodyBuilder bodyBuilder,
                                        @Nullable String resultId,
                                        @Nullable LirVariable receiverVar,
@@ -390,7 +390,8 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
             bodyBuilder.declareTempVar(temp);
             switch (param.defaultKind()) {
                 case LITERAL -> materializeLiteralDefault(bodyBuilder, resolved, param, temp, i + 1);
-                case FUNCTION -> materializeFunctionDefault(bodyBuilder, receiverVar, resolved, param, temp, i + 1, insnName);
+                case FUNCTION ->
+                        materializeFunctionDefault(bodyBuilder, receiverVar, resolved, param, temp, i + 1, insnName);
                 case NONE -> throw bodyBuilder.invalidInsn("Method '" + resolved.ownerClassName() + "." +
                         resolved.methodName() + "' parameter #" + (i + 1) +
                         " has no default value metadata");

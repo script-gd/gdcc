@@ -79,7 +79,7 @@ public final class FrontendAnalysisData {
     /// per-owner export-batch discipline does not apply to it.
     private final @NotNull Set<LirFunctionDef> coroutineFunctions;
     /// Monotonic identity set of lambda owners (`LambdaExpression`) whose bodies directly contain
-    /// a real await or await a call to another coroutine (`frontend_await_minicoro_plan.md` 第九步).
+    /// a real await or await a call to another coroutine (`frontend_await_implementation.md` §8).
     /// Keyed by AST identity because the synthetic `_lambda_<n>` shell does not exist during sema;
     /// the lowering function-preparation pass bridges each marked owner to its freshly synthesized
     /// shell (`setCoroutine(true)` + `markCoroutineFunction(shell)` — both are required: the former

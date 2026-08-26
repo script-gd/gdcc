@@ -56,7 +56,7 @@ Godot 对齐基线：runtime / GDExtension ABI / generated bindings 固定为 **
 
 仍拒绝：
 
-- property initializer / parameter default 内 await 与 value-position coroutine call；普通 executable function 与已记录 lambda body 的 signal/dynamic/instance-call/static-call await 已闭环（lambda 内 await 见 `frontend_await_minicoro_plan.md` 第九步，static coroutine call 见第十步）
+- property initializer / parameter default 内 await 与 value-position coroutine call；普通 executable function 与已记录 lambda body 的 signal/dynamic/instance-call/static-call await 已闭环（统一见 `frontend_await_implementation.md`）
 - builtin type-meta 方法当值（`Vector2.abs`、`Vector2.from_angle`）
 - 构造器当值（`Node.new`、`Inner.new`）
 - `dict.clear` 当方法引用（Godot 把它当 Dictionary key）
@@ -234,7 +234,7 @@ operand 冻结为 `(VARIABLE, STRING)` min/max=2。旧 1-operand 非法，由 op
 
 `gdcc_standalone_callable_spec_of` 按 `(kind, owner, name)` 线性去重；每条 spec 单独 `godot_mem_alloc`，指针数组倍增。`deinitialize` 调 `gdcc_standalone_callable_registry_destroy_all()`。`free_func` 是 no-op（多份 Callable 共享同一 spec）。OOM 返回空 Callable。
 
-standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC / engine 静态方法（该路径保持原样）；`CALL_STATIC_METHOD` 的 CInsnGen 已由 `frontend_await_minicoro_plan.md` 第十步落地（`CallStaticMethodInsnGen`），与本 trampoline 是两条独立通道。
+standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC / engine 静态方法（该路径保持原样）；`CALL_STATIC_METHOD` 的 CInsnGen 为 `CallStaticMethodInsnGen`，与本 trampoline 是两条独立通道。
 
 ### 8.4 `construct_lambda`
 
@@ -287,7 +287,7 @@ standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC / engine 静�
 - 诊断必须走 `DiagnosticManager` + skip subtree；普通源码错误不得当异常控制流。
 - 继承 signal 不得重复注册；engine signal 只读、不注册、冲突被拒。
 - 新 `gdcc_*` helper 必须按 `gdcc_runtime_lib.md` 登记。
-- `CALL_STATIC_METHOD` backend 已由 `frontend_await_minicoro_plan.md` 第十步落地（`CallStaticMethodInsnGen`）；静态方法 **调用**（`call_static_method`）与静态方法 **引用**（`construct_standalone_callable` trampoline）是两条独立通道，改动其一不得波及另一。
+- `CALL_STATIC_METHOD` backend 为 `CallStaticMethodInsnGen`；静态方法 **调用**（`call_static_method`）与静态方法 **引用**（`construct_standalone_callable` trampoline）是两条独立通道，改动其一不得波及另一。
 
 ---
 

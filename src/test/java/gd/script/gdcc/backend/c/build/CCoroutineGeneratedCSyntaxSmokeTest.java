@@ -74,7 +74,7 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
         workerClass.addFunction(coroutine("fetch", GdVariantType.VARIANT, List.of(), null));
         workerClass.addFunction(coroutine("wait_done", GdVoidType.VOID, List.of(), null));
 
-        // Named static coroutines (plan step 10): no `self` parameter, so the frame/state object,
+        // Named static coroutines: no `self` parameter, so the frame/state object,
         // start thunk and ClassDB wrapper compile-verify the receiver-free shape.
         workerClass.addFunction(staticCoroutine("static_sum", GdIntType.INT,
                 List.of(param("count", GdIntType.INT)),
@@ -109,7 +109,7 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
                 List.of(new LirInstruction.VariableOperand("self"), new LirInstruction.VariableOperand("label"))
         ));
 
-        // Coroutine lambda (plan step 9): captures + an in-body await compile-verify the
+        // Coroutine lambda: captures + an in-body await compile-verify the
         // `_coro_capture_*` frame fields, the `_capture` start-thunk tail parameter, the
         // forward-declaration ordering ahead of `call_func`, and the done/suspend dispatch —
         // string anchors alone cannot see C declaration-order or type errors here.
@@ -176,7 +176,7 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
                 List.of(new LirInstruction.VariableOperand("count"), new LirInstruction.VariableOperand("label"))
         ));
         runAllEntry.appendInstruction(new AwaitInsn("res_i", "state_sum"));
-        // Static coroutine call surface (plan step 10): awaited typed result and statement-position
+        // Static coroutine call surface: awaited typed result and statement-position
         // fire-and-forget detach, both receiver-free.
         runAllEntry.appendInstruction(new CallStaticMethodInsn(
                 "state_static_sum",
@@ -258,7 +258,7 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
         return new ParamSpec(name, type);
     }
 
-    /// Static coroutines take no `self` parameter (plan step 10); the returned-variable shape is
+    /// Static coroutines take no `self` parameter; the returned-variable shape is
     /// otherwise identical to the instance `coroutine(...)` fixture.
     private static @NotNull LirFunctionDef staticCoroutine(String name,
                                                            GdType returnType,

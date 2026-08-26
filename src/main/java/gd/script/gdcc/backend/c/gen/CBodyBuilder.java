@@ -84,7 +84,7 @@ public final class CBodyBuilder {
         return coroContext != null && func.checkVariableParameter(variable.id());
     }
 
-    /// Captures of a coroutine lambda body map to typed frame fields (plan 第九步): the start
+    /// Captures of a coroutine lambda body map to typed frame fields: the start
     /// thunk copies the capture block into per-call owning frame fields, so the body never sees
     /// the `_capture` block. Mirrors `isCoroutineFrameParameter`; false for non-coroutine bodies.
     public boolean isCoroutineFrameCapture(@NotNull LirVariable variable) {
@@ -1553,7 +1553,8 @@ public final class CBodyBuilder {
         }
     }
 
-    public record VarValue(@NotNull LirVariable variable, @NotNull PtrKind ptrKind, @NotNull String code) implements ValueRef {
+    public record VarValue(@NotNull LirVariable variable, @NotNull PtrKind ptrKind,
+                           @NotNull String code) implements ValueRef {
         public VarValue(@NotNull LirVariable variable, @NotNull PtrKind ptrKind) {
             this(variable, ptrKind, "$" + variable.id());
         }
@@ -1693,7 +1694,8 @@ public final class CBodyBuilder {
         boolean isRef();
     }
 
-    public record VarTargetRef(@NotNull LirVariable variable, @NotNull String code, boolean effectivelyRef) implements TargetRef {
+    public record VarTargetRef(@NotNull LirVariable variable, @NotNull String code,
+                               boolean effectivelyRef) implements TargetRef {
         public VarTargetRef(@NotNull LirVariable variable) {
             this(variable, "$" + variable.id(), variable.ref());
         }

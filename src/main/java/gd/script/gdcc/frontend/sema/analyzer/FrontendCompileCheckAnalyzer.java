@@ -172,8 +172,8 @@ public class FrontendCompileCheckAnalyzer {
                 + "lowering support lands";
     }
 
-    /// §3.5, aligned with Godot's `must be called with "await"`: a coroutine call (instance or
-    /// static — static calls were unblocked in plan 第十步) is only legal as a statement root
+    /// `frontend_await_implementation.md` §8, aligned with Godot's `must be called with "await"`:
+    /// a coroutine call (instance or static) is only legal as a statement root
     /// expression (fire-and-forget) or as an await operand.
     private static @NotNull String valuePositionCoroutineCallCompileBlockedMessage(@NotNull String callableName) {
         return "Function '" + callableName
@@ -432,8 +432,8 @@ public class FrontendCompileCheckAnalyzer {
             }
             markCompileSurfaceNode(expressionStatement);
             // The direct root expression of a statement is the only fire-and-forget position where
-            // a coroutine call (instance or static, plan 第十步) is legal without `await`
-            // (§3.5, Godot root-expression rule).
+            // a coroutine call (instance or static) is legal without `await`
+            // (Godot root-expression rule).
             walkingStatementRootExpression = true;
             try {
                 walkExpression(expressionStatement.expression());
@@ -702,9 +702,9 @@ public class FrontendCompileCheckAnalyzer {
             }
         }
 
-        /// Await is compile-ready after step 8. Its root and operand must enter the ordinary
-        /// published-fact scan, and the operand's top-level coroutine call (instance or static,
-        /// plan 第十步) is a legal await position rather than an ordinary value position. Recording
+        /// Await is compile-ready. Its root and operand must enter the ordinary
+        /// published-fact scan, and the operand's top-level coroutine call (instance or static)
+        /// is a legal await position rather than an ordinary value position. Recording
         /// that anchor through the shared position check also identity-deduplicates a trailing
         /// AttributeCallStep during descent; intermediate calls remain value positions and are
         /// still checked recursively.
@@ -914,8 +914,8 @@ public class FrontendCompileCheckAnalyzer {
             }
         }
 
-        /// §3.5 position rules for calls to GDCC coroutine functions: static and instance calls
-        /// share one contract (plan 第十步) — legal only at a statement root (fire-and-forget) or
+        /// Position rules for calls to GDCC coroutine functions: static and instance calls
+        /// share one contract — legal only at a statement root (fire-and-forget) or
         /// as the top-level operand handled by `walkAwaitExpression`.
         private void checkCoroutineCallPosition(@Nullable Node callAnchor, boolean statementRoot) {
             var call = coroutineCallAtOrNull(callAnchor);

@@ -8,7 +8,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.EnumSet;
 
-/// C code generator for `CALL_STATIC_METHOD` (`frontend_await_minicoro_plan.md` 第十步).
+/// C code generator for `CALL_STATIC_METHOD` (`frontend_await_implementation.md`).
 ///
 /// Static calls have no receiver and no dynamic fallback: resolution always goes through
 /// `BackendMethodCallResolver.resolveStatic` (receiver canonical name -> `ScopeTypeMeta` ->

@@ -775,7 +775,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             return emitCoroutineDetachIfNeeded(session, continuation, node);
         }
 
-        /// Fire-and-forget contract (`frontend_await_minicoro_plan.md` §3.4): a coroutine call whose
+        /// Fire-and-forget contract (`frontend_await_implementation.md` §7): a coroutine call whose
         /// result is not consumed by an await releases the call-site OWNED state reference right
         /// after the call; the coroutine frame stays alive through its own wait edges. Awaited
         /// results skip the destruct because the await moves the reference out of the slot.
@@ -1518,8 +1518,8 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
     }
 
-    /// Lowers one await suspension point strictly from frozen facts (`frontend_await_minicoro_plan.md`
-    /// 第七步).
+    /// Lowers one await suspension point strictly from frozen facts
+    /// (`frontend_await_implementation.md` §9).
     ///
     /// Dispatch follows the materialized operand type. Signal/Variant-returning non-coroutine calls
     /// remain suspension-capable (Godot dynamically awaits their returned value), while a RESOLVED

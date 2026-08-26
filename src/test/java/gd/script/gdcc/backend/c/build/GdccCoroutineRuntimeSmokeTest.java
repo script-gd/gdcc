@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// the machine. The fixtures fake the Godot interface at the GDExtension function-pointer
 /// level, so finalize/cancel/waiter logic runs against the real production C code paths;
 /// branches that need real Godot objects (signal connect, dynamic external-object layer)
-/// are deferred to the step-8 e2e suite.
+/// are deferred to the Godot e2e suite.
 class GdccCoroutineRuntimeSmokeTest {
     private static final Path GODOT_INCLUDE_DIR = Path.of("src/main/c/codegen/include_451/godot").toAbsolutePath().normalize();
     private static final Path GDCC_INCLUDE_DIR = Path.of("src/main/c/codegen/include_451/gdcc").toAbsolutePath().normalize();
@@ -455,7 +455,7 @@ class GdccCoroutineRuntimeSmokeTest {
         // nil/null-object pass-through, freed-object runtime error, and the own-state-object
         // channel (done fast path + suspend/register/resume delegation). The external-object
         // duck-type and TYPE_SIGNAL extraction need real engine objects and stay with the
-        // step-8 e2e suite.
+        // Godot e2e suite.
         var source = FAKE_ENGINE + """
                 
                 static FakeState g_S5, g_W5;

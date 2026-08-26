@@ -464,7 +464,7 @@ public final class CGenHelper {
         return renderDestroyFunctionName(captureType) + "(&(" + fieldExpr + "));";
     }
 
-    // ==== Coroutine state class codegen (frontend_await_minicoro_plan.md §3.2-§3.4) ====
+    // ==== Coroutine state class codegen (frontend_await_implementation.md §5-§7) ====
     //
     // Naming formula frozen in `gdcc_facing_class_name_contract.md` §1.3:
     // `_gdcc_coro_state_<canonicalClass>__coro__<func>`. The backend owns this spelling directly
@@ -586,7 +586,7 @@ public final class CGenHelper {
     }
 
     /// Start-thunk fill of one typed capture frame field of a coroutine lambda from the borrowed
-    /// `_capture->name` block field (plan 第九步: per-call copy into fresh owning frame storage;
+    /// `_capture->name` block field (per-call copy into fresh owning frame storage;
     /// the capture block itself stays owned by the Callable userdata). Unlike
     /// `renderCoroParamFillStmt`, capture block fields are plain *values*, not storage pointers,
     /// so value-semantic copies must take the field address — delegated to

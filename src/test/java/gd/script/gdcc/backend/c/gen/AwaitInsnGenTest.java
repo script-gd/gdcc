@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// String-anchor tests for `AwaitInsnGen` (contract: `gdcc_low_ir.md` §Coroutine Instructions,
-/// `frontend_await_minicoro_plan.md` step 5): signal / static-state / dynamic dispatch paths,
+/// `frontend_await_implementation.md` §7): signal / static-state / dynamic dispatch paths,
 /// the moved-from NULL source slot, the typed `out_typed` channel, and the cancel check after
 /// every resume point. Behavioral anchors (not text-only): the cancel check must sit between
 /// the helper call and any result-slot read, because a cancel-resume leaves the result channel

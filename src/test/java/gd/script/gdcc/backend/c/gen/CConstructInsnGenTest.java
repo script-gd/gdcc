@@ -717,8 +717,8 @@ class CConstructInsnGenTest {
         assertTrue(new ConstructInsnGen().getInsnOpcodes().contains(GdInstruction.CONSTRUCT_STANDALONE_CALLABLE));
     }
 
-    /// CALL_SUPER_METHOD has no CInsnGen (CALL_STATIC_METHOD got one in plan 第十步, so the
-    /// unregistered-opcode probe moved to the remaining gap). Dispatch must throw, not skip the insn.
+    /// CALL_SUPER_METHOD has no CInsnGen (CALL_STATIC_METHOD already has one, so the
+    /// unregistered-opcode probe uses the remaining gap). Dispatch must throw, not skip the insn.
     @Test
     @DisplayName("CCodegen must fail-fast when an opcode is not registered on any CInsnGen")
     void unregisteredOpcodeFailsDispatchInsteadOfSkipping() {
@@ -821,7 +821,7 @@ class CConstructInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
-        // Callable.create is a static builtin wrapper: no self parameter since plan 第十步.
+        // Callable.create is a static builtin wrapper: its generated call takes no self parameter.
         assertTrue(body.contains("godot_Callable_create("), body);
         assertFalse(body.contains("godot_Callable_create(NULL"), body);
         assertTrue(body.contains("GD_STATIC_SN(u8\"abs\")"), body);

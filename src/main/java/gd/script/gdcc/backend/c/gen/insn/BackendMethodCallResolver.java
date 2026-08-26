@@ -190,7 +190,7 @@ public final class BackendMethodCallResolver {
         };
     }
 
-    /// Static counterpart of `resolve(...)` (`frontend_await_minicoro_plan.md` 第十步).
+    /// Static counterpart of `resolve(...)`.
     ///
     /// `className` is the receiver canonical name published by lowering (GDCC class, inner class
     /// `Outer__sub__Inner`, engine class, or builtin type name); it is restored to a `ScopeTypeMeta`
@@ -280,15 +280,15 @@ public final class BackendMethodCallResolver {
                 coroutine
                         ? bodyBuilder.helper().renderCoroStartThunkName(resolved.ownerClass(), resolved.function())
                         : renderMethodCFunctionName(
-                                mode,
-                                ownerClassName,
-                                resolved.methodName(),
-                                parameters,
-                                resolved.returnType(),
-                                engineMethodBindSpec,
-                                resolved.isVararg(),
-                                resolved.isStatic()
-                        ),
+                        mode,
+                        ownerClassName,
+                        resolved.methodName(),
+                        parameters,
+                        resolved.returnType(),
+                        engineMethodBindSpec,
+                        resolved.isVararg(),
+                        resolved.isStatic()
+                ),
                 resolved.returnType(),
                 parameters,
                 engineMethodBindSpec,

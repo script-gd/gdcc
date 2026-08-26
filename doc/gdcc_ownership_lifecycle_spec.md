@@ -215,7 +215,7 @@ Instructions; crossing into or out of `Variant` happens only inside runtime help
 engine-boundary wrappers, never in generated body code.
 
 Static coroutine functions have no source-level `self` receiver (see
-`frontend_await_minicoro_plan.md` 第十步). Their state object and frame therefore contain no
+`frontend_await_implementation.md` §5). Their state object and frame therefore contain no
 implicit `self` field; this does not change the ownership or keep-alive rules below — any explicit
 object parameter is retained only through its ordinary parameter storage, and the state object is
 kept alive by the same wait edges as instance coroutines.
