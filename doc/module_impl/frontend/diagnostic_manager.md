@@ -196,6 +196,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.unsupported_binding_subtree`
 - `sema.member_resolution`
 - `sema.call_resolution`
+- `sema.static_access_via_instance`
 - `sema.deferred_chain_resolution`
 - `sema.unsupported_chain_route`
 - `sema.expression_resolution`
@@ -239,6 +240,11 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.call_resolution`
   - chain binding 中 blocked / failed call step 的语义错误
   - 以及“实例语法命中 static method”这类 route note/warning
+- `sema.static_access_via_instance`
+  - chain binding 对「instance receiver（含显式 `self`）读写 static property」发出的 warning
+  - 与 `resolvedMembers()` 中的 `RESOLVED(PROPERTY, STATIC_LOAD)` 并存；不阻断 compile，不属于 compile-only gate
+  - 消息提示改用 `<OwnerClass>.<name>` 访问；裸标识符与 `ClassName.name` 路径不发此 warning
+  - 对齐 Godot 行为（instance 访问操作声明类共享存储），并主动补齐 Godot 缺失的 static var 版 warning（godot#106364）
 - `sema.deferred_chain_resolution`
   - chain binding 的 deferred subtree warning
   - 以及首个 deferred chain recovery root 的恢复诊断

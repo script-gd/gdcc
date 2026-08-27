@@ -22,6 +22,7 @@ import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendAnnotationUsageAnalyzerTest {
@@ -121,6 +122,34 @@ class FrontendAnnotationUsageAnalyzerTest {
         var staticLocalClass = findClassDef(analyzedModule.analysisData(), "StaticLocalOnready");
         assertEquals("", findProperty(nonNodeClass, "child").getAnnotations().get("onready"));
         assertEquals("", findProperty(staticLocalClass, "child").getAnnotations().get("onready"));
+    }
+
+    /// `@export` on a static var is rejected (Godot parity: export registers per-instance
+    /// storage, which a static property never has). Retention in the property metadata is kept
+    /// so the diagnostic stays the single source of truth for the rejection.
+    @Test
+    void analyzeReportsExportOnStaticPropertyWhileAllowingInstanceExport() throws Exception {
+        var analyzedModule = analyze("""
+                class_name ExportStaticPlacement
+                extends RefCounted
+                
+                @export static var shared_total: int = 0
+                @export var instance_total: int = 0
+                """);
+
+        var annotationUsageDiagnostics = diagnosticsByCategory(
+                analyzedModule.analysisData().diagnostics().asList(),
+                "sema.annotation_usage"
+        );
+        assertEquals(1, annotationUsageDiagnostics.size());
+        var diagnostic = annotationUsageDiagnostics.getFirst();
+        assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());
+        assertTrue(diagnostic.message().contains("@export cannot be used on static property 'shared_total'"));
+        assertNotNull(diagnostic.range());
+
+        var classDef = findClassDef(analyzedModule.analysisData(), "ExportStaticPlacement");
+        assertEquals("", findProperty(classDef, "shared_total").getAnnotations().get("export"));
+        assertEquals("", findProperty(classDef, "instance_total").getAnnotations().get("export"));
     }
 
     private static @NotNull AnalyzedModule analyze(@NotNull String source) throws Exception {

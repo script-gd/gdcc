@@ -21,6 +21,7 @@ import gd.script.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.SignalStatement;
 import dev.superice.gdparser.frontend.ast.Statement;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -930,9 +931,10 @@ class FrontendClassSkeletonTest {
         invokeBuilderMethod(
                 builder,
                 "fillSourceClassRelationMembers",
-                new Class<?>[]{FrontendSourceClassRelation.class, shellContext.getClass()},
+                new Class<?>[]{FrontendSourceClassRelation.class, shellContext.getClass(), List.class},
                 shellRelation,
-                shellContext
+                shellContext,
+                new ArrayList<>()
         );
         assertEquals("changed", shellRelation.topLevelClassDef().getSignals().getFirst().getName());
         assertEquals("_init", shellRelation.topLevelClassDef().getFunctions().getFirst().getName());
@@ -1199,6 +1201,176 @@ class FrontendClassSkeletonTest {
         assertTrue(result.diagnostics().isEmpty());
         assertEquals("String", findSignalByName(parentClass, "pinged").getParameter(0).getType().getTypeName());
         assertEquals(GdIntType.INT, findSignalByName(childClass, "pinged").getParameter(0).getType());
+    }
+
+    /// A source `static var` must not redeclare any same-named property on the inheritance chain.
+    /// The conflict check runs after every class shell is filled, so it must hold even when the
+    /// subclass source unit is filled before its base (source order is not inheritance order).
+    @Test
+    void buildRejectsStaticPropertyConflictingWithInheritedGdccProperty() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        // Deliberately list the child unit first: member filling follows source order, so the
+        // conflict check must still see the base class properties afterwards.
+        var childUnit = parserService.parseUnit(Path.of("tmp", "static_child.gd"), """
+                class_name StaticChild
+                extends StaticBase
+                
+                static var shared: int = 2
+                var hp: int = 3
+                """, diagnostics);
+        var baseUnit = parserService.parseUnit(Path.of("tmp", "static_base.gd"), """
+                class_name StaticBase
+                extends RefCounted
+                
+                static var shared: int = 1
+                var base_only: float = 1.0
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(childUnit, baseUnit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var childClass = findClassByName(topLevelClassDefs(result), "StaticChild");
+        var baseClass = findClassByName(topLevelClassDefs(result), "StaticBase");
+        var sharedStatement = findStatement(
+                childUnit.ast().statements(),
+                VariableDeclaration.class,
+                statement -> statement.name().equals("shared")
+        );
+        var skeletonDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton"))
+                .toList();
+
+        assertEquals(1, skeletonDiagnostics.size());
+        assertTrue(skeletonDiagnostics.getFirst().message().contains("shared"));
+        assertTrue(skeletonDiagnostics.getFirst().message().contains("StaticBase.shared"));
+        // The conflicting member is removed while sibling members of both classes survive.
+        assertNull(findPropertyByNameOrNull(childClass, "shared"));
+        assertNotNull(findPropertyByNameOrNull(childClass, "hp"));
+        assertNotNull(findPropertyByNameOrNull(baseClass, "shared"));
+        assertNotNull(findPropertyByNameOrNull(baseClass, "base_only"));
+        assertTrue(analysisData.skippedSubtreeRoots().containsKey(sharedStatement));
+    }
+
+    /// Engine instance properties on the inheritance chain also collide with a source static var.
+    @Test
+    void buildRejectsStaticPropertyConflictingWithInheritedEngineProperty() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "engine_static_conflict.gd"), """
+                class_name EngineStaticConflict
+                extends Node2D
+                
+                static var position: Vector2 = Vector2.ZERO
+                var hp: int = 3
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "EngineStaticConflict");
+        var skeletonDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton"))
+                .toList();
+
+        assertEquals(1, skeletonDiagnostics.size());
+        assertTrue(skeletonDiagnostics.getFirst().message().contains("position"));
+        assertTrue(skeletonDiagnostics.getFirst().message().contains("Node2D.position"));
+        assertNull(findPropertyByNameOrNull(classDef, "position"));
+        assertNotNull(findPropertyByNameOrNull(classDef, "hp"));
+    }
+
+    /// Positive controls: distinct static names are fine, inner-class statics are checked too,
+    /// and non-static property shadowing keeps its existing (allowed) behavior untouched.
+    @Test
+    void buildAllowsDistinctStaticPropertiesAndKeepsInstanceShadowingBehavior() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var baseUnit = parserService.parseUnit(Path.of("tmp", "static_ok_base.gd"), """
+                class_name StaticOkBase
+                extends RefCounted
+                
+                static var shared: int = 1
+                """, diagnostics);
+        var childUnit = parserService.parseUnit(Path.of("tmp", "static_ok_child.gd"), """
+                class_name StaticOkChild
+                extends StaticOkBase
+                
+                static var child_static: int = 2
+                var shared: int = 3
+                
+                class Inner:
+                    static var inner_static: int = 4
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(baseUnit, childUnit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var childClass = findClassByName(topLevelClassDefs(result), "StaticOkChild");
+
+        assertTrue(result.diagnostics().isEmpty());
+        assertNotNull(findPropertyByNameOrNull(childClass, "child_static"));
+        // Existing behavior: an instance property may shadow an inherited (static) member.
+        assertNotNull(findPropertyByNameOrNull(childClass, "shared"));
+        var innerClass = findClassByName(result.allClassDefs(), "StaticOkChild__sub__Inner");
+        assertNotNull(findPropertyByNameOrNull(innerClass, "inner_static"));
+    }
+
+    /// Inner classes participate in the same static conflict rule through their own hierarchy.
+    @Test
+    void buildRejectsInnerClassStaticPropertyConflictingWithInheritedMember() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "inner_static_conflict.gd"), """
+                class_name InnerStaticConflictOuter
+                extends RefCounted
+                
+                class Base:
+                    static var shared: int = 1
+                
+                class Sub extends Base:
+                    static var shared: int = 2
+                    var keep_me: int = 3
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var subClass = findClassByName(result.allClassDefs(), "InnerStaticConflictOuter__sub__Sub");
+        var skeletonDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton"))
+                .toList();
+
+        assertEquals(1, skeletonDiagnostics.size());
+        assertTrue(skeletonDiagnostics.getFirst().message().contains(
+                "InnerStaticConflictOuter__sub__Base.shared"
+        ));
+        assertNull(findPropertyByNameOrNull(subClass, "shared"));
+        assertNotNull(findPropertyByNameOrNull(subClass, "keep_me"));
     }
 
     @Test

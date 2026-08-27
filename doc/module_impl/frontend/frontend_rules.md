@@ -16,7 +16,7 @@
 - 当前合同中“已识别但明确不支持”的 feature boundary 统一发 error；只有真正的 deferred/暂缓恢复路径才保留 warning。
 - body phase 的 diagnostic owner 必须保持单一：
   - top binding 负责 bare `TYPE_META` ordinary-value misuse 的首条 `sema.binding`
-  - chain binding 负责 `sema.member_resolution` / `sema.call_resolution` / chain deferred/unsupported boundary
+  - chain binding 负责 `sema.member_resolution` / `sema.call_resolution` / `sema.static_access_via_instance` / chain deferred/unsupported boundary
   - expr analyzer 负责 `sema.expression_resolution` / `sema.deferred_expression_resolution` / `sema.unsupported_expression_route` / `sema.discarded_expression`
   - var-type-post analyzer 负责 `sema.variable_slot_publication`
   - annotation-usage analyzer 负责 `sema.annotation_usage`

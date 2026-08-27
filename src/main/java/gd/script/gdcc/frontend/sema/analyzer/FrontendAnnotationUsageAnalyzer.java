@@ -27,6 +27,11 @@ import java.util.Objects;
 /// Current `@onready` contract stays intentionally small: skeleton retains the annotation, then
 /// this analyzer validates owner-class and staticness placement without introducing runtime
 /// `_ready()` timing semantics.
+///
+/// `@export` is retained by the skeleton for ClassDB usage metadata, but Godot rejects every
+/// export annotation on a static variable (export registers per-instance storage, which a static
+/// property never has). gdcc mirrors that rejection here because there is no parser-level
+/// annotation validation layer.
 public class FrontendAnnotationUsageAnalyzer {
     private static final @NotNull String ANNOTATION_USAGE_CATEGORY = "sema.annotation_usage";
 
@@ -103,6 +108,7 @@ public class FrontendAnnotationUsageAnalyzer {
                 return;
             }
             validateOnreadyUsage(node);
+            validateExportUsage(node);
             if (node instanceof ClassDeclaration classDeclaration) {
                 if (!scopesByAst.containsKey(classDeclaration)) {
                     return;
@@ -116,7 +122,7 @@ public class FrontendAnnotationUsageAnalyzer {
         }
 
         private void validateOnreadyUsage(@NotNull Node annotatedNode) {
-            var onreadyAnnotation = findOnreadyAnnotation(annotatedNode);
+            var onreadyAnnotation = findAnnotationByName(annotatedNode, "onready");
             if (onreadyAnnotation == null) {
                 return;
             }
@@ -147,6 +153,24 @@ public class FrontendAnnotationUsageAnalyzer {
             }
         }
 
+        /// `@export` on a static property is rejected (Godot parity); unlike `@onready` there is
+        /// no additional owner-class requirement, so non-static usage stays silent here.
+        private void validateExportUsage(@NotNull Node annotatedNode) {
+            var exportAnnotation = findAnnotationByName(annotatedNode, "export");
+            if (exportAnnotation == null) {
+                return;
+            }
+            if (annotatedNode instanceof VariableDeclaration variableDeclaration
+                    && variableDeclaration.kind() == DeclarationKind.VAR
+                    && variableDeclaration.isStatic()
+                    && scopesByAst.get(variableDeclaration) instanceof ClassScope) {
+                reportInvalidUsage(
+                        exportAnnotation,
+                        "@export cannot be used on static property '" + variableDeclaration.name() + "'"
+                );
+            }
+        }
+
         private boolean isNodeDerived(@NotNull ClassDef classDef) {
             Objects.requireNonNull(classDef, "classDef must not be null");
             return classRegistry.checkAssignable(
@@ -169,9 +193,9 @@ public class FrontendAnnotationUsageAnalyzer {
             );
         }
 
-        private @Nullable FrontendGdAnnotation findOnreadyAnnotation(@NotNull Node annotatedNode) {
+        private @Nullable FrontendGdAnnotation findAnnotationByName(@NotNull Node annotatedNode, @NotNull String name) {
             return analysisData.annotationsByAst().getOrDefault(annotatedNode, List.of()).stream()
-                    .filter(annotation -> annotation.name().equals("onready"))
+                    .filter(annotation -> annotation.name().equals(name))
                     .findFirst()
                     .orElse(null);
         }

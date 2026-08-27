@@ -1079,7 +1079,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         reportRecoveryBoundary(context, result);
         for (var note : result.notes()) {
             context.diagnosticManager().warning(
-                    CALL_RESOLUTION_CATEGORY,
+                    note.category(),
                     note.message(),
                     context.sourcePath(),
                     FrontendRange.fromAstRange(note.anchor().range())

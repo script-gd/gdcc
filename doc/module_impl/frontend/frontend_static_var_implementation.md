@@ -184,7 +184,9 @@ frontend 只发布起始类名；这样继承共享存储自然成立。
 - **instance receiver × static property**（`self.x` / `obj.x`，§1.2）：`reducePropertyStep`
   在 resolved instance receiver（含 explicit `self`）上命中 static property 时，不再按现状
   走实例 property route 或 UNSUPPORTED，而是产出 RESOLVED static load/store route
-  （receiverTypeName 为命中链上的声明 owner，declarationSite 为 `PropertyDef`），
+  （`receiverType` 保留 receiver 的静态类型即起始类，declarationSite 为命中链上声明 owner 的
+  `PropertyDef`；frontend/LIR 不预计算 owner，声明 owner 由 backend 沿 hierarchy 解析——
+  与裸标识符路径的约定一致），
   并由 chain binding analyzer（member resolution 诊断 owner）在 access anchor 上发一条
   **warning**：category 固定为 `sema.static_access_via_instance`，消息模板对齐 Godot
   `STATIC_CALLED_ON_INSTANCE` 风格：
@@ -200,8 +202,15 @@ frontend 只发布起始类名；这样继承共享存储自然成立。
 - 裸写 / 链式写：B1 修复 + 阶段 1 语义核查后，`StaticPropertyLeaf` 既有分支直接消费。
 - instance receiver 路径（§3.4）：receiver 表达式**仍须正常 lower 并求值**
   （可能含副作用，如 `get_obj().x`），leaf 读写重定向到 static 存储；
-  生成的 LIR 只允许出现 `LoadStaticInsn` / `StoreStaticInsn`（声明 owner），
-  不得残留指向实例字段的 `LoadPropertyInsn` / `StorePropertyInsn`。
+  生成的 LIR 只允许出现 `LoadStaticInsn` / `StoreStaticInsn`（起始类名，声明 owner 由
+  backend 沿 hierarchy 解析，与裸标识符约定一致），不得残留指向实例字段的
+  `LoadPropertyInsn` / `StorePropertyInsn`。直接 leaf 读/写/复合赋值已在阶段 1 review 闭环中
+  提前落地（见阶段 1.5 记录）。
+- **已知缺口（阶段 1 review 记录，归本阶段处理）**：static 容器 property 的 attribute-subscript
+  路径（`obj.values[i]` 读/写/复合赋值）目前仍由 CFG 构造 `SubscriptLeaf` 并落入
+  `VariantGetNamedInsn` / `VariantSetNamedInsn`。本阶段需实现 static 外层容器专用 payload：
+  先 `LoadStaticInsn` 到容器临时值，完成下标读写，再经 terminal `StaticPropertyCommitStep`
+  发出 `StoreStaticInsn`；补 `static Array`/`Dictionary` 的下标读/写/复合赋值 LIR 测试。
 - static `PROPERTY_INIT` context：验证 `FrontendLoweringBuildCfgPass` 与 body pass 对无 self 的
   static init shell 全链路可用（当前证据不足，作为阶段 2 首个验证项）；
   发现 self 假设则按 `requireCompatiblePropertyInitShell` 的 static 分支对齐。
@@ -246,20 +255,54 @@ lowering 就绪、backend 就绪、文档与测试同步之后移除。因此 B2
 - [x] 0.4 本文档经 review-expert-c 审阅，中/高风险问题已并入修正（§8.4）。
 - 验收：0.1 / 0.2 结论追加到 §8；无代码改动。
 
-### 阶段 1：shared semantic 修复（gate 保持关闭）
+### 阶段 1：shared semantic 修复（gate 保持关闭）—— 已完成（2026-08-27）
 
-- [ ] 1.1 修复 B1 predicate（§3.3.3）；predicate 回归断言加入既有
+- [x] 1.1 修复 B1 predicate（§3.3.3）；predicate 回归断言加入既有
       `FrontendLoweringBodyInsnPassTest`（裸读/裸写/复合赋值不再误走 `LoadPropertyInsn`），
       完整 LIR 形态断言留在阶段 2.2。
-- [ ] 1.2 继承冲突校验（§3.3.2）：top-level 与 inner class 各覆盖 happy/negative path。
-- [ ] 1.3 annotation 边界（§3.3.1）：`FrontendAnnotationUsageAnalyzer` 新增 `@export` × static
+  - 实现：`isStaticPropertyBinding` 改为 `kind() == PROPERTY && declarationSite() instanceof PropertyDef && isStatic()`。
+  - 测试：`runLowersBareStaticPropertyAccessThroughStaticInstructions`；因 compile gate 仍关闭，
+    测试用 shared-semantic harness（参照 cast integration 测试形状）绕过 gate 直接驱动 lowering passes。
+- [x] 1.2 继承冲突校验（§3.3.2）：top-level 与 inner class 各覆盖 happy/negative path。
+  - 实现：`ClassRegistry.findPropertyInHierarchy` + skeleton **post-fill 校验 pass**
+    （成员填充按源文件顺序而非继承拓扑顺序，父类 property 在子类填充时未必已入 registry，
+    故冲突校验统一推迟到全部 shell 填充完成后执行）；恢复合同为 `sema.class_skeleton` +
+    `removeProperty` + `markSkippedSubtreeRoots`。
+  - 范围收窄（实现确认并记录）：仅检查继承链上的 **property** 同名冲突（GDCC/engine 均覆盖）；
+    跨 kind（static var × 继承 function/signal）冲突留作后续加固（§9），与
+    `rejectEngineNativeSignalShadow` 只查 engine signal 的既有收窄先例一致。
+  - 测试：`FrontendClassSkeletonTest` 4 用例（子类先于父类填充的顺序鲁棒性、`Node2D.position`
+    engine 冲突、inner class 冲突、正向不同名 + 实例遮蔽行为不变）。
+- [x] 1.3 annotation 边界（§3.3.1）：`FrontendAnnotationUsageAnalyzer` 新增 `@export` × static
       property 的 `sema.annotation_usage` 拒绝；`@onready` 既有拒绝回归不动。
-- [ ] 1.4 `reduceGdccStaticLoad` static property 分支 + 专用 PROPERTY trace（§3.4）；
+  - 实现：`validateExportUsage` + `findAnnotationByName`（泛化自 `findOnreadyAnnotation`）。
+  - 测试：`analyzeReportsExportOnStaticPropertyWhileAllowingInstanceExport`。
+- [x] 1.4 `reduceGdccStaticLoad` static property 分支 + 专用 PROPERTY trace（§3.4）；
       `ClassRegistry` 新增 static-property hierarchy 查询（B9）。
-- [ ] 1.5 instance receiver × static property 路由（§3.4）：`self.x` / `obj.x` 解析为
+  - 实现：`findStaticPropertyInHierarchy`（static-only，返回 `ClassPropertyLookup`）；
+    `resolvedStaticLoadTrace` 显式参数化 `bindingKind`，5 个既有常量 call site 显式传 `CONSTANT`；
+    `reduceGdccStaticLoad` 在 method-reference 之后插入 static property 分支。
+  - 测试：`ClassRegistryTest` 2 用例 + chain test `analyzeResolvesStaticPropertyThroughClassNameAccess`
+    （含继承共享同一 declaring `PropertyDef`、`Worker.shared += 1` 写路径）。
+- [x] 1.5 instance receiver × static property 路由（§3.4）：`self.x` / `obj.x` 解析为
       static route + `sema.static_access_via_instance` warning；覆盖读/写/复合赋值与
       `get_obj().x` 副作用 receiver 场景；同步 `diagnostic_manager.md` 新 category。
-- [ ] 1.6 static `:=` 冻结规则测试（Variant metadata + `sema.type_hint`，§1.2）。
+  - 实现：`resolvedInstanceStaticPropertyTrace`（`RouteKind.STATIC_LOAD` + `receiverKind=INSTANCE`
+    保留语法事实）；`ReductionNote` 新增 `category` 字段（默认 `sema.call_resolution`），
+    `publishReduction` 改用 `note.category()`；`reduceSubscriptStep` 透传 notes。
+    `diagnostic_manager.md` 与 `frontend_rules.md` owner 条款已同步。
+  - 测试：`analyzeWarnsWhenInstanceSyntaxAccessesStaticProperty`（复合赋值/`self.x`/return 读
+    共 3 条 warning + 实例 property 对照）、`analyzeKeepsInstancePropertyAccessViaClassNameFailClosed`。
+  - review 闭环补强（review-expert-b 发现，提前落地阶段 2.2 的 instance-receiver LIR 部分）：
+    仅修语义 route 会让 lowering 仍走实例字段指令，因此同步修复两处消费端——
+    `FrontendSequenceItemInsnLoweringProcessors` 的 `MemberLoadItem` INSTANCE 分支识别 static
+    `PropertyDef` 改发 `LoadStaticInsn`（receiver 已在 CFG 序中求值，副作用保留），
+    `FrontendBodyLoweringSession.isStaticWritablePropertyRoute` 的 AttributePropertyStep 分支
+    增加 static `PropertyDef` 判定（写/复合赋值走 `StaticPropertyLeaf`/`StaticPropertyCommitStep`）。
+    测试：`runLowersInstanceStyleStaticAccessThroughStaticInstructions`（call-result 副作用
+    receiver + `self.x` 读写，断言零实例字段指令、副作用 call 保留、warning 存在且无 error）。
+- [x] 1.6 static `:=` 冻结规则测试（Variant metadata + `sema.type_hint`，§1.2）。
+  - 测试：`analyzeWarnsForStaticPropertyInferredTypeHintsWithoutRewritingMetadata`。
 - 验收：`run-gradle-targeted-tests.ps1 -Tests FrontendStaticContextValueRestrictionTest,FrontendAnnotationUsageAnalyzerTest,FrontendTypeCheckAnalyzerTest,FrontendBodyOwnerProceduresChainBindingTest,FrontendBodyOwnerProceduresExprTypeTest,FrontendClassSkeletonTest,FrontendLoweringBodyInsnPassTest` 全绿；
   shared `analyze(...)` 对合法 static var 零新诊断，对非法形态 diagnostic category 正确且兄弟 subtree 继续工作；
   `FrontendCompileCheckAnalyzerTest` / `ApiCompileDiagnosticsTest` 中 static var 被拒用例**保持不动**（gate 仍关闭）。

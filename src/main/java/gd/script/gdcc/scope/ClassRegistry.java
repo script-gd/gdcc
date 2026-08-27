@@ -56,6 +56,14 @@ public final class ClassRegistry implements Scope {
     ) {
     }
 
+    /// Property lookup result. `ownerClass` is the class that actually declares the property,
+    /// which may be a superclass of the class the walk started from.
+    public record ClassPropertyLookup(
+            @NotNull ClassDef ownerClass,
+            @NotNull PropertyDef property
+    ) {
+    }
+
     public record BuiltinClassConstantLookup(
             @NotNull ExtensionBuiltinClass ownerClass,
             @NotNull ExtensionBuiltinClass.ConstantInfo constant
@@ -1235,6 +1243,50 @@ public final class ClassRegistry implements Scope {
             }
             if (found != null) {
                 return new ClassStaticFunctionLookup(current, found);
+            }
+            current = resolveSuperclass(current);
+        }
+        return null;
+    }
+
+    /// Looks up a property starting at `className` and walking superclasses, regardless of whether
+    /// the property is static. Direct declarations win over inherited ones.
+    ///
+    /// Used by skeleton conflict checks that must see both static and instance members; access
+    /// routes that only serve static storage should call [findStaticPropertyInHierarchy] instead.
+    public @Nullable ClassPropertyLookup findPropertyInHierarchy(
+            @NotNull String className,
+            @NotNull String propertyName
+    ) {
+        return findPropertyInHierarchy(className, propertyName, false);
+    }
+
+    /// Looks up a static property starting at `className` and walking superclasses. Instance
+    /// properties with the same name do not shadow the static lookup; callers that need to reject
+    /// cross-staticness name reuse must run [findPropertyInHierarchy] separately.
+    public @Nullable ClassPropertyLookup findStaticPropertyInHierarchy(
+            @NotNull String className,
+            @NotNull String propertyName
+    ) {
+        return findPropertyInHierarchy(className, propertyName, true);
+    }
+
+    private @Nullable ClassPropertyLookup findPropertyInHierarchy(
+            @NotNull String className,
+            @NotNull String propertyName,
+            boolean staticOnly
+    ) {
+        var current = resolveClassDefByName(className);
+        var visited = new HashSet<String>();
+        while (current != null && visited.add(current.getName())) {
+            for (var property : current.getProperties()) {
+                if (!property.getName().equals(propertyName)) {
+                    continue;
+                }
+                if (staticOnly && !property.isStatic()) {
+                    continue;
+                }
+                return new ClassPropertyLookup(current, property);
             }
             current = resolveSuperclass(current);
         }

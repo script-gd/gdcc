@@ -900,6 +900,53 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "skipped_deferred_hint").getType());
     }
 
+    /// Static `:=` follows the instance-property contract exactly: no inference, `Variant`
+    /// metadata, and a `sema.type_hint` warning asking for an explicit type. An explicitly typed
+    /// static property produces no hint.
+    @Test
+    void analyzeWarnsForStaticPropertyInferredTypeHintsWithoutRewritingMetadata() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_static_property_hint.gd", """
+                class_name TypeCheckStaticPropertyHint
+                extends RefCounted
+                
+                static var inferred_static := 1
+                static var missing_static = 2
+                static var typed_static: int = 3
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = preparedInput.diagnosticManager().snapshot();
+        var typeHintDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_hint");
+        assertEquals(2, typeHintDiagnostics.size());
+        assertTrue(typeHintDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.WARNING && diagnostic.range() != null
+        ));
+        assertTrue(typeHintDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("inferred_static")
+                        && diagnostic.message().contains("':='")
+                        && diagnostic.message().contains(": int")
+        ));
+        assertTrue(typeHintDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("missing_static")
+                        && diagnostic.message().contains("no explicit type")
+                        && diagnostic.message().contains(": int")
+        ));
+        assertTrue(typeHintDiagnostics.stream().noneMatch(diagnostic ->
+                diagnostic.message().contains("typed_static")
+        ));
+
+        var topLevelClass = preparedInput.analysisData().moduleSkeleton().sourceClassRelations().getFirst().classDef();
+        assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "inferred_static").getType());
+        assertEquals(GdVariantType.VARIANT, findPropertyDef(topLevelClass, "missing_static").getType());
+        assertTrue(findPropertyDef(topLevelClass, "inferred_static").isStatic());
+        assertTrue(findPropertyDef(topLevelClass, "missing_static").isStatic());
+    }
+
     @Test
     void analyzeAcceptsOnlySameDimensionVectoriToVectorInitializerBoundaries() throws Exception {
         var preparedInput = prepareTypeCheckInput("type_check_vector_initializer_compatibility.gd", """

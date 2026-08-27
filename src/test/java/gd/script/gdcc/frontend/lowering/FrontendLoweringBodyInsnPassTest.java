@@ -71,6 +71,7 @@ import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.lir.insn.StorePropertyInsn;
+import gd.script.gdcc.lir.insn.StoreStaticInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.lir.insn.VariantGetInsn;
@@ -221,6 +222,176 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(2, propertyLoads.size()),
                 () -> assertEquals(1, propertyStores.size()),
                 () -> assertEquals(compoundInsn.resultId(), propertyStores.getFirst().valueId())
+        );
+    }
+
+    /// Bare read/write/compound assignment on a static var must lower through `LoadStaticInsn` /
+    /// `StoreStaticInsn` (guards the `PropertyDef`-based staticness check in
+    /// `FrontendBodyLoweringSession.isStaticPropertyBinding`), never through instance property
+    /// instructions.
+    ///
+    /// The compile-only gate still blocks `static var`, so this test drives the shared-semantic
+    /// harness directly (same shape as the cast integration test) instead of `prepareContext`.
+    @Test
+    void runLowersBareStaticPropertyAccessThroughStaticInstructions() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_static_property.gd"),
+                """
+                        class_name BodyInsnStaticProperty
+                        extends RefCounted
+                        
+                        static var counter: int = 0
+                        var instance_field: int = 0
+                        
+                        func bump() -> int:
+                            counter += 1
+                            instance_field = counter
+                            return instance_field
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule(
+                "test_module",
+                List.of(unit),
+                Map.of("BodyInsnStaticProperty", "RuntimeBodyInsnStaticProperty")
+        );
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected semantic errors: " + diagnostics.snapshot());
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var bumpContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStaticProperty",
+                "bump"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var instructions = allInstructions(bumpContext.targetFunction());
+        var staticLoads = instructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("counter"))
+                .toList();
+        var staticStores = instructions.stream()
+                .filter(StoreStaticInsn.class::isInstance)
+                .map(StoreStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("counter"))
+                .toList();
+        var instanceLoadsForCounter = instructions.stream()
+                .filter(LoadPropertyInsn.class::isInstance)
+                .map(LoadPropertyInsn.class::cast)
+                .filter(instruction -> instruction.propertyName().equals("counter"))
+                .toList();
+        var instanceStoresForCounter = instructions.stream()
+                .filter(StorePropertyInsn.class::isInstance)
+                .map(StorePropertyInsn.class::cast)
+                .filter(instruction -> instruction.propertyName().equals("counter"))
+                .toList();
+        var instanceLoadsForField = instructions.stream()
+                .filter(LoadPropertyInsn.class::isInstance)
+                .map(LoadPropertyInsn.class::cast)
+                .filter(instruction -> instruction.propertyName().equals("instance_field"))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals(2, staticLoads.size()),
+                () -> assertEquals(1, staticStores.size()),
+                () -> assertTrue(instanceLoadsForCounter.isEmpty(),
+                        "static var must not lower to instance property loads"),
+                () -> assertTrue(instanceStoresForCounter.isEmpty(),
+                        "static var must not lower to instance property stores"),
+                () -> assertEquals(1, instanceLoadsForField.size(),
+                        "instance property access must stay on instance instructions")
+        );
+    }
+
+    /// Instance-syntax access to a static var (`receiver.x`, `self.x`) warns at semantic level
+    /// and must still lower through `LoadStaticInsn` / `StoreStaticInsn` targeting the declaring
+    /// class's shared storage. A call-result receiver proves side-effect evaluation is preserved
+    /// while no instance field instruction is emitted for the static member.
+    @Test
+    void runLowersInstanceStyleStaticAccessThroughStaticInstructions() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_instance_static_access.gd"),
+                """
+                        class_name BodyInsnInstanceStaticAccess
+                        extends RefCounted
+                        
+                        static var shared: int = 7
+                        var instance_field: int = 0
+                        
+                        static func make_worker() -> BodyInsnInstanceStaticAccess:
+                            return BodyInsnInstanceStaticAccess.new()
+                        
+                        func bump() -> int:
+                            make_worker().shared += 1
+                            self.shared = instance_field
+                            return self.shared
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule("test_module", List.of(unit));
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var bumpContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "BodyInsnInstanceStaticAccess",
+                "bump"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var instructions = allInstructions(bumpContext.targetFunction());
+        var staticLoads = instructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("shared"))
+                .toList();
+        var staticStores = instructions.stream()
+                .filter(StoreStaticInsn.class::isInstance)
+                .map(StoreStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("shared"))
+                .toList();
+        var instanceAccessesForShared = instructions.stream()
+                .filter(instruction -> switch (instruction) {
+                    case LoadPropertyInsn load -> load.propertyName().equals("shared");
+                    case StorePropertyInsn store -> store.propertyName().equals("shared");
+                    default -> false;
+                })
+                .toList();
+        var sideEffectCalls = instructions.stream()
+                .filter(CallStaticMethodInsn.class::isInstance)
+                .map(CallStaticMethodInsn.class::cast)
+                .filter(instruction -> instruction.methodName().equals("make_worker"))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals(2, staticLoads.size()),
+                () -> assertEquals(2, staticStores.size()),
+                () -> assertTrue(instanceAccessesForShared.isEmpty(),
+                        "instance-style static access must not lower to instance property instructions"),
+                () -> assertEquals(1, sideEffectCalls.size(),
+                        "receiver expression with side effects must still be evaluated")
         );
     }
 

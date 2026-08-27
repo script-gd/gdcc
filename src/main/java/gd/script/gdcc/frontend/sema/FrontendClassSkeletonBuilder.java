@@ -73,6 +73,10 @@ public final class FrontendClassSkeletonBuilder {
             sourceClassRelations.add(buildSourceClassRelationShell(sourceUnitGraph, context));
         }
         publishClassShells(sourceClassRelations, classRegistry);
+        // Static-property conflict checks are deferred until every class shell has been filled:
+        // member filling follows source order, not inheritance order, so an ancestor's properties
+        // are only guaranteed to exist in the registry after this loop completes.
+        var pendingStaticPropertyChecks = new ArrayList<PendingStaticPropertyConflictCheck>();
         for (var sourceClassRelation : sourceClassRelations) {
             var context = new SkeletonBuildContext(
                     classRegistry,
@@ -81,8 +85,9 @@ public final class FrontendClassSkeletonBuilder {
                     analysisData,
                     module.topLevelCanonicalNameMap()
             );
-            fillSourceClassRelationMembers(sourceClassRelation, context);
+            fillSourceClassRelationMembers(sourceClassRelation, context, pendingStaticPropertyChecks);
         }
+        validateStaticPropertyHierarchyConflicts(pendingStaticPropertyChecks, classRegistry, diagnosticManager, analysisData);
 
         return new FrontendModuleSkeleton(
                 module.moduleName(),
@@ -150,21 +155,24 @@ public final class FrontendClassSkeletonBuilder {
 
     private void fillSourceClassRelationMembers(
             @NotNull FrontendSourceClassRelation sourceClassRelation,
-            @NotNull SkeletonBuildContext context
+            @NotNull SkeletonBuildContext context,
+            @NotNull List<PendingStaticPropertyConflictCheck> pendingStaticPropertyChecks
     ) {
         var declaredTypeScopes = buildDeclaredTypeScopes(sourceClassRelation, context.classRegistry());
         fillClassMembers(
                 sourceClassRelation.topLevelClassDef(),
                 sourceClassRelation.unit().ast().statements(),
                 requireDeclaredTypeScope(declaredTypeScopes, sourceClassRelation.astOwner()),
-                context
+                context,
+                pendingStaticPropertyChecks
         );
         for (var innerClassRelation : sourceClassRelation.innerClassRelations()) {
             fillClassMembers(
                     innerClassRelation.classDef(),
                     innerClassRelation.declaration().body().statements(),
                     requireDeclaredTypeScope(declaredTypeScopes, innerClassRelation.astOwner()),
-                    context
+                    context,
+                    pendingStaticPropertyChecks
             );
         }
     }
@@ -240,7 +248,8 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull LirClassDef classDef,
             @NotNull List<Statement> statements,
             @NotNull Scope declaredTypeScope,
-            @NotNull SkeletonBuildContext context
+            @NotNull SkeletonBuildContext context,
+            @NotNull List<PendingStaticPropertyConflictCheck> pendingStaticPropertyChecks
     ) {
         for (var statement : statements) {
             switch (statement) {
@@ -269,9 +278,16 @@ public final class FrontendClassSkeletonBuilder {
                         )) {
                             continue;
                         }
-                        classDef.addProperty(
-                                toLirProperty(variableDeclaration, declaredTypeScope, context)
-                        );
+                        var propertyDef = toLirProperty(variableDeclaration, declaredTypeScope, context);
+                        classDef.addProperty(propertyDef);
+                        if (variableDeclaration.isStatic()) {
+                            pendingStaticPropertyChecks.add(new PendingStaticPropertyConflictCheck(
+                                    context.sourcePath(),
+                                    classDef,
+                                    propertyDef,
+                                    variableDeclaration
+                            ));
+                        }
                     }
                 }
                 case FunctionDeclaration functionDeclaration -> {
@@ -554,6 +570,53 @@ public final class FrontendClassSkeletonBuilder {
         );
         markSkippedSubtreeRoots(List.of(sourceNode), context.analysisData());
         return true;
+    }
+
+    /// One static property declaration whose hierarchy conflict check is deferred until every
+    /// class shell in the module has been filled. `source` is kept so a conflict can still anchor
+    /// the diagnostic and skip the exact AST subtree after the property is removed again.
+    private record PendingStaticPropertyConflictCheck(
+            @NotNull Path sourcePath,
+            @NotNull LirClassDef ownerClass,
+            @NotNull LirPropertyDef property,
+            @NotNull VariableDeclaration source
+    ) {
+    }
+
+    /// Rejects a source `static var` whose name collides with any property on the inheritance
+    /// chain (static or instance, GDCC or engine). Godot treats such redeclaration as an error,
+    /// and silently keeping it would let the subclass binding shadow the shared static storage
+    /// owner. Only the new static declaration surface is constrained; the existing shadowing
+    /// behavior of non-static properties stays untouched.
+    ///
+    /// Recovery mirrors the engine-signal shadow rule: diagnostic + remove the property from the
+    /// class skeleton + skip the source subtree, so scope publication never sees the member.
+    private void validateStaticPropertyHierarchyConflicts(
+            @NotNull List<PendingStaticPropertyConflictCheck> pendingChecks,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull DiagnosticManager diagnosticManager,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+        for (var pending : pendingChecks) {
+            var superName = pending.ownerClass().getSuperName();
+            if (superName.isBlank()) {
+                continue;
+            }
+            var inherited = classRegistry.findPropertyInHierarchy(superName, pending.property().getName());
+            if (inherited == null) {
+                continue;
+            }
+            diagnosticManager.error(
+                    "sema.class_skeleton",
+                    "Static property '" + pending.property().getName() + "' on class '"
+                            + pending.ownerClass().getName() + "' conflicts with inherited member '"
+                            + inherited.ownerClass().getName() + "." + inherited.property().getName() + "'",
+                    pending.sourcePath(),
+                    FrontendRange.fromAstRange(pending.source().range())
+            );
+            pending.ownerClass().removeProperty(pending.property());
+            markSkippedSubtreeRoots(List.of(pending.source()), analysisData);
+        }
     }
 
     /// GDCC may shadow an inherited GDCC signal, but it must not redeclare an inherited

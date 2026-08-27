@@ -55,6 +55,9 @@ import java.util.regex.Pattern;
 /// statuses, trace entries, and suggested `FrontendResolvedMember` / `FrontendResolvedCall` facts.
 public final class FrontendChainReductionHelper {
     private static final @NotNull Pattern INTEGER_LITERAL_PATTERN = Pattern.compile("[+-]?\\d+");
+    /// Diagnostic category for the non-blocking warning emitted when a static property is read or
+    /// written through an instance receiver (`obj.x` / `self.x`). Owner: chain binding.
+    public static final @NotNull String STATIC_ACCESS_VIA_INSTANCE_CATEGORY = "sema.static_access_via_instance";
 
     private FrontendChainReductionHelper() {
     }
@@ -100,12 +103,21 @@ public final class FrontendChainReductionHelper {
         void accept(@NotNull ReductionNote note);
     }
 
+    /// Non-blocking warning emitted while reducing a chain. `category` routes the diagnostic to
+    /// the owning category; historical notes all belonged to call resolution, which remains the
+    /// default via [ReductionNote#DEFAULT_CATEGORY].
     public record ReductionNote(
             @NotNull Node anchor,
+            @NotNull String category,
             @NotNull String message
     ) {
+        /// Default category for notes that predate per-category routing (instance-style static
+        /// method call resolution warnings).
+        public static final @NotNull String DEFAULT_CATEGORY = "sema.call_resolution";
+
         public ReductionNote {
             Objects.requireNonNull(anchor, "anchor must not be null");
+            category = StringUtil.requireNonBlank(category, "category");
             message = StringUtil.requireNonBlank(message, "message");
         }
     }
@@ -477,10 +489,10 @@ public final class FrontendChainReductionHelper {
     ) {
         return switch (step) {
             case AttributePropertyStep propertyStep ->
-                    reducePropertyStep(stepIndex, propertyStep, incomingReceiver, request);
+                    reducePropertyStep(stepIndex, propertyStep, incomingReceiver, request, notes);
             case AttributeCallStep callStep -> reduceCallStep(stepIndex, callStep, incomingReceiver, request, notes);
             case AttributeSubscriptStep subscriptStep ->
-                    reduceSubscriptStep(stepIndex, subscriptStep, incomingReceiver, request);
+                    reduceSubscriptStep(stepIndex, subscriptStep, incomingReceiver, request, notes);
             case UnknownAttributeStep unknownStep -> unsupportedUnknownStep(stepIndex, unknownStep, incomingReceiver);
         };
     }
@@ -489,7 +501,8 @@ public final class FrontendChainReductionHelper {
             int stepIndex,
             @NotNull AttributePropertyStep step,
             @NotNull ReceiverState incomingReceiver,
-            @NotNull ReductionRequest request
+            @NotNull ReductionRequest request,
+            @NotNull List<ReductionNote> notes
     ) {
         if (incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META) {
             return reduceStaticLoadStep(stepIndex, step, incomingReceiver, request);
@@ -534,6 +547,21 @@ public final class FrontendChainReductionHelper {
             );
             if (boundaryDetail != null) {
                 return unsupportedResolvedPropertyTrace(stepIndex, step, incomingReceiver, property, boundaryDetail);
+            }
+            if (property.property().isStatic()) {
+                // Godot silently allows instance access to a static var and operates on the
+                // declaring class's shared storage; gdcc keeps the behavior but additionally
+                // warns, mirroring the STATIC_CALLED_ON_INSTANCE precedent for static methods.
+                emitNote(
+                        step,
+                        STATIC_ACCESS_VIA_INSTANCE_CATEGORY,
+                        "The property '" + step.name() + "' is static but was accessed from an instance. "
+                                + "Instead, it should be accessed from the type: '"
+                                + property.ownerClass().getName() + "." + step.name() + "'.",
+                        notes,
+                        request.noteSink()
+                );
+                return resolvedInstanceStaticPropertyTrace(stepIndex, step, incomingReceiver, property);
             }
             return resolvedPropertyTrace(stepIndex, step, incomingReceiver, property);
         }
@@ -737,6 +765,7 @@ public final class FrontendChainReductionHelper {
                 stepIndex,
                 step,
                 incomingReceiver,
+                FrontendBindingKind.CONSTANT,
                 null,
                 GdIntType.INT,
                 enumValue
@@ -768,6 +797,7 @@ public final class FrontendChainReductionHelper {
                         stepIndex,
                         step,
                         incomingReceiver,
+                        FrontendBindingKind.CONSTANT,
                         ScopeOwnerKind.BUILTIN,
                         GdIntType.INT,
                         enumValueLookup.enumValue()
@@ -793,6 +823,7 @@ public final class FrontendChainReductionHelper {
                 stepIndex,
                 step,
                 incomingReceiver,
+                FrontendBindingKind.CONSTANT,
                 ScopeOwnerKind.BUILTIN,
                 constantType,
                 constant
@@ -824,6 +855,7 @@ public final class FrontendChainReductionHelper {
                         stepIndex,
                         step,
                         incomingReceiver,
+                        FrontendBindingKind.CONSTANT,
                         ScopeOwnerKind.ENGINE,
                         GdIntType.INT,
                         enumValueLookup.enumValue()
@@ -844,6 +876,7 @@ public final class FrontendChainReductionHelper {
                 stepIndex,
                 step,
                 incomingReceiver,
+                FrontendBindingKind.CONSTANT,
                 ScopeOwnerKind.ENGINE,
                 GdIntType.INT,
                 constant
@@ -861,8 +894,20 @@ public final class FrontendChainReductionHelper {
         if (methodReference != null) {
             return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
         }
+        var propertyLookup = classRegistry.findStaticPropertyInHierarchy(receiverTypeMeta.canonicalName(), step.name());
+        if (propertyLookup != null) {
+            return resolvedStaticLoadTrace(
+                    stepIndex,
+                    step,
+                    incomingReceiver,
+                    FrontendBindingKind.PROPERTY,
+                    ScopeOwnerKind.GDCC,
+                    propertyLookup.property().getType(),
+                    propertyLookup.property()
+            );
+        }
         var detailReason = "Static load route on GDCC class '" + receiverTypeMeta.displayName()
-                + "' is outside the current class-constant support boundary";
+                + "' resolved to neither a static method reference nor a static property; it is outside the current support boundary";
         return new StepTrace(
                 stepIndex,
                 step,
@@ -891,6 +936,7 @@ public final class FrontendChainReductionHelper {
             int stepIndex,
             @NotNull AttributePropertyStep step,
             @NotNull ReceiverState incomingReceiver,
+            @NotNull FrontendBindingKind bindingKind,
             @Nullable ScopeOwnerKind ownerKind,
             @NotNull GdType resultType,
             @Nullable Object declarationSite
@@ -906,7 +952,7 @@ public final class FrontendChainReductionHelper {
                 null,
                 FrontendResolvedMember.resolved(
                         step.name(),
-                        FrontendBindingKind.CONSTANT,
+                        bindingKind,
                         FrontendReceiverKind.TYPE_META,
                         ownerKind,
                         incomingReceiver.receiverType(),
@@ -1047,6 +1093,42 @@ public final class FrontendChainReductionHelper {
                 null,
                 false,
                 detailReason
+        );
+    }
+
+    /// Resolved route for a static property reached through an instance receiver (`obj.x`).
+    ///
+    /// The route kind is [RouteKind.STATIC_LOAD] because storage lives on the declaring class,
+    /// while `receiverKind` stays `INSTANCE` to preserve the source syntax for downstream
+    /// lowering (the receiver expression must still be evaluated for side effects) and for the
+    /// `sema.static_access_via_instance` warning anchored on this step.
+    private static @NotNull StepTrace resolvedInstanceStaticPropertyTrace(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ScopeResolvedProperty property
+    ) {
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.PROPERTY,
+                RouteKind.STATIC_LOAD,
+                incomingReceiver,
+                Status.RESOLVED,
+                ReceiverState.resolvedInstance(property.property().getType()),
+                null,
+                FrontendResolvedMember.resolved(
+                        step.name(),
+                        FrontendBindingKind.PROPERTY,
+                        FrontendReceiverKind.INSTANCE,
+                        property.ownerKind(),
+                        incomingReceiver.receiverType(),
+                        property.property().getType(),
+                        property.property()
+                ),
+                null,
+                false,
+                null
         );
     }
 
@@ -1731,13 +1813,15 @@ public final class FrontendChainReductionHelper {
             int stepIndex,
             @NotNull AttributeSubscriptStep step,
             @NotNull ReceiverState incomingReceiver,
-            @NotNull ReductionRequest request
+            @NotNull ReductionRequest request,
+            @NotNull List<ReductionNote> notes
     ) {
         var memberResolution = reducePropertyStep(
                 stepIndex,
                 new AttributePropertyStep(step.name(), step.range()),
                 incomingReceiver,
-                request
+                request,
+                notes
         );
         if (memberResolution.status() != Status.RESOLVED && memberResolution.status() != Status.DYNAMIC) {
             return new StepTrace(
@@ -2398,7 +2482,17 @@ public final class FrontendChainReductionHelper {
             @NotNull List<ReductionNote> notes,
             @NotNull NoteSink noteSink
     ) {
-        var note = new ReductionNote(anchor, message);
+        emitNote(anchor, ReductionNote.DEFAULT_CATEGORY, message, notes, noteSink);
+    }
+
+    private static void emitNote(
+            @NotNull Node anchor,
+            @NotNull String category,
+            @NotNull String message,
+            @NotNull List<ReductionNote> notes,
+            @NotNull NoteSink noteSink
+    ) {
+        var note = new ReductionNote(anchor, category, message);
         notes.add(note);
         noteSink.accept(note);
     }

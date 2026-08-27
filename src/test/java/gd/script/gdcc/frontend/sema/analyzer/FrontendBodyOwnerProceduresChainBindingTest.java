@@ -20,6 +20,8 @@ import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.PropertyDef;
+import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -48,6 +50,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendBodyOwnerProceduresChainBindingTest {
@@ -1117,6 +1120,164 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         var callDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution");
         assertEquals(1, callDiagnostics.size());
         assertTrue(callDiagnostics.getFirst().message().contains("Instance-style syntax resolved to static method"));
+    }
+
+    /// `ClassName.staticVar` resolves to a RESOLVED static property route (TYPE_META receiver,
+    /// PROPERTY binding, declaration site is the static `PropertyDef`), including through
+    /// inheritance where the route must land on the *declaring* owner's property.
+    @Test
+    void analyzeResolvesStaticPropertyThroughClassNameAccess() throws Exception {
+        var analyzed = analyze(
+                "static_property_class_access.gd",
+                """
+                        class_name StaticPropertyClassAccess
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var shared: int = 7
+                            var instance_field: int = 1
+                        
+                        class SubWorker extends Worker:
+                            pass
+                        
+                        func ping() -> int:
+                            Worker.shared += 1
+                            return SubWorker.shared
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var sharedSteps = findNodes(pingFunction, AttributePropertyStep.class, step -> step.name().equals("shared"));
+        assertEquals(2, sharedSteps.size());
+
+        PropertyDef declaringProperty = null;
+        for (var sharedStep : sharedSteps) {
+            var resolved = analyzed.analysisData().resolvedMembers().get(sharedStep);
+            assertNotNull(resolved);
+            assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolved.status());
+            assertEquals(FrontendBindingKind.PROPERTY, resolved.bindingKind());
+            assertEquals(FrontendReceiverKind.TYPE_META, resolved.receiverKind());
+            assertEquals(ScopeOwnerKind.GDCC, resolved.ownerKind());
+            assertNotNull(resolved.resultType());
+            assertEquals("int", resolved.resultType().getTypeName());
+            var declarationSite = assertInstanceOf(PropertyDef.class, resolved.declarationSite());
+            assertTrue(declarationSite.isStatic());
+            if (declaringProperty == null) {
+                declaringProperty = declarationSite;
+            }
+        }
+        // The subclass access must resolve to the very same declaring static storage.
+        assertSame(declaringProperty, assertInstanceOf(
+                PropertyDef.class,
+                analyzed.analysisData().resolvedMembers().get(sharedSteps.get(1)).declarationSite()
+        ));
+
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.static_access_via_instance").isEmpty());
+    }
+
+    /// `ClassName.instanceField` stays fail-closed: the route is published as UNSUPPORTED and no
+    /// static-access warning is emitted.
+    @Test
+    void analyzeKeepsInstancePropertyAccessViaClassNameFailClosed() throws Exception {
+        var analyzed = analyze(
+                "static_property_class_access_negative.gd",
+                """
+                        class_name StaticPropertyClassAccessNegative
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var shared: int = 7
+                            var instance_field: int = 1
+                        
+                        func ping() -> int:
+                            return Worker.instance_field
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var fieldStep = findNode(pingFunction, AttributePropertyStep.class, step -> step.name().equals("instance_field"));
+
+        var resolved = analyzed.analysisData().resolvedMembers().get(fieldStep);
+        assertNotNull(resolved);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, resolved.status());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.static_access_via_instance").isEmpty());
+    }
+
+    /// Instance receivers (`obj.x`, explicit `self.x`) still resolve to the shared static storage
+    /// route, but each such step publishes a `sema.static_access_via_instance` warning that does
+    /// not block compilation. Plain instance-property access must stay warning-free.
+    @Test
+    void analyzeWarnsWhenInstanceSyntaxAccessesStaticProperty() throws Exception {
+        var analyzed = analyze(
+                "static_property_instance_access.gd",
+                """
+                        class_name StaticPropertyInstanceAccess
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var shared: int = 7
+                            var instance_field: int = 1
+                        
+                        static var local_shared: int = 3
+                        
+                        func ping(worker: Worker) -> int:
+                            worker.shared += 1
+                            self.local_shared = worker.instance_field
+                            return worker.shared
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var sharedSteps = findNodes(pingFunction, AttributePropertyStep.class, step -> step.name().equals("shared"));
+        assertEquals(2, sharedSteps.size());
+        for (var sharedStep : sharedSteps) {
+            var resolved = analyzed.analysisData().resolvedMembers().get(sharedStep);
+            assertNotNull(resolved);
+            assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolved.status());
+            assertEquals(FrontendBindingKind.PROPERTY, resolved.bindingKind());
+            // INSTANCE receiver kind preserves the source syntax while the route targets the
+            // declaring class's shared static storage.
+            assertEquals(FrontendReceiverKind.INSTANCE, resolved.receiverKind());
+            var declarationSite = assertInstanceOf(PropertyDef.class, resolved.declarationSite());
+            assertTrue(declarationSite.isStatic());
+        }
+        var localStep = findNode(pingFunction, AttributePropertyStep.class, step -> step.name().equals("local_shared"));
+        var localResolved = analyzed.analysisData().resolvedMembers().get(localStep);
+        assertNotNull(localResolved);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, localResolved.status());
+        assertEquals(FrontendBindingKind.PROPERTY, localResolved.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, localResolved.receiverKind());
+        assertTrue(assertInstanceOf(PropertyDef.class, localResolved.declarationSite()).isStatic());
+
+        var warnings = diagnosticsByCategory(analyzed.analysisData(), "sema.static_access_via_instance");
+        assertEquals(3, warnings.size());
+        assertTrue(warnings.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.WARNING && diagnostic.range() != null
+        ));
+        assertTrue(warnings.stream().filter(diagnostic -> diagnostic.message().contains("'shared'"))
+                .allMatch(diagnostic -> diagnostic.message().contains(
+                                "The property 'shared' is static but was accessed from an instance"
+                        ) && diagnostic.message().contains(
+                                "'StaticPropertyInstanceAccess__sub__Worker.shared'"
+                        )
+                ));
+        assertTrue(warnings.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("The property 'local_shared' is static but was accessed from an instance")
+                        && diagnostic.message().contains("'StaticPropertyInstanceAccess.local_shared'")
+        ));
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+
+        // Control: the plain instance-property step resolves without any static-access warning.
+        var instanceFieldStep = findNode(
+                pingFunction,
+                AttributePropertyStep.class,
+                step -> step.name().equals("instance_field")
+        );
+        var resolvedField = analyzed.analysisData().resolvedMembers().get(instanceFieldStep);
+        assertNotNull(resolvedField);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedField.status());
+        assertFalse(assertInstanceOf(PropertyDef.class, resolvedField.declarationSite()).isStatic());
     }
 
     @Test

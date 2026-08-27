@@ -16,6 +16,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
+import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendContainerLiteralPlan;
@@ -545,11 +546,21 @@ public final class FrontendBodyLoweringSession {
             }
             case dev.superice.gdparser.frontend.ast.AttributePropertyStep _ -> {
                 var resolvedMember = requireResolvedMember(propertyAnchor);
-                yield resolvedMember.receiverKind() == FrontendReceiverKind.TYPE_META;
+                // `ClassName.x` arrives with a TYPE_META receiver; instance syntax (`obj.x` /
+                // `self.x`, already warned via sema.static_access_via_instance) keeps an INSTANCE
+                // receiver but must still target the declaring class's shared static storage.
+                yield resolvedMember.receiverKind() == FrontendReceiverKind.TYPE_META
+                        || isStaticResolvedPropertyMember(resolvedMember);
             }
             default -> root.kind() == FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT
                     && root.anchor() == propertyAnchor;
         };
+    }
+
+    private boolean isStaticResolvedPropertyMember(@NotNull FrontendResolvedMember resolvedMember) {
+        return resolvedMember.bindingKind() == FrontendBindingKind.PROPERTY
+                && resolvedMember.declarationSite() instanceof PropertyDef propertyDef
+                && propertyDef.isStatic();
     }
 
     private @NotNull String requireStaticWritableReceiverName(
@@ -1220,9 +1231,12 @@ public final class FrontendBodyLoweringSession {
         return List.copyOf(operands);
     }
 
+    /// Property bindings always carry the skeleton-produced `PropertyDef` as declaration site
+    /// (never the AST `VariableDeclaration`), so staticness must be read from the property model.
     boolean isStaticPropertyBinding(@NotNull FrontendBinding binding) {
-        return binding.declarationSite() instanceof VariableDeclaration variableDeclaration
-                && variableDeclaration.isStatic();
+        return binding.kind() == FrontendBindingKind.PROPERTY
+                && binding.declarationSite() instanceof PropertyDef propertyDef
+                && propertyDef.isStatic();
     }
 
     @NotNull String currentClassName() {

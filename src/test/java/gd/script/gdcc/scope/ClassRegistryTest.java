@@ -11,6 +11,7 @@ import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirParameterDef;
+import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
@@ -380,6 +381,51 @@ public class ClassRegistryTest {
         assertEquals("build", lookup.function().getName());
         assertTrue(lookup.function().isStatic());
         assertNull(registry.findStaticFunctionInHierarchy("StaticChild", "missing"));
+    }
+
+    @Test
+    void findPropertyInHierarchyShouldPreferNearestDeclaringOwnerAndMatchAnyStaticness() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var parent = new LirClassDef("PropParent", "RefCounted");
+        var parentShared = new LirPropertyDef("shared", GdIntType.INT);
+        parentShared.setStatic(true);
+        parent.addProperty(parentShared);
+        parent.addProperty(new LirPropertyDef("inst", GdIntType.INT));
+        var child = new LirClassDef("PropChild", "PropParent");
+        registry.addGdccClass(parent);
+        registry.addGdccClass(child);
+
+        var inherited = registry.findPropertyInHierarchy("PropChild", "shared");
+        assertNotNull(inherited);
+        assertEquals("PropParent", inherited.ownerClass().getName());
+        assertSame(parentShared, inherited.property());
+        // The any-staticness variant is the skeleton conflict-check surface: instance members match too.
+        assertNotNull(registry.findPropertyInHierarchy("PropChild", "inst"));
+        assertNull(registry.findPropertyInHierarchy("PropChild", "missing"));
+        assertNull(registry.findPropertyInHierarchy("MissingStart", "shared"));
+    }
+
+    @Test
+    void findStaticPropertyInHierarchyShouldSkipInstanceMembersAndReachEngineRoots() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var parent = new LirClassDef("StaticPropParent", "RefCounted");
+        parent.addProperty(new LirPropertyDef("inst", GdIntType.INT));
+        var staticProp = new LirPropertyDef("shared", GdIntType.INT);
+        staticProp.setStatic(true);
+        parent.addProperty(staticProp);
+        var child = new LirClassDef("StaticPropChild", "StaticPropParent");
+        registry.addGdccClass(parent);
+        registry.addGdccClass(child);
+
+        var lookup = registry.findStaticPropertyInHierarchy("StaticPropChild", "shared");
+        assertNotNull(lookup);
+        assertEquals("StaticPropParent", lookup.ownerClass().getName());
+        assertSame(staticProp, lookup.property());
+        // Instance members never satisfy the static route lookup, even with a matching name.
+        assertNull(registry.findStaticPropertyInHierarchy("StaticPropChild", "inst"));
+        // Engine classes expose only instance properties, so static lookup walks past them.
+        assertNull(registry.findStaticPropertyInHierarchy("Node2D", "position"));
+        assertNotNull(registry.findPropertyInHierarchy("Node2D", "position"));
     }
 
     @Test
