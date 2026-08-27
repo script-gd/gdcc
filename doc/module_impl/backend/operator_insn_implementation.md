@@ -4,7 +4,7 @@
 
 - 状态：`Active`
 - 文档类型：`规范 / 事实源`
-- 更新时间：`2026-08-19`
+- 更新时间：`2026-08-27`
 - 适用范围：`backend.c` 中 `UNARY_OP`、`BINARY_OP` 的 C 代码生成与校验
 - 说明：本文件描述“已落地语义与约束”。如与历史文档或旧实现描述冲突，以本文件为准。
 
@@ -159,6 +159,15 @@ codegen，不回写 frontend 接受面。
 3. 原顺序不命中：直接 fail-fast（无交换/对偶补救）。
 4. metadata 异常记录（空类型名、非法 operator 字符串等）：跳过异常项并输出可定位告警；最终无可用匹配则 fail-fast。
 
+#### 4.2.1 typed container operand 归一化
+
+metadata 条目按 plain 容器名注册，而 LIR 类型可能是 richer generic text，因此两处 metadata key lookup 统一经 `OperatorResolver.operatorOperandTypeName(...)` 归一化（与 frontend sema 侧同名规则逐字一致，见 `frontend_unary_binary_expr_semantic_implementation.md` §4.3）：
+
+1. `Array[T] -> Array`、`Dictionary[K, V] -> Dictionary`；`GdPackedArrayType` 不属于 `GdArrayType`，保持 raw `Packed*Array` 名。
+2. 左操作数 owner-class 查询与 binary 右操作数 metadata 匹配都必须先归一化。
+3. 归一化只是 metadata key lookup 规则，不是类型协变，不改变 source-level 类型身份；不引入交换/对偶 fallback，原顺序仍严格匹配。
+4. 归一化后仍无匹配条目时必须 fail-fast，不得凭空发明匹配。
+
 ### 4.3 结果类型规则
 
 1. 快路径、evaluator、Variant evaluate 都必须先解析语义结果类型。
@@ -249,7 +258,8 @@ codegen，不回写 frontend 接受面。
 3. 原顺序 metadata 严格匹配（无交换回退）。
 4. Variant 参与场景统一 evaluate；`Variant -> 非 Variant` 通过运行时类型检查与 `unpack` 回写。
 5. `IN(int, Array)` 不走快路径。
-6. guard 覆盖规则：浮点除零、整型除零、移位 UB、防护 NOOP 占位。
+6. typed container operand 归一化：`IN(int, Array[int])` / `IN(String, Dictionary[String, int])` 命中 plain `Array` / `Dictionary` 条目，`Array[int]` 可作左 owner；归一化后 plain 条目缺失必须 fail-fast（`COperatorInsnGenTest`）。
+7. guard 覆盖规则：浮点除零、整型除零、移位 UB、防护 NOOP 占位。
 
 辅助回归：`CCodegenTest`。
 

@@ -39,11 +39,11 @@ GDCC is currently in an early alpha stage. Do not use it in production.
 ## Unsupported or Limited
 
 - Lambdas in property initializers or parameter defaults.
-- `assert`, `preload`, and `get_node`. (Array/dictionary literals, casts, type tests, and ternary expressions are compile-ready.)
-- `not in`, string `%` formatting, parameter defaults, local or class constants, and script-level `static var`.
+- `assert`, `preload`, and `get_node`.
+- String `%` formatting, parameter defaults, local or class constants, and script-level `static var`.
 - Path-based `extends`, autoload superclass binding, global script class superclass binding, and multi-module superclass binding.
 - Built-in keyed access such as `vector["x"]`; use property-style access such as `vector.x` where supported.
-- Broad Godot runtime conversion compatibility is still incomplete, including several widened key, index, and numeric conversion cases.
+- Broad Godot runtime casting compatibility is incomplete, you may cast variable explicitly using `as`.
 
 # Download
 

@@ -75,7 +75,7 @@
 
 - `UnaryExpression` 不再被默认视为 deferred gap
 - `BinaryExpression` 不再被默认视为 deferred gap
-- `not in` 已由 upstream owner 按复合规则 `not (lhs in rhs)` 发布 `RESOLVED(bool)` / `FAILED`（见 `frontend_not_in_operator_plan.md`），type-check 直接消费该稳定 typed fact
+- `not in` 已由 upstream owner 按复合规则 `not (lhs in rhs)` 发布 `RESOLVED(bool)` / `FAILED`（见 `frontend_unary_binary_expr_semantic_implementation.md` §4.4），type-check 直接消费该稳定 typed fact
 
 `FrontendAnnotationUsageAnalyzer` 当前只负责 diagnostics-only 的 annotation placement contract：
 

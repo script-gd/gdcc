@@ -122,6 +122,6 @@
 - `@onready` 的 MVP 合同当前是“annotation retention + usage validation”，不是完整 ready-time 执行模型。
 - `@onready` 的最小合法性规则固定为：只能用于 Node 派生类中的 non-static class property；相关非法用法由独立的 `sema.annotation_usage` owner 负责，不应混入 `sema.unsupported_annotation` 或 `sema.type_check`。
 - 全局枚举成员（如裸 `TYPE_NIL` / `OK`）、全局常量与 GDScript 语言常量（`PI` / `TAU` / `INF` / `NAN` 及合成极值常量 `INT*_MIN/MAX` 等）的裸访问已进入 compile-ready 支持面：sema 发布 `CONSTANT` binding 与 `int` / `float` 表达式类型，body lowering 物化为 `literal_int` / `literal_float`；局部/类作用域遮蔽规则不变。`match` 进入 shared semantic 后，pattern 内的全局常量/枚举裸访问走普通 `EXPRESSION` 合同，不再 deferred。限定式 `Variant.Type.TYPE_NIL` 等 chain 路径不受影响。
-- `not in` 运算符已进入 compile-ready 支持面：按源码层复合规则 `not (lhs in rhs)` 处理，sema 发布 `RESOLVED(bool)`（非法配对 `FAILED` 锚定 `'in'`），lowering 产出 `BinaryOpInsn(IN)` + `UnaryOpInsn(NOT)`；枚举层 `fromSourceLexeme("not in", ...)` 继续 fail-closed。见 `frontend_not_in_operator_plan.md`。
+- `not in` 运算符已进入 compile-ready 支持面：按源码层复合规则 `not (lhs in rhs)` 处理，sema 发布 `RESOLVED(bool)`（非法配对 `FAILED` 锚定 `'in'`），lowering 产出 `BinaryOpInsn(IN)` + `UnaryOpInsn(NOT)`；枚举层 `fromSourceLexeme("not in", ...)` 继续 fail-closed。见 `frontend_unary_binary_expr_semantic_implementation.md` §4.4。
 - 数组与字典字面量（`[...]` / `{...}`）已进入 compile-ready 支持面：generic/contextual typed、empty/nested、exact-call 参数与 property initializer 等路径均走 `FrontendContainerLiteralPlan` → `construct_container_literal`；常量 duplicate Dictionary key 由 type-check 报错，动态 duplicate key 保持运行时后写覆盖。
 - 字符串格式化`%`语法在MVP版本中不支持。

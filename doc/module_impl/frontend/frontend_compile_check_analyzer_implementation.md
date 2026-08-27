@@ -279,7 +279,7 @@ generic status scan 之外，compile gate 还保留一组 **RESOLVED feature-spe
 - object/nil equality 与 object identity equality 在 shared semantic 发布 `RESOLVED(bool)` 后，compile gate 不得再把它们当作 not lowering-ready
 - object/object ordering 继续由上游 `sema.expression_resolution` 发布 `FAILED`，compile gate 消费该 fact，不新增独立 diagnostic 类别
 - `and/or` 虽然也会在 shared semantic 路径发布稳定 typed fact，但它们属于独立的显式 AST compile-block，而不是 generic published-fact blocker
-- `not in` 已由 upstream 按复合规则发布 `RESOLVED(bool)`（非法配对为 `FAILED`，见 `frontend_not_in_operator_plan.md`），不再被 compile gate 阻断
+- `not in` 已由 upstream 按复合规则发布 `RESOLVED(bool)`（非法配对为 `FAILED`，见 `frontend_unary_binary_expr_semantic_implementation.md` §4.4），不再被 compile gate 阻断
 - `ConditionalExpression` 已不再依赖显式 AST compile-block：它与 unary/binary 一样只依赖 published fact 是否 lowering-ready（见 `frontend_conditional_expression_implementation.md`）
 
 ### 4.3 当前 compile anchor 规则
