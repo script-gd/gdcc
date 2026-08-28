@@ -394,15 +394,68 @@ lowering 就绪、backend 就绪、文档与测试同步之后移除。因此 B2
   新增 LIR 断言覆盖各指令形态与 static init helper（0 参数、hidden、返回类型匹配、0 残留
   实例字段指令）。
 
-### 阶段 3：C backend（gate 保持关闭）
+### 阶段 3：C backend（gate 保持关闭）（已完成，2026-08-28）
 
-- [ ] 3.1 存储符号公式入 `CGenHelper`（§3.1 raw 拼接约定）+ `entry.h.ftl` / `entry.c.ftl`
+- [x] 3.1 存储符号公式入 `CGenHelper`（§3.1 raw 拼接约定）+ `entry.h.ftl` / `entry.c.ftl`
       backing 变量发射 + 全模块符号冲突校验 fail-fast。
-- [ ] 3.2 模板三处 static guard（B7）+ `CCodegen` static 分支（§3.6 前两条）。
-- [ ] 3.3 全局两段式 static init + `initialize()` / `deinitialize()` 接线（§3.2，
+  - 实现：`CGenHelper.renderStaticBackingSymbol` / `renderStaticDefaultsSymbol` /
+    `renderStaticInitializersSymbol` 单点发布；backing 变量在 `entry.c` 顶部定义（零初始化），
+    `entry.h` 发 `extern` 声明；`CCodegen.validateFileScopeSymbolsDisjoint()` 在
+    getter/setter/init 合成之后收集 backing、双入口、`${class}_${func}`、apply-helper、
+    模板固定 per-class 符号与模块级固定符号（`gdextension_entry`/`initialize`/`deinitialize`/
+    `class_library`，review 补充预置）统一查重，冲突报出双方来源。coroutine/lambda helper
+    家族维持存量风险水位，不在本次校验面内（§3.1 风险基线）。
+  - 测试：`generateFailsFastOnFileScopeSymbolConflictBetweenFunctions`（`A.B_c` vs `A_B.c`）、
+    `generateFailsFastOnStaticBackingSymbolConflict`（`A.b_c` vs `A_b.c`）、
+    `generateSeedsFixedModuleSymbolsIntoConflictCheck`（类 `gdextension` + 函数 `entry`）。
+- [x] 3.2 模板三处 static guard（B7）+ `CCodegen` static 分支（§3.6 前两条）。
+  - 实现：`generateDefaultGetterSetterInitialization` 对 static `continue`（不再 throw，且不合成
+    默认 `_field_init_`）；`validatePropertyInitFunctionsReadyForCodegen` 跳过
+    `initFunc == null` 的 static；`validatePropertyInitFunctionSignature` 新增 static 分支
+    （hidden + static + 0 参数 + 返回类型匹配）；`generatePropertyInitApplyBody` 对 static
+    防御性 fail-fast。`entry.c.ftl` 的 apply-helper 定义、constructor 调用、destructor 销毁
+    三处加 `<#if !property.static>`。
+  - 测试：`generateSkipsInstanceSynthesisForStaticProperties`（含无 `self->count`、
+    getter/setter/initFunc 保持 null 的冻结断言）+ 签名校验 3 个 negative 测试。
+- [x] 3.3 全局两段式 static init + `initialize()` / `deinitialize()` 接线（§3.2，
       base-before-derived 排序）。
-- [ ] 3.4 `LoadStaticInsnGen` / `StoreStaticInsnGen` GDCC 分支（§3.6），
+  - 实现：`CCodegen.computeStaticInitClassOrder()` 稳定拓扑序（沿完整 module 祖先链收集依赖，
+    无关节类保持 module 顺序，无法推进即 fail-fast）；模板 ctx 新增 `staticInitClassDefs`；
+    `initialize()` 在**全部类（含 hidden coroutine state 类）注册完成之后**先全类 defaults
+    再全类 initializers（review 发现：initializer 可经 static func 启动协程，start thunk
+    依赖 state 类注册）；per-class 双入口函数体经 `GenerateRenderFacade` 三个新渲染口由
+    `CBodyBuilder` slot-write API 生成——defaults 段用 `applyPropertyInitializerFirstWrite`
+    （zero-init 首写不销毁；容器走 `constructBuiltin` 临时值物化以保留 typed 元数据，再
+    move 入 backing），initializers 段用新增的 `CBodyBuilder.moveOwnedCallIntoSlot`
+    （destroyable 值语义：carrier temp 承载 call 结果 → 销毁旧值 →  plain 赋值 move，
+    carrier 不再销毁——review 修正：不允许 copy 构造 + carrier destroy 的伪 move；OBJECT：
+    call 结果先物化进 carrier（防止 initializer 重入写同一 backing 时旧值捕获过早导致泄漏），
+    再 capture old → assign → OWNED consume → release old）。
+    `deinitialize()` 在 runtime registry 销毁前按逆序内联清理（
+    `CGenHelper.renderStaticBackingDestroyStmt`，与 lambda capture free 共用
+    `renderManagedStorageFreeStmt` 实现——destroy 公式单点化，与实例 destructor 模板同一
+    先例；CBodyBuilder slot-write API 只管写路径，destroy 不属其范围）。
+  - 测试：`generateEmitsTwoPhaseStaticInitInBaseBeforeDerivedOrder`（派生类在 module 顺序中
+    故意前置；defaults/initializers 四调用链序 + deinit 逆序且先于 registry +
+    defaults 段无销毁）、`generateRoutesStaticInitializerThroughOverwriteSemantics`
+    （call→销毁旧值→move 顺序 + 无 copy 构造 + carrier 不销毁锚定）、
+    `generateEmitsTypedArrayStaticDefaultThroughConstructor`、
+    `generateRunsStaticInitAfterCoroutineStateClassRegistration`（static init 晚于协程
+    state 类注册）、`generateEmitsObjectStaticLifecycleThreeStateForms`（YES/UNKNOWN/NO
+    deinit 形态 + object initializer 无 re-own）、
+    `generateOmitsStaticSectionsWhenNoStaticProperties`（无 static 模块零输出了稳性）。
+- [x] 3.4 `LoadStaticInsnGen` / `StoreStaticInsnGen` GDCC 分支（§3.6），
       含 OBJECT fat-pointer 与 RefCounted YES / UNKNOWN / NO 三态。
+  - 实现：两 gen 新增 GDCC script class 分支——`findStaticPropertyInHierarchy` 沿继承链解析
+    声明 owner，按 `gdcc_static_<owner>_<name>` backing 读写；load 经
+    `valueOfAddressableExpr`（BORROWED 存储读），store 经 `targetOfExpr` + `assignVar`
+    （release/destroy 旧值 + BORROWED rhs retain），与实例 property 读写语义完全同构；
+    engine/builtin/global 分支不动，非 GDCC receiver 维持显式拒绝。类型不匹配与未知
+    static 均 fail-fast。
+  - 测试：两个 gen 测试类各 7 个正反用例（自类/继承 owner backing、String by-address 借用读、
+    destroyable 覆盖先销毁、RefCounted YES retain/release 顺序、UNKNOWN `try_*` 形态、
+    NO 态零生命周期调用、unknown/mismatch 负向）；`CProjectBuilderIntegrationTest.compileStaticVarModuleWithRealZig`
+    对含 static 的模块做真实 zig 编译冒烟（zig 不可用时跳过）。
 - 验收：`run-gradle-targeted-tests.ps1 -Tests CLoadStaticInsnGenTest,CStoreStaticInsnGenTest,CCodegenTest,CBodyBuilderPhaseCTest,FrontendLoweringToCProjectBuilderIntegrationTest,ObjectValueLifecycleCharacterizationTest` 全绿；
   新增 codegen 断言覆盖：backing 变量命名（含冲突用例）、两段式 static_init、
   生成 C 中无 `self-><static_name>`、三条写路径的 ownership 形态、deinitialize 清理。

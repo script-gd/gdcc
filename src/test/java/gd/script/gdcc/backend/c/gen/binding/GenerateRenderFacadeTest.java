@@ -17,6 +17,9 @@ class GenerateRenderFacadeTest {
         var facade = new GenerateRenderFacade(
                 (_, _) -> "",
                 (_, _) -> "",
+                (_) -> "",
+                (_) -> "",
+                (_) -> "",
                 templateUsageBuffer
         );
 

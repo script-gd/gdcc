@@ -28,11 +28,15 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public class CCodegen implements Codegen {
     private static final Logger LOGGER = LoggerFactory.getLogger(CCodegen.class);
@@ -129,8 +133,12 @@ public class CCodegen implements Codegen {
         for (var classDef : module.getClassDefs()) {
             var selfType = new GdObjectType(classDef.getName());
             for (var propertyDef : classDef.getProperties()) {
+                // Static properties stay entirely out of instance member synthesis: no
+                // getter/setter, and no `_field_init_` default helper either. Static default
+                // values are materialized inline by the module-lifecycle defaults section,
+                // so `initFunc != null` keeps meaning "source has an explicit initializer".
                 if (propertyDef.isStatic()) {
-                    throw new IllegalStateException("Static properties are not supported in GdExtension.");
+                    continue;
                 }
                 if (propertyDef.getGetterFunc() == null) {
                     var getterName = "_field_getter_" + propertyDef.getName();
@@ -308,6 +316,12 @@ public class CCodegen implements Codegen {
     private void validatePropertyInitFunctionsReadyForCodegen() {
         for (var classDef : module.getClassDefs()) {
             for (var propertyDef : classDef.getProperties()) {
+                // Static properties without a source initializer carry `initFunc == null` because
+                // no default helper is synthesized for them; their defaults are materialized
+                // inline by the module lifecycle defaults section, so there is nothing to validate.
+                if (propertyDef.isStatic() && propertyDef.getInitFunc() == null) {
+                    continue;
+                }
                 validatePropertyInitFunctionReadyForCodegen(classDef, propertyDef);
             }
         }
@@ -415,6 +429,36 @@ public class CCodegen implements Codegen {
                             + "; expected "
                             + propertyDef.getType().getTypeName()
             );
+        }
+        // Static property init helpers follow the static shell contract: hidden (checked above),
+        // explicitly static, zero parameters — they run without any instance and are invoked
+        // from the module lifecycle path to write shared storage.
+        if (propertyDef.isStatic()) {
+            if (!function.isStatic()) {
+                throw new IllegalStateException(
+                        "Property '"
+                                + classDef.getName()
+                                + "."
+                                + propertyDef.getName()
+                                + "' references non-static init function '"
+                                + function.getName()
+                                + "'; static property init helpers must be static"
+                );
+            }
+            if (function.getParameterCount() != 0) {
+                throw new IllegalStateException(
+                        "Property '"
+                                + classDef.getName()
+                                + "."
+                                + propertyDef.getName()
+                                + "' references static init function '"
+                                + function.getName()
+                                + "' with "
+                                + function.getParameterCount()
+                                + " parameters; expected zero parameters"
+                );
+            }
+            return;
         }
         if (function.getParameterCount() != 1) {
             throw new IllegalStateException(
@@ -571,6 +615,14 @@ public class CCodegen implements Codegen {
         if (ctx == null || module == null) {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generating property init apply code.");
         }
+        // Instance-only route: static property writes go through the module-lifecycle static
+        // sections (backing variables), never through `self->field` apply helpers.
+        if (property.isStatic()) {
+            throw new IllegalStateException(
+                    "Property '" + clazz.getName() + "." + property.getName()
+                            + "' is static; static properties have no constructor-time apply helper"
+            );
+        }
         var initFunction = resolvePropertyInitFunction(clazz, property);
         var bodyBuilder = new CBodyBuilder(
                 helper,
@@ -606,6 +658,252 @@ public class CCodegen implements Codegen {
         return body;
     }
 
+    // ==== Static property module lifecycle ====
+
+    private static @NotNull CBodyBuilder.PtrKind ptrKindOf(@NotNull GdType type) {
+        return type instanceof GdObjectType ? CBodyBuilder.PtrKind.FAT_PTR : CBodyBuilder.PtrKind.NON_OBJECT;
+    }
+
+    /// Renders the per-class static defaults section body: every static property is
+    /// first-written with its materialized type default in declaration order. Backing variables
+    /// are zero-initialized file-scope storage, so these writes must never destroy an old value.
+    private @NotNull String generateStaticDefaultsBody(@NotNull LirClassDef clazz,
+                                                       @NotNull GodotBindingUsageBuffer usageBuffer) {
+        if (ctx == null || module == null) {
+            throw new IllegalStateException("CCodegen not prepared. Call prepare() before generating static defaults code.");
+        }
+        // Shell function context: the builder only needs an owner for diagnostics and temp naming;
+        // no LIR instructions are executed for this synthesized section.
+        var shellFunc = new LirFunctionDef(helper.renderStaticDefaultsSymbol(clazz.getName()));
+        var bodyBuilder = new CBodyBuilder(helper, clazz, shellFunc, usageBuffer);
+        for (var property : clazz.getProperties()) {
+            if (!property.isStatic()) {
+                continue;
+            }
+            var propertyType = property.getType();
+            if (propertyType instanceof GdCompilerType) {
+                throw new IllegalStateException(
+                        "compiler-only type leaked into static property defaults: "
+                                + clazz.getName() + "." + property.getName()
+                                + " (" + propertyType.getTypeName() + ")"
+                );
+            }
+            var backingExpr = helper.renderStaticBackingSymbol(clazz.getName(), property.getName());
+            if (propertyType instanceof GdContainerType) {
+                // Containers go through the builtin constructor so typed Array/Dictionary keep
+                // their element-type metadata (`renderDefaultValueExprInC` only yields untyped
+                // empties). The fresh temp is uninitialized, so the constructor write performs
+                // no old-value destroy.
+                var temp = bodyBuilder.newTempVariable("static_default", propertyType);
+                bodyBuilder.declareTempVar(temp);
+                helper.builtinBuilder().constructBuiltin(bodyBuilder, temp, List.of());
+                bodyBuilder.applyPropertyInitializerFirstWrite(
+                        backingExpr, propertyType, temp.name(), propertyType,
+                        ptrKindOf(propertyType), CBodyBuilder.OwnershipKind.OWNED
+                );
+                // The temp's value moved into the backing slot; nothing further to destroy.
+            } else {
+                bodyBuilder.applyPropertyInitializerFirstWrite(
+                        backingExpr, propertyType, helper.renderDefaultValueExprInC(propertyType), propertyType,
+                        ptrKindOf(propertyType), CBodyBuilder.OwnershipKind.OWNED
+                );
+            }
+        }
+        return bodyBuilder.build();
+    }
+
+    @NotNull String generateStaticDefaultsBody(@NotNull LirClassDef clazz,
+                                               @NotNull GodotBindingUsageSession godotBindingUsageSession) {
+        var buffer = godotBindingUsageSession.newFunctionBuffer();
+        var body = generateStaticDefaultsBody(clazz, buffer);
+        godotBindingUsageSession.commit(buffer);
+        return body;
+    }
+
+    /// Renders the per-class static initializers section body: for each static property
+    /// with a source initializer (`initFunc != null` by construction), calls the hidden static
+    /// `_field_init_<name>()` helper and overwrites the backing variable. The overwrite runs
+    /// through `moveOwnedCallIntoSlot`, so the already-materialized default is destroyed/released
+    /// exactly once and the helper result moves in without an extra copy.
+    private @NotNull String generateStaticInitializersBody(@NotNull LirClassDef clazz,
+                                                           @NotNull GodotBindingUsageBuffer usageBuffer) {
+        if (ctx == null || module == null) {
+            throw new IllegalStateException("CCodegen not prepared. Call prepare() before generating static initializers code.");
+        }
+        var shellFunc = new LirFunctionDef(helper.renderStaticInitializersSymbol(clazz.getName()));
+        var bodyBuilder = new CBodyBuilder(helper, clazz, shellFunc, usageBuffer);
+        for (var property : clazz.getProperties()) {
+            if (!property.isStatic() || property.getInitFunc() == null) {
+                continue;
+            }
+            var initFunction = resolvePropertyInitFunction(clazz, property);
+            var backingExpr = helper.renderStaticBackingSymbol(clazz.getName(), property.getName());
+            // Init helpers are dedicated fresh producers: the returned OWNED value moves into the
+            // backing slot after the materialized default is destroyed (destroy-then-move for
+            // value semantics; capture → assign → consume → release for objects).
+            bodyBuilder.moveOwnedCallIntoSlot(
+                    bodyBuilder.targetOfExpr(backingExpr, property.getType()),
+                    clazz.getName() + "_" + initFunction.getName() + "()",
+                    initFunction.getReturnType()
+            );
+        }
+        return bodyBuilder.build();
+    }
+
+    @NotNull String generateStaticInitializersBody(@NotNull LirClassDef clazz,
+                                                   @NotNull GodotBindingUsageSession godotBindingUsageSession) {
+        var buffer = godotBindingUsageSession.newFunctionBuffer();
+        var body = generateStaticInitializersBody(clazz, buffer);
+        godotBindingUsageSession.commit(buffer);
+        return body;
+    }
+
+    /// Renders the `deinitialize()` cleanup for one class's static backing variables: destroyable
+    /// values are released/destroyed in reverse declaration order via the shared managed-storage
+    /// free formula (`CGenHelper.renderStaticBackingDestroyStmt`). The template calls this for
+    /// classes in reverse initialization order before the runtime registries are torn down.
+    private @NotNull String generateStaticDeinitializeBody(@NotNull LirClassDef clazz) {
+        var body = new StringBuilder();
+        var staticProperties = clazz.getProperties().stream().filter(LirPropertyDef::isStatic).toList();
+        for (var property : staticProperties.reversed()) {
+            var stmt = helper.renderStaticBackingDestroyStmt(
+                    property.getType(),
+                    helper.renderStaticBackingSymbol(clazz.getName(), property.getName())
+            );
+            if (!stmt.isEmpty()) {
+                body.append(stmt).append("\n");
+            }
+        }
+        return body.toString();
+    }
+
+    /// Classes that declare at least one static property, ordered base-before-derived along the
+    /// module's inheritance topology for the global two-phase static initialization. Classes whose
+    /// superclass chain leaves the module (engine/native roots) have no static-init dependencies.
+    /// Unrelated classes keep module (`LirModule.classDefs`) order so generated C stays
+    /// deterministic.
+    private @NotNull List<LirClassDef> computeStaticInitClassOrder() {
+        var classByName = new HashMap<String, LirClassDef>();
+        for (var classDef : module.getClassDefs()) {
+            classByName.put(classDef.getName(), classDef);
+        }
+        var staticClassNames = new HashSet<String>();
+        for (var classDef : module.getClassDefs()) {
+            if (classDef.getProperties().stream().anyMatch(LirPropertyDef::isStatic)) {
+                staticClassNames.add(classDef.getName());
+            }
+        }
+        var remaining = module.getClassDefs().stream()
+                .filter(classDef -> staticClassNames.contains(classDef.getName()))
+                .collect(Collectors.toCollection(ArrayList::new));
+        var ordered = new ArrayList<LirClassDef>(remaining.size());
+        var emittedNames = new HashSet<String>();
+        while (!remaining.isEmpty()) {
+            var progressed = false;
+            for (var iterator = remaining.iterator(); iterator.hasNext(); ) {
+                var candidate = iterator.next();
+                if (staticAncestorNames(candidate, classByName, staticClassNames).allMatch(emittedNames::contains)) {
+                    ordered.add(candidate);
+                    emittedNames.add(candidate.getName());
+                    iterator.remove();
+                    progressed = true;
+                }
+            }
+            if (!progressed) {
+                throw new IllegalStateException(
+                        "Inheritance cycle among classes with static properties: "
+                                + remaining.stream().map(LirClassDef::getName).toList()
+                );
+            }
+        }
+        return List.copyOf(ordered);
+    }
+
+    /// Streams the names of all module ancestors of `classDef` that themselves declare static
+    /// properties (walks the full superclass chain, not just the direct parent, so transitive
+    /// dependencies like `A -> B -> C` order `A` after `C` even when `B` declares no statics).
+    private @NotNull Stream<String> staticAncestorNames(
+            @NotNull LirClassDef classDef,
+            @NotNull Map<String, LirClassDef> classByName,
+            @NotNull Set<String> staticClassNames
+    ) {
+        var ancestorNames = new ArrayList<String>();
+        var visited = new HashSet<String>();
+        var current = classByName.get(classDef.getSuperName());
+        while (current != null && visited.add(current.getName())) {
+            if (staticClassNames.contains(current.getName())) {
+                ancestorNames.add(current.getName());
+            }
+            current = classByName.get(current.getSuperName());
+        }
+        return ancestorNames.stream();
+    }
+
+    /// Module-wide C file-scope symbol conflict validation. Collects the
+    /// symbols this backend is responsible for — static backing variables, per-class static
+    /// defaults/initializers entries, all `${class}_${func}` functions (including synthesized
+    /// getter/setter/init helpers), property-init apply helpers, and the template-fixed per-class
+    /// machinery symbols — and fails fast on any duplicate, reporting both emission sources.
+    /// Coroutine/lambda helper families keep their existing risk level and are not re-spelled here.
+    private void validateFileScopeSymbolsDisjoint() {
+        var symbolSources = new HashMap<String, String>();
+        // Fixed module-level symbols emitted by entry.c/entry.h themselves; a user class named
+        // e.g. `gdextension` with a function `entry` would otherwise collide with the exported
+        // entry point without being reported here.
+        registerFileScopeSymbol(symbolSources, "gdextension_entry", "GDExtension entry point (entry.c.ftl)");
+        registerFileScopeSymbol(symbolSources, "initialize", "module initialize callback (entry.c.ftl)");
+        registerFileScopeSymbol(symbolSources, "deinitialize", "module deinitialize callback (entry.c.ftl)");
+        registerFileScopeSymbol(symbolSources, "class_library", "class library storage (entry.h.ftl)");
+        for (var classDef : module.getClassDefs()) {
+            var className = classDef.getName();
+            for (var suffix : List.of(
+                    "_class_bind_methods", "_class_create_instance", "_class_free_instance",
+                    "_class_constructor", "_class_destructor", "_class_notification",
+                    "_class_get_virtual_with_data", "_class_call_virtual_with_data",
+                    "_class_binding_callbacks", "_object_ptr", "_set_object_ptr")) {
+                registerFileScopeSymbol(symbolSources, className + suffix, "class machinery of '" + className + "'");
+            }
+            for (var function : classDef.getFunctions()) {
+                registerFileScopeSymbol(symbolSources, className + "_" + function.getName(),
+                        "function '" + className + "." + function.getName() + "'");
+            }
+            var hasStaticProperties = false;
+            for (var property : classDef.getProperties()) {
+                if (property.isStatic()) {
+                    hasStaticProperties = true;
+                    registerFileScopeSymbol(symbolSources,
+                            helper.renderStaticBackingSymbol(className, property.getName()),
+                            "static property backing of '" + className + "." + property.getName() + "'");
+                } else {
+                    registerFileScopeSymbol(symbolSources,
+                            helper.renderPropertyInitApplyHelperName(classDef, property),
+                            "property-init apply helper of '" + className + "." + property.getName() + "'");
+                }
+            }
+            if (hasStaticProperties) {
+                registerFileScopeSymbol(symbolSources, helper.renderStaticDefaultsSymbol(className),
+                        "static defaults entry of '" + className + "'");
+                registerFileScopeSymbol(symbolSources, helper.renderStaticInitializersSymbol(className),
+                        "static initializers entry of '" + className + "'");
+            }
+        }
+    }
+
+    private static void registerFileScopeSymbol(
+            @NotNull Map<String, String> symbolSources,
+            @NotNull String symbol,
+            @NotNull String source
+    ) {
+        var previous = symbolSources.putIfAbsent(symbol, source);
+        if (previous != null) {
+            throw new IllegalStateException(
+                    "C file-scope symbol conflict: '" + symbol + "' is emitted by both "
+                            + previous + " and " + source
+                            + "; rename the conflicting class, function, or property"
+            );
+        }
+    }
+
 
     @Override
     public List<GeneratedFile> generate() {
@@ -616,6 +914,8 @@ public class CCodegen implements Codegen {
         publicAbiValidator.validateModule(module);
         this.generateDefaultGetterSetterInitialization();
         this.validatePropertyInitFunctionsReadyForCodegen();
+        // Runs after getter/setter/init synthesis so synthesized names join the conflict surface.
+        this.validateFileScopeSymbolsDisjoint();
         this.generateFunctionPrepareBlock();
         this.ensureFunctionFinallyBlock();
         for (var classDef : module.getClassDefs()) {
@@ -624,6 +924,7 @@ public class CCodegen implements Codegen {
                 lifecycleValidator.validateFunction(ctx, function);
             }
         }
+        var staticInitClassDefs = computeStaticInitClassOrder();
         try {
             var usageSession = GodotBindingUsageSession.forRegistry(ctx.classRegistry());
             // Template-visible registrations are committed only after `entry.c` renders successfully.
@@ -631,12 +932,16 @@ public class CCodegen implements Codegen {
             var bodyRender = new GenerateRenderFacade(
                     (classDef, func) -> generateFuncBody(classDef, func, usageSession),
                     (classDef, property) -> generatePropertyInitApplyBody(classDef, property, usageSession),
+                    classDef -> generateStaticDefaultsBody(classDef, usageSession),
+                    classDef -> generateStaticInitializersBody(classDef, usageSession),
+                    this::generateStaticDeinitializeBody,
                     templateUsageBuffer
             );
             var cTplCtx = Map.of(
                     "module", module,
                     "helper", helper,
-                    "bodyRender", bodyRender
+                    "bodyRender", bodyRender,
+                    "staticInitClassDefs", staticInitClassDefs
             );
             var cSrc = TemplateLoader.renderFromClasspath("template_451/entry.c.ftl", cTplCtx);
             usageSession.commit(templateUsageBuffer);

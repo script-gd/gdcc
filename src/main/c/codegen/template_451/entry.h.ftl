@@ -45,6 +45,7 @@ struct ${classDef.name} {
     </#list>
 };
 
+
 static inline GDExtensionObjectPtr ${classDef.name}_object_ptr(${classDef.name}* self);
 static inline void ${classDef.name}_set_object_ptr(${classDef.name}* self, GDExtensionObjectPtr obj);
 

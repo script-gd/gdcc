@@ -499,6 +499,68 @@ public final class CBodyBuilder {
         return this;
     }
 
+    /// Moves a fresh OWNED call result into an already-initialized target slot.
+    /// Value-semantic destroyable targets apply destroy-then-move: the call result is captured
+    /// into a carrier temp, the old target value is destroyed, and the carrier is moved in by
+    /// plain struct assignment (the carrier is intentionally never destroyed afterwards — its
+    /// value now belongs to the target). Unlike `assignVar(target, valueOfOwnedExpr(...))`, no
+    /// copy construction or carrier destroy is emitted. Object targets delegate to the unified
+    /// object slot write with OWNED consumption (capture old -> assign -> release old, no re-own).
+    /// Non-destroyable targets take the plain direct assignment.
+    ///
+    /// Used by the static initializer overwrite route, where the hidden `_field_init_<name>`
+    /// helper result must move into the backing variable after the materialized default is
+    /// destroyed.
+    public @NotNull CBodyBuilder moveOwnedCallIntoSlot(@NotNull TargetRef target,
+                                                       @NotNull String callExpr,
+                                                       @NotNull GdType returnType) {
+        checkTargetAssignable(target);
+        checkAssignable(returnType, target.type());
+        var targetCode = target.generateCode();
+        var targetType = target.type();
+        if (targetType instanceof GdObjectType targetObjType) {
+            if (!(returnType instanceof GdObjectType returnObjType)) {
+                throw invalidInsn(
+                        "moveOwnedCallIntoSlot target '" + targetObjType.getTypeName()
+                                + "' requires object return type, but got '" + returnType.getTypeName() + "'"
+                );
+            }
+            // Materialize the call result BEFORE capturing the old slot value: initializer calls
+            // may re-enter and overwrite the same storage, and capturing first would leak that
+            // re-entrant reference when the result is assigned over it.
+            var carrier = newTempVariable("owned_move", targetType, callExpr);
+            declareTempVar(carrier);
+            // The carrier hands its reference to the slot (OWNED consume: capture old -> assign
+            // -> release old, no re-own) and is intentionally never destroyed afterwards.
+            emitObjectSlotWrite(
+                    targetCode,
+                    targetObjType,
+                    canDestroyOldValue(target) && !checkInPrepareBlock(),
+                    carrier.name(),
+                    PtrKind.FAT_PTR,
+                    returnObjType,
+                    OwnershipKind.OWNED
+            );
+            markTargetInitialized(target);
+            return this;
+        }
+        if (!targetType.isDestroyable()) {
+            emitNonObjectSlotWrite(targetCode, targetType, false, callExpr);
+            markTargetInitialized(target);
+            return this;
+        }
+        var carrier = newTempVariable("owned_move", targetType, callExpr);
+        declareTempVar(carrier);
+        emitNonObjectSlotWrite(
+                targetCode,
+                targetType,
+                canDestroyOldValue(target) && !checkInPrepareBlock(),
+                carrier.name()
+        );
+        markTargetInitialized(target);
+        return this;
+    }
+
     /// Assigns a global enum constant to a target variable.
     public @NotNull CBodyBuilder assignGlobalConst(@NotNull TargetRef target,
                                                    @NotNull String enumName,

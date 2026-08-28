@@ -6,6 +6,7 @@ import gd.script.gdcc.backend.c.gen.binding.ModuleLocalGodotBinding;
 import gd.script.gdcc.enums.GdInstruction;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
+import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
@@ -161,6 +162,34 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
                 );
             }
             bodyBuilder.assignExpr(target, literal, GdIntType.INT);
+            return;
+        }
+
+        if (classDef instanceof LirClassDef) {
+            // GDCC script class static property: the frontend publishes only the
+            // access-start class name, so resolve the declaring owner along the inheritance
+            // chain here, then read the file-scope backing variable through the unified
+            // slot-write path. Storage reads are BORROWED; object result slots retain on write,
+            // exactly like instance property loads.
+            var staticPropertyLookup = classRegistry.findStaticPropertyInHierarchy(className, staticName);
+            if (staticPropertyLookup == null) {
+                throw bodyBuilder.invalidInsn(
+                        "Static property '" + staticName + "' not found in GDCC class '"
+                                + className + "' or its superclasses"
+                );
+            }
+            var property = staticPropertyLookup.property();
+            if (!classRegistry.checkAssignable(property.getType(), resultVar.type())) {
+                throw bodyBuilder.invalidInsn(
+                        "Static load target type '" + resultVar.type().getTypeName()
+                                + "' is not assignable from static property type '"
+                                + property.getType().getTypeName() + "'"
+                );
+            }
+            var backingExpr = bodyBuilder.helper().renderStaticBackingSymbol(
+                    staticPropertyLookup.ownerClass().getName(), staticName
+            );
+            bodyBuilder.assignVar(target, bodyBuilder.valueOfAddressableExpr(backingExpr, property.getType()));
             return;
         }
 

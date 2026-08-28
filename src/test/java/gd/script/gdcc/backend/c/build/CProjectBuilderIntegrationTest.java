@@ -15,8 +15,10 @@ import gd.script.gdcc.lir.insn.GotoInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.LoadPropertyInsn;
+import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
+import gd.script.gdcc.lir.insn.StoreStaticInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.*;
 import org.junit.jupiter.api.Assumptions;
@@ -36,6 +38,76 @@ public class CProjectBuilderIntegrationTest {
 
     private static boolean hasZig() {
         return ZigUtil.findZig() != null;
+    }
+
+    /// Static var C backend smoke: a module with static properties (plain, initialized, and
+    /// typed-container) plus load/store_static accessors must produce C that a real C compiler
+    /// accepts. Godot runtime validation of the two-phase init semantics stays with the e2e
+    /// suite, since the frontend compile gate still rejects static var sources.
+    @Test
+    public void compileStaticVarModuleWithRealZig() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+        var tempDir = Path.of("tmp/test/c_build_static_var");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo("staticvarproj", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var codegen = new CCodegen();
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var ctx = new CodegenContext(projectInfo, new ClassRegistry(api));
+
+        var workerClass = new LirClassDef("GDStaticWorker", "RefCounted");
+        workerClass.setSourceFile("static_worker.gd");
+        // Static with a source initializer (hidden static zero-param helper).
+        workerClass.addProperty(new LirPropertyDef("count", GdIntType.INT, true, "_field_init_count", null, null, Map.of()));
+        // Static without initializer (defaults-section only) and a typed-container static.
+        workerClass.addProperty(new LirPropertyDef("title", GdStringType.STRING, true, null, null, null, Map.of()));
+        workerClass.addProperty(new LirPropertyDef("items", new GdArrayType(GdIntType.INT), true, null, null, null, Map.of()));
+        {
+            var initFunc = new LirFunctionDef("_field_init_count", "entry");
+            initFunc.setHidden(true);
+            initFunc.setStatic(true);
+            initFunc.setReturnType(GdIntType.INT);
+            var tmpVar = initFunc.createAndAddTmpVariable(GdIntType.INT);
+            var entry = new LirBasicBlock("entry");
+            entry.appendInstruction(new LiteralIntInsn(tmpVar.id(), 41));
+            entry.appendInstruction(new ReturnInsn(tmpVar.id()));
+            initFunc.addBasicBlock(entry);
+            workerClass.addFunction(initFunc);
+        }
+        {
+            // Reads the static through load_static and bumps it through store_static.
+            var bumpFunc = new LirFunctionDef("bump_count", "entry");
+            bumpFunc.setStatic(true);
+            bumpFunc.setReturnType(GdIntType.INT);
+            var v0 = bumpFunc.createAndAddVariable("0", GdIntType.INT);
+            var v1 = bumpFunc.createAndAddVariable("1", GdIntType.INT);
+            Objects.requireNonNull(v0);
+            Objects.requireNonNull(v1);
+            var entry = new LirBasicBlock("entry");
+            entry.appendInstruction(new LoadStaticInsn(v0.id(), "GDStaticWorker", "count"));
+            entry.appendInstruction(new LiteralIntInsn(v1.id(), 1));
+            var v2 = bumpFunc.createAndAddVariable("2", GdIntType.INT);
+            Objects.requireNonNull(v2);
+            entry.appendInstruction(new BinaryOpInsn(v2.id(), GodotOperator.ADD, v0.id(), v1.id()));
+            entry.appendInstruction(new StoreStaticInsn("GDStaticWorker", "count", v2.id()));
+            entry.appendInstruction(new ReturnInsn(v2.id()));
+            bumpFunc.addBasicBlock(entry);
+            workerClass.addFunction(bumpFunc);
+        }
+
+        var module = new LirModule("static_var_module", List.of(workerClass));
+        codegen.prepare(ctx, module);
+        var result = builder.buildProject(projectInfo, codegen);
+        IO.println(result.buildLog());
+
+        assertTrue(result.success(), "Static var module should compile with zig. Build log:\n" + result.buildLog());
+        assertFalse(result.artifacts().isEmpty());
     }
 
     @Test

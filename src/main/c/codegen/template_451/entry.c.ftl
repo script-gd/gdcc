@@ -6,6 +6,23 @@
 
 #include "entry.h"
 
+<#-- Static property backing variables (file-scope shared storage): zero-initialized at -->
+<#-- program load; every value write goes through the module lifecycle sections or the -->
+<#-- load/store_static gens, all via CBodyBuilder slot-write semantics. -->
+<#list module.classDefs as classDef>
+    <#list classDef.properties as property>
+        <#if property.static>
+${helper.renderGdTypeInC(property.type)} ${helper.renderStaticBackingSymbol(classDef.name, property.name)};
+        </#if>
+    </#list>
+</#list>
+<#-- Per-class static lifecycle entries (two-phase global static initialization): declared -->
+<#-- before `initialize()` below which calls them in base-before-derived order. -->
+<#list staticInitClassDefs as classDef>
+static void ${helper.renderStaticDefaultsSymbol(classDef.name)}(void);
+static void ${helper.renderStaticInitializersSymbol(classDef.name)}(void);
+</#list>
+
 GDE_EXPORT GDExtensionBool gdextension_entry(
     GDExtensionInterfaceGetProcAddress p_get_proc_address,
     GDExtensionClassLibraryPtr p_library,
@@ -87,6 +104,19 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
         </#list>
     </#list>
     </#if>
+    <#if staticInitClassDefs?size gt 0>
+    <#-- Global two-phase static init: ALL classes' defaults run first (base-before-derived), -->
+    <#-- then ALL classes' initializers in the same order, so a static initializer reading another -->
+    <#-- class's static var always observes at least the materialized type default. Both phases run -->
+    <#-- only after EVERY class (including hidden coroutine state classes) is registered, because an -->
+    <#-- initializer may call static functions that instantiate script classes or start coroutines. -->
+    <#list staticInitClassDefs as classDef>
+    ${helper.renderStaticDefaultsSymbol(classDef.name)}();
+    </#list>
+    <#list staticInitClassDefs as classDef>
+    ${helper.renderStaticInitializersSymbol(classDef.name)}();
+    </#list>
+    </#if>
 }
 
 void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
@@ -100,11 +130,26 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
         godot_print(&msg_variant, NULL, 0);
         godot_Variant_destroy(&msg_variant);
     }
+    <#--  Destroy static backing variables in reverse initialization order BEFORE the runtime  -->
+    <#--  registries below: destroy/release paths may still touch interned StringName/String state.  -->
+    <#list staticInitClassDefs?reverse as classDef>
+    ${bodyRender.generateStaticDeinitializeBody(classDef)}</#list>
     <#--  Destroy Const StringNames, Strings, and interned standalone Callables  -->
     gdcc_sn_registry_destroy_all();
     gdcc_s_registry_destroy_all();
     gdcc_standalone_callable_registry_destroy_all();
 }
+
+<#-- Per-class static lifecycle entry definitions (two-phase global static initialization). -->
+<#list staticInitClassDefs as classDef>
+static void ${helper.renderStaticDefaultsSymbol(classDef.name)}(void) {
+    ${bodyRender.generateStaticDefaultsBody(classDef)}
+}
+
+static void ${helper.renderStaticInitializersSymbol(classDef.name)}(void) {
+    ${bodyRender.generateStaticInitializersBody(classDef)}
+}
+</#list>
 
 <#-- Bind Methods for each class.-->
 <#-- The local `class_name` slot remains the canonical owner identity that registration used above.-->
@@ -186,9 +231,12 @@ static inline void ${classDef.name}_set_object_ptr(${classDef.name}* self, GDExt
 // GdExtension Methods for each class
 <#list module.classDefs as classDef>
 <#list classDef.properties as property>
+<#-- Static properties have no instance apply helper; their init runs via module lifecycle. -->
+<#if !property.static>
 static inline void ${helper.renderPropertyInitApplyHelperName(classDef, property)}(${classDef.name}* self) {
     ${bodyRender.generatePropertyInitApplyBody(classDef, property)}
 }
+</#if>
 </#list>
 
 GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize) {
@@ -219,7 +267,10 @@ void ${classDef.name}_class_constructor(${classDef.name}* self) {
         ${classDef.superName}_class_constructor(&self->_super);
     </#if>
     <#list classDef.properties as property>
+        <#-- Static properties are not instance fields; the constructor must not touch them. -->
+        <#if !property.static>
         ${helper.renderPropertyInitApplyHelperName(classDef, property)}(self);
+        </#if>
     </#list>
     <#list classDef.functions as function>
         <#if function.name == "_init" && !function.static && function.parameters?size == 1>
@@ -234,7 +285,8 @@ void ${classDef.name}_class_destructor(${classDef.name}* self) {
         return;
     }
     <#list classDef.properties as property>
-        <#if property.type.destroyable>
+        <#-- Static backing variables are cleaned up in deinitialize(), never here. -->
+        <#if !property.static && property.type.destroyable>
             <#if property.type.gdExtensionType.name() == "OBJECT">
                 // Object properties store fat pointers; release the validated live raw Godot object.
                 // The cached instance_id drives the runtime RefCounted reference-bit check.

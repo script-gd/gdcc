@@ -448,20 +448,28 @@ public final class CGenHelper {
     /// `free_func` cleanup for one heap capture field. Object fields release via the fat-pointer
     /// live raw + cached `instance_id`; destroyable builtins use the ordinary destroy helper.
     public @NotNull String renderLambdaCaptureFreeStmt(@NotNull GdType captureType, @NotNull String fieldExpr) {
-        TypeCheckUtil.requireNonCompilerOnly(captureType, "lambda capture free");
-        if (captureType instanceof GdObjectType objectType) {
+        return renderManagedStorageFreeStmt(captureType, fieldExpr);
+    }
+
+    /// Single-point cleanup formula for one owned managed storage slot (lambda capture field or
+    /// static backing variable). Object storage releases through the fat-pointer live raw plus
+    /// cached `instance_id` per `RefCountedStatus`; destroyable builtins use the destroy helper;
+    /// everything else needs no cleanup.
+    private @NotNull String renderManagedStorageFreeStmt(@NotNull GdType storageType, @NotNull String storageExpr) {
+        TypeCheckUtil.requireNonCompilerOnly(storageType, "managed storage free");
+        if (storageType instanceof GdObjectType objectType) {
             var fatType = renderObjectFatPtrStorageType(objectType);
-            var liveExpr = fatType + "_live_object(" + fieldExpr + ")";
+            var liveExpr = fatType + "_live_object(" + storageExpr + ")";
             return switch (context.classRegistry().getRefCountedStatus(objectType)) {
                 case YES -> "release_object(" + liveExpr + ");";
-                case UNKNOWN -> "try_release_object(" + liveExpr + ", " + fieldExpr + ".instance_id);";
+                case UNKNOWN -> "try_release_object(" + liveExpr + ", " + storageExpr + ".instance_id);";
                 case NO -> "";
             };
         }
-        if (!captureType.isDestroyable()) {
+        if (!storageType.isDestroyable()) {
             return "";
         }
-        return renderDestroyFunctionName(captureType) + "(&(" + fieldExpr + "));";
+        return renderDestroyFunctionName(storageType) + "(&(" + storageExpr + "));";
     }
 
     // ==== Coroutine state class codegen (frontend_await_implementation.md §5-§7) ====
@@ -1616,6 +1624,42 @@ public final class CGenHelper {
             @NotNull LirPropertyDef propertyDef
     ) {
         return classDef.getName() + "_class_apply_property_init_" + propertyDef.getName();
+    }
+
+    // ==== Static property storage symbols ====
+    //
+    // All static-var file-scope symbols are published from this single point; load/store gens,
+    // module lifecycle wiring, and the symbol-conflict validator must never re-spell them locally.
+    // The class identity component is the raw canonical class name (same surface as
+    // `<Class>_object_ptr`), not `cIdentifier()` output; the theoretical ambiguity this creates
+    // is absorbed by the module-wide conflict check in `CCodegen.validateFileScopeSymbolsDisjoint`.
+
+    /// File-scope backing variable for one static property: `gdcc_static_<canonicalClassName>_<propName>`.
+    public @NotNull String renderStaticBackingSymbol(
+            @NotNull String canonicalClassName,
+            @NotNull String propertyName
+    ) {
+        return "gdcc_static_" + canonicalClassName + "_" + propertyName;
+    }
+
+    /// Per-class static defaults entry: `gdcc_static_defaults_<canonicalClassName>`. The class name
+    /// intentionally does not sit in the prefix position so these compiler-owned symbols stay out
+    /// of the user function namespace `${class}_${func}` (`func.ftl`).
+    public @NotNull String renderStaticDefaultsSymbol(@NotNull String canonicalClassName) {
+        return "gdcc_static_defaults_" + canonicalClassName;
+    }
+
+    /// Per-class static initializer entry: `gdcc_static_initializers_<canonicalClassName>`
+    /// (same namespace-avoidance rationale as the defaults entry).
+    public @NotNull String renderStaticInitializersSymbol(@NotNull String canonicalClassName) {
+        return "gdcc_static_initializers_" + canonicalClassName;
+    }
+
+    /// `deinitialize()` cleanup statement for one static backing variable. Shares the exact
+    /// per-value destroy discipline of lambda capture fields (object three-state release /
+    /// destroyable builtin destroy / no-op otherwise); returns "" when there is nothing to free.
+    public @NotNull String renderStaticBackingDestroyStmt(@NotNull GdType propertyType, @NotNull String backingExpr) {
+        return renderManagedStorageFreeStmt(propertyType, backingExpr);
     }
 
     /// Constructor/`Class*` sites materialize owner fat self for internal methods that take fat parameters.

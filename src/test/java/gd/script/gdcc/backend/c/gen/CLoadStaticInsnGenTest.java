@@ -15,6 +15,7 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
+import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -469,6 +470,115 @@ class CLoadStaticInsnGenTest {
         assertTrue(ex.getMessage().contains("cannot be a reference"));
     }
 
+    // ==== GDCC script class static property branch ====
+
+    @Test
+    @DisplayName("load_static should read GDCC static property from its backing variable")
+    void shouldLoadGdccStaticPropertyFromBacking() {
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+        var clazz = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(),
+                List.of(new LirPropertyDef("count", GdIntType.INT, true, null, null, null, Map.of())), List.of());
+        clazz.addFunction(setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "Worker", "count")));
+
+        var body = generateBody(api, clazz, clazz.getFunctions().getFirst());
+
+        assertTrue(body.contains("$out = gdcc_static_Worker_count;"), body);
+    }
+
+    @Test
+    @DisplayName("load_static should resolve the declaring owner backing along the hierarchy")
+    void shouldLoadInheritedGdccStaticPropertyFromOwnerBacking() {
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+        var baseClazz = new LirClassDef("Base", "RefCounted", false, false, Map.of(), List.of(),
+                List.of(new LirPropertyDef("count", GdIntType.INT, true, null, null, null, Map.of())), List.of());
+        var subClazz = new LirClassDef("Sub", "Base", false, false, Map.of(), List.of(), List.of(), List.of());
+        subClazz.addFunction(setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "Sub", "count")));
+        var module = new LirModule("test_module", List.of(baseClazz, subClazz));
+        var codegen = new CCodegen();
+        codegen.prepare(newContext(api), module);
+
+        var body = codegen.generateFuncBody(subClazz, subClazz.getFunctions().getFirst());
+
+        // The frontend publishes only the access-start class; the backend must read the declaring
+        // owner's shared storage, never a per-subclass symbol.
+        assertTrue(body.contains("$out = gdcc_static_Base_count;"), body);
+        assertFalse(body.contains("gdcc_static_Sub_count"), body);
+    }
+
+    @Test
+    @DisplayName("load_static should borrow destroyable static storage by address")
+    void shouldLoadDestroyableGdccStaticPropertyByAddress() {
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+        var clazz = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(),
+                List.of(new LirPropertyDef("title", GdStringType.STRING, true, null, null, null, Map.of())), List.of());
+        clazz.addFunction(setupLoadStaticFunction(GdStringType.STRING, new LoadStaticInsn("out", "Worker", "title")));
+
+        var body = generateBody(api, clazz, clazz.getFunctions().getFirst());
+
+        // BORROWED storage read: the copy path takes the backing address directly instead of
+        // shallow-copying the storage into a temp first.
+        assertTrue(body.contains("&(gdcc_static_Worker_title)"), body);
+        assertFalse(body.contains("gdcc_static_Worker_title ="), body);
+    }
+
+    @Test
+    @DisplayName("load_static should retain borrowed RefCounted static reads into the result slot")
+    void shouldRetainBorrowedRefCountedStaticRead() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var clazz = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(),
+                List.of(new LirPropertyDef("peer", new GdObjectType("Worker"), true, null, null, null, Map.of())), List.of());
+        clazz.addFunction(setupLoadStaticFunction(new GdObjectType("Worker"), new LoadStaticInsn("out", "Worker", "peer")));
+
+        var body = generateBody(api, clazz, clazz.getFunctions().getFirst());
+
+        // Object storage read is BORROWED: the result slot retains after the fat-pointer assign.
+        var assignIndex = body.indexOf("$out = gdcc_static_Worker_peer;");
+        assertTrue(assignIndex >= 0, body);
+        var ownIndex = body.indexOf("own_object", assignIndex);
+        assertTrue(ownIndex > assignIndex, body);
+    }
+
+    @Test
+    @DisplayName("load_static should emit no retain for NO RefCounted status static reads")
+    void shouldEmitNoRetainForNonRefCountedStaticRead() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var clazz = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(),
+                List.of(new LirPropertyDef("node", new GdObjectType("Node"), true, null, null, null, Map.of())), List.of());
+        clazz.addFunction(setupLoadStaticFunction(new GdObjectType("Node"), new LoadStaticInsn("out", "Worker", "node")));
+
+        var body = generateBody(api, clazz, clazz.getFunctions().getFirst());
+
+        // Non-RefCounted object reads copy the fat pointer without any ownership call.
+        assertTrue(body.contains("$out = gdcc_static_Worker_node;"), body);
+        assertFalse(body.contains("own_object"), body);
+    }
+
+    @Test
+    @DisplayName("load_static should reject unknown GDCC static property")
+    void shouldRejectUnknownGdccStaticProperty() {
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+        var clazz = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(),
+                List.of(new LirPropertyDef("count", GdIntType.INT, true, null, null, null, Map.of())), List.of());
+        clazz.addFunction(setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "Worker", "missing")));
+
+        var ex = assertThrows(InvalidInsnException.class,
+                () -> generateBody(api, clazz, clazz.getFunctions().getFirst()));
+        assertTrue(ex.getMessage().contains("Static property 'missing' not found in GDCC class 'Worker'"));
+    }
+
+    @Test
+    @DisplayName("load_static should reject result type not assignable from the static property type")
+    void shouldRejectMismatchedGdccStaticLoadType() {
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+        var clazz = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(),
+                List.of(new LirPropertyDef("count", GdIntType.INT, true, null, null, null, Map.of())), List.of());
+        clazz.addFunction(setupLoadStaticFunction(GdStringType.STRING, new LoadStaticInsn("out", "Worker", "count")));
+
+        var ex = assertThrows(InvalidInsnException.class,
+                () -> generateBody(api, clazz, clazz.getFunctions().getFirst()));
+        assertTrue(ex.getMessage().contains("is not assignable from static property type"));
+    }
+
     private LirFunctionDef setupLoadStaticFunction(GdType resultType, LoadStaticInsn instruction) {
         var func = new LirFunctionDef("load_static_test");
         func.setReturnType(GdVoidType.VOID);
@@ -544,6 +654,13 @@ class CLoadStaticInsnGenTest {
     private String generateBody(ExtensionAPI api, LirFunctionDef func) {
         var clazz = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         clazz.addFunction(func);
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = new CCodegen();
+        codegen.prepare(newContext(api), module);
+        return codegen.generateFuncBody(clazz, func);
+    }
+
+    private String generateBody(ExtensionAPI api, LirClassDef clazz, LirFunctionDef func) {
         var module = new LirModule("test_module", List.of(clazz));
         var codegen = new CCodegen();
         codegen.prepare(newContext(api), module);

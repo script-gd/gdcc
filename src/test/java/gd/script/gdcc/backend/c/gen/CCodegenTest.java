@@ -27,6 +27,7 @@ import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralFloatInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
+import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.lir.insn.VariantGetInsn;
@@ -62,6 +63,7 @@ import java.util.regex.Pattern;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -2664,6 +2666,362 @@ public class CCodegenTest {
                     () -> "Missing fragment `" + needle + "` in:\n" + text
             );
         }
+    }
+
+    // ==== Static var C backend ====
+
+    private static @NotNull CodegenContext newStaticTestContext() {
+        var projectInfo = new ProjectInfo("static_codegen_test", GodotVersion.V451, Path.of(".")) {
+        };
+        return new CodegenContext(projectInfo, new ClassRegistry(new ExtensionAPI(
+                null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()
+        )));
+    }
+
+    private static @NotNull LirPropertyDef staticProperty(@NotNull String name, @NotNull GdType type) {
+        return new LirPropertyDef(name, type, true, null, null, null, Map.of());
+    }
+
+    /// Builds a valid hidden static zero-parameter `_field_init_<name>` helper returning `type`.
+    private static @NotNull LirFunctionDef staticInitFunction(@NotNull String name, @NotNull GdType type) {
+        var func = new LirFunctionDef(name);
+        func.setHidden(true);
+        func.setStatic(true);
+        func.setReturnType(type);
+        var tmpVar = func.createAndAddTmpVariable(type);
+        var entry = new LirBasicBlock("entry");
+        func.addBasicBlock(entry);
+        if (type instanceof GdIntType) {
+            entry.appendNonTerminatorInstruction(new LiteralIntInsn(tmpVar.id(), 1));
+        } else if (type instanceof GdStringType) {
+            entry.appendNonTerminatorInstruction(new LiteralStringInsn(tmpVar.id(), "init"));
+        } else {
+            throw new IllegalArgumentException("unsupported fixture type: " + type.getTypeName());
+        }
+        entry.setTerminator(new ReturnInsn(tmpVar.id()));
+        func.setEntryBlockId("entry");
+        return func;
+    }
+
+    private static @NotNull String extractSection(@NotNull String cCode, @NotNull String sectionHeader) {
+        // Match the function definition (header + line break + brace), never its file-top
+        // prototype; the formatter emits CRLF, so the line break is matched with `\R`.
+        var matcher = Pattern.compile(Pattern.quote(sectionHeader) + "\\R\\{").matcher(cCode);
+        assertTrue(matcher.find(), () -> "Missing section: " + sectionHeader);
+        var start = matcher.start();
+        var end = cCode.indexOf("\n}", start);
+        assertTrue(end > start, () -> "Unterminated section: " + sectionHeader);
+        return cCode.substring(start, end);
+    }
+
+    @Test
+    void generateSkipsInstanceSynthesisForStaticProperties() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        workerClass.addProperty(staticProperty("count", GdIntType.INT));
+        workerClass.addProperty(new LirPropertyDef("speed", GdFloatType.FLOAT));
+        var module = new LirModule("static_skip_module", List.of(workerClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var files = codegen.generate();
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
+
+        // Backing storage is defined once at the top of entry.c (single translation unit);
+        // instance member synthesis covers only `speed`.
+        assertTrue(cCode.contains("godot_int gdcc_static_Worker_count;"), cCode);
+        assertFalse(hCode.contains("gdcc_static_Worker_count"), hCode);
+        assertTrue(cCode.contains("Worker_class_apply_property_init_speed"), cCode);
+        assertFalse(cCode.contains("_field_getter_count"), cCode);
+        assertFalse(cCode.contains("_field_setter_count"), cCode);
+        assertFalse(cCode.contains("Worker_class_apply_property_init_count"), cCode);
+        // No instance-field access path may reference the static name.
+        assertFalse(cCode.contains("self->count"), cCode);
+        assertFalse(hCode.contains("self->count"), hCode);
+        // initFunc freeze: backend must not synthesize a default `_field_init_` helper for statics.
+        var countProperty = workerClass.getProperties().stream()
+                .filter(property -> property.getName().equals("count"))
+                .findFirst()
+                .orElseThrow();
+        assertNull(countProperty.getInitFunc());
+        assertNull(countProperty.getGetterFunc());
+        assertNull(countProperty.getSetterFunc());
+    }
+
+    @Test
+    void generateEmitsTwoPhaseStaticInitInBaseBeforeDerivedOrder() {
+        // Module order is deliberately derived-first to prove the inheritance topology reorder.
+        var subClass = new LirClassDef("Sub", "Base");
+        subClass.addProperty(staticProperty("sub_title", GdStringType.STRING));
+        var baseClass = new LirClassDef("Base", "RefCounted");
+        baseClass.addProperty(staticProperty("base_title", GdStringType.STRING));
+        var module = new LirModule("static_order_module", List.of(subClass, baseClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var cCode = generatedFileText(codegen.generate(), "entry.c");
+
+        // Phase 1 (defaults) fully precedes phase 2 (initializers); both are base-before-derived.
+        var defaultsBase = cCode.indexOf("gdcc_static_defaults_Base();");
+        var defaultsSub = cCode.indexOf("gdcc_static_defaults_Sub();");
+        var initializersBase = cCode.indexOf("gdcc_static_initializers_Base();");
+        var initializersSub = cCode.indexOf("gdcc_static_initializers_Sub();");
+        assertTrue(defaultsBase >= 0 && initializersSub >= 0, cCode);
+        assertTrue(defaultsBase < defaultsSub, cCode);
+        assertTrue(defaultsSub < initializersBase, cCode);
+        assertTrue(initializersBase < initializersSub, cCode);
+
+        // deinitialize() destroys in reverse initialization order, before the runtime registries.
+        var subDestroy = cCode.indexOf("godot_String_destroy(&(gdcc_static_Sub_sub_title))");
+        var baseDestroy = cCode.indexOf("godot_String_destroy(&(gdcc_static_Base_base_title))");
+        var registryDestroy = cCode.indexOf("gdcc_sn_registry_destroy_all()");
+        assertTrue(subDestroy >= 0 && baseDestroy > subDestroy, cCode);
+        assertTrue(registryDestroy > baseDestroy, cCode);
+
+        // Defaults sections first-write zero-initialized storage: no destroy of the backing there.
+        var defaultsSection = extractSection(cCode, "static void gdcc_static_defaults_Base(void)");
+        assertTrue(defaultsSection.contains("gdcc_static_Base_base_title ="), defaultsSection);
+        assertFalse(defaultsSection.contains("godot_String_destroy"), defaultsSection);
+    }
+
+    @Test
+    void generateRoutesStaticInitializerThroughOverwriteSemantics() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var titleProperty = new LirPropertyDef("title", GdStringType.STRING, true, "_field_init_title", null, null, Map.of());
+        workerClass.addProperty(titleProperty);
+        workerClass.addFunction(staticInitFunction("_field_init_title", GdStringType.STRING));
+        var module = new LirModule("static_init_module", List.of(workerClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var cCode = generatedFileText(codegen.generate(), "entry.c");
+
+        // The initializers section calls the hidden static helper into a carrier temp, destroys
+        // the already-materialized default, then MOVES the carrier in by plain struct assignment
+        // (destroy-then-move): no copy construction, and the moved-from carrier is never
+        // destroyed.
+        var initializersSection = extractSection(cCode, "static void gdcc_static_initializers_Worker(void)");
+        var callIndex = initializersSection.indexOf("= Worker__field_init_title();");
+        var destroyIndex = initializersSection.indexOf("godot_String_destroy(&gdcc_static_Worker_title)");
+        var moveMatcher = Pattern.compile("gdcc_static_Worker_title = __gdcc_tmp_owned_move_\\d+;")
+                .matcher(initializersSection);
+        assertTrue(callIndex >= 0, initializersSection);
+        assertTrue(destroyIndex > callIndex, initializersSection);
+        assertTrue(moveMatcher.find(destroyIndex), initializersSection);
+        assertFalse(initializersSection.contains("godot_new_String_with_String"), initializersSection);
+        assertFalse(initializersSection.contains("godot_String_destroy(&__gdcc_tmp"), initializersSection);
+    }
+
+    @Test
+    void generateRunsStaticInitAfterCoroutineStateClassRegistration() {
+        // Both static init phases must run only after ALL classes — including hidden
+        // coroutine state classes — are registered, since an initializer may start a coroutine.
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        workerClass.addProperty(staticProperty("count", GdIntType.INT));
+        var coroutineFunc = new LirFunctionDef("work");
+        coroutineFunc.setReturnType(GdVoidType.VOID);
+        coroutineFunc.setStatic(true);
+        coroutineFunc.setHidden(true);
+        coroutineFunc.setCoroutine(true);
+        var entry = new LirBasicBlock("entry");
+        entry.setTerminator(new ReturnInsn(null));
+        coroutineFunc.addBasicBlock(entry);
+        coroutineFunc.setEntryBlockId("entry");
+        workerClass.addFunction(coroutineFunc);
+        var module = new LirModule("static_coroutine_order_module", List.of(workerClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var cCode = generatedFileText(codegen.generate(), "entry.c");
+
+        // First occurrence of the state-class factory is its registration inside initialize().
+        var stateRegistration = cCode.indexOf("_gdcc_coro_state_Worker__coro__work_class_create_instance");
+        var defaultsCall = cCode.indexOf("gdcc_static_defaults_Worker();");
+        var initializersCall = cCode.indexOf("gdcc_static_initializers_Worker();");
+        assertTrue(stateRegistration >= 0, cCode);
+        assertTrue(defaultsCall > stateRegistration, cCode);
+        assertTrue(initializersCall > stateRegistration, cCode);
+        assertTrue(defaultsCall < initializersCall, cCode);
+    }
+
+    @Test
+    void generateSeedsFixedModuleSymbolsIntoConflictCheck() {
+        // Class `gdextension` + function `entry` would spell the exported `gdextension_entry`.
+        var clashClass = new LirClassDef("gdextension", "RefCounted");
+        var entryFunc = new LirFunctionDef("entry");
+        entryFunc.setReturnType(GdVoidType.VOID);
+        clashClass.addFunction(entryFunc);
+        var module = new LirModule("fixed_symbol_clash_module", List.of(clashClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var ex = assertThrows(IllegalStateException.class, codegen::generate);
+        assertTrue(ex.getMessage().contains("C file-scope symbol conflict: 'gdextension_entry'"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("GDExtension entry point"), ex.getMessage());
+    }
+
+    @Test
+    void generateOmitsStaticSectionsWhenNoStaticProperties() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        workerClass.addProperty(new LirPropertyDef("speed", GdFloatType.FLOAT));
+        var module = new LirModule("no_static_module", List.of(workerClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var files = codegen.generate();
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
+
+        // Modules without static properties keep byte-stable output: no backing storage,
+        // no lifecycle entries, no two-phase calls.
+        assertFalse(cCode.contains("gdcc_static_"), cCode);
+        assertFalse(hCode.contains("gdcc_static_"), hCode);
+    }
+
+    @Test
+    void generateEmitsObjectStaticLifecycleThreeStateForms() throws Exception {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        // YES (RefCounted-derived GDCC) with an object-producing initializer.
+        workerClass.addProperty(new LirPropertyDef("peer", new GdObjectType("Worker"), true, "_field_init_peer", null, null, Map.of()));
+        // UNKNOWN (`Object` root) and NO (non-RefCounted engine class) runtime statics.
+        workerClass.addProperty(staticProperty("target", new GdObjectType("Object")));
+        workerClass.addProperty(staticProperty("node", new GdObjectType("Node")));
+        var initFunc = new LirFunctionDef("_field_init_peer");
+        initFunc.setHidden(true);
+        initFunc.setStatic(true);
+        initFunc.setReturnType(new GdObjectType("Worker"));
+        var tmpVar = initFunc.createAndAddTmpVariable(new GdObjectType("Worker"));
+        var entry = new LirBasicBlock("entry");
+        initFunc.addBasicBlock(entry);
+        entry.appendNonTerminatorInstruction(new ConstructObjectInsn(tmpVar.id(), "Worker"));
+        entry.setTerminator(new ReturnInsn(tmpVar.id()));
+        initFunc.setEntryBlockId("entry");
+        workerClass.addFunction(initFunc);
+        var module = new LirModule("static_object_module", List.of(workerClass));
+        var projectInfo = new ProjectInfo("static_object_test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var cCode = generatedFileText(codegen.generate(), "entry.c");
+
+        // Initializer overwrite (OWNED object): the call result is materialized FIRST (before the
+        // old slot is captured, so re-entrant writes from the initializer cannot leak), then
+        // capture old -> assign carrier -> release old, NO re-own, carrier never destroyed.
+        var initializersSection = extractSection(cCode, "static void gdcc_static_initializers_Worker(void)");
+        var callIndex = initializersSection.indexOf("= Worker__field_init_peer();");
+        var captureIndex = initializersSection.indexOf("= gdcc_static_Worker_peer;");
+        var moveMatcher = Pattern.compile("gdcc_static_Worker_peer = __gdcc_tmp_owned_move_\\d+;")
+                .matcher(initializersSection);
+        assertTrue(callIndex >= 0, initializersSection);
+        assertTrue(captureIndex > callIndex, initializersSection);
+        assertTrue(moveMatcher.find(captureIndex), initializersSection);
+        assertFalse(initializersSection.contains("own_object"), initializersSection);
+        assertTrue(initializersSection.indexOf("release_object(", moveMatcher.end()) > moveMatcher.end(), initializersSection);
+
+        // deinitialize(): YES -> release_object, UNKNOWN -> try_release_object with cached id,
+        // NO -> no cleanup statement at all.
+        var deinitializeSection = extractSection(cCode, "void deinitialize(void* userdata, GDExtensionInitializationLevel p_level)");
+        assertTrue(deinitializeSection.contains("release_object(gdcc_Worker_fat_ptr_live_object(gdcc_static_Worker_peer));"), deinitializeSection);
+        assertTrue(deinitializeSection.contains("try_release_object(gdcc_Object_fat_ptr_live_object(gdcc_static_Worker_target), gdcc_static_Worker_target.instance_id);"), deinitializeSection);
+        assertFalse(deinitializeSection.contains("gdcc_static_Worker_node"), deinitializeSection);
+    }
+
+    @Test
+    void generateFailsFastOnFileScopeSymbolConflictBetweenFunctions() {
+        // `A` + function `B_c` and class `A_B` + function `c` both spell `A_B_c`.
+        var plainClass = new LirClassDef("A", "RefCounted");
+        var clashFunc = new LirFunctionDef("B_c");
+        clashFunc.setReturnType(GdVoidType.VOID);
+        plainClass.addFunction(clashFunc);
+        var compoundClass = new LirClassDef("A_B", "RefCounted");
+        var otherFunc = new LirFunctionDef("c");
+        otherFunc.setReturnType(GdVoidType.VOID);
+        compoundClass.addFunction(otherFunc);
+        var module = new LirModule("symbol_clash_module", List.of(plainClass, compoundClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var ex = assertThrows(IllegalStateException.class, codegen::generate);
+        assertTrue(ex.getMessage().contains("C file-scope symbol conflict: 'A_B_c'"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("A.B_c"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("A_B.c"), ex.getMessage());
+    }
+
+    @Test
+    void generateFailsFastOnStaticBackingSymbolConflict() {
+        // `A.b_c` and `A_b.c` both spell `gdcc_static_A_b_c`.
+        var plainClass = new LirClassDef("A", "RefCounted");
+        plainClass.addProperty(staticProperty("b_c", GdIntType.INT));
+        var compoundClass = new LirClassDef("A_b", "RefCounted");
+        compoundClass.addProperty(staticProperty("c", GdIntType.INT));
+        var module = new LirModule("backing_clash_module", List.of(plainClass, compoundClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var ex = assertThrows(IllegalStateException.class, codegen::generate);
+        assertTrue(ex.getMessage().contains("C file-scope symbol conflict: 'gdcc_static_A_b_c'"), ex.getMessage());
+    }
+
+    @Test
+    void generateRejectsStaticInitFunctionWithParameters() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        workerClass.addProperty(new LirPropertyDef("count", GdIntType.INT, true, "_field_init_count", null, null, Map.of()));
+        var badInit = staticInitFunction("_field_init_count", GdIntType.INT);
+        badInit.addParameter(new LirParameterDef("unexpected", GdIntType.INT, null, badInit));
+        workerClass.addFunction(badInit);
+        var module = new LirModule("static_init_param_module", List.of(workerClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var ex = assertThrows(IllegalStateException.class, codegen::generate);
+        assertTrue(ex.getMessage().contains("expected zero parameters"), ex.getMessage());
+    }
+
+    @Test
+    void generateRejectsNonStaticInitFunctionForStaticProperty() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        workerClass.addProperty(new LirPropertyDef("count", GdIntType.INT, true, "_field_init_count", null, null, Map.of()));
+        var badInit = staticInitFunction("_field_init_count", GdIntType.INT);
+        badInit.setStatic(false);
+        workerClass.addFunction(badInit);
+        var module = new LirModule("static_init_flag_module", List.of(workerClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var ex = assertThrows(IllegalStateException.class, codegen::generate);
+        assertTrue(ex.getMessage().contains("must be static"), ex.getMessage());
+    }
+
+    @Test
+    void generateRejectsMissingStaticInitFunction() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        workerClass.addProperty(new LirPropertyDef("count", GdIntType.INT, true, "_field_init_count", null, null, Map.of()));
+        var module = new LirModule("static_init_missing_module", List.of(workerClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var ex = assertThrows(IllegalStateException.class, codegen::generate);
+        assertTrue(ex.getMessage().contains("does not exist"), ex.getMessage());
+    }
+
+    @Test
+    void generateEmitsTypedArrayStaticDefaultThroughConstructor() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        workerClass.addProperty(staticProperty("items", new GdArrayType(GdIntType.INT)));
+        var module = new LirModule("static_typed_default_module", List.of(workerClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var cCode = generatedFileText(codegen.generate(), "entry.c");
+
+        // Typed containers materialize via the builtin constructor (element-type metadata kept),
+        // then move into the backing slot — never a bare untyped `godot_new_Array()` assignment.
+        var defaultsSection = extractSection(cCode, "static void gdcc_static_defaults_Worker(void)");
+        assertTrue(defaultsSection.contains("gdcc_static_Worker_items ="), defaultsSection);
+        assertTrue(defaultsSection.contains("GDEXTENSION_VARIANT_TYPE_INT"), defaultsSection);
+        assertFalse(defaultsSection.contains("gdcc_static_Worker_items = godot_new_Array();"), defaultsSection);
     }
 
     private static String generatedFileText(List<GeneratedFile> files, String filePath) {
