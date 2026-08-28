@@ -2353,6 +2353,74 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
+    void buildExecutableBodyFreezesKeyedAccessForStaticTypedDictionaryContainer() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_static_typed_container_access_kind.gd",
+                """
+                        class_name CfgBuilderStaticTypedContainerAccessKind
+                        extends RefCounted
+                        
+                        static var typed_table: Dictionary[float, int] = {}
+                        var instance_table: Dictionary[float, int] = {}
+                        
+                        func ping() -> void:
+                            self.typed_table[1] = 7
+                            self.instance_table[2] = 8
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderStaticTypedContainerAccessKind",
+                        "RuntimeCfgBuilderStaticTypedContainerAccessKind"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var staticStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().get(0));
+        var staticAssignment = assertInstanceOf(AssignmentExpression.class, staticStatement.expression());
+        var staticTarget = assertInstanceOf(AttributeExpression.class, staticAssignment.left());
+        var staticStep = assertInstanceOf(AttributeSubscriptStep.class, staticTarget.steps().getLast());
+        var instanceStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().get(1));
+        var instanceAssignment = assertInstanceOf(AssignmentExpression.class, instanceStatement.expression());
+        var instanceTarget = assertInstanceOf(AttributeExpression.class, instanceAssignment.left());
+        var instanceStep = assertInstanceOf(AttributeSubscriptStep.class, instanceTarget.steps().getLast());
+
+        var assignments = entryNode.items().stream()
+                .filter(AssignmentItem.class::isInstance)
+                .map(AssignmentItem.class::cast)
+                .toList();
+        var staticPayload = requireNotNull(
+                assignments.getFirst().writableRoutePayload(),
+                "static typed container write should publish a writable payload"
+        );
+        var instancePayload = requireNotNull(
+                assignments.get(1).writableRoutePayload(),
+                "instance typed container write should publish a writable payload"
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(2, assignments.size()),
+                () -> assertSame(staticStep, staticPayload.leaf().anchor()),
+                () -> assertEquals("typed_table", staticPayload.leaf().memberNameOrNull()),
+                // Static containers keep the published container type, so the frozen access
+                // family matches body lowering's typed key materialization (float key, KEYED).
+                () -> assertEquals(
+                        FrontendSubscriptAccessSupport.AccessKind.KEYED,
+                        staticPayload.leaf().subscriptAccessKindOrNull()
+                ),
+                () -> assertSame(instanceStep, instancePayload.leaf().anchor()),
+                () -> assertEquals("instance_table", instancePayload.leaf().memberNameOrNull()),
+                // Instance named containers keep the Variant frozen route (int key -> INDEXED).
+                () -> assertEquals(
+                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
+                        instancePayload.leaf().subscriptAccessKindOrNull()
+                )
+        );
+    }
+
+    @Test
     void buildExecutableBodyFailsFastWhenCompoundPropertyReadFactIsMissing() throws Exception {
         var analyzed = analyzeSharedSemanticFunction(
                 "cfg_builder_compound_missing_property_fact.gd",

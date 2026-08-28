@@ -1280,6 +1280,115 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         assertFalse(assertInstanceOf(PropertyDef.class, resolvedField.declarationSite()).isStatic());
     }
 
+    /// Stage 2.2 of `frontend_static_var_implementation.md`: an attribute-subscript step whose
+    /// named container is a static property publishes the RESOLVED static member on the subscript
+    /// anchor (container provenance for body lowering), while the step's published expression type
+    /// stays the subscript element type. Instance containers publish the same provenance shape
+    /// (RESOLVED instance member) as metadata for the planned typed named-route optimization,
+    /// while body lowering keeps their Variant named route unchanged.
+    @Test
+    void analyzePublishesStaticContainerMemberOnAttributeSubscriptStep() throws Exception {
+        var analyzed = analyze(
+                "static_container_subscript_chain.gd",
+                """
+                        class_name StaticContainerChain
+                        extends RefCounted
+
+                        static var values: Array[int] = []
+                        var plain: Array[int] = []
+
+                        func ping(other: StaticContainerChain) -> int:
+                            var picked = other.values[0]
+                            var fallback = other.plain[1]
+                            return picked + fallback
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var valuesSubscript = findNode(
+                pingFunction,
+                AttributeSubscriptStep.class,
+                step -> step.name().equals("values")
+        );
+        var containerMember = analyzed.analysisData().resolvedMembers().get(valuesSubscript);
+        assertNotNull(containerMember, "static container subscript must publish the static member fact");
+        assertAll(
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, containerMember.status()),
+                () -> assertEquals(FrontendBindingKind.PROPERTY, containerMember.bindingKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, containerMember.receiverKind()),
+                () -> assertTrue(assertInstanceOf(PropertyDef.class, containerMember.declarationSite()).isStatic()),
+                () -> assertEquals("StaticContainerChain", containerMember.receiverType().getTypeName())
+        );
+
+        // The subscript step's published expression type is the element type, not the container
+        // property type hijacked through the member fact.
+        var elementType = analyzed.analysisData().expressionTypes().get(valuesSubscript);
+        assertNotNull(elementType);
+        assertEquals("int", elementType.publishedType().getTypeName());
+
+        // Instance containers publish the same container provenance shape (RESOLVED instance
+        // property member): body lowering keeps the Variant named route for them, but the
+        // declared container type stays available for the planned typed named-route optimization.
+        var plainSubscript = findNode(
+                pingFunction,
+                AttributeSubscriptStep.class,
+                step -> step.name().equals("plain")
+        );
+        var plainContainerMember = analyzed.analysisData().resolvedMembers().get(plainSubscript);
+        assertNotNull(plainContainerMember, "instance container subscript must publish the container member fact");
+        assertAll(
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, plainContainerMember.status()),
+                () -> assertEquals(FrontendBindingKind.PROPERTY, plainContainerMember.bindingKind()),
+                () -> assertFalse(assertInstanceOf(PropertyDef.class, plainContainerMember.declarationSite()).isStatic()),
+                () -> assertEquals("Array[int]", plainContainerMember.resultType().getTypeName()),
+                () -> assertEquals("StaticContainerChain", plainContainerMember.receiverType().getTypeName())
+        );
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+    }
+
+    /// Receiver-shape coverage for the same publication: explicitly typed locals, `self` and
+    /// call-result receivers must all publish the static container member; an untyped local
+    /// inferred through `new()` does as well.
+    @Test
+    void analyzePublishesStaticContainerMemberAcrossReceiverShapes() throws Exception {
+        var analyzed = analyze(
+                "static_container_subscript_receiver_shapes.gd",
+                """
+                        class_name StaticContainerReceiverShapes
+                        extends RefCounted
+
+                        static var values: Array[int] = []
+
+                        static func make_worker() -> StaticContainerReceiverShapes:
+                            return StaticContainerReceiverShapes.new()
+
+                        func read_via_typed_local() -> int:
+                            var worker: StaticContainerReceiverShapes = StaticContainerReceiverShapes.new()
+                            return worker.values[0]
+
+                        func write_via_self(v: int) -> void:
+                            self.values[1] = v
+
+                        func compound_via_call_receiver(v: int) -> void:
+                            make_worker().values[0] += v
+                        """
+        );
+
+        var subscriptSteps = findNodes(
+                analyzed.unit().ast(),
+                AttributeSubscriptStep.class,
+                step -> step.name().equals("values")
+        );
+        assertEquals(3, subscriptSteps.size());
+        for (var step : subscriptSteps) {
+            var member = analyzed.analysisData().resolvedMembers().get(step);
+            assertNotNull(member, "missing static container member on subscript step at " + step.range());
+            assertEquals(FrontendMemberResolutionStatus.RESOLVED, member.status());
+            assertTrue(assertInstanceOf(PropertyDef.class, member.declarationSite()).isStatic());
+        }
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+    }
+
     @Test
     void analyzePublishesBareBuiltinAndObjectNewConstructorsOnSharedCallSurface() throws Exception {
         var analyzed = analyze(
@@ -1810,6 +1919,7 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution").isEmpty());
     }
 
+    @Test
     void analyzeKeepsExactSuffixAfterAttributeSubscriptStep() throws Exception {
         var analyzed = analyze(
                 "attribute_subscript_suffix.gd",
@@ -1833,7 +1943,13 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         var itemsStep = findNode(chainStatement, AttributeSubscriptStep.class, step -> step.name().equals("items"));
         var payloadStep = findNode(chainStatement, AttributePropertyStep.class, step -> step.name().equals("payload"));
 
-        assertTrue(analyzed.analysisData().resolvedMembers().get(itemsStep) == null);
+        var itemsMember = analyzed.analysisData().resolvedMembers().get(itemsStep);
+        assertNotNull(itemsMember, "instance container subscript must publish the container member fact");
+        assertAll(
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, itemsMember.status()),
+                () -> assertEquals(FrontendBindingKind.PROPERTY, itemsMember.bindingKind()),
+                () -> assertEquals("Array[AttributeSubscriptSuffix__sub__Item]", itemsMember.resultType().getTypeName())
+        );
 
         var resolvedPayload = analyzed.analysisData().resolvedMembers().get(payloadStep);
         assertNotNull(resolvedPayload);

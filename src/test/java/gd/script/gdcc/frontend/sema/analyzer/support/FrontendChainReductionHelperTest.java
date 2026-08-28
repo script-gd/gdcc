@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema.analyzer.support;
 
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
+import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
@@ -511,7 +512,16 @@ class FrontendChainReductionHelperTest {
 
         assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
         assertEquals(FrontendChainReductionHelper.RouteKind.SUBSCRIPT, result.stepTraces().getFirst().routeKind());
-        assertNull(result.stepTraces().getFirst().suggestedMember());
+        // The container property resolution is re-anchored on the subscript step so body
+        // lowering can recover the declared container type (`Array[String]` here).
+        var containerMember = result.stepTraces().getFirst().suggestedMember();
+        assertNotNull(containerMember);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, containerMember.status());
+        assertEquals(FrontendBindingKind.PROPERTY, containerMember.bindingKind());
+        assertEquals("names", containerMember.memberName());
+        var containerType = containerMember.resultType();
+        assertNotNull(containerType);
+        assertEquals("Array[String]", containerType.getTypeName());
         assertNull(result.stepTraces().getFirst().suggestedCall());
         var subscriptReceiverType = result.stepTraces().getFirst().outgoingReceiver().receiverType();
         assertNotNull(subscriptReceiverType);

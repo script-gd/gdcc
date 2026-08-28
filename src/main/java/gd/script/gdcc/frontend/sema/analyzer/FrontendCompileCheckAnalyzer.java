@@ -798,8 +798,15 @@ public class FrontendCompileCheckAnalyzer {
         /// BLOCKED/DEFERRED/FAILED/UNSUPPORTED members stay compile-blocked here.
         private void scanResolvedMemberCompileBlocks() {
             for (var entry : resolvedMembers.entrySet()) {
-                var anchor = requireAttributePropertyStep(entry.getKey());
+                var anchor = requireResolvedMemberAnchor(entry.getKey());
                 var publishedMember = Objects.requireNonNull(entry.getValue(), "publishedMember must not be null");
+                if (anchor instanceof AttributeSubscriptStep
+                        && (publishedMember.status() != FrontendMemberResolutionStatus.RESOLVED
+                        || publishedMember.bindingKind() != FrontendBindingKind.PROPERTY)) {
+                    throw new IllegalStateException(
+                            "AttributeSubscriptStep member facts must be RESOLVED container property provenance"
+                    );
+                }
                 if (shouldBlockUnsupportedMethodReference(anchor, publishedMember)) {
                     reportCompileBlock(
                             anchor,
@@ -1115,12 +1122,19 @@ public class FrontendCompileCheckAnalyzer {
             );
         }
 
-        /// Member facts must stay anchored at the exact property step that produced them.
-        private static @NotNull AttributePropertyStep requireAttributePropertyStep(@NotNull Node node) {
-            if (node instanceof AttributePropertyStep attributePropertyStep) {
-                return attributePropertyStep;
+        /// Member facts must stay anchored at the exact property step that produced them. The single
+        /// exception is an attribute-subscript step carrying a RESOLVED container property fact
+        /// (`receiver.member[key]`, instance or static), which chain binding re-anchors from the
+        /// internally synthesized property step so body lowering can recover the container type and
+        /// redirect static containers to static storage; only RESOLVED facts ever use that anchor,
+        /// so the compile-blocking scan below still never reports them.
+        private static @NotNull Node requireResolvedMemberAnchor(@NotNull Node node) {
+            if (node instanceof AttributePropertyStep || node instanceof AttributeSubscriptStep) {
+                return node;
             }
-            throw new IllegalStateException("resolvedMembers must be keyed by attribute property steps");
+            throw new IllegalStateException(
+                    "resolvedMembers must be keyed by attribute property steps or container-provenance subscript steps"
+            );
         }
 
         /// Call facts may be anchored either at an attribute step (`foo.bar()`) or a bare call expression.

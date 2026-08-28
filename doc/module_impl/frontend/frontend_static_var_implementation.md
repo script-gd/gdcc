@@ -206,11 +206,11 @@ frontend 只发布起始类名；这样继承共享存储自然成立。
   backend 沿 hierarchy 解析，与裸标识符约定一致），不得残留指向实例字段的
   `LoadPropertyInsn` / `StorePropertyInsn`。直接 leaf 读/写/复合赋值已在阶段 1 review 闭环中
   提前落地（见阶段 1.5 记录）。
-- **已知缺口（阶段 1 review 记录，归本阶段处理）**：static 容器 property 的 attribute-subscript
-  路径（`obj.values[i]` 读/写/复合赋值）目前仍由 CFG 构造 `SubscriptLeaf` 并落入
-  `VariantGetNamedInsn` / `VariantSetNamedInsn`。本阶段需实现 static 外层容器专用 payload：
-  先 `LoadStaticInsn` 到容器临时值，完成下标读写，再经 terminal `StaticPropertyCommitStep`
-  发出 `StoreStaticInsn`；补 `static Array`/`Dictionary` 的下标读/写/复合赋值 LIR 测试。
+- **（已解决，阶段 2.2）**：static 容器 property 的 attribute-subscript 路径（`obj.values[i]`
+  读/写/复合赋值）曾经落入 `VariantGetNamedInsn` / `VariantSetNamedInsn`；现已实现 static
+  外层容器专用路由：`LoadStaticInsn` 到容器临时值 → 下标读写 → 写回经
+  `appendNamedBaseWriteback` / terminal `StaticContainerSubscriptCommitStep` 发
+  `StoreStaticInsn`（reference carrier 按既定规则编译期跳过写回）。实现与测试明细见阶段 2.2。
 - static `PROPERTY_INIT` context：验证 `FrontendLoweringBuildCfgPass` 与 body pass 对无 self 的
   static init shell 全链路可用（当前证据不足，作为阶段 2 首个验证项）；
   发现 self 假设则按 `requireCompatiblePropertyInitShell` 的 static 分支对齐。
@@ -307,15 +307,92 @@ lowering 就绪、backend 就绪、文档与测试同步之后移除。因此 B2
   shared `analyze(...)` 对合法 static var 零新诊断，对非法形态 diagnostic category 正确且兄弟 subtree 继续工作；
   `FrontendCompileCheckAnalyzerTest` / `ApiCompileDiagnosticsTest` 中 static var 被拒用例**保持不动**（gate 仍关闭）。
 
-### 阶段 2：lowering 链路（gate 保持关闭）
+### 阶段 2：lowering 链路（gate 保持关闭）（✅ 已完成，2026-08-27）
 
-- [ ] 2.1 验证/修复 static `PROPERTY_INIT`（无 self）CFG build + body lowering 全链路（§3.5）。
-- [ ] 2.2 裸读/裸写/复合赋值/`ClassName.name` 读写的 LIR 形态定型：
+- [x] 2.1 验证/修复 static `PROPERTY_INIT`（无 self）CFG build + body lowering 全链路（§3.5）。
+  - 结论：链路**已就绪无需生产修复**——`createPropertyInitShell` 已有 static 分支
+    （hidden + static + 0 参数，不加 `self`），`requireCompatiblePropertyInitShell` 已有
+    0 参数 static 合同校验，CFG/body pass 无 static 拒绝，body session 对 static 函数不声明
+    `self` 槽；唯一阻断是 compile gate（按阶段冻结决定保持关闭）。
+  - 顺带修复文档矛盾：`gdcc_low_ir.md` 示例把实例 property 的 init helper 误标
+    `is_static="true"`（property 表为 `is_static="false"`），已改回。
+  - 测试（shared-semantic harness 绕过 gate）：
+    `runPublishesStaticPropertyInitContextAsZeroParamStaticHiddenShell`（两个 static + 实例对照，
+    锚定 hidden/static/0 参数/返回类型/initFunc 元数据/shell-only）、
+    `runReusesPreassignedHiddenZeroParamStaticPropertyInitShell`（复用正向）、
+    `runFailsFastWhenExistingStaticPropertyInitShellDeclaresParameters`（带参 shell 负向 fail-fast）、
+    `runPublishesStaticPropertyInitCfgGraph`（seq_0 → RETURN stop，literal 与 sibling 引用两形态）、
+    `runLowersStaticPropertyInitializersIntoZeroParamStaticInitFunctions`（LiteralIntInsn + ReturnInsn；
+    sibling static 引用 `base + 41` 在 init 函数内发 `LoadStaticInsn`；0 残留实例字段指令）。
+- [x] 2.2 裸读/裸写/复合赋值/`ClassName.name` 读写的 LIR 形态定型：
       `LoadStaticInsn(起始类, name)` / `StoreStaticInsn(起始类, name, value)`，含继承场景；
       instance receiver 路径额外断言：receiver 子表达式正常求值、leaf 只出现
       `LoadStaticInsn` / `StoreStaticInsn`、无残留实例字段指令（§3.5）。
-- 验收：`run-gradle-targeted-tests.ps1 -Tests FrontendLoweringFunctionPreparationPassTest,FrontendLoweringBuildCfgPassTest,FrontendLoweringAnalysisPassTest,FrontendLoweringBodyInsnPassTest,FrontendLoweringPassManagerTest` 全绿；
-  新增 LIR 级断言覆盖上述指令形态与 static init helper（0 参数、hidden、返回类型匹配）。
+  - 直接 leaf 读/写/复合赋值与 `ClassName.name` 已在阶段 1 review 闭环完成（见 1.5 记录）。
+  - 本阶段落地 static 容器 property 的 attribute-subscript 路径（`obj.values[i]` /
+    `self.values[i]` 读/写/复合赋值）：
+    - sema：`reduceSubscriptStep` 把内部属性解析出的 RESOLVED 容器 property member
+      （实例或 static）**重锚定发布到真实 subscript step**（合成 property step 不在 AST 上，
+      side table 无法检索）；实例成员事实当前仅作容器类型 provenance（供 `containerSourceType`
+      与阶段 6 typed 优化），static 成员事实额外驱动静态存储路由；
+      `resolvePublishedAttributeStepType` 对 SUBSCRIPT step 跳过 member 派生类型，
+      保持发布元素类型（否则 leafType 会被容器类型劫持，实测引发 `store_subscript` 边界错误）。
+    - compile gate：`resolvedMembers` 锚点校验放宽为 AttributePropertyStep |
+      AttributeSubscriptStep（RESOLVED 容器 property 事实使用后一种锚点，阻塞扫描不受影响）。
+    - lowering：`SubscriptLeaf` 携带 `containerSourceType`（三条路径恒填充：裸下标为容器
+      类型、resolved named 容器为发布的 property 类型、dynamic named 容器为 Variant）与
+      `staticOwnerNameOrNull`（仅 static 容器非空）；由 session / SubscriptLoadItem processor
+      在构造时经 `resolveSubscriptContainerFacts(memberName, receiverType, leaf/item anchor)`
+      解析——**不能用 route anchor**：赋值 payload 会被 `withRouteAnchor(assignmentExpression)`
+      重锚定；named scratch 静态分支发 `LoadStaticInsn`，写回经 `appendNamedBaseWriteback` 发
+      `StoreStaticInsn`；新增 `StaticContainerSubscriptCommitStep`（terminal-only，与
+      `StaticPropertyCommitStep` 同规则）承载深层链（`obj.values[i].x = v`）的反向提交。
+    - 写回跳过语义与实例路径对齐：reference carrier（Array/Dictionary/Object/primitive）的
+      终端 static commit 编译期跳过（容器原位 mutation），value-semantic carrier 仍内联应用；
+      因此裸 `values[i]` 复合赋值无 `StoreStaticInsn`、引用元素深链无容器写回——均与实例
+      bare/named 路由的既定行为一致。
+    - 已知边界（预存在，非本计划引入）：type-meta head 首步为 subscript（`ClassName.values[i]`）
+      在 CFG build 抛 `IllegalStateException`（对所有 type-meta 下标链一致），归阶段 5。
+  - review 闭环补强（review-expert-b 发现，均已修复）：
+    - **BLOCKING：static typed 容器的 key 物化丢失容器类型**。named 路由的 key 物化强制按
+      Variant 处理（`materializeSubscriptKey` 对 `memberNameOrNull != null` 降级为 Variant），
+      会把 `Dictionary[float, V]` 的 `int` key 错走 GENERIC/INDEXED。修复：provenance 携带
+      容器类型（`resolvedMember.resultType()`；现为 `SubscriptLeaf.containerSourceType` /
+      `StaticContainerSubscriptCommitStep.containerType`），key 物化与
+      access-kind 选择按 typed 容器语义（同裸下标）。测试：`write_typed_key`（integration，
+      `self.typed_table[1] = v` 锚定 KEYED + 无 named/通用 set）与 commit step 单测的
+      float-key 转换断言。
+    - **WARNING：嵌套 receiver 下 static commit 非 terminal 崩溃**。`holder.child.values[i] = v`
+      这类链的 route promotion 会在 static 边界外保留实例 commit step，触发
+      `StaticContainerSubscriptCommitStep` 的 terminal fail-fast。修复：session 在
+      `requireWritableAccessChain` 物化 commit steps 后做 static 存储边界截断
+      （`truncateAtStaticStorageBoundary`）——static commit 完全终止 mutation 链，外侧 step 只是
+      未变 reference carrier 的冗余写回；receiver/key 表达式的副作用求值不受影响。该截断同时
+      修复 `a.b.static_prop[k] = v` 形态下 `StaticPropertyCommitStep` 的同类预存在崩溃。
+      测试：`runTruncatesOuterInstanceStepsAtStaticContainerBoundary`（值语义 Vector2 元素强制
+      写回实际应用，锚定 LoadStatic/SetIndexed/StoreStatic + 无 `child` 写回 + receiver 链
+      仍求值）。
+    - **review 复审二次发现：截断必须保留最内层 static 边界**。双 static 边界场景
+      （`static_holder.vectors[i].x = v`，外层 static property + 内层 static 容器）下，取第一个
+      static 边界会让内层 commit 以 non-terminal 执行；外层 static property 的存储引用从不因
+      内层元素/容器 mutation 改变，故截断改为丢弃最内层 static 边界之前的全部 step。
+      测试：`runKeepsOnlyInnermostStaticBoundaryInReverseCommit`（锚定 vectors 的
+      LoadStatic/SetIndexed/StoreStatic、无 `holder` 的 StoreStatic、`holder` receiver 仍被求值）。
+  - 测试：`analyzePublishesStaticContainerMemberOnAttributeSubscriptStep`（发布 + 元素类型 +
+    实例容器同形态 provenance）、`analyzePublishesStaticContainerMemberAcrossReceiverShapes`（typed
+    local / self / call receiver 三形态）、
+    `runLowersStaticContainerSubscriptThroughStaticStorageRoute`（Array 读 / self 写 /
+    Dictionary 写 / call receiver 复合 + 实例 named 路由对照）、
+    `runLowersBareStaticContainerSubscriptThroughStaticStorageRoute`（bare 回归锚点，
+    写回跳过语义）、`runSkipsStaticContainerWritebackForReferenceElementMutations`（深链引用
+    元素）、`reverseCommitAppliesStaticContainerSubscriptThroughStaticStorageRoute` +
+    `reverseCommitFailsFastWhenStaticContainerSubscriptCommitIsNotTerminal`（commit step 单测）。
+- 验收：`run-gradle-targeted-tests.ps1 -Tests FrontendLoweringFunctionPreparationPassTest,FrontendLoweringBuildCfgPassTest,FrontendLoweringAnalysisPassTest,FrontendLoweringBodyInsnPassTest,FrontendLoweringPassManagerTest` 全绿（另含
+  FrontendWritableRouteSupportTest / FrontendChainReductionHelperTest /
+  FrontendBodyOwnerProceduresChainBindingTest / FrontendCompileCheckAnalyzerTest /
+  ApiCompileDiagnosticsTest / FrontendMatchSupportTest 回归，共 446 项）；
+  新增 LIR 断言覆盖各指令形态与 static init helper（0 参数、hidden、返回类型匹配、0 残留
+  实例字段指令）。
 
 ### 阶段 3：C backend（gate 保持关闭）
 
@@ -359,6 +436,54 @@ lowering 就绪、backend 就绪、文档与测试同步之后移除。因此 B2
       本文档改写为事实源风格并移除 checklist。
 - 验收：`run-gradle-targeted-tests.ps1 -Tests FrontendCompileCheckAnalyzerTest,ApiCompileDiagnosticsTest,ApiCompileTaskFailureStageTest` 全绿；
   `./gradlew clean build --no-daemon --info --console=plain` 全绿。
+
+### 阶段 5：type-meta head 首步 attribute-subscript 支持（`ClassName.values[i]`，待实施）
+
+预存在的通用边界（对所有 type-meta 下标链一致，含常量容器，非 static var 特有）：
+`FrontendCfgGraphBuilder.buildTypeMetaHeadAttributeExpressionValue` 只接受首步为
+`AttributePropertyStep` / `AttributeCallStep`，遇到 `AttributeSubscriptStep` 首步直接
+fail-fast `IllegalStateException`。整条下标机制（`SubscriptLoadItem.baseValueId` 非空、
+writable root 枚举、`SubscriptLeaf.baseOrReceiverSlotId` 非空）都建立在“receiver 有运行时值”
+的假设上，而 type-meta head 从不物化运行时值。
+
+- [ ] 5.1 CFG 增加 type-meta subscript 首步分支：头部成员 step 沿用既有 TYPE_META 分支出
+      `MemberLoadItem(baseValueIdOrNull=null)`（直接发 `LoadStaticInsn` 产出容器值 id），
+      后续下标按**普通下标**（`memberNameOrNull=null`，base 指向容器临时值）构造——
+      与裸标识符形态（`values[i]`，STATIC_CONTEXT root + 终端 `StaticPropertyCommitStep`）
+      结构同构；`SubscriptLeaf.baseOrReceiverSlotId` 保持 `@NotNull`（base 恒为
+      `LoadStaticInsn` 结果槽位），不需要为“无 receiver”放宽可空性。
+- [ ] 5.2 sema 确认/放行 TYPE_META receiver 的容器成员事实发布（`reduceSubscriptStep`
+      对 type-meta incoming receiver 的合成属性解析已覆盖 static property；验证
+      `requireStaticReceiverName(resolvedMember.receiverType())` 在 TYPE_META 下取类名）。
+- [ ] 5.3 终端写回沿用提升的 `StaticPropertyCommitStep`；读形态 `ClassName.values[i]`
+      与写形态 `ClassName.values[i] = v` 均需正/负测试（含继承起始类 `Sub.values[i]`）。
+- 验收：`FrontendCfgGraphBuilderTest` / `FrontendLoweringBodyInsnPassTest` 新增
+  type-meta subscript 用例全绿；既有 type-meta head 负向断言相应更新。
+
+### 阶段 6：可解析实例 named subscript 的 typed 优化（`obj.items[i]`，待实施，依赖阶段 5 之后）
+
+现状：attribute-subscript named 路由（`receiver.member[key]`）对所有实例 receiver 一律走
+Variant named 路径（`PackVariantInsn` → `VariantGetNamedInsn` → `Variant(Set/Get)IndexedInsn`
+→ `VariantSetNamedInsn`），即使 `member` 是完全解析、静态类型明确的实例 property
+（如 `var items: Array[int]`）。这是“指令契约（VariantGetNamedInsn 返回 Variant）+ 运行时
+分发兜底正确”的既定公共分母，正确性无问题，但放弃了编译期已知的容器类型。
+
+阶段 2.2 起已铺平数据通路：chain binding 把 RESOLVED 实例容器成员事实发布到 subscript
+锚点，`SubscriptLeaf.containerSourceType` 恒填充声明容器类型（dynamic 容器为 Variant）。
+本阶段消费这些数据：
+
+- [ ] 6.1 resolved 实例容器（`containerSourceType` 为非 Variant 且非 static owner）的 named
+      scratch 改为 `LoadPropertyInsn` + typed 下标（key 转换与 access-kind 按
+      `containerSourceType`，与裸下标一致）+ `StorePropertyInsn` 写回，与裸形态
+      （`items[i]` 经 `InstancePropertyCommitStep`）拉齐；`containerSourceType` 为 Variant
+      的 dynamic 容器保持既有 Variant named 路由不变。
+- [ ] 6.2 反向提交 `SubscriptCommitStep` 同步增加容器 provenance 消费（深链
+      `obj.items[i].x = v` 的 named 层写回同样 typed 化）。
+- [ ] 6.3 行为基线迁移：既有 named 路由测试锚定 Variant 指令形态，需按 receiver 是否
+      resolved 实例容器分组更新；engine 对象 property 容器（非 GDCC `PropertyDef`）保持
+      Variant 路由（`LoadPropertyInsn`/`StorePropertyInsn` 仅 GDCC 实例存储可用）。
+- 验收：`FrontendWritableRouteSupportTest` 按新契约重写 named 用例 + integration 正/负测试
+  （typed key 转换、无 Variant named 指令残留、dynamic 容器回归）全绿。
 
 ## 5. 风险登记
 
@@ -458,3 +583,7 @@ lowering 就绪、backend 就绪、文档与测试同步之后移除。因此 B2
 - `_static_init()` 用户函数的自动调用（Godot parity）。
 - static var setget。
 - `@static_unload` 注解。
+- type-meta head 首步 attribute-subscript（`ClassName.values[i]`，含 static 容器与常量
+  容器）：已升级为阶段 5（预存在的通用边界，非 static var 特有）。
+- 可解析实例 named subscript 的 typed 优化（`obj.items[i]` 跳过 Variant named 路由）：
+  已升级为阶段 6。

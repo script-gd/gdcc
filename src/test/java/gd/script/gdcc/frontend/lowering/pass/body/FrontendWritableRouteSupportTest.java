@@ -22,8 +22,10 @@ import gd.script.gdcc.lir.insn.GoIfInsn;
 import gd.script.gdcc.lir.insn.GotoInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.LoadPropertyInsn;
+import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.StorePropertyInsn;
+import gd.script.gdcc.lir.insn.StoreStaticInsn;
 import gd.script.gdcc.lir.insn.VariantGetKeyedInsn;
 import gd.script.gdcc.lir.insn.VariantGetIndexedInsn;
 import gd.script.gdcc.lir.insn.VariantGetNamedInsn;
@@ -35,6 +37,7 @@ import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
@@ -56,6 +59,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -176,6 +180,57 @@ class FrontendWritableRouteSupportTest {
                 () -> assertEquals(4, instructions.size()),
                 () -> assertEquals("receiver_slot", packInsn.valueId()),
                 () -> assertEquals("payloads", nameInsn.value()),
+                () -> assertEquals(packInsn.resultId(), getNamedInsn.namedVariantId()),
+                () -> assertEquals(nameInsn.resultId(), getNamedInsn.nameId()),
+                () -> assertEquals("leaf_result", getIndexedInsn.resultId()),
+                () -> assertEquals(getNamedInsn.resultId(), getIndexedInsn.variantId()),
+                () -> assertEquals("key_slot", getIndexedInsn.indexId())
+        );
+    }
+
+    @Test
+    void readLeafKeepsVariantNamedRouteWhenInstanceContainerSourceTypeIsDeclared() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        var objectType = new GdObjectType("MissingWorker");
+        session.ensureVariable("receiver_slot", objectType);
+        session.ensureVariable("key_slot", GdIntType.INT);
+        session.ensureVariable("leaf_result", GdVariantType.VARIANT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("items"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "attribute-subscript receiver",
+                        "receiver_slot",
+                        objectType
+                ),
+                // A declared instance container type is provenance metadata for the planned
+                // typed named-route optimization: without a static owner the leaf must still
+                // lower through the Variant named route exactly like a dynamic container.
+                new FrontendWritableRouteSupport.SubscriptLeaf(
+                        "receiver_slot",
+                        objectType,
+                        "items",
+                        "key_slot",
+                        GdIntType.INT,
+                        GdVariantType.VARIANT,
+                        new GdArrayType(GdIntType.INT),
+                        null
+                ),
+                List.of()
+        );
+
+        var slotId = FrontendWritableRouteSupport.materializeLeafReadInto(session, block, chain, "leaf_result");
+        var instructions = block.getNonTerminatorInstructions();
+        var packInsn = assertInstanceOf(PackVariantInsn.class, instructions.get(0));
+        var nameInsn = assertInstanceOf(LiteralStringNameInsn.class, instructions.get(1));
+        var getNamedInsn = assertInstanceOf(VariantGetNamedInsn.class, instructions.get(2));
+        var getIndexedInsn = assertInstanceOf(VariantGetIndexedInsn.class, instructions.get(3));
+
+        assertAll(
+                () -> assertEquals("leaf_result", slotId),
+                () -> assertEquals(4, instructions.size()),
+                () -> assertEquals("receiver_slot", packInsn.valueId()),
+                () -> assertEquals("items", nameInsn.value()),
                 () -> assertEquals(packInsn.resultId(), getNamedInsn.namedVariantId()),
                 () -> assertEquals(nameInsn.resultId(), getNamedInsn.nameId()),
                 () -> assertEquals("leaf_result", getIndexedInsn.resultId()),
@@ -910,6 +965,108 @@ class FrontendWritableRouteSupportTest {
         );
     }
 
+    /// Value-semantic carriers still apply the static container writeback inline: reverse commit
+    /// reloads the shared container through `LoadStaticInsn`, applies the indexed store and
+    /// commits through `StoreStaticInsn`, with no Variant named-member instruction. The container
+    /// type is honored for key materialization: a `float`-keyed Dictionary converts the `int` key
+    /// and stays `KEYED` instead of degrading to the Variant named route.
+    @Test
+    void reverseCommitAppliesStaticContainerSubscriptThroughStaticStorageRoute() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.ensureVariable("element_slot", GdFloatVectorType.VECTOR2);
+        session.ensureVariable("key_slot", GdIntType.INT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("vectors"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot("static container route", "obj_slot", GdObjectType.OBJECT),
+                new FrontendWritableRouteSupport.InstancePropertyLeaf("element_slot", "x", GdFloatVectorType.VECTOR2),
+                List.of(
+                        new FrontendWritableRouteSupport.StaticContainerSubscriptCommitStep(
+                                "RuntimeWritableRouteHelper",
+                                "vectors",
+                                new GdDictionaryType(GdFloatType.FLOAT, GdVariantType.VARIANT),
+                                "key_slot",
+                                GdIntType.INT
+                        )
+                )
+        );
+
+        FrontendWritableRouteSupport.reverseCommit(
+                session,
+                block,
+                chain,
+                "element_slot",
+                FrontendWritableRouteSupport.ALWAYS_APPLY
+        );
+
+        var instructions = block.getNonTerminatorInstructions();
+        var staticLoads = instructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .toList();
+        var staticStores = instructions.stream()
+                .filter(StoreStaticInsn.class::isInstance)
+                .map(StoreStaticInsn.class::cast)
+                .toList();
+        var keyedStores = instructions.stream()
+                .filter(VariantSetKeyedInsn.class::isInstance)
+                .map(VariantSetKeyedInsn.class::cast)
+                .toList();
+        assertAll(
+                () -> assertEquals(1, staticLoads.size()),
+                () -> assertEquals("RuntimeWritableRouteHelper", staticLoads.getFirst().className()),
+                () -> assertEquals("vectors", staticLoads.getFirst().staticName()),
+                () -> assertEquals(1, keyedStores.size()),
+                () -> assertEquals(staticLoads.getFirst().resultId(), keyedStores.getFirst().keyedVariantId()),
+                () -> assertNotEquals("key_slot", keyedStores.getFirst().keyId(),
+                        "float-keyed container must materialize a converted key slot"),
+                () -> assertEquals("element_slot", keyedStores.getFirst().valueId()),
+                () -> assertEquals(1, staticStores.size()),
+                () -> assertEquals("RuntimeWritableRouteHelper", staticStores.getFirst().className()),
+                () -> assertEquals("vectors", staticStores.getFirst().staticName()),
+                () -> assertEquals(staticLoads.getFirst().resultId(), staticStores.getFirst().valueId()),
+                () -> assertTrue(instructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn))
+        );
+    }
+
+    @Test
+    void reverseCommitFailsFastWhenStaticContainerSubscriptCommitIsNotTerminal() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.ensureVariable("value_slot", GdVariantType.VARIANT);
+        session.ensureVariable("key_slot", GdIntType.INT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("value"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot("malformed route", "value_slot", GdVariantType.VARIANT),
+                new FrontendWritableRouteSupport.DirectSlotLeaf("value_slot", GdVariantType.VARIANT),
+                List.of(
+                        new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "payloads"),
+                        new FrontendWritableRouteSupport.StaticContainerSubscriptCommitStep(
+                                "RuntimeWritableRouteHelper",
+                                "payloads",
+                                GdVariantType.VARIANT,
+                                "key_slot",
+                                GdIntType.INT
+                        )
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> FrontendWritableRouteSupport.reverseCommit(
+                        session,
+                        block,
+                        chain,
+                        "value_slot",
+                        FrontendWritableRouteSupport.ALWAYS_APPLY
+                )
+        );
+
+        assertTrue(exception.getMessage().contains("StaticContainerSubscriptCommitStep"));
+    }
+
     @Test
     void reverseCommitFailsFastWhenStaticPropertyCommitIsNotTerminal() throws Exception {
         var session = prepareSession();
@@ -955,6 +1112,19 @@ class FrontendWritableRouteSupportTest {
                         GdVariantType.VARIANT
                 )
         );
+        var staticOwnerWithoutMember = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendWritableRouteSupport.SubscriptLeaf(
+                        "receiver_slot",
+                        GdVariantType.VARIANT,
+                        null,
+                        "key_slot",
+                        GdIntType.INT,
+                        GdVariantType.VARIANT,
+                        GdVariantType.VARIANT,
+                        "MissingWorker"
+                )
+        );
         var blankProperty = assertThrows(
                 IllegalArgumentException.class,
                 () -> new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", " ")
@@ -962,6 +1132,7 @@ class FrontendWritableRouteSupportTest {
 
         assertAll(
                 () -> assertTrue(blankKey.getMessage().contains("keySlotId")),
+                () -> assertTrue(staticOwnerWithoutMember.getMessage().contains("memberNameOrNull")),
                 () -> assertTrue(blankProperty.getMessage().contains("propertyName"))
         );
     }

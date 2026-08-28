@@ -2445,6 +2445,45 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeFailsFastWhenSubscriptStepMemberFactIsNotResolvedProperty() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_subscript_member_fact_guard.gd", """
+                class_name CompileCheckSubscriptMemberFactGuard
+                extends RefCounted
+                
+                var items: Array[int] = []
+                
+                func ping() -> void:
+                    self.items[0] = 1
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
+        var subscriptStep = findNode(pingFunction, AttributeSubscriptStep.class, step -> step.name().equals("items"));
+        var originalMember = Objects.requireNonNull(preparedInput.analysisData().resolvedMembers().get(subscriptStep));
+        preparedInput.analysisData().resolvedMembers().put(
+                subscriptStep,
+                FrontendResolvedMember.dynamic(
+                        originalMember.memberName(),
+                        originalMember.bindingKind(),
+                        originalMember.receiverKind(),
+                        originalMember.ownerKind(),
+                        originalMember.receiverType(),
+                        originalMember.declarationSite(),
+                        "synthetic dynamic container member"
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> runCompileCheck(new PreparedCompileCheckInput(
+                        preparedInput.unit(),
+                        preparedInput.analysisData(),
+                        new DiagnosticManager()
+                ))
+        );
+
+        assertTrue(exception.getMessage().contains("RESOLVED container property provenance"));
+    }
+
+    @Test
     void analyzeReleasesResolvedSignalConnectCallRegression() throws Exception {
         var preparedInput = prepareCompileCheckInput("compile_check_signal_resolved_regression.gd", """
                 class_name CompileCheckSignalResolvedRegression

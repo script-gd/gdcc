@@ -4,6 +4,7 @@ import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
+import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
@@ -1857,6 +1858,20 @@ public final class FrontendChainReductionHelper {
         var subscriptTypeResult = FrontendChainStatusBridge.toExpressionTypeResult(semanticResult);
         var outgoingReceiver = FrontendChainStatusBridge.toReceiverState(subscriptTypeResult);
         var detailReason = semanticResult.detailReason();
+        // Attribute-subscript steps re-anchor the internally synthesized container property
+        // resolution (instance or static) on the real subscript step: the synthesized property
+        // step is detached from the AST, so the side table cannot retrieve it otherwise. Body
+        // lowering consumes the fact as container provenance (`receiver.member[key]`): the
+        // published container type feeds `SubscriptLeaf.containerSourceType`, and static
+        // containers additionally redirect the named-base scratch/writeback from the Variant
+        // named route to `LoadStaticInsn`/`StoreStaticInsn`. Dynamic containers (Variant
+        // receivers) stay unpublished and keep the Variant named route.
+        var containerMember = memberResolution.suggestedMember();
+        var publishableContainerMember = containerMember != null
+                && containerMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                && containerMember.bindingKind() == FrontendBindingKind.PROPERTY
+                ? containerMember
+                : null;
         return new StepTrace(
                 stepIndex,
                 step,
@@ -1866,7 +1881,7 @@ public final class FrontendChainReductionHelper {
                 outgoingReceiver.status(),
                 outgoingReceiver,
                 null,
-                null,
+                publishableContainerMember,
                 null,
                 argumentResolution.retryUsed(),
                 detailReason

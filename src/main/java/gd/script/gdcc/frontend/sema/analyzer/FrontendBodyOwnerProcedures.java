@@ -1556,7 +1556,12 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     private static @NotNull FrontendExpressionType resolvePublishedAttributeStepType(
             @NotNull FrontendChainReductionHelper.StepTrace trace
     ) {
-        if (trace.suggestedMember() != null) {
+        // A SUBSCRIPT step may carry a suggestedMember as static container provenance
+        // (`obj.values[i]` with static `values`, published for body lowering only). The step's
+        // value type is still the subscript element type from the outgoing receiver, never the
+        // container property type.
+        if (trace.suggestedMember() != null
+                && trace.stepKind() != FrontendChainReductionHelper.StepKind.SUBSCRIPT) {
             return FrontendChainStatusBridge.toPublishedExpressionType(trace.suggestedMember());
         }
         if (trace.suggestedCall() != null) {

@@ -41,6 +41,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -492,6 +493,127 @@ class FrontendLoweringFunctionPreparationPassTest {
         assertTrue(exception.getMessage().contains("Executable function 'RuntimePreparationOuter.ping' must remain shell-only during preparation"));
     }
 
+    /// Stage 2.1 of `frontend_static_var_implementation.md`: static var initializers publish a
+    /// `PROPERTY_INIT` context whose shell is hidden, static and zero-parameter (no `self`), while
+    /// the instance init shell keeps its one-`self` contract. The compile gate stays closed, so
+    /// this uses the shared-semantic harness to verify the lowering chain in isolation.
+    @Test
+    void runPublishesStaticPropertyInitContextAsZeroParamStaticHiddenShell() throws Exception {
+        var prepared = prepareSharedStaticInitContext();
+        var preparationPass = new FrontendLoweringFunctionPreparationPass();
+
+        preparationPass.run(prepared.context());
+
+        var lirModule = prepared.context().requireLirModule();
+        var contexts = prepared.context().requireFunctionLoweringContexts();
+        var classDef = requireClass(lirModule, "RuntimePreparationStaticInit");
+        var sourceFile = prepared.module().units().getFirst().ast();
+        var sharedDeclaration = requireStatement(
+                sourceFile.statements(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("shared")
+        );
+        var labelDeclaration = requireStatement(
+                sourceFile.statements(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("label")
+        );
+
+        var sharedContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimePreparationStaticInit",
+                "_field_init_shared"
+        );
+        var labelContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimePreparationStaticInit",
+                "_field_init_label"
+        );
+        var countContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimePreparationStaticInit",
+                "_field_init_count"
+        );
+
+        assertAll(
+                () -> assertSame(sharedDeclaration, sharedContext.sourceOwner()),
+                () -> assertSame(sharedDeclaration.value(), sharedContext.loweringRoot()),
+                () -> assertTrue(sharedContext.targetFunction().isHidden()),
+                () -> assertTrue(sharedContext.targetFunction().isStatic()),
+                () -> assertEquals(0, sharedContext.targetFunction().getParameterCount()),
+                () -> assertEquals("int", sharedContext.targetFunction().getReturnType().getTypeName()),
+                () -> assertSame(requireFunction(classDef, "_field_init_shared"), sharedContext.targetFunction()),
+                () -> assertEquals(0, sharedContext.targetFunction().getBasicBlockCount()),
+                () -> assertTrue(sharedContext.targetFunction().getEntryBlockId().isEmpty()),
+                () -> assertEquals("_field_init_shared", requireProperty(classDef, "shared").getInitFunc()),
+                () -> assertSame(labelDeclaration, labelContext.sourceOwner()),
+                () -> assertTrue(labelContext.targetFunction().isStatic()),
+                () -> assertEquals(0, labelContext.targetFunction().getParameterCount()),
+                () -> assertEquals("String", labelContext.targetFunction().getReturnType().getTypeName()),
+                () -> assertFalse(countContext.targetFunction().isStatic()),
+                () -> assertEquals(1, countContext.targetFunction().getParameterCount()),
+                () -> assertEquals("self", countContext.targetFunction().getParameter(0).name())
+        );
+    }
+
+    @Test
+    void runReusesPreassignedHiddenZeroParamStaticPropertyInitShell() throws Exception {
+        var prepared = prepareSharedStaticInitContext();
+        var lirModule = prepared.context().requireLirModule();
+        var classDef = requireClass(lirModule, "RuntimePreparationStaticInit");
+        var property = requireProperty(classDef, "shared");
+        property.setInitFunc("_field_init_shared_preassigned");
+        var existingShell = new LirFunctionDef("_field_init_shared_preassigned");
+        existingShell.setStatic(true);
+        existingShell.setHidden(true);
+        existingShell.setReturnType(property.getType());
+        classDef.addFunction(existingShell);
+
+        new FrontendLoweringFunctionPreparationPass().run(prepared.context());
+
+        var contexts = prepared.context().requireFunctionLoweringContexts();
+        var propertyContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimePreparationStaticInit",
+                "_field_init_shared_preassigned"
+        );
+        assertSame(existingShell, propertyContext.targetFunction());
+        assertEquals(
+                1,
+                classDef.getFunctions().stream()
+                        .filter(function -> function.getName().equals("_field_init_shared_preassigned"))
+                        .count()
+        );
+    }
+
+    /// A pre-seeded static init shell that carries a parameter violates the zero-parameter static
+    /// contract and must fail fast instead of being silently reused.
+    @Test
+    void runFailsFastWhenExistingStaticPropertyInitShellDeclaresParameters() throws Exception {
+        var prepared = prepareSharedStaticInitContext();
+        var lirModule = prepared.context().requireLirModule();
+        var classDef = requireClass(lirModule, "RuntimePreparationStaticInit");
+        var property = requireProperty(classDef, "shared");
+        property.setInitFunc("_field_init_shared_existing");
+        var existingShell = new LirFunctionDef("_field_init_shared_existing");
+        existingShell.setStatic(true);
+        existingShell.setHidden(true);
+        existingShell.setReturnType(property.getType());
+        existingShell.addParameter(new LirParameterDef("self", outerClassAsType(classDef), null, existingShell));
+        classDef.addFunction(existingShell);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringFunctionPreparationPass().run(prepared.context())
+        );
+
+        assertTrue(exception.getMessage().contains("must not declare parameters"));
+    }
+
     @Test
     void runReusesPreassignedHiddenPropertyInitShell() throws Exception {
         var prepared = prepareCompileReadyContext();
@@ -910,6 +1032,34 @@ class FrontendLoweringFunctionPreparationPassTest {
         new FrontendLoweringAnalysisPass().run(context);
         new FrontendLoweringClassSkeletonPass().run(context);
         return new PreparedContext(context, diagnostics, module);
+    }
+
+    /// Shared-semantic harness for static var fixtures: the compile gate intentionally rejects
+    /// static vars in production, so these tests publish shared analysis data directly to verify
+    /// the lowering chain in isolation (gate removal is stage 4 scope).
+    private static @NotNull PreparedContext prepareSharedStaticInitContext() throws Exception {
+        var analyzed = analyzeSharedModule(
+                List.of(new SourceFixture(
+                        "preparation_static_init.gd",
+                        """
+                                class_name PreparationStaticInit
+                                extends RefCounted
+
+                                static var shared: int = 7
+                                static var label: String = "s"
+                                var count: int = 1
+                                """
+                )),
+                Map.of("PreparationStaticInit", "RuntimePreparationStaticInit")
+        );
+        var context = new FrontendLoweringContext(
+                analyzed.module(),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                analyzed.diagnostics()
+        );
+        context.publishAnalysisData(analyzed.analysisData());
+        new FrontendLoweringClassSkeletonPass().run(context);
+        return new PreparedContext(context, analyzed.diagnostics(), analyzed.module());
     }
 
     private static @NotNull SharedAnalyzedModule analyzeSharedModule(

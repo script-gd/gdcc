@@ -3735,13 +3735,27 @@ public final class FrontendCfgGraphBuilder {
     /// - `Dictionary[float, V]` with an `int` key freezes as `KEYED`, because body lowering will cast
     ///   the key to the dictionary's `float` key type
     /// - attribute-subscript steps use a `Variant` effective receiver because the named base is
-    ///   materialized from runtime `receiver.member` before the subscript is applied
+    ///   materialized from runtime `receiver.member` before the subscript is applied — except static
+    ///   container properties, whose named base is loaded from shared static storage and keeps the
+    ///   published container type (body lowering consumes the same provenance through
+    ///   `SubscriptLeaf.containerSourceType` / `staticOwnerNameOrNull`)
     private @NotNull FrontendSubscriptAccessSupport.AccessKind determineWritableSubscriptAccessKind(
             @NotNull Node subscriptAnchor,
             @NotNull GdType receiverType,
             @NotNull GdType keyType
     ) {
-        var effectiveReceiverType = subscriptAnchor instanceof AttributeSubscriptStep ? GdVariantType.VARIANT : receiverType;
+        var effectiveReceiverType = receiverType;
+        if (subscriptAnchor instanceof AttributeSubscriptStep) {
+            var containerMember = requireAnalysisData().resolvedMembers().get(subscriptAnchor);
+            var staticContainerType = containerMember != null
+                    && containerMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                    && containerMember.bindingKind() == FrontendBindingKind.PROPERTY
+                    && containerMember.declarationSite() instanceof PropertyDef propertyDef
+                    && propertyDef.isStatic()
+                    ? containerMember.resultType()
+                    : null;
+            effectiveReceiverType = staticContainerType != null ? staticContainerType : GdVariantType.VARIANT;
+        }
         var materializedKeyType = effectiveReceiverType instanceof GdContainerType containerType
                 ? containerType.getKeyType()
                 : keyType;

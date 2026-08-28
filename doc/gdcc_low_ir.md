@@ -1146,7 +1146,7 @@ Low IR:
                 </basic_blocks>
             </function>
             <function name="_field_init_pitch_degree"
-                      is_static="true"
+                      is_static="false"
                       is_abstract="false"
                       is_vararg="false"
                       is_hidden="true">

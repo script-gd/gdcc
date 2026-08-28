@@ -39,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -248,6 +249,75 @@ class FrontendLoweringBuildCfgPassTest {
                 () -> assertEquals(methodCall.resultValueId(), propertyStop.returnValueIdOrNull()),
                 () -> assertEquals(0, propertyContext.targetFunction().getBasicBlockCount()),
                 () -> assertTrue(propertyContext.targetFunction().getEntryBlockId().isEmpty())
+        );
+    }
+
+    /// Stage 2.1 of `frontend_static_var_implementation.md`: a static var initializer builds the
+    /// same expression-rooted CFG shape as an instance initializer (sequence node -> RETURN stop
+    /// carrying the initializer value id); the target shell stays block-free until body lowering.
+    /// The compile gate stays closed, so this uses the shared-semantic harness.
+    @Test
+    void runPublishesStaticPropertyInitCfgGraph() throws Exception {
+        var prepared = prepareSharedContext(
+                "build_cfg_static_property_init.gd",
+                """
+                        class_name BuildCfgStaticPropertyInit
+                        extends RefCounted
+
+                        static var base: int = 1
+                        static var derived: int = base + 41
+                        """,
+                Map.of("BuildCfgStaticPropertyInit", "RuntimeBuildCfgStaticPropertyInit")
+        );
+        var baseContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBuildCfgStaticPropertyInit",
+                "_field_init_base"
+        );
+        var derivedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBuildCfgStaticPropertyInit",
+                "_field_init_derived"
+        );
+
+        new FrontendLoweringBuildCfgPass().run(prepared.context());
+
+        var baseGraph = baseContext.requireFrontendCfgGraph();
+        var baseEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                baseGraph.requireNode(baseGraph.entryNodeId())
+        );
+        var baseStop = assertInstanceOf(
+                FrontendCfgGraph.StopNode.class,
+                baseGraph.requireNode(baseEntry.nextId())
+        );
+        var baseLiteral = assertInstanceOf(OpaqueExprValueItem.class, baseEntry.items().getFirst());
+
+        var derivedGraph = derivedContext.requireFrontendCfgGraph();
+        var derivedEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                derivedGraph.requireNode(derivedGraph.entryNodeId())
+        );
+        var derivedStop = assertInstanceOf(
+                FrontendCfgGraph.StopNode.class,
+                derivedGraph.requireNode(derivedEntry.nextId())
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(List.of("seq_0", "stop_0"), baseGraph.nodeIds()),
+                () -> assertEquals(baseLiteral.resultValueId(), baseStop.returnValueIdOrNull()),
+                () -> assertEquals("seq_0", derivedGraph.entryNodeId()),
+                // `base + 41` lowers through a binary item chain terminated by the RETURN stop;
+                // the exact operator items are asserted at body-insn level.
+                () -> assertFalse(derivedEntry.items().isEmpty()),
+                () -> assertNotNull(derivedStop.returnValueIdOrNull()),
+                () -> assertEquals(0, baseContext.targetFunction().getBasicBlockCount()),
+                () -> assertEquals(0, derivedContext.targetFunction().getBasicBlockCount()),
+                () -> assertTrue(baseContext.targetFunction().isStatic()),
+                () -> assertEquals(0, baseContext.targetFunction().getParameterCount())
         );
     }
 
@@ -605,6 +675,30 @@ class FrontendLoweringBuildCfgPassTest {
                 diagnostics
         );
         new FrontendLoweringAnalysisPass().run(context);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        return new PreparedContext(context, diagnostics, module);
+    }
+
+    /// Shared-semantic variant of `prepareContext` for fixtures the compile gate still rejects
+    /// (e.g. static vars): publishes shared analysis data directly so lowering passes can be
+    /// verified in isolation while the gate stays closed (stage 4 scope).
+    private static @NotNull PreparedContext prepareSharedContext(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var module = parseModule(List.of(new SourceFixture(fileName, source)), topLevelCanonicalNameMap);
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analysisData = new gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer()
+                .analyze(module, classRegistry, diagnostics);
+        var context = new FrontendLoweringContext(
+                module,
+                classRegistry,
+                diagnostics
+        );
+        context.publishAnalysisData(analysisData);
         new FrontendLoweringClassSkeletonPass().run(context);
         new FrontendLoweringFunctionPreparationPass().run(context);
         return new PreparedContext(context, diagnostics, module);

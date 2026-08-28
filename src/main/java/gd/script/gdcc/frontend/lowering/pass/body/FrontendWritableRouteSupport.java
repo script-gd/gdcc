@@ -335,8 +335,12 @@ final class FrontendWritableRouteSupport {
                 chain,
                 leaf.keySlotId(),
                 leaf.keyType(),
-                leaf.receiverType(),
-                leaf.memberNameOrNull(),
+                // Static containers keep their published container type for key materialization;
+                // only the Variant named route degrades the named base to Variant.
+                leaf.staticOwnerNameOrNull() != null
+                        ? leaf.containerSourceType()
+                        : leaf.receiverType(),
+                leaf.staticOwnerNameOrNull() != null ? null : leaf.memberNameOrNull(),
                 "subscript_read_key"
         );
         if (leaf.memberNameOrNull() == null) {
@@ -352,6 +356,7 @@ final class FrontendWritableRouteSupport {
         var scratch = materializeNamedMemberScratch(
                 session,
                 block,
+                leaf.staticOwnerNameOrNull(),
                 leaf.baseOrReceiverSlotId(),
                 leaf.receiverType(),
                 leaf.memberNameOrNull(),
@@ -379,8 +384,10 @@ final class FrontendWritableRouteSupport {
                 chain,
                 leaf.keySlotId(),
                 leaf.keyType(),
-                leaf.receiverType(),
-                leaf.memberNameOrNull(),
+                leaf.staticOwnerNameOrNull() != null
+                        ? leaf.containerSourceType()
+                        : leaf.receiverType(),
+                leaf.staticOwnerNameOrNull() != null ? null : leaf.memberNameOrNull(),
                 "subscript_write_key"
         );
         if (leaf.memberNameOrNull() == null) {
@@ -396,6 +403,7 @@ final class FrontendWritableRouteSupport {
         var scratch = materializeNamedMemberScratch(
                 session,
                 block,
+                leaf.staticOwnerNameOrNull(),
                 leaf.baseOrReceiverSlotId(),
                 leaf.receiverType(),
                 leaf.memberNameOrNull(),
@@ -408,11 +416,7 @@ final class FrontendWritableRouteSupport {
                 writtenValueSlotId,
                 key.accessKind()
         );
-        block.appendNonTerminatorInstruction(new VariantSetNamedInsn(
-                scratch.receiverVariantSlotId(),
-                scratch.nameSlotId(),
-                scratch.namedBaseSlotId()
-        ));
+        appendNamedBaseWriteback(block, scratch);
         return leaf.baseOrReceiverSlotId();
     }
 
@@ -494,17 +498,29 @@ final class FrontendWritableRouteSupport {
                     );
                     yield nextOuterCarrierSlotId(subscriptStep, writtenBackValueSlotId, terminalStep);
                 }
-                var scratch = materializeNamedMemberScratch(
+                // Static container properties never reach this branch: the session materializes
+                // them as StaticContainerSubscriptCommitStep instead, so the named base here is
+                // always rebuilt through the Variant named route on the instance receiver.
+                var scratch = materializeVariantNamedMemberReceiver(
                         session,
                         block,
                         subscriptStep.baseOrReceiverSlotId(),
                         subscriptStep.receiverType(),
                         subscriptStep.memberNameOrNull(),
-                        "reverse_commit"
+                        "reverse_commit_named"
                 );
+                var namedBaseSlotId = session.allocateWritableRouteTemp(
+                        "reverse_commit_named_base",
+                        GdVariantType.VARIANT
+                );
+                block.appendNonTerminatorInstruction(new VariantGetNamedInsn(
+                        namedBaseSlotId,
+                        scratch.receiverVariantSlotId(),
+                        scratch.nameSlotId()
+                ));
                 FrontendSubscriptInsnSupport.appendStore(
                         block,
-                        scratch.namedBaseSlotId(),
+                        namedBaseSlotId,
                         key.slotId(),
                         writtenBackValueSlotId,
                         key.accessKind()
@@ -512,9 +528,51 @@ final class FrontendWritableRouteSupport {
                 block.appendNonTerminatorInstruction(new VariantSetNamedInsn(
                         scratch.receiverVariantSlotId(),
                         scratch.nameSlotId(),
-                        scratch.namedBaseSlotId()
+                        namedBaseSlotId
                 ));
                 yield nextOuterCarrierSlotId(subscriptStep, writtenBackValueSlotId, terminalStep);
+            }
+            case StaticContainerSubscriptCommitStep subscriptStep -> {
+                if (!terminalStep) {
+                    throw new IllegalStateException(
+                            "StaticContainerSubscriptCommitStep must be terminal in reverse commit, but outer steps still remain"
+                    );
+                }
+                var key = materializeSubscriptKey(
+                        session,
+                        block,
+                        chain,
+                        subscriptStep.keySlotId(),
+                        subscriptStep.keyType(),
+                        subscriptStep.containerType(),
+                        null,
+                        "subscript_commit_key"
+                );
+                // Reload the shared container, apply the indexed mutation, then commit the whole
+                // container back to static storage. There is no instance receiver writeback: the
+                // receiver slot was only evaluated for side effects and ordering.
+                var namedBaseSlotId = session.allocateWritableRouteTemp(
+                        "reverse_commit_named_base",
+                        GdVariantType.VARIANT
+                );
+                block.appendNonTerminatorInstruction(new LoadStaticInsn(
+                        namedBaseSlotId,
+                        subscriptStep.staticOwnerName(),
+                        subscriptStep.propertyName()
+                ));
+                FrontendSubscriptInsnSupport.appendStore(
+                        block,
+                        namedBaseSlotId,
+                        key.slotId(),
+                        writtenBackValueSlotId,
+                        key.accessKind()
+                );
+                block.appendNonTerminatorInstruction(new StoreStaticInsn(
+                        subscriptStep.staticOwnerName(),
+                        subscriptStep.propertyName(),
+                        namedBaseSlotId
+                ));
+                yield writtenBackValueSlotId;
             }
         };
     }
@@ -579,12 +637,21 @@ final class FrontendWritableRouteSupport {
                 yield writtenBackValueSlotId;
             }
             case SubscriptCommitStep subscriptStep -> subscriptStep.baseOrReceiverSlotId();
+            case StaticContainerSubscriptCommitStep _ -> {
+                if (!terminalStep) {
+                    throw new IllegalStateException(
+                            "StaticContainerSubscriptCommitStep must be terminal in reverse commit, but outer steps still remain"
+                    );
+                }
+                yield writtenBackValueSlotId;
+            }
         };
     }
 
     private static @NotNull NamedMemberScratch materializeNamedMemberScratch(
             @NotNull FrontendBodyLoweringSession session,
             @NotNull LirBasicBlock block,
+            @Nullable String staticContainerOwnerNameOrNull,
             @NotNull String receiverSlotId,
             @NotNull GdType receiverType,
             @NotNull String memberName,
@@ -592,6 +659,17 @@ final class FrontendWritableRouteSupport {
     ) {
         var actualPurpose = StringUtil.requireNonBlank(purpose, "purpose");
         var namedBaseSlotId = session.allocateWritableRouteTemp(actualPurpose + "_named_base", GdVariantType.VARIANT);
+        if (staticContainerOwnerNameOrNull != null) {
+            // Static container property: the named base comes from shared class storage. The
+            // receiver slot is intentionally not packed or touched; writeback must target the
+            // same static storage via `StoreStaticInsn`.
+            block.appendNonTerminatorInstruction(new LoadStaticInsn(
+                    namedBaseSlotId,
+                    staticContainerOwnerNameOrNull,
+                    memberName
+            ));
+            return NamedMemberScratch.staticContainer(staticContainerOwnerNameOrNull, memberName, namedBaseSlotId);
+        }
         var scratch = materializeVariantNamedMemberReceiver(
                 session,
                 block,
@@ -605,7 +683,29 @@ final class FrontendWritableRouteSupport {
                 scratch.receiverVariantSlotId(),
                 scratch.nameSlotId()
         ));
-        return new NamedMemberScratch(scratch.receiverVariantSlotId(), scratch.nameSlotId(), namedBaseSlotId);
+        return NamedMemberScratch.variantRoute(scratch.receiverVariantSlotId(), scratch.nameSlotId(), namedBaseSlotId);
+    }
+
+    /// Writes the mutated named base back to its owner after an attribute-subscript store:
+    /// static containers commit to shared class storage, every other receiver keeps the Variant
+    /// named-member writeback shape.
+    private static void appendNamedBaseWriteback(
+            @NotNull LirBasicBlock block,
+            @NotNull NamedMemberScratch scratch
+    ) {
+        if (scratch.staticOwnerNameOrNull() != null) {
+            block.appendNonTerminatorInstruction(new StoreStaticInsn(
+                    scratch.staticOwnerNameOrNull(),
+                    Objects.requireNonNull(scratch.staticPropertyNameOrNull(), "staticPropertyNameOrNull must not be null"),
+                    scratch.namedBaseSlotId()
+            ));
+            return;
+        }
+        block.appendNonTerminatorInstruction(new VariantSetNamedInsn(
+                Objects.requireNonNull(scratch.receiverVariantSlotId(), "receiverVariantSlotId must not be null"),
+                Objects.requireNonNull(scratch.nameSlotId(), "nameSlotId must not be null"),
+                scratch.namedBaseSlotId()
+        ));
     }
 
     /// Materializes the receiver side of a Variant named member route.
@@ -878,14 +978,53 @@ final class FrontendWritableRouteSupport {
     ///   through the Variant named route and write it back into the outer receiver as part of the same
     ///   leaf operation. Object-family receivers are packed before named get/set; the later subscript
     ///   still operates on the materialized Variant named base.
+    ///
+    /// `containerSourceType` always freezes the compile-time-known type of the container being
+    /// subscripted: the base type for plain subscripts, the published container property type for
+    /// resolved named containers (instance or static), or `Variant` when the container member is
+    /// runtime-dynamic. The current named route still operates on a Variant named base, so for
+    /// instance/dynamic named leaves this is provenance metadata for the planned typed named-route
+    /// optimization; only plain subscripts and static containers consume it for key materialization.
+    ///
+    /// `staticOwnerNameOrNull` (only meaningful together with `memberNameOrNull`) marks the named
+    /// base as a static property container (`receiver.member[key]` with static `member`): the
+    /// named-base temp is loaded through `LoadStaticInsn` from the start class's shared storage and
+    /// written back through `StoreStaticInsn`, while the receiver slot stays untouched (it was
+    /// already evaluated in CFG order, preserving side effects).
     record SubscriptLeaf(
             @NotNull String baseOrReceiverSlotId,
             @NotNull GdType receiverType,
             @Nullable String memberNameOrNull,
             @NotNull String keySlotId,
             @NotNull GdType keyType,
-            @NotNull GdType valueType
+            @NotNull GdType valueType,
+            @NotNull GdType containerSourceType,
+            @Nullable String staticOwnerNameOrNull
     ) implements FrontendWritableLeaf {
+        /// Convenience for plain subscripts and dynamic named routes: the container source type
+        /// defaults to the base type for plain subscripts, or `Variant` for named routes whose
+        /// container member has no published static type. The session passes the resolved
+        /// container provenance explicitly when chain binding published one.
+        SubscriptLeaf(
+                @NotNull String baseOrReceiverSlotId,
+                @NotNull GdType receiverType,
+                @Nullable String memberNameOrNull,
+                @NotNull String keySlotId,
+                @NotNull GdType keyType,
+                @NotNull GdType valueType
+        ) {
+            this(
+                    baseOrReceiverSlotId,
+                    receiverType,
+                    memberNameOrNull,
+                    keySlotId,
+                    keyType,
+                    valueType,
+                    memberNameOrNull == null ? receiverType : GdVariantType.VARIANT,
+                    null
+            );
+        }
+
         SubscriptLeaf {
             baseOrReceiverSlotId = StringUtil.requireNonBlank(baseOrReceiverSlotId, "baseOrReceiverSlotId");
             Objects.requireNonNull(receiverType, "receiverType must not be null");
@@ -895,6 +1034,15 @@ final class FrontendWritableRouteSupport {
             keySlotId = StringUtil.requireNonBlank(keySlotId, "keySlotId");
             Objects.requireNonNull(keyType, "keyType must not be null");
             Objects.requireNonNull(valueType, "valueType must not be null");
+            Objects.requireNonNull(containerSourceType, "containerSourceType must not be null");
+            if (staticOwnerNameOrNull != null) {
+                staticOwnerNameOrNull = StringUtil.requireNonBlank(staticOwnerNameOrNull, "staticOwnerNameOrNull");
+                if (memberNameOrNull == null) {
+                    throw new IllegalArgumentException(
+                            "static container subscript leaf requires memberNameOrNull (the static property name)"
+                    );
+                }
+            }
         }
     }
 
@@ -917,6 +1065,7 @@ final class FrontendWritableRouteSupport {
             InstancePropertyCommitStep,
             DynamicPropertyCommitStep,
             StaticPropertyCommitStep,
+            StaticContainerSubscriptCommitStep,
             SubscriptCommitStep {
     }
 
@@ -985,15 +1134,73 @@ final class FrontendWritableRouteSupport {
         }
     }
 
+    /// Writes the mutated carrier back through one subscript layer whose container is a static
+    /// property (`receiver.values[i]` with static `values`): reverse commit reloads the shared
+    /// container from static storage, applies the indexed store, then writes the whole container
+    /// back through `StoreStaticInsn`. Like `StaticPropertyCommitStep` this is terminal-only:
+    /// static storage has no outer runtime owner slot to carry forward.
+    ///
+    /// `containerType` keeps the static property's published container type so key materialization
+    /// and access-kind selection match a plain subscript on that typed container (the Variant named
+    /// route is only for instance/dynamic receivers); the outer receiver slot is never read.
+    record StaticContainerSubscriptCommitStep(
+            @NotNull String staticOwnerName,
+            @NotNull String propertyName,
+            @NotNull GdType containerType,
+            @NotNull String keySlotId,
+            @NotNull GdType keyType
+    ) implements FrontendWritableCommitStep {
+        StaticContainerSubscriptCommitStep {
+            staticOwnerName = StringUtil.requireNonBlank(staticOwnerName, "staticOwnerName");
+            propertyName = StringUtil.requireNonBlank(propertyName, "propertyName");
+            Objects.requireNonNull(containerType, "containerType must not be null");
+            keySlotId = StringUtil.requireNonBlank(keySlotId, "keySlotId");
+            Objects.requireNonNull(keyType, "keyType must not be null");
+        }
+    }
+
     private record NamedMemberScratch(
-            @NotNull String receiverVariantSlotId,
-            @NotNull String nameSlotId,
-            @NotNull String namedBaseSlotId
+            @Nullable String receiverVariantSlotId,
+            @Nullable String nameSlotId,
+            @NotNull String namedBaseSlotId,
+            @Nullable String staticOwnerNameOrNull,
+            @Nullable String staticPropertyNameOrNull
     ) {
+        private static @NotNull NamedMemberScratch variantRoute(
+                @NotNull String receiverVariantSlotId,
+                @NotNull String nameSlotId,
+                @NotNull String namedBaseSlotId
+        ) {
+            return new NamedMemberScratch(
+                    StringUtil.requireNonBlank(receiverVariantSlotId, "receiverVariantSlotId"),
+                    StringUtil.requireNonBlank(nameSlotId, "nameSlotId"),
+                    namedBaseSlotId,
+                    null,
+                    null
+            );
+        }
+
+        private static @NotNull NamedMemberScratch staticContainer(
+                @NotNull String staticOwnerName,
+                @NotNull String staticPropertyName,
+                @NotNull String namedBaseSlotId
+        ) {
+            return new NamedMemberScratch(
+                    null,
+                    null,
+                    namedBaseSlotId,
+                    StringUtil.requireNonBlank(staticOwnerName, "staticOwnerName"),
+                    StringUtil.requireNonBlank(staticPropertyName, "staticPropertyName")
+            );
+        }
+
         private NamedMemberScratch {
-            receiverVariantSlotId = StringUtil.requireNonBlank(receiverVariantSlotId, "receiverVariantSlotId");
-            nameSlotId = StringUtil.requireNonBlank(nameSlotId, "nameSlotId");
             namedBaseSlotId = StringUtil.requireNonBlank(namedBaseSlotId, "namedBaseSlotId");
+            if ((staticOwnerNameOrNull == null) != (staticPropertyNameOrNull == null)) {
+                throw new IllegalArgumentException(
+                        "staticOwnerNameOrNull and staticPropertyNameOrNull must both be set or both be null"
+                );
+            }
         }
     }
 

@@ -1396,6 +1396,11 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var keySlotId = session.slotIdForValue(keyValueId);
             var keyType = session.requireValueType(keyValueId);
             var receiverType = session.requireValueType(node.baseValueId());
+            var containerFacts = session.resolveSubscriptContainerFacts(
+                    node.memberNameOrNull(),
+                    receiverType,
+                    node.anchor()
+            );
             var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
                     node.anchor(),
                     new FrontendWritableRouteSupport.FrontendWritableRoot(
@@ -1409,7 +1414,9 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                             node.memberNameOrNull(),
                             keySlotId,
                             keyType,
-                            session.requireValueType(node.resultValueId())
+                            session.requireValueType(node.resultValueId()),
+                            containerFacts.containerSourceType(),
+                            containerFacts.staticOwnerNameOrNull()
                     ),
                     List.of()
             );

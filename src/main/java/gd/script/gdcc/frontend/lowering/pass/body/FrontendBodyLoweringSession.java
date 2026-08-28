@@ -342,10 +342,41 @@ public final class FrontendBodyLoweringSession {
                 actualPayload.routeAnchor(),
                 materializeWritableRouteRoot(actualPayload.root()),
                 materializeWritableLeaf(actualPayload),
-                actualPayload.reverseCommitSteps().stream()
-                        .map(step -> materializeWritableCommitStep(actualPayload.root(), step))
-                        .toList()
+                truncateAtStaticStorageBoundary(actualPayload)
         );
+    }
+
+    /// Materializes reverse-commit steps and truncates everything outside the innermost static
+    /// storage boundary (`holder.child.values[i] = v` with static `values` still carries an
+    /// instance `child` step from route promotion; `static_holder.values[i].x = v` with static
+    /// `static_holder` carries an outer static property step).
+    ///
+    /// The innermost static commit fully terminates the mutation chain: static storage is not
+    /// nested inside any owner, so outer steps only re-store unchanged carriers (statics only
+    /// exist on object classes, and an outer static property's stored reference never changes when
+    /// an inner element/container is mutated). Dropping them is semantically neutral (receiver/key
+    /// expressions were still evaluated in CFG order for side effects) and keeps the remaining
+    /// static step terminal, as `StaticPropertyCommitStep` and `StaticContainerSubscriptCommitStep`
+    /// require.
+    private @NotNull List<FrontendWritableRouteSupport.FrontendWritableCommitStep> truncateAtStaticStorageBoundary(
+            @NotNull FrontendWritableRoutePayload payload
+    ) {
+        var commitSteps = payload.reverseCommitSteps().stream()
+                .map(step -> materializeWritableCommitStep(payload.root(), step))
+                .toList();
+        // Steps are ordered outermost-first; the innermost static boundary is the real storage
+        // terminal, so everything before it is dropped.
+        var staticBoundaryIndex = -1;
+        for (var index = 0; index < commitSteps.size(); index++) {
+            if (commitSteps.get(index) instanceof FrontendWritableRouteSupport.StaticPropertyCommitStep
+                    || commitSteps.get(index) instanceof FrontendWritableRouteSupport.StaticContainerSubscriptCommitStep) {
+                staticBoundaryIndex = index;
+            }
+        }
+        if (staticBoundaryIndex <= 0) {
+            return commitSteps;
+        }
+        return commitSteps.subList(staticBoundaryIndex, commitSteps.size());
     }
 
     private @NotNull FrontendWritableRouteSupport.FrontendWritableRoot materializeWritableRouteRoot(
@@ -421,13 +452,24 @@ public final class FrontendBodyLoweringSession {
             }
             case SUBSCRIPT -> {
                 var keyValueId = leaf.operandValueIds().getFirst();
+                var receiverType = requireWritableContainerType(root, leaf.containerValueIdOrNull());
+                // Container provenance lives on the leaf anchor (the subscript step), not the
+                // route anchor: assignment payloads re-anchor the route to the whole assignment
+                // expression via `withRouteAnchor`.
+                var containerFacts = resolveSubscriptContainerFacts(
+                        leaf.memberNameOrNull(),
+                        receiverType,
+                        leaf.anchor()
+                );
                 yield new FrontendWritableRouteSupport.SubscriptLeaf(
                         resolveWritableContainerSlot(root, leaf.containerValueIdOrNull()),
-                        requireWritableContainerType(root, leaf.containerValueIdOrNull()),
+                        receiverType,
                         leaf.memberNameOrNull(),
                         slotIdForValue(keyValueId),
                         requireValueType(keyValueId),
-                        leafType
+                        leafType,
+                        containerFacts.containerSourceType(),
+                        containerFacts.staticOwnerNameOrNull()
                 );
             }
         };
@@ -461,6 +503,24 @@ public final class FrontendBodyLoweringSession {
             }
             case SUBSCRIPT -> {
                 var keyValueId = step.operandValueIds().getFirst();
+                // A named subscript step whose container is a static property (`obj.values[i]`
+                // with static `values`) commits back to shared class storage, not the instance
+                // receiver; chain binding publishes the container member on the subscript anchor.
+                var containerMember = step.memberNameOrNull() != null
+                        ? findSubscriptContainerMemberOrNull(step.anchor())
+                        : null;
+                if (containerMember != null && isStaticResolvedPropertyMember(containerMember)) {
+                    yield new FrontendWritableRouteSupport.StaticContainerSubscriptCommitStep(
+                            requireStaticReceiverName(containerMember.receiverType()),
+                            Objects.requireNonNull(step.memberNameOrNull(), "memberNameOrNull must not be null"),
+                            Objects.requireNonNull(
+                                    containerMember.resultType(),
+                                    "RESOLVED container property member must publish resultType"
+                            ),
+                            slotIdForValue(keyValueId),
+                            requireValueType(keyValueId)
+                    );
+                }
                 yield new FrontendWritableRouteSupport.SubscriptCommitStep(
                         resolveWritableContainerSlot(root, step.containerValueIdOrNull()),
                         requireWritableContainerType(root, step.containerValueIdOrNull()),
@@ -561,6 +621,60 @@ public final class FrontendBodyLoweringSession {
         return resolvedMember.bindingKind() == FrontendBindingKind.PROPERTY
                 && resolvedMember.declarationSite() instanceof PropertyDef propertyDef
                 && propertyDef.isStatic();
+    }
+
+    /// Returns the RESOLVED container property member published on an attribute-subscript
+    /// anchor (`receiver.member[key]`). Chain binding re-anchors the internally synthesized
+    /// property resolution (instance or static) on the real subscript step; a null result means
+    /// the container member is runtime-dynamic and the named base operates as Variant.
+    @Nullable FrontendResolvedMember findSubscriptContainerMemberOrNull(
+            @NotNull Node subscriptAnchor
+    ) {
+        var resolvedMember = analysisData.resolvedMembers().get(
+                Objects.requireNonNull(subscriptAnchor, "subscriptAnchor must not be null")
+        );
+        if (resolvedMember == null
+                || resolvedMember.status() != FrontendMemberResolutionStatus.RESOLVED
+                || resolvedMember.bindingKind() != FrontendBindingKind.PROPERTY) {
+            return null;
+        }
+        return resolvedMember;
+    }
+
+    /// Frozen container facts for `SubscriptLeaf` construction. `containerSourceType` always
+    /// records the compile-time-known container type: the base type for plain subscripts, the
+    /// published container property type for resolved named containers (instance or static), or
+    /// Variant for runtime-dynamic named containers. `staticOwnerNameOrNull` is set only when the
+    /// named container is a static property, redirecting the named-base scratch/writeback to the
+    /// start class's shared static storage.
+    record SubscriptContainerFacts(
+            @NotNull GdType containerSourceType,
+            @Nullable String staticOwnerNameOrNull
+    ) {
+    }
+
+    @NotNull SubscriptContainerFacts resolveSubscriptContainerFacts(
+            @Nullable String memberNameOrNull,
+            @NotNull GdType receiverType,
+            @NotNull Node subscriptAnchor
+    ) {
+        Objects.requireNonNull(receiverType, "receiverType must not be null");
+        if (memberNameOrNull == null) {
+            return new SubscriptContainerFacts(receiverType, null);
+        }
+        var containerMember = findSubscriptContainerMemberOrNull(subscriptAnchor);
+        if (containerMember == null) {
+            return new SubscriptContainerFacts(GdVariantType.VARIANT, null);
+        }
+        return new SubscriptContainerFacts(
+                Objects.requireNonNull(
+                        containerMember.resultType(),
+                        "RESOLVED container property member must publish resultType"
+                ),
+                isStaticResolvedPropertyMember(containerMember)
+                        ? requireStaticReceiverName(containerMember.receiverType())
+                        : null
+        );
     }
 
     private @NotNull String requireStaticWritableReceiverName(
