@@ -221,7 +221,8 @@ void run(FrontendLoweringContext context)
 - 读取 `context.requireAnalysisData()` 与 `context.requireLirModule()`
 - 基于 `FrontendModuleSkeleton.sourceClassRelations()` 建立 AST owner -> class/source relation 索引
 - 为 compile-ready executable callable 发布 `EXECUTABLE_BODY` context
-- 为 supported property initializer 发布 `PROPERTY_INIT` context
+- 为 supported property initializer 发布 `PROPERTY_INIT` context（含 static property：static helper
+  不注入 `self`，其结果由 module 级 static backing/init route 消费，不走实例 constructor-time apply）
 - 在 `LirPropertyDef.initFunc` 缺失时补 `_field_init_<property>` hidden synthetic function shell
 - 当 `LirPropertyDef.initFunc` 已预先指向 synthetic shell 时，仅在该 shell 仍满足 hidden/property-signature/shell-only 合同时复用；冲突则 fail-fast
 - 若 executable callable 对应的 skeleton function 已经带有 basic block 或 `entryBlockId`，按 invariant fail-fast；preparation 不接管任何已进入 body-shape 的函数
@@ -274,9 +275,8 @@ void run(FrontendLoweringContext context)
 - `assert`
 - `PreloadExpression`
 - `GetNodeExpression`
-- 脚本类 `static var`
 
-说明：`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression` 与 `ConditionalExpression` 已离开 compile-only 显式封口列表（见对应事实源文档）。
+说明：`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression`、`ConditionalExpression` 与脚本类 `static var` 已离开 compile-only 显式封口列表（见对应事实源文档）。
 
 此外，frontend MVP 仍未完整支持：
 

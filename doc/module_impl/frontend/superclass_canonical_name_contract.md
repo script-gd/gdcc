@@ -192,6 +192,7 @@ human-facing 诊断若需要展示用户实际写下的 `extends` 文本，必�
 - `rawExtendsText` 只存在于 discovery / diagnostic 的短生命周期对象
 - backend / LIR / registry / shared resolver 不依赖 superclass source text
 - Godot-facing / identity surface 继续原样携带 canonical `__sub__`；fat pointer 等 C 标识符 surface 经 `cIdentifier()` 折叠为 `_sub_`（见 `gdcc_facing_class_name_contract.md` §2.4）；该前提仅绑定当前 `zig cc` 工具链
+- static backing/init 符号沿用 raw canonical 拼接约定（`gdcc_static_<Class>_<name>` 等），属于 static storage/codegen symbol surface，不改变 superclass identity 双名模型；raw 拼接的碰撞面由全模块符号冲突校验兜底（见 `gdcc_facing_class_name_contract.md` §2.4 第三层）
 
 ---
 

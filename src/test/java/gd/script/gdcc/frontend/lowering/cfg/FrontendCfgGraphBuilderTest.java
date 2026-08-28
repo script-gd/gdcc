@@ -715,6 +715,126 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
+    void buildExecutableBodyKeepsStaticContainerReceiverCallLeafTerminalWithoutPromotedCommit() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_static_container_call.gd",
+                """
+                        class_name CfgBuilderStaticContainerCall
+                        extends RefCounted
+                        
+                        static var names: Array[String]
+                        static var label: String
+                        var inst_names: Array[String]
+                        
+                        func ping() -> int:
+                            names.append("x")
+                            inst_names.append("y")
+                            return names.size() + label.length()
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderStaticContainerCall",
+                        "RuntimeCfgBuilderStaticContainerCall"
+                )
+        );
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var calls = entryNode.items().stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .toList();
+
+        // Static receiver calls: mutating `append` on the reference-carrier array, const `size`,
+        // and const `length` on the value-semantic String (a const call never writes back, so the
+        // leaf stays terminal regardless of the carrier write-back matrix). Plus the instance
+        // contrast.
+        var staticCalls = calls.stream()
+                .filter(call -> call.writableRoutePayloadOrNull() != null
+                        && call.writableRoutePayloadOrNull().root().kind()
+                                == FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT)
+                .toList();
+        var instanceCalls = calls.stream()
+                .filter(call -> call.writableRoutePayloadOrNull() != null
+                        && call.writableRoutePayloadOrNull().root().kind()
+                                != FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(4, calls.size()),
+                () -> assertEquals(3, staticCalls.size()),
+                () -> assertEquals(1, instanceCalls.size()),
+                // Static property receivers are their own terminal storage boundary: the leaf is
+                // never promoted into a non-terminal commit step when the write-back is a no-op.
+                () -> staticCalls.forEach(call -> {
+                    var payload = call.writableRoutePayloadOrNull();
+                    assertAll(
+                            () -> assertEquals(
+                                    FrontendWritableRoutePayload.LeafKind.PROPERTY,
+                                    payload.leaf().kind()
+                            ),
+                            () -> assertTrue(
+                                    List.of("names", "label").contains(payload.leaf().memberNameOrNull()),
+                                    "unexpected static receiver member: " + payload.leaf().memberNameOrNull()
+                            ),
+                            () -> assertNull(payload.leaf().containerValueIdOrNull()),
+                            () -> assertTrue(
+                                    payload.reverseCommitSteps().isEmpty(),
+                                    "static receiver call must not promote a commit step"
+                            ),
+                            () -> assertNotNull(
+                                    call.receiverValueIdOrNull(),
+                                    "payload-backed call must keep a dedicated receiver value"
+                            )
+                    );
+                }),
+                // Instance property receivers keep the promoted commit step: the fix must not
+                // bleed into instance routes.
+                () -> assertEquals(1, instanceCalls.getFirst().writableRoutePayloadOrNull().reverseCommitSteps().size()),
+                () -> assertEquals(
+                        FrontendWritableRoutePayload.StepKind.PROPERTY,
+                        instanceCalls.getFirst().writableRoutePayloadOrNull().reverseCommitSteps().getFirst().kind()
+                )
+        );
+    }
+
+    /// A mutating method on a value-semantic / unknown-carrier static member (`PackedByteArray`
+    /// requires post-call write-back) cannot keep the static property leaf terminal, so the
+    /// promoted commit step must hit the static-terminal contract fail-fast instead of silently
+    /// dropping the write-back.
+    @Test
+    void buildExecutableBodyFailsFastForMutatingCallOnWritebackCarrierStaticMember() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_static_packed_call.gd",
+                """
+                        class_name CfgBuilderStaticPackedCall
+                        extends RefCounted
+                        
+                        static var bytes: PackedByteArray
+                        
+                        func ping() -> void:
+                            bytes.append(1)
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderStaticPackedCall",
+                        "RuntimeCfgBuilderStaticPackedCall"
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+        );
+
+        assertTrue(
+                exception.getMessage().contains("must keep a static property leaf terminal"),
+                exception.getMessage()
+        );
+    }
+
+    @Test
     void buildExecutableBodyKeepsObjectPropertyDynamicReceiverReadOnSnapshotButPublishesDirectOwnerWriteback() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_object_variant_property_call.gd",

@@ -14,6 +14,7 @@ import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirBasicBlock;
+import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
@@ -972,10 +973,12 @@ class FrontendWritableRouteSupportTest {
     /// and stays `KEYED` instead of degrading to the Variant named route.
     @Test
     void reverseCommitAppliesStaticContainerSubscriptThroughStaticStorageRoute() throws Exception {
-        var session = prepareSession();
+        var fixture = prepareSessionFixture();
+        var session = fixture.session();
         var block = new LirBasicBlock("entry");
         session.ensureVariable("element_slot", GdFloatVectorType.VECTOR2);
         session.ensureVariable("key_slot", GdIntType.INT);
+        var containerType = new GdDictionaryType(GdFloatType.FLOAT, GdVariantType.VARIANT);
         var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
                 identifier("vectors"),
                 new FrontendWritableRouteSupport.FrontendWritableRoot("static container route", "obj_slot", GdObjectType.OBJECT),
@@ -984,7 +987,7 @@ class FrontendWritableRouteSupportTest {
                         new FrontendWritableRouteSupport.StaticContainerSubscriptCommitStep(
                                 "RuntimeWritableRouteHelper",
                                 "vectors",
-                                new GdDictionaryType(GdFloatType.FLOAT, GdVariantType.VARIANT),
+                                containerType,
                                 "key_slot",
                                 GdIntType.INT
                         )
@@ -1025,6 +1028,16 @@ class FrontendWritableRouteSupportTest {
                 () -> assertEquals("RuntimeWritableRouteHelper", staticStores.getFirst().className()),
                 () -> assertEquals("vectors", staticStores.getFirst().staticName()),
                 () -> assertEquals(staticLoads.getFirst().resultId(), staticStores.getFirst().valueId()),
+                // The reverse-commit scratch must carry the declared container type, never
+                // Variant, or the backend static load/store assignability checks reject it.
+                () -> assertEquals(
+                        containerType,
+                        fixture.function().getVariableById(staticLoads.getFirst().resultId()).type()
+                ),
+                () -> assertEquals(
+                        containerType,
+                        fixture.function().getVariableById(staticStores.getFirst().valueId()).type()
+                ),
                 () -> assertTrue(instructions.stream()
                         .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
                                 || instruction instanceof VariantSetNamedInsn))
@@ -1137,7 +1150,16 @@ class FrontendWritableRouteSupportTest {
         );
     }
 
+    /// Session plus the lowering target function, for tests that also assert materialized
+    /// variable slot types (e.g. typed static container scratches).
+    private record SessionFixture(@NotNull FrontendBodyLoweringSession session, @NotNull LirFunctionDef function) {
+    }
+
     private static @NotNull FrontendBodyLoweringSession prepareSession() throws Exception {
+        return prepareSessionFixture().session();
+    }
+
+    private static @NotNull SessionFixture prepareSessionFixture() throws Exception {
         var diagnostics = new DiagnosticManager();
         var module = parseModule(
                 List.of(new SourceFixture(
@@ -1165,9 +1187,10 @@ class FrontendWritableRouteSupportTest {
         new FrontendLoweringFunctionPreparationPass().run(context);
         new FrontendLoweringBuildCfgPass().run(context);
         assertFalse(diagnostics.hasErrors(), () -> "Unexpected lowering diagnostics: " + diagnostics.snapshot());
-        return new FrontendBodyLoweringSession(
-                requireContext(context.requireFunctionLoweringContexts()),
-                context.classRegistry()
+        var functionContext = requireContext(context.requireFunctionLoweringContexts());
+        return new SessionFixture(
+                new FrontendBodyLoweringSession(functionContext, context.classRegistry()),
+                functionContext.targetFunction()
         );
     }
 

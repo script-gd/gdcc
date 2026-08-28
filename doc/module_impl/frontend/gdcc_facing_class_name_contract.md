@@ -180,9 +180,24 @@ backend 对 canonical class name 的消费必须区分两层 surface，**不得*
 - Godot-facing class identifier 问题已经通过 canonical contract 收口（identity 层继续是 `Outer__sub__Inner`）
 - backend **没有**为 class identity 引入额外 alias 字段；但 fat-pointer 等必须合法作 C 标识符的符号会经 `cIdentifier()` 做机械清洗，**不是**新的语义层
 
+此外还有第三层 static storage/codegen symbol surface：
+
+3. **static 符号 surface（raw canonical 拼接，不经 `cIdentifier()`）**
+   - static backing 变量（`gdcc_static_<Class>_<name>`）与 static defaults/initializers 入口
+     （`gdcc_static_defaults_<Class>` / `gdcc_static_initializers_<Class>`）
+     直接拼接 raw canonical class name，与 `<Class>_object_ptr` 同一 raw 拼接 surface；
+     static 清理没有独立 file-scope 符号，由 `deinitialize()` 按初始化逆序内联销毁
+   - 该 surface 不提供全局单射保证：raw 拼接存在理论歧义（如 `A_B.c` vs `A.B_c`），与存量
+     `${class}_${func}` 函数命名面（`call_<Class>_<argc>_arg_ret_<type>` 等同样不含完整方法名）
+     的已知碰撞风险同级；主防线是 `CCodegen.validateFileScopeSymbolsDisjoint` 的全模块符号冲突校验，
+     冲突时报告双方符号与来源并 fail-fast
+   - load/store gen、module lifecycle 模板与冲突校验共享 `CGenHelper` 发布的同一命名公式，
+     任何消费端不得自行重新拼写
+
 后续开发约束：
 
 - 写测试时，Godot 字符串 / registry 期望用 `__sub__`；fat pointer 类型名 / upcast helper 期望用 `_sub_`
+- static backing/init 符号期望 raw canonical 拼接（保留 `__sub__`），不得对其套用 `cIdentifier()`
 - call site 与 declaration site 的 helper 名必须同形；禁止一边 `cIdentifier`、一边 `canonicalClassName`
 - 若未来工具链或平台对内部 `__` / `_sub_` 再提出新约束，应另行立项做 C symbol portability 设计，而不是回退当前 class-name contract
 

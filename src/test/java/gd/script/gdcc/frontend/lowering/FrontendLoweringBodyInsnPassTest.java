@@ -84,7 +84,9 @@ import gd.script.gdcc.lir.insn.VariantSetKeyedInsn;
 import gd.script.gdcc.lir.insn.VariantSetNamedInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdccForArrayIterType;
 import gd.script.gdcc.type.GdccForDictionaryIterType;
 import gd.script.gdcc.type.GdccForFloatIterType;
@@ -231,8 +233,8 @@ class FrontendLoweringBodyInsnPassTest {
     /// `FrontendBodyLoweringSession.isStaticPropertyBinding`), never through instance property
     /// instructions.
     ///
-    /// The compile-only gate still blocks `static var`, so this test drives the shared-semantic
-    /// harness directly (same shape as the cast integration test) instead of `prepareContext`.
+    /// This test drives the shared-semantic harness directly (same shape as the cast integration
+    /// test) instead of `prepareContext`.
     @Test
     void runLowersBareStaticPropertyAccessThroughStaticInstructions() throws Exception {
         var diagnostics = new DiagnosticManager();
@@ -316,6 +318,148 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
+    /// Method calls on a bare static container member (`names.append(...)` in statement position,
+    /// `names.size()` in value position) must lower with the receiver loaded through
+    /// `LoadStaticInsn` and never emit a post-call `StoreStaticInsn` receiver write-back: the
+    /// static property leaf is the terminal storage boundary and `Array` is a reference carrier
+    /// mutated in place.
+    @Test
+    void runLowersStaticContainerMethodCallsWithoutReceiverWriteback() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_static_container_call.gd"),
+                """
+                        class_name BodyInsnStaticContainerCall
+                        extends RefCounted
+                        
+                        static var names: Array[String]
+                        
+                        func ping() -> int:
+                            names.append("x")
+                            return names.size()
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule(
+                "test_module",
+                List.of(unit),
+                Map.of("BodyInsnStaticContainerCall", "RuntimeBodyInsnStaticContainerCall")
+        );
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected semantic errors: " + diagnostics.snapshot());
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var pingContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStaticContainerCall",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var staticLoads = instructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("names"))
+                .toList();
+        var staticStores = instructions.stream()
+                .filter(StoreStaticInsn.class::isInstance)
+                .map(StoreStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("names"))
+                .toList();
+        var methodCalls = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals(2, methodCalls.size()),
+                () -> assertEquals("append", methodCalls.get(0).methodName()),
+                () -> assertEquals("size", methodCalls.get(1).methodName()),
+                // Each call loads the shared container exactly once as its receiver.
+                () -> assertEquals(2, staticLoads.size()),
+                () -> assertEquals(staticLoads.get(0).resultId(), methodCalls.get(0).objectId()),
+                () -> assertEquals(staticLoads.get(1).resultId(), methodCalls.get(1).objectId()),
+                () -> assertTrue(staticStores.isEmpty(),
+                        "reference-carrier receiver mutation must not write back to static storage")
+        );
+    }
+
+    /// A named (instance-receiver) subscript read on a static container (`peer.table["k"]`) must
+    /// load the named base from shared storage into a scratch slot typed with the declared
+    /// container type — never Variant — so the backend static load/store assignability checks
+    /// hold. The receiver expression is still evaluated for side effects, but no Variant named
+    /// route may appear.
+    @Test
+    void runLowersNamedStaticContainerSubscriptReadWithTypedScratch() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new GdScriptParserService().parseUnit(
+                Path.of("tmp", "body_insn_named_static_subscript.gd"),
+                """
+                        class_name BodyInsnNamedStaticSubscript
+                        extends RefCounted
+                        
+                        static var table: Dictionary = {"k": 1}
+                        
+                        func read_via(peer: BodyInsnNamedStaticSubscript) -> int:
+                            return peer.table["k"]
+                        """,
+                diagnostics
+        );
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var module = new FrontendModule(
+                "test_module",
+                List.of(unit),
+                Map.of("BodyInsnNamedStaticSubscript", "RuntimeBodyInsnNamedStaticSubscript")
+        );
+        var analysisData = new FrontendSemanticAnalyzer().analyze(module, classRegistry, diagnostics);
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected semantic errors: " + diagnostics.snapshot());
+
+        var context = new FrontendLoweringContext(module, classRegistry, diagnostics);
+        context.publishAnalysisData(analysisData);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        new FrontendLoweringFunctionPreparationPass().run(context);
+        new FrontendLoweringBuildCfgPass().run(context);
+        var readContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNamedStaticSubscript",
+                "read_via"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(context);
+
+        var instructions = allInstructions(readContext.targetFunction());
+        var staticLoads = instructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .filter(instruction -> instruction.staticName().equals("table"))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertEquals(1, staticLoads.size()),
+                () -> assertInstanceOf(
+                        GdDictionaryType.class,
+                        readContext.targetFunction().getVariableById(staticLoads.getFirst().resultId()).type(),
+                        "named static container scratch must carry the declared container type"
+                ),
+                () -> assertTrue(instructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn))
+        );
+    }
+
     /// Instance-syntax access to a static var (`receiver.x`, `self.x`) warns at semantic level
     /// and must still lower through `LoadStaticInsn` / `StoreStaticInsn` targeting the declaring
     /// class's shared storage. A call-result receiver proves side-effect evaluation is preserved
@@ -396,10 +540,10 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
-    /// Stage 2.1 of `frontend_static_var_implementation.md`: a static var initializer lowers into
-    /// a hidden static zero-parameter init function that returns the materialized value; no `self`
-    /// slot and no instance field instruction may appear. A sibling static reference (`base + 41`)
-    /// must read shared storage through `LoadStaticInsn` inside the init function.
+    /// A static var initializer lowers into a hidden static zero-parameter init function that
+    /// returns the materialized value; no `self` slot and no instance field instruction may
+    /// appear. A sibling static reference (`base + 41`) must read shared storage through
+    /// `LoadStaticInsn` inside the init function.
     @Test
     void runLowersStaticPropertyInitializersIntoZeroParamStaticInitFunctions() throws Exception {
         var diagnostics = new DiagnosticManager();
@@ -841,6 +985,16 @@ class FrontendLoweringBodyInsnPassTest {
                         .map(LoadStaticInsn.class::cast)
                         .filter(instruction -> instruction.staticName().equals("vectors"))
                         .count(), () -> nestedDump),
+                // Both static scratches must carry the declared container type (`Array[Vector2]`),
+                // never Variant, or the backend static load/store assignability checks reject them.
+                () -> assertTrue(instructions.stream()
+                                .filter(LoadStaticInsn.class::isInstance)
+                                .map(LoadStaticInsn.class::cast)
+                                .filter(instruction -> instruction.staticName().equals("vectors"))
+                                .allMatch(instruction -> writeContext.targetFunction()
+                                        .getVariableById(instruction.resultId())
+                                        .type() instanceof GdArrayType),
+                        () -> nestedDump),
                 () -> assertEquals(1, instructions.stream()
                         .filter(VariantSetIndexedInsn.class::isInstance)
                         .count(), () -> nestedDump),

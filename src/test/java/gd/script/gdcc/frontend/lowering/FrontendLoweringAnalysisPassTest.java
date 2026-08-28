@@ -110,16 +110,6 @@ class FrontendLoweringAnalysisPassTest {
                                     assert(value, "blocked in compile mode")
                                 """,
                         "assert statement"
-                ),
-                new CompileBlockedCase(
-                        "lowering_blocked_static_property.gd",
-                        """
-                                class_name LoweringBlockedStaticProperty
-                                extends RefCounted
-                                
-                                static var shared := 1
-                                """,
-                        "Static property 'shared'"
                 )
         )) {
             var module = parseModule(testCase.fileName(), testCase.source());
@@ -144,6 +134,44 @@ class FrontendLoweringAnalysisPassTest {
                     testCase.fileName()
             );
         }
+    }
+
+    @Test
+    void lowerStaticPropertyModuleKeepsPipelineRunningAfterGateRemoval() throws Exception {
+        // Static var declarations pass the compile analysis pass like any other supported
+        // property: no compile-check diagnostic, pipeline continuation still runs.
+        var module = parseModule(
+                "lowering_static_property_ready.gd",
+                """
+                        class_name LoweringStaticPropertyReady
+                        extends RefCounted
+                        
+                        static var shared := 1
+                        
+                        static func read() -> int:
+                            return shared
+                        """
+        );
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var diagnostics = new DiagnosticManager();
+        var continuationRan = new AtomicBoolean();
+        var manager = new FrontendLoweringPassManager(List.of(
+                new FrontendLoweringAnalysisPass(),
+                context -> {
+                    continuationRan.set(true);
+                    assertFalse(context.isStopRequested());
+                }
+        ));
+
+        var lowered = manager.lower(module, registry, diagnostics);
+
+        var compileDiagnostics = diagnostics.snapshot().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.compile_check"))
+                .toList();
+        assertNull(lowered);
+        assertTrue(continuationRan.get());
+        assertFalse(diagnostics.hasErrors());
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
     @Test

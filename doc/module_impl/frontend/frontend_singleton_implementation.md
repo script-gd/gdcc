@@ -44,6 +44,9 @@ frontend 当前正式支持的 engine singleton surface 包括：
 - 通过隐藏的 `_field_init_<property>` helper 物化真实 init func body
 - helper body 中 receiver 物化同样使用 `LoadStaticInsn("@GlobalScope", "<singleton_name>")` + `CallMethodInsn`
 - 真实 `LirBasicBlock`、有效 `entryBlockId`、真实 `ReturnInsn` 由 body pass 物化，不是 shell-only 中间态
+- static var initializer 同样可以使用 singleton / utility / global / type-meta 等已支持 route（如
+  `static var frames: int = Engine.get_frames_drawn()`）：receiver 物化路径不变，但 init helper 结果由
+  module 级两段式全局 static 初始化写回共享 backing 存储，而不是实例 constructor-time apply
 
 ### 2.3 Dual-role chain head route bias
 

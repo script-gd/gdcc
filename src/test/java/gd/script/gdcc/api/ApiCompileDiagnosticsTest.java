@@ -57,10 +57,10 @@ class ApiCompileDiagnosticsTest {
         api.createModule("demo", "Compile Block Demo");
         api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("compile-check-project")));
         api.putFile("demo", "/src/blocked.gd", """
-                class_name LoweringBlockedStaticProperty
+                class_name LoweringBlockedPreload
                 extends RefCounted
                 
-                static var shared := 1
+                var bundled = preload("res://bundled.gd")
                 """);
 
         var result = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
@@ -72,12 +72,42 @@ class ApiCompileDiagnosticsTest {
         assertEquals(CompileResult.Outcome.FRONTEND_FAILED, result.outcome());
         assertEquals("Frontend diagnostics blocked compilation", result.failureMessage());
         assertTrue(result.diagnostics().hasErrors());
-        assertTrue(compileDiagnostic.message().contains("Static property 'shared'"));
+        assertTrue(compileDiagnostic.message().contains("Preload expression"));
         assertEquals(List.of("/src/blocked.gd"), result.sourcePaths());
         assertTrue(result.generatedFiles().isEmpty());
         assertTrue(result.artifacts().isEmpty());
         assertTrue(result.outputLinks().isEmpty());
         assertEquals(0, compiler.invocationCount());
+    }
+
+    @Test
+    void compileSucceedsForScriptStaticProperties(@TempDir Path tempDir) {
+        var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
+        var api = ApiCompileTestSupport.newApi(compiler);
+
+        api.createModule("demo", "Static Property Demo");
+        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("static-property-project")));
+        api.putFile("demo", "/src/shared_state.gd", """
+                class_name ApiStaticProperty
+                extends RefCounted
+                
+                static var shared := 1
+                
+                static func read() -> int:
+                    return shared
+                """);
+
+        // Static var declarations compile end-to-end: no frontend gate diagnostic, the native
+        // compiler is invoked, and the task reports success.
+        var result = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+
+        assertEquals(CompileResult.Outcome.SUCCESS, result.outcome());
+        assertTrue(result.success());
+        assertFalse(result.diagnostics().hasErrors());
+        assertTrue(result.diagnostics().asList().stream()
+                .noneMatch(diagnostic -> diagnostic.category().equals("sema.compile_check")));
+        assertEquals(List.of("/src/shared_state.gd"), result.sourcePaths());
+        assertEquals(1, compiler.invocationCount());
     }
 
     @Test
@@ -91,7 +121,7 @@ class ApiCompileDiagnosticsTest {
                 class_name Player
                 extends RefCounted
                 
-                static var shared := 1
+                var bundled = preload("res://bundled.gd")
                 """, "res://actors/player.gd");
 
         var result = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
@@ -103,7 +133,7 @@ class ApiCompileDiagnosticsTest {
         assertEquals(CompileResult.Outcome.FRONTEND_FAILED, result.outcome());
         assertEquals("res://actors/player.gd", compileDiagnostic.sourcePath());
         assertEquals(List.of("res://actors/player.gd"), result.sourcePaths());
-        assertTrue(compileDiagnostic.message().contains("Static property 'shared'"));
+        assertTrue(compileDiagnostic.message().contains("Preload expression"));
         assertEquals(0, compiler.invocationCount());
     }
 

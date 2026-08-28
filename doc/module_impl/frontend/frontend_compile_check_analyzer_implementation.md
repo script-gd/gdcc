@@ -137,24 +137,15 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - 该 policy 只消费已发布的 iteration plan 与 lowering contract registry，不控制 iterator inventory、completeness certificate 或 child-suite dispatch。
 - hard non-iterable 的 shared `sema.type_check` 诊断不改变 compile policy：compile gate 仍只按 `plan.route()` 查询 lowering contract。若同一 `ForStatement` 已有 upstream `sema.type_check` error，route-not-ready blocker 继续按统一去重合同省略。
 
-### 3.2 declaration 级封口
+### 3.2 declaration 级处理
 
-脚本类 `static var` declaration 当前同样由 compile gate 显式拦截，并直接发出
-`sema.compile_check` `error`。
+脚本类 `static var` declaration 已从显式 compile-block 清单移除：shared semantic 发布的
+static property metadata 由 lowering/backend 直接承接（共享 backing 存储 + 两段式全局
+static 初始化，见 `frontend_static_var_implementation.md`）。
 
-这里的边界是 declaration-level，而不是 initializer-level：
-
-- blocker 锚定到 `VariableDeclaration`
-- 不要求 property 一定带 initializer
-- 一旦命中，不再继续递归该 initializer subtree
-
-这条规则对应当前 backend 的稳定事实：
-
-- frontend/shared semantic 仍可识别并发布 static property metadata
-- 但当前 backend 会在 property definition 层面 fail-fast 拒绝脚本静态字段
-
-因此 compile gate 需要在进入 lowering/codegen 前把这类 declaration 提前封口，而不是
-等 backend 抛异常。
+class-level variable declaration（实例或 static）带 supported initializer 时走统一的
+property-initializer 路径：锚定 `VariableDeclaration` 为 compile-surface 节点并递归扫描
+initializer subtree；无 initializer 的 declaration 不产生 compile-surface 节点。
 
 ### 3.3 expression 级封口
 
@@ -357,12 +348,9 @@ compile gate 当前统一使用：
 - non-error blocking category set
   - `sema.variable_slot_publication`
 
-对 declaration-level static property compile-block 还额外保持一条子树边界：
-
-- declaration 一旦命中 static-property explicit block，不再递归其 initializer subtree
-
-这样可以避免同一条 `static var value = [1]` 在 compile-only 路径上同时收到
-“static property blocked” 与 “array literal blocked” 两条 `sema.compile_check`。
+static property initializer subtree 与普通 property initializer 一样递归扫描：嵌套在其中的
+仍被封口的表达式（如 `PreloadExpression`）会正常收到各自的 `sema.compile_check`，不再存在
+declaration 级短路。
 
 对 direct explicit-self assignment target 还额外保持一条窄去重规则：
 
@@ -428,6 +416,7 @@ compile gate 当前统一使用：
 `ArrayExpression` / `DictionaryExpression` 已从显式 compile-block 列表移除（见 `frontend_container_literal_implementation.md`）。
 `ConditionalExpression` 已从显式 compile-block 列表移除（见 `frontend_conditional_expression_implementation.md`）。
 `LambdaExpression`（已记录、published plan + body）已从无条件形态级 compile-block 移除并纳入 compile surface；未记录 lambda 仍 fail-closed（见 `frontend_lambda_implementation.md`）。
+脚本类 `static var` declaration 已从显式 compile-block 清单移除（见 `frontend_static_var_implementation.md`）。
 
 在满足这些条件之前，它们都必须继续由 compile-only gate 拦截，而不是因为“frontend 已识别”就提前放行。
 

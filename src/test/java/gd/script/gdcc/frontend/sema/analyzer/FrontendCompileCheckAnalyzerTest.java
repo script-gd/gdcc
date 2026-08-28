@@ -63,6 +63,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -494,7 +495,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileBlocksStaticPropertyDeclarationsWhileAnalyzeLeavesSharedDiagnosticsUntouched() throws Exception {
+    void analyzeForCompileAcceptsStaticPropertyDeclarationsWithInitializer() throws Exception {
         var source = """
                 class_name CompileCheckStaticPropertyDeclaration
                 extends RefCounted
@@ -509,20 +510,15 @@ class FrontendCompileCheckAnalyzerTest {
         assertFalse(sharedAnalyzed.diagnostics().hasErrors());
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
 
+        // Static var declarations are ordinary compile-surface members: the compile pass must not
+        // emit any diagnostic for the declaration or the static function reading it.
         var compiled = analyzeForCompile("compile_check_static_property_declaration.gd", source);
-        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-
-        assertEquals(1, compileDiagnostics.size());
-        assertEquals(
-                FrontendRange.fromAstRange(findVariable(compiled.unit().ast().statements(), "shared").range()),
-                compileDiagnostics.getFirst().range()
-        );
-        assertTrue(compileDiagnostics.getFirst().message().contains("Static property 'shared'"));
-        assertTrue(compileDiagnostics.getFirst().message().contains("does not support script static fields"));
+        assertFalse(compiled.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
     }
 
     @Test
-    void analyzeForCompileBlocksStaticPropertyDeclarationsWithoutInitializer() throws Exception {
+    void analyzeForCompileAcceptsStaticPropertyDeclarationsWithoutInitializer() throws Exception {
         var source = """
                 class_name CompileCheckStaticPropertyWithoutInitializer
                 extends RefCounted
@@ -537,19 +533,15 @@ class FrontendCompileCheckAnalyzerTest {
         assertFalse(sharedAnalyzed.diagnostics().hasErrors());
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
 
+        // A static var without a source initializer compiles cleanly; its type default is
+        // materialized by the backend static lifecycle instead of a property-init helper.
         var compiled = analyzeForCompile("compile_check_static_property_without_initializer.gd", source);
-        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-
-        assertEquals(1, compileDiagnostics.size());
-        assertEquals(
-                FrontendRange.fromAstRange(findVariable(compiled.unit().ast().statements(), "shared").range()),
-                compileDiagnostics.getFirst().range()
-        );
-        assertTrue(compileDiagnostics.getFirst().message().contains("Static property 'shared'"));
+        assertFalse(compiled.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
     }
 
     @Test
-    void analyzeForCompileStopsAtStaticPropertyDeclarationInsteadOfRecursingIntoInitializerSubtree() throws Exception {
+    void analyzeForCompileRecursesIntoStaticPropertyInitializerSubtrees() throws Exception {
         var source = """
                 class_name CompileCheckStaticPropertyInitializerSubtree
                 extends Node
@@ -561,12 +553,39 @@ class FrontendCompileCheckAnalyzerTest {
         assertFalse(sharedAnalyzed.diagnostics().hasErrors());
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
 
+        // The initializer subtree now participates in the compile walk; supported constructs
+        // (container literals) stay diagnostic-free instead of being shielded by a
+        // declaration-level short-circuit.
         var compiled = analyzeForCompile("compile_check_static_property_initializer_subtree.gd", source);
+        assertFalse(compiled.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileStillReportsNestedBlockersInsideStaticPropertyInitializers() throws Exception {
+        var source = """
+                class_name CompileCheckStaticPropertyNestedBlocker
+                extends Node
+                
+                static var shared = preload("res://nested.gd")
+                """;
+
+        // Negative path: removing the static-property declaration gate must not shield
+        // still-unsupported constructs nested inside the initializer. The compile walk now
+        // reaches the preload and reports it, proving the subtree is really traversed.
+        var compiled = analyzeForCompile("compile_check_static_property_nested_blocker.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
+        assertTrue(compiled.diagnostics().hasErrors());
         assertEquals(1, compileDiagnostics.size());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Static property 'shared'"));
-        assertFalse(compileDiagnostics.getFirst().message().contains("Array literal"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("Preload expression"));
+        assertFalse(compileDiagnostics.getFirst().message().contains("Static property"));
+        // The blocker must anchor inside the initializer subtree (the preload expression),
+        // never on the declaration itself.
+        assertNotEquals(
+                FrontendRange.fromAstRange(findVariable(compiled.unit().ast().statements(), "shared").range()),
+                compileDiagnostics.getFirst().range()
+        );
     }
 
     @Test

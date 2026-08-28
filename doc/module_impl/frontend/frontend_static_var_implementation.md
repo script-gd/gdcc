@@ -467,16 +467,43 @@ lowering 就绪、backend 就绪、文档与测试同步之后移除。因此 B2
 `frontend_lowering_plan.md` §6 的“lowering / backend 就绪”前提由阶段 2-3 满足，
 文档与测试同步即本阶段内容，不得以“先拆 gate 后补文档”的方式拉长窗口。
 
-- [ ] 4.1 移除 B2（`handleVariableDeclaration` static 分支、`isStaticClassPropertyDeclaration`、
+- [x] 4.1 移除 B2（`handleVariableDeclaration` static 分支、`isStaticClassPropertyDeclaration`、
       `staticPropertyCompileBlockedMessage`），static property initializer 走既有
       `markCompileSurfaceNode` + `walkExpression` 路径；**同一变更单元内**反转
       `FrontendCompileCheckAnalyzerTest`（约 :496-570）与 `ApiCompileDiagnosticsTest`
       （约 :52-108）的 static var 用例为放行，保留 unsupported 形态 negative path。
-- [ ] 4.2 `src/test/test_suite` 新增 static var 正向用例：默认值、显式 initializer、跨方法读写、
-      static func 内读写、`ClassName.name` 访问、`self.x` / `obj.x` instance 访问
-      （含多实例共享同一存储、warning 不阻断运行）、继承共享同一份存储、inner class static var、
-      destroyable 类型（`String`/`Array`/`Dictionary`/object）、复合赋值。
-- [ ] 4.3 e2e 运行验证（zig 可用时；不可用时按环境感知跳过并记录）。
+- [x] 4.2 `src/test/test_suite` 新增 static var 正向用例（`member/static_var_basic.gd`、
+      `static_var_instance_access.gd`、`static_var_inheritance.gd`、`static_var_destroyable.gd`）：
+      默认值、显式 initializer、跨方法读写、static func 内读写、`ClassName.name` 访问、
+      `self.x` / `obj.x` instance 访问（含多实例共享同一存储、warning 不阻断运行）、
+      继承共享同一份存储、inner class static var、destroyable 类型（`String`/`Array`/
+      `Dictionary`/object）、复合赋值。
+  - 实施补强（本阶段发现并修复）：静态容器成员上的方法调用（`names.size()` /
+    `names.append(...)`）此前在 CFG build 崩溃——builder 对所有 attribute call 无条件发布
+    writable payload 并把 static property leaf 错误 promotion 成 non-terminal commit step。
+    修复：`FrontendCfgGraphBuilder.appendCallReceiverCommitSteps` 对 STATIC_CONTEXT 根 +
+    无容器槽 PROPERTY 叶，在 const 调用（`mayMutateReceiver == false`，reverse commit 本就
+    整体跳过）或引用载体 receiver（原位变更，写回为 no-op）时跳过 promotion（leaf 自身即
+    终端存储边界）；值语义/Variant 载体的 mutating 调用保持 promotion 走既有 fail-fast
+    （pinned：`buildExecutableBodyFailsFastForMutatingCallOnWritebackCarrierStaticMember`）。
+    测试：`buildExecutableBodyKeepsStaticContainerReceiverCallLeafTerminalWithoutPromotedCommit`
+    （含实例路由对照与 String const 调用）、`runLowersStaticContainerMethodCallsWithoutReceiverWriteback`。
+  - 实施补强（review 发现）：named 形态（`peer.table["k"]`）静态容器下标的 named-base
+    scratch 槽此前无条件按 `Variant` 分配，typed static 容器经 backend
+    `LoadStaticInsnGen`/`StoreStaticInsnGen` 类型校验时被拒。修复：
+    `FrontendWritableRouteSupport.materializeNamedMemberScratch` 的 static 分支改按已发布的
+    `containerSourceType`（声明容器类型）分配 scratch；未类型化 static（Variant）与非 static
+    Variant named 路由保持 Variant 槽。测试：
+    `runLowersNamedStaticContainerSubscriptReadWithTypedScratch`（槽类型 + 无 Variant named
+    指令残留）。反向提交姊妹路径（`StaticContainerSubscriptCommitStep` 的 reload scratch）
+    同样按 `subscriptStep.containerType()` 分配，测试锚定见
+    `reverseCommitAppliesStaticContainerSubscriptThroughStaticStorageRoute` 与
+    `runTruncatesOuterInstanceStepsAtStaticContainerBoundary` 的槽类型断言。
+  - 已知边界（存量命名面，非本计划引入）：方法 caller helper 命名 `<class>_<argc>_arg_ret_
+    <type>` 不含方法名，static init helper 与用户方法同 arity/同返回类型时 C 符号碰撞
+    （实测 `mutate() -> Array` × `_field_init_names() -> Array[String]`）；用例以参数形态
+    规避，严格化命名仍属未来统一加固。
+- [x] 4.3 e2e 运行验证（zig + Godot 环境可用，四个用例真实编译并在 Godot 运行时验证通过）。
 - [ ] 4.4 文档同步（review 发现 11）：`frontend_rules.md:54` / `frontend_rules.md:116` 改写为
       已支持口径；`frontend_property_init_lowering_implementation.md`、
       `frontend_compile_check_analyzer_implementation.md`、
@@ -487,6 +514,8 @@ lowering 就绪、backend 就绪、文档与测试同步之后移除。因此 B2
       （:194）补充条款：static backing/init 符号沿用 raw canonical 拼接约定，
       由全模块符号冲突校验兜底（该条款同时记录存量 `${class}_${func}` 命名表面的已知碰撞面）；
       本文档改写为事实源风格并移除 checklist。
+  - 进度：上述各文档条款与两份命名合同已同步为已支持口径；**本文档的事实源化改写暂缓**，
+    因阶段 5/6 尚未完成，本文档继续保留 checklist 直至全部阶段收口。
 - 验收：`run-gradle-targeted-tests.ps1 -Tests FrontendCompileCheckAnalyzerTest,ApiCompileDiagnosticsTest,ApiCompileTaskFailureStageTest` 全绿；
   `./gradlew clean build --no-daemon --info --console=plain` 全绿。
 

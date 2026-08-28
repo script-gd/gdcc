@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.lowering.cfg;
 import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.frontend.lowering.FrontendCallMutabilitySupport;
 import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
+import gd.script.gdcc.frontend.lowering.FrontendWritableTypeWritebackSupport;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.AwaitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
@@ -419,7 +420,7 @@ public final class FrontendCfgGraphBuilder {
                         attributeCallStep,
                         receiverRoute.root(),
                         receiverRoute.leaf(),
-                        appendPromotedLeaf(receiverRoute)
+                        appendCallReceiverCommitSteps(receiverRoute, publishedCall)
                 )
         ));
         return argumentsBuild.cursor();
@@ -3206,12 +3207,13 @@ public final class FrontendCfgGraphBuilder {
                         // Mutating call receivers reuse the current receiver leaf as the call object and
                         // therefore need the promoted leaf to appear in reverseCommitSteps. Without this,
                         // property/subscript receivers would carry provenance but no actual post-call
-                        // writeback plan.
+                        // writeback plan. Static property receivers stay terminal (see
+                        // appendCallReceiverCommitSteps).
                         new FrontendWritableRoutePayload(
                                 attributeCallStep,
                                 receiverRoute.root(),
                                 receiverRoute.leaf(),
-                                appendPromotedLeaf(receiverRoute)
+                                appendCallReceiverCommitSteps(receiverRoute, publishedCall)
                         )
                 ));
                 yield valueRootBuild(argumentsBuild.cursor(), attributeCallStep, resultValueId);
@@ -3696,6 +3698,33 @@ public final class FrontendCfgGraphBuilder {
             steps.add(promoted);
         }
         return List.copyOf(steps);
+    }
+
+    /// Reverse-commit steps for a method call whose receiver is a bare static property. The static
+    /// property leaf is already the terminal storage boundary (a static route has no runtime
+    /// container slot), so it must never be promoted into a non-terminal commit step whenever the
+    /// promoted step could only ever produce a no-op write-back: either the call is provably
+    /// const (`mayMutateReceiver == false`, so body lowering skips the reverse commit entirely),
+    /// or the receiver is a reference carrier (`Array`/`Dictionary`/objects/primitives) mutated
+    /// in place through the loaded value. Mutating calls on value-semantic or unknown (`Variant`)
+    /// carriers keep the promotion so the static-terminal contract fails fast instead of
+    /// silently dropping a required write-back.
+    private @NotNull List<FrontendWritableRoutePayload.StepDescriptor> appendCallReceiverCommitSteps(
+            @NotNull FrontendWritableRoutePayload routePayload,
+            @NotNull FrontendResolvedCall publishedCall
+    ) {
+        var receiverType = publishedCall.receiverType();
+        var staticBarePropertyReceiver =
+                routePayload.root().kind() == FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT
+                        && routePayload.leaf().kind() == FrontendWritableRoutePayload.LeafKind.PROPERTY
+                        && routePayload.leaf().containerValueIdOrNull() == null;
+        if (staticBarePropertyReceiver
+                && (!FrontendCallMutabilitySupport.mayMutateReceiver(publishedCall)
+                        || (receiverType != null
+                                && !FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(receiverType)))) {
+            return routePayload.reverseCommitSteps();
+        }
+        return appendPromotedLeaf(routePayload);
     }
 
     private @Nullable FrontendWritableRoutePayload.StepDescriptor promoteLeafToCommitStep(

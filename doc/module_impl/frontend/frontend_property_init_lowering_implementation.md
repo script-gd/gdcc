@@ -30,6 +30,7 @@
 - frontend 会为该 property 发布 hidden synthetic `_field_init_<property>` helper
 - helper 在默认 pipeline 终态拥有真实 CFG、真实 LIR body、有效 `entryBlockId`
 - backend 会把 helper 产出的 initializer value 通过独立的 constructor-time apply route 写回 backing field
+- static property 的 helper 不走 constructor-time apply；其结果由 module 级两段式全局 static 初始化（先类型默认值、后 source initializer）写回共享 backing 存储
 
 这条支持面当前覆盖：
 
@@ -38,17 +39,17 @@
   - 例如 `Node.new()`
   - `RefCounted.new()`
   - gdcc class `.new()`
+- 脚本类 `static var`（shared storage 路由与全局初始化，见 `frontend_static_var_implementation.md`）
 - compile gate 已放行的 property initializer island 表达式子树
 
 以下内容不属于当前 compile-ready surface：
 
-- 脚本类 `static var`
 - property `:=` metadata 回写
 - property initializer 对同 class non-static property / method / signal / `self` 的完整初始化时序语义
 - parameter default lowering
 - `@onready` ready-time 执行模型
 
-换言之，当前支持的是“property initializer helper 的 lowering 与 constructor-time apply 已闭合”，不是“完整实例成员初始化语义已经闭合”。
+换言之，当前支持的是“property initializer helper 的 lowering 与实例 property 的 constructor-time apply、static var 的全局 static 初始化写回均已闭合”，不是“完整实例成员初始化语义已经闭合”。
 
 ---
 
@@ -77,6 +78,7 @@ property-init helper 的 frontend/backend 共享合同当前固定为：
 - helper 必须 hidden
 - helper return type 必须等于 property type
 - non-static property helper 继续显式声明 owning-class `self` parameter
+- static property helper 不声明 `self` parameter（无实例上下文，写共享存储）
 - `LirPropertyDef.initFunc` 一旦指向某个 helper name，该 helper 就必须满足上面的命名与签名合同
 
 ---
@@ -215,7 +217,6 @@ property initializer 当前仍只是 frontend body-phase 的最小支持岛，�
 - 同 class non-static property / method / signal / `self` 的可见性与初始化时序
 - declaration order / default-state / cycle-aware member initialization semantics
 - property `:=` 推导回写
-- `static var` 的 compile-ready lowering
 
 因此，不得把以下事实混写：
 

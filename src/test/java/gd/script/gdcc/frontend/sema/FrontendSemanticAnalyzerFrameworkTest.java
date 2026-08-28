@@ -188,7 +188,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 class_name ModuleCompileSplit
                 extends Node
                 
-                static var blocked := 1
+                static var shared := 1
                 
                 func ping():
                     pass
@@ -219,10 +219,12 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 compileDiagnostics
         );
 
-        assertTrue(compileResult.diagnostics().asList().stream().anyMatch(diagnostic ->
+        // Static var declarations are compile-ready: the compile pass adds no gate diagnostic on
+        // top of the shared-semantic result for this module.
+        assertFalse(compileResult.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.compile_check")
-                        && diagnostic.message().contains("Static property 'blocked'")
         ));
+        assertFalse(compileResult.diagnostics().hasErrors());
     }
 
     @Test

@@ -17,7 +17,7 @@
 
 `$r = load_static "<class_name>" "<static_name>"`
 
- 当前后端支持七类静态读取：
+ 当前后端支持八类静态读取：
 
 1. `@GlobalScope` singleton properties
 2. `@GlobalScope` 顶层 global constants
@@ -26,6 +26,8 @@
 5. builtin class enum values
 6. engine class integer constants
 7. engine class enum values
+8. GDCC 脚本类 static property（共享 backing 存储读取，沿继承链定位声明 owner；见
+   `frontend_static_var_implementation.md`）
 
 engine class constants / enum values 按 `ClassRegistry` 的 inherited static lookup 解析：先查 receiver class
 本身，再沿 `classes[].inherits` 近到远查父类，返回实际声明 owner 后再执行 literal materialization 与诊断。
@@ -34,18 +36,18 @@ superclass edge，因此 builtin constant / enum value 入口保持 direct-only�
 
 不支持：
 
-- 脚本类静态字段读写
-- 任意“可写静态属性”路径
+- engine class 可写静态字段读写（integer constants / enum values 的**读取**仍属第 6/7 类支持面）
 - engine class 非整数字面量常量读取
 
 ### 1.2 `store_static`
 
-`store_static` 在当前阶段统一拒绝（fail-fast）。
+`store_static` 按目标类别分派：
 
-理由：
-
-- 与 GDScript 语义对齐：不开放脚本静态字段写入
-- builtin constants / global enums / global constants 均为只读语义
+- GDCC 脚本类 static property：生成对共享 backing 变量的写入，统一走 slot-write 语义
+  （旧值 release/destroy，BORROWED source retain），backing 存储生命周期长于任意实例，
+  不存在 first-write 捷径
+- builtin constants / global enums / global constants / engine class 静态字段等只读或未支持
+  目标：继续 fail-fast 抛 `InvalidInsnException`
 
 ---
 
@@ -55,10 +57,12 @@ superclass edge，因此 builtin constant / enum value 入口保持 direct-only�
 
 - `LoadStaticInsnGen`：
   - 做 IR 层校验（result 存在、可写、非 ref）
-  - 完成多路分发（global constant / global enum / singleton / builtin constant / builtin enum / engine-int constant / engine enum）
+  - 完成多路分发（global constant / global enum / singleton / builtin constant / builtin enum /
+    engine-int constant / engine enum / GDCC script static property（沿继承链定位声明 owner））
   - 调用 `CBodyBuilder` 与 `CBuiltinBuilder` 发射代码
 - `StoreStaticInsnGen`：
-  - 对 `STORE_STATIC` 统一抛 `InvalidInsnException`
+  - 对 GDCC 脚本类 static property 生成共享 backing 变量写入（统一 slot-write 语义）
+  - 对只读常量、global enum 与未支持的 engine 静态字段继续抛 `InvalidInsnException`
 
 ### 2.2 注册入口
 
@@ -195,7 +199,7 @@ superclass edge，因此 builtin constant / enum value 入口保持 direct-only�
 7. engine class non-integer constant 失败
 8. inherited engine class non-integer constant 失败，诊断指向实际 owner class
 9. result 变量非法（缺失 / ref）
-10. `store_static` 统一拒绝
+10. `store_static` 分层行为：脚本类 static var 成功写入，只读常量 / 未支持目标失败
 11. builtin constant `type` 元数据解析正确
 12. fixed-provided singleton wrapper 不进入 module-local header，non-provided singleton 才进入
 
@@ -211,14 +215,12 @@ script/run-gradle-targeted-tests.sh --tests CLoadStaticInsnGenTest,CStoreStaticI
 
 1. **不要复制 literal parser**：`load_static` 与 utility default literal 若各自演化，维护成本会快速上升。
 2. **元数据优先于推断**：builtin constant 的声明类型应作为校验主依据，避免由 literal 反推类型带来的歧义。
-3. **fail-fast 比“宽松兼容”更安全**：当前阶段对 `store_static` 和 engine non-int constant 的拒绝，有助于保持 IR 语义边界清晰。
+3. **fail-fast 比“宽松兼容”更安全**：对只读常量、engine non-int constant 与非法 `store_static` 目标的拒绝，有助于保持 IR 语义边界清晰。
 4. **文档只保留长期信息**：阶段实施步骤、已完成打点应从实现文档中清理，避免后续阅读噪音。
 
 ---
 
 ## 8. 非目标（当前不做）
 
-1. 支持脚本类静态字段
-2. 支持 engine class 静态字段写入
-3. 放宽 `store_static` 到可写路径
-4. 为 `load_static` 引入无关 IR 结构改造
+1. 支持 engine class 静态字段写入
+2. 为 `load_static` 引入无关 IR 结构改造

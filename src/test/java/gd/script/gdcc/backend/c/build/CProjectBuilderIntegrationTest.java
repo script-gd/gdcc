@@ -42,8 +42,8 @@ public class CProjectBuilderIntegrationTest {
 
     /// Static var C backend smoke: a module with static properties (plain, initialized, and
     /// typed-container) plus load/store_static accessors must produce C that a real C compiler
-    /// accepts. Godot runtime validation of the two-phase init semantics stays with the e2e
-    /// suite, since the frontend compile gate still rejects static var sources.
+    /// accepts. Godot runtime validation of the two-phase init semantics lives in the
+    /// `member/static_var_*` test-suite cases.
     @Test
     public void compileStaticVarModuleWithRealZig() throws IOException, InterruptedException {
         if (!hasZig()) {

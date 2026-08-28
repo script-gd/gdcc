@@ -357,6 +357,7 @@ final class FrontendWritableRouteSupport {
                 session,
                 block,
                 leaf.staticOwnerNameOrNull(),
+                leaf.containerSourceType(),
                 leaf.baseOrReceiverSlotId(),
                 leaf.receiverType(),
                 leaf.memberNameOrNull(),
@@ -404,6 +405,7 @@ final class FrontendWritableRouteSupport {
                 session,
                 block,
                 leaf.staticOwnerNameOrNull(),
+                leaf.containerSourceType(),
                 leaf.baseOrReceiverSlotId(),
                 leaf.receiverType(),
                 leaf.memberNameOrNull(),
@@ -550,10 +552,12 @@ final class FrontendWritableRouteSupport {
                 );
                 // Reload the shared container, apply the indexed mutation, then commit the whole
                 // container back to static storage. There is no instance receiver writeback: the
-                // receiver slot was only evaluated for side effects and ordering.
+                // receiver slot was only evaluated for side effects and ordering. The scratch is
+                // typed with the published container type (same rule as the leaf named-base path)
+                // so the backend static load/store assignability checks hold for typed statics.
                 var namedBaseSlotId = session.allocateWritableRouteTemp(
                         "reverse_commit_named_base",
-                        GdVariantType.VARIANT
+                        subscriptStep.containerType()
                 );
                 block.appendNonTerminatorInstruction(new LoadStaticInsn(
                         namedBaseSlotId,
@@ -652,17 +656,22 @@ final class FrontendWritableRouteSupport {
             @NotNull FrontendBodyLoweringSession session,
             @NotNull LirBasicBlock block,
             @Nullable String staticContainerOwnerNameOrNull,
+            @NotNull GdType containerSourceType,
             @NotNull String receiverSlotId,
             @NotNull GdType receiverType,
             @NotNull String memberName,
             @NotNull String purpose
     ) {
         var actualPurpose = StringUtil.requireNonBlank(purpose, "purpose");
-        var namedBaseSlotId = session.allocateWritableRouteTemp(actualPurpose + "_named_base", GdVariantType.VARIANT);
         if (staticContainerOwnerNameOrNull != null) {
-            // Static container property: the named base comes from shared class storage. The
-            // receiver slot is intentionally not packed or touched; writeback must target the
+            // Static container property: the named base comes from shared class storage. Type the
+            // scratch with the published container source type (the declared property type; Variant
+            // only for untyped statics) so the backend static load/store assignability checks hold.
+            // The receiver slot is intentionally not packed or touched; writeback must target the
             // same static storage via `StoreStaticInsn`.
+            var namedBaseSlotId = session.allocateWritableRouteTemp(
+                    actualPurpose + "_named_base", containerSourceType
+            );
             block.appendNonTerminatorInstruction(new LoadStaticInsn(
                     namedBaseSlotId,
                     staticContainerOwnerNameOrNull,
@@ -670,6 +679,7 @@ final class FrontendWritableRouteSupport {
             ));
             return NamedMemberScratch.staticContainer(staticContainerOwnerNameOrNull, memberName, namedBaseSlotId);
         }
+        var namedBaseSlotId = session.allocateWritableRouteTemp(actualPurpose + "_named_base", GdVariantType.VARIANT);
         var scratch = materializeVariantNamedMemberReceiver(
                 session,
                 block,
