@@ -2540,6 +2540,275 @@ class FrontendCfgGraphBuilderTest {
         );
     }
 
+    /// Type-meta head subscript read (`Worker.values[i]`): the head enters lowering as a
+    /// `MemberLoadItem` without a receiver value id (body lowering emits `LoadStaticInsn`), and the
+    /// subscript is a plain base[key] `SubscriptLoadItem` (`memberNameOrNull == null`) on the
+    /// container value — structurally identical to the bare `values[i]` identifier form.
+    @Test
+    void buildExecutableBodyLowersTypeMetaHeadSubscriptAsPlainSubscriptOnStaticContainer() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_type_meta_head_subscript_read.gd",
+                """
+                        class_name CfgBuilderTypeMetaHeadSubscriptRead
+                        extends RefCounted
+
+                        class Worker:
+                            static var values: Array[int] = [1, 2]
+
+                        func ping() -> int:
+                            return Worker.values[0]
+                        """,
+                "ping",
+                Map.of("CfgBuilderTypeMetaHeadSubscriptRead", "RuntimeCfgBuilderTypeMetaHeadSubscriptRead")
+        );
+        var returnStatement = assertInstanceOf(ReturnStatement.class, analyzed.function().body().statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var subscriptStep = assertInstanceOf(AttributeSubscriptStep.class, expression.steps().getFirst());
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode(entryNode.nextId()));
+        var containerLoad = assertInstanceOf(MemberLoadItem.class, entryNode.items().get(0));
+        var keyItem = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().get(1));
+        var subscriptLoad = assertInstanceOf(SubscriptLoadItem.class, entryNode.items().get(2));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(3, entryNode.items().size()),
+                // The container load is anchored at the subscript step (chain binding re-anchors the
+                // static container member there) and carries no receiver value id.
+                () -> assertSame(subscriptStep, containerLoad.anchor()),
+                () -> assertEquals("values", containerLoad.memberName()),
+                () -> assertNull(containerLoad.baseValueIdOrNull()),
+                () -> assertEquals(List.of(), containerLoad.operandValueIds()),
+                // The subscript is a plain base[key] read on the container value.
+                () -> assertSame(subscriptStep, subscriptLoad.anchor()),
+                () -> assertNull(subscriptLoad.memberNameOrNull()),
+                () -> assertEquals(containerLoad.resultValueId(), subscriptLoad.baseValueId()),
+                () -> assertEquals(List.of(keyItem.resultValueId()), subscriptLoad.argumentValueIds()),
+                () -> assertEquals(subscriptLoad.resultValueId(), stopNode.returnValueIdOrNull())
+        );
+    }
+
+    /// Type-meta head subscript write (`Worker.values[i] = v`): the assignment payload is rooted at
+    /// `STATIC_CONTEXT`, the leaf is a plain SUBSCRIPT on the loaded container value, and the
+    /// promoted static property sits as the single terminal commit step — the same route shape the
+    /// bare `values[i] = v` identifier form publishes.
+    @Test
+    void buildExecutableBodyPublishesStaticContextRouteForTypeMetaHeadSubscriptWrite() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_type_meta_head_subscript_write.gd",
+                """
+                        class_name CfgBuilderTypeMetaHeadSubscriptWrite
+                        extends RefCounted
+
+                        class Worker:
+                            static var values: Array[int] = [1, 2]
+
+                        func ping(v: int) -> void:
+                            Worker.values[1] = v
+                        """,
+                "ping",
+                Map.of("CfgBuilderTypeMetaHeadSubscriptWrite", "RuntimeCfgBuilderTypeMetaHeadSubscriptWrite")
+        );
+        var statement = assertInstanceOf(ExpressionStatement.class, analyzed.function().body().statements().getFirst());
+        var assignment = assertInstanceOf(AssignmentExpression.class, statement.expression());
+        var target = assertInstanceOf(AttributeExpression.class, assignment.left());
+        var subscriptStep = assertInstanceOf(AttributeSubscriptStep.class, target.steps().getFirst());
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
+        var containerLoad = assertInstanceOf(MemberLoadItem.class, entryNode.items().get(0));
+        var keyItem = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().get(1));
+        var assignmentItem = assertInstanceOf(AssignmentItem.class, entryNode.items().get(entryNode.items().size() - 1));
+        var payload = assignmentItem.writableRoutePayload();
+        var commitStep = assertInstanceOf(
+                FrontendWritableRoutePayload.StepDescriptor.class,
+                payload.reverseCommitSteps().getFirst()
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), () -> analyzed.diagnostics().snapshot().toString()),
+                // The frozen target operands are the container value followed by the key.
+                () -> assertEquals(
+                        List.of(containerLoad.resultValueId(), keyItem.resultValueId()),
+                        assignmentItem.targetOperandValueIds()
+                ),
+                () -> assertSame(assignment, payload.routeAnchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT, payload.root().kind()),
+                () -> assertSame(target.base(), payload.root().anchor()),
+                () -> assertNull(payload.root().valueIdOrNull()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.SUBSCRIPT, payload.leaf().kind()),
+                () -> assertSame(subscriptStep, payload.leaf().anchor()),
+                () -> assertEquals(containerLoad.resultValueId(), payload.leaf().containerValueIdOrNull()),
+                () -> assertNull(payload.leaf().memberNameOrNull()),
+                () -> assertEquals(1, payload.leaf().operandValueIds().size()),
+                () -> assertEquals(
+                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
+                        payload.leaf().subscriptAccessKindOrNull()
+                ),
+                // Exactly one terminal commit step: the promoted static property.
+                () -> assertEquals(1, payload.reverseCommitSteps().size()),
+                () -> assertEquals(FrontendWritableRoutePayload.StepKind.PROPERTY, commitStep.kind()),
+                () -> assertSame(subscriptStep, commitStep.anchor()),
+                () -> assertNull(commitStep.containerValueIdOrNull()),
+                () -> assertEquals("values", commitStep.memberNameOrNull()),
+                () -> assertNull(commitStep.subscriptAccessKindOrNull())
+        );
+    }
+
+    /// Type-meta head subscript compound assignment (`Worker.values[i] += v`): the current-value
+    /// read reuses the frozen container value id through a plain `SubscriptLoadItem`
+    /// (`memberNameOrNull == null`), never re-walking the type-meta head.
+    @Test
+    void buildExecutableBodyPublishesTypeMetaHeadSubscriptCompoundAssignment() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_type_meta_head_subscript_compound.gd",
+                """
+                        class_name CfgBuilderTypeMetaHeadSubscriptCompound
+                        extends RefCounted
+
+                        class Worker:
+                            static var values: Array[int] = [1, 2]
+
+                        func ping(v: int) -> void:
+                            Worker.values[0] += v
+                        """,
+                "ping",
+                Map.of("CfgBuilderTypeMetaHeadSubscriptCompound", "RuntimeCfgBuilderTypeMetaHeadSubscriptCompound")
+        );
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
+        var containerLoad = assertInstanceOf(MemberLoadItem.class, entryNode.items().get(0));
+        var currentValueReads = entryNode.items().stream()
+                .filter(SubscriptLoadItem.class::isInstance)
+                .map(SubscriptLoadItem.class::cast)
+                .toList();
+        var compoundItem = entryNode.items().stream()
+                .filter(CompoundAssignmentBinaryOpItem.class::isInstance)
+                .map(CompoundAssignmentBinaryOpItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("missing CompoundAssignmentBinaryOpItem"));
+        var assignmentItem = assertInstanceOf(
+                AssignmentItem.class,
+                entryNode.items().get(entryNode.items().size() - 1)
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), () -> analyzed.diagnostics().snapshot().toString()),
+                () -> assertEquals(1, currentValueReads.size()),
+                () -> assertNull(currentValueReads.getFirst().memberNameOrNull()),
+                () -> assertEquals(containerLoad.resultValueId(), currentValueReads.getFirst().baseValueId()),
+                () -> assertEquals(currentValueReads.getFirst().resultValueId(), compoundItem.currentTargetValueId()),
+                () -> assertEquals(compoundItem.resultValueId(), assignmentItem.rhsValueId()),
+                () -> assertEquals(
+                        FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT,
+                        assignmentItem.writableRoutePayload().root().kind()
+                ),
+                () -> assertEquals(
+                        1,
+                        assignmentItem.writableRoutePayload().reverseCommitSteps().size()
+                )
+        );
+    }
+
+    /// Single-step type-meta property write (`Worker.shared = v`): no runtime receiver operand is
+    /// frozen; the STATIC_CONTEXT-rooted PROPERTY leaf stays terminal with no commit steps.
+    @Test
+    void buildExecutableBodyPublishesTypeMetaHeadPropertyWriteRoute() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_type_meta_head_property_write.gd",
+                """
+                        class_name CfgBuilderTypeMetaHeadPropertyWrite
+                        extends RefCounted
+
+                        class Worker:
+                            static var shared: int = 7
+
+                        func ping(v: int) -> void:
+                            Worker.shared = v
+                        """,
+                "ping",
+                Map.of("CfgBuilderTypeMetaHeadPropertyWrite", "RuntimeCfgBuilderTypeMetaHeadPropertyWrite")
+        );
+        var statement = assertInstanceOf(ExpressionStatement.class, analyzed.function().body().statements().getFirst());
+        var assignment = assertInstanceOf(AssignmentExpression.class, statement.expression());
+        var target = assertInstanceOf(AttributeExpression.class, assignment.left());
+        var propertyStep = assertInstanceOf(AttributePropertyStep.class, target.steps().getFirst());
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
+        var assignmentItem = assertInstanceOf(AssignmentItem.class, entryNode.items().get(entryNode.items().size() - 1));
+        var payload = assignmentItem.writableRoutePayload();
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), () -> analyzed.diagnostics().snapshot().toString()),
+                () -> assertEquals(List.of(), assignmentItem.targetOperandValueIds()),
+                () -> assertSame(assignment, payload.routeAnchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT, payload.root().kind()),
+                () -> assertSame(target.base(), payload.root().anchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.PROPERTY, payload.leaf().kind()),
+                () -> assertSame(propertyStep, payload.leaf().anchor()),
+                () -> assertNull(payload.leaf().containerValueIdOrNull()),
+                () -> assertEquals("shared", payload.leaf().memberNameOrNull()),
+                () -> assertEquals(List.of(), payload.reverseCommitSteps())
+        );
+    }
+
+    /// A type-meta head subscript whose container member is not a RESOLVED static property
+    /// (constants, dynamic members, or a missing fact) must keep failing fast: the CFG branch only
+    /// accepts the static-container contract instead of guessing a route.
+    @Test
+    void buildExecutableBodyFailsFastWhenTypeMetaHeadSubscriptContainerIsNotStaticProperty() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_type_meta_head_subscript_drift.gd",
+                """
+                        class_name CfgBuilderTypeMetaHeadSubscriptDrift
+                        extends RefCounted
+
+                        class Worker:
+                            static var values: Array[int] = [1, 2]
+
+                        func ping() -> int:
+                            return Worker.values[0]
+                        """,
+                "ping",
+                Map.of("CfgBuilderTypeMetaHeadSubscriptDrift", "RuntimeCfgBuilderTypeMetaHeadSubscriptDrift")
+        );
+        var returnStatement = assertInstanceOf(ReturnStatement.class, analyzed.function().body().statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var subscriptStep = assertInstanceOf(AttributeSubscriptStep.class, expression.steps().getFirst());
+        var originalMember = analyzed.analysisData().resolvedMembers().get(subscriptStep);
+        assertNotNull(originalMember);
+        // Simulate publication drift: the container member is no longer a RESOLVED static property.
+        analyzed.analysisData().resolvedMembers().put(
+                subscriptStep,
+                FrontendResolvedMember.dynamic(
+                        originalMember.memberName(),
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.TYPE_META,
+                        originalMember.ownerKind(),
+                        originalMember.receiverType(),
+                        originalMember.declarationSite(),
+                        "synthetic type-meta dynamic container member"
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+        );
+
+        assertAll(
+                () -> assertTrue(
+                        exception.getMessage().contains("requires a RESOLVED static property container member"),
+                        exception.getMessage()
+                ),
+                () -> assertTrue(exception.getMessage().contains("DYNAMIC"), exception.getMessage())
+        );
+    }
+
     @Test
     void buildExecutableBodyFailsFastWhenCompoundPropertyReadFactIsMissing() throws Exception {
         var analyzed = analyzeSharedSemanticFunction(

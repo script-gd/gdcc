@@ -360,15 +360,12 @@ public final class FrontendCfgGraphBuilder {
             if (attributeExpression.steps().size() == 1) {
                 return buildDiscardedResolvedVoidTypeMetaHeadCall(cursor, finalCallStep, publishedCall);
             }
-            var currentBuild = switch (attributeExpression.steps().getFirst()) {
-                case AttributePropertyStep firstPropertyStep ->
-                        buildTypeMetaHeadMemberStep(cursor, firstPropertyStep, null);
-                case AttributeCallStep firstCallStep -> buildTypeMetaHeadCallStep(cursor, firstCallStep, null);
-                default -> throw new IllegalStateException(
-                        "Type-meta attribute head '" + attributeExpression.base()
-                                + "' currently requires a property step or call step to enter lowering"
-                );
-            };
+            var currentBuild = buildTypeMetaHeadFirstStepValue(
+                    cursor,
+                    attributeExpression,
+                    attributeExpression.steps().getFirst(),
+                    null
+            );
             for (var stepIndex = 1; stepIndex + 1 < attributeExpression.steps().size(); stepIndex++) {
                 currentBuild = applyAttributeStep(currentBuild, attributeExpression.steps().get(stepIndex), null);
             }
@@ -2151,6 +2148,9 @@ public final class FrontendCfgGraphBuilder {
     /// The first lowering step must therefore start directly from a published type-meta fact:
     /// - static member loads publish `MemberLoadItem(..., null, ...)`
     /// - static/constructor calls publish `CallItem(..., null, ...)`
+    /// - a static-container subscript head (`Worker.values[i]`) first loads the shared container
+    ///   through the same `MemberLoadItem(..., null, ...)` shape, then applies an ordinary plain
+    ///   subscript on that container value
     ///
     /// Only subsequent steps consume the produced result as an ordinary runtime value.
     private @NotNull ValueBuild buildTypeMetaHeadAttributeExpressionValue(
@@ -2158,22 +2158,12 @@ public final class FrontendCfgGraphBuilder {
             @NotNull AttributeExpression attributeExpression,
             @Nullable String preferredResultValueId
     ) {
-        var currentBuild = switch (attributeExpression.steps().getFirst()) {
-            case AttributePropertyStep firstPropertyStep -> buildTypeMetaHeadMemberStep(
-                    cursor,
-                    firstPropertyStep,
-                    attributeExpression.steps().size() == 1 ? preferredResultValueId : null
-            );
-            case AttributeCallStep firstCallStep -> buildTypeMetaHeadCallStep(
-                    cursor,
-                    firstCallStep,
-                    attributeExpression.steps().size() == 1 ? preferredResultValueId : null
-            );
-            default -> throw new IllegalStateException(
-                    "Type-meta attribute head '" + attributeExpression.base()
-                            + "' currently requires a property step or call step to enter lowering"
-            );
-        };
+        var currentBuild = buildTypeMetaHeadFirstStepValue(
+                cursor,
+                attributeExpression,
+                attributeExpression.steps().getFirst(),
+                attributeExpression.steps().size() == 1 ? preferredResultValueId : null
+        );
         for (var stepIndex = 1; stepIndex < attributeExpression.steps().size(); stepIndex++) {
             var step = attributeExpression.steps().get(stepIndex);
             currentBuild = applyAttributeStep(
@@ -2183,6 +2173,153 @@ public final class FrontendCfgGraphBuilder {
             );
         }
         return currentBuild;
+    }
+
+    /// Shared first-step dispatch for every type-meta head path (value reads, discarded void calls,
+    /// assignment target prefixes). Keeping one dispatch point guarantees all paths accept the same
+    /// head-step surface and fail fast with the same message for unsupported shapes.
+    private @NotNull ValueBuild buildTypeMetaHeadFirstStepValue(
+            @NotNull BuildCursor cursor,
+            @NotNull AttributeExpression attributeExpression,
+            @NotNull AttributeStep firstStep,
+            @Nullable String preferredResultValueId
+    ) {
+        return switch (firstStep) {
+            case AttributePropertyStep firstPropertyStep -> buildTypeMetaHeadMemberStep(
+                    cursor,
+                    firstPropertyStep,
+                    preferredResultValueId
+            );
+            case AttributeCallStep firstCallStep -> buildTypeMetaHeadCallStep(
+                    cursor,
+                    firstCallStep,
+                    preferredResultValueId
+            );
+            case AttributeSubscriptStep firstSubscriptStep -> buildTypeMetaHeadSubscriptStep(
+                    cursor,
+                    attributeExpression.base(),
+                    firstSubscriptStep,
+                    preferredResultValueId
+            );
+            default -> throw new IllegalStateException(
+                    "Type-meta attribute head '" + attributeExpression.base()
+                            + "' currently requires a property, call, or static-container subscript step to enter lowering"
+            );
+        };
+    }
+
+    /// Type-meta static-container subscript head (`Worker.values[i]`). Chain binding publishes the
+    /// RESOLVED static container property on the `AttributeSubscriptStep` itself (the internally
+    /// synthesized property step is not an AST node), so both the load item and the writable route
+    /// anchor at the subscript step:
+    /// - the container enters lowering as a `MemberLoadItem(..., null, ...)` that body lowering turns
+    ///   into one `LoadStaticInsn` on the start class (the declaring owner is resolved by the backend
+    ///   through the hierarchy, exactly like a plain `ClassName.name` load)
+    /// - the subscript itself is a plain `SubscriptLoadItem` (`memberNameOrNull = null`) on that
+    ///   container value, so `SubscriptLeaf.baseOrReceiverSlotId` stays backed by a real slot
+    /// - the writable route mirrors the bare `values[i]` identifier form: a `STATIC_CONTEXT` root
+    ///   plus a terminal `PROPERTY` commit step (the promoted static property), never a named route
+    private @NotNull ValueBuild buildTypeMetaHeadSubscriptStep(
+            @NotNull BuildCursor cursor,
+            @NotNull Expression headBase,
+            @NotNull AttributeSubscriptStep attributeSubscriptStep,
+            @Nullable String preferredResultValueId
+    ) {
+        var containerMember = requireTypeMetaStaticContainerMember(attributeSubscriptStep);
+        var containerValueId = nextValueId();
+        cursor.currentSequence().items().add(new MemberLoadItem(
+                attributeSubscriptStep,
+                containerMember.memberName(),
+                null,
+                containerValueId
+        ));
+        var containerBuild = new ValueBuild(
+                cursor,
+                attributeSubscriptStep,
+                containerValueId,
+                new FrontendWritableRoutePayload(
+                        attributeSubscriptStep,
+                        new FrontendWritableRoutePayload.RootDescriptor(
+                                FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT,
+                                headBase,
+                                null
+                        ),
+                        new FrontendWritableRoutePayload.LeafDescriptor(
+                                FrontendWritableRoutePayload.LeafKind.PROPERTY,
+                                attributeSubscriptStep,
+                                null,
+                                List.of(),
+                                containerMember.memberName(),
+                                null
+                        ),
+                        List.of()
+                )
+        );
+        var argumentsBuild = buildArgumentValues(cursor, attributeSubscriptStep.arguments());
+        var resultValueId = chooseResultValueId(preferredResultValueId);
+        argumentsBuild.cursor().currentSequence().items().add(new SubscriptLoadItem(
+                attributeSubscriptStep,
+                null,
+                containerValueId,
+                argumentsBuild.valueIds(),
+                resultValueId
+        ));
+        return new ValueBuild(
+                argumentsBuild.cursor(),
+                attributeSubscriptStep,
+                resultValueId,
+                appendSubscriptWritableRoute(
+                        containerBuild,
+                        attributeSubscriptStep,
+                        argumentsBuild.valueIds(),
+                        determineWritableSubscriptAccessKind(
+                                attributeSubscriptStep,
+                                requireTypeMetaStaticContainerType(containerMember),
+                                requireWritableRouteAnchorType(attributeSubscriptStep.arguments().getFirst())
+                        ),
+                        null
+                )
+        );
+    }
+
+    /// The type-meta head subscript surface is deliberately scoped to static container properties:
+    /// chain binding only re-anchors RESOLVED PROPERTY members onto the subscript step, so a missing
+    /// or non-static fact here means the chain deliberately kept the shape unsupported (constant
+    /// containers, dynamic members) or publication drifted; both must fail fast instead of lowering
+    /// through a guessed route.
+    private @NotNull FrontendResolvedMember requireTypeMetaStaticContainerMember(
+            @NotNull AttributeSubscriptStep attributeSubscriptStep
+    ) {
+        var publishedMember = requireAnalysisData().resolvedMembers().get(
+                Objects.requireNonNull(attributeSubscriptStep, "attributeSubscriptStep must not be null")
+        );
+        if (publishedMember == null
+                || publishedMember.status() != FrontendMemberResolutionStatus.RESOLVED
+                || publishedMember.bindingKind() != FrontendBindingKind.PROPERTY
+                || publishedMember.receiverKind() != FrontendReceiverKind.TYPE_META
+                || !(publishedMember.declarationSite() instanceof PropertyDef propertyDef)
+                || !propertyDef.isStatic()) {
+            throw new IllegalStateException(
+                    "Type-meta head subscript '"
+                            + attributeSubscriptStep.name()
+                            + "[...]' requires a RESOLVED static property container member published on the "
+                            + "AttributeSubscriptStep, but got "
+                            + (publishedMember == null
+                                    ? "no member fact"
+                                    : publishedMember.status() + " / " + publishedMember.bindingKind())
+                            + "; constant containers and dynamic members stay unsupported"
+            );
+        }
+        return publishedMember;
+    }
+
+    private static @NotNull GdType requireTypeMetaStaticContainerType(
+            @NotNull FrontendResolvedMember containerMember
+    ) {
+        return Objects.requireNonNull(
+                containerMember.resultType(),
+                "RESOLVED static container property member must publish resultType"
+        );
     }
 
     private @NotNull ValueBuild buildTypeMetaHeadMemberStep(
@@ -2924,8 +3061,23 @@ public final class FrontendCfgGraphBuilder {
             throw new IllegalStateException("AttributeExpression assignment target must contain at least one step");
         }
 
-        var currentBuild = buildAssignmentTargetValue(cursor, attributeExpression.base());
-        for (var stepIndex = 0; stepIndex + 1 < attributeExpression.steps().size(); stepIndex++) {
+        // Type-meta heads (`Worker.shared = v`, `Worker.values[i] = v`) never materialize the head
+        // identifier as a runtime value; the target route must start from the published type-meta
+        // fact directly instead of walking an opaque base value.
+        ValueBuild currentBuild;
+        int firstPrefixStepIndex;
+        if (isTypeMetaHeadAttributeExpression(attributeExpression)) {
+            var firstStep = attributeExpression.steps().getFirst();
+            if (attributeExpression.steps().size() == 1) {
+                return buildTypeMetaHeadSingleStepTargetOperands(cursor, attributeExpression, firstStep);
+            }
+            currentBuild = buildTypeMetaHeadFirstStepValue(cursor, attributeExpression, firstStep, null);
+            firstPrefixStepIndex = 1;
+        } else {
+            currentBuild = buildAssignmentTargetValue(cursor, attributeExpression.base());
+            firstPrefixStepIndex = 0;
+        }
+        for (var stepIndex = firstPrefixStepIndex; stepIndex + 1 < attributeExpression.steps().size(); stepIndex++) {
             currentBuild = applyAttributeStep(currentBuild, attributeExpression.steps().get(stepIndex), null);
         }
 
@@ -2968,6 +3120,102 @@ public final class FrontendCfgGraphBuilder {
         };
     }
 
+    /// Single-step type-meta assignment targets (`Worker.shared = v`, `Worker.values[i] = v`) carry
+    /// no runtime receiver operand: the `STATIC_CONTEXT` root plus the published type-meta member
+    /// fact already identify the shared static storage, and body lowering resolves the declaring
+    /// owner through the hierarchy exactly like a `ClassName.name` load.
+    ///
+    /// - property form: the `PROPERTY` leaf stays terminal (no commit steps), matching the bare
+    ///   `shared = v` identifier route
+    /// - subscript form: the container enters as one `MemberLoadItem(..., null, ...)` (lowered to
+    ///   `LoadStaticInsn`), the subscript leaf is a plain base[key] route on that container value,
+    ///   and the promoted terminal `PROPERTY` commit step anchored at the subscript step writes the
+    ///   container back through `StoreStaticInsn` when the carrier requires it
+    private @NotNull AssignmentTargetBuild buildTypeMetaHeadSingleStepTargetOperands(
+            @NotNull BuildCursor cursor,
+            @NotNull AttributeExpression attributeExpression,
+            @NotNull AttributeStep firstStep
+    ) {
+        return switch (firstStep) {
+            case AttributePropertyStep attributePropertyStep -> {
+                var publishedMember = requireLoweringReadyMember(attributePropertyStep);
+                yield new AssignmentTargetBuild(
+                        cursor,
+                        List.of(),
+                        new FrontendWritableRoutePayload(
+                                attributeExpression,
+                                new FrontendWritableRoutePayload.RootDescriptor(
+                                        FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT,
+                                        attributeExpression.base(),
+                                        null
+                                ),
+                                new FrontendWritableRoutePayload.LeafDescriptor(
+                                        FrontendWritableRoutePayload.LeafKind.PROPERTY,
+                                        attributePropertyStep,
+                                        null,
+                                        List.of(),
+                                        publishedMember.memberName(),
+                                        null
+                                ),
+                                List.of()
+                        ).withRouteAnchor(attributeExpression)
+                );
+            }
+            case AttributeSubscriptStep attributeSubscriptStep -> {
+                var containerMember = requireTypeMetaStaticContainerMember(attributeSubscriptStep);
+                var containerValueId = nextValueId();
+                cursor.currentSequence().items().add(new MemberLoadItem(
+                        attributeSubscriptStep,
+                        containerMember.memberName(),
+                        null,
+                        containerValueId
+                ));
+                var argumentsBuild = buildArgumentValues(cursor, attributeSubscriptStep.arguments());
+                requireSingleWritableRouteKey(attributeSubscriptStep, argumentsBuild.valueIds());
+                var operands = new ArrayList<String>(1 + argumentsBuild.valueIds().size());
+                operands.add(containerValueId);
+                operands.addAll(argumentsBuild.valueIds());
+                yield new AssignmentTargetBuild(
+                        argumentsBuild.cursor(),
+                        List.copyOf(operands),
+                        new FrontendWritableRoutePayload(
+                                attributeExpression,
+                                new FrontendWritableRoutePayload.RootDescriptor(
+                                        FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT,
+                                        attributeExpression.base(),
+                                        null
+                                ),
+                                new FrontendWritableRoutePayload.LeafDescriptor(
+                                        FrontendWritableRoutePayload.LeafKind.SUBSCRIPT,
+                                        attributeSubscriptStep,
+                                        containerValueId,
+                                        List.copyOf(argumentsBuild.valueIds()),
+                                        null,
+                                        determineWritableSubscriptAccessKind(
+                                                attributeSubscriptStep,
+                                                requireTypeMetaStaticContainerType(containerMember),
+                                                requireWritableRouteAnchorType(attributeSubscriptStep.arguments().getFirst())
+                                        )
+                                ),
+                                List.of(new FrontendWritableRoutePayload.StepDescriptor(
+                                        FrontendWritableRoutePayload.StepKind.PROPERTY,
+                                        attributeSubscriptStep,
+                                        null,
+                                        List.of(),
+                                        containerMember.memberName(),
+                                        null
+                                ))
+                        ).withRouteAnchor(attributeExpression)
+                );
+            }
+            default -> throw new IllegalStateException(
+                    "Type-meta assignment target step '"
+                            + firstStep.getClass().getSimpleName()
+                            + "' is not supported by the current frontend CFG contract"
+            );
+        };
+    }
+
     /// Attribute compound-assignment reads reuse the frozen final receiver/index operands instead of
     /// replaying the prefix chain. The final writable step becomes one explicit load item that feeds
     /// the later compound binary op.
@@ -2980,14 +3228,21 @@ public final class FrontendCfgGraphBuilder {
             throw new IllegalStateException("AttributeExpression compound target must contain at least one step");
         }
         var finalStep = attributeExpression.steps().getLast();
+        // A single-step type-meta target (`Worker.shared += v` / `Worker.values[i] += v`) freezes no
+        // runtime receiver operand: the current-value read must load the shared static storage
+        // directly instead of consuming a frozen receiver value id.
+        var typeMetaSingleStepTarget = attributeExpression.steps().size() == 1
+                && isTypeMetaHeadAttributeExpression(attributeExpression);
         return switch (finalStep) {
             case AttributePropertyStep attributePropertyStep -> {
                 requireLoweringReadyCompoundMemberRead(attributePropertyStep);
-                var receiverValueId = requireFrozenTargetOperandValue(
-                        frozenTargetOperandValueIds,
-                        attributeExpression,
-                        "receiver"
-                );
+                var receiverValueId = typeMetaSingleStepTarget
+                        ? null
+                        : requireFrozenTargetOperandValue(
+                                frozenTargetOperandValueIds,
+                                attributeExpression,
+                                "receiver"
+                        );
                 var resultValueId = nextValueId();
                 cursor.currentSequence().items().add(new MemberLoadItem(
                         attributePropertyStep,
@@ -3001,12 +3256,14 @@ public final class FrontendCfgGraphBuilder {
                 var receiverValueId = requireFrozenTargetOperandValue(
                         frozenTargetOperandValueIds,
                         attributeExpression,
-                        "receiver"
+                        typeMetaSingleStepTarget ? "container" : "receiver"
                 );
                 var resultValueId = nextValueId();
                 cursor.currentSequence().items().add(new SubscriptLoadItem(
                         attributeSubscriptStep,
-                        attributeSubscriptStep.name(),
+                        // The type-meta head form loaded the container itself as the frozen first
+                        // operand, so the compound read is a plain base[key] subscript on it.
+                        typeMetaSingleStepTarget ? null : attributeSubscriptStep.name(),
                         receiverValueId,
                         requireFrozenTargetTrailingOperands(frozenTargetOperandValueIds, attributeExpression),
                         resultValueId
@@ -3664,6 +3921,28 @@ public final class FrontendCfgGraphBuilder {
             @NotNull List<String> keyValueIds,
             @NotNull FrontendSubscriptAccessSupport.AccessKind accessKind
     ) {
+        return appendSubscriptWritableRoute(
+                receiverBuild,
+                subscriptAnchor,
+                keyValueIds,
+                accessKind,
+                subscriptAnchor instanceof AttributeSubscriptStep attributeSubscriptStep
+                        ? attributeSubscriptStep.name()
+                        : null
+        );
+    }
+
+    /// `memberNameOrNull` is explicit because one anchor shape does not imply one route shape:
+    /// ordinary attribute-subscripts (`receiver.member[key]`) keep the member name for the named
+    /// route, while a type-meta head subscript (`Worker.values[i]`) re-anchors the static container
+    /// member on the same step yet must lower the subscript itself as a plain base[key] route.
+    private @NotNull FrontendWritableRoutePayload appendSubscriptWritableRoute(
+            @NotNull ValueBuild receiverBuild,
+            @NotNull Node subscriptAnchor,
+            @NotNull List<String> keyValueIds,
+            @NotNull FrontendSubscriptAccessSupport.AccessKind accessKind,
+            @Nullable String memberNameOrNull
+    ) {
         var baseRoute = routePayloadOrValueRoot(receiverBuild);
         requireSingleWritableRouteKey(subscriptAnchor, keyValueIds);
         return new FrontendWritableRoutePayload(
@@ -3674,9 +3953,7 @@ public final class FrontendCfgGraphBuilder {
                         subscriptAnchor,
                         useImplicitRootContainer(baseRoute) ? null : receiverBuild.resultValueId(),
                         List.copyOf(keyValueIds),
-                        subscriptAnchor instanceof AttributeSubscriptStep attributeSubscriptStep
-                                ? attributeSubscriptStep.name()
-                                : null,
+                        memberNameOrNull,
                         Objects.requireNonNull(accessKind, "accessKind must not be null")
                 ),
                 appendPromotedLeaf(baseRoute)

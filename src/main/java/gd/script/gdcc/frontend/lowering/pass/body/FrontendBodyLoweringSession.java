@@ -1,5 +1,7 @@
 package gd.script.gdcc.frontend.lowering.pass.body;
 
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import gd.script.gdcc.frontend.lowering.FrontendBodyLoweringSupport;
 import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.FunctionLoweringContext;
@@ -604,13 +606,22 @@ public final class FrontendBodyLoweringSession {
                 var binding = requireBinding(propertyAnchor);
                 yield isStaticPropertyBinding(binding);
             }
-            case dev.superice.gdparser.frontend.ast.AttributePropertyStep _ -> {
+            case AttributePropertyStep _ -> {
                 var resolvedMember = requireResolvedMember(propertyAnchor);
                 // `ClassName.x` arrives with a TYPE_META receiver; instance syntax (`obj.x` /
                 // `self.x`, already warned via sema.static_access_via_instance) keeps an INSTANCE
                 // receiver but must still target the declaring class's shared static storage.
                 yield resolvedMember.receiverKind() == FrontendReceiverKind.TYPE_META
                         || isStaticResolvedPropertyMember(resolvedMember);
+            }
+            // Type-meta head subscript routes (`ClassName.values[i]`) encode the static container
+            // property as a PROPERTY leaf/commit step anchored at the subscript step; chain binding
+            // publishes the container member on that anchor (receiverKind TYPE_META).
+            case AttributeSubscriptStep _ -> {
+                var containerMember = findSubscriptContainerMemberOrNull(propertyAnchor);
+                yield containerMember != null
+                        && containerMember.receiverKind() == FrontendReceiverKind.TYPE_META
+                        && isStaticResolvedPropertyMember(containerMember);
             }
             default -> root.kind() == FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT
                     && root.anchor() == propertyAnchor;
@@ -685,7 +696,12 @@ public final class FrontendBodyLoweringSession {
             return currentClassName();
         }
         return switch (Objects.requireNonNull(propertyAnchor, "propertyAnchor must not be null")) {
-            case dev.superice.gdparser.frontend.ast.AttributePropertyStep _ -> requireStaticReceiverName(
+            case AttributePropertyStep _ -> requireStaticReceiverName(
+                    requireResolvedMember(propertyAnchor).receiverType()
+            );
+            // `ClassName.values[i]` anchor: the start class comes from the published container
+            // member's receiver type (the type-meta class), never from `currentClassName()`.
+            case AttributeSubscriptStep _ -> requireStaticReceiverName(
                     requireResolvedMember(propertyAnchor).receiverType()
             );
             case IdentifierExpression _ -> currentClassName();
@@ -700,7 +716,7 @@ public final class FrontendBodyLoweringSession {
             @NotNull String routeDescription
     ) {
         if (!(Objects.requireNonNull(propertyAnchor, "propertyAnchor must not be null")
-                instanceof dev.superice.gdparser.frontend.ast.AttributePropertyStep)) {
+                instanceof AttributePropertyStep)) {
             return null;
         }
         var resolvedMember = requireResolvedMember(propertyAnchor);
@@ -761,7 +777,7 @@ public final class FrontendBodyLoweringSession {
     private @NotNull GdType requireWritablePropertyLeafType(@NotNull Node propertyAnchor) {
         return switch (Objects.requireNonNull(propertyAnchor, "propertyAnchor must not be null")) {
             case IdentifierExpression _ -> requireWritableBindingStorageType(requireBinding(propertyAnchor));
-            case dev.superice.gdparser.frontend.ast.AttributePropertyStep _ -> {
+            case AttributePropertyStep _ -> {
                 var resolvedMember = requireResolvedMember(propertyAnchor);
                 if (resolvedMember.status() == FrontendMemberResolutionStatus.DYNAMIC) {
                     throw new IllegalStateException(

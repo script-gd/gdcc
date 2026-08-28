@@ -48,6 +48,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -1202,6 +1203,110 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         assertNotNull(resolved);
         assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, resolved.status());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.static_access_via_instance").isEmpty());
+    }
+
+    /// Type-meta head attribute-subscripts (`Worker.values[i]`, including via an inherited start
+    /// class `SubWorker.values[i]`) publish the RESOLVED static container property on the
+    /// `AttributeSubscriptStep` anchor itself: TYPE_META receiver carrying the *start* class type,
+    /// the declaring owner's static `PropertyDef` shared across start classes, and the element type
+    /// (not the container type) as the published expression type. This is the sema contract the
+    /// CFG type-meta subscript head branch consumes.
+    @Test
+    void analyzePublishesTypeMetaHeadStaticContainerMemberOnSubscriptStep() throws Exception {
+        var analyzed = analyze(
+                "static_type_meta_container_subscript.gd",
+                """
+                        class_name StaticTypeMetaContainerSubscript
+                        extends RefCounted
+
+                        class Worker:
+                            static var values: Array[int] = [1, 2]
+
+                        class SubWorker extends Worker:
+                            pass
+
+                        func ping(v: int) -> int:
+                            Worker.values[0] += v
+                            SubWorker.values[1] = v
+                            return Worker.values[2]
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var subscriptSteps = findNodes(pingFunction, AttributeSubscriptStep.class, step -> step.name().equals("values"));
+        assertEquals(3, subscriptSteps.size());
+
+        PropertyDef declaringProperty = null;
+        var expectedReceiverTypes = List.of(
+                "StaticTypeMetaContainerSubscript__sub__Worker",
+                "StaticTypeMetaContainerSubscript__sub__SubWorker",
+                "StaticTypeMetaContainerSubscript__sub__Worker"
+        );
+        for (var index = 0; index < subscriptSteps.size(); index++) {
+            var subscriptStep = subscriptSteps.get(index);
+            var resolved = analyzed.analysisData().resolvedMembers().get(subscriptStep);
+            var stepIndex = index;
+            assertNotNull(resolved, () -> "subscript step #" + stepIndex + " must publish the container member");
+            var startClassName = expectedReceiverTypes.get(index);
+            assertAll(
+                    () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolved.status()),
+                    () -> assertEquals(FrontendBindingKind.PROPERTY, resolved.bindingKind()),
+                    () -> assertEquals(FrontendReceiverKind.TYPE_META, resolved.receiverKind()),
+                    () -> assertEquals(ScopeOwnerKind.GDCC, resolved.ownerKind()),
+                    // The receiver type is the *start* class so lowering can publish
+                    // `LoadStaticInsn(startClass, ...)` and let the backend walk the hierarchy.
+                    () -> assertEquals(startClassName, resolved.receiverType().getTypeName()),
+                    () -> assertEquals("Array[int]", resolved.resultType().getTypeName()),
+                    () -> assertTrue(assertInstanceOf(PropertyDef.class, resolved.declarationSite()).isStatic()),
+                    // The step's own expression type is the *element* type, not the container type.
+                    () -> assertEquals(
+                            "int",
+                            analyzed.analysisData().expressionTypes().get(subscriptStep).publishedType().getTypeName()
+                    )
+            );
+            if (declaringProperty == null) {
+                declaringProperty = assertInstanceOf(PropertyDef.class, resolved.declarationSite());
+            }
+        }
+        // All three accesses (base class twice, subclass once) share the one declaring storage.
+        var finalDeclaringProperty = declaringProperty;
+        assertTrue(subscriptSteps.stream()
+                .allMatch(step -> analyzed.analysisData().resolvedMembers().get(step).declarationSite()
+                        == finalDeclaringProperty));
+
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.static_access_via_instance").isEmpty());
+    }
+
+    /// An instance container property reached through a type-meta head (`Worker.plain[0]`) stays
+    /// fail-closed: no container member is re-anchored onto the subscript step and the step's
+    /// expression type is not lowering-ready.
+    @Test
+    void analyzeKeepsInstanceContainerViaTypeMetaHeadSubscriptFailClosed() throws Exception {
+        var analyzed = analyze(
+                "static_type_meta_container_subscript_negative.gd",
+                """
+                        class_name StaticTypeMetaContainerSubscriptNegative
+                        extends RefCounted
+
+                        class Worker:
+                            var plain: Array[int] = []
+
+                        func ping() -> int:
+                            return Worker.plain[0]
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var subscriptStep = findNode(pingFunction, AttributeSubscriptStep.class, step -> step.name().equals("plain"));
+
+        assertAll(
+                () -> assertNull(analyzed.analysisData().resolvedMembers().get(subscriptStep)),
+                () -> assertNotEquals(
+                        FrontendExpressionTypeStatus.RESOLVED,
+                        analyzed.analysisData().expressionTypes().get(subscriptStep).status()
+                )
+        );
     }
 
     /// Instance receivers (`obj.x`, explicit `self.x`) still resolve to the shared static storage

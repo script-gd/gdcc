@@ -352,7 +352,8 @@ lowering 就绪、backend 就绪、文档与测试同步之后移除。因此 B2
       因此裸 `values[i]` 复合赋值无 `StoreStaticInsn`、引用元素深链无容器写回——均与实例
       bare/named 路由的既定行为一致。
     - 已知边界（预存在，非本计划引入）：type-meta head 首步为 subscript（`ClassName.values[i]`）
-      在 CFG build 抛 `IllegalStateException`（对所有 type-meta 下标链一致），归阶段 5。
+      此前在 CFG build 抛 `IllegalStateException`（对所有 type-meta 下标链一致），已在阶段 5
+      按裸形态同构语义支持。
   - review 闭环补强（review-expert-b 发现，均已修复）：
     - **BLOCKING：static typed 容器的 key 物化丢失容器类型**。named 路由的 key 物化强制按
       Variant 处理（`materializeSubscriptKey` 对 `memberNameOrNull != null` 降级为 Variant），
@@ -519,28 +520,51 @@ lowering 就绪、backend 就绪、文档与测试同步之后移除。因此 B2
 - 验收：`run-gradle-targeted-tests.ps1 -Tests FrontendCompileCheckAnalyzerTest,ApiCompileDiagnosticsTest,ApiCompileTaskFailureStageTest` 全绿；
   `./gradlew clean build --no-daemon --info --console=plain` 全绿。
 
-### 阶段 5：type-meta head 首步 attribute-subscript 支持（`ClassName.values[i]`，待实施）
+### 阶段 5：type-meta head 首步 attribute-subscript 支持（`ClassName.values[i]`，已完成）
 
-预存在的通用边界（对所有 type-meta 下标链一致，含常量容器，非 static var 特有）：
-`FrontendCfgGraphBuilder.buildTypeMetaHeadAttributeExpressionValue` 只接受首步为
+历史边界（对所有 type-meta 下标链一致，含常量容器，非 static var 特有）：
+`FrontendCfgGraphBuilder.buildTypeMetaHeadAttributeExpressionValue` 此前只接受首步为
 `AttributePropertyStep` / `AttributeCallStep`，遇到 `AttributeSubscriptStep` 首步直接
 fail-fast `IllegalStateException`。整条下标机制（`SubscriptLoadItem.baseValueId` 非空、
 writable root 枚举、`SubscriptLeaf.baseOrReceiverSlotId` 非空）都建立在“receiver 有运行时值”
-的假设上，而 type-meta head 从不物化运行时值。
+的假设上，而 type-meta head 从不物化运行时值。本阶段起该首步由
+`buildTypeMetaHeadSubscriptStep` 按裸形态同构支持（常量容器等非静态容器成员仍 fail-fast）。
 
-- [ ] 5.1 CFG 增加 type-meta subscript 首步分支：头部成员 step 沿用既有 TYPE_META 分支出
+- [x] 5.1 CFG 增加 type-meta subscript 首步分支：头部成员 step 沿用既有 TYPE_META 分支出
       `MemberLoadItem(baseValueIdOrNull=null)`（直接发 `LoadStaticInsn` 产出容器值 id），
       后续下标按**普通下标**（`memberNameOrNull=null`，base 指向容器临时值）构造——
       与裸标识符形态（`values[i]`，STATIC_CONTEXT root + 终端 `StaticPropertyCommitStep`）
       结构同构；`SubscriptLeaf.baseOrReceiverSlotId` 保持 `@NotNull`（base 恒为
       `LoadStaticInsn` 结果槽位），不需要为“无 receiver”放宽可空性。
-- [ ] 5.2 sema 确认/放行 TYPE_META receiver 的容器成员事实发布（`reduceSubscriptStep`
+      实现落点：`FrontendCfgGraphBuilder` 抽取共享的 `buildTypeMetaHeadFirstStepValue(...)`，
+      新增 `buildTypeMetaHeadSubscriptStep(...)` 与容器成员校验
+      `requireTypeMetaStaticContainerMember(...)`（仅接受 TYPE_META receiver 上的 static
+      property 容器，其余 fail-fast），读、写、复合赋值、discarded void attribute 与
+      assignment target 各路径共用；`appendSubscriptWritableRoute(...)` 增加显式
+      `memberNameOrNull` overload 以支持首步普通下标编码。
+      顺带修复两处预存缺陷：
+      - `ClassName.shared = v` / `ClassName.shared += v` 此前因 TYPE_META head 被当作普通值
+        解析而在 compile gate 失败；现 `finalizeAttributeAssignmentTargetExpressionTypes`
+        与读路径一致，把 type-meta route head 标记为 route-head-only，不发布其失败的普通值
+        类型事实。
+      - `FrontendBodyLoweringSupport.requireMemberResultType(...)` 对
+        `AttributeSubscriptStep` 锚点改用 `resolvedMembers().resultType()`（容器类型），
+        不再误用其元素表达式类型。
+- [x] 5.2 sema 确认/放行 TYPE_META receiver 的容器成员事实发布（`reduceSubscriptStep`
       对 type-meta incoming receiver 的合成属性解析已覆盖 static property；验证
       `requireStaticReceiverName(resolvedMember.receiverType())` 在 TYPE_META 下取类名）。
-- [ ] 5.3 终端写回沿用提升的 `StaticPropertyCommitStep`；读形态 `ClassName.values[i]`
-      与写形态 `ClassName.values[i] = v` 均需正/负测试（含继承起始类 `Sub.values[i]`）。
-- 验收：`FrontendCfgGraphBuilderTest` / `FrontendLoweringBodyInsnPassTest` 新增
-  type-meta subscript 用例全绿；既有 type-meta head 负向断言相应更新。
+      `FrontendBodyLoweringSession.isStaticWritablePropertyRoute(...)` 与
+      `requireStaticWritableReceiverName(...)` 新增 `AttributeSubscriptStep` 锚点分支，
+      从发布在锚点上的容器成员事实取起始类名（保持 `SubWorker.values[i]` 的
+      `className=SubWorker`）。
+- [x] 5.3 终端写回沿用提升的 `StaticPropertyCommitStep`；读形态 `ClassName.values[i]`
+      与写形态 `ClassName.values[i] = v` 均有正/负测试（含继承起始类 `Sub.values[i]`、
+      typed dictionary 键转换、Variant 容器运行时门控写回，以及容器成员事实丢失静态
+      声明点时的 fail-fast drift 用例）。
+- 验收：`FrontendBodyOwnerProceduresChainBindingTest`（sema 正/负）、
+  `FrontendCfgGraphBuilderTest`（读/写/复合/属性写/负向 publication drift）、
+  `FrontendLoweringBodyInsnPassTest`（静态存储路由、属性写、Variant 门控写回、drift
+  fail-fast）新增用例全绿。
 
 ### 阶段 6：可解析实例 named subscript 的 typed 优化（`obj.items[i]`，待实施，依赖阶段 5 之后）
 

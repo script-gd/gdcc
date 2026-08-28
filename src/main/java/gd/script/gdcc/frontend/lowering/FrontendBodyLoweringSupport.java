@@ -491,6 +491,19 @@ public final class FrontendBodyLoweringSupport {
             @NotNull Node memberAnchor
     ) {
         var anchor = Objects.requireNonNull(memberAnchor, "memberAnchor must not be null");
+        // A subscript-step anchor publishes its *element* type in `expressionTypes()` while the
+        // container member fact on the same anchor carries the *container* type. A MemberLoadItem
+        // anchored there (the type-meta static-container head form `Worker.values[i]`) materializes
+        // the container, so the member fact is the only correct type source.
+        if (anchor instanceof AttributeSubscriptStep) {
+            var containerMember = analysisData.resolvedMembers().get(anchor);
+            if (containerMember == null || containerMember.resultType() == null) {
+                throw new IllegalStateException(
+                        "Missing published container member result type for " + describeMemberAnchor(anchor)
+                );
+            }
+            return containerMember.resultType();
+        }
         var publishedExpressionType = analysisData.expressionTypes().get(anchor);
         if (publishedExpressionType != null) {
             return requireLoweringReadyExpressionType(

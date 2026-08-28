@@ -2144,6 +2144,12 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 @NotNull AttributeExpression attributeExpression,
                 boolean publishRootExpression
         ) {
+            // Mirror `resolveAttributeExpressionType`: a type-meta chain head (`Worker.values[i] = v`,
+            // `Worker.shared = v`) is never consumed as an ordinary value, so its failed ordinary-value
+            // type must stay unpublished exactly like on the read path.
+            if (isTypeMetaRouteHead(attributeExpression.base())) {
+                routeHeadOnlyTypeMetaExpressions.put(attributeExpression.base(), Boolean.TRUE);
+            }
             finalizeAssignmentTargetValueExpression(attributeExpression.base());
             for (var step : attributeExpression.steps()) {
                 if (step instanceof AttributeCallStep attributeCallStep) {

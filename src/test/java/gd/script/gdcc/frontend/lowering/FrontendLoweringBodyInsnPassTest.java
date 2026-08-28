@@ -6,6 +6,7 @@ import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
@@ -552,7 +553,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnStaticPropertyInit
                         extends RefCounted
-
+                        
                         static var base: int = 1
                         static var derived: int = base + 41
                         """,
@@ -632,29 +633,29 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnStaticContainerAccess
                         extends RefCounted
-
+                        
                         static var values: Array[int] = [1, 2]
                         static var table: Dictionary = {}
                         static var typed_table: Dictionary[float, int] = {}
                         var instance_list: Array[int] = []
-
+                        
                         static func make_worker() -> BodyInsnStaticContainerAccess:
                             return BodyInsnStaticContainerAccess.new()
-
+                        
                         func read_via_instance() -> int:
                             var worker: BodyInsnStaticContainerAccess = BodyInsnStaticContainerAccess.new()
                             return worker.values[0]
-
+                        
                         func write_via_self(v: int) -> void:
                             self.values[1] = v
                             table["k"] = v
-
+                        
                         func write_typed_key(v: int) -> void:
                             self.typed_table[1] = v
-
+                        
                         func compound_via_call_receiver(v: int) -> void:
                             make_worker().values[0] += v
-
+                        
                         func instance_contrast(i: int) -> int:
                             self.instance_list[i] = i
                             return self.instance_list[0]
@@ -711,10 +712,10 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertFalse(diagnostics.hasErrors()),
                 // read: static load feeds the indexed read; no named-member variant route.
                 () -> assertEquals(1, readInstructions.stream()
-                        .filter(LoadStaticInsn.class::isInstance)
-                        .map(LoadStaticInsn.class::cast)
-                        .filter(instruction -> instruction.staticName().equals("values"))
-                        .count(),
+                                .filter(LoadStaticInsn.class::isInstance)
+                                .map(LoadStaticInsn.class::cast)
+                                .filter(instruction -> instruction.staticName().equals("values"))
+                                .count(),
                         () -> readInstructions.stream().map(Object::toString).collect(Collectors.joining("\n"))),
                 () -> assertEquals(1, readInstructions.stream()
                         .filter(VariantGetIndexedInsn.class::isInstance)
@@ -755,9 +756,9 @@ class FrontendLoweringBodyInsnPassTest {
                         .filter(StoreStaticInsn.class::isInstance)
                         .count(), () -> compoundDump),
                 () -> assertTrue(compoundInstructions.stream()
-                        .filter(CallStaticMethodInsn.class::isInstance)
-                        .map(CallStaticMethodInsn.class::cast)
-                        .anyMatch(instruction -> instruction.methodName().equals("make_worker")),
+                                .filter(CallStaticMethodInsn.class::isInstance)
+                                .map(CallStaticMethodInsn.class::cast)
+                                .anyMatch(instruction -> instruction.methodName().equals("make_worker")),
                         () -> compoundDump),
                 () -> assertTrue(compoundInstructions.stream()
                         .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
@@ -775,8 +776,8 @@ class FrontendLoweringBodyInsnPassTest {
                         .filter(instruction -> instruction.staticName().equals("typed_table"))
                         .count()),
                 () -> assertEquals(1, typedInstructions.stream()
-                        .filter(VariantSetKeyedInsn.class::isInstance)
-                        .count(),
+                                .filter(VariantSetKeyedInsn.class::isInstance)
+                                .count(),
                         () -> typedInstructions.stream().map(Object::toString).collect(Collectors.joining("\n"))),
                 () -> assertEquals(1, typedInstructions.stream()
                         .filter(StoreStaticInsn.class::isInstance)
@@ -803,9 +804,9 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnBareStaticContainer
                         extends RefCounted
-
+                        
                         static var values: Array[int] = [1, 2]
-
+                        
                         func bump() -> int:
                             values[0] += 1
                             return values[1]
@@ -861,6 +862,342 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
+    /// Type-meta head `Worker.values[i]` lowers isomorphically to the bare `values[i]` route: the
+    /// container load is a `LoadStaticInsn`, element mutation is an in-place indexed/keyed store, and
+    /// the terminal static commit is compile-time skipped for reference carriers. The start class
+    /// stays pinned to the expression's type-meta owner (`SubWorker.values` loads from `SubWorker`).
+    @Test
+    void runLowersTypeMetaHeadStaticContainerSubscriptThroughStaticStorageRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_type_meta_head_container.gd",
+                """
+                        class_name BodyInsnTypeMetaHeadContainer
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var values: Array[int] = [1, 2]
+                            static var typed_table: Dictionary[float, int] = {}
+                        
+                        class SubWorker extends Worker:
+                            pass
+                        
+                        func read_via_type_meta() -> int:
+                            return Worker.values[0]
+                        
+                        func write_via_type_meta(v: int) -> void:
+                            Worker.values[1] = v
+                        
+                        func write_typed_key(v: int) -> void:
+                            Worker.typed_table[1] = v
+                        
+                        func compound_via_inherited(v: int) -> void:
+                            SubWorker.values[0] += v
+                        """,
+                Map.of(
+                        "BodyInsnTypeMetaHeadContainer",
+                        "RuntimeBodyInsnTypeMetaHeadContainer"
+                ),
+                true
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var readInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadContainer",
+                "read_via_type_meta"
+        ).targetFunction());
+        var writeInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadContainer",
+                "write_via_type_meta"
+        ).targetFunction());
+        var keyedInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadContainer",
+                "write_typed_key"
+        ).targetFunction());
+        var compoundInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadContainer",
+                "compound_via_inherited"
+        ).targetFunction());
+        var readStaticLoads = readInstructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .toList();
+        var compoundStaticLoads = compoundInstructions.stream()
+                .filter(LoadStaticInsn.class::isInstance)
+                .map(LoadStaticInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // Read: one static container load feeding one indexed read, never the named route.
+                () -> assertEquals(1, readStaticLoads.size()),
+                () -> assertTrue(readStaticLoads.stream()
+                        .allMatch(instruction -> instruction.staticName().equals("values")
+                                && instruction.className().endsWith("__sub__Worker"))),
+                () -> assertEquals(1, readInstructions.stream()
+                        .filter(VariantGetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertTrue(readInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof LoadPropertyInsn)),
+                // Write: static load + in-place indexed store, no writeback for the Array carrier.
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(LoadStaticInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(0, writeInstructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .count()),
+                () -> assertTrue(writeInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof VariantSetInsn
+                                || instruction instanceof StorePropertyInsn)),
+                // Typed dictionary: keyed mutation, still no static writeback.
+                () -> assertEquals(1, keyedInstructions.stream()
+                        .filter(VariantSetKeyedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(0, keyedInstructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .count()),
+                () -> assertTrue(keyedInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof VariantSetInsn)),
+                // Inherited start class: the container loads from the expression's type-meta owner.
+                () -> assertEquals(1, compoundStaticLoads.size()),
+                () -> assertTrue(compoundStaticLoads.stream()
+                        .allMatch(instruction -> instruction.staticName().equals("values")
+                                && instruction.className().endsWith("__sub__SubWorker"))),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(VariantGetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(0, compoundInstructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .count())
+        );
+    }
+
+    /// Direct type-meta property writes (`Worker.shared = v`, `Worker.shared += v`) lower through the
+    /// static storage route: a single `StoreStaticInsn` for plain assignment, load-op-store for
+    /// compound assignment, and never the instance property instructions.
+    @Test
+    void runLowersTypeMetaHeadStaticPropertyWritesThroughStoreStaticInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_type_meta_head_property_write.gd",
+                """
+                        class_name BodyInsnTypeMetaHeadPropertyWrite
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var shared: int = 7
+                        
+                        func write_plain(v: int) -> void:
+                            Worker.shared = v
+                        
+                        func compound_plain(v: int) -> void:
+                            Worker.shared += v
+                        """,
+                Map.of(
+                        "BodyInsnTypeMetaHeadPropertyWrite",
+                        "RuntimeBodyInsnTypeMetaHeadPropertyWrite"
+                ),
+                true
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var writeInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadPropertyWrite",
+                "write_plain"
+        ).targetFunction());
+        var compoundInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadPropertyWrite",
+                "compound_plain"
+        ).targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(0, writeInstructions.stream()
+                        .filter(LoadStaticInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .map(StoreStaticInsn.class::cast)
+                        .filter(instruction -> instruction.staticName().equals("shared")
+                                && instruction.className().endsWith("__sub__Worker"))
+                        .count()),
+                () -> assertTrue(writeInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof LoadPropertyInsn
+                                || instruction instanceof StorePropertyInsn)),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(LoadStaticInsn.class::isInstance)
+                        .map(LoadStaticInsn.class::cast)
+                        .filter(instruction -> instruction.staticName().equals("shared"))
+                        .count()),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(BinaryOpInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .count()),
+                () -> assertTrue(compoundInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof LoadPropertyInsn
+                                || instruction instanceof StorePropertyInsn))
+        );
+    }
+
+    /// Variant static containers keep the bare-form writeback contract on the type-meta head route:
+    /// the in-place generic store is unconditional and `gdcc_variant_requires_writeback` gates the
+    /// `StoreStaticInsn` in the apply block.
+    @Test
+    void runAppliesRuntimeGatedWritebackForVariantTypeMetaHeadContainer() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_type_meta_variant_container.gd",
+                """
+                        class_name BodyInsnTypeMetaVariantContainer
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var untyped_list: Variant = []
+                        
+                        func write_variant(v: int) -> void:
+                            Worker.untyped_list[0] = v
+                        """,
+                Map.of(
+                        "BodyInsnTypeMetaVariantContainer",
+                        "RuntimeBodyInsnTypeMetaVariantContainer"
+                ),
+                true
+        );
+        var writeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaVariantContainer",
+                "write_variant"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = writeContext.targetFunction();
+        var instructions = allInstructions(function);
+        var entryBlock = requireBlock(function, "seq_0");
+        var gateCalls = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(CallGlobalInsn.class::isInstance)
+                .map(CallGlobalInsn.class::cast)
+                .toList();
+        var gateBranch = assertInstanceOf(GoIfInsn.class, entryBlock.getTerminator());
+        var applyBlock = requireBlock(function, gateBranch.trueBbId());
+        var applyStores = applyBlock.getNonTerminatorInstructions().stream()
+                .filter(StoreStaticInsn.class::isInstance)
+                .map(StoreStaticInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(LoadStaticInsn.class::isInstance)
+                        .map(LoadStaticInsn.class::cast)
+                        .filter(instruction -> instruction.staticName().equals("untyped_list"))
+                        .count()),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, gateCalls.size()),
+                () -> assertEquals("gdcc_variant_requires_writeback", gateCalls.getFirst().functionName()),
+                () -> assertEquals(gateCalls.getFirst().resultId(), gateBranch.conditionVarId()),
+                () -> assertEquals(1, applyStores.size()),
+                () -> assertTrue(applyStores.stream()
+                        .allMatch(instruction -> instruction.staticName().equals("untyped_list"))),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(StoreStaticInsn.class::isInstance)
+                        .count())
+        );
+    }
+
+    /// Drift guard: when the published container member on a type-meta head subscript anchor loses
+    /// its static declaration site, the STATIC_CONTEXT property commit step can no longer take the
+    /// static route and must fail fast instead of silently emitting an instance-route writeback.
+    @Test
+    void runFailsFastWhenTypeMetaHeadSubscriptContainerMemberLosesStaticDeclarationSite() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_type_meta_head_subscript_member_drift.gd",
+                """
+                        class_name BodyInsnTypeMetaHeadSubscriptMemberDrift
+                        extends RefCounted
+                        
+                        class Worker:
+                            static var values: Array[int] = [1, 2]
+                        
+                        func write_via_type_meta(v: int) -> void:
+                            Worker.values[1] = v
+                        """,
+                Map.of(
+                        "BodyInsnTypeMetaHeadSubscriptMemberDrift",
+                        "RuntimeBodyInsnTypeMetaHeadSubscriptMemberDrift"
+                ),
+                true
+        );
+        var writeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypeMetaHeadSubscriptMemberDrift",
+                "write_via_type_meta"
+        );
+        var assignmentItem = requireSingleSequenceItem(
+                writeContext.requireFrontendCfgGraph(),
+                AssignmentItem.class
+        );
+        var propertyCommitAnchor = assignmentItem.writableRoutePayload().reverseCommitSteps().stream()
+                .filter(step -> step.kind() == FrontendWritableRoutePayload.StepKind.PROPERTY)
+                .findFirst()
+                .orElseThrow()
+                .anchor();
+        assertInstanceOf(AttributeSubscriptStep.class, propertyCommitAnchor);
+        var original = prepared.context().requireAnalysisData().resolvedMembers().get(propertyCommitAnchor);
+        assertNotNull(original);
+        assertNotNull(original.resultType());
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                propertyCommitAnchor,
+                FrontendResolvedMember.resolved(
+                        original.memberName(),
+                        original.bindingKind(),
+                        original.receiverKind(),
+                        original.ownerKind(),
+                        original.receiverType(),
+                        original.resultType(),
+                        null
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertTrue(
+                exception.getMessage().contains(
+                        "STATIC_CONTEXT root requires an explicit container value id for non-property writable routes"
+                ),
+                exception.getMessage()
+        );
+    }
+
     /// Deep chain `obj.workers[0].level = 1` with static `workers`: the element read must come
     /// from `LoadStaticInsn` (never the Variant named route) and the element mutation is a plain
     /// instance property store. Because a reference element is mutated in place, the terminal
@@ -876,13 +1213,13 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnStaticContainerReverseCommit
                         extends RefCounted
-
+                        
                         class Worker:
                             extends RefCounted
                             var level: int = 0
-
+                        
                         static var workers: Array[Worker] = []
-
+                        
                         func promote(obj: BodyInsnStaticContainerReverseCommit) -> void:
                             obj.workers[0].level = 1
                         """,
@@ -911,10 +1248,10 @@ class FrontendLoweringBodyInsnPassTest {
         assertAll(
                 () -> assertFalse(diagnostics.hasErrors()),
                 () -> assertEquals(1, instructions.stream()
-                        .filter(LoadStaticInsn.class::isInstance)
-                        .map(LoadStaticInsn.class::cast)
-                        .filter(instruction -> instruction.staticName().equals("workers"))
-                        .count(),
+                                .filter(LoadStaticInsn.class::isInstance)
+                                .map(LoadStaticInsn.class::cast)
+                                .filter(instruction -> instruction.staticName().equals("workers"))
+                                .count(),
                         "the element read must come from shared static storage"),
                 () -> assertEquals(1, instructions.stream()
                         .filter(StorePropertyInsn.class::isInstance)
@@ -922,8 +1259,8 @@ class FrontendLoweringBodyInsnPassTest {
                         .filter(instruction -> instruction.propertyName().equals("level"))
                         .count()),
                 () -> assertEquals(0, instructions.stream()
-                        .filter(StoreStaticInsn.class::isInstance)
-                        .count(),
+                                .filter(StoreStaticInsn.class::isInstance)
+                                .count(),
                         "reference element mutation needs no container writeback"),
                 () -> assertEquals(0, instructions.stream()
                         .filter(VariantSetIndexedInsn.class::isInstance)
@@ -947,10 +1284,10 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnNestedStaticContainer
                         extends RefCounted
-
+                        
                         static var vectors: Array[Vector2] = [Vector2.ZERO]
                         var child: BodyInsnNestedStaticContainer
-
+                        
                         func nested_write(holder: BodyInsnNestedStaticContainer) -> void:
                             holder.child.vectors[0].x = 1.0
                         """,
@@ -1009,7 +1346,7 @@ class FrontendLoweringBodyInsnPassTest {
                                 .noneMatch(instruction -> instruction.propertyName().equals("child")),
                         "the outer instance `child` writeback must be truncated at the static boundary"),
                 () -> assertTrue(instructions.stream()
-                        .anyMatch(LoadPropertyInsn.class::isInstance),
+                                .anyMatch(LoadPropertyInsn.class::isInstance),
                         "the receiver chain `holder.child` is still evaluated for side effects and ordering")
         );
     }
@@ -1027,10 +1364,10 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnDoubleStaticBoundary
                         extends RefCounted
-
+                        
                         static var holder: BodyInsnDoubleStaticBoundary
                         static var vectors: Array[Vector2] = [Vector2.ZERO]
-
+                        
                         func nested_static_write() -> void:
                             holder.vectors[0].x = 1.0
                         """,
@@ -1065,23 +1402,23 @@ class FrontendLoweringBodyInsnPassTest {
                         .filter(instruction -> instruction.staticName().equals("vectors"))
                         .count(), () -> dump),
                 () -> assertEquals(0, instructions.stream()
-                        .filter(StoreStaticInsn.class::isInstance)
-                        .map(StoreStaticInsn.class::cast)
-                        .filter(instruction -> instruction.staticName().equals("holder"))
-                        .count(),
+                                .filter(StoreStaticInsn.class::isInstance)
+                                .map(StoreStaticInsn.class::cast)
+                                .filter(instruction -> instruction.staticName().equals("holder"))
+                                .count(),
                         "the outer static property commit must be dropped; its stored reference is unchanged"),
                 () -> assertTrue(instructions.stream()
-                        .filter(LoadStaticInsn.class::isInstance)
-                        .map(LoadStaticInsn.class::cast)
-                        .anyMatch(instruction -> instruction.staticName().equals("holder")),
+                                .filter(LoadStaticInsn.class::isInstance)
+                                .map(LoadStaticInsn.class::cast)
+                                .anyMatch(instruction -> instruction.staticName().equals("holder")),
                         "the outer static receiver is still evaluated for side effects and ordering"),
                 () -> assertEquals(1, instructions.stream()
                         .filter(VariantSetIndexedInsn.class::isInstance)
                         .count(), () -> dump),
                 () -> assertTrue(instructions.stream()
-                        .filter(StorePropertyInsn.class::isInstance)
-                        .map(StorePropertyInsn.class::cast)
-                        .allMatch(instruction -> instruction.propertyName().equals("x")),
+                                .filter(StorePropertyInsn.class::isInstance)
+                                .map(StorePropertyInsn.class::cast)
+                                .allMatch(instruction -> instruction.propertyName().equals("x")),
                         "the only instance property write is the Vector2 element field mutation")
         );
     }
