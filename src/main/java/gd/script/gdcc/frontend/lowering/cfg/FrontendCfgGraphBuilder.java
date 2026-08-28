@@ -2305,8 +2305,8 @@ public final class FrontendCfgGraphBuilder {
                             + "[...]' requires a RESOLVED static property container member published on the "
                             + "AttributeSubscriptStep, but got "
                             + (publishedMember == null
-                                    ? "no member fact"
-                                    : publishedMember.status() + " / " + publishedMember.bindingKind())
+                            ? "no member fact"
+                            : publishedMember.status() + " / " + publishedMember.bindingKind())
                             + "; constant containers and dynamic members stay unsupported"
             );
         }
@@ -3239,10 +3239,10 @@ public final class FrontendCfgGraphBuilder {
                 var receiverValueId = typeMetaSingleStepTarget
                         ? null
                         : requireFrozenTargetOperandValue(
-                                frozenTargetOperandValueIds,
-                                attributeExpression,
-                                "receiver"
-                        );
+                        frozenTargetOperandValueIds,
+                        attributeExpression,
+                        "receiver"
+                );
                 var resultValueId = nextValueId();
                 cursor.currentSequence().items().add(new MemberLoadItem(
                         attributePropertyStep,
@@ -3997,8 +3997,8 @@ public final class FrontendCfgGraphBuilder {
                         && routePayload.leaf().containerValueIdOrNull() == null;
         if (staticBarePropertyReceiver
                 && (!FrontendCallMutabilitySupport.mayMutateReceiver(publishedCall)
-                        || (receiverType != null
-                                && !FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(receiverType)))) {
+                || (receiverType != null
+                && !FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(receiverType)))) {
             return routePayload.reverseCommitSteps();
         }
         return appendPromotedLeaf(routePayload);
@@ -4041,10 +4041,12 @@ public final class FrontendCfgGraphBuilder {
     /// - `Dictionary[float, V]` with an `int` key freezes as `KEYED`, because body lowering will cast
     ///   the key to the dictionary's `float` key type
     /// - attribute-subscript steps use a `Variant` effective receiver because the named base is
-    ///   materialized from runtime `receiver.member` before the subscript is applied — except static
-    ///   container properties, whose named base is loaded from shared static storage and keeps the
-    ///   published container type (body lowering consumes the same provenance through
-    ///   `SubscriptLeaf.containerSourceType` / `staticOwnerNameOrNull`)
+    ///   materialized from runtime `receiver.member` before the subscript is applied — except
+    ///   static container properties, whose named base is loaded from shared static storage, and
+    ///   resolved non-static GDCC instance container properties, whose named base is loaded through
+    ///   `LoadPropertyInsn`; both keep the published container type (body lowering consumes the same
+    ///   provenance through `SubscriptLeaf.containerSourceType` / `staticOwnerNameOrNull` /
+    ///   `typedInstanceContainer`)
     private @NotNull FrontendSubscriptAccessSupport.AccessKind determineWritableSubscriptAccessKind(
             @NotNull Node subscriptAnchor,
             @NotNull GdType receiverType,
@@ -4053,14 +4055,17 @@ public final class FrontendCfgGraphBuilder {
         var effectiveReceiverType = receiverType;
         if (subscriptAnchor instanceof AttributeSubscriptStep) {
             var containerMember = requireAnalysisData().resolvedMembers().get(subscriptAnchor);
-            var staticContainerType = containerMember != null
+            var staticContainer = containerMember != null
                     && containerMember.status() == FrontendMemberResolutionStatus.RESOLVED
                     && containerMember.bindingKind() == FrontendBindingKind.PROPERTY
                     && containerMember.declarationSite() instanceof PropertyDef propertyDef
-                    && propertyDef.isStatic()
+                    && propertyDef.isStatic();
+            var typedContainerType = containerMember != null
+                    && (staticContainer
+                    || FrontendSubscriptAccessSupport.isResolvedTypedInstanceContainerMember(containerMember))
                     ? containerMember.resultType()
                     : null;
-            effectiveReceiverType = staticContainerType != null ? staticContainerType : GdVariantType.VARIANT;
+            effectiveReceiverType = typedContainerType != null ? typedContainerType : GdVariantType.VARIANT;
         }
         var materializedKeyType = effectiveReceiverType instanceof GdContainerType containerType
                 ? containerType.getKeyType()

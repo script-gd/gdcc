@@ -1416,7 +1416,8 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                             keyType,
                             session.requireValueType(node.resultValueId()),
                             containerFacts.containerSourceType(),
-                            containerFacts.staticOwnerNameOrNull()
+                            containerFacts.staticOwnerNameOrNull(),
+                            containerFacts.typedInstanceContainer()
                     ),
                     List.of()
             );

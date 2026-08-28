@@ -566,7 +566,7 @@ writable root 枚举、`SubscriptLeaf.baseOrReceiverSlotId` 非空）都建立�
   `FrontendLoweringBodyInsnPassTest`（静态存储路由、属性写、Variant 门控写回、drift
   fail-fast）新增用例全绿。
 
-### 阶段 6：可解析实例 named subscript 的 typed 优化（`obj.items[i]`，待实施，依赖阶段 5 之后）
+### 阶段 6：可解析实例 named subscript 的 typed 优化（`obj.items[i]`，已完成）
 
 现状：attribute-subscript named 路由（`receiver.member[key]`）对所有实例 receiver 一律走
 Variant named 路径（`PackVariantInsn` → `VariantGetNamedInsn` → `Variant(Set/Get)IndexedInsn`
@@ -578,18 +578,45 @@ Variant named 路径（`PackVariantInsn` → `VariantGetNamedInsn` → `Variant(
 锚点，`SubscriptLeaf.containerSourceType` 恒填充声明容器类型（dynamic 容器为 Variant）。
 本阶段消费这些数据：
 
-- [ ] 6.1 resolved 实例容器（`containerSourceType` 为非 Variant 且非 static owner）的 named
+- [x] 6.1 resolved 实例容器（`containerSourceType` 为非 Variant 且非 static owner）的 named
       scratch 改为 `LoadPropertyInsn` + typed 下标（key 转换与 access-kind 按
-      `containerSourceType`，与裸下标一致）+ `StorePropertyInsn` 写回，与裸形态
-      （`items[i]` 经 `InstancePropertyCommitStep`）拉齐；`containerSourceType` 为 Variant
-      的 dynamic 容器保持既有 Variant named 路由不变。
-- [ ] 6.2 反向提交 `SubscriptCommitStep` 同步增加容器 provenance 消费（深链
-      `obj.items[i].x = v` 的 named 层写回同样 typed 化）。
-- [ ] 6.3 行为基线迁移：既有 named 路由测试锚定 Variant 指令形态，需按 receiver 是否
-      resolved 实例容器分组更新；engine 对象 property 容器（非 GDCC `PropertyDef`）保持
-      Variant 路由（`LoadPropertyInsn`/`StorePropertyInsn` 仅 GDCC 实例存储可用）。
-- 验收：`FrontendWritableRouteSupportTest` 按新契约重写 named 用例 + integration 正/负测试
-  （typed key 转换、无 Variant named 指令残留、dynamic 容器回归）全绿。
+      `containerSourceType`，与裸下标一致）+ 无条件 `StorePropertyInsn` 写回；
+      `containerSourceType` 为 Variant 的 dynamic 容器保持既有 Variant named 路由不变。
+      写回不按载体家族省略（与裸形态经共享 reverse-commit walk 门控省略引用载体写回
+      不同）：typed 路由不假设“原位修改对属性存储可见”，避免该假设阻碍后续 GDCC 属性
+      自定义 getter/setter 的落地；冗余 store 的消除属于后续 backend/优化层的职责，
+      不在 CFG/lowering 层冻结。
+      实现落点：
+      - 共享判定 `FrontendSubscriptAccessSupport.isResolvedTypedInstanceContainerMember(...)`
+        （RESOLVED PROPERTY + INSTANCE receiver + GDCC owner + 非 static `PropertyDef` +
+        非 Variant `resultType`，fail-closed；engine property 虽实现 `PropertyDef` 但
+        ownerKind=ENGINE，被排除并保持 Variant 路由）。
+      - `SubscriptContainerFacts`/`SubscriptLeaf` 新增 `typedInstanceContainer` 标志，
+        由 `resolveSubscriptContainerFacts(...)` 统一产出；leaf read（普通
+        `SubscriptLoadItem`）与 writable leaf 两条构造路径同步接入。
+      - `materializeNamedMemberScratch` 新增 typed instance 分支（`LoadPropertyInsn` +
+        按容器类型分配 scratch），`NamedMemberScratch` 重构为 sealed 层次
+        （VariantRoute/StaticContainer/InstanceProperty）；`appendNamedBaseWriteback`
+        对该分支恒定发出 `StorePropertyInsn`。String/Vector 命名容器的
+        attribute-subscript 在下标语义检查阶段被拒绝（不是 member resolution 本身）；
+        `Packed*Array` 实现 `GdContainerType`，`obj.payloads[i] = v`（`PackedInt32Array`）
+        发出 `LoadPropertyInsn` + indexed store + `StorePropertyInsn`，由集成测试锚定。
+      - CFG 冻结（`determineWritableSubscriptAccessKind`）对 typed 实例容器同步使用容器
+        类型，保持冻结 access kind 与 body 实际指令一致。
+- [x] 6.2 反向提交同步增加容器 provenance 消费：新增
+      `InstanceContainerSubscriptCommitStep`（与 `StaticContainerSubscriptCommitStep`
+      同构但非 terminal，载体继续沿 receiver slot 外传），深链 `obj.vectors[i].x = v` 的
+      named 层写回同样 typed 化（`LoadPropertyInsn` 重载容器 + typed store + 无条件
+      `StorePropertyInsn` 写回）。
+- [x] 6.3 行为基线迁移：既有 named 路由测试按 receiver 是否 resolved 实例容器分组更新
+      （`FrontendWritableRouteSupportTest` 旧 Variant 锚定用例改写为 typed 正向 +
+      fail-closed 回归；`instance_contrast` 与 CFG 冻结断言同步翻转）；engine 对象
+      property 容器（非 GDCC `PropertyDef`）保持 Variant 路由，由判定的
+      `ownerKind == GDCC` 门槛保证。
+- 验收：`FrontendWritableRouteSupportTest`（typed 读/写/键转换/值语义写回/反向提交 +
+  malformed fail-fast）、`FrontendLoweringBodyInsnPassTest`（typed 路由读写/复合/typed key
+  转换/深链反向提交 + static 对比迁移）、`FrontendCfgGraphBuilderTest`（实例容器冻结
+  KEYED）全绿；dynamic/Variant 命名路由既有回归用例保持不变。
 
 ## 5. 风险登记
 

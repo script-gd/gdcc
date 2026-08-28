@@ -604,7 +604,7 @@ public final class GodotGdextensionTestRunner {
                 if (path.equals(dir)) {
                     continue;
                 }
-                var trailTimeRemaining = 5;
+                var trailTimeRemaining = 10;
                 while (trailTimeRemaining > 0) {
                     try {
                         Files.deleteIfExists(path);

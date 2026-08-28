@@ -335,12 +335,14 @@ final class FrontendWritableRouteSupport {
                 chain,
                 leaf.keySlotId(),
                 leaf.keyType(),
-                // Static containers keep their published container type for key materialization;
-                // only the Variant named route degrades the named base to Variant.
-                leaf.staticOwnerNameOrNull() != null
+                // Static and typed instance containers keep their published container type for key
+                // materialization; only the Variant named route degrades the named base to Variant.
+                leaf.staticOwnerNameOrNull() != null || leaf.typedInstanceContainer()
                         ? leaf.containerSourceType()
                         : leaf.receiverType(),
-                leaf.staticOwnerNameOrNull() != null ? null : leaf.memberNameOrNull(),
+                leaf.staticOwnerNameOrNull() != null || leaf.typedInstanceContainer()
+                        ? null
+                        : leaf.memberNameOrNull(),
                 "subscript_read_key"
         );
         if (leaf.memberNameOrNull() == null) {
@@ -357,6 +359,7 @@ final class FrontendWritableRouteSupport {
                 session,
                 block,
                 leaf.staticOwnerNameOrNull(),
+                leaf.typedInstanceContainer(),
                 leaf.containerSourceType(),
                 leaf.baseOrReceiverSlotId(),
                 leaf.receiverType(),
@@ -385,10 +388,12 @@ final class FrontendWritableRouteSupport {
                 chain,
                 leaf.keySlotId(),
                 leaf.keyType(),
-                leaf.staticOwnerNameOrNull() != null
+                leaf.staticOwnerNameOrNull() != null || leaf.typedInstanceContainer()
                         ? leaf.containerSourceType()
                         : leaf.receiverType(),
-                leaf.staticOwnerNameOrNull() != null ? null : leaf.memberNameOrNull(),
+                leaf.staticOwnerNameOrNull() != null || leaf.typedInstanceContainer()
+                        ? null
+                        : leaf.memberNameOrNull(),
                 "subscript_write_key"
         );
         if (leaf.memberNameOrNull() == null) {
@@ -405,6 +410,7 @@ final class FrontendWritableRouteSupport {
                 session,
                 block,
                 leaf.staticOwnerNameOrNull(),
+                leaf.typedInstanceContainer(),
                 leaf.containerSourceType(),
                 leaf.baseOrReceiverSlotId(),
                 leaf.receiverType(),
@@ -479,6 +485,47 @@ final class FrontendWritableRouteSupport {
                 ));
                 yield writtenBackValueSlotId;
             }
+            case InstanceContainerSubscriptCommitStep subscriptStep -> {
+                var key = materializeSubscriptKey(
+                        session,
+                        block,
+                        chain,
+                        subscriptStep.keySlotId(),
+                        subscriptStep.keyType(),
+                        subscriptStep.containerType(),
+                        null,
+                        "subscript_commit_key"
+                );
+                // Reload the typed container from the receiver's instance storage, apply the
+                // mutation, then commit the whole container back through `StorePropertyInsn`
+                // unconditionally: the typed route never reasons about in-place visibility of
+                // reference carriers, so the writeback stays correct when GDCC properties gain
+                // custom accessors later. Eliding redundant stores is a later backend/optimizer
+                // concern, not a lowering-level contract.
+                session.emitAssertObjectLiveIfNeeded(block, subscriptStep.receiverSlotId());
+                var namedBaseSlotId = session.allocateWritableRouteTemp(
+                        "reverse_commit_named_base",
+                        subscriptStep.containerType()
+                );
+                block.appendNonTerminatorInstruction(new LoadPropertyInsn(
+                        namedBaseSlotId,
+                        subscriptStep.propertyName(),
+                        subscriptStep.receiverSlotId()
+                ));
+                FrontendSubscriptInsnSupport.appendStore(
+                        block,
+                        namedBaseSlotId,
+                        key.slotId(),
+                        writtenBackValueSlotId,
+                        key.accessKind()
+                );
+                block.appendNonTerminatorInstruction(new StorePropertyInsn(
+                        subscriptStep.propertyName(),
+                        subscriptStep.receiverSlotId(),
+                        namedBaseSlotId
+                ));
+                yield nextOuterCarrierSlotId(subscriptStep, writtenBackValueSlotId, terminalStep);
+            }
             case SubscriptCommitStep subscriptStep -> {
                 var key = materializeSubscriptKey(
                         session,
@@ -500,9 +547,10 @@ final class FrontendWritableRouteSupport {
                     );
                     yield nextOuterCarrierSlotId(subscriptStep, writtenBackValueSlotId, terminalStep);
                 }
-                // Static container properties never reach this branch: the session materializes
-                // them as StaticContainerSubscriptCommitStep instead, so the named base here is
-                // always rebuilt through the Variant named route on the instance receiver.
+                // Static and typed instance container properties never reach this branch: the
+                // session materializes them as StaticContainerSubscriptCommitStep /
+                // InstanceContainerSubscriptCommitStep instead, so the named base here is always
+                // rebuilt through the Variant named route on the instance receiver.
                 var scratch = materializeVariantNamedMemberReceiver(
                         session,
                         block,
@@ -641,6 +689,7 @@ final class FrontendWritableRouteSupport {
                 yield writtenBackValueSlotId;
             }
             case SubscriptCommitStep subscriptStep -> subscriptStep.baseOrReceiverSlotId();
+            case InstanceContainerSubscriptCommitStep subscriptStep -> subscriptStep.receiverSlotId();
             case StaticContainerSubscriptCommitStep _ -> {
                 if (!terminalStep) {
                     throw new IllegalStateException(
@@ -656,6 +705,7 @@ final class FrontendWritableRouteSupport {
             @NotNull FrontendBodyLoweringSession session,
             @NotNull LirBasicBlock block,
             @Nullable String staticContainerOwnerNameOrNull,
+            boolean typedInstanceContainer,
             @NotNull GdType containerSourceType,
             @NotNull String receiverSlotId,
             @NotNull GdType receiverType,
@@ -677,7 +727,31 @@ final class FrontendWritableRouteSupport {
                     staticContainerOwnerNameOrNull,
                     memberName
             ));
-            return NamedMemberScratch.staticContainer(staticContainerOwnerNameOrNull, memberName, namedBaseSlotId);
+            return new NamedMemberScratch.StaticContainer(
+                    staticContainerOwnerNameOrNull,
+                    memberName,
+                    namedBaseSlotId
+            );
+        }
+        if (typedInstanceContainer) {
+            // Resolved non-static GDCC instance container: the named base is the receiver's own
+            // property storage, loaded through `LoadPropertyInsn` into a scratch typed with the
+            // published container type. No Variant pack, no named get; writeback goes through
+            // `StorePropertyInsn` unconditionally in `appendNamedBaseWriteback`.
+            session.emitAssertObjectLiveIfNeeded(block, receiverSlotId);
+            var namedBaseSlotId = session.allocateWritableRouteTemp(
+                    actualPurpose + "_named_base", containerSourceType
+            );
+            block.appendNonTerminatorInstruction(new LoadPropertyInsn(
+                    namedBaseSlotId,
+                    memberName,
+                    receiverSlotId
+            ));
+            return new NamedMemberScratch.InstanceProperty(
+                    receiverSlotId,
+                    memberName,
+                    namedBaseSlotId
+            );
         }
         var namedBaseSlotId = session.allocateWritableRouteTemp(actualPurpose + "_named_base", GdVariantType.VARIANT);
         var scratch = materializeVariantNamedMemberReceiver(
@@ -693,29 +767,43 @@ final class FrontendWritableRouteSupport {
                 scratch.receiverVariantSlotId(),
                 scratch.nameSlotId()
         ));
-        return NamedMemberScratch.variantRoute(scratch.receiverVariantSlotId(), scratch.nameSlotId(), namedBaseSlotId);
+        return new NamedMemberScratch.VariantRoute(
+                scratch.receiverVariantSlotId(),
+                scratch.nameSlotId(),
+                namedBaseSlotId
+        );
     }
 
     /// Writes the mutated named base back to its owner after an attribute-subscript store:
-    /// static containers commit to shared class storage, every other receiver keeps the Variant
-    /// named-member writeback shape.
+    /// static containers commit to shared class storage, typed GDCC instance containers always
+    /// commit back through `StorePropertyInsn` (no carrier-family elision — the route must not
+    /// assume in-place mutation visibility through the property, so it stays correct when GDCC
+    /// properties gain custom accessors; eliding redundant stores belongs to a later backend/
+    /// optimizer layer), and every other receiver keeps the Variant named-member writeback shape.
     private static void appendNamedBaseWriteback(
             @NotNull LirBasicBlock block,
             @NotNull NamedMemberScratch scratch
     ) {
-        if (scratch.staticOwnerNameOrNull() != null) {
-            block.appendNonTerminatorInstruction(new StoreStaticInsn(
-                    scratch.staticOwnerNameOrNull(),
-                    Objects.requireNonNull(scratch.staticPropertyNameOrNull(), "staticPropertyNameOrNull must not be null"),
-                    scratch.namedBaseSlotId()
-            ));
-            return;
+        switch (scratch) {
+            case NamedMemberScratch.StaticContainer staticContainer ->
+                    block.appendNonTerminatorInstruction(new StoreStaticInsn(
+                            staticContainer.staticOwnerName(),
+                            staticContainer.staticPropertyName(),
+                            staticContainer.namedBaseSlotId()
+                    ));
+            case NamedMemberScratch.InstanceProperty instanceProperty ->
+                    block.appendNonTerminatorInstruction(new StorePropertyInsn(
+                            instanceProperty.propertyName(),
+                            instanceProperty.receiverSlotId(),
+                            instanceProperty.namedBaseSlotId()
+                    ));
+            case NamedMemberScratch.VariantRoute variantRoute ->
+                    block.appendNonTerminatorInstruction(new VariantSetNamedInsn(
+                            variantRoute.receiverVariantSlotId(),
+                            variantRoute.nameSlotId(),
+                            variantRoute.namedBaseSlotId()
+                    ));
         }
-        block.appendNonTerminatorInstruction(new VariantSetNamedInsn(
-                Objects.requireNonNull(scratch.receiverVariantSlotId(), "receiverVariantSlotId must not be null"),
-                Objects.requireNonNull(scratch.nameSlotId(), "nameSlotId must not be null"),
-                scratch.namedBaseSlotId()
-        ));
     }
 
     /// Materializes the receiver side of a Variant named member route.
@@ -985,22 +1073,30 @@ final class FrontendWritableRouteSupport {
     /// `memberNameOrNull` freezes the attribute-subscript named-base contract:
     /// - `null` means a plain `base[key]`
     /// - non-null means `receiver.member[key]`, so the support must materialize one named-base temp
-    ///   through the Variant named route and write it back into the outer receiver as part of the same
-    ///   leaf operation. Object-family receivers are packed before named get/set; the later subscript
-    ///   still operates on the materialized Variant named base.
+    ///   and write it back into the outer receiver as part of the same leaf operation. The named-base
+    ///   route is chosen by `staticOwnerNameOrNull` / `typedInstanceContainer`; only the fallback
+    ///   Variant named route packs Object-family receivers before the named get/set.
     ///
     /// `containerSourceType` always freezes the compile-time-known type of the container being
     /// subscripted: the base type for plain subscripts, the published container property type for
     /// resolved named containers (instance or static), or `Variant` when the container member is
-    /// runtime-dynamic. The current named route still operates on a Variant named base, so for
-    /// instance/dynamic named leaves this is provenance metadata for the planned typed named-route
-    /// optimization; only plain subscripts and static containers consume it for key materialization.
+    /// runtime-dynamic. Plain subscripts, static containers, and typed instance containers consume
+    /// it for key materialization and access-kind selection; the Variant named route ignores it.
     ///
     /// `staticOwnerNameOrNull` (only meaningful together with `memberNameOrNull`) marks the named
     /// base as a static property container (`receiver.member[key]` with static `member`): the
     /// named-base temp is loaded through `LoadStaticInsn` from the start class's shared storage and
     /// written back through `StoreStaticInsn`, while the receiver slot stays untouched (it was
     /// already evaluated in CFG order, preserving side effects).
+    ///
+    /// `typedInstanceContainer` (only meaningful together with `memberNameOrNull`) marks the named
+    /// base as a resolved non-static GDCC instance property with a concrete declared type
+    /// (`receiver.member[key]` with `var member: Array[int]`-style storage): the named-base temp is
+    /// loaded through `LoadPropertyInsn`, subscripted with the published container type, and always
+    /// written back through `StorePropertyInsn`. Unlike the bare `member[key]` route (whose shared
+    /// reverse-commit walk elides the store for reference carriers), this route never assumes
+    /// in-place mutation visibility through the property, keeping the contract correct when GDCC
+    /// properties gain custom accessors; store elision belongs to a later backend/optimizer layer.
     record SubscriptLeaf(
             @NotNull String baseOrReceiverSlotId,
             @NotNull GdType receiverType,
@@ -1009,7 +1105,8 @@ final class FrontendWritableRouteSupport {
             @NotNull GdType keyType,
             @NotNull GdType valueType,
             @NotNull GdType containerSourceType,
-            @Nullable String staticOwnerNameOrNull
+            @Nullable String staticOwnerNameOrNull,
+            boolean typedInstanceContainer
     ) implements FrontendWritableLeaf {
         /// Convenience for plain subscripts and dynamic named routes: the container source type
         /// defaults to the base type for plain subscripts, or `Variant` for named routes whose
@@ -1031,7 +1128,33 @@ final class FrontendWritableRouteSupport {
                     keyType,
                     valueType,
                     memberNameOrNull == null ? receiverType : GdVariantType.VARIANT,
-                    null
+                    null,
+                    false
+            );
+        }
+
+        /// Convenience for provenance-carrying routes that are not typed instance containers
+        /// (plain subscripts, dynamic named routes, static containers).
+        SubscriptLeaf(
+                @NotNull String baseOrReceiverSlotId,
+                @NotNull GdType receiverType,
+                @Nullable String memberNameOrNull,
+                @NotNull String keySlotId,
+                @NotNull GdType keyType,
+                @NotNull GdType valueType,
+                @NotNull GdType containerSourceType,
+                @Nullable String staticOwnerNameOrNull
+        ) {
+            this(
+                    baseOrReceiverSlotId,
+                    receiverType,
+                    memberNameOrNull,
+                    keySlotId,
+                    keyType,
+                    valueType,
+                    containerSourceType,
+                    staticOwnerNameOrNull,
+                    false
             );
         }
 
@@ -1050,6 +1173,23 @@ final class FrontendWritableRouteSupport {
                 if (memberNameOrNull == null) {
                     throw new IllegalArgumentException(
                             "static container subscript leaf requires memberNameOrNull (the static property name)"
+                    );
+                }
+            }
+            if (typedInstanceContainer) {
+                if (memberNameOrNull == null) {
+                    throw new IllegalArgumentException(
+                            "typed instance container subscript leaf requires memberNameOrNull (the instance property name)"
+                    );
+                }
+                if (staticOwnerNameOrNull != null) {
+                    throw new IllegalArgumentException(
+                            "typed instance container subscript leaf must not also publish staticOwnerNameOrNull"
+                    );
+                }
+                if (containerSourceType instanceof GdVariantType) {
+                    throw new IllegalArgumentException(
+                            "typed instance container subscript leaf requires a concrete containerSourceType, not Variant"
                     );
                 }
             }
@@ -1072,6 +1212,7 @@ final class FrontendWritableRouteSupport {
     /// It is not another "leaf" hierarchy. The leaf describes the innermost direct operation; commit
     /// steps describe the outer owners that must observe the already-mutated carrier value.
     sealed interface FrontendWritableCommitStep permits
+            InstanceContainerSubscriptCommitStep,
             InstancePropertyCommitStep,
             DynamicPropertyCommitStep,
             StaticPropertyCommitStep,
@@ -1144,6 +1285,39 @@ final class FrontendWritableRouteSupport {
         }
     }
 
+    /// Writes the mutated carrier back through one subscript layer whose container is a resolved
+    /// non-static GDCC instance property (`obj.items[i]` with typed `items`): reverse commit reloads
+    /// the container through `LoadPropertyInsn`, applies the typed store, then always writes the
+    /// whole container back through `StorePropertyInsn`. The writeback is deliberately not elided
+    /// for reference carriers: the route must not assume in-place mutation visibility through the
+    /// property, so it stays correct when GDCC properties gain custom accessors. Engine-owned and
+    /// dynamic containers never reach this step; they keep the Variant named `SubscriptCommitStep`
+    /// route.
+    ///
+    /// `containerType` keeps the instance property's published container type so key materialization
+    /// and access-kind selection match a plain subscript on that typed container. The next outer
+    /// carrier is the owning receiver slot, so the step is valid at any reverse-commit position.
+    record InstanceContainerSubscriptCommitStep(
+            @NotNull String receiverSlotId,
+            @NotNull String propertyName,
+            @NotNull GdType containerType,
+            @NotNull String keySlotId,
+            @NotNull GdType keyType
+    ) implements FrontendWritableCommitStep {
+        InstanceContainerSubscriptCommitStep {
+            receiverSlotId = StringUtil.requireNonBlank(receiverSlotId, "receiverSlotId");
+            propertyName = StringUtil.requireNonBlank(propertyName, "propertyName");
+            Objects.requireNonNull(containerType, "containerType must not be null");
+            if (containerType instanceof GdVariantType) {
+                throw new IllegalArgumentException(
+                        "typed instance container commit step requires a concrete containerType, not Variant"
+                );
+            }
+            keySlotId = StringUtil.requireNonBlank(keySlotId, "keySlotId");
+            Objects.requireNonNull(keyType, "keyType must not be null");
+        }
+    }
+
     /// Writes the mutated carrier back through one subscript layer whose container is a static
     /// property (`receiver.values[i]` with static `values`): reverse commit reloads the shared
     /// container from static storage, applies the indexed store, then writes the whole container
@@ -1169,47 +1343,52 @@ final class FrontendWritableRouteSupport {
         }
     }
 
-    private record NamedMemberScratch(
-            @Nullable String receiverVariantSlotId,
-            @Nullable String nameSlotId,
-            @NotNull String namedBaseSlotId,
-            @Nullable String staticOwnerNameOrNull,
-            @Nullable String staticPropertyNameOrNull
-    ) {
-        private static @NotNull NamedMemberScratch variantRoute(
+    /// One materialized named-base temp plus the provenance needed to write it back to its owner.
+    /// The variant encodes the three named-base routes: the fallback Variant named route, the
+    /// static-container route, and the typed GDCC instance property route.
+    private sealed interface NamedMemberScratch {
+
+        @NotNull String namedBaseSlotId();
+
+        /// Fallback route: the named base is read/written through `VariantGetNamedInsn` /
+        /// `VariantSetNamedInsn` on the packed receiver.
+        record VariantRoute(
                 @NotNull String receiverVariantSlotId,
                 @NotNull String nameSlotId,
                 @NotNull String namedBaseSlotId
-        ) {
-            return new NamedMemberScratch(
-                    StringUtil.requireNonBlank(receiverVariantSlotId, "receiverVariantSlotId"),
-                    StringUtil.requireNonBlank(nameSlotId, "nameSlotId"),
-                    namedBaseSlotId,
-                    null,
-                    null
-            );
+        ) implements NamedMemberScratch {
+            public VariantRoute {
+                receiverVariantSlotId = StringUtil.requireNonBlank(receiverVariantSlotId, "receiverVariantSlotId");
+                nameSlotId = StringUtil.requireNonBlank(nameSlotId, "nameSlotId");
+                namedBaseSlotId = StringUtil.requireNonBlank(namedBaseSlotId, "namedBaseSlotId");
+            }
         }
 
-        private static @NotNull NamedMemberScratch staticContainer(
+        /// Static container route: the named base comes from shared class storage and is written
+        /// back through `StoreStaticInsn`; the instance receiver slot is never touched.
+        record StaticContainer(
                 @NotNull String staticOwnerName,
                 @NotNull String staticPropertyName,
                 @NotNull String namedBaseSlotId
-        ) {
-            return new NamedMemberScratch(
-                    null,
-                    null,
-                    namedBaseSlotId,
-                    StringUtil.requireNonBlank(staticOwnerName, "staticOwnerName"),
-                    StringUtil.requireNonBlank(staticPropertyName, "staticPropertyName")
-            );
+        ) implements NamedMemberScratch {
+            public StaticContainer {
+                staticOwnerName = StringUtil.requireNonBlank(staticOwnerName, "staticOwnerName");
+                staticPropertyName = StringUtil.requireNonBlank(staticPropertyName, "staticPropertyName");
+                namedBaseSlotId = StringUtil.requireNonBlank(namedBaseSlotId, "namedBaseSlotId");
+            }
         }
 
-        private NamedMemberScratch {
-            namedBaseSlotId = StringUtil.requireNonBlank(namedBaseSlotId, "namedBaseSlotId");
-            if ((staticOwnerNameOrNull == null) != (staticPropertyNameOrNull == null)) {
-                throw new IllegalArgumentException(
-                        "staticOwnerNameOrNull and staticPropertyNameOrNull must both be set or both be null"
-                );
+        /// Typed GDCC instance property route: the named base is loaded through
+        /// `LoadPropertyInsn` and always written back through `StorePropertyInsn`.
+        record InstanceProperty(
+                @NotNull String receiverSlotId,
+                @NotNull String propertyName,
+                @NotNull String namedBaseSlotId
+        ) implements NamedMemberScratch {
+            public InstanceProperty {
+                receiverSlotId = StringUtil.requireNonBlank(receiverSlotId, "receiverSlotId");
+                propertyName = StringUtil.requireNonBlank(propertyName, "propertyName");
+                namedBaseSlotId = StringUtil.requireNonBlank(namedBaseSlotId, "namedBaseSlotId");
             }
         }
     }

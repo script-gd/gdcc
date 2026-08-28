@@ -752,12 +752,12 @@ class FrontendCfgGraphBuilderTest {
         var staticCalls = calls.stream()
                 .filter(call -> call.writableRoutePayloadOrNull() != null
                         && call.writableRoutePayloadOrNull().root().kind()
-                                == FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT)
+                        == FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT)
                 .toList();
         var instanceCalls = calls.stream()
                 .filter(call -> call.writableRoutePayloadOrNull() != null
                         && call.writableRoutePayloadOrNull().root().kind()
-                                != FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT)
+                        != FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT)
                 .toList();
 
         assertAll(
@@ -2473,7 +2473,7 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
-    void buildExecutableBodyFreezesKeyedAccessForStaticTypedDictionaryContainer() throws Exception {
+    void buildExecutableBodyFreezesKeyedAccessForResolvedTypedDictionaryContainers() throws Exception {
         var analyzed = analyzeSharedSemanticFunction(
                 "cfg_builder_static_typed_container_access_kind.gd",
                 """
@@ -2532,9 +2532,11 @@ class FrontendCfgGraphBuilderTest {
                 ),
                 () -> assertSame(instanceStep, instancePayload.leaf().anchor()),
                 () -> assertEquals("instance_table", instancePayload.leaf().memberNameOrNull()),
-                // Instance named containers keep the Variant frozen route (int key -> INDEXED).
+                // Resolved typed GDCC instance containers freeze the same typed access family as
+                // static containers (float key -> KEYED); only dynamic/engine containers keep the
+                // Variant frozen route.
                 () -> assertEquals(
-                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
+                        FrontendSubscriptAccessSupport.AccessKind.KEYED,
                         instancePayload.leaf().subscriptAccessKindOrNull()
                 )
         );
@@ -2551,10 +2553,10 @@ class FrontendCfgGraphBuilderTest {
                 """
                         class_name CfgBuilderTypeMetaHeadSubscriptRead
                         extends RefCounted
-
+                        
                         class Worker:
                             static var values: Array[int] = [1, 2]
-
+                        
                         func ping() -> int:
                             return Worker.values[0]
                         """,
@@ -2601,10 +2603,10 @@ class FrontendCfgGraphBuilderTest {
                 """
                         class_name CfgBuilderTypeMetaHeadSubscriptWrite
                         extends RefCounted
-
+                        
                         class Worker:
                             static var values: Array[int] = [1, 2]
-
+                        
                         func ping(v: int) -> void:
                             Worker.values[1] = v
                         """,
@@ -2667,10 +2669,10 @@ class FrontendCfgGraphBuilderTest {
                 """
                         class_name CfgBuilderTypeMetaHeadSubscriptCompound
                         extends RefCounted
-
+                        
                         class Worker:
                             static var values: Array[int] = [1, 2]
-
+                        
                         func ping(v: int) -> void:
                             Worker.values[0] += v
                         """,
@@ -2722,10 +2724,10 @@ class FrontendCfgGraphBuilderTest {
                 """
                         class_name CfgBuilderTypeMetaHeadPropertyWrite
                         extends RefCounted
-
+                        
                         class Worker:
                             static var shared: int = 7
-
+                        
                         func ping(v: int) -> void:
                             Worker.shared = v
                         """,
@@ -2766,10 +2768,10 @@ class FrontendCfgGraphBuilderTest {
                 """
                         class_name CfgBuilderTypeMetaHeadSubscriptDrift
                         extends RefCounted
-
+                        
                         class Worker:
                             static var values: Array[int] = [1, 2]
-
+                        
                         func ping() -> int:
                             return Worker.values[0]
                         """,

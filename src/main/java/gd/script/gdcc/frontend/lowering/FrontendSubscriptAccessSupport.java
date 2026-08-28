@@ -1,5 +1,11 @@
 package gd.script.gdcc.frontend.lowering;
 
+import gd.script.gdcc.frontend.sema.FrontendBindingKind;
+import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
+import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
+import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
+import gd.script.gdcc.scope.PropertyDef;
+import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdIntType;
@@ -62,6 +68,28 @@ public final class FrontendSubscriptAccessSupport {
                 || receiverType instanceof GdStringType
                 || receiverType instanceof GdVectorType
                 || receiverType instanceof GdPackedArrayType;
+    }
+
+    /// Whether an attribute-subscript container member (`receiver.member[key]`) is a resolved,
+    /// non-static GDCC instance property with a concrete declared type, so body lowering may load
+    /// the named base through `LoadPropertyInsn` and subscript it with the published container
+    /// type instead of rebuilding the Variant named route.
+    ///
+    /// Fail-closed by construction: dynamic members, engine-owned properties (including
+    /// `ExtensionGdClass.PropertyInfo`, which implements `PropertyDef` but is not GDCC storage),
+    /// static properties, and untyped (`Variant`) properties all keep the Variant named route.
+    /// CFG access-kind freezing and body lowering must both consult this single predicate so the
+    /// frozen route contract cannot drift from the emitted instructions.
+    public static boolean isResolvedTypedInstanceContainerMember(@NotNull FrontendResolvedMember containerMember) {
+        Objects.requireNonNull(containerMember, "containerMember must not be null");
+        return containerMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                && containerMember.bindingKind() == FrontendBindingKind.PROPERTY
+                && containerMember.receiverKind() == FrontendReceiverKind.INSTANCE
+                && containerMember.ownerKind() == ScopeOwnerKind.GDCC
+                && containerMember.declarationSite() instanceof PropertyDef propertyDef
+                && !propertyDef.isStatic()
+                && containerMember.resultType() != null
+                && !(containerMember.resultType() instanceof GdVariantType);
     }
 
     public enum AccessKind {

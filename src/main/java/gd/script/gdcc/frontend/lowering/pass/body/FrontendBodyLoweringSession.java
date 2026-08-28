@@ -471,7 +471,8 @@ public final class FrontendBodyLoweringSession {
                         requireValueType(keyValueId),
                         leafType,
                         containerFacts.containerSourceType(),
-                        containerFacts.staticOwnerNameOrNull()
+                        containerFacts.staticOwnerNameOrNull(),
+                        containerFacts.typedInstanceContainer()
                 );
             }
         };
@@ -514,6 +515,23 @@ public final class FrontendBodyLoweringSession {
                 if (containerMember != null && isStaticResolvedPropertyMember(containerMember)) {
                     yield new FrontendWritableRouteSupport.StaticContainerSubscriptCommitStep(
                             requireStaticReceiverName(containerMember.receiverType()),
+                            Objects.requireNonNull(step.memberNameOrNull(), "memberNameOrNull must not be null"),
+                            Objects.requireNonNull(
+                                    containerMember.resultType(),
+                                    "RESOLVED container property member must publish resultType"
+                            ),
+                            slotIdForValue(keyValueId),
+                            requireValueType(keyValueId)
+                    );
+                }
+                // Resolved non-static GDCC instance container (`obj.items[i]` with typed `items`)
+                // commits back through `StorePropertyInsn` with the published container type,
+                // mirroring the bare `items[i]` route; engine/dynamic containers keep the Variant
+                // named route below.
+                if (containerMember != null
+                        && FrontendSubscriptAccessSupport.isResolvedTypedInstanceContainerMember(containerMember)) {
+                    yield new FrontendWritableRouteSupport.InstanceContainerSubscriptCommitStep(
+                            resolveWritableContainerSlot(root, step.containerValueIdOrNull()),
                             Objects.requireNonNull(step.memberNameOrNull(), "memberNameOrNull must not be null"),
                             Objects.requireNonNull(
                                     containerMember.resultType(),
@@ -657,10 +675,14 @@ public final class FrontendBodyLoweringSession {
     /// published container property type for resolved named containers (instance or static), or
     /// Variant for runtime-dynamic named containers. `staticOwnerNameOrNull` is set only when the
     /// named container is a static property, redirecting the named-base scratch/writeback to the
-    /// start class's shared static storage.
+    /// start class's shared static storage. `typedInstanceContainer` is set only when the named
+    /// container is a resolved non-static GDCC instance property with a concrete declared type,
+    /// selecting the typed `LoadPropertyInsn`/`StorePropertyInsn` named route instead of the
+    /// Variant named route (engine properties and dynamic members stay Variant).
     record SubscriptContainerFacts(
             @NotNull GdType containerSourceType,
-            @Nullable String staticOwnerNameOrNull
+            @Nullable String staticOwnerNameOrNull,
+            boolean typedInstanceContainer
     ) {
     }
 
@@ -671,11 +693,11 @@ public final class FrontendBodyLoweringSession {
     ) {
         Objects.requireNonNull(receiverType, "receiverType must not be null");
         if (memberNameOrNull == null) {
-            return new SubscriptContainerFacts(receiverType, null);
+            return new SubscriptContainerFacts(receiverType, null, false);
         }
         var containerMember = findSubscriptContainerMemberOrNull(subscriptAnchor);
         if (containerMember == null) {
-            return new SubscriptContainerFacts(GdVariantType.VARIANT, null);
+            return new SubscriptContainerFacts(GdVariantType.VARIANT, null, false);
         }
         return new SubscriptContainerFacts(
                 Objects.requireNonNull(
@@ -684,7 +706,8 @@ public final class FrontendBodyLoweringSession {
                 ),
                 isStaticResolvedPropertyMember(containerMember)
                         ? requireStaticReceiverName(containerMember.receiverType())
-                        : null
+                        : null,
+                FrontendSubscriptAccessSupport.isResolvedTypedInstanceContainerMember(containerMember)
         );
     }
 

@@ -623,8 +623,9 @@ class FrontendLoweringBodyInsnPassTest {
 
     /// Stage 2.2: attribute-subscript on a static container property (`obj.values[i]`) must lower
     /// through static storage: the named base is a `LoadStaticInsn` temp and writeback is a
-    /// `StoreStaticInsn`; no Variant named-member instruction may remain. Instance container
-    /// access keeps the Variant named route as a contrast anchor.
+    /// `StoreStaticInsn`; no Variant named-member instruction may remain. The typed instance
+    /// container contrast (`self.instance_list[i]`, stage 6) lowers through `LoadPropertyInsn`
+    /// with the same typed indexed access and always writes back through `StorePropertyInsn`.
     @Test
     void runLowersStaticContainerSubscriptThroughStaticStorageRoute() throws Exception {
         var diagnostics = new DiagnosticManager();
@@ -763,11 +764,30 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertTrue(compoundInstructions.stream()
                         .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
                                 || instruction instanceof VariantSetNamedInsn)),
-                // instance container contrast: the Variant named route is untouched.
+                // typed instance container contrast (stage 6): the named base is a
+                // `LoadPropertyInsn` temp with typed indexed access on both read and write; the
+                // single write commits back through one `StorePropertyInsn`, and no Variant
+                // named-member instruction may remain.
                 () -> assertTrue(contrastInstructions.stream()
-                        .anyMatch(VariantGetNamedInsn.class::isInstance)),
-                () -> assertTrue(contrastInstructions.stream()
-                        .anyMatch(VariantSetNamedInsn.class::isInstance)),
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof PackVariantInsn)),
+                () -> assertEquals(2, contrastInstructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("instance_list"))
+                        .count()),
+                () -> assertEquals(1, contrastInstructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, contrastInstructions.stream()
+                        .filter(VariantGetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, contrastInstructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("instance_list"))
+                        .count()),
                 // typed static container: LoadStatic -> KEYED store -> StoreStatic, with a
                 // converted float key and no Variant named instructions.
                 () -> assertEquals(1, typedInstructions.stream()
@@ -985,6 +1005,249 @@ class FrontendLoweringBodyInsnPassTest {
                         .count()),
                 () -> assertEquals(0, compoundInstructions.stream()
                         .filter(StoreStaticInsn.class::isInstance)
+                        .count())
+        );
+    }
+
+    /// Stage 6: attribute-subscript on a resolved non-static GDCC instance container
+    /// (`obj.items[i]` with typed `items`) lowers through the typed property route: the named base
+    /// is a `LoadPropertyInsn` temp subscripted with the published container type (typed key
+    /// conversion included), and every write commits the whole container back through
+    /// `StorePropertyInsn` unconditionally — the typed route never elides the writeback based on
+    /// the carrier family. No Variant named-member instruction may remain; dynamic/engine
+    /// containers keep the Variant named route (anchored by the dedicated dynamic-route tests).
+    @Test
+    void runLowersTypedInstanceContainerSubscriptThroughPropertyRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_typed_instance_container.gd",
+                """
+                        class_name BodyInsnTypedInstanceContainer
+                        extends RefCounted
+                        
+                        var items: Array[int] = []
+                        var table: Dictionary[float, int] = {}
+                        var payloads: PackedInt32Array = PackedInt32Array()
+                        
+                        func read_items(obj: BodyInsnTypedInstanceContainer, i: int) -> int:
+                            return obj.items[i]
+                        
+                        func write_items(obj: BodyInsnTypedInstanceContainer, i: int, v: int) -> void:
+                            obj.items[i] = v
+                        
+                        func compound_items(obj: BodyInsnTypedInstanceContainer, i: int, v: int) -> void:
+                            obj.items[i] += v
+                        
+                        func write_typed_key(obj: BodyInsnTypedInstanceContainer, k: int, v: int) -> void:
+                            obj.table[k] = v
+                        
+                        func write_packed(obj: BodyInsnTypedInstanceContainer, i: int, v: int) -> void:
+                            obj.payloads[i] = v
+                        """,
+                Map.of(
+                        "BodyInsnTypedInstanceContainer",
+                        "RuntimeBodyInsnTypedInstanceContainer"
+                ),
+                true
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var readInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedInstanceContainer",
+                "read_items"
+        ).targetFunction());
+        var writeInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedInstanceContainer",
+                "write_items"
+        ).targetFunction());
+        var compoundInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedInstanceContainer",
+                "compound_items"
+        ).targetFunction());
+        var keyedInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedInstanceContainer",
+                "write_typed_key"
+        ).targetFunction());
+        var packedInstructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedInstanceContainer",
+                "write_packed"
+        ).targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // Read: one property container load feeding one indexed read, never the named route.
+                () -> assertEquals(1, readInstructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("items"))
+                        .count()),
+                () -> assertEquals(1, readInstructions.stream()
+                        .filter(VariantGetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertTrue(readInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof PackVariantInsn)),
+                // Write: property load + indexed store + unconditional StorePropertyInsn commit;
+                // the typed route never elides the writeback based on the carrier family.
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("items"))
+                        .count()),
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, writeInstructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("items"))
+                        .count()),
+                () -> assertTrue(writeInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof VariantSetInsn
+                                || instruction instanceof PackVariantInsn)),
+                // Compound: read and write each reload the container through the property route,
+                // and the single mutation commits back through one StorePropertyInsn.
+                () -> assertEquals(2, compoundInstructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("items"))
+                        .count()),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(VariantGetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, compoundInstructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("items"))
+                        .count()),
+                () -> assertTrue(compoundInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn)),
+                // Typed dictionary: the int key converts to the float key type (c_int_to_float) and
+                // the mutation is KEYED, with no generic Variant set and no named route; the whole
+                // container commits back through StorePropertyInsn.
+                () -> assertEquals(1, keyedInstructions.stream()
+                        .filter(CallIntrinsicInsn.class::isInstance)
+                        .map(CallIntrinsicInsn.class::cast)
+                        .filter(instruction -> instruction.intrinsicName().equals("c_int_to_float"))
+                        .count()),
+                () -> assertEquals(1, keyedInstructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("table"))
+                        .count()),
+                () -> assertEquals(1, keyedInstructions.stream()
+                        .filter(VariantSetKeyedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, keyedInstructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("table"))
+                        .count()),
+                () -> assertTrue(keyedInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof VariantSetInsn)),
+                // Packed*Array follows the same unconditional writeback shape: property load,
+                // indexed store, StorePropertyInsn commit.
+                () -> assertEquals(1, packedInstructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("payloads"))
+                        .count()),
+                () -> assertEquals(1, packedInstructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, packedInstructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("payloads"))
+                        .count()),
+                () -> assertTrue(packedInstructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof PackVariantInsn))
+        );
+    }
+
+    /// Stage 6.2: a deep chain (`obj.vectors[i].x = v`) commits the mutated value-semantic element
+    /// back into the typed instance container through the reverse-commit `LoadPropertyInsn` + typed
+    /// store shape, and the whole container then writes back through `StorePropertyInsn`
+    /// unconditionally.
+    @Test
+    void runCommitsTypedInstanceContainerThroughPropertyRouteInDeepChain() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_typed_instance_deep_chain.gd",
+                """
+                        class_name BodyInsnTypedInstanceDeepChain
+                        extends RefCounted
+                        
+                        var vectors: Array[Vector2] = []
+                        
+                        func write_deep(obj: BodyInsnTypedInstanceDeepChain, i: int, v: float) -> void:
+                            obj.vectors[i].x = v
+                        """,
+                Map.of(
+                        "BodyInsnTypedInstanceDeepChain",
+                        "RuntimeBodyInsnTypedInstanceDeepChain"
+                ),
+                true
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedInstanceDeepChain",
+                "write_deep"
+        ).targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // Leaf: the value-semantic element's property store targets the indexed element temp.
+                () -> assertEquals(1, instructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("x"))
+                        .count()),
+                // Element read + reverse commit each reload the typed container through the
+                // property route; the mutated element commits back through one indexed store.
+                () -> assertEquals(2, instructions.stream()
+                        .filter(LoadPropertyInsn.class::isInstance)
+                        .map(LoadPropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("vectors"))
+                        .count()),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(VariantGetIndexedInsn.class::isInstance)
+                        .count()),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(VariantSetIndexedInsn.class::isInstance)
+                        .count()),
+                // The whole container always commits back through one property store, and no
+                // Variant named-member instruction may remain anywhere in the chain.
+                () -> assertTrue(instructions.stream()
+                        .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
+                                || instruction instanceof VariantSetNamedInsn
+                                || instruction instanceof PackVariantInsn)),
+                () -> assertEquals(1, instructions.stream()
+                        .filter(StorePropertyInsn.class::isInstance)
+                        .map(StorePropertyInsn.class::cast)
+                        .filter(instruction -> instruction.propertyName().equals("vectors"))
                         .count())
         );
     }
