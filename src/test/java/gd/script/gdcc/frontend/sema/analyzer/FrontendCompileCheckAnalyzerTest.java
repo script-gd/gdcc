@@ -1122,7 +1122,7 @@ class FrontendCompileCheckAnalyzerTest {
 
     @Test
     void analyzeSkipsCompileCheckWhenAnchorAlreadyHasPublishedError() throws Exception {
-        // Anchor on a still-blocked form so dedup is not vacuous after the conditional gate removal.
+        // Anchor on a still-blocked form so compile-check dedup is not vacuous.
         var preparedInput = prepareCompileCheckInput("compile_check_existing_error.gd", """
                 class_name CompileCheckExistingError
                 extends Node
@@ -1150,7 +1150,7 @@ class FrontendCompileCheckAnalyzerTest {
 
     @Test
     void analyzeDeduplicatesAgainstLiveManagerSnapshotWhenAnalysisDataSnapshotIsStale() throws Exception {
-        // Anchor on a still-blocked form so dedup is not vacuous after the conditional gate removal.
+        // Anchor on a still-blocked form so compile-check dedup is not vacuous.
         var preparedInput = prepareCompileCheckInput("compile_check_live_manager_upstream.gd", """
                 class_name CompileCheckLiveManagerUpstream
                 extends Node

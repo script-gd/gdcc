@@ -493,10 +493,8 @@ class FrontendLoweringFunctionPreparationPassTest {
         assertTrue(exception.getMessage().contains("Executable function 'RuntimePreparationOuter.ping' must remain shell-only during preparation"));
     }
 
-    /// Stage 2.1 of `frontend_static_var_implementation.md`: static var initializers publish a
-    /// `PROPERTY_INIT` context whose shell is hidden, static and zero-parameter (no `self`), while
-    /// the instance init shell keeps its one-`self` contract. The compile gate stays closed, so
-    /// this uses the shared-semantic harness to verify the lowering chain in isolation.
+    /// Static var initializers publish a `PROPERTY_INIT` context whose shell is hidden, static and
+    /// zero-parameter (no `self`), while the instance init shell keeps its one-`self` contract.
     @Test
     void runPublishesStaticPropertyInitContextAsZeroParamStaticHiddenShell() throws Exception {
         var prepared = prepareSharedStaticInitContext();
@@ -1034,9 +1032,8 @@ class FrontendLoweringFunctionPreparationPassTest {
         return new PreparedContext(context, diagnostics, module);
     }
 
-    /// Shared-semantic harness for static var fixtures: the compile gate intentionally rejects
-    /// static vars in production, so these tests publish shared analysis data directly to verify
-    /// the lowering chain in isolation (gate removal is stage 4 scope).
+    /// Shared-semantic harness for static var fixtures: publishes shared analysis data directly so
+    /// the function-preparation pass can be verified without the compile-only entry.
     private static @NotNull PreparedContext prepareSharedStaticInitContext() throws Exception {
         var analyzed = analyzeSharedModule(
                 List.of(new SourceFixture(

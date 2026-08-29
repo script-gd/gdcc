@@ -252,10 +252,9 @@ class FrontendLoweringBuildCfgPassTest {
         );
     }
 
-    /// Stage 2.1 of `frontend_static_var_implementation.md`: a static var initializer builds the
-    /// same expression-rooted CFG shape as an instance initializer (sequence node -> RETURN stop
-    /// carrying the initializer value id); the target shell stays block-free until body lowering.
-    /// The compile gate stays closed, so this uses the shared-semantic harness.
+    /// A static var initializer builds the same expression-rooted CFG shape as an instance
+    /// initializer (sequence node -> RETURN stop carrying the initializer value id); the target
+    /// shell stays block-free until body lowering.
     @Test
     void runPublishesStaticPropertyInitCfgGraph() throws Exception {
         var prepared = prepareSharedContext(
@@ -680,9 +679,8 @@ class FrontendLoweringBuildCfgPassTest {
         return new PreparedContext(context, diagnostics, module);
     }
 
-    /// Shared-semantic variant of `prepareContext` for fixtures the compile gate still rejects
-    /// (e.g. static vars): publishes shared analysis data directly so lowering passes can be
-    /// verified in isolation while the gate stays closed (stage 4 scope).
+    /// Shared-semantic variant of `prepareContext`: publishes shared analysis data directly so the
+    /// CFG pass can be verified without the compile-only entry.
     private static @NotNull PreparedContext prepareSharedContext(
             @NotNull String fileName,
             @NotNull String source,

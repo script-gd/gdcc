@@ -1385,12 +1385,11 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         assertFalse(assertInstanceOf(PropertyDef.class, resolvedField.declarationSite()).isStatic());
     }
 
-    /// Stage 2.2 of `frontend_static_var_implementation.md`: an attribute-subscript step whose
-    /// named container is a static property publishes the RESOLVED static member on the subscript
-    /// anchor (container provenance for body lowering), while the step's published expression type
-    /// stays the subscript element type. Instance containers publish the same provenance shape
-    /// (RESOLVED instance member) as metadata for the planned typed named-route optimization,
-    /// while body lowering keeps their Variant named route unchanged.
+    /// An attribute-subscript step whose named container is a static property publishes the
+    /// RESOLVED static member on the subscript anchor (container provenance for body lowering),
+    /// while the step's published expression type stays the subscript element type. Instance
+    /// containers publish the same provenance shape (RESOLVED instance member) so typed named-route
+    /// lowering can consume the declared container type.
     @Test
     void analyzePublishesStaticContainerMemberOnAttributeSubscriptStep() throws Exception {
         var analyzed = analyze(
@@ -1432,8 +1431,7 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         assertEquals("int", elementType.publishedType().getTypeName());
 
         // Instance containers publish the same container provenance shape (RESOLVED instance
-        // property member): body lowering keeps the Variant named route for them, but the
-        // declared container type stays available for the planned typed named-route optimization.
+        // property member). Typed named-route lowering consumes the declared container type.
         var plainSubscript = findNode(
                 pingFunction,
                 AttributeSubscriptStep.class,

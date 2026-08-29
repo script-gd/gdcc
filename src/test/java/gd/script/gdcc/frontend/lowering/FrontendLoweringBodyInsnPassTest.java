@@ -621,11 +621,11 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
-    /// Stage 2.2: attribute-subscript on a static container property (`obj.values[i]`) must lower
-    /// through static storage: the named base is a `LoadStaticInsn` temp and writeback is a
+    /// Attribute-subscript on a static container property (`obj.values[i]`) must lower through
+    /// static storage: the named base is a `LoadStaticInsn` temp and writeback is a
     /// `StoreStaticInsn`; no Variant named-member instruction may remain. The typed instance
-    /// container contrast (`self.instance_list[i]`, stage 6) lowers through `LoadPropertyInsn`
-    /// with the same typed indexed access and always writes back through `StorePropertyInsn`.
+    /// container contrast (`self.instance_list[i]`) lowers through `LoadPropertyInsn` with the
+    /// same typed indexed access and always writes back through `StorePropertyInsn`.
     @Test
     void runLowersStaticContainerSubscriptThroughStaticStorageRoute() throws Exception {
         var diagnostics = new DiagnosticManager();
@@ -764,10 +764,9 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertTrue(compoundInstructions.stream()
                         .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
                                 || instruction instanceof VariantSetNamedInsn)),
-                // typed instance container contrast (stage 6): the named base is a
-                // `LoadPropertyInsn` temp with typed indexed access on both read and write; the
-                // single write commits back through one `StorePropertyInsn`, and no Variant
-                // named-member instruction may remain.
+                // typed instance container contrast: the named base is a `LoadPropertyInsn` temp
+                // with typed indexed access on both read and write; the single write commits back
+                // through one `StorePropertyInsn`, and no Variant named-member instruction may remain.
                 () -> assertTrue(contrastInstructions.stream()
                         .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
                                 || instruction instanceof VariantSetNamedInsn
@@ -1009,13 +1008,13 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
-    /// Stage 6: attribute-subscript on a resolved non-static GDCC instance container
-    /// (`obj.items[i]` with typed `items`) lowers through the typed property route: the named base
-    /// is a `LoadPropertyInsn` temp subscripted with the published container type (typed key
-    /// conversion included), and every write commits the whole container back through
-    /// `StorePropertyInsn` unconditionally — the typed route never elides the writeback based on
-    /// the carrier family. No Variant named-member instruction may remain; dynamic/engine
-    /// containers keep the Variant named route (anchored by the dedicated dynamic-route tests).
+    /// Attribute-subscript on a resolved non-static GDCC instance container (`obj.items[i]` with
+    /// typed `items`) lowers through the typed property route: the named base is a
+    /// `LoadPropertyInsn` temp subscripted with the published container type (typed key conversion
+    /// included), and every write commits the whole container back through `StorePropertyInsn`
+    /// unconditionally — the typed route never elides the writeback based on the carrier family.
+    /// No Variant named-member instruction may remain; dynamic/engine containers keep the Variant
+    /// named route (anchored by the dedicated dynamic-route tests).
     @Test
     void runLowersTypedInstanceContainerSubscriptThroughPropertyRoute() throws Exception {
         var prepared = prepareContext(
@@ -1184,10 +1183,9 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
-    /// Stage 6.2: a deep chain (`obj.vectors[i].x = v`) commits the mutated value-semantic element
-    /// back into the typed instance container through the reverse-commit `LoadPropertyInsn` + typed
-    /// store shape, and the whole container then writes back through `StorePropertyInsn`
-    /// unconditionally.
+    /// A deep chain (`obj.vectors[i].x = v`) commits the mutated value-semantic element back into
+    /// the typed instance container through the reverse-commit `LoadPropertyInsn` + typed store
+    /// shape, and the whole container then writes back through `StorePropertyInsn` unconditionally.
     @Test
     void runCommitsTypedInstanceContainerThroughPropertyRouteInDeepChain() throws Exception {
         var prepared = prepareContext(

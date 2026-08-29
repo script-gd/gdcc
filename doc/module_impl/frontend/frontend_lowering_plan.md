@@ -201,15 +201,14 @@
 
 1. `assert`
 2. `GetNodeExpression` / `PreloadExpression`
-3. 脚本类 `static var`
 
 说明：
 
 - `TypeTestExpression` 与 `CastExpression` 已有独立的 compile-ready lowering/backend 合同并离开 temporary intercept 列表（见 `frontend_is_type_test_implementation.md`、`frontend_cast_expression_implementation.md`）
 - `ArrayExpression` / `DictionaryExpression` 已 compile-ready 并离开 temporary intercept（见 `frontend_container_literal_implementation.md`、`construct_container_literal_implementation.md`）
 - `ConditionalExpression` 已解除：frontend CFG 双语境构图、merge 槽合同、compile gate 解封、body lowering 与 e2e 均已闭环（见 `frontend_conditional_expression_implementation.md`）
+- 脚本类 `static var` 已 compile-ready 并离开显式 compile-block 清单（见 `frontend_static_var_implementation.md`）
 - `assert` 依赖 lowering/backend 的 statement 语义
-- runtime integration / static field 相关 blocker 均应在对应 lowering/backend 设计闭环后再解除
 - `for` 的 compile gate 为 route-aware policy：`ForLoweringContractRegistry` 中已注册 contract 的 route 放行，未注册 route（当前 `OBJECT_CUSTOM`）发 route-not-ready blocker；已注册 route 的 CFG/body lowering 已落地，见 `frontend_for_range_loop_implementation.md`
 
 ---
