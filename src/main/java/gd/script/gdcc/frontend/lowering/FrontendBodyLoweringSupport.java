@@ -7,6 +7,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.TypeTestItem;
+import gd.script.gdcc.frontend.lowering.pass.body.FrontendBodyLoweringSession;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
@@ -15,10 +16,14 @@ import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendSubscriptSemanticSupport;
+import gd.script.gdcc.lir.LirBasicBlock;
+import gd.script.gdcc.lir.insn.PackVariantInsn;
+import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdType;
@@ -71,6 +76,61 @@ public final class FrontendBodyLoweringSupport {
 
     public static @NotNull String conditionBoolSlotId(@NotNull String valueId) {
         return "cfg_cond_bool_" + StringUtil.requireNonBlank(valueId, "valueId");
+    }
+
+    /// Materializes Godot-compatible truthiness normalization for one condition-shaped value and
+    /// returns the id of the bool slot holding the normalized result.
+    ///
+    /// This is the single truthiness normalization point shared by branch lowering and `assert`
+    /// lowering:
+    /// - `bool` sources are consumed in place: the value's own backing slot id is returned
+    ///   directly and no conversion instruction is emitted
+    /// - `Variant` sources unpack once into `cfg_cond_bool_<valueId>`
+    /// - every other stable source type first packs into `cfg_cond_variant_<valueId>` and then
+    ///   unpacks into `cfg_cond_bool_<valueId>`
+    ///
+    /// The source slot is resolved through the published value materialization
+    /// (`session.slotIdForValue`): branch conditions are TEMP_SLOT by the condition-context
+    /// contract, while assert conditions may additionally be merge-backed (`a and b`, ternary
+    /// arms) and must be read from their real `cfg_merge_*` slot. Alias-backed inputs resolve
+    /// through the same path if they ever reach a condition position.
+    ///
+    /// The helper resolves and verifies the source slot, declares the conversion destination
+    /// slots, and appends conversion instructions; it never sets a terminator. Callers own the
+    /// consuming instruction (`GoIfInsn` for branches, `AssertInsn` for asserts). Compiler-only
+    /// types still fail fast here because they must never reach any runtime condition surface.
+    public static @NotNull String materializeTruthinessToBool(
+            @NotNull FrontendBodyLoweringSession session,
+            @NotNull LirBasicBlock block,
+            @NotNull String valueId,
+            @NotNull GdType type
+    ) {
+        var sourceSlotId = session.slotIdForValue(valueId);
+        session.ensureVariable(sourceSlotId, type);
+        switch (type) {
+            case GdBoolType _ -> {
+                return sourceSlotId;
+            }
+            case GdVariantType _ -> {
+                var boolSlotId = conditionBoolSlotId(valueId);
+                session.ensureVariable(boolSlotId, GdBoolType.BOOL);
+                block.appendNonTerminatorInstruction(new UnpackVariantInsn(boolSlotId, sourceSlotId));
+                return boolSlotId;
+            }
+            case GdCompilerType compilerOnlyType -> throw new IllegalStateException(
+                    "compiler-only type leaked into frontend condition normalization: "
+                            + compilerOnlyType.getTypeName()
+            );
+            default -> {
+            }
+        }
+        var variantSlotId = conditionVariantSlotId(valueId);
+        var boolSlotId = conditionBoolSlotId(valueId);
+        session.ensureVariable(variantSlotId, GdVariantType.VARIANT);
+        session.ensureVariable(boolSlotId, GdBoolType.BOOL);
+        block.appendNonTerminatorInstruction(new PackVariantInsn(variantSlotId, sourceSlotId));
+        block.appendNonTerminatorInstruction(new UnpackVariantInsn(boolSlotId, variantSlotId));
+        return boolSlotId;
     }
 
     public enum CfgValueMaterializationKind {

@@ -4,6 +4,7 @@ import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.frontend.lowering.FrontendCallMutabilitySupport;
 import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.FrontendWritableTypeWritebackSupport;
+import gd.script.gdcc.frontend.lowering.cfg.item.AssertItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.AwaitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
@@ -69,6 +70,7 @@ import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
 import gd.script.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
+import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -247,6 +249,7 @@ public final class FrontendCfgGraphBuilder {
             case VariableDeclaration variableDeclaration when variableDeclaration.kind() == DeclarationKind.VAR ->
                     processLocalDeclaration(state, variableDeclaration);
             case ReturnStatement returnStatement -> processReturnStatement(state, returnStatement);
+            case AssertStatement assertStatement -> processAssertStatement(state, assertStatement);
             case IfStatement ifStatement -> processIfStatement(state, ifStatement);
             case WhileStatement whileStatement -> processWhileStatement(state, whileStatement);
             case ForStatement forStatement -> processForStatement(state, forStatement);
@@ -435,6 +438,28 @@ public final class FrontendCfgGraphBuilder {
         }
         closeCurrentSequence(state, publishStopNode(FrontendCfgGraph.StopKind.RETURN, returnValueId));
         state.setReachable(false);
+    }
+
+    /// `assert` stays an ordinary linear statement on the compile surface: condition and optional
+    /// message are materialized as regular values in lexical order, then one `AssertItem` records
+    /// the consumption. Truthiness normalization and the final `AssertInsn` belong to body lowering.
+    private void processAssertStatement(@NotNull BlockState state, @NotNull AssertStatement assertStatement) {
+        var cursor = new BuildCursor(requireCurrentSequence(state));
+        var conditionBuild = buildValue(cursor, assertStatement.condition(), null);
+        var currentCursor = conditionBuild.cursor();
+        String messageValueId = null;
+        var message = assertStatement.message();
+        if (message != null) {
+            var messageBuild = buildValue(currentCursor, message, null);
+            currentCursor = messageBuild.cursor();
+            messageValueId = messageBuild.resultValueId();
+        }
+        currentCursor.currentSequence().items().add(new AssertItem(
+                assertStatement,
+                conditionBuild.resultValueId(),
+                messageValueId
+        ));
+        state.setCurrentSequence(currentCursor.currentSequence());
     }
 
     private void processLoopJump(@NotNull BlockState state, @NotNull Statement statement, @NotNull String targetId) {

@@ -231,14 +231,14 @@ class FrontendLoweringPassManagerTest {
                 List.of(new SourceFixture(
                         "lowering_manager_singleton_property_init.gd",
                         """
-                        class_name ManagerSingletonPropertyInit
-                        extends RefCounted
-
-                        var frames: int = Engine.get_frames_drawn()
-
-                        func ping() -> int:
-                            return frames
-                        """
+                                class_name ManagerSingletonPropertyInit
+                                extends RefCounted
+                                
+                                var frames: int = Engine.get_frames_drawn()
+                                
+                                func ping() -> int:
+                                    return frames
+                                """
                 )),
                 Map.of(
                         "ManagerSingletonPropertyInit",
@@ -476,7 +476,7 @@ class FrontendLoweringPassManagerTest {
                                         extends RefCounted
                                         
                                         func ping(value):
-                                            assert(value, "blocked in compile mode")
+                                            var icon = preload("res://icon.svg")
                                         """
                         )),
                         Map.of()
@@ -505,7 +505,7 @@ class FrontendLoweringPassManagerTest {
                                         extends RefCounted
                                         
                                         func ping(value):
-                                            assert(value, "blocked in compile mode")
+                                            var icon = preload("res://icon.svg")
                                         """
                         )),
                         Map.of()
@@ -521,7 +521,7 @@ class FrontendLoweringPassManagerTest {
                 .toList();
         assertFalse(compileDiagnostics.isEmpty());
         assertTrue(
-                compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("assert statement")),
+                compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Preload expression")),
                 () -> "Unexpected diagnostics: " + diagnostics.snapshot()
         );
     }

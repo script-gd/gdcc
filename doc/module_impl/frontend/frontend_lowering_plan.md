@@ -117,7 +117,8 @@
 当前明确不纳入：
 
 - `for` 的 `OBJECT_CUSTOM`（Object `_iter_*`）；其余已注册 route 已闭环，见 `frontend_for_range_loop_implementation.md`
-- `assert`
+
+`assert` 已解除：CFG 记录 `AssertItem`，body lowering 经共享 truthiness helper 归一化后发射 `AssertInsn`，backend 以 `gdcc_assert_failed` + default return 闭环。
 
 建议实施内容：
 
@@ -199,7 +200,7 @@
 
 建议解除顺序：
 
-1. `assert`
+1. ~~`assert`~~（已完成）
 2. `GetNodeExpression` / `PreloadExpression`
 
 说明：
@@ -208,7 +209,7 @@
 - `ArrayExpression` / `DictionaryExpression` 已 compile-ready 并离开 temporary intercept（见 `frontend_container_literal_implementation.md`、`construct_container_literal_implementation.md`）
 - `ConditionalExpression` 已解除：frontend CFG 双语境构图、merge 槽合同、compile gate 解封、body lowering 与 e2e 均已闭环（见 `frontend_conditional_expression_implementation.md`）
 - 脚本类 `static var` 已 compile-ready 并离开显式 compile-block 清单（见 `frontend_static_var_implementation.md`）
-- `assert` 依赖 lowering/backend 的 statement 语义
+- `assert` 的 statement 语义已落地（LIR `assert` 指令 + frontend lowering + backend guard）
 - `for` 的 compile gate 为 route-aware policy：`ForLoweringContractRegistry` 中已注册 contract 的 route 放行，未注册 route（当前 `OBJECT_CUSTOM`）发 route-not-ready blocker；已注册 route 的 CFG/body lowering 已落地，见 `frontend_for_range_loop_implementation.md`
 
 ---

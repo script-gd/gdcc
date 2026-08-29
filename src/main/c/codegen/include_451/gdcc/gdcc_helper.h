@@ -30,6 +30,10 @@ do {                                                                            
     godot_print_error((desc), (function_name), __gdcc_src_file, (line_number), true);        \
 } while (0)
 
+// GDScript language builtins depend on the macro above, so this include must stay after the
+// macro definition instead of joining the top include block.
+#include <gdscript_builtins.h>
+
 /// Object Property Getters
 
 #define GDCC_DEFINE_OBJECT_GETTER(ReturnType, ReturnTypeName)                                 \

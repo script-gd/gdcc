@@ -143,6 +143,7 @@
 - 非 `__finally__` 中的 `returnVoid()`：仅允许 void 函数并 `goto __finally__`。
 - `returnTerminal()` 仅允许在 `__finally__` 返回 `_return_val`。
 - 对生成后的 backend LIR，非 `void` `__finally__` 只能以 `ReturnInsn("_return_val")` 结束。
+- `emitAssertObjectLiveGuard(...)` 与 `emitAssertGuard(...)`都禁止出现在 `__finally__`：失败边本身要 `returnDefault()`（内部再 `goto __finally__`），在 `__finally__` 内会自跳死循环。
   `ControlFlowIntegrityValidator` 会拒绝 `ReturnInsn(<user-var>)` 之类会绕过 `_return_val` 发布边界的形态。
   `CBodyBuilder.returnValue(...)` 中保留的 finally-direct-return 分支只服务于手工 builder/test 场景，不属于正常 LIR surface。
 

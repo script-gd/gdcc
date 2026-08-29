@@ -601,8 +601,10 @@ class FrontendTypeCheckAnalyzerTest {
                 "sema.type_check"
         );
         // Both the outer and the nested lambda body are walked as independent callable islands,
-        // including the lambda carried by the assert-message position.
-        assertEquals(3, typeCheckDiagnostics.size(), typeCheckDiagnostics::toString);
+        // including the lambda carried by the assert-message position. The lambda root itself is
+        // `Callable`, which violates the current String-assignable assert-message contract and reports
+        // its own diagnostic on top of the three lambda-body mismatches.
+        assertEquals(4, typeCheckDiagnostics.size(), typeCheckDiagnostics::toString);
         assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
                 diagnostic.message().contains("bad_local") && diagnostic.message().contains("String")
         ));
@@ -611,6 +613,9 @@ class FrontendTypeCheckAnalyzerTest {
         ));
         assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
                 diagnostic.message().contains("assert_bad") && diagnostic.message().contains("String")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Assert message type 'Callable' is not assignable to 'String'")
         ));
     }
 

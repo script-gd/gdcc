@@ -196,9 +196,12 @@ public class FrontendLoopControlFlowAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// Both the condition and the optional message can host lambdas with loop-control
+        /// statements, so both must be scanned for nested callable boundaries.
         @Override
         public @NotNull FrontendASTTraversalDirective handleAssertStatement(@NotNull AssertStatement assertStatement) {
             scanNestedCallableBoundaries(assertStatement.condition());
+            scanNestedCallableBoundaries(assertStatement.message());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 

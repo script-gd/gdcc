@@ -160,11 +160,6 @@ public class FrontendCompileCheckAnalyzer {
         }
     }
 
-    private static @NotNull String assertCompileBlockedMessage() {
-        return "assert statement is recognized by the frontend but is blocked in compile mode because "
-                + "lowering/backend support lands";
-    }
-
     private static @NotNull String expressionCompileBlockedMessage(@NotNull String expressionKind) {
         return Objects.requireNonNull(expressionKind, "expressionKind must not be null")
                 + " is recognized by the frontend but is blocked in compile mode because "
@@ -447,13 +442,16 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
-        /// `assert` is deliberately compile-blocked until lowering/backend own its semantics.
+        /// `assert` is compile-ready: condition and optional message join the compile surface like
+        /// any other expression, and lowering/backend own the runtime failure semantics.
         @Override
         public @NotNull FrontendASTTraversalDirective handleAssertStatement(@NotNull AssertStatement assertStatement) {
             if (supportedExecutableBlockDepth <= 0) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            reportExplicitCompileBlock(assertStatement, assertCompileBlockedMessage());
+            markCompileSurfaceNode(assertStatement);
+            walkExpression(assertStatement.condition());
+            walkExpression(assertStatement.message());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 

@@ -700,6 +700,34 @@ public final class CBodyBuilder {
         return this;
     }
 
+    /// Unified codegen entry for the user-level `assert` guard.
+    ///
+    /// Emits the assertion failure shape: when the already-bool condition is false, report through
+    /// `gdcc_assert_failed` (which reuses the `GDCC_PRINT_RUNTIME_ERROR` channel) and then leave
+    /// the function via `returnDefault()`, exactly like `emitAssertObjectLiveGuard`. The message
+    /// argument is passed as `const godot_String*`: locals are addressed (`&$msg`), `ref`
+    /// parameters are already pointers, and a missing message lowers to `NULL`. The condition and
+    /// message types are validated by `AssertInsnGen` before delegation; the `__finally__`
+    /// prohibition is re-checked here because a failing assert inside `__finally__` would
+    /// self-jump forever.
+    public @NotNull CBodyBuilder emitAssertGuard(
+            @NotNull LirVariable conditionVariable,
+            @Nullable LirVariable messageVariableOrNull
+    ) {
+        if (checkInFinallyBlock()) {
+            throw invalidInsn("assert must not appear in __finally__ block");
+        }
+        var conditionCode = valueOfVar(conditionVariable).generateCode();
+        var messageCode = messageVariableOrNull == null
+                ? "NULL"
+                : renderArgument(valueOfVar(messageVariableOrNull), false).code();
+        appendLine("if (!(" + conditionCode + ")) {");
+        appendLine("    gdcc_assert_failed(" + messageCode + ", __func__, __FILE__, __LINE__);");
+        returnDefault();
+        appendLine("}");
+        return this;
+    }
+
     /// Nullness/assert raw operand from a fat pointer without liveness validation and without
     /// dereferencing a potentially freed GDCC wrapper. The helper only treats this value as a
     /// NULL-ness sentinel, then decides liveness from `instance_id`.

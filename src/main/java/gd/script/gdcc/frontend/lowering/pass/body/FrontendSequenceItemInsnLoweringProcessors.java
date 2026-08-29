@@ -4,6 +4,7 @@ import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.enums.LifecycleProvenance;
 import gd.script.gdcc.frontend.lowering.FrontendBodyLoweringSupport;
 import gd.script.gdcc.frontend.lowering.FrontendCallMutabilitySupport;
+import gd.script.gdcc.frontend.lowering.cfg.item.AssertItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.AwaitItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
@@ -47,6 +48,7 @@ import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.AssignInsn;
+import gd.script.gdcc.lir.insn.AssertInsn;
 import gd.script.gdcc.lir.insn.AwaitInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.GetVariantTypeInsn;
@@ -145,6 +147,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         return FrontendInsnLoweringProcessorRegistry.of(
                 "sequence item",
                 new FrontendSourceAnchorInsnLoweringProcessor(),
+                new FrontendAssertInsnLoweringProcessor(),
                 new FrontendLocalDeclarationInsnLoweringProcessor(),
                 new FrontendBoolConstantInsnLoweringProcessor(),
                 new FrontendIntConstantInsnLoweringProcessor(),
@@ -208,6 +211,42 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         private int sourceLine(@NotNull Statement statement) {
             var range = statement.range();
             return range == null ? -1 : range.startPoint().row() + 1;
+        }
+    }
+
+    /// Lowers one `assert` statement into the result-less `AssertInsn`.
+    ///
+    /// The condition value is normalized into a bool slot through the shared truthiness helper
+    /// (the same one branch lowering uses), so `assert(x)` accepts any Godot-truthy source type.
+    /// The optional message value is consumed from its materialized slot as-is: sema type-check
+    /// already guaranteed it is directly `String`-assignable, and the backend re-validates the
+    /// slot type before emitting the failure path. Being a non-terminator, the block continues
+    /// with the next sequence item after the guard.
+    private static final class FrontendAssertInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<AssertItem, Void> {
+        @Override
+        public @NotNull Class<AssertItem> nodeType() {
+            return AssertItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull AssertItem node,
+                @Nullable Void context
+        ) {
+            var conditionValueId = node.conditionValueId();
+            var boolSlotId = FrontendBodyLoweringSupport.materializeTruthinessToBool(
+                    session,
+                    block,
+                    conditionValueId,
+                    session.requireValueType(conditionValueId)
+            );
+            var messageValueId = node.messageValueIdOrNull();
+            var messageSlotId = messageValueId == null ? null : session.slotIdForValue(messageValueId);
+            block.appendNonTerminatorInstruction(new AssertInsn(boolSlotId, messageSlotId));
+            return block;
         }
     }
 

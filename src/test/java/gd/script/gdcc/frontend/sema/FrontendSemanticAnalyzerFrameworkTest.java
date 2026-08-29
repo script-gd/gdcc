@@ -1223,7 +1223,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     @Test
     void analyzeForCompileDefinesTheLoweringReadinessBoundary() throws Exception {
         // Shared analyze stays diagnostic-free; compile gate still blocks forms that are not compile-ready.
-        // Container literals are compile-ready; keep assert as the compile-only intercept anchor.
+        // Container literals and assert are compile-ready; keep preload as the compile-only intercept anchor.
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", "compile_check_lowering_boundary.gd"), """
                 class_name CompileCheckLoweringBoundary
@@ -1232,6 +1232,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 func ping():
                     [1]
                     assert(true)
+                    preload("res://icon.svg")
                 """, new DiagnosticManager());
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
@@ -1245,7 +1246,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(compileResult.diagnostics().hasErrors());
         var compileBlocks = diagnosticsByCategory(compileResult.diagnostics(), "sema.compile_check");
         assertEquals(1, compileBlocks.size());
-        assertTrue(compileBlocks.getFirst().message().contains("assert statement"));
+        assertTrue(compileBlocks.getFirst().message().contains("Preload expression"));
+        assertTrue(compileBlocks.stream().noneMatch(diagnostic -> diagnostic.message().contains("assert statement")));
         assertTrue(compileBlocks.stream().noneMatch(diagnostic -> diagnostic.message().contains("Array literal")));
         assertEquals(compileDiagnostics.snapshot(), compileResult.diagnostics());
     }

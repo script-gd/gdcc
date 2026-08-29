@@ -24,7 +24,7 @@
   - 不做常量折叠（Godot 在 condition 与双臂均常量时折叠），不做 flow-sensitive 类型收窄（与现有 `if` 一致）。
   - 不新增 `INCOMPATIBLE_TERNARY` 诊断：Godot 对无公共类型双臂发该 warning，当前只回退 `Variant`（见 §9 D2）。
   - 不做 `void` 臂三元的语句位丢弃特判：`void` 臂与非 Variant 具体类型配对为显式 `UNSUPPORTED`。
-  - 不改动 `assert` / `PreloadExpression` / `GetNodeExpression` 的 compile gate 拦截。
+  - 不改动 `PreloadExpression` / `GetNodeExpression` 的 compile gate 拦截。
 
 ## 1. 当前定位与数据流
 
@@ -121,7 +121,7 @@ return conditionBuild;
 
 即 `if (a if c else b):` ≡ 先测 `c`，再对被选臂做 truthiness 分支，**不产生任何 merge 值**。两臂经 `buildCondition` 递归分发：`not`/`and/or`/嵌套三元臂复用现有 condition 机制（嵌套三元臂继续纯控制流展开）；普通臂走 `buildConditionFromValue`，其值必为 temp 槽。各臂 `BranchNode.conditionRoot` 由 `publishConditionBranch` 按 fragment 对齐规则处理。
 
-**硬性规则：** condition 语境三元禁止走 value 路径——`FrontendBranchNodeInsnLoweringProcessor.emitConditionBranch` 固定读 `cfgTempSlotId(conditionValueId)`，而 value 路径结果是 `cfg_merge_<id>` 槽，会读到从未赋值的 `cfg_tmp_`；`frontend_rules.md` 亦禁止把 outward-facing merge result id 当作 branch condition id。因此 condition 语境三元的 `conditionValueId` 恒为 temp 槽，`emitConditionBranch` 与 truthiness 归一化零改动。
+**硬性规则：** condition 语境三元禁止走 value 路径——branch lowering 固定读 `cfgTempSlotId(conditionValueId)`（由共享 helper `FrontendBodyLoweringSupport.materializeTruthinessToBool` 承接），而 value 路径结果是 `cfg_merge_<id>` 槽，会读到从未赋值的 `cfg_tmp_`；`frontend_rules.md` 亦禁止把 outward-facing merge result id 当作 branch condition id。因此 condition 语境三元的 `conditionValueId` 恒为 temp 槽，truthiness 归一化零改动。
 
 ## 5. Compile gate 政策
 
@@ -134,7 +134,7 @@ return conditionBuild;
 
 - merge 槽 `cfg_merge_*` 是普通 LIR 变量，backend 无 `cfg_merge_` 特判。
 - **生命周期合同：** destroyable 合并类型（String/Array/object）的 merge 槽与 source-local / `cfg_tmp_*` 同策略——函数头声明 + `__prepare__` 默认构造、每互斥臂 destroy-then-write、`__finally__` 统一销毁，无漏毁（见 `frontend_lowering_cfg_pass_implementation.md` §6.1）。若发现缺毁，按 `cfg_tmp_*` 同策略修复，不特判三元。
-- condition 归一化复用 `emitConditionBranch`：`bool` 直传 / `Variant→unpack` / 其他 stable 类型 `pack+unpack`；`go_if` 保持 bool-only；sema/type-check 对三元 condition 不做 strict-bool 收紧（Godot-compatible，与 statement condition 合同一致，见 `frontend_rules.md`）。
+- condition 归一化复用共享 truthiness helper `FrontendBodyLoweringSupport.materializeTruthinessToBool`：`bool` 直传 / `Variant→unpack` / 其他 stable 类型 `pack+unpack`；`go_if` 保持 bool-only；sema/type-check 对三元 condition 不做 strict-bool 收紧（Godot-compatible，与 statement condition 合同一致，见 `frontend_rules.md`）。
 - 无新 LIR 指令：复用 `GoIfInsn` / `AssignInsn` / boundary (un)pack / intrinsic cast。
 - `FrontendSequenceItemInsnLoweringProcessors` 对 `ConditionalExpression` 的 opaque `DEFER` 分类保留为护栏（当前路径下三元永不产生 `OpaqueExprValueItem`）。
 
@@ -148,7 +148,7 @@ return conditionBuild;
 - `frontend/lowering/cfg/FrontendCfgGraph.java`：`validateMergeSourceContracts` / `validateValueProducerContracts`。
 - `frontend/lowering/FrontendBodyLoweringSupport.java`：`requireProducedValueMaterialization`（merge anchor 化）。
 - `frontend/lowering/pass/body/FrontendSequenceItemInsnLoweringProcessors.java`：`FrontendMergeValueInsnLoweringProcessor`（`merge_write`）。
-- `frontend/lowering/pass/body/FrontendCfgNodeInsnLoweringProcessors.java`：`FrontendBranchNodeInsnLoweringProcessor.emitConditionBranch`。
+- `frontend/lowering/pass/body/FrontendCfgNodeInsnLoweringProcessors.java`：`FrontendBranchNodeInsnLoweringProcessor`（terminator 组装；truthiness 归一化收口到 `FrontendBodyLoweringSupport.materializeTruthinessToBool`）。
 - `frontend/sema/analyzer/FrontendCompileCheckAnalyzer.java`：`walkExpression` default 递归与 exact-range 去重。
 - Godot：`modules/gdscript/gdscript_analyzer.cpp` `reduce_ternary_op`。gdparser：`frontend/ast/ConditionalExpression.java`、grammar `conditional_expression`。
 

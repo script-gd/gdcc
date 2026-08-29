@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：**In Progress**（阶段 A 已完成：LIR `assert` 指令模型 + 解析/序列化闭环；阶段 B–F 尚未开始）
+- 状态：**In Progress**（阶段 A、B 已完成：LIR `assert` 指令模型 + 解析/序列化闭环；`assert` frontend + backend 闭环；阶段 C–F 尚未开始）
 - 范围：frontend sema/lowering、LIR 新增 `assert` 指令、C backend 代码生成、`gdcc/**` runtime helper
 - 更新时间：2026-08-29
 - 目标读者：实施者、代码评审者
@@ -39,12 +39,14 @@
 
 ## 3. 现状与缺口（代码锚点）
 
+本节描述**阶段 B 实施前**的基线快照（行号为当时位置），用于解释设计动机；当前已实现的部分以 §5 各阶段状态为准。
+
 ### 3.1 已有可复用链路
 
 - 全局 utility 解析链路完整：`ClassRegistry.resolveFunctionsHere`（`scope/ClassRegistry.java:424`）→ `FrontendBodyOwnerProcedures.classifyFunctionBinding`（`frontend/sema/analyzer/FrontendBodyOwnerProcedures.java:1602`，全部为 `ExtensionUtilityFunction` 时分类为 `UTILITY_FUNCTION`）→ `FrontendExpressionSemanticSupport.bareCallRoute`（`frontend/sema/analyzer/support/FrontendExpressionSemanticSupport.java:1672`，映射为 receiverType=null 的 STATIC_METHOD route）→ `FrontendCfgGraphBuilder.buildBareCallValue`（`frontend/lowering/cfg/FrontendCfgGraphBuilder.java:2381`）→ `FrontendSequenceItemInsnLoweringProcessors.lowerStaticMethodCall`（`frontend/lowering/pass/body/FrontendSequenceItemInsnLoweringProcessors.java:801`，receiverType==null 时生成 `CallGlobalInsn`）→ `CallGlobalInsnGen`（`backend/c/gen/insn/CallGlobalInsnGen.java`）→ `CGenHelper.resolveUtilityCall`（`backend/c/gen/CGenHelper.java:1717`，统一加 `godot_` 前缀）。
 - 合成语言常量的注册先例：`ClassRegistry.registerSyntheticGdScriptLanguageConstants`（`ClassRegistry.java:151`，PI/TAU/INF/NAN），证明"编译器合成全局命名空间条目"模式已存在。
 - `assert` 的 shared semantic 已就绪：condition/message 类型发布（`FrontendBodyOwnerProcedures.java:1180`）、type-check 的 condition 契约（`FrontendTypeCheckAnalyzer.java:1219`，`visitConditionExpression` 明确"Godot-compatible truthiness 是 lowering/runtime 关注点"）。
-- 条件 truthiness 归一化已有唯一实现点：`FrontendCfgNodeInsnLoweringProcessors.emitConditionBranch`（`frontend/lowering/pass/body/FrontendCfgNodeInsnLoweringProcessors.java:90`）：bool 直接用；Variant 用 `UnpackVariantInsn`；其它类型先 `PackVariantInsn` 再 unpack 为 bool。
+- 条件 truthiness 归一化已有唯一实现点：`FrontendCfgNodeInsnLoweringProcessors.emitConditionBranch`（`frontend/lowering/pass/body/FrontendCfgNodeInsnLoweringProcessors.java:90`）：bool 直接用；Variant 用 `UnpackVariantInsn`；其它类型先 `PackVariantInsn` 再 unpack 为 bool。（阶段 B 起已按 D5 抽取为共享 helper `FrontendBodyLoweringSupport.materializeTruthinessToBool`，branch 与 assert lowering 共用。）
 - `assert_object_live` 指令全链路是新增无结果指令的模板：`lir/insn/AssertObjectLiveInsn.java`、`backend/c/gen/insn/AssertObjectLiveInsnGen.java`、`CBodyBuilder.emitAssertObjectLiveGuard`（`backend/c/gen/CBodyBuilder.java:685`，含 `GDCC_PRINT_RUNTIME_ERROR` + `returnDefault()`）。
 - `for` 中 range 的归一化（缺省 start=0/step=1）已有先例：`FrontendForLoopSupport.isBareRangeCall` 与 `gdcc.for_range_iter.*` intrinsic（`doc/gdcc_lir_intrinsic.md`）。
 - engine **singleton 实例方法**调用链完整：singleton 值经 `LoadStaticInsn("@GlobalScope", "<name>")` 物化（`LoadStaticInsnGen` singleton 分支，BORROWED），实例方法经 `CallMethodInsnGen` + `BackendMethodCallResolver` ENGINE 模式发射，缺省参数由 backend 按 metadata 物化。`ResourceLoader` 在 `extension_api_451.json:337351` 注册为 singleton，其 `load` 是 **实例方法**（`extension_api_451.json:247523`，`is_static=false`），因此只能走 singleton 实例调用，不能走 `call_static_method`。
@@ -204,6 +206,8 @@ pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <
 
 ### 阶段 B：`assert` frontend + backend 闭环
 
+状态：**已完成**（2026-08-29）
+
 目标：`assert(cond)` / `assert(cond, "msg")` 可编译到 C。
 
 修改文件：
@@ -230,8 +234,8 @@ pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <
 - 负向回归：assert 出现在 property initializer 等不支持位置仍被既有 gate 拦截。
 - 后端测试：新增 `AssertInsnGenTest`：无 message/有 message 的 C 文本断言（含 `gdcc_assert_failed` 与 default return）；condition 非 bool、message 非 String、`__finally__` 中出现三类 fail-fast。不测携带 resultId（已在 LIR `toConcrete()` 静默丢弃，见 D4 / R4）。
 - 行为不变验证：`buildCondition` 相关既有测试全绿（truthiness 抽取为纯重构）。
-- 既有阻断断言翻新（解锁副作用，必须同步更新期望）：`FrontendCompileCheckAnalyzerTest`（assert 不再计入 compile-block，GetNode/preload 仍阻断）、`FrontendSemanticAnalyzerFrameworkTest`、`FrontendLoweringPassManagerTest`、`FrontendLoweringAnalysisPassTest`。
-- 命令：`pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests AssertInsnGenTest,<新增前端测试类>,CBodyBuilderPhaseCTest,FrontendCompileCheckAnalyzerTest,FrontendSemanticAnalyzerFrameworkTest,FrontendLoweringPassManagerTest,FrontendLoweringAnalysisPassTest`
+- 既有阻断断言翻新（解锁副作用，必须同步更新期望）：`FrontendCompileCheckAnalyzerTest`（assert 不再计入 compile-block，GetNode/preload 仍阻断）、`FrontendSemanticAnalyzerFrameworkTest`、`FrontendLoweringPassManagerTest`、`FrontendLoweringAnalysisPassTest`。实施时另发现两个以 assert 为阻断探针的既有用例并一并改用 preload 探针：`FrontendLoweringFunctionPreparationPassTest`（2 处）、`ApiCompileTaskFailureStageTest`（LOWERING 阶段失败锚点）；`FrontendTypeCheckAnalyzerTest.analyzeWalksRecordedLambdaBodiesWithInheritedCallableContext` 的 lambda-in-message fixture 命中新 message 校验，期望由 3 条更新为 4 条并显式锚定新诊断。
+- 命令：`pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests AssertInsnGenTest,FrontendAssertLoweringTest,CBodyBuilderPhaseCTest,FrontendCompileCheckAnalyzerTest,FrontendSemanticAnalyzerFrameworkTest,FrontendLoweringPassManagerTest,FrontendLoweringAnalysisPassTest`（实施时追加 `FrontendLoweringFunctionPreparationPassTest,ApiCompileTaskFailureStageTest,FrontendLoweringBodyInsnPassTest,AssertObjectLiveInsnGenTest,FixedGodotBindingsTest,FrontendTypeCheckAnalyzerTest,FrontendAnalysisInspectionToolTest`，544 个测试全绿）
 - 完成判定：以上全绿；抽查生成 C 文本中 assert 失败路径含 runtime error 与 default return。
 
 ### 阶段 C：合成语言函数注册 + len/char/ord

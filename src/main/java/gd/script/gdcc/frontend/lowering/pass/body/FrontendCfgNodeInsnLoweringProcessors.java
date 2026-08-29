@@ -5,13 +5,7 @@ import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.insn.GoIfInsn;
 import gd.script.gdcc.lir.insn.GotoInsn;
-import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
-import gd.script.gdcc.lir.insn.UnpackVariantInsn;
-import gd.script.gdcc.type.GdBoolType;
-import gd.script.gdcc.type.GdCompilerType;
-import gd.script.gdcc.type.GdType;
-import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -59,9 +53,9 @@ final class FrontendCfgNodeInsnLoweringProcessors {
 
     /// Normalizes one frontend branch node into the bool-only LIR branch contract.
     ///
-    /// Frontend CFG may still carry source-typed condition values, so this processor is the single
-    /// place allowed to insert `pack_variant` / `unpack_variant` truthiness normalization before
-    /// emitting the final `GoIfInsn`.
+    /// Frontend CFG may still carry source-typed condition values. Truthiness normalization itself
+    /// lives in the shared `FrontendBodyLoweringSupport.materializeTruthinessToBool` helper (also
+    /// consumed by assert lowering); this processor only owns the final `GoIfInsn` terminator.
     private static final class FrontendBranchNodeInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<FrontendCfgGraph.BranchNode, Void> {
         @Override
@@ -76,52 +70,14 @@ final class FrontendCfgNodeInsnLoweringProcessors {
                 @NotNull FrontendCfgGraph.BranchNode node,
                 @Nullable Void context
         ) {
-            emitConditionBranch(
+            var boolSlotId = FrontendBodyLoweringSupport.materializeTruthinessToBool(
                     session,
                     block,
                     node.conditionValueId(),
-                    session.requireValueType(node.conditionValueId()),
-                    node.trueTargetId(),
-                    node.falseTargetId()
+                    session.requireValueType(node.conditionValueId())
             );
+            block.setTerminator(new GoIfInsn(boolSlotId, node.trueTargetId(), node.falseTargetId()));
             return block;
-        }
-
-        private void emitConditionBranch(
-                @NotNull FrontendBodyLoweringSession session,
-                @NotNull LirBasicBlock block,
-                @NotNull String conditionValueId,
-                @NotNull GdType conditionType,
-                @NotNull String trueBlockId,
-                @NotNull String falseBlockId
-        ) {
-            var sourceSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(conditionValueId);
-            session.ensureVariable(sourceSlotId, conditionType);
-            switch (conditionType) {
-                case GdBoolType _ -> {
-                    block.setTerminator(new GoIfInsn(sourceSlotId, trueBlockId, falseBlockId));
-                    return;
-                }
-                case GdVariantType _ -> {
-                    var boolSlotId = FrontendBodyLoweringSupport.conditionBoolSlotId(conditionValueId);
-                    session.ensureVariable(boolSlotId, GdBoolType.BOOL);
-                    block.appendNonTerminatorInstruction(new UnpackVariantInsn(boolSlotId, sourceSlotId));
-                    block.setTerminator(new GoIfInsn(boolSlotId, trueBlockId, falseBlockId));
-                    return;
-                }
-                case GdCompilerType compilerOnlyType -> throw new IllegalStateException(
-                        "compiler-only type leaked into frontend condition normalization: "
-                                + compilerOnlyType.getTypeName()
-                );
-                default -> {}
-            }
-            var variantSlotId = FrontendBodyLoweringSupport.conditionVariantSlotId(conditionValueId);
-            var boolSlotId = FrontendBodyLoweringSupport.conditionBoolSlotId(conditionValueId);
-            session.ensureVariable(variantSlotId, GdVariantType.VARIANT);
-            session.ensureVariable(boolSlotId, GdBoolType.BOOL);
-            block.appendNonTerminatorInstruction(new PackVariantInsn(variantSlotId, sourceSlotId));
-            block.appendNonTerminatorInstruction(new UnpackVariantInsn(boolSlotId, variantSlotId));
-            block.setTerminator(new GoIfInsn(boolSlotId, trueBlockId, falseBlockId));
         }
     }
 

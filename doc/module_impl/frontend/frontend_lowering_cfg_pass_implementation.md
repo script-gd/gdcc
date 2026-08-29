@@ -190,6 +190,7 @@ fully-terminated 的 `if` / `elif` / `else` 允许把 region `mergeId` 指向 `S
 
 - `SourceAnchorItem`
 - `ValueOpItem`
+- `AssertItem`（statement 形状、不发布 value id，直接实现 `SequenceItem` 而非 `ValueOpItem`，因此不进入 produced-value materialization 分派。body lowering 由注册表中的 `FrontendAssertInsnLoweringProcessor` 消费：condition value 先经共享 truthiness helper 归一化为 bool slot，再追加非终结 `AssertInsn`）
 
 当前已落地的 `ValueOpItem` 子类包括：
 
@@ -343,7 +344,7 @@ frontend CFG / body lowering 当前用以下方式闭合这组约束。
   - 每个 split 都绑定自己的 fragment-local `conditionValueId`
 - `ConditionalExpression`
   - 纯控制流展开，不产生任何 merge 值：先测 `condition`，再对被选中臂做 truthiness 分支（两臂经 `buildCondition` 递归分发，外层 true/false target 原样透传）
-  - 因此 `if (a if c else b):` 的图中每个 `BranchNode.conditionValueId` 仍为 branch-local temp 槽，`emitConditionBranch` 归一化零改动；嵌套三元臂与 `and/or` 臂继续递归纯展开
+  - 因此 `if (a if c else b):` 的图中每个 `BranchNode.conditionValueId` 仍为 branch-local temp 槽，truthiness 归一化（由共享 helper `FrontendBodyLoweringSupport.materializeTruthinessToBool` 承接）零改动；嵌套三元臂与 `and/or` 臂继续递归纯展开
 - 其他 condition
   - 先经由 `buildValue(...)` 求出 source value
   - 再发布 `BranchNode`
@@ -528,7 +529,7 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 - 真实的 per-function lowering state 收口到 `frontend.lowering.pass.body.FrontendBodyLoweringSession`
 - CFG node、`SequenceItem`、opaque expression root、assignment target / attribute step 都通过 `FrontendInsnLoweringProcessor` 注册表按“当前节点实际类型”动态分派
 - `FrontendInsnLoweringProcessor` 现在还显式返回 lowering 结束后的当前 continuation block；`SequenceNode` 会把这个 block 一路传给后续 item，因此 writable-route runtime gate 生成的 synthetic `apply/skip/continue` blocks 不会把后续 lowering 误挂回原始 node entry block
-- `FrontendBodyLoweringSupport` 只保留 slot naming、condition temp naming、published type collection 这类跨节点通用 helper；branch/subscript/opaque-expression 等节点专属逻辑都留在各自 processor 邻域
+- `FrontendBodyLoweringSupport` 保留 slot naming、condition temp naming、published type collection 与共享 truthiness 归一化（`materializeTruthinessToBool`，同时服务 branch 与 assert lowering）这类跨节点通用 helper；branch/subscript/opaque-expression 等节点专属逻辑都留在各自 processor 邻域
 
 ### 7.3 owner 边界
 

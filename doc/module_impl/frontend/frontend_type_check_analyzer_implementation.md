@@ -264,8 +264,16 @@ condition 当前采用 Godot-compatible source contract：
 但 downstream 约束仍然存在：
 
 - backend/LIR 的 control-flow 仍是 bool-only 边界
-- 当未来接上 frontend -> LIR lowering 时，必须在 lowering 侧补 truthiness / condition normalization
+- truthiness / condition normalization 由 lowering 侧显式完成
 - type-check 不得反向把 source frontend 收紧成 undocumented strict-bool dialect
+
+### 3.6.1 assert message contract
+
+与 condition 不同，`assert` 的可选 message 由 type-check 持有一条独立的 `sema.type_check` 合同：
+
+- message root 必须已发布稳定 typed fact；`DEFERRED` / `FAILED` / `BLOCKED` / `UNSUPPORTED` 保持 upstream owner，不重复发错
+- stable message 类型必须能**直接**赋值到 `String`：判定使用 backend `ClassRegistry.checkAssignable` 同规则，而不是通用 frontend boundary 矩阵。原因是 LIR `assert` 的 message 槽位被 backend 原样消费（`const godot_String*`），没有任何 pack/unpack 或 constructor 物化步骤；若放行矩阵的 `Variant -> String` unpack 或 `StringName -> String` 构造路由，只会在 backend fail-fast
+- 当前合同不支持任意表达式的运行时字符串化
 
 ### 3.7 utility 空返回类型合同
 

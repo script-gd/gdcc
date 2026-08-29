@@ -262,14 +262,14 @@ class FrontendLoweringFunctionPreparationPassTest {
                 List.of(new SourceFixture(
                         "preparation_singleton_property_init.gd",
                         """
-                        class_name PreparationSingletonPropertyInit
-                        extends RefCounted
-
-                        var frames: int = Engine.get_frames_drawn()
-
-                        func ping() -> int:
-                            return frames
-                        """
+                                class_name PreparationSingletonPropertyInit
+                                extends RefCounted
+                                
+                                var frames: int = Engine.get_frames_drawn()
+                                
+                                func ping() -> int:
+                                    return frames
+                                """
                 )),
                 Map.of(
                         "PreparationSingletonPropertyInit",
@@ -844,13 +844,13 @@ class FrontendLoweringFunctionPreparationPassTest {
         )).lower(
                 parseModule(
                         List.of(new SourceFixture(
-                                "preparation_blocked_assert.gd",
+                                "preparation_blocked_preload.gd",
                                 """
-                                        class_name PreparationBlockedAssert
+                                        class_name PreparationBlockedPreload
                                         extends RefCounted
                                         
                                         func ping(value):
-                                            assert(value, "blocked in compile mode")
+                                            var icon = preload("res://icon.svg")
                                         """
                         )),
                         Map.of()
@@ -904,13 +904,13 @@ class FrontendLoweringFunctionPreparationPassTest {
     void lowerCompileBlockedModuleLeavesFunctionLoweringContextsUnpublished() throws Exception {
         var module = parseModule(
                 List.of(new SourceFixture(
-                        "preparation_blocked_assert_contexts.gd",
+                        "preparation_blocked_preload_contexts.gd",
                         """
-                                class_name PreparationBlockedAssertContexts
+                                class_name PreparationBlockedPreloadContexts
                                 extends RefCounted
                                 
                                 func ping(value):
-                                    assert(value, "blocked in compile mode")
+                                    var icon = preload("res://icon.svg")
                                 """
                 )),
                 Map.of()
@@ -1041,7 +1041,7 @@ class FrontendLoweringFunctionPreparationPassTest {
                         """
                                 class_name PreparationStaticInit
                                 extends RefCounted
-
+                                
                                 static var shared: int = 7
                                 static var label: String = "s"
                                 var count: int = 1

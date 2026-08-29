@@ -101,15 +101,15 @@ class FrontendLoweringAnalysisPassTest {
 
         for (var testCase : List.of(
                 new CompileBlockedCase(
-                        "lowering_blocked_assert.gd",
+                        "lowering_blocked_preload.gd",
                         """
-                                class_name LoweringBlockedAssert
+                                class_name LoweringBlockedPreload
                                 extends RefCounted
                                 
                                 func ping(value):
-                                    assert(value, "blocked in compile mode")
+                                    var icon = preload("res://icon.svg")
                                 """,
-                        "assert statement"
+                        "Preload expression"
                 )
         )) {
             var module = parseModule(testCase.fileName(), testCase.source());

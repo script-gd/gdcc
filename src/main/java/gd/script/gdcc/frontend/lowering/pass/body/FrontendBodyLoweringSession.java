@@ -906,7 +906,12 @@ public final class FrontendBodyLoweringSession {
         }
     }
 
-    void ensureVariable(@NotNull String variableId, @NotNull GdType expectedType) {
+    /// Declares one function variable slot or verifies an existing declaration's type.
+    ///
+    /// Public so the shared truthiness helper in `FrontendBodyLoweringSupport` (parent package)
+    /// can declare its `cfg_cond_*` conversion slots; body processors inside this package use the
+    /// same entry point instead of touching the function variable table directly.
+    public void ensureVariable(@NotNull String variableId, @NotNull GdType expectedType) {
         var existing = function.getVariableById(variableId);
         if (existing == null) {
             function.createAndAddVariable(variableId, expectedType);
@@ -951,7 +956,15 @@ public final class FrontendBodyLoweringSession {
         return false;
     }
 
-    @NotNull String slotIdForValue(@NotNull String valueId) {
+    /// Resolves the slot that actually backs one published value id, honoring the published
+    /// materialization kind (`cfg_tmp_*` temp, `cfg_merge_*` merge, coroutine state, or direct
+    /// source-slot alias).
+    ///
+    /// Public so the shared truthiness helper in `FrontendBodyLoweringSupport` (parent package)
+    /// can read merge-backed assert conditions (`assert(a and b)`, ternary results) from their
+    /// real `cfg_merge_*` slot instead of a never-written `cfg_tmp_*`. Branch conditions stay
+    /// TEMP_SLOT by the condition-context contract, so this resolves to their `cfg_tmp_*` id.
+    public @NotNull String slotIdForValue(@NotNull String valueId) {
         var materialization = requireValueMaterialization(valueId);
         return switch (materialization.kind()) {
             case TEMP_SLOT -> FrontendBodyLoweringSupport.cfgTempSlotId(valueId);

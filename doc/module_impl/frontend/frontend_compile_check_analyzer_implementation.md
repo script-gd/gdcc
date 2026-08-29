@@ -117,14 +117,12 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 
 ### 3.1 statement 级封口
 
-`AssertStatement` 当前由 compile gate 显式拦截，并直接发出 `sema.compile_check` `error`。
+`AssertStatement` 已从显式封口列表移除：compile gate 对 `assert` 只做 `markCompileSurfaceNode` 并 `walkExpression` 其 condition 与可选 message，不再发出 `sema.compile_check`。
 
-这里需要同时保持两条事实：
+保持不变的两条事实：
 
 - frontend 已经识别并正常遍历 `assert`
-- shared type-check 继续把 `assert` condition 当成普通 source condition 处理
-
-因此，`assert` 的 compile-only block 只表达“lowering/backend 尚未接通”，而不是 source contract 已被收紧。
+- shared type-check 继续把 `assert` condition 当成普通 source condition 处理（Godot-compatible truthiness，不回退为 strict-bool）；message 的 String 可赋值校验由 shared type-check 持有（见 `frontend_type_check_analyzer_implementation.md` §3.6）
 
 `ForStatement` 使用 route-aware compile policy（不再使用无条件 for root blocker）：
 
@@ -406,7 +404,6 @@ declaration 级短路。
 
 这条规则同样适用于：
 
-- `assert`
 - `ForStatement`（route-aware compile policy：`ForLoweringContractRegistry` 中已注册的 route 放行并进入 body 重扫；未注册 route 在 statement root 拦截；已注册 route 的 CFG/body lowering 已落地，见 `frontend_for_range_loop_implementation.md`）
 - `PreloadExpression`
 - `GetNodeExpression`
@@ -417,6 +414,7 @@ declaration 级短路。
 `ConditionalExpression` 已从显式 compile-block 列表移除（见 `frontend_conditional_expression_implementation.md`）。
 `LambdaExpression`（已记录、published plan + body）已从无条件形态级 compile-block 移除并纳入 compile surface；未记录 lambda 仍 fail-closed（见 `frontend_lambda_implementation.md`）。
 脚本类 `static var` declaration 已从显式 compile-block 清单移除（见 `frontend_static_var_implementation.md`）。
+`AssertStatement` 已从显式 compile-block 清单移除（compile gate 放行 + truthiness 归一化 + backend `gdcc_assert_failed` 闭环）。
 
 在满足这些条件之前，它们都必须继续由 compile-only gate 拦截，而不是因为“frontend 已识别”就提前放行。
 
@@ -438,11 +436,11 @@ declaration 级短路。
   - surface 外 subtree 跳过
   - `DYNAMIC` 不误判为 blocker
   - `ConditionalExpression` 已放行：支持面三元零 `sema.compile_check`；FAILED 臂 binary 式 root 重持有（arm + root 各一条 `sema.expression_resolution`，exact-range 去重零 compile_check）；void 臂仅 root 一条 `sema.unsupported_expression_route` 压掉 compile_check
-  - `assert` 继续保持 shared condition contract，只在 compile-only 路径被拦截
+  - `assert` 继续保持 shared condition contract；已离开 compile-only 拦截列表，释放面上的 assert 不再产生 `sema.compile_check`
   - cast / type-test value-operand 传播去重：`missing as int` / `missing is int` / 链式 `(missing as int) as float` 不在 root 补 `sema.compile_check`
   - cast / type-test root-owned target failure 仍由 `sema.expression_resolution` 持有，exact-range 去重后无 root `compile_check`
-  - for route-aware compile policy：`RANGE_CALL` / `INT_SHORTHAND` 凭已注册 contract 放行（无 `sema.compile_check`，且释放后进入 body 扫描其中 `assert` 等封口节点）；`GENERIC_VARIANT` 在 statement root 发 route-not-ready blocker 且说明缺少 lowering route；同一 ForStatement anchor 已有 upstream error 时不补发同级 `sema.compile_check`
-  - lambda compile gate：`sig.connect(func(): ...)` 直接实参放行（无 `compile_check`/unsupported）；已记录 lambda body 内 `preload`/`$Node`/`assert` 会被递归扫描并各自发 blocker；property-initializer / parameter-default 未记录 lambda 保持 fail-closed（上游 unsupported owner 持有，不补发 `compile_check`）；lambda body 内 `match` 六 route 全部放行，不再由 `unsupported_binding_subtree` 持有
+  - for route-aware compile policy：`RANGE_CALL` / `INT_SHORTHAND` 凭已注册 contract 放行（无 `sema.compile_check`，且释放后进入 body 扫描其中仍被封口的 `preload` 等节点）；`GENERIC_VARIANT` 在 statement root 发 route-not-ready blocker 且说明缺少 lowering route；同一 ForStatement anchor 已有 upstream error 时不补发同级 `sema.compile_check`
+  - lambda compile gate：`sig.connect(func(): ...)` 直接实参放行（无 `compile_check`/unsupported）；已记录 lambda body 内 `preload`/`$Node` 会被递归扫描并各自发 blocker（body 内 `assert` 已 compile-ready，不再发 blocker）；property-initializer / parameter-default 未记录 lambda 保持 fail-closed（上游 unsupported owner 持有，不补发 `compile_check`）；lambda body 内 `match` 六 route 全部放行，不再由 `unsupported_binding_subtree` 持有
 - `FrontendSemanticAnalyzerFrameworkTest`
   - `analyze(...)` 与 `analyzeForCompile(...)` 的分离
   - compile gate 在 type-check 之后执行
@@ -461,7 +459,7 @@ declaration 级短路。
 
 - frontend -> LIR lowering 入口必须强制使用 `analyzeForCompile(...)`
 - lowering 在继续前必须检查 `diagnostics().hasErrors() == false`
-- `assert` 与 2 类显式拦截表达式（`PreloadExpression`、`GetNodeExpression`）的真正 lowering/backend 支持仍待后续补齐；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression` 与 `ConditionalExpression` 已完成 shared semantic、CFG/body lowering 与 backend 闭环；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）；已记录 `LambdaExpression` 的 shared semantic、`construct_lambda` lowering 与 C backend 已闭环，compile gate 按 published plan 放行并递归扫描 body
+- 2 类显式拦截表达式（`PreloadExpression`、`GetNodeExpression`）的真正 lowering/backend 支持仍待后续补齐；`assert` 已完成 compile gate 放行、CFG/body lowering 与 C backend 闭环；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression` 与 `ConditionalExpression` 已完成 shared semantic、CFG/body lowering 与 backend 闭环；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）；已记录 `LambdaExpression` 的 shared semantic、`construct_lambda` lowering 与 C backend 已闭环，compile gate 按 published plan 放行并递归扫描 body
 
 若未来需要为 LSP 单独呈现 compile-only blocker，正确方向仍是：
 

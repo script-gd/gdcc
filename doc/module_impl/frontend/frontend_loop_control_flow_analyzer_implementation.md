@@ -129,6 +129,7 @@ owner 固定为：
   - 外层 loop 不得跨 callable 泄漏到内层 callable
 - `if` / `elif` / `else` / `match` / 普通 block` 不重置 loop depth`
   - 原因：这些结构共享同一个 loop control 域
+- `assert` 的 condition 与可选 message 都视为普通表达式位置，两者都必须 `scanNestedCallableBoundaries`（message 内嵌 lambda 同样构成新的 callable boundary）；analyzer 不负责 assert 的类型或 compile readiness
 - analyzer 只发诊断，不改 side table
 
 ---

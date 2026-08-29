@@ -83,7 +83,15 @@ extend the runtime-provided `godot_*` surface.
   runtime error printing, Object property get/set helpers, RefCounted ownership helpers, GDCC
   wrapper pointer conversion helpers, compatibility constructors, UTF-8 formatting helpers,
   Variant type guards, GDScript `is` type-test helpers, Variant writeback classification and
-  `godot_Variant_call(...)`. It also pulls in sibling headers such as `gdcc_callable.h`.
+  `godot_Variant_call(...)`. It also pulls in sibling headers such as `gdcc_callable.h` and,
+  immediately after the `GDCC_PRINT_RUNTIME_ERROR` macro definition, `gdscript_builtins.h`.
+- `gdscript_builtins.h`: GDScript language-level builtins (header-only, `static inline`). These
+  back language constructs registered by the GDScript module rather than the GDExtension API, so
+  no generated `godot_*` wrapper exists for them. Currently provides
+  `gdcc_assert_failed(message_or_null, func, file, line)`: reports a failed user-level `assert`
+  through the shared `GDCC_PRINT_RUNTIME_ERROR` channel (`NULL` message falls back to a fixed
+  "Assertion failed." text; otherwise the String message is converted to UTF-8 and prefixed).
+  The caller owns the default-return edge; the helper only reports.
 - `gdcc_callable.h`: custom Callables for `construct_standalone_callable` and
   `construct_lambda`. Owns `gdcc_new_standalone_callable` (growable heap intern table of
   `gdcc_standalone_callable_spec`, one `godot_mem_alloc` per unique `(kind, owner, name)`,

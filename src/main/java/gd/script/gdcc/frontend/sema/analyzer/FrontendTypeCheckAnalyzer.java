@@ -31,6 +31,7 @@ import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -297,6 +298,47 @@ public class FrontendTypeCheckAnalyzer {
                             + compilerOnlyType.getTypeName()
             );
         }
+    }
+
+    /// Checks the optional `assert` message expression.
+    ///
+    /// The current contract requires the message to be directly assignable to `String` under the
+    /// backend `ClassRegistry.checkAssignable` rule rather than the general frontend boundary
+    /// matrix: the LIR `assert` message slot is consumed as-is without any pack/unpack or
+    /// constructor conversion, so matrix-only routes (Variant unpack, StringName construction,
+    /// ...) would pass here and then fail fast in the backend. Arbitrary-expression message
+    /// stringification is not supported. Unstable message facts keep their upstream diagnostic
+    /// owner and are skipped, mirroring the condition contract.
+    private void visitAssertMessageExpression(
+            @NotNull TypeCheckAccess access,
+            @NotNull Expression message
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(message, "message must not be null");
+
+        visitNestedCastExpressions(access, message);
+
+        var publishedMessageType = stableExpressionTypeOrNull(
+                access.analysisData(),
+                message,
+                "AssertStatement message"
+        );
+        if (publishedMessageType == null) {
+            return;
+        }
+        var messageType = Objects.requireNonNull(
+                publishedMessageType.publishedType(),
+                "publishedType must not be null for stable assert message expression"
+        );
+        if (access.assignmentSemanticContext().classRegistry().checkAssignable(messageType, GdStringType.STRING)) {
+            return;
+        }
+        access.diagnosticManager().error(
+                TYPE_CHECK_CATEGORY,
+                "Assert message type '" + messageType.getTypeName() + "' is not assignable to 'String'",
+                access.sourcePath(),
+                FrontendRange.fromAstRange(message.range())
+        );
     }
 
     /// Walks one expression tree and type-checks nested casts and published container-literal plans.
@@ -1223,7 +1265,7 @@ public class FrontendTypeCheckAnalyzer {
             var access = callbackAccess();
             visitConditionExpression(access, assertStatement.condition(), assertStatement);
             if (assertStatement.message() != null) {
-                visitNestedCastExpressions(access, assertStatement.message());
+                visitAssertMessageExpression(access, assertStatement.message());
             }
             scanNestedLambdaBodies(assertStatement.condition());
             scanNestedLambdaBodies(assertStatement.message());

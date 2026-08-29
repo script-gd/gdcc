@@ -123,6 +123,11 @@ already exists, otherwise use the project's own `compiler-cache` directory.
   - upcast helpers: preserve `instance_id`, rebuild target typed pointer
 - Hard-fail liveness guard for dereference sites is the LIR instruction `assert_object_live`, lowered through
   `gdcc_object_is_null_raw_and_id(raw, instance_id)` (never recover ID from a possibly-freed raw pointer).
+- The user-level `assert` statement is a separate LIR instruction `assert` (see `gdcc_low_ir.md`
+  §Misc Instructions): `AssertInsnGen` validates the bool condition and optional String-assignable
+  message, then `CBodyBuilder.emitAssertGuard(...)` emits the `gdcc_assert_failed` report plus the
+  default-return edge. It is unrelated to the object-liveness guard and must not appear in
+  `__finally__`.
 - Static RefCounted (`RefCountedStatus.YES`) uses the cached typed pointer under the ownership invariant;
   `UNKNOWN` uses the ObjectID reference bit (bit 63) for `try_*` lifecycle without ClassDB class-name queries.
 - Full design, contracts and acceptance matrix:

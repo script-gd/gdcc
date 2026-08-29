@@ -297,11 +297,11 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.compile_check`
   - compile-only `FrontendCompileCheckAnalyzer` 对进入 lowering 前仍不可编译的 surface 发出的最终 error
   - 同时覆盖：
-    - 当前首批显式封口的 `assert`、`PreloadExpression`、`GetNodeExpression`，以及按 route-aware policy 处理的 `ForStatement`；`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression`、`ConditionalExpression` 与已记录 `LambdaExpression` 不属于无条件显式封口列表
+    - 当前首批显式封口的 `PreloadExpression`、`GetNodeExpression`，以及按 route-aware policy 处理的 `ForStatement`；`assert`、`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression`、`ConditionalExpression` 与已记录 `LambdaExpression` 不属于无条件显式封口列表
     - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
     - feature-specific RESOLVED blocker：当前仅 Dictionary 实例 method-reference（`METHOD && BUILTIN && GdDictionaryType`）与 builtin type-meta static method-reference（`STATIC_METHOD && ownerKind == BUILTIN`）。signal 值读取、`.emit`、`.connect`/`.disconnect`、Object/self `METHOD`、非 Dictionary builtin 实例、GDCC/engine 静态与 bare utility 值读取已放行。bare blocker 按 published `symbolBindings().kind()` 定位，必须排除 `CallExpression.callee()`。详见 `frontend_signal_support.md` 与 `frontend_compile_check_analyzer_implementation.md` §4.2。
     - supported callable-local `var` 因 `sema.variable_slot_publication` warning 仍缺失 `slotTypes()` 的 lowering-only fact 缺洞
-  - `assert` 在这里仍只是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，不把它回退成 strict-bool `sema.type_check`
+  - `assert` 已完成 lowering/backend 闭环，不再是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，并额外持有可选 message 的 String 直接可赋值校验（见 `frontend_type_check_analyzer_implementation.md` §3.6.1）
   - `ForStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `forIterationPlans()` 与 `ForLoweringContractRegistry`，已注册 lowering contract 的 route 放行并进入 body 重扫 facts，未注册 contract 的 route（当前 `OBJECT_CUSTOM`）在 statement root 发 route-not-ready blocker（说明缺少 lowering route，而非 `FOR_SUBTREE` unsupported）；已注册 route 的 CFG/body lowering 已落地
   - `MatchStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `matchPlans()` 与 `FrontendMatchSupport.isRouteLoweringReady`；`WILDCARD` / `BINDING` / `LITERAL` / `EXPRESSION` / `ARRAY` / `DICTIONARY` 六 route 全部放行并重扫 body facts。plan 缺失时保持封口，由 upstream owner 持有诊断。同一 statement root 已有 upstream error 时省略 route-not-ready
   - 已记录 `LambdaExpression`（published `FrontendLambdaPlan` + body）放上 compile surface 并递归扫描 body facts；未记录 lambda 保持 fail-closed，且不得在上游 unsupported owner 上重复包一层 `sema.compile_check`。合同见 `frontend_lambda_implementation.md`
@@ -434,7 +434,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - 合法 `while` / `for` loop body 不会误报 loop-control error
   - nested lambda 会切断外层 loop depth
 - `FrontendCompileCheckAnalyzerTest`
-    - compile-only gate 会显式封口 `assert` 与当前暂不 lowering 的表达式形态
+    - compile-only gate 会显式封口当前暂不 lowering 的表达式形态（`PreloadExpression`、`GetNodeExpression`；`assert` 已放行）
     - compile surface 上的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 会被补成最终 compile blocker
     - supported property initializer island 上的 generic blocker 也被单独锚定到 compile surface
     - `DYNAMIC`、surface 外 subtree、以及同锚点重复 generic block 的去重行为稳定

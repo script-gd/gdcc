@@ -127,11 +127,11 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compiled = analyzeForCompile("compile_check_explicit_blocks.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        // Remaining explicit intercepts: assert, preload, get-node.
+        // Remaining explicit intercepts: preload, get-node. Assert is compile-ready and stays in
+        // the source above as release evidence alongside the ternary.
         // Array/Dictionary literals, CastExpression, TypeTestExpression, and ConditionalExpression
-        // are compile-ready and not in the intercept set (the ternary stays in the source above as
-        // release evidence).
-        assertEquals(3, compileDiagnostics.size());
+        // are compile-ready and not in the intercept set.
+        assertEquals(2, compileDiagnostics.size());
         assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                         && Objects.equals(
@@ -140,7 +140,7 @@ class FrontendCompileCheckAnalyzerTest {
                 )
                         && diagnostic.range() != null
         ));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("assert statement")));
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("assert statement")));
         assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Conditional expression")));
         assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Array literal")));
         assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Dictionary literal")));
@@ -349,7 +349,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileBlocksAssertWithoutReclassifyingSharedConditionContract() throws Exception {
+    void analyzeForCompileAcceptsAssertWithoutReclassifyingSharedConditionContract() throws Exception {
         var source = """
                 class_name CompileCheckAssertContract
                 extends RefCounted
@@ -366,9 +366,11 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_assert_contract.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
-        assertEquals(1, compileDiagnostics.size(), () -> compiled.diagnostics().asList().toString());
+        // Assert is compile-ready: the gate no longer blocks it, and the Godot-compatible
+        // truthiness condition contract stays unreinterpreted at source level.
+        assertTrue(compileDiagnostics.isEmpty(), () -> compiled.diagnostics().asList().toString());
+        assertFalse(compiled.diagnostics().hasErrors(), () -> compiled.diagnostics().asList().toString());
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.type_check").isEmpty());
-        assertTrue(compileDiagnostics.getFirst().message().contains("assert statement"));
     }
 
     @Test
@@ -959,14 +961,15 @@ class FrontendCompileCheckAnalyzerTest {
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
         // ARRAY is compile-ready: the match body joins the compile surface, so the nested
-        // preload / $Node / assert each report their own blocker and the match root stays clean.
-        assertEquals(3, compileDiagnostics.size(), compileDiagnostics::toString);
+        // preload / $Node each report their own blocker while the match root stays clean.
+        // The nested assert is compile-ready and contributes no blocker.
+        assertEquals(2, compileDiagnostics.size(), compileDiagnostics::toString);
         assertTrue(compileDiagnostics.stream().noneMatch(
                 diagnostic -> diagnostic.range().equals(FrontendRange.fromAstRange(matchStatement.range()))
         ));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Preload expression")));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Get-node expression")));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("assert statement")));
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("assert statement")));
         var unsupportedBindingDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
@@ -984,13 +987,15 @@ class FrontendCompileCheckAnalyzerTest {
                 func ping(value: int):
                     match value:
                         var bound when bound > 0:
-                            assert(bound)
+                            preload("res://icon.svg")
                 """;
 
         var compiled = analyzeForCompile("compile_check_match_ready_surface.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        // The ready match route releases its body onto the compile surface; the still-gated
+        // preload expression inside proves the body is actually scanned.
         assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
-        assertTrue(compileDiagnostics.getFirst().message().contains("assert"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("Preload expression"));
     }
 
     @Test
@@ -1002,7 +1007,7 @@ class FrontendCompileCheckAnalyzerTest {
                 func ping(values):
                     for item in values:
                         var copy := item
-                        assert(item)
+                        preload("res://user.save")
                 """;
 
         var shared = analyzeShared("compile_check_for_bridge.gd", source);
@@ -1013,9 +1018,11 @@ class FrontendCompileCheckAnalyzerTest {
                         || diagnostic.category().equals("sema.unsupported_binding_subtree")
                         || diagnostic.category().equals("sema.compile_check")
         ));
+        // The generic Variant for route releases its body onto the compile surface; the
+        // still-gated preload expression inside proves the body is actually scanned.
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         assertEquals(1, compileDiagnostics.size());
-        assertTrue(compileDiagnostics.getFirst().message().contains("assert"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("Preload expression"));
     }
 
     @Test
@@ -1062,14 +1069,16 @@ class FrontendCompileCheckAnalyzerTest {
                 
                 func ping():
                     for i in range(3):
-                        assert(i)
+                        preload("res://icon.svg")
                 """;
 
         var compiled = analyzeForCompile("compile_check_for_range_body_scanned.gd", source);
 
+        // The released range loop body is scanned like any other compile surface; the still-gated
+        // preload expression inside proves it.
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         assertEquals(1, compileDiagnostics.size());
-        assertTrue(compileDiagnostics.getFirst().message().contains("assert"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("Preload expression"));
     }
 
     @Test
@@ -2131,8 +2140,9 @@ class FrontendCompileCheckAnalyzerTest {
         var assertStatement = findNode(compiled.unit().ast(), AssertStatement.class, ignored -> true);
         var lambdaRange = FrontendRange.fromAstRange(lambda.range());
 
-        // The gate recurses into the recorded lambda body: the body's preload / get-node / assert are
+        // The gate recurses into the recorded lambda body: the body's preload / get-node are
         // compile-blocking facts now, while the lambda node itself carries no form-level blocker.
+        // The nested assert is compile-ready and contributes no blocker.
         assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
         assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
                 diagnostic.range().equals(lambdaRange)
@@ -2145,9 +2155,8 @@ class FrontendCompileCheckAnalyzerTest {
                 diagnostic.range().equals(FrontendRange.fromAstRange(getNode.range()))
                         && diagnostic.message().contains("Get-node expression")
         ), compileDiagnostics::toString);
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
                 diagnostic.range().equals(FrontendRange.fromAstRange(assertStatement.range()))
-                        && diagnostic.message().contains("assert statement")
         ), compileDiagnostics::toString);
     }
 
