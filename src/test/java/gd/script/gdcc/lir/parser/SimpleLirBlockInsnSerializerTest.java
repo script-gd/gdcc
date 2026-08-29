@@ -62,6 +62,22 @@ public class SimpleLirBlockInsnSerializerTest {
     }
 
     @Test
+    public void serialize_assertConditionOnlyHasNoResultAndNoProvenance() throws Exception {
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var sw = new StringWriter();
+        serializer.serialize(List.of(new AssertInsn("cond", null)), sw);
+        assertEquals("assert $cond;\n", sw.toString());
+    }
+
+    @Test
+    public void serialize_assertConditionAndMessageHasNoResultAndNoProvenance() throws Exception {
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var sw = new StringWriter();
+        serializer.serialize(List.of(new AssertInsn("cond", "msg")), sw);
+        assertEquals("assert $cond $msg;\n", sw.toString());
+    }
+
+    @Test
     public void serialize_lifecycleInstructionWithProvenance_appendsEnumToken() throws Exception {
         var insnList = List.<LirInstruction>of(
                 new DestructInsn("0", LifecycleProvenance.AUTO_GENERATED),

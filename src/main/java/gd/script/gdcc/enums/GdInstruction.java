@@ -89,6 +89,7 @@ public enum GdInstruction {
     // Misc
     NOP("nop", ReturnKind.NONE, List.of(), 0, 0),
     LINE_NUMBER("line_number", ReturnKind.NONE, List.of(OperandKind.INT), 1, 1),
+    ASSERT("assert", ReturnKind.NONE, List.of(OperandKind.VARIABLE, OperandKind.VARIABLE), 1, 2),
     ASSERT_OBJECT_LIVE("assert_object_live", ReturnKind.NONE, List.of(OperandKind.VARIABLE), 1, 1),
     ;
 

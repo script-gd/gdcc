@@ -740,6 +740,25 @@ Sets the current source code line number for debugging purposes.
 line_number <line_number:int>
 ```
 
+#### assert
+
+User-level condition assertion. Fails the current function when the condition is false.
+
+```
+assert $<cond_id:bool>
+assert $<cond_id:bool> $<msg_id:String>
+```
+
+No result. If the condition is true, execution falls through. If the condition is false,
+the current function enters its stable runtime-error/default-return cleanup path (`goto __finally__`).
+
+- `cond_id` must already be `bool`. Truthiness normalization is frontend lowering's
+  responsibility; this instruction does not booleanize other types.
+- `msg_id` is optional. When present it must be assignable to `String`.
+- Does not retain/release/destroy; does not mutate object state; requires no lifecycle provenance.
+- Distinct from `assert_object_live`, which is an object-liveness dereference guard.
+- Not a terminator: it sits in the ordinary instruction region of a basic block.
+
 #### assert_object_live
 
 Hard-fail dereference guard. Asserts that an object reference is still live before use.

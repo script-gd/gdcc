@@ -140,6 +140,26 @@ public class SimpleLirBlockInsnParserTest {
     }
 
     @Test
+    public void parse_assertUsesConditionOnly() {
+        var insn = assertInstanceOf(AssertInsn.class, parse("assert $cond;").getFirst());
+        assertAll(
+                () -> assertNull(insn.resultId()),
+                () -> assertEquals("cond", insn.conditionId()),
+                () -> assertNull(insn.messageId())
+        );
+    }
+
+    @Test
+    public void parse_assertUsesConditionAndMessage() {
+        var insn = assertInstanceOf(AssertInsn.class, parse("assert $cond $msg;").getFirst());
+        assertAll(
+                () -> assertNull(insn.resultId()),
+                () -> assertEquals("cond", insn.conditionId()),
+                () -> assertEquals("msg", insn.messageId())
+        );
+    }
+
+    @Test
     public void parse_objectIsNullUsesResultAndVariableOperand() {
         var insns = parse("$result = object_is_null $obj;");
         var insn = assertInstanceOf(ObjectIsNullInsn.class, insns.getFirst());
@@ -162,6 +182,25 @@ public class SimpleLirBlockInsnParserTest {
         var parser = new SimpleLirBlockInsnParser();
         var ex = assertThrows(LirInsnParsingException.class, () -> parser.parse(new StringReader("assert_object_live;")));
         assertTrue(ex.reason.contains("Invalid operand count"), ex.reason);
+    }
+
+    @Test
+    public void parse_assertRequiresOperand() {
+        var ex = assertThrows(LirInsnParsingException.class, () -> parse("assert;"));
+        assertTrue(ex.reason.contains("Invalid operand count"), ex.reason);
+    }
+
+    @Test
+    public void parse_assertRejectsThreeOperands() {
+        var ex = assertThrows(LirInsnParsingException.class, () -> parse("assert $c $m $extra;"));
+        assertTrue(ex.reason.contains("Invalid operand count"), ex.reason);
+    }
+
+    @Test
+    public void parse_assertRequiresVariableOperands() {
+        var line = "assert true;";
+        var col = line.indexOf("true") + 1;
+        assertParseError(line, 1, col, "Expected variable operand");
     }
 
     @Test

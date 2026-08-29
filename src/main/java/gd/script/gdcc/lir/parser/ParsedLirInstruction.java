@@ -236,6 +236,17 @@ public record ParsedLirInstruction(
 
                 case NOP -> new NopInsn();
                 case LINE_NUMBER -> new LineNumberInsn(Math.toIntExact(((IntOperand) operands.getFirst()).value()));
+                case ASSERT -> {
+                    // Operand count/kind are already enforced by SimpleLirBlockInsnParser from the
+                    // GdInstruction metadata (1..2 VARIABLE). A parsed result prefix is silently
+                    // discarded: AssertInsn has no result, so resultId() is always null.
+                    var conditionId = ((VariableOperand) operands.getFirst()).id();
+                    String messageId = null;
+                    if (operands.size() > 1) {
+                        messageId = ((VariableOperand) operands.getLast()).id();
+                    }
+                    yield new AssertInsn(conditionId, messageId);
+                }
                 case ASSERT_OBJECT_LIVE -> new AssertObjectLiveInsn(((VariableOperand) operands.getFirst()).id());
             };
         } catch (IndexOutOfBoundsException | ClassCastException e) {

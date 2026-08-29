@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：**Planned / 实施计划（尚未开始编码）**
+- 状态：**In Progress**（阶段 A 已完成：LIR `assert` 指令模型 + 解析/序列化闭环；阶段 B–F 尚未开始）
 - 范围：frontend sema/lowering、LIR 新增 `assert` 指令、C backend 代码生成、`gdcc/**` runtime helper
 - 更新时间：2026-08-29
 - 目标读者：实施者、代码评审者
@@ -110,7 +110,7 @@
 - 新增 `lir/insn/AssertInsn.java`（record：`conditionId`、`@Nullable messageId`），实现 `MiscInstruction`；**不**携带 lifecycle provenance（非生命周期指令）。
 - `ParsedLirInstruction.toConcrete()` 增加 `ASSERT` 分支（该 switch 是 exhaustive 的，不加会编译失败）；通用 parser/serializer 无需改动。
 - LIR 合同：condition 槽位**必须已是 bool**（truthiness 归一化是 frontend lowering 职责，见 D5）；message 槽位若存在必须是 `String` 可赋值类型。backend 对违规 fail-fast。
-- `ReturnKind.NONE` 不会被通用 parser 强制（`SimpleLirBlockInsnParser` 不看 returnKind，`$r = assert $c;` 在文本层可解析）：携带 resultId 的拒绝落在 `AssertInsnGen` fail-fast，与 `assert_object_live` 现状一致；contract 测试需覆盖该负例。
+- `ReturnKind.NONE` 不会被通用 parser 强制（`SimpleLirBlockInsnParser` 不看 returnKind，`$r = assert $c;` 在文本层可解析）。正式合同是 **静默丢弃**：`toConcrete()` 不读取解析到的 result 前缀，`AssertInsn.resultId()` 恒为 `null`，backend **不** 对 result 前缀 fail-fast。与 `assert_object_live` 现状一致。contract 测试覆盖「带 `$r =` 前缀仍解析为无结果指令」。
 
 ### D5：`assert` frontend 解锁与 lowering
 
@@ -183,6 +183,8 @@ pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <
 
 ### 阶段 A：LIR `assert` 指令（纯 LIR 层）
 
+状态：**已完成**（2026-08-29）
+
 目标：指令模型 + 枚举 + 解析/序列化闭环，不触碰 frontend/backend。
 
 修改文件：
@@ -215,7 +217,7 @@ pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <
 7. `frontend/lowering/pass/body/FrontendSequenceItemInsnLoweringProcessors.java`：新增 AssertItem processor。
 8. `frontend/lowering/pass/body/FrontendInsnLoweringProcessorRegistry.java`（或实际承担注册职责的类）：注册 AssertItem processor。
 9. `frontend/sema/analyzer/FrontendLoopControlFlowAnalyzer.java`：对 `message()` 补 `scanNestedCallableBoundaries`。
-10. `backend/c/gen/insn/AssertInsnGen.java`：新建（IR 校验：condition 存在且 bool、message 存在且 String 可赋值、非 `__finally__`、无 resultId）。
+10. `backend/c/gen/insn/AssertInsnGen.java`：新建（IR 校验：condition 存在且 bool、message 存在且 String 可赋值、非 `__finally__`。不校验 resultId：文本 `$r = assert ...` 已在 `toConcrete()` 静默丢弃，见 D4 / R4）。
 11. `backend/c/gen/CBodyBuilder.java`：新增 `emitAssertGuard(...)`。
 12. `backend/c/gen/CCodegen.java`：注册 `AssertInsnGen`。
 13. `src/main/c/codegen/include_451/gdcc/gdscript_builtins.h`：新建，先含 `gdcc_assert_failed`。
@@ -226,7 +228,7 @@ pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <
 
 - 前端测试：`assert(true)`、`assert(x)`（Variant 条件）、`assert(i)`（int 条件，验证 pack/unpack 归一化）、`assert(false, "m")` 均不再产生 compile-block 诊断且 LIR 中出现合法 `assert` 指令；`assert(1, 123)` 产生 message 类型诊断。
 - 负向回归：assert 出现在 property initializer 等不支持位置仍被既有 gate 拦截。
-- 后端测试：新增 `AssertInsnGenTest`：无 message/有 message 的 C 文本断言（含 `gdcc_assert_failed` 与 default return）；condition 非 bool、message 非 String、`__finally__` 中出现、携带 resultId 四类 fail-fast。
+- 后端测试：新增 `AssertInsnGenTest`：无 message/有 message 的 C 文本断言（含 `gdcc_assert_failed` 与 default return）；condition 非 bool、message 非 String、`__finally__` 中出现三类 fail-fast。不测携带 resultId（已在 LIR `toConcrete()` 静默丢弃，见 D4 / R4）。
 - 行为不变验证：`buildCondition` 相关既有测试全绿（truthiness 抽取为纯重构）。
 - 既有阻断断言翻新（解锁副作用，必须同步更新期望）：`FrontendCompileCheckAnalyzerTest`（assert 不再计入 compile-block，GetNode/preload 仍阻断）、`FrontendSemanticAnalyzerFrameworkTest`、`FrontendLoweringPassManagerTest`、`FrontendLoweringAnalysisPassTest`。
 - 命令：`pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests AssertInsnGenTest,<新增前端测试类>,CBodyBuilderPhaseCTest,FrontendCompileCheckAnalyzerTest,FrontendSemanticAnalyzerFrameworkTest,FrontendLoweringPassManagerTest,FrontendLoweringAnalysisPassTest`
@@ -314,8 +316,7 @@ pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <
 
 - **R2**：`is_instance_of` 的 class/script 形式依赖"类作为一等值"（GDScriptNativeClass 等价物），当前类型系统无此概念，v1 仅支持类型枚举数字（`TYPE_*` int 常量），其它形式运行时报错拒绝；如需支持须先设计 class-value 表示，属较大架构议题。
 - **R3**：`assert` message v1 限定 String 可赋值；Godot 允许任意表达式（按 Variant 字符串化）。如需放宽，后续把 message 槽位改为 Variant 并在 helper 内字符串化。
-
-（已关闭项：gdcc 脚本路径（`.gd`）拦截/诊断经决策**不实现**，见 §1；如需恢复，单独立项。）
+（已关闭项：gdcc 脚本路径（`.gd`）拦截/诊断经决策**不实现**，见 §1；如需恢复，单独立项。**R4**：`$r = assert $c;` 的 result 前缀定为静默丢弃——`toConcrete()` 丢弃、`AssertInsn.resultId()` 恒 `null`、阶段 B 不测/不 fail-fast resultId，与 `assert_object_live` 一致。）
 
 ## 7. 风险与防御策略
 
