@@ -305,8 +305,8 @@ public final class FrontendExpressionSemanticSupport {
                             + identifierExpression.name() + ".build(...)', '" + identifierExpression.name()
                             + ".new()', or a static constant access"
             );
-            case METHOD, STATIC_METHOD, UTILITY_FUNCTION ->
-                    resolveCallableIdentifierExpressionType(identifierExpression);
+            case METHOD, STATIC_METHOD -> resolveCallableIdentifierExpressionType(identifierExpression);
+            case UTILITY_FUNCTION -> resolveUtilityIdentifierExpressionType(identifierExpression);
             case UNKNOWN, LITERAL -> FrontendExpressionType.failed(
                     "Identifier '" + identifierExpression.name() + "' does not resolve to a typed value"
             );
@@ -363,6 +363,21 @@ public final class FrontendExpressionSemanticSupport {
                         bareCallee,
                         callExpression.arguments(),
                         preliminary.argumentTypes(),
+                        nestedResolver,
+                        finalizeWindow
+                );
+            }
+            if (bareBinding != null
+                    && bareBinding.kind() == FrontendBindingKind.UTILITY_FUNCTION
+                    && classRegistry.isGdScriptLanguageFunction(bareCallee.name())) {
+                // Synthetic GDScript language functions are call-only: value-position resolution
+                // rejects them (first-class reference ban, see resolveIdentifierExpressionType),
+                // so the callee slot must skip value-resolution entirely, mirroring the TYPE_META
+                // constructor branch above. The call itself resolves through the shared bare-call
+                // path and publishes its own resolved-call fact.
+                return resolveBareIdentifierCallWithLiteralContext(
+                        bareCallee,
+                        callExpression.arguments(),
                         nestedResolver,
                         finalizeWindow
                 );
@@ -1353,6 +1368,26 @@ public final class FrontendExpressionSemanticSupport {
                             + "' carries an invalid not-found resolved value status"
             );
         };
+    }
+
+    /// Value-position references to utility identifiers. Synthetic GDScript language functions
+    /// (`len`/`char`/`ord`, ...) are rejected here as the first line of defense: they carry no
+    /// engine utility hash, so no standalone callable can be built for `var f = len`. The backend
+    /// `construct_standalone_callable` lookup (`findUtilityFunction`, which excludes synthetic
+    /// entries) stays fail-fast as the second line of defense.
+    ///
+    /// Note this only sees value positions: bare-call callees are resolved through
+    /// `resolveBareIdentifierCallWithLiteralContext`, so direct calls remain unaffected.
+    private @NotNull FrontendExpressionType resolveUtilityIdentifierExpressionType(
+            @NotNull IdentifierExpression identifierExpression
+    ) {
+        if (classRegistry.isGdScriptLanguageFunction(identifierExpression.name())) {
+            return FrontendExpressionType.failed(
+                    "GDScript language function '" + identifierExpression.name()
+                            + "' cannot be referenced as a first-class value; call it directly instead"
+            );
+        }
+        return resolveCallableIdentifierExpressionType(identifierExpression);
     }
 
     private @NotNull FrontendExpressionType resolveCallableIdentifierExpressionType(

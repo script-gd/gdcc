@@ -10,6 +10,7 @@ import gd.script.gdcc.backend.c.gen.fatptr.ObjectFatPtrSpec;
 import gd.script.gdcc.backend.c.gen.fatptr.ObjectFatPtrUpcastSpec;
 import gd.script.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
 import gd.script.gdcc.backend.c.gen.insn.OperatorResolver;
+import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
@@ -31,6 +32,15 @@ import static gd.script.gdcc.util.StringUtil.escapeStringLiteral;
 public final class CGenHelper {
     private static final String GODOT_UTILITY_PREFIX = "godot_";
     private static final String VARIANT_WRITEBACK_HELPER_NAME = "gdcc_variant_requires_writeback";
+    /// Static route table from synthetic GDScript language function names to their `gdcc_*`
+    /// runtime helper (design D2 of `gdscript_language_functions_assert_preload_plan.md`).
+    /// `load` is deliberately absent: frontend lowering rewrites it into a ResourceLoader
+    /// singleton call (D6), so it must never reach `call_global` routing.
+    private static final Map<String, String> GDSCRIPT_LANGUAGE_FUNCTION_C_NAMES = Map.of(
+            "len", "gdcc_len",
+            "char", "gdcc_char",
+            "ord", "gdcc_ord"
+    );
     private static final FunctionSignature VARIANT_WRITEBACK_HELPER_SIGNATURE = new FunctionSignature(
             VARIANT_WRITEBACK_HELPER_NAME,
             List.of(new FunctionSignature.Parameter("value", GdVariantType.VARIANT, null)),
@@ -1723,11 +1733,40 @@ public final class CGenHelper {
             );
         }
         var lookupName = normalizeUtilityLookupName(functionName);
+        if (context.classRegistry().isGdScriptLanguageFunction(lookupName)) {
+            // Synthetic language functions bypass the `godot_` prefix: their runtime entry points
+            // are header-only `gdcc_*` helpers. The signature still comes from the shared
+            // registry pipeline, so a registered name always resolves one.
+            var signature = Objects.requireNonNull(
+                    context.classRegistry().findUtilityFunctionSignature(lookupName),
+                    "registered GDScript language function '" + lookupName + "' must expose a signature"
+            );
+            return new UtilityCallResolution(
+                    lookupName,
+                    requireGdScriptLanguageFunctionCName(lookupName),
+                    signature
+            );
+        }
         var signature = context.classRegistry().findUtilityFunctionSignature(lookupName);
         if (signature == null) {
             return null;
         }
         return new UtilityCallResolution(lookupName, GODOT_UTILITY_PREFIX + lookupName, signature);
+    }
+
+    /// Per-name contract (design D2): a registered synthetic GDScript language function must map
+    /// to a `gdcc_*` helper. A missing entry means the registration landed without its
+    /// backend/runtime counterpart (or, for `load`, that lowering failed to rewrite the call);
+    /// fail fast instead of silently emitting a nonexistent `godot_*` wrapper.
+    static @NotNull String requireGdScriptLanguageFunctionCName(@NotNull String lookupName) {
+        var cName = GDSCRIPT_LANGUAGE_FUNCTION_C_NAMES.get(lookupName);
+        if (cName == null) {
+            throw new InvalidInsnException("GDScript language function '" + lookupName +
+                    "' has no gdcc_* runtime helper mapping; 'load'/'preload' must be rewritten to a " +
+                    "ResourceLoader singleton call by frontend lowering, and unmapped names indicate " +
+                    "a registration/backend phase mismatch");
+        }
+        return cName;
     }
 
     public record UtilityCallResolution(@NotNull String lookupName,

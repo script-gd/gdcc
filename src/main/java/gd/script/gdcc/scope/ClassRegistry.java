@@ -82,6 +82,15 @@ public final class ClassRegistry implements Scope {
     private final Map<String, ExtensionGdClass> gdClassByName = new HashMap<>();
     /// Global utility functions.
     private final Map<String, ExtensionUtilityFunction> utilityByName = new HashMap<>();
+    /// Compiler-synthesized GDScript language functions (`len`/`char`/`ord`; later phases add
+    /// `range`/`is_instance_of`/`load`). Godot registers them from the GDScript module itself, so
+    /// they never appear in the GDExtension API dump and no generated `godot_*` wrapper exists.
+    ///
+    /// Kept separate from [utilityByName] on purpose: name/signature resolution queries consult
+    /// both tables, while raw extension-metadata consumers (`findUtilityFunction` for
+    /// `construct_standalone_callable`, `getExtensionUtilityFunctionList` for `godot_utility`
+    /// wrapper generation) must never see synthetic entries.
+    private final Map<String, ExtensionUtilityFunction> gdScriptLanguageFunctionByName = new HashMap<>();
     private final Map<String, ExtensionGlobalEnum> globalEnumByName = new HashMap<>();
     private final Map<String, ExtensionGlobalConstant> globalConstantByName = new HashMap<>();
     /// Bare-name index over every global enum member, independent of the owning enum group name.
@@ -140,6 +149,7 @@ public final class ClassRegistry implements Scope {
             if (s != null && s.name() != null) singletonByName.put(s.name(), s);
         }
         registerSyntheticGdScriptLanguageConstants();
+        registerSyntheticGdScriptLanguageFunctions();
         registerSyntheticExtremeConstants();
         validateGlobalValueNamespacesDisjoint();
         validateSingletonMetadata();
@@ -157,6 +167,60 @@ public final class ClassRegistry implements Scope {
         )) {
             gdScriptLanguageConstantByName.put(constant.name(), constant);
         }
+    }
+
+    /// Registers the GDScript language-level functions mirrored from Godot's
+    /// `GDScriptUtilityFunctions::register_functions()` (4.5 branch). They are language builtins
+    /// rather than extension API entries, so the compiler synthesizes their metadata.
+    ///
+    /// Synthetic records carry `hash=0`: the only hash consumers (`construct_standalone_callable`
+    /// via [findUtilityFunction], `godot_utility` wrapper generation via
+    /// [getExtensionUtilityFunctionList]) read the raw extension table and never see this map.
+    /// Registration is incremental per implementation phase; the backend `gdcc_*` route table and
+    /// runtime helpers must land in the same phase as the names they serve.
+    private void registerSyntheticGdScriptLanguageFunctions() {
+        registerSyntheticGdScriptLanguageFunction("len", "int", false, "var", "Variant");
+        registerSyntheticGdScriptLanguageFunction("char", "String", false, "code", "int");
+        registerSyntheticGdScriptLanguageFunction("ord", "int", false, "char", "String");
+    }
+
+    /// @param argumentNameTypePairs flattened `(name, extension-type)` pairs, mirroring the raw
+    ///                              string metadata shape used by the extension API loader.
+    private void registerSyntheticGdScriptLanguageFunction(
+            @NotNull String name,
+            @NotNull String returnType,
+            boolean isVararg,
+            @NotNull String... argumentNameTypePairs
+    ) {
+        if (argumentNameTypePairs.length % 2 != 0) {
+            throw new IllegalArgumentException(
+                    "argumentNameTypePairs must contain flattened (name, type) pairs for '" + name + "'");
+        }
+        if (utilityByName.containsKey(name)) {
+            // Resolution queries give the extension table priority, while backend routing keys
+            // off the synthetic table; a same-name extension utility would make the two views
+            // disagree, so refuse to boot instead of silently routing one name to two backends.
+            throw new IllegalStateException(
+                    "Synthetic GDScript language function '" + name + "' collides with an extension utility");
+        }
+        var arguments = new ArrayList<ExtensionFunctionArgument>();
+        var function = new ExtensionUtilityFunction(
+                name,
+                returnType,
+                "GDScript",
+                isVararg,
+                0,
+                Collections.unmodifiableList(arguments)
+        );
+        for (var i = 0; i < argumentNameTypePairs.length; i += 2) {
+            arguments.add(new ExtensionFunctionArgument(
+                    argumentNameTypePairs[i],
+                    argumentNameTypePairs[i + 1],
+                    null,
+                    function
+            ));
+        }
+        gdScriptLanguageFunctionByName.put(name, function);
     }
 
     /// Registers the extreme-value constants introduced by Godot master (4.6+) as compiler-synthesized
@@ -281,14 +345,29 @@ public final class ClassRegistry implements Scope {
         return gdClassByName.containsKey(name);
     }
 
-    /// Check whether a name refers to a global utility function.
+    /// Check whether a name refers to a global utility function, including compiler-synthesized
+    /// GDScript language functions.
     public boolean isUtilityFunction(@NotNull String name) {
-        return utilityByName.containsKey(name);
+        return utilityByName.containsKey(name) || gdScriptLanguageFunctionByName.containsKey(name);
     }
 
     /// Return the extension utility metadata by name, or `null` when the utility is unknown.
+    ///
+    /// Deliberately limited to the raw extension API table: synthetic GDScript language functions
+    /// are excluded so `construct_standalone_callable` keeps failing fast on first-class
+    /// references such as `var f = len` (their `hash=0` cannot support that path).
     public @Nullable ExtensionUtilityFunction findUtilityFunction(@NotNull String name) {
         return utilityByName.get(name);
+    }
+
+    /// Check whether a name refers to a compiler-synthesized GDScript language function.
+    public boolean isGdScriptLanguageFunction(@NotNull String name) {
+        return gdScriptLanguageFunctionByName.containsKey(name);
+    }
+
+    /// Return the synthetic GDScript language function metadata by name, or `null` when unknown.
+    public @Nullable ExtensionUtilityFunction findGdScriptLanguageFunction(@NotNull String name) {
+        return gdScriptLanguageFunctionByName.get(name);
     }
 
     /// Check whether a name refers to a global enum.
@@ -430,6 +509,11 @@ public final class ClassRegistry implements Scope {
         Objects.requireNonNull(restriction, "restriction");
 
         var utilityFunction = utilityByName.get(name);
+        if (utilityFunction == null) {
+            // Extension API entries keep priority; synthetic language functions are the fallback
+            // for names the GDScript module registers outside the API dump.
+            utilityFunction = gdScriptLanguageFunctionByName.get(name);
+        }
         return utilityFunction != null
                 ? ScopeLookupResult.foundAllowed(List.of(utilityFunction))
                 : ScopeLookupResult.notFound();
@@ -836,8 +920,14 @@ public final class ClassRegistry implements Scope {
     }
 
     /// Return the function signature for a global utility function by name.
+    ///
+    /// Synthetic GDScript language functions are resolved through the same signature pipeline so
+    /// frontend overload selection and backend call validation share one contract.
     public @Nullable FunctionSignature findUtilityFunctionSignature(@NotNull String name) {
         var uf = utilityByName.get(name);
+        if (uf == null) {
+            uf = gdScriptLanguageFunctionByName.get(name);
+        }
         if (uf == null) return null;
         var params = new ArrayList<FunctionSignature.Parameter>();
         if (uf.arguments() != null) {

@@ -26,6 +26,7 @@ import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
@@ -162,6 +163,161 @@ class CallGlobalInsnGenEngineTest {
 
     private static boolean hasZig() {
         return ZigUtil.findZig() != null;
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should execute gdcc_len/gdcc_char/gdcc_ord semantics in real engine")
+    void callGlobalGdScriptLanguageFunctionsShouldRunInRealGodot() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/call_global_language_functions_engine");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo(
+                "call_global_language_functions_engine",
+                GodotVersion.V451,
+                tempDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var probeClass = newLanguageFunctionProbeClass();
+        var module = new LirModule("call_global_language_functions_engine_module", List.of(probeClass));
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+
+        var buildResult = builder.buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), "Compilation should succeed. Build log:\n" + buildResult.buildLog());
+        assertFalse(buildResult.artifacts().isEmpty(), "Compilation should produce extension artifacts.");
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "LanguageFunctionsNode",
+                        probeClass.getName(),
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(languageFunctionTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        // The script uses the engine's own len/char/ord as the semantic oracle for every probe.
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("len checks passed."), "len semantics should match.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("char checks passed."), "char semantics should match.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("ord checks passed."), "ord semantics should match.\nOutput:\n" + combinedOutput);
+        assertFalse(combinedOutput.contains("check failed"), "No language-function check should fail.\nOutput:\n" + combinedOutput);
+    }
+
+    /// Probe class exposing the three synthetic language functions as engine-callable methods:
+    /// `probe_len(Variant) -> int`, `probe_char(int) -> String`, `probe_ord(String) -> int`.
+    private static LirClassDef newLanguageFunctionProbeClass() {
+        var clazz = new LirClassDef("GDLanguageFunctionsNode", "Node");
+        clazz.setSourceFile("call_global_language_functions_engine.gd");
+        var selfType = new GdObjectType(clazz.getName());
+
+        var lenFunc = newMethod("probe_len", GdIntType.INT, selfType);
+        lenFunc.addParameter(new LirParameterDef("value", GdVariantType.VARIANT, null, lenFunc));
+        lenFunc.createAndAddVariable("result", GdIntType.INT);
+        entry(lenFunc).appendInstruction(new CallGlobalInsn("result", "len", List.of(varRef("value"))));
+        entry(lenFunc).appendInstruction(new ReturnInsn("result"));
+        clazz.addFunction(lenFunc);
+
+        var charFunc = newMethod("probe_char", GdStringType.STRING, selfType);
+        charFunc.addParameter(new LirParameterDef("code", GdIntType.INT, null, charFunc));
+        charFunc.createAndAddVariable("result", GdStringType.STRING);
+        entry(charFunc).appendInstruction(new CallGlobalInsn("result", "char", List.of(varRef("code"))));
+        entry(charFunc).appendInstruction(new ReturnInsn("result"));
+        clazz.addFunction(charFunc);
+
+        var ordFunc = newMethod("probe_ord", GdIntType.INT, selfType);
+        ordFunc.addParameter(new LirParameterDef("text", GdStringType.STRING, null, ordFunc));
+        ordFunc.createAndAddVariable("result", GdIntType.INT);
+        entry(ordFunc).appendInstruction(new CallGlobalInsn("result", "ord", List.of(varRef("text"))));
+        entry(ordFunc).appendInstruction(new ReturnInsn("result"));
+        clazz.addFunction(ordFunc);
+
+        return clazz;
+    }
+
+    private static String languageFunctionTestScript() {
+        // Note: `char(0xD800)`/`char(0x110000)` exercise the Godot 4.5 contract where surrogates
+        // and out-of-range code points are replaced with U+FFFD by String.chr without a CallError;
+        // both sides must agree. `probe_len(42)`/`probe_char(-1)`/`probe_ord("ab")` hit the
+        // gdcc_* error paths, which print a runtime error and return the type default.
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "LanguageFunctionsNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var len_cases = [
+                        "hello",
+                        &"abc",
+                        [1, 2, 3],
+                        {"a": 1, "b": 2},
+                        PackedByteArray([1, 2]),
+                        PackedInt32Array([1, 2, 3]),
+                        PackedInt64Array([1]),
+                        PackedFloat32Array([0.5, 1.5]),
+                        PackedFloat64Array([0.5]),
+                        PackedStringArray(["a", "b", "c"]),
+                        PackedVector2Array([Vector2.ZERO]),
+                        PackedVector3Array([Vector3.ZERO]),
+                        PackedColorArray([Color.WHITE]),
+                        PackedVector4Array([Vector4.ZERO]),
+                    ]
+                    var len_ok = true
+                    for value in len_cases:
+                        if int(target.call("probe_len", value)) != len(value):
+                            push_error("len check failed for value of type " + type_string(typeof(value)))
+                            len_ok = false
+                    if int(target.call("probe_len", 42)) != 0:
+                        push_error("len unsupported-type check failed.")
+                        len_ok = false
+                    if len_ok:
+                        print("len checks passed.")
+                
+                    var char_ok = true
+                    for code in [0, 65, 0xD800, 0x110000, 4294967295]:
+                        if str(target.call("probe_char", code)) != char(code):
+                            push_error("char check failed for code: " + str(code))
+                            char_ok = false
+                    if str(target.call("probe_char", -1)) != "":
+                        push_error("char negative check failed.")
+                        char_ok = false
+                    if char_ok:
+                        print("char checks passed.")
+                
+                    var ord_ok = true
+                    for text in ["A", char(0xE9), char(0x1F4AF)]:
+                        if int(target.call("probe_ord", text)) != ord(text):
+                            push_error("ord check failed for code point: " + str(ord(text)))
+                            ord_ok = false
+                    if int(target.call("probe_ord", "ab")) != 0:
+                        push_error("ord multi-char check failed.")
+                        ord_ok = false
+                    if int(target.call("probe_ord", "")) != 0:
+                        push_error("ord empty check failed.")
+                        ord_ok = false
+                    if ord_ok:
+                        print("ord checks passed.")
+                """;
     }
 
     private static LirClassDef newCallGlobalEngineClass() {

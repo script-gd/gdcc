@@ -2,9 +2,9 @@
 
 ## 文档状态
 
-- 状态：**In Progress**（阶段 A、B 已完成：LIR `assert` 指令模型 + 解析/序列化闭环；`assert` frontend + backend 闭环；阶段 C–F 尚未开始）
+- 状态：**In Progress**（阶段 A、B、C 已完成：LIR `assert` 指令模型 + 解析/序列化闭环；`assert` frontend + backend 闭环；合成语言函数注册 + `len`/`char`/`ord` 端到端；阶段 D–F 尚未开始）
 - 范围：frontend sema/lowering、LIR 新增 `assert` 指令、C backend 代码生成、`gdcc/**` runtime helper
-- 更新时间：2026-08-29
+- 更新时间：2026-08-30
 - 目标读者：实施者、代码评审者
 - 语义锚点来源：`godotengine/godot` 仓库 `modules/gdscript/gdscript_utility_functions.cpp`（4.5 分支现状）
 
@@ -240,6 +240,8 @@ pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <
 
 ### 阶段 C：合成语言函数注册 + len/char/ord
 
+状态：**已完成**（2026-08-30）
+
 目标：三个纯函数端到端可用。
 
 修改文件：
@@ -259,6 +261,15 @@ pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <
 - 一等函数引用禁令：`var f = len` 产生明确诊断或 backend fail-fast（按 D1 双层防线各一条负向测试）；`GodotUtilityGenerator`/provided-symbols 测试证明合成函数未生成 `godot_*` wrapper。
 - 命令：`pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests CallGlobalInsnGenTest,<新增注册表测试>,<新增前端测试>,FixedGodotBindingsTest`
 - 完成判定：全绿；`GdccHelperBindingScanner` 相关测试/校验通过（新 helper 被扫描且不破坏 provided-symbols 合同）。
+
+实施备注（阶段 C 实际落地）：
+
+- 新增测试类：`ClassRegistryGdScriptLanguageFunctionTest`（注册表合同 + 同名 extension utility 冲突 fail-fast）、`FrontendGdScriptLanguageFunctionSemaTest`（sema 解析/遮蔽/一等引用禁令）、`FrontendGdScriptLanguageFunctionLoweringTest`（lowering 期 `call_global` 形态与 String→Variant pack 锚定）；backend 用例并入 `CallGlobalInsnGenTest`（`gdcc_*` 路由、`godot_` 前缀归一、discard 路径、未注册名/未映射名 fail-fast、provided-symbols 隔离）与 `CConstructInsnGenTest`（一等引用禁令第二层防线：`construct_standalone_callable "len"` fail-fast）；`CallGlobalInsnGenEngineTest` 新增真实引擎语义测试（zig + Godot，以引擎自身 `len`/`char`/`ord` 为 oracle 覆盖全部 len 分支、char 边界与 ord 错误路径，环境缺失时按约定跳过）。
+- D1 第一层防线的落地细化：裸调用的 callee 标识符在 `resolveCallExpressionType` 中会经 `nestedResolver.resolve` 走一遍值解析，因此直接在 `UTILITY_FUNCTION` 分支 fail 会误伤合法调用并产生重复诊断。实际实现为：值引用位置仍在 `resolveIdentifierExpressionType` 的 `UTILITY_FUNCTION` 分支拒绝；同时裸调用路径对合成语言函数 callee **跳过值解析**（与 TYPE_META 构造调用分支同形先例），直接进入 `resolveBareIdentifierCallWithLiteralContext`。
+- `resolveUtilityCall` 对合成名的签名校验仍走 `findUtilityFunctionSignature` 共享管线；映射查询抽取为包内可见的 `CGenHelper.requireGdScriptLanguageFunctionCName`，使"命中合成名但无映射"的 fail-fast 可被直接单测（阶段 E 再补 `call_global "load"` 的端到端拒绝用例）。
+- 评审加固：注册时对同名 extension utility 冲突 fail-fast（解析查询给 extension 表优先权、backend 路由以合成表为准，冲突会导致一个名字路由到两套后端，因此直接拒绝启动）。
+- 结构细化（2026-08-30）：`gdcc_len` 拆分为"每个类型一个 helper + `gdcc_len` 动态分派"两层——`gdcc_len_string`/`gdcc_len_string_name`/`gdcc_len_array`/`gdcc_len_dictionary`/`gdcc_len_packed_*_array` 接受具体载荷指针，`gdcc_len` 仅负责 unpack → 分派 → destroy。类型编译期已知时，后续可由 intrinsic 通道静态直调对应 helper，跳过 Variant 类型检查与临时解包。
+- 实际运行命令：`... -Tests ClassRegistryGdScriptLanguageFunctionTest,FrontendGdScriptLanguageFunctionSemaTest,CallGlobalInsnGenTest,FixedGodotBindingsTest`（53 个测试全绿）；回归 `ClassRegistryTest,ClassRegistryScopeTest,FrontendBodyOwnerProceduresExprTypeTest,FrontendCompileCheckAnalyzerTest,FrontendTypeCheckAnalyzerTest,GodotUtilityGeneratorTest,GodotBindingUsageSessionTest,GodotBindingGeneratedCScannerTest,CConstructInsnGenTest,CConstructInsnGenEngineTest,FrontendLoweringBodyInsnPassTest,FrontendSemanticAnalyzerFrameworkTest` 全绿。
 
 ### 阶段 D：range（独立调用）+ is_instance_of
 

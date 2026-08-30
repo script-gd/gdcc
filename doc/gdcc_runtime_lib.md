@@ -87,11 +87,23 @@ extend the runtime-provided `godot_*` surface.
   immediately after the `GDCC_PRINT_RUNTIME_ERROR` macro definition, `gdscript_builtins.h`.
 - `gdscript_builtins.h`: GDScript language-level builtins (header-only, `static inline`). These
   back language constructs registered by the GDScript module rather than the GDExtension API, so
-  no generated `godot_*` wrapper exists for them. Currently provides
-  `gdcc_assert_failed(message_or_null, func, file, line)`: reports a failed user-level `assert`
-  through the shared `GDCC_PRINT_RUNTIME_ERROR` channel (`NULL` message falls back to a fixed
-  "Assertion failed." text; otherwise the String message is converted to UTF-8 and prefixed).
-  The caller owns the default-return edge; the helper only reports.
+  no generated `godot_*` wrapper exists for them. Currently provides:
+  - `gdcc_assert_failed(message_or_null, func, file, line)`: reports a failed user-level `assert`
+    through the shared `GDCC_PRINT_RUNTIME_ERROR` channel (`NULL` message falls back to a fixed
+    "Assertion failed." text; otherwise the String message is converted to UTF-8 and prefixed).
+    The caller owns the default-return edge; the helper only reports.
+  - `gdcc_len(value)`: Godot 4.5 `len()` semantics — dynamic Variant dispatch that unpacks a
+    temporary payload copy, forwards to the matching per-type helper, and destroys the copy. The
+    per-type helpers `gdcc_len_string` / `gdcc_len_string_name` / `gdcc_len_array` /
+    `gdcc_len_dictionary` / `gdcc_len_packed_*_array` take the concrete payload pointer and may be
+    called directly by the intrinsic channel when the argument type is statically known. Any other
+    Variant type prints a runtime error and returns `0`.
+  - `gdcc_char(code)`: Godot 4.5 `char()` semantics — only `code < 0 || code > UINT32_MAX` is an
+    error (prints and returns an empty String); `0` yields NUL, and surrogates or values above
+    U+10FFFF are delegated to `String.chr` (U+FFFD substitution) without an extra error.
+  - `gdcc_ord(value)`: Godot 4.5 `ord()` semantics — requires a string of exactly one character
+    (otherwise prints a runtime error and returns `0`) and returns its Unicode code point via
+    `String.unicode_at(0)`.
 - `gdcc_callable.h`: custom Callables for `construct_standalone_callable` and
   `construct_lambda`. Owns `gdcc_new_standalone_callable` (growable heap intern table of
   `gdcc_standalone_callable_spec`, one `godot_mem_alloc` per unique `(kind, owner, name)`,
