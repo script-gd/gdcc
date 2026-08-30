@@ -4,6 +4,8 @@ import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
+import gd.script.gdcc.type.GdArrayType;
+import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
@@ -15,6 +17,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -34,28 +37,48 @@ class ClassRegistryGdScriptLanguageFunctionTest {
         var len = registry.findGdScriptLanguageFunction("len");
         var chr = registry.findGdScriptLanguageFunction("char");
         var ord = registry.findGdScriptLanguageFunction("ord");
+        var range = registry.findGdScriptLanguageFunction("range");
+        var isInstanceOf = registry.findGdScriptLanguageFunction("is_instance_of");
         assertAll(
                 () -> assertNotNull(len),
                 () -> assertNotNull(chr),
                 () -> assertNotNull(ord),
+                () -> assertNotNull(range),
+                () -> assertNotNull(isInstanceOf),
                 // Common synthetic-record fields: GDScript category and zero hash (no engine
                 // utility hash exists; hash consumers never see this table).
                 () -> assertEquals("GDScript", len.category()),
                 () -> assertEquals("GDScript", chr.category()),
                 () -> assertEquals("GDScript", ord.category()),
+                () -> assertEquals("GDScript", range.category()),
+                () -> assertEquals("GDScript", isInstanceOf.category()),
                 () -> assertEquals(0, len.hash()),
                 () -> assertEquals(0, chr.hash()),
                 () -> assertEquals(0, ord.hash()),
+                () -> assertEquals(0, range.hash()),
+                () -> assertEquals(0, isInstanceOf.hash()),
                 () -> assertFalse(len.isVararg()),
                 () -> assertFalse(chr.isVararg()),
                 () -> assertFalse(ord.isVararg()),
+                // `range` is vararg with zero fixed parameters, mirroring Godot's MethodInfo.
+                () -> assertTrue(range.isVararg()),
+                () -> assertFalse(isInstanceOf.isVararg()),
                 // Raw metadata is anchored name-by-name to Godot 4.5 MethodInfo.
                 () -> assertEquals("int", len.returnType()),
                 () -> assertEquals("String", chr.returnType()),
                 () -> assertEquals("int", ord.returnType()),
+                // Deliberately unparameterized `Array` (Godot MethodInfo alignment, D8).
+                () -> assertEquals("Array", range.returnType()),
+                () -> assertEquals("bool", isInstanceOf.returnType()),
                 () -> assertSingleArgument(len.arguments(), "var", "Variant"),
                 () -> assertSingleArgument(chr.arguments(), "code", "int"),
-                () -> assertSingleArgument(ord.arguments(), "char", "String")
+                () -> assertSingleArgument(ord.arguments(), "char", "String"),
+                () -> assertTrue(range.arguments().isEmpty()),
+                () -> assertEquals(2, isInstanceOf.arguments().size()),
+                () -> assertEquals("value", isInstanceOf.arguments().getFirst().name()),
+                () -> assertEquals("Variant", isInstanceOf.arguments().getFirst().type()),
+                () -> assertEquals("type", isInstanceOf.arguments().get(1).name()),
+                () -> assertEquals("Variant", isInstanceOf.arguments().get(1).type())
         );
     }
 
@@ -64,7 +87,7 @@ class ClassRegistryGdScriptLanguageFunctionTest {
         var api = ExtensionApiLoader.loadDefault();
         // Anchor the premise: the API dump itself must not carry these names, otherwise the
         // synthetic table would shadow (or be shadowed by) real engine metadata.
-        for (var name : List.of("len", "char", "ord")) {
+        for (var name : List.of("len", "char", "ord", "range", "is_instance_of")) {
             assertTrue(
                     api.utilityFunctions().stream().noneMatch(uf -> name.equals(uf.name())),
                     "extension API must not define '" + name + "'"
@@ -107,7 +130,7 @@ class ClassRegistryGdScriptLanguageFunctionTest {
     void resolutionQueriesConsultSyntheticTable() throws IOException {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
-        for (var name : List.of("len", "char", "ord")) {
+        for (var name : List.of("len", "char", "ord", "range", "is_instance_of")) {
             var resolved = registry.resolveFunctions(name);
             assertEquals(1, resolved.size(), "resolveFunctions must find synthetic '" + name + "'");
             assertEquals(name, resolved.getFirst().getName());
@@ -128,21 +151,37 @@ class ClassRegistryGdScriptLanguageFunctionTest {
         var lenSignature = registry.findUtilityFunctionSignature("len");
         var charSignature = registry.findUtilityFunctionSignature("char");
         var ordSignature = registry.findUtilityFunctionSignature("ord");
+        var rangeSignature = registry.findUtilityFunctionSignature("range");
+        var isInstanceOfSignature = registry.findUtilityFunctionSignature("is_instance_of");
 
         assertAll(
                 () -> assertNotNull(lenSignature),
                 () -> assertNotNull(charSignature),
                 () -> assertNotNull(ordSignature),
+                () -> assertNotNull(rangeSignature),
+                () -> assertNotNull(isInstanceOfSignature),
                 () -> assertEquals(GdIntType.INT, lenSignature.returnType()),
                 () -> assertEquals(GdStringType.STRING, charSignature.returnType()),
                 () -> assertEquals(GdIntType.INT, ordSignature.returnType()),
+                () -> assertEquals(GdBoolType.BOOL, isInstanceOfSignature.returnType()),
                 () -> assertEquals(1, lenSignature.parameterCount()),
                 () -> assertEquals(1, charSignature.parameterCount()),
                 () -> assertEquals(1, ordSignature.parameterCount()),
+                () -> assertEquals(0, rangeSignature.parameterCount()),
+                () -> assertEquals(2, isInstanceOfSignature.parameterCount()),
                 () -> assertEquals(GdVariantType.VARIANT, lenSignature.parameters().getFirst().type()),
                 () -> assertEquals(GdIntType.INT, charSignature.parameters().getFirst().type()),
                 () -> assertEquals(GdStringType.STRING, ordSignature.parameters().getFirst().type()),
-                () -> assertFalse(lenSignature.isVararg())
+                () -> assertEquals(GdVariantType.VARIANT, isInstanceOfSignature.parameters().getFirst().type()),
+                () -> assertEquals(GdVariantType.VARIANT, isInstanceOfSignature.parameters().get(1).type()),
+                () -> assertFalse(lenSignature.isVararg()),
+                () -> assertTrue(rangeSignature.isVararg()),
+                () -> assertFalse(isInstanceOfSignature.isVararg()),
+                // `range` returns the unparameterized (generic) Array.
+                () -> assertInstanceOf(GdArrayType.class, rangeSignature.returnType()),
+                () -> assertTrue(
+                        assertInstanceOf(GdArrayType.class, rangeSignature.returnType()).isGenericArray()
+                )
         );
     }
 
@@ -150,7 +189,7 @@ class ClassRegistryGdScriptLanguageFunctionTest {
     void rawExtensionMetadataConsumersStayIsolatedFromSyntheticTable() throws IOException {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
-        for (var name : List.of("len", "char", "ord")) {
+        for (var name : List.of("len", "char", "ord", "range", "is_instance_of")) {
             // `construct_standalone_callable` must keep failing fast on first-class references.
             assertNull(registry.findUtilityFunction(name), "findUtilityFunction must exclude '" + name + "'");
             // `godot_utility` wrapper generation must not invent `godot_len`-style wrappers.

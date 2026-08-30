@@ -880,24 +880,26 @@ class CConstructInsnGenTest {
         // language functions are excluded from `findUtilityFunction`, so even hand-written LIR
         // that bypasses the frontend gate must fail fast instead of building a hash-less
         // standalone callable.
-        var clazz = newTestClass();
-        var func = newFunction("construct_standalone_language_function");
-        func.createAndAddVariable("cb", new GdCallableType());
+        for (var functionName : List.of("len", "range", "is_instance_of")) {
+            var clazz = newTestClass();
+            var func = newFunction("construct_standalone_language_function");
+            func.createAndAddVariable("cb", new GdCallableType());
 
-        entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
-                "cb",
-                StandaloneCallableKind.UTILITY,
-                "",
-                "len"
-        ));
-        clazz.addFunction(func);
+            entry(func).appendInstruction(new ConstructStandaloneCallableInsn(
+                    "cb",
+                    StandaloneCallableKind.UTILITY,
+                    "",
+                    functionName
+            ));
+            clazz.addFunction(func);
 
-        var ex = assertThrows(
-                InvalidInsnException.class,
-                () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
-        );
-        assertTrue(ex.getMessage().contains("'len'"), ex.getMessage());
-        assertTrue(ex.getMessage().contains("not registered"), ex.getMessage());
+            var ex = assertThrows(
+                    InvalidInsnException.class,
+                    () -> generateBody(clazz, func, apiWithConstructibleObjectClasses())
+            );
+            assertTrue(ex.getMessage().contains("'" + functionName + "'"), ex.getMessage());
+            assertTrue(ex.getMessage().contains("not registered"), ex.getMessage());
+        }
     }
 
     @Test

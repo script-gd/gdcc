@@ -182,6 +182,13 @@ public final class ClassRegistry implements Scope {
         registerSyntheticGdScriptLanguageFunction("len", "int", false, "var", "Variant");
         registerSyntheticGdScriptLanguageFunction("char", "String", false, "code", "int");
         registerSyntheticGdScriptLanguageFunction("ord", "int", false, "char", "String");
+        // `range` mirrors Godot's MethodInfo: vararg with zero fixed parameters; the elements
+        // are always int, but the declared return stays an unparameterized `Array` (D8).
+        // Arity (1..3) is enforced by the frontend diagnostic layer since vararg matching
+        // accepts any count.
+        registerSyntheticGdScriptLanguageFunction("range", "Array", true);
+        registerSyntheticGdScriptLanguageFunction(
+                "is_instance_of", "bool", false, "value", "Variant", "type", "Variant");
     }
 
     /// @param argumentNameTypePairs flattened `(name, extension-type)` pairs, mirroring the raw

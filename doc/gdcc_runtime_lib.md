@@ -104,6 +104,22 @@ extend the runtime-provided `godot_*` surface.
   - `gdcc_ord(value)`: Godot 4.5 `ord()` semantics — requires a string of exactly one character
     (otherwise prints a runtime error and returns `0`) and returns its Unicode code point via
     `String.unicode_at(0)`.
+  - `gdcc_range(argv, argc)`: Godot 4.5 `range()` semantics — builds an unparameterized Array of
+    int elements; 1 argument is `[0, count)`, 2 arguments `[from, to)` step 1, 3 arguments
+    `from`/`to`/`step` with direction-aware emptiness (positive step with `from >= to` or negative
+    step with `from <= to` yields empty) and ceiling-division sizing. Following Godot's
+    `can_convert_strict(INT)` validation, INT/BOOL/FLOAT payloads are accepted and converted;
+    arity outside 1..3, any other argument type, `step == 0`, or an element count above INT32_MAX
+    prints a runtime error and returns an empty Array (arity is normally gated by the frontend;
+    the helper re-checks defensively). Overflow hardening beyond the engine reference: the element
+    count is computed on the unsigned distance/stride and the fill loop iterates by index without
+    incrementing past the final element, so INT64_MIN/INT64_MAX extremes cannot wrap the signed
+    arithmetic into an infinite loop. The returned Array is OWNED by the caller.
+  - `gdcc_is_instance_of_global(value, type)`: global `is_instance_of()` — v1 supports only the
+    `TYPE_*` integer-enum form of `type` (compared against `value`'s Variant type; out-of-range
+    enum values print a runtime error and return `false`); class/script Object type arguments
+    print a runtime error and return `false` (see plan R2). Hard boundary: the `x is T`
+    expression uses the separate `gdcc_is_instance_of_object_*` helper family and never this one.
 - `gdcc_callable.h`: custom Callables for `construct_standalone_callable` and
   `construct_lambda`. Owns `gdcc_new_standalone_callable` (growable heap intern table of
   `gdcc_standalone_callable_spec`, one `godot_mem_alloc` per unique `(kind, owner, name)`,

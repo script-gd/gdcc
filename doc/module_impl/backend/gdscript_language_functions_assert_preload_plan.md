@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：**In Progress**（阶段 A、B、C 已完成：LIR `assert` 指令模型 + 解析/序列化闭环；`assert` frontend + backend 闭环；合成语言函数注册 + `len`/`char`/`ord` 端到端；阶段 D–F 尚未开始）
+- 状态：**In Progress**（阶段 A、B、C、D 已完成：LIR `assert` 指令模型 + 解析/序列化闭环；`assert` frontend + backend 闭环；合成语言函数注册 + `len`/`char`/`ord` 端到端；`range`（独立调用）+ `is_instance_of` 端到端；阶段 E–F 尚未开始）
 - 范围：frontend sema/lowering、LIR 新增 `assert` 指令、C backend 代码生成、`gdcc/**` runtime helper
 - 更新时间：2026-08-30
 - 目标读者：实施者、代码评审者
@@ -26,7 +26,7 @@
 | `len` | `int len(Variant var)` | String/StringName 取字符数；Array/Dictionary 取 size；全部 Packed*Array 取 size | 其它类型：CallError + 错误消息 |
 | `char` | `String char(int code)` | `String::chr(code)` | 4.5 仅校验 `code < 0 \|\| code > 0xFFFFFFFF`（UINT32_MAX）时报错；`code == 0` 合法（NUL 字符）；surrogate 与 `> 0x10FFFF` 由 `String::chr` 替换为 U+FFFD 并打印 unicode 错误，**不产生 CallError** |
 | `ord` | `int ord(String char)` | 返回首字符的 Unicode code point | 字符串长度不为 1 时报错 |
-| `range` | `Array range(...)` vararg，1..3 个 int | 物化一个元素全为 int 的**未参数化 Array**；`range(n)` 等价 `range(0, n, 1)` | `step == 0`、元素数超 `INT32_MAX`、参数非 int 时报错 |
+| `range` | `Array range(...)` vararg，1..3 个 int | 物化一个元素全为 int 的**未参数化 Array**；`range(n)` 等价 `range(0, n, 1)` | `step == 0`、元素数超 `INT32_MAX`、参数无法严格转换为 int（Godot `can_convert_strict(INT)` 接受 INT/BOOL/FLOAT，其余类型拒绝）时报错 |
 | `load` | `Resource load(String path)` | 等价 `ResourceLoader.load(path)` | 加载失败由 ResourceLoader 自行报错并返回 null |
 | `is_instance_of` | `bool is_instance_of(Variant value, Variant type)` | `type` 为 int（`TYPE_*` 常量）时比较 `value` 的 Variant 类型；`type` 为 Object 时按 GDScriptNativeClass/Script 继承链判断 | value 为 freed 对象报错；value 为 null 返回 `false` |
 
@@ -273,6 +273,8 @@ pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <
 
 ### 阶段 D：range（独立调用）+ is_instance_of
 
+状态：**已完成**（2026-08-30）
+
 修改文件：
 
 1. `scope/ClassRegistry.java`：增量注册 `range`/`is_instance_of`（D1 分阶段约定）。
@@ -286,6 +288,18 @@ pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <
 - `is_instance_of(x, TYPE_INT)`：解析为 `gdcc_is_instance_of_global` 调用，返回 bool；`TYPE_INT` 作为全局枚举 bare value 的既有物化路径（`LiteralIntInsn`）回归；负向断言生成 C 中**不含** `gdcc_is_instance_of_object_`（D8 硬边界）。
 - 命令：`pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests CallGlobalInsnGenTest,<range/is_instance_of 新测试>,FrontendCfgGraphBuilderForLoopTest,FrontendForLoopSupportTest,GdccForRangeIterIntrinsicTest`
 - 完成判定：全绿。
+
+实施备注（阶段 D 实际落地）：
+
+- 注册：`range` 以 `isVararg=true`、零固定参数、返回未参数化 `Array` 落地；`is_instance_of` 为 `(value: Variant, type: Variant) -> bool`。`CGenHelper` 映射追加 `range → gdcc_range`、`is_instance_of → gdcc_is_instance_of_global`（`*_global` 命名维持与 `x is T` helper 族的 D8 硬边界）。
+- arity 兜底实现点：`resolveBareIdentifierCallWithLiteralContext` 的 overload 选中成功分支内，经 `isSyntheticRangeCall`（名称 + `UTILITY_FUNCTION` binding kind，用户遮蔽函数的 binding kind 不同因此天然豁免）拦截 0/4+ 参数，产出 `sema.expression_resolution` 诊断并照常 finalize 参数事实。
+- `gdcc_range` 按 Godot 4.5 源码逐分支对齐：1 参 `[0,count)`、2 参 `[from,to)`、3 参方向感知空集 + ceil-division 计数 + `INT32_MAX` 上限；1/2 参形式经 `step` 默认 1 自然并入统一分派，无需独立分支。错误一律 `GDCC_PRINT_RUNTIME_ERROR` + 返回空 Array（返回值为调用方 OWNED，discard 路径销毁已由 backend 测试锚定）。
+- `gdcc_is_instance_of_global`：INT 路径直接比较 Variant 类型枚举（与 Godot 一致，不做对象存活探测）；`type` 非 INT 报"class/script type argument 暂不支持"并返回 `false`；越界枚举值（`<0` 或 `>= VARIANT_MAX`）同样报错返回 `false`（对齐 Godot debug 校验）。
+- 引擎集成测试（`CallGlobalInsnGenEngineTest`，真实 zig + Godot、skipped=0 实际执行）：range 12 组 happy-path 参数组合以引擎 `range.callv` 为 oracle 按内容比较；错误路径（0 参/zero step/非 int/超 INT32_MAX）直接断言空 Array 合同（引擎侧对非法参数返回错误消息字符串，不可作 oracle）；`is_instance_of` 9 组 `TYPE_*` 用例以引擎为 oracle，错误路径（非 int type 参数、越界枚举）断言返回 `false`。
+- 既有负向锚点随注册推进更新：`call_global "range"` 未注册 fail-fast 用例改锚 `load`；映射表 fail-fast 用例移除 `range`、保留 `load`，并为五个已注册名逐一断言映射结果；`construct_standalone_callable` 第二层防线负例扩展为 `len`/`range`/`is_instance_of` 参数化。
+- 回归：`FrontendForLoopSupportTest`、`FrontendCfgGraphBuilderForLoopTest`、`GdccForRangeIterIntrinsicTest`、`FrontendSuiteResolverTest`、`FrontendTypeCheckAnalyzerTest`、`ForLoweringContractRegistryTest`、`FixedGodotBindingsTest`、`CallIntrinsicInsnGenTest`、`IsInstanceOfInsnGenTest` 等全绿，for-range 特判无串扰。
+- 评审加固（review-expert-c 第一轮）：① `gdcc_range` 元素计数改为无符号 distance/stride ceil-division、填充循环按预计算 count 迭代且不在末元素后再自增——消除 `INT64_MIN/MAX`、`step == INT64_MIN` 等极值输入下的有符号溢出与潜在死循环（属对引擎参考实现的有意加固，普通输入语义逐位一致）；② 参数校验对齐 Godot `can_convert_strict(INT)`：接受 INT/BOOL/FLOAT 并经 `godot_new_int_with_Variant` 转换，其余类型才报错（语义锚点表已同步修正）；③ 引擎测试新增 BOOL/FLOAT oracle 用例与三组极值溢出安全用例（引擎自身在极值输入下有 UB，故极值用例仅锚定 GDCC 合同、不用引擎 oracle）；错误路径的 stderr 文本断言因 runner 在 STOP_SIGNAL 完成时不 join stderr reader 存在竞态而不予断言，仅锚定默认值返回合同（已在测试注释中说明）。
+
 
 ### 阶段 E：load + preload
 

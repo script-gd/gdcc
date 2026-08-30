@@ -1499,6 +1499,22 @@ public final class FrontendExpressionSemanticSupport {
             );
             if (overloadSelection.selected() != null) {
                 var selected = overloadSelection.selected();
+                // Synthetic `range` is vararg with zero fixed parameters (matching Godot's
+                // MethodInfo), so generic vararg matching would accept any argument count.
+                // Gate the Godot 1..3 arity here instead of leaking `range()` to runtime (D8).
+                if (isSyntheticRangeCall(bareCallee) && (arguments.isEmpty() || arguments.size() > 3)) {
+                    var arityReason = "GDScript language function 'range' expects 1 to 3 argument(s), got "
+                            + arguments.size();
+                    // Finalize arguments with generic expected so their expression facts publish.
+                    var finalized = resolveCallArgumentTypes(arguments, nestedResolver, finalizeWindow, null);
+                    if (finalized.issue() != null) {
+                        return propagated(finalized.issue());
+                    }
+                    return rootOutcome(
+                            FrontendExpressionType.failed(arityReason),
+                            failedBareCall(bareCallee, bareCallRoute, finalized.argumentTypes(), arityReason)
+                    );
+                }
                 var selectedParameterTypes = fixedParameterTypes(selected);
                 var finalized = resolveCallArgumentTypes(
                         arguments,
@@ -1570,6 +1586,17 @@ public final class FrontendExpressionSemanticSupport {
                 FrontendExpressionType.failed(detailReason),
                 failedBareCall(bareCallee, bareCallRoute, finalized.argumentTypes(), detailReason)
         );
+    }
+
+    /// True when the bare callee resolves to the synthetic GDScript language function `range`
+    /// (not a user-defined shadow): the published binding must be the utility-function kind, which
+    /// user function bindings never carry.
+    private boolean isSyntheticRangeCall(@NotNull IdentifierExpression bareCallee) {
+        if (!"range".equals(bareCallee.name())) {
+            return false;
+        }
+        var binding = bindingFor(bareCallee);
+        return binding != null && binding.kind() == FrontendBindingKind.UTILITY_FUNCTION;
     }
 
     /// Generic-snapshot overload selection (no container-literal expression AST).

@@ -17,6 +17,7 @@ import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdccForRangeIterType;
@@ -636,15 +637,15 @@ class CallGlobalInsnGenTest {
     @Test
     @DisplayName("CALL_GLOBAL should reject language functions that are not yet registered")
     void callGlobalUnregisteredLanguageFunctionFails() {
-        // Phase-scoped negative anchor: `range` joins the synthetic registry in a later phase, so
+        // Phase-scoped negative anchor: `load` joins the synthetic registry in a later phase, so
         // for now it must keep hitting the plain unknown-utility failure path.
         var clazz = newTestClass();
-        var func = newFunction("call_range");
+        var func = newFunction("call_load");
         func.createAndAddVariable("v", GdVariantType.VARIANT);
 
         entry(func).appendInstruction(new CallGlobalInsn(
                 null,
-                "range",
+                "load",
                 List.of(new LirInstruction.VariableOperand("v"))
         ));
         clazz.addFunction(func);
@@ -657,20 +658,96 @@ class CallGlobalInsnGenTest {
     @DisplayName("gdcc_* route table should fail fast for language functions without a mapping")
     void gdscriptLanguageFunctionCNameMappingFailsFastWhenMissing() {
         // Per-name contract (design D2): `load` is registered in a later phase but never enters
-        // the route table (frontend rewrites it to a ResourceLoader singleton call), and `range`
-        // gains its helper together with its registration. Both must fail fast instead of
-        // silently falling back to a nonexistent `godot_*` wrapper.
-        for (var unmapped : List.of("load", "range")) {
-            var ex = assertThrows(
-                    InvalidInsnException.class,
-                    () -> CGenHelper.requireGdScriptLanguageFunctionCName(unmapped)
-            );
-            assertTrue(ex.getMessage().contains(unmapped), ex.getMessage());
-        }
-        // Sanity: mapped phase-C names resolve to their helpers.
+        // the route table (frontend rewrites it to a ResourceLoader singleton call); it must fail
+        // fast instead of silently falling back to a nonexistent `godot_*` wrapper.
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> CGenHelper.requireGdScriptLanguageFunctionCName("load")
+        );
+        assertTrue(ex.getMessage().contains("load"), ex.getMessage());
+        // Sanity: every currently registered language function resolves to its helper.
         assertEquals("gdcc_len", CGenHelper.requireGdScriptLanguageFunctionCName("len"));
         assertEquals("gdcc_char", CGenHelper.requireGdScriptLanguageFunctionCName("char"));
         assertEquals("gdcc_ord", CGenHelper.requireGdScriptLanguageFunctionCName("ord"));
+        assertEquals("gdcc_range", CGenHelper.requireGdScriptLanguageFunctionCName("range"));
+        assertEquals("gdcc_is_instance_of_global", CGenHelper.requireGdScriptLanguageFunctionCName("is_instance_of"));
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should route range to gdcc_range with the whole argv tail")
+    void callGlobalRangeRoutesToGdccRange() {
+        var clazz = newTestClass();
+        var func = newFunction("call_range");
+        func.createAndAddVariable("a", GdVariantType.VARIANT);
+        func.createAndAddVariable("b", GdVariantType.VARIANT);
+        func.createAndAddVariable("c", GdVariantType.VARIANT);
+        func.createAndAddVariable("r", new GdArrayType(GdVariantType.VARIANT));
+
+        entry(func).appendInstruction(new CallGlobalInsn(
+                "r",
+                "range",
+                List.of(
+                        new LirInstruction.VariableOperand("a"),
+                        new LirInstruction.VariableOperand("b"),
+                        new LirInstruction.VariableOperand("c")
+                )
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        // `range` has zero fixed parameters, so every argument travels through the vararg argv.
+        assertTrue(body.contains("const godot_Variant* __gdcc_tmp_argv_0[] = { &$a, &$b, &$c };"), body);
+        assertTrue(body.contains("gdcc_range(__gdcc_tmp_argv_0, (godot_int)3)"), body);
+        assertFalse(body.contains("godot_range"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL discard of range must destroy the OWNED Array return")
+    void callGlobalRangeDiscardDestroysOwnedArray() {
+        var clazz = newTestClass();
+        var func = newFunction("call_range_discard");
+        func.createAndAddVariable("a", GdVariantType.VARIANT);
+
+        entry(func).appendInstruction(new CallGlobalInsn(
+                null,
+                "range",
+                List.of(new LirInstruction.VariableOperand("a"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        // `gdcc_range` returns an OWNED destroyable Array; discarding must still destroy it
+        // (the discard temp index is shared with other temp families, so anchor on the prefix).
+        assertTrue(body.contains("godot_Array __gdcc_tmp_discard_"), body);
+        assertTrue(body.contains(" = gdcc_range("), body);
+        assertTrue(body.contains("godot_Array_destroy(&__gdcc_tmp_discard_"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should route is_instance_of to the global-only helper")
+    void callGlobalIsInstanceOfRoutesToGlobalHelper() {
+        var clazz = newTestClass();
+        var func = newFunction("call_is_instance_of");
+        func.createAndAddVariable("v", GdVariantType.VARIANT);
+        func.createAndAddVariable("t", GdVariantType.VARIANT);
+        func.createAndAddVariable("ok", GdBoolType.BOOL);
+
+        entry(func).appendInstruction(new CallGlobalInsn(
+                "ok",
+                "is_instance_of",
+                List.of(
+                        new LirInstruction.VariableOperand("v"),
+                        new LirInstruction.VariableOperand("t")
+                )
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        assertTrue(body.contains("$ok = gdcc_is_instance_of_global(&$v, &$t);"), body);
+        assertFalse(body.contains("godot_is_instance_of"), body);
+        // Hard boundary (D8): the global function must never reuse the `x is T` Object helpers.
+        assertFalse(body.contains("gdcc_is_instance_of_object"), body);
+        assertFalse(body.contains("gdcc_is_instance_of_typed"), body);
     }
 
     @Test

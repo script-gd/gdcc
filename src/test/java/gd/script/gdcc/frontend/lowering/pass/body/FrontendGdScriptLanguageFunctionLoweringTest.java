@@ -14,6 +14,8 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
+import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
+import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import org.jetbrains.annotations.NotNull;
@@ -85,6 +87,97 @@ class FrontendGdScriptLanguageFunctionLoweringTest {
         assertAll(
                 () -> assertEquals("char", calls.get(0).functionName()),
                 () -> assertEquals("ord", calls.get(1).functionName())
+        );
+    }
+
+    @Test
+    void rangeCallPacksEveryIntArgumentIntoVariantVarargTail() throws Exception {
+        var lowered = lowerProbe(
+                """
+                        class_name LanguageFunctionRangePack
+                        extends RefCounted
+                        
+                        func probe() -> Array:
+                            return range(1, 10, 2)
+                        """
+        );
+
+        var call = requireOnly(lowered, CallGlobalInsn.class);
+        var packs = allInstructions(lowered).stream()
+                .filter(PackVariantInsn.class::isInstance)
+                .map(PackVariantInsn.class::cast)
+                .toList();
+        // `range` has zero fixed parameters: every argument travels through the Variant vararg
+        // tail, so each int literal must be packed and the call must consume the packed slots in
+        // source order.
+        assertAll(
+                () -> assertEquals("range", call.functionName()),
+                () -> assertEquals(3, call.args().size()),
+                () -> assertEquals(3, packs.size(), () -> "expected one pack per argument in " + allInstructions(lowered)),
+                () -> assertEquals(packs.get(0).resultId(), operandId(call.args().get(0))),
+                () -> assertEquals(packs.get(1).resultId(), operandId(call.args().get(1))),
+                () -> assertEquals(packs.get(2).resultId(), operandId(call.args().get(2))),
+                () -> assertTrue(
+                        packs.stream().allMatch(pack -> indexOf(lowered, pack) < indexOf(lowered, call)),
+                        "all pack_variant instructions must precede the call_global"
+                ),
+                () -> assertEquals(
+                        "Array",
+                        lowered.getVariableById(call.resultId()).type().getTypeName(),
+                        "range result slot must be typed as Array"
+                )
+        );
+    }
+
+    @Test
+    void isInstanceOfCallLowersToCallGlobalDistinctFromTypeTestInsn() throws Exception {
+        var lowered = lowerProbe(
+                """
+                        class_name LanguageFunctionIsInstanceOfLowering
+                        extends RefCounted
+                        
+                        func probe(x) -> bool:
+                            return is_instance_of(x, TYPE_INT)
+                        """
+        );
+
+        var call = requireOnly(lowered, CallGlobalInsn.class);
+        // Hard boundary (D8): the global function must never lower to the `x is T` instruction.
+        assertEquals(
+                0,
+                count(lowered, IsInstanceOfInsn.class),
+                () -> "global is_instance_of must not produce IsInstanceOfInsn in " + allInstructions(lowered)
+        );
+        assertAll(
+                () -> assertEquals("is_instance_of", call.functionName()),
+                () -> assertEquals(2, call.args().size()),
+                // `x` is Variant already; the TYPE_INT enum constant materializes as an int
+                // literal that is packed into the Variant parameter slot.
+                () -> assertEquals(
+                        2,
+                        assertInstanceOf(
+                                LiteralIntInsn.class,
+                                allInstructions(lowered).stream()
+                                        .filter(LiteralIntInsn.class::isInstance)
+                                        .filter(insn -> {
+                                            var pack = allInstructions(lowered).stream()
+                                                    .filter(PackVariantInsn.class::isInstance)
+                                                    .map(PackVariantInsn.class::cast)
+                                                    .filter(candidate -> candidate.resultId().equals(operandId(call.args().get(1))))
+                                                    .findFirst()
+                                                    .orElseThrow(() -> new AssertionError("TYPE_INT literal must be packed"));
+                                            return pack.valueId().equals(insn.resultId());
+                                        })
+                                        .findFirst()
+                                        .orElseThrow(() -> new AssertionError("TYPE_INT must materialize as literal_int"))
+                        ).value(),
+                        "TYPE_INT must keep the engine Variant.Type enum value"
+                ),
+                () -> assertEquals(
+                        "bool",
+                        lowered.getVariableById(call.resultId()).type().getTypeName(),
+                        "is_instance_of result slot must be typed as bool"
+                )
         );
     }
 

@@ -320,6 +320,211 @@ class CallGlobalInsnGenEngineTest {
                 """;
     }
 
+    @Test
+    @DisplayName("CALL_GLOBAL should execute gdcc_range/gdcc_is_instance_of_global semantics in real engine")
+    void callGlobalRangeAndIsInstanceOfShouldRunInRealGodot() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/call_global_range_is_instance_of_engine");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo(
+                "call_global_range_is_instance_of_engine",
+                GodotVersion.V451,
+                tempDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var probeClass = newRangeIsInstanceOfProbeClass();
+        var module = new LirModule("call_global_range_is_instance_of_engine_module", List.of(probeClass));
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+
+        var buildResult = builder.buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), "Compilation should succeed. Build log:\n" + buildResult.buildLog());
+        assertFalse(buildResult.artifacts().isEmpty(), "Compilation should produce extension artifacts.");
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "RangeIsInstanceOfNode",
+                        probeClass.getName(),
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(rangeIsInstanceOfTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        // The script uses the engine's own range/is_instance_of as the semantic oracle; error
+        // paths assert the GDCC contract directly (runtime error + type-default return). The
+        // printed runtime errors themselves are not asserted: the runner completes on the stop
+        // signal without joining the stderr reader, so stderr content would be racy.
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("range checks passed."), "range semantics should match.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("range overflow-safety checks passed."), "range extremes must stay defined.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("range error checks passed."), "range error paths should yield empty Array.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("is_instance_of checks passed."), "is_instance_of semantics should match.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("is_instance_of error checks passed."), "is_instance_of error paths should yield false.\nOutput:\n" + combinedOutput);
+        assertFalse(combinedOutput.contains("check failed"), "No range/is_instance_of check should fail.\nOutput:\n" + combinedOutput);
+    }
+
+    /// Probe class exposing phase-D language functions as engine-callable methods. `range` is
+    /// vararg, so one probe per arity is exposed; `probe_range0` exists to exercise the helper's
+    /// defensive arity re-check (hand-written IR can bypass the frontend diagnostic).
+    private static LirClassDef newRangeIsInstanceOfProbeClass() {
+        var clazz = new LirClassDef("GDRangeIsInstanceOfNode", "Node");
+        clazz.setSourceFile("call_global_range_is_instance_of_engine.gd");
+        var selfType = new GdObjectType(clazz.getName());
+        var arrayType = new GdArrayType(GdVariantType.VARIANT);
+
+        var range0 = newMethod("probe_range0", arrayType, selfType);
+        range0.createAndAddVariable("result", arrayType);
+        entry(range0).appendInstruction(new CallGlobalInsn("result", "range", List.of()));
+        entry(range0).appendInstruction(new ReturnInsn("result"));
+        clazz.addFunction(range0);
+
+        for (var arity : List.of(1, 2, 3)) {
+            var func = newMethod("probe_range" + arity, arrayType, selfType);
+            var args = new java.util.ArrayList<LirInstruction.VariableOperand>();
+            for (var i = 0; i < arity; i++) {
+                var argName = "arg" + i;
+                func.addParameter(new LirParameterDef(argName, GdVariantType.VARIANT, null, func));
+                args.add(varRef(argName));
+            }
+            func.createAndAddVariable("result", arrayType);
+            entry(func).appendInstruction(new CallGlobalInsn("result", "range", List.copyOf(args)));
+            entry(func).appendInstruction(new ReturnInsn("result"));
+            clazz.addFunction(func);
+        }
+
+        var isInstanceOf = newMethod("probe_is_instance_of", GdBoolType.BOOL, selfType);
+        isInstanceOf.addParameter(new LirParameterDef("value", GdVariantType.VARIANT, null, isInstanceOf));
+        isInstanceOf.addParameter(new LirParameterDef("type", GdVariantType.VARIANT, null, isInstanceOf));
+        isInstanceOf.createAndAddVariable("result", GdBoolType.BOOL);
+        entry(isInstanceOf).appendInstruction(new CallGlobalInsn(
+                "result",
+                "is_instance_of",
+                List.of(varRef("value"), varRef("type"))
+        ));
+        entry(isInstanceOf).appendInstruction(new ReturnInsn("result"));
+        clazz.addFunction(isInstanceOf);
+
+        return clazz;
+    }
+
+    private static String rangeIsInstanceOfTestScript() {
+        // Happy paths compare against the engine oracle directly (Array equality is by content).
+        // Error paths follow the GDCC contract: runtime error printed, empty Array / false
+        // returned; the engine is never invoked with the invalid arguments because its own
+        // CallError would poison the comparison (Godot returns the error message instead).
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "RangeIsInstanceOfNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var range_ok = true
+                    var range_cases = [
+                        [3], [0], [-2],
+                        [1, 5], [5, 1], [3, 3],
+                        [1, 10, 2], [1, 10, 3], [10, 1, -2], [10, 1, -1], [1, 10, -1], [0, 0, 1],
+                        # BOOL/FLOAT payloads are accepted via Godot's can_convert_strict(INT).
+                        [true], [false], [3.5], [1.5, 4],
+                    ]
+                    for args in range_cases:
+                        var expected = range.callv(args)
+                        var actual = target.callv("probe_range" + str(args.size()), args)
+                        if actual != expected:
+                            push_error("range check failed for args: " + str(args))
+                            range_ok = false
+                    if range_ok:
+                        print("range checks passed.")
+                
+                    # Overflow-safety: GDCC hardening computes the element count on unsigned
+                    # distance/stride and fills by index, so these extremes terminate with the
+                    # correct single-element results. The engine itself hits signed-overflow UB
+                    # on such inputs, so these are asserted against the GDCC contract directly
+                    # instead of the engine oracle.
+                    var overflow_ok = true
+                    var int64_min = 1 << 63
+                    var int64_max = 9223372036854775807
+                    if target.call("probe_range3", int64_max - 2, int64_max, 2) != [int64_max - 2]:
+                        push_error("range near-INT64_MAX overflow-safety check failed.")
+                        overflow_ok = false
+                    if target.call("probe_range3", 5, -10, int64_min) != [5]:
+                        push_error("range INT64_MIN-step overflow-safety check failed.")
+                        overflow_ok = false
+                    if target.call("probe_range2", int64_min, int64_min + 1) != [int64_min]:
+                        push_error("range INT64_MIN-bound overflow-safety check failed.")
+                        overflow_ok = false
+                    if overflow_ok:
+                        print("range overflow-safety checks passed.")
+                
+                    var range_error_ok = true
+                    var zero_arity_result = target.call("probe_range0")
+                    if not (zero_arity_result is Array) or zero_arity_result.size() != 0:
+                        push_error("range zero-arity error check failed.")
+                        range_error_ok = false
+                    if target.call("probe_range3", 1, 2, 0).size() != 0:
+                        push_error("range zero-step error check failed.")
+                        range_error_ok = false
+                    if target.call("probe_range1", "not_an_int").size() != 0:
+                        push_error("range non-int error check failed.")
+                        range_error_ok = false
+                    if target.call("probe_range2", 0, 2147483648).size() != 0:
+                        push_error("range too-big error check failed.")
+                        range_error_ok = false
+                    if range_error_ok:
+                        print("range error checks passed.")
+                
+                    var iio_ok = true
+                    var iio_cases = [
+                        [42, TYPE_INT],
+                        [42, TYPE_STRING],
+                        ["text", TYPE_STRING],
+                        [[1, 2], TYPE_ARRAY],
+                        [{"k": 1}, TYPE_DICTIONARY],
+                        [null, TYPE_NIL],
+                        [null, TYPE_INT],
+                        [Node.new(), TYPE_OBJECT],
+                        [Vector2.ZERO, TYPE_VECTOR2],
+                    ]
+                    for args in iio_cases:
+                        var expected = is_instance_of(args[0], args[1])
+                        if bool(target.call("probe_is_instance_of", args[0], args[1])) != expected:
+                            push_error("is_instance_of check failed for args: " + str(args))
+                            iio_ok = false
+                    if iio_ok:
+                        print("is_instance_of checks passed.")
+                
+                    var iio_error_ok = true
+                    if bool(target.call("probe_is_instance_of", 42, "TYPE_INT")):
+                        push_error("is_instance_of non-int type-argument check failed.")
+                        iio_error_ok = false
+                    if bool(target.call("probe_is_instance_of", 42, 9999)):
+                        push_error("is_instance_of out-of-range enum check failed.")
+                        iio_error_ok = false
+                    if iio_error_ok:
+                        print("is_instance_of error checks passed.")
+                """;
+    }
+
     private static LirClassDef newCallGlobalEngineClass() {
         var clazz = new LirClassDef("GDCallGlobalEngineNode", "Node");
         clazz.setSourceFile("call_global_engine.gd");

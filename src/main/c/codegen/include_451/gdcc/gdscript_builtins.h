@@ -169,4 +169,122 @@ static inline godot_int gdcc_ord(const godot_String *value) {
     return godot_String_unicode_at(value, 0);
 }
 
+/// `range(...)` — Godot 4.5 `GDScriptUtilityFunctions` semantics: builds an unparameterized
+/// Array of int elements.
+/// - 1 argument: `[0, count)` with step 1.
+/// - 2 arguments: `[from, to)` with step 1.
+/// - 3 arguments: `from`/`to`/`step`, direction-aware: a positive step with `from >= to` or a
+///   negative step with `from <= to` yields an empty Array.
+/// Arity outside 1..3, `step == 0`, or an element count above INT32_MAX prints a runtime error
+/// and yields an empty Array (arity is normally gated by the frontend; the helper re-checks
+/// defensively for hand-written IR). Following Godot's debug-mode `can_convert_strict(INT)`
+/// validation, INT/BOOL/FLOAT payloads are accepted and converted; any other Variant type prints
+/// a runtime error and yields an empty Array.
+/// Overflow hardening beyond the engine reference: the element count is computed on the unsigned
+/// distance/stride and the fill loop iterates by index, so extreme bounds (e.g. `INT64_MIN` /
+/// `INT64_MAX` / `step == INT64_MIN`) cannot wrap the signed arithmetic into an infinite loop.
+/// The returned Array is OWNED by the caller and must be destroyed when discarded.
+static inline godot_Array gdcc_range(const godot_Variant **argv, godot_int argc) {
+    godot_Array result = godot_new_Array();
+    if (argc < 1 || argc > 3) {
+        GDCC_PRINT_RUNTIME_ERROR(
+                "range(): expected 1 to 3 argument(s).", __func__, __FILE__, __LINE__);
+        return result;
+    }
+    for (godot_int i = 0; i < argc; i++) {
+        GDExtensionVariantType arg_type = godot_variant_get_type(argv[i]);
+        // Godot validates range arguments with `can_convert_strict(..., INT)`, which admits
+        // BOOL and FLOAT alongside INT; the `godot_new_int_with_Variant` conversion below then
+        // applies the engine's truncation rules.
+        if (arg_type != GDEXTENSION_VARIANT_TYPE_INT
+                && arg_type != GDEXTENSION_VARIANT_TYPE_BOOL
+                && arg_type != GDEXTENSION_VARIANT_TYPE_FLOAT) {
+            GDCC_PRINT_RUNTIME_ERROR(
+                    "range(): every argument must be an integer.", __func__, __FILE__, __LINE__);
+            return result;
+        }
+    }
+    godot_int from = 0;
+    godot_int to = 0;
+    godot_int step = 1;
+    if (argc == 1) {
+        to = godot_new_int_with_Variant(argv[0]);
+    } else {
+        from = godot_new_int_with_Variant(argv[0]);
+        to = godot_new_int_with_Variant(argv[1]);
+        if (argc == 3) {
+            step = godot_new_int_with_Variant(argv[2]);
+        }
+    }
+    if (argc == 3 && step == 0) {
+        GDCC_PRINT_RUNTIME_ERROR(
+                "range(): step argument is zero!", __func__, __FILE__, __LINE__);
+        return result;
+    }
+    // Direction-aware emptiness (Godot: positive step with from >= to, or negative step with
+    // from <= to, yields an empty array).
+    if ((step > 0 && from >= to) || (step < 0 && from <= to)) {
+        return result;
+    }
+    // Element count via ceiling division on the unsigned distance/stride, matching Godot's
+    // `Math::division_round_up` sizing while staying defined for INT64_MIN/INT64_MAX bounds.
+    uint64_t distance = step > 0
+            ? (uint64_t) to - (uint64_t) from
+            : (uint64_t) from - (uint64_t) to;
+    uint64_t stride = step > 0 ? (uint64_t) step : 0ULL - (uint64_t) step;
+    uint64_t count = distance / stride + (distance % stride != 0 ? 1 : 0);
+    if (count > 2147483647ULL) {
+        GDCC_PRINT_RUNTIME_ERROR(
+                "range(): range is too big (element count exceeds INT32_MAX).",
+                __func__, __FILE__, __LINE__);
+        // `result` is currently empty; callers observe an empty Array on this error path.
+        return result;
+    }
+    if (godot_Array_resize(&result, (godot_int) count) != 0) {
+        GDCC_PRINT_RUNTIME_ERROR(
+                "range(): cannot resize the result array.", __func__, __FILE__, __LINE__);
+        return result;
+    }
+    // Fill by index over the precomputed count; the final element is never incremented past,
+    // so `value` can never wrap even when `from + count * step` would overflow int64.
+    godot_int value = from;
+    for (uint64_t index = 0; index < count; index++) {
+        godot_Variant element = godot_new_Variant_with_int(value);
+        godot_Array_set(&result, (godot_int) index, &element);
+        godot_Variant_destroy(&element);
+        if (index + 1 < count) {
+            value += step;
+        }
+    }
+    return result;
+}
+
+/// `is_instance_of(value, type)` — Godot 4.5 semantics, v1 scope (plan R2): only the `TYPE_*`
+/// integer-enum form of `type` is supported; the result is `value`'s Variant type compared
+/// against the enum. The class/script Object form prints a runtime error and yields `false`.
+/// Note the INT path intentionally performs no object-liveness probing, matching Godot.
+/// This helper is strictly for the global function; the `x is T` expression lowers to the
+/// separate `gdcc_is_instance_of_object_*` helper family (hard boundary, design D8).
+static inline godot_bool gdcc_is_instance_of_global(const godot_Variant *value, const godot_Variant *type) {
+    if (value == NULL || type == NULL) {
+        GDCC_PRINT_RUNTIME_ERROR(
+                "is_instance_of(): received a null Variant pointer.", __func__, __FILE__, __LINE__);
+        return false;
+    }
+    if (godot_variant_get_type(type) != GDEXTENSION_VARIANT_TYPE_INT) {
+        GDCC_PRINT_RUNTIME_ERROR(
+                "is_instance_of(): class/script type arguments are not supported yet; "
+                "use TYPE_* constants for built-in types.", __func__, __FILE__, __LINE__);
+        return false;
+    }
+    godot_int builtin_type = godot_new_int_with_Variant(type);
+    if (builtin_type < 0 || builtin_type >= GDEXTENSION_VARIANT_TYPE_VARIANT_MAX) {
+        GDCC_PRINT_RUNTIME_ERROR(
+                "is_instance_of(): invalid type argument; use TYPE_* constants for built-in types.",
+                __func__, __FILE__, __LINE__);
+        return false;
+    }
+    return godot_variant_get_type(value) == (GDExtensionVariantType) builtin_type;
+}
+
 #endif //GDSCRIPT_BUILTINS_H

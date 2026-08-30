@@ -39,7 +39,11 @@ public final class CGenHelper {
     private static final Map<String, String> GDSCRIPT_LANGUAGE_FUNCTION_C_NAMES = Map.of(
             "len", "gdcc_len",
             "char", "gdcc_char",
-            "ord", "gdcc_ord"
+            "ord", "gdcc_ord",
+            "range", "gdcc_range",
+            // Named `*_global` to keep the hard boundary against the `x is T` expression
+            // helper family `gdcc_is_instance_of_object_*` (design D8).
+            "is_instance_of", "gdcc_is_instance_of_global"
     );
     private static final FunctionSignature VARIANT_WRITEBACK_HELPER_SIGNATURE = new FunctionSignature(
             VARIANT_WRITEBACK_HELPER_NAME,

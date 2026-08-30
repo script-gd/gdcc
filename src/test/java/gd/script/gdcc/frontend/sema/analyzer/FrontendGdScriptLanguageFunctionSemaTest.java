@@ -137,6 +137,157 @@ class FrontendGdScriptLanguageFunctionSemaTest {
         assertEquals(List.of(), expressionResolutionDiagnostics(analyzed));
     }
 
+    @Test
+    void rangeCallsResolveToGenericArray() throws Exception {
+        var analyzed = analyze(
+                "language_function_range.gd",
+                """
+                        class_name LanguageFunctionRange
+                        extends Node
+                        
+                        func run():
+                            var a = range(3)
+                            var b = range(1, 5)
+                            var c = range(1, 10, 2)
+                        """
+        );
+
+        // All arities publish the unparameterized `Array` return (Godot MethodInfo alignment).
+        assertExpressionType(analyzed, "run", "a", "Array");
+        assertExpressionType(analyzed, "run", "b", "Array");
+        assertExpressionType(analyzed, "run", "c", "Array");
+        assertEquals(
+                List.of(),
+                errorDiagnostics(analyzed),
+                "valid range calls must not produce error diagnostics"
+        );
+    }
+
+    @Test
+    void rangeArityOutsideOneToThreeIsRejected() throws Exception {
+        // `range` is registered as vararg with zero fixed parameters (Godot MethodInfo), so
+        // generic vararg matching alone would accept any count; the frontend must gate arity.
+        var zeroArgs = analyze(
+                "language_function_range_zero.gd",
+                """
+                        class_name LanguageFunctionRangeZero
+                        extends Node
+                        
+                        func run():
+                            var bad = range()
+                        """
+        );
+        var fourArgs = analyze(
+                "language_function_range_four.gd",
+                """
+                        class_name LanguageFunctionRangeFour
+                        extends Node
+                        
+                        func run():
+                            var bad = range(1, 2, 3, 4)
+                        """
+        );
+
+        var zeroDiagnostics = expressionResolutionDiagnostics(zeroArgs);
+        assertEquals(1, zeroDiagnostics.size(), () -> "unexpected diagnostics: " + describe(zeroArgs));
+        assertTrue(zeroDiagnostics.getFirst().message().contains("'range'"));
+        assertTrue(zeroDiagnostics.getFirst().message().contains("1 to 3"));
+        var fourDiagnostics = expressionResolutionDiagnostics(fourArgs);
+        assertEquals(1, fourDiagnostics.size(), () -> "unexpected diagnostics: " + describe(fourArgs));
+        assertTrue(fourDiagnostics.getFirst().message().contains("'range'"));
+        assertTrue(fourDiagnostics.getFirst().message().contains("1 to 3"));
+    }
+
+    @Test
+    void userDefinedRangeShadowingBypassesSyntheticArityGate() throws Exception {
+        // The arity gate targets the synthetic `range` only; a user-defined shadow keeps its own
+        // signature (here four parameters), matching Godot scoping.
+        var analyzed = analyze(
+                "language_function_range_shadow.gd",
+                """
+                        class_name LanguageFunctionRangeShadow
+                        extends Node
+                        
+                        func range(a, b, c, d) -> String:
+                            return a
+                        
+                        func run():
+                            var n = range(1, 2, 3, 4)
+                        """
+        );
+
+        assertExpressionType(analyzed, "run", "n", "String");
+        assertEquals(List.of(), expressionResolutionDiagnostics(analyzed));
+    }
+
+    @Test
+    void forHeaderRangeRouteStaysSpecialCased() throws Exception {
+        // Regression guard: `for i in range(...)` keeps the RANGE_CALL route and must not pick up
+        // the synthetic global function resolution (nor its diagnostics).
+        var analyzed = analyze(
+                "language_function_for_range.gd",
+                """
+                        class_name LanguageFunctionForRange
+                        extends Node
+                        
+                        func run():
+                            for i in range(3):
+                                pass
+                        """
+        );
+
+        assertEquals(
+                List.of(),
+                errorDiagnostics(analyzed),
+                "for-range must stay diagnostic-free: " + describe(analyzed)
+        );
+    }
+
+    @Test
+    void isInstanceOfResolvesToBool() throws Exception {
+        var analyzed = analyze(
+                "language_function_is_instance_of.gd",
+                """
+                        class_name LanguageFunctionIsInstanceOf
+                        extends Node
+                        
+                        func run(x):
+                            var ok = is_instance_of(x, TYPE_INT)
+                        """
+        );
+
+        assertExpressionType(analyzed, "run", "ok", "bool");
+        assertEquals(
+                List.of(),
+                errorDiagnostics(analyzed),
+                "is_instance_of call must not produce error diagnostics"
+        );
+    }
+
+    @Test
+    void firstClassReferenceToRangeAndIsInstanceOfIsRejected() throws Exception {
+        for (var entry : List.of(
+                Map.entry("range", "language_function_range_first_class.gd"),
+                Map.entry("is_instance_of", "language_function_is_instance_of_first_class.gd")
+        )) {
+            var analyzed = analyze(
+                    entry.getValue(),
+                    """
+                            class_name LanguageFunctionFirstClass
+                            extends Node
+                            
+                            func run():
+                                var f = %s
+                            """.formatted(entry.getKey())
+            );
+
+            var diagnostics = expressionResolutionDiagnostics(analyzed);
+            assertEquals(1, diagnostics.size(), () -> "unexpected diagnostics: " + describe(analyzed));
+            assertTrue(diagnostics.getFirst().message().contains("'" + entry.getKey() + "'"));
+            assertTrue(diagnostics.getFirst().message().contains("first-class value"));
+        }
+    }
+
     private static void assertExpressionType(
             @NotNull AnalyzedScript analyzed,
             @NotNull String functionName,
