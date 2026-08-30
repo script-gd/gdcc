@@ -39,7 +39,7 @@ GDCC is currently in an alpha stage. Do not use it in production.
 ## Unsupported or Limited
 
 - Lambdas in property initializers.
-- `assert`, `preload`, and `get_node`.
+- `get_node` literal.
 - String `%` formatting, parameter defaults, local or class constants.
 - Path-based `extends`, autoload superclass binding, global script class superclass binding, and multi-module superclass binding.
 - Built-in keyed access such as `vector["x"]`; use property-style access such as `vector.x` where supported.

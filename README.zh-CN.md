@@ -39,7 +39,7 @@ GDCC 目前仍处于 alpha 阶段，请不要在生产环境中使用。
 ## 主要不支持或受限的 GDScript 用法
 
 - 初始化表达式中的Lambda函数
-- `assert`、`preload`、`get_node`
+- `get_node`字面量
 - `not in`、字符串 `%` 格式化、参数默认值、局部或类常量
 - 基于路径的 `extends`、autoload 父类绑定、全局脚本类父类绑定，以及多模块父类绑定。
 - 类似 `vector["x"]` 的内置类型 keyed 访问；已支持场景下请使用 `vector.x` 这类属性访问。
