@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：**In Progress**（阶段 A、B、C、D 已完成：LIR `assert` 指令模型 + 解析/序列化闭环；`assert` frontend + backend 闭环；合成语言函数注册 + `len`/`char`/`ord` 端到端；`range`（独立调用）+ `is_instance_of` 端到端；阶段 E–F 尚未开始）
+- 状态：**Completed**（阶段 A–F 全部完成：LIR `assert` 指令模型 + 解析/序列化闭环；`assert` frontend + backend 闭环；合成语言函数注册 + `len`/`char`/`ord` 端到端；`range`（独立调用）+ `is_instance_of` 端到端；`load`/`preload` 端到端（ResourceLoader singleton 调用对改写）；文档同步与全量验证）
 - 范围：frontend sema/lowering、LIR 新增 `assert` 指令、C backend 代码生成、`gdcc/**` runtime helper
 - 更新时间：2026-08-30
 - 目标读者：实施者、代码评审者
@@ -303,6 +303,8 @@ pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <
 
 ### 阶段 E：load + preload
 
+状态：**已完成**（2026-08-30）
+
 目标：`load(path)` 与 `preload("字面量")` 均 lower 为 `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` 指令对（见 D6）。
 
 修改文件：
@@ -313,33 +315,41 @@ pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <
 4. `frontend/lowering/cfg/FrontendCfgGraphBuilder.java`：`buildValue` 增加 `PreloadExpression` 分支，与 `IdentifierExpression` 同形产生 `OpaqueExprValueItem`。
 5. `frontend/lowering/pass/body/FrontendSequenceItemInsnLoweringProcessors.java`：`lowerStaticMethodCall` 增加合成 `load` → `load_static`+`call_method` 改写；`classifyOpaqueExpression` 中 preload 从 `DEFER` 改为 `HANDLE_NOW`。
 6. `frontend/lowering/pass/body/FrontendOpaqueExprInsnLoweringProcessors.java`：新增 `FrontendPreloadOpaqueExprInsnLoweringProcessor`，发射 `LoadStaticInsn("@GlobalScope", "ResourceLoader")` + `CallMethodInsn("load", ...)` 指令对（见 D6）。
-7. 视验证结果：`backend/c/gen/insn/CallMethodInsnGen.java` 仅在 engine 实例方法缺省参数物化存在缺口时修补（已有 `CallMethodInsnGenTest` 的 `Node.add_child` 缺省物化用例，预期无需改动）。
+7. `backend/c/gen/insn/CallMethodInsnGen.java` 无需改动：engine 实例方法缺省参数物化已有 `Node.add_child` 用例覆盖（预期达成）。
 
-验收细则：
+实施备注（阶段 E 实际落地）：
 
-- sema 测试：
-  - `preload("res://icon.svg")` 类型为 Resource；
-  - `preload(someVar)` / `preload("a" + "b")` 诊断（非字面量路径）。
-- 类级 preload 用例：
-  - 类级 `var x = preload("res://icon.svg")` 走 supported property initializer 路径端到端通过（本期主用例）。
-  - `const ICON = preload(...)` **非本期目标**：class constant 的收集/注册/binding 不在 MVP 范围（`frontend_rules.md` 明示），`FrontendPropertyInitializerSupport` 仅放行 `DeclarationKind.VAR`；该形态维持既有阻断行为并保留负向测试。若未来需要，单独立项解锁 class-constant 工作流。
-  - `FrontendCompileCheckAnalyzerTest` 中既有 preload blocker 用例（`:110-114` 附近）期望更新：函数体内 preload 解除阻断、GetNode 保持阻断、类级 const preload 维持现状。
-- lowering 测试：`load`（bare call 改写）与 `preload`（opaque 处理器）的 LIR 均为 `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` 指令对，无 `call_global "load"` 残留；坏 IR `call_global "load"` 在 backend fail-fast；preload 不触碰 `resolvedCalls`（key 空间保持 `CallExpression`/`AttributeCallStep`），compile gate 对 preload 节点无 call-anchor 校验失败。
-- 后端测试：生成的 C 经 singleton 接收者 + ENGINE 实例 dispatch 调用 `load`，缺省参数 `type_hint`/`cache_mode` 物化出现；返回 Resource 写入目标槽位（OWNED 消费路径）与 discard 路径各有断言。
-- 回归：`CLoadStaticInsnGenTest`（确认 `load_static` 语义未被混淆）、`ApiCompileDiagnosticsTest`、`ApiCompileTaskFailureStageTest`、既有 engine 实例方法缺省参数测试。
-- 命令：`pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <preload/load 新测试类>,CLoadStaticInsnGenTest,FrontendCompileCheckAnalyzerTest,ApiCompileDiagnosticsTest,ApiCompileTaskFailureStageTest`
-- 完成判定：全绿。
+- 注册：`load` 以 `(path: String) -> Resource` 注册（对齐 Godot MethodInfo `RETCLS("Resource")`）；`resolveUtilityCall` 对合成名**先查映射表再取签名**——`call_global "load"` 的按名 fail-fast 不再依赖周围 registry 能否解析 `Resource` 返回类型元数据（最小测试 fixture 无该类时也必须命中 D2 合同消息而非类型解析错误）。
+- preload sema（`resolvePreloadExpressionType`）：先嵌套解析 path 子节点并原样传播非稳定事实；`LiteralExpression` 且 `kind == "string"` 才通过（`StringName` 字面量不接受），否则 `FrontendExpressionType.failed`（诊断类别 `sema.expression_resolution`）；成功发布 `RESOLVED(GdObjectType("Resource"))`，不发布 `FrontendResolvedCall`（resolved-call key 空间保持 `CallExpression`/`AttributeCallStep` 冻结）。
+- compile gate：删除 preload 显式阻断分支后走默认 `walkExpression`（标记 surface + 递归子节点），由 generic published-fact scan 承接；`GetNodeExpression` 成为唯一保留的显式表达式拦截。
+- lowering 守卫：`isSyntheticLoadCall` 要求 `declarationSite() instanceof ExtensionUtilityFunction` 且经 `isGdScriptLanguageFunction` 确认——用户同名函数（static 或 instance）的 declaration site 不是合成记录，天然落在各自的 static/instance 路由上（遮蔽负向测试锚定 `self` 实例调用、无 `load_static` 残留）。
+- 临时槽：新增 session 专用分配器 `allocateGdScriptLanguageFunctionTemp`（`cfg_lang_fn_<purpose>_<n>`），与 `cfg_writable_*`/`cfg_match_*` 等既有用途前缀同级隔离。
+- preload opaque processor：从 AST 直接取已校验字面量（opaque item 无子操作数），发射 `literal_string`（`StringUtil.decodeGdStringLexeme` 解码、路径原样透传）+ `load_static` + `call_method`；结果槽 `cfg_tmp_<valueId>` 由 `declareCfgValueSlots` 以已发布的 `Resource` 类型预声明。
+- backend 单测（`CallMethodInsnGenTest`，真实 API dump）：singleton getter `godot_ResourceLoader_singleton()`、`gdcc_engine_call_resourceloader_load_*` ENGINE dispatch、缺省参数 temp #2/#3（`type_hint=""`/`cache_mode=1`）物化、OWNED Resource 写槽、discard 路径 release 逐一锚定；`CLoadStaticInsnGenTest` 回归确认 `load_static` 语义无串扰。
+- 引擎集成测试（`CallMethodInsnGenEngineTest`，真实 zig + Godot、skipped=0 实际执行）：`probe_load` 以 **`x is Resource`**（typed-null 感知）判定加载成功——不能用 `is_instance_of(res, TYPE_OBJECT)` 组合，因为 `Variant(const Object*)` 对 null 也置 `type=OBJECT`（payload 为 null），且 Godot `is_instance_of` 的 INT 路径只做 `get_type()` 比较、不做 null 检查，typed null 与 NIL 在该路径上语义不同（此差异已与 4.5 源码逐行核对）；happy path 以引擎 `load()` 全局函数为 oracle，缺失路径锚定 ResourceLoader 自行报错 + null 返回合同；`probe_load_discard` 验证 OWNED Resource 的 discard release。
+- 探针迁移：既有以 preload 为 compile-blocked 探针的既有用例全部改用 `$Camera3D`（`FrontendCompileCheckAnalyzerTest` 显式拦截计数 2→1，`FrontendLoweringPassManagerTest`、`FrontendLoweringAnalysisPassTest`、`FrontendLoweringFunctionPreparationPassTest`（2 处）、`FrontendSemanticAnalyzerFrameworkTest`、`ApiCompileDiagnosticsTest`（2 处）、`ApiCompileTaskFailureStageTest`、`FrontendBodyOwnerProceduresChainBindingTest`（deferred 链探针）；`FrontendClassSkeletonTest` 的 `const Preloaded = preload(...)` 负向锚点保持不变（class constant 仍不支持）。
+
+验收结果：
+
+- sema：`preload("res://icon.svg")` 类型 Resource；`preload(someVar)` / `preload("a" + "b")` 产生字面量诊断；`load(42)` 参数类型诊断；`var f = load` 一等引用禁令；用户同名遮蔽生效。
+- 类级 preload：`var icon: Resource = preload("res://icon.svg")` 走 supported property initializer 端到端通过（`FrontendLoweringPassManagerTest.lowerToContextHandlesPreloadPropertyInitializerEndToEnd`）；`const ICON = preload(...)` 维持既有阻断（负向锚点保留）。
+- lowering：`load` 与 `preload` 的 LIR 均为 `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` 指令对，无 `call_global "load"` 残留；坏 IR `call_global "load"` 在 backend 显式 fail-fast（端到端用例已锚定 D2 消息）。
+- 全量定向测试与回归全绿（含真实引擎测试）。
 
 ### 阶段 F：文档同步与全量验证
 
+状态：**已完成**（2026-08-30）
+
+落地内容：
+
 1. 文档更新：
-   - `doc/gdcc_low_ir.md`（`assert` 指令；`call_global` 覆盖 GDScript 语言函数的说明）
-   - `doc/gdcc_runtime_lib.md`（`gdscript_builtins.h` 全量函数与错误语义）
-   - `doc/module_impl/frontend/frontend_rules.md`（assert/preload 解除 intercept 的事实更新；`OpaqueExprValueItem` 承载面扩为"leaf / eager unary·binary / 已 HANDLE_NOW 的 PreloadExpression"；明确类级 `const preload` 与 `GetNodeExpression` 仍拦截）
-   - `doc/module_impl/frontend/frontend_lowering_cfg_pass_implementation.md`（`PreloadExpression` 从 remaining unsupported 移除的事实更新）
-   - 本文件收敛为"当前事实 + 长期合同"（实施流水账移除）。
-2. 全量验证：`./gradlew clean build --no-daemon --info --console=plain`。
-3. 环境允许时运行依赖 zig/Godot 的集成测试（不存在则按约定跳过）。
+   - `doc/gdcc_low_ir.md`：`call_global` 节补充合成 GDScript 语言函数（`gdcc_*` 路由）与 `load` 显式 fail-fast 合同说明。
+   - `doc/gdcc_runtime_lib.md`：`gdscript_builtins.h` 全量函数清单（阶段 B–D 已登记）+ `load`/`preload` 无 helper 的设计说明（D6）。
+   - `doc/module_impl/frontend/frontend_rules.md`：assert/preload 解除 intercept 的事实更新；`OpaqueExprValueItem` 承载面扩为 "leaf / eager unary·binary / `PreloadExpression`"；明确类级 `const preload` 与 `GetNodeExpression` 仍拦截。
+   - `doc/module_impl/frontend/frontend_lowering_cfg_pass_implementation.md`：`PreloadExpression` 从 remaining unsupported 移除的事实更新。
+   - `doc/module_impl/frontend/frontend_compile_check_analyzer_implementation.md`：显式拦截集合收敛为仅 `GetNodeExpression`（§3.3 与 §9 当前局限同步）。
+   - 本文件：各阶段状态收敛为"当前事实 + 长期合同"。
+2. 全量验证：`./gradlew clean build --no-daemon --console=plain` 通过；依赖 zig/Godot 的集成测试在本环境实际执行（skipped=0）。
 
 ## 6. 待确认项（不阻塞本计划启动，实施到对应阶段前需拍板）
 

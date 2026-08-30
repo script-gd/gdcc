@@ -94,6 +94,7 @@ import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.PreloadExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
@@ -2085,7 +2086,10 @@ public final class FrontendCfgGraphBuilder {
                         preferredResultValueId
                 );
             }
-            case IdentifierExpression _, LiteralExpression _, SelfExpression _ -> emitOpaqueValue(
+            // PreloadExpression joins the leaf family: its path literal is consumed directly by
+            // the dedicated opaque processor (no child value ids), mirroring how an identifier
+            // leaf carries no operands.
+            case IdentifierExpression _, LiteralExpression _, SelfExpression _, PreloadExpression _ -> emitOpaqueValue(
                     cursor,
                     expression,
                     List.of(),

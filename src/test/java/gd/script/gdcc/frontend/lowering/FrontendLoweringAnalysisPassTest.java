@@ -101,15 +101,15 @@ class FrontendLoweringAnalysisPassTest {
 
         for (var testCase : List.of(
                 new CompileBlockedCase(
-                        "lowering_blocked_preload.gd",
+                        "lowering_blocked_get_node.gd",
                         """
-                                class_name LoweringBlockedPreload
-                                extends RefCounted
+                                class_name LoweringBlockedGetNode
+                                extends Node
                                 
                                 func ping(value):
-                                    var icon = preload("res://icon.svg")
+                                    var camera = $Camera3D
                                 """,
-                        "Preload expression"
+                        "Get-node expression"
                 )
         )) {
             var module = parseModule(testCase.fileName(), testCase.source());

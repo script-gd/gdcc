@@ -6,6 +6,7 @@ import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.enums.LifecycleProvenance;
 import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionAPI;
+import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
@@ -18,6 +19,7 @@ import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
+import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
@@ -186,6 +188,90 @@ class CallMethodInsnGenTest {
         );
         assertFalse(body.contains("gdcc_object_to_godot_object_ptr($self, GDMyNode_object_ptr)"), body);
         assertFalse(body.contains("gdcc_engine_call_node_queue_free_P_RV((godot_Node*)$self);"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should dispatch ResourceLoader.load with singleton receiver and default completion")
+    void callMethodResourceLoaderLoadShouldMaterializeDefaultsAndOwnResult() throws java.io.IOException {
+        // This is the instruction pair the frontend `load`/`preload` rewrite (design D6) emits:
+        // `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load" $loader $path`.
+        // The real API dump supplies the singleton registration and the exact method metadata
+        // (`type_hint=""`, `cache_mode=1` defaults; hash 3358495409).
+        var clazz = newClass("Worker");
+        var func = newFunction("probe_load");
+        func.createAndAddVariable("loader", new GdObjectType("ResourceLoader"));
+        func.createAndAddVariable("path", GdStringType.STRING);
+        func.createAndAddVariable("resource", new GdObjectType("Resource"));
+
+        entry(func).appendInstruction(new LoadStaticInsn("loader", "@GlobalScope", "ResourceLoader"));
+        entry(func).appendInstruction(new CallMethodInsn(
+                "resource",
+                "load",
+                "loader",
+                List.of(new LirInstruction.VariableOperand("path"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, ExtensionApiLoader.loadDefault(), List.of(clazz));
+        // Singleton receiver materializes through the module-local singleton getter binding.
+        assertTrue(body.contains("godot_ResourceLoader_singleton()"), body);
+        // The OWNED Resource result is consumed by the declared slot directly (no extra retain:
+        // the engine call result is already caller-owned).
+        assertTrue(
+                body.contains("$resource = gdcc_engine_call_resourceloader_load_"),
+                body
+        );
+        assertFalse(
+                body.contains("own_object(gdcc_Resource_fat_ptr_live_object($resource)"),
+                "OWNED call result must not be retained again: " + body
+        );
+        // ENGINE exact dispatch for the instance method (no public godot_* wrapper).
+        assertFalse(body.contains("godot_ResourceLoader_load("), body);
+        // The two omitted defaults are materialized with their actual values: `type_hint=""`
+        // (String temp) and `cache_mode=1` (int temp).
+        assertOrdered(
+                body,
+                "godot_String __gdcc_tmp_default_arg_2_",
+                "= godot_new_String_with_String(GD_STATIC_S(u8\"\"));"
+        );
+        assertOrdered(
+                body,
+                "godot_int __gdcc_tmp_default_arg_3_",
+                "= 1;"
+        );
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD discard of ResourceLoader.load result should release the OWNED resource")
+    void callMethodResourceLoaderLoadDiscardShouldReleaseOwnedResult() throws java.io.IOException {
+        // Fire-and-forget `load(path)`: the RefCounted return is caller-OWNED, so discarding it
+        // must emit the balancing release instead of leaking the strong reference.
+        var clazz = newClass("Worker");
+        var func = newFunction("probe_load_discard");
+        func.createAndAddVariable("loader", new GdObjectType("ResourceLoader"));
+        func.createAndAddVariable("path", GdStringType.STRING);
+
+        entry(func).appendInstruction(new LoadStaticInsn("loader", "@GlobalScope", "ResourceLoader"));
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "load",
+                "loader",
+                List.of(new LirInstruction.VariableOperand("path"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, ExtensionApiLoader.loadDefault(), List.of(clazz));
+        // The discarded result is captured into a discard temp and immediately released: the
+        // balancing release for the caller-OWNED RefCounted return.
+        assertTrue(
+                body.contains("gdcc_Resource_fat_ptr __gdcc_tmp_discard_"),
+                body
+        );
+        assertOrdered(
+                body,
+                "= gdcc_engine_call_resourceloader_load_",
+                "release_object(gdcc_Resource_fat_ptr_live_object(__gdcc_tmp_discard_"
+        );
     }
 
     @Test

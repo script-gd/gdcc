@@ -107,6 +107,7 @@ public final class FrontendBodyLoweringSession {
     private int writableRouteBlockCounter;
     private int forLoopConstantCounter;
     private int matchHelperCounter;
+    private int languageFunctionTempCounter;
 
     public FrontendBodyLoweringSession(
             @NotNull FunctionLoweringContext functionContext,
@@ -1452,6 +1453,27 @@ public final class FrontendBodyLoweringSession {
                     "Published singleton binding '" + binding.symbolName()
                             + "' is missing registry-validated object metadata"
             );
+        }
+    }
+
+    /// Allocates one body-local temp owned by the synthetic GDScript language function lowering
+    /// (the `load`/`preload` rewrite to the `ResourceLoader` singleton call pair). Kept separate
+    /// from published CFG value ids and from writable-route scratch slots.
+    ///
+    /// The `cfg_lang_fn_*` prefix is a legal GDScript identifier, so a source-level variable could
+    /// occupy the same name (source locals keep their declared name verbatim); the counter loop
+    /// skips occupied ids instead of reusing them via `ensureVariable`, which would otherwise
+    /// either crash on a type mismatch or silently let the rewrite overwrite a user variable.
+    @NotNull String allocateGdScriptLanguageFunctionTemp(@NotNull String purpose, @NotNull GdType type) {
+        var tempType = Objects.requireNonNull(type, "type must not be null");
+        var prefix = "cfg_lang_fn_" + StringUtil.requireNonBlank(purpose, "purpose") + "_";
+        while (true) {
+            var slotId = prefix + languageFunctionTempCounter++;
+            if (function.getVariableById(slotId) != null) {
+                continue;
+            }
+            function.createAndAddVariable(slotId, tempType);
+            return slotId;
         }
     }
 

@@ -2,8 +2,10 @@ package gd.script.gdcc.frontend.lowering.pass.body;
 
 import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.lir.LirBasicBlock;
+import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
+import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralFloatInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
@@ -22,16 +24,20 @@ import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.scope.GdScriptLanguageConstant;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdStringType;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.PreloadExpression;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.List;
 import java.util.Objects;
 
 final class FrontendOpaqueExprInsnLoweringProcessors {
@@ -46,7 +52,8 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                 new FrontendLiteralOpaqueExprInsnLoweringProcessor(),
                 new FrontendSelfOpaqueExprInsnLoweringProcessor(),
                 new FrontendUnaryOpaqueExprInsnLoweringProcessor(),
-                new FrontendBinaryOpaqueExprInsnLoweringProcessor()
+                new FrontendBinaryOpaqueExprInsnLoweringProcessor(),
+                new FrontendPreloadOpaqueExprInsnLoweringProcessor()
         );
     }
 
@@ -327,6 +334,56 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                     GodotOperator.fromSourceLexeme(node.operator(), GodotOperator.OperatorArity.BINARY),
                     session.slotIdForValue(item.operandValueIds().getFirst()),
                     session.slotIdForValue(item.operandValueIds().getLast())
+            ));
+            return block;
+        }
+    }
+
+    /// Lowers `preload("literal")` as the `ResourceLoader.load` evaluation-point call (design
+    /// D6): `load_static "@GlobalScope" "ResourceLoader"` followed by `call_method "load"`. Sema
+    /// already rejected non-literal paths and published `RESOLVED(Resource)`; the path string is
+    /// passed through verbatim with no compile-time normalization, and the literal is read
+    /// straight from the AST (the opaque item carries no child operands by construction).
+    private static final class FrontendPreloadOpaqueExprInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<PreloadExpression, FrontendBodyLoweringSession.OpaqueExprLoweringContext> {
+        @Override
+        public @NotNull Class<PreloadExpression> nodeType() {
+            return PreloadExpression.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull PreloadExpression node,
+                @Nullable FrontendBodyLoweringSession.OpaqueExprLoweringContext context
+        ) {
+            var item = requireContext(context);
+            session.requireOpaqueOperandCount(item, 0);
+            if (!(node.path() instanceof LiteralExpression pathLiteral)
+                    || !"string".equals(pathLiteral.kind())) {
+                // Unreachable when the compile gate ran; hand-built graphs can still violate the
+                // contract, so fail fast instead of emitting a call with an invented path.
+                throw session.unsupportedSequenceItem(
+                        item,
+                        "preload path must be a string literal, got: " + node.path().getClass().getSimpleName()
+                );
+            }
+            var pathSlotId = session.allocateGdScriptLanguageFunctionTemp("preload_path", GdStringType.STRING);
+            block.appendNonTerminatorInstruction(new LiteralStringInsn(
+                    pathSlotId,
+                    StringUtil.decodeGdStringLexeme(pathLiteral.sourceText())
+            ));
+            var loaderSlotId = session.allocateGdScriptLanguageFunctionTemp(
+                    "resource_loader",
+                    new GdObjectType("ResourceLoader")
+            );
+            block.appendNonTerminatorInstruction(new LoadStaticInsn(loaderSlotId, "@GlobalScope", "ResourceLoader"));
+            block.appendNonTerminatorInstruction(new CallMethodInsn(
+                    session.resultSlotId(item),
+                    "load",
+                    loaderSlotId,
+                    List.of(new LirInstruction.VariableOperand(pathSlotId))
             ));
             return block;
         }

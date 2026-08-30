@@ -890,11 +890,10 @@ public final class FrontendExpressionSemanticSupport {
                     nestedResolver,
                     finalizeWindow
             );
-            case PreloadExpression preloadExpression -> resolveExplicitDeferredExpressionType(
+            case PreloadExpression preloadExpression -> resolvePreloadExpressionType(
                     preloadExpression,
                     nestedResolver,
                     resolveNestedChildren,
-                    "Preload expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case GetNodeExpression getNodeExpression -> resolveExplicitDeferredExpressionType(
@@ -958,6 +957,33 @@ public final class FrontendExpressionSemanticSupport {
             return propagated(dependencyIssue);
         }
         return rootOutcome(FrontendExpressionType.deferred(detailReason));
+    }
+
+    /// Dedicated `preload(path)` semantics (design D6): the path must be a string literal and is
+    /// passed through to `ResourceLoader.load` verbatim at the evaluation point (no compile-time
+    /// relative-path normalization — an intentional difference from Godot's compile-time preload).
+    /// Success publishes `RESOLVED(Resource)`; no `FrontendResolvedCall` is published because
+    /// lowering rewrites the opaque item into the singleton call pair directly, keeping the
+    /// resolved-call key space frozen to `CallExpression`/`AttributeCallStep`.
+    private @NotNull ExpressionSemanticResult resolvePreloadExpressionType(
+            @NotNull PreloadExpression preloadExpression,
+            @NotNull NestedExpressionResolver nestedResolver,
+            boolean resolveNestedChildren,
+            boolean finalizeWindow
+    ) {
+        if (resolveNestedChildren) {
+            var dependencyIssue = firstNestedDependencyIssue(preloadExpression, nestedResolver, finalizeWindow);
+            if (dependencyIssue != null) {
+                return propagated(dependencyIssue);
+            }
+        }
+        if (!(preloadExpression.path() instanceof LiteralExpression pathLiteral)
+                || !"string".equals(pathLiteral.kind())) {
+            return rootOutcome(FrontendExpressionType.failed(
+                    "preload(...) path must be a string literal; dynamic paths must use load(...) instead"
+            ));
+        }
+        return rootOutcome(FrontendExpressionType.resolved(new GdObjectType("Resource")));
     }
 
     /// Dedicated await classifier (`frontend_await_implementation.md` §8). The operand is resolved

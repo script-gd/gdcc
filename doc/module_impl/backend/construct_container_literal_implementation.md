@@ -66,7 +66,7 @@
 - 风险：typed container ABI 错误首次出现在 C codegen。  
   - 防线：frontend `TypedContainerAbiSupport` + focused type-check tests。
 - 风险：编译门过早解除导致其它 intercept 误放行。  
-  - 防线：仅删除 Array/Dictionary case；Preload/GetNode/assert 锚点测试继续锁定（Conditional 锚点在其自身解封时已换为 Preload/GetNode，见 `frontend_conditional_expression_implementation.md`）。
+  - 防线：仅删除 Array/Dictionary case；GetNode/assert 锚点测试继续锁定（Conditional 锚点在其自身解封时已换为当时的剩余 intercept；Preload 锚点在后续阶段解除 intercept 后已一并迁移到 GetNode，见 `frontend_conditional_expression_implementation.md`）。
 
 ## 回归测试基线
 

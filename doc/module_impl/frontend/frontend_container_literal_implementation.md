@@ -636,7 +636,7 @@ engine test 必须验证 typed fill 后 `is_typed()`、typed element/key/value m
 `FrontendCompileCheckAnalyzer.walkExpression` **不再** 为 `ArrayExpression` / `DictionaryExpression` 建立显式 blocker；两者进入 default compile surface recursion。
 
 - 字面量不产生 `sema.compile_check`。
-- 当前仍被显式 intercept 的表达式固定为 `PreloadExpression`、`GetNodeExpression`。`ConditionalExpression` 已离开 intercept（见 `frontend_conditional_expression_implementation.md`）。已记录 `LambdaExpression`（published plan + body）已纳入 compile surface 并递归扫描 body；未记录 lambda 保持 fail-closed。合同见 `frontend_lambda_implementation.md`。
+- 当前仍被显式 intercept 的表达式固定为 `GetNodeExpression`。`PreloadExpression`（字符串字面量 + ResourceLoader 调用对改写）与 `ConditionalExpression` 已离开 intercept（见 `frontend_conditional_expression_implementation.md`）。已记录 `LambdaExpression`（published plan + body）已纳入 compile surface 并递归扫描 body；未记录 lambda 保持 fail-closed。合同见 `frontend_lambda_implementation.md`。
 - 移除 Array/Dictionary blocker 时不得顺带改变其他 feature 的 intercept 状态。
 
 ## 10. 核心实现落点

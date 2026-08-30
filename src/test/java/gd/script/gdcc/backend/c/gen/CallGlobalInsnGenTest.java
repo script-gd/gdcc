@@ -635,10 +635,12 @@ class CallGlobalInsnGenTest {
     }
 
     @Test
-    @DisplayName("CALL_GLOBAL should reject language functions that are not yet registered")
-    void callGlobalUnregisteredLanguageFunctionFails() {
-        // Phase-scoped negative anchor: `load` joins the synthetic registry in a later phase, so
-        // for now it must keep hitting the plain unknown-utility failure path.
+    @DisplayName("CALL_GLOBAL should reject the registered `load` language function end-to-end")
+    void callGlobalLoadFailsFastEndToEnd() {
+        // Design D6: `load` IS registered in the synthetic table (frontend argument checking),
+        // but frontend lowering must have rewritten it to the ResourceLoader singleton call pair.
+        // A `call_global "load"` reaching the backend therefore indicates a lowering gap and must
+        // hit the unmapped-name fail-fast, not the plain unknown-utility path.
         var clazz = newTestClass();
         var func = newFunction("call_load");
         func.createAndAddVariable("v", GdVariantType.VARIANT);
@@ -651,15 +653,16 @@ class CallGlobalInsnGenTest {
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func, utilityApi()));
-        assertTrue(ex.getMessage().contains("not found in registry"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("no gdcc_* runtime helper mapping"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("load"), ex.getMessage());
     }
 
     @Test
     @DisplayName("gdcc_* route table should fail fast for language functions without a mapping")
     void gdscriptLanguageFunctionCNameMappingFailsFastWhenMissing() {
-        // Per-name contract (design D2): `load` is registered in a later phase but never enters
-        // the route table (frontend rewrites it to a ResourceLoader singleton call); it must fail
-        // fast instead of silently falling back to a nonexistent `godot_*` wrapper.
+        // Per-name contract (design D2): `load` is registered but never enters the route table
+        // (frontend rewrites it to a ResourceLoader singleton call); it must fail fast instead of
+        // silently falling back to a nonexistent `godot_*` wrapper.
         var ex = assertThrows(
                 InvalidInsnException.class,
                 () -> CGenHelper.requireGdScriptLanguageFunctionCName("load")

@@ -189,6 +189,11 @@ public final class ClassRegistry implements Scope {
         registerSyntheticGdScriptLanguageFunction("range", "Array", true);
         registerSyntheticGdScriptLanguageFunction(
                 "is_instance_of", "bool", false, "value", "Variant", "type", "Variant");
+        // `load` mirrors Godot's MethodInfo, but never enters the backend `gdcc_*` route table:
+        // frontend lowering rewrites the call to a `ResourceLoader` singleton instance call (D6),
+        // so a `call_global "load"` reaching the backend indicates a lowering gap and must fail
+        // fast there.
+        registerSyntheticGdScriptLanguageFunction("load", "Resource", false, "path", "String");
     }
 
     /// @param argumentNameTypePairs flattened `(name, extension-type)` pairs, mirroring the raw

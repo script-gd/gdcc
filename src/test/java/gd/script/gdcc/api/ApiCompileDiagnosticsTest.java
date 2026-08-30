@@ -57,10 +57,10 @@ class ApiCompileDiagnosticsTest {
         api.createModule("demo", "Compile Block Demo");
         api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("compile-check-project")));
         api.putFile("demo", "/src/blocked.gd", """
-                class_name LoweringBlockedPreload
-                extends RefCounted
+                class_name LoweringBlockedGetNode
+                extends Node
                 
-                var bundled = preload("res://bundled.gd")
+                var camera = $Camera3D
                 """);
 
         var result = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
@@ -72,7 +72,7 @@ class ApiCompileDiagnosticsTest {
         assertEquals(CompileResult.Outcome.FRONTEND_FAILED, result.outcome());
         assertEquals("Frontend diagnostics blocked compilation", result.failureMessage());
         assertTrue(result.diagnostics().hasErrors());
-        assertTrue(compileDiagnostic.message().contains("Preload expression"));
+        assertTrue(compileDiagnostic.message().contains("Get-node expression"));
         assertEquals(List.of("/src/blocked.gd"), result.sourcePaths());
         assertTrue(result.generatedFiles().isEmpty());
         assertTrue(result.artifacts().isEmpty());
@@ -119,9 +119,9 @@ class ApiCompileDiagnosticsTest {
         api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("godot-display-path-project")));
         api.putFile("demo", "/src/player.gd", """
                 class_name Player
-                extends RefCounted
+                extends Node
                 
-                var bundled = preload("res://bundled.gd")
+                var camera = $Camera3D
                 """, "res://actors/player.gd");
 
         var result = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
@@ -133,7 +133,7 @@ class ApiCompileDiagnosticsTest {
         assertEquals(CompileResult.Outcome.FRONTEND_FAILED, result.outcome());
         assertEquals("res://actors/player.gd", compileDiagnostic.sourcePath());
         assertEquals(List.of("res://actors/player.gd"), result.sourcePaths());
-        assertTrue(compileDiagnostic.message().contains("Preload expression"));
+        assertTrue(compileDiagnostic.message().contains("Get-node expression"));
         assertEquals(0, compiler.invocationCount());
     }
 

@@ -115,6 +115,7 @@ import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
+import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -682,7 +683,12 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                         OpaqueExprHandling.REJECT,
                         "array/dictionary literals must lower through ContainerLiteralItem, not OpaqueExprValueItem"
                 );
-                case PreloadExpression _, GetNodeExpression _ -> new OpaqueExprPolicy(
+                case PreloadExpression _ -> new OpaqueExprPolicy(
+                        OpaqueExprHandling.HANDLE_NOW,
+                        "preload lowers through the dedicated opaque processor as a ResourceLoader "
+                                + "singleton call pair"
+                );
+                case GetNodeExpression _ -> new OpaqueExprPolicy(
                         OpaqueExprHandling.DEFER,
                         "this compile-blocked expression family stays outside the first body lowering surface"
                 );
@@ -849,6 +855,28 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             // coroutines, so the detach on that branch is a no-op — hooking both branches keeps
             // static fire-and-forget on the same discipline as instance without special-casing.
             if (resolvedCall.receiverType() == null) {
+                // Synthetic `load` never reaches the backend as `call_global` (design D6): rewrite
+                // it to the ResourceLoader singleton instance call pair so the ordinary engine
+                // dispatch (default-argument completion included) handles it. The declaration-site
+                // check keeps user-defined `load` shadows on their own static/instance route.
+                if (isSyntheticLoadCall(session, resolvedCall)) {
+                    var loaderSlotId = session.allocateGdScriptLanguageFunctionTemp(
+                            "resource_loader",
+                            new GdObjectType("ResourceLoader")
+                    );
+                    block.appendNonTerminatorInstruction(new LoadStaticInsn(
+                            loaderSlotId,
+                            "@GlobalScope",
+                            "ResourceLoader"
+                    ));
+                    block.appendNonTerminatorInstruction(new CallMethodInsn(
+                            emittedExactResultSlotIdOrNull(session, node, resolvedCall),
+                            "load",
+                            loaderSlotId,
+                            arguments
+                    ));
+                    return emitCoroutineDetachIfNeeded(session, block, node);
+                }
                 block.appendNonTerminatorInstruction(new CallGlobalInsn(
                         emittedExactResultSlotIdOrNull(session, node, resolvedCall),
                         resolvedCall.callableName(),
@@ -863,6 +891,18 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     arguments
             ));
             return emitCoroutineDetachIfNeeded(session, block, node);
+        }
+
+        /// True only when the resolved bare call is the synthetic GDScript language function
+        /// `load`: the declaration site must be the registered synthetic `ExtensionUtilityFunction`
+        /// record, which user-defined same-name functions (static or instance) never carry.
+        private boolean isSyntheticLoadCall(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull FrontendResolvedCall resolvedCall
+        ) {
+            return "load".equals(resolvedCall.callableName())
+                    && resolvedCall.declarationSite() instanceof ExtensionUtilityFunction declaration
+                    && session.classRegistry().isGdScriptLanguageFunction(declaration.getName());
         }
 
         private @NotNull LirBasicBlock lowerConstructorCall(

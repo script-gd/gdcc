@@ -60,7 +60,6 @@ import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
-import dev.superice.gdparser.frontend.ast.PreloadExpression;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
@@ -670,10 +669,9 @@ public class FrontendCompileCheckAnalyzer {
                 // frontend_lowering_cfg_pass_implementation.md §5.1/§5.2.
                 // ArrayExpression / DictionaryExpression: compile-ready via ContainerLiteralItem +
                 // construct_container_literal (see frontend_container_literal_implementation.md).
-                case PreloadExpression preloadExpression -> reportExplicitCompileBlock(
-                        preloadExpression,
-                        expressionCompileBlockedMessage("Preload expression")
-                );
+                // PreloadExpression: compile-ready — sema publishes RESOLVED(Resource) for string
+                // literals and FAILED otherwise, so the generic published-fact scan gates it;
+                // lowering rewrites it to the ResourceLoader singleton call pair (design D6).
                 case GetNodeExpression getNodeExpression -> reportExplicitCompileBlock(
                         getNodeExpression,
                         expressionCompileBlockedMessage("Get-node expression")

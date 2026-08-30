@@ -18,10 +18,12 @@ import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
+import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
+import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
@@ -34,6 +36,7 @@ import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
+import gd.script.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -124,6 +127,67 @@ class CallMethodInsnGenEngineTest {
                 "The broader SceneTree vararg anchor should stay on the success path.\nOutput:\n" + combinedOutput
         );
         assertFalse(combinedOutput.contains("check failed"), "No check should fail.\nOutput:\n" + combinedOutput);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should execute the ResourceLoader.load singleton call pair in real engine")
+    void callMethodResourceLoaderLoadShouldRunInRealGodot() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/call_method_resource_loader_load_engine");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo(
+                "call_method_resource_loader_load_engine",
+                GodotVersion.V451,
+                tempDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var probeClass = newResourceLoaderProbeClass();
+        var module = new LirModule("call_method_resource_loader_load_engine_module", List.of(probeClass));
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+
+        var buildResult = builder.buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), "Compilation should succeed. Build log:\n" + buildResult.buildLog());
+        assertFalse(buildResult.artifacts().isEmpty(), "Compilation should produce extension artifacts.");
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "ResourceLoaderLoadNode",
+                        probeClass.getName(),
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(resourceLoaderTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        // The script compares against the engine's own `load` global as the semantic oracle; the
+        // missing-path case asserts the shared null-on-failure contract (ResourceLoader prints
+        // its own error on both sides).
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
+        assertTrue(
+                combinedOutput.contains("resource loader load checks passed."),
+                "load semantics should match the engine oracle.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("resource loader discard check passed."),
+                "Discarding the OWNED resource must release it without crashing.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(combinedOutput.contains("check failed"), "No load check should fail.\nOutput:\n" + combinedOutput);
     }
 
     @Test
@@ -431,6 +495,48 @@ class CallMethodInsnGenEngineTest {
 
         var selfType = new GdObjectType(clazz.getName());
         clazz.addFunction(newGdccCrossCallFunction(selfType));
+        return clazz;
+    }
+
+    /// Probe class exposing the frontend `load`/`preload` rewrite output (design D6:
+    /// `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"`) as engine-callable
+    /// methods, plus a fire-and-forget discard probe exercising the OWNED-resource release.
+    private static LirClassDef newResourceLoaderProbeClass() {
+        var clazz = new LirClassDef("GDResourceLoaderLoadNode", "Node");
+        clazz.setSourceFile("call_method_resource_loader_load_engine.gd");
+
+        var selfType = new GdObjectType(clazz.getName());
+
+        // probe_load(String) -> bool answers "loaded a non-null Resource" via the typed type-test
+        // (`x is Resource` returns false for a null object slot). A Variant-based
+        // `is_instance_of(res, TYPE_OBJECT)` probe would NOT work here: packing a typed null
+        // object yields an OBJECT Variant with a null payload (Variant(const Object*) sets
+        // type=OBJECT unconditionally), matching Godot's own typed-null behavior — so it cannot
+        // distinguish a failed load.
+        var loadFunc = newMethod("probe_load", GdBoolType.BOOL, selfType);
+        loadFunc.addParameter(new LirParameterDef("path", GdStringType.STRING, null, loadFunc));
+        loadFunc.createAndAddVariable("loader", new GdObjectType("ResourceLoader"));
+        loadFunc.createAndAddVariable("resource", new GdObjectType("Resource"));
+        loadFunc.createAndAddVariable("ok", GdBoolType.BOOL);
+        entry(loadFunc).appendInstruction(new LoadStaticInsn("loader", "@GlobalScope", "ResourceLoader"));
+        entry(loadFunc).appendInstruction(new CallMethodInsn(
+                "resource",
+                "load",
+                "loader",
+                List.of(varRef("path"))
+        ));
+        entry(loadFunc).appendInstruction(new IsInstanceOfInsn("ok", "Resource", "resource"));
+        entry(loadFunc).appendInstruction(new ReturnInsn("ok"));
+        clazz.addFunction(loadFunc);
+
+        var discardFunc = newMethod("probe_load_discard", GdVoidType.VOID, selfType);
+        discardFunc.addParameter(new LirParameterDef("path", GdStringType.STRING, null, discardFunc));
+        discardFunc.createAndAddVariable("loader", new GdObjectType("ResourceLoader"));
+        entry(discardFunc).appendInstruction(new LoadStaticInsn("loader", "@GlobalScope", "ResourceLoader"));
+        entry(discardFunc).appendInstruction(new CallMethodInsn(null, "load", "loader", List.of(varRef("path"))));
+        entry(discardFunc).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(discardFunc);
+
         return clazz;
     }
 
@@ -915,6 +1021,38 @@ class CallMethodInsnGenEngineTest {
                         print("variant dynamic call_method check passed.")
                     else:
                         push_error("variant dynamic call_method check failed.")
+                """;
+    }
+
+    private static String resourceLoaderTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "ResourceLoaderLoadNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    # The engine's own `load` global is the oracle: both sides share
+                    # ResourceLoader.load semantics, including the null-on-failure contract
+                    # (ResourceLoader prints its own error for the missing path).
+                    var load_ok = true
+                    for path in ["res://icon.svg", "res://main.tscn"]:
+                        var expected = load(path) != null
+                        if bool(target.call("probe_load", path)) != expected:
+                            push_error("load check failed for path: " + path)
+                            load_ok = false
+                    if bool(target.call("probe_load", "res://does_not_exist.png")):
+                        push_error("load missing-path check failed.")
+                        load_ok = false
+                    if load_ok:
+                        print("resource loader load checks passed.")
+                
+                    target.call("probe_load_discard", "res://icon.svg")
+                    print("resource loader discard check passed.")
                 """;
     }
 

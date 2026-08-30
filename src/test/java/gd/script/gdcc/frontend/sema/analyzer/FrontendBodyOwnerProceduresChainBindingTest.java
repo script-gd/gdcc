@@ -1218,13 +1218,13 @@ class FrontendBodyOwnerProceduresChainBindingTest {
                 """
                         class_name StaticTypeMetaContainerSubscript
                         extends RefCounted
-
+                        
                         class Worker:
                             static var values: Array[int] = [1, 2]
-
+                        
                         class SubWorker extends Worker:
                             pass
-
+                        
                         func ping(v: int) -> int:
                             Worker.values[0] += v
                             SubWorker.values[1] = v
@@ -1288,10 +1288,10 @@ class FrontendBodyOwnerProceduresChainBindingTest {
                 """
                         class_name StaticTypeMetaContainerSubscriptNegative
                         extends RefCounted
-
+                        
                         class Worker:
                             var plain: Array[int] = []
-
+                        
                         func ping() -> int:
                             return Worker.plain[0]
                         """
@@ -1397,10 +1397,10 @@ class FrontendBodyOwnerProceduresChainBindingTest {
                 """
                         class_name StaticContainerChain
                         extends RefCounted
-
+                        
                         static var values: Array[int] = []
                         var plain: Array[int] = []
-
+                        
                         func ping(other: StaticContainerChain) -> int:
                             var picked = other.values[0]
                             var fallback = other.plain[1]
@@ -1459,19 +1459,19 @@ class FrontendBodyOwnerProceduresChainBindingTest {
                 """
                         class_name StaticContainerReceiverShapes
                         extends RefCounted
-
+                        
                         static var values: Array[int] = []
-
+                        
                         static func make_worker() -> StaticContainerReceiverShapes:
                             return StaticContainerReceiverShapes.new()
-
+                        
                         func read_via_typed_local() -> int:
                             var worker: StaticContainerReceiverShapes = StaticContainerReceiverShapes.new()
                             return worker.values[0]
-
+                        
                         func write_via_self(v: int) -> void:
                             self.values[1] = v
-
+                        
                         func compound_via_call_receiver(v: int) -> void:
                             make_worker().values[0] += v
                         """
@@ -1896,7 +1896,7 @@ class FrontendBodyOwnerProceduresChainBindingTest {
                             return ""
                         
                         func ping(flag):
-                            self.build(preload("res://icon.svg")).length
+                            self.build($Camera3D).length
                         """
         );
 
@@ -1907,7 +1907,7 @@ class FrontendBodyOwnerProceduresChainBindingTest {
 
         var deferredCall = analyzed.analysisData().resolvedCalls().get(buildStep);
         assertNotNull(deferredCall);
-        // Preload expressions remain outside the current retry surface; after the one retry
+        // Get-node expressions remain outside the current retry surface; after the one retry
         // window, the chain stays deferred and the suffix is not speculatively opened.
         assertEquals(FrontendCallResolutionStatus.DEFERRED, deferredCall.status());
         assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, deferredCall.callKind());
@@ -1918,7 +1918,7 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         var deferredDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution");
         assertEquals(1, deferredDiagnostics.size());
         assertTrue(deferredDiagnostics.getFirst().message().contains("Argument #1 type is still deferred"));
-        assertTrue(deferredDiagnostics.getFirst().message().contains("Preload expression typing is deferred"));
+        assertTrue(deferredDiagnostics.getFirst().message().contains("Get-node expression typing is deferred"));
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
     }

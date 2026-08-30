@@ -14,8 +14,12 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
+import gd.script.gdcc.lir.insn.CallMethodInsn;
+import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.IsInstanceOfInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
+import gd.script.gdcc.lir.insn.LiteralStringInsn;
+import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import org.jetbrains.annotations.NotNull;
@@ -32,10 +36,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Body-lowering contract for the synthetic GDScript language functions `len`/`char`/`ord`:
-/// direct calls lower to `call_global` with the bare function name (backend routing to `gdcc_*`
-/// is a backend concern), and arguments whose static type is not Variant-assignable are packed
-/// through `pack_variant` before the call.
+/// Body-lowering contract for the synthetic GDScript language functions and `preload`:
+/// `len`/`char`/`ord`/`range`/`is_instance_of` lower to `call_global` with the bare function name
+/// (backend routing to `gdcc_*` is a backend concern), while `load`/`preload` rewrite to the
+/// `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` pair (design D6).
+/// Arguments whose static type is not Variant-assignable are packed through `pack_variant`
+/// before the call.
 class FrontendGdScriptLanguageFunctionLoweringTest {
     @Test
     void lenCallPacksStringArgumentIntoVariant() throws Exception {
@@ -177,6 +183,226 @@ class FrontendGdScriptLanguageFunctionLoweringTest {
                         "bool",
                         lowered.getVariableById(call.resultId()).type().getTypeName(),
                         "is_instance_of result slot must be typed as bool"
+                )
+        );
+    }
+
+    @Test
+    void loadCallRewritesToResourceLoaderSingletonCallPair() throws Exception {
+        var lowered = lowerProbe(
+                """
+                        class_name LanguageFunctionLoadRewrite
+                        extends RefCounted
+                        
+                        func probe() -> Resource:
+                            return load("res://icon.svg")
+                        """
+        );
+
+        // Design D6: synthetic `load` never reaches the backend as `call_global`; it rewrites to
+        // `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` so the ordinary
+        // engine instance dispatch (with default-argument completion) handles it.
+        assertEquals(
+                0,
+                count(lowered, CallGlobalInsn.class),
+                () -> "synthetic load must not remain a call_global in " + allInstructions(lowered)
+        );
+        var loadStatic = requireOnly(lowered, LoadStaticInsn.class);
+        var call = requireOnly(lowered, CallMethodInsn.class);
+        assertAll(
+                () -> assertEquals("@GlobalScope", loadStatic.className()),
+                () -> assertEquals("ResourceLoader", loadStatic.staticName()),
+                () -> assertEquals(
+                        "ResourceLoader",
+                        lowered.getVariableById(loadStatic.resultId()).type().getTypeName(),
+                        "singleton receiver temp must be typed as ResourceLoader"
+                ),
+                () -> assertEquals("load", call.methodName()),
+                () -> assertEquals(loadStatic.resultId(), call.objectId()),
+                () -> assertEquals(1, call.args().size()),
+                () -> assertTrue(
+                        indexOf(lowered, loadStatic) < indexOf(lowered, call),
+                        "load_static must precede the call_method"
+                ),
+                () -> assertEquals(
+                        "Resource",
+                        lowered.getVariableById(call.resultId()).type().getTypeName(),
+                        "load result slot must be typed as Resource"
+                )
+        );
+    }
+
+    @Test
+    void preloadLiteralLowersToSameSingletonCallPair() throws Exception {
+        var lowered = lowerProbe(
+                """
+                        class_name PreloadLiteralLowering
+                        extends RefCounted
+                        
+                        func probe() -> Resource:
+                            return preload("res://icon.svg")
+                        """
+        );
+
+        assertEquals(
+                0,
+                count(lowered, CallGlobalInsn.class),
+                () -> "preload must not produce any call_global in " + allInstructions(lowered)
+        );
+        var loadStatic = requireOnly(lowered, LoadStaticInsn.class);
+        var call = requireOnly(lowered, CallMethodInsn.class);
+        var pathLiteral = requireOnly(lowered, LiteralStringInsn.class);
+        assertAll(
+                // The literal path is decoded verbatim (no compile-time normalization, D6).
+                () -> assertEquals("res://icon.svg", pathLiteral.value()),
+                () -> assertEquals("@GlobalScope", loadStatic.className()),
+                () -> assertEquals("ResourceLoader", loadStatic.staticName()),
+                () -> assertEquals("load", call.methodName()),
+                () -> assertEquals(loadStatic.resultId(), call.objectId()),
+                () -> assertEquals(List.of(pathLiteral.resultId()), call.args().stream()
+                        .map(FrontendGdScriptLanguageFunctionLoweringTest::operandId)
+                        .toList()),
+                () -> assertTrue(
+                        indexOf(lowered, pathLiteral) < indexOf(lowered, call)
+                                && indexOf(lowered, loadStatic) < indexOf(lowered, call),
+                        "literal path and singleton load must precede the call_method"
+                ),
+                () -> assertEquals(
+                        "Resource",
+                        lowered.getVariableById(call.resultId()).type().getTypeName(),
+                        "preload result slot must be typed as Resource"
+                )
+        );
+    }
+
+    @Test
+    void userDefinedLoadShadowKeepsOrdinaryInstanceCallRoute() throws Exception {
+        var lowered = lowerProbe(
+                """
+                        class_name LanguageFunctionLoadShadowLowering
+                        extends RefCounted
+                        
+                        func load(path) -> String:
+                            return path
+                        
+                        func probe() -> String:
+                            return load("res://icon.svg")
+                        """
+        );
+
+        // The shadow binds to the user method (declaration site is a GDCC function, not the
+        // synthetic utility record), so the ResourceLoader rewrite must not trigger.
+        assertEquals(
+                0,
+                count(lowered, LoadStaticInsn.class),
+                () -> "shadowed load must not emit the singleton load_static in " + allInstructions(lowered)
+        );
+        var call = requireOnly(lowered, CallMethodInsn.class);
+        assertAll(
+                () -> assertEquals("load", call.methodName()),
+                () -> assertEquals("self", call.objectId()),
+                () -> assertEquals(
+                        "String",
+                        lowered.getVariableById(call.resultId()).type().getTypeName(),
+                        "shadowed load result slot must keep the user-declared String type"
+                )
+        );
+    }
+
+    @Test
+    void userDefinedStaticLoadShadowKeepsStaticCallRoute() throws Exception {
+        var lowered = lowerProbe(
+                """
+                        class_name LanguageFunctionLoadStaticShadow
+                        extends RefCounted
+                        
+                        static func load(path) -> String:
+                            return path
+                        
+                        func probe() -> String:
+                            return load("res://icon.svg")
+                        """
+        );
+
+        // A user static `load` resolves with a non-null receiver type (the enclosing class), so it
+        // must keep the `call_static_method` route; the rewrite only fires for the null-receiver
+        // utility route carrying the synthetic declaration record.
+        assertEquals(
+                0,
+                count(lowered, LoadStaticInsn.class),
+                () -> "static shadow must not emit the singleton load_static in " + allInstructions(lowered)
+        );
+        assertEquals(0, count(lowered, CallGlobalInsn.class));
+        var call = requireOnly(lowered, CallStaticMethodInsn.class);
+        assertAll(
+                () -> assertEquals("load", call.methodName()),
+                () -> assertEquals(
+                        "String",
+                        lowered.getVariableById(call.resultId()).type().getTypeName(),
+                        "static shadow result slot must keep the user-declared String type"
+                )
+        );
+    }
+
+    @Test
+    void chainedLoadCallOnReceiverStaysOrdinaryMethodCall() throws Exception {
+        var lowered = lowerProbe(
+                """
+                        class_name LanguageFunctionChainedLoad
+                        extends RefCounted
+                        
+                        func probe(obj):
+                            return obj.load("res://icon.svg")
+                        """
+        );
+
+        // Attribute calls never reach the bare-utility rewrite branch: the chain stays a plain
+        // (dynamic) `call_method` on the receiver and must not materialize the singleton.
+        assertEquals(
+                0,
+                count(lowered, LoadStaticInsn.class),
+                () -> "chained load must not emit the singleton load_static in " + allInstructions(lowered)
+        );
+        assertEquals(0, count(lowered, CallGlobalInsn.class));
+        var call = requireOnly(lowered, CallMethodInsn.class);
+        assertAll(
+                () -> assertEquals("load", call.methodName()),
+                () -> assertEquals("obj", call.objectId())
+        );
+    }
+
+    @Test
+    void sourceVariableNamedLikeRewriteTempDoesNotCollide() throws Exception {
+        // The rewrite temp prefix is a legal GDScript identifier; a source local occupying the
+        // first generated name must push the singleton temp to the next free id instead of being
+        // overwritten or tripping the type check.
+        var lowered = lowerProbe(
+                """
+                        class_name LanguageFunctionTempCollision
+                        extends RefCounted
+                        
+                        func probe() -> Resource:
+                            var cfg_lang_fn_resource_loader_0 = "occupied"
+                            return load("res://icon.svg")
+                        """
+        );
+
+        var loadStatic = requireOnly(lowered, LoadStaticInsn.class);
+        assertAll(
+                () -> assertFalse(
+                        "cfg_lang_fn_resource_loader_0".equals(loadStatic.resultId()),
+                        "rewrite temp must skip the user-occupied slot id"
+                ),
+                () -> assertEquals(
+                        "cfg_lang_fn_resource_loader_1",
+                        loadStatic.resultId(),
+                        "rewrite temp must take the next free id"
+                ),
+                () -> assertEquals(
+                        "Variant",
+                        lowered.getVariableById("cfg_lang_fn_resource_loader_0").type().getTypeName(),
+                        "the user variable must keep its own declared slot type (untyped var stays "
+                                + "Variant); a rewrite into ResourceLoader would prove clobbering"
                 )
         );
     }

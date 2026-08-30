@@ -201,7 +201,7 @@
 建议解除顺序：
 
 1. ~~`assert`~~（已完成）
-2. `GetNodeExpression` / `PreloadExpression`
+2. ~~`PreloadExpression`~~（已完成：字符串字面量校验 + ResourceLoader singleton 调用对改写）；`GetNodeExpression`
 
 说明：
 

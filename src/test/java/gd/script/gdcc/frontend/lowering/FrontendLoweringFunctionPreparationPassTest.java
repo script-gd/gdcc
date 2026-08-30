@@ -844,13 +844,13 @@ class FrontendLoweringFunctionPreparationPassTest {
         )).lower(
                 parseModule(
                         List.of(new SourceFixture(
-                                "preparation_blocked_preload.gd",
+                                "preparation_blocked_get_node.gd",
                                 """
-                                        class_name PreparationBlockedPreload
-                                        extends RefCounted
+                                        class_name PreparationBlockedGetNode
+                                        extends Node
                                         
                                         func ping(value):
-                                            var icon = preload("res://icon.svg")
+                                            var camera = $Camera3D
                                         """
                         )),
                         Map.of()
@@ -904,13 +904,13 @@ class FrontendLoweringFunctionPreparationPassTest {
     void lowerCompileBlockedModuleLeavesFunctionLoweringContextsUnpublished() throws Exception {
         var module = parseModule(
                 List.of(new SourceFixture(
-                        "preparation_blocked_preload_contexts.gd",
+                        "preparation_blocked_get_node_contexts.gd",
                         """
-                                class_name PreparationBlockedPreloadContexts
-                                extends RefCounted
+                                class_name PreparationBlockedGetNodeContexts
+                                extends Node
                                 
                                 func ping(value):
-                                    var icon = preload("res://icon.svg")
+                                    var camera = $Camera3D
                                 """
                 )),
                 Map.of()

@@ -880,7 +880,7 @@ class CConstructInsnGenTest {
         // language functions are excluded from `findUtilityFunction`, so even hand-written LIR
         // that bypasses the frontend gate must fail fast instead of building a hash-less
         // standalone callable.
-        for (var functionName : List.of("len", "range", "is_instance_of")) {
+        for (var functionName : List.of("len", "range", "is_instance_of", "load")) {
             var clazz = newTestClass();
             var func = newFunction("construct_standalone_language_function");
             func.createAndAddVariable("cb", new GdCallableType());

@@ -1523,11 +1523,6 @@ class FrontendExpressionSemanticSupportTest {
         var literal = integerLiteral("1");
         var cases = List.of(
                 new RemainingExpressionCase(
-                        new PreloadExpression(stringLiteral("\"res://icon.svg\""), TINY),
-                        FrontendExpressionTypeStatus.DEFERRED,
-                        "Preload expression typing is deferred"
-                ),
-                new RemainingExpressionCase(
                         new GetNodeExpression("$Camera3D", TINY),
                         FrontendExpressionTypeStatus.DEFERRED,
                         "Get-node expression typing is deferred"
@@ -1617,6 +1612,33 @@ class FrontendExpressionSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, dictionaryResult.expressionType().status());
         assertEquals("Dictionary", dictionaryResult.expressionType().publishedType().getTypeName());
         assertNotNull(dictionaryResult.publishedContainerLiteralPlanOrNull());
+
+        // Preload is no longer deferred (D6): a string-literal path resolves to
+        // RESOLVED(Resource) without publishing a resolved call; a non-literal path fails with
+        // the dedicated literal requirement.
+        var preloadResult = support.resolveRemainingExplicitExpressionType(
+                new PreloadExpression(stringLiteral("\"res://icon.svg\""), TINY),
+                nestedResolver,
+                true,
+                false
+        );
+        assertTrue(preloadResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, preloadResult.expressionType().status());
+        assertEquals("Resource", preloadResult.expressionType().publishedType().getTypeName());
+        assertNull(preloadResult.publishedCallOrNull());
+
+        var dynamicPreloadResult = support.resolveRemainingExplicitExpressionType(
+                new PreloadExpression(identifier("dynamic_path"), TINY),
+                nestedResolver,
+                true,
+                false
+        );
+        assertTrue(dynamicPreloadResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, dynamicPreloadResult.expressionType().status());
+        assertTrue(
+                dynamicPreloadResult.expressionType().detailReason().contains("string literal"),
+                () -> "unexpected detail reason: " + dynamicPreloadResult.expressionType().detailReason()
+        );
 
         // Await is not a deferred remaining route: it owns a dedicated classifier
         // (`frontend_await_implementation.md` §8) and the generic bucket must reject it.

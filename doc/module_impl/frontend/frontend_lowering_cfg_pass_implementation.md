@@ -719,11 +719,12 @@ body-lowering 合同：
 当前仍保持 shell-only、compile-block 或 fail-fast 的部分包括：
 
 - `PARAMETER_DEFAULT_INIT` CFG / body lowering
-- `PreloadExpression`
 - `GetNodeExpression`
 - callable-value invocation
 - multi-key subscript lowering
 - `for`（compile gate 为 route-aware：registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker；`FrontendForRegion`、四个 `ForLoop*Item`、source/hidden slot registry、跨表验证与 body lowering（`declareForLoopSlots()` + init/should_continue/get/next processors、temp-then-commit）均已落地；完整合同见 `frontend_for_range_loop_implementation.md`）
+
+`PreloadExpression` 已进入 compile-ready body lowering 合同（sema 要求字符串字面量路径并发布 `RESOLVED(Resource)`；CFG 按 opaque leaf 建 `OpaqueExprValueItem`；body lowering 由专用 processor 改写为 `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` 指令对，与合成语言函数 `load` 的改写共享同一指令对），不再属于 shell-only / temporary compile-block surface；`const X = preload(...)` 仍随 class-constant 工作流整体拦截。
 
 `ArrayExpression` / `DictionaryExpression` / `ContainerLiteralItem` 已进入 compile-ready body lowering 合同（plan → `construct_container_literal`，见 `frontend_container_literal_implementation.md`），不再属于 shell-only / temporary compile-block surface；opaque 路径对 Array/Dictionary 仍 `REJECT`（dedicated-item-only）。
 

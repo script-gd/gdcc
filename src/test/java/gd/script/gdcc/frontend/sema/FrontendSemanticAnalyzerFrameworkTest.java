@@ -1223,7 +1223,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
     @Test
     void analyzeForCompileDefinesTheLoweringReadinessBoundary() throws Exception {
         // Shared analyze stays diagnostic-free; compile gate still blocks forms that are not compile-ready.
-        // Container literals and assert are compile-ready; keep preload as the compile-only intercept anchor.
+        // Container literals, assert and preload are compile-ready; keep get-node as the
+        // compile-only intercept anchor.
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", "compile_check_lowering_boundary.gd"), """
                 class_name CompileCheckLoweringBoundary
@@ -1233,6 +1234,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     [1]
                     assert(true)
                     preload("res://icon.svg")
+                    $Camera3D
                 """, new DiagnosticManager());
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
@@ -1246,8 +1248,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(compileResult.diagnostics().hasErrors());
         var compileBlocks = diagnosticsByCategory(compileResult.diagnostics(), "sema.compile_check");
         assertEquals(1, compileBlocks.size());
-        assertTrue(compileBlocks.getFirst().message().contains("Preload expression"));
+        assertTrue(compileBlocks.getFirst().message().contains("Get-node expression"));
         assertTrue(compileBlocks.stream().noneMatch(diagnostic -> diagnostic.message().contains("assert statement")));
+        assertTrue(compileBlocks.stream().noneMatch(diagnostic -> diagnostic.message().contains("Preload expression")));
         assertTrue(compileBlocks.stream().noneMatch(diagnostic -> diagnostic.message().contains("Array literal")));
         assertEquals(compileDiagnostics.snapshot(), compileResult.diagnostics());
     }

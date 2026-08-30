@@ -1739,17 +1739,16 @@ public final class CGenHelper {
         var lookupName = normalizeUtilityLookupName(functionName);
         if (context.classRegistry().isGdScriptLanguageFunction(lookupName)) {
             // Synthetic language functions bypass the `godot_` prefix: their runtime entry points
-            // are header-only `gdcc_*` helpers. The signature still comes from the shared
-            // registry pipeline, so a registered name always resolves one.
+            // are header-only `gdcc_*` helpers. Check the route-table mapping before the
+            // signature so an unmapped name (`load`, which frontend lowering must rewrite) fails
+            // fast with the D2 contract message even when the surrounding registry cannot parse
+            // the declared return metadata (e.g. a minimal test fixture without `Resource`).
+            var cName = requireGdScriptLanguageFunctionCName(lookupName);
             var signature = Objects.requireNonNull(
                     context.classRegistry().findUtilityFunctionSignature(lookupName),
                     "registered GDScript language function '" + lookupName + "' must expose a signature"
             );
-            return new UtilityCallResolution(
-                    lookupName,
-                    requireGdScriptLanguageFunctionCName(lookupName),
-                    signature
-            );
+            return new UtilityCallResolution(lookupName, cName, signature);
         }
         var signature = context.classRegistry().findUtilityFunctionSignature(lookupName);
         if (signature == null) {
