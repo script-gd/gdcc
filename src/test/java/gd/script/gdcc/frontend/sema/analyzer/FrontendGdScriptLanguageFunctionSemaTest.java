@@ -1,0 +1,225 @@
+package gd.script.gdcc.frontend.sema.analyzer;
+
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import gd.script.gdcc.frontend.parse.FrontendModule;
+import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.scope.ClassRegistry;
+import org.jetbrains.annotations.NotNull;
+import org.junit.jupiter.api.Test;
+
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Predicate;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/// Sema contract for the synthetic GDScript language functions `len`/`char`/`ord`:
+/// direct bare calls resolve through the shared utility pipeline with Godot 4.5 signatures,
+/// user-defined same-name functions shadow the globals, and first-class value references such as
+/// `var f = len` are rejected with a `sema.expression_resolution` diagnostic.
+class FrontendGdScriptLanguageFunctionSemaTest {
+    @Test
+    void directCallsResolveWithGodotSignatures() throws Exception {
+        var analyzed = analyze(
+                "language_function_calls.gd",
+                """
+                        class_name LanguageFunctionCalls
+                        extends Node
+                        
+                        func run():
+                            var n = len("abc")
+                            var s = char(65)
+                            var o = ord("A")
+                        """
+        );
+
+        assertExpressionType(analyzed, "run", "n", "int");
+        assertExpressionType(analyzed, "run", "s", "String");
+        assertExpressionType(analyzed, "run", "o", "int");
+        assertEquals(
+                List.of(),
+                errorDiagnostics(analyzed),
+                "direct language-function calls must not produce error diagnostics"
+        );
+    }
+
+    @Test
+    void argumentTypeMismatchProducesExpressionResolutionDiagnostic() throws Exception {
+        var analyzed = analyze(
+                "language_function_bad_arg.gd",
+                """
+                        class_name LanguageFunctionBadArg
+                        extends Node
+                        
+                        func run():
+                            var bad = char("s")
+                        """
+        );
+
+        var diagnostics = expressionResolutionDiagnostics(analyzed);
+        assertEquals(1, diagnostics.size(), () -> "unexpected diagnostics: " + describe(analyzed));
+    }
+
+    @Test
+    void userDefinedFunctionShadowsLanguageFunction() throws Exception {
+        var analyzed = analyze(
+                "language_function_shadow.gd",
+                """
+                        class_name LanguageFunctionShadow
+                        extends Node
+                        
+                        func len(a) -> String:
+                            return a
+                        
+                        func run():
+                            var n = len("abc")
+                        """
+        );
+
+        // The class-scope method wins over the global synthetic entry, matching Godot's scoping;
+        // the String return type (vs the synthetic `int`) proves which overload bound.
+        assertExpressionType(analyzed, "run", "n", "String");
+        assertEquals(
+                List.of(),
+                errorDiagnostics(analyzed),
+                "shadowed language-function call must not produce error diagnostics"
+        );
+    }
+
+    @Test
+    void firstClassReferenceToLanguageFunctionIsRejected() throws Exception {
+        var analyzed = analyze(
+                "language_function_first_class.gd",
+                """
+                        class_name LanguageFunctionFirstClass
+                        extends Node
+                        
+                        func run():
+                            var f = len
+                        """
+        );
+
+        var diagnostics = expressionResolutionDiagnostics(analyzed);
+        assertEquals(1, diagnostics.size(), () -> "unexpected diagnostics: " + describe(analyzed));
+        assertTrue(diagnostics.getFirst().message().contains("'len'"));
+        assertTrue(diagnostics.getFirst().message().contains("first-class value"));
+    }
+
+    @Test
+    void firstClassReferenceToRegularUtilityStillResolvesToCallable() throws Exception {
+        // Regression guard: the ban targets synthetic language functions only; regular extension
+        // utilities keep publishing `Callable` for value positions.
+        var analyzed = analyze(
+                "utility_first_class.gd",
+                """
+                        class_name UtilityFirstClass
+                        extends Node
+                        
+                        func run():
+                            var f = print
+                        """
+        );
+
+        assertExpressionType(analyzed, "run", "f", "Callable");
+        assertEquals(List.of(), expressionResolutionDiagnostics(analyzed));
+    }
+
+    private static void assertExpressionType(
+            @NotNull AnalyzedScript analyzed,
+            @NotNull String functionName,
+            @NotNull String variableName,
+            @NotNull String expectedTypeName
+    ) {
+        var function = findNode(analyzed.ast(), FunctionDeclaration.class, f -> f.name().equals(functionName));
+        var declaration = findNode(function, VariableDeclaration.class, v -> v.name().equals(variableName));
+        var initializer = declaration.value();
+        assertNotNull(initializer, "variable '" + variableName + "' must have an initializer");
+        var type = analyzed.analysisData().expressionTypes().get(initializer);
+        assertNotNull(type, "no published expression type for '" + variableName + "' initializer");
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, type.status());
+        assertNotNull(type.publishedType());
+        assertEquals(expectedTypeName, type.publishedType().getTypeName());
+    }
+
+    private static @NotNull List<FrontendDiagnostic> expressionResolutionDiagnostics(@NotNull AnalyzedScript analyzed) {
+        return analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.expression_resolution"))
+                .toList();
+    }
+
+    private static @NotNull List<FrontendDiagnostic> errorDiagnostics(@NotNull AnalyzedScript analyzed) {
+        return analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                .toList();
+    }
+
+    private static @NotNull String describe(@NotNull AnalyzedScript analyzed) {
+        return analyzed.analysisData().diagnostics().asList().stream()
+                .map(diagnostic -> diagnostic.category() + ": " + diagnostic.message())
+                .toList()
+                .toString();
+    }
+
+    private static @NotNull AnalyzedScript analyze(
+            @NotNull String fileName,
+            @NotNull String source
+    ) throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var parserService = new GdScriptParserService();
+        var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
+        var analysisData = new FrontendSemanticAnalyzer().analyze(
+                new FrontendModule("test_module", List.of(unit), Map.of()),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        return new AnalyzedScript(unit.ast(), analysisData);
+    }
+
+    private static <T extends Node> @NotNull T findNode(
+            @NotNull Node root,
+            @NotNull Class<T> nodeType,
+            @NotNull Predicate<T> predicate
+    ) {
+        var matches = new ArrayList<T>();
+        collectMatchingNodes(root, nodeType, predicate, matches);
+        return matches.stream()
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Node not found: " + nodeType.getSimpleName()));
+    }
+
+    private static <T extends Node> void collectMatchingNodes(
+            @NotNull Node node,
+            @NotNull Class<T> nodeType,
+            @NotNull Predicate<T> predicate,
+            @NotNull List<T> matches
+    ) {
+        if (nodeType.isInstance(node)) {
+            var candidate = nodeType.cast(node);
+            if (predicate.test(candidate)) {
+                matches.add(candidate);
+            }
+        }
+        for (var child : node.getChildren()) {
+            collectMatchingNodes(child, nodeType, predicate, matches);
+        }
+    }
+
+    private record AnalyzedScript(
+            @NotNull Node ast,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+    }
+}
