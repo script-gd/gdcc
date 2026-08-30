@@ -959,8 +959,8 @@ public final class FrontendExpressionSemanticSupport {
         return rootOutcome(FrontendExpressionType.deferred(detailReason));
     }
 
-    /// Dedicated `preload(path)` semantics (design D6): the path must be a string literal and is
-    /// passed through to `ResourceLoader.load` verbatim at the evaluation point (no compile-time
+    /// Dedicated `preload(path)` semantics: the path must be a string literal and is passed
+    /// through to `ResourceLoader.load` verbatim at the evaluation point (no compile-time
     /// relative-path normalization — an intentional difference from Godot's compile-time preload).
     /// Success publishes `RESOLVED(Resource)`; no `FrontendResolvedCall` is published because
     /// lowering rewrites the opaque item into the singleton call pair directly, keeping the
@@ -1527,7 +1527,7 @@ public final class FrontendExpressionSemanticSupport {
                 var selected = overloadSelection.selected();
                 // Synthetic `range` is vararg with zero fixed parameters (matching Godot's
                 // MethodInfo), so generic vararg matching would accept any argument count.
-                // Gate the Godot 1..3 arity here instead of leaking `range()` to runtime (D8).
+                // Gate the Godot 1..3 arity here instead of leaking `range()` to runtime.
                 if (isSyntheticRangeCall(bareCallee) && (arguments.isEmpty() || arguments.size() > 3)) {
                     var arityReason = "GDScript language function 'range' expects 1 to 3 argument(s), got "
                             + arguments.size();

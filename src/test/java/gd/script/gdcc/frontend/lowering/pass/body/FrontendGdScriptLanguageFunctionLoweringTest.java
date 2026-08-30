@@ -39,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Body-lowering contract for the synthetic GDScript language functions and `preload`:
 /// `len`/`char`/`ord`/`range`/`is_instance_of` lower to `call_global` with the bare function name
 /// (backend routing to `gdcc_*` is a backend concern), while `load`/`preload` rewrite to the
-/// `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` pair (design D6).
+/// `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` pair.
 /// Arguments whose static type is not Variant-assignable are packed through `pack_variant`
 /// before the call.
 class FrontendGdScriptLanguageFunctionLoweringTest {
@@ -148,7 +148,7 @@ class FrontendGdScriptLanguageFunctionLoweringTest {
         );
 
         var call = requireOnly(lowered, CallGlobalInsn.class);
-        // Hard boundary (D8): the global function must never lower to the `x is T` instruction.
+        // Hard boundary: the global function must never lower to the `x is T` instruction.
         assertEquals(
                 0,
                 count(lowered, IsInstanceOfInsn.class),
@@ -199,7 +199,7 @@ class FrontendGdScriptLanguageFunctionLoweringTest {
                         """
         );
 
-        // Design D6: synthetic `load` never reaches the backend as `call_global`; it rewrites to
+        // Synthetic `load` never reaches the backend as `call_global`; it rewrites to
         // `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` so the ordinary
         // engine instance dispatch (with default-argument completion) handles it.
         assertEquals(
@@ -253,7 +253,7 @@ class FrontendGdScriptLanguageFunctionLoweringTest {
         var call = requireOnly(lowered, CallMethodInsn.class);
         var pathLiteral = requireOnly(lowered, LiteralStringInsn.class);
         assertAll(
-                // The literal path is decoded verbatim (no compile-time normalization, D6).
+                // The literal path is decoded verbatim (no compile-time normalization).
                 () -> assertEquals("res://icon.svg", pathLiteral.value()),
                 () -> assertEquals("@GlobalScope", loadStatic.className()),
                 () -> assertEquals("ResourceLoader", loadStatic.staticName()),

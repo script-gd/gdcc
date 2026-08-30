@@ -1613,9 +1613,9 @@ class FrontendExpressionSemanticSupportTest {
         assertEquals("Dictionary", dictionaryResult.expressionType().publishedType().getTypeName());
         assertNotNull(dictionaryResult.publishedContainerLiteralPlanOrNull());
 
-        // Preload is no longer deferred (D6): a string-literal path resolves to
-        // RESOLVED(Resource) without publishing a resolved call; a non-literal path fails with
-        // the dedicated literal requirement.
+        // Preload resolves at sema: a string-literal path resolves to RESOLVED(Resource) without
+        // publishing a resolved call; a non-literal path fails with the dedicated literal
+        // requirement.
         var preloadResult = support.resolveRemainingExplicitExpressionType(
                 new PreloadExpression(stringLiteral("\"res://icon.svg\""), TINY),
                 nestedResolver,

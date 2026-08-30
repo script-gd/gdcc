@@ -259,12 +259,12 @@ static inline godot_Array gdcc_range(const godot_Variant **argv, godot_int argc)
     return result;
 }
 
-/// `is_instance_of(value, type)` — Godot 4.5 semantics, v1 scope (plan R2): only the `TYPE_*`
+/// `is_instance_of(value, type)` — Godot 4.5 semantics, current scope: only the `TYPE_*`
 /// integer-enum form of `type` is supported; the result is `value`'s Variant type compared
 /// against the enum. The class/script Object form prints a runtime error and yields `false`.
 /// Note the INT path intentionally performs no object-liveness probing, matching Godot.
 /// This helper is strictly for the global function; the `x is T` expression lowers to the
-/// separate `gdcc_is_instance_of_object_*` helper family (hard boundary, design D8).
+/// separate `gdcc_is_instance_of_object_*` helper family (hard boundary).
 static inline godot_bool gdcc_is_instance_of_global(const godot_Variant *value, const godot_Variant *type) {
     if (value == NULL || type == NULL) {
         GDCC_PRINT_RUNTIME_ERROR(

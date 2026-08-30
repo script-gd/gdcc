@@ -33,16 +33,15 @@ public final class CGenHelper {
     private static final String GODOT_UTILITY_PREFIX = "godot_";
     private static final String VARIANT_WRITEBACK_HELPER_NAME = "gdcc_variant_requires_writeback";
     /// Static route table from synthetic GDScript language function names to their `gdcc_*`
-    /// runtime helper (design D2 of `gdscript_language_functions_assert_preload_plan.md`).
-    /// `load` is deliberately absent: frontend lowering rewrites it into a ResourceLoader
-    /// singleton call (D6), so it must never reach `call_global` routing.
+    /// runtime helper. `load` is deliberately absent: frontend lowering rewrites it into a
+    /// ResourceLoader singleton call, so it must never reach `call_global` routing.
     private static final Map<String, String> GDSCRIPT_LANGUAGE_FUNCTION_C_NAMES = Map.of(
             "len", "gdcc_len",
             "char", "gdcc_char",
             "ord", "gdcc_ord",
             "range", "gdcc_range",
             // Named `*_global` to keep the hard boundary against the `x is T` expression
-            // helper family `gdcc_is_instance_of_object_*` (design D8).
+            // helper family `gdcc_is_instance_of_object_*`.
             "is_instance_of", "gdcc_is_instance_of_global"
     );
     private static final FunctionSignature VARIANT_WRITEBACK_HELPER_SIGNATURE = new FunctionSignature(
@@ -1741,7 +1740,7 @@ public final class CGenHelper {
             // Synthetic language functions bypass the `godot_` prefix: their runtime entry points
             // are header-only `gdcc_*` helpers. Check the route-table mapping before the
             // signature so an unmapped name (`load`, which frontend lowering must rewrite) fails
-            // fast with the D2 contract message even when the surrounding registry cannot parse
+            // fast with a clear contract message even when the surrounding registry cannot parse
             // the declared return metadata (e.g. a minimal test fixture without `Resource`).
             var cName = requireGdScriptLanguageFunctionCName(lookupName);
             var signature = Objects.requireNonNull(
@@ -1757,8 +1756,8 @@ public final class CGenHelper {
         return new UtilityCallResolution(lookupName, GODOT_UTILITY_PREFIX + lookupName, signature);
     }
 
-    /// Per-name contract (design D2): a registered synthetic GDScript language function must map
-    /// to a `gdcc_*` helper. A missing entry means the registration landed without its
+    /// Per-name contract: a registered synthetic GDScript language function must map to a
+    /// `gdcc_*` helper. A missing entry means the registration landed without its
     /// backend/runtime counterpart (or, for `load`, that lowering failed to rewrite the call);
     /// fail fast instead of silently emitting a nonexistent `godot_*` wrapper.
     static @NotNull String requireGdScriptLanguageFunctionCName(@NotNull String lookupName) {

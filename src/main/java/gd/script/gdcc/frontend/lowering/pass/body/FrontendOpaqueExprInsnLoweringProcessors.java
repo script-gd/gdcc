@@ -339,8 +339,8 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
         }
     }
 
-    /// Lowers `preload("literal")` as the `ResourceLoader.load` evaluation-point call (design
-    /// D6): `load_static "@GlobalScope" "ResourceLoader"` followed by `call_method "load"`. Sema
+    /// Lowers `preload("literal")` as the `ResourceLoader.load` evaluation-point call:
+    /// `load_static "@GlobalScope" "ResourceLoader"` followed by `call_method "load"`. Sema
     /// already rejected non-literal paths and published `RESOLVED(Resource)`; the path string is
     /// passed through verbatim with no compile-time normalization, and the literal is read
     /// straight from the AST (the opaque item carries no child operands by construction).

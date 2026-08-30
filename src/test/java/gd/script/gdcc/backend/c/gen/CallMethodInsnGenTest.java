@@ -193,7 +193,7 @@ class CallMethodInsnGenTest {
     @Test
     @DisplayName("CALL_METHOD should dispatch ResourceLoader.load with singleton receiver and default completion")
     void callMethodResourceLoaderLoadShouldMaterializeDefaultsAndOwnResult() throws java.io.IOException {
-        // This is the instruction pair the frontend `load`/`preload` rewrite (design D6) emits:
+        // This is the instruction pair the frontend `load`/`preload` rewrite emits:
         // `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load" $loader $path`.
         // The real API dump supplies the singleton registration and the exact method metadata
         // (`type_hint=""`, `cache_mode=1` defaults; hash 3358495409).

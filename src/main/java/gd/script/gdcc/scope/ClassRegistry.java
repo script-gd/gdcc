@@ -82,8 +82,8 @@ public final class ClassRegistry implements Scope {
     private final Map<String, ExtensionGdClass> gdClassByName = new HashMap<>();
     /// Global utility functions.
     private final Map<String, ExtensionUtilityFunction> utilityByName = new HashMap<>();
-    /// Compiler-synthesized GDScript language functions (`len`/`char`/`ord`; later phases add
-    /// `range`/`is_instance_of`/`load`). Godot registers them from the GDScript module itself, so
+    /// Compiler-synthesized GDScript language functions (`len`/`char`/`ord`/`range`/
+    /// `is_instance_of`/`load`). Godot registers them from the GDScript module itself, so
     /// they never appear in the GDExtension API dump and no generated `godot_*` wrapper exists.
     ///
     /// Kept separate from [utilityByName] on purpose: name/signature resolution queries consult
@@ -176,21 +176,21 @@ public final class ClassRegistry implements Scope {
     /// Synthetic records carry `hash=0`: the only hash consumers (`construct_standalone_callable`
     /// via [findUtilityFunction], `godot_utility` wrapper generation via
     /// [getExtensionUtilityFunctionList]) read the raw extension table and never see this map.
-    /// Registration is incremental per implementation phase; the backend `gdcc_*` route table and
-    /// runtime helpers must land in the same phase as the names they serve.
+    /// When adding a new language function, its backend `gdcc_*` route-table entry and runtime
+    /// helper must land together with the registration.
     private void registerSyntheticGdScriptLanguageFunctions() {
         registerSyntheticGdScriptLanguageFunction("len", "int", false, "var", "Variant");
         registerSyntheticGdScriptLanguageFunction("char", "String", false, "code", "int");
         registerSyntheticGdScriptLanguageFunction("ord", "int", false, "char", "String");
         // `range` mirrors Godot's MethodInfo: vararg with zero fixed parameters; the elements
-        // are always int, but the declared return stays an unparameterized `Array` (D8).
+        // are always int, but the declared return stays an unparameterized `Array`.
         // Arity (1..3) is enforced by the frontend diagnostic layer since vararg matching
         // accepts any count.
         registerSyntheticGdScriptLanguageFunction("range", "Array", true);
         registerSyntheticGdScriptLanguageFunction(
                 "is_instance_of", "bool", false, "value", "Variant", "type", "Variant");
         // `load` mirrors Godot's MethodInfo, but never enters the backend `gdcc_*` route table:
-        // frontend lowering rewrites the call to a `ResourceLoader` singleton instance call (D6),
+        // frontend lowering rewrites the call to a `ResourceLoader` singleton instance call,
         // so a `call_global "load"` reaching the backend indicates a lowering gap and must fail
         // fast there.
         registerSyntheticGdScriptLanguageFunction("load", "Resource", false, "path", "String");

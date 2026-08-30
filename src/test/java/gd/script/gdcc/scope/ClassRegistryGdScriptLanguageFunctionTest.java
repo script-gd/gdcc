@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Contract tests for the compiler-synthesized GDScript language function registry
-/// (`len`/`char`/`ord` in the current phase). These functions are registered by Godot's
+/// (`len`/`char`/`ord`/`range`/`is_instance_of`/`load`). These functions are registered by Godot's
 /// GDScript module rather than the GDExtension API, so the registry synthesizes their metadata
 /// and routes resolution/signature queries to the synthetic table while keeping raw
 /// extension-metadata consumers (`findUtilityFunction`/`getExtensionUtilityFunctionList`)
@@ -73,7 +73,7 @@ class ClassRegistryGdScriptLanguageFunctionTest {
                 () -> assertEquals("int", len.returnType()),
                 () -> assertEquals("String", chr.returnType()),
                 () -> assertEquals("int", ord.returnType()),
-                // Deliberately unparameterized `Array` (Godot MethodInfo alignment, D8).
+                // Deliberately unparameterized `Array` (Godot MethodInfo alignment).
                 () -> assertEquals("Array", range.returnType()),
                 () -> assertEquals("bool", isInstanceOf.returnType()),
                 () -> assertEquals("Resource", load.returnType()),

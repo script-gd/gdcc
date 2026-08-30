@@ -492,7 +492,7 @@ writable / compatibility 规则为：
 - `GetNodeExpression`
 - `PatternBindingExpression`（普通 expr typing 仍 deferred；match pattern 上下文由 pattern-context 分派接管，永不触发该分支）
 
-`PreloadExpression` **已不在** deferred 集合中：shared semantic 要求字符串字面量路径并发布 `RESOLVED(Resource)`（非字面量发 `sema.expression_resolution`），body lowering 由专用 opaque processor 改写为 `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` 指令对（见 `gdscript_language_functions_assert_preload_plan.md` D6）。
+`PreloadExpression` **已不在** deferred 集合中：shared semantic 要求字符串字面量路径并发布 `RESOLVED(Resource)`（非字面量发 `sema.expression_resolution`），body lowering 由专用 opaque processor 改写为 `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` 指令对（见 `gdscript_language_functions_implementation.md` §7）。
 
 `ConditionalExpression` **已不在** deferred 集合中：shared semantic 经专用 `resolveConditionalExpressionType` 发布双臂合并类型（binary 式 root 重持有诊断）；CFG value 语境走 branch-result merge、condition 语境走纯控制流展开；body lowering 经 `merge_write` boundary 物化；compile gate 不再为其建立显式 blocker（见 `frontend_conditional_expression_implementation.md`）。
 

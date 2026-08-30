@@ -498,8 +498,8 @@ class CallMethodInsnGenEngineTest {
         return clazz;
     }
 
-    /// Probe class exposing the frontend `load`/`preload` rewrite output (design D6:
-    /// `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"`) as engine-callable
+    /// Probe class exposing the frontend `load`/`preload` rewrite output
+    /// (`load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"`) as engine-callable
     /// methods, plus a fire-and-forget discard probe exercising the OWNED-resource release.
     private static LirClassDef newResourceLoaderProbeClass() {
         var clazz = new LirClassDef("GDResourceLoaderLoadNode", "Node");

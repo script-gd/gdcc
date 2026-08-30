@@ -379,9 +379,10 @@ class CallGlobalInsnGenEngineTest {
         assertFalse(combinedOutput.contains("check failed"), "No range/is_instance_of check should fail.\nOutput:\n" + combinedOutput);
     }
 
-    /// Probe class exposing phase-D language functions as engine-callable methods. `range` is
-    /// vararg, so one probe per arity is exposed; `probe_range0` exists to exercise the helper's
-    /// defensive arity re-check (hand-written IR can bypass the frontend diagnostic).
+    /// Probe class exposing the global `range`/`is_instance_of` language functions as
+    /// engine-callable methods. `range` is vararg, so one probe per arity is exposed;
+    /// `probe_range0` exists to exercise the helper's defensive arity re-check (hand-written IR
+    /// can bypass the frontend diagnostic).
     private static LirClassDef newRangeIsInstanceOfProbeClass() {
         var clazz = new LirClassDef("GDRangeIsInstanceOfNode", "Node");
         clazz.setSourceFile("call_global_range_is_instance_of_engine.gd");

@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// calls resolve through the shared utility pipeline with Godot 4.5 signatures, user-defined
 /// same-name functions shadow the globals, and first-class value references such as `var f = len`
 /// are rejected with a `sema.expression_resolution` diagnostic. `preload` requires a string
-/// literal path and publishes `RESOLVED(Resource)` without entering the resolved-call table (D6).
+/// literal path and publishes `RESOLVED(Resource)` without entering the resolved-call table.
 class FrontendGdScriptLanguageFunctionSemaTest {
     @Test
     void directCallsResolveWithGodotSignatures() throws Exception {
@@ -370,8 +370,8 @@ class FrontendGdScriptLanguageFunctionSemaTest {
                 errorDiagnostics(analyzed),
                 "literal preload must not produce error diagnostics: " + describe(analyzed)
         );
-        // Design D6: preload publishes no FrontendResolvedCall; the resolved-call key space stays
-        // frozen to CallExpression/AttributeCallStep.
+        // preload publishes no FrontendResolvedCall; the resolved-call key space stays frozen to
+        // CallExpression/AttributeCallStep.
         var preloadCallKeys = analyzed.analysisData().resolvedCalls().keySet().stream()
                 .filter(PreloadExpression.class::isInstance)
                 .toList();

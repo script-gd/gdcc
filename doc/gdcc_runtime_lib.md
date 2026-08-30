@@ -118,7 +118,8 @@ extend the runtime-provided `godot_*` surface.
   - `gdcc_is_instance_of_global(value, type)`: global `is_instance_of()` — v1 supports only the
     `TYPE_*` integer-enum form of `type` (compared against `value`'s Variant type; out-of-range
     enum values print a runtime error and return `false`); class/script Object type arguments
-    print a runtime error and return `false` (see plan R2). Hard boundary: the `x is T`
+    print a runtime error and return `false` (class-value representation is not designed yet).
+    Hard boundary: the `x is T`
     expression uses the separate `gdcc_is_instance_of_object_*` helper family and never this one.
   - `load`/`preload` deliberately have **no** `gdcc_*` helper: frontend lowering rewrites both to
     the `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` instruction pair, so

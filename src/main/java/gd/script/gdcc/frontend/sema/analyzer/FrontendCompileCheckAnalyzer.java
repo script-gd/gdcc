@@ -671,7 +671,7 @@ public class FrontendCompileCheckAnalyzer {
                 // construct_container_literal (see frontend_container_literal_implementation.md).
                 // PreloadExpression: compile-ready — sema publishes RESOLVED(Resource) for string
                 // literals and FAILED otherwise, so the generic published-fact scan gates it;
-                // lowering rewrites it to the ResourceLoader singleton call pair (design D6).
+                // lowering rewrites it to the ResourceLoader singleton call pair.
                 case GetNodeExpression getNodeExpression -> reportExplicitCompileBlock(
                         getNodeExpression,
                         expressionCompileBlockedMessage("Get-node expression")

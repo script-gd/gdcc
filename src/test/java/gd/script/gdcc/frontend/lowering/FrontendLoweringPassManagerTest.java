@@ -280,9 +280,8 @@ class FrontendLoweringPassManagerTest {
 
     @Test
     void lowerToContextHandlesPreloadPropertyInitializerEndToEnd() throws Exception {
-        // The main phase-E use case: class-level `var icon: Resource = preload("res://...")`
-        // rides the supported property-initializer island and lowers to the ResourceLoader
-        // singleton call pair (design D6).
+        // Class-level `var icon: Resource = preload("res://...")` rides the supported
+        // property-initializer island and lowers to the ResourceLoader singleton call pair.
         var diagnostics = new DiagnosticManager();
         var manager = new FrontendLoweringPassManager();
         var module = parseModule(

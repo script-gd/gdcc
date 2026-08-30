@@ -855,10 +855,10 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             // coroutines, so the detach on that branch is a no-op — hooking both branches keeps
             // static fire-and-forget on the same discipline as instance without special-casing.
             if (resolvedCall.receiverType() == null) {
-                // Synthetic `load` never reaches the backend as `call_global` (design D6): rewrite
-                // it to the ResourceLoader singleton instance call pair so the ordinary engine
-                // dispatch (default-argument completion included) handles it. The declaration-site
-                // check keeps user-defined `load` shadows on their own static/instance route.
+                // Synthetic `load` never reaches the backend as `call_global`: rewrite it to the
+                // ResourceLoader singleton instance call pair so the ordinary engine dispatch
+                // (default-argument completion included) handles it. The declaration-site check
+                // keeps user-defined `load` shadows on their own static/instance route.
                 if (isSyntheticLoadCall(session, resolvedCall)) {
                     var loaderSlotId = session.allocateGdScriptLanguageFunctionTemp(
                             "resource_loader",
