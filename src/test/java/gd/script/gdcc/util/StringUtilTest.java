@@ -110,6 +110,67 @@ public class StringUtilTest {
         );
     }
 
+    @Test
+    public void decodeNodePathLexemeNormalizesPayload() {
+        assertAll(
+                () -> assertEquals("a/b", StringUtil.decodeNodePathLexeme("^\"a/b\"")),
+                () -> assertEquals("a\"b", StringUtil.decodeNodePathLexeme("^\"a\\\"b\"")),
+                () -> assertEquals("A", StringUtil.decodeNodePathLexeme("^\"\\u0041\"")),
+                () -> assertEquals("", StringUtil.decodeNodePathLexeme("^\"\""))
+        );
+    }
+
+    @Test
+    public void decodeNodePathLexemeRejectsMalformedLexemes() {
+        assertAll(
+                // Missing `^` prefix, missing quotes, and unterminated quoting all fail fast.
+                () -> assertMalformedNodePathLexeme("\"a/b\""),
+                () -> assertMalformedNodePathLexeme("^a/b"),
+                () -> assertMalformedNodePathLexeme("^\""),
+                () -> assertMalformedNodePathLexeme("^\"unterminated"),
+                () -> assertMalformedNodePathLexeme("&\"name\""),
+                () -> assertMalformedNodePathLexeme("plain"),
+                () -> assertMalformedNodePathLexeme("")
+        );
+    }
+
+    @Test
+    public void decodeGetNodePathLexemeNormalizesShorthandForms() {
+        assertAll(
+                () -> assertEquals("Camera3D", StringUtil.decodeGetNodePathLexeme("$Camera3D")),
+                () -> assertEquals("A B", StringUtil.decodeGetNodePathLexeme("$\"A B\"")),
+                () -> assertEquals("/root/X", StringUtil.decodeGetNodePathLexeme("$/root/X")),
+                // `%` survives decoding: the runtime unique-name lookup needs the prefix.
+                () -> assertEquals("%Foo", StringUtil.decodeGetNodePathLexeme("%Foo")),
+                () -> assertEquals("%A B", StringUtil.decodeGetNodePathLexeme("%\"A B\"")),
+                () -> assertEquals("a\"b", StringUtil.decodeGetNodePathLexeme("$\"a\\\"b\""))
+        );
+    }
+
+    @Test
+    public void decodeGetNodePathLexemeRejectsMalformedLexemes() {
+        assertAll(
+                () -> assertMalformedGetNodeLexeme("$"),
+                () -> assertMalformedGetNodeLexeme("%"),
+                () -> assertMalformedGetNodeLexeme("$\""),
+                () -> assertMalformedGetNodeLexeme("$\"unterminated"),
+                () -> assertMalformedGetNodeLexeme("%\"unterminated"),
+                () -> assertMalformedGetNodeLexeme("plain"),
+                () -> assertMalformedGetNodeLexeme("^\"a/b\""),
+                () -> assertMalformedGetNodeLexeme("")
+        );
+    }
+
+    private static void assertMalformedNodePathLexeme(String lexeme) {
+        var error = assertThrows(IllegalArgumentException.class, () -> StringUtil.decodeNodePathLexeme(lexeme));
+        assertEquals("Invalid GDScript node path lexeme: " + lexeme, error.getMessage());
+    }
+
+    private static void assertMalformedGetNodeLexeme(String lexeme) {
+        var error = assertThrows(IllegalArgumentException.class, () -> StringUtil.decodeGetNodePathLexeme(lexeme));
+        assertEquals("Invalid GDScript get-node lexeme: " + lexeme, error.getMessage());
+    }
+
     private static void assertMalformedLexeme(String lexeme) {
         var error = assertThrows(IllegalArgumentException.class, () -> StringUtil.decodeGdStringLexeme(lexeme));
         assertEquals("Invalid GDScript string lexeme: " + lexeme, error.getMessage());

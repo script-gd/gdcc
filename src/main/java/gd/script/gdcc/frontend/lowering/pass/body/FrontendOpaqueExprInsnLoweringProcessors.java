@@ -10,6 +10,7 @@ import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralFloatInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralNilInsn;
+import gd.script.gdcc.lir.insn.LiteralNodePathInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.ConstructCallableInsn;
@@ -220,6 +221,10 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                 case "string_name" -> block.appendNonTerminatorInstruction(new LiteralStringNameInsn(
                         resultSlotId,
                         StringUtil.decodeGdStringLexeme(sourceText)
+                ));
+                case "node_path" -> block.appendNonTerminatorInstruction(new LiteralNodePathInsn(
+                        resultSlotId,
+                        StringUtil.decodeNodePathLexeme(sourceText)
                 ));
                 case "true" -> block.appendNonTerminatorInstruction(new LiteralBoolInsn(resultSlotId, true));
                 case "false" -> block.appendNonTerminatorInstruction(new LiteralBoolInsn(resultSlotId, false));

@@ -64,6 +64,7 @@ import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralFloatInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralNilInsn;
+import gd.script.gdcc.lir.insn.LiteralNodePathInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
@@ -103,6 +104,7 @@ import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
@@ -8951,6 +8953,404 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
                 () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class)),
                 () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersNodePathLiteralReturnIntoNormalizedPayloadWhileAstKeepsRawLexeme() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_node_path_literal.gd",
+                """
+                        class_name BodyInsnNodePathLiteral
+                        extends RefCounted
+                        
+                        func ping() -> NodePath:
+                            return ^"Scene Child"
+                        """,
+                Map.of("BodyInsnNodePathLiteral", "RuntimeBodyInsnNodePathLiteral"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNodePathLiteral",
+                "ping"
+        );
+        var sourceLiteral = findLiteralExpression(
+                prepared.module().units().getFirst().ast(),
+                "^\"Scene Child\""
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var pingFunction = pingContext.targetFunction();
+        var literalInsn = requireOnlyInstruction(pingFunction, LiteralNodePathInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pingFunction);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("^\"Scene Child\"", sourceLiteral.sourceText()),
+                () -> assertEquals("Scene Child", literalInsn.value()),
+                () -> assertNotEquals(sourceLiteral.sourceText(), literalInsn.value()),
+                () -> assertEquals(GdNodePathType.NODE_PATH, requireVariableType(pingFunction, literalInsn.resultId())),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersNodePathLiteralPropertyInitializer() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_property_node_path_literal.gd",
+                """
+                        class_name BodyInsnPropertyNodePathLiteral
+                        extends RefCounted
+                        
+                        var spawn_path: NodePath = ^"Spawns/Enemy"
+                        """,
+                Map.of("BodyInsnPropertyNodePathLiteral", "RuntimeBodyInsnPropertyNodePathLiteral"),
+                true
+        );
+        var initContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBodyInsnPropertyNodePathLiteral",
+                "_field_init_spawn_path"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var initFunction = initContext.targetFunction();
+        var literalInsn = requireOnlyInstruction(initFunction, LiteralNodePathInsn.class);
+        var returnInsn = requireOnlyReturnInsn(initFunction);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("Spawns/Enemy", literalInsn.value()),
+                () -> assertEquals(GdNodePathType.NODE_PATH, requireVariableType(initFunction, literalInsn.resultId())),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersNodePathLiteralStaticVarInitializer() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_static_node_path_literal.gd",
+                """
+                        class_name BodyInsnStaticNodePathLiteral
+                        extends RefCounted
+                        
+                        static var shared_path: NodePath = ^"Shared/Path"
+                        """,
+                Map.of("BodyInsnStaticNodePathLiteral", "RuntimeBodyInsnStaticNodePathLiteral"),
+                true
+        );
+        var initContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBodyInsnStaticNodePathLiteral",
+                "_field_init_shared_path"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var initFunction = initContext.targetFunction();
+        var literalInsn = requireOnlyInstruction(initFunction, LiteralNodePathInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(initFunction.isStatic()),
+                () -> assertEquals(0, initFunction.getParameterCount()),
+                () -> assertEquals("Shared/Path", literalInsn.value()),
+                () -> assertEquals(GdNodePathType.NODE_PATH, requireVariableType(initFunction, literalInsn.resultId()))
+        );
+    }
+
+    @Test
+    void runLowersNodePathLiteralAsEngineCallArgument() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_node_path_call_arg.gd",
+                """
+                        class_name BodyInsnNodePathCallArg
+                        extends Node
+                        
+                        func ping() -> Node:
+                            return get_node_or_null(^"SceneChild")
+                        """,
+                Map.of("BodyInsnNodePathCallArg", "RuntimeBodyInsnNodePathCallArg"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNodePathCallArg",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var pingFunction = pingContext.targetFunction();
+        var literalInsn = requireOnlyInstruction(pingFunction, LiteralNodePathInsn.class);
+        var callInsn = requireOnlyInstruction(pingFunction, CallMethodInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pingFunction);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("SceneChild", literalInsn.value()),
+                () -> assertEquals(GdNodePathType.NODE_PATH, requireVariableType(pingFunction, literalInsn.resultId())),
+                () -> assertEquals("get_node_or_null", callInsn.methodName()),
+                () -> assertEquals(literalInsn.resultId(), onlyVariableOperandId(callInsn.args())),
+                () -> assertEquals(callInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersNodePathLiteralAsHasNodeArgument() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_node_path_has_node.gd",
+                """
+                        class_name BodyInsnNodePathHasNode
+                        extends Node
+                        
+                        func ping() -> bool:
+                            return has_node(^"SceneChild")
+                        """,
+                Map.of("BodyInsnNodePathHasNode", "RuntimeBodyInsnNodePathHasNode"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNodePathHasNode",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var pingFunction = pingContext.targetFunction();
+        var literalInsn = requireOnlyInstruction(pingFunction, LiteralNodePathInsn.class);
+        var callInsn = requireOnlyInstruction(pingFunction, CallMethodInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pingFunction);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("SceneChild", literalInsn.value()),
+                () -> assertEquals("has_node", callInsn.methodName()),
+                () -> assertEquals(literalInsn.resultId(), onlyVariableOperandId(callInsn.args())),
+                () -> assertEquals(callInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersNodePathLiteralAsTypedDictionaryValueElement() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_node_path_dictionary_value.gd",
+                """
+                        class_name BodyInsnNodePathDictionaryValue
+                        extends RefCounted
+                        
+                        func ping() -> Dictionary:
+                            var table: Dictionary[int, NodePath] = {1: ^"a/b"}
+                            return table
+                        """,
+                Map.of("BodyInsnNodePathDictionaryValue", "RuntimeBodyInsnNodePathDictionaryValue"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNodePathDictionaryValue",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var pingFunction = pingContext.targetFunction();
+        var literalInsn = requireOnlyInstruction(pingFunction, LiteralNodePathInsn.class);
+        var constructInsn = requireOnlyInstruction(pingFunction, ConstructContainerLiteralInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("a/b", literalInsn.value()),
+                () -> assertEquals(GdNodePathType.NODE_PATH, requireVariableType(pingFunction, literalInsn.resultId())),
+                // The typed dictionary's value operand is the literal slot directly (no Variant pack).
+                () -> assertEquals(2, constructInsn.operands().size()),
+                () -> assertEquals(
+                        literalInsn.resultId(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, constructInsn.operands().get(1)).id()
+                )
+        );
+    }
+
+    @Test
+    void runRejectsNodePathLiteralWhereStringIsExpected() throws Exception {
+        // The NodePath conversion matrix stays unchanged: no implicit NodePath -> String route.
+        var prepared = prepareContext(
+                "body_insn_node_path_string_mismatch.gd",
+                """
+                        class_name BodyInsnNodePathStringMismatch
+                        extends RefCounted
+                        
+                        func ping() -> String:
+                            return ^"a/b"
+                        """,
+                Map.of("BodyInsnNodePathStringMismatch", "RuntimeBodyInsnNodePathStringMismatch"),
+                true
+        );
+
+        assertTrue(
+                prepared.diagnostics().hasErrors(),
+                () -> "returning a NodePath literal from a String function must stay a type error"
+        );
+    }
+
+    @Test
+    void runFailsFastWhenPublishedNodePathLiteralLexemeIsMalformed() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_bad_node_path_lexeme.gd",
+                """
+                        class_name BodyInsnBadNodePathLexeme
+                        extends RefCounted
+                        
+                        func ping() -> NodePath:
+                            return ^"ok"
+                        """,
+                Map.of("BodyInsnBadNodePathLexeme", "RuntimeBodyInsnBadNodePathLexeme"),
+                true
+        );
+        var originalContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnBadNodePathLexeme",
+                "ping"
+        );
+        var originalGraph = originalContext.requireFrontendCfgGraph();
+        var originalLiteralItem = requireSingleValueProducerItem(originalGraph, OpaqueExprValueItem.class);
+        var entryNode = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                originalGraph.requireNode(originalGraph.entryNodeId())
+        );
+        var stopNode = assertInstanceOf(
+                FrontendCfgGraph.StopNode.class,
+                originalGraph.requireNode(entryNode.nextId())
+        );
+        var mutatedLiteralItem = new OpaqueExprValueItem(
+                new LiteralExpression("node_path", "^\"unterminated", SYNTHETIC_RANGE),
+                originalLiteralItem.operandValueIds(),
+                originalLiteralItem.resultValueId()
+        );
+        var mutatedItems = entryNode.items().stream()
+                .map(item -> item == originalLiteralItem ? mutatedLiteralItem : item)
+                .toList();
+        var mutatedGraph = new FrontendCfgGraph(
+                originalGraph.entryNodeId(),
+                Map.of(
+                        entryNode.id(),
+                        new FrontendCfgGraph.SequenceNode(entryNode.id(), mutatedItems, entryNode.nextId()),
+                        stopNode.id(),
+                        stopNode
+                )
+        );
+        var publishedType = originalContext.analysisData().expressionTypes().get(originalLiteralItem.expression());
+        assertNotNull(publishedType);
+        originalContext.analysisData().expressionTypes().put(mutatedLiteralItem.expression(), publishedType);
+        var mutatedContext = new FunctionLoweringContext(
+                originalContext.kind(),
+                originalContext.sourcePath(),
+                originalContext.sourceClassRelation(),
+                originalContext.owningClass(),
+                originalContext.targetFunction(),
+                originalContext.sourceOwner(),
+                originalContext.loweringRoot(),
+                originalContext.analysisData()
+        );
+        mutatedContext.publishFrontendCfgGraph(mutatedGraph);
+
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendBodyLoweringSession(
+                        mutatedContext,
+                        new ClassRegistry(ExtensionApiLoader.loadDefault())
+                ).run()
+        );
+
+        assertEquals("Invalid GDScript node path lexeme: ^\"unterminated", exception.getMessage());
+    }
+
+    @Test
+    void runFailsFastWhenLiteralKindIsUnknownToBodyLowering() throws Exception {
+        // The default branch stays a hard error so newly introduced parser literal kinds cannot
+        // silently lower to nothing.
+        var prepared = prepareContext(
+                "body_insn_unknown_literal_kind.gd",
+                """
+                        class_name BodyInsnUnknownLiteralKind
+                        extends RefCounted
+                        
+                        func ping() -> NodePath:
+                            return ^"ok"
+                        """,
+                Map.of("BodyInsnUnknownLiteralKind", "RuntimeBodyInsnUnknownLiteralKind"),
+                true
+        );
+        var originalContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnUnknownLiteralKind",
+                "ping"
+        );
+        var originalGraph = originalContext.requireFrontendCfgGraph();
+        var originalLiteralItem = requireSingleValueProducerItem(originalGraph, OpaqueExprValueItem.class);
+        var entryNode = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                originalGraph.requireNode(originalGraph.entryNodeId())
+        );
+        var stopNode = assertInstanceOf(
+                FrontendCfgGraph.StopNode.class,
+                originalGraph.requireNode(entryNode.nextId())
+        );
+        var mutatedLiteralItem = new OpaqueExprValueItem(
+                new LiteralExpression("bogus_kind", "^\"ok\"", SYNTHETIC_RANGE),
+                originalLiteralItem.operandValueIds(),
+                originalLiteralItem.resultValueId()
+        );
+        var mutatedItems = entryNode.items().stream()
+                .map(item -> item == originalLiteralItem ? mutatedLiteralItem : item)
+                .toList();
+        var mutatedGraph = new FrontendCfgGraph(
+                originalGraph.entryNodeId(),
+                Map.of(
+                        entryNode.id(),
+                        new FrontendCfgGraph.SequenceNode(entryNode.id(), mutatedItems, entryNode.nextId()),
+                        stopNode.id(),
+                        stopNode
+                )
+        );
+        var publishedType = originalContext.analysisData().expressionTypes().get(originalLiteralItem.expression());
+        assertNotNull(publishedType);
+        originalContext.analysisData().expressionTypes().put(mutatedLiteralItem.expression(), publishedType);
+        var mutatedContext = new FunctionLoweringContext(
+                originalContext.kind(),
+                originalContext.sourcePath(),
+                originalContext.sourceClassRelation(),
+                originalContext.owningClass(),
+                originalContext.targetFunction(),
+                originalContext.sourceOwner(),
+                originalContext.loweringRoot(),
+                originalContext.analysisData()
+        );
+        mutatedContext.publishFrontendCfgGraph(mutatedGraph);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendBodyLoweringSession(
+                        mutatedContext,
+                        new ClassRegistry(ExtensionApiLoader.loadDefault())
+                ).run()
+        );
+
+        assertTrue(
+                exception.getMessage().contains("literal kind is not supported by frontend body lowering: bogus_kind"),
+                exception.getMessage()
         );
     }
 

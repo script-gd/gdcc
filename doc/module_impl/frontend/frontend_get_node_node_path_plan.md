@@ -1,10 +1,10 @@
 # Frontend GetNode 与 NodePath 字面量实施计划
 
-> 本文档记录 `get_node` 简写（`$` / `%`，AST 层为 `GetNodeExpression`）与 NodePath 字面量（`^"..."`）从 semantics 到 C codegen 的端到端实施计划。当前两者均已被 parser 与 shared semantic 识别，但被 compile gate / lowering 阻断；本文档只保留尚未实现的计划内容，落地后应改写为 implementation 文档。
+> 本文档记录 `get_node` 简写（`$` / `%`，AST 层为 `GetNodeExpression`）与 NodePath 字面量（`^"..."`）从 semantics 到 C codegen 的端到端实施计划。`^"..."` 已端到端落地（步骤 1-4）；`$`/`%` 仍被 compile gate / lowering 阻断，本文档保留尚未实现的计划内容，全部落地后应改写为 implementation 文档。
 
 ## 文档状态
 
-- 状态：计划待实施
+- 状态：实施中（步骤 1-4 已完成，步骤 5-13 待实施）
 - 更新时间：2026-09-01
 - 当前事实源：
   - `frontend_rules.md`
@@ -75,7 +75,7 @@ GDCC 语义对齐决策：
 
 ### 3.2 Sema
 
-- `FrontendChainHeadReceiverSupport.resolveLiteralType`（:433-447）已把 `node_path` 解析为 `GdNodePathType.NODE_PATH`；容器 constant key 也已能 decode `^"..."`（`FrontendContainerLiteralSemanticSupport.tryDecodeNodePathLexeme` :491-501，私有实现）。
+- `FrontendChainHeadReceiverSupport.resolveLiteralType`（:433-447）已把 `node_path` 解析为 `GdNodePathType.NODE_PATH`；容器 constant key 经 `FrontendContainerLiteralSemanticSupport.tryDecodeNodePathLexeme` 复用共享的 `StringUtil.decodeNodePathLexeme`（步骤 1 已落地，null-on-miss）。
 - `GetNodeExpression` 在 `FrontendExpressionSemanticSupport.resolveRemainingExplicitExpressionType`（:899-905）固定返回 DEFERRED。
 - `GetNodeExpression` 作为调用实参时链绑定保持 deferred（`FrontendBodyOwnerProceduresChainBindingTest` :1895-1924 锁定现状）。
 
@@ -83,25 +83,24 @@ GDCC 语义对齐决策：
 
 - `FrontendCompileCheckAnalyzer.walkExpression`（:675-678）对 `GetNodeExpression` 发显式 `sema.compile_check` 阻断，消息为 `expressionCompileBlockedMessage("Get-node expression")`（:162-166）。
 - 该 gate 同时覆盖函数体与 supported property initializer island；lambda 体经 `walkLambdaExpression` 递归覆盖。
-- `^"..."` 字面量当前未被 explicit intercept 拦截，但 body lowering 缺失导致其实际不可用（generic published-fact scan 对 RESOLVED 字面量放行）。
+- `^"..."` 字面量未被 explicit intercept 拦截，generic published-fact scan 对 RESOLVED 字面量放行；body lowering 已于步骤 4 打通，`^"..."` 端到端可用。
 
 ### 3.4 CFG / body lowering
 
 - `FrontendCfgGraphBuilder.buildValue`（:2089-2097）的 leaf family 为 `Identifier / Literal / Self / Preload`；`GetNodeExpression` 落入 `default -> throw unsupportedReachableExpression(...)`。
 - `FrontendSequenceItemInsnLoweringProcessors.classifyOpaqueExpression`（:691-694）对 `GetNodeExpression` 返回 DEFER。
-- `FrontendLiteralOpaqueExprInsnLoweringProcessor.lower`（:194-231）无 `node_path` 分支，落入 default 报 `literal kind is not supported by frontend body lowering: node_path`。
+- `FrontendLiteralOpaqueExprInsnLoweringProcessor.lower` 已有 `node_path` 分支（步骤 4），产出 `LiteralNodePathInsn`；未知 kind 仍落入 default fail-fast。
 - opaque processor 注册表（:47-58）无 GetNode processor。
 - Preload 是最接近的模板：`FrontendPreloadOpaqueExprInsnLoweringProcessor`（:347-390）从 AST 直读 literal、`allocateGdScriptLanguageFunctionTemp` 分配临时槽、发 `LiteralStringInsn` + `LoadStaticInsn` + `CallMethodInsn` 指令对，且不发布 `resolvedCalls`。
 
 ### 3.5 LIR
 
-- 现有字面量指令：`literal_bool/int/float/string/string_name/null/nil`（`GdInstruction` :12-18），string 系为 `REQUIRED` + 恰好一个 `STRING` operand，`value` 为解码后 payload。
-- `ParsedLirInstruction.toConcrete()`（:27-50）逐 opcode 构造 record；serializer（`SimpleLirBlockInsnSerializer`）走通用路径，新 opcode 无需 serializer 分支。
-- **无 `literal_node_path`**。
+- 现有字面量指令：`literal_bool/int/float/string/string_name/node_path/null/nil`（`GdInstruction` :12-19），string 系为 `REQUIRED` + 恰好一个 `STRING` operand，`value` 为解码后 payload；`literal_node_path` 已于步骤 2 落地（`LiteralNodePathInsn`）。
+- `ParsedLirInstruction.toConcrete()` 逐 opcode 构造 record（含 `LITERAL_NODE_PATH` 分支）；serializer（`SimpleLirBlockInsnSerializer`）走通用路径，新 opcode 无需 serializer 分支。
 
 ### 3.6 C backend / runtime
 
-- `NewDataInsnGen`（:30-203）：按 record 类型 pattern switch 分派；string/string_name 支持非 ref（`godot_new_*_with_utf8_chars` 返回值）与 ref（`godot_string*_new_with_utf8_chars` 就地初始化）；StringName 拒绝 raw `&"..."` lexeme；结果槽类型严格校验。
+- `NewDataInsnGen`：按 record 类型 pattern switch 分派；string/string_name 支持非 ref（`godot_new_*_with_utf8_chars` 返回值）与 ref（`godot_string*_new_with_utf8_chars` 就地初始化）；node_path 仅支持非 ref（`godot_new_NodePath_with_utf8_chars`），ref 结果槽 fail-closed（步骤 3 已落地）；StringName 拒绝 raw `&"..."` lexeme（NodePath 刻意不做形状拒绝，见 D1/D6）；结果槽类型严格校验。
 - NodePath 构造 helper 已存在于生成绑定：`godot_new_NodePath_with_utf8_chars` 等（`godot_builtin.h` :1447-1462，`godot_builtin.c` :10734-10739，返回值语义，内部经临时 String + `godot_new_NodePath_with_String`）。
 - **GDExtension 接口没有 NodePath 的就地 utf8 构造器**（只有 string/string_name 有 `*_new_with_utf8_chars` 初始化未初始化存储的变体），故 ref 结果槽无可复用 helper。
 - `CBuiltinBuilder.materializeLiteralValue`（:232-258）服务 API dump 默认值/静态字面量物化：target 为 `GdNodePathType` 的普通 `"..."` 与 `$"..."` 都生成 `godot_new_NodePath_with_utf8_chars(u8"...")`；该路径与 LIR 字面量指令无关，本计划不改其行为。
@@ -202,6 +201,8 @@ GDCC 语义对齐决策：
 
 ### 步骤 1：`StringUtil` 解码 helper 集中化
 
+> 状态：已完成（2026-09-01）。`StringUtil.decodeNodePathLexeme` / `decodeGetNodePathLexeme` 落地，`tryDecodeNodePathLexeme` 重构为共享解码 + null-on-miss；测试 `StringUtilTest`、`FrontendContainerLiteralSemanticSupportTest`（新增 NodePath 解码等价/畸形 key 用例）及容器字面量回归全绿。
+
 改动点：
 
 - `src/main/java/gd/script/gdcc/util/StringUtil.java`：新增 `decodeNodePathLexeme` 与 `decodeGetNodePathLexeme`（含各自的 malformed fail-fast）。
@@ -214,6 +215,8 @@ GDCC 语义对齐决策：
 - 测试：`StringUtil` 既有/新增单测 + `FrontendContainerLiteral*Test` 回归。
 
 ### 步骤 2：LIR `literal_node_path` 指令
+
+> 状态：已完成（2026-09-01）。`GdInstruction.LITERAL_NODE_PATH`、`LiteralNodePathInsn`、`NewDataInstruction.getAsLiteralNodePathInsn()`、`ParsedLirInstruction.toConcrete()` 分支落地；`doc/gdcc_low_ir.md` 补合同（decoded payload、NodePath 结果类型、backend 拒绝 ref 结果槽）。测试 `LiteralNodePathInsnContractTest` 全绿。
 
 改动点：
 
@@ -231,6 +234,8 @@ GDCC 语义对齐决策：
 
 ### 步骤 3：backend `literal_node_path` codegen
 
+> 状态：已完成（2026-09-01）。`NewDataInsnGen` 注册 opcode、新增 `emitNodePathLiteral`（非 ref → `godot_new_NodePath_with_utf8_chars`；ref → fail-closed）与 `validateResultType` NodePath 校验；`builtin_builder_implementation.md` §5.2 补 `^"..."` 行并标注 `$"..."` 为 API-default 遗留分支。测试 `CNewDataInsnGenTest` 全绿。
+
 改动点：
 
 - `NewDataInsnGen`：`getInsnOpcodes()` 注册；`generateCCode` 新增 `LiteralNodePathInsn` case；`validateResultType` 新增 NodePath 校验；ref 结果槽拒绝。**不新增** raw-lexeme 形状防线（理由见 D1）。
@@ -243,6 +248,8 @@ GDCC 语义对齐决策：
 - 测试：仿 `CNewDataInsnGenTest` StringName 段新增断言；`--tests CNewDataInsnGenTest`。
 
 ### 步骤 4：`^"..."` frontend lowering 打通
+
+> 状态：已完成（2026-09-01）。`FrontendLiteralOpaqueExprInsnLoweringProcessor` 新增 `case "node_path"`，经 `StringUtil.decodeNodePathLexeme` 产出 `LiteralNodePathInsn`。`FrontendLoweringBodyInsnPassTest` 新增 9 用例（函数体/property-init/static-var 三上下文、`get_node_or_null`/`has_node` 实参、Dictionary value 元素、String 目标类型错误不变、畸形 lexeme 与未知 literal kind 双 fail-fast），全类 195 测试全绿。
 
 改动点：
 

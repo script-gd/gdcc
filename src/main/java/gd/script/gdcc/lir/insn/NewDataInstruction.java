@@ -23,6 +23,10 @@ public interface NewDataInstruction extends LirInstruction {
         return (LiteralStringNameInsn) this;
     }
 
+    default LiteralNodePathInsn getAsLiteralNodePathInsn() {
+        return (LiteralNodePathInsn) this;
+    }
+
     default LiteralNilInsn getAsLiteralNilInsn() {
         return (LiteralNilInsn) this;
     }

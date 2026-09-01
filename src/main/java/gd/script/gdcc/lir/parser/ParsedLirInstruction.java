@@ -47,6 +47,10 @@ public record ParsedLirInstruction(
                     var v = (StringOperand) operands.getFirst();
                     yield new LiteralStringNameInsn(resultId, v.value());
                 }
+                case LITERAL_NODE_PATH -> {
+                    var v = (StringOperand) operands.getFirst();
+                    yield new LiteralNodePathInsn(resultId, v.value());
+                }
                 case LITERAL_NULL -> new LiteralNullInsn(resultId);
                 case LITERAL_NIL -> new LiteralNilInsn(resultId);
 

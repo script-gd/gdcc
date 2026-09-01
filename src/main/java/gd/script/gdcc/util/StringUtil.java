@@ -114,6 +114,40 @@ public final class StringUtil {
         throw invalidGdStringLexeme(text);
     }
 
+    /// Decodes a `^"..."` NodePath source lexeme into the runtime payload stored by LIR.
+    ///
+    /// The returned payload never contains the leading `^` or the outer quotes. Malformed lexemes
+    /// fail fast with `IllegalArgumentException`; producers that treat unreducible shapes as
+    /// non-constant must catch and convert to their own miss sentinel.
+    public static @NotNull String decodeNodePathLexeme(@NotNull String lexeme) {
+        var text = Objects.requireNonNull(lexeme, "lexeme must not be null");
+        if (!text.startsWith("^\"") || text.length() < 3 || text.charAt(text.length() - 1) != '"') {
+            throw new IllegalArgumentException("Invalid GDScript node path lexeme: " + lexeme);
+        }
+        return unescapeQuoted(text.substring(2, text.length() - 1));
+    }
+
+    /// Decodes a `$...` / `%...` get-node source lexeme into the NodePath payload passed to the
+    /// runtime `Node.get_node` call.
+    ///
+    /// Quoted forms (`$"..."` / `%"..."`) decode the quoted section; bare forms keep the path text
+    /// as-is (including `/root/...` absolute paths). The `%` prefix is preserved so the runtime
+    /// unique-name lookup stays distinguishable from a plain path.
+    public static @NotNull String decodeGetNodePathLexeme(@NotNull String lexeme) {
+        var text = Objects.requireNonNull(lexeme, "lexeme must not be null");
+        if (text.length() < 2 || (text.charAt(0) != '$' && text.charAt(0) != '%')) {
+            throw new IllegalArgumentException("Invalid GDScript get-node lexeme: " + lexeme);
+        }
+        if (text.charAt(1) != '"') {
+            return text.charAt(0) == '$' ? text.substring(1) : text;
+        }
+        if (text.length() < 3 || text.charAt(text.length() - 1) != '"') {
+            throw new IllegalArgumentException("Invalid GDScript get-node lexeme: " + lexeme);
+        }
+        var decoded = unescapeQuoted(text.substring(2, text.length() - 1));
+        return text.charAt(0) == '%' ? "%" + decoded : decoded;
+    }
+
     public static @NotNull String unescapeQuoted(@NotNull String content) {
         var out = new StringBuilder();
         for (var i = 0; i < content.length(); i++) {

@@ -267,6 +267,59 @@ class FrontendContainerLiteralSemanticSupportTest {
     }
 
     @Test
+    void dictionaryDuplicateDetectionUsesDecodedNodePathValues() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        // NodePath keys compare by decoded payload: escape variants of the same path collide,
+        // while distinct paths stay distinct.
+        var dictionary = new DictionaryExpression(
+                List.of(
+                        new DictEntry(nodePathLiteral("^\"\\u0061/b\""), integerLiteral("1"), TINY),
+                        new DictEntry(nodePathLiteral("^\"a/b\""), integerLiteral("2"), TINY),
+                        new DictEntry(nodePathLiteral("^\"a/c\""), integerLiteral("3"), TINY)
+                ),
+                false,
+                TINY
+        );
+
+        var plan = FrontendContainerLiteralSemanticSupport.resolveDictionaryExpressionType(
+                registry,
+                dictionary,
+                resolvedChildren(),
+                true
+        ).planOrNull();
+        assertNotNull(plan);
+        assertEquals(1, plan.duplicateKeyIssues().size());
+        var issue = plan.duplicateKeyIssues().getFirst();
+        assertEquals(0, issue.firstEntryIndex());
+        assertEquals(1, issue.duplicateEntryIndex());
+        assertEquals("^\"a/b\"", issue.keyDisplay());
+    }
+
+    @Test
+    void dictionaryDuplicateDetectionTreatsMalformedNodePathKeyAsNonConstant() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        // Hand-built malformed node_path lexemes are not statically reducible, so the duplicate
+        // detector must skip them instead of throwing or flagging a false collision.
+        var dictionary = new DictionaryExpression(
+                List.of(
+                        new DictEntry(nodePathLiteral("plain"), integerLiteral("1"), TINY),
+                        new DictEntry(nodePathLiteral("plain"), integerLiteral("2"), TINY)
+                ),
+                false,
+                TINY
+        );
+
+        var plan = FrontendContainerLiteralSemanticSupport.resolveDictionaryExpressionType(
+                registry,
+                dictionary,
+                resolvedChildren(),
+                true
+        ).planOrNull();
+        assertNotNull(plan);
+        assertTrue(plan.duplicateKeyIssues().isEmpty());
+    }
+
+    @Test
     void dictionaryDuplicateDetectionUsesDecodedStringAndOctalIntegerValues() throws Exception {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var dictionary = new DictionaryExpression(
@@ -566,6 +619,10 @@ class FrontendContainerLiteralSemanticSupportTest {
 
     private static @NotNull LiteralExpression stringNameLiteral(@NotNull String sourceText) {
         return new LiteralExpression("string_name", sourceText, TINY);
+    }
+
+    private static @NotNull LiteralExpression nodePathLiteral(@NotNull String sourceText) {
+        return new LiteralExpression("node_path", sourceText, TINY);
     }
 
     private static @NotNull IdentifierExpression identifier(@NotNull String name) {

@@ -92,6 +92,17 @@ Creates a new StringName constant.
 $<result_id> = literal_string_name "<string_value_utf8>"
 ```
 
+#### literal_node_path
+
+Creates a new NodePath constant.
+
+```
+$<result_id> = literal_node_path "<node_path_value_utf8>"
+```
+
+The operand is the already-decoded NodePath payload: the `^` prefix and outer quotes of the
+`^"..."` source lexeme should be stripped.
+
 #### literal_nil
 
 Creates a new Variant Nil constant.

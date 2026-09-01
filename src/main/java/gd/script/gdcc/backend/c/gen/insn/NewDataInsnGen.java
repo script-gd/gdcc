@@ -9,6 +9,7 @@ import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralFloatInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralNilInsn;
+import gd.script.gdcc.lir.insn.LiteralNodePathInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
@@ -17,6 +18,7 @@ import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
@@ -33,6 +35,7 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
         return EnumSet.of(
                 GdInstruction.LITERAL_STRING_NAME,
                 GdInstruction.LITERAL_STRING,
+                GdInstruction.LITERAL_NODE_PATH,
                 GdInstruction.LITERAL_FLOAT,
                 GdInstruction.LITERAL_BOOL,
                 GdInstruction.LITERAL_INT,
@@ -48,6 +51,7 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
         switch (insn) {
             case LiteralStringNameInsn(_, var value) -> emitStringNameLiteral(bodyBuilder, resultVar, value);
             case LiteralStringInsn(_, var value) -> emitStringLiteral(bodyBuilder, resultVar, value);
+            case LiteralNodePathInsn(_, var value) -> emitNodePathLiteral(bodyBuilder, resultVar, value);
             case LiteralFloatInsn(_, var value) ->
                     // Non-finite values must go through the shared normalizer: `Double.toString`
                     // emits `Infinity` / `NaN`, which are not valid C literals.
@@ -119,6 +123,22 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
         );
     }
 
+    private void emitNodePathLiteral(@NotNull CBodyBuilder bodyBuilder, @NotNull LirVariable resultVar, @NotNull String value) {
+        // Payload-only path like emitStringLiteral: a decoded payload may legitimately look like a
+        // raw lexeme (`^"foo"`), so no shape rejection happens here. GDExtension has no in-place
+        // NodePath constructor, so ref results stay fail-closed (frontend lowering only produces
+        // non-ref temporary slots for literals; this branch is defensive).
+        if (resultVar.ref()) {
+            throw bodyBuilder.invalidInsn("Result variable ID " + resultVar.id() + " cannot be a reference");
+        }
+        bodyBuilder.callAssign(
+                bodyBuilder.targetOfVar(resultVar),
+                "godot_new_NodePath_with_utf8_chars",
+                resultVar.type(),
+                List.of(bodyBuilder.valueOfCStringLiteral(value))
+        );
+    }
+
     private void emitNilLiteral(@NotNull CBodyBuilder bodyBuilder, @NotNull LirVariable resultVar) {
         if (resultVar.ref()) {
             bodyBuilder.callVoid("godot_variant_new_nil", List.of(bodyBuilder.valueOfVar(resultVar)));
@@ -165,6 +185,11 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
             case LiteralStringInsn _ -> {
                 if (!(resultVariable.type() instanceof GdStringType)) {
                     throw bodyBuilder.invalidInsn("Result variable ID " + resultVariable.id() + " is not of string type");
+                }
+            }
+            case LiteralNodePathInsn _ -> {
+                if (!(resultVariable.type() instanceof GdNodePathType)) {
+                    throw bodyBuilder.invalidInsn("Result variable ID " + resultVariable.id() + " is not of node path type");
                 }
             }
             case LiteralFloatInsn _ -> {

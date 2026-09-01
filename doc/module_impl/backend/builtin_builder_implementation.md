@@ -235,7 +235,8 @@ target 生命周期由调用方控制。
 | `"..."`        | `NodePath` target       | `godot_new_NodePath_with_utf8_chars(u8"...")`     |
 | `"..."`        | 其他 string-like target | `valueOfStringPtrLiteral(...)`                    |
 | `&"..."`       | `StringName`            | `valueOfStringNamePtrLiteral(...)`                |
-| `$"..."`       | `NodePath`              | `godot_new_NodePath_with_utf8_chars(u8"...")`     |
+| `^"..."`       | 源码 NodePath literal   | 经 frontend lowering 产出 `LiteralNodePathInsn`，由 `NewDataInsnGen` 物化为 `godot_new_NodePath_with_utf8_chars(u8"...")`（不经过本表入口） |
+| `$"..."`       | `NodePath`              | `godot_new_NodePath_with_utf8_chars(u8"...")`（API default/static literal 遗留分支；与 API dump 中 `NodePath("")` 编码的默认值区分） |
 | `[]`           | `Array` target          | `constructBuiltin(..., List.of())`                |
 | `{}`           | `Dictionary` target     | `constructBuiltin(..., List.of())`                |
 | `<Type>(...)`  | constructor target      | registry resolve + constructor materialization    |

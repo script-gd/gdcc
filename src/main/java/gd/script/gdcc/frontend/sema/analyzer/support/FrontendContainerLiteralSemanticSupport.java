@@ -488,16 +488,15 @@ public final class FrontendContainerLiteralSemanticSupport {
         return Double.parseDouble(sourceText.replace("_", "").trim());
     }
 
-    /// Decodes `^"..."` / `"..."` NodePath lexemes via shared string unescape rules.
+    /// Decodes `^"..."` NodePath lexemes through the shared StringUtil decoder (single escape
+    /// source). Unreducible/malformed shapes return null so duplicate-key analysis treats the key
+    /// as non-constant instead of failing the whole literal.
     private static @Nullable String tryDecodeNodePathLexeme(@NotNull String sourceText) {
-        var text = sourceText.trim();
-        if (text.startsWith("^")) {
-            text = text.substring(1).trim();
+        try {
+            return StringUtil.decodeNodePathLexeme(sourceText);
+        } catch (IllegalArgumentException _) {
+            return null;
         }
-        if (text.startsWith("\"")) {
-            return StringUtil.decodeGdStringLexeme(text);
-        }
-        return null;
     }
 
     private static @NotNull GdType requirePublishedType(

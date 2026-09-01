@@ -14,6 +14,7 @@ import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralFloatInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralNilInsn;
+import gd.script.gdcc.lir.insn.LiteralNodePathInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
@@ -22,6 +23,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
@@ -200,6 +202,58 @@ public class CNewDataInsnGenTest {
         assertTrue(ex.getMessage().contains("&\"hero\""));
     }
 
+    @Test
+    @DisplayName("literal_node_path should call non-ref constructor for non-ref variable")
+    void literalNodePathShouldCallAssignForNonRef() {
+        var body = generateBody("p", GdNodePathType.NODE_PATH, false, new LiteralNodePathInsn("p", "a/b"));
+        assertTrue(body.contains("godot_new_NodePath_with_utf8_chars(u8\"a/b\")"));
+    }
+
+    @Test
+    @DisplayName("literal_node_path should escape quotes and backslashes in payload")
+    void literalNodePathShouldEscapeQuotedPayload() {
+        var body = generateBody("p", GdNodePathType.NODE_PATH, false, new LiteralNodePathInsn("p", "say \"hi\"\\n"));
+        assertTrue(body.contains("godot_new_NodePath_with_utf8_chars(u8\"say \\\"hi\\\"\\\\n\")"));
+    }
+
+    @Test
+    @DisplayName("literal_node_path should escape non-ASCII payload as unicode escapes")
+    void literalNodePathShouldEscapeNonAsciiPayload() {
+        // C literal escaping is shared with other string-like literals: non-ASCII BMP code points
+        // render as unicode escapes.
+        var body = generateBody("p", GdNodePathType.NODE_PATH, false, new LiteralNodePathInsn("p", "路径"));
+        assertTrue(body.contains("godot_new_NodePath_with_utf8_chars(u8\"\\u8DEF\\u5F84\")"));
+    }
+
+    @Test
+    @DisplayName("literal_node_path should materialize payload that looks like a raw lexeme")
+    void literalNodePathShouldMaterializeLexemeShapedPayload() {
+        // `^"^\"foo\""` decodes to `^"foo"`; payload-only contract must not reject it.
+        var body = generateBody("p", GdNodePathType.NODE_PATH, false, new LiteralNodePathInsn("p", "^\"foo\""));
+        assertTrue(body.contains("godot_new_NodePath_with_utf8_chars(u8\"^\\\"foo\\\"\")"));
+    }
+
+    @Test
+    @DisplayName("literal_node_path with non-node-path result should throw")
+    void literalNodePathTypeMismatchShouldThrow() {
+        assertTypeMismatchThrows(GdStringType.STRING, new LiteralNodePathInsn("x", "bad"));
+    }
+
+    @Test
+    @DisplayName("literal_node_path without result should throw")
+    void literalNodePathMissingResultShouldThrow() {
+        var ex = assertInvalidInsnThrows("x", GdNodePathType.NODE_PATH, new LiteralNodePathInsn(null, "a/b"));
+        assertTrue(ex.getMessage().contains("missing result variable ID"));
+    }
+
+    @Test
+    @DisplayName("literal_node_path with ref result should throw")
+    void literalNodePathRefResultShouldThrow() {
+        // GDExtension exposes no in-place NodePath constructor, so ref results are fail-closed.
+        var ex = assertRefInvalidInsnThrows("p", GdNodePathType.NODE_PATH, new LiteralNodePathInsn("p", "a/b"));
+        assertTrue(ex.getMessage().contains("cannot be a reference"));
+    }
+
     private void assertTypeMismatchThrows(@NotNull GdType variableType,
                                           @NotNull NewDataInstruction instruction) {
         var ex = assertInvalidInsnThrows("x", variableType, instruction);
@@ -213,6 +267,25 @@ public class CNewDataInsnGenTest {
         var func = new LirFunctionDef("new_data_mismatch");
         func.setReturnType(GdVoidType.VOID);
         func.createAndAddVariable(variableId, variableType);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(instruction);
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, List.of(workerClass));
+        return assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
+    }
+
+    private @NotNull InvalidInsnException assertRefInvalidInsnThrows(@NotNull String variableId,
+                                                                     @NotNull GdType variableType,
+                                                                     @NotNull NewDataInstruction instruction) {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("new_data_ref_mismatch");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddRefVariable(variableId, variableType);
 
         var entry = new LirBasicBlock("entry");
         entry.appendInstruction(instruction);

@@ -14,6 +14,8 @@ public enum GdInstruction {
     LITERAL_FLOAT("literal_float", ReturnKind.REQUIRED, List.of(OperandKind.FLOAT), 1, 1),
     LITERAL_STRING("literal_string", ReturnKind.REQUIRED, List.of(OperandKind.STRING), 1, 1),
     LITERAL_STRING_NAME("literal_string_name", ReturnKind.REQUIRED, List.of(OperandKind.STRING), 1, 1),
+    /// Payload is the decoded NodePath value (no `^` prefix or outer quotes from the source lexeme).
+    LITERAL_NODE_PATH("literal_node_path", ReturnKind.REQUIRED, List.of(OperandKind.STRING), 1, 1),
     LITERAL_NULL("literal_null", ReturnKind.REQUIRED, List.of()),
     LITERAL_NIL("literal_nil", ReturnKind.REQUIRED, List.of()),
 
