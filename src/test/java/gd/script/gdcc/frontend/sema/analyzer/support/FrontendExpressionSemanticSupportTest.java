@@ -1523,11 +1523,6 @@ class FrontendExpressionSemanticSupportTest {
         var literal = integerLiteral("1");
         var cases = List.of(
                 new RemainingExpressionCase(
-                        new GetNodeExpression("$Camera3D", TINY),
-                        FrontendExpressionTypeStatus.DEFERRED,
-                        "Get-node expression typing is deferred"
-                ),
-                new RemainingExpressionCase(
                         new PatternBindingExpression("captured", TINY),
                         FrontendExpressionTypeStatus.DEFERRED,
                         "Pattern binding expression typing is deferred"
@@ -1652,6 +1647,169 @@ class FrontendExpressionSemanticSupportTest {
                         false
                 )
         );
+
+        // Get-node is not a deferred remaining route either: the body-owner hook classifies it
+        // (RESOLVED(Node) inside Node-derived instance functions, fail-closed boundaries
+        // otherwise), so the generic bucket must reject it.
+        var getNodeExpression = new GetNodeExpression("$Camera3D", TINY);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> support.resolveRemainingExplicitExpressionType(
+                        getNodeExpression,
+                        nestedResolver,
+                        true,
+                        false
+                )
+        );
+    }
+
+    @Test
+    void analyzeResolvesGetNodeExpressionToNodeInsideNodeDerivedInstanceFunction() throws Exception {
+        var analyzed = analyze(
+                "get_node_sema_positive.gd",
+                """
+                        class_name GetNodeSemaPositive
+                        extends Node
+                        
+                        func probe():
+                            var plain = $Camera3D
+                            var unique = %Foo
+                        """
+        );
+
+        var getNodeExpressions = findNodes(analyzed.ast(), GetNodeExpression.class, ignored -> true);
+        assertEquals(2, getNodeExpressions.size());
+        for (var getNodeExpression : getNodeExpressions) {
+            var published = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+            assertNotNull(published);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, published.status());
+            assertEquals(new GdObjectType("Node"), published.publishedType());
+        }
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+        assertTrue(analyzed.analysisData().diagnostics().asList().stream()
+                .noneMatch(diagnostic -> diagnostic.category().equals("sema.deferred_expression_resolution")));
+        // Get-node never publishes into the resolved-call key space (preload precedent): lowering
+        // desugars to `self.get_node(NodePath)` without sema-level call facts.
+        assertTrue(analyzed.analysisData().resolvedCalls().isEmpty());
+    }
+
+    @Test
+    void analyzeFailsGetNodeExpressionInsideStaticFunction() throws Exception {
+        var analyzed = analyze(
+                "get_node_sema_static.gd",
+                """
+                        class_name GetNodeSemaStatic
+                        extends Node
+                        
+                        static func probe():
+                            var child = $Camera3D
+                        """
+        );
+
+        var getNodeExpression = findNode(analyzed.ast(), GetNodeExpression.class, ignored -> true);
+        var published = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+        assertNotNull(published);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, published.status());
+        var expressionErrors = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.expression_resolution"))
+                .toList();
+        assertEquals(1, expressionErrors.size());
+        assertTrue(expressionErrors.getFirst().message().contains("static function"));
+    }
+
+    @Test
+    void analyzeFailsGetNodeExpressionOutsideNodeDerivedClass() throws Exception {
+        var analyzed = analyze(
+                "get_node_sema_non_node.gd",
+                """
+                        class_name GetNodeSemaNonNode
+                        extends RefCounted
+                        
+                        func probe():
+                            var child = $Camera3D
+                        """
+        );
+
+        var getNodeExpression = findNode(analyzed.ast(), GetNodeExpression.class, ignored -> true);
+        var published = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+        assertNotNull(published);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, published.status());
+        var expressionErrors = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.expression_resolution"))
+                .toList();
+        assertEquals(1, expressionErrors.size());
+        assertTrue(expressionErrors.getFirst().message().contains("inherits from Node"));
+    }
+
+    @Test
+    void analyzeDefersGetNodeExpressionInsidePropertyInitializer() throws Exception {
+        var analyzed = analyze(
+                "get_node_sema_property_init.gd",
+                """
+                        class_name GetNodeSemaPropertyInit
+                        extends Node
+                        
+                        var camera = $Camera3D
+                        """
+        );
+
+        var getNodeExpression = findNode(analyzed.ast(), GetNodeExpression.class, ignored -> true);
+        var published = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+        assertNotNull(published);
+        assertEquals(FrontendExpressionTypeStatus.DEFERRED, published.status());
+        assertTrue(published.detailReason().startsWith("Get-node expression"));
+        // Deferred stays a warning-only outcome on the shared analyze path; the compile gate owns
+        // the escalation into a compile-blocking error.
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+        var deferredWarnings = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.deferred_expression_resolution"))
+                .toList();
+        assertEquals(1, deferredWarnings.size());
+        assertTrue(deferredWarnings.getFirst().message().contains("property initializers"));
+    }
+
+    @Test
+    void analyzeDefersGetNodeExpressionInsideLambdaBody() throws Exception {
+        // Transitional boundary: a get-node inside a lambda body cannot reach the enclosing
+        // instance receiver because capture planning never synthesizes an implicit `self` capture
+        // for it. This holds regardless of the enclosing callable's static restriction, so both
+        // fixtures resolve to DEFERRED rather than the static/non-Node FAILED rules.
+        var instanceFixture = analyze(
+                "get_node_sema_lambda_instance.gd",
+                """
+                        class_name GetNodeSemaLambdaInstance
+                        extends Node
+                        
+                        func probe():
+                            var callback = func():
+                                return $Camera3D
+                        """
+        );
+        var staticFixture = analyze(
+                "get_node_sema_lambda_static.gd",
+                """
+                        class_name GetNodeSemaLambdaStatic
+                        extends Node
+                        
+                        static func probe():
+                            var callback = func():
+                                return $Camera3D
+                        """
+        );
+
+        for (var analyzed : List.of(instanceFixture, staticFixture)) {
+            var getNodeExpression = findNode(analyzed.ast(), GetNodeExpression.class, ignored -> true);
+            var published = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+            assertNotNull(published);
+            assertEquals(FrontendExpressionTypeStatus.DEFERRED, published.status());
+            assertTrue(published.detailReason().startsWith("Get-node expression"));
+            assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+            var deferredWarnings = analyzed.analysisData().diagnostics().asList().stream()
+                    .filter(diagnostic -> diagnostic.category().equals("sema.deferred_expression_resolution"))
+                    .toList();
+            assertEquals(1, deferredWarnings.size());
+            assertTrue(deferredWarnings.getFirst().message().contains("lambda body"));
+        }
     }
 
     @Test

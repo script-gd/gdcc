@@ -132,3 +132,18 @@ compile-check 以 `Array/Dictionary literal is ... temporarily blocked` 失败�
 - 当前回归锚点包括：
   - `src/test/java/gd/script/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`
   - `src/test/java/gd/script/gdcc/test_suite/GdScriptEngineVirtualOverrideRuntimeTest.java`
+
+## 10. 已修复：get-node 简写（`$` / `%`）与 NodePath 字面量的 scene 端到端覆盖
+
+`scene/get_node_shorthand_scene.gd` 现在稳定覆盖以下组合 surface：
+
+- `$Child` / `$"Name With Space"`（bare 与 quoted 形态，含空格节点名）解析为 `self.get_node(NodePath)` 并返回非空 `Node`
+- `%Unique` / `%"Unique Name"` unique-name 查询：runtime 创建的节点必须先 `add_child`、再赋 `owner`、最后置 `unique_name_in_owner`（缺 `owner` 时该 flag 不生效）
+- `get_node_or_null(^"Missing")` 对缺失路径返回 null（不走引擎报错路径），`has_node(^"Child")` 返回 true
+- `$Child.name` 链头属性读取（GetNode 作为 chain head 经 fallback receiver 获得 `Node` 静态类型）
+
+当前合同需要注意的是：
+
+- `$` / `%` 的接收槽静态类型固定上溯为 `Node`（GDCC 子类的同名 `get_node` override 不参与 `$` 解析），与 Godot compiler 的 `Node.get_node` 原生绑定语义一致
+- `$` 对缺失路径的运行时报错行为（Godot `get_node` 引擎错误）不在该 fixture 中触发，避免环境差异
+- lambda 体内的 `$` / `%` 仍为 frontend fail-closed 边界（见 `doc/module_impl/frontend/frontend_get_node_node_path_plan.md`），不在本 fixture 范围

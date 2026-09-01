@@ -586,6 +586,7 @@ class GdccCoroutineRuntimeSmokeTest {
         command.add(zig.toString());
         command.add("cc");
         command.add("-std=c23");
+        command.add("-D_DEFAULT_SOURCE");
         command.add("-I" + GODOT_INCLUDE_DIR);
         command.add("-I" + GDCC_INCLUDE_DIR);
         command.add("-c");

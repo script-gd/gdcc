@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema.analyzer;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
@@ -23,6 +24,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdCallableType;
+import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -32,6 +34,7 @@ import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -1885,14 +1888,14 @@ class FrontendBodyOwnerProceduresChainBindingTest {
     }
 
     @Test
-    void analyzeKeepsDeferredArgumentBoundaryForRemainingUnsupportedExpressionKinds() throws Exception {
+    void analyzeResolvesChainWhenGetNodeArgumentMatchesNodeParameter() throws Exception {
         var analyzed = analyze(
-                "deferred_suffix_remaining_gap.gd",
+                "get_node_argument_route.gd",
                 """
-                        class_name DeferredSuffixRemainingGap
-                        extends RefCounted
+                        class_name GetNodeArgumentRoute
+                        extends Node
                         
-                        func build(value: int) -> String:
+                        func build(value: Node) -> String:
                             return ""
                         
                         func ping(flag):
@@ -1904,21 +1907,116 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         var chainStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
         var buildStep = findNode(chainStatement, AttributeCallStep.class, step -> step.name().equals("build"));
         var lengthStep = findNode(chainStatement, AttributePropertyStep.class, step -> step.name().equals("length"));
+        var getNode = findNode(chainStatement, GetNodeExpression.class, ignored -> true);
 
-        var deferredCall = analyzed.analysisData().resolvedCalls().get(buildStep);
-        assertNotNull(deferredCall);
-        // Get-node expressions remain outside the current retry surface; after the one retry
-        // window, the chain stays deferred and the suffix is not speculatively opened.
-        assertEquals(FrontendCallResolutionStatus.DEFERRED, deferredCall.status());
-        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, deferredCall.callKind());
-        assertEquals(0, analyzed.analysisData().resolvedMembers().size());
-        assertEquals(1, analyzed.analysisData().resolvedCalls().size());
-        assertTrue(analyzed.analysisData().resolvedMembers().get(lengthStep) == null);
+        // The get-node argument resolves to Node, so the outer call and the trailing property
+        // suffix resolve through the ordinary chain pipeline with no deferred boundary left.
+        var getNodeType = analyzed.analysisData().expressionTypes().get(getNode);
+        assertNotNull(getNodeType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, getNodeType.status());
+        assertEquals(new GdObjectType("Node"), getNodeType.publishedType());
 
-        var deferredDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution");
-        assertEquals(1, deferredDiagnostics.size());
-        assertTrue(deferredDiagnostics.getFirst().message().contains("Argument #1 type is still deferred"));
-        assertTrue(deferredDiagnostics.getFirst().message().contains("Get-node expression typing is deferred"));
+        var buildCall = analyzed.analysisData().resolvedCalls().get(buildStep);
+        assertNotNull(buildCall);
+        assertEquals(
+                FrontendCallResolutionStatus.RESOLVED,
+                buildCall.status(),
+                String.valueOf(buildCall.detailReason())
+        );
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, buildCall.callKind());
+        var lengthMember = analyzed.analysisData().resolvedMembers().get(lengthStep);
+        assertNotNull(lengthMember);
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeFailsGetNodeArgumentOutsideNodeDerivedClass() throws Exception {
+        var analyzed = analyze(
+                "get_node_argument_non_node.gd",
+                """
+                        class_name GetNodeArgumentNonNode
+                        extends RefCounted
+                        
+                        func build(value: int) -> String:
+                            return ""
+                        
+                        func ping(flag):
+                            self.build($Camera3D).length
+                        """
+        );
+
+        // The class does not inherit from Node, so the get-node argument fails with an upstream
+        // expression-resolution error anchored on the get-node range. The chain then applies its
+        // standard failed-argument stop: the `build` call publishes an argument-unavailable error
+        // and the `length` suffix is never speculatively resolved.
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var chainStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var getNode = findNode(chainStatement, GetNodeExpression.class, ignored -> true);
+        var lengthStep = findNode(chainStatement, AttributePropertyStep.class, step -> step.name().equals("length"));
+        var getNodeType = analyzed.analysisData().expressionTypes().get(getNode);
+        assertNotNull(getNodeType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, getNodeType.status());
+        var upstreamErrors = diagnosticsByCategory(analyzed.analysisData(), "sema.expression_resolution").stream()
+                .filter(diagnostic -> diagnostic.range().equals(FrontendRange.fromAstRange(getNode.range())))
+                .toList();
+        assertEquals(1, upstreamErrors.size(), () -> analyzed.analysisData().diagnostics().asList().toString());
+        assertTrue(upstreamErrors.getFirst().message().startsWith("Get-node expression"));
+        var callErrors = diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution");
+        assertEquals(1, callErrors.size());
+        assertTrue(callErrors.getFirst().message().contains("Argument #1 type is unavailable"));
+        assertNull(analyzed.analysisData().resolvedMembers().get(lengthStep));
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeResolvesGetNodeChainHeadThroughFallbackReceiver() throws Exception {
+        var analyzed = analyze(
+                "get_node_chain_head.gd",
+                """
+                        class_name GetNodeChainHead
+                        extends Node
+                        
+                        func ping():
+                            $Camera3D.name
+                            %Foo.get_name()
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var propertyStatement = assertInstanceOf(
+                ExpressionStatement.class,
+                pingFunction.body().statements().get(0)
+        );
+        var callStatement = assertInstanceOf(
+                ExpressionStatement.class,
+                pingFunction.body().statements().get(1)
+        );
+        var nameStep = findNode(propertyStatement, AttributePropertyStep.class, step -> step.name().equals("name"));
+        var getNameStep = findNode(callStatement, AttributeCallStep.class, step -> step.name().equals("get_name"));
+
+        // `$Foo.name` / `%Foo.get_name()`: the chain head falls back to the ordinary expression
+        // typing pipeline, so the published RESOLVED(Node) type becomes the receiver state and
+        // the suffix steps resolve against the engine Node surface.
+        var nameMember = analyzed.analysisData().resolvedMembers().get(nameStep);
+        assertNotNull(nameMember);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, nameMember.status());
+        var getNameCall = analyzed.analysisData().resolvedCalls().get(getNameStep);
+        assertNotNull(getNameCall);
+        assertEquals(
+                FrontendCallResolutionStatus.RESOLVED,
+                getNameCall.status(),
+                String.valueOf(getNameCall.detailReason())
+        );
+        for (var getNode : findNodes(pingFunction, GetNodeExpression.class, ignored -> true)) {
+            var getNodeType = analyzed.analysisData().expressionTypes().get(getNode);
+            assertNotNull(getNodeType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, getNodeType.status());
+            assertEquals(new GdObjectType("Node"), getNodeType.publishedType());
+        }
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
     }

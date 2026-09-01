@@ -116,6 +116,7 @@ import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
@@ -9179,6 +9180,314 @@ class FrontendLoweringBodyInsnPassTest {
                         assertInstanceOf(LirInstruction.VariableOperand.class, constructInsn.operands().get(1)).id()
                 )
         );
+    }
+
+    @Test
+    void runLowersGetNodeShorthandAsEngineGetNodeCallTriple() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_get_node_shorthand.gd",
+                """
+                        class_name BodyInsnGetNodeShorthand
+                        extends Node
+                        
+                        func probe() -> Node:
+                            return $Camera3D
+                        """,
+                Map.of("BodyInsnGetNodeShorthand", "RuntimeBodyInsnGetNodeShorthand"),
+                true
+        );
+        var probeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnGetNodeShorthand",
+                "probe"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var probeFunction = probeContext.targetFunction();
+        var literalInsn = requireOnlyInstruction(probeFunction, LiteralNodePathInsn.class);
+        var assignInsn = requireOnlyInstruction(probeFunction, AssignInsn.class);
+        var callInsn = requireOnlyInstruction(probeFunction, CallMethodInsn.class);
+        var returnInsn = requireOnlyReturnInsn(probeFunction);
+        var orderedInsns = allInstructions(probeFunction);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                // 1. literal_node_path carries the decoded payload (no `$` prefix, no quotes).
+                () -> assertEquals("Camera3D", literalInsn.value()),
+                () -> assertEquals(GdNodePathType.NODE_PATH, requireVariableType(probeFunction, literalInsn.resultId())),
+                // 2. The receiver temp is statically typed `Node` — not the GDCC class type of
+                // `self` — so backend method resolution pins the ENGINE `Node.get_node` route.
+                () -> assertEquals("self", assignInsn.sourceId()),
+                () -> assertEquals(
+                        new GdObjectType("Node"),
+                        requireVariableType(probeFunction, assignInsn.resultId())
+                ),
+                // 3. call_method "get_node" on the upcast receiver with the path as only argument.
+                () -> assertEquals("get_node", callInsn.methodName()),
+                () -> assertEquals(assignInsn.resultId(), callInsn.objectId()),
+                () -> assertEquals(
+                        literalInsn.resultId(),
+                        onlyVariableOperandId(callInsn.args())
+                ),
+                () -> assertEquals(new GdObjectType("Node"), requireVariableType(probeFunction, callInsn.resultId())),
+                () -> assertEquals(callInsn.resultId(), returnInsn.returnValueId()),
+                // Ordering: both operands must materialize before the call.
+                () -> assertTrue(orderedInsns.indexOf(literalInsn) < orderedInsns.indexOf(callInsn)),
+                () -> assertTrue(orderedInsns.indexOf(assignInsn) < orderedInsns.indexOf(callInsn))
+        );
+    }
+
+    @Test
+    void runLowersGetNodeUniqueNameAndQuotedForms() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_get_node_forms.gd",
+                """
+                        class_name BodyInsnGetNodeForms
+                        extends Node
+                        
+                        func probe() -> Node:
+                            var spaced = $"Name With Space"
+                            var unique = %Unique
+                            var unique_spaced = %"Wide Name"
+                            return unique
+                        """,
+                Map.of("BodyInsnGetNodeForms", "RuntimeBodyInsnGetNodeForms"),
+                true
+        );
+        var probeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnGetNodeForms",
+                "probe"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var probeFunction = probeContext.targetFunction();
+        var literalPayloads = allInstructions(probeFunction).stream()
+                .filter(LiteralNodePathInsn.class::isInstance)
+                .map(LiteralNodePathInsn.class::cast)
+                .map(LiteralNodePathInsn::value)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                // Quoted forms are decoded (quotes stripped); the `%` unique-name prefix is kept
+                // verbatim because the runtime Node implementation resolves it.
+                () -> assertEquals(List.of("Name With Space", "%Unique", "%Wide Name"), literalPayloads),
+                () -> assertEquals(3, allInstructions(probeFunction).stream()
+                        .filter(CallMethodInsn.class::isInstance)
+                        .map(CallMethodInsn.class::cast)
+                        .filter(insn -> insn.methodName().equals("get_node"))
+                        .count())
+        );
+    }
+
+    @Test
+    void runPinsGetNodeReceiverToEngineNodeAboveScriptOverride() throws Exception {
+        // A GDCC subclass may declare a same-signature `get_node(NodePath)`. The `$` shorthand
+        // must still resolve to the ENGINE `Node.get_node` (Godot compiler parity), while the
+        // explicit `self.get_node(...)` call keeps ordinary resolution and lets the override win.
+        // Both behaviors are locked by the receiver slot's static type.
+        var prepared = prepareContext(
+                "body_insn_get_node_override.gd",
+                """
+                        class_name BodyInsnGetNodeOverride
+                        extends Node
+                        
+                        func get_node(path: NodePath) -> Node:
+                            return self
+                        
+                        func probe() -> Node:
+                            var shorthand = $Child
+                            var explicit = self.get_node(^"Other")
+                            return shorthand
+                        """,
+                Map.of("BodyInsnGetNodeOverride", "RuntimeBodyInsnGetNodeOverride"),
+                true
+        );
+        var probeContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnGetNodeOverride",
+                "probe"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var probeFunction = probeContext.targetFunction();
+        var getNodeCalls = allInstructions(probeFunction).stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("get_node"))
+                .toList();
+        assertEquals(2, getNodeCalls.size());
+        var shorthandCall = getNodeCalls.stream()
+                .filter(insn -> !insn.objectId().equals("self"))
+                .findFirst()
+                .orElseThrow();
+        var explicitCall = getNodeCalls.stream()
+                .filter(insn -> insn.objectId().equals("self"))
+                .findFirst()
+                .orElseThrow();
+        var upcastAssigns = allInstructions(probeFunction).stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.sourceId().equals("self"))
+                .toList();
+        assertEquals(1, upcastAssigns.size());
+        var upcastAssign = upcastAssigns.getFirst();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                // Shorthand: the receiver is the upcast temp statically typed `Node`, so the
+                // backend cannot see the script override from this receiver type.
+                () -> assertEquals("self", upcastAssign.sourceId()),
+                () -> assertEquals(upcastAssign.resultId(), shorthandCall.objectId()),
+                () -> assertEquals(
+                        new GdObjectType("Node"),
+                        requireVariableType(probeFunction, shorthandCall.objectId())
+                ),
+                // Explicit call: the receiver stays the canonical `self` slot typed with the GDCC
+                // class, so the override applies through ordinary resolution.
+                () -> assertEquals(
+                        new GdObjectType("RuntimeBodyInsnGetNodeOverride"),
+                        requireVariableType(probeFunction, explicitCall.objectId())
+                )
+        );
+    }
+
+    @Test
+    void runFailsFastWhenGetNodeOpaqueItemCarriesOperands() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_get_node_operand_count.gd",
+                """
+                        class_name BodyInsnGetNodeOperandCount
+                        extends Node
+                        
+                        func probe() -> Node:
+                            return $Camera3D
+                        """,
+                Map.of("BodyInsnGetNodeOperandCount", "RuntimeBodyInsnGetNodeOperandCount"),
+                true
+        );
+        var originalContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnGetNodeOperandCount",
+                "probe"
+        );
+        var originalGraph = originalContext.requireFrontendCfgGraph();
+        var originalGetNodeItem = requireSingleValueProducerItem(originalGraph, OpaqueExprValueItem.class);
+        var entryNode = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                originalGraph.requireNode(originalGraph.entryNodeId())
+        );
+        var stopNode = assertInstanceOf(
+                FrontendCfgGraph.StopNode.class,
+                originalGraph.requireNode(entryNode.nextId())
+        );
+        // Get-node is a leaf: any operand on the opaque item is a protocol violation.
+        var mutatedGetNodeItem = new OpaqueExprValueItem(
+                originalGetNodeItem.expression(),
+                List.of(originalGetNodeItem.resultValueId()),
+                originalGetNodeItem.resultValueId()
+        );
+        var mutatedItems = entryNode.items().stream()
+                .map(item -> item == originalGetNodeItem ? mutatedGetNodeItem : item)
+                .toList();
+        var mutatedGraph = new FrontendCfgGraph(
+                originalGraph.entryNodeId(),
+                Map.of(
+                        entryNode.id(),
+                        new FrontendCfgGraph.SequenceNode(entryNode.id(), mutatedItems, entryNode.nextId()),
+                        stopNode.id(),
+                        stopNode
+                )
+        );
+        var mutatedContext = new FunctionLoweringContext(
+                originalContext.kind(),
+                originalContext.sourcePath(),
+                originalContext.sourceClassRelation(),
+                originalContext.owningClass(),
+                originalContext.targetFunction(),
+                originalContext.sourceOwner(),
+                originalContext.loweringRoot(),
+                originalContext.analysisData()
+        );
+        mutatedContext.publishFrontendCfgGraph(mutatedGraph);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendBodyLoweringSession(
+                        mutatedContext,
+                        new ClassRegistry(ExtensionApiLoader.loadDefault())
+                ).run()
+        );
+
+        assertTrue(exception.getMessage().contains("operand"), exception.getMessage());
+    }
+
+    @Test
+    void runFailsFastWhenGetNodeHasNoSelfSlot() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_get_node_no_self.gd",
+                """
+                        class_name BodyInsnGetNodeNoSelf
+                        extends Node
+                        
+                        func probe() -> Node:
+                            return $Camera3D
+                        """,
+                Map.of("BodyInsnGetNodeNoSelf", "RuntimeBodyInsnGetNodeNoSelf"),
+                true
+        );
+        var originalContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnGetNodeNoSelf",
+                "probe"
+        );
+        var originalFunction = originalContext.targetFunction();
+        // Simulate a broken shell that lost the canonical self slot: a static skeleton never
+        // declares one, so the get-node processor must fail fast instead of inventing a receiver.
+        var staticFunction = new LirFunctionDef(
+                originalFunction.getName(),
+                true,
+                false,
+                false,
+                false,
+                false,
+                Map.of(),
+                List.of(),
+                Map.of(),
+                originalFunction.getReturnType(),
+                Map.of(),
+                new LinkedHashMap<>()
+        );
+        var mutatedContext = new FunctionLoweringContext(
+                originalContext.kind(),
+                originalContext.sourcePath(),
+                originalContext.sourceClassRelation(),
+                originalContext.owningClass(),
+                staticFunction,
+                originalContext.sourceOwner(),
+                originalContext.loweringRoot(),
+                originalContext.analysisData()
+        );
+        mutatedContext.publishFrontendCfgGraph(originalContext.requireFrontendCfgGraph());
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendBodyLoweringSession(
+                        mutatedContext,
+                        new ClassRegistry(ExtensionApiLoader.loadDefault())
+                ).run()
+        );
+
+        assertTrue(exception.getMessage().contains("self"), exception.getMessage());
     }
 
     @Test

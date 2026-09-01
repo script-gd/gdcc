@@ -53,7 +53,6 @@ import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
-import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
@@ -157,12 +156,6 @@ public class FrontendCompileCheckAnalyzer {
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
         }
-    }
-
-    private static @NotNull String expressionCompileBlockedMessage(@NotNull String expressionKind) {
-        return Objects.requireNonNull(expressionKind, "expressionKind must not be null")
-                + " is recognized by the frontend but is blocked in compile mode because "
-                + "lowering support lands";
     }
 
     /// `frontend_await_implementation.md` §8, aligned with Godot's `must be called with "await"`:
@@ -672,10 +665,9 @@ public class FrontendCompileCheckAnalyzer {
                 // PreloadExpression: compile-ready — sema publishes RESOLVED(Resource) for string
                 // literals and FAILED otherwise, so the generic published-fact scan gates it;
                 // lowering rewrites it to the ResourceLoader singleton call pair.
-                case GetNodeExpression getNodeExpression -> reportExplicitCompileBlock(
-                        getNodeExpression,
-                        expressionCompileBlockedMessage("Get-node expression")
-                );
+                // GetNodeExpression: compile-ready inside supported executable bodies — sema
+                // publishes RESOLVED(Node), and the remaining boundaries (property initializer,
+                // lambda body) stay DEFERRED so the generic published-fact scan gates them.
                 case AwaitExpression awaitExpression -> walkAwaitExpression(awaitExpression);
                 default -> {
                     markCompileSurfaceNode(expression);

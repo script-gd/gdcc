@@ -896,13 +896,6 @@ public final class FrontendExpressionSemanticSupport {
                     resolveNestedChildren,
                     finalizeWindow
             );
-            case GetNodeExpression getNodeExpression -> resolveExplicitDeferredExpressionType(
-                    getNodeExpression,
-                    nestedResolver,
-                    resolveNestedChildren,
-                    "Get-node expression typing is deferred by the current frontend expression-typing contract",
-                    finalizeWindow
-            );
             case CastExpression castExpression -> resolveCastExpressionType(
                     castExpression,
                     nestedResolver,
@@ -930,6 +923,7 @@ public final class FrontendExpressionSemanticSupport {
                  AttributeExpression _,
                  AssignmentExpression _,
                  AwaitExpression _,
+                 GetNodeExpression _,
                  CallExpression _,
                  SubscriptExpression _,
                  LambdaExpression _,

@@ -489,8 +489,9 @@ writable / compatibility 规则为：
   当前 remaining explicit-deferred expression set 固定为：
 
 - `AwaitExpression` 已闭环（`frontend_await_implementation.md`）；普通 executable function 与已记录 lambda body 中的合法 signal/dynamic/instance/static-call await 进入 compile-ready surface
-- `GetNodeExpression`
 - `PatternBindingExpression`（普通 expr typing 仍 deferred；match pattern 上下文由 pattern-context 分派接管，永不触发该分支）
+
+`GetNodeExpression` **已不在** deferred 集合中：owner hook 按边界分类发布 `RESOLVED(Node)`（Node 派生类非 static 函数体）/ `FAILED`（static、非 Node 派生）/ `DEFERRED`（property initializer、lambda 体过渡边界）；链头经 `fallbackExpressionReceiverResolver` 走普通表达式 typing 管线，`$Foo.name` / `%Foo.get_name()` 自动获得 Node receiver（见 `frontend_get_node_node_path_plan.md` D4）。
 
 `PreloadExpression` **已不在** deferred 集合中：shared semantic 要求字符串字面量路径并发布 `RESOLVED(Resource)`（非字面量发 `sema.expression_resolution`），body lowering 由专用 opaque processor 改写为 `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` 指令对（见 `gdscript_language_functions_implementation.md` §7）。
 

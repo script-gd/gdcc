@@ -25,10 +25,12 @@ import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.scope.GdScriptLanguageConstant;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.PreloadExpression;
@@ -54,7 +56,8 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                 new FrontendSelfOpaqueExprInsnLoweringProcessor(),
                 new FrontendUnaryOpaqueExprInsnLoweringProcessor(),
                 new FrontendBinaryOpaqueExprInsnLoweringProcessor(),
-                new FrontendPreloadOpaqueExprInsnLoweringProcessor()
+                new FrontendPreloadOpaqueExprInsnLoweringProcessor(),
+                new FrontendGetNodeOpaqueExprInsnLoweringProcessor()
         );
     }
 
@@ -388,6 +391,56 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                     session.resultSlotId(item),
                     "load",
                     loaderSlotId,
+                    List.of(new LirInstruction.VariableOperand(pathSlotId))
+            ));
+            return block;
+        }
+    }
+
+    /// Lowers the get-node shorthand (`$Child` / `%Unique`) as Godot's desugar
+    /// `self.get_node(NodePath(<decoded path>))`: a `literal_node_path`, an upcast `assign` of
+    /// `self` into a fresh temp whose static type is `Node`, then a `call_method "get_node"`.
+    ///
+    /// The receiver temp must be statically typed `Node` — never the GDCC class type of `self`:
+    /// backend method resolution collects candidates starting from the receiver's static type, so
+    /// a script-level `get_node(NodePath)` override on a GDCC subclass would otherwise shadow the
+    /// engine method. Godot's compiler pins `$` to the native `Node.get_node` bind; typing the
+    /// receiver slot `Node` reproduces that pinning through the ordinary ENGINE route. Sema has
+    /// already proven the enclosing class is Node-derived, so the upcast assign is always legal.
+    private static final class FrontendGetNodeOpaqueExprInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<GetNodeExpression, FrontendBodyLoweringSession.OpaqueExprLoweringContext> {
+        @Override
+        public @NotNull Class<GetNodeExpression> nodeType() {
+            return GetNodeExpression.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull GetNodeExpression node,
+                @Nullable FrontendBodyLoweringSession.OpaqueExprLoweringContext context
+        ) {
+            var item = requireContext(context);
+            session.requireOpaqueOperandCount(item, 0);
+            // `self` is the canonical always-live receiver slot, so no AssertObjectLive is needed;
+            // `requireSelfSlot` fail-fasts if the current shell never published one (a lambda body
+            // only has it when capture planning synthesized a leading `self` capture).
+            session.requireSelfSlot();
+            var pathSlotId = session.allocateGdScriptLanguageFunctionTemp("get_node_path", GdNodePathType.NODE_PATH);
+            block.appendNonTerminatorInstruction(new LiteralNodePathInsn(
+                    pathSlotId,
+                    StringUtil.decodeGetNodePathLexeme(node.sourceText())
+            ));
+            var receiverSlotId = session.allocateGdScriptLanguageFunctionTemp(
+                    "get_node_receiver",
+                    new GdObjectType("Node")
+            );
+            block.appendNonTerminatorInstruction(new AssignInsn(receiverSlotId, "self"));
+            block.appendNonTerminatorInstruction(new CallMethodInsn(
+                    session.resultSlotId(item),
+                    "get_node",
+                    receiverSlotId,
                     List.of(new LirInstruction.VariableOperand(pathSlotId))
             ));
             return block;

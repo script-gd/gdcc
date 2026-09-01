@@ -849,8 +849,7 @@ class FrontendLoweringFunctionPreparationPassTest {
                                         class_name PreparationBlockedGetNode
                                         extends Node
                                         
-                                        func ping(value):
-                                            var camera = $Camera3D
+                                        var camera = $Camera3D
                                         """
                         )),
                         Map.of()
@@ -909,8 +908,7 @@ class FrontendLoweringFunctionPreparationPassTest {
                                 class_name PreparationBlockedGetNodeContexts
                                 extends Node
                                 
-                                func ping(value):
-                                    var camera = $Camera3D
+                                var camera = $Camera3D
                                 """
                 )),
                 Map.of()

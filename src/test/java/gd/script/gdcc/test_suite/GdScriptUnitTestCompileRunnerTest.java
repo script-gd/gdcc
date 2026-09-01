@@ -188,6 +188,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/virtual/physics_process_called_and_delta_valid.gd",
             "runtime/virtual/process_called_and_delta_valid.gd",
             "runtime/virtual/ready_called_once.gd",
+            "scene/get_node_shorthand_scene.gd",
             "scene/nested_node_refcounted_scene.gd",
             "smoke/basic_arithmetic.gd",
             "smoke/not_in_membership.gd",

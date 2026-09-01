@@ -1,10 +1,10 @@
 # Frontend GetNode 与 NodePath 字面量实施计划
 
-> 本文档记录 `get_node` 简写（`$` / `%`，AST 层为 `GetNodeExpression`）与 NodePath 字面量（`^"..."`）从 semantics 到 C codegen 的端到端实施计划。`^"..."` 已端到端落地（步骤 1-4）；`$`/`%` 仍被 compile gate / lowering 阻断，本文档保留尚未实现的计划内容，全部落地后应改写为 implementation 文档。
+> 本文档记录 `get_node` 简写（`$` / `%`，AST 层为 `GetNodeExpression`）与 NodePath 字面量（`^"..."`）从 semantics 到 C codegen 的端到端实施计划。`^"..."` 已端到端落地（步骤 1-4）；`$`/`%` 在 Node 派生类的非 static 函数体中已端到端落地（步骤 5-8），lambda 体内仍被 sema DEFERRED + generic compile scan 阻断（步骤 9-12 解除），本文档保留尚未实现的计划内容，全部落地后应改写为 implementation 文档。
 
 ## 文档状态
 
-- 状态：实施中（步骤 1-4 已完成，步骤 5-13 待实施）
+- 状态：实施中（步骤 1-8 已完成，步骤 9-13 待实施）
 - 更新时间：2026-09-01
 - 当前事实源：
   - `frontend_rules.md`
@@ -76,22 +76,21 @@ GDCC 语义对齐决策：
 ### 3.2 Sema
 
 - `FrontendChainHeadReceiverSupport.resolveLiteralType`（:433-447）已把 `node_path` 解析为 `GdNodePathType.NODE_PATH`；容器 constant key 经 `FrontendContainerLiteralSemanticSupport.tryDecodeNodePathLexeme` 复用共享的 `StringUtil.decodeNodePathLexeme`（步骤 1 已落地，null-on-miss）。
-- `GetNodeExpression` 在 `FrontendExpressionSemanticSupport.resolveRemainingExplicitExpressionType`（:899-905）固定返回 DEFERRED。
-- `GetNodeExpression` 作为调用实参时链绑定保持 deferred（`FrontendBodyOwnerProceduresChainBindingTest` :1895-1924 锁定现状）。
+- `GetNodeExpression` 已由 `FrontendBodyOwnerProcedures.resolveGetNodeExpressionType` owner hook 分类（步骤 5 已落地）：Node 派生类 instance 函数体 RESOLVED(Node)；property initializer DEFERRED；lambda 体 DEFERRED（过渡态，步骤 9-10 翻转）；static / 非 Node 派生 FAILED。链头经 `fallbackExpressionReceiverResolver` 自动获得 Node receiver（已有测试实证）。
 
 ### 3.3 Compile gate
 
-- `FrontendCompileCheckAnalyzer.walkExpression`（:675-678）对 `GetNodeExpression` 发显式 `sema.compile_check` 阻断，消息为 `expressionCompileBlockedMessage("Get-node expression")`（:162-166）。
-- 该 gate 同时覆盖函数体与 supported property initializer island；lambda 体经 `walkLambdaExpression` 递归覆盖。
+- `GetNodeExpression` 的显式 `sema.compile_check` 阻断已随步骤 7 移除（`expressionCompileBlockedMessage` 一并清理）；函数体内 RESOLVED(Node) 由 generic published-fact scan 放行，property-init/lambda 的 DEFERRED 由 scan 升级为 generic 形态 compile error，static/非 Node 的 FAILED 由上游 `sema.expression_resolution` 承担且 gate 去重不重复发。
+- lambda 体经 `walkLambdaExpression` 递归覆盖（recorded lambda 才释放到 compile surface）。
 - `^"..."` 字面量未被 explicit intercept 拦截，generic published-fact scan 对 RESOLVED 字面量放行；body lowering 已于步骤 4 打通，`^"..."` 端到端可用。
 
 ### 3.4 CFG / body lowering
 
-- `FrontendCfgGraphBuilder.buildValue`（:2089-2097）的 leaf family 为 `Identifier / Literal / Self / Preload`；`GetNodeExpression` 落入 `default -> throw unsupportedReachableExpression(...)`。
-- `FrontendSequenceItemInsnLoweringProcessors.classifyOpaqueExpression`（:691-694）对 `GetNodeExpression` 返回 DEFER。
+- `FrontendCfgGraphBuilder.buildValue` 的 leaf family 已含 `GetNodeExpression`（步骤 6，empty operand + empty route）。
+- `FrontendSequenceItemInsnLoweringProcessors.classifyOpaqueExpression` 对 `GetNodeExpression` 返回 HANDLE_NOW（步骤 6）。
 - `FrontendLiteralOpaqueExprInsnLoweringProcessor.lower` 已有 `node_path` 分支（步骤 4），产出 `LiteralNodePathInsn`；未知 kind 仍落入 default fail-fast。
-- opaque processor 注册表（:47-58）无 GetNode processor。
-- Preload 是最接近的模板：`FrontendPreloadOpaqueExprInsnLoweringProcessor`（:347-390）从 AST 直读 literal、`allocateGdScriptLanguageFunctionTemp` 分配临时槽、发 `LiteralStringInsn` + `LoadStaticInsn` + `CallMethodInsn` 指令对，且不发布 `resolvedCalls`。
+- opaque processor 注册表已含 `FrontendGetNodeOpaqueExprInsnLoweringProcessor`（步骤 6）：`requireSelfSlot` + `LiteralNodePathInsn` + `AssignInsn(receiverTmp, "self")`（receiverTmp 静态类型 `Node`）+ `CallMethodInsn("get_node")`。
+- Preload 模板：`FrontendPreloadOpaqueExprInsnLoweringProcessor` 从 AST 直读 literal、`allocateGdScriptLanguageFunctionTemp` 分配临时槽、发指令序列，且不发布 `resolvedCalls`。
 
 ### 3.5 LIR
 
@@ -264,6 +263,8 @@ GDCC 语义对齐决策：
 
 ### 步骤 5：GetNode sema
 
+> 状态：已完成（2026-09-01）。`FrontendExpressionSemanticSupport` 的 deferred 枚举移除 GetNode（转入 dedicated-resolver 拒绝分支）；`FrontendBodyOwnerProcedures` 新增 `resolveGetNodeExpressionType` owner hook（property-init → DEFERRED、lambda → DEFERRED 过渡态、static → FAILED、非 Node 派生 → FAILED、否则 RESOLVED(Node)），诊断沿用既有管线。测试：`FrontendExpressionSemanticSupportTest` 移除枚举 case 并新增 5 个 dedicated 用例（含 lambda 过渡态双 fixture）；`FrontendBodyOwnerProceduresChainBindingTest` 拆分为 Node 正向实参 / RefCounted 负向（锚定上游 error 的 GetNode range）/ `$Foo.name` + `%Foo.get_name()` 链头 fallback 三用例；`FrontendCompileCheckAnalyzerTest` 的 deferred 升级用例迁移到 property-init fixture。三类共 200 测试全绿。
+
 改动点：
 
 - `FrontendExpressionSemanticSupport`：`GetNodeExpression` 从 deferred 枚举移出，接入新 `resolveGetNodeExpressionType`（纯分类部分）。
@@ -285,6 +286,8 @@ GDCC 语义对齐决策：
 
 ### 步骤 6：GetNode CFG + body lowering
 
+> 状态：已完成（2026-09-01）。`FrontendCfgGraphBuilder.buildValue` leaf family 加入 `GetNodeExpression`（empty route）；`classifyOpaqueExpression` 翻转 HANDLE_NOW；新增 `FrontendGetNodeOpaqueExprInsnLoweringProcessor`（literal_node_path + `AssignInsn(receiverTmp, "self")` 上溯 `GdObjectType("Node")` + `call_method "get_node"`）。`FrontendLoweringBodyInsnPassTest` 新增 5 用例：三指令序列与接线/槽类型/顺序、`%` 前缀与引号形态 payload、override 钉住（`$Child` receiver 槽 `Node` vs 显式 `self.get_node(...)` receiver `self` GDCC 类型）、operand 携带与缺 self 槽双 fail-fast。
+
 改动点：
 
 - `FrontendCfgGraphBuilder.buildValue` leaf family 加入 `GetNodeExpression`。
@@ -300,6 +303,8 @@ GDCC 语义对齐决策：
 
 ### 步骤 7：compile gate 解除与既有阻断测试迁移
 
+> 状态：已完成（2026-09-01）。`FrontendCompileCheckAnalyzer` 的 `case GetNodeExpression` 显式阻断与 `expressionCompileBlockedMessage` helper 已删除，generic published-fact scan 接管。测试迁移：函数体/match/for/range-loop 四处翻转为放行（改用 `prepareCompileCheckInput`+published RESOLVED(Node) fact 证明扫描）；static property-init 与两个 anchor-dedup 用例迁移到 property-init DEFERRED 锚点（generic "remains deferred" 消息形态）；lambda 用例保持过渡态阻断（generic 形态）；`ApiCompileDiagnosticsTest` 新增函数体 `$Camera3D` 编译成功正例；`FrontendLoweringAnalysisPassTest`/`FrontendLoweringFunctionPreparationPassTest`/`FrontendLoweringPassManagerTest`/`FrontendSemanticAnalyzerFrameworkTest`/`ApiCompileTaskFailureStageTest` 的阻断 fixture 全部从函数体迁移到 property-init。frontend/api 两包全量回归绿。
+
 改动点：
 
 - 删除 `FrontendCompileCheckAnalyzer` 的 `case GetNodeExpression` 显式阻断；`expressionCompileBlockedMessage("Get-node expression")` 若不再有调用方则一并清理。
@@ -314,6 +319,8 @@ GDCC 语义对齐决策：
 - 测试：`--tests FrontendCompileCheckAnalyzerTest,ApiCompileDiagnosticsTest`。
 
 ### 步骤 8：e2e test_suite fixture
+
+> 状态：已完成（2026-09-01）。新增 `scene/get_node_shorthand_scene.gd` + 同名 validation，覆盖 `$Child`/`$"Name With Space"`/`%Unique`/`%"Unique Name"` 非空与 `is Node`、`get_node_or_null(^"Missing") == null`、`has_node(^"Child")`、`$Child.name` 链头读取；unique-name 节点按 `add_child → owner = self → unique_name_in_owner = true` 顺序登记。已登记 `EXPECTED_SCRIPT_PATHS`，`test_suite_engine_integration_known_limits.md` §10 补记。`compilesAndValidatesSceneScripts` 在 Zig+GODOT_BIN 环境实际运行通过（非 skip）。
 
 改动点：
 

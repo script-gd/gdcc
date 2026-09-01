@@ -81,6 +81,34 @@ class ApiCompileDiagnosticsTest {
     }
 
     @Test
+    void compileSucceedsForGetNodeShorthandInsideFunctionBody(@TempDir Path tempDir) {
+        var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
+        var api = ApiCompileTestSupport.newApi(compiler);
+
+        api.createModule("demo", "Get-Node Shorthand Demo");
+        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("get-node-shorthand-project")));
+        api.putFile("demo", "/src/player.gd", """
+                class_name ApiGetNodeShorthand
+                extends Node
+                
+                func ready_camera() -> Node:
+                    return $Camera3D
+                """);
+
+        // A get-node shorthand inside a supported executable body compiles end-to-end: no
+        // frontend gate diagnostic, the native compiler is invoked, and the task reports success.
+        var result = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+
+        assertEquals(CompileResult.Outcome.SUCCESS, result.outcome());
+        assertTrue(result.success());
+        assertFalse(result.diagnostics().hasErrors());
+        assertTrue(result.diagnostics().asList().stream()
+                .noneMatch(diagnostic -> diagnostic.category().equals("sema.compile_check")));
+        assertEquals(List.of("/src/player.gd"), result.sourcePaths());
+        assertEquals(1, compiler.invocationCount());
+    }
+
+    @Test
     void compileSucceedsForScriptStaticProperties(@TempDir Path tempDir) {
         var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
         var api = ApiCompileTestSupport.newApi(compiler);

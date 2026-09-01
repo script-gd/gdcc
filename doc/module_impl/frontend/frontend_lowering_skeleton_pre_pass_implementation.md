@@ -270,11 +270,9 @@ void run(FrontendLoweringContext context)
 
 ## 7. Compile Gate 与当前 blocker 边界
 
-当前 compile-only gate 仍是 lowering 唯一合法前置门。以下内容仍由 compile gate 显式封口，不得在 lowering 中偷偷放行：
+当前 compile-only gate 仍是 lowering 唯一合法前置门。表达式级显式封口当前为空：published facts 中的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 残留由 generic published-fact scan 兜底，不得在 lowering 中偷偷放行。
 
-- `GetNodeExpression`
-
-说明：`assert`、`PreloadExpression`、`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression`、`ConditionalExpression` 与脚本类 `static var` 已离开 compile-only 显式封口列表（见对应事实源文档）。
+说明：`assert`、`PreloadExpression`、`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression`、`ConditionalExpression`、`GetNodeExpression` 与脚本类 `static var` 已离开 compile-only 显式封口列表（见对应事实源文档；GetNode 的 property-init / lambda DEFERRED 边界经 generic scan 封口，见 `frontend_get_node_node_path_plan.md`）。
 
 此外，frontend MVP 仍未完整支持：
 

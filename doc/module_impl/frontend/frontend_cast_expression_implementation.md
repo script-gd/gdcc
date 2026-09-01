@@ -195,7 +195,7 @@ local/property initializer、assignment RHS、return、fixed call argument、con
 
 - supported cast 不产生 `sema.compile_check`。
 - invalid cast 只保留 shared type-check / expression-resolution error。
-- 当前仍被显式 intercept 的表达式（`GetNodeExpression`）以及 route-aware `ForStatement` 仍被正确封口。`assert`、`PreloadExpression`、`ArrayExpression` / `DictionaryExpression` 与 `ConditionalExpression` 已离开 intercept（见 `frontend_container_literal_implementation.md`、`frontend_conditional_expression_implementation.md`）。
+- 表达式级显式 intercept 当前为空（`GetNodeExpression` 已离开，其剩余边界经 generic scan 封口，见 `frontend_get_node_node_path_plan.md`）；route-aware `ForStatement` 的未注册 route 仍被正确封口。`assert`、`PreloadExpression`、`ArrayExpression` / `DictionaryExpression` 与 `ConditionalExpression` 已离开 intercept（见 `frontend_container_literal_implementation.md`、`frontend_conditional_expression_implementation.md`）。
 
 ## 7. 核心实现落点
 

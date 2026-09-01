@@ -1223,12 +1223,15 @@ class FrontendSemanticAnalyzerFrameworkTest {
     @Test
     void analyzeForCompileDefinesTheLoweringReadinessBoundary() throws Exception {
         // Shared analyze stays diagnostic-free; compile gate still blocks forms that are not compile-ready.
-        // Container literals, assert and preload are compile-ready; keep get-node as the
-        // compile-only intercept anchor.
+        // Container literals, assert, preload and function-body get-node are compile-ready; the
+        // property-initializer get-node stays DEFERRED on the shared path and serves as the
+        // compile-blocking anchor via the generic published-fact scan.
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", "compile_check_lowering_boundary.gd"), """
                 class_name CompileCheckLoweringBoundary
                 extends Node
+                
+                var camera = $Camera3D
                 
                 func ping():
                     [1]

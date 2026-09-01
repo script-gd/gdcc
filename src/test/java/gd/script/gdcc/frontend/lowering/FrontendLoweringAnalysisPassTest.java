@@ -106,8 +106,7 @@ class FrontendLoweringAnalysisPassTest {
                                 class_name LoweringBlockedGetNode
                                 extends Node
                                 
-                                func ping(value):
-                                    var camera = $Camera3D
+                                var camera = $Camera3D
                                 """,
                         "Get-node expression"
                 )

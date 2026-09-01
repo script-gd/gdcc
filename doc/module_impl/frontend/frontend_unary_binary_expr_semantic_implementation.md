@@ -93,7 +93,7 @@ frontend 当前将 unary / binary 语义冻结在 shared expression helper，而
 这条边界意味着：
 
 - unary / binary 的 typed fact 可以继续向 type-check、property initializer、return gate 与 compile gate 传递
-- compile-only block 的剩余重心不再是 unary / binary / conditional，而是 `GetNodeExpression` 等明确尚未接通 lowering 的表达式家族（`PreloadExpression` 已完成 lowering/backend 闭环）
+- compile-only block 的剩余重心不再是 unary / binary / conditional；表达式级显式 intercept 当前为空
 
 ---
 

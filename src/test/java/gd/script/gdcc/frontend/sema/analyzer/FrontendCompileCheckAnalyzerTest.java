@@ -15,6 +15,7 @@ import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
+import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
@@ -64,6 +65,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -102,9 +104,9 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileReportsExplicitCompileBlocksWhileAnalyzeLeavesSharedDiagnosticsUntouched() throws Exception {
+    void analyzeForCompileReleasesCompileReadyExpressionMixWhileAnalyzeLeavesSharedDiagnosticsUntouched() throws Exception {
         var source = """
-                class_name CompileCheckExplicitBlocks
+                class_name CompileCheckReadyExpressionMix
                 extends Node
                 
                 var property_array = [1]
@@ -119,37 +121,19 @@ class FrontendCompileCheckAnalyzerTest {
                     value is String
                 """;
 
-        var sharedAnalyzed = analyzeShared("compile_check_explicit_blocks.gd", source);
+        var sharedAnalyzed = analyzeShared("compile_check_ready_expression_mix.gd", source);
         assertFalse(sharedAnalyzed.diagnostics().hasErrors());
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.type_check").isEmpty());
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.unsupported_expression_route").isEmpty());
 
-        var compiled = analyzeForCompile("compile_check_explicit_blocks.gd", source);
+        // No explicit expression intercepts remain: assert, ternary, array/dictionary literals,
+        // preload, get-node, cast, and type-test are all compile-ready, and the supported property
+        // initializer island (property_preload) stays clean as well.
+        var compiled = analyzeForCompile("compile_check_ready_expression_mix.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        // Remaining explicit intercept: get-node. Assert and preload are compile-ready and stay in
-        // the source above as release evidence alongside the ternary (class-level
-        // `var property_preload = preload("res://icon.svg")` exercises the supported property
-        // initializer path).
-        // Array/Dictionary literals, CastExpression, TypeTestExpression, and ConditionalExpression
-        // are compile-ready and not in the intercept set.
-        assertEquals(1, compileDiagnostics.size());
-        assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
-                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && Objects.equals(
-                        FrontendDiagnostic.sourcePathText(Path.of("tmp", "compile_check_explicit_blocks.gd")),
-                        diagnostic.sourcePath()
-                )
-                        && diagnostic.range() != null
-        ));
-        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("assert statement")));
-        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Conditional expression")));
-        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Array literal")));
-        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Dictionary literal")));
-        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Preload expression")));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Get-node expression")));
-        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Cast expression")));
-        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Type-test expression")));
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
         assertEquals(compiled.diagnostics(), compiled.diagnosticManager().snapshot());
     }
 
@@ -575,14 +559,18 @@ class FrontendCompileCheckAnalyzerTest {
                 """;
 
         // Negative path: removing the static-property declaration gate must not shield
-        // still-unsupported constructs nested inside the initializer. The compile walk now
-        // reaches the get-node expression and reports it, proving the subtree is really traversed.
+        // still-unsupported constructs nested inside the initializer. The compile walk reaches
+        // the get-node expression, whose property-initializer DEFERRED fact is escalated by the
+        // generic published-fact scan, proving the subtree is really traversed.
         var compiled = analyzeForCompile("compile_check_static_property_nested_blocker.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
         assertTrue(compiled.diagnostics().hasErrors());
         assertEquals(1, compileDiagnostics.size());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Get-node expression"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("remains deferred"));
+        assertTrue(compileDiagnostics.getFirst().message().contains(
+                "Get-node expression is not supported inside property initializers"
+        ));
         assertFalse(compileDiagnostics.getFirst().message().contains("Static property"));
         // The blocker must anchor inside the initializer subtree (the get-node expression),
         // never on the declaration itself.
@@ -934,7 +922,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileSkipsExplicitCompileBlocksOutsideCompileSurface() throws Exception {
+    void matchArrayRouteReleasesBodyWhileUnsupportedBindingSubtreesStayClosed() throws Exception {
         var source = """
                 class_name CompileCheckSkippedSurface
                 extends Node
@@ -958,26 +946,27 @@ class FrontendCompileCheckAnalyzerTest {
                     return body_local
                 """;
 
+        var preparedInput = prepareCompileCheckInput("compile_check_skipped_surface.gd", source);
+        runCompileCheck(preparedInput);
         var compiled = analyzeForCompile("compile_check_skipped_surface.gd", source);
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        var matchStatement = findNode(compiled.unit().ast(), MatchStatement.class, ignored -> true);
-        // ARRAY is compile-ready: the match body joins the compile surface, so the nested
-        // $Node reports its own blocker while the match root stays clean. The nested preload and
-        // assert are compile-ready and contribute no blocker.
-        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
-        assertTrue(compileDiagnostics.stream().noneMatch(
-                diagnostic -> diagnostic.range().equals(FrontendRange.fromAstRange(matchStatement.range()))
-        ));
-        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("Preload expression")));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Get-node expression")));
-        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("assert statement")));
+        var getNode = findNode(preparedInput.unit().ast(), GetNodeExpression.class, ignored -> true);
+        // ARRAY is compile-ready: the match body joins the compile surface, and the nested
+        // get-node is published RESOLVED(Node) — proof the body was actually scanned, since the
+        // fact only exists for expressions the walker released. The match root itself, the nested
+        // preload, and the assert stay clean.
+        var getNodeType = preparedInput.analysisData().expressionTypes().get(getNode);
+        assertNotNull(getNodeType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, getNodeType.status());
+        assertEquals(new GdObjectType("Node"), getNodeType.publishedType());
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
         var unsupportedBindingDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
         );
         // parameter default + block-local const stay fail-closed; match no longer contributes.
-        assertEquals(2, unsupportedBindingDiagnostics.size());
+        assertEquals(2, unsupportedBindingDiagnostics.size(), unsupportedBindingDiagnostics::toString);
     }
 
     @Test
@@ -992,12 +981,19 @@ class FrontendCompileCheckAnalyzerTest {
                             $Camera3D
                 """;
 
-        var compiled = analyzeForCompile("compile_check_match_ready_surface.gd", source);
-        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        // The ready match route releases its body onto the compile surface; the still-gated
-        // get-node expression inside proves the body is actually scanned.
-        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
-        assertTrue(compileDiagnostics.getFirst().message().contains("Get-node expression"));
+        var preparedInput = prepareCompileCheckInput("compile_check_match_ready_surface.gd", source);
+        runCompileCheck(preparedInput);
+
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        // The ready match route releases its body onto the compile surface; the get-node inside
+        // carries a published RESOLVED(Node) fact, which proves the body was actually scanned and
+        // is lowering-ready.
+        var getNode = findNode(preparedInput.unit().ast(), GetNodeExpression.class, ignored -> true);
+        var getNodeType = preparedInput.analysisData().expressionTypes().get(getNode);
+        assertNotNull(getNodeType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, getNodeType.status());
+        assertEquals(new GdObjectType("Node"), getNodeType.publishedType());
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
     @Test
@@ -1013,18 +1009,24 @@ class FrontendCompileCheckAnalyzerTest {
                 """;
 
         var shared = analyzeShared("compile_check_for_bridge.gd", source);
-        var compiled = analyzeForCompile("compile_check_for_bridge.gd", source);
+        var preparedInput = prepareCompileCheckInput("compile_check_for_bridge.gd", source);
+        runCompileCheck(preparedInput);
 
         assertTrue(shared.diagnostics().asList().stream().noneMatch(diagnostic ->
                 diagnostic.category().equals("sema.unsupported_variable_inventory_subtree")
                         || diagnostic.category().equals("sema.unsupported_binding_subtree")
                         || diagnostic.category().equals("sema.compile_check")
         ));
-        // The generic Variant for route releases its body onto the compile surface; the
-        // still-gated get-node expression inside proves the body is actually scanned.
-        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        assertEquals(1, compileDiagnostics.size());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Get-node expression"));
+        // The generic Variant for route releases its body onto the compile surface; the get-node
+        // inside carries a published RESOLVED(Node) fact, which proves the body was actually
+        // scanned and is lowering-ready.
+        var getNode = findNode(preparedInput.unit().ast(), GetNodeExpression.class, ignored -> true);
+        var getNodeType = preparedInput.analysisData().expressionTypes().get(getNode);
+        assertNotNull(getNodeType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, getNodeType.status());
+        assertEquals(new GdObjectType("Node"), getNodeType.publishedType());
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
     @Test
@@ -1074,13 +1076,19 @@ class FrontendCompileCheckAnalyzerTest {
                         $Camera3D
                 """;
 
-        var compiled = analyzeForCompile("compile_check_for_range_body_scanned.gd", source);
+        var preparedInput = prepareCompileCheckInput("compile_check_for_range_body_scanned.gd", source);
+        runCompileCheck(preparedInput);
 
-        // The released range loop body is scanned like any other compile surface; the still-gated
-        // get-node expression inside proves it.
-        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        assertEquals(1, compileDiagnostics.size());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Get-node expression"));
+        // The released range loop body is scanned like any other compile surface; the get-node
+        // inside carries a published RESOLVED(Node) fact, which proves the scan reached it and
+        // that the fact is lowering-ready.
+        var getNode = findNode(preparedInput.unit().ast(), GetNodeExpression.class, ignored -> true);
+        var getNodeType = preparedInput.analysisData().expressionTypes().get(getNode);
+        assertNotNull(getNodeType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, getNodeType.status());
+        assertEquals(new GdObjectType("Node"), getNodeType.publishedType());
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
     @Test
@@ -1133,13 +1141,14 @@ class FrontendCompileCheckAnalyzerTest {
 
     @Test
     void analyzeSkipsCompileCheckWhenAnchorAlreadyHasPublishedError() throws Exception {
-        // Anchor on a still-blocked form so compile-check dedup is not vacuous.
+        // Anchor on a still-blocked form so compile-check dedup is not vacuous: a get-node inside
+        // a property initializer stays DEFERRED on the shared path and would be escalated by the
+        // generic published-fact scan if the synthetic upstream error did not own the anchor.
         var preparedInput = prepareCompileCheckInput("compile_check_existing_error.gd", """
                 class_name CompileCheckExistingError
                 extends Node
                 
-                func ping():
-                    $Camera3D
+                var camera = $Camera3D
                 """);
         var getNodeExpression = findNode(preparedInput.unit().ast(), GetNodeExpression.class, ignored -> true);
         preparedInput.diagnosticManager().error(
@@ -1161,13 +1170,13 @@ class FrontendCompileCheckAnalyzerTest {
 
     @Test
     void analyzeDeduplicatesAgainstLiveManagerSnapshotWhenAnalysisDataSnapshotIsStale() throws Exception {
-        // Anchor on a still-blocked form so compile-check dedup is not vacuous.
+        // Anchor on a still-blocked form so compile-check dedup is not vacuous (property
+        // initializer get-node stays DEFERRED on the shared path; see the sibling test above).
         var preparedInput = prepareCompileCheckInput("compile_check_live_manager_upstream.gd", """
                 class_name CompileCheckLiveManagerUpstream
                 extends Node
                 
-                func ping():
-                    $Camera3D
+                var camera = $Camera3D
                 """);
         var getNodeExpression = findNode(preparedInput.unit().ast(), GetNodeExpression.class, _ -> true);
         preparedInput.diagnosticManager().error(
@@ -1696,34 +1705,84 @@ class FrontendCompileCheckAnalyzerTest {
 
     @Test
     void analyzeForCompileUpgradesDeferredWarningsIntoCompileBlockingErrors() throws Exception {
+        // A get-node inside a property initializer is the remaining DEFERRED producer on the
+        // shared analyze path (warning only); compile mode escalates it via the generic
+        // published-fact scan.
         var source = """
                 class_name DeferredCompileCheck
-                extends RefCounted
+                extends Node
                 
-                func build(value: int) -> String:
-                    return ""
-                
-                func ping(flag):
-                    self.build($Camera3D).length
+                var camera = $Camera3D
                 """;
 
         var shared = analyzeShared("deferred_compile_check.gd", source);
         assertFalse(shared.diagnostics().hasErrors());
-        assertEquals(1, diagnosticsByCategory(shared.diagnostics(), "sema.deferred_chain_resolution").size());
+        var deferredWarnings = diagnosticsByCategory(shared.diagnostics(), "sema.deferred_expression_resolution");
+        assertEquals(1, deferredWarnings.size());
+        assertTrue(deferredWarnings.getFirst().message().contains("Get-node expression"));
         assertTrue(diagnosticsByCategory(shared.diagnostics(), "sema.compile_check").isEmpty());
 
         var compiled = analyzeForCompile("deferred_compile_check.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
-        assertFalse(compileDiagnostics.isEmpty(), () -> compiled.diagnostics().asList().toString());
+        assertEquals(1, compileDiagnostics.size(), () -> compiled.diagnostics().asList().toString());
         assertTrue(compiled.diagnostics().hasErrors());
         assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
         ));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
                 diagnostic.message().contains("remains deferred")
-                        || diagnostic.message().contains("Get-node expression")
+                        && diagnostic.message().contains("Get-node expression")
         ));
+    }
+
+    @Test
+    void analyzeForCompileKeepsStaticGetNodeFailureOnUpstreamErrorWithoutDuplicateCompileCheck() throws Exception {
+        var source = """
+                class_name CompileCheckStaticGetNode
+                extends Node
+                
+                static func ping():
+                    $Camera3D
+                """;
+
+        var compiled = analyzeForCompile("compile_check_static_get_node.gd", source);
+
+        // The static-function get-node failure is owned upstream by `sema.expression_resolution`;
+        // the generic published-fact scan sees the same FAILED fact but must not wrap a second
+        // `sema.compile_check` on the already-reported anchor.
+        assertTrue(compiled.diagnostics().hasErrors());
+        var expressionErrors = diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution");
+        assertEquals(1, expressionErrors.size(), () -> compiled.diagnostics().asList().toString());
+        assertTrue(expressionErrors.getFirst().message().contains("static function"));
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                () -> compiled.diagnostics().asList().toString()
+        );
+    }
+
+    @Test
+    void analyzeForCompileKeepsNonNodeGetNodeFailureOnUpstreamErrorWithoutDuplicateCompileCheck() throws Exception {
+        var source = """
+                class_name CompileCheckNonNodeGetNode
+                extends RefCounted
+                
+                func ping():
+                    $Camera3D
+                """;
+
+        var compiled = analyzeForCompile("compile_check_non_node_get_node.gd", source);
+
+        // Same upstream-owner rule for the non-Node-derived boundary: exactly one
+        // `sema.expression_resolution` error, no duplicate `sema.compile_check`.
+        assertTrue(compiled.diagnostics().hasErrors());
+        var expressionErrors = diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution");
+        assertEquals(1, expressionErrors.size(), () -> compiled.diagnostics().asList().toString());
+        assertTrue(expressionErrors.getFirst().message().contains("inherits from Node"));
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                () -> compiled.diagnostics().asList().toString()
+        );
     }
 
     @Test
@@ -2121,7 +2180,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileScansRecordedLambdaBodyExplicitBlocks() throws Exception {
+    void analyzeForCompileScansRecordedLambdaBodyPublishedFacts() throws Exception {
         var source = """
                 class_name CompileCheckLambdaBodyScan
                 extends Node
@@ -2142,10 +2201,13 @@ class FrontendCompileCheckAnalyzerTest {
         var assertStatement = findNode(compiled.unit().ast(), AssertStatement.class, ignored -> true);
         var lambdaRange = FrontendRange.fromAstRange(lambda.range());
 
-        // The gate recurses into the recorded lambda body: the body's get-node is a
-        // compile-blocking fact now, while the lambda node itself carries no form-level blocker.
-        // The nested preload and assert are compile-ready and contribute no blocker.
+        // The gate recurses into the recorded lambda body: the body's get-node stays DEFERRED on
+        // the shared path (a lambda cannot reach the enclosing instance receiver without an
+        // implicit `self` capture), so the generic published-fact scan escalates it. The lambda
+        // node itself carries no form-level blocker; the nested preload and assert are
+        // compile-ready and contribute no blocker.
         assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
         assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
                 diagnostic.range().equals(lambdaRange)
         ), compileDiagnostics::toString);
@@ -2154,6 +2216,7 @@ class FrontendCompileCheckAnalyzerTest {
         ), compileDiagnostics::toString);
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
                 diagnostic.range().equals(FrontendRange.fromAstRange(getNode.range()))
+                        && diagnostic.message().contains("remains deferred")
                         && diagnostic.message().contains("Get-node expression")
         ), compileDiagnostics::toString);
         assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->

@@ -689,8 +689,9 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                                 + "singleton call pair"
                 );
                 case GetNodeExpression _ -> new OpaqueExprPolicy(
-                        OpaqueExprHandling.DEFER,
-                        "this compile-blocked expression family stays outside the first body lowering surface"
+                        OpaqueExprHandling.HANDLE_NOW,
+                        "get-node lowers through the dedicated opaque processor as a "
+                                + "literal_node_path + self-upcast + Node.get_node call triple"
                 );
                 case AssignmentExpression _, AttributeExpression _, CallExpression _, SubscriptExpression _ ->
                         new OpaqueExprPolicy(

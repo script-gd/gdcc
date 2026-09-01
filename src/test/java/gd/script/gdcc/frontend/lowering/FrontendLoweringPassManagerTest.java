@@ -537,8 +537,7 @@ class FrontendLoweringPassManagerTest {
                                         class_name LoweringManagerCfgCompileBlocked
                                         extends Node
                                         
-                                        func ping(value):
-                                            var camera = $Camera3D
+                                        var camera = $Camera3D
                                         """
                         )),
                         Map.of()
@@ -566,8 +565,7 @@ class FrontendLoweringPassManagerTest {
                                         class_name LoweringManagerCompileBlocked
                                         extends Node
                                         
-                                        func ping(value):
-                                            var camera = $Camera3D
+                                        var camera = $Camera3D
                                         """
                         )),
                         Map.of()

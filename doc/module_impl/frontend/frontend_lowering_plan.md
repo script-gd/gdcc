@@ -201,7 +201,8 @@
 建议解除顺序：
 
 1. ~~`assert`~~（已完成）
-2. ~~`PreloadExpression`~~（已完成：字符串字面量校验 + ResourceLoader singleton 调用对改写）；`GetNodeExpression`
+2. ~~`PreloadExpression`~~（已完成：字符串字面量校验 + ResourceLoader singleton 调用对改写）
+3. ~~`GetNodeExpression`~~（已完成：Node 派生类非 static 函数体 `RESOLVED(Node)` + `literal_node_path` / `assign` 上溯 / `call_method "get_node"` 三指令 lowering + ENGINE dispatch 闭环；property initializer 与 lambda 体内的 `$`/`%` 仍为 DEFERRED 边界，由 generic published-fact scan 封口，不在本期放行）
 
 说明：
 
