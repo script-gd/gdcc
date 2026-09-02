@@ -24,7 +24,7 @@
   - 不做常量折叠（Godot 在 condition 与双臂均常量时折叠），不做 flow-sensitive 类型收窄（与现有 `if` 一致）。
   - 不新增 `INCOMPATIBLE_TERNARY` 诊断：Godot 对无公共类型双臂发该 warning，当前只回退 `Variant`（见 §9 D2）。
   - 不做 `void` 臂三元的语句位丢弃特判：`void` 臂与非 Variant 具体类型配对为显式 `UNSUPPORTED`。
-  - 不改动 `GetNodeExpression` 的 compile gate 处理（其显式拦截已在后续阶段解除，见 `frontend_get_node_node_path_plan.md`、`frontend_compile_check_analyzer_implementation.md`）。
+  - 不改动 `GetNodeExpression` 的 compile gate 处理（无表达式级显式拦截，见 `frontend_node_literal_implementation.md`、`frontend_compile_check_analyzer_implementation.md`）。
 
 ## 1. 当前定位与数据流
 
@@ -128,7 +128,7 @@ return conditionBuild;
 - `FrontendCompileCheckAnalyzer.walkExpression` 对三元无显式 case，落入 `default`：`markCompileSurfaceNode` + `rememberBareCallCallee` + `walkNestedExpressionChildren`（`getChildren()=[condition,left,right]` 递归覆盖嵌套三元）。
 - generic `scanExpressionTypeCompileBlocks` 保持不变：未稳定的 conditional fact 仍按 `BLOCKED/DEFERRED/FAILED/UNSUPPORTED` 阻断（fail-closed 兜底）。
 - 诊断去重零 gate 改动：依赖 §2 binary 式 root 重持有 + `hasPublishedConflictingDiagnosticAt` exact-range 冲突去重。**明确禁止：** 扩展 `isCoveredByPropagatedValueOperandCompileBlock` 的 AST-kind 硬编码（维持 cast/type-test-only ownership 不变量）。
-- 当前无表达式级显式 intercept：`GetNodeExpression` 已离开该列表（见 `frontend_get_node_node_path_plan.md`、`frontend_compile_check_analyzer_implementation.md`）。
+- 当前无表达式级显式 intercept：`GetNodeExpression` 已离开该列表（见 `frontend_node_literal_implementation.md`、`frontend_compile_check_analyzer_implementation.md`）。
 
 ## 6. Body lowering 与 backend
 

@@ -725,7 +725,7 @@ body-lowering 合同：
 - multi-key subscript lowering
 - `for`（compile gate 为 route-aware：registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker；`FrontendForRegion`、四个 `ForLoop*Item`、source/hidden slot registry、跨表验证与 body lowering（`declareForLoopSlots()` + init/should_continue/get/next processors、temp-then-commit）均已落地；完整合同见 `frontend_for_range_loop_implementation.md`）
 
-`GetNodeExpression` 已进入 compile-ready body lowering 合同（Node 派生类非 static 函数体 sema 发布 `RESOLVED(Node)`；CFG 按 opaque leaf 建 `OpaqueExprValueItem`；body lowering 由专用 processor 改写为 `literal_node_path` + `assign`（`self` 上溯 `Node`）+ `call_method "get_node"` 三指令序列，backend ENGINE dispatch 闭环），不再属于 shell-only / temporary compile-block surface；property initializer 与 lambda 体内的 `$`/`%` 仍为 DEFERRED 边界，由 generic published-fact scan 封口（见 `frontend_get_node_node_path_plan.md`）。
+`GetNodeExpression` 已进入 compile-ready body lowering 合同（Node 派生类非 static 函数体及已记录 lambda sema 发布 `RESOLVED(Node)`；CFG 按 opaque leaf 建 `OpaqueExprValueItem`；body lowering 由专用 processor 改写为 `literal_node_path` + `assign`（`self` 上溯 `Node`）+ `call_method "get_node"` 三指令序列，backend ENGINE dispatch 闭环），不再属于 shell-only / temporary compile-block surface；property initializer 中的 `$`/`%` 仍为 DEFERRED 边界，由 generic published-fact scan 封口（见 `frontend_node_literal_implementation.md`）。
 
 `PreloadExpression` 已进入 compile-ready body lowering 合同（sema 要求字符串字面量路径并发布 `RESOLVED(Resource)`；CFG 按 opaque leaf 建 `OpaqueExprValueItem`；body lowering 由专用 processor 改写为 `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` 指令对，与合成语言函数 `load` 的改写共享同一指令对），不再属于 shell-only / temporary compile-block surface；`const X = preload(...)` 仍随 class-constant 工作流整体拦截。
 

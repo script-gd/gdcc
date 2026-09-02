@@ -297,7 +297,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.compile_check`
   - compile-only `FrontendCompileCheckAnalyzer` 对进入 lowering 前仍不可编译的 surface 发出的最终 error
   - 同时覆盖：
-    - 按 route-aware policy 处理的 `ForStatement`；`GetNodeExpression`、`assert`、`PreloadExpression`、`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression`、`ConditionalExpression` 与已记录 `LambdaExpression` 不属于无条件显式封口列表（表达式级显式封口当前为空；GetNode 函数体路径已闭环，剩余 property-init/lambda DEFERRED 边界经 generic published-fact scan 升级）
+    - 按 route-aware policy 处理的 `ForStatement`；`GetNodeExpression`、`assert`、`PreloadExpression`、`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression`、`ConditionalExpression` 与已记录 `LambdaExpression` 不属于无条件显式封口列表（表达式级显式封口当前为空；GetNode 函数体与已记录 lambda 路径已闭环，剩余 property-init DEFERRED 边界经 generic published-fact scan 升级）
     - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
     - feature-specific RESOLVED blocker：当前仅 Dictionary 实例 method-reference（`METHOD && BUILTIN && GdDictionaryType`）与 builtin type-meta static method-reference（`STATIC_METHOD && ownerKind == BUILTIN`）。signal 值读取、`.emit`、`.connect`/`.disconnect`、Object/self `METHOD`、非 Dictionary builtin 实例、GDCC/engine 静态与 bare utility 值读取已放行。bare blocker 按 published `symbolBindings().kind()` 定位，必须排除 `CallExpression.callee()`。详见 `frontend_signal_support.md` 与 `frontend_compile_check_analyzer_implementation.md` §4.2。
     - supported callable-local `var` 因 `sema.variable_slot_publication` warning 仍缺失 `slotTypes()` 的 lowering-only fact 缺洞
@@ -305,7 +305,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - `ForStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `forIterationPlans()` 与 `ForLoweringContractRegistry`，已注册 lowering contract 的 route 放行并进入 body 重扫 facts，未注册 contract 的 route（当前 `OBJECT_CUSTOM`）在 statement root 发 route-not-ready blocker（说明缺少 lowering route，而非 `FOR_SUBTREE` unsupported）；已注册 route 的 CFG/body lowering 已落地
   - `MatchStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `matchPlans()` 与 `FrontendMatchSupport.isRouteLoweringReady`；`WILDCARD` / `BINDING` / `LITERAL` / `EXPRESSION` / `ARRAY` / `DICTIONARY` 六 route 全部放行并重扫 body facts。plan 缺失时保持封口，由 upstream owner 持有诊断。同一 statement root 已有 upstream error 时省略 route-not-ready
   - 已记录 `LambdaExpression`（published `FrontendLambdaPlan` + body）放上 compile surface 并递归扫描 body facts；未记录 lambda 保持 fail-closed，且不得在上游 unsupported owner 上重复包一层 `sema.compile_check`。合同见 `frontend_lambda_implementation.md`
-  - 表达式级 temporary compile intercept 当前为空：`GetNodeExpression` 已接通（Node 派生类非 static 函数体 `RESOLVED(Node)`，三指令 lowering + ENGINE `Node.get_node` dispatch 闭环）；`PreloadExpression`、`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression`、`ConditionalExpression` 与已记录 `LambdaExpression` 已完成 lowering/backend 闭环。历史上该列表承载的是「frontend 已识别但 lowering 尚未接通」的表达式，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
+  - 表达式级 temporary compile intercept 当前为空：`GetNodeExpression` 已接通（Node 派生类非 static 函数体与已记录 lambda `RESOLVED(Node)`，三指令 lowering + ENGINE `Node.get_node` dispatch 闭环）；`PreloadExpression`、`ArrayExpression` / `DictionaryExpression`、`TypeTestExpression`、`CastExpression`、`ConditionalExpression` 与已记录 `LambdaExpression` 已完成 lowering/backend 闭环。历史上该列表承载的是「frontend 已识别但 lowering 尚未接通」的表达式，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
   - `ConditionalExpression` 已完成 shared semantic（双臂合并类型 + binary 式 root 重持有诊断）、CFG 双语境构图、body lowering `merge_write` 物化与 e2e 闭环，不再属 temporary intercept；未稳定三元 fact 仍由 generic published-fact blocker 兜底（见 `frontend_conditional_expression_implementation.md`）
   - `DYNAMIC` 不属于 compile blocker；它保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 未实现状态
   - 该 category 只属于 compile-only 入口，不属于默认共享语义 / inspection / 未来 LSP 入口
@@ -434,7 +434,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - 合法 `while` / `for` loop body 不会误报 loop-control error
   - nested lambda 会切断外层 loop depth
 - `FrontendCompileCheckAnalyzerTest`
-    - 表达式级显式封口当前为空（`GetNodeExpression` 与 `assert` / `preload` 均已放行；GetNode 的 property-init / lambda DEFERRED 边界经 generic scan 升级）
+    - 表达式级显式封口当前为空（`GetNodeExpression` 与 `assert` / `preload` 均已放行；GetNode 的 property-init DEFERRED 边界经 generic scan 升级）
     - compile surface 上的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 会被补成最终 compile blocker
     - supported property initializer island 上的 generic blocker 也被单独锚定到 compile surface
     - `DYNAMIC`、surface 外 subtree、以及同锚点重复 generic block 的去重行为稳定

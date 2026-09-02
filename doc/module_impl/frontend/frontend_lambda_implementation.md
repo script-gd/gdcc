@@ -12,10 +12,12 @@
   `LambdaConstructItem` / `construct_lambda`、C custom Callable 与 compile gate 按 published plan
   放行已落地；lambda body 内 `await` 已由 `frontend_await_implementation.md` 闭环
   （协程 lambda 经 Callable ABI 走 done/suspend 分派，capture 逐调用拷贝入协程帧，
-  见 §3.8 末段）；property initializer / parameter default / skipped subtree 中的未记录 lambda
+  见 §3.8 末段）；Node 派生类 instance 函数体内已记录 lambda 的 `$` / `%` 经隐式
+  `self` capture 已闭环（见 `frontend_node_literal_implementation.md`）；
+  property initializer / parameter default / skipped subtree 中的未记录 lambda
   以及 lambda 自己的 parameter default、body 内 block-local `const` 仍 fail-closed；
-   lambda 内 `match` 已进入 shared semantic）
-- 更新时间：2026-08-25
+  lambda 内 `match` 已进入 shared semantic）
+- 更新时间：2026-09-02
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/scope/**`
@@ -43,6 +45,7 @@
   - `doc/module_impl/frontend/frontend_complex_writable_target_implementation.md`
   - `doc/module_impl/frontend/frontend_signal_support.md`
   - `doc/module_impl/frontend/frontend_for_range_loop_implementation.md`
+  - `doc/module_impl/frontend/frontend_node_literal_implementation.md`
   - `doc/gdcc_low_ir.md`（`construct_lambda`、`is_lambda`、`<captures>`）
   - `doc/gdcc_runtime_lib.md`
   - `doc/gdcc_ownership_lifecycle_spec.md`
@@ -339,9 +342,16 @@ var cb := func():
 
 GDCC LIR 只有 `construct_lambda` + capture 列表，没有独立 self-lambda opcode。
 
-- 若 lambda body 出现显式 `SelfExpression`，或 instance restriction 下的 implicit
-  instance member / instance method 调用需要 receiver，则把 enclosing executable 的
-  `self` 收为名为 `self` 的 capture。
+- 若 lambda body 出现显式 `SelfExpression`、get-node 简写（`$` / `%`，
+  `GetNodeExpression`），或 instance restriction 下的 implicit instance member /
+  instance method 调用需要 receiver，则把 enclosing executable 的 `self` 收为名为
+  `self` 的 capture。`$` / `%` 与显式 `self` 等价：desugar 为
+  `self.get_node(NodePath)`，capture discovery 经 `handleGetNodeExpression` 置
+  self-need 标志。合法结果类型固定为 native `Node`；lowering 读 captured 本地
+  `self` 槽后再上溯 assign 到静态类型 `Node`，钉住 ENGINE `Node.get_node`。
+  static enclosing callable 与非 Node 派生类中的 `$` / `%` 由上游 sema
+  `FAILED` 持有，不合成非法 capture。完整合同见
+  `frontend_node_literal_implementation.md`。
 - `capturesSelf == true` **当且仅当** capture 列表的**第一项**名为 `self`。
   不得把 `self` 插在中间，也不得在没有 leading `self` 时把 flag 设为 true。
   `FrontendLambdaCapturePlan` 构造器强制该不变量。

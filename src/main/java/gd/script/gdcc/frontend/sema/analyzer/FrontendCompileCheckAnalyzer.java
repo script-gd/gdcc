@@ -665,9 +665,9 @@ public class FrontendCompileCheckAnalyzer {
                 // PreloadExpression: compile-ready — sema publishes RESOLVED(Resource) for string
                 // literals and FAILED otherwise, so the generic published-fact scan gates it;
                 // lowering rewrites it to the ResourceLoader singleton call pair.
-                // GetNodeExpression: compile-ready inside supported executable bodies — sema
-                // publishes RESOLVED(Node), and the remaining boundaries (property initializer,
-                // lambda body) stay DEFERRED so the generic published-fact scan gates them.
+                // GetNodeExpression: compile-ready inside supported executable bodies and
+                // recorded lambdas — sema publishes RESOLVED(Node). Property-initializer
+                // uses stay DEFERRED so the generic published-fact scan gates them.
                 case AwaitExpression awaitExpression -> walkAwaitExpression(awaitExpression);
                 default -> {
                     markCompileSurfaceNode(expression);

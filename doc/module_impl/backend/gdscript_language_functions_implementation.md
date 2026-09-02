@@ -170,7 +170,7 @@ $res    = call_method "load" $rl_tmp $path;
 - sema（`FrontendExpressionSemanticSupport.resolvePreloadExpressionType`）：先嵌套解析 path 子节点并原样传播非稳定事实；路径必须是 `LiteralExpression` 且 `kind == "string"`（`StringName` 字面量不接受），否则 `FrontendExpressionType.failed`（诊断类别 `sema.expression_resolution`）；成功发布 `RESOLVED(GdObjectType("Resource"))`。
 - 路径**原样透传**给 `ResourceLoader.load`，编译期不做相对路径归一化（与 Godot `preload` 的相对路径解析是有意差异，与"共享运行时动态加载语义"一致；运行时由 ResourceLoader 自行处理/报错）。
 - **不发布** `FrontendResolvedCall`：`resolvedCalls` 的 key 空间被多处冻结为 `CallExpression`/`AttributeCallStep`（call 缓存以 `CallExpression` 为键、`requireCallAnchor`/`describeCallAnchor` 只认两类节点、多份 frontend 合同文档已写明），把 `PreloadExpression` 塞进去属于不必要的架构扩张。
-- compile gate：无显式阻断分支，走默认 `walkExpression` 路径，由 generic published-fact scan 承接；表达式分派当前不保留任何显式拦截（`GetNodeExpression` 已解除，见 `frontend_get_node_node_path_plan.md`）。
+- compile gate：无显式阻断分支，走默认 `walkExpression` 路径，由 generic published-fact scan 承接；表达式分派当前不保留任何显式拦截（`GetNodeExpression` 已解除，见 `frontend_node_literal_implementation.md`）。
 - CFG `buildValue` 的 `PreloadExpression` 分支与 `IdentifierExpression` 同形，产生 `OpaqueExprValueItem`；`classifyOpaqueExpression` 将其分类为 `HANDLE_NOW`。
 - `FrontendOpaqueExprInsnLoweringProcessors.FrontendPreloadOpaqueExprInsnLoweringProcessor`：从 AST 直接取已校验的字面量（opaque item 无子操作数），经 `StringUtil.decodeGdStringLexeme` 解码、路径原样透传，物化 `literal_string` 槽位与 ResourceLoader 临时槽位，连续发射 `LiteralStringInsn` + `LoadStaticInsn("@GlobalScope", "ResourceLoader")` + `CallMethodInsn("load", ...)`；结果槽 `cfg_tmp_<valueId>` 由 `declareCfgValueSlots` 以已发布的 `Resource` 类型预声明。
 

@@ -19,8 +19,9 @@ public final class FrontendLoweringBodyInsnPass implements FrontendLoweringPass 
                 throw new IllegalStateException("Function lowering context must reuse the published analysis snapshot");
             }
             switch (functionContext.kind()) {
-                // Lambda bodies share the executable-body session: the synthetic shell is static
-                // (no self slot) and carries its own published CFG graph.
+                // Lambda bodies share the executable-body session: the synthetic shell is marked
+                // static, but a self-capturing lambda still publishes a captured local `self`
+                // slot. The shell carries its own published CFG graph.
                 case EXECUTABLE_BODY, PROPERTY_INIT, LAMBDA_BODY ->
                         new FrontendBodyLoweringSession(functionContext, context.classRegistry()).run();
                 case PARAMETER_DEFAULT_INIT -> throw new IllegalStateException(
