@@ -5,7 +5,10 @@ import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.insn.GoIfInsn;
 import gd.script.gdcc.lir.insn.GotoInsn;
+import gd.script.gdcc.lir.insn.LiteralNilInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
+import gd.script.gdcc.type.GdVariantType;
+import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -108,7 +111,7 @@ final class FrontendCfgNodeInsnLoweringProcessors {
             }
             var returnValueId = node.returnValueIdOrNull();
             if (returnValueId == null) {
-                block.setTerminator(new ReturnInsn(null));
+                lowerBareReturn(session, block, node);
                 return block;
             }
             var materializedReturnSlotId = session.materializeFrontendBoundaryValue(
@@ -120,6 +123,35 @@ final class FrontendCfgNodeInsnLoweringProcessors {
             );
             block.setTerminator(new ReturnInsn(materializedReturnSlotId));
             return block;
+        }
+
+        /// Lowers a bare return stop (implicit fallthrough or explicit `return` without a value)
+        /// according to the target function return type: void keeps a value-less return, Variant
+        /// materializes a Variant nil slot first, and any other declared type fails fast because
+        /// missing-return analysis is not implemented in type-check, so lowering stays fail-closed
+        /// for typed non-Variant callables instead of emitting a terminator the backend rejects.
+        private static void lowerBareReturn(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull FrontendCfgGraph.StopNode node
+        ) {
+            var returnType = session.targetFunction().getReturnType();
+            if (returnType instanceof GdVoidType) {
+                block.setTerminator(new ReturnInsn(null));
+                return;
+            }
+            if (returnType instanceof GdVariantType) {
+                var nilSlotId = session.allocateReturnNilTemp();
+                block.appendNonTerminatorInstruction(new LiteralNilInsn(nilSlotId));
+                block.setTerminator(new ReturnInsn(nilSlotId));
+                return;
+            }
+            throw new IllegalStateException(
+                    "Bare return stop " + node.id()
+                            + " requires void or Variant return type, but function "
+                            + session.targetFunction().getName()
+                            + " returns " + returnType.getTypeName()
+            );
         }
     }
 }

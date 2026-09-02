@@ -107,6 +107,7 @@ public final class FrontendBodyLoweringSession {
     private int writableRouteBlockCounter;
     private int forLoopConstantCounter;
     private int matchHelperCounter;
+    private int returnNilCounter;
     private int languageFunctionTempCounter;
 
     public FrontendBodyLoweringSession(
@@ -1042,6 +1043,14 @@ public final class FrontendBodyLoweringSession {
                 + "_"
                 + matchHelperCounter++;
         ensureVariable(slotId, Objects.requireNonNull(type, "type must not be null"));
+        return slotId;
+    }
+
+    /// Allocates one Variant nil temp (`cfg_return_nil_<n>`) for a bare return stop of a
+    /// Variant-returning callable (implicit fallthrough or explicit `return` without a value).
+    @NotNull String allocateReturnNilTemp() {
+        var slotId = "cfg_return_nil_" + returnNilCounter++;
+        ensureVariable(slotId, GdVariantType.VARIANT);
         return slotId;
     }
 

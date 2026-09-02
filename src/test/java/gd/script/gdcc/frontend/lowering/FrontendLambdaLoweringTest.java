@@ -26,6 +26,7 @@ import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.AwaitInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructLambdaInsn;
+import gd.script.gdcc.lir.insn.LiteralNilInsn;
 import gd.script.gdcc.lir.insn.LiteralNodePathInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -33,6 +34,8 @@ import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.type.GdVariantType;
+import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -261,6 +264,79 @@ final class FrontendLambdaLoweringTest {
         var captureVariable = shell.getVariableById("seed");
         assertNotNull(captureVariable);
         assertEquals("int", captureVariable.type().getTypeName());
+    }
+
+    /// An untyped lambda is Variant-returning, so a body without an explicit return must not
+    /// emit a value-less terminator (the backend rejects those for non-void functions): the
+    /// stop block materializes a Variant nil slot and returns it.
+    @Test
+    void untypedLambdaWithoutReturnMaterializesReturnNil() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_implicit_return_nil.gd", """
+                class_name LambdaImplicitReturnNil
+                extends RefCounted
+                
+                func ping():
+                    var cb := func():
+                        pass
+                    return cb
+                """);
+
+        var shell = lambdaFunctions(requireClass(prepared, "LambdaImplicitReturnNil"), 1).getFirst();
+        var nilInsn = requireOnlyInstruction(shell, LiteralNilInsn.class);
+        var returnInsn = requireOnlyInstruction(shell, ReturnInsn.class);
+        assertAll(
+                () -> assertInstanceOf(GdVariantType.class, shell.getReturnType()),
+                () -> assertEquals(nilInsn.resultId(), returnInsn.returnValueId()),
+                () -> assertInstanceOf(GdVariantType.class, requireVariableType(shell, nilInsn.resultId()))
+        );
+    }
+
+    /// An explicit bare `return` inside a Variant-returning lambda materializes the same Variant
+    /// nil value return instead of a value-less one, matching the type-check rule that allows
+    /// bare `return` in Variant callables.
+    @Test
+    void untypedLambdaExplicitBareReturnMaterializesReturnNil() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_bare_return_nil.gd", """
+                class_name LambdaBareReturnNil
+                extends RefCounted
+                
+                func ping():
+                    var cb := func():
+                        return
+                    return cb
+                """);
+
+        var shell = lambdaFunctions(requireClass(prepared, "LambdaBareReturnNil"), 1).getFirst();
+        var nilInsn = requireOnlyInstruction(shell, LiteralNilInsn.class);
+        var returnInsn = requireOnlyInstruction(shell, ReturnInsn.class);
+        assertAll(
+                () -> assertInstanceOf(GdVariantType.class, shell.getReturnType()),
+                () -> assertEquals(nilInsn.resultId(), returnInsn.returnValueId()),
+                () -> assertInstanceOf(GdVariantType.class, requireVariableType(shell, nilInsn.resultId()))
+        );
+    }
+
+    /// A `-> void` lambda without an explicit return keeps the value-less terminator and must
+    /// not grow a nil materialization.
+    @Test
+    void voidLambdaWithoutReturnKeepsValuelessReturn() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_void_bare_return.gd", """
+                class_name LambdaVoidBareReturn
+                extends RefCounted
+                
+                func ping():
+                    var cb := func() -> void:
+                        pass
+                    return cb
+                """);
+
+        var shell = lambdaFunctions(requireClass(prepared, "LambdaVoidBareReturn"), 1).getFirst();
+        var returnInsn = requireOnlyInstruction(shell, ReturnInsn.class);
+        assertAll(
+                () -> assertInstanceOf(GdVoidType.class, shell.getReturnType()),
+                () -> assertNull(returnInsn.returnValueId()),
+                () -> assertTrue(allInstructions(shell).stream().noneMatch(LiteralNilInsn.class::isInstance))
+        );
     }
 
     /// A captureless lambda produces one outer-body `construct_lambda "_lambda_0"` with no

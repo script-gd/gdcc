@@ -33,7 +33,7 @@ func make_await_cb() -> Callable:
         return phase
 
 func connect_unique_cb() -> void:
-    tick.connect(func() -> void:
+    tick.connect(func():
         connected_name = %Unique.name
     )
 

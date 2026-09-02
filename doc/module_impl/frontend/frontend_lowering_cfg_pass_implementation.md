@@ -519,6 +519,8 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 - 将 `SequenceNode` lower 成 instruction 序列
 - 将 `BranchNode` lower 成 bool-only branch terminator
 - 将 `StopNode(kind = RETURN)` lower 成 `ReturnInsn`
+  - `returnValueIdOrNull` 非空：经 `materializeFrontendBoundaryValue(...)` 物化后生成带值 `ReturnInsn`
+  - `returnValueIdOrNull` 为空（隐式 fallthrough 或显式裸 `return`）：按目标函数返回类型分流——void 生成无值 `ReturnInsn(null)`；Variant 先向 `cfg_return_nil_<n>` temp（`FrontendBodyLoweringSession.allocateReturnNilTemp`）追加 `LiteralNilInsn` 再生成带值 `ReturnInsn`；其它已声明非 void 类型 fail-fast（type-check 尚未实现 missing-return 分析，lowering 对 typed non-Variant fallthrough 保持 fail-closed，而非生成 backend 必拒的 terminator）
 - 保留 `StopNode(kind = TERMINAL_MERGE)` 在 frontend CFG 中，但不为其创建 LIR basic block
 - `FrontendBodyLoweringSupport.collectCfgValueMaterializations(...)` 只按 graph 已发布的 node/item 顺序收集 materialization facts；它依赖 graph publication 已经验证 merge source 的本地先后合同，而不是自己跨 sequence 回溯 producer
 - 对 `hasStandaloneMaterializationSlot() == false` 的 item，body lowering 必须跳过独立 temp slot 声明；当前稳定用例包括 statement-position resolved-void `CallItem`

@@ -184,6 +184,41 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
+    /// An untyped function is Variant-returning, so an implicit fallthrough without an explicit
+    /// return must not emit a value-less terminator (the backend rejects those for non-void
+    /// functions): the stop block materializes a Variant nil slot and returns it.
+    @Test
+    void runMaterializesReturnNilForUntypedFunctionFallthrough() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_implicit_return_nil.gd",
+                """
+                        class_name BodyInsnImplicitReturnNil
+                        extends RefCounted
+                        
+                        func ping():
+                            pass
+                        """,
+                Map.of("BodyInsnImplicitReturnNil", "RuntimeBodyInsnImplicitReturnNil"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnImplicitReturnNil",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var nilInsn = requireOnlyInstruction(pingContext.targetFunction(), LiteralNilInsn.class);
+        var returnInsn = requireOnlyInstruction(pingContext.targetFunction(), ReturnInsn.class);
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertInstanceOf(GdVariantType.class, pingContext.targetFunction().getReturnType()),
+                () -> assertEquals(nilInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
     @Test
     void runLowersCompoundAssignmentOnPropertyThroughLoadBinaryOpAndStore() throws Exception {
         var prepared = prepareContext(
