@@ -26,7 +26,6 @@ import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdSignalType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
-import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -45,7 +44,6 @@ import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
-import dev.superice.gdparser.frontend.ast.PreloadExpression;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.TypeTestExpression;
@@ -66,6 +64,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -1786,6 +1785,58 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeForCompileKeepsStaticLambdaGetNodeFailureOnUpstreamErrorWithoutDuplicateCompileCheck() throws Exception {
+        var source = """
+                class_name CompileCheckStaticLambdaGetNode
+                extends Node
+                
+                static func ping():
+                    var f = func():
+                        return $Camera3D
+                """;
+
+        var compiled = analyzeForCompile("compile_check_static_lambda_get_node.gd", source);
+
+        // A static enclosing callable synthesizes no self capture, so the lambda get-node failure
+        // stays on the upstream `sema.expression_resolution` owner; the generic published-fact
+        // scan sees the FAILED fact but must not wrap a second `sema.compile_check`.
+        assertTrue(compiled.diagnostics().hasErrors());
+        var expressionErrors = diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution");
+        assertEquals(1, expressionErrors.size(), () -> compiled.diagnostics().asList().toString());
+        assertTrue(expressionErrors.getFirst().message().contains("static function"));
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                () -> compiled.diagnostics().asList().toString()
+        );
+    }
+
+    @Test
+    void analyzeForCompileKeepsNonNodeLambdaGetNodeFailureOnUpstreamErrorWithoutDuplicateCompileCheck() throws Exception {
+        var source = """
+                class_name CompileCheckNonNodeLambdaGetNode
+                extends RefCounted
+                
+                func ping():
+                    var f = func():
+                        return $Camera3D
+                """;
+
+        var compiled = analyzeForCompile("compile_check_non_node_lambda_get_node.gd", source);
+
+        // The leading self capture exists (instance function) but is not Node-assignable: the
+        // lambda get-node failure keeps the class-hierarchy wording on the upstream owner with
+        // no duplicate `sema.compile_check`.
+        assertTrue(compiled.diagnostics().hasErrors());
+        var expressionErrors = diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution");
+        assertEquals(1, expressionErrors.size(), () -> compiled.diagnostics().asList().toString());
+        assertTrue(expressionErrors.getFirst().message().contains("inherits from Node"));
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                () -> compiled.diagnostics().asList().toString()
+        );
+    }
+
+    @Test
     void analyzeForCompileReleasesBareSignalValueReadWhileAnalyzeLeavesSharedFactsUntouched() throws Exception {
         var source = """
                 class_name CompileCheckBareSignalValue
@@ -2193,35 +2244,26 @@ class FrontendCompileCheckAnalyzerTest {
                         assert(body_local)
                 """;
 
-        var compiled = analyzeForCompile("compile_check_lambda_body_scan.gd", source);
-        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        var lambda = findNode(compiled.unit().ast(), LambdaExpression.class, ignored -> true);
-        var preload = findNode(compiled.unit().ast(), PreloadExpression.class, ignored -> true);
-        var getNode = findNode(compiled.unit().ast(), GetNodeExpression.class, ignored -> true);
-        var assertStatement = findNode(compiled.unit().ast(), AssertStatement.class, ignored -> true);
-        var lambdaRange = FrontendRange.fromAstRange(lambda.range());
+        var shared = analyzeShared("compile_check_lambda_body_scan.gd", source);
+        var preparedInput = prepareCompileCheckInput("compile_check_lambda_body_scan.gd", source);
+        runCompileCheck(preparedInput);
 
-        // The gate recurses into the recorded lambda body: the body's get-node stays DEFERRED on
-        // the shared path (a lambda cannot reach the enclosing instance receiver without an
-        // implicit `self` capture), so the generic published-fact scan escalates it. The lambda
-        // node itself carries no form-level blocker; the nested preload and assert are
-        // compile-ready and contribute no blocker.
-        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
-        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
-        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
-                diagnostic.range().equals(lambdaRange)
-        ), compileDiagnostics::toString);
-        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
-                diagnostic.range().equals(FrontendRange.fromAstRange(preload.range()))
-        ), compileDiagnostics::toString);
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.range().equals(FrontendRange.fromAstRange(getNode.range()))
-                        && diagnostic.message().contains("remains deferred")
-                        && diagnostic.message().contains("Get-node expression")
-        ), compileDiagnostics::toString);
-        assertTrue(compileDiagnostics.stream().noneMatch(diagnostic ->
-                diagnostic.range().equals(FrontendRange.fromAstRange(assertStatement.range()))
-        ), compileDiagnostics::toString);
+        // The gate recurses into the recorded lambda body: preload, get-node and assert are all
+        // compile-ready there, so neither the shared path nor the generic published-fact scan
+        // reports any deferred/compile-check outcome.
+        assertTrue(shared.diagnostics().asList().stream().noneMatch(diagnostic ->
+                diagnostic.category().equals("sema.deferred_expression_resolution")
+                        || diagnostic.category().equals("sema.compile_check")
+        ), shared.diagnostics()::toString);
+        // The lambda body's get-node publishes RESOLVED(Node) — the leading self capture supplies
+        // the receiver — which proves the body was actually scanned and is lowering-ready.
+        var getNode = findNode(preparedInput.unit().ast(), GetNodeExpression.class, ignored -> true);
+        var getNodeType = preparedInput.analysisData().expressionTypes().get(getNode);
+        assertNotNull(getNodeType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, getNodeType.status());
+        assertEquals(new GdObjectType("Node"), getNodeType.publishedType());
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
     }
 
     @Test
@@ -2252,6 +2294,42 @@ class FrontendCompileCheckAnalyzerTest {
                 diagnostic.range().equals(lambdaRange)
                         && diagnostic.message().contains("Lambda expression")
         ), unsupportedExpressionDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileKeepsGetNodeInsideUnrecordedPropertyInitializerLambdaSilent() throws Exception {
+        var source = """
+                class_name CompileCheckPropertyInitLambdaGetNode
+                extends Node
+                
+                var cb = func():
+                    return $Camera3D
+                """;
+
+        var preparedInput = prepareCompileCheckInput("compile_check_property_init_lambda_get_node.gd", source);
+        runCompileCheck(preparedInput);
+
+        var lambda = findNode(preparedInput.unit().ast(), LambdaExpression.class, ignored -> true);
+        var getNode = findNode(preparedInput.unit().ast(), GetNodeExpression.class, ignored -> true);
+        var lambdaRange = FrontendRange.fromAstRange(lambda.range());
+        var getNodeRange = FrontendRange.fromAstRange(getNode.range());
+
+        // The property-initializer lambda is an unrecorded subtree: no plan is published and body
+        // traversal prunes before entering the lambda body, so the nested get-node publishes no
+        // expression type and draws no nested diagnostic of its own — the unrecorded-lambda root
+        // diagnostic holds the failure, and the gate adds no compile_check.
+        assertFalse(preparedInput.analysisData().lambdaPlans().containsKey(lambda));
+        assertNull(preparedInput.analysisData().expressionTypes().get(getNode));
+        var diagnostics = preparedInput.analysisData().diagnostics();
+        assertTrue(diagnostics.hasErrors(), diagnostics::toString);
+        assertTrue(diagnostics.asList().stream().noneMatch(diagnostic ->
+                diagnostic.range().equals(getNodeRange)
+        ), diagnostics::toString);
+        assertTrue(diagnosticsByCategory(diagnostics, "sema.compile_check").isEmpty(), diagnostics::toString);
+        assertTrue(diagnosticsByCategory(diagnostics, "sema.unsupported_expression_route").stream()
+                        .anyMatch(diagnostic -> diagnostic.range().equals(lambdaRange)
+                                && diagnostic.message().contains("Lambda expression")),
+                diagnostics::toString);
     }
 
     @Test

@@ -30,6 +30,7 @@ import dev.superice.gdparser.frontend.ast.ElifClause;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
@@ -990,8 +991,9 @@ public class FrontendVariableAnalyzer {
     /// The scanner skips nested lambda bodies (bound and planned on their own) and block-local
     /// `const` subtrees: names inside not-yet-supported domains must never become captures.
     /// Match sections are walked so bare identifiers and nested lambdas inside them participate
-    /// in capture planning. Explicit `self` expressions are flagged separately because `self`
-    /// is not an identifier use.
+    /// in capture planning. Explicit `self` expressions and get-node expressions (`$` / `%`) are
+    /// flagged separately because both need the enclosing instance receiver without being an
+    /// identifier use.
     private static final class LambdaCaptureSourceScanner implements ASTNodeHandler {
         /// One source-ordered capture-relevant event inside a lambda body.
         private sealed interface LambdaCaptureEvent {
@@ -1060,6 +1062,16 @@ public class FrontendVariableAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleSelfExpression(@NotNull SelfExpression selfExpression) {
+            usesExplicitSelf = true;
+            return FrontendASTTraversalDirective.CONTINUE;
+        }
+
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleGetNodeExpression(@NotNull GetNodeExpression getNodeExpression) {
+            // Get-node (`$` / `%`) desugars to `self.get_node(path)`, so it needs the enclosing
+            // instance receiver exactly like an explicit `self` expression. The node is a leaf
+            // with no child expressions, and capture validity (static enclosing callable, class
+            // hierarchy) stays with `buildSelfCaptureEntry` and the body-typing phases.
             usesExplicitSelf = true;
             return FrontendASTTraversalDirective.CONTINUE;
         }

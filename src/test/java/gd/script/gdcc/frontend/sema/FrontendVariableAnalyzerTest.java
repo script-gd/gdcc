@@ -860,6 +860,80 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
+    void analyzeCapturesSelfForGetNodeExpressionInsideLambda() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_get_node_capture.gd", """
+                class_name LambdaGetNodeCapture
+                extends Node
+                
+                func ping():
+                    var cb := func():
+                        return $Camera3D
+                    return cb
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var cbDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("cb")
+        );
+        var cbLambda = assertInstanceOf(LambdaExpression.class, cbDeclaration.value());
+        var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
+
+        // Get-node desugars to `self.get_node(path)`, so it captures the enclosing instance
+        // under the name `self` exactly like an explicit `self` expression (§3.5).
+        var selfCapture = lambdaScope.resolveValueHere("self");
+        assertNotNull(selfCapture);
+        assertEquals(ScopeValueKind.CAPTURE, selfCapture.kind());
+        assertEquals(GdVariantType.VARIANT, selfCapture.type());
+        assertSame(pingFunction, selfCapture.declaration());
+        assertTrue(phaseInput.analysisData().lambdaPlans().isEmpty());
+    }
+
+    @Test
+    void analyzeDoesNotCaptureSelfForGetNodeInsideStaticFunctionLambda() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_get_node_static.gd", """
+                class_name LambdaGetNodeStatic
+                extends Node
+                
+                static func ping():
+                    var cb := func():
+                        return $Camera3D
+                    return cb
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var cbDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("cb")
+        );
+        var cbLambda = assertInstanceOf(LambdaExpression.class, cbDeclaration.value());
+        var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        // A static enclosing callable never synthesizes a `self` capture even for get-node; the
+        // source diagnostic stays with the body-typing phases (same split as explicit `self`).
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
+        assertNull(lambdaScope.resolveValueHere("self"));
+    }
+
+    @Test
     void analyzeDoesNotCaptureSelfForUtilityFunctionCallInsideLambda() throws Exception {
         var phaseInput = publishedPhaseInput("phase4_lambda_utility_call.gd", """
                 class_name LambdaUtilityCall

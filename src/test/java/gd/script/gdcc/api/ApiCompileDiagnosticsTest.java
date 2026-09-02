@@ -109,6 +109,37 @@ class ApiCompileDiagnosticsTest {
     }
 
     @Test
+    void compileSucceedsForGetNodeShorthandInsideLambdaBody(@TempDir Path tempDir) {
+        var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
+        var api = ApiCompileTestSupport.newApi(compiler);
+
+        api.createModule("demo", "Get-Node Lambda Demo");
+        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("get-node-lambda-project")));
+        api.putFile("demo", "/src/player.gd", """
+                class_name ApiGetNodeLambda
+                extends Node
+                
+                func ready_camera() -> Node:
+                    var camera_provider := func() -> Node:
+                        return $Camera3D
+                    return camera_provider.call()
+                """);
+
+        // A get-node shorthand inside a lambda body compiles end-to-end: the leading self
+        // capture supplies the receiver, so no frontend gate diagnostic fires and the native
+        // compiler is invoked.
+        var result = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+
+        assertEquals(CompileResult.Outcome.SUCCESS, result.outcome());
+        assertTrue(result.success());
+        assertFalse(result.diagnostics().hasErrors());
+        assertTrue(result.diagnostics().asList().stream()
+                .noneMatch(diagnostic -> diagnostic.category().equals("sema.compile_check")));
+        assertEquals(List.of("/src/player.gd"), result.sourcePaths());
+        assertEquals(1, compiler.invocationCount());
+    }
+
+    @Test
     void compileSucceedsForScriptStaticProperties(@TempDir Path tempDir) {
         var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
         var api = ApiCompileTestSupport.newApi(compiler);

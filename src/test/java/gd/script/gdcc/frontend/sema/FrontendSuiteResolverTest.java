@@ -479,6 +479,41 @@ class FrontendSuiteResolverTest {
         assertTrue(scopeError.getMessage().contains("scope identity"));
     }
 
+    /// The get-node owner hook consumes the lambda's published plan during body typing; running
+    /// body typing without the plan is a publish-order protocol violation and must fail fast
+    /// instead of degrading into a source diagnostic.
+    @Test
+    void lambdaGetNodeFailsFastWhenPlanIsMissingBeforeBodyTyping() throws Exception {
+        var phaseInput = phaseInput("suite_lambda_get_node_missing_plan.gd", """
+                class_name SuiteLambdaGetNodeMissingPlan
+                extends Node
+                
+                func ping():
+                    var cb := func():
+                        return $Camera3D
+                    return cb
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var lambda = findNode(pingFunction.body(), LambdaExpression.class, ignored -> true);
+        var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+        // phaseInput stops before suite resolution, so no lambda plan exists anywhere on the
+        // pending -> committed -> stable -> parent chain the hook reads through.
+        var context = contextForBlock(phaseInput, surface, lambda, lambda.body());
+
+        var error = assertThrows(
+                NullPointerException.class,
+                () -> new FrontendSuiteResolver().resolveSuite(context, lambda.body())
+        );
+        assertTrue(
+                error.getMessage().contains("lambda plan must be published before body expression typing"),
+                error::getMessage
+        );
+    }
+
     @Test
     void supportedBodyCertificateFailsWhenScopeInventoryIsMissingFromIndex() throws Exception {
         var phaseInput = phaseInput("suite_body_certificate_missing_scope_inventory.gd", """
@@ -1442,10 +1477,10 @@ class FrontendSuiteResolverTest {
                 () -> assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(outerFor)),
                 () -> assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(innerFor)),
                 () -> assertEquals(GdIntType.INT, requireType(requireValue(
-                        phaseInput.analysisData().expressionTypes().get(jUse)).publishedType()),
+                                phaseInput.analysisData().expressionTypes().get(jUse)).publishedType()),
                         "inner body use of j must keep FOR_ITERATION_RESOLUTION int, not baseline Variant"),
                 () -> assertEquals(GdIntType.INT, requireType(requireValue(
-                        phaseInput.analysisData().expressionTypes().get(iUse)).publishedType()),
+                                phaseInput.analysisData().expressionTypes().get(iUse)).publishedType()),
                         "outer body use of i must keep refined int across nested suite boundary")
         );
     }
@@ -1567,7 +1602,7 @@ class FrontendSuiteResolverTest {
                 () -> assertEquals(GdVariantType.VARIANT, phaseInput.analysisData().slotTypes().get(outerFor),
                         "explicit Variant iterator must not be refined to int"),
                 () -> assertEquals(GdVariantType.VARIANT, requireType(requireValue(
-                        phaseInput.analysisData().expressionTypes().get(iUse)).publishedType()),
+                                phaseInput.analysisData().expressionTypes().get(iUse)).publishedType()),
                         "nested body use of explicit Variant iterator must stay Variant"),
                 () -> assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(innerFor))
         );

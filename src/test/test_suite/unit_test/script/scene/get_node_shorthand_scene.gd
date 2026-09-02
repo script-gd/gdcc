@@ -44,4 +44,18 @@ func get_node_shorthand_ok() -> bool:
         return false
     if not self.has_node(^"Child"):
         return false
+    # Get-node inside lambda bodies resolves through the implicitly captured `self` receiver,
+    # so both the plain and unique-name forms behave like the direct shorthand above.
+    var child_cb := func(): return $Child
+    var unique_cb := func(): return %Unique
+    var child_via_lambda = child_cb.call()
+    var unique_via_lambda = unique_cb.call()
+    if child_via_lambda == null or unique_via_lambda == null:
+        return false
+    if not (child_via_lambda is Node) or not (unique_via_lambda is Node):
+        return false
+    # Chain-head form inside a lambda: the resolved node identity is anchored by name.
+    var child_name_cb := func(): return $Child.name == StringName("Child")
+    if child_name_cb.call() != true:
+        return false
     return $Child.name == StringName("Child")

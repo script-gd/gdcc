@@ -2022,13 +2022,31 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         "Get-node expression is not supported inside property initializers"
                 );
             }
-            if (context.callableOwner() instanceof LambdaExpression) {
-                // Lambda bodies stay fail-closed: the enclosing instance receiver is only
-                // reachable through a leading `self` capture, which capture planning does not
-                // produce for get-node expressions, so there is no receiver to desugar against.
-                return FrontendExpressionType.deferred(
-                        "Get-node expression inside a lambda body requires an implicit self capture "
-                                + "that lambda capture planning does not provide"
+            var nodeType = new GdObjectType("Node");
+            if (context.callableOwner() instanceof LambdaExpression lambdaExpression) {
+                // The capture plan is the single source of truth for whether the enclosing
+                // instance receiver is reachable (static / owning-class decisions are already
+                // sealed into `buildSelfCaptureEntry`); re-deriving them here would create two
+                // truths that can drift. A missing plan violates the publish-before-body
+                // contract, so it fails fast instead of becoming a source diagnostic.
+                var plan = Objects.requireNonNull(
+                        context.typedEnvironment().lambdaPlan(lambdaExpression),
+                        "lambda plan must be published before body expression typing of a get-node expression"
+                );
+                if (plan.capturesSelf()
+                        && context.classRegistry().checkAssignable(plan.captures().getFirst().type(), nodeType)) {
+                    return FrontendExpressionType.resolved(nodeType);
+                }
+                // Reuse the function-body message families instead of a lambda-specific wording:
+                // the failure reason is the enclosing self-source, not the lambda itself.
+                if (plan.enclosingCallable() instanceof FunctionDeclaration enclosingFunction
+                        && enclosingFunction.isStatic()) {
+                    return FrontendExpressionType.failed(
+                            "Get-node expression cannot be used in a static function"
+                    );
+                }
+                return FrontendExpressionType.failed(
+                        "Get-node expression can only be used in a class that inherits from Node"
                 );
             }
             if (context.staticContext()) {
@@ -2040,7 +2058,6 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     context.currentScope().owningClassOrNull(),
                     "owning class must be published before body expression typing of a get-node expression"
             );
-            var nodeType = new GdObjectType("Node");
             if (!context.classRegistry().checkAssignable(new GdObjectType(owningClass.getName()), nodeType)) {
                 return FrontendExpressionType.failed(
                         "Get-node expression can only be used in a class that inherits from Node"

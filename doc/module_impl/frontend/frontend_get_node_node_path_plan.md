@@ -1,10 +1,10 @@
 # Frontend GetNode 与 NodePath 字面量实施计划
 
-> 本文档记录 `get_node` 简写（`$` / `%`，AST 层为 `GetNodeExpression`）与 NodePath 字面量（`^"..."`）从 semantics 到 C codegen 的端到端实施计划。`^"..."` 已端到端落地（步骤 1-4）；`$`/`%` 在 Node 派生类的非 static 函数体中已端到端落地（步骤 5-8），lambda 体内仍被 sema DEFERRED + generic compile scan 阻断（步骤 9-12 解除），本文档保留尚未实现的计划内容，全部落地后应改写为 implementation 文档。
+> 本文档记录 `get_node` 简写（`$` / `%`，AST 层为 `GetNodeExpression`）与 NodePath 字面量（`^"..."`）从 semantics 到 C codegen 的端到端实施计划。`^"..."` 已端到端落地（步骤 1-4）；`$`/`%` 在 Node 派生类的非 static 函数体及其 lambda 体中已端到端落地（步骤 5-12，lambda 经隐式 `self` capture），本文档保留尚未实现的计划内容，全部落地后应改写为 implementation 文档。
 
 ## 文档状态
 
-- 状态：实施中（步骤 1-8 已完成，步骤 9-13 待实施）
+- 状态：实施中（步骤 1-12 已完成，步骤 13 待实施）
 - 更新时间：2026-09-01
 - 当前事实源：
   - `frontend_rules.md`
@@ -36,7 +36,7 @@
 |---|---|---|
 | `String -> NodePath` / `NodePath -> String` 隐式转换 | 维持 GDCC `N`，matrix 不变 | `frontend_implicit_conversion_matrix.md` 已冻结；`get_node("Foo")` 依然类型错误，用户写 `get_node(^"Foo")` 或 `get_node(NodePath("Foo"))` |
 | property initializer 中的 `$` / `%`（含 `@onready` 场景） | fail-closed（DEFERRED） | `@onready` 目前仅 skeleton 保留注解，无 deferred-init 语义；构造期调 `get_node` 在 Godot 中也是运行时失败 |
-| ~~lambda 函数体中的 `$` / `%`~~ | **计划由步骤 9-12 转为支持**：capture 规划把 GetNode 视为隐式 `self` 用法 | 见 D4 lambda 分支与 §8 backlog 更新；static enclosing callable 与非 Node 派生类中仍 FAILED |
+| ~~lambda 函数体中的 `$` / `%`~~ | **已支持（步骤 9-12 已落地）**：capture 规划把 GetNode 视为隐式 `self` 用法 | 见 D4 lambda 分支与 §8 backlog 更新；static enclosing callable 与非 Node 派生类中仍 FAILED |
 | `$Foo = x` 赋值目标 | 拒绝 | Godot 同样不允许；GetNode 不属于 writable-target family |
 | `get_node_or_null` / `has_node` 专用 lowering | 不需要 | 它们是普通 Node 引擎方法，现有 `CallExpression → CallMethodInsn → CALL_METHOD` 路径已稳定（`nested_node_refcounted_scene.gd` 已覆盖） |
 | `CBuiltinBuilder.isQuotedNodePathLiteral` 的 `$"..."` 识别 | 本计划不改动（可选清理见 §8） | 该方法服务 extension API dump 默认值物化；4.5.1 dump 中 NodePath 默认值实际编码为 `NodePath("")` constructor 形式，`$"` 分支是 latent defensive code，与 GDScript 源码字面量无关 |
@@ -61,7 +61,7 @@ GDCC 语义对齐决策：
 
 - `$` / `%` 表达式静态类型固定为 `Node`（`GdObjectType("Node")`），与 Godot analyzer 一致。
 - static 函数与非 Node 派生类中的 `$` / `%` 是**源码错误**（sema FAILED + error 诊断），不是 compile-only 限制。
-- lambda 体中的 `$` / `%` 经 capture 规划扩展获得支持（步骤 9-12 落地后）：GetNode 被视为隐式 `self` 用法，lambda capture leading `self`，sema 边界与函数体一致（static enclosing / 非 Node 派生 → FAILED）。
+- lambda 体中的 `$` / `%` 经 capture 规划扩展获得支持（步骤 9-12 已落地）：GetNode 被视为隐式 `self` 用法，lambda capture leading `self`，sema 边界与函数体一致（static enclosing / 非 Node 派生 → FAILED）。
 - property initializer 中的 `$` / `%` 是 **GDCC 当前能力缺口**（sema DEFERRED）。诊断形态沿用既有管线：shared analyze 发布一条 `sema.deferred_expression_resolution` **warning**（无 error，见 `FrontendBodyOwnerProcedures.reportExpressionDiagnostic` :1524-1529）；compile 模式由 generic published-fact scan 升级为 `sema.compile_check` error，消息形态为 `Expression remains deferred at compile surface and is not lowering-ready in compile mode: <detailReason>`（`publishedCompileBlockedMessage` :245-258）。detailReason 以 "Get-node expression" 开头，保持与既有诊断断言的连续性。
 
 ---
@@ -76,7 +76,7 @@ GDCC 语义对齐决策：
 ### 3.2 Sema
 
 - `FrontendChainHeadReceiverSupport.resolveLiteralType`（:433-447）已把 `node_path` 解析为 `GdNodePathType.NODE_PATH`；容器 constant key 经 `FrontendContainerLiteralSemanticSupport.tryDecodeNodePathLexeme` 复用共享的 `StringUtil.decodeNodePathLexeme`（步骤 1 已落地，null-on-miss）。
-- `GetNodeExpression` 已由 `FrontendBodyOwnerProcedures.resolveGetNodeExpressionType` owner hook 分类（步骤 5 已落地）：Node 派生类 instance 函数体 RESOLVED(Node)；property initializer DEFERRED；lambda 体 DEFERRED（过渡态，步骤 9-10 翻转）；static / 非 Node 派生 FAILED。链头经 `fallbackExpressionReceiverResolver` 自动获得 Node receiver（已有测试实证）。
+- `GetNodeExpression` 已由 `FrontendBodyOwnerProcedures.resolveGetNodeExpressionType` owner hook 分类（步骤 5 落地、步骤 10 完成 lambda 翻转）：Node 派生类 instance 函数体 RESOLVED(Node)；property initializer DEFERRED；lambda 体消费已发布的 `FrontendLambdaPlan`（leading `self` capture 可赋值到 Node → RESOLVED(Node)，否则 FAILED）；static / 非 Node 派生 FAILED。链头经 `fallbackExpressionReceiverResolver` 自动获得 Node receiver（已有测试实证）。
 
 ### 3.3 Compile gate
 
@@ -339,7 +339,7 @@ GDCC 语义对齐决策：
 - negative path：validation 对缺失节点路径断言 `get_node_or_null` 返回 null 而非引擎报错崩溃（`get_node_or_null` 路径）；`$` 缺失路径的引擎报错行为不在 validation 中触发（避免环境差异）。
 - 测试：`--tests GdScriptUnitTestCompileRunnerTest`。
 
-### 步骤 9：capture discovery 把 GetNodeExpression 视为隐式 `self` 用法
+### 步骤 9：capture discovery 把 GetNodeExpression 视为隐式 `self` 用法（已完成）
 
 改动点：
 
@@ -354,7 +354,7 @@ GDCC 语义对齐决策：
 - 测试：`FrontendVariableAnalyzer` capture 相关测试类新增用例 + `FrontendLambdaLoweringTest` 的 shell 断言风格（:139-166）；`--tests "*LambdaCapture*","FrontendLambdaLoweringTest"`。
 - 落地顺序说明：本步骤单独合入是 inert 的——lambda 内 GetNode 仍是 sema DEFERRED（步骤 5 落地态），compile 被 generic scan 阻断，capture plan 变化不影响任何可编译程序；必须在步骤 10 之后才允许 lambda 内 GetNode 通过 compile。
 
-### 步骤 10：GetNode sema lambda 分支解除 DEFERRED
+### 步骤 10：GetNode sema lambda 分支解除 DEFERRED（已完成）
 
 改动点：
 
@@ -371,7 +371,7 @@ GDCC 语义对齐决策：
 - negative path：static 函数内 lambda → FAILED（`sema.expression_resolution` error）；`extends RefCounted` 类 instance 函数内 lambda → FAILED；property initializer 中的 lambda 属 unrecorded 子树，由既有 unrecorded-lambda root 诊断持有（`sema.unsupported_binding_subtree` / lambda root 表达式 typing 的 `sema.unsupported_expression_route`）；body 遍历在该子树剪枝，不进入 lambda body，因此其中的 `$`/`%` 不产生嵌套 GetNode 诊断，也不追加 `sema.compile_check`。
 - 测试：`FrontendExpressionSemanticSupportTest` 的 lambda GetNode 用例从 DEFERRED 断言翻转为正/反断言；`--tests FrontendExpressionSemanticSupportTest`。
 
-### 步骤 11：lambda 内 GetNode lowering 与防御回归
+### 步骤 11：lambda 内 GetNode lowering 与防御回归（已完成）
 
 无新处理器代码（机制论证见 D5.7）。本步骤只做测试与防御断言钉住：
 
@@ -387,7 +387,7 @@ GDCC 语义对齐决策：
 - negative path：防御 fail-fast 用例抛出 `IllegalStateException`。
 - 测试：`FrontendLambdaLoweringTest` 及 `*Lowering*` 相关类；`--tests FrontendLambdaLoweringTest`。
 
-### 步骤 12：lambda GetNode compile gate 放行与 e2e
+### 步骤 12：lambda GetNode compile gate 放行与 e2e（已完成）
 
 改动点：
 
@@ -447,7 +447,7 @@ GDCC 语义对齐决策：
 
 ## 8. 风险、开放问题与后续 backlog
 
-1. ~~**lambda 体内的 `$` / `%`**~~：计划由步骤 9-12 解决（capture discovery 把 GetNodeExpression 计为隐式 `self` 用法，leading `self` capture 不变量沿用 §3.5）。
+1. ~~**lambda 体内的 `$` / `%`**~~：已由步骤 9-12 解决（capture discovery 把 GetNodeExpression 计为隐式 `self` 用法，leading `self` capture 不变量沿用 §3.5）。
 2. **property initializer 与 `@onready`**：Godot 的 `@onready var c = $Child` 依赖 deferred-init 语义；gdcc 的 `@onready` 当前仅 skeleton 保留注解。待 `@onready` 真正实现后重新评估。注意 property initializer 内的 lambda 属 unrecorded 子树（由既有 root 诊断 `sema.unsupported_binding_subtree` / `sema.unsupported_expression_route` 持有，body 剪枝不进入），其中的 `$`/`%` 也随之保持 fail-closed，不在步骤 9-12 范围。
 3. **`isQuotedNodePathLiteral` 的 `$"` 分支**：与 4.5.1 dump 实际编码（`NodePath("")`）不符的 latent defensive code。可在独立小 PR 中移除或对齐，不在本计划关键路径。
 4. **`get_node` 缺失节点的运行时行为**：Godot 的 `get_node` 对缺失路径报引擎错误并返回 null（解释版随后可能 null deref）。GDCC 忠实转发引擎行为，不额外包装；若未来需要更友好的编译期诊断，可在 engine integration 层单独立项。

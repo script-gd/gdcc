@@ -130,6 +130,18 @@ public final class FrontendTypedLexicalEnvironment {
         );
     }
 
+    /// Overlay-aware read of the published lambda plan. `putLambdaPlan` writes only this
+    /// environment's pending overlay, so body typing inside the lambda must read through this
+    /// chain — the stable side table only receives the plan after the lambda body completes.
+    public @Nullable FrontendLambdaPlan lambdaPlan(@NotNull Node astNode) {
+        return firstNonNull(
+                pendingFacts.lambdaPlans.get(astNode),
+                committedFacts.lambdaPlans.get(astNode),
+                stableData.lambdaPlans().get(astNode),
+                parent != null ? parent.lambdaPlan(astNode) : null
+        );
+    }
+
     public @Nullable GdType slotType(@NotNull Node astNode) {
         var localSlotType = firstNonNull(
                 pendingFacts.slotTypes.get(astNode),

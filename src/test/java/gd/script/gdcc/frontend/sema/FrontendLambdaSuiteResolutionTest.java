@@ -241,6 +241,77 @@ class FrontendLambdaSuiteResolutionTest {
     }
 
     @Test
+    void nestedResolvePublishesSingleSelfCaptureForGetNodeAndExplicitSelf() throws Exception {
+        var analysisData = analyze("lambda_suite_get_node_self.gd", """
+                class_name LambdaSuiteGetNodeSelf
+                extends Node
+                
+                var hp: int = 0
+                
+                func ping():
+                    var cb := func():
+                        var child = $Camera3D
+                        return self.hp
+                """);
+        var pingFunction = findFunction(analysisData.unit().ast(), "ping");
+        var lambda = findNode(pingFunction.body(), LambdaExpression.class, _ -> true);
+        var lambdaScope = assertInstanceOf(
+                CallableScope.class,
+                analysisData.analysisData().scopesByAst().get(lambda)
+        );
+
+        var plan = analysisData.analysisData().lambdaPlans().get(lambda);
+
+        assertNotNull(plan);
+        assertTrue(plan.capturesSelf());
+        // Get-node and explicit `self` share one receiver need, so the plan keeps exactly one
+        // leading `self` entry (by-name dedup) with the enclosing class object type.
+        assertEquals(1, plan.captures().size());
+        var selfCapture = plan.captures().getFirst();
+        assertEquals("self", selfCapture.name());
+        assertEquals(new GdObjectType("LambdaSuiteGetNodeSelf"), selfCapture.type());
+        assertEquals(ScopeValueKind.PARAMETER, selfCapture.sourceKind());
+        assertSame(pingFunction, selfCapture.sourceDeclaration());
+        var scopeSelf = Objects.requireNonNull(lambdaScope.resolveValueHere("self"));
+        assertEquals(new GdObjectType("LambdaSuiteGetNodeSelf"), scopeSelf.type());
+        assertTrue(analysisData.diagnostics().asList().isEmpty());
+    }
+
+    @Test
+    void nestedLambdaTransfersSelfCaptureForNestedGetNodeExpression() throws Exception {
+        var analysisData = analyze("lambda_suite_get_node_nested.gd", """
+                class_name LambdaSuiteGetNodeNested
+                extends Node
+                
+                func ping():
+                    var outer := func():
+                        var inner := func():
+                            return $Camera3D
+                        return inner
+                """);
+        var pingFunction = findFunction(analysisData.unit().ast(), "ping");
+        var outerLambda = findNode(pingFunction.body(), LambdaExpression.class, _ -> true);
+        var innerLambda = findNode(outerLambda.body(), LambdaExpression.class, _ -> true);
+
+        var outerPlan = analysisData.analysisData().lambdaPlans().get(outerLambda);
+        var innerPlan = analysisData.analysisData().lambdaPlans().get(innerLambda);
+
+        assertNotNull(outerPlan);
+        assertNotNull(innerPlan);
+        // The inner get-node marks the inner plan leading-self; the nested transfer rule then
+        // rebuilds the same leading `self` on the outer plan (§3.5 propagation).
+        for (var plan : List.of(outerPlan, innerPlan)) {
+            assertTrue(plan.capturesSelf());
+            assertEquals(1, plan.captures().size());
+            var selfCapture = plan.captures().getFirst();
+            assertEquals("self", selfCapture.name());
+            assertEquals(new GdObjectType("LambdaSuiteGetNodeNested"), selfCapture.type());
+            assertSame(pingFunction, selfCapture.sourceDeclaration());
+        }
+        assertTrue(analysisData.diagnostics().asList().isEmpty());
+    }
+
+    @Test
     void nestedLambdaCaptureTransfersWithFrozenOuterCaptureType() throws Exception {
         var analysisData = analyze("lambda_suite_nested.gd", """
                 class_name LambdaSuiteNested

@@ -1769,12 +1769,8 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
-    void analyzeDefersGetNodeExpressionInsideLambdaBody() throws Exception {
-        // Transitional boundary: a get-node inside a lambda body cannot reach the enclosing
-        // instance receiver because capture planning never synthesizes an implicit `self` capture
-        // for it. This holds regardless of the enclosing callable's static restriction, so both
-        // fixtures resolve to DEFERRED rather than the static/non-Node FAILED rules.
-        var instanceFixture = analyze(
+    void analyzeResolvesGetNodeExpressionInsideNodeDerivedInstanceLambda() throws Exception {
+        var analyzed = analyze(
                 "get_node_sema_lambda_instance.gd",
                 """
                         class_name GetNodeSemaLambdaInstance
@@ -1782,10 +1778,32 @@ class FrontendExpressionSemanticSupportTest {
                         
                         func probe():
                             var callback = func():
-                                return $Camera3D
+                                var child = $Camera3D
+                                return $Camera3D.name
                         """
         );
-        var staticFixture = analyze(
+
+        // Both the statement-position and the chain-head get-node publish RESOLVED(Node) with the
+        // same rules as a plain function body; the receiver comes from the leading self capture.
+        var getNodeExpressions = findNodes(analyzed.ast(), GetNodeExpression.class, ignored -> true);
+        assertEquals(2, getNodeExpressions.size());
+        for (var getNodeExpression : getNodeExpressions) {
+            var published = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+            assertNotNull(published);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, published.status());
+            assertEquals(new GdObjectType("Node"), published.publishedType());
+        }
+        assertFalse(analyzed.analysisData().diagnostics().hasErrors());
+        assertTrue(analyzed.analysisData().diagnostics().asList().stream()
+                .noneMatch(diagnostic -> diagnostic.category().equals("sema.deferred_expression_resolution")));
+        // Get-node never publishes into the resolved-call key space (preload precedent), inside
+        // lambda bodies either.
+        assertTrue(analyzed.analysisData().resolvedCalls().isEmpty());
+    }
+
+    @Test
+    void analyzeFailsGetNodeExpressionInsideStaticFunctionLambda() throws Exception {
+        var analyzed = analyze(
                 "get_node_sema_lambda_static.gd",
                 """
                         class_name GetNodeSemaLambdaStatic
@@ -1797,19 +1815,44 @@ class FrontendExpressionSemanticSupportTest {
                         """
         );
 
-        for (var analyzed : List.of(instanceFixture, staticFixture)) {
-            var getNodeExpression = findNode(analyzed.ast(), GetNodeExpression.class, ignored -> true);
-            var published = analyzed.analysisData().expressionTypes().get(getNodeExpression);
-            assertNotNull(published);
-            assertEquals(FrontendExpressionTypeStatus.DEFERRED, published.status());
-            assertTrue(published.detailReason().startsWith("Get-node expression"));
-            assertFalse(analyzed.analysisData().diagnostics().hasErrors());
-            var deferredWarnings = analyzed.analysisData().diagnostics().asList().stream()
-                    .filter(diagnostic -> diagnostic.category().equals("sema.deferred_expression_resolution"))
-                    .toList();
-            assertEquals(1, deferredWarnings.size());
-            assertTrue(deferredWarnings.getFirst().message().contains("lambda body"));
-        }
+        // Static enclosing callable: capture planning synthesizes no self capture, and the sema
+        // hook reuses the function-body static wording rather than a lambda-specific one.
+        var getNodeExpression = findNode(analyzed.ast(), GetNodeExpression.class, ignored -> true);
+        var published = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+        assertNotNull(published);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, published.status());
+        var expressionErrors = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.expression_resolution"))
+                .toList();
+        assertEquals(1, expressionErrors.size());
+        assertTrue(expressionErrors.getFirst().message().contains("static function"));
+    }
+
+    @Test
+    void analyzeFailsGetNodeExpressionInsideNonNodeClassLambda() throws Exception {
+        var analyzed = analyze(
+                "get_node_sema_lambda_non_node.gd",
+                """
+                        class_name GetNodeSemaLambdaNonNode
+                        extends RefCounted
+                        
+                        func probe():
+                            var callback = func():
+                                return $Camera3D
+                        """
+        );
+
+        // The leading self capture exists (instance function) but its type is not
+        // Node-assignable, so the class-hierarchy wording applies.
+        var getNodeExpression = findNode(analyzed.ast(), GetNodeExpression.class, ignored -> true);
+        var published = analyzed.analysisData().expressionTypes().get(getNodeExpression);
+        assertNotNull(published);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, published.status());
+        var expressionErrors = analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.expression_resolution"))
+                .toList();
+        assertEquals(1, expressionErrors.size());
+        assertTrue(expressionErrors.getFirst().message().contains("inherits from Node"));
     }
 
     @Test

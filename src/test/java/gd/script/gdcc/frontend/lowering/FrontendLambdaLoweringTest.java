@@ -14,6 +14,7 @@ import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendLambdaCapturePlan;
 import gd.script.gdcc.frontend.sema.FrontendLambdaPlan;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
@@ -21,23 +22,32 @@ import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
+import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.AwaitInsn;
+import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructLambdaInsn;
+import gd.script.gdcc.lir.insn.LiteralNodePathInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Predicate;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -505,6 +515,217 @@ final class FrontendLambdaLoweringTest {
         assertEquals(List.of("seed"), captureOperandIds(innerConstruct));
     }
 
+    /// A get-node (`$`) inside a lambda lowers through the same three-insn desugar as a plain
+    /// function body; the only difference is that `self` resolves to the leading capture's
+    /// function variable instead of the executable `self` parameter.
+    @Test
+    void getNodeInsideLambdaLowersThroughCapturedSelfSlot() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_get_node.gd", """
+                class_name LambdaGetNode
+                extends Node
+                
+                func probe():
+                    var cb := func():
+                        return $Camera3D
+                    return cb
+                """);
+
+        var lambdaContext = requireLambdaContexts(prepared.context(), 1).getFirst();
+        var lambda = assertInstanceOf(LambdaExpression.class, lambdaContext.sourceOwner());
+        var plan = requirePlan(prepared.analysisData(), lambda);
+        var shell = lambdaContext.targetFunction();
+
+        // Capture discovery counted the get-node as an implicit self use: leading `self` typed
+        // as the enclosing class, surfaced as the outer construct's leading `$self` operand.
+        assertTrue(plan.capturesSelf());
+        assertEquals(List.of("self"), shell.getCaptureList().stream().map(capture -> capture.getName()).toList());
+        var outerContext = requireExecutableContext(prepared.context(), "probe");
+        var item = requireSingleLambdaConstructItem(outerContext);
+        assertSame(LambdaConstructItem.SelfSlotOperand.SELF_SLOT, item.captureOperands().getFirst());
+        assertEquals(List.of("self"), captureOperandIds(requireSingleConstructLambdaInsn(outerContext.targetFunction())));
+
+        // `requireSelfSlot` hits the captured function variable, not an executable self parameter.
+        var selfVariable = shell.getVariableById("self");
+        assertNotNull(selfVariable);
+        assertEquals(new GdObjectType("LambdaGetNode"), selfVariable.type());
+        var literalInsn = requireOnlyInstruction(shell, LiteralNodePathInsn.class);
+        var assignInsn = requireOnlyInstruction(shell, AssignInsn.class);
+        var callInsn = requireOnlyInstruction(shell, CallMethodInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), prepared.diagnostics().snapshot()::toString),
+                () -> assertEquals("Camera3D", literalInsn.value()),
+                () -> assertEquals(
+                        GdNodePathType.NODE_PATH,
+                        requireVariableType(shell, literalInsn.resultId())
+                ),
+                // The receiver temp is statically typed `Node` even though the captured `self`
+                // slot carries the enclosing class type: this pins the ENGINE `Node.get_node`
+                // route exactly like the plain function-body desugar.
+                () -> assertEquals("self", assignInsn.sourceId()),
+                () -> assertEquals(new GdObjectType("Node"), requireVariableType(shell, assignInsn.resultId())),
+                () -> assertEquals("get_node", callInsn.methodName()),
+                () -> assertEquals(assignInsn.resultId(), callInsn.objectId()),
+                () -> assertEquals(new GdObjectType("Node"), requireVariableType(shell, callInsn.resultId()))
+        );
+    }
+
+    /// Both levels of a nested get-node lambda carry exactly the leading self capture; the inner
+    /// `construct_lambda` reads the outer shell's captured `self` slot by name.
+    @Test
+    void nestedGetNodeLambdaKeepsLeadingSelfOnBothLevels() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_get_node_nested.gd", """
+                class_name LambdaGetNodeNested
+                extends Node
+                
+                func probe():
+                    var outer := func():
+                        var inner := func():
+                            return $Camera3D
+                        return inner
+                    return outer
+                """);
+
+        var outerContext = requireExecutableContext(prepared.context(), "probe");
+        var outerConstruct = requireSingleConstructLambdaInsn(outerContext.targetFunction());
+        assertEquals("_lambda_0", outerConstruct.lambdaName());
+        assertEquals(List.of("self"), captureOperandIds(outerConstruct));
+
+        var lambdaContexts = requireLambdaContexts(prepared.context(), 2);
+        var outerLambdaContext = lambdaContexts.stream()
+                .filter(context -> context.targetFunction().getName().equals("_lambda_0"))
+                .findFirst()
+                .orElseThrow();
+        var innerLambdaContext = lambdaContexts.stream()
+                .filter(context -> context.targetFunction().getName().equals("_lambda_1"))
+                .findFirst()
+                .orElseThrow();
+        for (var shell : List.of(outerLambdaContext.targetFunction(), innerLambdaContext.targetFunction())) {
+            assertEquals(List.of("self"), shell.getCaptureList().stream().map(capture -> capture.getName()).toList());
+        }
+        var innerConstruct = requireSingleConstructLambdaInsn(outerLambdaContext.targetFunction());
+        assertEquals("_lambda_1", innerConstruct.lambdaName());
+        assertEquals(List.of("self"), captureOperandIds(innerConstruct));
+
+        // The innermost body still lowers the get-node triple against its captured self slot.
+        var innerShell = innerLambdaContext.targetFunction();
+        var assignInsn = requireOnlyInstruction(innerShell, AssignInsn.class);
+        var callInsn = requireOnlyInstruction(innerShell, CallMethodInsn.class);
+        assertEquals("self", assignInsn.sourceId());
+        assertEquals("get_node", callInsn.methodName());
+        assertEquals(assignInsn.resultId(), callInsn.objectId());
+    }
+
+    /// A coroutine lambda (body contains `await`) reads the same local `self` slot for get-node;
+    /// the coroutine frame copy machinery lives in the backend, so the frontend LIR keeps the
+    /// plain sync shape.
+    @Test
+    void coroutineGetNodeLambdaReadsCapturedSelfSlotLikeSyncForm() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_get_node_coroutine.gd", """
+                class_name LambdaGetNodeCoroutine
+                extends Node
+                
+                signal pinged
+                
+                func watch():
+                    var cb := func():
+                        var resumed = await pinged
+                        return $Camera3D
+                    return cb
+                """);
+
+        var lambdaContext = requireLambdaContexts(prepared.context(), 1).getFirst();
+        var shell = lambdaContext.targetFunction();
+        assertTrue(shell.isCoroutine());
+        assertEquals(List.of("self"), shell.getCaptureList().stream().map(capture -> capture.getName()).toList());
+        var awaits = allInstructions(shell).stream().filter(AwaitInsn.class::isInstance).toList();
+        assertEquals(1, awaits.size());
+
+        var callInsn = allInstructions(shell).stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("get_node"))
+                .findFirst()
+                .orElseThrow();
+        // The get-node receiver assign still sources the plain `self` slot; other assigns the
+        // await machinery may emit must not be confused with it, so match by the call receiver.
+        var receiverAssign = allInstructions(shell).stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.resultId().equals(callInsn.objectId()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("self", receiverAssign.sourceId());
+        assertEquals(new GdObjectType("Node"), requireVariableType(shell, receiverAssign.resultId()));
+    }
+
+    /// A script override of `get_node(NodePath)` stays invisible from the lambda desugar: the
+    /// receiver temp is statically typed `Node`, so backend resolution starts at the engine
+    /// class (same pinning mechanism as the plain function body).
+    @Test
+    void getNodeInsideLambdaPinsEngineNodeAboveScriptOverride() throws Exception {
+        var prepared = prepareFullPipelineContexts("lambda_get_node_override.gd", """
+                class_name LambdaGetNodeOverride
+                extends Node
+                
+                func get_node(path: NodePath) -> Node:
+                    return self
+                
+                func probe():
+                    var cb := func():
+                        return $Camera3D
+                    return cb
+                """);
+
+        var lambdaContext = requireLambdaContexts(prepared.context(), 1).getFirst();
+        var shell = lambdaContext.targetFunction();
+        var callInsn = allInstructions(shell).stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("get_node"))
+                .findFirst()
+                .orElseThrow();
+        assertNotEquals("self", callInsn.objectId());
+        assertEquals(new GdObjectType("Node"), requireVariableType(shell, callInsn.objectId()));
+    }
+
+    /// If a published lambda plan loses its leading self capture while the body still contains a
+    /// get-node (a publish-order protocol violation), body lowering must fail fast at
+    /// `requireSelfSlot` instead of emitting a receiver-less call.
+    @Test
+    void bodyInsnFailsFastWhenLambdaPlanLacksSelfCaptureForGetNode() throws Exception {
+        var prepared = analyzeAndSkeleton("lambda_get_node_missing_self.gd", """
+                class_name LambdaGetNodeMissingSelf
+                extends Node
+                
+                func probe():
+                    var cb := func():
+                        return $Camera3D
+                    return cb
+                """);
+        var lambda = findNode(prepared.unit().ast(), LambdaExpression.class, _ -> true);
+        var plan = requirePlan(prepared.analysisData(), lambda);
+        assertTrue(plan.capturesSelf());
+        // Strip the leading self capture after analysis to simulate the protocol violation.
+        prepared.analysisData().lambdaPlans().remove(lambda);
+        prepared.analysisData().lambdaPlans().put(lambda, new FrontendLambdaPlan(
+                plan.lambda(),
+                plan.syntheticName(),
+                FrontendLambdaCapturePlan.of(List.of()),
+                plan.returnType(),
+                plan.enclosingCallable(),
+                plan.owningClassCanonicalName()
+        ));
+
+        new FrontendLoweringFunctionPreparationPass().run(prepared.context());
+        new FrontendLoweringBuildCfgPass().run(prepared.context());
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+        assertTrue(exception.getMessage().contains("requires an implicit self receiver slot"), exception::getMessage);
+    }
+
     /// A return-position lambda threads the preferred result value id onto the construct
     /// item. The stop node's returnValueId matches the item's resultValueId, and the insn
     /// result slot is the corresponding `cfg_tmp_*`.
@@ -642,6 +863,27 @@ final class FrontendLambdaLoweringTest {
         return insn.captures().stream()
                 .map(operand -> assertInstanceOf(LirInstruction.VariableOperand.class, operand).id())
                 .toList();
+    }
+
+    private static <T extends LirInstruction> @NotNull T requireOnlyInstruction(
+            @NotNull LirFunctionDef function,
+            @NotNull Class<T> insnType
+    ) {
+        var matches = allInstructions(function).stream()
+                .filter(insnType::isInstance)
+                .map(insnType::cast)
+                .toList();
+        assertEquals(1, matches.size(), () -> "Expected exactly one " + insnType.getSimpleName());
+        return matches.getFirst();
+    }
+
+    private static @NotNull GdType requireVariableType(
+            @NotNull LirFunctionDef function,
+            @Nullable String variableId
+    ) {
+        var variable = function.getVariableById(Objects.requireNonNull(variableId, "variableId must not be null"));
+        assertNotNull(variable, () -> "Expected lowered variable to exist: " + variableId);
+        return variable.type();
     }
 
     /// Runs the compile-ready CFG fixture through analysis/skeleton/preparation, then re-publishes
