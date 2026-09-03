@@ -22,11 +22,11 @@ public final class FrontendLoweringBodyInsnPass implements FrontendLoweringPass 
                 // Lambda bodies share the executable-body session: the synthetic shell is marked
                 // static, but a self-capturing lambda still publishes a captured local `self`
                 // slot. The shell carries its own published CFG graph.
-                case EXECUTABLE_BODY, PROPERTY_INIT, LAMBDA_BODY ->
+                // Parameter-default shells are isomorphic to property-init shells for body
+                // lowering: an expression-rooted graph closed by a RETURN stop, and the instance
+                // flavor's leading `self` parameter is declared by the shared self-slot path.
+                case EXECUTABLE_BODY, PROPERTY_INIT, LAMBDA_BODY, PARAMETER_DEFAULT_INIT ->
                         new FrontendBodyLoweringSession(functionContext, context.classRegistry()).run();
-                case PARAMETER_DEFAULT_INIT -> throw new IllegalStateException(
-                        "Frontend body lowering pass does not support parameter default initializer contexts yet"
-                );
             }
         }
     }

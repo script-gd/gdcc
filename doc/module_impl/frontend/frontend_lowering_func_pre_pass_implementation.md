@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（function pre-pass 已落地；当前稳定产物为 compile-ready executable/property initializer context scaffold）
-- 更新时间：2026-03-28
+- 状态：事实源维护中（function pre-pass 已落地；当前稳定产物为 compile-ready executable/property-initializer/lambda/parameter-default 四类 lowering-unit context 及其 synthetic shell scaffold）
+- 更新时间：2026-09-03
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/lowering/**`
   - `src/main/java/gd/script/gdcc/frontend/lowering/pass/**`
@@ -23,7 +23,6 @@
 - 明确非目标：
   - 当前实现不生成 function body basic block / CFG / instruction
   - 当前实现不解除 compile-only gate blocker
-  - 当前实现不让 parameter default 进入 compile-ready lowering surface
   - 当前实现不把无 initializer 的 property 变成 frontend-generated init shell
   - 当前实现不把 legacy metadata-only `FrontendLoweringCfgPass` 视为最终 CFG 架构
 
@@ -33,13 +32,12 @@
 
 function pre-pass 是 `FrontendLoweringAnalysisPass` 与 `FrontendLoweringClassSkeletonPass` 之后的第三个固定 lowering pass。它只负责把 compile-ready 的 function-shaped lowering 单元整理成统一 scaffold，供后续 CFG/body lowering 继续消费。
 
-当前稳定覆盖的 lowering 单元有三类：
+当前稳定覆盖的 lowering 单元有四类：
 
 - `EXECUTABLE_BODY`
 - `PROPERTY_INIT`
 - `LAMBDA_BODY`（每个已发布 `FrontendLambdaPlan` 的 lambda 合成 hidden `_lambda_<k>` shell 并发布对应 context）
-
-`PARAMETER_DEFAULT_INIT` 当前只保留模型槽位与合同，不实际收集。
+- `PARAMETER_DEFAULT_INIT`（每个带 `defaultValueFunc` 元数据的 source function 参数合成 hidden `_default_<func>$<param>` / `_default_s_<func>$<param>` shell 并发布对应 context；冻结合同见 §7）
 
 这意味着 function pre-pass 当前不是 “开始 lowering body” 的入口，而是 “冻结后续 body lowering 入口形状” 的入口。
 
@@ -58,6 +56,8 @@ function pre-pass 是 `FrontendLoweringAnalysisPass` 与 `FrontendLoweringClassS
 
 - `FrontendLoweringContext` 上发布的 `List<FunctionLoweringContext>`
 - 必要时追加到 owning class 上的 hidden property-init synthetic function shell
+- 按已发布 `FrontendLambdaPlan` 追加的 hidden lambda shell
+- 按已发布 `LirParameterDef.defaultValueFunc` 追加的 hidden parameter-default synthetic shell
 
 pre-pass 不新增新的 public lowering 入口，也不接受 `FrontendAnalysisData`、`FrontendModuleSkeleton` 或 `List<LirClassDef>` 作为替代输入。
 
@@ -87,7 +87,7 @@ pre-pass 不新增新的 public lowering 入口，也不接受 `FrontendAnalysis
 
 - executable callable 使用 declaration-level owner，lowering root 是 body `Block`
 - property initializer 使用 property declaration 作为 owner，lowering root 是 initializer expression
-- future parameter default 使用 parameter/default declaration 作为 owner，lowering root 只指向 default-value expression
+- parameter default 使用 `Parameter` declaration 作为 owner，lowering root 只指向 default-value expression；target function 是本 pass 按 `LirParameterDef.defaultValueFunc` 元数据合成的 hidden shell（static flag 与 owning function 一致；instance 函数的 shell 恰好声明一个名为 `self`、类型为 owning class 的首参）
 - lambda 使用 `LambdaExpression` 作为 owner，lowering root 是其 body `Block`；target function 是本 pass 按 plan 合成的 hidden shell（`is_lambda` + `is_hidden` + static），self 仅以 capture 存在，不得注入 `self` 参数
 - 后续 pass 必须统一经由 `FunctionLoweringContext.analysisData()` 读取：
   - `scopesByAst()`
@@ -101,7 +101,7 @@ pre-pass 不新增新的 public lowering 入口，也不接受 `FrontendAnalysis
 
 ## 4. 固定 Pipeline 位置
 
-当前默认 pipeline 顺序固定为：
+本文档管辖的 pipeline 段固定为（完整默认 pipeline 在此之后继续 `FrontendLoweringBuildCfgPass` / `FrontendLoweringBodyInsnPass`，见 `frontend_lowering_cfg_pass_implementation.md`）：
 
 1. `FrontendLoweringAnalysisPass`
 2. `FrontendLoweringClassSkeletonPass`
@@ -115,8 +115,9 @@ pre-pass 不新增新的 public lowering 入口，也不接受 `FrontendAnalysis
 - 为 supported property initializer 发布 `PROPERTY_INIT` context
 - 在 `LirPropertyDef.initFunc` 缺失时补 `_field_init_<property>` hidden synthetic function shell
 - 当 `LirPropertyDef.initFunc` 已预先指向 synthetic shell 时，只在 shell 仍满足 property-signature 与 shell-only 合同时复用
-- `_field_init_` / `_field_getter_` / `_field_setter_` / `_lambda_` namespace 属于 compiler-owned synthetic surface；source member 若以这些前缀开头，必须早于本 pass 在 skeleton/scope 恢复边界被诊断并跳过
+- `_field_init_` / `_field_getter_` / `_field_setter_` / `_lambda_` / `_default_` namespace 属于 compiler-owned synthetic surface；source member 若以这些前缀开头，必须早于本 pass 在 skeleton/scope 恢复边界被诊断并跳过
 - 发现式 walk 每个 executable body（含 lambda body 递归）中的 `LambdaExpression`，按已发布 `FrontendLambdaPlan` 合成 hidden `_lambda_<k>` shell 并发布 `LAMBDA_BODY` context；发现的 lambda 缺 plan、plan 的 owning class 与发现处不一致、或合成名与既有函数冲突时 fail-fast
+- 为每个带 `defaultValueFunc` 元数据的 source function 参数合成 hidden parameter-default shell（shell 名恒等于元数据名，本 pass 不重新推导）并发布 `PARAMETER_DEFAULT_INIT` context；sweep 已拒绝（元数据为 null）的参数跳过，元数据存在但 AST 无默认表达式、或 shell 名与既有函数冲突时 fail-fast
 
 `FrontendLoweringFunctionPreparationPass` 明确不负责：
 
@@ -125,7 +126,6 @@ pre-pass 不新增新的 public lowering 入口，也不接受 `FrontendAnalysis
 - 分配 lowering temp variable
 - 生成 instruction
 - truthiness normalization
-- parameter default context 收集
 
 ---
 
@@ -154,6 +154,8 @@ pre-pass 不新增新的 public lowering 入口，也不接受 `FrontendAnalysis
 - skeleton function 缺失或歧义
 - indexed class skeleton 不属于当前 published `LirModule`
 - executable function 已经偏离 shell-only 状态
+- parameter 的 `defaultValueFunc` 元数据存在但 AST 参数无默认表达式（sema sweep 与 AST 失同步）
+- parameter-default shell 名与 class 内既有函数冲突（reserved `_default_` 前缀防线被绕过或 preparation 重复运行）
 
 其中 “偏离 shell-only 状态” 的含义固定为：
 
@@ -196,22 +198,19 @@ preparation 不接受任何已经进入 CFG/body 形状的 executable function �
 
 ## 7. Parameter Default 冻结合同
 
-parameter default 当前仍不在 compile-ready lowering surface。
+parameter default lowering 单元已在 preparation 阶段落地（`frontend_parameter_default_plan.md` 步骤 4），冻结形状为：
 
-但当前架构已经固定以下合同：
-
-- future parameter default lowering 单元仍必须走 `FunctionLoweringContext`
-- `FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT` 必须保留
-- `sourceOwner` 保留原始 parameter/default declaration AST 节点
+- parameter default lowering 单元走 `FunctionLoweringContext`，kind 为 `PARAMETER_DEFAULT_INIT`
+- `sourceOwner` 保留原始 `Parameter` declaration AST 节点
 - `loweringRoot` 只指向 default-value expression
-- 对应 synthetic function 最终由 `LirParameterDef.defaultValueFunc` 引用
+- 每个被 sema sweep 接受的默认表达式对应一个 hidden synthetic shell，shell 名恒等于 `LirParameterDef.defaultValueFunc`（本 pass 不重新推导命名，杜绝元数据与 shell 漂移）
+- shell return type 等于参数声明 slot 类型；static flag 与 owning function 一致；instance 函数的 shell 非 static 且恰好声明一个名为 `self`、类型为 owning class 的首参（island 语义中 `self` 即绑定到该 slot），static 函数的 shell 无参数
 - 不允许把 parameter default permanently 设计成 call-site inline-only 路线
 
-当前实现与测试锚定的边界是：
+当前实现与测试锚定的剩余边界是：
 
-- compile-only analysis 仍会拦下 parameter default
-- preparation pass 不会发布 `PARAMETER_DEFAULT_INIT` context
-- 但现有 context 形状无需改动即可承载未来实现
+- preparation 发布的 `PARAMETER_DEFAULT_INIT` context 与 shell 保持 shell-only 中间态
+- `FrontendLoweringBuildCfgPass` / `FrontendLoweringBodyInsnPass` 已按 `buildPropertyInitializer()` 同构范式消费该 kind（`frontend_parameter_default_plan.md` 步骤 5-6）；剩余工作为 backend 调用点与 prologue 接线（步骤 7-8）
 
 ---
 
@@ -228,8 +227,9 @@ function pre-pass 结束后，`LirModule` 仍必须保持 shell-only 中间态�
 - 在 owning class 上追加 hidden property-init synthetic shell
 - 对应 property 的 `initFunc` 指向该 shell
 - 按已发布 `FrontendLambdaPlan` 在 owning class 上追加 hidden synthesized lambda shell（`is_lambda` + `is_hidden` + static，capture 列表与 plan 同源）
+- 按已发布 `LirParameterDef.defaultValueFunc` 在 owning class 上追加 hidden parameter-default synthetic shell（static flag 与 owning function 一致；instance flavor 恰好一个 owning-class 类型的 `self` 首参）
 
-这条 shell-only 约束只适用于 pre-pass 产物，不得外推到默认 lowering pipeline 终态；后续 CFG/body pass 会继续把 executable body、supported property initializer 与 lambda body 写成真实函数体。
+这条 shell-only 约束只适用于 pre-pass 产物，不得外推到默认 lowering pipeline 终态；后续 CFG/body pass 会继续把 executable body、supported property initializer、lambda body 与 parameter-default shell 写成真实函数体。
 
 当前 no-initializer property 的边界也固定为：
 
@@ -244,6 +244,7 @@ function pre-pass 结束后，`LirModule` 仍必须保持 shell-only 中间态�
 
 - compile-ready executable/property-init context 发布
 - lambda shell 合成与 `LAMBDA_BODY` context 发布（capture 列表与 plan 同源、无注入 `self` 参数）
+- parameter-default shell 合成与 `PARAMETER_DEFAULT_INIT` context 发布（shell 名恒等于 `defaultValueFunc` 元数据；instance flavor 非 static 且带 owning-class `self` 首参，static flavor 无参数；return type 等于参数 slot 类型；shell-only）
 - context 总数与 kind 分布
 - executable callable 对应 owning class / target function / constructor `_init`
 - property initializer 对应 owning class / property / target init function
@@ -260,6 +261,8 @@ negative path 至少要锚定：
 - 缺失 published fact 时 fail-fast
 - shell-only contract 被破坏时 fail-fast
 - 发现的 lambda 缺已发布 `FrontendLambdaPlan`、plan owning class 与发现处不一致、或合成名与既有函数冲突时 fail-fast，不得静默跳过或覆盖
+- sweep 已拒绝的 parameter default（`defaultValueFunc == null`）不物化 shell、不发布 context，executable context 照常发布
+- parameter `defaultValueFunc` 元数据存在但 AST 无默认表达式、或 shell 名与既有函数冲突时 fail-fast，不得静默跳过或覆盖
 - 不得把 pre-pass 的 shell-only 中间态误写成整个 lowering pipeline 的最终合同
 - 不存在 silent skip 掩盖协议破坏
 
@@ -271,7 +274,7 @@ negative path 至少要锚定：
 
 - callable skeleton 匹配键未来可能需要从 `name + static + parameterCount` 升级
 - property initializer 的完整执行时序、实例状态可见性和初始化顺序仍未闭环
-- parameter default 的可见性、捕获、求值顺序，以及 instance-vs-static synthetic function 策略仍待专门设计
+- parameter default 的可见性、instance-vs-static shell 策略、preparation 物化与 CFG/body lowering 接线已按 `frontend_parameter_default_plan.md` 落地；剩余风险集中在 backend 调用点与 prologue 补全（步骤 7-8）
 - `ConditionalExpression` 已按 frontend CFG graph 双语境合同放行（value 语境 merge / condition 语境纯控制流展开，见 `frontend_conditional_expression_implementation.md`）；后续新增 control-flow 表达式仍必须先冻结 CFG / condition-evaluation-region 合同再放行
 - truthiness / condition normalization 属于后续 CFG/body lowering 责任，不应下沉回 function pre-pass
 - 当前 `FrontendLoweringCfgPass` 与 `FunctionLoweringContext.cfgNodeBlocks` 仍属于迁移期过渡层；其中 `cfgNodeBlocks` 已显式标注弃用。后续 CFG 工程应在独立的 `frontend.lowering.cfg` 包中实施，并由 `FrontendLoweringBuildCfgPass` 构建，而不是继续扩展 legacy block-bundle metadata

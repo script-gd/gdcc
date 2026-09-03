@@ -9976,43 +9976,167 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
-    void runRejectsParameterDefaultContextsUntilTheirBodySurfaceExists() throws Exception {
+    void runLowersInstanceParameterDefaultIntoSelfReadingShell() throws Exception {
         var prepared = prepareContext(
                 "body_insn_parameter_default.gd",
                 """
                         class_name BodyInsnParameterDefault
                         extends RefCounted
                         
-                        func ping(seed: int) -> int:
-                            return seed
+                        var hp: int = 10
+                        
+                        func restore(amount: int = self.hp):
+                            pass
                         """,
                 Map.of("BodyInsnParameterDefault", "RuntimeBodyInsnParameterDefault"),
                 true
         );
-        var executableContext = requireContext(
+        var defaultContext = requireContext(
                 prepared.context().requireFunctionLoweringContexts(),
-                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
-                "RuntimeBodyInsnParameterDefault",
-                "ping"
-        );
-        var parameterDefaultContext = new FunctionLoweringContext(
                 FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
-                executableContext.sourcePath(),
-                executableContext.sourceClassRelation(),
-                executableContext.owningClass(),
-                executableContext.targetFunction(),
-                executableContext.sourceOwner(),
-                executableContext.loweringRoot(),
-                executableContext.analysisData()
-        );
-        prepared.context().publishFunctionLoweringContexts(List.of(executableContext, parameterDefaultContext));
-
-        var exception = assertThrows(
-                IllegalStateException.class,
-                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+                "RuntimeBodyInsnParameterDefault",
+                "_default_restore$amount"
         );
 
-        assertTrue(exception.getMessage().contains("parameter default"), exception.getMessage());
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var shell = defaultContext.targetFunction();
+        var instructions = allInstructions(shell);
+        var loadInsn = requireOnlyInstruction(shell, LoadPropertyInsn.class);
+        var returnInsn = requireOnlyReturnInsn(shell);
+        var selfParameter = shell.getParameter(0);
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("seq_0", shell.getEntryBlockId()),
+                () -> assertEquals(2, shell.getBasicBlockCount()),
+                () -> assertEquals(1, shell.getParameters().size()),
+                () -> assertEquals("self", selfParameter == null ? null : selfParameter.name()),
+                // The island's `self` reads the shell's own leading parameter slot: the
+                // SelfExpression materializes as a plain copy from the "self" variable.
+                () -> assertTrue(assignSourcesByTarget(instructions).containsValue("self")),
+                () -> assertEquals("hp", loadInsn.propertyName()),
+                () -> assertEquals(loadInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersStaticParameterDefaultIntoZeroParamShell() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_static_parameter_default.gd",
+                """
+                        class_name BodyInsnStaticParameterDefault
+                        extends RefCounted
+                        
+                        static func build(code: int = 7):
+                            pass
+                        """,
+                Map.of("BodyInsnStaticParameterDefault", "RuntimeBodyInsnStaticParameterDefault"),
+                true
+        );
+        var defaultContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
+                "RuntimeBodyInsnStaticParameterDefault",
+                "_default_s_build$code"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var shell = defaultContext.targetFunction();
+        var literalInsn = requireOnlyInstruction(shell, LiteralIntInsn.class);
+        var returnInsn = requireOnlyReturnInsn(shell);
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("seq_0", shell.getEntryBlockId()),
+                () -> assertEquals(2, shell.getBasicBlockCount()),
+                () -> assertTrue(shell.isStatic()),
+                () -> assertTrue(shell.getParameters().isEmpty()),
+                // A static default island never observes `self`, so no self slot is declared or read.
+                () -> assertTrue(assignSourcesByTarget(allInstructions(shell)).values().stream()
+                        .noneMatch("self"::equals)),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersWideningParameterDefaultThroughReturnBoundary() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_widening_parameter_default.gd",
+                """
+                        class_name BodyInsnWideningParameterDefault
+                        extends RefCounted
+                        
+                        func ping(value: float = 1):
+                            pass
+                        """,
+                Map.of("BodyInsnWideningParameterDefault", "RuntimeBodyInsnWideningParameterDefault"),
+                true
+        );
+        var defaultContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
+                "RuntimeBodyInsnWideningParameterDefault",
+                "_default_ping$value"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        // The shell returns the parameter slot type (`float`), so the int literal default crosses
+        // the shared return boundary as a widening intrinsic cast instead of a Variant round-trip.
+        var shell = defaultContext.targetFunction();
+        var literalInsn = requireOnlyInstruction(shell, LiteralIntInsn.class);
+        var castInsn = requireOnlyInstruction(shell, CallIntrinsicInsn.class);
+        var returnInsn = requireOnlyReturnInsn(shell);
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("c_int_to_float", castInsn.intrinsicName()),
+                () -> assertEquals(literalInsn.resultId(), onlyVariableOperandId(castInsn.args())),
+                () -> assertEquals(castInsn.resultId(), returnInsn.returnValueId()),
+                () -> assertEquals(0, countInstructions(allInstructions(shell), PackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void lowerParameterDefaultModuleCompletesFullDefaultPipeline() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        // The default pass-manager chain (analysis → skeleton → preparation → CFG → body) must
+        // materialize accepted parameter defaults end to end instead of failing fast on the
+        // PARAMETER_DEFAULT_INIT kind.
+        var lowered = new FrontendLoweringPassManager().lower(
+                parseModule(
+                        List.of(new SourceFixture(
+                                "body_insn_parameter_default_pipeline.gd",
+                                """
+                                        class_name BodyInsnParameterDefaultPipeline
+                                        extends RefCounted
+                                        
+                                        var hp: int = 10
+                                        
+                                        func restore(amount: int = self.hp, tag = "x"):
+                                            pass
+                                        """
+                        )),
+                        Map.of()
+                ),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+
+        assertFalse(diagnostics.hasErrors(), diagnostics.snapshot()::toString);
+        assertNotNull(lowered);
+        var classDef = lowered.getClassDefs().stream()
+                .filter(candidate -> candidate.getName().equals("BodyInsnParameterDefaultPipeline"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("class not found"));
+        for (var shellName : List.of("_default_restore$amount", "_default_restore$tag")) {
+            var shell = classDef.getFunctions().stream()
+                    .filter(function -> function.getName().equals(shellName))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("shell not found: " + shellName));
+            assertTrue(shell.getBasicBlockCount() > 0, shellName);
+            assertFalse(shell.getEntryBlockId().isEmpty(), shellName);
+            requireOnlyReturnInsn(shell);
+        }
     }
 
     @Test

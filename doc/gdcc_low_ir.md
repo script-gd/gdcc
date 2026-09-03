@@ -1135,14 +1135,14 @@ Low IR:
                 <return_type type="float"/>
                 <variables>
                     <variable id="self" type="RotatingCamera"/>
-                    <variable id="to_radians" type="bool"/>
+                    <variable id="to_radius" type="bool"/>
                     <variable id="0" type="float"/>
                     <variable id="1" type="float"/>
                 </variables>
-                <basic_blocks entry="entry">
+                <basic_blocks entry="bb1">
                     <basic_block id="bb1">
                         line_number 26;
-                        go_if $to_radians bb2 bb3;
+                        go_if $to_radius bb2 bb3;
                     </basic_block>
                     <basic_block id="bb2">
                         line_number 27;
@@ -1158,13 +1158,16 @@ Low IR:
                 </basic_blocks>
             </function>
             <function name="_default_get_pitch$to_radius"
-                      is_static="true"
+                      is_static="false"
                       is_abstract="false"
                       is_vararg="false"
                       is_hidden="true">
-                <parameters/>
+                <parameters>
+                    <parameter name="self" type="RotatingCamera"/>
+                </parameters>
                 <return_type type="bool"/>
                 <variables>
+                    <variable id="self" type="RotatingCamera"/>
                     <variable id="0" type="bool"/>
                 </variables>
                 <basic_blocks entry="entry">

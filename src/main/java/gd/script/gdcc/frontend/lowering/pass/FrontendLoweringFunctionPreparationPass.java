@@ -27,6 +27,7 @@ import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
@@ -39,8 +40,10 @@ import java.util.Objects;
 /// - property initializers get hidden synthetic helper scaffolds
 /// - recorded lambdas get hidden synthesized `_lambda_<k>` shells from their published
 ///   `FrontendLambdaPlan`
-/// - no basic blocks or instructions are emitted yet; later CFG/body passes materialize the default
-///   pipeline's executable callable, property-init and lambda bodies
+/// - accepted parameter defaults get hidden synthetic `_default_<func>$<param>` /
+///   `_default_s_<func>$<param>` shells referenced by `LirParameterDef.defaultValueFunc`
+/// - no basic blocks or instructions are emitted yet; later CFG/body passes materialize the
+///   executable callable, property-init, lambda and parameter-default bodies into these shells
 public final class FrontendLoweringFunctionPreparationPass implements FrontendLoweringPass {
     /// Compiler-owned helper namespace. Source members that start with this prefix must already have
     /// been rejected by skeleton-driven skipped-subtree recovery before preparation runs.
@@ -107,12 +110,21 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
         for (var statement : statements) {
             switch (statement) {
                 case FunctionDeclaration functionDeclaration -> {
-                    contexts.add(buildExecutableContext(
+                    var executableContext = buildExecutableContext(
                             sourceClassRelation,
                             owningClass,
                             functionDeclaration,
                             analysisData
-                    ));
+                    );
+                    contexts.add(executableContext);
+                    collectParameterDefaultContexts(
+                            sourceClassRelation,
+                            owningClass,
+                            functionDeclaration,
+                            executableContext.targetFunction(),
+                            analysisData,
+                            contexts
+                    );
                     collectLambdaContexts(
                             functionDeclaration.body(),
                             sourceClassRelation,
@@ -247,6 +259,118 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
                 initializerExpression,
                 analysisData
         );
+    }
+
+    /// Materializes one hidden synthetic shell per parameter whose default expression survived the
+    /// sema sweep, then publishes the frozen `PARAMETER_DEFAULT_INIT` context shape: `sourceOwner`
+    /// stays the `Parameter` node and `loweringRoot` the default expression, so CFG/body passes
+    /// keep reading the original AST identities from the shared side tables. Parameters whose
+    /// `defaultValueFunc` is still null were rejected by the sweep and already carry upstream
+    /// diagnostics, so they are skipped without touching LIR. The closing reverse scan pins the
+    /// sema/lowering invariant: default metadata on a parameter with no surviving AST default
+    /// expression is skeleton drift and fails fast instead of lowering a dangling reference.
+    private void collectParameterDefaultContexts(
+            @NotNull FrontendSourceClassRelation sourceClassRelation,
+            @NotNull LirClassDef owningClass,
+            @NotNull FunctionDeclaration functionDeclaration,
+            @NotNull LirFunctionDef owningFunction,
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull List<FunctionLoweringContext> contexts
+    ) {
+        var materializedParameterNames = new HashSet<String>();
+        for (var parameter : functionDeclaration.parameters()) {
+            var defaultValue = parameter.defaultValue();
+            if (defaultValue == null) {
+                continue;
+            }
+            var parameterName = parameter.name().trim();
+            // Lookup by name, not AST index: the executable context build already injected the
+            // leading `self` parameter into instance functions, so AST parameter indices no longer
+            // line up with LIR parameter indices.
+            var parameterDef = owningFunction.getParameter(parameterName);
+            if (parameterDef == null) {
+                throw new IllegalStateException(
+                        "Parameter skeleton drifted for '"
+                                + owningClass.getName()
+                                + "."
+                                + owningFunction.getName()
+                                + "': no LIR parameter named '"
+                                + parameterName
+                                + "'"
+                );
+            }
+            var shellName = parameterDef.defaultValueFunc();
+            if (shellName == null) {
+                continue;
+            }
+            var shell = synthesizeParameterDefaultShell(owningClass, owningFunction, parameterDef, shellName);
+            materializedParameterNames.add(parameterName);
+            contexts.add(new FunctionLoweringContext(
+                    FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
+                    sourceClassRelation.unit().path(),
+                    sourceClassRelation,
+                    owningClass,
+                    shell,
+                    parameter,
+                    defaultValue,
+                    analysisData
+            ));
+        }
+        for (var parameterDef : owningFunction.getParameters()) {
+            if (parameterDef.getDefaultValueFunc() != null
+                    && !materializedParameterNames.contains(parameterDef.getName())) {
+                throw new IllegalStateException(
+                        "Parameter '"
+                                + parameterDef.getName()
+                                + "' of '"
+                                + owningClass.getName()
+                                + "."
+                                + owningFunction.getName()
+                                + "' carries default metadata '"
+                                + parameterDef.getDefaultValueFunc()
+                                + "' but has no AST default expression; the sema sweep must keep "
+                                + "metadata and AST defaults in sync"
+                );
+            }
+        }
+    }
+
+    /// The shell name is owned by sema (`LirParameterDef.defaultValueFunc`); preparation never
+    /// re-derives it, so metadata and shell can never drift apart. An already existing function
+    /// with the same name is a reserved-prefix violation or a repeated preparation run — both are
+    /// programmer errors, never silently reused or overwritten. The shell returns the parameter's
+    /// declared slot type (the ABI output the omitted argument is completed with) and mirrors the
+    /// owning function's static flag; instance functions get a leading `self` parameter typed as
+    /// the owning class, which is exactly the slot the default island binds `self` to.
+    private @NotNull LirFunctionDef synthesizeParameterDefaultShell(
+            @NotNull LirClassDef owningClass,
+            @NotNull LirFunctionDef owningFunction,
+            @NotNull LirParameterDef parameterDef,
+            @NotNull String shellName
+    ) {
+        if (owningClass.hasFunction(shellName)) {
+            throw new IllegalStateException(
+                    "Class '"
+                            + owningClass.getName()
+                            + "' already declares a function named '"
+                            + shellName
+                            + "'; source members must be rejected by the reserved '_default_' prefix"
+            );
+        }
+        var shell = new LirFunctionDef(shellName);
+        shell.setHidden(true);
+        shell.setStatic(owningFunction.isStatic());
+        shell.setReturnType(parameterDef.type());
+        if (!owningFunction.isStatic()) {
+            shell.addParameter(new LirParameterDef(
+                    "self",
+                    new GdObjectType(owningClass.getName()),
+                    null,
+                    shell
+            ));
+        }
+        owningClass.addFunction(shell);
+        return shell;
     }
 
     /// Discovers every `LambdaExpression` reachable from a supported executable body and appends a

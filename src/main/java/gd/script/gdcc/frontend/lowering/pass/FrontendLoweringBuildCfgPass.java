@@ -10,6 +10,7 @@ import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
+import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 
@@ -34,9 +35,7 @@ public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass 
                 case EXECUTABLE_BODY -> publishStraightLineExecutableGraph(functionContext);
                 case LAMBDA_BODY -> publishLambdaBodyGraph(functionContext);
                 case PROPERTY_INIT -> publishPropertyInitializerGraph(functionContext);
-                case PARAMETER_DEFAULT_INIT -> throw new IllegalStateException(
-                        "Frontend CFG build pass does not support parameter default initializer contexts yet"
-                );
+                case PARAMETER_DEFAULT_INIT -> publishParameterDefaultGraph(functionContext);
             }
         }
     }
@@ -94,6 +93,35 @@ public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass 
         functionContext.publishFrontendCfgGraph(
                 new FrontendCfgGraphBuilder()
                         .buildPropertyInitializer(initializerExpression, functionContext.analysisData())
+                        .graph()
+        );
+    }
+
+    /// Parameter-default shells lower through the exact property-initializer paradigm: the default
+    /// expression is the only lowering root and the graph is one value sequence closed by a
+    /// synthesized RETURN stop. The context must keep the AST identities the sema island published
+    /// its facts under — the `Parameter` as `sourceOwner` and `parameter.defaultValue()` itself as
+    /// `loweringRoot` — otherwise the expression build cannot find the island's bindings/types.
+    private void publishParameterDefaultGraph(@NotNull FunctionLoweringContext functionContext) {
+        if (!(functionContext.sourceOwner() instanceof Parameter parameter)) {
+            throw new IllegalStateException(
+                    describeContext(functionContext) + " must keep a parameter declaration as sourceOwner"
+            );
+        }
+        if (!(functionContext.loweringRoot() instanceof Expression defaultExpression)) {
+            throw new IllegalStateException(
+                    describeContext(functionContext) + " must expose an Expression loweringRoot"
+            );
+        }
+        if (parameter.defaultValue() != defaultExpression) {
+            throw new IllegalStateException(
+                    describeContext(functionContext) + " must lower the published parameter default expression directly"
+            );
+        }
+        validateShellOnlyTarget(functionContext);
+        functionContext.publishFrontendCfgGraph(
+                new FrontendCfgGraphBuilder()
+                        .buildPropertyInitializer(defaultExpression, functionContext.analysisData())
                         .graph()
         );
     }

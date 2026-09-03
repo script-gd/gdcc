@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（executable-body CFG build / body lowering、property-initializer CFG/body lowering、constructor materialization、compound assignment、explicit self assignment-target prefix consumption、dynamic receiver runtime-gated writeback、`StopNode.kind` 空-return 图修复、`for-in` CFG build（`FrontendForRegion` / 四个 `ForLoop*Item` / source-slot / hidden-state registry / build-artifact 跨表验证）与 `for-in` range route body lowering（hidden-state / source-slot 预声明 + 四个 `ForLoop*Item` processor 生成 `gdcc.for_range_iter.*` intrinsic 与 temp-then-commit assign）均已落地；parameter default 仍未接通）
-- 更新时间：2026-07-25
+- 状态：事实源维护中（executable-body CFG build / body lowering、property-initializer CFG/body lowering、parameter-default CFG/body lowering（`buildPropertyInitializer()` 同构 expression-rooted 构图 + 共享 body session）、constructor materialization、compound assignment、explicit self assignment-target prefix consumption、dynamic receiver runtime-gated writeback、`StopNode.kind` 空-return 图修复、`for-in` CFG build（`FrontendForRegion` / 四个 `ForLoop*Item` / source-slot / hidden-state registry / build-artifact 跨表验证）与 `for-in` range route body lowering（hidden-state / source-slot 预声明 + 四个 `ForLoop*Item` processor 生成 `gdcc.for_range_iter.*` intrinsic 与 temp-then-commit assign）均已落地）
+- 更新时间：2026-09-03
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/lowering/**`
   - `src/main/java/gd/script/gdcc/frontend/lowering/cfg/**`
@@ -28,7 +28,6 @@
 - 明确非目标：
   - 不在这里引入 high-level IR / sea-of-nodes
   - `ConditionalExpression` 的 compile-ready 全链路（compile gate 放行、body lowering 端到端与 e2e）不由本文档管辖，见 `frontend_conditional_expression_implementation.md`；本文档只冻结其相关的 CFG 构图事实与 merge 合同
-  - 不在这里把 parameter default 接到 body pass
   - 不在这里让 lowering 重跑 chain reduction、call route 选择或表达式求值顺序推导
 
 ---
@@ -65,7 +64,8 @@
   - 复用 executable-block 构图与共享 body session materialize lambda body
   - 合成 shell 的 capture 变量已由 `addCapture` 预登记，body 内 CAPTURE 读取走 opaque 符号路由
 - `PARAMETER_DEFAULT_INIT`
-  - 只保留 context kind 与模型槽位，不接入默认 pipeline
+  - 复用 `buildPropertyInitializer()` 同构范式：默认表达式是唯一 lowering root，graph 为单条 value sequence 加合成 RETURN stop
+  - context 必须保持 island 发布 facts 所用的 AST identity（`sourceOwner` 为 `Parameter`，`loweringRoot` 为 `parameter.defaultValue()` 本身），身份不符即 fail-fast
 
 ---
 
@@ -493,20 +493,20 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 
 当前只负责：
 
-- 消费 compile-ready `EXECUTABLE_BODY` / `PROPERTY_INIT` / `LAMBDA_BODY` context
+- 消费 compile-ready `EXECUTABLE_BODY` / `PROPERTY_INIT` / `LAMBDA_BODY` / `PARAMETER_DEFAULT_INIT` context
 - 调用 `frontend.lowering.cfg` 下的 builder
 - 发布 `frontendCfgGraph`
 - 为 executable body 发布 `frontendCfgRegions`
 - 为 compile-ready `for-in` 发布 `frontendForSourceIteratorSlots` 与 `frontendForIteratorStateSlots` registry
 - 对 property initializer 校验 `sourceOwner == property declaration`、`loweringRoot == initializer expression`
 - 对 lambda body 校验 `sourceOwner instanceof LambdaExpression`、`loweringRoot instanceof Block`，随后与 `EXECUTABLE_BODY` 共享同一 `publishExecutableBlockGraph`（`buildExecutableBody` + graph/region/for-slot 发布）；外层 body 表达式树中的已 record `LambdaExpression` 由 CFG builder 建 `LambdaConstructItem`（缺已发布 plan 仍 fail-fast）
+- 对 parameter default 校验 `sourceOwner instanceof Parameter`、`loweringRoot == parameter.defaultValue()`（AST identity），随后复用 `buildPropertyInitializer()` 发布 expression-rooted graph（单条 value sequence + 合成 RETURN stop，不发布结构化 region）
 
 当前不负责：
 
 - 写 `LirBasicBlock`
 - 设置 `entryBlockId`
 - materialize instruction
-- 处理 parameter default
 - 为 property initializer 发布伪造的 block/loop region
 
 ### 7.2 `FrontendLoweringBodyInsnPass`
@@ -527,7 +527,7 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 
 当前内部组织也已经冻结为以下形状：
 
-- `FrontendLoweringBodyInsnPass` 本体只保留 compile-ready function context 调度；当前默认 pipeline 覆盖 executable-body、property-init 与 lambda-body（并入共享 session 分支；合成 shell 的 `setStatic(true)` 保证 `declareSelfSlotIfNeeded` 不产生 stray `self`），parameter-default 继续显式 fail-fast
+- `FrontendLoweringBodyInsnPass` 本体只保留 compile-ready function context 调度；当前默认 pipeline 覆盖 executable-body、property-init、lambda-body 与 parameter-default（均并入共享 session 分支；lambda/静态合成 shell 的 `setStatic(true)` 保证 `declareSelfSlotIfNeeded` 不产生 stray `self`，parameter-default instance shell 的 leading `self` 参数经同一路径声明槽位）
 - 真实的 per-function lowering state 收口到 `frontend.lowering.pass.body.FrontendBodyLoweringSession`
 - CFG node、`SequenceItem`、opaque expression root、assignment target / attribute step 都通过 `FrontendInsnLoweringProcessor` 注册表按“当前节点实际类型”动态分派
 - `FrontendInsnLoweringProcessor` 现在还显式返回 lowering 结束后的当前 continuation block；`SequenceNode` 会把这个 block 一路传给后续 item，因此 writable-route runtime gate 生成的 synthetic `apply/skip/continue` blocks 不会把后续 lowering 误挂回原始 node entry block
@@ -720,7 +720,6 @@ body-lowering 合同：
 
 当前仍保持 shell-only、compile-block 或 fail-fast 的部分包括：
 
-- `PARAMETER_DEFAULT_INIT` CFG / body lowering
 - callable-value invocation
 - multi-key subscript lowering
 - `for`（compile gate 为 route-aware：registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker；`FrontendForRegion`、四个 `ForLoop*Item`、source/hidden slot registry、跨表验证与 body lowering（`declareForLoopSlots()` + init/should_continue/get/next processors、temp-then-commit）均已落地；完整合同见 `frontend_for_range_loop_implementation.md`）

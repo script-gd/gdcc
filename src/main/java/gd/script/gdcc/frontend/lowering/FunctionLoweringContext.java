@@ -22,7 +22,8 @@ import java.util.Objects;
 /// The unit can be:
 /// - an executable callable body already published in the class skeleton
 /// - a synthetic property initializer function shell
-/// - a future synthetic parameter-default initializer function shell
+/// - a synthetic parameter-default initializer function shell
+/// - a synthesized hidden lambda body shell (`_lambda_<k>`)
 ///
 /// The carrier keeps direct AST identity references because frontend side tables are keyed by the
 /// original parser nodes. Later CFG/body passes therefore use the same AST identities instead of
@@ -31,9 +32,8 @@ public final class FunctionLoweringContext {
     /// Category of the lowering unit.
     ///
     /// This determines how later passes should interpret the relationship between `sourceOwner`
-    /// and `loweringRoot`. The preparation pass currently publishes `EXECUTABLE_BODY` and
-    /// `PROPERTY_INIT`, while `PARAMETER_DEFAULT_INIT` remains part of the fixed context model but
-    /// is still unpublished in the default pipeline.
+    /// and `loweringRoot`. The preparation pass publishes `EXECUTABLE_BODY`, `PROPERTY_INIT`,
+    /// `LAMBDA_BODY` and `PARAMETER_DEFAULT_INIT` units; CFG/body passes consume all four kinds.
     private final @NotNull Kind kind;
 
     /// Source file path that owns this lowering unit.
@@ -61,14 +61,14 @@ public final class FunctionLoweringContext {
     ///
     /// During preparation the only requirement is that this function shell already exists on the
     /// owning class. The default pipeline later fills blocks, entry metadata, and instructions into
-    /// this shell for published `EXECUTABLE_BODY` and `PROPERTY_INIT` units.
+    /// this shell for every published lowering-unit kind.
     private final @NotNull LirFunctionDef targetFunction;
 
     /// Original declaration-level AST owner used by shared frontend side tables.
     ///
     /// This intentionally stays at the declaration node instead of collapsing to `loweringRoot`:
     /// callable lowering uses the declaration, property initialization uses the property
-    /// declaration, and future parameter-default lowering uses the parameter/default declaration.
+    /// declaration, and parameter-default lowering uses the parameter declaration.
     private final @NotNull Node sourceOwner;
 
     /// AST root actually traversed and transformed by this lowering unit.

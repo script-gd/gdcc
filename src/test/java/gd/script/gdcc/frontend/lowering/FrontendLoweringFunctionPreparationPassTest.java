@@ -29,6 +29,7 @@ import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
@@ -864,7 +865,7 @@ class FrontendLoweringFunctionPreparationPassTest {
     }
 
     @Test
-    void lowerParameterDefaultModulePassesSemanticsWithoutShellMaterialization() throws Exception {
+    void lowerParameterDefaultModuleMaterializesHiddenShell() throws Exception {
         var continuationRan = new AtomicBoolean();
         var diagnostics = new DiagnosticManager();
         var lowered = new FrontendLoweringPassManager(List.of(
@@ -875,9 +876,9 @@ class FrontendLoweringFunctionPreparationPassTest {
         )).lower(
                 parseModule(
                         List.of(new SourceFixture(
-                                "preparation_blocked_parameter_default.gd",
+                                "preparation_parameter_default.gd",
                                 """
-                                        class_name PreparationBlockedParameterDefault
+                                        class_name PreparationParameterDefault
                                         extends RefCounted
                                         
                                         func ping(seed = 1):
@@ -891,25 +892,299 @@ class FrontendLoweringFunctionPreparationPassTest {
         );
 
         // Semantics accept the parameter default (the metadata owner publishes
-        // `_default_ping$seed` on the parameter), so lowering proceeds. Synthetic shell
-        // materialization is a later pipeline step: no `_default_` function exists yet.
+        // `_default_ping$seed` on the parameter), and preparation now materializes the hidden
+        // synthetic shell in the same pipeline run: non-static with a leading owner-typed `self`,
+        // returning the parameter slot type (`Variant` for the untyped `seed`), still shell-only
+        // for the later CFG/body passes.
         assertTrue(continuationRan.get());
         assertFalse(diagnostics.hasErrors(), diagnostics.snapshot()::toString);
         assertNotNull(lowered);
-        var classDef = lowered.getClassDefs().stream()
-                .filter(candidate -> candidate.getName().equals("PreparationBlockedParameterDefault"))
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("class not found"));
-        var ping = classDef.getFunctions().stream()
-                .filter(function -> function.getName().equals("ping"))
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("ping function not found"));
+        var classDef = requireClass(lowered, "PreparationParameterDefault");
+        var ping = requireFunction(classDef, "ping");
+        assertEquals("_default_ping$seed", ping.getParameter("seed").getDefaultValueFunc());
+        var shell = requireFunction(classDef, "_default_ping$seed");
+        assertTrue(shell.isHidden());
+        assertFalse(shell.isStatic());
+        assertEquals("Variant", shell.getReturnType().getTypeName());
+        assertEquals(1, shell.getParameterCount());
+        assertEquals("self", shell.getParameter(0).name());
+        assertEquals("PreparationParameterDefault", shell.getParameter(0).type().getTypeName());
+        assertEquals(0, shell.getBasicBlockCount());
+        assertTrue(shell.getEntryBlockId().isEmpty());
+    }
+
+    @Test
+    void runPublishesParameterDefaultInitContextsForInstanceFunction() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "preparation_instance_parameter_default.gd",
+                        """
+                                class_name PreparationInstanceParameterDefault
+                                extends RefCounted
+                                
+                                var hp: int = 10
+                                
+                                func restore(amount: int = self.hp):
+                                    pass
+                                
+                                func ping(seed = 1):
+                                    pass
+                                """
+                )),
+                Map.of()
+        );
+        var context = new FrontendLoweringContext(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        new FrontendLoweringAnalysisPass().run(context);
+        new FrontendLoweringClassSkeletonPass().run(context);
+
+        new FrontendLoweringFunctionPreparationPass().run(context);
+
+        assertFalse(diagnostics.hasErrors(), diagnostics.snapshot()::toString);
+        var classDef = requireClass(context.requireLirModule(), "PreparationInstanceParameterDefault");
+        var contexts = context.requireFunctionLoweringContexts();
+        var sourceFile = module.units().getFirst().ast();
+        var restoreFunction = requireStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                function -> function.name().equals("restore")
+        );
+        var pingFunction = requireStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                function -> function.name().equals("ping")
+        );
+        var amountParameter = restoreFunction.parameters().getFirst();
+        var seedParameter = pingFunction.parameters().getFirst();
+
+        // Both the instance-member default (`self.hp`) and the literal default materialize
+        // instance-flavor shells: hidden, non-static, leading owner-typed `self` (the slot the
+        // default island binds `self` to), return type equal to the parameter slot type.
+        var restoreContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
+                "PreparationInstanceParameterDefault",
+                "_default_restore$amount"
+        );
+        assertSame(amountParameter, restoreContext.sourceOwner());
+        assertSame(amountParameter.defaultValue(), restoreContext.loweringRoot());
+        var restoreShell = requireFunction(classDef, "_default_restore$amount");
+        assertSame(restoreShell, restoreContext.targetFunction());
+        assertTrue(restoreShell.isHidden());
+        assertFalse(restoreShell.isStatic());
+        assertEquals("int", restoreShell.getReturnType().getTypeName());
+        assertEquals(1, restoreShell.getParameterCount());
+        assertEquals("self", restoreShell.getParameter(0).name());
+        assertEquals("PreparationInstanceParameterDefault", restoreShell.getParameter(0).type().getTypeName());
+        assertEquals(0, restoreShell.getBasicBlockCount());
+        assertTrue(restoreShell.getEntryBlockId().isEmpty());
+
+        var pingContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
+                "PreparationInstanceParameterDefault",
+                "_default_ping$seed"
+        );
+        assertSame(seedParameter, pingContext.sourceOwner());
+        assertSame(seedParameter.defaultValue(), pingContext.loweringRoot());
+        assertEquals("Variant", pingContext.targetFunction().getReturnType().getTypeName());
+
+        // The shell names are exactly the names the sema sweep published on the parameters.
+        assertEquals(
+                "_default_restore$amount",
+                requireFunction(classDef, "restore").getParameter("amount").getDefaultValueFunc()
+        );
         assertEquals(
                 "_default_ping$seed",
-                ping.getParameter("seed").getDefaultValueFunc()
+                requireFunction(classDef, "ping").getParameter("seed").getDefaultValueFunc()
         );
+    }
+
+    @Test
+    void runPublishesStaticParameterDefaultShellsWithoutSelfParameter() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "preparation_static_parameter_default.gd",
+                        """
+                                class_name PreparationStaticParameterDefault
+                                extends RefCounted
+                                
+                                static func build(code: int = 7, label: String = "x") -> String:
+                                    return label
+                                """
+                )),
+                Map.of()
+        );
+        var context = new FrontendLoweringContext(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        new FrontendLoweringAnalysisPass().run(context);
+        new FrontendLoweringClassSkeletonPass().run(context);
+
+        new FrontendLoweringFunctionPreparationPass().run(context);
+
+        assertFalse(diagnostics.hasErrors(), diagnostics.snapshot()::toString);
+        var classDef = requireClass(context.requireLirModule(), "PreparationStaticParameterDefault");
+        var contexts = context.requireFunctionLoweringContexts();
+        var sourceFile = module.units().getFirst().ast();
+        var buildFunction = requireStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                function -> function.name().equals("build")
+        );
+        var codeParameter = buildFunction.parameters().get(0);
+        var labelParameter = buildFunction.parameters().get(1);
+
+        // Static function defaults materialize static shells with no parameters at all: the
+        // default island of a static function can never observe `self`, so no slot is injected.
+        var codeContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
+                "PreparationStaticParameterDefault",
+                "_default_s_build$code"
+        );
+        assertSame(codeParameter, codeContext.sourceOwner());
+        assertSame(codeParameter.defaultValue(), codeContext.loweringRoot());
+        var codeShell = requireFunction(classDef, "_default_s_build$code");
+        assertSame(codeShell, codeContext.targetFunction());
+        assertTrue(codeShell.isHidden());
+        assertTrue(codeShell.isStatic());
+        assertEquals("int", codeShell.getReturnType().getTypeName());
+        assertEquals(0, codeShell.getParameterCount());
+        assertEquals(0, codeShell.getBasicBlockCount());
+        assertTrue(codeShell.getEntryBlockId().isEmpty());
+
+        var labelContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
+                "PreparationStaticParameterDefault",
+                "_default_s_build$label"
+        );
+        assertSame(labelParameter, labelContext.sourceOwner());
+        assertSame(labelParameter.defaultValue(), labelContext.loweringRoot());
+        var labelShell = requireFunction(classDef, "_default_s_build$label");
+        assertSame(labelShell, labelContext.targetFunction());
+        assertTrue(labelShell.isStatic());
+        assertEquals("String", labelShell.getReturnType().getTypeName());
+        assertEquals(0, labelShell.getParameterCount());
+    }
+
+    @Test
+    void runSkipsShellMaterializationWhenSweepRejectedTheDefault() throws Exception {
+        var analyzed = analyzeSharedModule(
+                List.of(new SourceFixture(
+                        "preparation_rejected_parameter_default.gd",
+                        """
+                                class_name PreparationRejectedParameterDefault
+                                extends RefCounted
+                                
+                                func ping(value: int, alias = value):
+                                    pass
+                                """
+                )),
+                Map.of()
+        );
+        // The sweep rejects the parameter-reference default with its own anchored diagnostic and
+        // reclaims the placeholder metadata, so preparation must skip materialization entirely:
+        // no `_default_` function and no PARAMETER_DEFAULT_INIT context, while the executable
+        // context for `ping` is still published.
+        assertTrue(analyzed.diagnostics().hasErrors());
+        var context = new FrontendLoweringContext(
+                analyzed.module(),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                analyzed.diagnostics()
+        );
+        context.publishAnalysisData(analyzed.analysisData());
+        new FrontendLoweringClassSkeletonPass().run(context);
+
+        new FrontendLoweringFunctionPreparationPass().run(context);
+
+        var classDef = requireClass(context.requireLirModule(), "PreparationRejectedParameterDefault");
+        var ping = requireFunction(classDef, "ping");
+        assertNull(ping.getParameter("alias").getDefaultValueFunc());
         assertTrue(classDef.getFunctions().stream()
                 .noneMatch(function -> function.getName().startsWith("_default_")));
+        var contexts = context.requireFunctionLoweringContexts();
+        assertEquals(
+                0,
+                contexts.stream()
+                        .filter(candidate -> candidate.kind() == FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT)
+                        .count()
+        );
+        requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "PreparationRejectedParameterDefault",
+                "ping"
+        );
+    }
+
+    @Test
+    void runFailsFastWhenDefaultMetadataLacksAstDefaultExpression() throws Exception {
+        var prepared = prepareCompileReadyContext();
+        var classDef = requireClass(prepared.context().requireLirModule(), "RuntimePreparationOuter");
+        var ping = requireFunction(classDef, "ping");
+        var valueParameter = ping.getParameter("value");
+        // Corrupt the published metadata by hand: `value` has no AST default expression, so the
+        // preparation invariant scan must refuse to lower a dangling `defaultValueFunc`.
+        ping.removeParameter(0);
+        ping.addParameter(0, new LirParameterDef(
+                valueParameter.name(),
+                valueParameter.type(),
+                "_default_ping$value",
+                ping
+        ));
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringFunctionPreparationPass().run(prepared.context())
+        );
+
+        assertTrue(exception.getMessage().contains("_default_ping$value"), exception.getMessage());
+    }
+
+    @Test
+    void runFailsFastWhenParameterDefaultShellNameAlreadyExists() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "preparation_colliding_parameter_default.gd",
+                        """
+                                class_name PreparationCollidingParameterDefault
+                                extends RefCounted
+                                
+                                func ping(seed = 1):
+                                    pass
+                                """
+                )),
+                Map.of()
+        );
+        var context = new FrontendLoweringContext(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        new FrontendLoweringAnalysisPass().run(context);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        // A same-named member must already have been rejected by the reserved `_default_` prefix
+        // at skeleton time; if one still reaches preparation, materialization must fail fast
+        // instead of overwriting or silently reusing it.
+        var classDef = requireClass(context.requireLirModule(), "PreparationCollidingParameterDefault");
+        classDef.addFunction(new LirFunctionDef("_default_ping$seed"));
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringFunctionPreparationPass().run(context)
+        );
+
+        assertTrue(exception.getMessage().contains("_default_ping$seed"), exception.getMessage());
     }
 
     @Test

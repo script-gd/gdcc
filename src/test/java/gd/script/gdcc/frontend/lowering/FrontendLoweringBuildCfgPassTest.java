@@ -24,6 +24,7 @@ import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
+import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -362,25 +363,156 @@ class FrontendLoweringBuildCfgPassTest {
     }
 
     @Test
-    void runRejectsParameterDefaultContextsUntilTheirCompileSurfaceExists() throws Exception {
+    void runPublishesParameterDefaultCfgGraphForInstanceShell() throws Exception {
         var prepared = prepareContext(
                 "build_cfg_parameter_default.gd",
                 """
                         class_name BuildCfgParameterDefault
                         extends RefCounted
                         
+                        var hp: int = 10
+                        
+                        func max_hp() -> int:
+                            return 100
+                        
+                        func restore(amount: int = self.hp, cap: int = max_hp()):
+                            pass
+                        """,
+                Map.of("BuildCfgParameterDefault", "RuntimeBuildCfgParameterDefault")
+        );
+        var contexts = prepared.context().requireFunctionLoweringContexts();
+
+        new FrontendLoweringBuildCfgPass().run(prepared.context());
+
+        assertFalse(prepared.diagnostics().hasErrors());
+        // `self.hp` lowers into a self read feeding a member load; the bare instance call
+        // `max_hp()` lowers into a receiver-less call item with no self producer at all. Both
+        // graphs close with a RETURN stop carrying the default expression's producer result.
+        var amountContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
+                "RuntimeBuildCfgParameterDefault",
+                "_default_restore$amount"
+        );
+        var amountGraph = amountContext.requireFrontendCfgGraph();
+        var amountEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                amountGraph.requireNode(amountGraph.entryNodeId())
+        );
+        var amountStop = assertInstanceOf(
+                FrontendCfgGraph.StopNode.class,
+                amountGraph.requireNode(amountEntry.nextId())
+        );
+        var selfRead = assertInstanceOf(OpaqueExprValueItem.class, amountEntry.items().get(0));
+        var hpLoad = assertInstanceOf(MemberLoadItem.class, amountEntry.items().get(1));
+        assertAll(
+                () -> assertEquals(2, amountEntry.items().size()),
+                () -> assertInstanceOf(SelfExpression.class, selfRead.anchor()),
+                () -> assertEquals(List.of(), selfRead.operandValueIds()),
+                () -> assertEquals("hp", hpLoad.memberName()),
+                () -> assertEquals(List.of(selfRead.resultValueId()), hpLoad.operandValueIds()),
+                () -> assertEquals(hpLoad.resultValueId(), amountStop.returnValueIdOrNull()),
+                () -> assertNull(amountContext.frontendCfgRegionOrNull(amountContext.loweringRoot())),
+                () -> assertEquals(0, amountContext.targetFunction().getBasicBlockCount()),
+                () -> assertTrue(amountContext.targetFunction().getEntryBlockId().isEmpty())
+        );
+
+        var capContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
+                "RuntimeBuildCfgParameterDefault",
+                "_default_restore$cap"
+        );
+        var capGraph = capContext.requireFrontendCfgGraph();
+        var capEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                capGraph.requireNode(capGraph.entryNodeId())
+        );
+        var capStop = assertInstanceOf(
+                FrontendCfgGraph.StopNode.class,
+                capGraph.requireNode(capEntry.nextId())
+        );
+        var maxHpCall = assertInstanceOf(CallItem.class, capEntry.items().getFirst());
+        assertAll(
+                () -> assertEquals(1, capEntry.items().size()),
+                () -> assertEquals("max_hp", maxHpCall.callableName()),
+                () -> assertEquals(List.of(), maxHpCall.operandValueIds()),
+                () -> assertNull(maxHpCall.receiverValueIdOrNull()),
+                () -> assertEquals(maxHpCall.resultValueId(), capStop.returnValueIdOrNull()),
+                () -> assertTrue(capEntry.items().stream()
+                        .noneMatch(item -> item instanceof OpaqueExprValueItem))
+        );
+    }
+
+    @Test
+    void runPublishesParameterDefaultCfgGraphForStaticShell() throws Exception {
+        var prepared = prepareContext(
+                "build_cfg_static_parameter_default.gd",
+                """
+                        class_name BuildCfgStaticParameterDefault
+                        extends RefCounted
+                        
+                        static func build(code: int = 7):
+                            pass
+                        """,
+                Map.of("BuildCfgStaticParameterDefault", "RuntimeBuildCfgStaticParameterDefault")
+        );
+        var contexts = prepared.context().requireFunctionLoweringContexts();
+
+        new FrontendLoweringBuildCfgPass().run(prepared.context());
+
+        assertFalse(prepared.diagnostics().hasErrors());
+        // The static shell graph is a single literal producer closed by a RETURN stop; a static
+        // default island can never observe `self`, so no self-anchored producer may appear.
+        var codeContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
+                "RuntimeBuildCfgStaticParameterDefault",
+                "_default_s_build$code"
+        );
+        var codeGraph = codeContext.requireFrontendCfgGraph();
+        var codeEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                codeGraph.requireNode(codeGraph.entryNodeId())
+        );
+        var codeStop = assertInstanceOf(
+                FrontendCfgGraph.StopNode.class,
+                codeGraph.requireNode(codeEntry.nextId())
+        );
+        var literalRead = assertInstanceOf(OpaqueExprValueItem.class, codeEntry.items().getFirst());
+        assertAll(
+                () -> assertEquals(1, codeEntry.items().size()),
+                () -> assertFalse(literalRead.anchor() instanceof SelfExpression),
+                () -> assertEquals(List.of(), literalRead.operandValueIds()),
+                () -> assertEquals(literalRead.resultValueId(), codeStop.returnValueIdOrNull()),
+                () -> assertEquals(0, codeContext.targetFunction().getBasicBlockCount()),
+                () -> assertTrue(codeContext.targetFunction().getEntryBlockId().isEmpty())
+        );
+    }
+
+    @Test
+    void runRejectsParameterDefaultContextWithNonParameterSourceOwner() throws Exception {
+        var prepared = prepareContext(
+                "build_cfg_parameter_default_shape.gd",
+                """
+                        class_name BuildCfgParameterDefaultShape
+                        extends RefCounted
+                        
                         func ping(value: int) -> int:
                             return value
                         """,
-                Map.of("BuildCfgParameterDefault", "RuntimeBuildCfgParameterDefault")
+                Map.of("BuildCfgParameterDefaultShape", "RuntimeBuildCfgParameterDefaultShape")
         );
         var executableContext = requireContext(
                 prepared.context().requireFunctionLoweringContexts(),
                 FunctionLoweringContext.Kind.EXECUTABLE_BODY,
-                "RuntimeBuildCfgParameterDefault",
+                "RuntimeBuildCfgParameterDefaultShape",
                 "ping"
         );
-        var parameterDefaultContext = new FunctionLoweringContext(
+        // Hand-corrupt the context shape: a PARAMETER_DEFAULT_INIT unit must keep the `Parameter`
+        // as sourceOwner and the default expression as loweringRoot, otherwise the expression
+        // build cannot find the island's published bindings/types.
+        var malformedContext = new FunctionLoweringContext(
                 FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
                 executableContext.sourcePath(),
                 executableContext.sourceClassRelation(),
@@ -390,14 +522,17 @@ class FrontendLoweringBuildCfgPassTest {
                 executableContext.loweringRoot(),
                 executableContext.analysisData()
         );
-        prepared.context().publishFunctionLoweringContexts(List.of(executableContext, parameterDefaultContext));
+        prepared.context().publishFunctionLoweringContexts(List.of(executableContext, malformedContext));
 
         var exception = assertThrows(
                 IllegalStateException.class,
                 () -> new FrontendLoweringBuildCfgPass().run(prepared.context())
         );
 
-        assertTrue(exception.getMessage().contains("parameter default"), exception.getMessage());
+        assertTrue(
+                exception.getMessage().contains("must keep a parameter declaration as sourceOwner"),
+                exception.getMessage()
+        );
     }
 
     @Test

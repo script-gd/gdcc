@@ -5,8 +5,8 @@
 
 ## 文档状态
 
-- 状态：计划维护中（已经过 review-expert-a 多轮审阅修订，全部发现闭合；constructor 默认值确认为 GDExtension 内在限制、永久非目标；步骤 1-2 已完成落地）
-- 更新时间：2026-09-02
+- 状态：计划维护中（已经过 review-expert-a 多轮审阅修订，全部发现闭合；constructor 默认值确认为 GDExtension 内在限制、永久非目标；步骤 1-6 已完成落地，frontend 链路闭环；剩余 backend 步骤 7-8 与文档收尾步骤 9）
+- 更新时间：2026-09-03
 - 适用范围：GDScript source function（instance / static）声明的参数默认值；覆盖 frontend sema、lowering 与 backend 接线。
 - 关联文档：
   - `doc/module_impl/frontend/frontend_rules.md`
@@ -47,16 +47,18 @@
 - **Backend**：`CallMethodInsnGen.validateFixedArgsAndCompleteDefaults()` / `CGenHelper` 已实现基于 `default_value_func` / literal metadata 的调用点补全与过多/过少实参报错（bare source call 降低为 `CallMethodInsn` / `CallStaticMethodInsn`，同样走该路径；`CallGlobalInsnGen` 只服务 utility literal default，与本特性无关）。
 - **Lowering context 模型与 CFG 范式**：`FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT` 已保留；`frontend_lowering_func_pre_pass_implementation.md` §7 冻结了“每个默认表达式降低为 hidden synthetic function，经 `LirParameterDef.defaultValueFunc` 引用，不允许永久 call-site inline-only”的合同。`FrontendCfgGraphBuilder.buildPropertyInitializer()` 已提供“表达式求值 → 合成 `RETURN` stop”的 expression-rooted CFG 范式，可直接复用。
 
-### 1.2 当前 fail-closed 边界（本计划要解除/改写的部分）
+### 1.2 实施前 fail-closed 基线与解除状态
 
-- `FrontendVariableAnalyzer.bindParameter()` 对每个带默认值的参数报告 `sema.unsupported_parameter_default_value`，且**不分析**默认表达式（参数本身仍正常登记）。
-- `FrontendSuiteResolver` 对默认表达式子树报告 `sema.unsupported_binding_subtree` / `sema.unsupported_chain_route`。
-- `FrontendVisibleValueResolver` 双重封口：`classifyBoundaryEdge()` 把 `Parameter.defaultValue` AST 边识别为 structural deferred boundary；`classifyRequestDomainBoundary()` 对一切非 `EXECUTABLE_BODY` 的 request domain 返回 `DEFERRED_UNSUPPORTED`。`FrontendBodySemanticSupportPolicy.PARAMETER_DEFAULT(false, false, ...)`。
-- `FrontendClassSkeletonBuilder.fillFunctionParameters()` 创建 `LirParameterDef` 时 `defaultValueFunc` 恒为 `null` → 所有带默认值参数在 arity 检查中被当作 required。
-- `FrontendLoweringFunctionPreparationPass` 不发布 `PARAMETER_DEFAULT_INIT` context；`FrontendLoweringBuildCfgPass` / `FrontendLoweringBodyInsnPass` 遇到该 kind 直接 `IllegalStateException`。
-- `FrontendCompileCheckAnalyzer` 的 compile surface 只 walk callable body（`walkCallableBody`），不触及参数默认表达式（`frontend_rules.md` 明确要求 compile gate 不得重新深入 parameter default）。
-- lambda 参数创建（preparation pass）同样恒写 `null` default metadata；lambda 参数默认值维持 fail-closed（见 §3.4）。
-- `_default_` 前缀未列入 compiler-owned 保留前缀（`FrontendSyntheticPropertyHelperSupport.RESERVED_PREFIXES` 当前只有 `_field_init_` / `_lambda_` 等），存在与用户成员撞名风险。
+> 本节记录本计划实施前（步骤 1 之前）的 fail-closed 边界；每条标注当前状态。仍然有效的边界继续保持 fail-closed。
+
+- **（步骤 1 已解除）** `FrontendVariableAnalyzer.bindParameter()` 曾对每个带默认值的参数报告 `sema.unsupported_parameter_default_value`，且不分析默认表达式；现 source function 参数正常登记并开放默认值（lambda 维持诊断）。
+- **（步骤 2 已解除）** `FrontendSuiteResolver` 曾对默认表达式子树报告 `sema.unsupported_binding_subtree` / `sema.unsupported_chain_route`；现由 §4.1 sweep owner 统一分析。
+- **（步骤 2 已解除）** `FrontendVisibleValueResolver` 双重封口（`classifyBoundaryEdge()` 把 `Parameter.defaultValue` 边识别为 structural deferred boundary；`classifyRequestDomainBoundary()` 对非 `EXECUTABLE_BODY` domain 返回 `DEFERRED_UNSUPPORTED`）；现 `PARAMETER_DEFAULT` 按 §4.2 island 受限开放。
+- **（仍然有效，合同如此）** `FrontendClassSkeletonBuilder.fillFunctionParameters()` 创建 `LirParameterDef` 时 `defaultValueFunc` 恒为 `null`；元数据由 §4.1 sweep owner 统一写入/回收，skeleton 阶段不提前发布。
+- **（步骤 4-6 已解除）** `FrontendLoweringFunctionPreparationPass` 为每个带 `defaultValueFunc` 的参数物化 hidden synthetic shell 并发布 `PARAMETER_DEFAULT_INIT` context；`FrontendLoweringBuildCfgPass` / `FrontendLoweringBodyInsnPass` 按 `buildPropertyInitializer()` 同构范式消费该 kind。
+- **（步骤 3 已解除）** `FrontendCompileCheckAnalyzer` 的 compile surface 曾只 walk callable body；现 `walkCallableBody` 必须重扫已接受的参数默认表达式根（§4.3）。
+- **（仍然有效）** lambda 参数创建（preparation pass）恒写 `null` default metadata；lambda 参数默认值维持 fail-closed（见 §3.4）。
+- **（步骤 1 已解除）** `_default_` 前缀已列入 compiler-owned 保留前缀（`FrontendSyntheticPropertyHelperSupport.RESERVED_PREFIXES`），用户成员撞名由 skeleton 诊断。
 
 ---
 
@@ -271,13 +273,13 @@
   - `FrontendCompileCheckAnalyzer.walkCallableBody(...)` 对已接受默认根显式 `walkExpression()`（§4.3）；同步修订 `frontend_rules.md` 与 `frontend_compile_check_analyzer_implementation.md` 对应条款。
   - 验收：含合法默认值的模块通过 compile gate；纯字面量默认（无 call facts）同样被扫描；默认表达式内含 failed call 的模块在 compile surface 产生恰好一条诊断且不进入 lowering；`FrontendCompileCheckAnalyzerTest`（923-969、1575-1601、2335-2364）锚点更新。
   - 附带修复：`FrontendSuiteResolverStageTestSupport` 的 `OwnerProcedures` 包装补上 `runParameterDefaultExprType` 委派（接口默认为 no-op，否则 prepared-input 路径下默认值 island 永不发布表达式类型，所有默认被误拒）。
-- [ ] **步骤 4：preparation pass 物化 synthetic shell**
+- [x] **步骤 4：preparation pass 物化 synthetic shell**（2026-09-03 完成）
   - 按 §5.2 追加 shell + 发布 `PARAMETER_DEFAULT_INIT` context；扩展 shell-only 合同与名字一致性 fail-fast。
   - 验收：pre-pass 产物中每个带 `defaultValueFunc` 的参数存在同名 hidden shell——static 方法的 shell 无参且 static；instance 方法的 shell 非 static 且首参为 `self`（owning class 类型）；context 的 `sourceOwner`/`loweringRoot` 形状满足冻结合同；`FrontendLoweringFunctionPreparationPassTest`（322-380 形状锚点保持、866-900 转正）。
-- [ ] **步骤 5：CFG pass 支持 `PARAMETER_DEFAULT_INIT`**
+- [x] **步骤 5：CFG pass 支持 `PARAMETER_DEFAULT_INIT`**（2026-09-03 完成）
   - 按 §5.3 复用 `buildPropertyInitializer()` 范式。
   - 验收：默认表达式生成正确 value producer 与 RETURN stop；instance 默认表达式含 `self` / `self.x` / 裸实例方法调用时 CFG 有对应 self 读与成员/调用 value producer，static 方法的 shell CFG 无 self；`FrontendLoweringBuildCfgPassTest`（365-401 转正）。
-- [ ] **步骤 6：body lowering 支持 `PARAMETER_DEFAULT_INIT`**
+- [x] **步骤 6：body lowering 支持 `PARAMETER_DEFAULT_INIT`**（2026-09-03 完成）
   - 按 §5.3 复用 return-stop lowering 发射 `ReturnInsn`。
   - 验收：synthetic function 的 LIR body 含表达式求值与 return；instance flavor 的 `self` 引用正确读 synthetic 的 `self` 参数槽（`declareSelfSlotIfNeeded` 路径），static flavor 无 `self` 槽；`FrontendLoweringBodyInsnPassTest`（9979-10016 转正）。
 - [ ] **步骤 7：backend 接线验证、bind 隔离与端到端**
