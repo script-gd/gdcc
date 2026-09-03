@@ -3,12 +3,15 @@ package gd.script.gdcc.frontend.sema.analyzer;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Expression;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendInterfaceSurface;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.scope.ClassRegistry;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
 import java.util.Set;
@@ -76,6 +79,20 @@ final class FrontendSuiteResolverStageTestSupport {
             public void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
                 if (checkedStages.contains(FrontendSemanticStage.EXPR_TYPE)) {
                     delegate.runExprType(context, root);
+                }
+            }
+
+            // The interface default is a no-op; without this delegation the parameter-default
+            // island never publishes expression types in prepared inputs and every default is
+            // wrongly rejected upstream.
+            @Override
+            public void runParameterDefaultExprType(
+                    @NotNull FrontendSuiteContext context,
+                    @NotNull Expression defaultRoot,
+                    @Nullable GdType expectedType
+            ) {
+                if (checkedStages.contains(FrontendSemanticStage.EXPR_TYPE)) {
+                    delegate.runParameterDefaultExprType(context, defaultRoot, expectedType);
                 }
             }
 

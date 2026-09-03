@@ -96,14 +96,15 @@ compile gate 当前只扫描未来 lowering 会实际消费的 surface：
 
 - supported executable body
 - supported property initializer island
+- 已接受 parameter default 表达式根（`walkCallableBody(...)` 中对每个 `parameter.defaultValue() != null` 且已发布 `expressionTypes` 的根显式 `walkExpression()`；纯字面量默认没有 call facts，`resolvedCalls` 不是必需条件）
 
-compile gate 可以沿 callable body 和支持岛 property initializer 继续递归表达式子树，并据此建立 compile anchor。对 property initializer 而言，这条 compile surface 的 downstream 已经固定为 `PROPERTY_INIT` CFG/body lowering 与真实 `init_func` helper materialization，而不是停留在 shell-only scaffold。
+compile gate 可以沿 callable body、支持岛 property initializer 与已接受 parameter default 根继续递归表达式子树，并据此建立 compile anchor。对 property initializer 而言，这条 compile surface 的 downstream 已经固定为 `PROPERTY_INIT` CFG/body lowering 与真实 `init_func` helper materialization，而不是停留在 shell-only scaffold。parameter default 根的 downstream 是 `PARAMETER_DEFAULT_INIT` synthetic shell lowering（见 `frontend_parameter_default_plan.md` §5.2/§5.3）。
 
 ### 2.2 当前显式跳过的区域
 
 以下区域继续保留 upstream owner，不被 compile gate 重新深入：
 
-- parameter default
+- 被参数默认值 sweep 拒绝的 parameter default 子树（从未发布 facts 的根结构性跳过；子树 range 跨度内已存在阻断性上游诊断的根同样整体跳过——无论拒绝锚在根、内层 step 还是 await/容器包装根，该 island 一律视为 upstream-owned，不再 walk，避免静默 BLOCKED 内层或包装根失败事实在其它 range 上被重复包装）
 - 未记录 lambda（property initializer / parameter default / skipped subtree 中缺 published `FrontendLambdaPlan` 的 `LambdaExpression`）
 - block-local `const`
 - missing-scope / skipped subtree

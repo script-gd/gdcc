@@ -171,7 +171,7 @@
 ### 4.3 compile surface
 
 - `FrontendCompileCheckAnalyzer` 在 `walkCallableBody(...)` 中对每个**已接受**的参数默认表达式根显式 `walkExpression()`，重扫其 published facts（exprTypes 及存在的 bindings / resolvedCalls 均为 lowering-ready）。
-- **“已接受”谓词**：compile gate 只消费已发布 facts、不回读 LIR 元数据——对 `parameter.defaultValue() != null` 且该根已存在 published `expressionTypes` 的参数执行 walk（`resolvedCalls` 可选——纯字面量默认没有 call facts，不得把它当必需条件）；被 §4.1 拒绝的根（无 published facts，已有上游诊断）不进入 compile surface，不重复包装。compile visitor 当前拿不到 class skeleton，**不得**按 name/static/arity 反查 `LirParameterDef`。
+- **“已接受”谓词**：compile gate 只消费已发布 facts、不回读 LIR 元数据——对 `parameter.defaultValue() != null` 且该根已存在 published `expressionTypes`、且默认根 range 跨度内无任何阻断性上游诊断的参数执行 walk（`resolvedCalls` 可选——纯字面量默认没有 call facts，不得把它当必需条件）；被 §4.1 拒绝的根（无 published facts，或 island 已在子树内发出诊断）不进入 compile surface，不重复包装。compile visitor 当前拿不到 class skeleton，**不得**按 name/static/arity 反查 `LirParameterDef`。
 - 同步修订 `frontend_rules.md` 中“compile gate 不得重新深入 parameter default”的条款为“compile gate 必须重扫已接受的 parameter default 根”，以及 `frontend_compile_check_analyzer_implementation.md` 对应章节。
 
 ### 4.4 类型检查
@@ -267,9 +267,10 @@
   - `FrontendTypeCheckAnalyzer`：按 §4.4 增加默认值类型兼容 hook。
   - 同步修订 `frontend_visible_value_resolver_implementation.md` 与 `frontend_resolution_pipeline_implementation.md` §4.8/R8（登记新 owner）。
   - 验收：`f(a, b = 5)` / `f(a, b = Vector2(1, 2))` / `f(a, b = make_default())`（static utility）的默认表达式获得完整 bindings/exprTypes/resolvedCalls 且参数携带 `defaultValueFunc`；**交叉缺省调用** `func g(x = f(1))`（`f` 带默认值）正路径通过；**instance 方法的 `b = self.x` / `b = self` / `b = inst_method()` 正路径**（self 正常绑定、实例成员正常解析）；`f(a: Array[int] = [1, 2])` 的容器字面量按参数声明类型获得 expected type；`b = a`、`b = x`（local）、`await`、`$Child`、static 方法中的 `b = self.x` 负路径各自恰好一条 `sema.unsupported_parameter_default_expression` 且参数回收为无默认值；`static var a = 1` + `func f(a, b = a)` 必须诊断参数引用而**不得**绑到外层 static 属性（§4.2 停在本层）；`func f(a = 1, b)` / `func f(...args = 1)` 恰好一条顺序诊断且违规参数无 `defaultValueFunc`；同名兄弟函数（static+instance 对、同 static 位 overload、兄弟无默认值）下带默认值函数的每个结构合法默认参数恰好一条 `sema.unsupported_parameter_default_expression` 且无 `defaultValueFunc`（结构违规参数只携带顺序诊断）；static 函数默认值合成名恒为 `_default_s_<func>$<param>`；sweep 跳过 `_init` / constructor / lambda；默认值分析失败时同模块 `f(x)` 调用报 too-few（验证 §4.1 后果闭包）；类型不兼容默认值保留 `defaultValueFunc` 并发恰好一条赋值兼容诊断；`FrontendVisibleValueResolverTest`（387-409）、`FrontendSemanticAnalyzerFrameworkTest`（386-520）等锚点更新。
-- [ ] **步骤 3：compile surface 开放**
+- [x] **步骤 3：compile surface 开放**（2026-09-03 完成）
   - `FrontendCompileCheckAnalyzer.walkCallableBody(...)` 对已接受默认根显式 `walkExpression()`（§4.3）；同步修订 `frontend_rules.md` 与 `frontend_compile_check_analyzer_implementation.md` 对应条款。
   - 验收：含合法默认值的模块通过 compile gate；纯字面量默认（无 call facts）同样被扫描；默认表达式内含 failed call 的模块在 compile surface 产生恰好一条诊断且不进入 lowering；`FrontendCompileCheckAnalyzerTest`（923-969、1575-1601、2335-2364）锚点更新。
+  - 附带修复：`FrontendSuiteResolverStageTestSupport` 的 `OwnerProcedures` 包装补上 `runParameterDefaultExprType` 委派（接口默认为 no-op，否则 prepared-input 路径下默认值 island 永不发布表达式类型，所有默认被误拒）。
 - [ ] **步骤 4：preparation pass 物化 synthetic shell**
   - 按 §5.2 追加 shell + 发布 `PARAMETER_DEFAULT_INIT` context；扩展 shell-only 合同与名字一致性 fail-fast。
   - 验收：pre-pass 产物中每个带 `defaultValueFunc` 的参数存在同名 hidden shell——static 方法的 shell 无参且 static；instance 方法的 shell 非 static 且首参为 `self`（owning class 类型）；context 的 `sourceOwner`/`loweringRoot` 形状满足冻结合同；`FrontendLoweringFunctionPreparationPassTest`（322-380 形状锚点保持、866-900 转正）。

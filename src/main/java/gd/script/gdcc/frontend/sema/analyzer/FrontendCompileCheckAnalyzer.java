@@ -610,7 +610,53 @@ public class FrontendCompileCheckAnalyzer {
             if (isNotPublished(callableOwner) || isNotPublished(body)) {
                 return;
             }
+            if (callableOwner instanceof FunctionDeclaration functionDeclaration) {
+                walkAcceptedParameterDefaultRoots(functionDeclaration);
+            }
             walkSupportedExecutableBlock(body);
+        }
+
+        /// Accepted parameter default roots (the metadata-owner sweep published their facts) belong
+        /// to the compile surface: replay the ordinary expression walk so their expr/member/call
+        /// facts join the generic published-fact scan. `resolvedCalls` is deliberately not part of
+        /// the predicate: a pure literal default has no call facts. `_init`/constructor defaults are
+        /// never analyzed, so they publish nothing and stay out; lambda parameters stay fail-closed
+        /// upstream for the same reason.
+        /// Rejected roots are filtered two ways so the gate never re-wraps them: roots that were
+        /// never analyzed publish no facts, and roots whose subtree already carries a blocking
+        /// upstream diagnostic are upstream-owned — walking them would surface silently blocked or
+        /// wrapper-level failure facts at ranges (inner identifiers, remapped attribute steps,
+        /// await/container roots) that no upstream diagnostic anchors exactly. Accepted roots never
+        /// carry in-subtree blocking diagnostics, so this filter never hides a compilable default.
+        private void walkAcceptedParameterDefaultRoots(@NotNull FunctionDeclaration functionDeclaration) {
+            for (var parameter : functionDeclaration.parameters()) {
+                var defaultRoot = parameter.defaultValue();
+                if (defaultRoot != null
+                        && expressionTypes.containsKey(defaultRoot)
+                        && !hasPublishedBlockingDiagnosticWithin(defaultRoot)) {
+                    walkExpression(defaultRoot);
+                }
+            }
+        }
+
+        /// Whether any blocking upstream diagnostic already owns a range inside this subtree, which
+        /// marks the whole parameter-default island as upstream-owned regardless of where exactly
+        /// the rejection anchored (root, inner step, or wrapper operand).
+        private boolean hasPublishedBlockingDiagnosticWithin(@NotNull Node root) {
+            var rootRange = FrontendRange.fromAstRange(root.range());
+            return publishedDiagnostics.asList().stream()
+                    .filter(diagnostic -> Objects.equals(
+                            diagnostic.sourcePath(),
+                            FrontendDiagnostic.sourcePathText(sourcePath)
+                    ))
+                    .filter(diagnostic -> isCompileBlockingPublishedDiagnostic(diagnostic)
+                            && !isNonConflictingPublishedDiagnostic(diagnostic))
+                    .anyMatch(diagnostic -> {
+                        var range = diagnostic.range();
+                        return range != null
+                                && range.startByte() >= rootRange.startByte()
+                                && range.endByte() <= rootRange.endByte();
+                    });
         }
 
         /// Replay the AST walker over a flat statement list in source order.

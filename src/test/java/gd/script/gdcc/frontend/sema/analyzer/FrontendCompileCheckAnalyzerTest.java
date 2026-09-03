@@ -32,6 +32,7 @@ import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -1574,9 +1575,9 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeSkipsGenericCompileBlocksOutsideCompileSurface() throws Exception {
-        var preparedInput = prepareCompileCheckInput("compile_check_outside_surface.gd", """
-                class_name CompileCheckOutsideSurface
+    void analyzeScansAcceptedParameterDefaultRootFacts() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_param_default_surface.gd", """
+                class_name CompileCheckParamDefaultSurface
                 extends Node
                 
                 func ping(seed = 1):
@@ -1591,14 +1592,24 @@ class FrontendCompileCheckAnalyzerTest {
                 defaultLiteral,
                 FrontendExpressionType.deferred("synthetic default-value deferred expression")
         );
+        assertTrue(preparedInput.analysisData().expressionTypes().containsKey(defaultLiteral));
 
         runCompileCheck(preparedInput);
 
-        // The synthetic deferred fact sits in a parameter default, which stays outside the compile
-        // surface and is never scanned; phase I releases the recorded lambda, whose clean body
-        // contributes no blocker either.
+        // Accepted parameter default roots belong to the compile surface even without call facts:
+        // the corrupted not-ready literal fact is scanned and blocked exactly once at the literal
+        // anchor. The recorded lambda in the body stays clean and contributes nothing.
         var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
-        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
+        assertEquals(
+                FrontendRange.fromAstRange(defaultLiteral.range()),
+                compileDiagnostics.getFirst().range(),
+                compileDiagnostics::toString
+        );
+        assertTrue(
+                compileDiagnostics.getFirst().message().contains("synthetic default-value deferred expression"),
+                compileDiagnostics::toString
+        );
     }
 
     @Test
@@ -2354,17 +2365,263 @@ class FrontendCompileCheckAnalyzerTest {
         var lambda = findNode(compiled.unit().ast(), LambdaExpression.class, ignored -> true);
         var lambdaRange = FrontendRange.fromAstRange(lambda.range());
 
-        // Parameter defaults are not walked by the compile gate. An unrecorded default lambda is
-        // rejected by the parameter-default island through the existing unrecorded-lambda
-        // fail-closed path (exactly one `sema.unsupported_binding_subtree` anchored at the lambda,
-        // which is the default root); the nested get-node is not scanned and the gate does not
-        // wrap a form-level compile_check.
+        // The gate now considers the accepted-default surface, but this root was rejected by the
+        // parameter-default island through the unrecorded-lambda fail-closed path: the single
+        // `sema.unsupported_binding_subtree` already owns the lambda (default root) range, so the
+        // root-level conflict check skips the walk entirely. The nested get-node is never scanned.
         assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
         assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
         assertTrue(unsupportedDefaultDiagnostics.stream().anyMatch(diagnostic ->
                 diagnostic.range().equals(lambdaRange)
                         && diagnostic.message().contains("lambda subtree")
         ), unsupportedDefaultDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileAcceptsSupportedParameterDefaults() throws Exception {
+        var compiled = analyzeForCompile("compile_check_param_defaults_accepted.gd", """
+                class_name CompileCheckParamDefaultsAccepted
+                extends Node
+                
+                var count = 3
+                
+                func make_default():
+                    return 7
+                
+                func ping(seed = 1, at = Vector2(1, 2), copy = count, made = self.make_default()):
+                    pass
+                
+                static func pick(tag = "x"):
+                    return tag
+                """);
+
+        // Accepted defaults (literal, builtin constructor, instance member, self method call, and
+        // a static-function literal) publish lowering-ready facts, so the gate's default-root walk
+        // finds nothing to block.
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                compiled.diagnostics()::toString
+        );
+    }
+
+    @Test
+    void analyzeForCompileBlocksValuePositionCoroutineCallInParameterDefault() throws Exception {
+        var compiled = analyzeForCompile("compile_check_param_default_coroutine.gd", """
+                class_name CompileCheckParamDefaultCoroutine
+                extends Node
+                
+                signal pinged
+                
+                func make_value():
+                    await pinged
+                    return 1
+                
+                func ping(seed = make_value()):
+                    pass
+                """);
+
+        // The sweep accepts `make_value()` (the call itself resolves), but a coroutine call in a
+        // default can never be awaited, so the value-position rule blocks it exactly once at the
+        // call — a blocker only the compile gate can raise, with no upstream diagnostic involved.
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertEquals(1, compileDiagnostics.size(), compileDiagnostics::toString);
+        var defaultCall = findNode(
+                compiled.unit().ast(),
+                CallExpression.class,
+                call -> call.callee() instanceof IdentifierExpression callee && callee.name().equals("make_value")
+        );
+        assertEquals(
+                FrontendRange.fromAstRange(defaultCall.range()),
+                compileDiagnostics.getFirst().range(),
+                compileDiagnostics::toString
+        );
+        assertTrue(compileDiagnostics.getFirst().message().contains("make_value"), compileDiagnostics::toString);
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.unsupported_parameter_default_expression").isEmpty(),
+                compiled.diagnostics()::toString
+        );
+    }
+
+    @Test
+    void analyzeForCompileKeepsBlockedParameterReferenceDefaultUpstreamOwned() throws Exception {
+        var compiled = analyzeForCompile("compile_check_param_default_blocked_param.gd", """
+                class_name CompileCheckParamDefaultBlockedParam
+                extends RefCounted
+                
+                func ping(count, alias = count + 1):
+                    return alias
+                """);
+
+        // The island stays silent on the inner BLOCKED identifier (`count`) and the owner anchors
+        // the single rejection at the default root, so the gate must not walk the subtree and
+        // re-report the silently blocked inner facts at ranges no upstream diagnostic owns.
+        var ownerDiagnostics = diagnosticsByCategory(
+                compiled.diagnostics(),
+                "sema.unsupported_parameter_default_expression"
+        );
+        assertEquals(1, ownerDiagnostics.size(), compiled.diagnostics()::toString);
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                compiled.diagnostics()::toString
+        );
+    }
+
+    @Test
+    void analyzeForCompileKeepsStaticSelfDefaultUpstreamOwned() throws Exception {
+        var compiled = analyzeForCompile("compile_check_param_default_static_self.gd", """
+                class_name CompileCheckParamDefaultStaticSelf
+                extends RefCounted
+                
+                var hp = 1
+                
+                static func ping(copy = self.hp):
+                    return copy
+                """);
+
+        // Same silent-BLOCKED shape through an attribute root: `self` is invisible in a static
+        // function default and the only diagnostic is the owner's root-anchored rejection; the
+        // gate must not surface inner `self`/step facts as extra compile_check diagnostics.
+        var ownerDiagnostics = diagnosticsByCategory(
+                compiled.diagnostics(),
+                "sema.unsupported_parameter_default_expression"
+        );
+        assertEquals(1, ownerDiagnostics.size(), compiled.diagnostics()::toString);
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                compiled.diagnostics()::toString
+        );
+    }
+
+        @Test
+    void analyzeForCompileKeepsAwaitWrappedFailureDefaultUpstreamOwned() throws Exception {
+        var compiled = analyzeForCompile("compile_check_param_default_await_wrap.gd", """
+                class_name CompileCheckParamDefaultAwaitWrap
+                extends Node
+                
+                func ping(value = await self.missing_member):
+                    return value
+                """);
+
+        // The island rewrites the await root to BLOCKED while the genuine member failure owns the
+        // inner step; the owner stays silent because an island error already exists. The gate must
+        // recognize the subtree as upstream-owned and add no compile_check of its own.
+        assertEquals(
+                1,
+                diagnosticsByCategory(compiled.diagnostics(), "sema.member_resolution").size(),
+                compiled.diagnostics()::toString
+        );
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                compiled.diagnostics()::toString
+        );
+    }
+
+    @Test
+    void analyzeForCompileKeepsContainerWrappedFailureDefaultUpstreamOwned() throws Exception {
+        var compiled = analyzeForCompile("compile_check_param_default_array_wrap.gd", """
+                class_name CompileCheckParamDefaultArrayWrap
+                extends RefCounted
+                
+                func ping(values = [self.missing_member]):
+                    return values
+                """);
+
+        // Same wrapper shape through an array literal: the element's FAILED member fact owns the
+        // inner step, the propagated FAILED root carries no diagnostic of its own, and the gate
+        // must not add a second blocker at the array root range.
+        assertEquals(
+                1,
+                diagnosticsByCategory(compiled.diagnostics(), "sema.member_resolution").size(),
+                compiled.diagnostics()::toString
+        );
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                compiled.diagnostics()::toString
+        );
+    }
+
+    @Test
+    void analyzeForCompileKeepsRejectedDefaultFailureFactsUpstreamOwned() throws Exception {
+        var compiled = analyzeForCompile("compile_check_param_default_rejected.gd", """
+                class_name CompileCheckParamDefaultRejected
+                extends RefCounted
+                
+                func ping(copy = self.missing_member):
+                    return copy
+                """);
+
+        // The rejected default retains its FAILED facts, but the member-step failure already owns
+        // a range inside the default subtree, so the gate treats the whole island as
+        // upstream-owned and skips the walk instead of adding a second blocker.
+        var memberDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.member_resolution");
+        assertEquals(1, memberDiagnostics.size(), compiled.diagnostics()::toString);
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                compiled.diagnostics()::toString
+        );
+    }
+
+    @Test
+    void analyzeForCompileBlocksParameterizedConstructorDefaultViaDedicatedGuard() throws Exception {
+        var compiled = analyzeForCompile("compile_check_param_default_ctor.gd", """
+                class_name CompileCheckParamDefaultCtor
+                extends RefCounted
+                
+                class Worker:
+                    func _init(value: int):
+                        pass
+                
+                func build(worker = Worker.new(1)):
+                    pass
+                """);
+
+        // A parameterized GDCC constructor default fails upstream resolution and stays
+        // fail-closed; the dedicated constructor regression guard (surface-independent, dedup
+        // skipped) still raises its single compile_check at the call step, matching the
+        // executable-body route behavior.
+        var callDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.call_resolution");
+        var typeCheckDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.type_check");
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        assertEquals(1, callDiagnostics.size(), compiled.diagnostics()::toString);
+        assertEquals(1, typeCheckDiagnostics.size(), compiled.diagnostics()::toString);
+        assertEquals(1, compileDiagnostics.size(), compiled.diagnostics()::toString);
+        assertTrue(
+                compileDiagnostics.getFirst().message().contains("supports only zero-argument custom object construction"),
+                compileDiagnostics::toString
+        );
+    }
+
+    @Test
+    void analyzeForCompileSkipsConstructorParameterDefaults() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_init_default.gd", """
+                class_name CompileCheckInitDefault
+                extends RefCounted
+                
+                func _init(seed = 1):
+                    pass
+                """);
+        var initConstructor = findNode(
+                preparedInput.unit().ast(),
+                ConstructorDeclaration.class,
+                ignored -> true
+        );
+        var defaultLiteral = Objects.requireNonNull(initConstructor.parameters().getFirst().defaultValue());
+
+        // `_init` defaults stay permanently unsupported: the sweep never analyzes them, so no
+        // expression facts exist for the default root and the gate's accepted-default walk skips
+        // it structurally; the existing rejection chain owns the diagnostics.
+        assertNull(preparedInput.analysisData().expressionTypes().get(defaultLiteral));
+
+        runCompileCheck(preparedInput);
+
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+        assertFalse(
+                diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.type_check").isEmpty(),
+                preparedInput.analysisData().diagnostics()::toString
+        );
     }
 
     @Test
