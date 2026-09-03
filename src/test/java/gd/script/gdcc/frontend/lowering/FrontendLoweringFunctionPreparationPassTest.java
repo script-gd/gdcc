@@ -864,7 +864,7 @@ class FrontendLoweringFunctionPreparationPassTest {
     }
 
     @Test
-    void lowerParameterDefaultModuleStopsBeforePreparationPublicationAndKeepsUnsupportedDiagnostic() throws Exception {
+    void lowerParameterDefaultModulePassesSemanticsWithoutShellMaterialization() throws Exception {
         var continuationRan = new AtomicBoolean();
         var diagnostics = new DiagnosticManager();
         var lowered = new FrontendLoweringPassManager(List.of(
@@ -890,13 +890,26 @@ class FrontendLoweringFunctionPreparationPassTest {
                 diagnostics
         );
 
-        assertFalse(continuationRan.get());
-        assertTrue(diagnostics.hasErrors());
-        assertNull(lowered);
-        assertTrue(diagnostics.snapshot().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.unsupported_parameter_default_value")
-                        && diagnostic.message().contains("Parameter default value")
-        ));
+        // Semantics accept the parameter default (the metadata owner publishes
+        // `_default_ping$seed` on the parameter), so lowering proceeds. Synthetic shell
+        // materialization is a later pipeline step: no `_default_` function exists yet.
+        assertTrue(continuationRan.get());
+        assertFalse(diagnostics.hasErrors(), diagnostics.snapshot()::toString);
+        assertNotNull(lowered);
+        var classDef = lowered.getClassDefs().stream()
+                .filter(candidate -> candidate.getName().equals("PreparationBlockedParameterDefault"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("class not found"));
+        var ping = classDef.getFunctions().stream()
+                .filter(function -> function.getName().equals("ping"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("ping function not found"));
+        assertEquals(
+                "_default_ping$seed",
+                ping.getParameter("seed").getDefaultValueFunc()
+        );
+        assertTrue(classDef.getFunctions().stream()
+                .noneMatch(function -> function.getName().startsWith("_default_")));
     }
 
     @Test

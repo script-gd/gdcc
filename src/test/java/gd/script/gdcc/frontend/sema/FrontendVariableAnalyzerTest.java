@@ -247,7 +247,7 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
-    void analyzeWarnsForDefaultValuesButStillBindsParameters() throws Exception {
+    void analyzeAcceptsSourceFunctionDefaultValuesAndStillBindsParameters() throws Exception {
         var phaseInput = publishedPhaseInput("phase3_parameter_default.gd", """
                 class_name ParameterDefaultWarning
                 extends Node
@@ -266,20 +266,11 @@ class FrontendVariableAnalyzerTest {
 
         new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
 
+        // Source-function parameter defaults are no longer fail-closed at inventory time: the
+        // parameter-default metadata owner analyzes the default expression during the suite
+        // phase, so this analyzer only registers the parameter bindings.
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
-        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
-        var error = newDiagnostics.getFirst();
-
-        assertEquals(1, newDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
-        assertEquals("sema.unsupported_parameter_default_value", error.category());
-        assertTrue(error.message().contains("not supported"));
-        assertTrue(error.message().contains("ignores the default value expression"));
-        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), error.sourcePath());
-        assertEquals(
-                FrontendRange.fromAstRange(pingFunction.parameters().getLast().defaultValue().range()),
-                error.range()
-        );
+        assertEquals(0, newDiagnostics(diagnosticsBefore, diagnosticsAfter).size());
 
         var valueBinding = pingScope.resolveValue("value");
         assertNotNull(valueBinding);
@@ -287,6 +278,53 @@ class FrontendVariableAnalyzerTest {
         var aliasBinding = pingScope.resolveValue("alias");
         assertNotNull(aliasBinding);
         assertEquals(GdVariantType.VARIANT, aliasBinding.type());
+    }
+
+    @Test
+    void analyzeKeepsLambdaParameterDefaultValuesFailClosed() throws Exception {
+        var phaseInput = publishedPhaseInput("phase3_lambda_parameter_default.gd", """
+                class_name LambdaParameterDefaultFailClosed
+                extends Node
+                
+                func ping():
+                    var cb = func(item = 1):
+                        pass
+                """);
+        var sourceFile = phaseInput.unit().ast();
+        var pingFunction = findStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var cbDeclaration = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("cb")
+        );
+        var cbLambda = assertInstanceOf(LambdaExpression.class, cbDeclaration.value());
+        var lambdaScope = assertInstanceOf(CallableScope.class, phaseInput.analysisData().scopesByAst().get(cbLambda));
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        // Lambda parameter defaults stay fail-closed: exactly one diagnostic anchored at the
+        // default expression, and the lambda parameter itself is still registered.
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
+        assertEquals(1, newDiagnostics.size());
+        var error = newDiagnostics.getFirst();
+        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
+        assertEquals("sema.unsupported_parameter_default_value", error.category());
+        assertTrue(error.message().contains("not supported"));
+        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), error.sourcePath());
+        assertEquals(
+                FrontendRange.fromAstRange(cbLambda.parameters().getFirst().defaultValue().range()),
+                error.range()
+        );
+
+        var itemBinding = lambdaScope.resolveValue("item");
+        assertNotNull(itemBinding);
+        assertEquals(GdVariantType.VARIANT, itemBinding.type());
     }
 
     @Test

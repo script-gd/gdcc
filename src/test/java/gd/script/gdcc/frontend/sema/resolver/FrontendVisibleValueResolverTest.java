@@ -54,7 +54,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("visible_parameter.gd", """
                 class_name VisibleParameter
                 extends Node
-
+                
                 func ping(value: int):
                     print(value)
                 """);
@@ -81,7 +81,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("shadow_global_enum_value.gd", """
                 class_name ShadowGlobalEnumValue
                 extends Node
-
+                
                 func ping():
                     var TYPE_NIL = 5
                     return TYPE_NIL
@@ -124,7 +124,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("future_local_not_found.gd", """
                 class_name FutureLocalNotFound
                 extends Node
-
+                
                 func ping():
                     print(count)
                     var count := 1
@@ -154,7 +154,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("future_local_index.gd", """
                 class_name FutureLocalIndex
                 extends Node
-
+                
                 func ping():
                     print(count)
                     var count := 1
@@ -213,7 +213,7 @@ class FrontendVisibleValueResolverTest {
         var visibleInput = analyzedInput("visible_overlay_local.gd", """
                 class_name VisibleOverlayLocal
                 extends Node
-
+                
                 func ping():
                     var count
                     print(count)
@@ -252,7 +252,7 @@ class FrontendVisibleValueResolverTest {
         var futureInput = analyzedInput("future_overlay_local.gd", """
                 class_name FutureOverlayLocal
                 extends Node
-
+                
                 func ping():
                     print(later)
                     var later
@@ -602,7 +602,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("for_body_outer_parameter.gd", """
                 class_name ForBodyOuterParameter
                 extends Node
-
+                
                 func ping(values, seed):
                     for item in values:
                         print(seed)
@@ -785,7 +785,7 @@ class FrontendVisibleValueResolverTest {
     }
 
     @Test
-    void resolveRejectsUnsupportedRequestDomainBeforeLookup() throws Exception {
+    void resolveParameterDefaultDomainStopsCallableLocalHitsAtCurrentLayer() throws Exception {
         var analyzedInput = analyzedInput("unsupported_request_domain.gd", """
                 class_name UnsupportedRequestDomain
                 extends Node
@@ -796,18 +796,58 @@ class FrontendVisibleValueResolverTest {
         var useSite = findIdentifierExpression(analyzedInput.unit().ast(), "value");
         var resolver = new FrontendVisibleValueResolver(analyzedInput.analysisData());
 
+        // The parameter-default island domain resolves through the ordinary layer walk, but a
+        // callable-local hit (parameter/capture/local) stops blocked at the current layer instead
+        // of falling through to an outer same-name binding.
         var result = resolver.resolve(new FrontendVisibleValueResolveRequest(
                 "value",
                 useSite,
                 FrontendVisibleValueDomain.PARAMETER_DEFAULT
         ));
 
-        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
-        assertEquals(FrontendVisibleValueDomain.PARAMETER_DEFAULT, result.deferredBoundary().domain());
+        assertEquals(FrontendVisibleValueStatus.FOUND_BLOCKED, result.status());
+        assertEquals(ScopeValueKind.PARAMETER, result.visibleValue().kind());
+
+        // Other non-executable domains still reject before any lookup happens.
+        var lambdaDomainResult = resolver.resolve(new FrontendVisibleValueResolveRequest(
+                "value",
+                useSite,
+                FrontendVisibleValueDomain.LAMBDA_SUBTREE
+        ));
+        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, lambdaDomainResult.status());
+        assertEquals(FrontendVisibleValueDomain.LAMBDA_SUBTREE, lambdaDomainResult.deferredBoundary().domain());
         assertEquals(
                 FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
-                result.deferredBoundary().reason()
+                lambdaDomainResult.deferredBoundary().reason()
         );
+    }
+
+    @Test
+    void resolveParameterDefaultDomainStopsCaptureHitsAtCurrentLayer() throws Exception {
+        var analyzedInput = analyzedInput("parameter_default_capture_stop.gd", """
+                class_name ParameterDefaultCaptureStop
+                extends Node
+                
+                func ping(seed: int):
+                    var f = func():
+                        return seed
+                """);
+        var pingFunction = findFunction(analyzedInput.unit().ast(), "ping");
+        var lambda = findLambdaExpression(pingFunction.body());
+        var useSite = findIdentifierExpression(lambda.body(), "seed");
+        var resolver = new FrontendVisibleValueResolver(analyzedInput.analysisData());
+
+        // Inside the parameter-default island a capture hit stops blocked at the lambda's own
+        // layer instead of being allowed or falling through to an outer same-name binding.
+        var result = resolver.resolve(new FrontendVisibleValueResolveRequest(
+                "seed",
+                useSite,
+                FrontendVisibleValueDomain.PARAMETER_DEFAULT
+        ));
+
+        assertEquals(FrontendVisibleValueStatus.FOUND_BLOCKED, result.status());
+        assertNotNull(result.visibleValue());
+        assertEquals(ScopeValueKind.CAPTURE, result.visibleValue().kind());
     }
 
     @Test

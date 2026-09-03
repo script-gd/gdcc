@@ -68,6 +68,7 @@
 Owner 边界是语义合同：
 
 - `FrontendVariableAnalyzer` 拥有 parameter / ordinary local inventory publication。
+- `FrontendParameterDefaultMetadataOwner` 拥有 source function 参数默认表达式的语义分析与 `LirParameterDef.defaultValueFunc` 元数据的唯一写入/回收权（三阶段 sweep：结构校验 → 占位写入 → island 分析 → 失败回收）；skeleton 恒写 `null`，其余组件不得改写该元数据（`frontend_parameter_default_plan.md` §4.1）。
 - `FrontendTopBindingAnalyzer` 拥有 `symbolBindings()`。
 - `FrontendLocalTypeStabilizationAnalyzer` 只拥有 source-facing local `:=` slot rewrite，不拥有 diagnostics，不发布 `resolvedMembers()` / `resolvedCalls()` / `expressionTypes()` / `slotTypes()`。
 - `FrontendChainBindingAnalyzer` 拥有 `resolvedMembers()` 与 chain-owned `resolvedCalls()`。
@@ -212,7 +213,7 @@ Body 层：
 
 ### 4.3 Body `SuiteResolver`
 
-`FrontendSuiteResolver` 按 Godot `resolve_suite()` 的形状处理 body：
+`FrontendSuiteResolver` 按 Godot `resolve_suite()` 的形状处理 body。进入任何 callable body / property initializer 之前，`FrontendParameterDefaultMetadataOwner` 先执行一次模块级 parameter-default sweep（结构校验 → 占位写入 → island 分析 → 失败回收），因此 body 调用点的 arity 检查只读已定案的 `defaultValueFunc` 元数据：
 
 ```text
 resolveCallableOwner(context, callableOwner):
@@ -227,6 +228,8 @@ resolveSuite(context, block):
       resolveStatement(context, statement)
   context.exportBatch().accumulate(context.typedEnvironment().exportPatchTransaction())
 ```
+
+Parameter-default island 不经过 `resolveSuite()`：它由 `FrontendStatementResolver.resolveParameterDefault(...)` 以独立 expression root 驱动同一组 owner 子过程（top binding → chain binding → expr typing，携带参数 slot 类型作为 expected type），复用同一套 AST-identity side tables，且不经过 `FrontendBodyStructuralCompleteness`。
 
 参数是 callable-entry `VAR_TYPE_POST` facts，在进入 statement 循环前写入 pending overlay 并 flush 到 current-suite committed overlay。
 
@@ -338,9 +341,9 @@ Per-owner patch merge 规则：
 
 三道结构检查：
 
-1. Request-domain hard boundary：`EXECUTABLE_BODY` 才进入 ordinary lookup。
-2. AST boundary：parameter default 与 block-local `const` initializer 直接返回 structural deferred boundary；`ForStatement.body()`、iterator type 与 iterable edge 不封口。已记录 lambda 的 AST 边不再封口。`MatchSection` pattern / guard / body 边不再封口。
-3. Current-scope backstop：`FOR_BODY`、`MATCH_SECTION_BODY` 与已记录 lambda 的 `LAMBDA_BODY` / `LAMBDA_EXPRESSION` 是 supported executable scope。未记录 lambda 保持 fail-closed。
+1. Request-domain hard boundary：`EXECUTABLE_BODY` 与 `PARAMETER_DEFAULT` 进入 ordinary lookup；后者是 parameter-default island 的显式 domain，且在逐层 lookup 中 parameter / capture / local 命中停在本层（`FOUND_BLOCKED`），禁止外层 fallback（`frontend_visible_value_resolver_implementation.md` §5 规则 9）。
+2. AST boundary：`Parameter.defaultValue` 边仅对非 `PARAMETER_DEFAULT` 请求返回 structural deferred boundary（island 请求穿越自己的根边）；block-local `const` initializer 仍直接 deferred；`ForStatement.body()`、iterator type 与 iterable edge 不封口。已记录 lambda 的 AST 边不再封口。`MatchSection` pattern / guard / body 边不再封口。
+3. Current-scope backstop：`FOR_BODY`、`MATCH_SECTION_BODY` 与已记录 lambda 的 `LAMBDA_BODY` / `LAMBDA_EXPRESSION` 是 supported executable scope。未记录 lambda 保持 fail-closed（默认表达式内的 lambda 值也走该 fail-closed 路径）。
 
 Overlay 不得绕过 resolver filter：resolver 先按 request-domain gate、AST boundary、current-scope gate、declaration order 与 initializer self-reference 过滤候选 declaration，再从 `TypedLexicalEnvironment` 读取该候选的 effective type / binding payload。
 
@@ -378,7 +381,7 @@ interface phase、body statement、suite export、diagnostics-only phase 都有�
 
 ### R8：unsupported subtree 被过早打开
 
-support matrix 对 match、block-local `const`、parameter default 和 unknown/skipped structure 显式返回各自 deferred domain；已记录 lambda 走 `EXECUTABLE_BODY` policy。新增 scope/AST kind 必须通过 exhaustive mapping 显式选择 policy。
+support matrix 对 match、block-local `const` 和 unknown/skipped structure 显式返回各自 deferred domain；已记录 lambda 走 `EXECUTABLE_BODY` policy；parameter default 不再是 structural deferred boundary，而是经 `FrontendParameterDefaultMetadataOwner` 的受限 `PARAMETER_DEFAULT` island 转正（可见性限制由 resolver 停层规则与 island 专用诊断通道承载）。新增 scope/AST kind 必须通过 exhaustive mapping 显式选择 policy。
 
 ### R9：compiler-only type 泄漏
 

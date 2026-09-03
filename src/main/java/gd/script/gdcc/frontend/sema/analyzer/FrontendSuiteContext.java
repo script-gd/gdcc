@@ -6,7 +6,6 @@ import dev.superice.gdparser.frontend.ast.Node;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
-import gd.script.gdcc.frontend.sema.FrontendBodySemanticSupportPolicy;
 import gd.script.gdcc.frontend.sema.FrontendInterfaceSurface;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
@@ -32,6 +31,10 @@ import java.util.Objects;
 ///
 /// `currentCallableReturnType` is frozen at callable-root creation and threaded through child
 /// blocks so return-value expected typing does not re-query a second skeleton path.
+///
+/// `visibleValueDomain` is explicit instead of derived from `currentBlockRoot`: expression-rooted
+/// islands (parameter defaults) carry no block root, and a null-block fallback would misclassify
+/// them as `EXECUTABLE_BODY`.
 public record FrontendSuiteContext(
         @NotNull Path sourcePath,
         @NotNull Node callableOwner,
@@ -48,7 +51,8 @@ public record FrontendSuiteContext(
         @NotNull ClassRegistry classRegistry,
         @Nullable FrontendCallableExportBatch exportBatch,
         @Nullable GdType currentCallableReturnType,
-        @Nullable NestedLambdaResolver nestedLambdaResolver
+        @Nullable NestedLambdaResolver nestedLambdaResolver,
+        @NotNull FrontendVisibleValueDomain visibleValueDomain
 ) {
     public FrontendSuiteContext {
         Objects.requireNonNull(sourcePath, "sourcePath must not be null");
@@ -60,6 +64,7 @@ public record FrontendSuiteContext(
         Objects.requireNonNull(analysisData, "analysisData must not be null");
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
+        Objects.requireNonNull(visibleValueDomain, "visibleValueDomain must not be null");
     }
 
     public @NotNull FrontendSuiteContext withChildBlock(@NotNull Block block, @NotNull BlockScope blockScope) {
@@ -85,7 +90,8 @@ public record FrontendSuiteContext(
                 classRegistry,
                 exportBatch,
                 currentCallableReturnType,
-                nestedLambdaResolver
+                nestedLambdaResolver,
+                visibleValueDomain
         );
     }
 
@@ -93,14 +99,15 @@ public record FrontendSuiteContext(
             @NotNull String name,
             @NotNull Node useSite
     ) {
-        return new FrontendVisibleValueResolveRequest(name, useSite, restriction, visibleValueDomainForCurrentBody());
+        return new FrontendVisibleValueResolveRequest(name, useSite, restriction, visibleValueDomain);
     }
 
-    private @NotNull FrontendVisibleValueDomain visibleValueDomainForCurrentBody() {
-        if (currentBlockRoot == null || currentBlockScope == null) {
-            return FrontendVisibleValueDomain.EXECUTABLE_BODY;
-        }
-        return FrontendBodySemanticSupportPolicy.forBlockScopeKind(currentBlockScope.kind()).visibleValueDomain();
+    /// True only inside the parameter-default island context built by
+    /// `FrontendParameterDefaultMetadataOwner`; used to funnel visibility violations
+    /// (parameter/local/capture hits, `self` under static restriction, await, get-node) into the
+    /// owner's single anchored diagnostic instead of ordinary body diagnostics.
+    public boolean isParameterDefaultIsland() {
+        return visibleValueDomain == FrontendVisibleValueDomain.PARAMETER_DEFAULT;
     }
 
     /// Triggers the nested suite resolution of a recorded lambda encountered by an enclosing

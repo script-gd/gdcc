@@ -591,7 +591,14 @@ public class FrontendVariableAnalyzer {
 
         private void bindParameter(@NotNull Parameter parameter) {
             var parameterName = parameter.name().trim();
-            reportUnsupportedDefaultValue(parameter);
+            // Lambda parameter defaults stay fail-closed here. Source function defaults are no
+            // longer reported: their expressions are analyzed by the parameter-default metadata
+            // owner during the suite phase. Constructor/parameterized `_init` defaults stay
+            // permanently unsupported on the existing suite rejection path and never enter the
+            // owner's sweep.
+            if (currentCallableOwner instanceof LambdaExpression) {
+                reportUnsupportedDefaultValue(parameter);
+            }
 
             var targetScope = scopesByAst.get(parameter);
             if (targetScope == null) {

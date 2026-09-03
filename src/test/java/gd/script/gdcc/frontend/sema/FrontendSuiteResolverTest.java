@@ -32,6 +32,7 @@ import gd.script.gdcc.frontend.sema.analyzer.FrontendStatementResolver;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteContext;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteResolver;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
+import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
 import gd.script.gdcc.frontend.sema.patch.FrontendVarTypePostPatch;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -1965,7 +1966,8 @@ class FrontendSuiteResolverTest {
                 phaseInput.registry(),
                 null,
                 null,
-                null
+                null,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
         );
     }
 

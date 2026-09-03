@@ -964,8 +964,9 @@ class FrontendCompileCheckAnalyzerTest {
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
         );
-        // parameter default + block-local const stay fail-closed; match no longer contributes.
-        assertEquals(2, unsupportedBindingDiagnostics.size(), unsupportedBindingDiagnostics::toString);
+        // Block-local const stays fail-closed; the parameter default is now analyzed and accepted
+        // by the parameter-default island, and the ready match route contributes nothing.
+        assertEquals(1, unsupportedBindingDiagnostics.size(), unsupportedBindingDiagnostics::toString);
     }
 
     @Test
@@ -2348,18 +2349,21 @@ class FrontendCompileCheckAnalyzerTest {
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         var unsupportedDefaultDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
-                "sema.unsupported_parameter_default_value"
+                "sema.unsupported_binding_subtree"
         );
         var lambda = findNode(compiled.unit().ast(), LambdaExpression.class, ignored -> true);
         var lambdaRange = FrontendRange.fromAstRange(lambda.range());
 
-        // Parameter defaults are not walked by the compile gate. An unrecorded default lambda must
-        // stay off the surface: compile still fails through the upstream default-value owner, the
-        // nested get-node is not scanned, and the gate does not wrap a form-level compile_check.
+        // Parameter defaults are not walked by the compile gate. An unrecorded default lambda is
+        // rejected by the parameter-default island through the existing unrecorded-lambda
+        // fail-closed path (exactly one `sema.unsupported_binding_subtree` anchored at the lambda,
+        // which is the default root); the nested get-node is not scanned and the gate does not
+        // wrap a form-level compile_check.
         assertTrue(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
         assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
         assertTrue(unsupportedDefaultDiagnostics.stream().anyMatch(diagnostic ->
                 diagnostic.range().equals(lambdaRange)
+                        && diagnostic.message().contains("lambda subtree")
         ), unsupportedDefaultDiagnostics::toString);
     }
 

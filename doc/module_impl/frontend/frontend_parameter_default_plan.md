@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：计划维护中（已经过 review-expert-a 多轮审阅修订，全部发现闭合；constructor 默认值确认为 GDExtension 内在限制、永久非目标）
+- 状态：计划维护中（已经过 review-expert-a 多轮审阅修订，全部发现闭合；constructor 默认值确认为 GDExtension 内在限制、永久非目标；步骤 1-2 已完成落地）
 - 更新时间：2026-09-02
 - 适用范围：GDScript source function（instance / static）声明的参数默认值；覆盖 frontend sema、lowering 与 backend 接线。
 - 关联文档：
@@ -140,7 +140,7 @@
 
 **触发时机与范围**：body 阶段、任何 callable body 解析开始**之前**统一执行三阶段 sweep。sweep **只**处理非 `_init` 的 `FunctionDeclaration`——`ConstructorDeclaration`、名为 `_init` 的函数、`LambdaExpression` 一律跳过（lambda 参数默认值维持现有 unsupported 诊断；有参 `_init` 维持既有拒绝路径；lambda 在 suite 阶段尚无 `LirFunctionDef`，对其改写参数元数据会 fail-fast）：
 
-1. **结构校验与占位**：先做 §2.1 顺序规则校验（默认值后缀连续性、variadic 无默认值），违规参数发 `sema.invalid_parameter_default_order` 且永不进入后续阶段。对结构合法且 `defaultValue() != null` 的参数，立即通过 `LirFunctionDef.removeParameter(index)` + `addParameter(index, new LirParameterDef(name, type, "_default_<func>$<param>", functionDef))` 成对原地改写，写入确定性 synthetic 名（此时默认表达式尚未分析）。
+1. **结构校验与占位**：先做 §2.1 顺序规则校验（默认值后缀连续性、variadic 无默认值），违规参数发 `sema.invalid_parameter_default_order` 且永不进入后续阶段。对结构合法且 `defaultValue() != null` 的参数，立即通过 `LirFunctionDef.removeParameter(index)` + `addParameter(index, new LirParameterDef(name, type, "<_default_ 或 _default_s_><func>$<param>", functionDef))` 成对原地改写，写入确定性 synthetic 名（此时默认表达式尚未分析）。**同名兄弟函数 fail-closed 前置**：若类内存在同名（任意 static 位/arity）兄弟函数，该函数的每个**结构合法**默认参数直接发 `sema.unsupported_parameter_default_expression`（锚定默认表达式根）并整体跳过占位写入与 island 分析；结构违规参数仍只携带 §2.1 顺序诊断，不重复发同名诊断。
 2. **island 语义分析**：逐个默认表达式根按 §4.2 的 island 设计做 chain/expr 分析，发布 `symbolBindings()` / `expressionTypes()` / `resolvedCalls()` facts 到既有 AST-identity side tables——与 body 表达式同表同构，**不得**新建平行 side table 或第二语义 owner。占位元数据已就位，因此默认表达式中对其他 source function 的**交叉缺省调用**（`func g(x = f(1))`，`f` 带默认值）能读到 `f` 的 `defaultValueFunc` 并正确放行。
 3. **失败回收**：分析失败（可见性违规、表达式 facts 不完整）的参数发 `sema.unsupported_parameter_default_expression`（单条同级诊断，锚定默认表达式根），并以同样的 `removeParameter`/`addParameter` 对把 `defaultValueFunc` 清回 `null`。
 
@@ -185,10 +185,10 @@
 
 ### 5.1 命名与元数据接线
 
-- 命名：`_default_<func>$<param>`（对齐 `gdcc_low_ir.md` demo 的 `_default_get_pitch$to_radius`）。名字按 (owning class, function name, parameter name) 确定性生成，class 内唯一。
-- `_default_` 加入 `FrontendSyntheticPropertyHelperSupport.RESERVED_PREFIXES`；skeleton 对以该前缀命名的用户函数发 `sema.class_skeleton` 诊断并 skip，杜绝与 synthetic shell 撞名。
+- 命名：instance 函数 `_default_<func>$<param>`，static 函数恒为 `_default_s_<func>$<param>`（对齐 `gdcc_low_ir.md` demo 的 `_default_get_pitch$to_radius`）。名字按 (owning class, function staticness, function name, parameter name) 确定性生成，class 内唯一。
+- `_default_` 加入 `FrontendSyntheticPropertyHelperSupport.RESERVED_PREFIXES`（`_default_s_` 位于该命名空间下，自动覆盖）；skeleton 对以该前缀命名的用户函数发 `sema.class_skeleton` 诊断并 skip，杜绝与 synthetic shell 撞名。
 - 元数据由 §4.1 owner（`FrontendParameterDefaultMetadataOwner`）按三阶段 sweep 写入/回收 `LirParameterDef.defaultValueFunc`；skeleton 阶段恒为 `null`。shared `analyze(...)` 路径下“参数无 `defaultValueFunc`”即“无默认值”，语义一致。
-- **同名 static+instance 撞名**：若类内允许同名 static 与 instance 函数共存（`ClassScope` 按名维护 overload set），两个同名函数的 synthetic 名会相同；写入方必须在 `owningClass.hasFunction(name)` / 同名参数元数据冲突时，为 static 函数改用 `_default_s_<func>$<param>`（或等价 static 位编码），保证 synthetic 名唯一。若 skeleton 已禁止同类同名函数，则该分支不可达，保留 fail-fast 即可。
+- **同名函数一律 fail-closed**（2026-09-02 复审修订，替代原 `_default_s_` 撞名分支）：Godot GDScript 的成员表按名唯一，同一 class 内任何同名函数声明（static+instance 对、同 static 位 overload）均为 parse error。gdcc 的 overload set 容忍主要面向 builtin/extension 类，但 source function 的默认值不对同名形态扩展命名合同：只要类内存在同名兄弟函数（无论 static 位与 arity、无论兄弟是否带默认值），带默认值的函数每个默认参数发恰好一条 `sema.unsupported_parameter_default_expression`（锚定默认表达式根），且不写入任何元数据、不进入 island 分析。该规则同时消除了 `(name, static, arity)` skeleton 匹配的重载歧义崩溃路径。
 - **C 标识符**：`_default_f$b` 依赖 GNU `$` 扩展（zig cc / clang / gcc 接受），与 `gdcc_low_ir.md` demo 一致。步骤 7 必须用 zig 端到端验证 `Class__default_f$b` 形式的符号可编译链接，并验证定义点（`func.ftl`）、调用点（`CallMethodInsnGen`）与 file-scope 冲突检查（`CCodegen`）使用同一拼写；若验证失败，统一改为同一 sanitize 映射（定义/调用/冲突检查同路径），并补撞名测试。
 
 ### 5.2 物化（preparation pass 阶段）
@@ -208,7 +208,7 @@
 ### 5.4 Backend 调用点补全
 
 - 既有 `CallMethodInsnGen.validateFixedArgsAndCompleteDefaults()` / `CGenHelper` 已按 `default_value_func` 在调用点补全省略实参；本计划验证/补齐其对 **source GDScript function**（而非仅 extension/utility）生效：
-  - static method / static 上下文中的调用：生成对 `_default_<func>$<param>()` 的无参调用并压入实参列表；
+  - static method / static 上下文中的调用：生成对 `_default_s_<func>$<param>()` 的无参调用并压入实参列表；
   - **exact instance call / instance 上下文中的 bare call**：synthetic 函数首参为 `self`，补全时把**当前接收者**（owner fat self）作为首实参传入——`CallMethodInsnGen.materializeFunctionDefault` 路径需要按 synthetic shell 的 static flag 区分是否传接收者；
   - 过多实参仍报 compile error；少于 required 仍报 compile error；
   - 多次调用各自重新调用 synthetic function（语义 §2.2）。
@@ -257,16 +257,16 @@
 
 每一步独立可验证、独立提交；单批次改动不超过 5 个文件，超出则拆批。除特别说明外，测试改动与实现同批。
 
-- [ ] **步骤 1：保留前缀与 inventory 开放**
+- [x] **步骤 1：保留前缀与 inventory 开放**（2026-09-02 完成）
   - `FrontendSyntheticPropertyHelperSupport.RESERVED_PREFIXES` 加入 `_default_`；skeleton 对用户 `_default_*` 函数发诊断并 skip。
   - `FrontendVariableAnalyzer.bindParameter()`：移除 source function 的 `sema.unsupported_parameter_default_value`（lambda 参数维持诊断）；照常登记参数 binding。
   - 验收：保留前缀负路径恰好一条诊断；`func f(a, b = 5)` 参数正常登记且不再发 unsupported 诊断；`FrontendVariableAnalyzerTest`（250-290）等锚点更新。
-- [ ] **步骤 2：默认值分析 owner（island 语义 + 三阶段 sweep）**
+- [x] **步骤 2：默认值分析 owner（island 语义 + 三阶段 sweep）**（2026-09-02 完成）
   - 新增 `FrontendParameterDefaultMetadataOwner`：由 `FrontendSuiteResolver` 驱动、在任何 body 解析前执行 §4.1 三阶段 sweep（结构校验 → 占位写入 → island 分析 → 失败回收）。
   - `FrontendVisibleValueResolver` / `FrontendBodySemanticSupportPolicy` / `FrontendSuiteContext` / `FrontendBodyOwnerProcedures`：按 §4.2 落地 island 全部机制（独立入口、显式 domain、owner = enclosing `FunctionDeclaration`、双重封口开放、PARAMETER/CAPTURE/LOCAL 停在本层 + `bindIdentifier`/`bindSelf` 单条诊断、await 边界、get-node 与 self 链式分支、lambda 嵌套 fail-closed、expected type 接线）。
   - `FrontendTypeCheckAnalyzer`：按 §4.4 增加默认值类型兼容 hook。
   - 同步修订 `frontend_visible_value_resolver_implementation.md` 与 `frontend_resolution_pipeline_implementation.md` §4.8/R8（登记新 owner）。
-  - 验收：`f(a, b = 5)` / `f(a, b = Vector2(1, 2))` / `f(a, b = make_default())`（static utility）的默认表达式获得完整 bindings/exprTypes/resolvedCalls 且参数携带 `defaultValueFunc`；**交叉缺省调用** `func g(x = f(1))`（`f` 带默认值）正路径通过；**instance 方法的 `b = self.x` / `b = self` / `b = inst_method()` 正路径**（self 正常绑定、实例成员正常解析）；`f(a: Array[int] = [1, 2])` 的容器字面量按参数声明类型获得 expected type；`b = a`、`b = x`（local）、`await`、`$Child`、static 方法中的 `b = self.x` 负路径各自恰好一条 `sema.unsupported_parameter_default_expression` 且参数回收为无默认值；`static var a = 1` + `func f(a, b = a)` 必须诊断参数引用而**不得**绑到外层 static 属性（§4.2 停在本层）；`func f(a = 1, b)` / `func f(...args = 1)` 恰好一条顺序诊断且违规参数无 `defaultValueFunc`；sweep 跳过 `_init` / constructor / lambda；默认值分析失败时同模块 `f(x)` 调用报 too-few（验证 §4.1 后果闭包）；类型不兼容默认值保留 `defaultValueFunc` 并发恰好一条赋值兼容诊断；`FrontendVisibleValueResolverTest`（387-409）、`FrontendSemanticAnalyzerFrameworkTest`（386-520）等锚点更新。
+  - 验收：`f(a, b = 5)` / `f(a, b = Vector2(1, 2))` / `f(a, b = make_default())`（static utility）的默认表达式获得完整 bindings/exprTypes/resolvedCalls 且参数携带 `defaultValueFunc`；**交叉缺省调用** `func g(x = f(1))`（`f` 带默认值）正路径通过；**instance 方法的 `b = self.x` / `b = self` / `b = inst_method()` 正路径**（self 正常绑定、实例成员正常解析）；`f(a: Array[int] = [1, 2])` 的容器字面量按参数声明类型获得 expected type；`b = a`、`b = x`（local）、`await`、`$Child`、static 方法中的 `b = self.x` 负路径各自恰好一条 `sema.unsupported_parameter_default_expression` 且参数回收为无默认值；`static var a = 1` + `func f(a, b = a)` 必须诊断参数引用而**不得**绑到外层 static 属性（§4.2 停在本层）；`func f(a = 1, b)` / `func f(...args = 1)` 恰好一条顺序诊断且违规参数无 `defaultValueFunc`；同名兄弟函数（static+instance 对、同 static 位 overload、兄弟无默认值）下带默认值函数的每个结构合法默认参数恰好一条 `sema.unsupported_parameter_default_expression` 且无 `defaultValueFunc`（结构违规参数只携带顺序诊断）；static 函数默认值合成名恒为 `_default_s_<func>$<param>`；sweep 跳过 `_init` / constructor / lambda；默认值分析失败时同模块 `f(x)` 调用报 too-few（验证 §4.1 后果闭包）；类型不兼容默认值保留 `defaultValueFunc` 并发恰好一条赋值兼容诊断；`FrontendVisibleValueResolverTest`（387-409）、`FrontendSemanticAnalyzerFrameworkTest`（386-520）等锚点更新。
 - [ ] **步骤 3：compile surface 开放**
   - `FrontendCompileCheckAnalyzer.walkCallableBody(...)` 对已接受默认根显式 `walkExpression()`（§4.3）；同步修订 `frontend_rules.md` 与 `frontend_compile_check_analyzer_implementation.md` 对应条款。
   - 验收：含合法默认值的模块通过 compile gate；纯字面量默认（无 call facts）同样被扫描；默认表达式内含 failed call 的模块在 compile surface 产生恰好一条诊断且不进入 lowering；`FrontendCompileCheckAnalyzerTest`（923-969、1575-1601、2335-2364）锚点更新。
@@ -280,7 +280,7 @@
   - 按 §5.3 复用 return-stop lowering 发射 `ReturnInsn`。
   - 验收：synthetic function 的 LIR body 含表达式求值与 return；instance flavor 的 `self` 引用正确读 synthetic 的 `self` 参数槽（`declareSelfSlotIfNeeded` 路径），static flavor 无 `self` 槽；`FrontendLoweringBodyInsnPassTest`（9979-10016 转正）。
 - [ ] **步骤 7：backend 接线验证、bind 隔离与端到端**
-  - 验证/补齐 §5.4 各路由调用点补全（exact instance / static / bare→method|static-method）；按 §5.5 隔离 `method_info` 注册通道（三条收集路径的 `defaultVariables` 对 source function 恒空）并补回归；验证 §5.1 的 C 标识符（zig 端到端编译 `Class__default_f$b`；定义/调用/冲突检查同拼写；同名 static/instance 撞名分支测试）。
+  - 验证/补齐 §5.4 各路由调用点补全（exact instance / static / bare→method|static-method）；按 §5.5 隔离 `method_info` 注册通道（三条收集路径的 `defaultVariables` 对 source function 恒空）并补回归；验证 §5.1 的 C 标识符（zig 端到端编译 `Class__default_f$b` 与 `Class__default_s_f$b`；定义/调用/冲突检查同拼写；同名函数 fail-closed 分支已由步骤 2 锚定）。
   - 验收（端到端，zig 可用时）：`f(1)` 与 `f(1, 2)` 结果正确；省略多个尾部参数按声明顺序求值；每次调用重新求值（可变默认值不共享）；too-few/too-many 仍 compile error；带默认值方法的 class 生成的 bind C 代码可编译、helper 名不含 default suffix、`default_argument_count == 0`。
 - [ ] **步骤 8：argc 感知 callee-prologue wrapper（dynamic/引擎侧补全）**
   - `BindingData` 增加 `defaultSlotCount`（参与相等性与 `_K_defslot` bind 名编码，三处 `renderFuncBindName` 与 `collectBindingData` 同一计数）；`entry.c.ftl` 注册点为每个带默认值方法建立独占 `static` userdata 结构（impl + 按槽位类型化的默认函数指针字段），经 bind helper **现有 `void* function` 形参** 传入（helper 签名不变、不填共享静态块）；`entry.h.ftl` 新增 `defaultSlotCount > 0` 的 call/ptrcall wrapper flavor：call 侧 argc 守卫（TOO_FEW `expected = required_count` / TOO_MANY `expected = param_count`）→ 仅 `i < p_argument_count` 的类型门/probe → 逐槽 unpack-or-default（默认槽非 const 声明）→ cleanup 纳入；ptrcall 侧同一套 userdata 解包（`function = ud->impl`）、不做填充。
@@ -318,7 +318,7 @@
   - `src/test/java/gd/script/gdcc/frontend/lowering/FrontendLoweringFunctionPreparationPassTest.java`（322-380 形状锚点保持、866-900 转正）
   - `src/test/java/gd/script/gdcc/frontend/lowering/FrontendLoweringBuildCfgPassTest.java`（365-401 转正）
   - `src/test/java/gd/script/gdcc/frontend/lowering/FrontendLoweringBodyInsnPassTest.java`（9979-10016 转正）
-- 新增：各路由省略参数正路径、顺序规则负路径、受限可见性负路径（static 方法中 `b = self` 单条诊断）、instance 方法 `self`/实例成员引用正路径（含 synthetic 首参 `self` 与调用点/wrapper 传接收者）、类型不兼容负路径（元数据保留）、§4.1 后果闭包（call-before-callee 顺序洞）、交叉缺省调用正路径与回收角落、sweep 内 await 边界、bind method_info 通道隔离回归、C 标识符与同名 static/instance 撞名、逐调用重新求值端到端用例、§5.6 prologue wrapper 的 bind 层 argc 边界用例（缺参/恰好 required/超参、错误 `expected` 字段、shape 去重区分、`defaultSlotCount == 0` 零回归）与 dynamic/`Object.call` 端到端用例。
+- 新增：各路由省略参数正路径、顺序规则负路径、受限可见性负路径（static 方法中 `b = self` 单条诊断）、instance 方法 `self`/实例成员引用正路径（含 synthetic 首参 `self` 与调用点/wrapper 传接收者）、类型不兼容负路径（元数据保留）、§4.1 后果闭包（call-before-callee 顺序洞）、交叉缺省调用正路径与回收角落、sweep 内 await 边界、bind method_info 通道隔离回归、C 标识符（含 `_default_s_` 静态变体）与同名函数 fail-closed、逐调用重新求值端到端用例、§5.6 prologue wrapper 的 bind 层 argc 边界用例（缺参/恰好 required/超参、错误 `expected` 字段、shape 去重区分、`defaultSlotCount == 0` 零回归）与 dynamic/`Object.call` 端到端用例。
 
 ---
 

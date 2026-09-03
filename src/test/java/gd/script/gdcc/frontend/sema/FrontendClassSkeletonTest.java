@@ -790,6 +790,10 @@ class FrontendClassSkeletonTest {
         assertEquals(GdIntType.INT, topLevelInit.getParameter(0).getType());
         assertEquals("alias", topLevelInit.getParameter(1).getName());
         assertEquals(GdVariantType.VARIANT, topLevelInit.getParameter(1).getType());
+        // Skeleton keeps default metadata empty; the parameter-default metadata owner writes or
+        // reclaims `defaultValueFunc` during the suite phase.
+        assertNull(topLevelInit.getParameter(0).getDefaultValueFunc());
+        assertNull(topLevelInit.getParameter(1).getDefaultValueFunc());
 
         var innerInit = findFunctionByName(inner, "_init");
         assertEquals(GdVoidType.VOID, innerInit.getReturnType());
@@ -1121,6 +1125,49 @@ class FrontendClassSkeletonTest {
         assertEquals(1, skeletonDiagnostics.size());
         assertTrue(skeletonDiagnostics.getFirst().message().contains("reserved synthetic lambda-function prefix"));
         assertTrue(skeletonDiagnostics.getFirst().message().contains("_lambda_"));
+    }
+
+    /// The `_default_` namespace is compiler-owned for synthesized parameter-default functions
+    /// (`_default_<func>$<param>`), so source members reusing it are rejected like the other
+    /// reserved prefixes. Boundary names without the trailing separator stay alive.
+    @Test
+    void buildRejectsReservedParameterDefaultPrefixButKeepsBoundaryNamesAlive() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "reserved_parameter_default_names.gd"), """
+                class_name ReservedParameterDefaultNames
+                extends RefCounted
+                
+                func _default_ping():
+                    pass
+                
+                func _default():
+                    pass
+                
+                func ok():
+                    pass
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "ReservedParameterDefaultNames");
+        var skeletonDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton"))
+                .toList();
+
+        assertNull(findFunctionByNameOrNull(classDef, "_default_ping"));
+        assertNotNull(findFunctionByNameOrNull(classDef, "_default"));
+        assertNotNull(findFunctionByNameOrNull(classDef, "ok"));
+        assertEquals(1, skeletonDiagnostics.size());
+        assertTrue(skeletonDiagnostics.getFirst().message().contains("reserved synthetic parameter-default prefix"));
+        assertTrue(skeletonDiagnostics.getFirst().message().contains("_default_"));
     }
 
     @Test

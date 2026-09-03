@@ -161,11 +161,11 @@
 
 ### 3.3 参数默认值
 
-若 `Parameter.defaultValue() != null`，当前行为固定为：
+若 `Parameter.defaultValue() != null`：
 
-- 发出 `sema.unsupported_parameter_default_value` error
-- 不分析默认值表达式
-- 不改变参数本身写入 `CallableScope` 的行为
+- source function 参数：不再发诊断、不分析默认值表达式、照常登记参数 binding；默认表达式的语义分析与 `defaultValueFunc` 元数据由 `FrontendParameterDefaultMetadataOwner` 在 suite 阶段统一负责（`frontend_parameter_default_plan.md` §4.1）
+- constructor / `_init` 参数：永久非目标，不进入该 owner 的 sweep，维持既有拒绝路径
+- lambda 参数：维持 fail-closed —— 发出 `sema.unsupported_parameter_default_value` error，不分析默认值表达式，照常登记参数 binding
 
 ---
 
@@ -244,7 +244,7 @@
 当前对“已识别但当前不支持”的 variable-inventory 来源统一发 error：
 
 - `sema.unsupported_parameter_default_value`
-  - 参数默认值当前被忽略
+  - 仅 lambda 参数默认值维持该 fail-closed 边界；source function 参数默认值已由 `FrontendParameterDefaultMetadataOwner` 接线
 - `sema.unsupported_variable_inventory_subtree`
   - block-local `const` 当前不支持
   - `match` 已移出该边界
@@ -337,7 +337,7 @@ For iterator 与 parameter、外层 local 或 body local 冲突时仍发布 `sem
 后续最直接的增量工作包括：
 
 - block-local `const` inventory
-- 参数默认值的真实语义接线
+- lambda 参数默认值的真实语义接线（source function 参数默认值已转正）
 
 ---
 

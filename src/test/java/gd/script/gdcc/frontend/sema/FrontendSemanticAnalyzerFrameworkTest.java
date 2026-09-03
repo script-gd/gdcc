@@ -383,7 +383,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void analyzePublishesTopBindingsForChainHeadsWhileKeepingUnsupportedBoundariesExplicit() throws Exception {
+    void analyzePublishesTopBindingsForChainHeadsAndParameterDefaultIslandFacts() throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "framework_top_binding.gd"), """
@@ -449,6 +449,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 ).kind()
         );
 
+        // The parameter-default island analyzes `helper()` through the ordinary owner pipeline:
+        // the callee identifier binds as METHOD and the call resolves, publishing into the same
+        // AST-identity side tables as body facts.
         var helperUseSite = findNode(
                 pingFunction.parameters().getLast().defaultValue(),
                 IdentifierExpression.class,
@@ -459,8 +462,15 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 CallExpression.class,
                 candidate -> true
         );
-        assertNull(result.symbolBindings().get(helperUseSite));
-        assertNull(result.resolvedCalls().get(helperDefaultCall));
+        assertEquals(
+                FrontendBindingKind.METHOD,
+                Objects.requireNonNull(result.symbolBindings().get(helperUseSite)).kind()
+        );
+        assertEquals(
+                FrontendCallResolutionStatus.RESOLVED,
+                Objects.requireNonNull(result.resolvedCalls().get(helperDefaultCall)).status()
+        );
+        assertEquals("helper", Objects.requireNonNull(result.resolvedCalls().get(helperDefaultCall)).callableName());
 
         var lambdaPlayerUseSite = findNode(
                 lambdaHolder.value(),
@@ -480,11 +490,23 @@ class FrontendSemanticAnalyzerFrameworkTest {
         );
         assertEquals("get_player", Objects.requireNonNull(result.resolvedCalls().get(getPlayerCall)).callableName());
 
-        assertEquals(6, result.symbolBindings().size());
-        assertEquals(2, result.resolvedMembers().size());
-        assertEquals(2, result.resolvedCalls().size());
+        // The accepted default carries its deterministic synthetic name on the parameter metadata.
+        var pingFunctionDef = result.moduleSkeleton().allClassDefs().stream()
+                .filter(classDef -> classDef.getName().equals("FrameworkTopBinding"))
+                .flatMap(classDef -> classDef.getFunctions().stream())
+                .filter(function -> function.getName().equals("ping"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("ping function skeleton not found"));
         assertEquals(
-                1,
+                "_default_ping$seed",
+                pingFunctionDef.getParameter("seed").getDefaultValueFunc()
+        );
+
+        assertEquals(7, result.symbolBindings().size());
+        assertEquals(2, result.resolvedMembers().size());
+        assertEquals(3, result.resolvedCalls().size());
+        assertEquals(
+                0,
                 result.diagnostics().asList().stream()
                         .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_binding_subtree"))
                         .count()
@@ -496,7 +518,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                         .count()
         );
         assertEquals(
-                1,
+                0,
                 result.diagnostics().asList().stream()
                         .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_chain_route"))
                         .count()
@@ -507,16 +529,6 @@ class FrontendSemanticAnalyzerFrameworkTest {
                         .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_expression_route"))
                         .count()
         );
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.unsupported_binding_subtree")
-                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && diagnostic.message().contains("parameter default")
-        ));
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.unsupported_chain_route")
-                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && diagnostic.message().contains("parameter default")
-        ));
     }
 
     @Test

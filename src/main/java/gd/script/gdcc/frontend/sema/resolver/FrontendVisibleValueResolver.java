@@ -68,7 +68,7 @@ public final class FrontendVisibleValueResolver {
         }
 
         var useSite = request.useSite();
-        var deferredBoundary = detectDeferredBoundary(useSite);
+        var deferredBoundary = detectDeferredBoundary(useSite, request.domain());
         if (deferredBoundary != null) {
             return FrontendVisibleValueResolution.deferredUnsupported(deferredBoundary);
         }
@@ -102,6 +102,17 @@ public final class FrontendVisibleValueResolver {
             }
             if (currentLayerResult.isAllowed()) {
                 var visibleValue = currentLayerResult.requireValue();
+                // Parameter-default island: parameters, captures, and locals are visibility
+                // violations there. The hit stops at the current layer as blocked instead of
+                // being filtered and falling through to an outer same-name binding (e.g. a
+                // static property shadowed by a parameter would otherwise win silently).
+                if (request.domain() == FrontendVisibleValueDomain.PARAMETER_DEFAULT
+                        && isCallableLocalKind(visibleValue.kind())) {
+                    return FrontendVisibleValueResolution.foundBlocked(
+                            effectiveValue(visibleValue, scope, typedEnvironment),
+                            filteredHits
+                    );
+                }
                 var filteredHit = filterInvisibleCurrentLayerHit(visibleValue, scope, useSite);
                 if (filteredHit == null) {
                     return FrontendVisibleValueResolution.foundAllowed(
@@ -144,11 +155,18 @@ public final class FrontendVisibleValueResolver {
         }
     }
 
+    private static boolean isCallableLocalKind(@NotNull ScopeValueKind kind) {
+        return kind == ScopeValueKind.PARAMETER || kind == ScopeValueKind.CAPTURE || kind == ScopeValueKind.LOCAL;
+    }
+
     /// Walks from the use site toward the source root and returns the nearest deferred boundary.
     ///
     /// Checking the nearest boundary first matters because nested unsupported regions should report
     /// the domain the binder actually crossed most recently instead of some broader outer umbrella.
-    private @Nullable FrontendVisibleValueDeferredBoundary detectDeferredBoundary(@NotNull Node useSite) {
+    private @Nullable FrontendVisibleValueDeferredBoundary detectDeferredBoundary(
+            @NotNull Node useSite,
+            @NotNull FrontendVisibleValueDomain requestDomain
+    ) {
         Node currentNode = useSite;
         while (true) {
             var parentNode = parentByNode.get(currentNode);
@@ -156,7 +174,7 @@ public final class FrontendVisibleValueResolver {
                 return null;
             }
 
-            var boundary = classifyBoundaryEdge(currentNode, parentNode);
+            var boundary = classifyBoundaryEdge(currentNode, parentNode, requestDomain);
             if (boundary != null) {
                 return boundary;
             }
@@ -166,11 +184,16 @@ public final class FrontendVisibleValueResolver {
 
     private @Nullable FrontendVisibleValueDeferredBoundary classifyBoundaryEdge(
             @NotNull Node childNode,
-            @NotNull Node parentNode
+            @NotNull Node parentNode,
+            @NotNull FrontendVisibleValueDomain requestDomain
     ) {
         return switch (parentNode) {
+            // The parameter-default island crosses its own root edge freely; requests from any
+            // other domain (e.g. a lambda body nested in a default) stay sealed.
             case Parameter parameter when parameter.defaultValue() == childNode ->
-                    structuralBoundary(FrontendBodySemanticSupportPolicy.PARAMETER_DEFAULT);
+                    requestDomain == FrontendVisibleValueDomain.PARAMETER_DEFAULT
+                            ? null
+                            : structuralBoundary(FrontendBodySemanticSupportPolicy.PARAMETER_DEFAULT);
             case VariableDeclaration variableDeclaration when variableDeclaration.kind() == DeclarationKind.CONST
                     && variableDeclaration.value() == childNode
                     && isDeferredBlockLocalConst(variableDeclaration) -> structuralBoundary(
@@ -183,7 +206,10 @@ public final class FrontendVisibleValueResolver {
     private @Nullable FrontendVisibleValueDeferredBoundary classifyRequestDomainBoundary(
             @NotNull FrontendVisibleValueResolveRequest request
     ) {
-        if (request.domain() == FrontendVisibleValueDomain.EXECUTABLE_BODY) {
+        // `PARAMETER_DEFAULT` resolves through the parameter-default island: parameters, captures,
+        // and locals still stop blocked at the current layer inside `resolve`.
+        if (request.domain() == FrontendVisibleValueDomain.EXECUTABLE_BODY
+                || request.domain() == FrontendVisibleValueDomain.PARAMETER_DEFAULT) {
             return null;
         }
         return new FrontendVisibleValueDeferredBoundary(

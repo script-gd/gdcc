@@ -304,6 +304,20 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         }
     }
 
+    /// Parameter-default island root typing: identical to the bare-expression branch of
+    /// `runExprType`, but the parameter slot type flows in as the expected type so typed container
+    /// literals (e.g. `Array[int] = [1, 2]`) keep their declared element types. `Variant`/untyped
+    /// parameters drop the context through `contextualExpectedOrNull` like every other root.
+    @Override
+    public void runParameterDefaultExprType(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Expression defaultRoot,
+            @Nullable GdType expectedType
+    ) {
+        var resolver = new BodyExpressionResolver(context);
+        publishExpressionType(context, resolver, defaultRoot, false, contextualExpectedOrNull(expectedType));
+    }
+
     private static void reportDiscardedExpressionWarning(
             @NotNull FrontendSuiteContext context,
             @NotNull Expression expression,
@@ -824,7 +838,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         if (valueResolution.status() == FrontendVisibleValueStatus.FOUND_ALLOWED
                 || valueResolution.status() == FrontendVisibleValueStatus.FOUND_BLOCKED) {
             publishScopeValueBinding(context, identifierExpression, valueResolution);
-            if (valueResolution.status() == FrontendVisibleValueStatus.FOUND_BLOCKED) {
+            if (valueResolution.status() == FrontendVisibleValueStatus.FOUND_BLOCKED
+                    && !context.isParameterDefaultIsland()) {
                 reportBindingError(
                         context,
                         identifierExpression,
@@ -835,6 +850,26 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         }
         if (valueResolution.status() == FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED) {
             return;
+        }
+        // Parameter-default island: a bare identifier that misses every visible layer but names a
+        // callable local is a visibility violation, not an unknown name. Publish it as blocked so
+        // the island root fails silently and the metadata owner anchors the single diagnostic.
+        if (context.isParameterDefaultIsland()) {
+            var callableLocal = parameterDefaultIslandLocalHit(context, identifierExpression.name());
+            if (callableLocal != null) {
+                context.typedEnvironment().putSymbolBinding(
+                        FrontendSemanticStage.TOP_BINDING,
+                        identifierExpression,
+                        new FrontendBinding(
+                                identifierExpression.name(),
+                                toBindingKind(callableLocal.kind()),
+                                callableLocal.declaration(),
+                                callableLocal,
+                                ScopeLookupStatus.FOUND_BLOCKED
+                        )
+                );
+                return;
+            }
         }
         if (tryPublishFunctionBinding(context, identifierExpression)) {
             return;
@@ -873,9 +908,33 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             );
             return;
         }
+        // Static parameter-default islands reject `self` through the metadata owner's single
+        // anchored diagnostic; the blocked self type still publishes so the island root fails.
+        if (context.isParameterDefaultIsland() && context.staticContext()) {
+            return;
+        }
         if (context.staticContext()) {
             reportBindingError(context, selfExpression, "Keyword 'self' is not available in static context");
         }
+    }
+
+    /// Probes the island's enclosing callable body for a top-level local with the given name.
+    /// Default expressions live in the `CallableScope`, so body locals can never be hit by the
+    /// ordinary layer walk; this probe distinguishes "references a local" (visibility violation,
+    /// silent blocked) from a genuinely unknown name (ordinary `sema.binding` error). Locals in
+    /// deeper nested blocks stay on the ordinary unknown-name path.
+    private static @Nullable ScopeValue parameterDefaultIslandLocalHit(
+            @NotNull FrontendSuiteContext context,
+            @NotNull String name
+    ) {
+        if (!(context.callableOwner() instanceof FunctionDeclaration functionDeclaration)) {
+            return null;
+        }
+        if (!(context.analysisData().scopesByAst().get(functionDeclaration.body()) instanceof BlockScope bodyScope)) {
+            return null;
+        }
+        var hit = bodyScope.resolveValueHere(name);
+        return hit != null && hit.kind() == ScopeValueKind.LOCAL ? hit : null;
     }
 
     private void bindLiteral(
@@ -1097,6 +1156,12 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 && trace.status() != FrontendChainReductionHelper.Status.FAILED) {
             return;
         }
+        // Parameter-default island: restriction-blocked traces (e.g. `self`/instance members under
+        // a static function, parameter/local heads) stay silent so the metadata owner anchors the
+        // single default diagnostic. Genuine resolution failures (FAILED) keep reporting.
+        if (context.isParameterDefaultIsland() && trace.status() == FrontendChainReductionHelper.Status.BLOCKED) {
+            return;
+        }
         context.diagnosticManager().error(
                 MEMBER_RESOLUTION_CATEGORY,
                 Objects.requireNonNull(trace.detailReason(), "detailReason must not be null"),
@@ -1111,6 +1176,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     ) {
         if (trace.status() != FrontendChainReductionHelper.Status.BLOCKED
                 && trace.status() != FrontendChainReductionHelper.Status.FAILED) {
+            return;
+        }
+        // Same island rule as `reportMemberTrace`: BLOCKED stays owner-reported, FAILED reports.
+        if (context.isParameterDefaultIsland() && trace.status() == FrontendChainReductionHelper.Status.BLOCKED) {
             return;
         }
         context.diagnosticManager().error(
@@ -1971,14 +2040,21 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 @NotNull AwaitExpression awaitExpression,
                 boolean finalizeWindow
         ) {
+            var boundaryReason = awaitFailClosedBoundaryReason();
             var result = expressionSemanticSupport.resolveAwaitExpressionType(
                     awaitExpression,
                     this::resolveExpressionType,
                     this::findAwaitOperandCallOrNull,
-                    awaitFailClosedBoundaryReason(),
+                    boundaryReason,
                     finalizeWindow
             );
             rootOwnsExpressionDiagnostics.put(awaitExpression, result.rootOwnsOutcome());
+            // Parameter-default island: convert the fail-closed boundary into a silent blocked root
+            // so the metadata owner anchors the single default diagnostic; no coroutine marking or
+            // pending recording ever starts there.
+            if (boundaryReason != null && context.isParameterDefaultIsland()) {
+                return FrontendExpressionType.blocked(null, boundaryReason);
+            }
             switch (result.route()) {
                 case SIGNAL, DYNAMIC -> context.analysisData()
                         .markCoroutineOwner(requireAwaitCoroutineOwner());
@@ -1995,13 +2071,15 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             return result.expressionType();
         }
 
-        /// Fail-closed boundary: property initializers reject await. Lambda bodies accept await —
-        /// their owners are marked through the lambda owner set and bridged to
-        /// the synthesized shell during lowering preparation. Parameter defaults never reach body
-        /// expression typing, so they keep their existing boundary.
+        /// Fail-closed boundary: property initializers and parameter defaults reject await. Lambda
+        /// bodies accept await — their owners are marked through the lambda owner set and bridged to
+        /// the synthesized shell during lowering preparation.
         private @Nullable String awaitFailClosedBoundaryReason() {
             if (context.propertyInitializerContext() != null) {
                 return "Await expressions are not supported inside property initializers";
+            }
+            if (context.isParameterDefaultIsland()) {
+                return "Await expressions are not supported inside parameter defaults";
             }
             return null;
         }
@@ -2020,6 +2098,14 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 // The compile gate escalates the deferred warning into a compile-mode error.
                 return FrontendExpressionType.deferred(
                         "Get-node expression is not supported inside property initializers"
+                );
+            }
+            if (context.isParameterDefaultIsland()) {
+                // Blocked rather than deferred/failed: the island stays silent here so the
+                // metadata owner anchors the single parameter-default diagnostic.
+                return FrontendExpressionType.blocked(
+                        null,
+                        "Get-node expression is not supported inside parameter defaults"
                 );
             }
             var nodeType = new GdObjectType("Node");

@@ -24,6 +24,7 @@ import gd.script.gdcc.frontend.sema.LambdaCaptureEntry;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendCallableReturnTypeSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.frontend.sema.patch.FrontendCallableExportBatch;
+import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
@@ -55,6 +56,7 @@ public class FrontendSuiteResolver {
     private static final @NotNull String SELF_CAPTURE_NAME = "self";
 
     private final @NotNull FrontendStatementResolver statementResolver;
+    private final @NotNull FrontendParameterDefaultMetadataOwner parameterDefaultMetadataOwner;
     /// Per-owning-class counters backing `_lambda_<k>` synthetic names; resolution order follows
     /// source appearance order, so names stay stable across runs of the same module.
     private final @NotNull Map<String, Integer> lambdaNameCountersByOwningClass = new HashMap<>();
@@ -85,6 +87,7 @@ public class FrontendSuiteResolver {
 
     public FrontendSuiteResolver(@NotNull FrontendStatementResolver statementResolver) {
         this.statementResolver = Objects.requireNonNull(statementResolver, "statementResolver must not be null");
+        this.parameterDefaultMetadataOwner = new FrontendParameterDefaultMetadataOwner(statementResolver);
     }
 
     public void resolve(
@@ -97,6 +100,10 @@ public class FrontendSuiteResolver {
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         Objects.requireNonNull(analysisData, "analysisData must not be null");
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
+
+        // Parameter-default sweep runs before any callable body so body call sites only observe
+        // finalized `defaultValueFunc` metadata (accepted) or required parameters (reclaimed).
+        parameterDefaultMetadataOwner.sweep(interfaceSurface, classRegistry, analysisData, diagnosticManager);
 
         for (var callableOwner : interfaceSurface.suiteEntryRoots().callableOwners()) {
             // Recorded lambdas are resolved through the nested trigger while their enclosing
@@ -188,7 +195,8 @@ public class FrontendSuiteResolver {
                 classRegistry,
                 exportBatch,
                 currentCallableReturnType,
-                this::resolveNestedLambdaOwner
+                this::resolveNestedLambdaOwner,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
         );
         if (callableOwner instanceof LambdaExpression lambdaExpression) {
             fillAndPublishLambdaPlan(context, lambdaExpression, restrictionOwner, outerEnvironment);
@@ -423,7 +431,13 @@ public class FrontendSuiteResolver {
         var parameters = callableParameters(callableOwner);
         for (var parameter : parameters) {
             publishCallableEntryParameterSlotType(context, parameter);
-            reportUnsupportedParameterDefault(context, parameter);
+            // Source-function defaults (excluding `_init`) are owned by the parameter-default
+            // metadata sweep; constructors, `_init` functions, and lambdas keep the fail-closed
+            // binding/chain diagnostics here.
+            if (!(callableOwner instanceof FunctionDeclaration functionDeclaration)
+                    || functionDeclaration.name().trim().equals("_init")) {
+                reportUnsupportedParameterDefault(context, parameter);
+            }
         }
         // Make every parameter visible to the first statement without publishing stable facts.
         context.typedEnvironment().flushPendingFacts();
@@ -507,7 +521,10 @@ public class FrontendSuiteResolver {
                 null,
                 null,
                 // Property initializers stay fail-closed for lambdas: no nested resolve trigger.
-                null
+                null,
+                // Property initializers bypass the visible-value resolver entirely
+                // (`resolveVisibleValue` class-scope shortcut), so the domain is never consulted.
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
         );
         statementResolver.resolvePropertyInitializer(context, propertyInitializer);
         // Property initializers are independent roots and do not join a callable export batch.
@@ -561,7 +578,9 @@ public class FrontendSuiteResolver {
         return callableOwner instanceof FunctionDeclaration functionDeclaration && functionDeclaration.isStatic();
     }
 
-    private static @NotNull Path sourcePathFor(
+    /// Shared with `FrontendParameterDefaultMetadataOwner`, whose island contexts need the same
+    /// per-entry-root source path resolution.
+    static @NotNull Path sourcePathFor(
             @NotNull FrontendInterfaceSurface interfaceSurface,
             @NotNull Node entryRoot,
             @NotNull FrontendAnalysisData analysisData

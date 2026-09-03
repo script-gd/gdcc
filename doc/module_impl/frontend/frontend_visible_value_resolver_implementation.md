@@ -24,7 +24,7 @@
   - 不修改 shared `Scope.resolveValue(...)` 协议
   - 不让 unsupported 子域伪装成正常 `NOT_FOUND`
   - 不在 resolver 内直接生产 diagnostics 或写入 `symbolBindings()`
-  - 不在当前 frontend 中为 parameter default、`match`、block-local `const` 提供正式 local inventory 解析（lambda body 已转正）
+  - 不在当前 frontend 中为 `match`、block-local `const` 提供正式 local inventory 解析（lambda body 已转正；parameter default 经 `PARAMETER_DEFAULT` island 由 `FrontendParameterDefaultMetadataOwner` 转正，见 `frontend_parameter_default_plan.md` §4.2）
 
 ---
 
@@ -96,22 +96,25 @@ SuiteResolver body path 中的 caller 必须优先通过 typed overlay-aware `re
 
 ### 3.1 当前正常解析域
 
-resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时满足：
+resolver 当前只对 `EXECUTABLE_BODY` 与 `PARAMETER_DEFAULT` 两个域提供正常 lookup，并要求同时满足：
 
-- request 的 `domain == EXECUTABLE_BODY`
+- request 的 `domain == EXECUTABLE_BODY` 或 `domain == PARAMETER_DEFAULT`
 - use-site 能在 `analysisData.scopesByAst()` 中找到 current scope
 - current scope 自身属于已发布 callable-local value inventory 的 executable scope
 
 这里的最后一条是硬约束，不允许再退回“祖先链上存在某个 supported block 就放行”的宽松判定。
 
+`PARAMETER_DEFAULT` 是 parameter-default island 的显式 domain：它穿过自己的参数根边，但在逐层 lookup 中 parameter / capture / local 命中停在本层（`FOUND_BLOCKED`），不向 outer 层 fallback；instance 方法上下文允许 `self` / 实例成员，static 上下文静默拒绝。完整合同见 §5 规则 9。
+
 ### 3.2 当前显式封口域
 
 以下位置当前都必须返回 `DEFERRED_UNSUPPORTED + deferredBoundary(...)`：
 
-- parameter default-value expression
 - block-local `const` initializer subtree
 - 任何缺少稳定 scope 记录的 subtree
 - 任何 current scope 自身就是未发布 inventory 的 scope（`MATCH_SECTION_BODY` 已毕业，不再属于此列）
+
+parameter default-value expression 已不再是封口域：非 island 请求（`EXECUTABLE_BODY` 等）穿越 `Parameter.defaultValue` 边时仍返回 structural deferred boundary，island 请求（`PARAMETER_DEFAULT`）则在自己的根边上放行，可见性限制由 §5 规则 9 的停层合同承载。
 
 这些域当前不能静默回退到 outer local / class property / global，也不能伪装成普通 `NOT_FOUND`。`ForStatement` 的 iterator type、iterable 与 body edge 已转正，`FOR_BODY` current scope 直接进入 normal lookup；lambda body 同样转正：`LAMBDA_BODY` / `LAMBDA_EXPRESSION` current scope 走 policy 驱动 gate（`EXECUTABLE_BODY` 放行），lambda AST 边不再封口，body 内 use-site 直接命中 lambda 自己的 `CAPTURE` / `PARAMETER` / `LOCAL` 绑定。`MatchSection` pattern / guard / body 的 AST 边与 `MATCH_SECTION_BODY` current-scope backstop 同样已解封：bind 在同一 section 的 guard / body 内可见，section 间与 `match` 之后由独立 `BlockScope` 自然不可见。body 内 identifier 的精化类型仍依赖 suite overlay 的 `effectiveBinding`：iterator 声明的 owning scope 必须是 `FOR_BODY` 对象身份（`scope_analyzer_implementation.md` §6.1），否则可能回落到 Interface baseline `Variant`。
 
@@ -195,17 +198,18 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 
 `FrontendVisibleValueResolver.resolve(request)` 当前行为冻结为：
 
-1. 若 `request.domain != EXECUTABLE_BODY`，直接返回 `DEFERRED_UNSUPPORTED(domain = request.domain, reason = UNSUPPORTED_DOMAIN)`
-2. 先做 AST boundary 检测，识别 parameter default、block-local `const` initializer 等共享外层 scope 的 unsupported 子树；for header/body edge、lambda body edge 与 match section pattern/guard/body edge 不封口
+1. 若 `request.domain` 不是 `EXECUTABLE_BODY` 或 `PARAMETER_DEFAULT`，直接返回 `DEFERRED_UNSUPPORTED(domain = request.domain, reason = UNSUPPORTED_DOMAIN)`；`PARAMETER_DEFAULT` 是 parameter-default island 的显式 domain，由 `FrontendParameterDefaultMetadataOwner` 的独立入口发出
+2. 先做 AST boundary 检测，识别 block-local `const` initializer 等共享外层 scope 的 unsupported 子树；`Parameter.defaultValue` 边仅对非 `PARAMETER_DEFAULT` 请求封口（island 请求穿越自己的根边），for header/body edge、lambda body edge 与 match section pattern/guard/body edge 不封口
 3. 若 use-site 缺少 current scope 记录，返回 `DEFERRED_UNSUPPORTED`
 4. 对 current scope 执行 fail-closed 校验（block 与 callable scope 均走 policy 驱动 gate）；若 current scope 自身没有已发布 inventory，也返回 `DEFERRED_UNSUPPORTED`
 5. 在继续 outer fallback 之前，检查 enclosing supported block 中是否已经出现同名且当前可见的 block-local `const`；若存在，也必须封口为 `BLOCK_LOCAL_CONST_SUBTREE`
 6. 只有 AST boundary 与 current-scope gate 都放行后，才对 `BlockScope` / `CallableScope` 做逐层 lookup
 7. 当前层若 `FOUND_BLOCKED`，直接返回 `FOUND_BLOCKED`，不能降级成 `NOT_FOUND`
 8. 当前层若 `FOUND_ALLOWED` 但 declaration 当前不可见，则追加 `filteredHit` 后继续向外层查找
-9. 当前层若 `NOT_FOUND`，继续向 lexical parent 查找
-10. 离开 callable-local 层后，委托 shared `Scope.resolveValue(...)`
-11. 若 shared lookup 抛出 `ScopeLookupException`，必须原样传播
+9. **`PARAMETER_DEFAULT` 域例外**：当前层命中 `PARAMETER` / `CAPTURE` / `LOCAL` 时必须立即停在本层并返回 `FOUND_BLOCKED`，禁止过滤后继续外查（`static var a = 1` + `func f(a, b = a)` 不得把 `a` 绑到外层 static 属性）；实例成员命中不受此限，instance 方法的默认表达式经 `ClassScope` 正常命中实例属性/方法
+10. 当前层若 `NOT_FOUND`，继续向 lexical parent 查找
+11. 离开 callable-local 层后，委托 shared `Scope.resolveValue(...)`
+12. 若 shared lookup 抛出 `ScopeLookupException`，必须原样传播
 
 全局 root（`ClassRegistry`）的 value 命名空间解析顺序冻结为五级（见 `frontend_global_constant_implementation.md` §3.3）：
 
@@ -219,8 +223,8 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 
 ### 5.1 declaration-order 规则
 
-- parameter 只在 executable callable body 内按“始终可见”处理
-- ordinary local `var` 只有在 declaration 结束位置早于 use-site 起始位置时才视为可见
+- parameter 只在 executable callable body 内按“始终可见”处理；`PARAMETER_DEFAULT` 域中 parameter 命中一律停在本层并返回 `FOUND_BLOCKED`（默认表达式不允许引用参数）
+- ordinary local `var` 只有在 declaration 结束位置早于 use-site 起始位置时才视为可见；`PARAMETER_DEFAULT` 域中 local 命中同样停在本层并 `FOUND_BLOCKED`
 - class property / signal / class const / global enum / global constant / 全局枚举成员裸名 / GDScript 语言常量 / singleton 等 non-callable-local binding 不受 statement-order 过滤影响
 
 ### 5.2 initializer 自引用
@@ -272,7 +276,8 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 - parameter / ordinary local / class property 三类基本路径的正向解析
 - future local / initializer self-reference 会进入 `filteredHits`，且不会误命中当前 declaration
 - `FOUND_BLOCKED` 不会被错误降级成 `NOT_FOUND`
-- parameter default、block-local `const`、`match`、missing-scope 都返回 `DEFERRED_UNSUPPORTED`
+- block-local `const`、`match`、missing-scope 都返回 `DEFERRED_UNSUPPORTED`
+- parameter default：非 `PARAMETER_DEFAULT` 请求穿越 `Parameter.defaultValue` 边仍封口为 deferred；`PARAMETER_DEFAULT` 请求正常进入 lookup，且 parameter / capture / local 命中停在本层返回 `FOUND_BLOCKED`（不外层 fallback）
 - lambda body 内 use-site 正常解析：外层 capture / 当前 lambda 的 parameter / local 都返回 `FOUND_ALLOWED`；lambda 的 `CAPTURE` 绑定不参与 interface body inventory 一致性校验，但仍受 declaration-order 可见性过滤
 - for header/body/current-scope lookup 正常进入 resolver，iterator 与 body local 仍受 published inventory、declaration-order 与 self-reference guard 约束
 - 真实 AST deferred 场景与 synthetic current-scope remap 场景都已覆盖，证明即使 AST boundary 漏判，resolver 仍按未发布 inventory fail-closed

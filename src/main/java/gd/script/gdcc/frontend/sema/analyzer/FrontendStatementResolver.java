@@ -16,6 +16,7 @@ import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.MatchSection;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.Statement;
@@ -23,7 +24,9 @@ import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
 import gd.script.gdcc.frontend.sema.FrontendForLoopSupport;
 import gd.script.gdcc.frontend.sema.FrontendMatchSupport;
+import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.Objects;
 
@@ -44,6 +47,27 @@ public class FrontendStatementResolver {
             @NotNull VariableDeclaration propertyInitializer
     ) {
         resolveSupportedRoot(context, propertyInitializer);
+    }
+
+    /// Parameter-default island entry: runs the ordinary owner pipeline on the default expression
+    /// root (top binding → chain binding → expression typing) with the parameter slot type wired
+    /// as the expected type. Local stabilization and var-type-post are no-ops for bare expression
+    /// roots, so they are skipped; the island never enters `FrontendSuiteResolver.resolveSuite()`.
+    public void resolveParameterDefault(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Parameter parameter,
+            @Nullable GdType expectedType
+    ) {
+        Objects.requireNonNull(context, "context must not be null");
+        Objects.requireNonNull(parameter, "parameter must not be null");
+        var defaultValue = Objects.requireNonNull(
+                parameter.defaultValue(),
+                "parameter default island requires a default expression"
+        );
+        ownerProcedures.runTopBinding(context, defaultValue);
+        ownerProcedures.runChainBinding(context, defaultValue);
+        ownerProcedures.runParameterDefaultExprType(context, defaultValue, expectedType);
+        flushStatementBoundary(context);
     }
 
     public void resolveStatement(
@@ -260,6 +284,15 @@ public class FrontendStatementResolver {
         }
 
         default void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+        }
+
+        /// Parameter-default island expression typing: the bare default-expression root with the
+        /// parameter slot type as expected type. Only `FrontendBodyOwnerProcedures` implements it.
+        default void runParameterDefaultExprType(
+                @NotNull FrontendSuiteContext context,
+                @NotNull Expression defaultRoot,
+                @Nullable GdType expectedType
+        ) {
         }
 
         default void runUnsupported(@NotNull FrontendSuiteContext context, @NotNull Node root) {

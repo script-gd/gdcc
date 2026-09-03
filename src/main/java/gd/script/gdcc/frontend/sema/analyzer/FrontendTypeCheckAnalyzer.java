@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema.analyzer;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.scope.BlockScope;
+import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
@@ -29,6 +30,7 @@ import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
+import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdStringType;
@@ -56,6 +58,7 @@ import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
@@ -217,6 +220,73 @@ public class FrontendTypeCheckAnalyzer {
         }
 
         reportPropertyTypeHint(access, variableDeclaration, publishedInitializerType);
+    }
+
+    /// Parameter-default type hook (parameter-default plan §4.4): for every accepted default
+    /// expression (published stable root type), the default's type must be assignment-compatible
+    /// with the declared parameter slot type. Rejected or structurally skipped defaults (no
+    /// published stable root) keep their upstream diagnostic owner and are never re-wrapped here.
+    /// A mismatch never reclaims `defaultValueFunc`: the default still exists, and the module
+    /// fails closed through this diagnostic. Runs after the suite sweep.
+    protected void visitParameterDefaults(
+            @NotNull TypeCheckAccess access,
+            @NotNull FunctionDeclaration functionDeclaration
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(functionDeclaration, "functionDeclaration must not be null");
+        for (var parameter : functionDeclaration.parameters()) {
+            var defaultValue = parameter.defaultValue();
+            if (defaultValue == null) {
+                continue;
+            }
+            var publishedDefaultType = access.analysisData().expressionTypes().get(defaultValue);
+            if (publishedDefaultType == null) {
+                continue;
+            }
+            var stableDefaultType = switch (publishedDefaultType.status()) {
+                case RESOLVED, DYNAMIC -> publishedDefaultType;
+                case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> null;
+            };
+            if (stableDefaultType == null) {
+                continue;
+            }
+            visitNestedCastExpressions(access, defaultValue);
+            var parameterSlot = publishedParameterSlotOrNull(access, parameter);
+            if (parameterSlot == null) {
+                continue;
+            }
+            var valueType = Objects.requireNonNull(
+                    stableDefaultType.publishedType(),
+                    "publishedType must not be null for stable parameter default type"
+            );
+            if (access.checkAssignmentCompatible(parameterSlot.type(), valueType)) {
+                continue;
+            }
+            access.diagnosticManager().error(
+                    TYPE_CHECK_CATEGORY,
+                    "Parameter '" + parameter.name().trim() + "' default value type '"
+                            + valueType.getTypeName()
+                            + "' is not assignable to declared parameter type '"
+                            + parameterSlot.type().getTypeName() + "'",
+                    access.sourcePath(),
+                    FrontendRange.fromAstRange(defaultValue.range())
+            );
+        }
+    }
+
+    private static @Nullable ScopeValue publishedParameterSlotOrNull(
+            @NotNull TypeCheckAccess access,
+            @NotNull Parameter parameter
+    ) {
+        if (!(access.analysisData().scopesByAst().get(parameter) instanceof CallableScope callableScope)) {
+            return null;
+        }
+        var slot = callableScope.resolveValueHere(parameter.name().trim());
+        return slot != null
+                && slot.kind() == ScopeValueKind.PARAMETER
+                && slot.declaration() == parameter
+                ? slot
+                : null;
     }
 
     protected void visitReturnStatement(
@@ -1442,6 +1512,12 @@ public class FrontendTypeCheckAnalyzer {
             currentCallableReturnSlot = Objects.requireNonNull(returnSlot, "returnSlot must not be null");
             currentPropertyInitializerContext = null;
             try {
+                // Accepted parameter defaults are checked with the callable context already set
+                // (plan §4.4); `_init`/constructors/lambdas never carry default metadata.
+                if (callableOwner instanceof FunctionDeclaration functionDeclaration
+                        && !functionDeclaration.name().trim().equals("_init")) {
+                    visitParameterDefaults(callbackAccess(), functionDeclaration);
+                }
                 walkSupportedExecutableBlock(body);
             } finally {
                 currentPropertyInitializerContext = previousPropertyInitializerContext;

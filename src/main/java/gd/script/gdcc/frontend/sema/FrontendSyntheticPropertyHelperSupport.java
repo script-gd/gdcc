@@ -18,11 +18,17 @@ public final class FrontendSyntheticPropertyHelperSupport {
     /// Compiler-owned namespace for synthesized lambda shells. Source members reusing it collide
     /// with the hidden `LirFunctionDef` materialized per `LambdaExpression`.
     public static final @NotNull String LAMBDA_FUNCTION_PREFIX = "_lambda_";
+    /// Compiler-owned namespace for synthesized parameter-default functions
+    /// (`_default_<func>$<param>` for instance functions, `_default_s_<func>$<param>` for static
+    /// ones — the static variant sits under the same prefix). Source members reusing it collide
+    /// with the hidden `LirFunctionDef` materialized per defaulted `Parameter`.
+    public static final @NotNull String PARAMETER_DEFAULT_PREFIX = "_default_";
     public static final @NotNull List<String> RESERVED_PREFIXES = List.of(
             PROPERTY_INIT_PREFIX,
             PROPERTY_GETTER_PREFIX,
             PROPERTY_SETTER_PREFIX,
-            LAMBDA_FUNCTION_PREFIX
+            LAMBDA_FUNCTION_PREFIX,
+            PARAMETER_DEFAULT_PREFIX
     );
 
     private FrontendSyntheticPropertyHelperSupport() {
@@ -54,6 +60,16 @@ public final class FrontendSyntheticPropertyHelperSupport {
                     + "' and will be skipped; the '"
                     + LAMBDA_FUNCTION_PREFIX
                     + "' prefix is compiler-owned for synthesized lambda functions";
+        }
+        if (prefix.equals(PARAMETER_DEFAULT_PREFIX)) {
+            return Objects.requireNonNull(memberKind, "memberKind must not be null")
+                    + " '"
+                    + trimmedName
+                    + "' uses reserved synthetic parameter-default prefix '"
+                    + prefix
+                    + "' and will be skipped; the '"
+                    + PARAMETER_DEFAULT_PREFIX
+                    + "' prefix is compiler-owned for synthesized parameter-default functions";
         }
         return Objects.requireNonNull(memberKind, "memberKind must not be null")
                 + " '"
