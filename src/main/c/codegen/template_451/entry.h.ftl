@@ -475,8 +475,8 @@ static inline ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnTyp
 
 <#list helper.bindingDataList as bindingData>
 <#assign paramCount = bindingData.paramTypes?size>
-<#-- Default-slot contract (frontend_parameter_default_plan §5.6): defaults form a contiguous -->
-<#-- trailing suffix, so requiredCount = paramCount - defaultSlotCount locates the fill range. -->
+<#-- Default-slot contract: defaults form a contiguous trailing suffix, so -->
+<#-- requiredCount = paramCount - defaultSlotCount locates the fill range. -->
 <#assign requiredCount = paramCount - bindingData.defaultSlotCount>
 <#assign defaultFlavor = (bindingData.defaultSlotCount gt 0)>
 <#if defaultFlavor>
@@ -621,7 +621,7 @@ static void call${helper.renderFuncBindName(bindingData)}(
     // cleanup epilogue below can destroy them before returning to Godot.
 <#if defaultFlavor>
     <#if !bindingData.staticMethod>
-    // self_fat must be materialized before any default fill below (§5.6.3); it is borrowed
+    // self_fat must be materialized before any default fill below; it is borrowed
     // from p_instance and needs no cleanup.
     ${helper.renderRegisteredMethodSelfFatType(bindingData)} self_fat = ${helper.renderRegisteredMethodSelfFatExpr(bindingData)};
     </#if>

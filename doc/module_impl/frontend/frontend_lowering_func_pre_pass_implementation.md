@@ -198,7 +198,7 @@ preparation 不接受任何已经进入 CFG/body 形状的 executable function �
 
 ## 7. Parameter Default 冻结合同
 
-parameter default lowering 单元已在 preparation 阶段落地（`frontend_parameter_default_plan.md` 步骤 4），冻结形状为：
+parameter default lowering 单元在 preparation 阶段落地（事实源见 `frontend_parameter_default_implementation.md` §4.2），冻结形状为：
 
 - parameter default lowering 单元走 `FunctionLoweringContext`，kind 为 `PARAMETER_DEFAULT_INIT`
 - `sourceOwner` 保留原始 `Parameter` declaration AST 节点
@@ -207,10 +207,10 @@ parameter default lowering 单元已在 preparation 阶段落地（`frontend_par
 - shell return type 等于参数声明 slot 类型；static flag 与 owning function 一致；instance 函数的 shell 非 static 且恰好声明一个名为 `self`、类型为 owning class 的首参（island 语义中 `self` 即绑定到该 slot），static 函数的 shell 无参数
 - 不允许把 parameter default permanently 设计成 call-site inline-only 路线
 
-当前实现与测试锚定的剩余边界是：
+本 pass 的边界（下游 CFG/body lowering 与 backend 接线均已闭环）：
 
 - preparation 发布的 `PARAMETER_DEFAULT_INIT` context 与 shell 保持 shell-only 中间态
-- `FrontendLoweringBuildCfgPass` / `FrontendLoweringBodyInsnPass` 已按 `buildPropertyInitializer()` 同构范式消费该 kind（`frontend_parameter_default_plan.md` 步骤 5-6）；剩余工作为 backend 调用点与 prologue 接线（步骤 7-8）
+- `FrontendLoweringBuildCfgPass` / `FrontendLoweringBodyInsnPass` 已按 `buildPropertyInitializer()` 同构范式消费该 kind；backend 调用点补全与 argc 感知 prologue wrapper 接线亦已闭环（`frontend_parameter_default_implementation.md` §4.3/§5）
 
 ---
 
@@ -274,7 +274,6 @@ negative path 至少要锚定：
 
 - callable skeleton 匹配键未来可能需要从 `name + static + parameterCount` 升级
 - property initializer 的完整执行时序、实例状态可见性和初始化顺序仍未闭环
-- parameter default 的可见性、instance-vs-static shell 策略、preparation 物化与 CFG/body lowering 接线已按 `frontend_parameter_default_plan.md` 落地；剩余风险集中在 backend 调用点与 prologue 补全（步骤 7-8）
 - `ConditionalExpression` 已按 frontend CFG graph 双语境合同放行（value 语境 merge / condition 语境纯控制流展开，见 `frontend_conditional_expression_implementation.md`）；后续新增 control-flow 表达式仍必须先冻结 CFG / condition-evaluation-region 合同再放行
 - truthiness / condition normalization 属于后续 CFG/body lowering 责任，不应下沉回 function pre-pass
 - 当前 `FrontendLoweringCfgPass` 与 `FunctionLoweringContext.cfgNodeBlocks` 仍属于迁移期过渡层；其中 `cfgNodeBlocks` 已显式标注弃用。后续 CFG 工程应在独立的 `frontend.lowering.cfg` 包中实施，并由 `FrontendLoweringBuildCfgPass` 构建，而不是继续扩展 legacy block-bundle metadata

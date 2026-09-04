@@ -1156,8 +1156,8 @@ class CGenHelperTest {
         plain.addParameter(new LirParameterDef("label", GdStringType.STRING, null, plain));
         worker.addFunction(plain);
 
-        // The bind-time Variant channel stays empty (§5.5), but the default-slot count feeds the
-        // wrapper shape (§5.6.1): same-shape methods with different default counts never share.
+        // The bind-time Variant channel stays empty, but the default-slot count feeds the
+        // wrapper shape: same-shape methods with different default counts never share.
         var pingBindName = helper.renderFuncBindName(worker, ping);
         var plainBindName = helper.renderFuncBindName(worker, plain);
         var staticPingBindName = helper.renderFuncBindName(staticPing);

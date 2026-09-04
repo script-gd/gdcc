@@ -3189,9 +3189,9 @@ public class CCodegenTest {
         var hCode = generatedFileText(files, "entry.h");
         var cCode = generatedFileText(files, "entry.c");
 
-        // §5.5: the bind helper must not grow default_N_value formals and must not register
-        // method_info.default_arguments for GDCC source defaults. §5.6.1: the default-slot count
-        // feeds the wrapper shape name instead.
+        // The bind helper must not grow default_N_value formals and must not register
+        // method_info.default_arguments for GDCC source defaults; the default-slot count feeds
+        // the wrapper shape name instead.
         var bindHelperBody = resolveMethodBindHelperBody(hCode, "_2_arg_int_int_ret_int_1_defslot");
         assertFalse(bindHelperBody.contains("default_"), bindHelperBody);
         assertFalse(bindHelperBody.contains("default_argument_count"), bindHelperBody);
@@ -3214,7 +3214,7 @@ public class CCodegenTest {
     public void sourceParameterDefaultsGenerateArgcAwareWrapperAndExclusiveUserdata() throws Exception {
         var workerClass = new LirClassDef("DefaultWrapperWorker", "RefCounted");
 
-        // Hidden instance shells (self first parameter, per §5.2).
+        // Hidden instance shells declare the owner-typed self as first parameter.
         var shellCount = new LirFunctionDef("_default_describe$count");
         shellCount.setHidden(true);
         shellCount.setReturnType(GdIntType.INT);
@@ -3295,7 +3295,7 @@ public class CCodegenTest {
         var hCode = generatedFileText(files, "entry.h");
         var cCode = generatedFileText(files, "entry.c");
 
-        // §5.6.2: per-shape userdata typedef with per-slot typed default function pointers
+        // Per-shape userdata typedef with per-slot typed default function pointers
         // (heterogeneous int + String), instance flavor taking owner fat self. impl keeps the
         // exact function-pointer type (no function-pointer <-> void* round-trip).
         assertContainsAll(
@@ -3310,7 +3310,7 @@ public class CCodegenTest {
                 "} gdcc_default_ud_1_arg_int_ret_int_1_defslot_static;"
         );
 
-        // §5.6.3: call wrapper — argc guard with required-count expected, gates/probes conditional
+        // Call wrapper: argc guard with required-count expected, gates/probes conditional
         // on supplied arguments, per-slot unpack-or-default, self_fat before any fill.
         var callBody = resolveCallWrapperBody(hCode, "_3_arg_int_int_String_ret_int_2_defslot");
         assertContainsAll(
@@ -3348,7 +3348,7 @@ public class CCodegenTest {
         assertTrue(staticCallBody.contains("arg0 = ud->def0();"), staticCallBody);
         assertFalse(staticCallBody.contains("self_fat"), staticCallBody);
 
-        // §5.6.7: ptrcall keeps the full-argument ABI but must unwrap impl from the same userdata.
+        // ptrcall keeps the full-argument ABI but must unwrap impl from the same userdata.
         var ptrcallBody = resolveFunctionBodyByPrefix(
                 hCode,
                 resolveOwnedWrapperPrefix(hCode, "static void ptrcall", "_3_arg_int_int_String_ret_int_2_defslot")
@@ -3357,7 +3357,7 @@ public class CCodegenTest {
         assertFalse(ptrcallBody.contains("p_argument_count"), ptrcallBody);
         assertFalse(ptrcallBody.contains("ud->def"), ptrcallBody);
 
-        // §5.6.2: registration site owns a per-method exclusive static userdata instance, filled
+        // The registration site owns a per-method exclusive static userdata instance, filled
         // in declaration order, passed through the existing void* function formal.
         assertOrdered(
                 cCode,
@@ -3381,7 +3381,8 @@ public class CCodegenTest {
         assertTrue(pingCallBody.contains("= method_userdata;"), pingCallBody);
         assertFalse(pingCallBody.contains("ud->"), pingCallBody);
 
-        // §5.5 regression holds under the new flavor: no bind-time default Variant channel.
+        // Bind-time isolation still holds under the defslot flavor: no bind-time default
+        // Variant channel anywhere in the generated registration surface.
         assertFalse(hCode.contains("default_argument_count"), hCode);
         assertFalse(hCode.contains("default_0_value"), hCode);
     }

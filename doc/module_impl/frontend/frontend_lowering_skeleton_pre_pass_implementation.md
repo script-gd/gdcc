@@ -164,15 +164,14 @@ void run(FrontendLoweringContext context)
 - `EXECUTABLE_BODY`
 - `PROPERTY_INIT`
 - `LAMBDA_BODY`（prep pass 按已发布 `FrontendLambdaPlan` 合成 hidden `_lambda_<k>` shell）
-
-`PARAMETER_DEFAULT_INIT` 当前只冻结模型，不实际收集。
+- `PARAMETER_DEFAULT_INIT`（每个带 `defaultValueFunc` 元数据的参数合成 hidden shell 并发布 context，合同见 `frontend_parameter_default_implementation.md` §4.2）
 
 冻结合同补充：
 
-- future parameter default lowering 单元仍必须走 `FunctionLoweringContext`
-- `sourceOwner` 应保留原始 parameter/default declaration AST 节点
+- parameter default lowering 单元走 `FunctionLoweringContext`
+- `sourceOwner` 保留原始 parameter/default declaration AST 节点
 - `loweringRoot` 只指向 parameter default expression
-- 对应 synthetic function 最终由 `LirParameterDef.defaultValueFunc` 引用，而不是退化成 call-site inline-only 设计
+- 对应 synthetic function 由 `LirParameterDef.defaultValueFunc` 引用，而不是退化成 call-site inline-only 设计
 - 后续 pass 应统一经由 `FunctionLoweringContext.analysisData()` 读取 `scopesByAst()`、`symbolBindings()`、`expressionTypes()`、`resolvedMembers()`、`resolvedCalls()`，而不是重新扫描 `FrontendModuleSkeleton` 去回找同一批函数级事实
 
 ---
@@ -233,7 +232,7 @@ void run(FrontendLoweringContext context)
 - executable callable 继续复用 skeleton phase 已发布的同一份 `LirFunctionDef`
 - executable callable 在进入 preparation 时仍必须保持 shell-only 状态；不允许把已进入 CFG/body 形状的函数继续当作 scaffold 消费
 - property initializer 的 synthetic shell 只建立函数壳，不代表完整初始化时序已经落地
-- parameter default 仍不生成 context，但 `FunctionLoweringContext.Kind` 必须保留 `PARAMETER_DEFAULT_INIT`，且 future `default_value_func` 合同已冻结为 hidden synthetic function route
+- parameter default lowering 单元由 function pre-pass 发布 `PARAMETER_DEFAULT_INIT` context 与 hidden synthetic shell（`default_value_func` 走 hidden synthetic function route，不允许 call-site inline-only）
 
 ---
 
@@ -277,7 +276,6 @@ void run(FrontendLoweringContext context)
 此外，frontend MVP 仍未完整支持：
 
 - `match`
-- 参数默认值
 - block-local `const`
 - signal coroutine use-site（`await signal`；`.emit` / `.connect` 已闭环，见 `frontend_signal_support.md`）
 

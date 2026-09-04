@@ -44,10 +44,10 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
-/// Anchors the parameter-default metadata owner sweep (plan §4.1) and the `PARAMETER_DEFAULT`
-/// visible-value island (plan §4.2): accepted forms publish full facts plus `defaultValueFunc`
-/// metadata, rejected forms produce exactly one anchored diagnostic and reclaim the metadata, and
-/// the reclaimed state is what body arity checks observe.
+/// Anchors the parameter-default metadata owner sweep and the `PARAMETER_DEFAULT` visible-value
+/// island: accepted forms publish full facts plus `defaultValueFunc` metadata, rejected forms
+/// produce exactly one anchored diagnostic and reclaim the metadata, and the reclaimed state is
+/// what body arity checks observe.
 class FrontendParameterDefaultMetadataOwnerTest {
     private static final @NotNull String ORDER_CATEGORY = "sema.invalid_parameter_default_order";
     private static final @NotNull String UNSUPPORTED_DEFAULT_CATEGORY =
@@ -223,7 +223,7 @@ class FrontendParameterDefaultMetadataOwnerTest {
                 """);
 
         assertTrue(input.diagnostics().snapshot().isEmpty(), input.diagnostics().snapshot()::toString);
-        // Static functions always synthesize under the `_default_s_` prefix (plan §5.1).
+        // Static functions always synthesize under the `_default_s_` prefix.
         assertEquals("_default_s_ping$count", requireParameterDef(input, "StaticLiteralDefault", "ping", "count")
                 .getDefaultValueFunc());
     }

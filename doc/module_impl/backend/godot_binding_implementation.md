@@ -337,11 +337,11 @@ fail-fast。同一 C function name 对应不同结构性 signature 或 ABI 也�
 wrapper。`GameSingleton -> Node` 这类 runtime 未提供的 singleton 才进入 module-local snapshot，并生成
 按 `GameSingleton` lookup、按 `Node` 返回的 wrapper。
 
-## GDCC 注册方法的参数默认值绑定合同（2026-09-03 落地）
+## GDCC 注册方法的参数默认值绑定合同
 
 source function 的参数默认值（`LirParameterDef.defaultValueFunc`）走独立的 callee-prologue
 通道，与 bind 期 Variant 默认值通道严格隔离（详细语义合同见
-`frontend_parameter_default_plan.md` §5.5/§5.6，步骤 9 完成后以其事实源为准）：
+`frontend_parameter_default_implementation.md` §5.2/§5.3）：
 
 - **method_info 通道恒空**：`CGenHelper` 三条收集路径（`collectBindingData`、两处
   `renderFuncBindName` 的 FunctionDef 重载）不再把 `defaultValueFunc` 写入

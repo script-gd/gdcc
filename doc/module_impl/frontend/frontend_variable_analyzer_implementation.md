@@ -163,7 +163,7 @@
 
 若 `Parameter.defaultValue() != null`：
 
-- source function 参数：不再发诊断、不分析默认值表达式、照常登记参数 binding；默认表达式的语义分析与 `defaultValueFunc` 元数据由 `FrontendParameterDefaultMetadataOwner` 在 suite 阶段统一负责（`frontend_parameter_default_plan.md` §4.1）
+- source function 参数：不再发诊断、不分析默认值表达式、照常登记参数 binding；默认表达式的语义分析与 `defaultValueFunc` 元数据由 `FrontendParameterDefaultMetadataOwner` 在 suite 阶段统一负责（`frontend_parameter_default_implementation.md` §3.1）
 - constructor / `_init` 参数：永久非目标，不进入该 owner 的 sweep，维持既有拒绝路径
 - lambda 参数：维持 fail-closed —— 发出 `sema.unsupported_parameter_default_value` error，不分析默认值表达式，照常登记参数 binding
 

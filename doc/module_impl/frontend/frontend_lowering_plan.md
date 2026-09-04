@@ -4,11 +4,12 @@
 
 ## 文档状态
 
-- 状态：计划维护中（function pre-pass scaffold、frontend CFG graph shared-expression core、property-initializer CFG/body lowering、executable-body body lowering 与 processor-registry 重构已落地；parameter default / staged surface 仍待继续推进）
+- 状态：计划维护中（function pre-pass scaffold、frontend CFG graph shared-expression core、property-initializer CFG/body lowering、executable-body body lowering 与 processor-registry 重构已落地；parameter default 全链路已闭环，事实源见 `frontend_parameter_default_implementation.md`；staged surface 仍待继续推进）
 - 更新时间：2026-04-06
 - 当前事实源：
   - `frontend_lowering_skeleton_pre_pass_implementation.md`
   - `frontend_lowering_func_pre_pass_implementation.md`
+  - `frontend_parameter_default_implementation.md`
   - `frontend_rules.md`
   - `frontend_compile_check_analyzer_implementation.md`
   - `runtime_name_mapping_implementation.md`
@@ -61,7 +62,7 @@
 
 - 在不生成真实 CFG 的前提下，为所有未来会形成 `LirFunctionDef` 的 lowering 单元建立统一入口
 - 引入统一的 `FunctionLoweringContext`，但保持结构简单，不制造多余抽象
-- 明确 executable body、property initializer function 与 future parameter default initializer function 共用同一套函数级 scaffold
+- 明确 executable body、property initializer function 与 parameter default initializer function 共用同一套函数级 scaffold
 
 建议实施内容：
 
@@ -77,7 +78,7 @@
   - 已发布的 scope / binding / member / call / expression-type facts
 - executable callable 复用 skeleton phase 已发布的 `LirFunctionDef`
 - supported property initializer 应补 hidden synthetic init function shell，并回写 `LirPropertyDef.initFunc`
-- parameter default 当前仍不收集真实 context，但架构必须保留 future `default_value_func` 接线位置
+- parameter default 经 `PARAMETER_DEFAULT_INIT` context 收集真实 facts 并接线 `default_value_func`，合同见 `frontend_parameter_default_implementation.md` §4.2
 
 验收细则：
 
@@ -85,7 +86,7 @@
   - 所有 top-level / inner class executable callable 都可进入 `EXECUTABLE_BODY` context
   - supported property initializer 可进入 `PROPERTY_INIT` context，并稳定映射到 hidden synthetic init function shell
   - `_init`、普通 instance function、static function 与 property init function 都能被区分
-  - 当前 `FunctionLoweringContext` 形状无需修改即可容纳 future `PARAMETER_DEFAULT_INIT`
+  - `FunctionLoweringContext` 形状原样容纳 `PARAMETER_DEFAULT_INIT`（已由 function pre-pass 发布，合同见 `frontend_parameter_default_implementation.md` §4.2）
 - negative path：
   - compile gate 已挡下的 subtree 不进入 function lowering context 集合
   - 对缺失的 published fact 或 metadata 采用 invariant fail-fast，而不是 silent skip
@@ -159,7 +160,7 @@
 2. bare/global call
 3. member call / property access
 4. assignment
-5. parameter default / staged executable surface
+5. staged executable surface（parameter default 已闭环，见 `frontend_parameter_default_implementation.md`）
 
 建议实施内容：
 
@@ -220,18 +221,13 @@
 以下内容即使 body lowering 初步落地，也继续保持 post-MVP，不应混入已有 lowering pass 的局部放行：
 
 - `for` 的 `OBJECT_CUSTOM`（Object `_iter_*` 精确协议）仍属 post-MVP；其余已注册 route 已接入，见 `frontend_for_range_loop_implementation.md`
-- 参数默认值语义本身
 - block-local `const`
 - property initializer / parameter default 内 await；普通 executable function 的 signal/dynamic/instance-call await、lambda 内 await 与 static coroutine call 均已闭环（`frontend_await_implementation.md`）
 - property initializer 中依赖实例状态的完整初始化时序语义
 
-其中参数默认值需要额外明确：
+参数默认值语义本身已落地（hidden synthetic function + `LirParameterDef.defaultValueFunc` 接线，非调用点 inline-only），事实源见 `frontend_parameter_default_implementation.md`。
 
-- 当前 deferred 的是 parameter default 的语义支持面，不是其架构位置
-- 后续实现时应把每个 supported default expression lowering 成 hidden synthetic function，并写入 `LirParameterDef.defaultValueFunc`
-- 不应把 parameter default 设计成仅靠调用点 inline 补全的唯一路径
-
-这些内容需要单独立项，并附带专门的文档、测试与回归边界。
+以上未落地项需要单独立项，并附带专门的文档、测试与回归边界。
 
 ---
 

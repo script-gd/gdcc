@@ -24,7 +24,7 @@
   - 不修改 shared `Scope.resolveValue(...)` 协议
   - 不让 unsupported 子域伪装成正常 `NOT_FOUND`
   - 不在 resolver 内直接生产 diagnostics 或写入 `symbolBindings()`
-  - 不在当前 frontend 中为 `match`、block-local `const` 提供正式 local inventory 解析（lambda body 已转正；parameter default 经 `PARAMETER_DEFAULT` island 由 `FrontendParameterDefaultMetadataOwner` 转正，见 `frontend_parameter_default_plan.md` §4.2）
+  - 不在当前 frontend 中为 `match`、block-local `const` 提供正式 local inventory 解析（lambda body 已转正；parameter default 经 `PARAMETER_DEFAULT` island 由 `FrontendParameterDefaultMetadataOwner` 转正，见 `frontend_parameter_default_implementation.md` §3.2）
 
 ---
 

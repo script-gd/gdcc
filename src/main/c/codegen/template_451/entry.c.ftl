@@ -151,7 +151,7 @@ static void ${helper.renderStaticInitializersSymbol(classDef.name)}(void) {
 }
 </#list>
 
-<#-- Per-method exclusive default-fill userdata at file scope (§5.6.2): the ClassDB registration
+<#-- Per-method exclusive default-fill userdata at file scope: the ClassDB registration
      below and the virtual dispatch path share these instances, so both userdata protocols resolve
      impl through the same struct — a raw function address is never reinterpreted as userdata.
      Default slots form a contiguous trailing suffix, so the filtered initializer order matches

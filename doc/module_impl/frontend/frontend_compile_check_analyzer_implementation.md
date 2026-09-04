@@ -98,7 +98,7 @@ compile gate 当前只扫描未来 lowering 会实际消费的 surface：
 - supported property initializer island
 - 已接受 parameter default 表达式根（`walkCallableBody(...)` 中对每个 `parameter.defaultValue() != null` 且已发布 `expressionTypes` 的根显式 `walkExpression()`；纯字面量默认没有 call facts，`resolvedCalls` 不是必需条件）
 
-compile gate 可以沿 callable body、支持岛 property initializer 与已接受 parameter default 根继续递归表达式子树，并据此建立 compile anchor。对 property initializer 而言，这条 compile surface 的 downstream 已经固定为 `PROPERTY_INIT` CFG/body lowering 与真实 `init_func` helper materialization，而不是停留在 shell-only scaffold。parameter default 根的 downstream 是 `PARAMETER_DEFAULT_INIT` synthetic shell lowering（见 `frontend_parameter_default_plan.md` §5.2/§5.3）。
+compile gate 可以沿 callable body、支持岛 property initializer 与已接受 parameter default 根继续递归表达式子树，并据此建立 compile anchor。对 property initializer 而言，这条 compile surface 的 downstream 已经固定为 `PROPERTY_INIT` CFG/body lowering 与真实 `init_func` helper materialization，而不是停留在 shell-only scaffold。parameter default 根的 downstream 是 `PARAMETER_DEFAULT_INIT` synthetic shell lowering（见 `frontend_parameter_default_implementation.md` §4.2/§4.3）。
 
 ### 2.2 当前显式跳过的区域
 

@@ -33,7 +33,7 @@ import java.util.Objects;
 import java.util.Set;
 
 /// Single owner of source-function parameter-default semantics and `LirParameterDef.defaultValueFunc`
-/// metadata (plan §4.1). Driven by `FrontendSuiteResolver` once per module, before any callable body
+/// metadata. Driven by `FrontendSuiteResolver` once per module, before any callable body
 /// or property initializer resolves, so body call sites only ever observe finalized metadata.
 ///
 /// The sweep runs three phases module-wide:
@@ -59,9 +59,9 @@ public final class FrontendParameterDefaultMetadataOwner {
             "sema.invalid_parameter_default_order";
     public static final @NotNull String UNSUPPORTED_PARAMETER_DEFAULT_EXPRESSION_CATEGORY =
             "sema.unsupported_parameter_default_expression";
-    /// Static helper prefix (plan §5.1): static functions always synthesize `_default_s_` names so
-    /// the prefix encodes staticness by construction. The whole `_default_` namespace (including
-    /// `_default_s_`) is compiler-owned via `FrontendSyntheticPropertyHelperSupport`.
+    /// Static functions always synthesize `_default_s_` names so the prefix encodes staticness by
+    /// construction. The whole `_default_` namespace (including `_default_s_`) is compiler-owned
+    /// via `FrontendSyntheticPropertyHelperSupport`.
     private static final @NotNull String STATIC_PREFIX = "_default_s_";
 
     private final @NotNull FrontendStatementResolver statementResolver;
@@ -190,9 +190,9 @@ public final class FrontendParameterDefaultMetadataOwner {
         }
     }
 
-    /// Godot order rule (plan §2.1): mandatory prefix, contiguous defaulted suffix, optional
-    /// variadic tail. Every violating parameter earns exactly one diagnostic and is excluded from
-    /// later phases; the remaining parameters keep flowing so sibling subtrees stay analyzed.
+    /// Godot order rule: mandatory prefix, contiguous defaulted suffix, optional variadic tail.
+    /// Every violating parameter earns exactly one diagnostic and is excluded from later phases;
+    /// the remaining parameters keep flowing so sibling subtrees stay analyzed.
     private @NotNull Set<Parameter> validateParameterOrder(
             @NotNull FunctionDeclaration functionDeclaration,
             @NotNull List<Parameter> parameters,
@@ -277,7 +277,7 @@ public final class FrontendParameterDefaultMetadataOwner {
                 null,
                 interfaceSurface.typedLexicalBaseline()
         );
-        // Island context (plan §4.2): explicit PARAMETER_DEFAULT domain, enclosing function stays
+        // Island context: explicit PARAMETER_DEFAULT domain, enclosing function stays
         // the callable owner, instance/static restriction inherited, no property-initializer
         // context (that one would wrongly seal `self`/instance members) and no nested-lambda
         // resolver (lambdas inside defaults stay fail-closed).

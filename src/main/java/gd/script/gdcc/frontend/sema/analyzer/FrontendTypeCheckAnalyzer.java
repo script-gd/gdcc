@@ -222,10 +222,10 @@ public class FrontendTypeCheckAnalyzer {
         reportPropertyTypeHint(access, variableDeclaration, publishedInitializerType);
     }
 
-    /// Parameter-default type hook (parameter-default plan §4.4): for every accepted default
-    /// expression (published stable root type), the default's type must be assignment-compatible
-    /// with the declared parameter slot type. Rejected or structurally skipped defaults (no
-    /// published stable root) keep their upstream diagnostic owner and are never re-wrapped here.
+    /// Parameter-default type hook: for every accepted default expression (published stable root
+    /// type), the default's type must be assignment-compatible with the declared parameter slot
+    /// type. Rejected or structurally skipped defaults (no published stable root) keep their
+    /// upstream diagnostic owner and are never re-wrapped here.
     /// A mismatch never reclaims `defaultValueFunc`: the default still exists, and the module
     /// fails closed through this diagnostic. Runs after the suite sweep.
     protected void visitParameterDefaults(
@@ -1512,8 +1512,8 @@ public class FrontendTypeCheckAnalyzer {
             currentCallableReturnSlot = Objects.requireNonNull(returnSlot, "returnSlot must not be null");
             currentPropertyInitializerContext = null;
             try {
-                // Accepted parameter defaults are checked with the callable context already set
-                // (plan §4.4); `_init`/constructors/lambdas never carry default metadata.
+                // Accepted parameter defaults are checked with the callable context already set;
+                // `_init`/constructors/lambdas never carry default metadata.
                 if (callableOwner instanceof FunctionDeclaration functionDeclaration
                         && !functionDeclaration.name().trim().equals("_init")) {
                     visitParameterDefaults(callbackAccess(), functionDeclaration);

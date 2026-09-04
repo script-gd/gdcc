@@ -322,11 +322,11 @@ public final class CGenHelper {
                         functionDef.isStatic() ? null : ownerName,
                         paramTypes,
                         functionDef.getReturnType(),
-                        // Source-function defaults never enter the bind-time Variant channel
-                        // (frontend_parameter_default_plan §5.5): the registration surface keeps
-                        // default_argument_count == 0 so the VM cannot pre-fill bind-time constants;
-                        // runtime completion happens caller-side (exact route) or in the
-                        // callee-prologue wrapper (dynamic route, keyed by defaultSlotCount).
+                        // Source-function defaults never enter the bind-time Variant channel:
+                        // the registration surface keeps default_argument_count == 0 so the VM
+                        // cannot pre-fill bind-time constants; runtime completion happens
+                        // caller-side (exact route) or in the callee-prologue wrapper
+                        // (dynamic route, keyed by defaultSlotCount).
                         List.of(),
                         functionDef.isStatic(),
                         countDefaultSlots(functionDef)
@@ -958,7 +958,7 @@ public final class CGenHelper {
     }
 
     /// Shared FunctionDef -> BindingData projection: the bind-time Variant channel stays empty
-    /// (§5.5) while the default-slot count feeds the wrapper shape (§5.6.1).
+    /// while the default-slot count feeds the wrapper shape.
     private @NotNull BindingData toBindingData(@NotNull ClassDef classDef, @NotNull FunctionDef functionDef) {
         var paramTypes = new ArrayList<GdType>();
         for (var parameterDef : functionDef.getParameters()) {
@@ -977,7 +977,7 @@ public final class CGenHelper {
         );
     }
 
-    /// Per-shape default-fill userdata struct name (§5.6.2). The typedef (entry.h), the wrapper
+    /// Per-shape default-fill userdata struct name. The typedef (entry.h), the wrapper
     /// unwrap (entry.h) and the per-method instance (entry.c) all derive it from the same
     /// bind-name encoding, so the three sites can never disagree on the spelling.
     public @NotNull String renderDefaultUserdataTypeName(@NotNull BindingData bindingData) {
@@ -1138,7 +1138,7 @@ public final class CGenHelper {
             sb.append("no_ret");
         }
         // `_K_defslot` is the only default-aware bind-name segment; the legacy `_N_default_`
-        // Variant channel is never fed for source functions (§5.5/§5.6.1).
+        // Variant channel is never fed for source functions.
         if (defaultSlotCount > 0) {
             sb.append("_").append(defaultSlotCount).append("_defslot");
         }

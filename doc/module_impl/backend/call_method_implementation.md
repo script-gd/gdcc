@@ -53,7 +53,7 @@
   - 支持实例/静态默认值函数
   - 校验函数参数个数、vararg 禁止、返回类型兼容、receiver 参数兼容
   - default 值通过 temp 物化，调用后逆序销毁
-  - source function 默认值（frontend_parameter_default_plan §5.4，2026-09-03 验证闭环）：synthetic shell 按 static 位决定是否传当前接收者（instance shell 首参 `self` 传 owner fat self；static shell 无参直调）；同一调用省略多个尾部默认值时按声明顺序逐槽物化，多次调用各自重新调用 shell（无缓存）；缺 required 前缀/超参仍 fail-fast；bare call 由 frontend 降到 exact `CallMethodInsn`/`CallStaticMethodInsn` 后共享同一补全程式。dynamic（`OBJECT_DYNAMIC`/`VARIANT_DYNAMIC`）路由不做调用点补全，缺参由 callee-prologue wrapper 在运行时填充（见 `godot_binding_implementation.md` 的参数默认值条款）
+  - source function 默认值（语义合同见 `frontend_parameter_default_implementation.md` §5.1）：synthetic shell 按 static 位决定是否传当前接收者（instance shell 首参 `self` 传 owner fat self；static shell 无参直调）；同一调用省略多个尾部默认值时按声明顺序逐槽物化，多次调用各自重新调用 shell（无缓存）；缺 required 前缀/超参仍 fail-fast；bare call 由 frontend 降到 exact `CallMethodInsn`/`CallStaticMethodInsn` 后共享同一补全程式。dynamic（`OBJECT_DYNAMIC`/`VARIANT_DYNAMIC`）路由不做调用点补全，缺参由 callee-prologue wrapper 在运行时填充（见 `godot_binding_implementation.md` 的参数默认值条款）
 
 ### 已实现动态路径 pack/unpack
 

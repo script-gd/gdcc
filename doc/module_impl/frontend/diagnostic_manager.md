@@ -190,6 +190,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.type_resolution`
 - `sema.variable_binding`
 - `sema.unsupported_parameter_default_value`
+- `sema.invalid_parameter_default_order`
+- `sema.unsupported_parameter_default_expression`
 - `sema.unsupported_variable_inventory_subtree`
 - `sema.variable_slot_publication`
 - `sema.binding`
@@ -221,7 +223,12 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - variable analyzer 对 duplicate parameter、duplicate local、same-callable local shadowing、capture 与既有 callable slot 冲突（如 lambda 参数名为 `self` 时又需捕获 `self`）、scope kind mismatch 发出的恢复性 source error
   - duplicate / shadowing local 的消息现在必须包含：当前声明位置、冲突声明位置、callable / block 归属、source path
 - `sema.unsupported_parameter_default_value`
-  - variable analyzer 对 parameter default value 当前尚未接线时发出的 feature-boundary error
+  - variable analyzer 对 lambda 参数默认值发出的 feature-boundary error；source function 参数默认值已由 `FrontendParameterDefaultMetadataOwner` 接线，不再走该 category
+- `sema.invalid_parameter_default_order`
+  - parameter-default metadata owner 对默认值顺序违规（默认参数后接必填参数、variadic 带默认值）发出的 error，锚定违规参数；违规参数不获得 `defaultValueFunc`
+- `sema.unsupported_parameter_default_expression`
+  - parameter-default metadata owner 对默认表达式可见性违规（引用参数/局部变量/capture、`await`、`$`/`%` get-node、static 方法中引用 `self`/实例成员、同名兄弟函数）发出的单条同级 error，锚定默认表达式根
+  - 以上两个 category 的完整合同见 `frontend_parameter_default_implementation.md` §6
 - `sema.unsupported_variable_inventory_subtree`
   - variable analyzer 对 block-local `const` inventory 边界发出的 feature-boundary error
   - lambda 与 `match` 已移出该边界：supported executable body 内的 lambda / match section 会绑定 param / local / capture / pattern bind，不再发此诊断

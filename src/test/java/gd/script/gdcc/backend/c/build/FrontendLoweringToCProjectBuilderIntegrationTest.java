@@ -140,7 +140,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
 
         // The gdcc module itself exercises the exact/static/bare caller routes with omitted
         // trailing arguments; the Godot-side script only invokes full-argument probe methods
-        // (dynamic-route omission lands with the step-8 callee-prologue wrapper).
+        // (dynamic-route omission lands in the callee-prologue wrapper).
         var source = """
                 class_name ParamDefaultSmoke
                 extends Node
@@ -216,14 +216,14 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         var entrySource = Files.readString(projectDir.resolve("entry.c"));
         var entryHeader = Files.readString(projectDir.resolve("entry.h"));
 
-        // §5.1: the raw `$` file-scope symbols must compile and link under zig cc; definition
+        // The raw `$` file-scope symbols must compile and link under zig cc; definition
         // (entry.c), prototype (entry.h) and call sites share one spelling.
         assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
         assertTrue(entrySource.contains("RuntimeParamDefaultSmoke__default_ping$count("), entrySource);
         assertTrue(entrySource.contains("RuntimeParamDefaultSmoke__default_s_sping$count("), entrySource);
         assertTrue(entryHeader.contains("RuntimeParamDefaultSmoke__default_ping$count("), entryHeader);
 
-        // §5.5: the bind registration channel stays empty — no bind-time default Variants and
+        // The bind registration channel stays empty — no bind-time default Variants and
         // no default_N_value formals anywhere in the generated registration surface.
         assertFalse(entryHeader.contains("default_argument_count"), entryHeader);
         assertFalse(entryHeader.contains("default_0_value"), entryHeader);
@@ -264,7 +264,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                 () -> "Re-evaluation check should not fail.\nOutput:\n" + combinedOutput
         );
 
-        // Step 8: dynamic route (Object.call) runtime completion through the argc-aware wrapper.
+        // Dynamic route (Object.call) runtime completion through the argc-aware wrapper.
         assertTrue(
                 combinedOutput.contains("parameter default dynamic-route check passed."),
                 () -> "Dynamic-route default fill should be correct.\nOutput:\n" + combinedOutput
@@ -2286,7 +2286,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                     else:
                         push_error("parameter default re-evaluation check failed: got %s." % reeval_result)
 
-                    # Step 8: the dynamic route (Object.call -> GDExtensionMethodBind::call ->
+                    # The dynamic route (Object.call -> GDExtensionMethodBind::call ->
                     # callee-prologue wrapper) fills omitted trailing arguments at runtime.
                     var dynamic_result = int(target.call("ping", 1))
                     if dynamic_result == 41:

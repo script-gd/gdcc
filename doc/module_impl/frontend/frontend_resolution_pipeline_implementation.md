@@ -68,7 +68,7 @@
 Owner 边界是语义合同：
 
 - `FrontendVariableAnalyzer` 拥有 parameter / ordinary local inventory publication。
-- `FrontendParameterDefaultMetadataOwner` 拥有 source function 参数默认表达式的语义分析与 `LirParameterDef.defaultValueFunc` 元数据的唯一写入/回收权（三阶段 sweep：结构校验 → 占位写入 → island 分析 → 失败回收）；skeleton 恒写 `null`，其余组件不得改写该元数据（`frontend_parameter_default_plan.md` §4.1）。
+- `FrontendParameterDefaultMetadataOwner` 拥有 source function 参数默认表达式的语义分析与 `LirParameterDef.defaultValueFunc` 元数据的唯一写入/回收权（三阶段 sweep：结构校验 → 占位写入 → island 分析 → 失败回收）；skeleton 恒写 `null`，其余组件不得改写该元数据（`frontend_parameter_default_implementation.md` §3.1）。
 - `FrontendTopBindingAnalyzer` 拥有 `symbolBindings()`。
 - `FrontendLocalTypeStabilizationAnalyzer` 只拥有 source-facing local `:=` slot rewrite，不拥有 diagnostics，不发布 `resolvedMembers()` / `resolvedCalls()` / `expressionTypes()` / `slotTypes()`。
 - `FrontendChainBindingAnalyzer` 拥有 `resolvedMembers()` 与 chain-owned `resolvedCalls()`。
