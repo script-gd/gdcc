@@ -151,6 +151,26 @@ static void ${helper.renderStaticInitializersSymbol(classDef.name)}(void) {
 }
 </#list>
 
+<#-- Per-method exclusive default-fill userdata at file scope (§5.6.2): the ClassDB registration
+     below and the virtual dispatch path share these instances, so both userdata protocols resolve
+     impl through the same struct — a raw function address is never reinterpreted as userdata.
+     Default slots form a contiguous trailing suffix, so the filtered initializer order matches
+     the typedef's def0..defK layout. -->
+<#list module.classDefs as classDef>
+<#list classDef.functions as function>
+    <#if !function.hidden && !function.lambda && helper.countDefaultSlots(function) gt 0>
+static ${helper.renderDefaultUserdataTypeName(classDef, function)} ${helper.renderDefaultUserdataInstanceName(classDef, function)} = {
+    ${classDef.name}_${function.name},
+    <#list function.parameters as parameter>
+        <#if parameter.name != "self" && parameter.defaultValueFunc??>
+    ${classDef.name}_${parameter.defaultValueFunc},
+        </#if>
+    </#list>
+};
+    </#if>
+</#list>
+</#list>
+
 <#-- Bind Methods for each class.-->
 <#-- The local `class_name` slot remains the canonical owner identity that registration used above.-->
 <#list module.classDefs as classDef>
@@ -159,7 +179,13 @@ void ${classDef.name}_class_bind_methods() {
     // Methods
     <#list classDef.functions as function>
         <#if !function.hidden && !function.lambda>
-    gdcc_bind_method${helper.renderFuncBindName(classDef, function)}(class_name, GD_STATIC_SN(u8"${function.name}"), ${classDef.name}_${function.name}<#if function.parameters?size gt function.static?then(0, 1)>,<#else>);</#if>
+            <#if helper.countDefaultSlots(function) gt 0>
+                <#-- The bind helper keeps its existing `void* function` formal and receives &ud. -->
+                <#assign implArg = "&" + helper.renderDefaultUserdataInstanceName(classDef, function)>
+            <#else>
+                <#assign implArg = classDef.name + "_" + function.name>
+            </#if>
+    gdcc_bind_method${helper.renderFuncBindName(classDef, function)}(class_name, GD_STATIC_SN(u8"${function.name}"), ${implArg}<#if function.parameters?size gt function.static?then(0, 1)>,<#else>);</#if>
             <#list function.parameters as parameter>
                 <#if parameter.name != "self">
                     GD_STATIC_SN(u8"${parameter.name}"), GDEXTENSION_VARIANT_TYPE_${parameter.type.gdExtensionType.name()}<#if parameter_has_next>,<#else>);</#if>
@@ -317,8 +343,11 @@ void* ${classDef.name}_class_get_virtual_with_data(void* p_class_userdata, GDExt
     // Bind virtual methods
     <#list classDef.functions as function>
         <#if helper.checkVirtualMethod(classDef, function)>
+            <#-- Virtual dispatch must hand the ptrcall wrapper the same userdata protocol as
+                 ClassDB registration: the shared per-method default userdata for default-carrying
+                 overrides, the raw impl address otherwise. -->
             if (godot_StringName_op_equal_StringName(p_name, GD_STATIC_SN(u8"${function.name}"))) {
-                return (void*)${classDef.name}_${function.name};
+                return (void*)<#if helper.countDefaultSlots(function) gt 0>&${helper.renderDefaultUserdataInstanceName(classDef, function)}<#else>${classDef.name}_${function.name}</#if>;
             }
         </#if>
     </#list>
@@ -334,7 +363,7 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
     // Call virtual methods
     <#list classDef.functions as function>
         <#if helper.checkVirtualMethod(classDef, function)>
-            if (p_virtual_call_userdata == &${classDef.name}_${function.name}) {
+            if (p_virtual_call_userdata == <#if helper.countDefaultSlots(function) gt 0>&${helper.renderDefaultUserdataInstanceName(classDef, function)}<#else>&${classDef.name}_${function.name}</#if>) {
                 ptrcall${helper.renderFuncBindName(classDef, function)}(p_virtual_call_userdata, p_instance, p_args, r_ret);
                 return;
             }

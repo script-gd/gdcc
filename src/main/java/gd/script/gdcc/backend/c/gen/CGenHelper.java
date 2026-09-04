@@ -294,14 +294,16 @@ public final class CGenHelper {
                         List.of(),
                         propertyDef.getType(),
                         List.of(),
-                        false
+                        false,
+                        0
                 ));
                 bindingDataSet.add(new BindingData(
                         ownerName,
                         List.of(propertyDef.getType()),
                         GdVoidType.VOID,
                         List.of(),
-                        false
+                        false,
+                        0
                 ));
             }
             // Functions binding data
@@ -310,22 +312,24 @@ public final class CGenHelper {
                     continue;
                 }
                 var paramTypes = new ArrayList<GdType>();
-                var defaultVariables = new ArrayList<GdType>();
                 for (var parameterDef : functionDef.getParameters()) {
                     if (parameterDef.getName().equals("self")) {
                         continue;
                     }
                     paramTypes.add(parameterDef.getType());
-                    if (parameterDef.getDefaultValueFunc() != null) {
-                        defaultVariables.add(parameterDef.getType());
-                    }
                 }
                 bindingDataSet.add(new BindingData(
                         functionDef.isStatic() ? null : ownerName,
                         paramTypes,
                         functionDef.getReturnType(),
-                        defaultVariables,
-                        functionDef.isStatic()
+                        // Source-function defaults never enter the bind-time Variant channel
+                        // (frontend_parameter_default_plan §5.5): the registration surface keeps
+                        // default_argument_count == 0 so the VM cannot pre-fill bind-time constants;
+                        // runtime completion happens caller-side (exact route) or in the
+                        // callee-prologue wrapper (dynamic route, keyed by defaultSlotCount).
+                        List.of(),
+                        functionDef.isStatic(),
+                        countDefaultSlots(functionDef)
                 ));
             }
         }
@@ -938,7 +942,7 @@ public final class CGenHelper {
         var shapeName = renderFuncBindName(
                 bindingData.returnType(),
                 bindingData.paramTypes(),
-                bindingData.defaultVariables(),
+                bindingData.defaultSlotCount(),
                 bindingData.staticMethod()
         );
         // Instance wrappers are owner-specific so self fat type cannot be shared by ABI shape alone.
@@ -950,25 +954,55 @@ public final class CGenHelper {
 
     /// Owner-aware bind name for virtual dispatch (matches BindingData instance naming).
     public @NotNull String renderFuncBindName(@NotNull ClassDef classDef, @NotNull FunctionDef functionDef) {
+        return renderFuncBindName(toBindingData(classDef, functionDef));
+    }
+
+    /// Shared FunctionDef -> BindingData projection: the bind-time Variant channel stays empty
+    /// (§5.5) while the default-slot count feeds the wrapper shape (§5.6.1).
+    private @NotNull BindingData toBindingData(@NotNull ClassDef classDef, @NotNull FunctionDef functionDef) {
         var paramTypes = new ArrayList<GdType>();
-        var defaultVarTypes = new ArrayList<GdType>();
         for (var parameterDef : functionDef.getParameters()) {
             if (parameterDef.getName().equals("self")) {
                 continue;
             }
             paramTypes.add(parameterDef.getType());
-            if (parameterDef.getDefaultValueFunc() != null) {
-                defaultVarTypes.add(parameterDef.getType());
-            }
         }
-        var binding = new BindingData(
+        return new BindingData(
                 functionDef.isStatic() ? null : classDef.getName(),
                 paramTypes,
                 functionDef.getReturnType(),
-                defaultVarTypes,
-                functionDef.isStatic()
+                List.of(),
+                functionDef.isStatic(),
+                countDefaultSlots(functionDef)
         );
-        return renderFuncBindName(binding);
+    }
+
+    /// Per-shape default-fill userdata struct name (§5.6.2). The typedef (entry.h), the wrapper
+    /// unwrap (entry.h) and the per-method instance (entry.c) all derive it from the same
+    /// bind-name encoding, so the three sites can never disagree on the spelling.
+    public @NotNull String renderDefaultUserdataTypeName(@NotNull BindingData bindingData) {
+        if (bindingData.defaultSlotCount() <= 0) {
+            throw new IllegalArgumentException("default userdata type requires defaultSlotCount > 0");
+        }
+        return "gdcc_default_ud" + renderFuncBindName(bindingData);
+    }
+
+    public @NotNull String renderDefaultUserdataTypeName(@NotNull ClassDef classDef, @NotNull FunctionDef functionDef) {
+        return renderDefaultUserdataTypeName(toBindingData(classDef, functionDef));
+    }
+
+    /// Per-method default userdata INSTANCE name (entry.c, file scope). The `$` separator cannot
+    /// appear in GDScript identifiers, so a user function named `<method>_default_ud` can never
+    /// collide with it; the symbol is still registered with the file-scope conflict check as a
+    /// defensive net.
+    public @NotNull String renderDefaultUserdataInstanceName(@NotNull ClassDef classDef, @NotNull FunctionDef functionDef) {
+        if (countDefaultSlots(functionDef) <= 0) {
+            throw new IllegalArgumentException(
+                    "default userdata instance requires a function with at least one default slot: "
+                            + classDef.getName() + "." + functionDef.getName()
+            );
+        }
+        return classDef.getName() + "_" + functionDef.getName() + "$default_ud";
     }
 
     /// Construct owner fat self from Godot `p_instance` (GDCC wrapper pointer).
@@ -1042,17 +1076,30 @@ public final class CGenHelper {
             );
         }
         var paramTypes = new ArrayList<GdType>();
-        var defaultVarTypes = new ArrayList<GdType>();
         for (var parameterDef : functionDef.getParameters()) {
             if (parameterDef.getName().equals("self")) {
                 continue;
             }
             paramTypes.add(parameterDef.getType());
+        }
+        // Same isolation as collectBindingData: only the slot count feeds the wrapper shape.
+        return renderFuncBindName(functionDef.getReturnType(), paramTypes, countDefaultSlots(functionDef), true);
+    }
+
+    /// The single counter every bind-name/collection path must use: trailing parameters (the
+    /// synthetic `self` excluded) that carry a source `defaultValueFunc`. Frontend semantics
+    /// guarantee defaults form a contiguous suffix, so the count alone locates the fill range.
+    public int countDefaultSlots(@NotNull FunctionDef functionDef) {
+        var count = 0;
+        for (var parameterDef : functionDef.getParameters()) {
+            if (parameterDef.getName().equals("self")) {
+                continue;
+            }
             if (parameterDef.getDefaultValueFunc() != null) {
-                defaultVarTypes.add(parameterDef.getType());
+                count++;
             }
         }
-        return renderFuncBindName(functionDef.getReturnType(), paramTypes, defaultVarTypes, true);
+        return count;
     }
 
     public @NotNull String renderGdTypeName(@NotNull GdType gdType) {
@@ -1078,7 +1125,7 @@ public final class CGenHelper {
 
     public @NotNull String renderFuncBindName(@Nullable GdType returnType,
                                               @NotNull List<GdType> paramTypes,
-                                              @NotNull List<GdType> defaultVarTypes,
+                                              int defaultSlotCount,
                                               boolean staticFunction) {
         var sb = new StringBuilder("_");
         sb.append(paramTypes.size()).append("_arg_");
@@ -1090,14 +1137,10 @@ public final class CGenHelper {
         } else {
             sb.append("no_ret");
         }
-        if (!defaultVarTypes.isEmpty()) {
-            sb.append("_").append(defaultVarTypes.size()).append("_default_");
-            for (var defType : defaultVarTypes) {
-                sb.append(renderGdTypeName(defType)).append("_");
-            }
-            if (sb.lastIndexOf("_") == sb.length() - 1) {
-                sb.deleteCharAt(sb.length() - 1);
-            }
+        // `_K_defslot` is the only default-aware bind-name segment; the legacy `_N_default_`
+        // Variant channel is never fed for source functions (§5.5/§5.6.1).
+        if (defaultSlotCount > 0) {
+            sb.append("_").append(defaultSlotCount).append("_defslot");
         }
         if (staticFunction) {
             sb.append("_static");
@@ -1199,6 +1242,14 @@ public final class CGenHelper {
         }
     }
 
+    /// Unpack without a cached gate type expression: re-evaluates `godot_variant_get_type`.
+    /// Used by the default-slot fill branch, which runs after the (argument-count-conditional)
+    /// gate block that scoped the cached type variable.
+    public @NotNull String renderCallWrapperUnpackExpr(@NotNull GdType paramType,
+                                                       @NotNull String variantPtrExpr) {
+        return renderCallWrapperUnpackExpr(paramType, variantPtrExpr, null);
+    }
+
     /// Ordinary pack helpers are the unary `godot_new_Variant_with_<Type>` family.
     /// `Nil` is excluded because it uses the dedicated nullary `godot_new_Variant_nil()`.
     public @NotNull String renderPackFunctionName(@NotNull GdType type) {
@@ -1278,6 +1329,24 @@ public final class CGenHelper {
             return "";
         }
         return renderDestroyFunctionName(type) + "(&" + varName + ");";
+    }
+
+    /// Release an OWNED object local produced by a wrapper default-fill shell call
+    /// (`ud->defK(...)`). Unlike Variant-unpacked wrapper arguments (BORROWED), a default shell's
+    /// object result is OWNED per the ownership spec, so the epilogue must release it; callers
+    /// gate this statement behind the runtime `argN_from_default` flag so explicitly supplied
+    /// (BORROWED) object arguments are never released. Empty for non-object / non-RefCounted.
+    public @NotNull String renderCallWrapperDefaultObjectReleaseStmt(@NotNull GdType type, @NotNull String varName) {
+        if (!(type instanceof GdObjectType objectType)) {
+            return "";
+        }
+        var fatType = renderObjectFatPtrStorageType(objectType);
+        var liveExpr = fatType + "_live_object(" + varName + ")";
+        return switch (context.classRegistry().getRefCountedStatus(objectType)) {
+            case YES -> "release_object(" + liveExpr + ");";
+            case UNKNOWN -> "try_release_object(" + liveExpr + ", " + varName + ".instance_id);";
+            case NO -> "";
+        };
     }
 
     /// Typed Dictionary wrapper preflight only applies to non-generic `Dictionary[K, V]` slots.

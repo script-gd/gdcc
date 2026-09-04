@@ -474,19 +474,40 @@ static inline ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnTyp
 // Method binding helpers
 
 <#list helper.bindingDataList as bindingData>
+<#assign paramCount = bindingData.paramTypes?size>
+<#-- Default-slot contract (frontend_parameter_default_plan §5.6): defaults form a contiguous -->
+<#-- trailing suffix, so requiredCount = paramCount - defaultSlotCount locates the fill range. -->
+<#assign requiredCount = paramCount - bindingData.defaultSlotCount>
+<#assign defaultFlavor = (bindingData.defaultSlotCount gt 0)>
+<#if defaultFlavor>
+<#-- Per-shape default-fill userdata layout, shared by all methods with this ABI shape; the -->
+<#-- per-method exclusive instances live at the registration site in entry.c. Default function -->
+<#-- pointers are typed per slot (default return types are heterogeneous within one method); -->
+<#-- the instance flavor takes owner fat self as the leading argument, matching the synthetic -->
+<#-- shell ABI (non-static, first parameter self). -->
+typedef struct {
+    <#-- impl keeps the exact impl signature so no function-pointer <-> void* round-trip is -->
+    <#-- involved; only the userdata STRUCT address crosses the bind helper as void*. -->
+    ${helper.renderGdTypeInC(bindingData.returnType)} (*impl)(<#if !bindingData.staticMethod>${helper.renderRegisteredMethodSelfFatType(bindingData)}<#if paramCount gt 0>, </#if></#if><#list bindingData.paramTypes as paramType>${helper.renderGdTypeRefInC(paramType)}<#if paramType_has_next>, </#if></#list>);
+    <#list 0..(bindingData.defaultSlotCount - 1) as defIndex>
+    ${helper.renderGdTypeInC(bindingData.paramTypes[requiredCount + defIndex])} (*def${defIndex})(<#if !bindingData.staticMethod>${helper.renderRegisteredMethodSelfFatType(bindingData)}</#if>);
+    </#list>
+} ${helper.renderDefaultUserdataTypeName(bindingData)};
+
+</#if>
 static void call${helper.renderFuncBindName(bindingData)}(
     void* method_userdata,
     GDExtensionClassInstancePtr p_instance, const GDExtensionConstVariantPtr* p_args, GDExtensionInt p_argument_count,
     GDExtensionVariantPtr r_return, GDExtensionCallError* r_error) {
-<#--     Check argument count-->
-    if (p_argument_count < ${bindingData.paramTypes?size}) {
+<#--     Check argument count: the argc-aware flavor admits [requiredCount, paramCount].-->
+    if (p_argument_count < ${requiredCount}) {
         r_error->error = GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS;
-        r_error->expected = ${bindingData.paramTypes?size};
+        r_error->expected = ${requiredCount};
         return;
     }
-    if (p_argument_count > ${bindingData.paramTypes?size}) {
+    if (p_argument_count > ${paramCount}) {
         r_error->error = GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS;
-        r_error->expected = ${bindingData.paramTypes?size};
+        r_error->expected = ${paramCount};
         return;
     }
 
@@ -494,8 +515,10 @@ static void call${helper.renderFuncBindName(bindingData)}(
 <#--Variant outward slots are encoded as NIL metadata, so only non-Variant -->
 <#--parameters keep the runtime gate here. Non-exact inbound exceptions must be -->
 <#--accepted by this gate before wrapper-local materialization runs below. -->
+<#--Default-slot gates only run when the caller actually supplied that argument. -->
     <#list bindingData.paramTypes as paramType>
     <#if paramType.typeName != "Variant">
+    <#if paramType_index gte requiredCount>if (p_argument_count > ${paramType_index}) {</#if>
     const GDExtensionVariantType arg${paramType_index}_type = godot_variant_get_type(p_args[${paramType_index}]);
     if (!${helper.renderCallWrapperVariantTypeGate(paramType, "arg${paramType_index}_type")}) {
         r_error->error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
@@ -503,6 +526,7 @@ static void call${helper.renderFuncBindName(bindingData)}(
         r_error->argument = ${paramType_index};
         return;
     }
+    <#if paramType_index gte requiredCount>}</#if>
     </#if>
     </#list>
 
@@ -513,7 +537,7 @@ static void call${helper.renderFuncBindName(bindingData)}(
         <#if helper.needsTypedArrayCallGuard(paramType)>
         <#assign probeVarName = "probe" + paramType_index>
         <#assign expectedBuiltinType = helper.renderTypedArrayGuardBuiltinTypeLiteral(paramType)>
-        {
+        <#if paramType_index gte requiredCount>if (p_argument_count > ${paramType_index}) </#if>{
             // Compare compile-time known typed-array metadata directly to avoid extra
             // is_same_typed(...) overhead on the wrapper hot path.
             godot_Array ${probeVarName} = godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[${paramType_index}]);
@@ -552,7 +576,7 @@ static void call${helper.renderFuncBindName(bindingData)}(
     <#list bindingData.paramTypes as paramType>
         <#if helper.needsTypedDictionaryCallGuard(paramType)>
         <#assign probeVarName = "probe" + paramType_index>
-        {
+        <#if paramType_index gte requiredCount>if (p_argument_count > ${paramType_index}) </#if>{
             // Typed Dictionary slots need a second-stage typedness check before wrapper locals exist.
             godot_Dictionary ${probeVarName} = godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[${paramType_index}]);
             godot_bool typed_mismatch = false;
@@ -595,19 +619,46 @@ static void call${helper.renderFuncBindName(bindingData)}(
 
     // Extract the argument. Wrapper-owned non-object locals stay mutable so the
     // cleanup epilogue below can destroy them before returning to Godot.
+<#if defaultFlavor>
+    <#if !bindingData.staticMethod>
+    // self_fat must be materialized before any default fill below (§5.6.3); it is borrowed
+    // from p_instance and needs no cleanup.
+    ${helper.renderRegisteredMethodSelfFatType(bindingData)} self_fat = ${helper.renderRegisteredMethodSelfFatExpr(bindingData)};
+    </#if>
+    ${helper.renderDefaultUserdataTypeName(bindingData)}* ud = method_userdata;
+</#if>
     <#list bindingData.paramTypes as paramType>
+        <#if paramType_index gte requiredCount>
+        <#-- Default slot: always mutable so the omitted-argument branch can assign the shell -->
+        <#-- result; the unpack branch re-evaluates the Variant type (the gate's cached -->
+        <#-- argN_type is scoped inside the conditional gate above). -->
+        ${helper.renderGdTypeInC(paramType)} arg${paramType_index};
+        <#if helper.renderCallWrapperDefaultObjectReleaseStmt(paramType, "arg${paramType_index}")?has_content>
+        <#-- Shell-produced objects are OWNED while Variant-unpacked arguments stay BORROWED; -->
+        <#-- the flag lets the epilogue release only default-produced references. Only emitted -->
+        <#-- for RefCounted-tracked object types so no unused flag is generated. -->
+        godot_bool arg${paramType_index}_from_default = false;
+        </#if>
+        if (p_argument_count > ${paramType_index}) {
+            arg${paramType_index} = ${helper.renderCallWrapperUnpackExpr(paramType, "(GDExtensionVariantPtr)p_args[${paramType_index}]")};
+        } else {
+            arg${paramType_index} = ud->def${paramType_index - requiredCount}(<#if !bindingData.staticMethod>self_fat</#if>);
+            <#if helper.renderCallWrapperDefaultObjectReleaseStmt(paramType, "arg${paramType_index}")?has_content>arg${paramType_index}_from_default = true;</#if>
+        }
+        <#else>
         <#assign argCleanupStmt = helper.renderCallWrapperDestroyStmt(paramType, "arg${paramType_index}")>
         <#if argCleanupStmt?has_content>
         ${helper.renderGdTypeInC(paramType)} arg${paramType_index} = ${helper.renderCallWrapperUnpackExpr(paramType, "(GDExtensionVariantPtr)p_args[${paramType_index}]", "arg${paramType_index}_type")};
         <#else>
         const ${helper.renderGdTypeInC(paramType)} arg${paramType_index} = ${helper.renderCallWrapperUnpackExpr(paramType, "(GDExtensionVariantPtr)p_args[${paramType_index}]", "arg${paramType_index}_type")};
         </#if>
+        </#if>
     </#list>
 
     // Call the function. Instance methods receive owner fat self; static methods omit self.
     // Wrapper-local non-object values materialized above must be destroyed here.
 <#if bindingData.staticMethod>
-    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(<#list bindingData.paramTypes as paramType>${helper.renderGdTypeRefInC(paramType)}<#if paramType_has_next>, </#if></#list>) = method_userdata;
+    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(<#list bindingData.paramTypes as paramType>${helper.renderGdTypeRefInC(paramType)}<#if paramType_has_next>, </#if></#list>) = <#if defaultFlavor>ud->impl<#else>method_userdata</#if>;
     <#if bindingData.returnType.typeName != "void">
         ${helper.renderGdTypeInC(bindingData.returnType)} r = function(<#list bindingData.paramTypes as paramType>${helper.renderValueRef(paramType, "arg${paramType_index}")}<#if paramType_has_next>, </#if></#list>);
         godot_Variant ret = ${helper.renderPackFunctionName(bindingData.returnType)}(${helper.renderValueRef(bindingData.returnType, "r")});
@@ -625,8 +676,10 @@ static void call${helper.renderFuncBindName(bindingData)}(
         (function(<#list bindingData.paramTypes as paramType>${helper.renderValueRef(paramType, "arg${paramType_index}")}<#if paramType_has_next>, </#if></#list>));
     </#if>
 <#else>
+<#if !defaultFlavor>
     ${helper.renderRegisteredMethodSelfFatType(bindingData)} self_fat = ${helper.renderRegisteredMethodSelfFatExpr(bindingData)};
-    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(${helper.renderRegisteredMethodSelfFatType(bindingData)}<#list bindingData.paramTypes as paramType>, ${helper.renderGdTypeRefInC(paramType)}</#list>) = method_userdata;
+</#if>
+    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(${helper.renderRegisteredMethodSelfFatType(bindingData)}<#list bindingData.paramTypes as paramType>, ${helper.renderGdTypeRefInC(paramType)}</#list>) = <#if defaultFlavor>ud->impl<#else>method_userdata</#if>;
     <#if bindingData.returnType.typeName != "void">
         ${helper.renderGdTypeInC(bindingData.returnType)} r = function(self_fat<#list bindingData.paramTypes as paramType>, ${helper.renderValueRef(paramType, "arg${paramType_index}")}</#list>);
         godot_Variant ret = ${helper.renderPackFunctionName(bindingData.returnType)}(${helper.renderValueRef(bindingData.returnType, "r")});
@@ -651,6 +704,14 @@ static void call${helper.renderFuncBindName(bindingData)}(
         <#if argCleanupStmt?has_content>
         ${argCleanupStmt}
         </#if>
+        <#if defaultFlavor && (argIndex gte requiredCount)>
+        <#assign defaultObjectReleaseStmt = helper.renderCallWrapperDefaultObjectReleaseStmt(paramType, "arg${argIndex}")>
+        <#if defaultObjectReleaseStmt?has_content>
+        if (arg${argIndex}_from_default) {
+            ${defaultObjectReleaseStmt}
+        }
+        </#if>
+        </#if>
     </#list>
 }
 
@@ -658,16 +719,21 @@ static void ptrcall${helper.renderFuncBindName(bindingData)}(
     void* method_userdata, GDExtensionClassInstancePtr p_instance,
     const GDExtensionConstTypePtr* p_args, GDExtensionTypePtr r_return) {
     // Object args/returns use raw Godot pointer slots; self is owner fat for instance methods.
+<#-- The default flavor shares the same userdata layout as the call wrapper: ptrcall keeps the -->
+<#-- fixed full-argument ABI (no argc guard, no fill) but must still reach impl via ud->impl. -->
+<#if defaultFlavor>
+    ${helper.renderDefaultUserdataTypeName(bindingData)}* ud = method_userdata;
+</#if>
 <#list bindingData.paramTypes as paramType>
 <#if helper.checkObjectType(paramType)>
     ${helper.renderPtrcallObjectArgDecl(paramType, paramType_index)}
 </#if>
 </#list>
 <#if bindingData.staticMethod>
-    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(<#list bindingData.paramTypes as paramType>${helper.renderGdTypeRefInC(paramType)}<#if paramType_has_next>, </#if></#list>) = method_userdata;
+    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(<#list bindingData.paramTypes as paramType>${helper.renderGdTypeRefInC(paramType)}<#if paramType_has_next>, </#if></#list>) = <#if defaultFlavor>ud->impl<#else>method_userdata</#if>;
 <#else>
     ${helper.renderRegisteredMethodSelfFatType(bindingData)} self_fat = ${helper.renderRegisteredMethodSelfFatExpr(bindingData)};
-    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(${helper.renderRegisteredMethodSelfFatType(bindingData)}<#list bindingData.paramTypes as paramType>, ${helper.renderGdTypeRefInC(paramType)}</#list>) = method_userdata;
+    ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(${helper.renderRegisteredMethodSelfFatType(bindingData)}<#list bindingData.paramTypes as paramType>, ${helper.renderGdTypeRefInC(paramType)}</#list>) = <#if defaultFlavor>ud->impl<#else>method_userdata</#if>;
 </#if>
 <#if bindingData.returnType.typeName == "void">
     <#if bindingData.staticMethod>

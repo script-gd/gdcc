@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：计划维护中（已经过 review-expert-a 多轮审阅修订，全部发现闭合；constructor 默认值确认为 GDExtension 内在限制、永久非目标；步骤 1-6 已完成落地，frontend 链路闭环；剩余 backend 步骤 7-8 与文档收尾步骤 9）
+- 状态：计划维护中（已经过 review-expert-a 多轮审阅修订，全部发现闭合；constructor 默认值确认为 GDExtension 内在限制、永久非目标；步骤 1-8 已完成落地，frontend 链路与 backend 接线/wrapper 均已闭环；剩余文档收尾步骤 9）
 - 更新时间：2026-09-03
 - 适用范围：GDScript source function（instance / static）声明的参数默认值；覆盖 frontend sema、lowering 与 backend 接线。
 - 关联文档：
@@ -282,12 +282,14 @@
 - [x] **步骤 6：body lowering 支持 `PARAMETER_DEFAULT_INIT`**（2026-09-03 完成）
   - 按 §5.3 复用 return-stop lowering 发射 `ReturnInsn`。
   - 验收：synthetic function 的 LIR body 含表达式求值与 return；instance flavor 的 `self` 引用正确读 synthetic 的 `self` 参数槽（`declareSelfSlotIfNeeded` 路径），static flavor 无 `self` 槽；`FrontendLoweringBodyInsnPassTest`（9979-10016 转正）。
-- [ ] **步骤 7：backend 接线验证、bind 隔离与端到端**
+- [x] **步骤 7：backend 接线验证、bind 隔离与端到端**（2026-09-03 完成）
   - 验证/补齐 §5.4 各路由调用点补全（exact instance / static / bare→method|static-method）；按 §5.5 隔离 `method_info` 注册通道（三条收集路径的 `defaultVariables` 对 source function 恒空）并补回归；验证 §5.1 的 C 标识符（zig 端到端编译 `Class__default_f$b` 与 `Class__default_s_f$b`；定义/调用/冲突检查同拼写；同名函数 fail-closed 分支已由步骤 2 锚定）。
   - 验收（端到端，zig 可用时）：`f(1)` 与 `f(1, 2)` 结果正确；省略多个尾部参数按声明顺序求值；每次调用重新求值（可变默认值不共享）；too-few/too-many 仍 compile error；带默认值方法的 class 生成的 bind C 代码可编译、helper 名不含 default suffix、`default_argument_count == 0`。
-- [ ] **步骤 8：argc 感知 callee-prologue wrapper（dynamic/引擎侧补全）**
-  - `BindingData` 增加 `defaultSlotCount`（参与相等性与 `_K_defslot` bind 名编码，三处 `renderFuncBindName` 与 `collectBindingData` 同一计数）；`entry.c.ftl` 注册点为每个带默认值方法建立独占 `static` userdata 结构（impl + 按槽位类型化的默认函数指针字段），经 bind helper **现有 `void* function` 形参** 传入（helper 签名不变、不填共享静态块）；`entry.h.ftl` 新增 `defaultSlotCount > 0` 的 call/ptrcall wrapper flavor：call 侧 argc 守卫（TOO_FEW `expected = required_count` / TOO_MANY `expected = param_count`）→ 仅 `i < p_argument_count` 的类型门/probe → 逐槽 unpack-or-default（默认槽非 const 声明）→ cleanup 纳入；ptrcall 侧同一套 userdata 解包（`function = ud->impl`）、不做填充。
+  - 落地记录：§5.4 的调用点补全（含 instance 传接收者、static 不传）在既有 `CallMethodInsnGen.materializeFunctionDefault` 已就绪，本步补齐多默认声明顺序、too-few/too-many、static 多默认无接收者的单测锚点；§5.5 隔离通过移除三条路径的 `defaultVariables` 收集实现（`BindingData.defaultVariables` 字段保留但恒空）；§5.1 由 `FrontendLoweringToCProjectBuilderIntegrationTest.lowerFrontendParameterDefaultsBuildNativeLibraryAndRunInGodot` 端到端钉死（`$` file-scope 符号 zig 编译链接 + Godot 运行 exact 路由与逐调用重估）。
+- [x] **步骤 8：argc 感知 callee-prologue wrapper（dynamic/引擎侧补全）**（2026-09-03 完成）
+  - `BindingData` 增加 `defaultSlotCount`（参与相等性与 `_K_defslot` bind 名编码，三处 `renderFuncBindName` 与 `collectBindingData` 经 `countDefaultSlots` 同一计数）；`entry.c.ftl` 注册点为每个带默认值方法建立独占 `static` userdata 结构（impl + 按槽位类型化的默认函数指针字段），经 bind helper **现有 `void* function` 形参** 传入（helper 签名不变、不填共享静态块）；`entry.h.ftl` 新增 `defaultSlotCount > 0` 的 call/ptrcall wrapper flavor：call 侧 argc 守卫（TOO_FEW `expected = required_count` / TOO_MANY `expected = param_count`）→ 仅 `i < p_argument_count` 的类型门/probe → 逐槽 unpack-or-default（默认槽非 const 声明）→ cleanup 纳入；ptrcall 侧同一套 userdata 解包（`function = ud->impl`）、不做填充。
   - 验收：bind 层 C 测试覆盖 `p_arg_count` 缺参/恰好 required/超参边界与两种 `GDExtensionCallError` 的 `expected` 字段；ptrcall 全参回归（经 `ud->impl` 调用）；异构默认值返回类型（`int` + `String`）逐槽正确赋值；instance flavor 填充时 `self_fat` 正确传入且求值点先于任何默认填充；同 shape 不同 `defaultSlotCount` 的方法不共享 wrapper（bind 名区分）且 userdata 实例互不覆盖；`defaultSlotCount == 0` 方法保持 `method_userdata = function` 零回归；端到端（zig 可用时）gdcc 内部 dynamic 调用与 `Object.call` 省略实参结果正确且逐调用重新求值；`method_info.default_argument_count == 0` 回归保持。
+  - 落地记录：userdata 结构类型按 wrapper shape 以 named typedef 随 `bindingDataList` 发射进 `entry.h`，实例为 `entry.c` **文件作用域**的 `<Class>_<method>$default_ud`（`$` 分隔符杜绝与用户函数撞名，并登记进 file-scope 冲突检查兜底）；ClassDB 注册点与 engine virtual dispatch 共享同一实例，defslot wrapper 永远不会把裸 impl 地址当结构体解引用。`Object.call` 路径的 TOO_FEW 在运行时以 `expected = required_count` 被引擎表面化（端到端锚定 `Expected 1 argument(s).`），Godot 4.5 `GDExtensionMethodBind::call` 不做前置 argc 校验（透传实参数并回译 `GDExtensionCallError`），前提已核对 godotengine/godot 源码。
 - [ ] **步骤 9：文档收尾**
   - 本计划转为事实源（移除分步清单）；同步修订 `frontend_lowering_func_pre_pass_implementation.md` §7/§10、`frontend_lowering_plan.md` §7、`frontend_exact_call_extension_metadata_contract.md`（说明 source function 默认值经 `defaultValueFunc` 元数据承载、不改 `ExactCallableBoundary` 载荷范围）、`gdcc_low_ir.md` 的 arity 验证条款。
 

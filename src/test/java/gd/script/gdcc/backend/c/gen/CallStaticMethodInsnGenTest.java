@@ -348,6 +348,52 @@ class CallStaticMethodInsnGenTest {
     }
 
     @Test
+    @DisplayName("CALL_STATIC_METHOD should materialize multiple static source defaults in declaration order")
+    void gdccStaticCallShouldMaterializeMultipleStaticDefaultsInDeclarationOrder() {
+        var workerClass = newClass("Worker");
+
+        var defaultCount = newFunction("_default_s_ping$count");
+        defaultCount.setStatic(true);
+        defaultCount.setReturnType(GdIntType.INT);
+        workerClass.addFunction(defaultCount);
+
+        var defaultLabel = newFunction("_default_s_ping$label");
+        defaultLabel.setStatic(true);
+        defaultLabel.setReturnType(GdStringType.STRING);
+        workerClass.addFunction(defaultLabel);
+
+        var ping = newFunction("ping");
+        ping.setStatic(true);
+        ping.addParameter(new LirParameterDef("a", GdIntType.INT, null, ping));
+        ping.addParameter(new LirParameterDef("count", GdIntType.INT, "_default_s_ping$count", ping));
+        ping.addParameter(new LirParameterDef("label", GdStringType.STRING, "_default_s_ping$label", ping));
+        entry(ping).appendInstruction(new ReturnInsn(null));
+        workerClass.addFunction(ping);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("a", GdIntType.INT);
+        entry(caller).appendInstruction(new CallStaticMethodInsn(
+                null,
+                "Worker",
+                "ping",
+                List.of(new LirInstruction.VariableOperand("a"))
+        ));
+        hostClass.addFunction(caller);
+
+        var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass));
+        // Static shells are receiver-less and evaluated per call in declaration order.
+        assertOrdered(
+                body,
+                "Worker__default_s_ping$count()",
+                "Worker__default_s_ping$label()",
+                "Worker_ping($a, __gdcc_tmp_default_arg_2_"
+        );
+        assertTrue(body.contains("__gdcc_tmp_default_arg_3_"), body);
+        assertFalse(body.contains("Worker__default_s_ping$count($"), body);
+    }
+
+    @Test
     @DisplayName("CALL_STATIC_METHOD with an instance default_value_func should fail fast (no receiver)")
     void gdccStaticCallWithInstanceDefaultFunctionShouldFailFast() {
         var workerClass = newClass("Worker");

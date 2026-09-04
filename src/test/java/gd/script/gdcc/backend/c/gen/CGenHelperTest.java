@@ -2,6 +2,7 @@ package gd.script.gdcc.backend.c.gen;
 
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
+import gd.script.gdcc.backend.c.gen.binding.BindingData;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirClassDef;
@@ -1128,5 +1129,81 @@ class CGenHelperTest {
                 () -> helper.renderOperatorEvaluatorReturnExpr(unknown, "result"));
         assertTrue(returnEx.getMessage().contains("NotARegisteredType")
                 || returnEx.getMessage().toLowerCase().contains("unknown"), returnEx.getMessage());
+    }
+
+    @Test
+    @DisplayName("source default_value_func never enters the bind name or defaultVariables channel")
+    void sourceDefaultValueFuncIsIsolatedFromBindChannel() {
+        var worker = new LirClassDef("Worker", "RefCounted");
+
+        var ping = new LirFunctionDef("ping");
+        ping.setReturnType(GdVoidType.VOID);
+        ping.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, ping));
+        ping.addParameter(new LirParameterDef("count", GdIntType.INT, "_default_ping$count", ping));
+        ping.addParameter(new LirParameterDef("label", GdStringType.STRING, "_default_ping$label", ping));
+        worker.addFunction(ping);
+
+        var staticPing = new LirFunctionDef("static_ping");
+        staticPing.setStatic(true);
+        staticPing.setReturnType(GdVoidType.VOID);
+        staticPing.addParameter(new LirParameterDef("count", GdIntType.INT, "_default_s_static_ping$count", staticPing));
+        worker.addFunction(staticPing);
+
+        var plain = new LirFunctionDef("plain");
+        plain.setReturnType(GdVoidType.VOID);
+        plain.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, plain));
+        plain.addParameter(new LirParameterDef("count", GdIntType.INT, null, plain));
+        plain.addParameter(new LirParameterDef("label", GdStringType.STRING, null, plain));
+        worker.addFunction(plain);
+
+        // The bind-time Variant channel stays empty (§5.5), but the default-slot count feeds the
+        // wrapper shape (§5.6.1): same-shape methods with different default counts never share.
+        var pingBindName = helper.renderFuncBindName(worker, ping);
+        var plainBindName = helper.renderFuncBindName(worker, plain);
+        var staticPingBindName = helper.renderFuncBindName(staticPing);
+        assertNotEquals(plainBindName, pingBindName);
+        assertTrue(pingBindName.endsWith("_2_defslot"), pingBindName);
+        assertTrue(staticPingBindName.endsWith("_1_defslot_static"), staticPingBindName);
+        assertFalse(plainBindName.contains("defslot"), plainBindName);
+        // The legacy `_N_default_` channel is never produced.
+        assertFalse(pingBindName.contains("_default_"), pingBindName);
+        assertFalse(staticPingBindName.contains("_default_"), staticPingBindName);
+
+        assertEquals(2, helper.countDefaultSlots(ping));
+        assertEquals(1, helper.countDefaultSlots(staticPing));
+        assertEquals(0, helper.countDefaultSlots(plain));
+
+        var context = new CodegenContext(
+                new ProjectInfo("TestProject", GodotVersion.V451, Path.of(".")) {
+                },
+                classRegistry
+        );
+        var localHelper = new CGenHelper(context, List.of(worker));
+        // ping (2 default slots), plain (same ABI shape, 0 slots) and static_ping never dedupe
+        // into one another: three distinct wrapper shapes.
+        assertEquals(3, localHelper.getBindingDataList().size());
+        for (var data : localHelper.getBindingDataList()) {
+            assertTrue(data.defaultVariables().isEmpty(),
+                    "defaultVariables must stay empty for source defaults: " + data);
+            assertFalse(localHelper.renderFuncBindName(data).contains("_default_"));
+        }
+    }
+
+    @Test
+    @DisplayName("BindingData rejects out-of-range defaultSlotCount")
+    void bindingDataRejectsOutOfRangeDefaultSlotCount() {
+        // More default slots than parameters.
+        assertThrows(IllegalArgumentException.class, () -> new BindingData(
+                "Worker", List.of(GdIntType.INT), GdVoidType.VOID, List.of(), false, 2));
+        // Negative count.
+        assertThrows(IllegalArgumentException.class, () -> new BindingData(
+                null, List.of(GdIntType.INT), GdVoidType.VOID, List.of(), true, -1));
+    }
+
+    @Test
+    @DisplayName("BindingData rejects any non-empty defaultVariables (bind Variant channel closed)")
+    void bindingDataRejectsNonEmptyDefaultVariables() {
+        assertThrows(IllegalArgumentException.class, () -> new BindingData(
+                "Worker", List.of(GdIntType.INT), GdVoidType.VOID, List.of(GdIntType.INT), false, 1));
     }
 }

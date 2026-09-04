@@ -337,6 +337,44 @@ fail-fast。同一 C function name 对应不同结构性 signature 或 ABI 也�
 wrapper。`GameSingleton -> Node` 这类 runtime 未提供的 singleton 才进入 module-local snapshot，并生成
 按 `GameSingleton` lookup、按 `Node` 返回的 wrapper。
 
+## GDCC 注册方法的参数默认值绑定合同（2026-09-03 落地）
+
+source function 的参数默认值（`LirParameterDef.defaultValueFunc`）走独立的 callee-prologue
+通道，与 bind 期 Variant 默认值通道严格隔离（详细语义合同见
+`frontend_parameter_default_plan.md` §5.5/§5.6，步骤 9 完成后以其事实源为准）：
+
+- **method_info 通道恒空**：`CGenHelper` 三条收集路径（`collectBindingData`、两处
+  `renderFuncBindName` 的 FunctionDef 重载）不再把 `defaultValueFunc` 写入
+  `BindingData.defaultVariables`；生成的 bind helper 不带 `default_N_value` 形参，
+  `method_info.default_argument_count == 0`——注册 bind 期常量会让 GDScript VM 先行填充，
+  与逐调用重新求值语义不等价。
+- **`BindingData.defaultSlotCount`**：记录带默认值的连续尾部槽数（frontend 顺序规则保证后缀
+  连续），参与 record 相等性与 `_K_defslot` bind 名编码；三处命名与 `collectBindingData`
+  统一经 `CGenHelper.countDefaultSlots` 计数，同 shape 不同槽数的方法不共享 wrapper。
+- **userdata 通道**：`defaultSlotCount > 0` 的 shape 在 `entry.h` 随 `bindingDataList`
+  发射 named typedef（`gdcc_default_ud<bindName>`：`impl` 为精确函数指针类型（不引入
+  function-pointer↔`void*` 往返）+ 按槽位类型化的默认函数指针，instance flavor 首参为
+  owner fat self）；`entry.c` 在文件作用域为每个方法建立独占 `static` 实例
+  （`<Class>_<method>$default_ud`，`$` 分隔符使合法用户标识符不可能与之撞名，并登记进
+  file-scope 冲突检查兜底），ClassDB 注册点经 bind helper 现有 `void* function`
+  形参以 `&ud` 传入，helper 签名不变；engine virtual dispatch（`get_virtual_with_data` /
+  `call_virtual_with_data`）对带默认值的 override 同样返回并比较 `&ud`，两条 userdata
+  协议共享同一实例——裸 impl 地址永远不会被 defslot wrapper 当作结构体解引用。
+  `defaultSlotCount == 0` 的方法保持 `method_userdata` 直存 impl 指针，零回归。
+- **call wrapper flavor**（`defaultSlotCount > 0`）：argc 守卫 TOO_FEW
+  `expected = required_count` / TOO_MANY `expected = param_count` → 类型门与 typed
+  Array/Dictionary probe 仅对 `i < p_argument_count` 的实参执行 → instance 的 `self_fat`
+  先于任何默认填充物化 → 默认槽非 const 声明，`p_argument_count > i` 走既有 unpack，
+  否则调 `ud->def<i - required_count>(self_fat)`（static flavor 无参直调），填充值纳入既有
+  逆序 cleanup epilogue；object 类型默认槽经 `argN_from_default` 运行期标记区分来源，
+  epilogue 仅释放 default 分支产生的 OWNED 引用（Variant 解包参数保持 BORROWED 不释放）。
+- **ptrcall flavor**：保持全参 ABI、不做填充，但同一套 userdata 解包（`function =
+  ud->impl`），避免把结构体地址当函数指针调用。
+- 前提核对：Godot 4.5 `GDExtensionMethodBind::call` 不做前置 argc 校验，透传实参数并把
+  `GDExtensionCallError`（含 `expected`）回译给调用方；因此 `Object.call` / gdcc 内部
+  dynamic 路由的缺参调用会到达本 wrapper。GDScript 源码直调的缺参由 GDScript analyzer 按
+  method_info 在编译期拒绝，与引擎内置方法行为一致。
+
 ## 动态路径与固定 Helper 边界
 
 动态 method/property/index fallback 不生成自由漂移的 wrapper：

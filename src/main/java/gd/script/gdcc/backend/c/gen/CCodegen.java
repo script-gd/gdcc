@@ -867,6 +867,11 @@ public class CCodegen implements Codegen {
             for (var function : classDef.getFunctions()) {
                 registerFileScopeSymbol(symbolSources, className + "_" + function.getName(),
                         "function '" + className + "." + function.getName() + "'");
+                if (!function.isHidden() && !function.isLambda() && helper.countDefaultSlots(function) > 0) {
+                    registerFileScopeSymbol(symbolSources,
+                            helper.renderDefaultUserdataInstanceName(classDef, function),
+                            "default userdata of '" + className + "." + function.getName() + "'");
+                }
             }
             var hasStaticProperties = false;
             for (var property : classDef.getProperties()) {

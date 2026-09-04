@@ -2668,6 +2668,15 @@ public class CCodegenTest {
         }
     }
 
+    private static void assertOrdered(String text, String... fragmentsInOrder) {
+        var searchFromIndex = 0;
+        for (var fragment : fragmentsInOrder) {
+            var index = text.indexOf(fragment, searchFromIndex);
+            assertTrue(index >= 0, () -> "Missing fragment: " + fragment + "\n" + text);
+            searchFromIndex = index + fragment.length();
+        }
+    }
+
     // ==== Static var C backend ====
 
     private static @NotNull CodegenContext newStaticTestContext() {
@@ -3139,6 +3148,408 @@ public class CCodegenTest {
                 List.of(),
                 List.of(),
                 List.of()
+        );
+    }
+
+    @Test
+    public void sourceParameterDefaultsKeepBindRegistrationChannelEmpty() throws Exception {
+        var workerClass = new LirClassDef("DefaultBindWorker", "RefCounted");
+
+        // Hidden synthetic default shell: excluded from binding but prototyped/defined normally.
+        var shell = new LirFunctionDef("_default_ping$count");
+        shell.setHidden(true);
+        shell.setReturnType(GdIntType.INT);
+        shell.addParameter(new LirParameterDef("self", new GdObjectType("DefaultBindWorker"), null, shell));
+        var shellResult = shell.createAndAddTmpVariable(GdIntType.INT);
+        var shellEntry = new LirBasicBlock("entry");
+        shellEntry.appendInstruction(new LiteralIntInsn(shellResult.id(), 40));
+        shellEntry.setTerminator(new ReturnInsn(shellResult.id()));
+        shell.addBasicBlock(shellEntry);
+        shell.setEntryBlockId("entry");
+        workerClass.addFunction(shell);
+
+        var ping = new LirFunctionDef("ping");
+        ping.setReturnType(GdIntType.INT);
+        ping.addParameter(new LirParameterDef("self", new GdObjectType("DefaultBindWorker"), null, ping));
+        ping.addParameter(new LirParameterDef("base", GdIntType.INT, null, ping));
+        ping.addParameter(new LirParameterDef("count", GdIntType.INT, "_default_ping$count", ping));
+        var pingEntry = new LirBasicBlock("entry");
+        pingEntry.setTerminator(new ReturnInsn("base"));
+        ping.addBasicBlock(pingEntry);
+        ping.setEntryBlockId("entry");
+        workerClass.addFunction(ping);
+
+        var module = new LirModule("default_bind_isolation_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), module);
+        var files = codegen.generate();
+        var hCode = generatedFileText(files, "entry.h");
+        var cCode = generatedFileText(files, "entry.c");
+
+        // §5.5: the bind helper must not grow default_N_value formals and must not register
+        // method_info.default_arguments for GDCC source defaults. §5.6.1: the default-slot count
+        // feeds the wrapper shape name instead.
+        var bindHelperBody = resolveMethodBindHelperBody(hCode, "_2_arg_int_int_ret_int_1_defslot");
+        assertFalse(bindHelperBody.contains("default_"), bindHelperBody);
+        assertFalse(bindHelperBody.contains("default_argument_count"), bindHelperBody);
+
+        // The registration call hands over the per-method default userdata (not the raw impl
+        // pointer) plus name/type metadata, so the helper signature and call site stay linkable.
+        var bindCall = resolveMethodBindCall(cCode, "ping");
+        assertTrue(bindCall.contains("&DefaultBindWorker_ping$default_ud"), bindCall);
+        assertFalse(bindCall.contains("DefaultBindWorker_ping,"), bindCall);
+        assertTrue(bindCall.contains("_1_defslot"), bindCall);
+        assertFalse(bindCall.contains("_default_ping"), bindCall);
+
+        // The hidden shell keeps its raw `$` C symbol at both prototype (entry.h) and definition
+        // (entry.c) sites — the spelling shared by definition, call site and conflict check.
+        assertTrue(hCode.contains("DefaultBindWorker__default_ping$count"), hCode);
+        assertTrue(cCode.contains("DefaultBindWorker__default_ping$count"), cCode);
+    }
+
+    @Test
+    public void sourceParameterDefaultsGenerateArgcAwareWrapperAndExclusiveUserdata() throws Exception {
+        var workerClass = new LirClassDef("DefaultWrapperWorker", "RefCounted");
+
+        // Hidden instance shells (self first parameter, per §5.2).
+        var shellCount = new LirFunctionDef("_default_describe$count");
+        shellCount.setHidden(true);
+        shellCount.setReturnType(GdIntType.INT);
+        shellCount.addParameter(new LirParameterDef("self", new GdObjectType("DefaultWrapperWorker"), null, shellCount));
+        var shellCountResult = shellCount.createAndAddTmpVariable(GdIntType.INT);
+        var shellCountEntry = new LirBasicBlock("entry");
+        shellCountEntry.appendInstruction(new LiteralIntInsn(shellCountResult.id(), 40));
+        shellCountEntry.setTerminator(new ReturnInsn(shellCountResult.id()));
+        shellCount.addBasicBlock(shellCountEntry);
+        shellCount.setEntryBlockId("entry");
+        workerClass.addFunction(shellCount);
+
+        var shellLabel = new LirFunctionDef("_default_describe$label");
+        shellLabel.setHidden(true);
+        shellLabel.setReturnType(GdStringType.STRING);
+        shellLabel.addParameter(new LirParameterDef("self", new GdObjectType("DefaultWrapperWorker"), null, shellLabel));
+        var shellLabelResult = shellLabel.createAndAddTmpVariable(GdStringType.STRING);
+        var shellLabelEntry = new LirBasicBlock("entry");
+        shellLabelEntry.appendInstruction(new LiteralStringInsn(shellLabelResult.id(), "fallback"));
+        shellLabelEntry.setTerminator(new ReturnInsn(shellLabelResult.id()));
+        shellLabel.addBasicBlock(shellLabelEntry);
+        shellLabel.setEntryBlockId("entry");
+        workerClass.addFunction(shellLabel);
+
+        // Hidden static shell (no parameters).
+        var shellStatic = new LirFunctionDef("_default_s_static_ping$count");
+        shellStatic.setHidden(true);
+        shellStatic.setStatic(true);
+        shellStatic.setReturnType(GdIntType.INT);
+        var shellStaticResult = shellStatic.createAndAddTmpVariable(GdIntType.INT);
+        var shellStaticEntry = new LirBasicBlock("entry");
+        shellStaticEntry.appendInstruction(new LiteralIntInsn(shellStaticResult.id(), 7));
+        shellStaticEntry.setTerminator(new ReturnInsn(shellStaticResult.id()));
+        shellStatic.addBasicBlock(shellStaticEntry);
+        shellStatic.setEntryBlockId("entry");
+        workerClass.addFunction(shellStatic);
+
+        var describe = new LirFunctionDef("describe");
+        describe.setReturnType(GdIntType.INT);
+        describe.addParameter(new LirParameterDef("self", new GdObjectType("DefaultWrapperWorker"), null, describe));
+        describe.addParameter(new LirParameterDef("base", GdIntType.INT, null, describe));
+        describe.addParameter(new LirParameterDef("count", GdIntType.INT, "_default_describe$count", describe));
+        describe.addParameter(new LirParameterDef("label", GdStringType.STRING, "_default_describe$label", describe));
+        var describeEntry = new LirBasicBlock("entry");
+        describeEntry.setTerminator(new ReturnInsn("base"));
+        describe.addBasicBlock(describeEntry);
+        describe.setEntryBlockId("entry");
+        workerClass.addFunction(describe);
+
+        var staticPing = new LirFunctionDef("static_ping");
+        staticPing.setStatic(true);
+        staticPing.setReturnType(GdIntType.INT);
+        staticPing.addParameter(new LirParameterDef("count", GdIntType.INT, "_default_s_static_ping$count", staticPing));
+        var staticPingEntry = new LirBasicBlock("entry");
+        staticPingEntry.setTerminator(new ReturnInsn("count"));
+        staticPing.addBasicBlock(staticPingEntry);
+        staticPing.setEntryBlockId("entry");
+        workerClass.addFunction(staticPing);
+
+        // Same-arity method without defaults: must keep the zero-default flavor untouched.
+        var ping = new LirFunctionDef("ping");
+        ping.setReturnType(GdIntType.INT);
+        ping.addParameter(new LirParameterDef("self", new GdObjectType("DefaultWrapperWorker"), null, ping));
+        ping.addParameter(new LirParameterDef("base", GdIntType.INT, null, ping));
+        var pingEntry = new LirBasicBlock("entry");
+        pingEntry.setTerminator(new ReturnInsn("base"));
+        ping.addBasicBlock(pingEntry);
+        ping.setEntryBlockId("entry");
+        workerClass.addFunction(ping);
+
+        var module = new LirModule("default_wrapper_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), module);
+        var files = codegen.generate();
+        var hCode = generatedFileText(files, "entry.h");
+        var cCode = generatedFileText(files, "entry.c");
+
+        // §5.6.2: per-shape userdata typedef with per-slot typed default function pointers
+        // (heterogeneous int + String), instance flavor taking owner fat self. impl keeps the
+        // exact function-pointer type (no function-pointer <-> void* round-trip).
+        assertContainsAll(
+                hCode,
+                "godot_int (*impl)(gdcc_DefaultWrapperWorker_fat_ptr, godot_int, godot_int, godot_String*);",
+                "godot_int (*def0)(gdcc_DefaultWrapperWorker_fat_ptr);",
+                "godot_String (*def1)(gdcc_DefaultWrapperWorker_fat_ptr);",
+                "} gdcc_default_ud_DefaultWrapperWorker_3_arg_int_int_String_ret_int_2_defslot;",
+                // Static flavor: receiver-less slot signature.
+                "godot_int (*impl)(godot_int);",
+                "godot_int (*def0)();",
+                "} gdcc_default_ud_1_arg_int_ret_int_1_defslot_static;"
+        );
+
+        // §5.6.3: call wrapper — argc guard with required-count expected, gates/probes conditional
+        // on supplied arguments, per-slot unpack-or-default, self_fat before any fill.
+        var callBody = resolveCallWrapperBody(hCode, "_3_arg_int_int_String_ret_int_2_defslot");
+        assertContainsAll(
+                callBody,
+                "if (p_argument_count < 1)",
+                "r_error->error = GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS;",
+                "r_error->expected = 1;",
+                "if (p_argument_count > 3)",
+                "r_error->error = GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS;",
+                "r_error->expected = 3;",
+                "godot_int arg1;",
+                "godot_String arg2;",
+                "arg1 = godot_new_int_with_Variant((GDExtensionVariantPtr)p_args[1]);",
+                "arg1 = ud->def0(self_fat);",
+                "arg2 = ud->def1(self_fat);",
+                "= ud->impl;",
+                // Default-filled destroyable values join the same reverse cleanup epilogue.
+                "godot_String_destroy(&arg2);"
+        );
+        // self_fat materialization strictly precedes userdata unwrap and every default fill.
+        assertOrdered(
+                callBody,
+                "self_fat = ",
+                "* ud = method_userdata;",
+                "ud->def0(self_fat)",
+                "ud->def1(self_fat)"
+        );
+        // Required slot 0 keeps the unconditional gate; default slots are guarded by argc.
+        assertFalse(callBody.contains("if (p_argument_count > 0)"), callBody);
+        assertTrue(callBody.contains("if (p_argument_count > 1)"), callBody);
+        assertTrue(callBody.contains("if (p_argument_count > 2)"), callBody);
+
+        // Static flavor: receiver-less default invocation.
+        var staticCallBody = resolveCallWrapperBody(hCode, "_1_arg_int_ret_int_1_defslot_static");
+        assertTrue(staticCallBody.contains("arg0 = ud->def0();"), staticCallBody);
+        assertFalse(staticCallBody.contains("self_fat"), staticCallBody);
+
+        // §5.6.7: ptrcall keeps the full-argument ABI but must unwrap impl from the same userdata.
+        var ptrcallBody = resolveFunctionBodyByPrefix(
+                hCode,
+                resolveOwnedWrapperPrefix(hCode, "static void ptrcall", "_3_arg_int_int_String_ret_int_2_defslot")
+        );
+        assertTrue(ptrcallBody.contains("= ud->impl;"), ptrcallBody);
+        assertFalse(ptrcallBody.contains("p_argument_count"), ptrcallBody);
+        assertFalse(ptrcallBody.contains("ud->def"), ptrcallBody);
+
+        // §5.6.2: registration site owns a per-method exclusive static userdata instance, filled
+        // in declaration order, passed through the existing void* function formal.
+        assertOrdered(
+                cCode,
+                "static gdcc_default_ud_DefaultWrapperWorker_3_arg_int_int_String_ret_int_2_defslot DefaultWrapperWorker_describe$default_ud = {",
+                "DefaultWrapperWorker_describe,",
+                "DefaultWrapperWorker__default_describe$count,",
+                "DefaultWrapperWorker__default_describe$label,"
+        );
+        var describeBindCall = resolveMethodBindCall(cCode, "describe");
+        assertTrue(describeBindCall.contains("&DefaultWrapperWorker_describe$default_ud"), describeBindCall);
+        assertTrue(cCode.contains(
+                "static gdcc_default_ud_1_arg_int_ret_int_1_defslot_static DefaultWrapperWorker_static_ping$default_ud = {"
+        ), cCode);
+        assertTrue(cCode.contains("DefaultWrapperWorker__default_s_static_ping$count,"), cCode);
+
+        // Zero-default regression: impl pointer still flows directly as method_userdata.
+        var pingBindCall = resolveMethodBindCall(cCode, "ping");
+        assertTrue(pingBindCall.contains("DefaultWrapperWorker_ping,"), pingBindCall);
+        assertFalse(cCode.contains("DefaultWrapperWorker_ping$default_ud"), cCode);
+        var pingCallBody = resolveCallWrapperBody(hCode, "_1_arg_int_ret_int");
+        assertTrue(pingCallBody.contains("= method_userdata;"), pingCallBody);
+        assertFalse(pingCallBody.contains("ud->"), pingCallBody);
+
+        // §5.5 regression holds under the new flavor: no bind-time default Variant channel.
+        assertFalse(hCode.contains("default_argument_count"), hCode);
+        assertFalse(hCode.contains("default_0_value"), hCode);
+    }
+
+    @Test
+    public void virtualOverrideWithDefaultsSharesDefaultUserdataBetweenClassDBAndVirtualDispatch() throws Exception {
+        var workerClass = new LirClassDef("VirtualDefaultDispatch", "Node");
+
+        // Hidden instance shell for `_process`'s delta default.
+        var shell = new LirFunctionDef("_default__process$delta");
+        shell.setHidden(true);
+        shell.setReturnType(GdFloatType.FLOAT);
+        shell.addParameter(new LirParameterDef("self", new GdObjectType("VirtualDefaultDispatch"), null, shell));
+        var shellResult = shell.createAndAddTmpVariable(GdFloatType.FLOAT);
+        var shellEntry = new LirBasicBlock("entry");
+        shellEntry.appendInstruction(new LiteralFloatInsn(shellResult.id(), 0.0));
+        shellEntry.setTerminator(new ReturnInsn(shellResult.id()));
+        shell.addBasicBlock(shellEntry);
+        shell.setEntryBlockId("entry");
+        workerClass.addFunction(shell);
+
+        var process = new LirFunctionDef("_process");
+        process.setReturnType(GdVoidType.VOID);
+        process.addParameter(new LirParameterDef("self", new GdObjectType("VirtualDefaultDispatch"), null, process));
+        process.addParameter(new LirParameterDef("delta", GdFloatType.FLOAT, "_default__process$delta", process));
+        var processEntry = new LirBasicBlock("entry");
+        processEntry.setTerminator(new ReturnInsn(null));
+        process.addBasicBlock(processEntry);
+        process.setEntryBlockId("entry");
+        workerClass.addFunction(process);
+
+        var module = new LirModule("virtual_default_dispatch_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), module);
+        var files = codegen.generate();
+        var cCode = generatedFileText(files, "entry.c");
+
+        // The engine's virtual callback reaches the defslot ptrcall flavor through
+        // p_virtual_call_userdata; it must be the same per-method userdata instance the ClassDB
+        // registration handed over, never the raw impl address (which the wrapper would
+        // dereference as a struct).
+        assertOrdered(
+                cCode,
+                "static gdcc_default_ud_VirtualDefaultDispatch_1_arg_float_no_ret_1_defslot VirtualDefaultDispatch__process$default_ud = {",
+                "VirtualDefaultDispatch__process,",
+                "VirtualDefaultDispatch__default__process$delta,"
+        );
+        var lookupBody = resolveFunctionBodyByPrefix(
+                cCode,
+                "void* VirtualDefaultDispatch_class_get_virtual_with_data("
+        );
+        assertTrue(lookupBody.contains("return (void*)&VirtualDefaultDispatch__process$default_ud;"), lookupBody);
+        assertFalse(lookupBody.contains("return (void*)VirtualDefaultDispatch__process;"), lookupBody);
+        var dispatchBody = resolveFunctionBodyByPrefix(
+                cCode,
+                "void VirtualDefaultDispatch_class_call_virtual_with_data("
+        );
+        assertTrue(dispatchBody.contains("p_virtual_call_userdata == &VirtualDefaultDispatch__process$default_ud"), dispatchBody);
+        assertTrue(dispatchBody.contains("ptrcall_VirtualDefaultDispatch_1_arg_float_no_ret_1_defslot("), dispatchBody);
+    }
+
+    @Test
+    public void defaultUserdataInstanceNameCannotCollideWithUserFunction() throws Exception {
+        var workerClass = new LirClassDef("CollisionWorker", "RefCounted");
+
+        var shell = new LirFunctionDef("_default_foo$a");
+        shell.setHidden(true);
+        shell.setReturnType(GdIntType.INT);
+        shell.addParameter(new LirParameterDef("self", new GdObjectType("CollisionWorker"), null, shell));
+        var shellResult = shell.createAndAddTmpVariable(GdIntType.INT);
+        var shellEntry = new LirBasicBlock("entry");
+        shellEntry.appendInstruction(new LiteralIntInsn(shellResult.id(), 1));
+        shellEntry.setTerminator(new ReturnInsn(shellResult.id()));
+        shell.addBasicBlock(shellEntry);
+        shell.setEntryBlockId("entry");
+        workerClass.addFunction(shell);
+
+        var foo = new LirFunctionDef("foo");
+        foo.setReturnType(GdVoidType.VOID);
+        foo.addParameter(new LirParameterDef("self", new GdObjectType("CollisionWorker"), null, foo));
+        foo.addParameter(new LirParameterDef("a", GdIntType.INT, "_default_foo$a", foo));
+        var fooEntry = new LirBasicBlock("entry");
+        fooEntry.setTerminator(new ReturnInsn(null));
+        foo.addBasicBlock(fooEntry);
+        foo.setEntryBlockId("entry");
+        workerClass.addFunction(foo);
+
+        // A legal user function whose C symbol would collide with an underscore-joined
+        // `<method>_default_ud` userdata instance name.
+        var userFunction = new LirFunctionDef("foo_default_ud");
+        userFunction.setReturnType(GdVoidType.VOID);
+        userFunction.addParameter(new LirParameterDef("self", new GdObjectType("CollisionWorker"), null, userFunction));
+        var userEntry = new LirBasicBlock("entry");
+        userEntry.setTerminator(new ReturnInsn(null));
+        userFunction.addBasicBlock(userEntry);
+        userFunction.setEntryBlockId("entry");
+        workerClass.addFunction(userFunction);
+
+        var module = new LirModule("default_userdata_collision_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), module);
+
+        // Must not throw: the `$`-separated instance name is unreachable from user identifiers.
+        var files = codegen.generate();
+        var cCode = generatedFileText(files, "entry.c");
+        assertTrue(cCode.contains("CollisionWorker_foo$default_ud = {"), cCode);
+        assertTrue(cCode.contains("CollisionWorker_foo_default_ud("), cCode);
+    }
+
+    @Test
+    public void objectDefaultFillIsOwnedAndReleasedOnlyOnTheDefaultBranch() throws Exception {
+        var workerClass = new LirClassDef("ObjectDefaultWorker", "RefCounted");
+
+        var shell = new LirFunctionDef("_default_take$target");
+        shell.setHidden(true);
+        shell.setReturnType(new GdObjectType("RefCounted"));
+        shell.addParameter(new LirParameterDef("self", new GdObjectType("ObjectDefaultWorker"), null, shell));
+        var shellResult = shell.createAndAddVariable("target", new GdObjectType("RefCounted"));
+        var shellEntry = new LirBasicBlock("entry");
+        shellEntry.appendInstruction(new ConstructObjectInsn(shellResult.id(), "RefCounted"));
+        shellEntry.setTerminator(new ReturnInsn(shellResult.id()));
+        shell.addBasicBlock(shellEntry);
+        shell.setEntryBlockId("entry");
+        workerClass.addFunction(shell);
+
+        var take = new LirFunctionDef("take");
+        take.setReturnType(GdVoidType.VOID);
+        take.addParameter(new LirParameterDef("self", new GdObjectType("ObjectDefaultWorker"), null, take));
+        take.addParameter(new LirParameterDef("target", new GdObjectType("RefCounted"), "_default_take$target", take));
+        var takeEntry = new LirBasicBlock("entry");
+        takeEntry.setTerminator(new ReturnInsn(null));
+        take.addBasicBlock(takeEntry);
+        take.setEntryBlockId("entry");
+        workerClass.addFunction(take);
+
+        var module = new LirModule("object_default_fill_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), module);
+        var files = codegen.generate();
+        var hCode = generatedFileText(files, "entry.h");
+
+        var callBody = resolveCallWrapperBody(hCode, "_1_arg_RefCounted_no_ret_1_defslot");
+        // Shell-produced objects are OWNED: the default branch flags them, and the epilogue
+        // releases exactly those; the Variant-unpacked (BORROWED) branch stays untouched.
+        assertContainsAll(
+                callBody,
+                "godot_bool arg0_from_default = false;",
+                "arg0 = gdcc_RefCounted_fat_ptr_from_variant((GDExtensionVariantPtr)p_args[0]);",
+                "arg0 = ud->def0(self_fat);",
+                "arg0_from_default = true;",
+                "if (arg0_from_default) {",
+                "release_object(gdcc_RefCounted_fat_ptr_live_object(arg0));"
+        );
+        // The release is only reachable behind the from_default guard.
+        assertOrdered(
+                callBody,
+                "arg0_from_default = true;",
+                "if (arg0_from_default) {",
+                "release_object(gdcc_RefCounted_fat_ptr_live_object(arg0));"
         );
     }
 

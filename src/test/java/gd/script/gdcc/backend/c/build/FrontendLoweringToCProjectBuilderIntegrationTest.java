@@ -129,6 +129,176 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     }
 
     @Test
+    void lowerFrontendParameterDefaultsBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping parameter-default integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_parameter_default");
+        Files.createDirectories(tempDir);
+
+        // The gdcc module itself exercises the exact/static/bare caller routes with omitted
+        // trailing arguments; the Godot-side script only invokes full-argument probe methods
+        // (dynamic-route omission lands with the step-8 callee-prologue wrapper).
+        var source = """
+                class_name ParamDefaultSmoke
+                extends Node
+
+                var marker: int = 5
+
+                func ping(a: int, count: int = 40) -> int:
+                    return a + count
+
+                static func sping(a: int, count: int = 7) -> int:
+                    return a + count
+
+                func multi(a: int, b: int = 1, c: int = 2) -> int:
+                    return a * 100 + b * 10 + c
+
+                func marker_default(value: int = marker) -> int:
+                    return value
+
+                func append_probe(items: Array[int] = [0]) -> int:
+                    items.append(1)
+                    return items.size()
+
+                func run_exact_checks() -> int:
+                    var sum = 0
+                    sum += ping(1)
+                    sum += ping(1, 2)
+                    sum += sping(1)
+                    sum += sping(1, 1)
+                    sum += multi(1)
+                    sum += multi(1, 5)
+                    sum += marker_default()
+                    return sum
+
+                func run_reeval_checks() -> int:
+                    var first = append_probe()
+                    var second = append_probe()
+                    return first * 10 + second
+
+                # gdcc-internal dynamic route: a Variant receiver forces the VARIANT_DYNAMIC
+                # lowering path, which reaches the same callee-prologue wrapper through the engine.
+                func run_dynamic_checks() -> int:
+                    var v: Variant = self
+                    return int(v.ping(1)) * 1000 + int(v.ping(1, 2))
+                """;
+        var module = parseModule(
+                tempDir.resolve("param_default_smoke.gd"),
+                source,
+                Map.of("ParamDefaultSmoke", "RuntimeParamDefaultSmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(1, lowered.getClassDefs().size());
+        var className = lowered.getClassDefs().getFirst().getName();
+        assertEquals("RuntimeParamDefaultSmoke", className);
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_parameter_default",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
+        var entryHeader = Files.readString(projectDir.resolve("entry.h"));
+
+        // §5.1: the raw `$` file-scope symbols must compile and link under zig cc; definition
+        // (entry.c), prototype (entry.h) and call sites share one spelling.
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(entrySource.contains("RuntimeParamDefaultSmoke__default_ping$count("), entrySource);
+        assertTrue(entrySource.contains("RuntimeParamDefaultSmoke__default_s_sping$count("), entrySource);
+        assertTrue(entryHeader.contains("RuntimeParamDefaultSmoke__default_ping$count("), entryHeader);
+
+        // §5.5: the bind registration channel stays empty — no bind-time default Variants and
+        // no default_N_value formals anywhere in the generated registration surface.
+        assertFalse(entryHeader.contains("default_argument_count"), entryHeader);
+        assertFalse(entryHeader.contains("default_0_value"), entryHeader);
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "ParamDefaultSmokeNode",
+                        className,
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(parameterDefaultTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("parameter default exact-route check passed."),
+                () -> "Exact/static/bare default completion should be correct.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("parameter default re-evaluation check passed."),
+                () -> "Mutable defaults must be re-evaluated per call.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("parameter default exact-route check failed."),
+                () -> "Exact-route check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("parameter default re-evaluation check failed."),
+                () -> "Re-evaluation check should not fail.\nOutput:\n" + combinedOutput
+        );
+
+        // Step 8: dynamic route (Object.call) runtime completion through the argc-aware wrapper.
+        assertTrue(
+                combinedOutput.contains("parameter default dynamic-route check passed."),
+                () -> "Dynamic-route default fill should be correct.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("parameter default dynamic multi-slot check passed."),
+                () -> "Dynamic-route multi-slot fill should follow declaration order.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("parameter default dynamic re-evaluation check passed."),
+                () -> "Dynamic-route defaults must be re-evaluated per call.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("parameter default gdcc dynamic-route check passed."),
+                () -> "gdcc-internal VARIANT_DYNAMIC route should reach the wrapper fill.\nOutput:\n" + combinedOutput
+        );
+        // Too-few below the required prefix: the wrapper rejects with expected = required_count
+        // (1), and Godot surfaces that exact expectation. The failing `call` aborts the script
+        // function, so the probe marker right before it anchors that the error is ours.
+        assertTrue(
+                combinedOutput.contains("parameter default dynamic too-few probe reached."),
+                () -> "Too-few probe should be reached.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("Expected 1 argument(s)."),
+                () -> "TOO_FEW should report expected = required_count (1).\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("parameter default dynamic-route check failed."),
+                () -> "Dynamic-route check should not fail.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
     void lowerVectorIToVectorBoundariesBuildConstructorIntrinsicAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping Vector*i-to-Vector integration test");
@@ -2089,6 +2259,64 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend lowering runtime class remap check passed.")
                     else:
                         push_error("frontend lowering runtime class remap check failed.")
+                """;
+    }
+
+    private static @NotNull String parameterDefaultTestScript() {
+        return """
+                extends Node
+
+                const TARGET_NODE_NAME = "ParamDefaultSmokeNode"
+
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+
+                    var exact_result = int(target.call("run_exact_checks"))
+                    if exact_result == 323:
+                        print("parameter default exact-route check passed.")
+                    else:
+                        push_error("parameter default exact-route check failed: got %s." % exact_result)
+
+                    var reeval_result = int(target.call("run_reeval_checks"))
+                    if reeval_result == 22:
+                        print("parameter default re-evaluation check passed.")
+                    else:
+                        push_error("parameter default re-evaluation check failed: got %s." % reeval_result)
+
+                    # Step 8: the dynamic route (Object.call -> GDExtensionMethodBind::call ->
+                    # callee-prologue wrapper) fills omitted trailing arguments at runtime.
+                    var dynamic_result = int(target.call("ping", 1))
+                    if dynamic_result == 41:
+                        print("parameter default dynamic-route check passed.")
+                    else:
+                        push_error("parameter default dynamic-route check failed: got %s." % dynamic_result)
+
+                    var dynamic_multi = int(target.call("multi", 1))
+                    if dynamic_multi == 112:
+                        print("parameter default dynamic multi-slot check passed.")
+                    else:
+                        push_error("parameter default dynamic multi-slot check failed: got %s." % dynamic_multi)
+
+                    var dynamic_reeval = int(target.call("append_probe")) * 10 + int(target.call("append_probe"))
+                    if dynamic_reeval == 22:
+                        print("parameter default dynamic re-evaluation check passed.")
+                    else:
+                        push_error("parameter default dynamic re-evaluation check failed: got %s." % dynamic_reeval)
+
+                    var gdcc_dynamic = int(target.call("run_dynamic_checks"))
+                    if gdcc_dynamic == 41003:
+                        print("parameter default gdcc dynamic-route check passed.")
+                    else:
+                        push_error("parameter default gdcc dynamic-route check failed: got %s." % gdcc_dynamic)
+
+                    # Too-few below the required prefix surfaces as a call error whose
+                    # `expected` is the required count (1), not the full arity (2). The failed
+                    # call aborts this GDScript function, so this probe must stay LAST.
+                    print("parameter default dynamic too-few probe reached.")
+                    target.call("ping")
                 """;
     }
 

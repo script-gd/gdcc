@@ -900,6 +900,130 @@ class CallMethodInsnGenTest {
     }
 
     @Test
+    @DisplayName("CALL_METHOD should materialize multiple source defaults in declaration order")
+    void callMethodShouldMaterializeMultipleSourceDefaultsInDeclarationOrder() {
+        var workerClass = newClass("Worker");
+
+        var defaultCount = newFunction("_default_ping$count");
+        defaultCount.setReturnType(GdIntType.INT);
+        defaultCount.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, defaultCount));
+        workerClass.addFunction(defaultCount);
+
+        var defaultLabel = newFunction("_default_ping$label");
+        defaultLabel.setReturnType(GdStringType.STRING);
+        defaultLabel.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, defaultLabel));
+        workerClass.addFunction(defaultLabel);
+
+        var ping = newFunction("ping");
+        ping.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, ping));
+        ping.addParameter(new LirParameterDef("a", GdIntType.INT, null, ping));
+        ping.addParameter(new LirParameterDef("count", GdIntType.INT, "_default_ping$count", ping));
+        ping.addParameter(new LirParameterDef("label", GdStringType.STRING, "_default_ping$label", ping));
+        entry(ping).appendInstruction(new ReturnInsn(null));
+        workerClass.addFunction(ping);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        caller.createAndAddVariable("a", GdIntType.INT);
+        entry(caller).appendInstruction(new CallMethodInsn(
+                null,
+                "ping",
+                "worker",
+                List.of(new LirInstruction.VariableOperand("a"))
+        ));
+        hostClass.addFunction(caller);
+
+        var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass));
+        // Each omitted trailing argument re-invokes its own shell at the call site, in declaration
+        // order, before the completed call (per-call re-evaluation, no shared caching).
+        assertOrdered(
+                body,
+                "Worker__default_ping$count($worker)",
+                "Worker__default_ping$label($worker)",
+                "Worker_ping($worker, $a, __gdcc_tmp_default_arg_2_"
+        );
+        assertTrue(body.contains("__gdcc_tmp_default_arg_3_"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should reject too-few arguments below the required prefix of a source default method")
+    void callMethodShouldRejectTooFewBelowRequiredPrefixOfSourceDefaultMethod() {
+        var workerClass = newClass("Worker");
+        var defaultCount = newFunction("_default_ping$count");
+        defaultCount.setReturnType(GdIntType.INT);
+        defaultCount.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, defaultCount));
+        workerClass.addFunction(defaultCount);
+
+        var ping = newFunction("ping");
+        ping.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, ping));
+        ping.addParameter(new LirParameterDef("a", GdIntType.INT, null, ping));
+        ping.addParameter(new LirParameterDef("count", GdIntType.INT, "_default_ping$count", ping));
+        entry(ping).appendInstruction(new ReturnInsn(null));
+        workerClass.addFunction(ping);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        entry(caller).appendInstruction(new CallMethodInsn(
+                null,
+                "ping",
+                "worker",
+                List.of()
+        ));
+        hostClass.addFunction(caller);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass))
+        );
+        assertTrue(ex.getMessage().contains("Too few arguments"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("missing required parameter #1"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should reject too-many arguments on a source default method")
+    void callMethodShouldRejectTooManyOnSourceDefaultMethod() {
+        var workerClass = newClass("Worker");
+        var defaultCount = newFunction("_default_ping$count");
+        defaultCount.setReturnType(GdIntType.INT);
+        defaultCount.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, defaultCount));
+        workerClass.addFunction(defaultCount);
+
+        var ping = newFunction("ping");
+        ping.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, ping));
+        ping.addParameter(new LirParameterDef("a", GdIntType.INT, null, ping));
+        ping.addParameter(new LirParameterDef("count", GdIntType.INT, "_default_ping$count", ping));
+        entry(ping).appendInstruction(new ReturnInsn(null));
+        workerClass.addFunction(ping);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        caller.createAndAddVariable("a", GdIntType.INT);
+        caller.createAndAddVariable("b", GdIntType.INT);
+        caller.createAndAddVariable("c", GdIntType.INT);
+        entry(caller).appendInstruction(new CallMethodInsn(
+                null,
+                "ping",
+                "worker",
+                List.of(
+                        new LirInstruction.VariableOperand("a"),
+                        new LirInstruction.VariableOperand("b"),
+                        new LirInstruction.VariableOperand("c")
+                )
+        ));
+        hostClass.addFunction(caller);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass))
+        );
+        assertTrue(ex.getMessage().contains("Too many arguments"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("expected 2, got 3"), ex.getMessage());
+    }
+
+    @Test
     @DisplayName("CALL_METHOD should reject non-Variant vararg arguments")
     void callMethodShouldRejectNonVariantVarargArgument() {
         var clazz = newClass("Worker");
