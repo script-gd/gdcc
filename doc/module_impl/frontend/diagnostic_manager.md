@@ -347,7 +347,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 
 - skeleton phase 只负责 annotation retention、export 参数的结构求值（经共享 helper）与 unsupported-annotation boundary
 - `@onready` / `@tool` / `@export*` 的合法用法验证不属于 skeleton phase
-- 独立的 annotation-usage phase 消费 retained annotation + class metadata + typed facts，并使用 `sema.annotation_usage` 报告全部用法错误（消息模板见 `frontend_annotation_implementation_plan.md` §3.3）
+- 独立的 annotation-usage phase 消费 retained annotation + class metadata + typed facts，并使用 `sema.annotation_usage` 报告全部用法错误（消息模板见 `frontend_annotation_implementation.md` §4.3）
 
 与 `FrontendTypeCheckAnalyzer` 相关的当前合同已冻结为：
 

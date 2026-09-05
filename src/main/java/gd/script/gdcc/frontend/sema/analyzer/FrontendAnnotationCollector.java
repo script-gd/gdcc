@@ -39,14 +39,15 @@ import java.util.Set;
 /// of a statement list anchor on their own `AnnotationStatement` so the usage analyzer keeps a
 /// stable placement-diagnostic node and the skeleton never consumes them as member annotations.
 ///
-/// Region-style warning annotations are ignored because this round only prepares semantic
-/// attachment for node-local annotations.
+/// Region-style warning annotations are ignored: they attach to no node and carry no semantic
+/// payload for downstream phases.
 public final class FrontendAnnotationCollector {
     /// Annotations Godot registers as `AnnotationInfo::SCRIPT`: legal only at the script root.
     private static final Set<String> OWNER_SCOPED_ANNOTATIONS = Set.of("tool", "icon");
     /// Annotations that target members; consuming one closes the owner preamble (Godot parity: a
-    /// `@tool` written after a member annotation is rejected). Deferred export members are
-    /// classified here as well so the preamble contract stays stable when they get implemented.
+    /// `@tool` written after a member annotation is rejected). Not-yet-supported export members are
+    /// classified here as well, so adding support for them later cannot silently change preamble
+    /// behavior.
     private static final Set<String> MEMBER_TARGET_ANNOTATIONS = Set.of(
             "onready",
             "rpc",

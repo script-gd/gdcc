@@ -83,7 +83,7 @@
 - owner class 必须派生自 `Node`
 - `@onready` 不可用于 `static` property
 - `@tool` 只允许顶层 `SourceFile` 上的零参形式
-- `@export*` 家族的 placement（仅 class `var` property）、static 拒绝、参数结构与类型兼容校验（完整合同见 `frontend_annotation_implementation_plan.md` §3.3）
+- `@export*` 家族的 placement（仅 class `var` property）、static 拒绝、参数结构与类型兼容校验（完整合同见 `frontend_annotation_implementation.md` §5）
 
 ### 1.3 当前不负责
 
