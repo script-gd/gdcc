@@ -5,12 +5,12 @@
 
 ## 文档状态
 
-- 状态：Maintained（`String <-> StringName` 入站 wrapper parity 已完成实现闭合；runtime gate、wrapper-local materializer、cleanup 与 focused/runtime 锚点已同步）
+- 状态：Maintained（`String <-> StringName` 入站 wrapper parity 已完成实现闭合；runtime gate、wrapper-local materializer、cleanup 与 focused/runtime 锚点已同步；property hint/class_name 槽随 export 注解合同落地）
 - 范围：
   - `src/main/java/gd/script/gdcc/backend/c/**`
   - `src/main/c/codegen/**`
   - `src/test/java/gd/script/gdcc/backend/c/**`
-- 更新时间：2026-05-29
+- 更新时间：2026-09-04
 - 上游对齐基线：
   - Godot 4.x 对 source-level `Variant` outward slot 的合同：
     - `type = NIL`
@@ -80,11 +80,12 @@
   - property registration metadata
 - non-`Variant` outward slot 继续沿用现有 `gdExtensionType` 与 base usage 行为；入站
   `call_func` wrapper 只在少量 frontend ordinary-boundary widening 上额外接受相邻 runtime tag，不改变 outward metadata
-- 当前 outward ABI 只自定义 `type` / `usage`：
-  - `hint`
-  - `hint_string`
-  - `class_name`
-  继续保持现有 backend 默认/owner-class 形态
+- outward ABI 的 `hint` / `hint_string` / `class_name` 由 export 注解合同驱动：
+  - 带 `@export*` variant key 的 property：`hint` 为 key 对应的 `PROPERTY_HINT_*`，`hint_string` 为注解 value 原文，`class_name` 为空
+  - 裸 `@export` 的 Object property：Resource 派生 → `PROPERTY_HINT_RESOURCE_TYPE`、Node 派生 → `PROPERTY_HINT_NODE_TYPE`，`hint_string` 与 `class_name` 均为 property 类型类名
+  - 裸 `@export` 的非 Object property：复用 `renderBoundMetadata`（typed Array/Dictionary 仍发 `ARRAY_TYPE` / `DICTIONARY_TYPE`，其余 `HINT_NONE`），`class_name` 为空，usage 为 `DEFAULT`
+  - 无 export 的 property：同上 hint 规则，usage 为 `NO_EDITOR`
+  - method argument / return metadata：不受 export 合同驱动，继续走 `renderBoundMetadata`（含 typed-container hint），`class_name` 为空
 - `void` 不允许进入 outward metadata helper：
   - 缺失 outward metadata 的类型必须 fail-fast
   - 不能在模板层静默拼接无意义的 enum 字面量
@@ -165,9 +166,9 @@
   - `template_451/entry.h.ftl`
   - `template_451/entry.c.ftl`
 - 不允许在新的 generator/template 中再次散落硬编码分支去“顺手修 `Variant` ABI”
-- property registration 当前仍保留 owner-class `class_name` 槽位形态：
-  - 这不是 `Variant` ABI 的问题
-  - 后续若要补 object/typed-container property metadata，必须作为独立合同扩展
+- property registration 的 `class_name` 槽位形态已固定：
+  - Object 导出的 property 携带 property 类型类名（Resource/Node hint 配套），其余 property 为空串
+  - 这与 `Variant` ABI 无关；typed-container hint 由 `renderBoundMetadata` 独立持有，不经过 `class_name` 槽
 
 ### 6. typed dictionary 边界合同
 

@@ -10,7 +10,7 @@ func unicode_escape_payload() -> String:
     var payload: String = "\u4F60"
     payload += "\u597D"
     payload += "-"
-    payload += "\U0001F642"
+    payload += "\U01F642"
     return payload
 
 func escaped_name_payload() -> StringName:

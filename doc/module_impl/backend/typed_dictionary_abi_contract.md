@@ -104,7 +104,7 @@
   - 不发布 typed `hint_string`
 - top-level `class_name` 不承载 typed-dictionary leaf identity：
   - object leaf 身份在 `hint_string` 与 runtime preflight 中表达
-  - property bind 继续保留当前 owner-class `class_name` 槽位形态
+  - property bind 的 `class_name` 槽只对裸 `@export` 的 Object property 填 property 类型类名（export 注解合同），其余 property 为空串
 - 当前 outward hint renderer 只允许 Godot outward surface 可直接表达的 leaf：
   - primitive / builtin / packed array / `Variant`
   - engine object / GDCC object

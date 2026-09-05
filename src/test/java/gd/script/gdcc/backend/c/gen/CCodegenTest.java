@@ -690,6 +690,148 @@ public class CCodegenTest {
         assertFalse(invalidDispatchBody.contains("InvalidVirtualDispatch__process"), invalidDispatchBody);
     }
 
+    /// GDExtension has no tool-script registration flag, so non-tool classes gate the frame-loop
+    /// virtuals (`_process` / `_physics_process`) behind `gdcc_is_editor_hint()` inside their
+    /// userdata-matched dispatch branches; other virtuals (`_ready`) stay ungated.
+    @Test
+    public void generateShouldGateFrameLoopVirtualsForNonToolClassInEditor() throws Exception {
+        var workerClass = new LirClassDef("FrameLoopGateWorker", "Node");
+        var process = newFunction("_process", GdVoidType.VOID);
+        process.addParameter(new LirParameterDef("delta", GdFloatType.FLOAT, null, process));
+        entry(process).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(process);
+        var physicsProcess = newFunction("_physics_process", GdVoidType.VOID);
+        physicsProcess.addParameter(new LirParameterDef("delta", GdFloatType.FLOAT, null, physicsProcess));
+        entry(physicsProcess).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(physicsProcess);
+        var ready = newFunction("_ready", GdVoidType.VOID);
+        entry(ready).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(ready);
+
+        var module = new LirModule("frame_loop_gate_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), module);
+        var entrySource = generatedFileText(codegen.generate(), "entry.c");
+
+        var dispatchBody = resolveFunctionBodyByPrefix(
+                entrySource,
+                "void FrameLoopGateWorker_class_call_virtual_with_data("
+        );
+        // The generated C passes through CCodeFormatter, so the gate block is asserted as ordered
+        // fragments rather than whitespace-exact text.
+        var processBranch = resolveVirtualDispatchBranch(dispatchBody, "FrameLoopGateWorker__process");
+        assertOrdered(processBranch, "if (gdcc_is_editor_hint()) {", "return;", "}", "ptrcall");
+        var physicsBranch = resolveVirtualDispatchBranch(dispatchBody, "FrameLoopGateWorker__physics_process");
+        assertOrdered(physicsBranch, "if (gdcc_is_editor_hint()) {", "return;", "}", "ptrcall");
+        var readyBranch = resolveVirtualDispatchBranch(dispatchBody, "FrameLoopGateWorker__ready");
+        assertContainsAll(readyBranch, "ptrcall");
+        assertFalse(readyBranch.contains("gdcc_is_editor_hint"), readyBranch);
+
+        // The lookup side never gates: it only resolves userdata for the engine.
+        var lookupBody = resolveFunctionBodyByPrefix(
+                entrySource,
+                "void* FrameLoopGateWorker_class_get_virtual_with_data("
+        );
+        assertFalse(lookupBody.contains("gdcc_is_editor_hint"), lookupBody);
+    }
+
+    /// The frame-loop gate also applies when the override carries default slots: the gate lives
+    /// inside the default-userdata-matched branch, before the defslot ptrcall flavor.
+    @Test
+    public void generateShouldGateFrameLoopVirtualWithDefaultUserdataInEditor() throws Exception {
+        var workerClass = new LirClassDef("FrameLoopGateDefault", "Node");
+
+        var shell = new LirFunctionDef("_default__process$delta");
+        shell.setHidden(true);
+        shell.setReturnType(GdFloatType.FLOAT);
+        shell.addParameter(new LirParameterDef("self", new GdObjectType("FrameLoopGateDefault"), null, shell));
+        var shellResult = shell.createAndAddTmpVariable(GdFloatType.FLOAT);
+        var shellEntry = new LirBasicBlock("entry");
+        shellEntry.appendInstruction(new LiteralFloatInsn(shellResult.id(), 0.0));
+        shellEntry.setTerminator(new ReturnInsn(shellResult.id()));
+        shell.addBasicBlock(shellEntry);
+        shell.setEntryBlockId("entry");
+        workerClass.addFunction(shell);
+
+        var process = new LirFunctionDef("_process");
+        process.setReturnType(GdVoidType.VOID);
+        process.addParameter(new LirParameterDef("self", new GdObjectType("FrameLoopGateDefault"), null, process));
+        process.addParameter(new LirParameterDef("delta", GdFloatType.FLOAT, "_default__process$delta", process));
+        var processEntry = new LirBasicBlock("entry");
+        processEntry.setTerminator(new ReturnInsn(null));
+        process.addBasicBlock(processEntry);
+        process.setEntryBlockId("entry");
+        workerClass.addFunction(process);
+
+        var module = new LirModule("frame_loop_gate_default_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), module);
+        var entrySource = generatedFileText(codegen.generate(), "entry.c");
+
+        var dispatchBody = resolveFunctionBodyByPrefix(
+                entrySource,
+                "void FrameLoopGateDefault_class_call_virtual_with_data("
+        );
+        var processBranch = resolveVirtualDispatchBranch(
+                dispatchBody,
+                "FrameLoopGateDefault__process$default_ud"
+        );
+        assertOrdered(
+                processBranch,
+                "if (gdcc_is_editor_hint()) {",
+                "return;",
+                "}",
+                "ptrcall_FrameLoopGateDefault_1_arg_float_no_ret_1_defslot("
+        );
+    }
+
+    /// Tool classes (including inner classes of a `@tool` script, which the frontend marks with
+    /// the same propagated flag) emit no editor gate at all: frame-loop virtuals run in the
+    /// editor, matching Godot's `@tool` semantics.
+    @Test
+    public void generateShouldNotGateFrameLoopVirtualsForToolClass() throws Exception {
+        var toolClass = new LirClassDef("ToolFrameLoopWorker", "Node");
+        toolClass.setTool(true);
+        var process = newFunction("_process", GdVoidType.VOID);
+        process.addParameter(new LirParameterDef("delta", GdFloatType.FLOAT, null, process));
+        entry(process).setTerminator(new ReturnInsn(null));
+        toolClass.addFunction(process);
+
+        var toolInnerClass = new LirClassDef("ToolFrameLoopWorker__sub__Inner", "Node");
+        toolInnerClass.setTool(true);
+        var innerPhysics = newFunction("_physics_process", GdVoidType.VOID);
+        innerPhysics.addParameter(new LirParameterDef("delta", GdFloatType.FLOAT, null, innerPhysics));
+        entry(innerPhysics).setTerminator(new ReturnInsn(null));
+        toolInnerClass.addFunction(innerPhysics);
+
+        var module = new LirModule("tool_frame_loop_module", List.of(toolClass, toolInnerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), module);
+        var entrySource = generatedFileText(codegen.generate(), "entry.c");
+
+        var toolDispatchBody = resolveFunctionBodyByPrefix(
+                entrySource,
+                "void ToolFrameLoopWorker_class_call_virtual_with_data("
+        );
+        assertContainsAll(toolDispatchBody, "ptrcall");
+        assertFalse(toolDispatchBody.contains("gdcc_is_editor_hint"), toolDispatchBody);
+        var innerDispatchBody = resolveFunctionBodyByPrefix(
+                entrySource,
+                "void ToolFrameLoopWorker__sub__Inner_class_call_virtual_with_data("
+        );
+        assertContainsAll(innerDispatchBody, "ptrcall");
+        assertFalse(innerDispatchBody.contains("gdcc_is_editor_hint"), innerDispatchBody);
+    }
+
     @Test
     public void generateShouldUseSessionBoundBodyRendererInsteadOfPublicGenerateFuncBody() {
         var workerClass = new LirClassDef("EngineUsageWorker", "RefCounted");
@@ -1111,6 +1253,108 @@ public class CCodegenTest {
         );
         assertFalse(takeNodePathCallBody.contains("GDEXTENSION_VARIANT_TYPE_STRING"), takeNodePathCallBody);
         assertFalse(takeNodePathCallBody.contains("from_call_arg_variant"), takeNodePathCallBody);
+    }
+
+    /// Export-variant properties bind with the hint/hint_string driven by the annotation value;
+    /// the class_name slot stays empty for non-Object property types.
+    @Test
+    public void generatesExportVariantPropertyBindingMetadataFromAnnotationValue() throws Exception {
+        var workerClass = new LirClassDef("ExportVariantPropertyOwner", "Node");
+        workerClass.addProperty(new LirPropertyDef(
+                "speed",
+                GdFloatType.FLOAT,
+                false,
+                null,
+                null,
+                null,
+                Map.of("export_range", "0,20,0.5")
+        ));
+        workerClass.addProperty(new LirPropertyDef(
+                "title",
+                GdStringType.STRING,
+                false,
+                null,
+                null,
+                null,
+                Map.of("export_multiline", "")
+        ));
+
+        var module = new LirModule("export_variant_property_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), module);
+        var cCode = generatedFileText(codegen.generate(), "entry.c");
+
+        var speedBind = resolvePropertyBindCall(cCode, "speed");
+        assertContainsAll(
+                speedBind,
+                "GDEXTENSION_VARIANT_TYPE_FLOAT",
+                "godot_PROPERTY_HINT_RANGE",
+                "GD_STATIC_S(u8\"0,20,0.5\")",
+                "GD_STATIC_SN(u8\"\")",
+                "godot_PROPERTY_USAGE_DEFAULT"
+        );
+        var titleBind = resolvePropertyBindCall(cCode, "title");
+        assertContainsAll(
+                titleBind,
+                "GDEXTENSION_VARIANT_TYPE_STRING",
+                "godot_PROPERTY_HINT_MULTILINE_TEXT",
+                "godot_PROPERTY_USAGE_DEFAULT"
+        );
+    }
+
+    /// Object exports bind with the property type class in both the hint_string and the
+    /// class_name slot (never the owner class name), driving RESOURCE_TYPE / NODE_TYPE hints.
+    @Test
+    public void generatesObjectExportBindingWithPropertyTypeClassName() throws Exception {
+        var workerClass = new LirClassDef("ObjectExportOwner", "Node");
+        workerClass.addProperty(new LirPropertyDef(
+                "texture",
+                new GdObjectType("Texture2D"),
+                false,
+                null,
+                null,
+                null,
+                Map.of("export", "")
+        ));
+        workerClass.addProperty(new LirPropertyDef(
+                "target",
+                new GdObjectType("Node2D"),
+                false,
+                null,
+                null,
+                null,
+                Map.of("export", "")
+        ));
+
+        var module = new LirModule("object_export_property_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), module);
+        var cCode = generatedFileText(codegen.generate(), "entry.c");
+
+        var textureBind = resolvePropertyBindCall(cCode, "texture");
+        assertContainsAll(
+                textureBind,
+                "GDEXTENSION_VARIANT_TYPE_OBJECT",
+                "godot_PROPERTY_HINT_RESOURCE_TYPE",
+                "GD_STATIC_S(u8\"Texture2D\")",
+                "GD_STATIC_SN(u8\"Texture2D\")",
+                "godot_PROPERTY_USAGE_DEFAULT"
+        );
+        assertFalse(textureBind.contains("GD_STATIC_SN(u8\"ObjectExportOwner\")"), textureBind);
+        var targetBind = resolvePropertyBindCall(cCode, "target");
+        assertContainsAll(
+                targetBind,
+                "godot_PROPERTY_HINT_NODE_TYPE",
+                "GD_STATIC_S(u8\"Node2D\")",
+                "GD_STATIC_SN(u8\"Node2D\")"
+        );
+        assertFalse(targetBind.contains("GD_STATIC_SN(u8\"ObjectExportOwner\")"), targetBind);
     }
 
     @Test
@@ -2626,6 +2870,17 @@ public class CCodegenTest {
         assertTrue(openBraceIndex >= 0, "Missing opening brace for " + signaturePrefix);
         var closeBraceIndex = findMatchingBrace(code, openBraceIndex);
         return code.substring(openBraceIndex + 1, closeBraceIndex);
+    }
+
+    /// Extracts one userdata-matched branch body out of a generated `*_class_call_virtual_with_data`
+    /// dispatch body so assertions can target exactly one virtual's gate/call sequence.
+    private static String resolveVirtualDispatchBranch(String dispatchBody, String userdataSymbol) {
+        var branchAnchor = "if (p_virtual_call_userdata == &" + userdataSymbol + ")";
+        var branchStart = dispatchBody.indexOf(branchAnchor);
+        assertTrue(branchStart >= 0, "Missing dispatch branch for " + userdataSymbol + "\n" + dispatchBody);
+        var openBraceIndex = dispatchBody.indexOf('{', branchStart);
+        var closeBraceIndex = findMatchingBrace(dispatchBody, openBraceIndex);
+        return dispatchBody.substring(openBraceIndex + 1, closeBraceIndex);
     }
 
     private static void addSingleParamReturnFunction(@NotNull LirClassDef clazz,

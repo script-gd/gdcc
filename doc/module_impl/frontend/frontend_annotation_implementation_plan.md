@@ -1,11 +1,17 @@
 # Frontend Annotation（`@tool` / `@export*`）实施计划
 
-> 本文档是 GDScript 注解在 gdcc 中的分期实施计划，本期范围固定为 `@tool` 与 `@export*` 家族。文档同时记录已冻结的现状事实、目标合同、分步骤实施顺序与验收细则；落地完成后，稳定事实应回流到 `diagnostic_manager.md`、`frontend_rules.md` 与 `gdcc_low_ir.md`，本文档再转为事实源或归档。
+> 本文档是 GDScript 注解在 gdcc 中的分期实施计划，范围固定为 `@tool` 与 `@export*` 家族。文档同时记录实施前基线事实、目标合同、分步骤实施顺序与验收细则；落地已全部完成，稳定事实已回流到 `diagnostic_manager.md`、`frontend_rules.md`、`gdcc_low_ir.md` 与 `variant_abi_contract.md`，本文档现为该特性的完整事实源。
 
 ## 文档状态
 
-- 状态：计划待实施（已经过多轮审阅修订并获批；Godot 行为以 `4.5.1-stable` 为准逐一核对）
+- 状态：已落地，转为事实源（已经过多轮审阅修订并获批；Godot 行为以 `4.5.1-stable` 为准逐一核对）
 - 更新时间：2026-09-04
+- 实施进度：
+    - Step 1（`@tool` frontend 贯通）：✅ 已完成并通过审阅——collector 按单注解分类 + `ownerPreambleOpen` 状态机重写（trivia 透明、list 末尾补 flush 到自身锚点）、skeleton script 级 `@tool` 传播（顶层 + 全部 inner `setTool(true)`，顶层额外 `setAnnotation("tool", "")`）、usage analyzer 补 `SourceFile` 校验入口与 `@tool` placement/arity 校验、`DomLirParser` class 级 annotation 递归读取 bug 修复。测试：`FrontendClassSkeletonAnnotationTest`(14)、`FrontendAnnotationUsageAnalyzerTest`(11)、`DomLirSerializerTest`、`DomLirParserTest` 全绿。
+    - Step 2（backend hint 渲染与 `@tool` 帧循环 gate）：✅ 已完成并通过审阅——`CGenHelper.renderPropertyMetadata` 按固定全序选 key、variant hint/hint_string 由注解值驱动、裸 `export` Object → `RESOURCE_TYPE`/`NODE_TYPE` + property 类型类名填 hint_string/class_name；`entry.c.ftl` class_name 槽改传 `classNameExpr`；非 tool 类 `_process`/`_physics_process` userdata 分支内 ptrcall 前生成 `gdcc_is_editor_hint()` gate。审阅修复：既有集成测试三处旧 owner class_name 形态断言更新（Zig 环境实跑通过）、gate 断言锁完整 `return` 块（容忍 CCodeFormatter 重排）、注释去计划章节依赖、补 placeholder 转义用例。测试：`CGenHelperTest`(85)、`CCodegenTest`(71)、`FrontendLoweringToCProjectBuilderIntegrationTest`(17) 全绿。
+    - Step 3（export 家族 helper + skeleton 映射 + usage 校验）：✅ 已完成并通过审阅——`StringUtil.decodeGdStringLexeme` 扩展至全形式（单/双/三引号 + raw，`&"..."` 保持），`unescapeQuoted` 补齐 Godot 4.5.1 转义全集（`\a\b\f\v\'` + `\u`4位/`\U`6位 + 代理对配对 + 换行续行，未知转义/非法 hex/非成对代理/越界码点一律报错）；新增 `FrontendExportAnnotationSupport`（`frontend/sema/analyzer/support`）收口名称分类/arity/字面量/逗号/空串/解码校验与 hint_string 编码（三态结果）；`applyPropertyAnnotations` 按 §3.3 分流；`FrontendAnnotationUsageAnalyzer` 实现 export 家族 placement/static/参数/类型兼容/Object 家族校验与类型事实源规则。审阅修复（对照 Godot 4.5.1 源码核实）：**显式 `: Variant` 注解属可定型**（`datatype_specifier != null`，导出为 NIL_IS_VARIANT）——`EffectiveExportType` 增加 `VariantTyped` 态，裸 `@export` 仅"无类型标注且无 initializer"才报无法定型；multiline 无法定型诊断改走标准类型模板（type=Variant）；孤立 `\<CR>` 保留反斜杠（Godot 对齐，但不复刻其多吞一字符的疑似 bug）；整数 lexeme 支持 `0o` 八进制（与 container helper 对齐）；test_suite 两个 .gd 的 8 位 `\U` 字面量改 6 位；补显式 `: Variant`/容器裸 export/packed array 用例。测试：验收清单 + `GdScriptUnitTestCompileRunnerTest`（含 `property_roundtrip.gd` 显式 Variant 导出）全绿。
+    - Step 4（文档同步）：✅ 已完成——`diagnostic_manager.md`（skeleton annotation 行为与 owner 边界随 export 家族/@tool 落地重写）、`frontend_rules.md`（MVP 约定新增 `@tool` / `@export*` 条目）、`gdcc_low_ir.md`（class/property annotation 的 is_tool 传播与 value=hint_string 编码说明）、`variant_abi_contract.md`（property class_name 槽与 hint/hint_string 新形态）。全量 `clean build` 通过。
+- 端到端锚点（test_suite `annotation/` 分组，经 `GdScriptUnitTestCompileRunnerTest` 真实 Godot 运行验证）：`export_variant_hints.gd`（16 个 export variant 的 type/hint/hint_string/usage 与 Variant 导出的 NIL_IS_VARIANT、非导出 NO_EDITOR）、`export_object_hints.gd`（Resource/Node hint + class_name 槽为 property 类型类名）、`tool_process_runtime.gd`（`@tool` 类帧循环在游戏模式正常运行；编辑器内抑制由 backend codegen 测试锚定，headless 套件不可观察）。
 - 当前事实源：
     - `frontend_rules.md`
     - `diagnostic_manager.md`
@@ -38,7 +44,9 @@
 
 ---
 
-## 2. 现状事实（已核实）
+## 2. 实施前基线（Step 1 之前的状态，均已按验收修复/实现）
+
+> 本节保留实施前的代码基线记录，用于解释各 Step 的改动动机；当前行为以 §3 目标合同与代码为准。
 
 ### 2.1 parser 与 collector
 
@@ -138,7 +146,7 @@
 - arity 合同严格按 §2.6 的 4.5.1 注册签名实现（`export_enum` / `export_flags` ≥1；`export_multiline` =0 等）。`@export_range` 的 extra hints 必须是第 4 个及以后的独立字符串字面量（`@export_range(0, 100, 1, "or_greater")`），编码时依次 append 进 hint_string。
 - 会被 join 进列表型 hint_string 的字符串参数（enum / flags / node_path / file filter / range extra hints / exp_easing hints）不得包含 `,`，否则 hint_string 会被引擎错误切分；`@export_placeholder` 不受此限（其 hint_string 不是列表）。
 - 非 `@export_placeholder` 的字符串参数不得为空串（Godot 对齐）。
-- 字符串字面量解码以前置任务扩展 `StringUtil.decodeGdStringLexeme(...)` 后统一调用：覆盖 `"..."` / `'...'` / `"""..."""` / `'''...'''` / `r"..."` / `r'...'` / `r"""..."""` / `r'''...'''`；转义集补齐 Godot 4.5.1 全集（`\a \b \f \n \r \t \v \' \" \\ \u \U`），其中 **`\u` 恰好 4 位 hex、`\U` 恰好 6 位 hex**（Godot 4.5.1 tokenizer 实测；当前实现读 8 位，需修正），非法 hex / 未知转义 / 非法 Unicode 序列一律报错（Godot 对齐，不得静默吞掉反斜杠）；raw 形式按 Godot 语义仅对 `\<quote>` 与 `\\` 保留反斜杠，其余反斜杠原样保留。**解码抛出的 `IllegalArgumentException` 必须被 helper 捕获并转为 `MALFORMED`**，不得作为异常穿越 analyzer（恢复约定见 `frontend_rules.md:5-8`）。
+- 字符串字面量解码以前置任务扩展 `StringUtil.decodeGdStringLexeme(...)` 后统一调用：覆盖 `"..."` / `'...'` / `"""..."""` / `'''...'''` / `r"..."` / `r'...'` / `r"""..."""` / `r'''...'''`；转义集补齐 Godot 4.5.1 全集（`\a \b \f \n \r \t \v \' \" \\ \u \U`），其中 **`\u` 恰好 4 位 hex、`\U` 恰好 6 位 hex**（Godot 4.5.1 tokenizer 实测；基线实现读 8 位，已修正），非法 hex / 未知转义 / 非法 Unicode 序列一律报错（Godot 对齐，不得静默吞掉反斜杠）；raw 形式按 Godot 语义仅对 `\<quote>` 与 `\\` 保留反斜杠，其余反斜杠原样保留。**解码抛出的 `IllegalArgumentException` 必须被 helper 捕获并转为 `MALFORMED`**，不得作为异常穿越 analyzer（恢复约定见 `frontend_rules.md:5-8`）。
 - 数值取 `sourceText()` 文本，unary `+` / `-` 作用于数值字面量时合法。
 - 数值编码采用最短无损格式：整数值渲染为 `0`、`20`，浮点保留必要小数（`0.5`）。hint_string 只 join **显式写出的参数**（Godot 4.5.1 `resolve_annotation` 不填充默认值）：`@export_range(0, 100)` 编码为 `"0,100"` 而不是 `"0,100,1"`；extra hints 仍必须从第 4 个参数开始（`@export_range(0, 100, "or_greater")` 因第 3 形参是 float 而非法）。
 - 同一套“结构解析 + 求值 + hint_string 编码”逻辑必须收口在单个共享 helper（新增 `FrontendExportAnnotationSupport`，放 `frontend/sema/analyzer/support`），skeleton 映射与 usage 校验都消费它，禁止两处各写一份规则。
@@ -169,13 +177,14 @@
 
 - 类型事实源规则（替代单纯的 skeleton 声明类型）：
     1. property 声明了非 `Variant` 显式类型 → 以 `LirPropertyDef.getType()` 为准。
-    2. 声明为 `Variant`（未标注或 `:=`）→ 读 initializer 根表达式已发布的稳定 `expressionTypes()` 事实（本 analyzer 运行在 expr typing 之后）；得到具体类型则按该类型校验（含 Object 家族判定）。
-    3. 仍无法确定 → 裸 `@export` 发 `sema.annotation_usage`（Godot 4.5.1 对齐）；`export_multiline` 发 `sema.annotation_usage`（Godot 自定义检查不含 Variant，且 gdcc 已收窄掉 Dictionary）；`export_enum` 与走默认检查的其余 variant（range / flags / layer flags / file 家族 / dir / global / placeholder / color / node_path / exp_easing）放行（Godot 默认类型检查对仍未定型的 `Variant` 跳过；backend 按 `Variant` property 渲染对应 hint）。**上游抑制**：initializer 子树已存在上游阻断性诊断（binding/expression resolution error 等）时，不再补发 determinability 诊断，避免同一根源双 owner 报错（`frontend_rules.md:27`）。
+    2. 声明类型为 `Variant` 且有 initializer（未标注 / `:=` / 显式 `: Variant`）→ 读 initializer 根表达式已发布的稳定 `expressionTypes()` 事实（本 analyzer 运行在 expr typing 之后）；得到具体类型则按该类型校验（含 Object 家族判定）。
+    2a. 显式 `: Variant` 标注、或 initializer 只推断出 `Variant`（RESOLVED Variant / DYNAMIC）→ 类型已定为 `Variant`（Godot `datatype_specifier != null` / initializer 回退对齐）：裸 `@export` 合法（backend 导出 `NIL` + `NIL_IS_VARIANT`）；默认检查族与 `export_enum` 跳过检查（Godot 对 `is_variant()` 跳过）；`export_multiline` 仍报类型不兼容（Godot 自定义检查不跳过 Variant，且 gdcc 已收窄掉 Dictionary）。
+    3. 仍无法确定（无类型标注、无 `:=`、无 initializer）→ 裸 `@export` 发 `sema.annotation_usage`（Godot 4.5.1 对齐：`type can't be inferred`）；`export_multiline` 发 `sema.annotation_usage`；`export_enum` 与走默认检查的其余 variant（range / flags / layer flags / file 家族 / dir / global / placeholder / color / node_path / exp_easing）放行（Godot 默认类型检查对仍未定型的 `Variant` 跳过；backend 按 `Variant` property 渲染对应 hint）。**上游抑制**：initializer 子树已存在上游阻断性诊断（binding/expression resolution error 等）时，不再补发 determinability 诊断，避免同一根源双 owner 报错（`frontend_rules.md:27`）。
     4. 默认检查族（range / flags / layer flags / exp_easing）的 `int` 与 `float` 声明类型互通（Godot 4.5.1 对齐）：`@export_flags("A") var x: float`、`@export_exp_easing var x: int` 均合法。
     5. 声明类型为容器（`Array[T]` / packed array / `Dictionary`）时，**§3.1 表中全部 export variant**（含 `export_enum` / `export_multiline` / layer flags）一律报类型不兼容（§1.2 的 peel 收窄）；裸 `export` 不受限。
     6. 裸 `@export` 的 Object 家族限制（有效类型按规则 1/2 判定后）：`Resource` 派生或 `Node` 派生放行；其余 Object 类型（如裸 `RefCounted`）报错；builtin / `Variant` 不受此限。脚本枚举类型本期尚未进入 MVP，enum 导出不实施。
     7. 裸 `@export` 导出 `Node` 派生类型时，owner class 必须派生自 `Node`（复用 analyzer 现有 `isNodeDerived` 模式），否则报错。
-- usage analyzer 对 side-table 中**每一处** `tool` 注解（无论挂在 `SourceFile`、inner `ClassDeclaration`、member 还是尾随的 `AnnotationStatement` 自身上）做 placement/arity 校验；仅 `annotationsByAst()[SourceFile]` 上的零参 `@tool` 合法。当前遍历不经过 `SourceFile` 自身，需补该校验入口。同一节点同时违反多条 `@tool` 规则时，至少发出一条 placement error，不承诺恰好一条。
+- usage analyzer 对 side-table 中**每一处** `tool` 注解（无论挂在 `SourceFile`、inner `ClassDeclaration`、member 还是尾随的 `AnnotationStatement` 自身上）做 placement/arity 校验；仅 `annotationsByAst()[SourceFile]` 上的零参 `@tool` 合法。基线遍历不经过 `SourceFile` 自身，已补该校验入口（`walkSourceFile` 显式校验容器节点）。同一节点同时违反多条 `@tool` 规则时，至少发出一条 placement error，不承诺恰好一条。
 - static 检查从精确名 `"export"` 扩展为整个 export 家族（含裸 `export`），消息中的 `@<name>` 用实际注解名。
 - 同一 property 携带多个 export 家族注解（如 `@export` + `@export_range`）**不发诊断**（与 Godot 硬错误的刻意差异，记录在案）；**同名 variant 重复出现冻结为 last-wins**（`Map.put` 自然语义，如两个 `@export_range` 后者覆盖前者）；不同 key 时 backend 按 §3.5 的全序选择渲染。
 - compile-only gate 不新增注解扫描：`sema.annotation_usage` error 已足以经 `hasErrors()` 阻断 lowering/backend；compile gate 不得把既有注解诊断重复包装成 `sema.compile_check`。
@@ -259,7 +268,7 @@
 
 改动点：
 
-- 前置：扩展 `StringUtil.decodeGdStringLexeme(...)` 覆盖 §3.2 的字符串形式与转义全集（保持既有 `"..."` / `&"..."` 行为不变）。
+- 前置（已完成）：扩展 `StringUtil.decodeGdStringLexeme(...)` 覆盖 §3.2 的字符串形式与转义全集（保持既有 `"..."` / `&"..."` 行为不变）。
 - 新增 `FrontendExportAnnotationSupport`（`frontend/sema/analyzer/support`）：注解名分类、arity/字面量/逗号/空串/解码结构校验、hint_string 编码（§3.1/§3.2 的唯一实现），三态结果。
 - `applyPropertyAnnotations` 按 §3.3 重写分流。
 - `FrontendAnnotationUsageAnalyzer` 按 §3.3 表实现 export 家族 placement / static / arity / 字面量 / 类型兼容 / Object 家族校验；类型事实源按 §3.3 的七级规则（含 Variant → initializer `expressionTypes()` 回退、无法定型差异行为与上游抑制）。
@@ -281,6 +290,7 @@
 - `diagnostic_manager.md`：更新 skeleton annotation 行为段落（320-340 行附近）与 category 表，明确 export 家族已从 `sema.unsupported_annotation` 移入支持面。
 - `frontend_rules.md`：MVP 约定补充 `@tool` / `@export*` 合同条目。
 - `gdcc_low_ir.md`：annotation 段补充 value = hint_string 编码说明。
+- `variant_abi_contract.md`：同步 property `class_name` 槽与 hint/hint_string 的新形态（不再固定填 owner 类名）。
 - 本文档状态从“计划待实施”转为“事实源”。
 
 验收：上述文档与代码行为一致；全量 `./gradlew clean build --no-daemon --info --console=plain` 通过。

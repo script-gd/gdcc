@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -641,6 +642,240 @@ class CGenHelperTest {
         var property = new LirPropertyDef("score", GdIntType.INT, false, null, null, null, Map.of());
 
         assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", helper.renderPropertyMetadata(property).usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderPropertyMetadata should render every export variant hint from the annotation value")
+    void renderPropertyMetadataShouldRenderEveryExportVariantHint() {
+        // Key order mirrors the fixed backend selection order (export_range first); every variant
+        // drives hint/hint_string from its annotation value and forces PROPERTY_USAGE_DEFAULT.
+        var expectations = new LinkedHashMap<String, String>();
+        expectations.put("export_range", "godot_PROPERTY_HINT_RANGE");
+        expectations.put("export_enum", "godot_PROPERTY_HINT_ENUM");
+        expectations.put("export_flags", "godot_PROPERTY_HINT_FLAGS");
+        expectations.put("export_flags_2d_render", "godot_PROPERTY_HINT_LAYERS_2D_RENDER");
+        expectations.put("export_flags_2d_physics", "godot_PROPERTY_HINT_LAYERS_2D_PHYSICS");
+        expectations.put("export_flags_2d_navigation", "godot_PROPERTY_HINT_LAYERS_2D_NAVIGATION");
+        expectations.put("export_flags_3d_render", "godot_PROPERTY_HINT_LAYERS_3D_RENDER");
+        expectations.put("export_flags_3d_physics", "godot_PROPERTY_HINT_LAYERS_3D_PHYSICS");
+        expectations.put("export_flags_3d_navigation", "godot_PROPERTY_HINT_LAYERS_3D_NAVIGATION");
+        expectations.put("export_flags_avoidance", "godot_PROPERTY_HINT_LAYERS_AVOIDANCE");
+        expectations.put("export_file", "godot_PROPERTY_HINT_FILE");
+        expectations.put("export_file_path", "godot_PROPERTY_HINT_FILE_PATH");
+        expectations.put("export_dir", "godot_PROPERTY_HINT_DIR");
+        expectations.put("export_global_file", "godot_PROPERTY_HINT_GLOBAL_FILE");
+        expectations.put("export_global_dir", "godot_PROPERTY_HINT_GLOBAL_DIR");
+        expectations.put("export_multiline", "godot_PROPERTY_HINT_MULTILINE_TEXT");
+        expectations.put("export_placeholder", "godot_PROPERTY_HINT_PLACEHOLDER_TEXT");
+        expectations.put("export_exp_easing", "godot_PROPERTY_HINT_EXP_EASING");
+        expectations.put("export_color_no_alpha", "godot_PROPERTY_HINT_COLOR_NO_ALPHA");
+        expectations.put("export_node_path", "godot_PROPERTY_HINT_NODE_PATH_VALID_TYPES");
+
+        for (var expectation : expectations.entrySet()) {
+            var property = new LirPropertyDef(
+                    "value",
+                    GdIntType.INT,
+                    false,
+                    null,
+                    null,
+                    null,
+                    Map.of(expectation.getKey(), "1,2")
+            );
+            var metadata = helper.renderPropertyMetadata(property);
+            assertEquals(expectation.getValue(), metadata.hintEnumLiteral(), expectation.getKey());
+            assertEquals("GD_STATIC_S(u8\"1,2\")", metadata.hintStringExpr(), expectation.getKey());
+            assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr(), expectation.getKey());
+            assertEquals("GD_STATIC_SN(u8\"\")", metadata.classNameExpr(), expectation.getKey());
+        }
+    }
+
+    @Test
+    @DisplayName("renderPropertyMetadata should escape variant hint_string through the string literal channel")
+    void renderPropertyMetadataShouldEscapeVariantHintString() {
+        // `export_placeholder` carries arbitrary prose: quotes/backslashes must survive the
+        // escapeStringLiteral channel so the emitted C string literal stays valid.
+        var property = new LirPropertyDef(
+                "prompt",
+                GdStringType.STRING,
+                false,
+                null,
+                null,
+                null,
+                Map.of("export_placeholder", "say \"hi\"\nhere")
+        );
+
+        var metadata = helper.renderPropertyMetadata(property);
+
+        assertEquals("godot_PROPERTY_HINT_PLACEHOLDER_TEXT", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"say \\\"hi\\\"\\nhere\")", metadata.hintStringExpr());
+    }
+
+    @Test
+    @DisplayName("renderPropertyMetadata should render undetermined Variant property with variant key")
+    void renderPropertyMetadataShouldRenderVariantTypedPropertyWithVariantKey() {
+        var property = new LirPropertyDef(
+                "value",
+                GdVariantType.VARIANT,
+                false,
+                null,
+                null,
+                null,
+                Map.of("export_range", "0,1")
+        );
+
+        var metadata = helper.renderPropertyMetadata(property);
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_NIL", metadata.typeEnumLiteral());
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT", metadata.usageExpr());
+        assertEquals("godot_PROPERTY_HINT_RANGE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"0,1\")", metadata.hintStringExpr());
+    }
+
+    @Test
+    @DisplayName("renderPropertyMetadata should prefer export variant over bare export")
+    void renderPropertyMetadataShouldPreferVariantKeyOverBareExport() {
+        var property = new LirPropertyDef(
+                "value",
+                GdIntType.INT,
+                false,
+                null,
+                null,
+                null,
+                Map.of("export", "", "export_range", "0,100")
+        );
+
+        var metadata = helper.renderPropertyMetadata(property);
+
+        assertEquals("godot_PROPERTY_HINT_RANGE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"0,100\")", metadata.hintStringExpr());
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderPropertyMetadata should follow the fixed variant order regardless of map iteration order")
+    void renderPropertyMetadataShouldFollowFixedVariantOrderRegardlessOfMapOrder() {
+        // `LirPropertyDef.annotations` is a HashMap: selection must follow the fixed priority
+        // order (export_range before export_enum), never the map's iteration order.
+        var property = new LirPropertyDef(
+                "value",
+                GdIntType.INT,
+                false,
+                null,
+                null,
+                null,
+                Map.of("export_enum", "A,B", "export_range", "0,100")
+        );
+
+        var metadata = helper.renderPropertyMetadata(property);
+
+        assertEquals("godot_PROPERTY_HINT_RANGE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"0,100\")", metadata.hintStringExpr());
+    }
+
+    @Test
+    @DisplayName("renderPropertyMetadata should keep typed array hint for bare export")
+    void renderPropertyMetadataShouldKeepTypedArrayHintForBareExport() {
+        var property = new LirPropertyDef(
+                "values",
+                new GdArrayType(GdIntType.INT),
+                false,
+                null,
+                null,
+                null,
+                Map.of("export", "")
+        );
+
+        var metadata = helper.renderPropertyMetadata(property);
+
+        assertEquals("godot_PROPERTY_HINT_ARRAY_TYPE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"int\")", metadata.hintStringExpr());
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderPropertyMetadata should render resource hint for bare export Resource-derived object")
+    void renderPropertyMetadataShouldRenderResourceHintForBareExportObject() {
+        var property = new LirPropertyDef(
+                "texture",
+                new GdObjectType("Texture2D"),
+                false,
+                null,
+                null,
+                null,
+                Map.of("export", "")
+        );
+
+        var metadata = helper.renderPropertyMetadata(property);
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_OBJECT", metadata.typeEnumLiteral());
+        assertEquals("godot_PROPERTY_HINT_RESOURCE_TYPE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"Texture2D\")", metadata.hintStringExpr());
+        assertEquals("GD_STATIC_SN(u8\"Texture2D\")", metadata.classNameExpr());
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderPropertyMetadata should render node hint for bare export Node-derived object")
+    void renderPropertyMetadataShouldRenderNodeHintForBareExportObject() {
+        var property = new LirPropertyDef(
+                "target",
+                new GdObjectType("Node2D"),
+                false,
+                null,
+                null,
+                null,
+                Map.of("export", "")
+        );
+
+        var metadata = helper.renderPropertyMetadata(property);
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_OBJECT", metadata.typeEnumLiteral());
+        assertEquals("godot_PROPERTY_HINT_NODE_TYPE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"Node2D\")", metadata.hintStringExpr());
+        assertEquals("GD_STATIC_SN(u8\"Node2D\")", metadata.classNameExpr());
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderPropertyMetadata should keep non-export Object property on default metadata")
+    void renderPropertyMetadataShouldKeepNonExportObjectOnDefaults() {
+        var property = new LirPropertyDef(
+                "texture",
+                new GdObjectType("Texture2D"),
+                false,
+                null,
+                null,
+                null,
+                Map.of()
+        );
+
+        var metadata = helper.renderPropertyMetadata(property);
+
+        assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", metadata.usageExpr());
+        assertEquals("godot_PROPERTY_HINT_NONE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_SN(u8\"\")", metadata.classNameExpr());
+    }
+
+    @Test
+    @DisplayName("renderPropertyMetadata should stay silent for non-exportable Object family rejected upstream")
+    void renderPropertyMetadataShouldStaySilentForNonExportableObjectFamily() {
+        // The frontend export validation rejects bare `RefCounted` exports; backend deliberately
+        // does not re-diagnose and falls back to the plain type-derived surface.
+        var property = new LirPropertyDef(
+                "obj",
+                new GdObjectType("RefCounted"),
+                false,
+                null,
+                null,
+                null,
+                Map.of("export", "")
+        );
+
+        var metadata = helper.renderPropertyMetadata(property);
+
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
+        assertEquals("godot_PROPERTY_HINT_NONE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_SN(u8\"\")", metadata.classNameExpr());
     }
 
     @Test

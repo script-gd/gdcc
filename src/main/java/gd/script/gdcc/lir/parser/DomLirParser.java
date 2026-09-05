@@ -53,14 +53,9 @@ public final class DomLirParser implements LirParser {
             var isAbstract = Boolean.parseBoolean(cn.getAttribute("is_abstract"));
             var isTool = Boolean.parseBoolean(cn.getAttribute("is_tool"));
 
-            var annotations = new HashMap<String, String>();
-            var annNodes = cn.getElementsByTagName("annotation");
-            for (int j = 0; j < annNodes.getLength(); j++) {
-                var an = (Element) annNodes.item(j);
-                var k = an.getAttribute("key");
-                var v = an.getAttribute("value");
-                annotations.put(k, v);
-            }
+            // Only direct child annotations belong to the class itself: a recursive lookup would
+            // also collect property/function annotations nested deeper in the class element.
+            var annotations = readDirectChildAnnotations(cn);
 
             // signals
             var signals = new ArrayList<LirSignalDef>();
@@ -236,6 +231,20 @@ public final class DomLirParser implements LirParser {
         }
 
         return new LirModule(moduleName, classes);
+    }
+
+    /// Reads only the `annotation` elements that are direct children of `element`.
+    /// `getElementsByTagName` cannot be used for the class level because it recursively descends
+    /// into `<properties>`/`<functions>` and would pollute the class map with member annotations.
+    private static @NotNull Map<String, String> readDirectChildAnnotations(@NotNull Element element) {
+        var annotations = new HashMap<String, String>();
+        var children = element.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            if (children.item(i) instanceof Element child && "annotation".equals(child.getTagName())) {
+                annotations.put(child.getAttribute("key"), child.getAttribute("value"));
+            }
+        }
+        return annotations;
     }
 
     @Override

@@ -44,6 +44,9 @@ public class GdScriptUnitTestCompileRunnerTest {
             "abi/variant/property_roundtrip.gd",
             "algorithm/fibonacci_sequence.gd",
             "algorithm/graph_traversal.gd",
+            "annotation/export_object_hints.gd",
+            "annotation/export_variant_hints.gd",
+            "annotation/tool_process_runtime.gd",
             "cast/builtin_identity_conversion.gd",
             "cast/cast_result_consumers.gd",
             "cast/engine_object_cast.gd",
@@ -225,6 +228,7 @@ public class GdScriptUnitTestCompileRunnerTest {
     );
     private static final List<String> ABI_SCRIPT_PATHS = scriptPathsWithPrefix("abi/");
     private static final List<String> ALGORITHM_SCRIPT_PATHS = scriptPathsWithPrefix("algorithm/");
+    private static final List<String> ANNOTATION_SCRIPT_PATHS = scriptPathsWithPrefix("annotation/");
     private static final List<String> CAST_SCRIPT_PATHS = scriptPathsWithPrefix("cast/");
     private static final List<String> COLLECTION_SCRIPT_PATHS = scriptPathsWithPrefix("collection/");
     private static final List<String> CONSTRUCTOR_SCRIPT_PATHS = scriptPathsWithPrefix("constructor/");
@@ -278,6 +282,14 @@ public class GdScriptUnitTestCompileRunnerTest {
         return compileAndValidateBundledUnitScripts(
                 ALGORITHM_SCRIPT_PATHS,
                 "Zig not found; skipping algorithm GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesAnnotationScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                ANNOTATION_SCRIPT_PATHS,
+                "Zig not found; skipping annotation GDScript compile-run tests"
         );
     }
 

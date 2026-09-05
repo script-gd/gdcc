@@ -21,11 +21,50 @@ import org.junit.jupiter.api.Test;
 
 import java.io.StringReader;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 public class DomLirParserTest {
+    /// Class-level annotations must only come from direct children of `<class_def>`: property and
+    /// function annotations nested deeper in the element must not pollute the class map.
+    @Test
+    public void parse_classAnnotationsOnlyReadDirectChildren() throws Exception {
+        var xml = """
+                <ir>
+                  <class_def name="Tooly" super="Node" is_abstract="false" is_tool="true">
+                    <annotation key="tool" value=""/>
+                    <signals/>
+                    <properties>
+                      <property name="hp" type="int" is_static="false">
+                        <annotation key="export" value=""/>
+                        <annotation key="export_range" value="0,20,0.5"/>
+                      </property>
+                    </properties>
+                    <functions>
+                      <function name="_init" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false" is_coroutine="false">
+                        <annotation key="rpc" value="authority"/>
+                      </function>
+                    </functions>
+                  </class_def>
+                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var mod = parser.parse(new StringReader(xml));
+        var cls = mod.getClassDefs().getFirst();
+
+        assertTrue(cls.isTool());
+        assertEquals(Map.of("tool", ""), cls.getAnnotations());
+
+        var property = cls.getProperties().getFirst();
+        assertEquals("", property.getAnnotations().get("export"));
+        assertEquals("0,20,0.5", property.getAnnotations().get("export_range"));
+
+        assertEquals("authority", cls.getFunctions().getFirst().getAnnotations().get("rpc"));
+    }
+
     @Test
     public void parse_basicBlockInstructionsFromXml() throws Exception {
         var xml = """

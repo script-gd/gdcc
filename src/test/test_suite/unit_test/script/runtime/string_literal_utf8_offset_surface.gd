@@ -21,7 +21,7 @@ func escaped_after_multibyte() -> String:
     # 多字节注释🙂用于锚定源码 byte offset 到 literal lexeme 的映射
     var banner = "中文🙂"
     var payload: String = "\u706B"
-    payload += "\U0001F680"
+    payload += "\U01F680"
     return payload
 
 func build_name() -> StringName:

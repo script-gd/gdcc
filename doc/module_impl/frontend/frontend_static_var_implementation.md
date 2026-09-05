@@ -131,11 +131,11 @@
 
 ### 3.5 Annotation
 
-- `@export` × static property：`FrontendAnnotationUsageAnalyzer` 发 `sema.annotation_usage` error，消息 `@export cannot be used on static property '<name>'`。
+- `@export` 家族 × static property：`FrontendAnnotationUsageAnalyzer` 发 `sema.annotation_usage` error，消息 `@<name> cannot be used on static property '<name>'`（`@<name>` 为实际注解名，覆盖裸 `export` 与全部 export variant）。
 - `@onready` × static property：既有拒绝保持不变，消息 `@onready cannot be used on static property '<name>'`。
 - gdcc 没有 parser 层注解校验；Godot 在 parser 层拒绝 export / onready 用于 static var。gdcc 统一由 annotation-usage owner 承担，不新增诊断 category。
-- 其余 annotation 继续走 `sema.unsupported_annotation`。
-- 背景：`@export` 当前只影响实例 property 的 ClassDB `PROPERTY_USAGE`，而 static property 本就不注册 ClassDB，拒绝语义与 Godot 一致且无副作用。
+- 尚未实现的 export 成员（`export_category` / `export_group` / `export_subgroup` / `export_storage` / `export_custom` / `export_tool_button`）与其他未识别 annotation 继续走 `sema.unsupported_annotation`。
+- 背景：`@export` 只影响实例 property 的 ClassDB 注册（usage / hint / hint_string / class_name），而 static property 本就不注册 ClassDB，拒绝语义与 Godot 一致且无副作用。
 
 ---
 

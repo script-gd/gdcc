@@ -215,6 +215,9 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.type_hint`
 - `sema.loop_control_flow`
 - `sema.unsupported_annotation`
+- `sema.annotation_usage`
+  - annotation-usage analyzer 对已支持注解的挂载位置 / owner class / staticness / 参数结构 / 类型兼容发出的 error
+  - `@onready` / `@tool` / `@export*` 家族的用法校验均走此 category，不混入 `sema.unsupported_annotation` 或 `sema.type_check`
 - `sema.compile_check`
 
 其中 body/binding phase 新增 category 的语义固定为：
@@ -317,27 +320,34 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - `DYNAMIC` 不属于 compile blocker；它保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 未实现状态
   - 该 category 只属于 compile-only 入口，不属于默认共享语义 / inspection / 未来 LSP 入口
 
-其中 `FrontendClassSkeletonBuilder` 当前对 property annotation 的行为已经冻结为：
+其中 `FrontendClassSkeletonBuilder` 当前对 annotation 的行为已经冻结为：
 
-- `export` / `onready`：映射到 property skeleton annotations
+- `@export` 家族（裸 `export` 与 `export_range` / `export_enum` / `export_flags*` / `export_file*` / `export_dir` / `export_global_*` / `export_multiline` / `export_placeholder` / `export_exp_easing` / `export_color_no_alpha` / `export_node_path`）：
+    - 参数经共享 helper `FrontendExportAnnotationSupport` 结构校验并编译期求值为 Godot `hint_string` 后，写入 property skeleton annotations（key 为注解名，value 为 hint_string 原文）
+    - 参数 malformed 时只 retention 不写 metadata，**不发诊断**（参数诊断归 annotation-usage analyzer）
+- `onready`：映射到 property skeleton annotations
+- `@tool`：挂在顶层 `SourceFile` 上的零参 `tool` 消费为 script 级 `isTool`——该文件的顶层与全部 inner `LirClassDef` 都 `setTool(true)`，仅顶层额外写 `tool` class annotation；其余挂载点（inner class / member / 尾随锚点）与带参 `@tool` 一律只 retention，不写 `isTool`
+- `tool` / `icon` 等 class 级注解即使误挂到 member 或尾随锚点也只 retention，不发 `sema.unsupported_annotation`
 - region annotations：忽略，不制造噪声诊断
-- 已识别但当前 skeleton phase 尚未支持的 property annotation：
+- 已识别但当前 skeleton phase 尚未支持的 property annotation（如 `export_category` / `export_group` / `export_subgroup` / `export_storage` / `export_custom` / `export_tool_button`）：
     - 发出 `sema.unsupported_annotation` error
     - 同时保留 annotation 事实在 `FrontendAnalysisData.annotationsByAst()`
 
-与 `@onready` 相关的后续合同也已冻结为：
+与 `@onready` / `@tool` / `@export*` 相关的后续合同也已冻结为：
 
 - `sema.unsupported_annotation`
   - 只用于“annotation 已识别，但当前 frontend 尚未实现该 annotation”
 - `sema.annotation_usage`
-  - 预留给“annotation 本身已支持，但挂载位置/owner class/staticness 非法”的用法验证错误
+  - 用于“annotation 本身已支持，但挂载位置/owner class/staticness/参数/类型兼容非法”的用法验证错误
   - `@onready` 的 Node-only / non-static 约束属于这一类，而不是 `sema.unsupported_annotation`
+  - `@tool` 的 placement（仅顶层 `SourceFile` 零参合法）与 arity 校验属于这一类
+  - `@export*` 家族的 placement（仅 class `var` property）、static 拒绝、参数 arity/字面量/逗号/空串、类型兼容（含容器收窄、int/float 互通、Variant initializer 回退与无法定型差异行为）、裸 `@export` 的 Object 家族与 Node owner 校验都属于这一类
 
 这里还需要保持一条 owner 边界：
 
-- skeleton phase 只负责 annotation retention 与 unsupported-annotation boundary
-- `@onready` 的合法用法验证不属于 skeleton phase
-- 后续独立的 annotation-usage phase 将消费 retained annotation + class metadata，并使用 `sema.annotation_usage` 报告 static / non-Node misuse
+- skeleton phase 只负责 annotation retention、export 参数的结构求值（经共享 helper）与 unsupported-annotation boundary
+- `@onready` / `@tool` / `@export*` 的合法用法验证不属于 skeleton phase
+- 独立的 annotation-usage phase 消费 retained annotation + class metadata + typed facts，并使用 `sema.annotation_usage` 报告全部用法错误（消息模板见 `frontend_annotation_implementation_plan.md` §3.3）
 
 与 `FrontendTypeCheckAnalyzer` 相关的当前合同已冻结为：
 
@@ -385,7 +395,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - 调用 `FrontendChainBindingAnalyzer.analyze(...)` 发布 `resolvedMembers()` / `resolvedCalls()`
     - 调用 `FrontendExprTypeAnalyzer.analyze(...)` 发布 `expressionTypes()` 并补齐 expression-only diagnostics / discarded-expression warning
     - 调用 `FrontendVarTypePostAnalyzer.analyze(...)` 发布 callable-local `slotTypes()`
-    - 调用 `FrontendAnnotationUsageAnalyzer.analyze(...)` 对 retained annotation 的合法挂载位置发出 `sema.annotation_usage`
+    - 调用 `FrontendAnnotationUsageAnalyzer.analyze(...)` 对 retained annotation 的合法挂载位置、staticness、参数结构与类型兼容发出 `sema.annotation_usage`
     - 调用 `FrontendVirtualOverrideAnalyzer.analyze(...)` 对 engine virtual override 签名发出 `sema.virtual_override`
     - 调用 `FrontendTypeCheckAnalyzer.analyze(...)` 对 ordinary local / class property / return typed contract 发出 `sema.type_check`，并对 property hint 发出 `sema.type_hint`；经 `scanNestedLambdaBodies` 显式 re-entry 遍历已 record lambda 的 body（plan 存在性为闸门，继承 enclosing callable 的 restriction/static context）
     - 调用 `FrontendLoopControlFlowAnalyzer.analyze(...)` 对非法 `break` / `continue` 发出 `sema.loop_control_flow`
@@ -425,7 +435,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - duplicate / cycle diagnostics 会跳过坏 subtree，但不打断同一 module 的其余 skeleton
     - registry 注入和 snapshot 边界稳定
 - `FrontendClassSkeletonAnnotationTest`
-    - `export` / `onready` retention 语义稳定
+    - `export` / `onready` retention 语义稳定；export 家族参数编译期求值为 hint_string 写入 metadata，malformed 只 retention 不发诊断
+    - `@tool` 的 script 级 `isTool` 传播（顶层 + inner）、trivia 透明与挂载顺序边界稳定
     - unsupported property annotation 会发 error，且仍保留 side-table 事实
 - `FrontendSemanticAnalyzerFrameworkTest`
   - analyzer 返回共享 `FrontendAnalysisData`

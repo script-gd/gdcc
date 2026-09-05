@@ -252,7 +252,7 @@ Godot-facing surface 继续直接消费 canonical class name，但这不是一�
 - typed array / typed dictionary object leaf 继续直接输出 canonical `Outer__sub__Inner`
 - engine leaf 与 generic leaf 的 outward grammar 保持各自既有规则
 - nested typed leaf 继续按当前 ABI 边界 fail-fast
-- `BoundMetadata.classNameExpr` 继续保持空值；typed-container object leaf identity 停留在 `hint_string`
+- typed-container 路径的 `BoundMetadata.classNameExpr` 继续保持空值；typed-container object leaf identity 停留在 `hint_string`
 
 ### 3.3 runtime compare 面
 
@@ -287,7 +287,8 @@ Godot-facing surface 继续直接消费 canonical class name，但这不是一�
 
 当前合同：
 
-- `BoundMetadata.classNameExpr` 继续保持空值，不得顺手填成 canonical
+- typed-container 路径的 `BoundMetadata.classNameExpr` 继续保持空值，不得顺手填成 canonical
+- 裸 `@export` Object property 的 `class_name` 槽携带的是 property 类型类名（export 注解合同），不属于本合同的 container leaf identity 通道
 - native construct / engine lookup 继续只使用 engine/native owner class 名
 
 ---
@@ -376,7 +377,7 @@ Godot-facing surface 继续直接消费 canonical class name，但这不是一�
 - 放松 `__sub__` 输入边界，重新让 source/canonical 空间相交
 - 为 backend 或 Godot-facing surface 新增第三套持久化名字层
 - 把 inner class source-facing 可见性扩写成全局 alias
-- 在未单独立项的情况下启用 `BoundMetadata.classNameExpr`
+- 把 typed-container 路径的 `BoundMetadata.classNameExpr` 填上 leaf identity（裸 `@export` Object property 的 property 类型类名是 export 注解合同批准的既定例外）
 - 把 C symbol portability 问题与当前 class-name contract 混成同一个修复议题
 
 只要系统继续满足本文件中的边界，inner canonical name 就可以保持 `Outer__sub__Inner`，并同时作为 gdcc 内部 identity 与 Godot-facing class identifier 使用，而不需要额外 alias 层。

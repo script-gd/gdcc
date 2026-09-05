@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema;
 
 import gd.script.gdcc.frontend.FrontendClassNameContract;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendAnnotationCollector;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExportAnnotationSupport;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdparser.frontend.ast.*;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
@@ -70,7 +71,9 @@ public final class FrontendClassSkeletonBuilder {
                     analysisData,
                     module.topLevelCanonicalNameMap()
             );
-            sourceClassRelations.add(buildSourceClassRelationShell(sourceUnitGraph, context));
+            var sourceClassRelation = buildSourceClassRelationShell(sourceUnitGraph, context);
+            applyScriptToolAnnotation(sourceClassRelation, context);
+            sourceClassRelations.add(sourceClassRelation);
         }
         publishClassShells(sourceClassRelations, classRegistry);
         // Static-property conflict checks are deferred until every class shell has been filled:
@@ -236,6 +239,34 @@ public final class FrontendClassSkeletonBuilder {
         var classDef = new LirClassDef(className, superClassName);
         classDef.setSourceFile(context.sourcePath().toString().replace('\\', '/'));
         return classDef;
+    }
+
+    /// Applies the script-level `@tool` contract once every class shell of one source file exists.
+    ///
+    /// Only a zero-argument `tool` annotation attached to the top-level `SourceFile` is consumed.
+    /// Godot treats `@tool` as script-level state and `_prepare_compilation` assigns it to every
+    /// class compiled from the script, so the flag propagates to the top-level shell and all inner
+    /// shells; the top-level class additionally records the `tool` class annotation so LIR XML
+    /// roundtrips keep the source-level fact. `@tool` attached anywhere else (inner class, member,
+    /// trailing anchor) or carrying arguments is retention-only here — placement/arity diagnostics
+    /// belong to `FrontendAnnotationUsageAnalyzer` as the single owner.
+    private void applyScriptToolAnnotation(
+            @NotNull FrontendSourceClassRelation sourceClassRelation,
+            @NotNull SkeletonBuildContext context
+    ) {
+        var sourceFile = sourceClassRelation.unit().ast();
+        var hasScriptTool = context.analysisData().annotationsByAst()
+                .getOrDefault(sourceFile, List.of())
+                .stream()
+                .anyMatch(annotation -> annotation.name().equals("tool") && annotation.arguments().isEmpty());
+        if (!hasScriptTool) {
+            return;
+        }
+        sourceClassRelation.topLevelClassDef().setTool(true);
+        sourceClassRelation.topLevelClassDef().setAnnotation("tool", "");
+        for (var innerClassRelation : sourceClassRelation.innerClassRelations()) {
+            innerClassRelation.classDef().setTool(true);
+        }
     }
 
     /// Fills member skeletons into an already-published class shell.
@@ -415,10 +446,25 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull SkeletonBuildContext context
     ) {
         for (var annotation : context.analysisData().annotationsByAst().getOrDefault(variableDeclaration, List.of())) {
-            switch (annotation.name()) {
-                case "export" -> propertyDef.getAnnotations().put("export", "");
-                case "onready" -> propertyDef.getAnnotations().put("onready", "");
-                default -> reportUnsupportedPropertyAnnotation(annotation, variableDeclaration, context);
+            // The shared export helper owns argument evaluation: well-formed export annotations
+            // map to their Godot hint_string metadata, while malformed ones stay retention-only
+            // in the side table (the usage analyzer owns the argument diagnostics). Same-name
+            // duplicates keep last-wins Map semantics.
+            switch (FrontendExportAnnotationSupport.evaluate(annotation)) {
+                case FrontendExportAnnotationSupport.Evaluation.Supported supported ->
+                        propertyDef.getAnnotations().put(supported.hintKey(), supported.hintStringValue());
+                case FrontendExportAnnotationSupport.Evaluation.Malformed _ -> {
+                }
+                case FrontendExportAnnotationSupport.Evaluation.NotExportFamily _ -> {
+                    switch (annotation.name()) {
+                        case "onready" -> propertyDef.getAnnotations().put("onready", "");
+                        // Class-level annotations mis-attached to a member stay retention-only in
+                        // the side table; their placement diagnostics belong to the usage analyzer.
+                        case "tool", "icon" -> {
+                        }
+                        default -> reportUnsupportedPropertyAnnotation(annotation, variableDeclaration, context);
+                    }
+                }
             }
         }
     }

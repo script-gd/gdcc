@@ -1557,16 +1557,16 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
 
         assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
         assertTrue(
-                entrySource.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"payload\"), GDEXTENSION_VARIANT_TYPE_NIL, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_NO_EDITOR | godot_PROPERTY_USAGE_NIL_IS_VARIANT,"),
-                () -> "Non-export Variant property should publish NIL + NO_EDITOR | NIL_IS_VARIANT.\nSource:\n" + entrySource
+                entrySource.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"payload\"), GDEXTENSION_VARIANT_TYPE_NIL, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"\"), godot_PROPERTY_USAGE_NO_EDITOR | godot_PROPERTY_USAGE_NIL_IS_VARIANT,"),
+                () -> "Non-export Variant property should publish NIL + NO_EDITOR | NIL_IS_VARIANT with an empty property class_name slot.\nSource:\n" + entrySource
         );
         assertTrue(
-                entrySource.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"visible_payload\"), GDEXTENSION_VARIANT_TYPE_NIL, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT,"),
-                () -> "Export Variant property should publish NIL + DEFAULT | NIL_IS_VARIANT.\nSource:\n" + entrySource
+                entrySource.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"visible_payload\"), GDEXTENSION_VARIANT_TYPE_NIL, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"\"), godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT,"),
+                () -> "Export Variant property should publish NIL + DEFAULT | NIL_IS_VARIANT with an empty property class_name slot.\nSource:\n" + entrySource
         );
         assertTrue(
-                entrySource.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"score\"), GDEXTENSION_VARIANT_TYPE_INT, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), class_name, godot_PROPERTY_USAGE_NO_EDITOR,"),
-                () -> "Non-Variant property should keep its original property metadata shape.\nSource:\n" + entrySource
+                entrySource.contains("gdcc_bind_property_full(class_name, GD_STATIC_SN(u8\"score\"), GDEXTENSION_VARIANT_TYPE_INT, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"\"), godot_PROPERTY_USAGE_NO_EDITOR,"),
+                () -> "Non-Variant property should keep its metadata shape with an empty property class_name slot.\nSource:\n" + entrySource
         );
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));

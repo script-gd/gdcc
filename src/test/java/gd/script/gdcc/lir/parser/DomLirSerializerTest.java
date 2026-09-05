@@ -1,9 +1,12 @@
 package gd.script.gdcc.lir.parser;
 
 import gd.script.gdcc.enums.LifecycleProvenance;
+import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.*;
 import gd.script.gdcc.lir.insn.*;
+import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdccForArrayIterType;
 import gd.script.gdcc.type.GdccForDictionaryIterType;
 import gd.script.gdcc.type.GdccForFloatIterType;
@@ -15,12 +18,52 @@ import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdVariantType;
 import org.junit.jupiter.api.Test;
 
+import java.io.StringReader;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 public class DomLirSerializerTest {
+    /// `is_tool` and class/property annotations survive an XML roundtrip; in particular the parsed
+    /// class annotation map must not be polluted by member annotations (direct-children read).
+    @Test
+    public void serialize_classToolAndAnnotationsRoundtrip() throws Exception {
+        var property = new LirPropertyDef(
+                "hp",
+                new GdIntType(),
+                false,
+                null,
+                null,
+                null,
+                Map.of("export", "", "export_range", "0,20,0.5")
+        );
+        var cls = new LirClassDef(
+                "Tooly",
+                "Node",
+                false,
+                true,
+                Map.of("tool", ""),
+                List.of(),
+                List.of(property),
+                List.of()
+        );
+        var module = new LirModule("m", List.of(cls));
+
+        var xml = new DomLirSerializer().serializeToString(module);
+        assertTrue(xml.contains("is_tool=\"true\""));
+        assertTrue(xml.contains("<annotation key=\"tool\" value=\"\""));
+
+        var parsed = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()))
+                .parse(new StringReader(xml));
+        var parsedClass = parsed.getClassDefs().getFirst();
+        assertTrue(parsedClass.isTool());
+        assertEquals(Map.of("tool", ""), parsedClass.getAnnotations());
+        var parsedProperty = parsedClass.getProperties().getFirst();
+        assertEquals("", parsedProperty.getAnnotations().get("export"));
+        assertEquals("0,20,0.5", parsedProperty.getAnnotations().get("export_range"));
+    }
+
     @Test
     public void serialize_module_includesBasicBlockInstructions() throws Exception {
         var fn = new LirFunctionDef("_init", "entry");

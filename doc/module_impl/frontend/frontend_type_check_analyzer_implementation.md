@@ -77,11 +77,13 @@
 - `BinaryExpression` 不再被默认视为 deferred gap
 - `not in` 已由 upstream owner 按复合规则 `not (lhs in rhs)` 发布 `RESOLVED(bool)` / `FAILED`（见 `frontend_unary_binary_expr_semantic_implementation.md` §4.4），type-check 直接消费该稳定 typed fact
 
-`FrontendAnnotationUsageAnalyzer` 当前只负责 diagnostics-only 的 annotation placement contract：
+`FrontendAnnotationUsageAnalyzer` 当前负责 diagnostics-only 的 annotation usage contract：
 
 - `@onready` 只能用于 class property `var`
 - owner class 必须派生自 `Node`
 - `@onready` 不可用于 `static` property
+- `@tool` 只允许顶层 `SourceFile` 上的零参形式
+- `@export*` 家族的 placement（仅 class `var` property）、static 拒绝、参数结构与类型兼容校验（完整合同见 `frontend_annotation_implementation_plan.md` §3.3）
 
 ### 1.3 当前不负责
 
@@ -136,7 +138,7 @@
   - property `:=` / 未声明显式类型 property 的手动显式类型提醒
   - severity 固定为 `warning`
 - `sema.annotation_usage`
-  - `@onready` 的 placement / owner-class / staticness 非法用法
+  - 已支持注解的 placement / owner-class / staticness / 参数结构 / 类型兼容非法用法（`@onready` / `@tool` / `@export*` 家族）
   - severity 固定为 `error`
 
 以下 category 继续保持 upstream owner，不由 type-check/annotation-usage 重发：

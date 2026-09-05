@@ -53,6 +53,13 @@ typed boundaries, nested/untyped reads, `for-in` over literals). They exercise
 `int(...)` when the slot is already `int` or generic `Variant`; keep cast constructors only for
 real folds such as `float -> int`.
 
+Annotation e2e pairs live under `annotation/` (export-variant hint metadata, bare `@export`
+Object-family hints, `@tool` frame-loop runtime anchor). Validation reads the engine-side
+`get_property_list()` entries of the compiled target and asserts the registered
+`type` / `hint` / `hint_string` / `class_name` / `usage`; the `@tool` editor-side frame-loop
+suppression is not observable from this headless game-mode suite and stays anchored by
+backend-focused codegen tests instead.
+
 ## How Discovery Works
 
 `ResourceExtractor.listResourceFilesRecursively(...)` is used to enumerate all files under `unit_test/script`.

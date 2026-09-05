@@ -841,10 +841,14 @@ A Low IR file (which is a .xml format file) consists of 4 parts:
 ```xml
 <!-- name is optional for anonymous classes -->
 <!-- is_abstract and is_tool are optional, default to false -->
+<!-- is_tool is script-level state: when a `@tool` script compiles to multiple classes
+     (top-level plus inner classes), every compiled class_def carries is_tool="true",
+     while only the top-level class_def carries the `tool` annotation below -->
 <class_def name="<class_name>"
            super="super_class_name"
            is_abstract="false"
            is_tool="false">
+    <!-- class-level annotations; currently only `tool` (value always empty) is produced -->
     <annotation key="<annotation_key>" value="<annotation_value>"/>
     <annotation key="<annotation_key>" value="<annotation_value>"/>
     <signals>...</signals>
@@ -876,6 +880,11 @@ A Low IR file (which is a .xml format file) consists of 4 parts:
     <!-- The getter func should receive a self parameter and return the same type as the prop.  -->
     <!-- The setter func should receive a self and a value parameter in the same type as the prop. -->
     <!-- If getter & setter are not present, a default one is generated -->
+    <!-- Property annotation values for the `@export*` family encode the Godot `hint_string`
+         payload verbatim (no quotes, no annotation-name prefix; e.g. `@export_range(0, 20, 0.5)`
+         becomes <annotation key="export_range" value="0,20,0.5"/>). An empty value means an
+         empty hint_string. The backend maps each key to its PROPERTY_HINT_* enum by a fixed
+         priority order, never by annotation map iteration order. -->
     <property name="<prop_name>"
               type="<prop_type>"
               is_static="false"

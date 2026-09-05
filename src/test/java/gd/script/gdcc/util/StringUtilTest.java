@@ -75,28 +75,70 @@ public class StringUtilTest {
     public void unescapeQuotedHandlesEscapesAndUnicode() {
         assertEquals("line\nbreak", StringUtil.unescapeQuoted("line\\nbreak"));
         assertEquals("tab\tquote\"", StringUtil.unescapeQuoted("tab\\tquote\\\""));
+        // Godot 4.5.1 escape set: \a \b \f \v \' complete the classic \n \r \t \\ \" set.
+        assertEquals("\u0007\b\f\u000B'", StringUtil.unescapeQuoted("\\a\\b\\f\\v\\'"));
         assertEquals("A", StringUtil.unescapeQuoted("\\u0041"));
-        assertEquals("\uD83D\uDE00", StringUtil.unescapeQuoted("\\U0001F600"));
+        // `\U` takes exactly 6 hex digits (Godot 4.5.1), not 8.
+        assertEquals("\uD83D\uDE00", StringUtil.unescapeQuoted("\\U01F600"));
+        // Lead/trail surrogate escapes combine into a single code point.
+        assertEquals("\uD83D\uDE00", StringUtil.unescapeQuoted("\\uD83D\\uDE00"));
+        // Backslash-newline is a line continuation and contributes nothing.
+        assertEquals("ab", StringUtil.unescapeQuoted("a\\\nb"));
+        assertEquals("ab", StringUtil.unescapeQuoted("a\\\r\nb"));
+        // A lone carriage return after a backslash keeps the backslash and drops the CR (Godot
+        // parity); unlike Godot we deliberately do not also drop the following character.
+        assertEquals("a\\b", StringUtil.unescapeQuoted("a\\\rb"));
     }
 
     @Test
-    public void unescapeQuotedRejectsMalformedUnicodeEscape() {
+    public void unescapeQuotedRejectsMalformedEscapes() {
         var shortUnicode = assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeQuoted("\\u123"));
         assertEquals("Invalid unicode escape in literal: \\u", shortUnicode.getMessage());
 
-        var shortCodePoint = assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeQuoted("\\U1234567"));
+        var shortCodePoint = assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeQuoted("\\U12345"));
         assertEquals("Invalid unicode escape in literal: \\U", shortCodePoint.getMessage());
+
+        // Unknown escapes are hard errors (Godot parity) instead of silently dropping the backslash.
+        assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeQuoted("\\q"));
+        // Invalid hex digits in a unicode escape.
+        assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeQuoted("\\u12G4"));
+        // Code points above U+10FFFF are invalid.
+        assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeQuoted("\\U110000"));
+        // Unpaired UTF-16 surrogates are invalid in both directions.
+        assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeQuoted("\\uD83D"));
+        assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeQuoted("\\uD83D\\u0041"));
+        assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeQuoted("\\uDE00"));
+        // A lone trailing backslash cannot start an escape.
+        assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeQuoted("a\\"));
     }
 
     @Test
     public void decodeGdStringLexemeNormalizesStringAndStringNamePayloads() {
         assertAll(
                 () -> assertEquals("hello", StringUtil.decodeGdStringLexeme("\"hello\"")),
+                () -> assertEquals("hello", StringUtil.decodeGdStringLexeme("'hello'")),
                 () -> assertEquals("line\nbreak", StringUtil.decodeGdStringLexeme("\"line\\nbreak\"")),
                 () -> assertEquals("tab\tquote\"", StringUtil.decodeGdStringLexeme("\"tab\\tquote\\\"\"")),
+                () -> assertEquals("tab\tquote\"", StringUtil.decodeGdStringLexeme("'tab\\tquote\\\"'")),
                 () -> assertEquals("Node_2D", StringUtil.decodeGdStringLexeme("&\"Node_2D\"")),
                 () -> assertEquals("A", StringUtil.decodeGdStringLexeme("\"\\u0041\"")),
-                () -> assertEquals("\uD83D\uDE00", StringUtil.decodeGdStringLexeme("\"\\U0001F600\""))
+                () -> assertEquals("\uD83D\uDE00", StringUtil.decodeGdStringLexeme("\"\\U01F600\"")),
+                // Triple-quoted multiline payloads keep raw newlines.
+                () -> assertEquals("line1\nline2", StringUtil.decodeGdStringLexeme("\"\"\"line1\nline2\"\"\"")),
+                () -> assertEquals("it's", StringUtil.decodeGdStringLexeme("'''it's'''")),
+                () -> assertEquals("", StringUtil.decodeGdStringLexeme("\"\"\"\"\"\""))
+        );
+    }
+
+    @Test
+    public void decodeGdStringLexemeKeepsRawPayloadsVerbatim() {
+        assertAll(
+                // Raw strings never interpret escapes; `\<quote>` and `\\` pairs stay verbatim too.
+                () -> assertEquals("\\n", StringUtil.decodeGdStringLexeme("r\"\\n\"")),
+                () -> assertEquals("a\\\"b", StringUtil.decodeGdStringLexeme("r\"a\\\"b\"")),
+                () -> assertEquals("a\\\\b", StringUtil.decodeGdStringLexeme("r'a\\\\b'")),
+                () -> assertEquals("C:\\path\\file.png", StringUtil.decodeGdStringLexeme("r\"C:\\path\\file.png\"")),
+                () -> assertEquals("x\ny", StringUtil.decodeGdStringLexeme("r\"\"\"x\ny\"\"\""))
         );
     }
 
@@ -104,9 +146,16 @@ public class StringUtilTest {
     public void decodeGdStringLexemeRejectsMalformedLexemes() {
         assertAll(
                 () -> assertMalformedLexeme("\"unterminated"),
+                () -> assertMalformedLexeme("'unterminated"),
+                () -> assertMalformedLexeme("\"\"\"unterminated"),
+                () -> assertMalformedLexeme("r\"unterminated"),
+                () -> assertMalformedLexeme("r'\""),
                 () -> assertMalformedLexeme("&hello"),
                 () -> assertMalformedLexeme("&\""),
-                () -> assertMalformedLexeme("plain")
+                () -> assertMalformedLexeme("&'name'"),
+                () -> assertMalformedLexeme("plain"),
+                // Escape-level failures surface through the same entry point.
+                () -> assertThrows(IllegalArgumentException.class, () -> StringUtil.decodeGdStringLexeme("\"\\q\""))
         );
     }
 

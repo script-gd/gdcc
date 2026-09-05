@@ -4,11 +4,24 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendGdAnnotation;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExportAnnotationSupport;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.Scope;
+import gd.script.gdcc.type.GdArrayType;
+import gd.script.gdcc.type.GdColorType;
+import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdPackedArrayType;
+import gd.script.gdcc.type.GdStringType;
+import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.Node;
@@ -45,7 +58,6 @@ public class FrontendAnnotationUsageAnalyzer {
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
 
         var moduleSkeleton = analysisData.moduleSkeleton();
-        analysisData.diagnostics();
 
         var scopesByAst = analysisData.scopesByAst();
         for (var sourceClassRelation : moduleSkeleton.sourceClassRelations()) {
@@ -90,6 +102,9 @@ public class FrontendAnnotationUsageAnalyzer {
         }
 
         private void walkSourceFile(@NotNull SourceFile sourceFile) {
+            // The `SourceFile` container itself never passes through `walkNode`, so script-level
+            // annotations attached to it (the only legal `@tool` placement) are validated here.
+            validateToolUsage(sourceFile);
             walkClassContainer(sourceFile, sourceFile.statements());
         }
 
@@ -109,6 +124,7 @@ public class FrontendAnnotationUsageAnalyzer {
             }
             validateOnreadyUsage(node);
             validateExportUsage(node);
+            validateToolUsage(node);
             if (node instanceof ClassDeclaration classDeclaration) {
                 if (!scopesByAst.containsKey(classDeclaration)) {
                     return;
@@ -153,21 +169,282 @@ public class FrontendAnnotationUsageAnalyzer {
             }
         }
 
-        /// `@export` on a static property is rejected (Godot parity); unlike `@onready` there is
-        /// no additional owner-class requirement, so non-static usage stays silent here.
+        /// Export-family validation: placement (class `var` property only), staticness, argument
+        /// structure (via the shared export helper), and property-type compatibility. Each
+        /// annotation is checked independently and the first violated rule wins, so one bad
+        /// annotation never cascades; multiple export annotations on one property deliberately
+        /// coexist without a diagnostic (a documented difference from Godot's hard error).
         private void validateExportUsage(@NotNull Node annotatedNode) {
-            var exportAnnotation = findAnnotationByName(annotatedNode, "export");
-            if (exportAnnotation == null) {
+            for (var annotation : analysisData.annotationsByAst().getOrDefault(annotatedNode, List.of())) {
+                if (FrontendExportAnnotationSupport.isExportFamilyAnnotation(annotation.name())) {
+                    validateSingleExportAnnotation(annotatedNode, annotation);
+                }
+            }
+        }
+
+        private void validateSingleExportAnnotation(@NotNull Node annotatedNode, @NotNull FrontendGdAnnotation annotation) {
+            var name = annotation.name();
+            if (!(annotatedNode instanceof VariableDeclaration variableDeclaration)
+                    || variableDeclaration.kind() != DeclarationKind.VAR
+                    || !(scopesByAst.get(variableDeclaration) instanceof ClassScope propertyScope)) {
+                reportInvalidUsage(annotation, "@" + name + " can only be used on class properties declared with 'var'");
                 return;
             }
-            if (annotatedNode instanceof VariableDeclaration variableDeclaration
-                    && variableDeclaration.kind() == DeclarationKind.VAR
-                    && variableDeclaration.isStatic()
-                    && scopesByAst.get(variableDeclaration) instanceof ClassScope) {
-                reportInvalidUsage(
-                        exportAnnotation,
-                        "@export cannot be used on static property '" + variableDeclaration.name() + "'"
+            // Godot rejects every export annotation on a static variable (export registers
+            // per-instance storage, which a static property never has).
+            if (variableDeclaration.isStatic()) {
+                reportInvalidUsage(annotation, "@" + name + " cannot be used on static property '" + variableDeclaration.name() + "'");
+                return;
+            }
+            if (FrontendExportAnnotationSupport.evaluate(annotation)
+                    instanceof FrontendExportAnnotationSupport.Evaluation.Malformed malformed) {
+                reportInvalidUsage(annotation, malformed.reason());
+                return;
+            }
+            var propertyDef = findClassProperty(propertyScope.getCurrentClass(), variableDeclaration.name().trim());
+            if (propertyDef == null) {
+                // The skeleton rejected this property subtree; the upstream diagnostic owns it.
+                return;
+            }
+            switch (resolveEffectiveExportType(variableDeclaration, propertyDef)) {
+                case EffectiveExportType.UpstreamBlocked upstreamBlocked -> {
+                    // The initializer subtree already carries an upstream blocking diagnostic;
+                    // stacking a determinability error on the same root cause would double-report.
+                }
+                case EffectiveExportType.VariantTyped variantTyped -> {
+                    // A legitimately Variant-typed property is exportable as Variant; Godot's
+                    // default type check skips Variant, only the custom multiline check rejects it.
+                    if (name.equals("export_multiline")) {
+                        reportExportTypeMismatch(annotation, variableDeclaration.name(), GdVariantType.VARIANT, "String");
+                    }
+                }
+                case EffectiveExportType.Undetermined undetermined -> {
+                    // Godot rejects bare `@export` only when neither a type specifier nor an
+                    // initializer exists ("type can't be inferred"); the default type check skips
+                    // a still-undetermined Variant, only multiline's custom check fails here.
+                    if (name.equals("export")) {
+                        reportInvalidUsage(
+                                annotation,
+                                "@export requires a determinable property type, but '" + variableDeclaration.name()
+                                        + "' has neither a type annotation nor an inferable initializer"
+                        );
+                    } else if (name.equals("export_multiline")) {
+                        reportExportTypeMismatch(annotation, variableDeclaration.name(), GdVariantType.VARIANT, "String");
+                    }
+                }
+                case EffectiveExportType.Determined determined ->
+                        checkDeterminedExportType(annotation, variableDeclaration, propertyScope, determined.type());
+            }
+        }
+
+        /// Type-compatibility rules per variant. Container-typed properties are deliberately
+        /// rejected for every variant (Godot's element-peel encoding is out of scope), while
+        /// bare `export` stays unrestricted. The default-check family (range/flags/layer
+        /// flags/exp_easing) accepts `int` and `float` interchangeably, matching Godot.
+        private void checkDeterminedExportType(
+                @NotNull FrontendGdAnnotation annotation,
+                @NotNull VariableDeclaration variableDeclaration,
+                @NotNull ClassScope propertyScope,
+                @NotNull GdType type
+        ) {
+            var name = annotation.name();
+            var propertyName = variableDeclaration.name();
+            var container = type instanceof GdArrayType
+                    || type instanceof GdDictionaryType
+                    || type instanceof GdPackedArrayType;
+            if (container && !name.equals("export")) {
+                reportExportTypeMismatch(annotation, propertyName, type, allowedExportTypesText(name));
+                return;
+            }
+            switch (name) {
+                case "export" -> validateBareExportType(annotation, propertyName, propertyScope, type);
+                case "export_range" -> requireExportType(
+                        annotation, propertyName, type,
+                        type instanceof GdIntType || type instanceof GdFloatType
                 );
+                case "export_enum" -> requireExportType(
+                        annotation, propertyName, type,
+                        type instanceof GdIntType || type instanceof GdStringType
+                );
+                case "export_flags", "export_flags_2d_render", "export_flags_2d_physics",
+                     "export_flags_2d_navigation", "export_flags_3d_render", "export_flags_3d_physics",
+                     "export_flags_3d_navigation", "export_flags_avoidance" -> requireExportType(
+                        annotation, propertyName, type,
+                        type instanceof GdIntType || type instanceof GdFloatType
+                );
+                case "export_file", "export_file_path", "export_dir", "export_global_file",
+                     "export_global_dir", "export_multiline", "export_placeholder" -> requireExportType(
+                        annotation, propertyName, type,
+                        type instanceof GdStringType
+                );
+                case "export_exp_easing" -> requireExportType(
+                        annotation, propertyName, type,
+                        type instanceof GdFloatType || type instanceof GdIntType
+                );
+                case "export_color_no_alpha" -> requireExportType(
+                        annotation, propertyName, type,
+                        type instanceof GdColorType
+                );
+                case "export_node_path" -> requireExportType(
+                        annotation, propertyName, type,
+                        type instanceof GdNodePathType
+                );
+                default -> {
+                }
+            }
+        }
+
+        /// Bare `export` Object-family rules: only Resource- or Node-derived objects are
+        /// exportable, and exporting a Node type additionally requires a Node-derived owner class
+        /// (Godot parity — the editor would otherwise attach an unplaceable node reference).
+        private void validateBareExportType(
+                @NotNull FrontendGdAnnotation annotation,
+                @NotNull String propertyName,
+                @NotNull ClassScope propertyScope,
+                @NotNull GdType type
+        ) {
+            if (!(type instanceof GdObjectType objectType)) {
+                return;
+            }
+            var nodeDerived = classRegistry.checkAssignable(objectType, new GdObjectType("Node"));
+            var resourceDerived = classRegistry.checkAssignable(objectType, new GdObjectType("Resource"));
+            if (!nodeDerived && !resourceDerived) {
+                reportInvalidUsage(
+                        annotation,
+                        "@export can only export built-in, Resource, Node, or enum types, but '"
+                                + propertyName + "' is " + type.getTypeName()
+                );
+                return;
+            }
+            if (nodeDerived && !isNodeDerived(propertyScope.getCurrentClass())) {
+                reportInvalidUsage(
+                        annotation,
+                        "@export of Node type is only supported in Node-derived classes, but '"
+                                + propertyName + "' is declared in '" + propertyScope.getCurrentClass().getName() + "'"
+                );
+            }
+        }
+
+        private void requireExportType(
+                @NotNull FrontendGdAnnotation annotation,
+                @NotNull String propertyName,
+                @NotNull GdType type,
+                boolean compatible
+        ) {
+            if (!compatible) {
+                reportExportTypeMismatch(annotation, propertyName, type, allowedExportTypesText(annotation.name()));
+            }
+        }
+
+        private void reportExportTypeMismatch(
+                @NotNull FrontendGdAnnotation annotation,
+                @NotNull String propertyName,
+                @NotNull GdType type,
+                @NotNull String allowedTypesText
+        ) {
+            reportInvalidUsage(
+                    annotation,
+                    "@" + annotation.name() + " can only be used on properties of type " + allowedTypesText
+                            + ", but '" + propertyName + "' is " + type.getTypeName()
+            );
+        }
+
+        /// The allowed-type text shown in mismatch diagnostics, phrased after Godot's accepted
+        /// sets (the int/float interchangeability of the default-check family is not repeated in
+        /// the wording).
+        private @NotNull String allowedExportTypesText(@NotNull String name) {
+            return switch (name) {
+                case "export_range" -> "int or float";
+                case "export_enum" -> "int, String, or Variant";
+                case "export_flags", "export_flags_2d_render", "export_flags_2d_physics",
+                     "export_flags_2d_navigation", "export_flags_3d_render", "export_flags_3d_physics",
+                     "export_flags_3d_navigation", "export_flags_avoidance" -> "int";
+                case "export_exp_easing" -> "float";
+                case "export_color_no_alpha" -> "Color";
+                case "export_node_path" -> "NodePath";
+                default -> "String";
+            };
+        }
+
+        /// Effective export type after applying the type-fact source rules: an explicitly
+        /// declared non-Variant type wins; otherwise the initializer's published expression type
+        /// provides the fallback (this analyzer runs after expression typing).
+        private @NotNull EffectiveExportType resolveEffectiveExportType(
+                @NotNull VariableDeclaration variableDeclaration,
+                @NotNull PropertyDef propertyDef
+        ) {
+            var declaredType = propertyDef.getType();
+            if (!(declaredType instanceof GdVariantType)) {
+                return new EffectiveExportType.Determined(declaredType);
+            }
+            var initializer = variableDeclaration.value();
+            if (initializer == null) {
+                // An explicit `: Variant` annotation is itself a determinate (Variant) export
+                // type; only a declaration without any type information fails determinability.
+                var typeRef = variableDeclaration.type();
+                return typeRef != null && !FrontendDeclaredTypeSupport.isInferredTypeRef(typeRef)
+                        ? new EffectiveExportType.VariantTyped()
+                        : new EffectiveExportType.Undetermined();
+            }
+            var fact = Objects.requireNonNull(
+                    analysisData.expressionTypes().get(initializer),
+                    "Property initializer expression type has not been published yet"
+            );
+            return switch (fact.status()) {
+                case RESOLVED -> fact.publishedType() instanceof GdVariantType
+                        ? new EffectiveExportType.VariantTyped()
+                        : new EffectiveExportType.Determined(fact.publishedType());
+                case DYNAMIC -> new EffectiveExportType.VariantTyped();
+                case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> new EffectiveExportType.UpstreamBlocked();
+            };
+        }
+
+        private @Nullable PropertyDef findClassProperty(@NotNull ClassDef classDef, @NotNull String propertyName) {
+            return classDef.getProperties().stream()
+                    .filter(property -> property.getName().equals(propertyName))
+                    .findFirst()
+                    .orElse(null);
+        }
+
+        private sealed interface EffectiveExportType {
+            /// A concrete non-Variant type; full per-variant compatibility checks apply.
+            record Determined(@NotNull GdType type) implements EffectiveExportType {
+            }
+
+            /// Legitimately Variant-typed (explicit `: Variant` annotation or an initializer
+            /// that only infers Variant): exportable as Variant; the default type check and
+            /// `export_enum` skip Variant, only the custom multiline check rejects it.
+            record VariantTyped() implements EffectiveExportType {
+            }
+
+            /// Nothing determines the type (no type annotation, no `:=`, no initializer): bare
+            /// export and multiline fail; other variants skip (Godot default-check parity).
+            record Undetermined() implements EffectiveExportType {
+            }
+
+            /// The initializer subtree already carries an upstream blocking diagnostic;
+            /// determinability diagnostics are suppressed to keep single-owner reporting.
+            record UpstreamBlocked() implements EffectiveExportType {
+            }
+        }
+
+        /// `@tool` is script-level in Godot (`AnnotationInfo::SCRIPT`): only the zero-argument
+        /// form attached to the top-level `SourceFile` is legal. Inner classes, members, and
+        /// trailing anchors are rejected to match Godot, which reports `@tool` outside the script
+        /// top as an error instead of a per-class marker. When one annotation violates both rules
+        /// the placement error takes precedence and arity is not double-reported.
+        private void validateToolUsage(@NotNull Node annotatedNode) {
+            for (var toolAnnotation : findAnnotationsByName(annotatedNode, "tool")) {
+                if (!(annotatedNode instanceof SourceFile)) {
+                    reportInvalidUsage(
+                            toolAnnotation,
+                            "@tool can only be used at the top of the script, before \"extends\" and \"class_name\""
+                    );
+                    continue;
+                }
+                if (!toolAnnotation.arguments().isEmpty()) {
+                    reportInvalidUsage(toolAnnotation, "@tool does not accept any arguments");
+                }
             }
         }
 
@@ -198,6 +475,12 @@ public class FrontendAnnotationUsageAnalyzer {
                     .filter(annotation -> annotation.name().equals(name))
                     .findFirst()
                     .orElse(null);
+        }
+
+        private @NotNull List<FrontendGdAnnotation> findAnnotationsByName(@NotNull Node annotatedNode, @NotNull String name) {
+            return analysisData.annotationsByAst().getOrDefault(annotatedNode, List.of()).stream()
+                    .filter(annotation -> annotation.name().equals(name))
+                    .toList();
         }
 
         private void assertPublishedClassScope(@NotNull Node classOwner) {

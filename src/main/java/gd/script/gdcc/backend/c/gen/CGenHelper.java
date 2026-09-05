@@ -1445,19 +1445,113 @@ public final class CGenHelper {
         return renderBoundMetadata(type, "godot_PROPERTY_USAGE_DEFAULT", "signal parameter");
     }
 
-    /// Property registration keeps the current export/non-export base-usage split
-    /// while reusing the same outward Variant encoding as method args/returns.
-    public @NotNull BoundMetadata renderPropertyMetadata(@NotNull PropertyDef propertyDef) {
-        return renderBoundMetadata(propertyDef.getType(), renderPropertyBaseUsageEnum(propertyDef), "property");
-    }
+    /// Export-variant annotation keys mapped to their Godot property-hint enum literal, iterated
+    /// in a fixed priority order: the first key present on a property fully drives
+    /// hint/hint_string rendering. Bare `export` is deliberately absent — it is the
+    /// lowest-priority fallback that derives hint metadata from the property type. The explicit
+    /// list keeps selection deterministic despite `LirPropertyDef.annotations` being an unordered
+    /// `HashMap`.
+    private static final List<Map.Entry<String, String>> EXPORT_VARIANT_HINT_PRIORITY = List.of(
+            Map.entry("export_range", "godot_PROPERTY_HINT_RANGE"),
+            Map.entry("export_enum", "godot_PROPERTY_HINT_ENUM"),
+            Map.entry("export_flags", "godot_PROPERTY_HINT_FLAGS"),
+            Map.entry("export_flags_2d_render", "godot_PROPERTY_HINT_LAYERS_2D_RENDER"),
+            Map.entry("export_flags_2d_physics", "godot_PROPERTY_HINT_LAYERS_2D_PHYSICS"),
+            Map.entry("export_flags_2d_navigation", "godot_PROPERTY_HINT_LAYERS_2D_NAVIGATION"),
+            Map.entry("export_flags_3d_render", "godot_PROPERTY_HINT_LAYERS_3D_RENDER"),
+            Map.entry("export_flags_3d_physics", "godot_PROPERTY_HINT_LAYERS_3D_PHYSICS"),
+            Map.entry("export_flags_3d_navigation", "godot_PROPERTY_HINT_LAYERS_3D_NAVIGATION"),
+            Map.entry("export_flags_avoidance", "godot_PROPERTY_HINT_LAYERS_AVOIDANCE"),
+            Map.entry("export_file", "godot_PROPERTY_HINT_FILE"),
+            Map.entry("export_file_path", "godot_PROPERTY_HINT_FILE_PATH"),
+            Map.entry("export_dir", "godot_PROPERTY_HINT_DIR"),
+            Map.entry("export_global_file", "godot_PROPERTY_HINT_GLOBAL_FILE"),
+            Map.entry("export_global_dir", "godot_PROPERTY_HINT_GLOBAL_DIR"),
+            Map.entry("export_multiline", "godot_PROPERTY_HINT_MULTILINE_TEXT"),
+            Map.entry("export_placeholder", "godot_PROPERTY_HINT_PLACEHOLDER_TEXT"),
+            Map.entry("export_exp_easing", "godot_PROPERTY_HINT_EXP_EASING"),
+            Map.entry("export_color_no_alpha", "godot_PROPERTY_HINT_COLOR_NO_ALPHA"),
+            Map.entry("export_node_path", "godot_PROPERTY_HINT_NODE_PATH_VALID_TYPES")
+    );
 
-    private @NotNull String renderPropertyBaseUsageEnum(@NotNull PropertyDef propertyDef) {
-        for (var entry : propertyDef.getAnnotations().entrySet()) {
-            if (entry.getKey().equals("export")) {
-                return "godot_PROPERTY_USAGE_DEFAULT";
+    /// Property registration keeps the export/non-export base-usage split while reusing the same
+    /// outward Variant encoding as method args/returns.
+    ///
+    /// The first export-variant key in `EXPORT_VARIANT_HINT_PRIORITY` present on the property
+    /// fully drives hint/hint_string from the annotation value (the frontend already encoded it
+    /// as a Godot `hint_string`); bare `export` alone falls back to type-derived hints. Any
+    /// export family key implies `PROPERTY_USAGE_DEFAULT`; none implies `NO_EDITOR`. Backend
+    /// trusts the frontend compile gate for argument validity and silently ignores unknown
+    /// annotation keys.
+    public @NotNull BoundMetadata renderPropertyMetadata(@NotNull PropertyDef propertyDef) {
+        var annotations = propertyDef.getAnnotations();
+        for (var variantHint : EXPORT_VARIANT_HINT_PRIORITY) {
+            var hintString = annotations.get(variantHint.getKey());
+            if (hintString != null) {
+                return renderExportVariantMetadata(propertyDef, variantHint.getValue(), hintString);
             }
         }
-        return "godot_PROPERTY_USAGE_NO_EDITOR";
+        if (annotations.containsKey("export")) {
+            return renderBareExportPropertyMetadata(propertyDef);
+        }
+        return renderBoundMetadata(propertyDef.getType(), "godot_PROPERTY_USAGE_NO_EDITOR", "property");
+    }
+
+    /// Variant-keyed exports: hint and hint_string come entirely from the annotation value. The
+    /// class_name slot stays empty because the frontend restricts every variant to non-Object
+    /// property types.
+    private @NotNull BoundMetadata renderExportVariantMetadata(
+            @NotNull PropertyDef propertyDef,
+            @NotNull String hintEnumLiteral,
+            @NotNull String hintString
+    ) {
+        var type = propertyDef.getType();
+        var extensionType = requireBoundMetadataType(type, "property metadata");
+        var usageExpr = type instanceof GdVariantType
+                ? "godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT"
+                : "godot_PROPERTY_USAGE_DEFAULT";
+        return new BoundMetadata(
+                "GDEXTENSION_VARIANT_TYPE_" + extensionType.name(),
+                hintEnumLiteral,
+                "GD_STATIC_S(u8\"" + escapeStringLiteral(hintString) + "\")",
+                "GD_STATIC_SN(u8\"\")",
+                usageExpr
+        );
+    }
+
+    /// Bare `@export` keeps the type-derived hint behavior (typed Array/Dictionary via
+    /// `renderBoundMetadata`) and extends it to Object exports: Resource-derived types render
+    /// `PROPERTY_HINT_RESOURCE_TYPE`, Node-derived types render `PROPERTY_HINT_NODE_TYPE`, both
+    /// with the property type class name as hint_string and class_name (Godot parity). Other
+    /// Object types were already rejected by the frontend export validation; if one still reaches
+    /// here it falls through to the plain type-derived surface.
+    private @NotNull BoundMetadata renderBareExportPropertyMetadata(@NotNull PropertyDef propertyDef) {
+        var type = propertyDef.getType();
+        if (type instanceof GdObjectType objectType) {
+            var hintEnumLiteral = resolveExportObjectHintEnum(objectType);
+            if (hintEnumLiteral != null) {
+                var extensionType = requireBoundMetadataType(type, "property metadata");
+                var className = escapeStringLiteral(objectType.getTypeName());
+                return new BoundMetadata(
+                        "GDEXTENSION_VARIANT_TYPE_" + extensionType.name(),
+                        hintEnumLiteral,
+                        "GD_STATIC_S(u8\"" + className + "\")",
+                        "GD_STATIC_SN(u8\"" + className + "\")",
+                        "godot_PROPERTY_USAGE_DEFAULT"
+                );
+            }
+        }
+        return renderBoundMetadata(type, "godot_PROPERTY_USAGE_DEFAULT", "property");
+    }
+
+    private @Nullable String resolveExportObjectHintEnum(@NotNull GdObjectType objectType) {
+        if (context.classRegistry().checkAssignable(objectType, new GdObjectType("Resource"))) {
+            return "godot_PROPERTY_HINT_RESOURCE_TYPE";
+        }
+        if (context.classRegistry().checkAssignable(objectType, new GdObjectType("Node"))) {
+            return "godot_PROPERTY_HINT_NODE_TYPE";
+        }
+        return null;
     }
 
     private @NotNull GdExtensionTypeEnum requireBoundMetadataType(@NotNull GdType type,

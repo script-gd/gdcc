@@ -1,6 +1,7 @@
 <#-- @ftlvariable name="module" type="gd.script.gdcc.lir.LirModule" -->
 <#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
 <#-- @ftlvariable name="bodyRender" type="gd.script.gdcc.backend.c.gen.binding.GenerateRenderFacade" -->
+<#-- @ftlvariable name="staticInitClassDefs" type="java.util.List<gd.script.gdcc.lir.LirClassDef>" -->
 <#include "func.ftl">
 <#include "trim.ftl">
 
@@ -198,9 +199,10 @@ void ${classDef.name}_class_bind_methods() {
     {
         <#if !property.static>
             <#assign propertyMetadata = helper.renderPropertyMetadata(property)>
-            <#-- Property outward metadata stays centralized in renderPropertyMetadata(...): it owns type/hint/hint_string/usage
-                 for Variant, typed Array and typed Dictionary alike, while property class_name still uses the current owner-class slot. -->
-            gdcc_bind_property_full(class_name, GD_STATIC_SN(u8"${property.name}"), ${propertyMetadata.typeEnumLiteral}, ${propertyMetadata.hintEnumLiteral}, ${propertyMetadata.hintStringExpr}, class_name, ${propertyMetadata.usageExpr}, GD_STATIC_SN(u8"${property.getterFunc}"), GD_STATIC_SN(u8"${property.setterFunc}"));
+            <#-- Property outward metadata stays centralized in renderPropertyMetadata(...): it owns type/hint/hint_string/class_name/usage
+                 for Variant, typed Array, typed Dictionary and Object exports alike; the class_name slot carries the
+                 property type class (Object exports) instead of the owner class. -->
+            gdcc_bind_property_full(class_name, GD_STATIC_SN(u8"${property.name}"), ${propertyMetadata.typeEnumLiteral}, ${propertyMetadata.hintEnumLiteral}, ${propertyMetadata.hintStringExpr}, ${propertyMetadata.classNameExpr}, ${propertyMetadata.usageExpr}, GD_STATIC_SN(u8"${property.getterFunc}"), GD_STATIC_SN(u8"${property.setterFunc}"));
         </#if>
     }
     </#list>
@@ -364,6 +366,16 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
     <#list classDef.functions as function>
         <#if helper.checkVirtualMethod(classDef, function)>
             if (p_virtual_call_userdata == <#if helper.countDefaultSlots(function) gt 0>&${helper.renderDefaultUserdataInstanceName(classDef, function)}<#else>&${classDef.name}_${function.name}</#if>) {
+                <#-- GDExtension registration has no tool-script flag, so the editor suppression of
+                     frame-loop callbacks is gated here: non-tool classes skip `_process` /
+                     `_physics_process` while in the editor (Godot placeholder parity, frame-loop
+                     part only); tool classes emit no check at all. The gate stays inside the
+                     userdata-matched branch so non-frame-loop virtuals (`_ready`, ...) still run. -->
+                <#if !classDef.tool && (function.name == "_process" || function.name == "_physics_process")>
+                if (gdcc_is_editor_hint()) {
+                    return;
+                }
+                </#if>
                 ptrcall${helper.renderFuncBindName(classDef, function)}(p_virtual_call_userdata, p_instance, p_args, r_ret);
                 return;
             }
