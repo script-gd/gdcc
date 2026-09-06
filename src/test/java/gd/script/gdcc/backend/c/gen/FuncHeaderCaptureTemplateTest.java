@@ -89,7 +89,9 @@ class FuncHeaderCaptureTemplateTest {
         );
         return TemplateLoader.renderFromClasspath(
                 "template_451/entry.h.ftl",
-                Map.of("module", module, "helper", helper)
+                // Single-class module: module order already satisfies the base-before-derived
+                // inheritance order entry.h.ftl now requires.
+                Map.of("module", module, "helper", helper, "inheritanceOrderedClassDefs", module.getClassDefs())
         );
     }
 

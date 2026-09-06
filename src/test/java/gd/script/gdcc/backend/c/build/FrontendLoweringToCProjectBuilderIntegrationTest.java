@@ -2203,6 +2203,184 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         );
     }
 
+    @Test
+    void lowerFrontendCrossFileInheritanceBuildsNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping cross-file inheritance frontend integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_cross_file_inheritance_runtime");
+        Files.createDirectories(tempDir);
+
+        // The child source is listed before its base on purpose: module class order follows
+        // source order, so this fixture forces the derived-first hazard that requires the
+        // backend to emit base-before-derived struct definitions and ClassDB registration.
+        var childSource = """
+                class_name CrossFileChild
+                extends CrossFileBase
+
+                func child_value() -> int:
+                    return base_value() + 1
+                """;
+        var baseSource = """
+                class_name CrossFileBase
+                extends RefCounted
+
+                func base_value() -> int:
+                    return 41
+                """;
+        var hostSource = """
+                class_name CrossFileInheritanceHost
+                extends Node
+
+                func make_child_sum() -> int:
+                    var child: CrossFileChild = CrossFileChild.new()
+                    return child.base_value() + child.child_value()
+
+                func dispatch_via_base(base_ref: CrossFileBase) -> int:
+                    return base_ref.base_value()
+                """;
+        var module = parseModule(
+                "frontend_cross_file_inheritance_runtime_module",
+                List.of(
+                        new SourceFileSpec(tempDir.resolve("cross_file_child.gd"), childSource),
+                        new SourceFileSpec(tempDir.resolve("cross_file_base.gd"), baseSource),
+                        new SourceFileSpec(tempDir.resolve("cross_file_inheritance_host.gd"), hostSource)
+                ),
+                Map.of(
+                        "CrossFileChild", "RuntimeCrossFileChild",
+                        "CrossFileBase", "RuntimeCrossFileBase",
+                        "CrossFileInheritanceHost", "RuntimeCrossFileInheritanceHost"
+                )
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(3, lowered.getClassDefs().size());
+        // Pin the hazard setup: the module stays derived-first, so the C assertions below
+        // actually observe the backend reorder instead of a lucky input order.
+        assertEquals("RuntimeCrossFileChild", lowered.getClassDefs().getFirst().getName());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_cross_file_inheritance_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
+        var headerSource = Files.readString(projectDir.resolve("entry.h"));
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        // The child wrapper embeds `RuntimeCrossFileBase _super` by value as its first field,
+        // so the base struct definition must be complete first (C has no by-value incomplete
+        // fields); raw module order would fail the C compile here.
+        var baseStructIndex = headerSource.indexOf("struct RuntimeCrossFileBase {");
+        var childStructIndex = headerSource.indexOf("struct RuntimeCrossFileChild {");
+        assertTrue(baseStructIndex >= 0 && childStructIndex > baseStructIndex, headerSource);
+        assertTrue(headerSource.contains("RuntimeCrossFileBase _super;"), headerSource);
+        // Godot rejects registering an extension class whose parent extension class is not
+        // registered yet, so ClassDB registration follows the same base-before-derived order.
+        // The `();` anchor matches only the call sites inside initialize(), never the later
+        // `void <Class>_class_bind_methods() {` definitions.
+        var baseRegistrationIndex = entrySource.indexOf("RuntimeCrossFileBase_class_bind_methods();");
+        var childRegistrationIndex = entrySource.indexOf("RuntimeCrossFileChild_class_bind_methods();");
+        assertTrue(baseRegistrationIndex >= 0 && childRegistrationIndex > baseRegistrationIndex, entrySource);
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "CrossFileInheritanceHostNode",
+                        "RuntimeCrossFileInheritanceHost",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(crossFileInheritanceTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend cross-file inheritance instantiate dispatch check passed."),
+                () -> "Cross-file instantiation and method dispatch check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend cross-file inheritance upcast dispatch check passed."),
+                () -> "Base-typed upcast dispatch check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend cross-file inheritance is_class check passed."),
+                () -> "Cross-file is/is_class check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend cross-file inheritance instantiate dispatch check failed."),
+                () -> "Cross-file instantiation and method dispatch check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend cross-file inheritance upcast dispatch check failed."),
+                () -> "Base-typed upcast dispatch check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend cross-file inheritance is_class check failed."),
+                () -> "Cross-file is/is_class check should not fail.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    private static @NotNull String crossFileInheritanceTestScript() {
+        return """
+                extends Node
+
+                const TARGET_NODE_NAME = "CrossFileInheritanceHostNode"
+
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+
+                    # Engine-side instantiation of a class that extends another file's class,
+                    # plus inherited/own method dispatch on the gdcc-compiled host.
+                    var child = RuntimeCrossFileChild.new()
+                    var sum = int(target.call("make_child_sum"))
+                    if sum == 83 and int(child.base_value()) == 41 and int(child.child_value()) == 42:
+                        print("frontend cross-file inheritance instantiate dispatch check passed.")
+                    else:
+                        push_error("frontend cross-file inheritance instantiate dispatch check failed.")
+
+                    # A derived instance passed through the base-typed parameter boundary must
+                    # still dispatch to the base owner method via the safe upcast path.
+                    var via_base = int(target.call("dispatch_via_base", child))
+                    if via_base == 41:
+                        print("frontend cross-file inheritance upcast dispatch check passed.")
+                    else:
+                        push_error("frontend cross-file inheritance upcast dispatch check failed.")
+
+                    var is_ok = child is RuntimeCrossFileBase
+                    var classdb_ok = ClassDB.is_parent_class("RuntimeCrossFileChild", "RuntimeCrossFileBase")
+                    var is_class_ok = child.is_class("RuntimeCrossFileChild") and child.is_class("RuntimeCrossFileBase") and child.is_class("RefCounted") and not child.is_class("CrossFileChild") and not child.is_class("CrossFileBase")
+                    if is_ok and classdb_ok and is_class_ok:
+                        print("frontend cross-file inheritance is_class check passed.")
+                    else:
+                        push_error("frontend cross-file inheritance is_class check failed.")
+                """;
+    }
+
     private static @NotNull FrontendModule parseModule(
             @NotNull Path sourcePath,
             @NotNull String source,

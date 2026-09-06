@@ -10,7 +10,7 @@
   - `src/main/java/gd/script/gdcc/backend/c/**`
   - `src/main/c/codegen/**`
   - `src/test/java/gd/script/gdcc/backend/c/**`
-- 更新时间：2026-04-27
+- 更新时间：2026-09-06
 - 上游对齐基线：
   - Godot ClassDB 继承关系决定 source-visible / runtime-visible 继承层级
   - GDExtension extension instance 回调会把同一个实例指针传给 GDCC 父类/子类方法路径
@@ -29,6 +29,10 @@
 - per-class object pointer helper 与 create/bind 链路：
   - `src/main/c/codegen/template_451/entry.c.ftl`
   - `src/main/c/codegen/include_451/gdcc/gdcc_helper.h`
+- 模块类 base-before-derived 拓扑顺序（struct 定义与 ClassDB 注册共用）：
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CCodegen.java`
+    - `computeInheritanceClassOrder(...)`
+    - `computeStaticInitClassOrder(...)`
 - 最近 native ancestor 解析与 helper 符号渲染：
   - `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`
     - `resolveNearestNativeAncestorName(...)`
@@ -54,6 +58,7 @@
 - `godot_object_set_instance(...)` 与 `godot_object_set_instance_binding(...)` 只在最派生 GDCC 创建路径执行一次。
 - GDCC->GDCC 转换只允许可证明的上行转换，生成 `_super` 链表达式；不可证明路径必须 fail-fast。
 - `CALL_METHOD` 在 GDCC 子类 receiver 调用 GDCC 父类 owner 方法时，必须复用上述安全上行路径，不能退回裸 C cast。
+- `entry.h` 的 wrapper struct 定义与 `entry.c` 的 ClassDB 注册都按模块继承拓扑 base-before-derived 生成（`inheritanceOrderedClassDefs`），不直接使用原始 `module.classDefs` 顺序；module 顺序由源文件顺序决定，可以是 derived-first。
 
 ## 长期合同
 
@@ -132,6 +137,18 @@
   - 旧式通用 `_object` 宏
   - 假设所有 GDCC wrapper 物理形状相同的临时转换
 
+### 7. 模块类拓扑顺序合同
+
+- `CCodegen.computeInheritanceClassOrder()` 产出模块全部类的 base-before-derived 拓扑序：
+  - 类绝不先于其模块内父类出现（唯一顺序合同）。
+  - 父类在模块外（engine/native 根）不构成约束。
+  - 每轮按 module（`LirModule.classDefs`）顺序发出所有父类已就位的类，同一输入产出唯一确定结果；但被父链阻塞的类可能晚于 module 中位于其后且无继承关系的类，不保证无关类保持 module 相对序。
+  - frontend 已在 lowering 前拒绝继承环；backend 遇到环必须 fail-fast，不得静默输出无序 C。
+- 以下两处消费该顺序，禁止改回原始 module 顺序：
+  - `entry.h.ftl` 的 wrapper struct 定义循环：非根 wrapper 以值嵌入父 wrapper（`Parent _super`），父 struct 定义必须先完整，否则 C 编译报 incomplete type 字段错误。
+  - `entry.c.ftl` 的 ClassDB 注册循环：Godot 在 `_register_extension_class_internal` 中要求父 extension class 已注册（否则报 `non-existing parent class` 并放弃注册），并在注册时绑定父/子 extension 指针对。
+- static init 两段式全局初始化（见 `frontend_static_var_implementation.md` §5.2）复用同一拓扑序过滤含 static var 的类，不再维护独立排序实现。
+
 ## 与 Godot 的对齐点
 
 ### 1. ClassDB 继承关系不是 C struct 布局
@@ -144,12 +161,18 @@ C struct 布局只决定 backend 自己传入 extension method callback 的实�
 - ClassDB 注册继续发布正确的 `class_name` / `parent_class_name`
 - GDCC wrapper 的 C-level 前缀布局能支撑父类方法读取父 wrapper 字段
 
-### 2. extension instance 指针在父/子路径间共享
+### 2. ClassDB 注册顺序与 struct 定义顺序是同一个拓扑约束
+
+- Godot 侧：`_register_extension_class_internal` 要求父 extension class 已经注册（`extension_classes.has(parent_class_name)`），否则报 `Attempt to register an extension class ... using non-existing parent class ...` 并放弃注册；注册成功时还会把子类挂到父类的 `children` 列表。
+- C 侧：子类 wrapper 以值嵌入父 wrapper，父 struct 定义必须先完整。
+- 两者由同一个 `inheritanceOrderedClassDefs`（base-before-derived）满足；frontend 保证无环，backend 对环 fail-fast。
+
+### 3. extension instance 指针在父/子路径间共享
 
 GDCC 子类对象调用父类方法时，Godot 仍会把同一个 extension instance 交给 callback。  
 如果父类方法把该指针解释为父 wrapper，而子类 wrapper 不以前缀形式嵌入父 wrapper，就会重新打开布局未定义行为风险。
 
-### 3. Godot object pointer 是 wrapper 内部事实，不是通用字段名合同
+### 4. Godot object pointer 是 wrapper 内部事实，不是通用字段名合同
 
 `_object` 只存在于根 GDCC wrapper 层。  
 非根 wrapper 通过 `_super` 链间接持有同一个 Godot object pointer，因此所有 Godot object pointer 访问都必须走生成 helper。
@@ -162,6 +185,9 @@ GDCC 子类对象调用父类方法时，Godot 仍会把同一个 extension inst
   - `create_instance` 构造最近 native ancestor
   - 多级 GDCC 继承链仍稳定构造同一个 native ancestor
   - extension instance / binding 在最派生 create path 中各绑定一次
+  - derived-first module 输入下 struct 定义与 ClassDB 注册仍为 base-before-derived；同 pass 就绪的无关类保持 module 相对序（被父链阻塞的类不在此列）
+  - static init 序为全类拓扑序的 static 子序列：经无 static 中间类的传递祖先仍约束顺序，无关 static 类不保证保持 module 相对序
+  - 模块内继承环 fail-fast
 - `src/test/java/gd/script/gdcc/backend/c/gen/CBodyBuilderPhaseCTest.java`
   - GDCC 多级上行转换生成 `_super` 链
   - 非上行或不可证明转换 fail-fast
@@ -175,6 +201,10 @@ GDCC 子类对象调用父类方法时，Godot 仍会把同一个 extension inst
   - GDCC 子类调用父类静态 owner 方法
   - 动态 receiver 通过 generated helper 转成 Godot raw pointer
   - Godot runtime 侧 `child is Base` / `ClassDB.is_parent_class(...)` 可见性
+- `src/test/java/gd/script/gdcc/backend/c/build/FrontendLoweringToCProjectBuilderIntegrationTest.java`
+  - 跨文件 extends 且子类源文件先于父类的模块：zig 编译通过（struct 定义拓扑序），ClassDB 注册 base-before-derived
+  - 引擎侧实例化跨文件子类、`is` / `is_class` / `ClassDB.is_parent_class(...)` 行为
+  - 继承方法分派（子类实例调父类 owner 方法、base 类型参数接收派生实例的安全上行分派）
 
 依赖 Zig / Godot 运行环境的集成测试必须保持环境不可用时跳过，不得误报失败。
 

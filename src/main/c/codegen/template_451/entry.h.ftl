@@ -1,5 +1,6 @@
 <#-- @ftlvariable name="module" type="gd.script.gdcc.lir.LirModule" -->
 <#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
+<#-- @ftlvariable name="inheritanceOrderedClassDefs" type="java.util.List<gd.script.gdcc.lir.LirClassDef>" -->
 <#include "trim.ftl">
 <#include "func.ftl">
 #ifndef GDEXTENSION_${module.moduleName?upper_case}_ENTRY_H
@@ -23,13 +24,16 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level);
 
 // Class declarations
 
-<#list module.classDefs as classDef>
+<#list inheritanceOrderedClassDefs as classDef>
 typedef struct ${classDef.name} ${classDef.name};
 </#list>
 
 #include "object_fat_ptr_types.h"
 
-<#list module.classDefs as classDef>
+<#-- Struct definitions iterate the base-before-derived inheritance order (never raw module -->
+<#-- order): a non-root wrapper embeds its parent BY VALUE as the first field (`Parent _super`), -->
+<#-- which is only legal once the parent struct definition is complete. -->
+<#list inheritanceOrderedClassDefs as classDef>
 // Class definition for ${classDef.name}
 
 struct ${classDef.name} {

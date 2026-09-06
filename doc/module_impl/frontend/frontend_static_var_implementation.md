@@ -218,7 +218,14 @@
 1. 先按类间顺序调用所有 `gdcc_static_defaults_*`
 2. 再按同一顺序调用所有 `gdcc_static_initializers_*`
 
-类间顺序固定为 base-before-derived（按继承拓扑；无继承关系时按 module class 顺序）。初始化级别为 `GDEXTENSION_INITIALIZATION_SCENE`。
+类间顺序固定为 base-before-derived（按继承拓扑，含经无 static 中间类传递的祖先）。初始化级别为 `GDEXTENSION_INITIALIZATION_SCENE`。
+
+该拓扑序由 backend `CCodegen.computeInheritanceClassOrder()` 统一产出，与 `entry.h` wrapper
+struct 定义顺序、`entry.c` ClassDB 注册顺序共用同一份实现（见
+`explicit_c_inheritance_layout_contract.md` §7）；static init 只是在完整拓扑序上过滤含
+static var 的类，不再维护独立排序。全类图拓扑下，被父链阻塞的类可能晚于 module 中位于
+其后但无继承关系的类，因此过滤结果只保证 base-before-derived 与确定性，不保证无关
+static 类保持 module 相对序（本节原本就不保证跨类 initializer 的相对先后）。
 
 分段理由：static initializer 可以通过 `ClassName.name` 读其他类的 static var。若默认值与 initializer 混在同一个 per-class 函数里，module 词法序可能让早初始化的类读到尚未物化的 managed 默认值。分段后任何 initializer 读到的至少是类型默认值。
 

@@ -3049,6 +3049,93 @@ public class CCodegenTest {
     }
 
     @Test
+    void generateEmitsStructDefinitionsAndClassRegistrationInBaseBeforeDerivedOrder() {
+        // Module order is deliberately derived-first to prove the inheritance topology reorder;
+        // the unrelated solo class pins that classes ready in the same pass keep their
+        // module-relative order (Solo precedes Root in module order and neither blocks the other).
+        var leafClass = new LirClassDef("GdTopoLeaf", "GdTopoMid");
+        var midClass = new LirClassDef("GdTopoMid", "GdTopoRoot");
+        var soloClass = new LirClassDef("GdTopoSolo", "RefCounted");
+        var rootClass = new LirClassDef("GdTopoRoot", "RefCounted");
+        var module = new LirModule("topo_order_module", List.of(leafClass, midClass, soloClass, rootClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var files = codegen.generate();
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
+
+        // A non-root wrapper embeds its parent BY VALUE as the first field, so the parent struct
+        // definition must be complete before the child one (C has no by-value incomplete fields).
+        assertOrdered(hCode,
+                "struct GdTopoSolo {",
+                "struct GdTopoRoot {",
+                "struct GdTopoMid {",
+                "struct GdTopoLeaf {");
+        assertOrdered(hCode,
+                "struct GdTopoRoot {",
+                "GdTopoRoot _super;",
+                "GdTopoMid _super;");
+
+        // Godot rejects registering an extension class whose parent extension class is not
+        // registered yet, so ClassDB registration must follow the same base-before-derived order.
+        // The `();` anchor matches only the call sites inside initialize(), never the later
+        // `void <Class>_class_bind_methods() {` definitions.
+        assertOrdered(cCode,
+                "GdTopoSolo_class_bind_methods();",
+                "GdTopoRoot_class_bind_methods();",
+                "GdTopoMid_class_bind_methods();",
+                "GdTopoLeaf_class_bind_methods();");
+    }
+
+    @Test
+    void generateEmitsStaticInitAsFilteredInheritanceOrder() {
+        // Locks the filtered-order semantics of the shared topology: transitive static
+        // dependencies order through non-static intermediates (GdStaticD before GdStaticA via
+        // GdNonStaticB), and a class blocked behind its chain may land after unrelated static
+        // classes that follow it in module order (GdStaticC before GdStaticA). Only
+        // base-before-derived is contractual; the exact sequence pins determinism.
+        var classA = new LirClassDef("GdStaticA", "GdNonStaticB");
+        classA.addProperty(staticProperty("a_title", GdStringType.STRING));
+        var classC = new LirClassDef("GdStaticC", "RefCounted");
+        classC.addProperty(staticProperty("c_title", GdStringType.STRING));
+        var classB = new LirClassDef("GdNonStaticB", "GdStaticD");
+        var classD = new LirClassDef("GdStaticD", "RefCounted");
+        classD.addProperty(staticProperty("d_title", GdStringType.STRING));
+        var module = new LirModule("static_filtered_order_module", List.of(classA, classC, classB, classD));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var cCode = generatedFileText(codegen.generate(), "entry.c");
+
+        assertOrdered(cCode,
+                "gdcc_static_defaults_GdStaticC();",
+                "gdcc_static_defaults_GdStaticD();",
+                "gdcc_static_defaults_GdStaticA();");
+        assertOrdered(cCode,
+                "gdcc_static_initializers_GdStaticC();",
+                "gdcc_static_initializers_GdStaticD();",
+                "gdcc_static_initializers_GdStaticA();");
+    }
+
+    @Test
+    void generateFailsFastOnModuleInheritanceCycle() {
+        // The frontend rejects inheritance cycles before lowering; the backend still fails fast
+        // on hand-built cyclic modules instead of emitting silently unordered C.
+        var classA = new LirClassDef("GdCycleA", "GdCycleB");
+        var classB = new LirClassDef("GdCycleB", "GdCycleA");
+        var module = new LirModule("topo_cycle_module", List.of(classA, classB));
+        var codegen = new CCodegen();
+        codegen.prepare(newStaticTestContext(), module);
+
+        var exception = assertThrows(IllegalStateException.class, codegen::generate);
+        assertTrue(
+                exception.getMessage().contains("Inheritance cycle among module classes"),
+                exception.getMessage()
+        );
+    }
+
+    @Test
     void generateRoutesStaticInitializerThroughOverwriteSemantics() {
         var workerClass = new LirClassDef("Worker", "RefCounted");
         var titleProperty = new LirPropertyDef("title", GdStringType.STRING, true, "_field_init_title", null, null, Map.of());

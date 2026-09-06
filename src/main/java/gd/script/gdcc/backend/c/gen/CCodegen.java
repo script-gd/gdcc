@@ -35,8 +35,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 public class CCodegen implements Codegen {
     private static final Logger LOGGER = LoggerFactory.getLogger(CCodegen.class);
@@ -778,41 +776,42 @@ public class CCodegen implements Codegen {
         return body.toString();
     }
 
-    /// Classes that declare at least one static property, ordered base-before-derived along the
-    /// module's inheritance topology for the global two-phase static initialization. Classes whose
-    /// superclass chain leaves the module (engine/native roots) have no static-init dependencies.
-    /// Unrelated classes keep module (`LirModule.classDefs`) order so generated C stays
-    /// deterministic.
-    private @NotNull List<LirClassDef> computeStaticInitClassOrder() {
+    /// All module classes ordered base-before-derived along the module's inheritance topology:
+    /// a class never precedes its in-module superclass. Two consumers depend on this order —
+    /// `entry.h` struct definitions embed the parent wrapper by value (`Parent _super`), so the
+    /// parent type must be complete first, and Godot refuses to register an extension class whose
+    /// parent extension class is not registered yet. Superclasses outside the module (engine or
+    /// native roots) impose no constraint. Each pass emits, in module (`LirModule.classDefs`)
+    /// order, every class whose in-module superclass is already emitted, so the result is
+    /// deterministic for identical input; a class blocked behind its superclass chain can still
+    /// land after unrelated classes that follow it in module order, so only the
+    /// base-before-derived guarantee is contractual.
+    private @NotNull List<LirClassDef> computeInheritanceClassOrder() {
         var classByName = new HashMap<String, LirClassDef>();
         for (var classDef : module.getClassDefs()) {
             classByName.put(classDef.getName(), classDef);
         }
-        var staticClassNames = new HashSet<String>();
-        for (var classDef : module.getClassDefs()) {
-            if (classDef.getProperties().stream().anyMatch(LirPropertyDef::isStatic)) {
-                staticClassNames.add(classDef.getName());
-            }
-        }
-        var remaining = module.getClassDefs().stream()
-                .filter(classDef -> staticClassNames.contains(classDef.getName()))
-                .collect(Collectors.toCollection(ArrayList::new));
+        var remaining = new ArrayList<>(module.getClassDefs());
         var ordered = new ArrayList<LirClassDef>(remaining.size());
         var emittedNames = new HashSet<String>();
         while (!remaining.isEmpty()) {
             var progressed = false;
             for (var iterator = remaining.iterator(); iterator.hasNext(); ) {
                 var candidate = iterator.next();
-                if (staticAncestorNames(candidate, classByName, staticClassNames).allMatch(emittedNames::contains)) {
+                var superDef = classByName.get(candidate.getSuperName());
+                if (superDef == null || emittedNames.contains(superDef.getName())) {
                     ordered.add(candidate);
                     emittedNames.add(candidate.getName());
                     iterator.remove();
                     progressed = true;
                 }
             }
+            // The frontend rejects inheritance cycles before lowering, so a stall here means a
+            // hand-built or corrupted module reached the backend; fail fast instead of emitting
+            // silently unordered output.
             if (!progressed) {
                 throw new IllegalStateException(
-                        "Inheritance cycle among classes with static properties: "
+                        "Inheritance cycle among module classes: "
                                 + remaining.stream().map(LirClassDef::getName).toList()
                 );
             }
@@ -820,24 +819,17 @@ public class CCodegen implements Codegen {
         return List.copyOf(ordered);
     }
 
-    /// Streams the names of all module ancestors of `classDef` that themselves declare static
-    /// properties (walks the full superclass chain, not just the direct parent, so transitive
-    /// dependencies like `A -> B -> C` order `A` after `C` even when `B` declares no statics).
-    private @NotNull Stream<String> staticAncestorNames(
-            @NotNull LirClassDef classDef,
-            @NotNull Map<String, LirClassDef> classByName,
-            @NotNull Set<String> staticClassNames
-    ) {
-        var ancestorNames = new ArrayList<String>();
-        var visited = new HashSet<String>();
-        var current = classByName.get(classDef.getSuperName());
-        while (current != null && visited.add(current.getName())) {
-            if (staticClassNames.contains(current.getName())) {
-                ancestorNames.add(current.getName());
-            }
-            current = classByName.get(current.getSuperName());
-        }
-        return ancestorNames.stream();
+    /// Classes that declare at least one static property, filtered from the module-wide
+    /// base-before-derived inheritance order for the global two-phase static initialization.
+    /// The only contractual guarantee is base-before-derived, including transitive ancestors
+    /// reached through non-static intermediates (`A -> B -> C` orders `A` after `C` even when
+    /// `B` declares no statics); static classes unrelated by inheritance are NOT guaranteed to
+    /// keep their module-order relative positions, but the filtered result stays deterministic
+    /// for identical input.
+    private @NotNull List<LirClassDef> computeStaticInitClassOrder(@NotNull List<LirClassDef> inheritanceOrderedClassDefs) {
+        return inheritanceOrderedClassDefs.stream()
+                .filter(classDef -> classDef.getProperties().stream().anyMatch(LirPropertyDef::isStatic))
+                .toList();
     }
 
     /// Module-wide C file-scope symbol conflict validation. Collects the
@@ -930,7 +922,8 @@ public class CCodegen implements Codegen {
                 lifecycleValidator.validateFunction(ctx, function);
             }
         }
-        var staticInitClassDefs = computeStaticInitClassOrder();
+        var inheritanceOrderedClassDefs = computeInheritanceClassOrder();
+        var staticInitClassDefs = computeStaticInitClassOrder(inheritanceOrderedClassDefs);
         try {
             var usageSession = GodotBindingUsageSession.forRegistry(ctx.classRegistry());
             // Template-visible registrations are committed only after `entry.c` renders successfully.
@@ -947,7 +940,8 @@ public class CCodegen implements Codegen {
                     "module", module,
                     "helper", helper,
                     "bodyRender", bodyRender,
-                    "staticInitClassDefs", staticInitClassDefs
+                    "staticInitClassDefs", staticInitClassDefs,
+                    "inheritanceOrderedClassDefs", inheritanceOrderedClassDefs
             );
             var cSrc = TemplateLoader.renderFromClasspath("template_451/entry.c.ftl", cTplCtx);
             usageSession.commit(templateUsageBuffer);
@@ -983,7 +977,8 @@ public class CCodegen implements Codegen {
             );
             var hTplCtx = Map.of(
                     "module", module,
-                    "helper", helper
+                    "helper", helper,
+                    "inheritanceOrderedClassDefs", inheritanceOrderedClassDefs
             );
             var hSrc = TemplateLoader.renderFromClasspath("template_451/entry.h.ftl", hTplCtx);
             cSrc = CCodeFormatter.format(cSrc);

@@ -268,7 +268,10 @@ C lowering 合同：
 1. Godot/runtime includes 和 `class_library`。
 2. GDCC wrapper struct forward declarations。
 3. 所有 generated fat pointer typedef（由独立头文件 `object_fat_ptr_types.h` 承载）。
-4. GDCC wrapper struct definitions；object fields 使用 fat pointer。
+4. GDCC wrapper struct definitions；object fields 使用 fat pointer。定义按模块继承拓扑
+   base-before-derived（`inheritanceOrderedClassDefs`）：非根 wrapper 以值嵌入父 wrapper
+   `Parent _super`，父 struct 定义必须先完整，详见
+   `explicit_c_inheritance_layout_contract.md` §7。
 5. `<Class>_object_ptr(...)` 等 raw layout helper declarations。
 6. per-type fat pointer helper declarations/definitions。
 7. `engine_method_binds.h`。

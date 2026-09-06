@@ -2,6 +2,7 @@
 <#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
 <#-- @ftlvariable name="bodyRender" type="gd.script.gdcc.backend.c.gen.binding.GenerateRenderFacade" -->
 <#-- @ftlvariable name="staticInitClassDefs" type="java.util.List<gd.script.gdcc.lir.LirClassDef>" -->
+<#-- @ftlvariable name="inheritanceOrderedClassDefs" type="java.util.List<gd.script.gdcc.lir.LirClassDef>" -->
 <#include "func.ftl">
 <#include "trim.ftl">
 
@@ -57,7 +58,10 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
     <#-- Register user classes.-->
     <#-- Registration, bind-owner lookup, and instance attach intentionally all reuse the-->
     <#-- same canonical class name directly. There is no backend-only Godot alias layer here.-->
-    <#list module.classDefs as classDef>
+    <#-- Registration iterates the base-before-derived inheritance order (never raw module -->
+    <#-- order): Godot rejects registering an extension class whose parent extension class is -->
+    <#-- not registered yet, and binds the parent/child extension pair at registration time. -->
+    <#list inheritanceOrderedClassDefs as classDef>
     {
         GDExtensionClassCreationInfo5 creation_info = {};
         creation_info.is_abstract = ${classDef.abstract?c};
