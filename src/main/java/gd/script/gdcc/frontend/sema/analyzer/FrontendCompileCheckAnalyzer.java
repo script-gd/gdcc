@@ -372,7 +372,10 @@ public class FrontendCompileCheckAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleFunctionDeclaration(
                 @NotNull FunctionDeclaration functionDeclaration
         ) {
-            if (isNotPublished(functionDeclaration)) {
+            // Statement-position declarations (bare lambda statements) stay off the compile
+            // surface: the enclosing body owns their boundary diagnostic and their bodies never
+            // resolve, so there are no lowering-ready facts to scan.
+            if (isNotPublished(functionDeclaration) || supportedExecutableBlockDepth > 0) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             walkCallableBody(functionDeclaration, functionDeclaration.body());
@@ -384,7 +387,7 @@ public class FrontendCompileCheckAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleConstructorDeclaration(
                 @NotNull ConstructorDeclaration constructorDeclaration
         ) {
-            if (isNotPublished(constructorDeclaration)) {
+            if (isNotPublished(constructorDeclaration) || supportedExecutableBlockDepth > 0) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             walkCallableBody(constructorDeclaration, constructorDeclaration.body());

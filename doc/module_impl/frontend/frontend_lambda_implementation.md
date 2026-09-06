@@ -134,6 +134,15 @@ Parser AST 为 `dev.superice.gdparser.frontend.ast.LambdaExpression`，提供
 `parameters()` / `returnType()` / `body()`。它不是 `FunctionDeclaration`，
 没有源码级函数名，也不进入 class member namespace。
 
+Statement 位置的裸 `func ...`（`func(): ...` 直接作为 function-body statement 书写）是
+另一种形态：parser 把它映射为 statement 级 `FunctionDeclaration`，名为 `<anonymous>`
+（匿名）或所书名字（具名形态 `func inner(): ...`），而不是 `LambdaExpression`。与 Godot
+一致（Godot 把 statement 位置的 `func` 解析为 lambda 表达式语句，并以
+"Standalone lambdas cannot be accessed" 拒绝），该形状 fail-closed：Interface 在
+`supportedBodyDepth > 0` 边界不把它记录为 callable owner，enclosing suite 的 top binding
+（`runUnsupported`）以该 declaration 为恢复根发单条
+`sema.unsupported_binding_subtree` error，type-check / compile gate 对该形状保持跳过。
+
 ---
 
 ## 2. 当前支持面
@@ -153,6 +162,8 @@ Parser AST 为 `dev.superice.gdparser.frontend.ast.LambdaExpression`，提供
 继续 fail-closed：
 
 - property initializer、parameter default、class-level 表达式中的 lambda
+- statement 位置的裸 lambda 语句（`func ...` 作为 statement root，含具名形态
+  `func inner(): ...`；parser 映射为 statement 级 `FunctionDeclaration`，见 §1.4 末段）
 - lambda 自己的 parameter default
 - lambda body 内的 block-local `const`（`match` 已进入 shared semantic，lambda 内 match 正常解析；
   `await` 已由第九步闭环，见 §3.8 末段）
@@ -475,6 +486,7 @@ userdata 结构体。这是 ABI 差异，不是语义差异；测试应对齐用
 | 场景 | category | 策略 |
 |------|----------|------|
 | 仍未转正的位置出现 lambda（property init 等） | 保持 `sema.unsupported_binding_subtree` 或 inventory 对应 category | diagnostic + skip |
+| statement 位置裸 lambda 语句（`<anonymous>` / 具名 statement 级 `FunctionDeclaration`） | `sema.unsupported_binding_subtree`（top binding / `runUnsupported` 持有，锚定 declaration 根） | diagnostic + skip 整个 declaration 子树，sibling 继续解析 |
 | lambda 内 parameter default | 与普通函数相同的 deferred default 诊断 | 不打开 default 语义 |
 | capture / parameter 同名冲突 | `sema.variable_binding` 既有 duplicate/shadow 类 | diagnostic + skip define |
 | 静态上下文捕获 `self` | 既有 restriction / `sema.type_check` 或 lookup | 不新增平行语义 |
@@ -495,6 +507,10 @@ userdata 结构体。这是 ABI 差异，不是语义差异；测试应对齐用
   body facts（与普通 executable block 相同）。
 - **未记录 lambda**：保持形态级 `sema.compile_check` blocker，不静默放行；若上游已在同一
   exact range 发布 unsupported 诊断，则按统一去重合同省略补发。
+- **statement 位置裸 lambda 语句**（`<anonymous>` / 具名 statement 级
+  `FunctionDeclaration` / `ConstructorDeclaration`）：executable 深度守卫使其不进入
+  compile surface，body 从未解析、无 published facts，compile gate 不补发
+  `sema.compile_check`。
 - lambda body 内的 `match` 走 match 自己的 route-aware compile policy（`WILDCARD` /
   `BINDING` / `LITERAL` / `EXPRESSION` / `ARRAY` / `DICTIONARY` 六 route 全部放行），
   不再由 `sema.unsupported_binding_subtree` 持有。

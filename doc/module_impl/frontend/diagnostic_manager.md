@@ -244,6 +244,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.unsupported_binding_subtree`
   - top binding 对 parameter default、block-local `const` 等明确 unsupported subtree 的边界 error
   - 已 `recordCallable` 的 lambda 与已毕业的 `match` 改走 nested / match-pattern resolution，不再发此诊断；未记录的 lambda（property initializer 等）继续按此边界 fail-closed
+  - statement 位置的裸 lambda 语句（parser 映射为 statement 级 `FunctionDeclaration` / `ConstructorDeclaration`，名为 `<anonymous>` 或所书名字）在 interface 记录边界不被收录为 callable owner；enclosing suite 的 top binding（`runUnsupported`）以该 declaration 为锚发单条 error，type-check / compile gate 跳过该子树且不补发同级诊断
   - top binding 对 missing-scope / skipped subtree 的恢复诊断继续允许使用 warning
 - `sema.member_resolution`
   - chain binding 中 blocked / failed member step 的语义错误

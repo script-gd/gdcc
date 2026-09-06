@@ -106,6 +106,7 @@ compile gate 可以沿 callable body、支持岛 property initializer 与已接�
 
 - 被参数默认值 sweep 拒绝的 parameter default 子树（从未发布 facts 的根结构性跳过；子树 range 跨度内已存在阻断性上游诊断的根同样整体跳过——无论拒绝锚在根、内层 step 还是 await/容器包装根，该 island 一律视为 upstream-owned，不再 walk，避免静默 BLOCKED 内层或包装根失败事实在其它 range 上被重复包装）
 - 未记录 lambda（property initializer / parameter default / skipped subtree 中缺 published `FrontendLambdaPlan` 的 `LambdaExpression`）
+- statement 位置的裸 lambda 语句（executable 深度 > 0 处出现的 statement 级 `FunctionDeclaration` / `ConstructorDeclaration`；body 从未解析、无 published facts，边界诊断由 enclosing body 的 top binding 持有）
 - block-local `const`
 - missing-scope / skipped subtree
 

@@ -128,6 +128,14 @@ public class FrontendInterfacePhase {
         public @NotNull FrontendASTTraversalDirective handleFunctionDeclaration(
                 @NotNull FunctionDeclaration functionDeclaration
         ) {
+            // A statement-position `func ...` is a bare lambda statement, not a class member
+            // (Godot parses the same shape as a lambda expression statement and rejects it as an
+            // inaccessible standalone lambda): it never gets a class skeleton, so it must not
+            // become a suite-entry callable owner. The subtree stays unpublished here and the
+            // enclosing body resolution owns the boundary diagnostic.
+            if (supportedBodyDepth > 0) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             recordCallable(functionDeclaration, functionDeclaration.parameters(), functionDeclaration.body());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
@@ -136,6 +144,11 @@ public class FrontendInterfacePhase {
         public @NotNull FrontendASTTraversalDirective handleConstructorDeclaration(
                 @NotNull ConstructorDeclaration constructorDeclaration
         ) {
+            // Same statement-position boundary as `handleFunctionDeclaration`: a nested `_init`
+            // definition is a bare lambda statement, never a class constructor.
+            if (supportedBodyDepth > 0) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             recordCallable(constructorDeclaration, constructorDeclaration.parameters(), constructorDeclaration.body());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }

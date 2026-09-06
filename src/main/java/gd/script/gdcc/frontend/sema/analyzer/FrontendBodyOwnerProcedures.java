@@ -822,9 +822,32 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 reportUnsupportedBinding(context, variableDeclaration.value(), "block-local const initializer");
                 reportUnsupportedChain(context, variableDeclaration.value(), "block-local const initializer");
             }
+            case FunctionDeclaration functionDeclaration ->
+                    reportStandaloneLambdaStatement(context, functionDeclaration);
+            case ConstructorDeclaration constructorDeclaration ->
+                    reportStandaloneLambdaStatement(context, constructorDeclaration);
             default -> {
             }
         }
+    }
+
+    /// A statement-position `func ...` never becomes a recorded callable owner (Godot rejects the
+    /// same shape as an inaccessible standalone lambda), so the enclosing suite meets it here as
+    /// an unsupported root; top binding owns the single boundary diagnostic, anchored at the
+    /// skipped subtree root.
+    private static void reportStandaloneLambdaStatement(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Node declaration
+    ) {
+        if (context.interfaceSurface().suiteEntryRoots().containsCallableOwner(declaration)) {
+            return;
+        }
+        reportUnsupportedBindingMessage(
+                context,
+                declaration,
+                "Standalone lambda statement cannot be accessed; "
+                        + "consider assigning it to a variable or passing it as an argument"
+        );
     }
 
     private void bindIdentifier(

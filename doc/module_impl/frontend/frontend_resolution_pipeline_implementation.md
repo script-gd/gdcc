@@ -211,6 +211,16 @@ Body 层：
 - 将已转正 AST 节点的 body inventory 延迟到 typed fact 可用后。
 - 将 `GdCompilerType` 写入 source-facing lexical baseline。
 
+Statement 位置的 `func ...` 声明（裸 lambda 语句，parser 映射为 statement 级
+`FunctionDeclaration` / `ConstructorDeclaration`）在 `supportedBodyDepth > 0` 时不被
+`recordCallable`：它永远不会有 class skeleton，因而不是合法 suite entry，其子树整体不进入
+interface surface。该形状的边界诊断由 enclosing body 的 top binding（`runUnsupported`）
+持有；`FrontendSuiteResolver.resolveCallableOwner` 入口另保留一条 fail-closed 守卫——
+已记录 `FunctionDeclaration` / `ConstructorDeclaration` 的 callable scope 若不是直接挂在
+`ClassScope` 下（即不是 class member），发 `sema.unsupported_binding_subtree` 诊断并跳过，
+不再深入 return-slot / baseline 解析。已记录 lambda 是合法 nested owner（其 skeleton 即
+published lambda plan），不受该守卫约束。
+
 ### 4.3 Body `SuiteResolver`
 
 `FrontendSuiteResolver` 按 Godot `resolve_suite()` 的形状处理 body。进入任何 callable body / property initializer 之前，`FrontendParameterDefaultMetadataOwner` 先执行一次模块级 parameter-default sweep（结构校验 → 占位写入 → island 分析 → 失败回收），因此 body 调用点的 arity 检查只读已定案的 `defaultValueFunc` 元数据：

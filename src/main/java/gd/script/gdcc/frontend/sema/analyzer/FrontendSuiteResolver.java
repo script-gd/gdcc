@@ -12,6 +12,7 @@ import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.scope.CallableScopeKind;
+import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBodyStructuralCompleteness;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
@@ -162,6 +163,27 @@ public class FrontendSuiteResolver {
         var bodyScope = analysisData.scopesByAst().get(body);
         if (!(bodyScope instanceof BlockScope blockScope)) {
             throw new IllegalStateException("Suite entry callable body has no published BlockScope");
+        }
+        // Entry guard: a recorded `FunctionDeclaration` / `ConstructorDeclaration` must be a class
+        // member — its callable scope hangs directly off a `ClassScope`; in the production
+        // pipeline that membership is exactly what a published skeleton overload is built from.
+        // Statement-position declarations (bare lambda statements, including nested `_init`) are
+        // rejected during interface recording, so a mismatch here means a hand-built entry
+        // surface; reject with a diagnostic at entry time instead of crashing deep inside
+        // return-slot or baseline resolution. Recorded lambdas are legitimate nested owners
+        // (their skeleton is the published lambda plan) and are not subject to this.
+        if (callableOwner instanceof FunctionDeclaration || callableOwner instanceof ConstructorDeclaration) {
+            var ownerScope = analysisData.scopesByAst().get(callableOwner);
+            if (!(ownerScope instanceof CallableScope callableScope)
+                    || !(callableScope.getParentScope() instanceof ClassScope)) {
+                diagnosticManager.error(
+                        UNSUPPORTED_BINDING_SUBTREE_CATEGORY,
+                        "Recorded callable owner is not a class member and has no published skeleton overload",
+                        sourcePathFor(interfaceSurface, callableOwner, analysisData),
+                        FrontendRange.fromAstRange(callableOwner.range())
+                );
+                return;
+            }
         }
         // A lambda inherits its restriction / static context from the nearest enclosing non-lambda
         // callable; the same node is recorded as `enclosingCallable` in the plan.

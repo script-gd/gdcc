@@ -1223,7 +1223,10 @@ public class FrontendTypeCheckAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleFunctionDeclaration(
                 @NotNull FunctionDeclaration functionDeclaration
         ) {
-            if (isNotPublished(functionDeclaration)) {
+            // Statement-position declarations (bare lambda statements) are rejected upstream and
+            // their bodies never resolve, so the diagnostics-only walk must not re-enter them:
+            // they carry no class-member skeleton return slot and no published body facts.
+            if (isNotPublished(functionDeclaration) || supportedExecutableBlockDepth > 0) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             reportParameterizedGdccConstructorIfNeeded(functionDeclaration);
@@ -1243,7 +1246,7 @@ public class FrontendTypeCheckAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleConstructorDeclaration(
                 @NotNull ConstructorDeclaration constructorDeclaration
         ) {
-            if (isNotPublished(constructorDeclaration)) {
+            if (isNotPublished(constructorDeclaration) || supportedExecutableBlockDepth > 0) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             reportParameterizedGdccConstructorIfNeeded(constructorDeclaration);
