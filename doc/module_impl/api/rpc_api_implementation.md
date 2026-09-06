@@ -7,7 +7,7 @@
 ## Document Status
 
 - Status: fact source maintained
-- Updated: 2026-04-25
+- Updated: 2026-09-06
 - Scope:
   - `src/main/java/gd/script/gdcc/api/**`
   - `src/test/java/gd/script/gdcc/api/**`
@@ -25,6 +25,10 @@
   - `src/main/java/gd/script/gdcc/api/CompileOptions.java`
   - `src/main/java/gd/script/gdcc/api/CompileResult.java`
   - `src/main/java/gd/script/gdcc/api/CompileTaskSnapshot.java`
+  - `src/main/java/gd/script/gdcc/api/AnalyzeOptions.java`
+  - `src/main/java/gd/script/gdcc/api/AnalysisResult.java`
+  - `src/main/java/gd/script/gdcc/api/AnalysisRunner.java`
+  - `src/main/java/gd/script/gdcc/api/DiagnosticSourcePathRemapper.java`
   - `src/main/java/gd/script/gdcc/api/VfsEntrySnapshot.java`
   - `src/main/java/gd/script/gdcc/api/task/CompileTaskRunner.java`
 - Explicit non-goals:
@@ -42,7 +46,9 @@
 
 `API` is an in-memory facade for controlling the compiler from a remote process through an adapter.
 It owns module state, virtual files, compile configuration, compile task tracking, and publication of
-local build outputs back into module VFS as links.
+local build outputs back into module VFS as links. It also exposes a synchronous analyze-only
+entrypoint so editor-plugin integrations can collect frontend warnings and errors, and optionally
+verify lowering readiness, without running a full compile.
 
 The facade deliberately remains transport-neutral:
 
@@ -82,6 +88,9 @@ The intended layering is:
   - VFS link whose target is another path inside the same module VFS.
 - **Compile task**
   - One asynchronous compile attempt started by `compile(moduleId)`.
+- **Analysis request**
+  - One synchronous analyze-only pass started by `analyze(moduleId, analyzeOptions)`. It reports
+    frontend diagnostics and optional lowering verification without producing artifacts.
 - **Output mount root**
   - VFS directory where successful compile outputs are published as local links.
 
@@ -168,6 +177,26 @@ snapshots and their event logs are retained for a TTL, then removed by a backgro
 
 `recordCurrentCompileTaskEvent(...)` only records into the compile task bound to the current thread.
 Calls outside an API-managed compile thread return `false`.
+
+### 3.6 Module Analysis
+
+- `analyze(moduleId)`
+- `analyze(moduleId, analyzeOptions)`
+
+`analyze(...)` is the synchronous analyze-only entrypoint for editor-plugin style integrations. It
+runs the parser plus the shared semantic pipeline over the module's frozen sources and returns an
+`AnalysisResult` with frontend diagnostics. It never requires `projectPath`, never generates C
+code, never starts a native build, and never touches the module's last compile result.
+
+When `AnalyzeOptions.includeLowering()` is `true`, the pass continues into
+`FrontendLoweringPassManager.lower(...)` after parsing so the caller can verify whether the module
+can currently lower to LIR; the C backend still never runs. Lowering reruns semantic analysis
+through the compile-only gate, so this mode can additionally surface `sema.compile_check`
+diagnostics that plain analysis intentionally skips.
+
+The analysis result surface is deliberately independent from the compile surface: `AnalysisResult`
+and `AnalyzeOptions` are separate DTOs and must not reuse `CompileResult`, compile task snapshots,
+or compile outcomes.
 
 ---
 
@@ -305,6 +334,45 @@ Progress fields:
 
 Parsing progress is counted by source unit. Native build progress is intentionally coarse.
 
+### 4.8 Analyze Options
+
+`AnalyzeOptions` contains:
+
+- `boolean includeLowering`
+
+Defaults: `includeLowering == false`, so `analyze(moduleId)` runs the shared semantic pipeline
+only.
+
+### 4.9 Analysis Result
+
+`AnalysisResult` freezes the observable outcome of one synchronous analysis attempt:
+
+- `outcome`
+- `analyzeOptions`
+- `godotVersion` taken from the module's `CompileOptions`; extension metadata is only loaded once
+  source collection and parsing have succeeded
+- top-level canonical name map
+- source paths using display paths
+- diagnostics snapshot
+- failure message
+- `loweringStatus`
+
+Current outcomes:
+
+- `COMPLETED`: the parse/analyze pipeline (and lowering, when requested) ran to completion.
+  Diagnostics may still contain errors; `COMPLETED` describes the pipeline, not code health.
+- `SOURCE_COLLECTION_FAILED`: module VFS source collection failed before parsing, for example on
+  broken or cyclic virtual links, or the module has no `.gd` sources.
+- `INTERNAL_FAILED`: required compiler metadata such as the Godot extension API could not be
+  loaded.
+
+Lowering status:
+
+- `NOT_REQUESTED`: `includeLowering` was `false`; no lowering answer is available.
+- `SUCCEEDED`: lowering was requested, published a `LirModule`, and diagnostics contain no errors.
+- `FAILED`: lowering was requested but the module cannot currently lower, either because
+  diagnostics contain errors or because the pipeline stopped before LIR publication.
+
 ---
 
 ## 5. Virtual Path Contract
@@ -409,6 +477,34 @@ The result boundary is intentional:
   `generatedFiles`, because only the project builder knows which `GeneratedFile` instances were
   written for the current invocation.
 
+### 7.1 Analysis Pipeline Boundary
+
+One analysis request performs:
+
+1. Freeze compile options, class-name map, and VFS source snapshots through the same module-state
+   freeze used by compile tasks.
+2. Collect `.gd` files from the whole module VFS, with identical link and dedup rules.
+3. Parse each source with `GdScriptParserService.parseUnit(...)`.
+4. Stop after parsing when parse diagnostics contain errors, because semantic phases require a
+   well-formed AST.
+5. Load extension metadata for the module's `CompileOptions.godotVersion` and create
+   `ClassRegistry`.
+6. Run `FrontendSemanticAnalyzer.analyze(...)`, the shared semantic pipeline without the
+   compile-only gate, unless lowering was requested.
+7. When `AnalyzeOptions.includeLowering()` is `true`, run
+   `FrontendLoweringPassManager.lower(...)` instead, which reruns analysis through
+   `analyzeForCompile(...)` and emits a `LirModule` when no errors exist.
+
+The analysis boundary ends before `CCodegen.prepare(...)`: analysis never instantiates C codegen,
+never writes generated files, never invokes a native compiler, and never publishes output links.
+Only `CompileOptions.godotVersion` influences analysis; build-directory, optimization, platform,
+and output-mount settings are compile-only inputs.
+
+Semantic analyzers and lowering passes keep per-run state (for example lambda name counters and
+scope reverse indexes), so each analysis request constructs fresh `FrontendSemanticAnalyzer` /
+`FrontendLoweringPassManager` instances. Analysis never borrows the compile path's long-lived
+lowering pass manager.
+
 ---
 
 ## 8. Concurrency Contract
@@ -419,6 +515,8 @@ Per module:
 
 - VFS reads and writes, link operations, compile options, class-name mapping, snapshots, and
   last-result queries serialize through one module gate.
+- `analyze(moduleId, ...)` is synchronous and also serializes through the module gate, so it waits
+  for a queued or active compile of the same module to finish before its inputs are frozen.
 - `compile(moduleId)` reserves the module's compile slot before returning a task ID.
 - A queued compile prevents later same-module operations from overtaking it before input freeze.
 - Once a compile task becomes active, it holds the module gate until result writeback and output
@@ -574,6 +672,7 @@ Focused API tests currently anchor the contract:
 - compile configuration: `ApiCompileOptionsTest`, `ApiCanonicalNameMapTest`
 - compile pipeline and diagnostics: `ApiCompilePipelineTest`, `ApiCompileDiagnosticsTest`,
   `ApiMappedClassCompileTest`
+- analyze-only surface: `ApiAnalyzeTest`
 - task lifecycle, progress, events, retention: `ApiCompileTaskTest`,
   `ApiCompileTaskProgressTest`, `ApiCompileTaskFailureStageTest`, `ApiCompileTaskEventTest`,
   `ApiCompileTaskTtlTest`

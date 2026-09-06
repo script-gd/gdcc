@@ -3,6 +3,7 @@ package gd.script.gdcc.api.task;
 import gd.script.gdcc.api.CompileOptions;
 import gd.script.gdcc.api.CompileResult;
 import gd.script.gdcc.api.CompileTaskSnapshot;
+import gd.script.gdcc.api.DiagnosticSourcePathRemapper;
 import gd.script.gdcc.api.VfsEntrySnapshot;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.c.build.CProjectBuilder;
@@ -11,7 +12,6 @@ import gd.script.gdcc.backend.c.gen.CCodegen;
 import gd.script.gdcc.exception.ApiEntryTypeMismatchException;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
-import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.lowering.FrontendLoweringPassManager;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
@@ -434,40 +434,13 @@ public final class CompileTaskRunner implements Runnable {
             @NotNull Request request,
             @NotNull DiagnosticSnapshot diagnostics
     ) {
-        if (diagnostics.isEmpty()) {
-            return diagnostics;
-        }
         var displayPathsByLogicalPath = request.sourceSnapshots().stream()
                 .collect(Collectors.toMap(
-                        sourceSnapshot -> FrontendDiagnostic.sourcePathText(sourceSnapshot.logicalPath()),
+                        sourceSnapshot -> DiagnosticSourcePathRemapper.logicalPathKey(sourceSnapshot.logicalPath()),
                         SourceSnapshot::displayPath,
                         (first, _) -> first
                 ));
-        var remappedDiagnostics = diagnostics.asList().stream()
-                .map(diagnostic -> remapDiagnosticSourcePath(diagnostic, displayPathsByLogicalPath))
-                .toList();
-        return new DiagnosticSnapshot(remappedDiagnostics);
-    }
-
-    private @NotNull FrontendDiagnostic remapDiagnosticSourcePath(
-            @NotNull FrontendDiagnostic diagnostic,
-            @NotNull Map<String, String> displayPathsByLogicalPath
-    ) {
-        var sourcePath = diagnostic.sourcePath();
-        if (sourcePath == null) {
-            return diagnostic;
-        }
-        var displayPath = displayPathsByLogicalPath.get(sourcePath);
-        if (Objects.equals(sourcePath, displayPath) || displayPath == null) {
-            return diagnostic;
-        }
-        return new FrontendDiagnostic(
-                diagnostic.severity(),
-                diagnostic.category(),
-                diagnostic.message(),
-                displayPath,
-                diagnostic.range()
-        );
+        return DiagnosticSourcePathRemapper.remap(displayPathsByLogicalPath, diagnostics);
     }
 
     private @NotNull CompileResult unexpectedTaskFailure(

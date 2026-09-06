@@ -42,6 +42,7 @@ public final class API {
     private final @NotNull GdScriptParserService parserService;
     private final @NotNull FrontendLoweringPassManager loweringPassManager;
     private final @NotNull CProjectBuilder projectBuilder;
+    private final @NotNull AnalysisRunner analysisRunner;
     private final @NotNull CompileTaskHooks compileTaskHooks;
     private final @NotNull ConcurrentHashMap<String, ManagedModule> modules = new ConcurrentHashMap<>();
     private final @NotNull ConcurrentHashMap<Long, CompileTaskState> compileTasks = new ConcurrentHashMap<>();
@@ -86,6 +87,7 @@ public final class API {
         this.loweringPassManager = Objects.requireNonNull(loweringPassManager, "loweringPassManager must not be null");
         this.projectBuilder = Objects.requireNonNull(projectBuilder, "projectBuilder must not be null");
         this.compileTaskHooks = Objects.requireNonNull(compileTaskHooks, "compileTaskHooks must not be null");
+        analysisRunner = new AnalysisRunner(parserService);
         compileTaskCleaner = new CompileTaskCleaner(
                 clock,
                 compileTasks,
@@ -263,6 +265,28 @@ public final class API {
     public @Nullable CompileResult getLastCompileResult(@NotNull String moduleId) {
         var normalizedModuleId = normalizeModuleId(moduleId);
         return requireManagedModule(normalizedModuleId).runExclusive(normalizedModuleId, ModuleState::getLastCompileResult);
+    }
+
+    /// Runs one synchronous analyze-only pass over the module's current sources and returns the
+    /// collected frontend diagnostics without producing artifacts. Editor-style callers use this to
+    /// surface warnings and errors without configuring a build directory or polling an asynchronous
+    /// compile task.
+    public @NotNull AnalysisResult analyze(@NotNull String moduleId) {
+        return analyze(moduleId, AnalyzeOptions.defaults());
+    }
+
+    /// When `AnalyzeOptions.includeLowering()` is set, the analysis pass continues into frontend
+    /// lowering to verify whether the module can currently lower to LIR; the C backend still never
+    /// runs. The call serializes through the module gate like any other operation, so it waits for
+    /// a queued or active compile of the same module to finish first, and it never touches the
+    /// module's last compile result.
+    public @NotNull AnalysisResult analyze(@NotNull String moduleId, @NotNull AnalyzeOptions analyzeOptions) {
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        var managedModule = requireManagedModule(normalizedModuleId);
+        var options = Objects.requireNonNull(analyzeOptions, "analyzeOptions must not be null");
+        return managedModule.runExclusive(normalizedModuleId, state ->
+                analysisRunner.analyze(state.freezeCompileRequest(), options)
+        );
     }
 
     /// Publishes one queued compile task immediately, then lets a fresh virtual thread wait for the
