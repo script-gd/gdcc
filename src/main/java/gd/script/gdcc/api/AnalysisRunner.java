@@ -25,8 +25,8 @@ import java.util.stream.Collectors;
 /// matching editor-plugin flows that show warnings and errors without producing artifacts.
 ///
 /// Semantic analyzers and lowering passes keep per-run state (for example lambda name counters and
-/// scope reverse indexes), so every request constructs fresh pipeline instances instead of sharing
-/// the compile path's long-lived `FrontendLoweringPassManager`.
+/// scope reverse indexes), so every request constructs fresh pipeline instances and never shares a
+/// `FrontendLoweringPassManager` with compile tasks, which also construct their own per task.
 final class AnalysisRunner {
     private static final @NotNull DiagnosticSnapshot EMPTY_DIAGNOSTICS = new DiagnosticSnapshot(List.of());
 

@@ -11,7 +11,6 @@ import gd.script.gdcc.exception.ApiModuleAlreadyExistsException;
 import gd.script.gdcc.exception.ApiModuleBusyException;
 import gd.script.gdcc.exception.ApiModuleNotFoundException;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
-import gd.script.gdcc.frontend.lowering.FrontendLoweringPassManager;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
@@ -40,7 +39,6 @@ public final class API {
 
     private final @NotNull Clock clock;
     private final @NotNull GdScriptParserService parserService;
-    private final @NotNull FrontendLoweringPassManager loweringPassManager;
     private final @NotNull CProjectBuilder projectBuilder;
     private final @NotNull AnalysisRunner analysisRunner;
     private final @NotNull CompileTaskHooks compileTaskHooks;
@@ -53,7 +51,6 @@ public final class API {
         this(
                 Clock.systemUTC(),
                 new GdScriptParserService(),
-                new FrontendLoweringPassManager(),
                 new CProjectBuilder(),
                 CompileTaskHooks.none(),
                 DEFAULT_COMPLETED_COMPILE_TASK_TTL,
@@ -65,7 +62,6 @@ public final class API {
         this(
                 clock,
                 new GdScriptParserService(),
-                new FrontendLoweringPassManager(),
                 new CProjectBuilder(),
                 CompileTaskHooks.none(),
                 DEFAULT_COMPLETED_COMPILE_TASK_TTL,
@@ -76,7 +72,6 @@ public final class API {
     API(
             @NotNull Clock clock,
             @NotNull GdScriptParserService parserService,
-            @NotNull FrontendLoweringPassManager loweringPassManager,
             @NotNull CProjectBuilder projectBuilder,
             @NotNull CompileTaskHooks compileTaskHooks,
             @NotNull Duration completedCompileTaskTtl,
@@ -84,7 +79,6 @@ public final class API {
     ) {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.parserService = Objects.requireNonNull(parserService, "parserService must not be null");
-        this.loweringPassManager = Objects.requireNonNull(loweringPassManager, "loweringPassManager must not be null");
         this.projectBuilder = Objects.requireNonNull(projectBuilder, "projectBuilder must not be null");
         this.compileTaskHooks = Objects.requireNonNull(compileTaskHooks, "compileTaskHooks must not be null");
         analysisRunner = new AnalysisRunner(parserService);
@@ -313,7 +307,6 @@ public final class API {
                     .unstarted(new CompileTaskRunner(
                             clock,
                             parserService,
-                            loweringPassManager,
                             projectBuilder,
                             taskState,
                             () -> managedModule.awaitCompileTurn(normalizedModuleId, taskId),

@@ -502,8 +502,8 @@ and output-mount settings are compile-only inputs.
 
 Semantic analyzers and lowering passes keep per-run state (for example lambda name counters and
 scope reverse indexes), so each analysis request constructs fresh `FrontendSemanticAnalyzer` /
-`FrontendLoweringPassManager` instances. Analysis never borrows the compile path's long-lived
-lowering pass manager.
+`FrontendLoweringPassManager` instances. Analysis never shares a lowering pass manager with compile
+tasks; both paths construct a fresh instance per request or task.
 
 ---
 
@@ -673,6 +673,7 @@ Focused API tests currently anchor the contract:
 - compile pipeline and diagnostics: `ApiCompilePipelineTest`, `ApiCompileDiagnosticsTest`,
   `ApiMappedClassCompileTest`
 - analyze-only surface: `ApiAnalyzeTest`
+- informational pipeline throughput (no perf thresholds): `ApiCompileThroughputTest`
 - task lifecycle, progress, events, retention: `ApiCompileTaskTest`,
   `ApiCompileTaskProgressTest`, `ApiCompileTaskFailureStageTest`, `ApiCompileTaskEventTest`,
   `ApiCompileTaskTtlTest`

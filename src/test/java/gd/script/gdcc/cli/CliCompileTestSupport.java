@@ -9,7 +9,6 @@ import gd.script.gdcc.backend.c.build.CCompiler;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.CProjectBuilder;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
-import gd.script.gdcc.frontend.lowering.FrontendLoweringPassManager;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -50,7 +49,6 @@ final class CliCompileTestSupport {
             var constructor = API.class.getDeclaredConstructor(
                     Clock.class,
                     GdScriptParserService.class,
-                    FrontendLoweringPassManager.class,
                     CProjectBuilder.class,
                     CompileTaskHooks.class,
                     Duration.class,
@@ -60,7 +58,6 @@ final class CliCompileTestSupport {
             return constructor.newInstance(
                     Clock.systemUTC(),
                     new GdScriptParserService(),
-                    new FrontendLoweringPassManager(),
                     projectBuilder,
                     hooks,
                     COMPLETED_TASK_TTL,

@@ -7,7 +7,6 @@ import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.CProjectBuilder;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.enums.GodotVersion;
-import gd.script.gdcc.frontend.lowering.FrontendLoweringPassManager;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -103,7 +102,6 @@ final class ApiCompileTestSupport {
         return new API(
                 clock,
                 new GdScriptParserService(),
-                new FrontendLoweringPassManager(),
                 projectBuilder,
                 compileTaskHooks,
                 completedCompileTaskTtl,

@@ -44,7 +44,6 @@ public final class CompileTaskRunner implements Runnable {
 
     private final @NotNull Clock clock;
     private final @NotNull GdScriptParserService parserService;
-    private final @NotNull FrontendLoweringPassManager loweringPassManager;
     private final @NotNull CProjectBuilder projectBuilder;
     private final @NotNull CompileTaskState taskState;
     private final @NotNull Runnable executionStarter;
@@ -54,7 +53,6 @@ public final class CompileTaskRunner implements Runnable {
     public CompileTaskRunner(
             @NotNull Clock clock,
             @NotNull GdScriptParserService parserService,
-            @NotNull FrontendLoweringPassManager loweringPassManager,
             @NotNull CProjectBuilder projectBuilder,
             @NotNull CompileTaskState taskState,
             @NotNull Runnable executionStarter,
@@ -63,7 +61,6 @@ public final class CompileTaskRunner implements Runnable {
     ) {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.parserService = Objects.requireNonNull(parserService, "parserService must not be null");
-        this.loweringPassManager = Objects.requireNonNull(loweringPassManager, "loweringPassManager must not be null");
         this.projectBuilder = Objects.requireNonNull(projectBuilder, "projectBuilder must not be null");
         this.taskState = Objects.requireNonNull(taskState, "taskState must not be null");
         this.executionStarter = Objects.requireNonNull(executionStarter, "executionStarter must not be null");
@@ -268,7 +265,10 @@ public final class CompileTaskRunner implements Runnable {
                     request.sourceSnapshots().size(),
                     null
             );
-            var lowered = loweringPassManager.lower(frontendModule, classRegistry, diagnostics);
+            // Each task lowers through a fresh pass manager because semantic analyzers and
+            // lowering passes keep per-run state (lambda name counters, scope reverse indexes)
+            // that must never leak into another module's compile.
+            var lowered = new FrontendLoweringPassManager().lower(frontendModule, classRegistry, diagnostics);
             throwIfCancellationRequested();
             var frontendDiagnostics = remapDiagnosticSourcePaths(request, diagnostics.snapshot());
             if (lowered == null || frontendDiagnostics.hasErrors()) {

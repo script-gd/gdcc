@@ -173,4 +173,45 @@ class ApiCompilePipelineTest {
         var bindHeader = Files.readString(projectPath.resolve("engine_method_binds.h"));
         assertTrue(bindHeader.contains("static inline godot_int godot_Probe_READY(void)"), bindHeader);
     }
+
+    @Test
+    void sequentialCompilesReuseApiAcrossLambdaModules(@TempDir Path tempDir) {
+        var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
+        var api = ApiCompileTestSupport.newApi(compiler);
+
+        // Both modules deliberately reuse the same class name so a stale per-run resolver would
+        // collide on the lambda name counter as well as the scope reverse index.
+        api.createModule("first", "First Lambda Compile Demo");
+        api.setCompileOptions("first", ApiCompileTestSupport.compileOptions(tempDir.resolve("first-lambda-project")));
+        api.putFile("first", "/src/first.gd", lambdaSource("CompileLambdaShared"));
+        api.createModule("second", "Second Lambda Compile Demo");
+        api.setCompileOptions("second", ApiCompileTestSupport.compileOptions(tempDir.resolve("second-lambda-project")));
+        api.putFile("second", "/src/second.gd", lambdaSource("CompileLambdaShared"));
+
+        // FrontendSuiteResolver keeps per-run lambda state, so the second compile on the same API
+        // instance must observe a fresh lowering pipeline instead of stale scope/counter state
+        // left behind by the first compile.
+        var firstResult = ApiCompileTestSupport.awaitResult(api, api.compile("first"));
+        var secondResult = ApiCompileTestSupport.awaitResult(api, api.compile("second"));
+
+        assertEquals(CompileResult.Outcome.SUCCESS, firstResult.outcome());
+        assertFalse(firstResult.diagnostics().hasErrors());
+        assertEquals(List.of("/src/first.gd"), firstResult.sourcePaths());
+        assertEquals(CompileResult.Outcome.SUCCESS, secondResult.outcome());
+        assertFalse(secondResult.diagnostics().hasErrors());
+        assertEquals(List.of("/src/second.gd"), secondResult.sourcePaths());
+        assertEquals(2, compiler.invocationCount());
+    }
+
+    private static String lambdaSource(String className) {
+        return """
+                class_name %s
+                extends RefCounted
+                
+                func make() -> Callable:
+                    var add := func(a: int, b: int) -> int:
+                        return a + b
+                    return add
+                """.formatted(className);
+    }
 }
