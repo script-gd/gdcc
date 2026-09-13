@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：计划待实施（Draft，已经过多轮审阅修订）。
+- 状态：第一、二步已实施（2026-09-13，验收全绿），第三、四步待实施。实施记录与偏差见文末「实施状态」节。
 - 范围：`ZigCcCompiler` 的 native 编译方式重构，不改 `CCompiler` 接口、`CProjectBuilder` 输入收集、artifact 命名与发布合同。
 - 依据：`tmp/rotating_camera/` 下的原型实测数据（zig 0.16.0，Xeon E5-2699 v4 44 核，rotating_camera 示例模块）。
 - 阅读前提：先读 `doc/gdcc_c_backend.md` §Native Compiler Cache、`doc/module_impl/backend/godot_binding_implementation.md` §构建输入与旧残留规则、`doc/module_impl/api/rpc_api_implementation.md` §Compile Pipeline Contract。
@@ -102,6 +102,8 @@ object 路径与链接输入的硬规则：
 - object 写到 `<projectDir>/obj/<debug|release>/<zigTarget>/<index>_<fileName>.o`；`<index>` 为 `cFiles` 下标，避免不同目录同名 `.c` 冲突；路径含 opt 与 target，避免跨配置残留误用；
 - **链接命令的输入只允许是「本轮按 `cFiles` 顺序生成的 object 绝对路径列表」，禁止 glob `obj/` 目录、禁止「.o 已存在则跳过编译」**；每个 TU 每次都调用 `zig cc -c`，复用完全交给 zig 内容缓存（key 不含 `-o`，已实测）；陈旧 `.o` 只是磁盘残留，绝不进入链接；
 - object 属于中间产物：不进 artifacts、不随 generated files 发布。
+- **同一进程内同一 `projectDir` 的并发 native build 由 per-project 锁串行化**（`ZigCcCompiler` 内 `ReentrantLock`，`lockInterruptibly` 等待以保证取消语义；覆盖 TU 编译 + 链接 + 产物探测全程）。跨 gdcc 进程/实例的并发冲突不在此防护范围内，由外部启动方自行协调。
+- **链接直接 `-o` 写正式产物路径，不做原子发布**：本轮失败时磁盘上可能残留上一轮产物或半成品，属已接受的合理行为——下游只信 `artifacts()`（失败时为空，CLI/API 仅在成功时消费），不读磁盘推断。
 
 ### 4.2 各优化级别的编译参数
 
@@ -200,7 +202,7 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
 - PCH 回退说明固定一行，位于整段日志最前；
 - worker 必须先把各自输出缓冲到按 `cFiles` 下标索引的槽位，全部结束后统一次序拼接（并行完成顺序非确定）；拼接逻辑由 `ZigCcCompilerCommandTest` 以假输出断言「仅 TU 失败」与「链接失败」两种形态。
 
-## 5. 第一步：两阶段编译 + LTO 分级（串行 TU）
+## 5. 第一步：两阶段编译 + LTO 分级（串行 TU）【已实施】
 
 目标：把单命令拆成「per-TU 编译 + 链接」，并直接落地最终 flags（§4.2），TU 暂串行。行为等价性、冒烟矩阵与增量收益在本步验证。注意：§1.2 的性能数字是含并行的最终形态，本步（串行）增量收益已经主要来自 `godot_binding.c` 缓存命中，但冷构建并行加速尚不可用。
 
@@ -225,7 +227,7 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
   - msvc→gnu 命令门禁（`ZigCcCompilerCommandTest`）：编译与链接均无 LTO flag；
 - 性能验收（**手工、参考机器、写入 PR 描述，CI 不断言**）：rotating_camera 模块 debug 冷 ≤ 4.5s、debug 增量 ≤ 0.9s（串行 TU）；release 冷 ≤ 8s、release 增量 ≤ 2.2s。
 
-## 6. 第二步：per-TU 并行 + 取消协议加固
+## 6. 第二步：per-TU 并行 + 取消协议加固【已实施】
 
 ### 建议实施内容
 
@@ -300,10 +302,112 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
 
 ## 11. 测试规则
 
-- 迭代期只跑定向测试：`script/run-gradle-targeted-tests.sh --tests <类名>`，本计划相关锚点类：`ZigCcCompilerCommandTest`、`ZigCcCompilerTest`、`ZigCcCompilerCachePathTest`、`ZigCcCompilerIncrementalIntegrationTest`、`ZigCcCompilerPchKeyTest`、`ZigCcCompilerPchIntegrationTest`、`CProjectBuilderCoroutineRuntimeInputTest`、`CProjectBuilderSharedIncludeTest`、`CProjectBuilderPlaceHolderTest`、`CProjectBuilderIntegrationTest`、`FrontendLoweringToCProjectBuilderIntegrationTest`、`GdScriptUnitTestCompileRunnerTest`、`GdScriptBenchmarkCompileTest`；
+- 迭代期只跑定向测试：`script/run-gradle-targeted-tests.sh --tests <类名>`，本计划相关锚点类：`ZigCcCompilerCommandTest`、`ZigCcCompilerTest`、`ZigCcCompilerCachePathTest`、`ZigCcCompilerIncrementalIntegrationTest`、`ZigCcCompilerCrossTargetSmokeTest`、`ZigCcCompilerFailureTest`、`ZigCcCompilerProjectLockTest`、`ZigCcCompilerParallelTest`、`CProcessRegistryTest`、`ApiZigCcCompilerCancellationTest`、`ZigCcCompilerPchKeyTest`、`ZigCcCompilerPchIntegrationTest`、`CProjectBuilderCoroutineRuntimeInputTest`、`CProjectBuilderSharedIncludeTest`、`CProjectBuilderPlaceHolderTest`、`CProjectBuilderIntegrationTest`、`FrontendLoweringToCProjectBuilderIntegrationTest`、`GdScriptUnitTestCompileRunnerTest`、`GdScriptBenchmarkCompileTest`；
 - 真 zig/Godot 依赖一律 `ZigUtil.findZig()` + `Assumptions` 门控，与现有集成测试写法一致；
 - 涉及 native compiler 行为的 negative path 一律直调 `ZigCcCompiler.compile(...)`（含精心构造的 `.c` 与独立 include 树），不得通过破坏 shared-include / 共享 cache 实现；
 - 性能数字一律为手工参考值（注明参考机器），写入 PR 描述，**不进入 CI 断言**；
 - 每步完成后运行该步验收列出的定向测试；全部步骤完成后 `./gradlew clean build --no-daemon --info --console=plain`；
 - 测试失败先查实现根因，不得改测试去适配新行为；
 - 代码风格遵循 AGENTS.md 与 `doc/module_impl/common_rules.md`：`var`/record/`///` 文档注释、最小注释、`requireXxx`/`checkXxx` 命名（`findXxx` 保持现有不抛错模型）、字符串处理复用 `StringUtil`、自定义异常入 `gd.script.gdcc.exception`。
+
+## 12. 实施状态
+
+### 第一步（2026-09-13 完成，验收全绿）
+
+已落地内容（对照 §5 建议实施内容）：
+
+- `ZigCcCompiler.compile()` 重构为「per-TU 串行编译 + 一次链接」两阶段；新增 package-private 静态构建方法 `buildTuCompileCommand(...)`/`buildLinkCommand(...)`/`resolveObjectPath(...)`/`resolveLtoMode(...)` 与私有 `runProcess(...)` helper（沿用既有虚拟线程 drain + `ProcessUtil.waitForInterruptibly` 中断语义）；obj 路径规则 `<projectDir>/obj/<debug|release>/<zigTarget>/<index>_<fileName>.o`；artifacts 组装与 PDB 探测逻辑不变。
+- LTO 分级按 §4.2 优先级实现：abi 替换→无 `-flto*`；DEBUG→无 LTO；已知 ThinLTO 不兼容 target→RELEASE 回退 `-flto`；其余 RELEASE→`-flto=thin`（编译与链接同带，链接随 LTO 带 `-O2`）。不兼容集 `THIN_LTO_UNSUPPORTED_ZIG_TARGETS` 目前为空（见冒烟结论）。
+- 新增 `ZigCcCompilerCommandTest`（纯 Java）：编译含 `-c` 不含 `-shared`、链接含 `-shared` 不含 `-c`/`.c`/`-I`/`-std=`/`-fPIC`/`-Wno-`、两者同 `-target`、debug 无 `-flto*`、release `-flto=thin`、msvc→gnu 两者皆无 LTO flag（含「abi 替换永不进入 ThinLTO 回退判定」与「替换构建链接不带 `-O`」）、回退 target 双命令带 `-flto` 且不带 `-flto=thin`、obj 路径含 opt/target/序号（同名不同目录 `.c` 由下标消歧的硬断言）；`mergeSlotOutputs`/`mergeCommandSections` 提为 package-private 并以假输出锁定三种日志形态：成功拼接（空槽跳过、无 Command 行）、仅 TU 失败（无链接段）、链接失败（链接段位于全部 TU 槽之后）。
+- 新增 `ZigCcCompilerIncrementalIntegrationTest`（真 zig 门控）：同一项目构建两次、第二次前重写 entry 级 `.c`；两次均成功、artifact 命名不变、object 不进 artifacts；DEBUG 与 RELEASE（ThinLTO 下入口符号不被内部化）两条用例分别断言 `nm -D` 动态定义符号含 `gdextension_entry`；不断言耗时。
+- 新增 `ZigCcCompilerCrossTargetSmokeTest`（真 zig 门控）：宿主 + linux 交叉（aarch64/riscv64）+ windows 交叉全部链接成功且产物存在（linux 走 ThinLTO，windows 在非 Windows 宿主走替换后的无 LTO gnu 构建）；`windows-msvc` 未替换冒烟仅在 Windows 宿主真实执行；android/web 以 `@Disabled` 显式跳过并记录已知限制，另以纯 Java 断言二者 RELEASE 仍取 `-flto=thin`（不误判为 ThinLTO 不兼容）。
+- 新增 `ZigCcCompilerFailureTest`（真 zig 门控 negative path，直调 `compile(...)`）：单 TU 语法错误→失败 + 单 Command 段 + 无链接段 + artifacts 空；中间 TU 失败→仅已启动 TU 的 Command 段按输入序出现、后续 TU 与链接段不出现；链接失败（双 TU 重复符号）→ 两个 TU 段 + 链接段按序出现、含 lld `duplicate symbol` 诊断、artifacts 空；`obj/` 内陈旧垃圾 `.o`（含本轮自身 obj 路径与未用序号）不影响构建、绝不进链接。
+
+冒烟结论（zig 0.16.0，本开发机实测）：
+
+- 宿主 `x86_64-linux-gnu` 与交叉 `aarch64-linux-gnu`/`riscv64-linux-gnu` ThinLTO 全链路通过 → 不兼容集保持为空；
+- `x86_64-windows-gnu` 的 LTO 链接确认失败（`frexpf`/`frexpl`/`modfl` undefined，与既有禁 LTO 注释一致），但该 target 只能经 msvc→gnu 替换路径到达、该路径本就禁 LTO，故不进入回退判定集（命令级测试已锁定）。
+
+实施偏差（相对计划原文，均已核实不影响合同）：
+
+- zig 0.16.0 不提供 `zig nm`，`zig objdump` 亦无符号转储能力 → 导出符号检查改为优先 `llvm-nm`、不可用时回退 binutils `nm`（`nm -D --defined-only`），仅在 ELF 宿主且工具可用时启用（否则 Assumptions 跳过），release 产物手工冒烟已确认 59 个动态定义符号含 `gdextension_entry`；
+- 性能实测（串行 TU，本开发机，非 §1.2 参考机）：release 增量 ~1.1s（≤2.2s 达标）、debug 增量 ~0.38s（≤0.9s 达标）；冷构建未复测全量矩阵，留待 PR 描述补齐参考机数据；
+- §5 未命名的两个测试类定名为 `ZigCcCompilerCrossTargetSmokeTest`、`ZigCcCompilerFailureTest`，已补入 §11 锚点清单。
+
+审阅驱动的加固（第一~二轮 review 后落地）：
+
+- `compile()` 在 TU 循环开头与链接启动前新增 `checkNotInterrupted()`：中断标志已置位时不再启动下一个子进程，直接走既有 interrupted 通道；残余 check-then-start 竞态由 `ProcessUtil.waitForInterruptibly` 销毁刚启动的子进程闭合（与旧单进程语义同级），完整闭合属第二步进程注册表范围；
+- `runProcess` 中「进程已启动但输出读取 IOException」从整轮失败降级为输出尾部内联诊断（`[gdcc] incomplete compiler output: ...`）：进程 exit code 仍决定成败，已启动进程必有 Command 段；`pb.start()` 失败（进程未启动）仍抛 IOException 走 `Failed to run zig:` 通道，维持「未启动不出现 Command 段」；
+- **同一 `projectDir` 的并发构建串行化**（用户决策，2026-09-13）：`ZigCcCompiler` 内新增进程内 per-project `ReentrantLock`（`requireProjectBuildLock`，按归一化绝对路径共享），`lockInterruptibly` 等待使「等待锁期间被取消」走既有 interrupted 通道；锁覆盖 TU 编译 + 链接 + 产物探测全程。跨 gdcc 进程/实例的并发由外部启动方负责，不引入 OS 级文件锁。新增 `ZigCcCompilerProjectLockTest`：锁同一性（路径归一化）、并发两轮同名 TU 不同内容各自链接到自己的符号（nm 断言）、等待锁期间中断 → interrupted 通道 + 锁释放后可正常构建。
+
+已确认的保留行为（用户决策，2026-09-13，作为设计事实记录，见 §4.1）：
+
+- 链接直接 `-o` 写正式产物路径，本轮失败时磁盘上可能残留上一轮产物或半成品——**可接受的合理行为**：下游只信 `artifacts()`（失败时为空，CLI/API 仅在成功时消费），不做磁盘推断；不引入临时输出 + rename 的原子发布。
+
+第一步验收命令（均已执行全绿）：
+
+```text
+script/run-gradle-targeted-tests.sh --tests ZigCcCompilerCommandTest,ZigCcCompilerTest,ZigCcCompilerCachePathTest
+script/run-gradle-targeted-tests.sh --tests CProjectBuilderCoroutineRuntimeInputTest,CProjectBuilderSharedIncludeTest,CProjectBuilderPlaceHolderTest
+script/run-gradle-targeted-tests.sh --tests ZigCcCompilerIncrementalIntegrationTest,CProjectBuilderIntegrationTest,FrontendLoweringToCProjectBuilderIntegrationTest
+script/run-gradle-targeted-tests.sh --tests ZigCcCompilerFailureTest,ZigCcCompilerCrossTargetSmokeTest,ZigCcCompilerProjectLockTest
+script/run-gradle-targeted-tests.sh --tests GdScriptBenchmarkCompileTest
+script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest
+```
+
+### 第二步（2026-09-13 完成，验收全绿）
+
+已落地内容（对照 §6 建议实施内容与 §4.4 硬合同）：
+
+- 新增 `CProcessRegistry`（package-private）：带关闭状态的同步进程注册表，`register` 与 `cancelAndSnapshot` 在同一监视器下互斥；closed 后 `register` 立即 `destroyForcibly()`（登记即销毁，且在监视器内执行）；`cancelAndSnapshot` 一次性——首次置 closed 并返回全部已登记进程，后续调用返回空表。一轮构建一个实例，不复用。
+- 新增 `CProcessLauncher`（package-private 函数式接口）：全部 zig 子进程（TU 编译 + 链接）收敛到这一接缝；合同为「仅在进程完全无法启动时抛 `IOException`，返回即视为已启动」；默认实现 `processBuilder()` 沿用工作目录/合并流/环境变量规则。`ZigCcCompiler` 增加 package-private 注入构造 `ZigCcCompiler(CProcessLauncher)`，公开无参构造不变。
+- `ZigCcCompiler.compile()` 并行化：每轮创建注册表；TU 命令与 obj 路径在 runner 线程预计算进 `TuSlot[]`（槽位按 `cFiles` 下标，worker 只写自己的槽，runner 在 `Future.get` 后读取，hb 边由 Future 保证）；固定线程池虚拟线程 worker，并行度 `resolveParallelism(tuCount, availableProcessors)` = `min` 封顶（package-private 静态，命令测试锁定）；`runProcess` 改为实例方法，`launcher.start()` 后立即 `registry.register(p)` 闭合 start/register 竞态。
+- 取消路径（`cancelRound`）：关闭注册表 → 对快照 `destroyForcibly()` → **不响应后续中断地**等待全部 worker 退出（worker 进程被销毁后即刻退出；`compile()` 绝不先于 zig 子进程返回，否则 `API.close()` 会泄漏孤儿进程），随后走既有 `success=false` + `Failed to run zig: interrupted` 通道并恢复 interrupt 状态；链接步在取消下绝不启动。排队 worker 获得线程前先查 `registry.isClosed()`/线程中断位，绝不迟发启动。
+- 非取消 TU 失败：全部兄弟 TU 跑完收集完整日志（§4.4 允许），等待循环仍响应 interrupt（失败收集期间被中断 → 取消路径抢占失败报告）；启动失败（`IOException`）走既有 `Failed to run zig:` 通道且该 TU 无 Command 段（串行语义平价）；`compile()` 的 `catch (InterruptedException)` 对注册表做防御性关闭+销毁（链接等待等不经 `runTuPhase` 的中断路径）。
+- `mergeSlotOutputs`/`mergeCommandSections` 与 obj 路径规则、PDB 探测、artifacts 组装、per-project 构建锁全部不变；锁仍覆盖 TU 编译 + 链接 + 产物探测全程。
+
+测试落地：
+
+- 新增 `CProcessRegistryTest`（纯 Java，不起进程、无需 zig）：取消快照含全部关闭前登记进程且不由 register 销毁；closed 后 register 立即销毁且不进任何快照；`cancelAndSnapshot` 一次性；latch 竞态用例（4 线程 × 200 进程与取消并发，每个进程恰为「在快照中」或「被 register 销毁」其一）。
+- 新增 `ZigCcCompilerParallelTest`（纯 Java：假 launcher 驱动真实 `ZigCcCompiler`，不起真实 zig 进程，zig 发现经 package-private 注入点一并伪造）：并行成功（3 TU + 恰好 1 链接、object 不进 artifacts、成功日志按槽序无 Command 行、无进程被销毁）；中断（全部已启动进程 `destroyForcibly`、无 `-shared`、interrupted 通道、interrupt 位恢复、返回后命令数不再增长=worker 已 awaited）；TU 失败（兄弟跑完、3 段按输入序、无链接段、不销毁已完成兄弟进程）；失败收集期间中断（interrupted 通道抢占失败报告）；启动失败注入（IOException 通道、无 Command 段）；并发证伪与孤儿管道收敛锚点见下方审阅加固节。
+- 新增 `ApiZigCcCompilerCancellationTest`（API 级接线：真 API + 真 `CProjectBuilder`（含 codegen）+ 真 `ZigCcCompiler`，仅 OS 进程层为假且全部阻塞至被销毁）：`cancelCompileTask()` 于 `BUILDING_NATIVE` → 全部 zig 子进程被销毁、不启动链接、`CANCELED`、任务完成后无迟发进程；`API.close()` → 同样销毁且返回时任务已终态 `CANCELED`（runner/worker/子进程全退出）。
+- 扩展 `ApiCompileTaskCancellationTest`：新增「仅 `success=false` 且未取消 → `FAILED` + `BUILD_FAILED` + buildLog 透传」用例，与既有「interrupt + cancellationRequested → `CANCELED`」构成映射对。
+- 更新 `ZigCcCompilerFailureTest` 中间 TU 用例为并行语义（§6「并行失败直调测试」以此既有场景落地）：3 个 Command 段按输入序、含 clang 诊断、无链接段、artifacts 空。
+- 更新 `ZigCcCompilerCommandTest`：`resolveParallelism` 封顶与下限断言。
+- 测试基础设施（test source set，public 供 api 包测试复用）：`FakeProcess`（可控生命周期：即刻退出 / 阻塞至被销毁，记录 destroy/destroyForcibly）、`FakeProcessLauncher`（记录全部 start 调用、按命令注入退出码/启动失败/阻塞、模拟 `-o` 产物副作用、`newCompiler()` 经 package-private 注入点构造真 compiler）。
+
+实施偏差（相对计划原文，均已核实不影响合同）：
+
+- §4.5「已启动段按固定次序稳定排列，段集合可逐次不同」在本实现中被强化：失败路径不短路未启动 TU，全部 TU 恒启动并跑完，TU 段集合因此恒为全集且按输入序——确定性更强，不违反合同（合同允许任意已启动子集）。
+- 「取消等待全部 worker 退出」通过 runner 在 `cancelRound` 中对全部 Future 做不可中断等待实现；`API.close()` 对 runner 的 30s bounded join 合同（`rpc_api_implementation.md` §3.7）不变——compiler 内 worker 必先于 `compile()` 返回退出，两条合同一致，无需文档澄清变更。
+- `ZigUtil` 的 `which/where` 发现进程未纳入注册表：其为秒级只读探测，§4.4 登记范围内的版本探测属第三步 `findZigVersion()` 范畴；另发现 `ZigUtil.findByWhichOrWhere` 在 `IOException` 时误置 interrupt 标记的既有问题，本步未改动（不影响本步合同，列为后续候选修正）。
+- scratch 测量中观察到 zig 对「输入文件不存在」报 `error: CacheCheckFailed`——与 §9 记录的并发缓存竞争无关（系测量脚本路径错误），特此记录以免后续混淆两种成因。
+- 性能实测（并行形态，zig 0.16.0，本开发机，合成 entry TU + 真实 `godot_binding.c`/`minicoro.c`/`gdcc_coroutine.c`、两轮间仅 entry TU 变更；项目本地全新 cache）：debug 增量 179/202ms（≤0.8s 达标）、release 增量 642/686ms（≤2s 达标）；冷构建受 zig 一次性 compiler-rt 构建支配（18.7s/10.6s，非常态，生产走共享暖 cache），参考机全矩阵数据留待 PR 描述补齐。
+- 临时 scratch 测量测试（`TmpIncrementalPerfScratchTest`）测毕即删，未入库。
+
+审阅驱动的加固（第二步第一轮 review 后落地，review-expert-a/c 共同指出的取消收敛缺口）：
+
+- **取消收敛机制改为 `shutdownNow()` + 不可中断 `awaitTermination`**：原实现 worker 不被中断、仅靠跨线程 `destroyForcibly` 收敛，若 `zig cc` 被 SIGKILL 后其 clang 子进程成孤儿继续持有输出管道（drain 永不见 EOF），worker 会挂在无超时 `outputReader.join()` 上，放大为 `compile()` 不返回 → 项目锁不放 → `API.close()` 超时后同项目后续构建永久阻塞。现：取消时中断全部 worker（`waitFor` 中的 worker 走既有 `ProcessUtil` 中断销毁通道，排队任务被丢弃不会迟发启动），并不可中断地等待 worker 线程真正终止（而非 `Future.get` 的即时 `CancellationException`）；`runProcess` 在 `registry.isClosed()` 时一律 interrupt drain + 1s 有界 join（成功路径 `isClosed()` 恒为 false，全量输出语义不变）。worker 卡在 `launcher.start()` 内是 OS 固有不可中断窗口（`ProcessBuilder.start()` 不响应中断，与串行旧实现同级），迟发进程由 closed-register 销毁兜底，无孤儿。
+- **`waitForWorkers` 的 `ExecutionException`（worker 未检查逃逸）同样走 `cancelRound`** 取消兄弟任务，异常消息携带 cause；不再出现「一个 worker 出 bug、其余 worker 干等一天」的死角。
+- **新增 zig 发现注入点**：`ZigCcCompiler(CProcessLauncher, Supplier<Path>)`（package-private），假 launcher 测试与 API 接线测试因此成为真正的纯 Java 测试（不再 `Assumptions` 门控真实 zig 二进制）；生产路径仍为 `ZigUtil::findZig`。
+- **`FakeProcess` 管道语义贴近真实**：blocking 模式 stdout 改为门控流（销毁才 EOF，真实管道随进程死亡）；新增 orphan-pipe 模式（销毁后 stdout 永不 EOF，模拟孤儿 clang 持有管道）。新增锚点测试 `cancelConvergesWhenDestroyedProcessLeavesOrphanedPipeOpen`（修复前必然挂起超时，修复后收敛）。
+- **并发证伪去调度依赖**：新增 `tusRunConcurrentlyNotSequentially`——两个阻塞 TU 必须同时存活才被放行（串行实现永远无法到达，≥2 核门控）；`interruptDuringFailureCollectionPreemptsTheFailureReport` 降为 2 TU 场景（1 核并行度为 1 时仍可达）并补 `interruptRestored` 断言；registry 竞态测试以「观测到首次注册后再取消」替代固定 `sleep(1)`。
+- 复核后**未采纳**的两条（记录在案）：①「输出读取 IOException 仍可能成功」系误读——「降级内联诊断、exit code 定成败」是第一步两轮审阅后的既定决策（见第一步审阅加固节），非本步回归；②「worker 卡在 `start()` 的 latch 测试」不可实现——`ProcessBuilder.start()` 不可中断，任何 Java 机制都无法收敛该窗口，closed-register 已保证无孤儿，硬合同字面要求的「等待 worker」不为此弱化。
+
+第二轮复核（review-expert-c）后再落地：
+
+- **TU 结果改为按完成序收集**（`ExecutorCompletionService`）：按提交序 `get()` 会让 runner 卡在前序阻塞 TU 上而看不见后序 worker 的未检查异常逃逸，兄弟取消永不可达；完成序收集使异常即时可见并触发 `cancelRound`。成功/失败/取消三条通道语义不变。
+- **registry 竞态测试改为确定性两阶段 latch**：phase-A 批次全部登记完成（latch 建立 happens-before）后才取消，phase-B 批次在关闭后放行——快照必须恰为 phase-A 全集、phase-B 必须全部被 closed-register 销毁，消除旧版本可能退化为「全部登记完才取消」的调度依赖。
+- 文档同步修正「假 launcher 测试非纯 Java」的过期表述（zig 发现注入点落地后已纯 Java 化）。
+
+第二步验收命令（均已执行全绿）：
+
+```text
+script/run-gradle-targeted-tests.sh --tests CProcessRegistryTest
+script/run-gradle-targeted-tests.sh --tests ZigCcCompilerParallelTest,ZigCcCompilerCommandTest,ZigCcCompilerFailureTest
+script/run-gradle-targeted-tests.sh --tests ApiZigCcCompilerCancellationTest,ApiCompileTaskCancellationTest
+script/run-gradle-targeted-tests.sh --tests ZigCcCompilerTest,ZigCcCompilerCachePathTest,ZigCcCompilerCrossTargetSmokeTest,ZigCcCompilerProjectLockTest,ProcessUtilTest
+script/run-gradle-targeted-tests.sh --tests CProjectBuilderCoroutineRuntimeInputTest,CProjectBuilderSharedIncludeTest,CProjectBuilderPlaceHolderTest,ZigCcCompilerIncrementalIntegrationTest,ApiCloseTest,ApiCompileTaskFailureStageTest
+script/run-gradle-targeted-tests.sh --tests GdScriptBenchmarkCompileTest,CProjectBuilderIntegrationTest
+script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest
+```
