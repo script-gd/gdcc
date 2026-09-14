@@ -11,6 +11,7 @@ import java.net.URI;
 import java.net.URL;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -283,12 +284,25 @@ public final class ResourceExtractor {
             unzipStream(is, dir);
         } else {
             Files.createDirectories(out.getParent());
-            // write stream to temp then atomic replace
-            var tmp = Files.createTempFile(out.getParent(), ".gdcc-extract-", ".tmp");
-            try (var os = Files.newOutputStream(tmp)) {
-                is.transferTo(os);
+            // Compare before writing like the file branch does: replacing an identical file
+            // would needlessly bump its mtime, which clang PCH validation (and other
+            // timestamp-sensitive consumers) treats as "modified since the pch was built".
+            var bytes = is.readAllBytes();
+            if (Files.isRegularFile(out) && Arrays.equals(bytes, Files.readAllBytes(out))) {
+                return;
             }
-            atomicReplace(tmp, out);
+            var tmp = Files.createTempFile(out.getParent(), ".gdcc-extract-", ".tmp");
+            try {
+                Files.write(tmp, bytes);
+                atomicReplace(tmp, out);
+            } catch (Throwable t) {
+                try {
+                    Files.deleteIfExists(tmp);
+                } catch (IOException ignored) {
+                    // Best-effort cleanup of the staging file.
+                }
+                throw t;
+            }
         }
     }
 

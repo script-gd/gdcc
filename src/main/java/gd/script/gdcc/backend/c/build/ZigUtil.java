@@ -1,28 +1,138 @@
 package gd.script.gdcc.backend.c.build;
 
+import gd.script.gdcc.util.ProcessUtil;
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 public final class ZigUtil {
     private ZigUtil() {
     }
 
     private static Path ZigPath = null;
+    /// Only a successfully probed version is cached; failures and interrupts re-probe next
+    /// time, so a transient spawn problem never poisons the process-lifetime cache. Like
+    /// [findZig], a single value is kept: production discovers exactly one zig per process.
+    private static volatile @Nullable String ZigVersion = null;
+    private static final Duration VERSION_READER_JOIN_TIMEOUT = Duration.ofSeconds(1);
 
     public static @Nullable Path findZig() {
         if (ZigPath == null) {
             ZigPath = findZigInternal();
         }
         return ZigPath;
+    }
+
+    /// Probes `zig version` and caches the trimmed version string, following the [findZig]
+    /// non-throwing failure model. `null` means the version could not be determined (spawn
+    /// failure, non-zero exit, empty output) — callers degrade the dependent feature (PCH
+    /// caching) and must never read it as "zig is missing"; the negative result is not cached.
+    /// [InterruptedException] is the cancellation channel: it propagates (the probe process is
+    /// destroyed by [ProcessUtil.waitForInterruptibly] first) and is never converted to `null`.
+    public static @Nullable String findZigVersion(@NotNull Path zig) throws InterruptedException {
+        return findZigVersion(zig, CProcessLauncher.processBuilder(), new CProcessRegistry(),
+                Path.of("").toAbsolutePath(), Map.of());
+    }
+
+    /// Same contract as [findZigVersion(Path)], but the probe runs through the caller's process
+    /// manager: the launcher provides the spawn seam (real or fake) and the started probe is
+    /// registered immediately, so a cancellation of the owning round destroys it like every
+    /// other zig child. Package-private — only [ZigCcCompiler] wires a round's registry in.
+    static @Nullable String findZigVersion(@NotNull Path zig, @NotNull CProcessLauncher launcher, @NotNull CProcessRegistry registry, @NotNull Path workingDir, @NotNull Map<String, String> environmentOverrides) throws InterruptedException {
+        var cached = ZigVersion;
+        if (cached != null) {
+            return cached;
+        }
+        // The probe runs outside any monitor: waiting on a built-in lock is not interruptible,
+        // and a cancelled round must converge promptly even when another thread's probe hangs.
+        // Duplicate probes on a cold cache are cheap and harmless; the first success wins the
+        // publish race below.
+        var probed = probeZigVersion(zig, launcher, registry, workingDir, environmentOverrides);
+        if (probed == null) {
+            return null;
+        }
+        synchronized (ZigUtil.class) {
+            if (ZigVersion == null) {
+                ZigVersion = probed;
+            }
+            return ZigVersion;
+        }
+    }
+
+    /// Test-only hook: drops the cached version so probe behavior can be exercised repeatedly.
+    static void clearCachedZigVersionForTesting() {
+        synchronized (ZigUtil.class) {
+            ZigVersion = null;
+        }
+    }
+
+    /// One uncached `zig version` invocation: exit 0 plus the first non-blank output line wins,
+    /// anything else is a probe failure (`null`). Output is drained on a companion virtual
+    /// thread even though the version line is tiny, keeping the same pipe discipline as the
+    /// compile rounds; an interrupt destroys the child and converges the reader with a bounded
+    /// join before propagating.
+    private static @Nullable String probeZigVersion(@NotNull Path zig, @NotNull CProcessLauncher launcher, @NotNull CProcessRegistry registry, @NotNull Path workingDir, @NotNull Map<String, String> environmentOverrides) throws InterruptedException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("cancelled before the zig version probe started");
+        }
+        final Process process;
+        try {
+            process = launcher.start(List.of(zig.toString(), "version"), workingDir, environmentOverrides);
+        } catch (IOException exception) {
+            return null;
+        }
+        registry.register(process);
+        var outputBytes = new ByteArrayOutputStream();
+        var outputReader = Thread.ofVirtual()
+                .name("gdcc-zig-version")
+                .start(() -> {
+                    try (var input = process.getInputStream()) {
+                        input.transferTo(outputBytes);
+                    } catch (IOException exception) {
+                        // A truncated version stream surfaces as an unparseable (blank) output.
+                    }
+                });
+        int exit;
+        try {
+            exit = ProcessUtil.waitForInterruptibly(process, outputReader);
+        } catch (InterruptedException exception) {
+            outputReader.interrupt();
+            try {
+                ProcessUtil.joinThreadAfterInterrupt(outputReader, VERSION_READER_JOIN_TIMEOUT);
+            } catch (InterruptedException joinException) {
+                // The original cancellation is already being propagated.
+            }
+            throw exception;
+        }
+        try {
+            outputReader.join();
+        } catch (InterruptedException exception) {
+            // The cancel channel outranks the parse: restore and propagate like the wait path.
+            Thread.currentThread().interrupt();
+            throw new InterruptedException("interrupted while joining the zig version output reader");
+        }
+        if (exit != 0) {
+            return null;
+        }
+        for (var line : outputBytes.toString(StandardCharsets.UTF_8).split("\\R")) {
+            var trimmed = line.trim();
+            if (!trimmed.isEmpty()) {
+                return trimmed;
+            }
+        }
+        return null;
     }
 
     @SuppressWarnings("DuplicateExpressions")

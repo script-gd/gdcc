@@ -115,6 +115,50 @@ public class ResourceExtractorTest {
         }
     }
 
+    @Test
+    public void testJarExtractionSkipsIdenticalFilesWithoutTouchingMtime(@TempDir Path tempDir) throws IOException, InterruptedException {
+        // clang PCH validation rejects a pch whose recorded header mtimes no longer match the
+        // files on disk; blindly replacing identical resources on every build would churn
+        // those mtimes and permanently disable the pch cache for packaged (jar) runs.
+        var jar = tempDir.resolve("resources.jar");
+        try (var zip = new ZipOutputStream(Files.newOutputStream(jar))) {
+            writeJarEntry(zip, "jar_root/");
+            writeJarEntry(zip, "jar_root/a.txt", "alpha");
+        }
+
+        try (var loader = new URLClassLoader(new URL[]{jar.toUri().toURL()})) {
+            var out = tempDir.resolve("out");
+            ResourceExtractor.extract("jar_root", out, loader);
+            var extracted = out.resolve("a.txt");
+            var firstMtime = Files.getLastModifiedTime(extracted);
+            // Make a later mtime observable on filesystems with coarse timestamp granularity.
+            Thread.sleep(20);
+
+            ResourceExtractor.extract("jar_root", out, loader);
+            assertEquals(firstMtime, Files.getLastModifiedTime(extracted),
+                    "re-extracting identical content must not replace the file");
+            assertEquals("alpha", Files.readString(extracted, StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    public void testJarExtractionReplacesWhenContentDiffers(@TempDir Path tempDir) throws IOException {
+        var out = tempDir.resolve("out");
+        Files.createDirectories(out);
+        Files.writeString(out.resolve("a.txt"), "stale");
+
+        var jar = tempDir.resolve("resources.jar");
+        try (var zip = new ZipOutputStream(Files.newOutputStream(jar))) {
+            writeJarEntry(zip, "jar_root/");
+            writeJarEntry(zip, "jar_root/a.txt", "alpha");
+        }
+        try (var loader = new URLClassLoader(new URL[]{jar.toUri().toURL()})) {
+            ResourceExtractor.extract("jar_root", out, loader);
+            assertEquals("alpha", Files.readString(out.resolve("a.txt"), StandardCharsets.UTF_8),
+                    "changed content must still be extracted");
+        }
+    }
+
     private static void writeJarEntry(@NotNull ZipOutputStream zip, @NotNull String name) throws IOException {
         writeJarEntry(zip, name, "");
     }

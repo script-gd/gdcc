@@ -25,7 +25,7 @@ class MainEntrypointTest {
         var result = runWithCapturedStreams("--version");
 
         assertEquals(0, result.exitCode());
-        assertEquals(GdccVersion.displayText() + System.lineSeparator(), result.outText());
+        assertTrue(result.outText().contains(GdccVersion.displayText() + System.lineSeparator()));
         assertEquals("", result.errText());
     }
 

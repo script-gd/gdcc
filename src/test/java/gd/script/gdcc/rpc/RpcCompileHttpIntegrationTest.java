@@ -5,6 +5,8 @@ import gd.script.gdcc.backend.c.build.ZigUtil;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.nio.file.Path;
 import java.util.Set;
@@ -18,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// `compile.start` and task polling, gated on zig availability. Proves the adapter layer carries
 /// the full editor-plugin compile loop (`options.set` with a build directory → start → poll →
 /// result) without any in-process shortcuts.
+@Execution(ExecutionMode.CONCURRENT)
 class RpcCompileHttpIntegrationTest {
     private static final Set<String> TERMINAL_STATES = Set.of("SUCCEEDED", "FAILED", "CANCELED");
 

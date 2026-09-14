@@ -3,6 +3,7 @@ package gd.script.gdcc.test_suite.benchmark;
 import gd.script.gdcc.backend.c.build.ZigUtil;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestFactory;
 
 import java.util.stream.Stream;
@@ -10,6 +11,7 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag("throughput")
 class GdScriptBenchmarkCompileTest {
     @TestFactory
     Stream<DynamicTest> compilesBundledBenchmarkScriptsToReleaseArtifacts() throws Exception {

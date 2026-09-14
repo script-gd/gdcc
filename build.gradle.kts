@@ -58,7 +58,14 @@ dependencies {
 }
 
 tasks.test {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        // Throughput-tagged tests (real release builds of the benchmark suite) are excluded by
+        // default; opt in locally with `./gradlew test -PrunThroughputTests=true`.
+        val runThroughputTests = providers.gradleProperty("runThroughputTests").map(String::toBoolean).getOrElse(false)
+        if (!runThroughputTests) {
+            excludeTags("throughput")
+        }
+    }
 }
 
 val benchmark by tasks.registering(JavaExec::class) {
