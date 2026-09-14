@@ -21,7 +21,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// - `cancelCompileTask()` during `BUILDING_NATIVE` destroys every started zig child, never
 ///   starts the link step, maps to `CANCELED`, and lets no process start after completion;
 /// - `API.close()` cancels the same way and returns only after the runner (and with it every
-///   compiler worker and child process) is gone.
+///   compiler worker and child process) is gone;
+/// - with a PCH-enabled compiler, a cancel landing in the PCH phase destroys the PCH build
+///   child through the same protocol (no TU or link ever starts).
 /// Pure Java: no real zig process is started and zig discovery is faked through the compiler
 /// injection seam.
 class ApiZigCcCompilerCancellationTest {
@@ -96,6 +98,47 @@ class ApiZigCcCompilerCancellationTest {
         assertTrue(launcher.startedProcesses().stream().allMatch(FakeProcess::destroyForciblyCalled),
                 "every started zig child must be destroyed before close returns");
         assertEquals(0, launcher.countCommandsContaining("-shared"));
+    }
+
+    @Test
+    void cancelDuringPchBuildDestroysThePchChildThroughTheSameProtocol(@TempDir Path tempDir) throws Exception {
+        // PCH-enabled compiler (fixed zig version: no version-probe process), all processes
+        // blocked: the first — and only — started child is the PCH build, so the cancel
+        // provably destroys a PCH-phase process through the API wiring.
+        var launcher = new FakeProcessLauncher().blockProcessesUntilDestroyed();
+        var api = ApiCompileTestSupport.newApi(new CProjectBuilder(
+                launcher.newCompilerWithPch("0.16.0-test", tempDir.resolve("compiler-cache"))));
+        api.createModule("demo", "Zig Pch Cancel Demo");
+        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("zig-pch-cancel-project")));
+        api.putFile("demo", "/src/demo.gd", validSource("ZigPchCancelDemo"));
+
+        try {
+            var taskId = api.compile("demo");
+            ApiCompileTestSupport.awaitSnapshot(
+                    api,
+                    taskId,
+                    snapshot -> snapshot.state() == CompileTaskSnapshot.State.RUNNING
+                            && snapshot.stage() == CompileTaskSnapshot.Stage.BUILDING_NATIVE,
+                    "BUILDING_NATIVE"
+            );
+            assertTrue(launcher.awaitFirstProcess(), "the PCH build must be running");
+
+            api.cancelCompileTask(taskId);
+            var canceledTask = ApiCompileTestSupport.awaitTask(api, taskId);
+
+            assertEquals(CompileTaskSnapshot.State.CANCELED, canceledTask.state());
+            assertEquals(CompileResult.Outcome.CANCELED, Objects.requireNonNull(canceledTask.result()).outcome());
+            var started = launcher.startedProcesses();
+            assertEquals(1, started.size(), "only the PCH build started before the cancel");
+            var pchBuild = launcher.recordedCommands().getFirst();
+            assertTrue(pchBuild.contains("-x") && pchBuild.contains("c-header"),
+                    () -> "the destroyed child is the PCH build: " + pchBuild);
+            assertTrue(started.stream().allMatch(FakeProcess::destroyForciblyCalled),
+                    "the PCH-phase child must be forcibly destroyed");
+            assertEquals(0, launcher.countCommandsContaining("-shared"), "cancel must never start the link step");
+        } finally {
+            api.close();
+        }
     }
 
     private static String validSource(String className) {

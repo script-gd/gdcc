@@ -16,8 +16,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// pins the compile/link flag split, the per-optimization-level LTO tiers (DEBUG none, RELEASE
 /// `-flto=thin`, known-unsupported targets falling back to full `-flto`), the hard rule that
 /// ABI-substituted builds omit every `-flto*` token, the object path shape
-/// `<projectDir>/obj/<opt>/<zigTarget>/<index>_<file>.o`, and the buildLog merge forms
-/// (success concatenation vs. per-started-process `Command:` sections).
+/// `<projectDir>/obj/<opt>/<zigTarget>/<index>_<file>.o`, the buildLog merge forms
+/// (success concatenation vs. per-started-process `Command:` sections), and the PCH contracts:
+/// the name-based TU whitelist (`minicoro.c` never gets `-include-pch`), the exact prefix
+/// header content, and the PCH build command sharing the full TU language flag surface.
 class ZigCcCompilerCommandTest {
     private static final Path ZIG = Path.of("zig");
     private static final Path PROJECT_DIR = Path.of("proj").toAbsolutePath();
@@ -196,7 +198,67 @@ class ZigCcCompilerCommandTest {
         assertEquals(4, Math.clamp(44, 1, 4), "fewer TUs than cores: one worker per TU");
         assertEquals(4, Math.clamp(4, 1, 8), "more TUs than cores: capped at the core count");
         assertEquals(1, Math.clamp(1, 1, 1));
-        assertEquals(1, Math.clamp(4, 1, 0), "defensive floor for the degenerate empty input");
+        // The degenerate empty input never reaches runTuPhase (compile() rejects empty cFiles
+        // first), so the floor is anchored at the reachable boundary: one TU, one worker.
+        assertEquals(1, Math.clamp(4, 1, 1), "a single TU gets exactly one worker");
+    }
+
+    @Test
+    void pchWhitelistCoversOnlyGodotBindingConsumers() {
+        assertTrue(ZigCcCompiler.isGodotBindingPchTu(Path.of("entry.c")));
+        assertTrue(ZigCcCompiler.isGodotBindingPchTu(Path.of("godot_binding.c")));
+        assertTrue(ZigCcCompiler.isGodotBindingPchTu(Path.of("gdcc_coroutine.c")));
+        // The isolated assembly-backend TU must never force-include the Godot ABI headers.
+        assertFalse(ZigCcCompiler.isGodotBindingPchTu(Path.of("minicoro.c")));
+        assertFalse(ZigCcCompiler.isGodotBindingPchTu(Path.of("anything_else.c")));
+        // The whitelist keys on the simple file name; directory prefixes never matter.
+        assertTrue(ZigCcCompiler.isGodotBindingPchTu(Path.of("godot/godot_binding.c")));
+        assertFalse(ZigCcCompiler.isGodotBindingPchTu(Path.of("gdcc/minicoro.c")));
+    }
+
+    @Test
+    void pchPrefixHeaderContainsExactlyTheGodotBindingInclude() {
+        // Guards the entry.h contract: the PCH may pull in godot_binding.h and nothing else —
+        // gdcc tree headers require per-TU declarations a precompiled header cannot satisfy.
+        assertEquals("#include <godot_binding.h>\n", ZigCcCompiler.PCH_PREFIX_HEADER_CONTENT);
+    }
+
+    @Test
+    void tuCompileCommandCarriesIncludePchOnlyWhenProvided() {
+        var objPath = objPath(COptimizationLevel.DEBUG, TARGET, 0, "entry.c");
+        var pch = Path.of("cache/pch/key/gdcc_godot_prefix.pch");
+        var withPch = ZigCcCompiler.buildTuCompileCommand(ZIG, TARGET, CLtoMode.NONE, COptimizationLevel.DEBUG, INCLUDE_DIRS, objPath, Path.of("src/entry.c"), pch);
+        assertTrue(withPch.contains("-include-pch"), withPch::toString);
+        assertEquals(pch.toString(), withPch.get(withPch.indexOf("-include-pch") + 1));
+        // The rest of the command shape is unchanged: same -o target, source still trailing.
+        assertEquals(objPath.toString(), withPch.get(withPch.indexOf("-o") + 1));
+        assertEquals(Path.of("src/entry.c").toAbsolutePath().toString(), withPch.getLast());
+        // A whitelisted-excluded TU (minicoro.c) is compiled through the no-pch overload.
+        var withoutPch = ZigCcCompiler.buildTuCompileCommand(ZIG, TARGET, CLtoMode.NONE, COptimizationLevel.DEBUG, INCLUDE_DIRS, objPath, Path.of("src/minicoro.c"));
+        assertFalse(withoutPch.contains("-include-pch"), withoutPch::toString);
+    }
+
+    @Test
+    void pchBuildCommandUsesHeaderModeWithTheFullTuLanguageFlags() {
+        var prefix = Path.of("cache/pch/key/gdcc_godot_prefix.h");
+        var pchOut = Path.of("cache/pch/key/gdcc_godot_prefix.pch");
+        for (var opt : COptimizationLevel.values()) {
+            var lto = ZigCcCompiler.resolveLtoMode(TARGET, false, opt);
+            var cmd = ZigCcCompiler.buildPchBuildCommand(ZIG, TARGET, lto, opt, INCLUDE_DIRS, prefix, pchOut);
+            // Header mode compiles the prefix header itself: no "-c" token, no ".c" input.
+            assertTrue(cmd.contains("-x"), cmd::toString);
+            assertEquals("c-header", cmd.get(cmd.indexOf("-x") + 1));
+            assertFalse(cmd.contains("-c"), "PCH build must not carry the compile-only token: " + cmd);
+            assertFalse(cmd.stream().anyMatch(arg -> arg.endsWith(".c")), cmd::toString);
+            assertTrue(cmd.contains(prefix.toString()), cmd::toString);
+            assertEquals(pchOut.toString(), cmd.get(cmd.indexOf("-o") + 1));
+            // clang rejects -include-pch when creation and usage options differ: the language
+            // flag block (right after "-target <T>") must be identical to a TU compile's.
+            var expectedFlags = ZigCcCompiler.languageFlags(lto, opt);
+            assertEquals(expectedFlags, cmd.subList(4, 4 + expectedFlags.size()), "PCH build flags must match TU flags: " + cmd);
+            var tuCmd = ZigCcCompiler.buildTuCompileCommand(ZIG, TARGET, lto, opt, INCLUDE_DIRS, objPath(opt, TARGET, 0, "entry.c"), Path.of("src/entry.c"), pchOut);
+            assertEquals(expectedFlags, tuCmd.subList(4, 4 + expectedFlags.size()), "TU flags anchor: " + tuCmd);
+        }
     }
 
     private static @NotNull Path objPath(COptimizationLevel opt, String zigTarget, int index, String cFileName) {

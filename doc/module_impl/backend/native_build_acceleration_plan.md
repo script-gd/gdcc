@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：第一、二步已实施（2026-09-13，验收全绿），第三、四步待实施。实施记录与偏差见文末「实施状态」节。
+- 状态：第一、二、三步已实施（2026-09-14，验收全绿），第四步待实施。实施记录与偏差见文末「实施状态」节。
 - 范围：`ZigCcCompiler` 的 native 编译方式重构，不改 `CCompiler` 接口、`CProjectBuilder` 输入收集、artifact 命名与发布合同。
 - 依据：`tmp/rotating_camera/` 下的原型实测数据（zig 0.16.0，Xeon E5-2699 v4 44 核，rotating_camera 示例模块）。
 - 阅读前提：先读 `doc/gdcc_c_backend.md` §Native Compiler Cache、`doc/module_impl/backend/godot_binding_implementation.md` §构建输入与旧残留规则、`doc/module_impl/api/rpc_api_implementation.md` §Compile Pipeline Contract。
@@ -302,7 +302,7 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
 
 ## 11. 测试规则
 
-- 迭代期只跑定向测试：`script/run-gradle-targeted-tests.sh --tests <类名>`，本计划相关锚点类：`ZigCcCompilerCommandTest`、`ZigCcCompilerTest`、`ZigCcCompilerCachePathTest`、`ZigCcCompilerIncrementalIntegrationTest`、`ZigCcCompilerCrossTargetSmokeTest`、`ZigCcCompilerFailureTest`、`ZigCcCompilerProjectLockTest`、`ZigCcCompilerParallelTest`、`CProcessRegistryTest`、`ApiZigCcCompilerCancellationTest`、`ZigCcCompilerPchKeyTest`、`ZigCcCompilerPchIntegrationTest`、`CProjectBuilderCoroutineRuntimeInputTest`、`CProjectBuilderSharedIncludeTest`、`CProjectBuilderPlaceHolderTest`、`CProjectBuilderIntegrationTest`、`FrontendLoweringToCProjectBuilderIntegrationTest`、`GdScriptUnitTestCompileRunnerTest`、`GdScriptBenchmarkCompileTest`；
+- 迭代期只跑定向测试：`script/run-gradle-targeted-tests.sh --tests <类名>`，本计划相关锚点类：`ZigCcCompilerCommandTest`、`ZigCcCompilerTest`、`ZigCcCompilerCachePathTest`、`ZigCcCompilerIncrementalIntegrationTest`、`ZigCcCompilerCrossTargetSmokeTest`、`ZigCcCompilerFailureTest`、`ZigCcCompilerProjectLockTest`、`ZigCcCompilerParallelTest`、`CProcessRegistryTest`、`ApiZigCcCompilerCancellationTest`、`ZigCcCompilerPchTest`、`ZigCcCompilerPchKeyTest`、`ZigCcCompilerPchIntegrationTest`、`CProjectBuilderCoroutineRuntimeInputTest`、`CProjectBuilderSharedIncludeTest`、`CProjectBuilderPlaceHolderTest`、`CProjectBuilderIntegrationTest`、`FrontendLoweringToCProjectBuilderIntegrationTest`、`GdScriptUnitTestCompileRunnerTest`、`GdScriptBenchmarkCompileTest`；
 - 真 zig/Godot 依赖一律 `ZigUtil.findZig()` + `Assumptions` 门控，与现有集成测试写法一致；
 - 涉及 native compiler 行为的 negative path 一律直调 `ZigCcCompiler.compile(...)`（含精心构造的 `.c` 与独立 include 树），不得通过破坏 shared-include / 共享 cache 实现；
 - 性能数字一律为手工参考值（注明参考机器），写入 PR 描述，**不进入 CI 断言**；
@@ -410,4 +410,71 @@ script/run-gradle-targeted-tests.sh --tests ZigCcCompilerTest,ZigCcCompilerCache
 script/run-gradle-targeted-tests.sh --tests CProjectBuilderCoroutineRuntimeInputTest,CProjectBuilderSharedIncludeTest,CProjectBuilderPlaceHolderTest,ZigCcCompilerIncrementalIntegrationTest,ApiCloseTest,ApiCompileTaskFailureStageTest
 script/run-gradle-targeted-tests.sh --tests GdScriptBenchmarkCompileTest,CProjectBuilderIntegrationTest
 script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest
+```
+
+### 第三步（2026-09-14 完成，验收全绿）
+
+已落地内容（对照 §7 建议实施内容与 §4.3）：
+
+- `ZigUtil.findZigVersion()`：public 一参重载（默认进程管理器）与 package-private 四参重载（经调用方 launcher + registry + 工作目录 + 环境），`zig version` 探测进程与编译轮次同一进程管理器（§4.4 登记范围合同）；仅缓存成功结果（`volatile` + 同步单探测），失败/中断均不缓存；`InterruptedException` 永不塌缩为 `null`，恢复中断状态后传播（取消不被吞成 PCH 回退）。
+- `ZigCcCompiler` 注入缝扩展：四参 package-private 构造 `ZigCcCompiler(CProcessLauncher, Supplier<Path>, ZigVersionProbe, Function<Path,Path> cacheRootResolver)`；`null` 探针选择生产实现（经本轮 launcher+registry 的 `zig version` 探测）；一/二参 legacy 测试缝默认 `PCH_DISABLED_PROBE`（PCH 关闭），既有 fake-launcher 测试的命令序列零改动；cacheRootResolver 生产路径仍为 `resolveCompilerCacheRoot`（环境解析行为不变）。
+- `languageFlags(ltoMode, opt)` 单一来源：TU 编译、PCH 构建、PCH probe、cache key 四处共享同一 flag 列表（`-std=c23 -fPIC [lto] <-O0|-O2> -Wno-...`），消除 clang 创建/使用选项漂移；`buildTuCompileCommand` 增加 `includePch` 八参重载（七参保留），新增 `buildPchBuildCommand`（`-x c-header` 头模式，无 `-c`）。
+- `resolvePchCacheKey` + `hashIncludeTree`：key 文档含 zig 版本、zigTarget、完整语言 flags（`-O` 级别与实际 LTO token 三者分别入 key）、保序 include 目录（序号 + 归一化绝对路径 + 目录树内容哈希；目录内部按相对路径排序，length-prefixed 拼接路径与内容）；SHA-256 截断 16 字节（32 hex）作 key 目录名。
+- 就位协议：`<cacheRoot>/pch/<key>/` 下最终路径写前缀头（临时文件 + rename，内容一致跳过），PCH 构建到唯一临时名，**probe 通过后** rename 为 `gdcc_godot_prefix.pch`，最后写 `.ready`；消费方只认三者齐全的条目；rename 一律 `ATOMIC_MOVE + REPLACE_EXISTING`（不支持原子则退化普通 rename）。
+- probe 保真：probe 源嵌入轮次唯一后缀（内容与文件名均唯一），zig 内容缓存无法回放陈旧 probe 判定——损坏 PCH 必被当轮 probe 捕获。
+- 白名单 `isGodotBindingPchTu`（`entry.c`/`godot_binding.c`/`gdcc_coroutine.c`，`minicoro.c` 排除）在 TU 槽位构建时应用；`-include-pch` 指向已就位 pch。
+- 自愈与回退：已就位条目 probe 失败 → 删除 key 目录并允许一次重建，重建失败才回退；版本探测失败、include 树哈希失败、构建/安装失败中的任何一种都回退为「本轮无 PCH」+ buildLog 顶部固定一行（`[gdcc] PCH unavailable this round: ...`）；PCH 阶段进程的 Command 段在失败日志中位于 TU 槽位之前（§4.5 前导合同），成功日志不含 Command 行。
+- TU 拒绝 PCH 的整轮重试：任一失败 TU 的诊断含 PCH 标记（`precompiled file`/`precompiled header`/`-include-pch`/`pch file`/`ast file`，启发式、宁滥勿缺）时，整轮去掉 `-include-pch` 重编（禁止 PCH/no-PCH 混链），日志顶部记录重试行；probe 先行使该路径理论上不可达。
+
+测试落地：
+
+- 新增 `ZigCcCompilerPchKeyTest`（纯 Java，10 用例）：同输入同 key（含 32-hex 形态）、zig 版本/target/优化级别变更换 key、三种 LTO 模式两两互异、嵌套头内容变更换 key、增删头文件换 key（删除后复原）、includeDirs 顺序变化换 key（同名头场景）、集合变化换 key、shared-include 与 project include 根换 key。
+- 新增 `ZigCcCompilerPchTest`（fake launcher + 固定版本 + 固定 cache root，纯 Java，5 用例）：首轮构建+probe+发布、白名单逐 TU 断言、次轮复用（无重建、pch 内容/mtime 不变、无临时残留）；仅 `-x c-header` 失败 → 回退行居首 + 成功无 PCH + 无 `.ready`；毒化已就位条目（probe 失败 + 重建失败）→ 回退行含 heal 说明 + 无 PCH 成功；两线程共享 cache root 并发 → 单一 key 目录、条目完整、双方引用同一 pch、无残留；PCH 构建期中断 → 子进程被销毁、无 TU/链接启动、interrupted 通道、中断位恢复。
+- 新增 `ZigCcCompilerPchIntegrationTest`（真 zig 门控 + `@TempDir` 固定 cache root + `setIgnoreSharedInclude(true)`，不触共享 include/cache）：entry-only 重建复用同一 pch（key 目录不变、内容字节一致）；篡改 `godot_macros.h` → 第二 key 目录 + 新条目就位 + 构建成功；产物经 `GodotGdextensionTestRunner` 运行验证（无 `Can't open dynamic library`、stop signal 达成，`GODOT_BIN` 缺失时跳过运行验证）；截断已就位 pch（4 字节垃圾、保留 `.ready`/前缀头）→ probe 失败 → 删除并重建一次 → 同 key 目录恢复完整有效条目、无回退行。
+- 更新 `ZigCcCompilerCommandTest`：白名单逐名断言（含目录前缀无关性）、前缀头内容恰为 `#include <godot_binding.h>\n`、`-include-pch` 接线（仅八参带 pch）、PCH 构建命令与 TU 共享同一 `languageFlags` 块、无 `-c`/`.c`。
+- 更新 `ZigCcCompilerFailureTest` 至 §4.5 PCH 前导形态：toy 轮次无 include 目录 → PCH 构建确定性失败 → 回退行居首 + 单个 PCH 构建 Command 段 + TU/链接段次序不变（真 zig 端到端锚定新失败日志合同）。
+- 测试基础设施：`FakeProcessLauncher.newCompilerWithPch(version, cacheRoot)`（固定版本消除版本探测进程，命令序列确定性）。
+
+实施偏差（相对计划原文，均已核实不影响合同）：
+
+- rename 语义由「目标已存在视为其他进程获胜」实现为 `REPLACE_EXISTING` last-writer-wins：同 key 条目内容可互换，语义等价且实现更简单，记录于 gdcc_c_backend.md。
+- probe 源内容唯一化（嵌入随机后缀）为计划未要求的加固：防止 zig 内容缓存在「同内容 probe 源 + 已损坏 pch」场景回放陈旧成功判定。
+- 前缀头 mtime 归一为 `Instant.EPOCH`（计划未提）：实测发现自愈链路缺陷——重写前缀头产生新 mtime，而 zig 内容缓存回放旧 pch（记录的 mtime 不变），clang 报 `has been modified since the precompiled header was built: mtime changed` 硬错误导致重建永不成功；固定 mtime 使校验跨重建确定。这是本步最重要的实测修正。
+- 既有 `ZigCcCompilerCommandTest.tuParallelismIsCappedByTuCountAndAvailableProcessors` 中 `Math.clamp(4, 1, 0)`（min>max）在本机 Java 25（GraalVM 25.0.4）抛 `IllegalArgumentException`，属预存失败（HEAD 原样，与 PCH 无关）；根因是 JDK clamp 校验收紧且空输入不可达（`compile()` 先拒绝空 `cFiles`），已改为断言可达边界「单 TU 单 worker」。
+- §7 negative path「PCH 构建失败」用注入 launcher 实现（遵循计划「不得用坏 header 构造」）；「key 目录并发就位」以 fake launcher 两线程实现（确定性），真 zig 单写者就位由集成测试覆盖。
+- 新增锚点类 `ZigCcCompilerPchTest` 已补入 §11 清单。
+- 性能验收（手工、参考机器）留待 PR 描述补齐；本开发机实测（rotating_camera 全管线，zig 0.16.0，PCH 开启）：debug 增量 **310-317ms**（≤0.6s 达标，较第一/二步无 PCH 的 ~477ms 再降 ~35%）、release 增量 **1.07-1.18s**（≤2s 达标）；暖机全量（共享 zig cache 暖、新项目 PCH 冷）debug 3.85s / release 6.5s，与 §1.2 原型目标（3.8s/7.0s）一致；全冷构建（含 zig 一次性 compiler-rt）debug 19.6s / release 10.5s，属已记录的一次性非常态成本。测量用临时 scratch 测试测毕即删，未入库。
+
+第三步验收命令（均已执行全绿）：
+
+```text
+script/run-gradle-targeted-tests.sh --tests ZigCcCompilerPchKeyTest,ZigCcCompilerCommandTest,ZigCcCompilerPchTest
+script/run-gradle-targeted-tests.sh --tests ZigCcCompilerPchIntegrationTest
+script/run-gradle-targeted-tests.sh --tests ZigCcCompilerPchTest,ZigCcCompilerPchKeyTest,ZigCcCompilerCommandTest,ZigCcCompilerParallelTest,CProcessRegistryTest,ZigCcCompilerTest,ZigCcCompilerCachePathTest,ZigCcCompilerProjectLockTest,ProcessUtilTest,ApiZigCcCompilerCancellationTest,ApiCompileTaskCancellationTest,ApiCloseTest,ApiCompileTaskFailureStageTest
+script/run-gradle-targeted-tests.sh --tests ZigCcCompilerFailureTest,ZigCcCompilerIncrementalIntegrationTest,ZigCcCompilerCrossTargetSmokeTest,CProjectBuilderCoroutineRuntimeInputTest,CProjectBuilderSharedIncludeTest,CProjectBuilderPlaceHolderTest
+script/run-gradle-targeted-tests.sh --tests GdScriptBenchmarkCompileTest,CProjectBuilderIntegrationTest
+script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest,FrontendLoweringToCProjectBuilderIntegrationTest
+```
+
+审阅驱动的加固（第三步第一轮 review 后落地，review-expert-a/c 指出并已复核的问题）：
+
+- **生产 JAR 路径 PCH 每轮失效根因修复**（两位审阅者一致 HIGH）：`ResourceExtractor.copyStreamOrUnpack`（JAR 分支）此前每次构建无条件替换资源文件，被包含头 mtime 逐轮变化 → 已就位 pch 复用 probe 失败、自愈重建被 zig 内容缓存回放（记录的 mtime 不变）→ 该 key 永久回退。且该实现违反类文档自述的「内容一致则跳过」合同。已修复为「读入字节比较，一致则跳过替换」（与 file 分支对齐），`ResourceExtractorTest` 新增两例（jar 重复提取不动 mtime、内容变化仍替换）。`file:` 协议分支本就比较内容，开发/测试路径不受影响。
+- **版本探测并发收敛修复**（HIGH）：`findZigVersion` 曾在 `synchronized (ZigUtil.class)` 内运行外部进程，内置锁等待不可中断——首个 `zig version` 卡住时其他构建的取消与 `API.close()` 无法收敛。已改为锁外探测 + 锁内仅发布（冷缓存重复探测廉价无害），中断路径补上有界 reader join，启动前补中断检查；新增 package-private `clearCachedZigVersionForTesting()` 与 `ZigUtilTest`（纯 Java 5 用例：成功解析与缓存、失败/空输出不缓存、中断销毁传播且不缓存、启动失败无进程）。
+- **PCH 重试标记补齐**（MEDIUM）：`PCH_REJECTION_MARKERS` 漏掉「precompiled header」措辞（本文件 §12 自己记录的 mtime 硬错误原文不含任何既有标记），已补；并新增 fake 用例 `tuRejectionOfPchRetriesTheWholeRoundWithoutPch`：probe 放行后白名单 TU 以真实诊断文本失败 → 重试行居首、整轮无 `-include-pch` 重编、构建成功、禁止混链。该重试合同此前无测试。
+- **并发就位测试真并行化**（HIGH，测试缺陷）：旧实现把 `compile()` 包进 `synchronized`，两轮实际串行、给出假并发信号。已改为：两个 launcher 的 PCH 构建命令一律阻塞，双线程都进入 PCH 构建后同时放行——确定性重叠，断言单一 key 目录、条目完整、双方引用同一 pch、无临时残留。
+- **`ZigCcCompilerFailureTest` 钉 `@TempDir` cache root**（MEDIUM）：这些 toy 轮次无 include 目录，PCH 构建确定性失败；生产 cache root 解析在父进程设置 `GDCC_SHARED_C_COMPILER_CACHE` 时会把失败 PCH 目录写进共享 cache。已改经四参注入缝固定临时 cache root（生产探针不变）。
+- **API 级 PCH 取消接线用例**：`ApiZigCcCompilerCancellationTest` 新增 `cancelDuringPchBuildDestroysThePchChildThroughTheSameProtocol`——PCH 开启的 compiler 经 API 取消，恰好销毁唯一已启动的 `-x c-header` 进程、无 TU/链接启动、`CANCELED`。此前 legacy 测试缝默认 PCH 关闭，API 层覆盖不到 PCH 子进程。
+- **类级文档同步**：`ZigCcCompiler` 类注释的 buildLog 次序与取消范围补入 PCH 前导与 version/PCH 子进程；`gdcc_c_backend.md` 补「include 树 mtime 稳定性」要求与外部 mtime-only 搅动的行为后果。
+- **外部 mtime-only 搅动列为已知限制**（`gdcc_c_backend.md` PCH Cache 节）：生产路径（file/jar 提取）已免疫；外部触碰不改变内容只改 mtime 时，clang 拒绝已就位 pch 且 zig 缓存回放陈旧重建，该 key 回退无 PCH（构建仍正确）直至内容变化产生新 key。真 zig 用例 `transitiveHeaderMtimeTouchDegradesSafelyInsteadOfFailing` 锚定安全网行为。根治候选（include 树 mtime 归一、heal 期 nonce 前缀头）列入 Backlog。
+- **版本缓存单值模型保留**（LOW，有意决策）：`ZigVersion` 与 `ZigPath` 同为单值静态缓存——生产进程只发现一个 zig；已在字段注释写明，不引入按路径分键。
+
+复核后**保留待确认**的一条（架构影响较大，暂未改动）：
+
+- review-expert-c 指出 §4.3「销毁已启动 TU、整轮去掉 `-include-pch` 重编」的字面要求未被完全满足：当前实现先跑完同批全部 TU（第二步的失败收集语义）再做整轮无 PCH 重试，而非在发现首个 TU 拒绝 PCH 时立即销毁其余 PCH TU。早销毁需要 `runTuPhase` 完成循环内逐 TU 检查诊断并引入 attempt 级注册表（取消链路要跨两个 attempt 闭合），属 TU 阶段架构调整；且该路径在 probe 先行下理论上不可达，当前行为正确（不混链、构建成功）仅浪费一轮 PCH TU 编译。是否实施早销毁待用户确认。
+
+第三步第一轮 review 后追加验收命令（均已执行全绿）：
+
+```text
+script/run-gradle-targeted-tests.sh --tests ZigUtilTest,ZigCcCompilerPchTest,ZigCcCompilerCommandTest,ResourceExtractorTest,ApiZigCcCompilerCancellationTest
+script/run-gradle-targeted-tests.sh --tests ZigCcCompilerFailureTest,ZigCcCompilerPchIntegrationTest
 ```

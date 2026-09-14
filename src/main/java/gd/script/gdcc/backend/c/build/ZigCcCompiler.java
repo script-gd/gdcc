@@ -7,18 +7,28 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.InvalidPathException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.FileTime;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorCompletionService;
@@ -27,6 +37,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /// Zig-backed [CCompiler] that builds the shared library in two phases: every translation
@@ -40,17 +51,29 @@ import java.util.function.Supplier;
 /// - [CCompiler] signature unchanged; `artifacts()` first element is always the final shared
 ///   library, a Windows PDB (produced only by the link step) is listed second when present,
 ///   and intermediate objects never appear in `artifacts()`.
-/// - `buildLog` merges per-process output in a fixed slot order (TU slots in `cFiles` input
-///   order, then the link step); on failure only processes that were actually started get a
-///   `Command:` section. A TU failure does not stop sibling TUs — they run to completion so
+/// - `buildLog` merges per-process output in a fixed order: the PCH fallback line (only when
+///   the round degraded) first, then PCH-phase sections (build/probe), TU slots in `cFiles`
+///   input order, then the link step. On failure only processes that were actually started get
+///   a `Command:` section. A TU failure does not stop sibling TUs — they run to completion so
 ///   the failure log is complete — but the link step only starts after every TU succeeded.
 /// - Cancellation: interrupting the runner thread closes the round's [CProcessRegistry],
-///   forcibly destroys every started zig child (TU compiles and a started link), never starts
-///   the link step, interrupts and awaits all TU workers (queued workers never launch), and
+///   forcibly destroys every started zig child (the version probe, PCH build/probe, TU
+///   compiles, and a started link), never starts the link step, interrupts and awaits all TU
+///   workers (queued workers never launch), and
 ///   then surfaces through the existing `success=false` + `Failed to run zig: interrupted`
 ///   channel with the interrupt status restored. A round that notices the interrupt flag
 ///   between steps stops before launching the next sub-process; the residual start/register
 ///   race is closed by the registry destroying any process registered after the close.
+/// - PCH: a `godot_binding.h` precompiled header is cached under `<cacheRoot>/pch/<key>/`
+///   (key = zig version + target + full language flags + ordered include-tree hashes) and
+///   force-included only into the whitelisted TUs that actually include `godot_binding.h`
+///   (`entry.c`, `godot_binding.c`, `gdcc_coroutine.c`; `minicoro.c` is excluded so the ABI
+///   headers never leak into the isolated assembly-backend TU). Every PCH problem — version
+///   probe failure, build/probe/rename failure, a poisoned installed entry that still fails
+///   after one self-heal rebuild, or zig rejecting `-include-pch` mid-round — degrades to a
+///   no-PCH round with one fixed fallback line at the top of `buildLog`; it never fails the
+///   build. Interrupts during PCH work propagate through the cancellation channel instead.
+///   PCH and no-PCH objects are never mixed in one link.
 public class ZigCcCompiler implements CCompiler {
     private static final Logger LOGGER = LoggerFactory.getLogger(ZigCcCompiler.class);
     private static final String PROJECT_CACHE_DIR_NAME = "compiler-cache";
@@ -60,6 +83,39 @@ public class ZigCcCompiler implements CCompiler {
     private static final String GNU_ABI_SUFFIX = "-windows-gnu";
     private static final String OBJ_DIR_NAME = "obj";
     private static final Duration OUTPUT_READER_JOIN_TIMEOUT = Duration.ofSeconds(1);
+
+    /// PCH cache layout: `<cacheRoot>/pch/<key>/` holds the final-path prefix header, the
+    /// precompiled header and the `.ready` marker published last; consumers only accept
+    /// entries with all three present.
+    private static final String PCH_DIR_NAME = "pch";
+    private static final String PCH_PREFIX_HEADER_NAME = "gdcc_godot_prefix.h";
+    private static final String PCH_FILE_NAME = "gdcc_godot_prefix.pch";
+    private static final String PCH_READY_MARKER_NAME = ".ready";
+    /// The prefix header may only pull in `godot_binding.h` — never gdcc tree headers —
+    /// because `entry.h` requires `class_library` to be declared by its includer before
+    /// `gdcc_helper.h` is seen (a PCH cannot satisfy that per-TU contract).
+    static final String PCH_PREFIX_HEADER_CONTENT = "#include <godot_binding.h>\n";
+    /// Fixed prefix-header mtime keeping clang's pch mtime validation deterministic across
+    /// rebuilds (see [installPrefixHeader]).
+    private static final Instant PCH_PREFIX_HEADER_MTIME = Instant.EPOCH;
+    private static final String PCH_PROBE_SOURCE_PREFIX = "gdcc_pch_probe_";
+    /// `%s` carries the round-unique suffix (a valid C identifier fragment), making every
+    /// probe source content-distinct so zig's cache cannot replay a stale probe verdict.
+    private static final String PCH_PROBE_SOURCE_CONTENT = "int gdcc_pch_probe_%s(void) { return 0; }\n";
+    /// TUs force-including the PCH, by simple file name, anchored to the fixed
+    /// `CProjectBuilder` native inputs. A TU that does not include `godot_binding.h`
+    /// (`minicoro.c`) must never be added here.
+    private static final Set<String> PCH_WHITELIST_TU_NAMES = Set.of("entry.c", "godot_binding.c", "gdcc_coroutine.c");
+    private static final String PCH_FALLBACK_PREFIX = "[gdcc] PCH unavailable this round: ";
+    private static final String PCH_REJECTED_RETRY_NOTE =
+            "[gdcc] zig rejected the PCH during TU compilation; the whole round was retried without -include-pch\n";
+    /// clang PCH-rejection diagnostics (lower-cased contains match). The pre-launch probe makes
+    /// reaching these during real TU compiles near-impossible; the markers exist so the rare
+    /// escape triggers one no-PCH retry instead of a spurious build failure. Covers both
+    /// "precompiled file" and "precompiled header" phrasings of clang's validation errors.
+    private static final List<String> PCH_REJECTION_MARKERS = List.of("precompiled file", "precompiled header", "-include-pch", "pch file", "ast file");
+    /// SHA-256 truncated to 16 bytes (32 hex chars) for cache directory names.
+    private static final int PCH_KEY_HASH_BYTES = 16;
 
     /// Zig targets whose lld backend is known to reject `-flto=thin`; RELEASE builds for these
     /// fall back to full LTO (the two-phase per-TU bitcode + single link shape is unchanged, so
@@ -79,23 +135,43 @@ public class ZigCcCompiler implements CCompiler {
 
     private final CProcessLauncher processLauncher;
     private final @NotNull Supplier<@Nullable Path> zigDiscovery;
+    private final @NotNull ZigVersionProbe zigVersionProbe;
+    private final @NotNull Function<Path, Path> cacheRootResolver;
 
     public ZigCcCompiler() {
-        this(CProcessLauncher.processBuilder(), ZigUtil::findZig);
+        this(CProcessLauncher.processBuilder(), ZigUtil::findZig, null, ZigCcCompiler::resolveCompilerCacheRoot);
     }
 
     /// Package-private injection point for tests: a fake launcher drives the real round logic
-    /// (registry, cancellation, log merging) without starting real zig processes.
+    /// (registry, cancellation, log merging) without starting real zig processes. This legacy
+    /// seam keeps PCH off (the version probe resolves to null) so pre-PCH test rounds keep
+    /// their exact command sequences; PCH tests use the full seam below.
     ZigCcCompiler(@NotNull CProcessLauncher processLauncher) {
-        this(processLauncher, ZigUtil::findZig);
+        this(processLauncher, ZigUtil::findZig, PCH_DISABLED_PROBE, ZigCcCompiler::resolveCompilerCacheRoot);
     }
 
     /// Full test seam: additionally fixes zig discovery, making fake-launcher tests pure Java
     /// (no real zig binary needs to be discoverable). Production uses `ZigUtil::findZig`.
+    /// Same legacy PCH-off default as the single-argument seam.
     ZigCcCompiler(@NotNull CProcessLauncher processLauncher, @NotNull Supplier<@Nullable Path> zigDiscovery) {
+        this(processLauncher, zigDiscovery, PCH_DISABLED_PROBE, ZigCcCompiler::resolveCompilerCacheRoot);
+    }
+
+    /// PCH test seam: fixes the zig version probe (a fixed version exercises the PCH path
+    /// without spawning a probe process, keeping recorded command sequences deterministic;
+    /// returning null disables PCH for the round) and the cache root resolver (tests pin an
+    /// isolated temporary cache root because `@TempDir` cannot scrub a parent-process
+    /// `GDCC_SHARED_C_COMPILER_CACHE`). A `null` probe selects the production implementation.
+    ZigCcCompiler(@NotNull CProcessLauncher processLauncher, @NotNull Supplier<@Nullable Path> zigDiscovery, @Nullable ZigVersionProbe zigVersionProbe, @NotNull Function<Path, Path> cacheRootResolver) {
         this.processLauncher = processLauncher;
         this.zigDiscovery = zigDiscovery;
+        this.zigVersionProbe = zigVersionProbe != null ? zigVersionProbe : this::probeZigVersion;
+        this.cacheRootResolver = cacheRootResolver;
     }
+
+    /// Legacy test seams never probe a version: PCH stays disabled for rounds that predate the
+    /// PCH feature, so their process-command expectations are unchanged.
+    private static final ZigVersionProbe PCH_DISABLED_PROBE = (zig, registry, projectDir, cachePath) -> null;
 
     @Override
     public CCompileResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel, @NotNull TargetPlatform targetPlatform) {
@@ -126,46 +202,42 @@ public class ZigCcCompiler implements CCompiler {
             // Everything below runs under the lock: path/cache resolution touches the file
             // system too, so the unlock must guard the whole round, not just process execution.
             var outputPath = projectDir.resolve(outName).toAbsolutePath();
-            var cachePath = resolveCompilerCacheRoot(projectDir);
+            var cachePath = cacheRootResolver.apply(projectDir);
             var targetResolution = resolveZigTarget(targetPlatform);
             var zigTarget = targetResolution.zigTarget();
             var ltoMode = resolveLtoMode(zigTarget, targetResolution.abiSubstituted(), optimizationLevel);
 
-            // One slot per TU in cFiles order: command and object path are precomputed on the
-            // runner thread, each worker then writes exactly its own slot, and the runner reads
-            // the slots only after the worker futures completed (Future.get provides the
-            // happens-before edge), keeping the build log order deterministic.
-            var slots = new TuSlot[cFiles.size()];
-            for (var i = 0; i < cFiles.size(); i++) {
-                var cFile = cFiles.get(i);
-                var objPath = resolveObjectPath(projectDir, optimizationLevel, zigTarget, i, cFile);
-                Files.createDirectories(objPath.getParent());
-                slots[i] = new TuSlot(buildTuCompileCommand(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, objPath, cFile), objPath);
-            }
+            // PCH preparation (build/reuse + probe) finishes before any parallel TU starts, so
+            // a PCH that zig would reject is never force-included into the TU phase.
+            var pch = preparePch(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, projectDir, cachePath, registry);
+            // Log shape: PCH fallback line first (only when degraded), then PCH-phase sections,
+            // then TU slots in input order, then the link section.
+            var logPrefix = pch.logPrefix() != null ? pch.logPrefix() : "";
+            var startedCommands = new ArrayList<>(pch.startedCommands());
+            var slotOutputs = new ArrayList<>(pch.outputs());
+
+            var slots = createTuSlots(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, cFiles, projectDir, pch.pchPath());
             runTuPhase(slots, registry, projectDir, cachePath);
 
-            var startedCommands = new ArrayList<List<String>>(slots.length + 1);
-            var slotOutputs = new ArrayList<String>(slots.length + 1);
+            // The link consumes exactly this round's object paths in cFiles order; they are
+            // configuration-namespaced and identical across the retry below.
             var objPaths = new ArrayList<Path>(slots.length);
-            Integer failedTuExitCode = null;
             for (var slot : slots) {
-                if (slot.startFailure != null) {
-                    // A TU whose process never started gets no Command section; surface through
-                    // the same IOException channel the serial implementation used.
-                    throw slot.startFailure;
-                }
                 objPaths.add(slot.objPath);
-                if (slot.started) {
-                    startedCommands.add(slot.command);
-                    slotOutputs.add(slot.output);
-                }
-                if (failedTuExitCode == null && slot.started && (slot.exitCode != 0 || !Files.exists(slot.objPath))) {
-                    failedTuExitCode = slot.exitCode;
-                }
+            }
+            var failedTuExitCode = collectTuResults(slots, startedCommands, slotOutputs);
+            if (failedTuExitCode != null && pch.pchPath() != null && anyFailedTuBlamesPch(slots)) {
+                // A TU rejecting the PCH after a passing probe must not fail the build: retry
+                // the whole round without -include-pch. Every object is rebuilt, so PCH and
+                // no-PCH objects never mix in one link.
+                logPrefix = PCH_REJECTED_RETRY_NOTE;
+                slots = createTuSlots(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, cFiles, projectDir, null);
+                runTuPhase(slots, registry, projectDir, cachePath);
+                failedTuExitCode = collectTuResults(slots, startedCommands, slotOutputs);
             }
             if (failedTuExitCode != null) {
                 // All TUs ran to completion for a complete log; the link step never started.
-                return new CCompileResult(false, mergeCommandSections(startedCommands, slotOutputs), List.of());
+                return new CCompileResult(false, logPrefix + mergeCommandSections(startedCommands, slotOutputs), List.of());
             }
 
             // A cancelled round must not launch the link; the check narrows the interrupt
@@ -177,7 +249,7 @@ public class ZigCcCompiler implements CCompiler {
             slotOutputs.add(linkRun.output());
             var success = linkRun.exitCode() == 0 && Files.exists(outputPath);
             if (!success) {
-                return new CCompileResult(false, mergeCommandSections(startedCommands, slotOutputs), List.of());
+                return new CCompileResult(false, logPrefix + mergeCommandSections(startedCommands, slotOutputs), List.of());
             }
             var artifacts = new ArrayList<Path>(2);
             artifacts.add(outputPath);
@@ -187,7 +259,7 @@ public class ZigCcCompiler implements CCompiler {
                     artifacts.add(pdbPath);
                 }
             }
-            return new CCompileResult(true, mergeSlotOutputs(slotOutputs), artifacts);
+            return new CCompileResult(true, logPrefix + mergeSlotOutputs(slotOutputs), artifacts);
         } catch (InterruptedException e) {
             // Paths that throw without passing runTuPhase (link wait, post-TU check) have no
             // live TU workers left; close + destroy defensively so no registered child survives.
@@ -199,6 +271,45 @@ public class ZigCcCompiler implements CCompiler {
         } finally {
             projectLock.unlock();
         }
+    }
+
+    /// One slot per TU in cFiles order: command and object path are precomputed on the runner
+    /// thread, each worker then writes exactly its own slot, and the runner reads the slots
+    /// only after the worker futures completed (Future.get provides the happens-before edge),
+    /// keeping the build log order deterministic. `pchPath` is force-included only into
+    /// whitelisted TUs; null disables PCH for the whole attempt (fallback and the
+    /// rejection retry).
+    private static @NotNull TuSlot[] createTuSlots(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull Path projectDir, @Nullable Path pchPath) throws IOException {
+        var slots = new TuSlot[cFiles.size()];
+        for (var i = 0; i < cFiles.size(); i++) {
+            var cFile = cFiles.get(i);
+            var objPath = resolveObjectPath(projectDir, optimizationLevel, zigTarget, i, cFile);
+            Files.createDirectories(objPath.getParent());
+            var tuPch = pchPath != null && isGodotBindingPchTu(cFile) ? pchPath : null;
+            slots[i] = new TuSlot(buildTuCompileCommand(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, objPath, cFile, tuPch), objPath);
+        }
+        return slots;
+    }
+
+    /// Collects worker results in slot order into the log lists and returns the first failing
+    /// exit code, or null when every started TU produced its object. A TU whose process never
+    /// started surfaces through the same IOException channel the serial implementation used
+    /// (it gets no Command section).
+    private static @Nullable Integer collectTuResults(TuSlot @NotNull [] slots, @NotNull List<List<String>> startedCommands, @NotNull List<String> outputs) throws IOException {
+        Integer failedTuExitCode = null;
+        for (var slot : slots) {
+            if (slot.startFailure != null) {
+                throw slot.startFailure;
+            }
+            if (slot.started) {
+                startedCommands.add(slot.command);
+                outputs.add(slot.output);
+            }
+            if (failedTuExitCode == null && slot.started && (slot.exitCode != 0 || !Files.exists(slot.objPath))) {
+                failedTuExitCode = slot.exitCode;
+            }
+        }
+        return failedTuExitCode;
     }
 
     /// Runs all TU compile workers in parallel and blocks until every worker finished. An
@@ -325,26 +436,48 @@ public class ZigCcCompiler implements CCompiler {
                 .resolve(OBJ_DIR_NAME).resolve(optDir).resolve(zigTarget).resolve(objFileName);
     }
 
+    /// The complete language flag set shared — in the same order — by TU compiles, the PCH
+    /// build, the PCH probe and the PCH cache key. clang rejects `-include-pch` when creation
+    /// and usage options differ, and a key built from a diverging flag list would let an
+    /// incompatible PCH poison the cache; funnelling all four consumers through this one list
+    /// makes that drift impossible. `-c`/`-x`/`-o`/source paths/`-include-pch` are
+    /// deliberately excluded: they distinguish the command kinds and are added by the callers.
+    static @NotNull List<String> languageFlags(@NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel) {
+        var flags = new ArrayList<String>();
+        flags.add("-std=c23");
+        flags.add("-fPIC");
+        var ltoFlag = ltoMode.cliFlag();
+        if (ltoFlag != null) {
+            flags.add(ltoFlag);
+        }
+        flags.add(optimizationFlag(optimizationLevel));
+        flags.add("-Wno-macro-redefined");
+        flags.add("-Wno-pointer-sign");
+        return List.copyOf(flags);
+    }
+
     /// Per-TU compile command:
-    /// `zig cc -target <T> -std=c23 -fPIC -c [lto] <-O0|-O2> -Wno-... -I... -o <obj> <cFile>`.
+    /// `zig cc -target <T> <languageFlags> -c -I... [-include-pch <pch>] -o <obj> <cFile>`.
     static @NotNull List<String> buildTuCompileCommand(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull Path objPath, @NotNull Path cFile) {
+        return buildTuCompileCommand(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, objPath, cFile, null);
+    }
+
+    /// `includePch` is non-null only for whitelisted TUs of a PCH round (see
+    /// [isGodotBindingPchTu]); the PCH probe command is this same shape with a trivial source.
+    static @NotNull List<String> buildTuCompileCommand(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull Path objPath, @NotNull Path cFile, @Nullable Path includePch) {
         var cmd = new ArrayList<String>();
         cmd.add(zig.toString());
         cmd.add("cc");
         cmd.add("-target");
         cmd.add(zigTarget);
-        cmd.add("-std=c23");
-        cmd.add("-fPIC");
+        cmd.addAll(languageFlags(ltoMode, optimizationLevel));
         cmd.add("-c");
-        var ltoFlag = ltoMode.cliFlag();
-        if (ltoFlag != null) {
-            cmd.add(ltoFlag);
-        }
-        cmd.add(optimizationFlag(optimizationLevel));
-        cmd.add("-Wno-macro-redefined");
-        cmd.add("-Wno-pointer-sign");
         for (var inc : includeDirs) {
             cmd.add("-I" + inc.toAbsolutePath());
+        }
+        if (includePch != null) {
+            cmd.add("-include-pch");
+            cmd.add(includePch.toString());
         }
         cmd.add("-o");
         cmd.add(objPath.toString());
@@ -384,6 +517,306 @@ public class ZigCcCompiler implements CCompiler {
             case DEBUG -> "-O0";
             case RELEASE -> "-O2";
         };
+    }
+
+    /// Resolves the zig version string feeding the PCH cache key. `null` disables PCH for the
+    /// round (a feature degradation, never a build failure); [InterruptedException] is the
+    /// cancellation channel and must propagate rather than collapse into `null`.
+    @FunctionalInterface
+    interface ZigVersionProbe {
+        @Nullable String probe(@NotNull Path zig, @NotNull CProcessRegistry registry, @NotNull Path projectDir, @NotNull Path cachePath) throws InterruptedException;
+    }
+
+    /// Result of the PCH preparation phase. `pchPath` non-null lets whitelisted TUs
+    /// force-include it; otherwise `logPrefix` carries the fixed one-line fallback note that
+    /// leads the build log. `startedCommands`/`outputs` hold the PCH-phase processes that
+    /// actually started (build, probe, rebuild), ahead of the TU slots in the merged log.
+    private record PchOutcome(@Nullable Path pchPath, @Nullable String logPrefix, @NotNull List<List<String>> startedCommands, @NotNull List<String> outputs) {
+    }
+
+    /// Resolves the PCH to force-include this round, or degrades to a no-PCH round. Failure
+    /// handling is strictly layered: any PCH problem (version probe, hashing, build, probe,
+    /// install, self-heal) produces the fixed fallback line and the build continues without
+    /// PCH, while [InterruptedException] always propagates to the cancellation channel — a
+    /// cancel is never swallowed into a fallback (that would report CANCELED only after the
+    /// round finished and could leak orphan children).
+    private @NotNull PchOutcome preparePch(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull Path projectDir, @NotNull Path cachePath, @NotNull CProcessRegistry registry) throws InterruptedException {
+        var startedCommands = new ArrayList<List<String>>();
+        var outputs = new ArrayList<String>();
+
+        var zigVersion = zigVersionProbe.probe(zig, registry, projectDir, cachePath);
+        if (zigVersion == null) {
+            return pchFallback("zig version probe failed", startedCommands, outputs);
+        }
+        final String key;
+        try {
+            key = resolvePchCacheKey(zigVersion, zigTarget, ltoMode, optimizationLevel, includeDirs);
+        } catch (IOException exception) {
+            return pchFallback("include tree hashing failed: " + exception.getMessage(), startedCommands, outputs);
+        }
+        var keyDir = cachePath.resolve(PCH_DIR_NAME).resolve(key);
+        var pchPath = keyDir.resolve(PCH_FILE_NAME);
+
+        if (isInstalledEntryComplete(keyDir)) {
+            // Reused entry: probe it with this round's exact flag surface before any TU sees it.
+            if (probePch(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, keyDir, pchPath, projectDir, cachePath, registry, startedCommands, outputs)) {
+                return new PchOutcome(pchPath, null, startedCommands, outputs);
+            }
+            // Self-heal: drop the poisoned entry and allow exactly one rebuild, so a single
+            // crash or half-written file cannot disable PCH for this key forever.
+            if (!deleteRecursively(keyDir)) {
+                return pchFallback("installed pch failed the probe and the poisoned cache entry could not be deleted", startedCommands, outputs);
+            }
+            var rebuildFailure = buildAndInstallPch(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, keyDir, projectDir, cachePath, registry, startedCommands, outputs);
+            if (rebuildFailure != null) {
+                return pchFallback("installed pch failed the probe and the one allowed rebuild also failed (" + rebuildFailure + ")", startedCommands, outputs);
+            }
+            return new PchOutcome(pchPath, null, startedCommands, outputs);
+        }
+
+        var buildFailure = buildAndInstallPch(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, keyDir, projectDir, cachePath, registry, startedCommands, outputs);
+        if (buildFailure != null) {
+            return pchFallback(buildFailure, startedCommands, outputs);
+        }
+        return new PchOutcome(pchPath, null, startedCommands, outputs);
+    }
+
+    private static @NotNull PchOutcome pchFallback(@NotNull String reason, @NotNull List<List<String>> startedCommands, @NotNull List<String> outputs) {
+        return new PchOutcome(null, PCH_FALLBACK_PREFIX + reason + "\n", startedCommands, outputs);
+    }
+
+    /// Builds the PCH into the cache entry and publishes it: the prefix header is written at
+    /// its final path (clang records absolute paths inside the PCH, so the header must never
+    /// move after the build), the PCH is compiled to a unique temporary name, probed, then
+    /// renamed into place with the `.ready` marker written last. Same-key concurrent builds
+    /// are interchangeable by construction (identical prefix header, flags and include trees),
+    /// so a racing rename simply lets the last writer's equivalent entry win. Returns `null`
+    /// on success, otherwise the failure reason for the fallback line.
+    private @Nullable String buildAndInstallPch(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull Path keyDir, @NotNull Path projectDir, @NotNull Path cachePath, @NotNull CProcessRegistry registry, @NotNull List<List<String>> startedCommands, @NotNull List<String> outputs) throws InterruptedException {
+        try {
+            Files.createDirectories(keyDir);
+            var prefixHeader = keyDir.resolve(PCH_PREFIX_HEADER_NAME);
+            installPrefixHeader(prefixHeader);
+            var tmpPch = keyDir.resolve(PCH_FILE_NAME + ".tmp-" + randomSuffix());
+            var buildCmd = buildPchBuildCommand(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, prefixHeader, tmpPch);
+            var buildRun = runPchProcess(buildCmd, projectDir, cachePath, registry, startedCommands, outputs);
+            if (buildRun.exitCode() != 0 || !Files.isRegularFile(tmpPch)) {
+                Files.deleteIfExists(tmpPch);
+                return "pch build failed (exit " + buildRun.exitCode() + ")";
+            }
+            // Probe before publishing: an entry zig would reject never reaches consumers.
+            if (!probePch(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, keyDir, tmpPch, projectDir, cachePath, registry, startedCommands, outputs)) {
+                Files.deleteIfExists(tmpPch);
+                return "pch probe failed for the freshly built entry";
+            }
+            moveReplacing(tmpPch, keyDir.resolve(PCH_FILE_NAME));
+            Files.writeString(keyDir.resolve(PCH_READY_MARKER_NAME), "");
+            return null;
+        } catch (IOException exception) {
+            return "pch install failed: " + exception.getMessage();
+        }
+    }
+
+    /// Compiles a trivial TU with the exact flag surface of a whitelisted TU plus
+    /// `-include-pch <candidate>` — the cheap, faithful acceptance test clang itself performs
+    /// on a PCH. Probe litter lives in the key directory (unique names, so concurrent
+    /// processes never collide) and is best-effort removed afterwards; leftovers are inert.
+    /// The probe source embeds the round-unique suffix so zig's content cache can never
+    /// replay an earlier probe's verdict — every probe really compiles against the CURRENT
+    /// candidate file.
+    private boolean probePch(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull Path keyDir, @NotNull Path pchCandidate, @NotNull Path projectDir, @NotNull Path cachePath, @NotNull CProcessRegistry registry, @NotNull List<List<String>> startedCommands, @NotNull List<String> outputs) throws InterruptedException {
+        var suffix = randomSuffix().replace("-", "_");
+        var probeSource = keyDir.resolve(PCH_PROBE_SOURCE_PREFIX + suffix + ".c");
+        var probeObject = keyDir.resolve(PCH_PROBE_SOURCE_PREFIX + suffix + ".o");
+        try {
+            Files.writeString(probeSource, PCH_PROBE_SOURCE_CONTENT.formatted(suffix));
+            var probeCmd = buildTuCompileCommand(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, probeObject, probeSource, pchCandidate);
+            var probeRun = runPchProcess(probeCmd, projectDir, cachePath, registry, startedCommands, outputs);
+            return probeRun.exitCode() == 0 && Files.isRegularFile(probeObject);
+        } catch (IOException exception) {
+            return false;
+        } finally {
+            try {
+                Files.deleteIfExists(probeSource);
+                Files.deleteIfExists(probeObject);
+            } catch (IOException exception) {
+                // Leftover probe files never affect the entry's validity.
+            }
+        }
+    }
+
+    /// Runs one PCH-phase process and records its log section. An [IOException] (process
+    /// never started) escapes before recording, keeping the "no Command section for unstarted
+    /// processes" rule.
+    private @NotNull ProcessRun runPchProcess(@NotNull List<String> cmd, @NotNull Path projectDir, @NotNull Path cachePath, @NotNull CProcessRegistry registry, @NotNull List<List<String>> startedCommands, @NotNull List<String> outputs) throws IOException, InterruptedException {
+        var run = runProcess(cmd, projectDir, cachePath, registry);
+        startedCommands.add(cmd);
+        outputs.add(run.output());
+        return run;
+    }
+
+    /// Production version probe: routes `zig version` through this round's launcher and
+    /// registry (the child is cancelled like every other zig process) under the round's zig
+    /// cache environment. Only a successful parse is cached, process-wide, by [ZigUtil].
+    private @Nullable String probeZigVersion(@NotNull Path zig, @NotNull CProcessRegistry registry, @NotNull Path projectDir, @NotNull Path cachePath) throws InterruptedException {
+        return ZigUtil.findZigVersion(zig, processLauncher, registry, projectDir, zigCacheEnvironment(cachePath));
+    }
+
+    /// An installed entry is consumable only when marker, prefix header and PCH are all
+    /// present; the marker is published last, so its presence implies a completed install.
+    private static boolean isInstalledEntryComplete(@NotNull Path keyDir) {
+        return Files.isRegularFile(keyDir.resolve(PCH_READY_MARKER_NAME))
+                && Files.isRegularFile(keyDir.resolve(PCH_PREFIX_HEADER_NAME))
+                && Files.isRegularFile(keyDir.resolve(PCH_FILE_NAME));
+    }
+
+    /// Writes the prefix header at its final path through a temporary file. An existing header
+    /// with identical content (same-key entries share the constant content) is left untouched;
+    /// a differing one is corruption and gets replaced. The mtime is then normalized to a
+    /// fixed instant: clang validates the pch-recorded header mtime against the current file,
+    /// and zig's content cache can replay a pch built against an older-mtime copy of the same
+    /// content — a fixed instant makes that validation deterministic across rebuilds.
+    private static void installPrefixHeader(@NotNull Path prefixHeader) throws IOException {
+        if (!(Files.isRegularFile(prefixHeader) && Files.readString(prefixHeader).equals(PCH_PREFIX_HEADER_CONTENT))) {
+            var tmp = prefixHeader.resolveSibling(PCH_PREFIX_HEADER_NAME + ".tmp-" + randomSuffix());
+            Files.writeString(tmp, PCH_PREFIX_HEADER_CONTENT);
+            moveReplacing(tmp, prefixHeader);
+        }
+        if (!Files.getLastModifiedTime(prefixHeader).toInstant().equals(PCH_PREFIX_HEADER_MTIME)) {
+            Files.setLastModifiedTime(prefixHeader, FileTime.from(PCH_PREFIX_HEADER_MTIME));
+        }
+    }
+
+    /// Renames `tmp` onto `target`, atomically where supported, replacing any existing entry —
+    /// same-key racing entries are interchangeable, so last-writer-wins is safe.
+    private static void moveReplacing(@NotNull Path tmp, @NotNull Path target) throws IOException {
+        try {
+            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException exception) {
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /// Best-effort recursive delete for the self-heal path; `false` means the poisoned entry
+    /// could not be removed and the caller must fall back instead of rebuilding into a dirty
+    /// directory.
+    private static boolean deleteRecursively(@NotNull Path dir) {
+        try (var walk = Files.walk(dir)) {
+            var paths = walk.sorted(Comparator.reverseOrder()).toList();
+            for (var path : paths) {
+                Files.deleteIfExists(path);
+            }
+            return true;
+        } catch (IOException exception) {
+            return false;
+        }
+    }
+
+    private static @NotNull String randomSuffix() {
+        return UUID.randomUUID().toString();
+    }
+
+    /// PCH cache key: SHA-256 (truncated to [PCH_KEY_HASH_BYTES] bytes) over a canonical
+    /// document of the zig version, the resolved target, the full language flag list
+    /// (optimization level and the actual LTO token included — debug and release never share
+    /// a PCH, and a full-LTO fallback never reuses a ThinLTO entry) and the include
+    /// directories in command order (`-I` order is semantic: swapping two directories that
+    /// carry a same-named header must change the key). `GodotVersion`/`REAL_T_IS_DOUBLE`
+    /// never appear: they reach zig only through header contents, which the tree hashes cover.
+    static @NotNull String resolvePchCacheKey(@NotNull String zigVersion, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs) throws IOException {
+        var document = new StringBuilder();
+        document.append("zig-version=").append(zigVersion).append('\n');
+        document.append("zig-target=").append(zigTarget).append('\n');
+        document.append("language-flags=").append(String.join(" ", languageFlags(ltoMode, optimizationLevel))).append('\n');
+        for (var i = 0; i < includeDirs.size(); i++) {
+            var dir = includeDirs.get(i).toAbsolutePath().normalize();
+            document.append("include[").append(i).append("]=").append(dir).append('\n');
+            document.append("include-tree-sha256[").append(i).append("]=").append(hashIncludeTree(dir)).append('\n');
+        }
+        var digest = newSha256().digest(document.toString().getBytes(StandardCharsets.UTF_8));
+        return HexFormat.of().formatHex(digest, 0, PCH_KEY_HASH_BYTES);
+    }
+
+    /// Content hash of one include directory tree: regular files are visited in sorted
+    /// relative-path order (sorting applies only inside a directory; the directory order
+    /// itself is preserved by the caller) and each file contributes its length-prefixed
+    /// relative path and content, so editing, adding or removing any header changes the hash.
+    private static @NotNull String hashIncludeTree(@NotNull Path includeDir) throws IOException {
+        var digest = newSha256();
+        final List<Path> files;
+        try (var walk = Files.walk(includeDir)) {
+            files = walk.filter(Files::isRegularFile)
+                    .sorted(Comparator.comparing(path -> includeDir.relativize(path).toString()))
+                    .toList();
+        }
+        for (var file : files) {
+            var relative = includeDir.relativize(file).toString().replace(File.separatorChar, '/');
+            updateLengthPrefixed(digest, relative.getBytes(StandardCharsets.UTF_8));
+            updateLengthPrefixed(digest, Files.readAllBytes(file));
+        }
+        return HexFormat.of().formatHex(digest.digest());
+    }
+
+    /// Length-prefixing removes any concatenation ambiguity between path/content boundaries.
+    private static void updateLengthPrefixed(@NotNull MessageDigest digest, byte @NotNull [] bytes) {
+        var length = (long) bytes.length;
+        for (var i = Long.BYTES - 1; i >= 0; i--) {
+            digest.update((byte) (length >>> (i * Byte.SIZE)));
+        }
+        digest.update(bytes);
+    }
+
+    private static @NotNull MessageDigest newSha256() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is a required algorithm of every Java runtime", exception);
+        }
+    }
+
+    /// Name-based PCH whitelist anchored to the fixed `CProjectBuilder` native inputs: only
+    /// TUs that actually include `godot_binding.h` may force-include the PCH. `minicoro.c`
+    /// stays out so the Godot ABI headers never leak into the isolated assembly-backend TU.
+    static boolean isGodotBindingPchTu(@NotNull Path cFile) {
+        return PCH_WHITELIST_TU_NAMES.contains(cFile.getFileName().toString());
+    }
+
+    /// Heuristic for the near-impossible "zig rejects the PCH during a real TU compile after
+    /// the probe passed": any failed TU whose diagnostics mention PCH machinery. A false
+    /// positive costs one redundant no-PCH retry; a miss turns a PCH problem into a spurious
+    /// build failure, so the markers err on the inclusive side.
+    private static boolean anyFailedTuBlamesPch(TuSlot @NotNull [] slots) {
+        for (var slot : slots) {
+            if (slot.started && slot.exitCode != 0) {
+                var output = slot.output.toLowerCase(Locale.ROOT);
+                for (var marker : PCH_REJECTION_MARKERS) {
+                    if (output.contains(marker)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /// PCH build command: the TU language flags with `-c`/source replaced by header mode —
+    /// `zig cc -target <T> <languageFlags> -I... -x c-header <prefix.h> -o <pch>`.
+    public static @NotNull List<String> buildPchBuildCommand(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull Path prefixHeader, @NotNull Path pchOutput) {
+        var cmd = new ArrayList<String>();
+        cmd.add(zig.toString());
+        cmd.add("cc");
+        cmd.add("-target");
+        cmd.add(zigTarget);
+        cmd.addAll(languageFlags(ltoMode, optimizationLevel));
+        for (var inc : includeDirs) {
+            cmd.add("-I" + inc.toAbsolutePath());
+        }
+        cmd.add("-x");
+        cmd.add("c-header");
+        cmd.add(prefixHeader.toString());
+        cmd.add("-o");
+        cmd.add(pchOutput.toString());
+        return cmd;
     }
 
     /// Success path: raw outputs concatenated in slot order, empty outputs contribute nothing
@@ -438,10 +871,7 @@ public class ZigCcCompiler implements CCompiler {
     /// started at all — once started, a drained-output read failure is degraded to an inline
     /// diagnostic so the round keeps the process's exit code and its Command section.
     private @NotNull ProcessRun runProcess(@NotNull List<String> cmd, @NotNull Path projectDir, @NotNull Path cachePath, @NotNull CProcessRegistry registry) throws IOException, InterruptedException {
-        var environmentOverrides = Map.of(
-                "ZIG_CACHE_DIR", cachePath.resolve("local").toString(),
-                "ZIG_GLOBAL_CACHE_DIR", cachePath.resolve("global").toString()
-        );
+        var environmentOverrides = zigCacheEnvironment(cachePath);
         var p = processLauncher.start(cmd, projectDir, environmentOverrides);
         registry.register(p);
         var outputBytes = new ByteArrayOutputStream();
@@ -486,6 +916,15 @@ public class ZigCcCompiler implements CCompiler {
             output += "[gdcc] incomplete compiler output: " + readFailure + "\n";
         }
         return new ProcessRun(exit, output);
+    }
+
+    /// Both zig cache roots under the compiler cache root, passed to every zig sub-process of
+    /// the round (TU compiles, PCH build/probe, link, version probe) identically.
+    private static @NotNull Map<String, String> zigCacheEnvironment(@NotNull Path cachePath) {
+        return Map.of(
+                "ZIG_CACHE_DIR", cachePath.resolve("local").toString(),
+                "ZIG_GLOBAL_CACHE_DIR", cachePath.resolve("global").toString()
+        );
     }
 
     private record ProcessRun(int exitCode, @NotNull String output) {

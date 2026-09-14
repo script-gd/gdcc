@@ -1,5 +1,6 @@
 package gd.script.gdcc.backend.c.build;
 
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -19,6 +20,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// exactly the processes that were started — on a TU failure every TU of the round (parallel
 /// siblings run to completion), in `cFiles` slot order, the link section only when the link
 /// ran — and stale files under `obj/` must never leak into the link.
+///
+/// These toy rounds pass no include dirs, so the PCH build deterministically fails
+/// (`godot_binding.h` is unreachable) and the round degrades to no-PCH: per the buildLog
+/// contract the fixed fallback line leads the log, followed by the PCH-phase Command section,
+/// then the TU/link sections. The assertions below anchor exactly that shape.
 public class ZigCcCompilerFailureTest {
 
     @Test
@@ -30,14 +36,19 @@ public class ZigCcCompilerFailureTest {
         var broken = tempDir.resolve("broken.c");
         Files.writeString(broken, "this is not valid C\n");
 
-        var result = new ZigCcCompiler().compile(tempDir, List.of(), List.of(broken), "probe", COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var result = newCompiler(tempDir).compile(tempDir, List.of(), List.of(broken), "probe", COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
 
         assertFalse(result.success());
         assertTrue(result.artifacts().isEmpty(), "a failed round must not publish artifacts");
         var buildLog = result.buildLog();
-        assertTrue(buildLog.startsWith("Command: "), () -> "failure log opens with the started command section:\n" + buildLog);
-        assertEquals(1, countCommandSections(buildLog), () -> "exactly the one started TU may appear:\n" + buildLog);
-        assertTrue(buildLog.contains(broken.toAbsolutePath().toString()));
+        assertTrue(buildLog.startsWith("[gdcc] PCH unavailable this round: pch build failed"),
+                () -> "the PCH fallback line leads the log:\n" + buildLog);
+        // Sections: the failed PCH build, then the one started TU; the link never appears.
+        assertEquals(2, countCommandSections(buildLog), () -> "PCH-phase section plus exactly the started TU:\n" + buildLog);
+        var indexPchBuild = buildLog.indexOf("-x c-header");
+        var indexBroken = buildLog.indexOf(broken.toAbsolutePath().toString());
+        assertTrue(indexPchBuild > 0 && indexBroken > indexPchBuild,
+                () -> "the PCH-phase section precedes the TU section:\n" + buildLog);
         assertTrue(buildLog.contains("error:"), () -> "clang's diagnostic is part of the section:\n" + buildLog);
         assertFalse(buildLog.contains("-shared"), () -> "the link step never started and must not appear:\n" + buildLog);
     }
@@ -55,20 +66,23 @@ public class ZigCcCompilerFailureTest {
         Files.writeString(brokenB, "int gdcc_probe_b(void) { return ; }\n");
         Files.writeString(validC, "int gdcc_probe_c(void) { return 3; }\n");
 
-        var result = new ZigCcCompiler().compile(tempDir, List.of(), List.of(validA, brokenB, validC), "probe", COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var result = newCompiler(tempDir).compile(tempDir, List.of(), List.of(validA, brokenB, validC), "probe", COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
 
         assertFalse(result.success());
         assertTrue(result.artifacts().isEmpty());
         var buildLog = result.buildLog();
+        assertTrue(buildLog.startsWith("[gdcc] PCH unavailable this round: pch build failed"),
+                () -> "the PCH fallback line leads the log:\n" + buildLog);
         // Parallel TU semantics: a failing TU does not stop its siblings — all three TUs are
         // started and run to completion so the failure log is complete; their sections follow
-        // the cFiles slot order; the link step is never started.
-        assertEquals(3, countCommandSections(buildLog), () -> "every started TU gets a section:\n" + buildLog);
+        // the cFiles slot order after the single PCH-phase section; the link never starts.
+        assertEquals(4, countCommandSections(buildLog), () -> "PCH-phase section plus every started TU:\n" + buildLog);
+        var indexPchBuild = buildLog.indexOf("-x c-header");
         var indexA = buildLog.indexOf(validA.toAbsolutePath().toString());
         var indexB = buildLog.indexOf(brokenB.toAbsolutePath().toString());
         var indexC = buildLog.indexOf(validC.toAbsolutePath().toString());
-        assertTrue(indexA >= 0 && indexB > indexA && indexC > indexB,
-                () -> "TU sections keep the cFiles order:\n" + buildLog);
+        assertTrue(indexPchBuild > 0 && indexA > indexPchBuild && indexB > indexA && indexC > indexB,
+                () -> "PCH prelude first, then TU sections in cFiles order:\n" + buildLog);
         assertTrue(buildLog.contains("error:"), () -> "the broken TU's diagnostic is part of its section:\n" + buildLog);
         assertFalse(buildLog.contains("-shared"), () -> "a failed TU round never reaches the link step:\n" + buildLog);
     }
@@ -85,17 +99,19 @@ public class ZigCcCompilerFailureTest {
         Files.writeString(dupA, "int gdcc_dup(void) { return 1; }\n");
         Files.writeString(dupB, "int gdcc_dup(void) { return 2; }\n");
 
-        var result = new ZigCcCompiler().compile(tempDir, List.of(), List.of(dupA, dupB), "probe", COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var result = newCompiler(tempDir).compile(tempDir, List.of(), List.of(dupA, dupB), "probe", COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
 
         assertFalse(result.success());
         assertTrue(result.artifacts().isEmpty(), "a failed link must not publish artifacts");
         var buildLog = result.buildLog();
-        assertEquals(3, countCommandSections(buildLog), () -> "both TUs plus the link were started:\n" + buildLog);
+        assertTrue(buildLog.startsWith("[gdcc] PCH unavailable this round: pch build failed"),
+                () -> "the PCH fallback line leads the log:\n" + buildLog);
+        assertEquals(4, countCommandSections(buildLog), () -> "PCH-phase section, both TUs, plus the link:\n" + buildLog);
         var indexA = buildLog.indexOf(dupA.toAbsolutePath().toString());
         var indexB = buildLog.indexOf(dupB.toAbsolutePath().toString());
         var indexLink = buildLog.indexOf("-shared");
-        assertTrue(indexA >= 0 && indexB > indexA && indexLink > indexB,
-                () -> "sections follow the slot order TU0, TU1, link:\n" + buildLog);
+        assertTrue(indexA > 0 && indexB > indexA && indexLink > indexB,
+                () -> "sections follow the order TU0, TU1, link:\n" + buildLog);
         assertTrue(buildLog.contains("duplicate symbol"), () -> "lld's diagnostic is part of the link section:\n" + buildLog);
     }
 
@@ -118,7 +134,7 @@ public class ZigCcCompilerFailureTest {
 
         var validA = tempDir.resolve("probe_a.c");
         Files.writeString(validA, "int gdcc_probe_a(void) { return 1; }\n");
-        var result = new ZigCcCompiler().compile(tempDir, List.of(), List.of(validA), "probe", COptimizationLevel.DEBUG, targetPlatform);
+        var result = newCompiler(tempDir).compile(tempDir, List.of(), List.of(validA), "probe", COptimizationLevel.DEBUG, targetPlatform);
 
         assertTrue(result.success(), () -> "stale obj/ leftovers must not affect the round:\n" + result.buildLog());
         assertTrue(Files.isRegularFile(result.artifacts().getFirst()));
@@ -132,5 +148,13 @@ public class ZigCcCompilerFailureTest {
             }
         }
         return count;
+    }
+
+    /// Real-zig compiler with only the cache root pinned into the test directory: these rounds
+    /// deterministically fail their PCH build (no include dirs), and a parent-process
+    /// `GDCC_SHARED_C_COMPILER_CACHE` must not redirect that fallout into the shared cache.
+    private static @NotNull CCompiler newCompiler(Path tempDir) {
+        var cacheRoot = tempDir.resolve("compiler-cache");
+        return new ZigCcCompiler(CProcessLauncher.processBuilder(), ZigUtil::findZig, null, projectDir -> cacheRoot);
     }
 }

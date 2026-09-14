@@ -108,6 +108,13 @@ public final class FakeProcessLauncher implements CProcessLauncher {
         return new ZigCcCompiler(this, () -> Path.of("zig"));
     }
 
+    /// PCH seam: a fixed zig version (no probe process is spawned, keeping recorded command
+    /// sequences deterministic) and a pinned cache root, so PCH rounds stay isolated inside a
+    /// test-managed temporary directory instead of touching any shared compiler cache.
+    public @NotNull CCompiler newCompilerWithPch(@NotNull String zigVersion, @NotNull Path cacheRoot) {
+        return new ZigCcCompiler(this, () -> Path.of("zig"), (zig, registry, projectDir, cachePath) -> zigVersion, projectDir -> cacheRoot);
+    }
+
     /// Every `start()` call in call order, including calls that then failed to "start".
     public @NotNull List<List<String>> recordedCommands() {
         synchronized (recordedCommands) {
