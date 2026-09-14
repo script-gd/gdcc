@@ -4,6 +4,8 @@ import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -11,6 +13,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -25,6 +28,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// (`godot_binding.h` is unreachable) and the round degrades to no-PCH: per the buildLog
 /// contract the fixed fallback line leads the log, followed by the PCH-phase Command section,
 /// then the TU/link sections. The assertions below anchor exactly that shape.
+///
+/// CONCURRENT: each method is an independent cold-cache real-zig round (cache root pinned
+/// under the per-method `@TempDir`), so methods pack into the shared fork-join pool.
+@Execution(ExecutionMode.CONCURRENT)
 public class ZigCcCompilerFailureTest {
 
     @Test

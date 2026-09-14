@@ -1,5 +1,6 @@
 package gd.script.gdcc.api;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -15,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// pipeline only. Results are printed as `[gdcc-api-throughput]` lines for humans; the test asserts
 /// correctness of every run but intentionally sets no performance threshold, keeping it stable
 /// across machines.
+@Tag("throughput")
 class ApiCompileThroughputTest {
     private static final int WARMUP_ITERATIONS = 20;
     private static final int MEASURED_ITERATIONS = 50;

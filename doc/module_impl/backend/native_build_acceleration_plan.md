@@ -478,3 +478,15 @@ script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest,Fr
 script/run-gradle-targeted-tests.sh --tests ZigUtilTest,ZigCcCompilerPchTest,ZigCcCompilerCommandTest,ResourceExtractorTest,ApiZigCcCompilerCancellationTest
 script/run-gradle-targeted-tests.sh --tests ZigCcCompilerFailureTest,ZigCcCompilerPchIntegrationTest
 ```
+
+### CI 测试并行化（2026-09-14 完成，验收全绿）
+
+背景：PR 的 CI 时长增长 3 倍+，主因是本计划新增的真 zig 编译器测试——`ZigCcCompilerPchIntegrationTest`/`ZigCcCompilerFailureTest` 每个方法钉死独立冷 cache root（每轮重付 compiler-rt 与全 TU 冷编译），`ZigCcCompilerCrossTargetSmokeTest` 单方法内串行跑 5 个 target，在 4 核 runner 上叠加为重的串行成本。
+
+- 新增 `src/test/resources/junit-platform.properties`：开启 JUnit 类级并行，`mode.default=same_thread` + `mode.classes.default=same_thread`（未标注类执行模型不变），fixed parallelism=3（可用 `-Djunit.jupiter.execution.parallel.config.fixed.parallelism=N` 覆盖）；标注类的方法继承 CONCURRENT，与未标注的串行类可时间交叠但无共享状态（逐方法 `@TempDir`、无静态可变状态）。
+- 4 个重真 zig 类标注 `@Execution(ExecutionMode.CONCURRENT)`：`ZigCcCompilerCrossTargetSmokeTest`、`ZigCcCompilerFailureTest`、`ZigCcCompilerIncrementalIntegrationTest`、`ZigCcCompilerPchIntegrationTest`。
+- 拆分单方法多目标构建：`CrossTargetSmokeTest` 的 5 target 循环改为 `@ParameterizedTest` 逐 target 调用，各 target 构建在池内并行；`IncrementalIntegrationTest`（3 方法）与 `PchIntegrationTest`（3 方法）本身已是逐方法独立工程，无需再拆。
+- `PchIntegrationTest` 的 Godot 校验改为复制 `test_project` fixture（排除生成的 `bin/` 与 `.godot/`）到每方法独立目录后运行，避免并行下与串行集成测试共享的 `test_project` 目录撞车。
+- 明确不并行：`ZigCcCompilerParallelTest` 与 `ApiZigCcCompilerCancellationTest`（时序/取消语义敏感）、全部 fake/纯 Java 测试（轻量无收益）。
+- 吞吐量测试默认排除：`GdScriptBenchmarkCompileTest` 标注 `@Tag("throughput")`，`build.gradle.kts` 的 test 任务默认 `excludeTags("throughput")`（已验证默认 `--tests` 指向该类时报 No tests found），本地显式运行用 `-PrunThroughputTests=true`（已验证 14 个 release 构建全绿）；`GdScriptBenchmarkRunnerTest` 走 fake compiler，轻量，保持默认运行。
+- 验证（本开发机，zig 0.16.0）：4 个标注类并行运行 17 测试全绿（2m3s）；`ZigCcCompilerCommandTest`、`ZigCcCompilerPchTest`、`ZigCcCompilerParallelTest`、`ZigUtilTest` 串行回归全绿。

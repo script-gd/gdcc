@@ -10,6 +10,8 @@ import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -36,6 +38,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// - an mtime-only change of a transitively included header (external churn; production
 ///   extraction prevents it) degrades safely to no-PCH instead of failing the build;
 /// - the PCH-built artifact loads in Godot when `GODOT_BIN` is configured.
+///
+/// CONCURRENT: each method pins its own cache root under the per-method `@TempDir`, and the
+/// Godot run below uses a unique project directory per invocation (never the shared
+/// `test_project` directory used by the sequential integration tests).
+@Execution(ExecutionMode.CONCURRENT)
 public class ZigCcCompilerPchIntegrationTest {
 
     @Test
@@ -81,7 +88,7 @@ public class ZigCcCompilerPchIntegrationTest {
         assertTrue(Files.isRegularFile(secondKeyDir.resolve(".ready")), "the new key's entry was installed");
 
         // The PCH-built artifact loads and runs in Godot when a binary is configured.
-        runInGodotIfAvailable(third.artifacts());
+        runInGodotIfAvailable(third.artifacts(), tempDir);
     }
 
     @Test
@@ -193,12 +200,15 @@ public class ZigCcCompilerPchIntegrationTest {
 
     /// Minimal Godot validation: the project carries the PCH-built library and a bare scene
     /// script; a broken library makes Godot log the dynamic-loader failure before the script
-    /// ever prints the stop signal.
-    private static void runInGodotIfAvailable(@NotNull List<Path> artifacts) throws IOException, InterruptedException {
+    /// ever prints the stop signal. The project is a private copy of the checked-in fixture so
+    /// a concurrent run never collides with the sequential tests' shared `test_project`.
+    private static void runInGodotIfAvailable(@NotNull List<Path> artifacts, @NotNull Path projectBaseDir) throws IOException, InterruptedException {
         if (GodotGdextensionTestRunner.findGodotBinaryFromEnv() == null) {
             return;
         }
-        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        var projectDir = projectBaseDir.resolve("godot_project");
+        copyTestProjectFixture(projectDir);
+        var runner = new GodotGdextensionTestRunner(projectDir);
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
                 artifacts,
                 List.of(),
@@ -212,6 +222,28 @@ public class ZigCcCompilerPchIntegrationTest {
         var output = runResult.combinedOutput();
         assertFalse(output.contains("Can't open dynamic library"), () -> "the PCH-built library failed to load:\n" + output);
         assertTrue(runResult.stopSignalSeen(), () -> "the Godot run did not complete:\n" + output);
+    }
+
+    /// Copies the checked-in `test_project` fixture except the generated parts (`bin/`
+    /// artifacts, the `.godot` import cache): `prepareProject` rewrites those anyway, and the
+    /// rest (`project.godot`, `root.gd`, icons, uid files) must exist for Godot to start.
+    private static void copyTestProjectFixture(@NotNull Path targetDir) throws IOException {
+        var source = Path.of("test_project");
+        try (var paths = Files.walk(source)) {
+            for (var path : paths.toList()) {
+                var relative = source.relativize(path);
+                if (relative.getNameCount() > 0
+                        && (relative.getName(0).toString().equals("bin") || relative.getName(0).toString().equals(".godot"))) {
+                    continue;
+                }
+                var target = targetDir.resolve(relative);
+                if (Files.isDirectory(path)) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.copy(path, target);
+                }
+            }
+        }
     }
 
     /// Mirrors the output-base-name rule of `CProjectBuilder.buildProject(...)`.

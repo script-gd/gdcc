@@ -5,12 +5,17 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -26,6 +31,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// by design — minicoro locks `MCO_USE_ASM` and zig ships no Emscripten sysroot — and android
 /// linking needs the NDK/Bionic. The Emscripten backend is a separate post-MVP project;
 /// `webAndAndroidRealBuildsRemainKnownLimitations` is the explicit skip record.
+///
+/// CONCURRENT with one parameterized invocation per target: the per-target builds are
+/// independent probe projects, so they pack into the shared fork-join pool instead of
+/// serializing five cold cross-target builds inside one test.
+@Execution(ExecutionMode.CONCURRENT)
 public class ZigCcCompilerCrossTargetSmokeTest {
     /// Targets the current toolchain can build end to end: host + linux cross + windows cross.
     private static final List<TargetPlatform> BUILDABLE_TARGETS = List.of(
@@ -35,20 +45,23 @@ public class ZigCcCompilerCrossTargetSmokeTest {
             TargetPlatform.WINDOWS_X86_64,
             TargetPlatform.WINDOWS_AARCH64);
 
-    @Test
-    public void releaseBuildsLinkForBuildableCrossTargets(@TempDir Path tempDir) throws IOException {
+    private static @NotNull Stream<TargetPlatform> buildableTargets() {
+        return BUILDABLE_TARGETS.stream();
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("buildableTargets")
+    public void releaseBuildLinksForBuildableCrossTarget(TargetPlatform target, @TempDir Path tempDir) throws IOException {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping cross-target link smoke test");
             return;
         }
-        for (var target : BUILDABLE_TARGETS) {
-            var projectDir = Files.createDirectories(tempDir.resolve(target.name().toLowerCase(Locale.ROOT)));
-            var result = compileProbe(projectDir, target);
-            assertTrue(result.success(), () -> target + " release link smoke failed:\n" + result.buildLog());
-            assertTrue(Files.isRegularFile(result.artifacts().getFirst()),
-                    () -> target + " must produce the shared library artifact");
-            assertEquals(target.sharedLibraryFileName("probe"), result.artifacts().getFirst().getFileName().toString());
-        }
+        var projectDir = Files.createDirectories(tempDir.resolve("project"));
+        var result = compileProbe(projectDir, target);
+        assertTrue(result.success(), () -> target + " release link smoke failed:\n" + result.buildLog());
+        assertTrue(Files.isRegularFile(result.artifacts().getFirst()),
+                () -> target + " must produce the shared library artifact");
+        assertEquals(target.sharedLibraryFileName("probe"), result.artifacts().getFirst().getFileName().toString());
     }
 
     @Test

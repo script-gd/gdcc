@@ -11,6 +11,8 @@ import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -28,6 +30,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// rebuild where zig's per-TU content cache absorbs the runtime TUs. Both rounds must succeed,
 /// the artifact naming contract must hold, and the rebuilt shared library must keep exporting
 /// `gdextension_entry`. Build time is intentionally never asserted.
+///
+/// CONCURRENT: each method owns an independent project under its per-method `@TempDir`.
+@Execution(ExecutionMode.CONCURRENT)
 public class ZigCcCompilerIncrementalIntegrationTest {
 
     @Test
