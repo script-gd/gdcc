@@ -1410,8 +1410,12 @@ public final class CGenHelper {
     /// - typed `Array[T]` publishes `PROPERTY_HINT_ARRAY_TYPE` plus one leaf atom whenever `T != Variant`
     /// - typed `Dictionary[K, V]` publishes `PROPERTY_HINT_DICTIONARY_TYPE` plus a flat `key;value`
     ///   hint string whenever either side is stricter than `Variant`
-    /// - `class_name` stays on the existing empty default here; typed dictionary leaf identity lives in
-    ///   `hint_string`, not in the top-level property info class slot
+    /// - Object slots publish the concrete object class in `class_name` (engine classes and GDCC
+    ///   classes alike), per the ABI note that class name should always be present if it applies;
+    ///   this makes Godot-facing surfaces (editor docs, autocomplete, dynamic call checks) show
+    ///   `HTTPRequest` / `PendingRequest` instead of a bare `Object`. Every other slot keeps the
+    ///   empty `class_name`: typed container leaf identity lives in `hint_string`, not in the
+    ///   top-level property info class slot
     /// - GDCC inner classes keep flowing through these metadata surfaces as their canonical
     ///   `Outer__sub__Inner` names; backend does not introduce a separate Godot-facing alias
     public @NotNull BoundMetadata renderBoundMetadata(@NotNull GdType type,
@@ -1428,6 +1432,9 @@ public final class CGenHelper {
                 : baseUsageExpr;
         var hintEnumLiteral = "godot_PROPERTY_HINT_NONE";
         var hintStringExpr = "GD_STATIC_S(u8\"\")";
+        var classNameExpr = type instanceof GdObjectType objectType
+                ? "GD_STATIC_SN(u8\"" + escapeStringLiteral(objectType.getTypeName()) + "\")"
+                : "GD_STATIC_SN(u8\"\")";
         if (type instanceof GdArrayType arrayType && !arrayType.isGenericArray()) {
             hintEnumLiteral = "godot_PROPERTY_HINT_ARRAY_TYPE";
             hintStringExpr = "GD_STATIC_S(u8\"" + escapeStringLiteral(renderTypedArrayHintString(arrayType, useSite)) + "\")";
@@ -1439,14 +1446,14 @@ public final class CGenHelper {
                 "GDEXTENSION_VARIANT_TYPE_" + extensionType.name(),
                 hintEnumLiteral,
                 hintStringExpr,
-                "GD_STATIC_SN(u8\"\")",
+                classNameExpr,
                 usageExpr
         );
     }
 
     /// Signal-parameter metadata reuses the method-arg usage surface, not export-property usage.
     ///
-    /// Object `class_name` stays on the existing empty default from `renderBoundMetadata`.
+    /// Object parameters publish their concrete class in `class_name` via `renderBoundMetadata`.
     public @NotNull BoundMetadata renderSignalParameterMetadata(@NotNull GdType type) {
         return renderBoundMetadata(type, "godot_PROPERTY_USAGE_DEFAULT", "signal parameter");
     }

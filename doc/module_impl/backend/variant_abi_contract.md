@@ -80,12 +80,15 @@
   - property registration metadata
 - non-`Variant` outward slot 继续沿用现有 `gdExtensionType` 与 base usage 行为；入站
   `call_func` wrapper 只在少量 frontend ordinary-boundary widening 上额外接受相邻 runtime tag，不改变 outward metadata
-- outward ABI 的 `hint` / `hint_string` / `class_name` 由 export 注解合同驱动：
-  - 带 `@export*` variant key 的 property：`hint` 为 key 对应的 `PROPERTY_HINT_*`，`hint_string` 为注解 value 原文，`class_name` 为空
+- outward ABI 的 `hint` / `hint_string` 由 export 注解合同驱动：
+  - 带 `@export*` variant key 的 property：`hint` 为 key 对应的 `PROPERTY_HINT_*`，`hint_string` 为注解 value 原文，`class_name` 为空（frontend 限定 variant key 只用于非 Object 类型）
   - 裸 `@export` 的 Object property：Resource 派生 → `PROPERTY_HINT_RESOURCE_TYPE`、Node 派生 → `PROPERTY_HINT_NODE_TYPE`，`hint_string` 与 `class_name` 均为 property 类型类名
-  - 裸 `@export` 的非 Object property：复用 `renderBoundMetadata`（typed Array/Dictionary 仍发 `ARRAY_TYPE` / `DICTIONARY_TYPE`，其余 `HINT_NONE`），`class_name` 为空，usage 为 `DEFAULT`
+  - 裸 `@export` 的非 Object property：复用 `renderBoundMetadata`（typed Array/Dictionary 仍发 `ARRAY_TYPE` / `DICTIONARY_TYPE`，其余 `HINT_NONE`），usage 为 `DEFAULT`
   - 无 export 的 property：同上 hint 规则，usage 为 `NO_EDITOR`
-  - method argument / return metadata：不受 export 合同驱动，继续走 `renderBoundMetadata`（含 typed-container hint），`class_name` 为空
+  - method argument / return metadata：不受 export 合同驱动，继续走 `renderBoundMetadata`（含 typed-container hint）
+- `class_name` 槽统一规则（`renderBoundMetadata` 收口）：
+  - `GdObjectType` 槽位（method argument / return、signal 参数、任意 property 一律）的 `class_name` 填对象类型类名（engine 类、GDCC 类、inner 类 canonical 名）
+  - 非 Object 槽位（含 `Variant`、typed Array/Dictionary 顶层）的 `class_name` 保持空；typed-container leaf identity 只住在 `hint_string`
 - `void` 不允许进入 outward metadata helper：
   - 缺失 outward metadata 的类型必须 fail-fast
   - 不能在模板层静默拼接无意义的 enum 字面量
@@ -167,7 +170,7 @@
   - `template_451/entry.c.ftl`
 - 不允许在新的 generator/template 中再次散落硬编码分支去“顺手修 `Variant` ABI”
 - property registration 的 `class_name` 槽位形态已固定：
-  - Object 导出的 property 携带 property 类型类名（Resource/Node hint 配套），其余 property 为空串
+  - Object property 一律携带 property 类型类名（裸 `@export` 的 Resource/Node 另有 hint 配套；非 export 的 Object property 同样发布类名），非 Object property 为空串
   - 这与 `Variant` ABI 无关；typed-container hint 由 `renderBoundMetadata` 独立持有，不经过 `class_name` 槽
 
 ### 6. typed dictionary 边界合同

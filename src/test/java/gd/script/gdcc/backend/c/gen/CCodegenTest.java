@@ -1265,6 +1265,43 @@ public class CCodegenTest {
         assertContainsAll(acceptIntCallBody, "expected = GDEXTENSION_VARIANT_TYPE_INT;");
     }
 
+    /// Object-typed method args and return values publish the concrete class in the class_name
+    /// slot so Godot-facing surfaces show the real type instead of a bare Object.
+    @Test
+    public void generatesObjectMethodBindingMetadataWithConcreteClassName() throws Exception {
+        var workerClass = new LirClassDef("ObjectMetaWorker", "Node");
+
+        var echoNode = new LirFunctionDef("echo_node");
+        echoNode.setReturnType(new GdObjectType("Node"));
+        echoNode.addParameter(new LirParameterDef("self", new GdObjectType("ObjectMetaWorker"), null, echoNode));
+        echoNode.addParameter(new LirParameterDef("value", new GdObjectType("Node"), null, echoNode));
+        var echoEntry = new LirBasicBlock("entry");
+        echoEntry.setTerminator(new ReturnInsn("value"));
+        echoNode.addBasicBlock(echoEntry);
+        echoNode.setEntryBlockId("entry");
+        workerClass.addFunction(echoNode);
+
+        var module = new LirModule("object_method_bind_metadata_module", List.of(workerClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var hCode = generatedFileText(files, "entry.h");
+
+        var echoNodeBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Node_ret_Node");
+
+        assertContainsAll(
+                echoNodeBindBody,
+                "gdcc_make_property_full(arg0_type, arg0_name, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"Node\"), godot_PROPERTY_USAGE_DEFAULT)",
+                "GDExtensionPropertyInfo return_info = gdcc_make_property_full(GDEXTENSION_VARIANT_TYPE_OBJECT, GD_STATIC_SN(u8\"\"), godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"Node\"), godot_PROPERTY_USAGE_DEFAULT);"
+        );
+    }
+
     @Test
     public void generatesCallWrapperInboundIntToFloatCompatibilityWithoutWeakeningOtherParams() throws Exception {
         var workerClass = new LirClassDef("InboundPrimitiveCallWorker", "Node");

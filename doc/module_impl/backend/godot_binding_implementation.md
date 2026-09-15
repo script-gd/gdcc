@@ -421,7 +421,7 @@ constant 这类模块变化 symbol 才进入 module-local。
   - `_class_bind_methods` 只注册当前类 `classDef.signals`
   - 无参 signal 传 `NULL, 0`；有参 signal 复用 `gdcc_make_property_full` /
     `gdcc_destruct_property`，usage 为 method-arg `godot_PROPERTY_USAGE_DEFAULT`
-  - Object signal 参数 `class_name` 保持空默认
+  - Object signal 参数 `class_name` 发布对象类型类名
 - `CallMethodInsnGenTest` / `CallMethodInsnGenEngineTest`
   - caller-side normalized helper surface
   - exact engine route 不回退 public wrapper

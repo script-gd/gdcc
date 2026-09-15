@@ -263,7 +263,7 @@ standalone trampoline 通过 `ClassDB.class_call_static` 调 GDCC / engine 静�
 - 0 参传 `NULL, 0`，不得生成零长度数组
 - 有参经 `CGenHelper.renderSignalParameterMetadata` → `renderBoundMetadata(..., "godot_PROPERTY_USAGE_DEFAULT", "signal parameter")`（method-arg usage，不得误用 export-property usage）
 - 注册后 `gdcc_destruct_property` 释放 `name` / `hint_string` / `class_name`
-- Object 参数 `class_name` 保持空默认 `GD_STATIC_SN(u8"")`
+- Object 参数 `class_name` 发布对象类型类名（`renderBoundMetadata` 统一收口，见 `variant_abi_contract.md` 的 `class_name` 槽统一规则）
 - engine / native 同名守卫：`ClassRegistry.findEngineSignalInHierarchy` 只匹配 `ExtensionGdClass`；skeleton 用 `classDef.getSuperName()` 起查，命中发 `sema.class_skeleton` 并跳过该 `SignalStatement`
 
 `CGenHelper.renderGdTypeInC(GdSignalType)` → `godot_Signal` 目前走 `default` 兜底（`"godot_" + getTypeName()`），无显式 `case GdSignalType`。

@@ -158,6 +158,8 @@ backend 对 canonical class name 的消费必须区分两层 surface，**不得*
 1. **Godot / identity surface（保留 canonical `__sub__`）**
    - 注册名、`GD_STATIC_SN(...)`、bind owner class、instance attach
    - typed array / typed dictionary object leaf 的 hint string
+   - 独立 Object 槽位（method argument / return、signal 参数、property）的
+     `GDExtensionPropertyInfo.class_name`
    - GDCC wrapper struct / 部分 layout helper 等仍直接拼接 canonical name 的路径
      （例如 `Outer__sub__Inner`、`Outer__sub__Inner_object_ptr`）
    - 主要模板：`entry.c.ftl`、`entry.h.ftl`、`func.ftl`
@@ -252,7 +254,10 @@ Godot-facing surface 继续直接消费 canonical class name，但这不是一�
 - typed array / typed dictionary object leaf 继续直接输出 canonical `Outer__sub__Inner`
 - engine leaf 与 generic leaf 的 outward grammar 保持各自既有规则
 - nested typed leaf 继续按当前 ABI 边界 fail-fast
-- typed-container 路径的 `BoundMetadata.classNameExpr` 继续保持空值；typed-container object leaf identity 停留在 `hint_string`
+- typed-container 顶层槽位的 `BoundMetadata.classNameExpr` 继续保持空值；typed-container object leaf identity 停留在 `hint_string`
+- 独立 `GdObjectType` 槽位（method argument / return、signal 参数、任意 property）的
+  `GDExtensionPropertyInfo.class_name` 直接发布对象类型类名（engine 类、GDCC 类、inner
+  canonical `Outer__sub__Inner`），由 `CGenHelper.renderBoundMetadata(...)` 统一收口
 
 ### 3.3 runtime compare 面
 
@@ -273,22 +278,18 @@ Godot-facing surface 继续直接消费 canonical class name，但这不是一�
 - `Variant -> Object` check 继续使用 canonical expected class name，并保留 subclass-compatible fallback
 - engine object 与 GDCC object 的 subclass-match 行为都必须继续与 ClassDB 继承关系一致
 
-### 3.4 dormant / engine-only 面
+### 3.4 engine-only 面
 
-有两类 surface 仍然需要明确保持不变：
+engine-only 面需要明确保持不变：
 
-- dormant / 预留面
-  - `BoundMetadata.classNameExpr`
-  - `CGenHelper.renderBoundMetadata(...)`
-  - `template_451/entry.h.ftl`
 - engine-only 面
   - `godot_classdb_construct_object2(...)`
   - engine method bind lookup
 
 当前合同：
 
-- typed-container 路径的 `BoundMetadata.classNameExpr` 继续保持空值，不得顺手填成 canonical
-- 裸 `@export` Object property 的 `class_name` 槽携带的是 property 类型类名（export 注解合同），不属于本合同的 container leaf identity 通道
+- typed-container 顶层槽位的 `BoundMetadata.classNameExpr` 继续保持空值，不得顺手填成 canonical；container object leaf identity 只走 `hint_string`
+- 裸 `@export` Object property 的 `class_name` 槽携带的是 property 类型类名（export 注解合同），与 §3.2 的独立 Object 槽位规则同向，不属于本合同的 container leaf identity 通道
 - native construct / engine lookup 继续只使用 engine/native owner class 名
 
 ---

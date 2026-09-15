@@ -284,6 +284,24 @@ class CGenHelperTest {
     }
 
     @Test
+    @DisplayName("renderBoundMetadata should publish the concrete object class in class_name")
+    void renderBoundMetadataShouldPublishObjectClassName() {
+        var engineMetadata = helper.renderBoundMetadata(new GdObjectType("HTTPRequest"), "godot_PROPERTY_USAGE_DEFAULT");
+        var gdccMetadata = helper.renderBoundMetadata(new GdObjectType("PendingRequest"), "godot_PROPERTY_USAGE_NO_EDITOR");
+        var innerMetadata = helper.renderBoundMetadata(new GdObjectType("Outer__sub__Inner"), "godot_PROPERTY_USAGE_DEFAULT");
+        var genericMetadata = helper.renderBoundMetadata(GdObjectType.OBJECT, "godot_PROPERTY_USAGE_DEFAULT");
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_OBJECT", engineMetadata.typeEnumLiteral());
+        assertEquals("godot_PROPERTY_HINT_NONE", engineMetadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"\")", engineMetadata.hintStringExpr());
+        assertEquals("GD_STATIC_SN(u8\"HTTPRequest\")", engineMetadata.classNameExpr());
+        assertEquals("GD_STATIC_SN(u8\"PendingRequest\")", gdccMetadata.classNameExpr());
+        assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", gdccMetadata.usageExpr());
+        assertEquals("GD_STATIC_SN(u8\"Outer__sub__Inner\")", innerMetadata.classNameExpr());
+        assertEquals("GD_STATIC_SN(u8\"Object\")", genericMetadata.classNameExpr());
+    }
+
+    @Test
     @DisplayName("renderBoundMetadata should emit typed dictionary hint for object leaf")
     void renderBoundMetadataShouldEmitTypedDictionaryHintForObjectLeaf() {
         var metadata = helper.renderBoundMetadata(
@@ -372,8 +390,8 @@ class CGenHelperTest {
     }
 
     @Test
-    @DisplayName("renderBoundMetadata should keep inner canonical object leaves verbatim while leaving dormant class slot empty")
-    void renderBoundMetadataShouldKeepInnerCanonicalObjectLeavesVerbatimWhileLeavingDormantClassSlotEmpty() {
+    @DisplayName("renderBoundMetadata should keep inner canonical object leaves verbatim while leaving top-level class slot empty")
+    void renderBoundMetadataShouldKeepInnerCanonicalObjectLeavesVerbatimWhileLeavingTopLevelClassSlotEmpty() {
         var typedArrayMetadata = helper.renderBoundMetadata(
                 new GdArrayType(new GdObjectType("RuntimeOuter__sub__Worker")),
                 "godot_PROPERTY_USAGE_DEFAULT",
@@ -837,8 +855,8 @@ class CGenHelperTest {
     }
 
     @Test
-    @DisplayName("renderPropertyMetadata should keep non-export Object property on default metadata")
-    void renderPropertyMetadataShouldKeepNonExportObjectOnDefaults() {
+    @DisplayName("renderPropertyMetadata should publish class name for non-export Object property")
+    void renderPropertyMetadataShouldPublishClassNameForNonExportObject() {
         var property = new LirPropertyDef(
                 "texture",
                 new GdObjectType("Texture2D"),
@@ -853,14 +871,15 @@ class CGenHelperTest {
 
         assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", metadata.usageExpr());
         assertEquals("godot_PROPERTY_HINT_NONE", metadata.hintEnumLiteral());
-        assertEquals("GD_STATIC_SN(u8\"\")", metadata.classNameExpr());
+        assertEquals("GD_STATIC_SN(u8\"Texture2D\")", metadata.classNameExpr());
     }
 
     @Test
     @DisplayName("renderPropertyMetadata should stay silent for non-exportable Object family rejected upstream")
     void renderPropertyMetadataShouldStaySilentForNonExportableObjectFamily() {
         // The frontend export validation rejects bare `RefCounted` exports; backend deliberately
-        // does not re-diagnose and falls back to the plain type-derived surface.
+        // does not re-diagnose and falls back to the plain type-derived surface (which now still
+        // publishes the object class name like any other Object slot).
         var property = new LirPropertyDef(
                 "obj",
                 new GdObjectType("RefCounted"),
@@ -875,7 +894,7 @@ class CGenHelperTest {
 
         assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
         assertEquals("godot_PROPERTY_HINT_NONE", metadata.hintEnumLiteral());
-        assertEquals("GD_STATIC_SN(u8\"\")", metadata.classNameExpr());
+        assertEquals("GD_STATIC_SN(u8\"RefCounted\")", metadata.classNameExpr());
     }
 
     @Test
@@ -904,12 +923,12 @@ class CGenHelperTest {
     }
 
     @Test
-    @DisplayName("renderSignalParameterMetadata should keep Object class_name on the empty default")
-    void renderSignalParameterMetadataShouldKeepEmptyObjectClassName() {
+    @DisplayName("renderSignalParameterMetadata should publish the Object class name")
+    void renderSignalParameterMetadataShouldPublishObjectClassName() {
         var metadata = helper.renderSignalParameterMetadata(new GdObjectType("Node"));
 
         assertEquals("GDEXTENSION_VARIANT_TYPE_OBJECT", metadata.typeEnumLiteral());
-        assertEquals("GD_STATIC_SN(u8\"\")", metadata.classNameExpr());
+        assertEquals("GD_STATIC_SN(u8\"Node\")", metadata.classNameExpr());
         assertEquals("godot_PROPERTY_HINT_NONE", metadata.hintEnumLiteral());
         assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
     }
