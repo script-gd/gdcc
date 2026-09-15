@@ -13,6 +13,8 @@
     - v8：HR-0.3 结论落定——**headless editor 自动化端到端测试可行**（经 `4.5.1-stable` 源码与官方文档核验）：`GDExtensionManager.reload_extension(path)` 脚本可直接调用、同步执行、强制重载指定扩展（不看 mtime）、实例恢复与 `NOTIFICATION_EXTENSION_RELOADED` 在返回前完成；`--headless --editor --script` 是官方支持路径（脚本须继承 `SceneTree`/`MainLoop`）；`--editor` 自动开启 extension reloading；headless 无窗口，焦点自动 reload 不触发，全部走脚本显式触发，天然确定性；Godot 官方无 GDExtension 热重载自动化测试先例。据此将 HR-9 自动化由 stretch 升级为正式交付项 `GodotEditorHotReloadTestSession`（架构见 HR-9 自动化节），手测清单保留为兜底；HR-9 改号并移至最终步骤，新增步骤覆盖矩阵。
     - v9：HR-9 自动化路线本机探针验证通过（Linux，Godot 4.5.2-stable editor binary，探针产物存于 `tmp/editor_hotreload_probe/`）：手写最小 C 扩展（reloadable + recreate + 注册属性）完成全链路——`--headless --editor --script` 启动、SceneTree 脚本与 EditorNode 共存（EditorNode 首帧即挂载）、`GDExtensionManager.reload_extension` 同步返回 OK、state save → deinitialize/unregister/free → dlclose/dlopen → recreate → state restore 完整往返（`get_value` 1→2 证明新代码在同一 Godot 对象上生效、`stored_value` 跨 reload 保留证明引擎属性 save/restore 路径）、`quit(code)` 退出码 editor/runtime 双模式原样传递、bogus 路径优雅报错。**关键陷阱（已修正换库合同）**：禁止 in-place 覆盖已映射 `.so`——`cp` 原地截断写入会使运行中映射的干净页重灌新文件内容而脏页（GOT）保留旧版，旧 GOT 调用新代码立即 SIGSEGV；换库必须**原子 rename**（`cp v2 临时文件 && mv -f 临时文件 目标路径`），unlink 不影响既有映射，引擎 dlclose 旧 inode 后 dlopen 路径即得新 inode。Windows `~xxx.dll` 副本机制项仍为 Windows 专属待验证。
     - v10：补齐 macOS x86_64（Intel）thunk 生成表述——§5.3 明确复用 x86_64 SysV 模板（macOS Intel 同为 System V AMD64 ABI，参数寄存器/16B 对齐/128B red zone 一致，模板零新增）；§5.4 macOS execmem 路径覆盖两架构（`MAP_JIT`/`pthread_jit_write_protect_np` 为 arm64 专属，Intel 不涉及；slab 页大小运行时查询，Intel 4K / Apple Silicon 16K）；§5.10 平台矩阵新增 macOS x86_64 行（universal2 编辑器 Intel 切片必须覆盖），RW→RX 实机验证项改为按架构分别核验。
+    - v11（实施期修订，HR-4 双审阅发现并经用户确认）：**D8 顺序修订——static backing 销毁与类注销段对调**（static 销毁 → 类注销 → registry 销毁）。原顺序仅在 reload 路径安全；正常退出（非 reload）时 `_unregister_extension_class` 不调 `_clear_extension`（`gdextension.cpp` 非 reload 分支直接 `extension_classes.erase`），static backing 持有的 GDCC 实例在最后引用释放时会经悬空的 `_extension` 执行析构回调（UAF，链路经 `object.cpp:2263-2278, 933-935` 与 `main.cpp:4985,5016` 核验成立）；GDExtension 接口不暴露 `is_reloading`，无法运行时分流，故统一改为两路径皆安全的对调顺序，并扩展 D3 纪律（字段析构链/协程字段清理不得依赖 static backing）。HR-4 验收细则同步修订；`gdcc_c_backend.md` 与 `explicit_c_inheritance_layout_contract.md` 已同步。
+    - 实施进展（2026-09）：HR-0 ✅（附录 A）；HR-1 ✅；HR-2 ✅（D2，双审阅闭环）；HR-3 ✅（D4/D5，双审阅闭环：修复 alloc OOM 守卫、壳执行级测试）；HR-4 ✅（D8 v11，双审阅 + BLOCKING 修订闭环）。详见 §6 各步骤状态行。
 - 关联文档：
     - `doc/gdcc_c_backend.md`：C 后端 ABI 与 entry 生命周期合同（Scene-level initialize/deinitialize）。
     - `doc/gdcc_runtime_lib.md`：runtime 全局 registry（String/StringName/standalone Callable）、协程运行时清理规则。
@@ -81,7 +83,7 @@
     - 不带守卫的字段析构链 `<C>_class_destruct_fields(self)`：析构本类字段后递归 `<super>_class_destruct_fields(&self->_super)`（镜像现有 destructor 的 derived→base 链）；
     - 带守卫的入口 `<C>_class_destructor(self)`：`if (self == NULL || 根标志) return; 置位根标志; <C>_class_destruct_fields(self);`。
       PREDELETE 路径与 `free_instance_func`（`if (!destructed) <C>_class_destructor(self); godot_mem_free(self);`）都只调守卫入口，实现两条路径的 exactly-once；守卫禁止放在链式函数入口，否则派生类置位后父类字段全部泄漏。根标志经 wrapper `_super` 链访问（访问模式复用 vtable accessor 既定方案）；`godot_mem_alloc` 不置零，create/recreate 必须显式置 `false`。
-- **D3（free_instance 的执行环境）**：按 §2.1 步骤 4，free_instance 在 deinitialize 的类注销段内部执行；按 D8 顺序，此时 static backing 与 String/StringName registry **尚未销毁**，缓存 MethodBind 亦有效，现有析构路径可正常工作。作为保守纪律：析构路径不得**新增**对 `GD_STATIC_S`/`GD_STATIC_SN` 惰性创建的依赖（防止未来调整 D8 顺序后引入 use-after-destroy）。
+- **D3（free_instance 的执行环境）**：按 §2.1 步骤 4，free_instance 在 deinitialize 的类注销段内部执行；按 D8（v11）顺序，此时 String/StringName registry **尚未销毁**（`GD_STATIC_SN` 使用安全），缓存 MethodBind 亦有效，现有析构路径可正常工作，但 **static backing 已销毁**。三条保守纪律：析构路径不得**新增**对 `GD_STATIC_S`/`GD_STATIC_SN` 惰性创建的依赖（防止未来调整 D8 顺序后引入 use-after-destroy）；字段析构链与协程字段清理**不得依赖 static backing**（它们只触碰 self 字段，保证 v11 对调后注销段内 free_instance 安全）；**Object 存储的释放一律经 `instance_id` → ObjectDB（`gdcc_object_live_ptr`），禁止解引用 fat ptr 缓存的 GDCC wrapper**——wrapper 生命 ≠ 对象生命：reload 批量 `clear_internal_extension` 的实例遍历顺序任意，被引用实例的 wrapper 可能已先被释放而其 Godot 对象因强引用存活（v11 实施期复核发现的 UAF，统一在 `renderManagedStorageFreeStmt` 与 `destruct_fields` 落实；ObjectDB 是引擎侧权威，跨整个 deinitialize 有效）。
 - **D4（recreate 合同）**：每个用户类生成 `<C>_class_recreate_instance(void* p_class_userdata, GDExtensionObjectPtr p_object)`，语义：
     - **必须** `return self`（wrapper 指针；引擎直接赋给 `_extension_instance`）。**禁止** `return p_object`（create 模板返回的是 Godot 对象，照抄会把 `Object*` 当 wrapper 用，必崩）。
     - **做**：`godot_mem_alloc` 分配 wrapper → `_set_object_ptr(self, p_object)` → 写 `_vtable`（与 create 共用 `renderVtableFieldInitExpr` 渲染结果）→ `_gdcc_destructed = false` → `godot_object_set_instance_binding`（与 create 相同的 library/callbacks）→ 调新增递归字段初始化 helper `<C>_class_init_fields(self)`（base-first 递归祖先段后执行本类非 static 属性的 init apply helper；**不调** `<C>_class_constructor`、**不跑** `_init`）。
@@ -95,7 +97,12 @@
     - **惰性壳 recreate**（协程状态类）：wrapper 全量分配后：header 以**新库** descriptor 初始化并置于显式"RELOADED_SHELL"终态（需在 runtime header 生命周期中新增该状态，与 done/cancel 并列）；参数/capture/返回槽等 owning 字段全部初始化为合法默认值（返回槽 written 标志置 false），保证既有 `free_instance` 清理路径对壳安全且幂等；壳不入活跃链表；对壳 await 必须立即返回确定的取消结果，不得挂起；壳的 PREDELETE/free 幂等，绝不调用 coroutine body、旧 waiter 或 `emit_completed`。binding 必须使用 `gdcc_coro_binding_token()`（与用户类的 `class_library` 不同，照抄会导致 `gdcc_coroutine.c` 取不到 binding）。
 - **D6（custom Callable 合同）**：跨 reload 安全由 **§5 堆驻留 thunk 方案（HR-8）** 解决——编辑器进程内 lambda/standalone Callable 全部经堆 thunk 间接派发，回调地址永久有效；存活 Callable 在新代按名重绑后**执行新代码**；签名/捕获布局失配或被删除的 lambda 优雅失效（`is_valid=false`、call 走引擎标准错误路径）。非编辑器进程维持现状直调（零改动）；编辑器内若可执行内存不可用则 **fail-closed**（拒绝创建 custom Callable，绝不回退 direct 重新引入悬空指针）。`Callable(对象, "方法名")` 连接走 ClassDB MethodBind 经 `try_update` 更新，**始终有效**，与本方案正交。
 - **D7（static 与缓存）**：依赖映像清零语义，不新增缓存清理代码；runtime 审计禁止引入线程/TLS，保证 dlclose 真正卸载（开发期用 `/proc/<pid>/maps` 验证）。static var 跨 reload 重置为初始值，写入用户合同。
-- **D8（deinitialize 内部顺序）**：打印 → `gdcc_coro_cancel_all()`（HR-5）→ 类注销段：先协程状态类按**生成序的严格逆序**、再用户类按 `inheritanceOrderedClassDefs` 逆序，调 `godot_classdb_unregister_extension_class`；free_instance 在此段内被引擎触发（§2.1 步骤 4）→ static backing 逆序销毁（现有）→ 三个 registry 销毁（现有；thunk 模式下 standalone interned spec 的归属见 §5.7）→ **hrx hub 失效置空（HR-8：先 `sweeper=NULL`，再全 spec 函数指针置 NULL）放最后**。此前各阶段释放的 Callable 仍能经 sweeper 被本代即时回收（最佳内存卫生）；置空后只剩 Godot 侧残余副本（deferred 队列等）可触发 free thunk，仅标记 dead，由新代清扫。
+- **D8（deinitialize 内部顺序，v11 修订）**：打印 → `gdcc_coro_cancel_all()`（HR-5）→ **static backing 逆序销毁** → **类注销段**：先协程状态类按**生成序的严格逆序**、再用户类按 `inheritanceOrderedClassDefs` 逆序，调 `godot_classdb_unregister_extension_class`；free_instance 在此段内被引擎触发（§2.1 步骤 4）→ 三个 registry 销毁（现有；thunk 模式下 standalone interned spec 的归属见 §5.7）→ **hrx hub 失效置空（HR-8：先 `sweeper=NULL`，再全 spec 函数指针置 NULL）放最后**。此前各阶段释放的 Callable 仍能经 sweeper 被本代即时回收（最佳内存卫生）；置空后只剩 Godot 侧残余副本（deferred 队列等）可触发 free thunk，仅标记 dead，由新代清扫。
+    - **v11 修订缘由（static 销毁与类注销对调）**：GDExtension 接口不向扩展暴露 `is_reloading`，deinitialize 同时服务 reload 与正常退出两条路径，而两条路径对"static 销毁 vs 类注销"的相对顺序要求**相反**——正常退出时 `_unregister_extension_class` 不调 `_clear_extension`（`gdextension.cpp` 非 reload 分支直接 `extension_classes.erase`），若先注销类，static backing 持有的 GDCC 实例在最后引用释放时会经已悬空的 `_extension` 执行 `untrack_instance`/`notification2`/`free_instance`（`object.cpp:2263-2278, 933-935`），构成 UAF；reload 时 `is_reloading` 使注销先 `_clear_extension` 清空 `_extension`，两序皆安全。对调后两条路径各自安全（已核验）：
+        - **正常退出**：static 销毁释放引用时 `_extension` 仍有效，实例正常析构；注销时该类已无存活实例，`erase` 安全；
+        - **reload**：static 销毁同上（tracked 实例尚未 clear，`_extension` 有效）；注销段内引擎对剩余 tracked 实例 `clear_internal_extension` 并调 free_instance——此时 static 已销毁，故须满足下方纪律。
+    - **配套纪律（扩展 D3）**：字段析构链（`<C>_class_destruct_fields`）、协程状态类 `free_instance` 的字段清理、以及未来 sweeper 的 spec 销毁**不得依赖 static backing**（它们只触碰 self 字段/spec 自身）；原 D3 纪律不变——析构路径不得新增对 `GD_STATIC_S`/`GD_STATIC_SN` 惰性创建的依赖（registry 销毁仍在类注销段之后，注销段内 `GD_STATIC_SN` 使用安全）。
+    - `gdcc_coro_cancel_all()`（HR-5）保持在 static 销毁**之前**：取消-resume 的 `__finally__` 清理虽不读 static，保守起见于一切资源存活时执行。
 
 ## 5. 堆驻留 thunk：custom Callable 跨 reload 方案（HR-8 设计合同）
 
@@ -328,7 +335,9 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
 
 ## 6. 分步实施与验收细则
 
-### HR-0 残余契约核对（0 代码改动）
+### HR-0 残余契约核对（0 代码改动）✅ 已完成
+
+> 实施状态：已完成（2026-09）。四项未决项全部关闭，结论见文末附录 A；未推翻 §2/§4/§5 任何条款。
 
 §2 主体事实已按 4.5.1-stable 核验完毕，仅保留以下真正未决项：
 1. 协程状态对象的 token binding（`gdcc_coro_binding_token()`）在引擎 `clear_instance_bindings`/`clear_internal_extension` 中的清理路径：确认 token 与本 extension library 的关联方式，保证 reload 时旧 binding 被释放、recreate 重建无冲突。
@@ -338,7 +347,9 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
 
 - **验收细则**：结论追加至本文档附录；若推翻 §2/§4/§5 任何条款，先修订本文档再继续。
 
-### HR-1 `.gdextension` 输出 `reloadable = true`
+### HR-1 `.gdextension` 输出 `reloadable = true` ✅ 已完成
+
+> 实施状态：已完成（2026-09）。`GdextensionMetadataFile.render(...)`/`renderMultiPlatform(...)` 均在 `[configuration]` 段固定输出 `reloadable = true`（共享常量 `RELOADABLE_LINE`）；`GdextensionMetadataFileTest` 已补齐 `render()` 入口断言并更新 multi-platform 快照，`script/run-gradle-targeted-tests.sh --tests GdextensionMetadataFileTest` 通过。末条验收（test_project 重生成 + 编辑器告警消除）移交 HR-9 场景 1 验证。
 
 - **改动点**：`GdextensionMetadataFile.java` 的 `render(...)` 与 `renderMultiPlatform(...)` 均在 `[configuration]` 段固定输出 `reloadable = true`（与 godot-cpp 模板一致；release 导出由引擎忽略 reload，无需 CLI 开关）。
 - **验收细则**：
@@ -346,16 +357,20 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
     - `script/run-gradle-targeted-tests.sh --tests GdextensionMetadataFileTest` 通过；
     - 重新生成 `test_project` 的 `.gdextension` 后含该字段，编辑器不再打印"不具备热重载条件"告警。
 
-### HR-2 free_instance 幂等全量析构
+### HR-2 free_instance 幂等全量析构 ✅ 已完成
 
-- **改动点**：按 D2 拆分守卫入口与字段析构链；根 wrapper 加 `_gdcc_destructed`（同步 `explicit_c_inheritance_layout_contract.md`）；`free_instance_func` 升级为"未析构则先析构再释放"；create 显式置 `false`；全量走查 free_instance 可达析构路径确认无新增 intern 宏依赖（D3）。协程状态类 `free_instance`（`entry.c.ftl:499-523`）本已承担字段清理，核对与 cancel/惰性壳（HR-3）组合的 exactly-once，必要时接入同一标志。
+> 实施状态：已完成（2026-09）。D2 落地：根 wrapper 新增 `_gdcc_destructed`（`entry.h.ftl`，仅根段，派生类经 `_super` 链访问——`CGenHelper.renderDestructedFlagAccessExpr`，与 vtable 字段访问共抽 `renderRootWrapperFieldAccessExpr`）；析构拆分为无守卫链 `<C>_class_destruct_fields`（derived→base 递归）与带守卫入口 `<C>_class_destructor`；`<C>_class_free_instance` 判守卫后调守卫入口再 `godot_mem_free`；create 显式置 `false`。协程状态类经核对**不接入**该标志（其 PREDELETE 仅 cancel、free_instance 是唯一清理点，两条引擎路径各调一次，天然 exactly-once）。`explicit_c_inheritance_layout_contract.md` 已同步 §1/§3/§8。新增 `freeInstancePerformsExactlyOnceGuardedFullDestruction` 测试（含基类+派生类 destroyable 字段防截断用例），`CCodegenTest,CCoroutineStateClassCodegenTest,CVtableCodegenTest` 与 `ObjectOwnershipCornerCaseIntegrationTest,ObjectReturnConsumptionLeakIntegrationTest`（Godot 实机，PREDELETE→free 路径）全部通过。
+
+- **改动点**：按 D2 拆分守卫入口与字段析构链；根 wrapper 加 `_gdcc_destructed`（同步 `explicit_c_inheritance_layout_contract.md`）；`free_instance_func` 升级为"未析构则先析构再释放"；create 显式置 `false`；全量走查 free_instance 可达析构路径确认无新增 intern 宏依赖（D3）。协程状态类 `free_instance`（`${stateName}_class_free_instance`）本已承担字段清理，核对与 cancel/惰性壳（HR-3）组合的 exactly-once，必要时接入同一标志。
 - **验收细则**：
     - 模板测试断言：守卫只在 `<C>_class_destructor` 入口、链式 `<C>_class_destruct_fields` 无守卫、free_instance 调守卫入口、标志字段位于根段；
     - **必须**含"基类与派生类均有 destroyable 字段"的用例（防 D2 截断回归）；
     - `script/run-gradle-targeted-tests.sh --tests CCodegenTest,CCoroutineStateClassCodegenTest` 通过；
     - 现有 `GodotGdextensionTestRunner` 驱动的集成测试不回归（正常 PREDELETE→free 路径）。
 
-### HR-3 recreate_instance_func 生成
+### HR-3 recreate_instance_func 生成 ✅ 已完成（双审阅闭环）
+
+> 实施状态：已完成（2026-09）。D4/D5 落地：用户类生成 `<C>_class_recreate_instance`（返回 wrapper、`set_object_ptr`→vtable 重绑（与 create 共用 `renderVtableFieldInitExpr`）→`_gdcc_destructed=false`→`set_instance_binding`→新增 base-first 递归 helper `<C>_class_init_fields`；不含 construct/set_instance/POSTINITIALIZE/RefCounted init/`_init`）与协程状态类 RELOADED_SHELL 惰性壳 recreate（wrapper 整体 `memset` 置合法默认值→`header_init` 新代 descriptor→`reloaded_shell=true`→coro token binding；runtime header 新增 `reloaded_shell` 终态字段，`gdcc_coro_finalize`/`gdcc_coro_cancel`/`gdcc_coro_register_waiter` 三处对壳短路——await 壳立即返回确定取消结果不挂起）。两类 creation info 均强制填入 `recreate_instance_func`，两处 recreate 均含 alloc OOM 守卫（返回 NULL 供引擎优雅降级）。测试：`recreateInstanceRebuildsWrapperStateWithoutTouchingGodotObject`（CCodegenTest）、`coroutineStateClassRecreateBuildsReloadedShell`（CCoroutineStateClassCodegenTest，5 状态类全覆盖+OOM 顺序锚定）、CVtableCodegenTest 四角色 recreate vtable 断言、`GdccCoroutineRuntimeSmokeTest.reloadedShellShouldShortCircuitFinalizeCancelAndAwait`（壳终态执行级锚定：finalize/cancel 短路、await 立即返回、consume 合同驱动壳 free 幂等）。双审阅修复：HIGH（alloc 未检查）、MEDIUM（壳无执行级测试）及全部 LOW 已闭环；§7 用户合同补 initializer 副作用重放条款。全部单测与 ObjectOwnership 集成测试通过。
 
 - **改动点**：按 D4 为用户类生成 recreate 并填入 creation info（`entry.c.ftl:66-78`）；按 D5 惰性壳合同为协程状态类生成 recreate（`entry.c.ftl:90-100`），含 header 新终态与 owning 字段安全初始化；新增 `<C>_class_init_fields` 递归 helper（base-first、无 `_init`）。
 - **验收细则**：
@@ -364,17 +379,19 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
     - vtable 写入覆盖四角色 golden test：introducer（自有表）、override-only（最近 introducer 表）、pass-through（祖先共享表值）、旁支/无 slot（NULL/无赋值），与 create 输出逐一一致；
     - `script/run-gradle-targeted-tests.sh --tests CCodegenTest,CVtableCodegenTest,CCoroutineStateClassCodegenTest` 通过。
 
-### HR-4 deinitialize 逆序类注销
+### HR-4 deinitialize 逆序类注销 ✅ 已完成（D8 经 v11 修订）
 
-- **改动点**：`entry.c.ftl` `deinitialize()` 按 D8 插入注销段：协程状态类按生成序严格逆序、用户类按 `inheritanceOrderedClassDefs` 逆序，调用 `godot_classdb_unregister_extension_class`（`godot_interface.h:873`）。
-- **验收细则**：
-    - 模板测试断言注销序列是注册序列的严格镜像反转，且整段位于 static 销毁与 registry 销毁之前；
+> 实施状态：已完成（2026-09）。D8 注销段落地：`deinitialize()` 在卸载打印之后按 **v11 修订顺序**执行——static backing 逆序销毁 → 类注销段（先协程状态类按生成序严格逆序（嵌套 `?reverse` 全局反转）、再用户类按 `inheritanceOrderedClassDefs?reverse`，统一调 `godot_classdb_unregister_extension_class`）→ registry 销毁；注释预留 HR-5 `gdcc_coro_cancel_all()` 插入位（static 销毁之前）。**v11 修订**：首轮双审阅发现原 D8"类注销先于 static 销毁"在正常退出路径构成 UAF（`_unregister_extension_class` 非 reload 分支直接 erase 使 `_extension` 悬空，static backing 持有的实例析构时经悬空指针回调）——经用户确认后将 static 销毁与类注销对调（两条路径均安全，论证见 §4 D8）。**复核轮再修一处 BLOCKING**：HR-2 引入的 Object 释放路径在 reload 批量 clear 下经 fat ptr 缓存 wrapper 取 raw object 构成 UAF（wrapper 生命 ≠ 对象生命）——已统一改为 `gdcc_object_live_ptr(instance_id)`（ObjectDB 权威），覆盖 `renderManagedStorageFreeStmt`（capture/param/ret-slot/static）与 `destruct_fields`；D3 纪律同步扩展（不得依赖 static backing + Object 释放一律 ObjectDB）。测试：`deinitializeUnregistersClassesInStrictReverseRegistrationOrder`（乱序 module 拓扑轴 + abstract + static→注销→registry 全序）、`coroutineStateClassesUnregisterInGlobalReverseGenerationOrder`（两类四协程全局逆序双轴 + static 联合位置锚）、D2 测试 Object 字段 ObjectDB 正反断言、协程 Object param/ret-slot ObjectDB 锚定。三轮审阅全部闭环（APPROVE）。
+
+- **改动点**：`entry.c.ftl` `deinitialize()` 按 D8（v11）插入注销段：协程状态类按生成序严格逆序、用户类按 `inheritanceOrderedClassDefs` 逆序，调用 `godot_classdb_unregister_extension_class`（`godot_interface.h:873`）；static backing 销毁移至类注销段**之前**。
+- **验收细则（v11 修订）**：
+    - 模板测试断言注销序列是注册序列的严格镜像反转，且类注销段位于 registry 销毁之前、static backing 销毁位于类注销段之前；
     - `script/run-gradle-targeted-tests.sh --tests CCodegenTest` 通过；
     - HR-9 流程无 "Attempt to unregister class while other extension classes inherit from it" 报错。
 
 ### HR-5 协程活跃注册表与统一取消
 
-- **改动点**：`gdcc_coroutine.h`/`gdcc_coroutine.c`：按 D5 实现活跃链表（不变量见 D5）、signal waiter 挂起边登记与断开、`gdcc_coro_cancel_all()`；`entry.c.ftl` `deinitialize()` 在打印之后、类注销之前调用。
+- **改动点**：`gdcc_coroutine.h`/`gdcc_coroutine.c`：按 D5 实现活跃链表（不变量见 D5）、signal waiter 挂起边登记与断开、`gdcc_coro_cancel_all()`；`entry.c.ftl` `deinitialize()` 在打印之后、**static backing 销毁之前**调用（D8 v11：保守起见于一切资源存活时执行取消-resume 的 `__finally__` 清理）。
 - **验收细则**：
     - 纯 C runtime 测试（新增或扩展现有协程测试）：取消过程中释放相邻节点、嵌套 waiter 级联、重复调用 `cancel_all`、signal emitter 在取消后仍存活且 signal 永不触发、断开过程 free callback 重入；
     - `script/run-gradle-targeted-tests.sh --tests CCoroutineStateClassCodegenTest`（及新增测试类）通过；
@@ -449,6 +466,7 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
 
 - reload 仅 editor build 可用；release 导出不受影响（且导出包走 direct 路径，与现状观察等价）。
 - 存活实例：带 `PROPERTY_USAGE_STORAGE` 的已注册实例属性（导出与非导出）由引擎保存并恢复，但存在非 NIL 默认值且当前值等于默认值时跳过不保存、Object 类型值为 null 且无 `PROPERTY_USAGE_STORE_IF_NULL` 时同样跳过；仅在 `_init` 中赋值的字段保持 initializer 值（`_init` 不重新执行）。
+- 属性 initializer 在 reload 时会对每个存活实例**重新执行**（recreate 重放 initializer 后引擎才经 setter 恢复保存值）：最终字段值由引擎恢复语义决定，但 initializer 的副作用（对象构造、函数调用）无法避免地再发生一次——用户代码不得依赖属性 initializer 的 exactly-once 副作用；被引擎恢复覆盖的 RefCounted initializer 值由 setter 正常释放，非 RefCounted Object initializer 值同理经 setter/析构路径处理，不形成泄漏。
 - static var 重置为初始值。
 - 进行中的协程被静默取消：`completed` **不**发射，等待方协程同样被取消。
 - 编辑器内 lambda/standalone Callable 跨 reload 安全：签名与捕获布局未变的连接**执行新代码**；捕获布局/签名失配、lambda 被删除/换位、或在**同一函数体内该 lambda 之前**增删行时，连接优雅失效（信号静默跳过、脚本 `call()` 报标准错误，不会绑到错误实现）；其他函数的改动与本函数整体移动**不影响**连接；`Callable(对象, "方法名")` 连接始终有效；thunk 路径下 Callable `to_string` 显示 `<CallableCustom>`。
@@ -462,3 +480,27 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
 - `NOTIFICATION_EXTENSION_RELOADED` 用户钩子（如 `_on_extension_reloaded` 虚函数）。
 - 同映像重复初始化加固（dlclose 未真正卸载时 `_inited` 标志与 registry 的一致性；以"runtime 不引入线程/TLS"规避为主）。
 - worker 线程调用 custom Callable 的完整支持：generation quiescence 协议（原子状态机 + active-call pin + call-return trampoline + 并发回收），替代 §5.8 的线程禁止合同。
+
+## 附录 A：HR-0 残余契约核对结论（2026-09，按 `4.5.1-stable` 源码核验）
+
+### A.1 协程 token binding 的引擎清理路径（HR-0 项 1）
+
+核验来源：`object.cpp:2102-2227`（set/get/free_instance_binding、clear/reset_internal_extension）、`gdextension.cpp:987-997`（clear_instance_bindings）、`gdextension_manager.cpp:282-298`（track/untrack_instance_binding）、`entry.c.ftl:483-497`。
+
+- 协程状态对象的 `gdcc_coro_binding_token()` binding 是该对象上**唯一** binding，占 slot 0。reload 时 `Object::clear_internal_extension()` 先调旧库 `free_instance_func`（释放 wrapper 与 header 内存），随后仅将 slot 0 四字段置空——callbacks 全 NULL 故无任何代码回调，**先释放后置空的顺序无悬空解引用**。
+- `GDExtension::clear_instance_bindings()` 只按 **GDExtension\* token** 释放被跟踪 binding；而跟踪仅在 `get_instance_binding` 内 `!_extension && is_extension_reloading_enabled()` 时发生（非扩展实例对象），且 `GDExtensionManager::track_instance_binding` 只认 `p_token == GDExtension*`。协程 token（TU-static 地址）不匹配该条件，协程状态对象又是扩展实例（`_extension != nullptr`），**双重不命中**——协程 binding 的清理完全由 `clear_internal_extension`（经 `Extension::instances` 跟踪）承担，无遗漏路径。
+- recreate 重建无冲突：`clear_internal_extension` 已将 slot 0 置空，新代惰性壳 recreate 调 `godot_object_set_instance_binding`（写 slot 0）满足其 `_instance_bindings[0].binding == nullptr` 前置断言。
+- 附带确认（§5.5 锚点事实基线）：**固定常量 token（≠ GDExtension\*）的 binding 不会被 track，因此不被 `clear_instance_bindings` 触及；Engine 单例非扩展实例，`clear_internal_extension` 不适用**——HR-8 锚点跨 reload 存活的引擎机制源码层面成立（实机验证留给 HR-9 自动化）。
+
+### A.2 dlclose 真正卸载：方法学与 runtime TLS/线程审计（HR-0 项 2）
+
+- **审计结果**：runtime 唯一的 TLS 使用是 minicoro 的 `MCO_THREAD_LOCAL mco_coro* mco_current_co`（`minicoro.c:565`）——POD 指针、无 TLS 析构器（不注册 `__cxa_thread_atexit`），不阻止 dlclose；deinitialize 时（HR-5 `cancel_all` 之后）全部协程已 MCO_DEAD，该值必为 NULL。除 minicoro 外 runtime 无任何线程/TLS/线程局部存储使用（全量 grep 已覆盖 `include_451/gdcc` 与 `include_451/godot`）。
+- **验证方法学**（纳入 HR-9 场景 9/10 开发期验证）：Linux 用 `/proc/<pid>/maps` 对比 reload 前后库路径映射消失（辅以 `LD_DEBUG=files` 观察 dlclose）；macOS 用 `vmmap <pid>` / `DYLD_PRINT_LIBRARIES` 对照；Windows 引擎加载 `~xxx.dll` 副本，原 DLL 本就不在映射中。
+
+### A.3 §5.10 待验证项结论（HR-0 项 4）
+
+- Engine 单例固定 token instance binding 跨 reload 存活：**源码确认成立**（A.1 末条）；实机验证项移交 HR-9 自动化（依赖 HR-8 落地）。
+- macOS 无 entitlement RW→RX 实机验证：本机为 Linux 无法验证，**保留为 macOS 专属待验证项**（aarch64 与 x86_64 分别核验）；HR-8 的 execmem probe fail-closed 设计已为此保底。
+- `is_editor_hint` 三进程取值（`main.cpp:2032-2034, 2161-2163` 核验）：仅 `--editor`/project manager 进程 `set_editor_hint(true)`；编辑器 F5 启动的游戏进程（独立进程，不带 `--editor`）与导出包均为 false。现有 `gdcc_is_editor_hint()`（`gdcc_helper.h:76-77`，经 fixed binding 查询 `gdcc_init()` 缓存的 Engine 单例）可直接作为 §5.4 三态模式机的进程判定输入；HR-9 场景 10b 实机复核。
+
+**总结论**：HR-0 全部未决项关闭；未推翻 §2/§4/§5 任何条款，主体设计不变。

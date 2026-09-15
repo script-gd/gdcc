@@ -2870,7 +2870,7 @@ public class CCodegenTest {
         );
         var childCreateInstanceBody = resolveCreateInstanceBody(cCode, "GDChildNode");
         var childConstructorBody = resolveClassConstructorBody(cCode, "GDChildNode");
-        var childDestructorBody = resolveClassDestructorBody(cCode, "GDChildNode");
+        var childDestructFieldsBody = resolveFunctionBodyByPrefix(cCode, "void GDChildNode_class_destruct_fields");
 
         assertContainsAll(
                 hCode,
@@ -2888,8 +2888,12 @@ public class CCodegenTest {
                 "GDChildNode_set_object_ptr(self, obj);"
         );
         assertContainsAll(childConstructorBody, "GDParentNode_class_constructor(&self->_super);");
-        assertContainsAll(childDestructorBody, "GDParentNode_class_destructor(&self->_super);");
-        assertContainsAll(cCode, "try_release_object(gdcc_GDParentNode_fat_ptr_live_object(self->peer), self->peer.instance_id);");
+        // D2 chain: field destruction recurses through the unguarded destruct_fields chain.
+        assertContainsAll(childDestructFieldsBody, "GDParentNode_class_destruct_fields(&self->_super);");
+        // Object field teardown resolves the target through ObjectDB (never the cached
+        // wrapper): the engine frees wrappers during a hot-reload bulk clear while the Godot
+        // objects stay alive.
+        assertContainsAll(cCode, "try_release_object(gdcc_object_live_ptr(self->peer.instance_id), self->peer.instance_id);");
 
         assertEquals("Node", resolveConstructTarget(cCode, "GDParentNode"));
         assertEquals("Node", resolveConstructTarget(cCode, "GDChildNode"));
@@ -2897,6 +2901,246 @@ public class CCodegenTest {
                 "GDExtensionObjectPtr\\s+GDChildNode_class_create_instance\\([^)]*\\)\\s*\\{\\s*GDExtensionObjectPtr obj = godot_classdb_construct_object2\\(GD_STATIC_SN\\(u8\"GDParentNode\"\\)\\);",
                 Pattern.DOTALL);
         assertFalse(directParentConstructPattern.matcher(cCode).find());
+    }
+
+    /// Hot reload D2 (hot_reload_implementation_plan.md): free_instance must re-enter field
+    /// destruction when the PREDELETE path never ran (the engine reload path calls
+    /// free_instance WITHOUT PREDELETE), while the normal PREDELETE-then-free sequence must
+    /// still destruct exactly once. This pins the guard layout: the root-only
+    /// `_gdcc_destructed` flag, the guarded `<C>_class_destructor` entry, and the unguarded
+    /// `<C>_class_destruct_fields` chain — with destroyable fields on BOTH base and derived
+    /// classes so a flag-set truncation of the parent segment fails here. Object field
+    /// teardown must resolve targets through ObjectDB (`gdcc_object_live_ptr`), never the
+    /// cached wrapper — the engine frees GDCC wrappers during a bulk reload clear while the
+    /// referenced Godot objects stay alive.
+    @Test
+    public void freeInstancePerformsExactlyOnceGuardedFullDestruction() throws Exception {
+        var parentClass = new LirClassDef("GDGuardParent", "Node");
+        parentClass.addProperty(new LirPropertyDef("base_text", GdStringType.STRING));
+
+        var childClass = new LirClassDef("GDGuardChild", "GDGuardParent");
+        childClass.addProperty(new LirPropertyDef("own_text", GdStringType.STRING));
+        childClass.addProperty(new LirPropertyDef("peer", new GdObjectType("GDGuardParent")));
+        childClass.addProperty(new LirPropertyDef("plain_int", GdIntType.INT));
+
+        var module = new LirModule("destruction_guard_module", List.of(parentClass, childClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
+
+        // The flag lives only in the ROOT wrapper segment; the derived struct embeds the
+        // parent by value and must not repeat it.
+        var parentStructBody = resolveFunctionBodyByPrefix(hCode, "struct GDGuardParent {");
+        var childStructBody = resolveFunctionBodyByPrefix(hCode, "struct GDGuardChild {");
+        assertContainsAll(parentStructBody, "GDExtensionBool _gdcc_destructed;");
+        assertFalse(childStructBody.contains("_gdcc_destructed"), childStructBody);
+
+        // Guarded entry: the only place the flag is tested and set; reaches the root flag
+        // through the wrapper `_super` chain for the derived class.
+        var childDestructorBody = resolveClassDestructorBody(cCode, "GDGuardChild");
+        assertOrdered(
+                childDestructorBody,
+                "if (self == NULL)",
+                "if (self->_super._gdcc_destructed)",
+                "self->_super._gdcc_destructed = true;",
+                "GDGuardChild_class_destruct_fields(self);"
+        );
+        var rootDestructorBody = resolveClassDestructorBody(cCode, "GDGuardParent");
+        assertOrdered(
+                rootDestructorBody,
+                "if (self == NULL)",
+                "if (self->_gdcc_destructed)",
+                "self->_gdcc_destructed = true;",
+                "GDGuardParent_class_destruct_fields(self);"
+        );
+
+        // Unguarded chain: destroys own fields, then recurses through the parent's CHAIN
+        // function (never the guarded entry); no flag access anywhere in the chain. Object
+        // fields go through ObjectDB — the cached wrapper is forbidden in teardown.
+        var childDestructFieldsBody = resolveFunctionBodyByPrefix(cCode, "void GDGuardChild_class_destruct_fields");
+        assertContainsAll(
+                childDestructFieldsBody,
+                "godot_String_destroy(&(self->own_text));",
+                "try_release_object(gdcc_object_live_ptr(self->peer.instance_id), self->peer.instance_id);",
+                "GDGuardParent_class_destruct_fields(&self->_super);"
+        );
+        assertFalse(childDestructFieldsBody.contains("_gdcc_destructed"), childDestructFieldsBody);
+        assertFalse(childDestructFieldsBody.contains("GDGuardParent_class_destructor("), childDestructFieldsBody);
+        assertFalse(childDestructFieldsBody.contains("_fat_ptr_live_object(self->"), childDestructFieldsBody);
+        var parentDestructFieldsBody = resolveFunctionBodyByPrefix(cCode, "void GDGuardParent_class_destruct_fields");
+        assertContainsAll(parentDestructFieldsBody, "godot_String_destroy(&(self->base_text));");
+        assertFalse(parentDestructFieldsBody.contains("_gdcc_destructed"), parentDestructFieldsBody);
+
+        // free_instance funnels into the guarded entry before releasing the wrapper.
+        var childFreeBody = resolveFunctionBodyByPrefix(cCode, "void GDGuardChild_class_free_instance");
+        assertOrdered(
+                childFreeBody,
+                "if (p_instance == NULL)",
+                "if (!self->_super._gdcc_destructed)",
+                "GDGuardChild_class_destructor(self);",
+                "godot_mem_free(self);"
+        );
+
+        // create_instance clears the flag explicitly (godot_mem_alloc does not zero) BEFORE
+        // the instance is attached — the engine cannot reach free_instance for this wrapper
+        // before set_instance, so the guard is never read uninitialized.
+        var childCreateBody = resolveCreateInstanceBody(cCode, "GDGuardChild");
+        assertOrdered(
+                childCreateBody,
+                "self->_super._gdcc_destructed = false;",
+                "godot_object_set_instance("
+        );
+
+        // PREDELETE keeps funneling through the same guarded entry.
+        var childNotificationBody = resolveFunctionBodyByPrefix(cCode, "void GDGuardChild_class_notification");
+        assertContainsAll(childNotificationBody, "GDGuardChild_class_destructor(self);");
+    }
+
+    /// Hot reload D4 (hot_reload_implementation_plan.md): every creatable class must supply
+    /// recreate_instance_func (Godot disables reload for the whole extension otherwise). The
+    /// recreate MUST return the wrapper (the engine assigns it directly to
+    /// `_extension_instance`) and rebuild ONLY extension-side state: no native construction,
+    /// no object_set_instance, no POSTINITIALIZE, no constructor/`_init` — property state is
+    /// restored by the engine through setters afterwards; only initializers are replayed
+    /// (base-first) through the new `<C>_class_init_fields` helper.
+    @Test
+    public void recreateInstanceRebuildsWrapperStateWithoutTouchingGodotObject() throws Exception {
+        var parentClass = new LirClassDef("GDRecreateParent", "Node");
+        parentClass.addProperty(new LirPropertyDef("base_text", GdStringType.STRING));
+
+        var childClass = new LirClassDef("GDRecreateChild", "GDRecreateParent");
+        childClass.addProperty(new LirPropertyDef("own_text", GdStringType.STRING));
+
+        var module = new LirModule("recreate_instance_module", List.of(parentClass, childClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+
+        // Creation info must wire recreate for every class (engine-mandated for reloadable).
+        assertContainsAll(
+                cCode,
+                "creation_info.recreate_instance_func = GDRecreateParent_class_recreate_instance;",
+                "creation_info.recreate_instance_func = GDRecreateChild_class_recreate_instance;"
+        );
+
+        var recreateBody = resolveFunctionBodyByPrefix(cCode,
+                "GDExtensionClassInstancePtr GDRecreateChild_class_recreate_instance");
+        assertOrdered(
+                recreateBody,
+                "GDRecreateChild* self = godot_mem_alloc(sizeof(GDRecreateChild));",
+                // OOM must bail out with NULL (the engine degrades gracefully on recreate
+                // failure) instead of dereferencing the unallocated wrapper.
+                "if (self == NULL)",
+                "return NULL;",
+                "GDRecreateChild_set_object_ptr(self, p_object);",
+                "self->_super._gdcc_destructed = false;",
+                "godot_object_set_instance_binding(p_object, class_library, self, &GDRecreateChild_class_binding_callbacks);",
+                "GDRecreateChild_class_init_fields(self);",
+                "return self;"
+        );
+        // Forbidden on the recreate path (D4): the Godot object survived the reload.
+        assertFalse(recreateBody.contains("classdb_construct_object2"), recreateBody);
+        assertFalse(recreateBody.contains("godot_object_set_instance("), recreateBody);
+        assertFalse(recreateBody.contains("POSTINITIALIZE"), recreateBody);
+        assertFalse(recreateBody.contains("GDRecreateChild_class_constructor"), recreateBody);
+        assertFalse(recreateBody.contains("__init("), recreateBody);
+        assertFalse(recreateBody.contains("gdcc_ref_counted_init_raw("), recreateBody);
+
+        // init_fields replays initializers BASE-FIRST (parent segment first), never `_init`.
+        var initFieldsBody = resolveFunctionBodyByPrefix(cCode, "void GDRecreateChild_class_init_fields");
+        assertOrdered(
+                initFieldsBody,
+                "GDRecreateParent_class_init_fields(&self->_super);",
+                "GDRecreateChild_class_apply_property_init_own_text(self);"
+        );
+        assertFalse(initFieldsBody.contains("__init("), initFieldsBody);
+        assertFalse(initFieldsBody.contains("_class_constructor"), initFieldsBody);
+        var parentInitFieldsBody = resolveFunctionBodyByPrefix(cCode, "void GDRecreateParent_class_init_fields");
+        assertContainsAll(parentInitFieldsBody, "GDRecreateParent_class_apply_property_init_base_text(self);");
+    }
+
+    /// Hot reload D8 v11 (hot_reload_implementation_plan.md HR-4): deinitialize must destroy
+    /// static backing variables FIRST (the normal-exit path does not clear `_extension` when
+    /// a class is unregistered, so a static-held instance released after unregistration would
+    /// destruct through a dangling pointer), then unregister every extension class — Godot
+    /// rejects re-registration of a class that was never unregistered, and rejects
+    /// unregistering a base while derived extension classes still inherit from it — and only
+    /// then tear down the runtime registries. During a reload the engine runs free_instance
+    /// inside the unregistration calls, so field destruction must never depend on static
+    /// backing (already torn down; the D3 discipline), while the registries stay alive until
+    /// after the unregistration section.
+    @Test
+    public void deinitializeUnregistersClassesInStrictReverseRegistrationOrder() throws Exception {
+        var rootClass = new LirClassDef("GDUnregRoot", "Node");
+        // Abstract classes are still registered (is_abstract), so they must be unregistered too.
+        rootClass.setAbstract(true);
+        var midClass = new LirClassDef("GDUnregMid", "GDUnregRoot");
+        var leafClass = new LirClassDef("GDUnregLeaf", "GDUnregMid");
+        // A destroyable static forces a static-deinitialize section to anchor against.
+        leafClass.addProperty(staticProperty("label", GdStringType.STRING));
+        // Deliberately derived-first: `module.classDefs` is NOT inheritance-ordered, so this
+        // fixture fails if the template ever unregisters along raw module order instead of
+        // the inheritance-topology order.
+        var module = new LirModule("unregister_order_module", List.of(leafClass, midClass, rootClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+        var initializeBody = resolveFunctionBodyByPrefix(cCode, "void initialize(void* userdata");
+        var deinitializeBody = resolveFunctionBodyByPrefix(cCode, "void deinitialize(void* userdata");
+
+        // Registration runs base-before-derived (class name + parent name pairs are unique
+        // anchors within the registration blocks).
+        assertOrdered(
+                initializeBody,
+                "GD_STATIC_SN(u8\"GDUnregRoot\"), GD_STATIC_SN(u8\"Node\")",
+                "GD_STATIC_SN(u8\"GDUnregMid\"), GD_STATIC_SN(u8\"GDUnregRoot\")",
+                "GD_STATIC_SN(u8\"GDUnregLeaf\"), GD_STATIC_SN(u8\"GDUnregMid\")"
+        );
+
+        // Unregistration is the strict mirror: derived before base. Static backing is torn
+        // down FIRST (D8 v11: on the normal-exit path the engine does not clear `_extension`
+        // during unregistration, so a static-held instance released after unregistration
+        // would destruct through a dangling pointer), then the unregistration section, then
+        // the runtime registries.
+        assertOrdered(
+                deinitializeBody,
+                "Unloading unregister_order_module...",
+                "gdcc_static_GDUnregLeaf_label",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"GDUnregLeaf\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"GDUnregMid\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"GDUnregRoot\"));",
+                "gdcc_sn_registry_destroy_all();",
+                "gdcc_s_registry_destroy_all();",
+                "gdcc_standalone_callable_registry_destroy_all();"
+        );
+        assertEquals(3, countOccurrences(deinitializeBody, "godot_classdb_unregister_extension_class("),
+                "every registered user class must be unregistered exactly once");
     }
 
     @Test
@@ -2924,6 +3168,13 @@ public class CCodegenTest {
         var leafCreateInstanceBody = resolveCreateInstanceBody(cCode, "GDLeafNode");
         assertEquals(1, countOccurrences(leafCreateInstanceBody, "godot_object_set_instance("));
         assertEquals(1, countOccurrences(leafCreateInstanceBody, "godot_object_set_instance_binding("));
+
+        // D2 root-flag access walks one `_super` hop per wrapper level (three-level chain).
+        assertContainsAll(leafCreateInstanceBody, "self->_super._super._gdcc_destructed = false;");
+        var leafFreeBody = resolveFunctionBodyByPrefix(cCode, "void GDLeafNode_class_free_instance");
+        assertContainsAll(leafFreeBody, "if (!self->_super._super._gdcc_destructed)");
+        var leafDestructorBody = resolveClassDestructorBody(cCode, "GDLeafNode");
+        assertContainsAll(leafDestructorBody, "self->_super._super._gdcc_destructed = true;");
     }
 
     @Test
@@ -3507,8 +3758,8 @@ public class CCodegenTest {
         // deinitialize(): YES -> release_object, UNKNOWN -> try_release_object with cached id,
         // NO -> no cleanup statement at all.
         var deinitializeSection = extractSection(cCode, "void deinitialize(void* userdata, GDExtensionInitializationLevel p_level)");
-        assertTrue(deinitializeSection.contains("release_object(gdcc_Worker_fat_ptr_live_object(gdcc_static_Worker_peer));"), deinitializeSection);
-        assertTrue(deinitializeSection.contains("try_release_object(gdcc_Object_fat_ptr_live_object(gdcc_static_Worker_target), gdcc_static_Worker_target.instance_id);"), deinitializeSection);
+        assertTrue(deinitializeSection.contains("release_object(gdcc_object_live_ptr(gdcc_static_Worker_peer.instance_id));"), deinitializeSection);
+        assertTrue(deinitializeSection.contains("try_release_object(gdcc_object_live_ptr(gdcc_static_Worker_target.instance_id), gdcc_static_Worker_target.instance_id);"), deinitializeSection);
         assertFalse(deinitializeSection.contains("gdcc_static_Worker_node"), deinitializeSection);
     }
 

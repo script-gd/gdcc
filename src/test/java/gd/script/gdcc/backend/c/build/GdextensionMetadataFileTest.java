@@ -7,10 +7,32 @@ import java.util.LinkedHashMap;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/// Pins the multi-platform `.gdextension` rendering: arch-qualified Godot library keys
-/// (Godot's `arm64` spelling, not gdcc's `aarch64`) plus debug/release compatibility aliases,
-/// because two builds of the same platform family would otherwise collide on one key.
+/// Pins the `.gdextension` rendering: arch-qualified Godot library keys (Godot's `arm64`
+/// spelling, not gdcc's `aarch64`) plus debug/release compatibility aliases, because two
+/// builds of the same platform family would otherwise collide on one key. Both render entry
+/// points must also declare `reloadable = true` — the editor-side hot reload prerequisite
+/// (hot_reload_implementation_plan.md HR-1).
 class GdextensionMetadataFileTest {
+    @Test
+    void renderEmitsReloadableConfigurationWithCompatibilityKeys() {
+        var rendered = GdextensionMetadataFile.render(
+                "res://addons/gdcc/bin/libgdcc_for_editor_debug_x86_64.so",
+                COptimizationLevel.DEBUG,
+                TargetPlatform.LINUX_X86_64);
+
+        assertEquals("""
+                [configuration]
+                
+                entry_symbol = "gdextension_entry"
+                compatibility_minimum = "4.5"
+                reloadable = true
+                
+                [libraries]
+                linux.debug = "res://addons/gdcc/bin/libgdcc_for_editor_debug_x86_64.so"
+                linux.release = "res://addons/gdcc/bin/libgdcc_for_editor_debug_x86_64.so"
+                """, rendered);
+    }
+
     @Test
     void renderMultiPlatformEmitsArchQualifiedKeysWithCompatibilityAliases() {
         var libraryPathByPlatform = new LinkedHashMap<TargetPlatform, String>();
@@ -25,6 +47,7 @@ class GdextensionMetadataFileTest {
 
                 entry_symbol = "gdextension_entry"
                 compatibility_minimum = "4.5"
+                reloadable = true
 
                 [libraries]
                 windows.debug.x86_64 = "res://addons/gdcc/bin/gdcc_for_editor_debug_x86_64.dll"

@@ -404,8 +404,92 @@ class GdccCoroutineRuntimeSmokeTest {
     }
 
     @Test
-    void identifyShouldRejectNonStateObjects() throws IOException, InterruptedException {
-        // Anchors `gdcc_coro_state_identify`: valid token+magic round-trip; rejection of
+    void reloadedShellShouldShortCircuitFinalizeCancelAndAwait() throws IOException, InterruptedException {
+        // D5 RELOADED_SHELL terminal-state anchors (hot_reload_implementation_plan.md): a
+        // shell is produced by the recreate path after the in-flight coroutine was silently
+        // cancelled at reload. finalize on a shell never packs/resumes/emits; cancel stays a
+        // pure no-op; awaiting a shell returns the determined cancellation result
+        // IMMEDIATELY (no suspend, typed out slot keeps its default, one diagnostic) while
+        // the await_state consume contract still releases the callee reference — which here
+        // drives the shell's own PREDELETE + free_instance, proving that path idempotent.
+        var source = FAKE_ENGINE + """
+                
+                static FakeState g_SH, g_W;
+                static mco_coro *g_w_co;
+                static int64_t g_w_out;
+                static int g_w_resumed;
+                
+                static void w_body(mco_coro *co) {
+                    log_event("w_await");
+                    gdcc_coro_await_state(&g_SH.header, &g_w_out, co, &g_W.header);
+                    // Immediate-return contract: control reaches here in the SAME resume
+                    // slice (no mco_yield happened), with the awaiter itself untouched.
+                    g_w_resumed++;
+                    CHECK(!g_W.header.cancel, "the shell await path must not cancel the awaiter");
+                    log_event("w_after_await");
+                    fake_state_write_ret(&g_W, 0); // lets the main line finalize W normally (control group)
+                }
+                
+                int main(void) {
+                    if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
+                    fake_state_init(&g_SH, "SH");
+                    g_SH.header.reloaded_shell = true; // recreate-path terminal state
+                    fake_state_init(&g_W, "W");
+                    g_w_out = -9; // sentinel: the typed out slot must keep its default
+                    g_w_co = fake_make_coro(w_body, &g_W);
+                
+                    // finalize on a shell: no pack, no copy, no waiter resume, no emit, no done.
+                    gdcc_coro_finalize(&g_SH.header);
+                    CHECK(g_SH.pack_calls == 0 && g_SH.copy_ret_calls == 0 && g_SH.emit_calls == 0,
+                            "finalize on a shell must be a no-op");
+                    CHECK(!g_SH.header.done, "a shell never publishes done");
+                
+                    // cancel on a shell: pure no-op — the flag is never set and the (NULL)
+                    // coroutine body is never resumed.
+                    gdcc_coro_cancel(&g_SH.header);
+                    CHECK(!g_SH.header.cancel, "cancel must stay a no-op on a shell");
+                    CHECK(g_SH.header.waiters == NULL, "a shell never registers waiters");
+                
+                    // Await the shell from a live coroutine. The shell's only reference is the
+                    // caller's init ref; the consume contract releases it, driving the shell's
+                    // PREDELETE (cancel no-op) and free_instance (destroy slot + state_free).
+                    mco_resume(g_w_co);
+                    CHECK(g_w_resumed == 1, "awaiting a shell must return in the same resume slice");
+                    CHECK(mco_status(g_w_co) == MCO_DEAD, "the awaiter must run to completion without suspending");
+                    CHECK(g_w_out == -9, "the typed out slot must keep its default on the shell await path");
+                    CHECK(g_SH.destroy_slot_calls == 1, "the shell return slot is destroyed exactly once");
+                    CHECK(g_SH.header.magic == 0, "the shell identity must be revoked by state_free");
+                    CHECK(g_print_error_count == 1, "the shell await reports exactly one diagnostic");
+                
+                    // Control group: the awaiter itself finalizes normally afterwards.
+                    gdcc_coro_finalize(&g_W.header);
+                    CHECK(g_W.pack_calls == 1 && g_W.emit_calls == 1, "the awaiter must finalize normally");
+                    fake_drop_ref((GDExtensionObjectPtr)&g_W);
+                    CHECK(g_W.destroy_slot_calls == 1, "the awaiter return slot is destroyed exactly once");
+                
+                    CHECK(g_mem_balance == 0, "no waiter node may leak on the shell path");
+                    CHECK(g_variant_destroy_count == 3, "result caches: SH free + W pack + W free");
+                    printf("OK reloaded_shell\\n");
+                    return 0;
+                }
+                """;
+        var execution = compileLinkAndRun("reloaded_shell_probe", source, runtimeObjects);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertEvents(execution, List.of(
+                "w_await",
+                "destroy_slot:SH",
+                "free:SH",
+                "w_after_await",
+                "pack_result:W",
+                "emit:W",
+                "destroy_slot:W",
+                "free:W"
+        ));
+        assertTrue(execution.output().contains("OK reloaded_shell"), execution::diagnostic);
+    }
+
+    @Test
+    void identifyShouldRejectNonStateObjects() throws IOException, InterruptedException {        // Anchors `gdcc_coro_state_identify`: valid token+magic round-trip; rejection of
         // objects without the dedicated token binding, of bindings under a foreign token,
         // of bindings with a corrupted magic, and of NULL.
         var source = FAKE_ENGINE + """

@@ -74,6 +74,12 @@ struct ${classDef.name} {
         <#if helper.requiresVtableField(classDef.name)>
         const void* _vtable;
         </#if>
+        <#-- Hot reload exactly-once destruction guard (hot_reload_implementation_plan.md D2): -->
+        <#-- lives ONLY in the root segment; derived wrappers reach it through the `_super` -->
+        <#-- chain (renderDestructedFlagAccessExpr). Set by `<C>_class_destructor`, cleared by -->
+        <#-- create/recreate; `free_instance_func` re-enters the destructor when the PREDELETE -->
+        <#-- path never ran (engine reload calls free_instance WITHOUT PREDELETE). -->
+        GDExtensionBool _gdcc_destructed;
     </#if>
     <#list classDef.properties as property>
         <#if !property.static>
@@ -101,11 +107,17 @@ static void ${classDef.name}_class_bind_methods();
 
 GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize);
 
+GDExtensionClassInstancePtr ${classDef.name}_class_recreate_instance(void* p_class_userdata, GDExtensionObjectPtr p_object);
+
 void ${classDef.name}_class_free_instance(void* p_class_userdata, GDExtensionClassInstancePtr p_instance);
 
 void ${classDef.name}_class_constructor(${classDef.name}* self);
 
+void ${classDef.name}_class_init_fields(${classDef.name}* self);
+
 void ${classDef.name}_class_destructor(${classDef.name}* self);
+
+void ${classDef.name}_class_destruct_fields(${classDef.name}* self);
 
 void ${classDef.name}_class_notification(GDExtensionClassInstancePtr p_instance, int32_t p_what, GDExtensionBool p_reversed);
 
@@ -454,6 +466,8 @@ const GDExtensionInstanceBindingCallbacks ${stateName}_class_binding_callbacks =
 };
 
 GDExtensionObjectPtr ${stateName}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize);
+
+GDExtensionClassInstancePtr ${stateName}_class_recreate_instance(void* p_class_userdata, GDExtensionObjectPtr p_object);
 
 void ${stateName}_class_free_instance(void* p_class_userdata, GDExtensionClassInstancePtr p_instance);
 

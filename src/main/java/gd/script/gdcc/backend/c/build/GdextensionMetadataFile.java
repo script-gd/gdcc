@@ -40,6 +40,12 @@ public final class GdextensionMetadataFile {
         return metadataPath;
     }
 
+    /// Renders the single-platform metadata. `reloadable = true` is always declared (both
+    /// here and in `renderMultiPlatform`): the editor only honors hot reload for `reloadable`
+    /// extensions, and the engine ignores the flag entirely for release exports, so no CLI
+    /// opt-out is needed. Every generated class must also supply `recreate_instance_func`
+    /// (entry.c, hot_reload_implementation_plan.md HR-3) — Godot disables reload for the
+    /// whole extension if any creatable class lacks it.
     public static @NotNull String render(
             @NotNull String libraryPath,
             @NotNull COptimizationLevel optimizationLevel,
@@ -60,6 +66,7 @@ public final class GdextensionMetadataFile {
                 
                 entry_symbol = "%s"
                 compatibility_minimum = "%s"
+                reloadable = true
                 
                 [libraries]
                 %s
@@ -113,6 +120,7 @@ public final class GdextensionMetadataFile {
 
                 entry_symbol = "%s"
                 compatibility_minimum = "%s"
+                reloadable = true
 
                 [libraries]
                 %s

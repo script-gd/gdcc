@@ -76,6 +76,12 @@ struct gdcc_coro_state_header {
     mco_coro *co;                     // NULL until the entry thunk creates the coroutine
     bool done;                        // finalize published result_cache
     bool cancel;                      // cancel-resume requested (mutually exclusive with done)
+    /// RELOADED_SHELL terminal state (hot_reload_implementation_plan.md D5): set only by the
+    /// generated recreate_instance_func on the engine hot-reload path. The shell shares the
+    /// done/cancel exclusion discipline — finalize/cancel/await all short-circuit on it, the
+    /// coroutine body is never run, and the generated free_instance stays safe and idempotent
+    /// (co == NULL, waiters == NULL, result_cache stays the constructed nil Variant).
+    bool reloaded_shell;
     godot_Variant result_cache;       // always constructed; zeroed storage is a nil Variant
     gdcc_coro_waiter *waiters;        // head of the waiter list
 };

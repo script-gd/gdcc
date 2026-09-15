@@ -208,7 +208,25 @@ Usage and lifecycle rules:
   - `r_initialization->initialize = &initialize;`
   - `r_initialization->deinitialize = &deinitialize;`
 - `initialize(...)` must return without side effects for levels other than `GDEXTENSION_INITIALIZATION_SCENE`.
-- `deinitialize(...)` must use the same level guard before printing unload messages or destroying GDCC static registries.
+- `deinitialize(...)` must use the same level guard, then run the teardown in the fixed
+  hot-reload order (`hot_reload_implementation_plan.md` D8 v11; the plan additionally
+  reserves two steps this backend does not emit yet: `gdcc_coro_cancel_all()` before step 2
+  as HR-5, and the hrx hub invalidation last as HR-8):
+  1. print the unload message;
+  2. destroy static backing variables in reverse initialization order — FIRST, because this
+     deinitialize also serves the normal-exit path where the engine does NOT clear
+     `_extension` during class unregistration: a static-held instance released after
+     unregistration would destruct through a dangling extension pointer (UAF). The reload
+     path is safe under either relative order;
+  3. unregister every extension class with `godot_classdb_unregister_extension_class` —
+     hidden coroutine state classes first (strict reverse of their generation order), then
+     user classes in the strict mirror of the base-before-derived registration order
+     (`inheritanceOrderedClassDefs` reversed). Godot rejects re-registration of a class that
+     was never unregistered, and rejects unregistering a base while derived extension
+     classes still inherit from it. During a reload the engine runs `free_instance` on every
+     surviving instance from inside these calls — field destruction must therefore never
+     depend on static backing (already torn down; the D3 discipline);
+  4. destroy the StringName/String registries and the standalone Callable intern storage.
 - This keeps class registration, StringName/String registries, standalone Callable intern
   storage, and module log output scoped to the scene-level lifecycle that Godot uses for
   runtime class availability.

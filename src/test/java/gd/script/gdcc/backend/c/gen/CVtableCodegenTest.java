@@ -106,6 +106,15 @@ public class CVtableCodegenTest {
         assertCreateInstanceWrites(cCode, "VtD", "self->_super._super._super._vtable = &gdcc_VtD_vtable_inst;");
         assertFalse(resolveCreateInstanceBody(cCode, "VtB").contains("NULL"),
                 "pass-through classes must never initialize _vtable with NULL");
+
+        // Hot reload recreate (D4): the same four vtable roles must be rebound to THIS
+        // library generation's table — identical expressions to create_instance.
+        assertRecreateInstanceWrites(cCode, "VtA", "self->_vtable = &gdcc_VtA_vtable_inst;");
+        assertRecreateInstanceWrites(cCode, "VtB", "self->_super._vtable = &gdcc_VtA_vtable_inst;");
+        assertRecreateInstanceWrites(cCode, "VtC", "self->_super._super._vtable = &gdcc_VtC_vtable_inst;");
+        assertRecreateInstanceWrites(cCode, "VtD", "self->_super._super._super._vtable = &gdcc_VtD_vtable_inst;");
+        assertFalse(resolveRecreateInstanceBody(cCode, "VtB").contains("_vtable = NULL"),
+                "pass-through classes must never recreate _vtable with NULL");
     }
 
     @Test
@@ -135,6 +144,13 @@ public class CVtableCodegenTest {
         assertCreateInstanceWrites(cCode, "SbAChild", "self->_super._super._vtable = &gdcc_SbAChild_vtable_inst;");
         assertContainsAll(cCode,
                 "static const gdcc_SbA_vtable gdcc_SbAChild_vtable_inst = { .m_foo = gdcc_SbAChild_vslot_foo };");
+
+        // Hot reload recreate (D4) mirrors the same branch split: NULL for side branches,
+        // own instance for the slotted branch.
+        assertRecreateInstanceWrites(cCode, "SbRoot", "self->_vtable = NULL;");
+        assertRecreateInstanceWrites(cCode, "SbB", "self->_super._vtable = NULL;");
+        assertRecreateInstanceWrites(cCode, "SbA", "self->_super._vtable = &gdcc_SbA_vtable_inst;");
+        assertRecreateInstanceWrites(cCode, "SbAChild", "self->_super._super._vtable = &gdcc_SbAChild_vtable_inst;");
     }
 
     @Test
@@ -240,6 +256,8 @@ public class CVtableCodegenTest {
         assertFalse(cCode.contains("vtable"), cCode);
         assertFalse(resolveCreateInstanceBody(cCode, "SlA").contains("_vtable ="), "no assignment for slotless hierarchies");
         assertFalse(resolveCreateInstanceBody(cCode, "SlB").contains("_vtable ="), "no assignment for slotless hierarchies");
+        assertFalse(resolveRecreateInstanceBody(cCode, "SlA").contains("_vtable ="), "no recreate assignment for slotless hierarchies");
+        assertFalse(resolveRecreateInstanceBody(cCode, "SlB").contains("_vtable ="), "no recreate assignment for slotless hierarchies");
     }
 
     @Test
@@ -456,6 +474,19 @@ public class CVtableCodegenTest {
 
     private static @NotNull String resolveCreateInstanceBody(@NotNull String cCode, @NotNull String className) {
         return resolveFunctionBodyByPrefix(cCode, "GDExtensionObjectPtr " + className + "_class_create_instance");
+    }
+
+    /// Asserts the exact `_vtable` write inside one hot reload recreate_instance body (D4):
+    /// the write must rebind the instance to THIS generation's table before the wrapper is
+    /// handed back to the engine, i.e. before the final `return self;`.
+    private static void assertRecreateInstanceWrites(@NotNull String cCode, @NotNull String className,
+                                                     @NotNull String assignment) {
+        var recreateBody = resolveRecreateInstanceBody(cCode, className);
+        assertOrdered(recreateBody, assignment, "return self;");
+    }
+
+    private static @NotNull String resolveRecreateInstanceBody(@NotNull String cCode, @NotNull String className) {
+        return resolveFunctionBodyByPrefix(cCode, "GDExtensionClassInstancePtr " + className + "_class_recreate_instance");
     }
 
     /// Extracts the body between the braces following a prefix (function definitions, struct

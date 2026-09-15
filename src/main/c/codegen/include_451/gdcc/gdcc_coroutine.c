@@ -63,6 +63,8 @@ void gdcc_coro_state_free(gdcc_coro_state_header *state) {
     if (state == NULL) {
         return;
     }
+    // A RELOADED_SHELL passes through safely: co == NULL (no stack was ever created) and
+    // result_cache is still the constructed nil Variant from header init.
     if (state->co != NULL) {
         if (mco_status(state->co) != MCO_DEAD) {
             // Contract violation: cancel-resume at PREDELETE must have driven the coroutine
@@ -244,10 +246,13 @@ static gdcc_coro_wait_reg gdcc_coro_register_waiter(gdcc_coro_state_header *call
         }
         return GDCC_CORO_WAIT_DONE;
     }
-    if (callee->cancel) {
-        // Unreachable by construction (the caller holds a callee reference, so PREDELETE
-        // cannot have run); kept as a defensive guard because a cancelled callee never
-        // resumes its waiters - suspending here would hang the awaiter forever.
+    if (callee->cancel || callee->reloaded_shell) {
+        // Cancelled callee: unreachable by construction (the caller holds a callee
+        // reference, so PREDELETE cannot have run); kept as a defensive guard because a
+        // cancelled callee never resumes its waiters - suspending here would hang the
+        // awaiter forever. RELOADED_SHELL (hot reload recreate, D5): the coroutine was
+        // silently cancelled at reload, so awaiting the shell must return the determined
+        // cancellation result immediately without ever suspending.
         GDCC_PRINT_RUNTIME_ERROR("gdcc: await on an abandoned coroutine state; resuming without suspending",
                 "gdcc_coro_register_waiter", NULL, 0);
         gdcc_coro_wait_fail_out(kind, out);
@@ -368,9 +373,11 @@ void gdcc_coro_await_dynamic(godot_Variant *operand, godot_Variant *out, mco_cor
 }
 
 void gdcc_coro_finalize(gdcc_coro_state_header *state) {
-    if (state == NULL || state->done || state->cancel) {
+    if (state == NULL || state->done || state->cancel || state->reloaded_shell) {
         // The cancel path must never finalize; the `done` guard also makes nested re-entry
-        // on the same state a no-op (finalize is re-entrant by design).
+        // on the same state a no-op (finalize is re-entrant by design). A RELOADED_SHELL
+        // never finalizes either: its body, waiters and `completed` emission belong to the
+        // unloaded library generation.
         return;
     }
     // (1) Copy the typed return slot into result_cache (the slot itself stays alive for
@@ -409,7 +416,10 @@ void gdcc_coro_finalize(gdcc_coro_state_header *state) {
 }
 
 void gdcc_coro_cancel(gdcc_coro_state_header *state) {
-    if (state == NULL || state->done || state->cancel) {
+    if (state == NULL || state->done || state->cancel || state->reloaded_shell) {
+        // A RELOADED_SHELL is already terminal: never resume its (NULL) coroutine body and
+        // never touch its (empty) waiter list - PREDELETE on a shell is a pure no-op here,
+        // and the generated free_instance still runs its exactly-once field cleanup.
         return;
     }
     state->cancel = true;

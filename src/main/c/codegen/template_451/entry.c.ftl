@@ -8,6 +8,8 @@
 
 #include "entry.h"
 
+#include <string.h>
+
 <#-- Static property backing variables (file-scope shared storage): zero-initialized at -->
 <#-- program load; every value write goes through the module lifecycle sections or the -->
 <#-- load/store_static gens, all via CBodyBuilder slot-write semantics. -->
@@ -69,6 +71,7 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
         creation_info.is_virtual = false;
         creation_info.is_exposed = true;
         creation_info.create_instance_func = ${classDef.name}_class_create_instance;
+        creation_info.recreate_instance_func = ${classDef.name}_class_recreate_instance;
         creation_info.free_instance_func = ${classDef.name}_class_free_instance;
         creation_info.get_virtual_call_data_func = ${classDef.name}_class_get_virtual_with_data;
         creation_info.call_virtual_with_data_func = ${classDef.name}_class_call_virtual_with_data;
@@ -93,6 +96,7 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
         creation_info.is_virtual = false;
         creation_info.is_exposed = false;
         creation_info.create_instance_func = ${stateName}_class_create_instance;
+        creation_info.recreate_instance_func = ${stateName}_class_recreate_instance;
         creation_info.free_instance_func = ${stateName}_class_free_instance;
         creation_info.notification_func = ${stateName}_class_notification;
         godot_classdb_register_extension_class5(class_library,
@@ -135,10 +139,41 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
         godot_print(&msg_variant, NULL, 0);
         godot_Variant_destroy(&msg_variant);
     }
-    <#--  Destroy static backing variables in reverse initialization order BEFORE the runtime  -->
-    <#--  registries below: destroy/release paths may still touch interned StringName/String state.  -->
+    <#--  Destroy static backing variables in reverse initialization order BEFORE the class    -->
+    <#--  unregistration below (D8 v11): this deinitialize serves BOTH the hot-reload and the  -->
+    <#--  normal-exit paths, and the interface never tells them apart. On the normal-exit path -->
+    <#--  the engine does NOT clear `_extension` when a class is unregistered, so releasing a  -->
+    <#--  static-held instance AFTER unregistration would destruct it through a dangling       -->
+    <#--  `_extension` pointer (UAF); destroying statics FIRST keeps every such destruction on -->
+    <#--  a still-valid extension vtable. The reload path is safe either way (the engine       -->
+    <#--  clears `_extension` inside unregistration there). Destroy/release paths may still    -->
+    <#--  touch interned StringName/String state, so the runtime registries stay last.         -->
+    <#--  (HR-5 will insert gdcc_coro_cancel_all() right BEFORE this section.)                 -->
     <#list staticInitClassDefs?reverse as classDef>
     ${bodyRender.generateStaticDeinitializeBody(classDef)}</#list>
+    <#--  Unregister ALL extension classes after static teardown and BEFORE the runtime        -->
+    <#--  registries (D8 v11): Godot rejects unregistering a class while other extension       -->
+    <#--  classes still inherit from it, and re-registration without prior unregistration is   -->
+    <#--  refused outright (ClassDB "already registered"), so the hot reload path depends on   -->
+    <#--  this section. During a reload the engine runs free_instance on every surviving       -->
+    <#--  instance from INSIDE these calls (clear_internal_extension) — field destruction      -->
+    <#--  must therefore never depend on static backing (already torn down above; the D3       -->
+    <#--  discipline), while the String/StringName registries below are still alive.           -->
+    <#--  Order: hidden coroutine state classes first (strict reverse of their generation      -->
+    <#--  order), then user classes in the strict mirror of the base-before-derived            -->
+    <#--  registration order (derived before base).                                            -->
+    <#if helper.hasCoroutineFunctions()>
+    <#list module.classDefs?reverse as classDef>
+        <#list classDef.functions?reverse as func>
+            <#if func.coroutine>
+    godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8"${helper.renderCoroStateClassName(classDef, func)}"));
+            </#if>
+        </#list>
+    </#list>
+    </#if>
+    <#list inheritanceOrderedClassDefs?reverse as classDef>
+    godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8"${classDef.name}"));
+    </#list>
     <#--  Destroy Const StringNames, Strings, and interned standalone Callables  -->
     gdcc_sn_registry_destroy_all();
     gdcc_s_registry_destroy_all();
@@ -318,6 +353,9 @@ GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userda
     <#if vtableFieldInit?has_content>
     ${helper.renderVtableFieldAccessExpr(classDef.name)} = ${vtableFieldInit};
     </#if>
+    <#-- godot_mem_alloc does not zero-initialize: the exactly-once destruction guard (D2) -->
+    <#-- must be cleared explicitly before the instance can run any destructor path. -->
+    ${helper.renderDestructedFlagAccessExpr(classDef.name)} = false;
     godot_object_set_instance(obj, GD_STATIC_SN(u8"${classDef.name}"), self);
     godot_object_set_instance_binding(obj, class_library, self, &${classDef.name}_class_binding_callbacks);
     if (p_notify_postinitialize) {
@@ -326,11 +364,74 @@ GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userda
     return obj;
 }
 
+<#-- Recursive field initializer for the hot reload recreate path (D4): replays the -->
+<#-- property initializers BASE-FIRST (parent segment first, mirroring the constructor's -->
+<#-- recursion) but deliberately skips every `_init` — the Godot object survived the reload, -->
+<#-- only the extension wrapper storage needs its initializer values back. The constructor -->
+<#-- keeps its own copy of the apply-helper calls because `_init` invocations interleave -->
+<#-- with the parent recursion there. -->
+void ${classDef.name}_class_init_fields(${classDef.name}* self) {
+    if (self == NULL) {
+        return;
+    }
+    <#if helper.checkGdccClassByName(classDef.superName)>
+        ${classDef.superName}_class_init_fields(&self->_super);
+    </#if>
+    <#list classDef.properties as property>
+        <#-- Static properties are not instance fields; statics are re-initialized by the -->
+        <#-- module lifecycle, never here. -->
+        <#if !property.static>
+        ${helper.renderPropertyInitApplyHelperName(classDef, property)}(self);
+        </#if>
+    </#list>
+}
+
+<#-- Hot reload recreate (D4): the engine assigns our return value DIRECTLY to -->
+<#-- `_extension_instance` (Object::reset_internal_extension), so this MUST return the -->
+<#-- wrapper — never p_object. The Godot object is alive across the reload: no native -->
+<#-- construction, no `godot_object_set_instance` (the engine re-attaches `_extension` -->
+<#-- itself and instance tracking survives the reload), no POSTINITIALIZE, no RefCounted -->
+<#-- init, and no constructor/`_init` — property state is restored by the engine through -->
+<#-- the registered setters afterwards; only initializer values are replayed here. -->
+GDExtensionClassInstancePtr ${classDef.name}_class_recreate_instance(void* p_class_userdata, GDExtensionObjectPtr p_object) {
+    (void)p_class_userdata;
+    if (p_object == NULL) {
+        return NULL;
+    }
+    ${classDef.name}* self = godot_mem_alloc(sizeof(${classDef.name}));
+    <#-- The engine treats a NULL return as a graceful recreate failure (reset_internal_extension -->
+    <#-- reports it and keeps the object on its native class), so OOM must bail out here instead -->
+    <#-- of dereferencing the unallocated wrapper below. -->
+    if (self == NULL) {
+        GDCC_PRINT_RUNTIME_ERROR("gdcc: out of memory recreating extension instance", __func__, __FILE__, __LINE__);
+        return NULL;
+    }
+    ${classDef.name}_set_object_ptr(self, p_object);
+    <#-- Same vtable write as create (renderVtableFieldInitExpr): the instance vtable -->
+    <#-- pointer must be rebound to THIS library generation's static table. -->
+    <#assign vtableFieldInit = helper.renderVtableFieldInitExpr(classDef.name)>
+    <#if vtableFieldInit?has_content>
+    ${helper.renderVtableFieldAccessExpr(classDef.name)} = ${vtableFieldInit};
+    </#if>
+    ${helper.renderDestructedFlagAccessExpr(classDef.name)} = false;
+    godot_object_set_instance_binding(p_object, class_library, self, &${classDef.name}_class_binding_callbacks);
+    ${classDef.name}_class_init_fields(self);
+    return self;
+}
+
 void ${classDef.name}_class_free_instance(void* p_class_userdata, GDExtensionClassInstancePtr p_instance) {
     if (p_instance == NULL) {
         return;
     }
     ${classDef.name}* self = p_instance;
+    <#-- Exactly-once field destruction across BOTH paths (hot_reload_implementation_plan.md -->
+    <#-- D2): the normal path destructs at PREDELETE, but the engine reload path reaches this -->
+    <#-- function via clear_internal_extension WITHOUT ever sending PREDELETE — skipping the -->
+    <#-- destructor here would leak every destroyable field on reload. The guarded entry is -->
+    <#-- idempotent, so the PREDELETE-then-free sequence still destructs exactly once. -->
+    if (!${helper.renderDestructedFlagAccessExpr(classDef.name)}) {
+        ${classDef.name}_class_destructor(self);
+    }
     godot_mem_free(self);
 }
 
@@ -355,7 +456,10 @@ void ${classDef.name}_class_constructor(${classDef.name}* self) {
     </#list>
 }
 
-void ${classDef.name}_class_destructor(${classDef.name}* self) {
+<#-- Field destruction chain (no guard): destroys THIS class's destroyable non-static fields, -->
+<#-- then recurses into the parent's chain — the guard must live only in the entry function -->
+<#-- below; placing it here would truncate the parent segments once the derived entry set it. -->
+void ${classDef.name}_class_destruct_fields(${classDef.name}* self) {
     if (self == NULL) {
         return;
     }
@@ -363,17 +467,35 @@ void ${classDef.name}_class_destructor(${classDef.name}* self) {
         <#-- Static backing variables are cleaned up in deinitialize(), never here. -->
         <#if !property.static && property.type.destroyable>
             <#if property.type.gdExtensionType.name() == "OBJECT">
-                // Object properties store fat pointers; release the validated live raw Godot object.
-                // The cached instance_id drives the runtime RefCounted reference-bit check.
-                try_release_object(${helper.renderObjectFatPtrStorageType(property.type)}_live_object(self->${property.name}), self->${property.name}.instance_id);
+                // Object fields release through the instance ID resolved via ObjectDB — NEVER
+                // the cached wrapper: during a hot-reload bulk clear the engine frees the
+                // target's wrapper while its Godot object is still alive (clear order across
+                // instances is arbitrary), so dereferencing the cached wrapper here is a UAF.
+                // ObjectDB is the engine-side authority and outlives every extension teardown.
+                try_release_object(gdcc_object_live_ptr(self->${property.name}.instance_id), self->${property.name}.instance_id);
             <#else>
                 ${helper.renderDestroyFunctionName(property.type)}(&(self->${property.name}));
             </#if>
         </#if>
     </#list>
     <#if helper.checkGdccClassByName(classDef.superName)>
-        ${classDef.superName}_class_destructor(&self->_super);
+        ${classDef.superName}_class_destruct_fields(&self->_super);
     </#if>
+}
+
+<#-- Guarded destruction entry: the ONLY place the root `_gdcc_destructed` flag is SET; -->
+<#-- PREDELETE reads it here and free_instance pre-reads it before funneling through this -->
+<#-- entry, which makes field destruction exactly-once across the normal and reload paths. -->
+void ${classDef.name}_class_destructor(${classDef.name}* self) {
+    if (self == NULL) {
+        return;
+    }
+    <#assign destructedFlagExpr = helper.renderDestructedFlagAccessExpr(classDef.name)>
+    if (${destructedFlagExpr}) {
+        return;
+    }
+    ${destructedFlagExpr} = true;
+    ${classDef.name}_class_destruct_fields(self);
 }
 
 void ${classDef.name}_class_notification(GDExtensionClassInstancePtr p_instance, int32_t p_what, GDExtensionBool p_reversed) {
@@ -494,6 +616,38 @@ GDExtensionObjectPtr ${stateName}_class_create_instance(void* p_class_userdata, 
         godot_Object_notification(obj, godot_Object_NOTIFICATION_POSTINITIALIZE(), false);
     }
     return obj;
+}
+
+<#-- Hot reload recreate for coroutine state classes: the RELOADED_SHELL lazy shell (D5). -->
+<#-- The in-flight coroutine is silently cancelled at reload (abandonment contract); the -->
+<#-- shell exists so the surviving Godot state object keeps a valid, idempotently freeable -->
+<#-- wrapper. The whole wrapper is zeroed FIRST (owning param/capture/return-slot fields -->
+<#-- become their legal default values: zeroed Variants are nil, zeroed builtins are empty, -->
+<#-- zeroed fat pointers are NULL — all safe for the free_instance cleanup path), then the -->
+<#-- header is initialized against THIS generation's descriptor and marked as a shell. The -->
+<#-- shell never runs the body, never resumes waiters, never emits `completed`, and is never -->
+<#-- linked into the active-coroutine list; awaiting it returns the determined cancellation -->
+<#-- result immediately (gdcc_coro_register_waiter short-circuit). -->
+GDExtensionClassInstancePtr ${stateName}_class_recreate_instance(void* p_class_userdata, GDExtensionObjectPtr p_object) {
+    (void)p_class_userdata;
+    if (p_object == NULL) {
+        return NULL;
+    }
+    ${stateName}* self = godot_mem_alloc(sizeof(${stateName}));
+    <#-- Same OOM contract as the user-class recreate: NULL lets the engine degrade gracefully. -->
+    if (self == NULL) {
+        GDCC_PRINT_RUNTIME_ERROR("gdcc: out of memory recreating coroutine state shell", __func__, __FILE__, __LINE__);
+        return NULL;
+    }
+    memset(self, 0, sizeof(${stateName}));
+    self->_object = p_object;
+    gdcc_coro_state_header_init(&self->${helper.renderCoroHeaderField()}, &${helper.renderCoroStateDescName(classDef, func)}, p_object);
+    self->${helper.renderCoroHeaderField()}.reloaded_shell = true;
+    <#-- Binding must use the coroutine token (never class_library): gdcc_coro_state_identify -->
+    <#-- looks the header up through exactly this token. -->
+    godot_object_set_instance_binding(p_object, gdcc_coro_binding_token(),
+        &self->${helper.renderCoroHeaderField()}, &${stateName}_class_binding_callbacks);
+    return self;
 }
 
 void ${stateName}_class_free_instance(void* p_class_userdata, GDExtensionClassInstancePtr p_instance) {
