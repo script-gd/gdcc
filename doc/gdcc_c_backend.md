@@ -12,6 +12,54 @@ Blank values, invalid paths, files, or paths that cannot be created fall back to
 project-location behavior: use the project parent's `shared-compiler-cache` directory when it
 already exists, otherwise use the project's own `compiler-cache` directory.
 
+### PCH Cache
+
+`ZigCcCompiler` additionally caches a precompiled header of `godot_binding.h` under
+`<cacheRoot>/pch/<key>/`. Each entry holds `gdcc_godot_prefix.h` (content is exactly
+`#include <godot_binding.h>` — gdcc tree headers are never part of the PCH because `entry.h`
+requires per-TU declarations a precompiled header cannot satisfy), `gdcc_godot_prefix.pch`, and a
+`.ready` marker that is published last; an entry is consumed only when all three files are present.
+
+The `<key>` is a truncated SHA-256 over:
+
+- the `zig version` string (probe failure disables PCH for the round, never the build);
+- the resolved zig target;
+- the full language flag list shared with TU compiles, including the optimization level and the
+  actual LTO token (`-flto=thin` / `-flto` / none each key separately — clang hard-errors when a
+  PCH is consumed with different creation options);
+- the include directories in `-I` command order, each as its normalized absolute path plus a
+  recursive content hash of its tree (paths are sorted only inside a directory; swapping two
+  include dirs changes the key).
+
+Usage and lifecycle rules:
+
+- `-include-pch` is force-included only into the whitelisted TUs that actually include
+  `godot_binding.h` (`entry.c`, `godot_binding.c`, `gdcc_coroutine.c`); `minicoro.c` never gets it,
+  keeping the Godot ABI headers out of the isolated assembly-backend TU.
+- Before any TU of a round sees the PCH, a trivial probe TU is compiled with the exact TU flag
+  surface. The probe source embeds a round-unique token so zig's content cache cannot replay a
+  stale verdict.
+- Installs build the PCH from the final-path prefix header (clang records absolute paths, so the
+  header is never moved after the build; its mtime is pinned to a fixed instant to keep clang's
+  mtime validation deterministic when zig's content cache replays a pch build). The PCH is written
+  to a unique temporary name, probed, then renamed into place before `.ready` is written.
+- Self-heal: an installed entry that fails the probe is deleted and rebuilt exactly once; only if
+  the rebuild also fails does the round fall back.
+- Fallback: any PCH problem (version probe, hashing, build, probe, install, or a failed self-heal)
+  degrades the round to no-PCH with one fixed fallback line at the top of `buildLog`; it never
+  fails the build. If zig still rejects `-include-pch` during a real TU compile, the whole round
+  is retried once without it — PCH and no-PCH objects are never mixed in one link.
+- Concurrency: processes sharing a cache root may duplicate a build, but cannot corrupt it
+  (identical contents, unique temporary names, last-writer-wins rename, marker written last).
+  There is no cross-process PCH lock; capacity management is backlog work.
+- Header mtime stability is required: runtime resource extraction compares content before
+  replacing, so gdcc-driven rebuilds never churn include-tree mtimes. External mtime-only
+  churn (touching a recorded header without a content change) makes clang reject the installed
+  pch, and zig's content cache replays the stale-mtime rebuild — that key then falls back to
+  no-PCH rounds (builds stay correct) until a content change produces a new key. Changing only
+  the prefix header is safe: its mtime is pinned, as described above.
+- PCH files and probe litter never appear in `artifacts()`.
+
 ## Reminders
 
 ### Use GDCC Class Types

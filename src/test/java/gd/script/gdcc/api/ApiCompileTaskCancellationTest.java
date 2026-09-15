@@ -88,6 +88,29 @@ class ApiCompileTaskCancellationTest {
         }
     }
 
+    @Test
+    void nativeBuildFailureWithoutCancellationMapsToBuildFailed(@TempDir Path tempDir) {
+        // Outcome-mapping counterpart of the running-cancel case above: interrupt +
+        // cancellationRequested maps to CANCELED (asserted there), while a plain
+        // success=false from the native compiler without a cancellation request must map to
+        // BUILD_FAILED — never to CANCELED.
+        var compiler = ApiCompileTestSupport.RecordingCompiler.failing("simulated native build failure");
+        var api = ApiCompileTestSupport.newApi(compiler);
+
+        api.createModule("demo", "Build Failed Mapping Demo");
+        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("build-failed-project")));
+        api.putFile("demo", "/src/demo.gd", validSource("BuildFailedMappingDemo"));
+
+        var failedTask = ApiCompileTestSupport.awaitTask(api, api.compile("demo"));
+
+        assertEquals(CompileTaskSnapshot.State.FAILED, failedTask.state());
+        assertEquals(CompileTaskSnapshot.Stage.BUILDING_NATIVE, failedTask.stage());
+        var result = Objects.requireNonNull(failedTask.result());
+        assertEquals(CompileResult.Outcome.BUILD_FAILED, result.outcome());
+        assertEquals("simulated native build failure", result.buildLog());
+        assertEquals(1, compiler.invocationCount());
+    }
+
     private static String validSource(String className) {
         return """
                 class_name %s
