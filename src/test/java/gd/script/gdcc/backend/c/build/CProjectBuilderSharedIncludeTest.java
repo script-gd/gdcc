@@ -130,7 +130,8 @@ public class CProjectBuilderSharedIncludeTest {
                         projectDir.resolve("entry.c").toAbsolutePath().normalize(),
                         expectedGodot.resolve("godot_binding.c"),
                         expectedGdcc.resolve("minicoro.c"),
-                        expectedGdcc.resolve("gdcc_coroutine.c")
+                        expectedGdcc.resolve("gdcc_coroutine.c"),
+                        expectedGdcc.resolve("gdcc_hrx.c")
                 ),
                 compiler.cFiles()
         );

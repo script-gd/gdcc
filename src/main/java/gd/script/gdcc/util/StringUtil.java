@@ -3,12 +3,33 @@ package gd.script.gdcc.util;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
 public final class StringUtil {
     private StringUtil() {
+    }
+
+    /// Deterministic MD5 digest. Only used where a stable fixed-size fingerprint of compiler
+    /// internal data is required (never for security purposes).
+    public static byte @NotNull [] md5(byte @NotNull [] input) {
+        try {
+            return MessageDigest.getInstance("MD5").digest(input);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("MD5 MessageDigest is not available", e);
+        }
+    }
+
+    /// Uppercase hex of the first `count` bytes (fewer when the array is shorter).
+    public static @NotNull String toHex(byte @NotNull [] bytes, int count) {
+        var sb = new StringBuilder(count * 2);
+        for (var i = 0; i < count && i < bytes.length; i++) {
+            sb.append(String.format("%02X", bytes[i] & 0xFF));
+        }
+        return sb.toString();
     }
 
     public static @NotNull String requireNonBlank(@Nullable String value, @NotNull String fieldName) {

@@ -520,6 +520,9 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
         function.setHidden(true);
         function.setStatic(true);
         function.setReturnType(plan.returnType());
+        // HR-8: the stable source identity rides the LIR function down to the backend's rebind
+        // table; derived from the already-published plan (no AST/plan shape changes).
+        function.setSourceIdentityKey(plan.sourceIdentityKey());
         for (var parameter : lambdaExpression.parameters()) {
             var parameterName = parameter.name().trim();
             var binding = lambdaScope.resolveValueHere(parameterName);

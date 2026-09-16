@@ -15,6 +15,7 @@ import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.lir.LirBasicBlock;
+import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
@@ -24,17 +25,20 @@ import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralFloatInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
+import gd.script.gdcc.lir.insn.StandaloneCallableKind;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.lir.insn.VariantGetInsn;
 import gd.script.gdcc.lir.insn.VariantSetInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdccCoroStateType;
 import gd.script.gdcc.type.GdccForRangeIterType;
@@ -63,6 +67,7 @@ import java.util.regex.Pattern;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -3146,6 +3151,214 @@ public class CCodegenTest {
         // hot-reload gate in initialize either.
         assertFalse(deinitializeBody.contains("gdcc_coro_cancel_all"), deinitializeBody);
         assertFalse(initializeBody.contains("gdcc_coro_set_hot_reload_active"), initializeBody);
+    }
+
+    /// HR-8 (hot_reload_implementation_plan.md §5.6): the module-level Callable identity
+    /// catalog — per-extension anchor token, per-lambda/standalone identity structs (stable
+    /// `impl_key` + canonical schema descriptor + 128-bit fingerprint + data argument count),
+    /// and the rebind table consumed by the next library generation. initialize() must freeze
+    /// the dispatch mode before any class registration can construct a Callable, and
+    /// deinitialize() must run the hub invalidation as the LAST teardown step (D8).
+    @Test
+    public void hrxIdentityCatalogAndRebindTableAreEmittedForLambdasAndStandalones() throws Exception {
+        var clazz = new LirClassDef("HrxWorker", "Node");
+        var lambda = newFunction("_lambda_0", GdIntType.INT);
+        lambda.setLambda(true);
+        lambda.setHidden(true);
+        lambda.setStatic(true);
+        lambda.setSourceIdentityKey("HrxWorker::run@+2:5");
+        lambda.addCapture(new LirCaptureDef("seed", GdIntType.INT, lambda));
+        clazz.addFunction(lambda);
+        var user = newFunction("make", GdVoidType.VOID);
+        user.createAndAddVariable("cb", new GdCallableType());
+        entry(user).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb", StandaloneCallableKind.UTILITY, "", "print"));
+        entry(user).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(user);
+        var module = new LirModule("hrx_catalog_module", List.of(clazz));
+
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+        var initializeBody = resolveFunctionBodyByPrefix(cCode, "void initialize(void* userdata");
+        var deinitializeBody = resolveFunctionBodyByPrefix(cCode, "void deinitialize(void* userdata");
+
+        // Anchor token: per-extension 64-bit constant, defined once.
+        assertContainsAll(cCode, "#define GDCC_HRX_ANCHOR_TOKEN UINT64_C(0x");
+        assertEquals(1, countOccurrences(cCode, "#define GDCC_HRX_ANCHOR_TOKEN"), cCode);
+
+        // Lambda identity: key + schema descriptor + fingerprint + argument count, with the
+        // rebind table row pointing at the generated per-lambda functions.
+        assertContainsAll(
+                cCode,
+                "static const unsigned char HrxWorker__lambda_0_hrx_identity_schema[] = {",
+                ".impl_key = u8\"HrxWorker::run@+2:5\"",
+                ".argument_count = 0",
+                "{ &HrxWorker__lambda_0_hrx_identity, HrxWorker__lambda_0_call, HrxWorker__lambda_0_free, HrxWorker__lambda_0_is_valid }"
+        );
+        // Standalone identity: interning key + shared runtime impl + always-NULL destroy.
+        assertContainsAll(
+                cCode,
+                ".impl_key = u8\"standalone:utility::print\"",
+                "gdcc_standalone_callable_call, NULL, gdcc_standalone_callable_is_valid"
+        );
+        assertEquals(2, countOccurrences(cCode, "{ &"), "exactly two rebind rows expected");
+
+        // Mode freeze happens before any class registration (no Callable may predate it).
+        assertOrdered(
+                initializeBody,
+                "gdcc_init();",
+                "gdcc_hrx_initialize(class_library, GDCC_HRX_ANCHOR_TOKEN,",
+                "gdcc_hrx_rebind_table, 2);",
+                "godot_classdb_register_extension_class5("
+        );
+        // Hub invalidation is the LAST teardown step (D8): after the runtime registries.
+        assertOrdered(
+                deinitializeBody,
+                "gdcc_standalone_callable_registry_destroy_all();",
+                "gdcc_hrx_deinitialize();"
+        );
+    }
+
+    /// HR-8 catalog canonicalization: the same inherited static referenced through a subclass
+    /// AND through its declaring class is ONE identity — one impl_key (resolved owner), one
+    /// C symbol, one rebind row. Raw-owner keys would emit duplicate symbol definitions.
+    @Test
+    public void hrxIdentityCatalogDedupesInheritedStandaloneToTheDeclaringOwner() throws Exception {
+        var parentClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var build = newFunction("build", GdVoidType.VOID);
+        build.setStatic(true);
+        parentClass.addFunction(build);
+        var childClass = new LirClassDef("WorkerChild", "Worker", false, false, Map.of(), List.of(), List.of(), List.of());
+
+        var viaChild = newFunction("via_child", GdVoidType.VOID);
+        viaChild.createAndAddVariable("cb", new GdCallableType());
+        entry(viaChild).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb", StandaloneCallableKind.STATIC_GDCC, "WorkerChild", "build"));
+        entry(viaChild).appendInstruction(new ReturnInsn(null));
+        childClass.addFunction(viaChild);
+
+        var viaParent = newFunction("via_parent", GdVoidType.VOID);
+        viaParent.createAndAddVariable("cb", new GdCallableType());
+        entry(viaParent).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb", StandaloneCallableKind.STATIC_GDCC, "Worker", "build"));
+        entry(viaParent).appendInstruction(new ReturnInsn(null));
+        parentClass.addFunction(viaParent);
+
+        var module = new LirModule("hrx_canonical_module", List.of(parentClass, childClass));
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+        assertEquals(1, countOccurrences(cCode, ".impl_key = u8\"standalone:static_gdcc:Worker:build\""),
+                "exactly one canonical identity may be emitted: " + cCode);
+        assertFalse(cCode.contains("standalone:static_gdcc:WorkerChild:build"),
+                "the raw subclass owner must never reach an identity: " + cCode);
+        assertEquals(1, countOccurrences(cCode, "static const gdcc_hrx_identity gdcc_hrx_identity_sa_static_gdcc_Worker_build"),
+                "the canonical symbol must be defined exactly once: " + cCode);
+        assertEquals(1, countOccurrences(cCode, "{ &"), "exactly one rebind row expected: " + cCode);
+    }
+
+    /// HR-8 negative: a module without any custom Callable still freezes the mode (coroutine
+    /// signal waiters may exist), but passes an empty table instead of emitting one.
+    @Test
+    public void hrxInitializePassesNullTableWhenNoCustomCallablesExist() throws Exception {
+        var clazz = new LirClassDef("HrxEmpty", "Node");
+        var module = new LirModule("hrx_empty_module", List.of(clazz));
+
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+        var initializeBody = resolveFunctionBodyByPrefix(cCode, "void initialize(void* userdata");
+        assertOrdered(
+                initializeBody,
+                "gdcc_hrx_initialize(class_library, GDCC_HRX_ANCHOR_TOKEN,",
+                "NULL, 0);"
+        );
+        assertFalse(cCode.contains("gdcc_hrx_rebind_table"), cCode);
+        assertFalse(cCode.contains("_hrx_identity_schema"), cCode);
+    }
+
+    /// HR-8 schema semantics: the canonical descriptor tracks the capture/signature LAYOUT
+    /// (never the body), so two lambdas with different capture types must produce different
+    /// descriptors (reload fails closed) while identical layouts share byte-identical
+    /// descriptors (reload rebinds). This is the safety property behind "never mis-destroy".
+    @Test
+    public void lambdaSchemaDescriptorShouldTrackCaptureAndSignatureLayout() throws java.io.IOException {
+        var intCapture = buildSchemaProbeLambda(GdIntType.INT, GdIntType.INT);
+        var stringCapture = buildSchemaProbeLambda(GdStringType.STRING, GdIntType.INT);
+        var intCaptureAgain = buildSchemaProbeLambda(GdIntType.INT, GdIntType.INT);
+        var differentReturn = buildSchemaProbeLambda(GdIntType.INT, GdStringType.STRING);
+
+        assertNotEquals(
+                intCapture.identities().getFirst().schemaBytes(),
+                stringCapture.identities().getFirst().schemaBytes(),
+                "capture layout must feed the descriptor"
+        );
+        assertEquals(
+                intCapture.identities().getFirst().schemaBytes(),
+                intCaptureAgain.identities().getFirst().schemaBytes(),
+                "identical layouts must share the descriptor (rebind-compatible)"
+        );
+        assertNotEquals(
+                intCapture.identities().getFirst().schemaBytes(),
+                differentReturn.identities().getFirst().schemaBytes(),
+                "the signature (return type) must feed the descriptor"
+        );
+    }
+
+    private static CHrxIdentityCatalog buildSchemaProbeLambda(GdType captureType, GdType returnType) throws java.io.IOException {
+        var clazz = new LirClassDef("HrxSchema", "Node");
+        var lambda = newFunction("_lambda_0", returnType);
+        lambda.setLambda(true);
+        lambda.setHidden(true);
+        lambda.setStatic(true);
+        lambda.setSourceIdentityKey("HrxSchema::run@+1:5");
+        lambda.addCapture(new LirCaptureDef("seed", captureType, lambda));
+        clazz.addFunction(lambda);
+        var module = new LirModule("hrx_schema_module", List.of(clazz));
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, new ClassRegistry(api));
+        // Catalog-level check (no template rendering): capture/signature drive the descriptor.
+        return CHrxIdentityCatalog.collect(module, ctx, new CGenHelper(ctx, module.getClassDefs()));
+    }
+
+    /// HR-8 defensive: a lambda without a frontend-published source identity key must fail
+    /// the build loudly instead of silently producing an unrebindable Callable.
+    @Test
+    public void keylessLambdaShouldFailCodegenFast() throws java.io.IOException {
+        var clazz = new LirClassDef("HrxKeyless", "Node");
+        var lambda = newFunction("_lambda_0", GdIntType.INT);
+        lambda.setLambda(true);
+        lambda.setHidden(true);
+        lambda.setStatic(true);
+        clazz.addFunction(lambda);
+        var module = new LirModule("hrx_keyless_module", List.of(clazz));
+
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+        var ex = assertThrows(IllegalStateException.class, codegen::generate);
+        assertTrue(ex.getMessage().contains("source identity key"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("HrxKeyless._lambda_0"), ex.getMessage());
     }
 
     @Test

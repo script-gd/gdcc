@@ -27,6 +27,7 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
     /// generates entry thunk + minicoro body + hidden state class only when true, and `await`
     /// instructions may only appear inside such functions.
     private boolean isCoroutine;
+    private @Nullable String sourceIdentityKey;
     private Map<String, String> annotations;
     private final List<LirParameterDef> parameters;
     private final Map<String, LirCaptureDef> captures;
@@ -178,6 +179,18 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
     /// function body suspends; the value is consumed by the C backend's coroutine codegen path.
     public void setCoroutine(boolean coroutine) {
         this.isCoroutine = coroutine;
+    }
+
+    /// Stable source identity for hot-reload rebinding (XML `source_identity_key`; absent ⇔
+    /// `null`). Only meaningful for lambda functions: `<Class>::<enclosingFunc>@+Δline:col`,
+    /// derived by the frontend from `FrontendLambdaPlan.sourceIdentityKey()` and consumed by
+    /// the C backend's HRX rebind-table emission, which refuses keyless lambdas.
+    public @Nullable String getSourceIdentityKey() {
+        return sourceIdentityKey;
+    }
+
+    public void setSourceIdentityKey(@Nullable String sourceIdentityKey) {
+        this.sourceIdentityKey = sourceIdentityKey;
     }
 
     public @NotNull Map<String, String> getAnnotations() {

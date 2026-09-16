@@ -16,7 +16,9 @@
     - v11（实施期修订，HR-4 双审阅发现并经用户确认）：**D8 顺序修订——static backing 销毁与类注销段对调**（static 销毁 → 类注销 → registry 销毁）。原顺序仅在 reload 路径安全；正常退出（非 reload）时 `_unregister_extension_class` 不调 `_clear_extension`（`gdextension.cpp` 非 reload 分支直接 `extension_classes.erase`），static backing 持有的 GDCC 实例在最后引用释放时会经悬空的 `_extension` 执行析构回调（UAF，链路经 `object.cpp:2263-2278, 933-935` 与 `main.cpp:4985,5016` 核验成立）；GDExtension 接口不暴露 `is_reloading`，无法运行时分流，故统一改为两路径皆安全的对调顺序，并扩展 D3 纪律（字段析构链/协程字段清理不得依赖 static backing）。HR-4 验收细则同步修订；`gdcc_c_backend.md` 与 `explicit_c_inheritance_layout_contract.md` 已同步。
     - v12（实施期修订，HR-9 自动化落地 HR-1~HR-5 部分）：`GodotEditorHotReloadTestSession` 与 4 个端到端场景测试已实现并全绿（Linux + Godot 4.5.2 editor，见 §6 HR-9 自动化节状态行）。关键新事实：**`_process` 挂载方式结论落定**——headless editor 下 `root.add_child()` 即可驱动节点 `_process`，但 fixture 类必须 `@tool`：gdcc 生成的 `call_virtual_with_data` 对非 tool 类的 `_process`/`_physics_process` 在 `gdcc_is_editor_hint()` 下既定跳过（非 tool 脚本编辑器语义对齐，见 `entry.c.ftl` 虚拟分派段），非热重载缺陷；冒烟验证项"需 `_process` 的场景挂载方式"据此闭环。
     - v13（实施期修订，HR-9 自动化性能与健壮性）：① 耗时画像——nativeCompile 占绝对大头（约 19.7s × 9 次构建 ≈ 77% 总时长），编辑器启动约 10s/次，reload 本身毫秒级；② 加速落地——4 个场景的原生构建目录改为 `tmp/test/editor_hot_reload/build_<scenario>` 单目录跨 v1/v2/v3 复用并跨测试运行存活（路径一致使 zig 按 TU 内容缓存吸收 3 个运行时 TU，仅 `entry.c` 逐版本重编），预建 `shared-compiler-cache` 使 4 场景共享 PCH/zig 缓存根，测试类加 `@Execution(CONCURRENT)`（`ZigCcCompiler` 锁按 projectDir 粒度，构建真并行；编辑器进程互相独立）：全类墙钟 3m50s → 约 25~27s（热缓存 nativeCompile ≈ 0.4~0.5s/次）；③ **上游引擎缺陷实证**：`reload_extension` 返回后于重负载下立即 `quit` 会在 `Main::cleanup()` 的 `MessageQueue::flush()` 中崩溃（SIGSEGV）——机制同 `godotengine/godot#123511`/`#111048`（deferred 编辑器文档再生成在扩展卸载后执行，StringName 键悬空；4.5.2 本机以手写最小 C 扩展 probe_ext 复现，与 gdcc 无关；负载放大竞态窗口），缓解：driver 在最终 marker/quit 前停留 60 帧让消息队列在扩展存活期内排空（满核负载下验证 4/4 干净），手测清单遇同类崩溃亦按此处理。
-    - 实施进展（2026-09）：HR-0 ✅（附录 A）；HR-1 ✅；HR-2 ✅（D2，双审阅闭环）；HR-3 ✅（D4/D5，双审阅闭环：修复 alloc OOM 守卫、壳执行级测试）；HR-4 ✅（D8 v11，双审阅 + BLOCKING 修订闭环）。详见 §6 各步骤状态行。
+    - 实施进展（2026-09）：HR-0 ✅（附录 A）；HR-1 ✅；HR-2 ✅（D2，双审阅闭环）；HR-3 ✅（D4/D5，双审阅闭环：修复 alloc OOM 守卫、壳执行级测试）；HR-4 ✅（D8 v11，双审阅 + BLOCKING 修订闭环）；HR-5 ✅（D5 + 双模门控，双审阅闭环）；HR-6 ✅（文档合同，随 HR-8 落地）；HR-8 ✅（§5 全合同，实施期发现的事实纠偏见下）。详见 §6 各步骤状态行。
+    - **HR-8 实施期事实纠偏**（相对 §5 设计稿，均为实现层细化而非合同变更）：① ~~四 thunk 合入**单 slab 槽位**~~（**已被 v14 取代**：per-spec slab 槽位整体废弃，改为每 hub 一页共享静态 thunk）；② standalone 身份结构与重绑表在 codegen 侧统一由 `CHrxIdentityCatalog` 发射（§5 预期的运行时字符串构造改为 codegen 静态发射，runtime 零格式化代码，schema_desc 跨代逐字节可比对）；③ `argument_count` 数据化字段并入 `gdcc_hrx_identity`（创建/重绑同源）；④ 锚点 token 派生输入定为模块名 MD5 前 64 位（不含 optimization/architecture）；⑤ 清扫重入 drain 与 §5.6 点 4 伪码等价地实现于 sweeper 尾部与阶段二尾部两处（深度归零即排空）。
+    - v14（实施期修订，HR-8 双审阅复核期间发现的 BLOCKING 驱动）：**per-spec slab thunk 槽位整体废弃，改为每 hub 一页的共享静态 thunk**。动因：slab 写新槽位需把整页 RX→RW→RX，若 RX 恢复持久失败，同页已发布 sibling thunk 将执行 NX 页崩溃，fail-closed 被穿透（review-expert-c 复核指认）。关键事实核验（`core/extension/gdextension_interface.cpp:65-73,132-170,204-234`）：四个回调的 arg0 恒为 `callable_userdata`（= spec），默认相等为 `(call_func, userdata)` 二元组、默认哈希混合两指针——因此 spec 立即数本就是冗余（arg0 寄存器已携带），共享 `call_func` 后相等归约为 spec 同一性，与 per-spec thunk 的等价类完全一致。唯一缺口是 free thunk 需要 hub（sweeper）：spec 新增 `hub` 回指针字段（偏移 48，ABI 冻结），free thunk 经 `spec->hub->sweeper` 两次加载。§5.1 不变量 6、§5.2 结构、§5.3 模板合同（零补丁，离线汇编字节内嵌）、§5.4（slab→共享 thunk 页，hub 创建时一次性 RW→写→RX 后**永不再写**，probe 回退单循环；页与 hub 同寿命、跨代 thunk 地址恒定）、§5.6（摘除 slot 归还步骤）、§5.7（身份语义改述）同步修订；原 slab 验收项（同页 sibling 保活、跨代槽位回收）作废，替换为"全 spec 共享同一组 thunk 函数指针 + 跨代地址恒定"验收项。
 - 关联文档：
     - `doc/gdcc_c_backend.md`：C 后端 ABI 与 entry 生命周期合同（Scene-level initialize/deinitialize）。
     - `doc/gdcc_runtime_lib.md`：runtime 全局 registry（String/StringName/standalone Callable）、协程运行时清理规则。
@@ -113,12 +115,13 @@
 编辑器进程内，交给 Godot 的 `call_func`/`free_func`/`is_valid_func`/`get_argument_count_func` 全部指向**运行时生成在可执行堆内存里的微型 thunk**（不属于任何库映像，dlclose 后仍可执行）；thunk 只做查表、标记与（尾）调用，真正的 lambda 实现函数指针存在 Godot 堆上的 spec 里，由新代主库按名重绑。
 
 ```text
-Godot Callable ──► thunk(可执行堆, 永久) ──► spec(Godot 堆, 永久)
-                                                ├─ impl_ptr / destroy_fn / is_valid_fn (随代重绑)
-                                                ├─ impl_key / schema_fingerprint / argument_count
-                                                ├─ binding_state / dead / refcount
-                                                └─ captures（现状捕获块，原封不动）
+Godot Callable ──► 共享 thunk(hub 可执行页, 永久, 全 spec 同一份) ──► spec(Godot 堆, 永久)
+                                                 ├─ impl_ptr / destroy_fn / is_valid_fn (随代重绑)
+                                                 ├─ impl_key / schema_fingerprint / argument_count
+                                                 ├─ binding_state / dead / refcount / hub(回指针)
+                                                 └─ captures（现状捕获块，原封不动）
 hub(Godot 堆, 永久): registry 双向链表 + sweeper(当前代清扫器) + magic/version + sweep_depth
+                     + thunk_page(创建时一次性 RX 发布，永不再写)
 锚点: Engine 单例的 instance binding（固定 per-module token，脚本不可访问）
 ```
 
@@ -128,7 +131,7 @@ hub(Godot 堆, 永久): registry 双向链表 + sweeper(当前代清扫器) + ma
 3. 内存回收只由"当前代主库代码"执行（sweeper 或新代清扫），旧代码永不在卸载后被需要；
 4. 跨代共享数据一律 `godot_mem_alloc`（§2.3 CRT 条款）且**显式初始化**（`godot_mem_alloc` 不置零：`dead/refcount/binding_state/impl_ptr/prev/next/sweeper` 等字段一律显式赋值）；thunk 代码页用 OS 可执行内存（进程级，与库卸载无关）；
 5. 捕获布局失配时宁泄漏不误析构；失效一律走引擎标准错误路径（§2.2 的 `is_valid` 检查落点）；
-6. `GDExtensionCallableCustomInfo2.callable_userdata` **钉死为 spec**（不是 captures）；thunk 忽略 Godot 传入的 arg0，一律改用立即数内嵌的 spec，再把 `spec->captures` 作为实现函数首参。
+6. `GDExtensionCallableCustomInfo2.callable_userdata` **钉死为 spec**（不是 captures）；thunk **直接使用 Godot 传入的 arg0**（四回调 arg0 恒为 `callable_userdata`，已按 `gdextension_interface.cpp:132-170,230-234` 核验）作为 spec 指针，再把 `spec->captures` 作为实现函数首参；free thunk 需要的 hub 经 `spec->hub` 回指针获取（`spec->hub->sweeper`）。thunk 字节因此**零运行时补丁**，全进程同一 ISA 只需一份。
 
 ### 5.2 数据结构与分配合同
 
@@ -154,10 +157,10 @@ typedef struct gdcc_hrx_spec {
     gdcc_hrx_is_valid_fn is_valid_fn; // = 现 per-lambda is_valid_func（可空）
     int32_t argument_count;           // = 现 per-lambda get_argument_count 值，数据化
     void *captures;                   // = 现 callable_userdata 捕获块（布局/分配不变）
+    gdcc_hrx_hub *hub;                // 回指针（free thunk 经此读 hub->sweeper；与 spec 同寿命）
     struct gdcc_hrx_spec *prev, *next;       // registry 双向链
     struct gdcc_hrx_spec *intern_next;       // hub interning 表哈希链（仅 standalone；lambda 恒 NULL）
     struct gdcc_hrx_spec *pending_next;      // sweep_pending 队列链（仅清扫期使用，独立于 registry/interning 链）
-    void *thunk_slot;                 // slab 槽位句柄（指向 hub slab 管理结构中的槽位，跨代可回收）
 } gdcc_hrx_spec;
 
 typedef struct gdcc_hrx_hub {
@@ -168,11 +171,11 @@ typedef struct gdcc_hrx_hub {
     gdcc_hrx_sweep_fn sweeper;        // 当前代主库注册；deinitialize 置 NULL
     uint32_t sweep_depth;             // 清扫重入守卫（§5.6 点 4）
     gdcc_hrx_spec *sweep_pending;     // 重入期间入队的待清扫 spec 链（§5.6 点 4，经 spec->pending_next 串联）
-    gdcc_hrx_slab *slab_pages;        // slab 页管理状态（页链表 + freelist + 每页 live_thunks；跨代存续于 hub，§5.4）
+    void *thunk_page;                 // 共享 thunk 代码页（hub 创建时一次性 RX 发布，永不再写，§5.4）
 } gdcc_hrx_hub;
 ```
 
-- spec/hub/捕获包装/payload 字符串：`godot_mem_alloc`（§2.3）。thunk 代码页：`VirtualAlloc`/`mmap` RW→RX（§5.4）。
+- spec/hub/捕获包装/payload 字符串：`godot_mem_alloc`（§2.3）。共享 thunk 代码页：`VirtualAlloc`/`mmap` RW→RX（§5.4）。
 - `captures` 与现状 `gdcc_new_lambda_callable` 的 `userdata` 捕获块（`gdcc_callable.h:407-431`）是**同一份数据**：同样的 codegen 布局、同样的 `godot_mem_alloc`；`impl_ptr` 就是现 per-lambda `call_func`（thunk 尾调用把首参换成 `captures`，`args/argc/r_return/r_error` 原样透传，正是其现有签名）。
 - spec/hub/thunk 模板布局 ABI **永久冻结**（append-only + version）；`abi_version` 参与 schema 指纹计算。
 - `binding_state` 与 `dead` 职责分离：`dead` 由 free thunk 写（Callable 已死），`binding_state` 只由主库代码写（重绑/清扫决策依据）；**禁止用 `destroy_fn == NULL` 推断失配**（兼容但无析构需求的 spec 同样为 NULL）。
@@ -214,27 +217,27 @@ get_argument_count(userdata=spec, r_is_valid):    // 两参数 ABI，非无参�
     return spec->argument_count;
 ```
 
-- 模板为手写位置无关字节（x86_64 SysV / x86_64 Win64 / aarch64 三变体），离线汇编一次后内嵌为 `static const unsigned char[]`，永久冻结；运行时 memcpy + 打立即数补丁（spec/hub 地址、字段偏移）。**macOS x86_64 直接复用 SysV 变体**：macOS Intel 遵循同一 System V AMD64 ABI（参数寄存器 `rdi/rsi/rdx/rcx/r8/r9` 一致、16B 栈对齐一致、128B red zone 受 Apple ABI 明确支持），模板零新增；thunk 字节本就是运行时 memcpy 生成，与宿主库编译目标无关，支持 Intel macOS 不要求第四个模板。
+- 模板为手写位置无关字节（x86_64 SysV / x86_64 Win64 / aarch64 三变体），离线汇编一次后内嵌为 `static const unsigned char[]`，永久冻结；**运行时零补丁**——spec 经 arg0 寄存器（SysV `rdi` / Win64 `rcx` / aarch64 `x0`）传入，hub 经 `spec->hub`（偏移 48）+ `hub->sweeper`（偏移 40）两次加载。**macOS x86_64 直接复用 SysV 变体**：macOS Intel 遵循同一 System V AMD64 ABI（参数寄存器 `rdi/rsi/rdx/rcx/r8/r9` 一致、16B 栈对齐一致、128B red zone 受 Apple ABI 明确支持），模板零新增；thunk 字节本就是运行时 memcpy 生成，与宿主库编译目标无关，支持 Intel macOS 不要求第四个模板。
 - ABI 约束（逐变体核验）：
     - `call`：SysV 第 5 参 `r8`、Win64 第 5 参在 shadow space 后栈上（尾调用不动栈即原样透传）、aarch64 `x0..x4`；
     - `free` → sweeper 纯尾跳：签名一致（`void sweeper(spec*)`），SysV 复用 `rdi`、Win64 复用 `rcx`（原 32B shadow 可用）、aarch64 复用 `x0` 保留 `lr`；
-    - `is_valid` 嵌套调用：Win64 须 `sub rsp, 0x28`（32B shadow + 16B 对齐，**无 red zone**）；SysV 须保持 16B 对齐；aarch64 须保存/恢复 `x30` 后 `blr`；
+    - `is_valid` 嵌套调用：Win64 须在 `call` 前备好 32B shadow space 且保持 16B 对齐（**无 red zone**；当前模板用 `push rbx` + `sub rsp, 0x20` 同时满足两者，`rbx` 持有 spec）；SysV 须保持 16B 对齐；aarch64 须保存/恢复 `x30` 后 `blr`；
     - `get_argument_count`：SysV `rdi/rsi`、Win64 `rcx/rdx`、aarch64 `x0/x1`。
 - aarch64 写后刷指令缓存：GNU 工具链用 `__builtin___clear_cache`，Apple 用 `sys_icache_invalidate`（不可假定对方符号存在）；x86_64 不需要 flush。
 - **禁止拷贝库中已编译函数**：编译产物的全局引用走 PC 相对寻址、外部调用走 PLT/GOT，拷贝后仍指向原映像。
-- 生成接口隔离 ISA 细节（sljit 为预留升级实现，本期不引入）：`const uint8_t *gdcc_hrx_thunk_emit(kind, patch...)`。
+- 生成接口隔离 ISA 细节（sljit 为预留升级实现，本期不引入）：`const gdcc_hrx_thunk_template *gdcc_hrx_thunk_template_get(kind)`。
 - `object_id` 字段照旧填（lambda 捕获 self 时由 `gdcc_new_lambda_callable` 传入；ObjectID 校验在引擎侧，与库卸载无关）。
 
-### 5.4 可执行内存：探测、模式状态机与 slab 页
+### 5.4 可执行内存：探测、模式状态机与共享 thunk 页
 
-- **进程级探测 + 冻结模式**：`initialize()` 在任何 custom Callable 产生之前执行 `gdcc_hrx_execmem_probe()`（完整走一遍 RW→写→RX→执行一个 nop thunk），三态模式机进程生命周期内冻结：
+- **进程级探测 + 冻结模式**：`initialize()` 在任何 custom Callable 产生之前执行 `gdcc_hrx_execmem_probe()`（完整走一遍 RW→写→RX→执行一个 nop thunk→unmap），三态模式机进程生命周期内冻结：
     - `DIRECT_NON_RELOAD`：非编辑器进程（`gdcc_is_editor_hint()==false`，读于 `gdcc_init()` 缓存 Engine 单例之后）→ 现状 direct 路径；
     - `HRX_ACTIVE`：编辑器进程且 probe 成功 → thunk 路径；
     - `HRX_UNAVAILABLE`：编辑器进程但 probe 失败 → **fail-closed**：custom Callable 创建一律返回无效 Callable 并打印一次性错误。**禁止回退 direct**（`reloadable` 已声明时 direct 会在 reload 后重新引入悬空指针，G7 原病）；也禁止 per-Callable 回退（身份/哈希分叉）。
-- **旧 hub 接管**：新代 initialize 发现锚点已有 hub 时，无论本次 probe 结果都必须继续 hrx 接管（旧 spec/thunk 已存在，切 direct 无法赎回）。
-- **slab 页管理（跨代）**：thunk 槽位按页池化；**页管理状态（页链表、freelist、每页 `live_thunks` 计数）是 `hub->slab_pages` 的一部分**（随 hub 驻 Godot 堆、跨代存续），spec 持 `thunk_slot` 句柄——因此**新代 sweeper/清扫可以安全回收旧代分配的槽位**（同一套 hub 管理结构，不依赖任何代的主库 static）。回收单位是 **slot** 而非 page：槽位归还即 `live_thunks--` 并入 freelist，仅当整页计数归零才 `munmap`/`VirtualFree`。验收必测"同页两 spec，先 free 一个，另一个 call 仍成功"与"旧代槽位由新代回收"。
-- 单次池扩容/OOM 失败：返回无效 Callable + 错误日志，半成品不得交付——lambda 用当前代 `destroy_fn` 释放已分配 captures；standalone（interned）走 `gdcc_hrx_standalone_payload_free`（其 `destroy_fn` 恒 NULL）。
-- 各平台路径：Linux `mmap(RW)`→写入→`mprotect(RX)`；Windows `VirtualAlloc(RW)`→写入→`VirtualProtect(RX)`；macOS（aarch64 与 x86_64 同一路径）`mmap(RW)`→写入→`mprotect(RX)`（**禁用 `MAP_JIT`**——其 entitlement 在编辑器主二进制上；且 `MAP_JIT`/`pthread_jit_write_protect_np` 是 arm64 专属机制，Intel 上无对应物亦不需要；真正失败点是 Hardened Runtime 下的 `mprotect(PROT_EXEC)`——Apple 文档对两架构同样要求 `allow-unsigned-executable-memory` entitlement，实际执法强度按架构分别实机核验，见 §5.10——probe 会在此暴露并走 `HRX_UNAVAILABLE`）；aarch64 写后刷 icache（§5.3），x86_64 不需要 flush；slab 页大小一律运行时 `getpagesize()`/`GetSystemInfo` 查询（Intel mac 4K、Apple Silicon 16K，不硬编码）。
+- **旧 hub 接管**：新代 initialize 发现锚点已有 hub 时，无论本次 probe 结果都必须继续 hrx 接管（旧 spec/thunk 页已存在，切 direct 无法赎回）。**损坏锚点不是接管凭证**：magic/version 失配的 binding 经孤岛协议摘除后，本次 probe 结果仍然门控新 hub 的创建（probe 失败 → `HRX_UNAVAILABLE`）。
+- **共享 thunk 页（v14）**：四角色静态 thunk 在 **hub 创建时**一次性写入**同一 OS 页**（RW→memcpy 模板→`mprotect`/`VirtualProtect` RX→aarch64 刷 icache），此后**该页永不再写**——发布时刻任何 Callable 尚不存在，因此"对已发布代码页做保护降级"的窗口从构造上不存在。所有 spec 的四个函数指针都指向这同一页（`thunk_page + 角色偏移`）；页与 hub 同寿命（跨代恒定：重绑后旧 Callable 的函数指针不变；孤儿 hub 的页随之孤岛泄漏，宁漏勿错）。无 thunk 模板的 ISA（如 riscv64）：probe 恒失败 → 编辑器 `HRX_UNAVAILABLE`、非编辑器 direct，导出构建不受影响。验收必测"全部 spec 共享同一组 thunk 函数指针"与"跨代重绑后旧 Callable 函数指针不变"。
+- 单次创建失败（thunk 页发布失败/spec OOM）：返回无效 Callable + 错误日志，半成品不得交付——lambda 用当前代 `destroy_fn` 释放已分配 captures；standalone（interned）走 `gdcc_hrx_standalone_payload_free`（其 `destroy_fn` 恒 NULL）。
+- 各平台路径：Linux `mmap(RW)`→写入→`mprotect(RX)`；Windows `VirtualAlloc(RW)`→写入→`VirtualProtect(RX)`；macOS（aarch64 与 x86_64 同一路径）`mmap(RW)`→写入→`mprotect(RX)`（**禁用 `MAP_JIT`**——其 entitlement 在编辑器主二进制上；且 `MAP_JIT`/`pthread_jit_write_protect_np` 是 arm64 专属机制，Intel 上无对应物亦不需要；真正失败点是 Hardened Runtime 下的 `mprotect(PROT_EXEC)`——Apple 文档对两架构同样要求 `allow-unsigned-executable-memory` entitlement，实际执法强度按架构分别实机核验，见 §5.10——probe 会在此暴露并走 `HRX_UNAVAILABLE`）；aarch64 写后刷 icache（§5.3），x86_64 不需要 flush；thunk 页大小一律运行时 `getpagesize()`/`GetSystemInfo` 查询（Intel mac 4K、Apple Silicon 16K，不硬编码）。
 
 ### 5.5 锚点与 hub 获取
 
@@ -242,7 +245,8 @@ get_argument_count(userdata=spec, r_is_valid):    // 两参数 ABI，非无参�
 - **获取 API 合同（已核验 `object.cpp:2104-2141`）**：
     - **`Object::set_instance_binding` 只写 slot 0**（`_instance_bindings[0].binding` 非空即 `ERR_FAIL_COND` 失败），**禁止**用于锚点——slot 0 可能已被其他绑定占用；
     - 锚点一律走 `Object::get_instance_binding(engine, token, &callbacks)`：内部按 token 线性查找，未命中则**追加新槽**（动态数组、`next_power_of_2` 扩容、无固定上限）并调 `create_callback` 懒创建——多 GDCC 扩展各持不同 token 可共存；
-    - **callbacks 语义（已核验 `object.h:673-681`）**：引擎**拷贝** `free_callback`/`reference_callback` 两个函数指针进槽位（`create_callback` 不被保存，仅在本次调用中执行）。因此：拷贝出的两个指针**必须全 NULL**（跨 reload 存活的 binding 绝不允许把库内函数地址留给引擎——free_callback 指向旧库即悬空；进程退出诊断因此放弃，退出泄漏可接受，写入合同）；`create_callback` 为库内函数是安全的（不存储、调用时本代库必然存活），但 **`create_callback == NULL` 时引擎会直接空调用**，不得省略；callbacks 结构体本身位置不限（static const 即可）。
+    - **callbacks 语义（已核验 `object.h:673-681`）**：引擎**拷贝** `free_callback`/`reference_callback` 两个函数指针进槽位（`create_callback` 不被保存，仅在本次调用中执行）。因此：拷贝出的两个指针**必须全 NULL**（跨 reload 存活的 binding 绝不允许把库内函数地址留给引擎——free_callback 指向旧库即悬空；进程退出诊断因此放弃，退出泄漏可接受，写入合同）；`create_callback` 为库内函数是安全的（不存储、调用时本代库必然存活），但 **`create_callback == NULL` 时引擎会直接空调用**，不得省略；callbacks 结构体本身位置不限（static const 即可）；
+    - **NULL tombstone 陷阱（已核验 `object.cpp:2116-2147`）**：引擎在调 `create_callback` **之前**就追加槽位，且**无论回调是否返回 NULL 都保存结果并递增计数**；查询按 token 线性查找**命中第一个匹配即停**。因此 `create_callback` 失败会留下 NULL tombstone，遮蔽后续一切同名 token 查询（后续 `get_instance_binding` 见 NULL 还会再次追加新槽，形成无限叠加）。合同：① `create_callback` 失败路径必须立即 `object_free_instance_binding` 摘除刚产生的 tombstone；② initialize 的 hub 查询前必须先做**有界 tombstone 清扫**——`object_free_instance_binding` 每次移除首个命中槽（`object.cpp:2165-2185` 已核验：摘除并前移后续槽），循环"查询为 NULL 则 free 一次"直到露出非 NULL（真实 hub 浮现即接管）或达上限 `GDCC_HRX_TOMBSTONE_SWEEP_MAX`（8；`object_has_instance_binding` 不经 GDExtension 暴露，空表与 tombstone 不可区分，no-op free 无害）。超过上限的叠加视为外来篡改，本代新 hub 可能仍被遮蔽，但每代清扫 8 个可在后续代数内自愈。
 - **hub 获取**（initialize）：`object_get_instance_binding(engine, token, NULL)` → 返回非 NULL 则校验 `magic`/`version`；返回 NULL 则 `godot_mem_alloc` 创建 hub 并以 `{create_callback=gdcc_hrx_anchor_create, free=NULL, reference=NULL}` 再次 `get_instance_binding` 完成挂载：
     - 匹配 → 接管（含 `HRX_UNAVAILABLE` 历史后的恢复接管）；
     - **失配协议**：不遍历旧 registry、不归还旧页（宁漏勿错）、`object_free_instance_binding(engine, token)` 后以新 hub 重新挂载，旧 hub 成为孤岛直到进程退出（记录诊断计数）。
@@ -252,12 +256,12 @@ get_argument_count(userdata=spec, r_is_valid):    // 两参数 ABI，非无参�
 
 registry 是跨代花名册（非 owning，spec 生死由 Callable 引用计数 + sweeper 决定），四个使用点：
 
-1. **创建登记（O(1) 头插）**：spec 分配并显式初始化 + thunk 生成 → 入链 → `refcount=1` → 才交付 `callable_custom_create2`；失败则摘链回收。登记必须先于交付，保证 deinitialize 任意时刻不漏。共享 spec（standalone）查 hub interning 表：**拒绝 `dead` spec**；命中存活项则 `refcount+1` 复用既有 `(thunk, spec)`（§5.7）。
+1. **创建登记（O(1) 头插）**：spec 分配并显式初始化（含 `hub` 回指针）→ 入链 → `refcount=1` → 才交付 `callable_custom_create2`（函数指针取自 `hub->thunk_page` 的角色偏移，全 spec 共享）；失败则摘链回收。登记必须先于交付，保证 deinitialize 任意时刻不漏。共享 spec（standalone）查 hub interning 表：**拒绝 `dead` 与失配 spec**；命中存活且 schema 兼容项则 `refcount+1` 复用既有 spec（§5.7）。
 2. **deinitialize 遍历置失效**（D8 最后一步）：`sweeper=NULL` → 全 spec 函数指针置 NULL、`binding_state` 置 `UNBOUND_INCOMPATIBLE`（`dead`/`refcount` 不动）。之后旧代码不再被任何路径需要。
 3. **新代 initialize 单遍历重绑 + 两阶段清扫**：先注册本代 `sweeper`，再：
     - **阶段一（单遍历，只摘链+重绑，不执行任何析构）**：遍历 registry——`dead && refcount==0` 的 spec 摘入独立 worklist（interned 的同时从 interning 表摘除）；**存活 spec（`!dead`）就地完成重绑**：按 `impl_key` 查本代重绑表，`schema_desc` 逐字节一致 → 三函数指针写入本代实现、`argument_count` 更新、`binding_state=BOUND_COMPATIBLE`（**原地升级到新代码**）；否则保持 `UNBOUND_INCOMPATIBLE`（优雅失效）。captures 一律不动。
       **顺序合同：任何析构发生之前，全部存活 spec 必须先完成重绑**——阶段二析构可能同步释放其他 Callable 使其 spec 变 dead 并入 pending；已重绑的兼容 spec 此时持有本代 `destroy_fn`，pending drain 才能正确析构其捕获（若先析构后重绑，重入变 dead 的 spec 仍处 `UNBOUND_INCOMPATIBLE`，其 captures 将被永久泄漏）。
-    - **阶段二（执行）**：对 worklist 逐项：`sweep_depth++` → 析构/释放 → `sweep_depth--` → depth 归零后统一 drain `sweep_pending`（drain 项按 §5.6 点 4 同一逻辑处理）。逐项动作：按 `impl_key` 查本代重绑表，指纹匹配且 `schema_desc` 与表条目**逐字节一致** → 用**表条目的** `destroy_fn` 析构捕获（注意：spec 上的函数指针已在 deinitialize 全部置 NULL，**禁止使用 spec->destroy_fn**——该字段仅供库存活期 sweeper 使用）；失配 → 捕获块整块泄漏（记诊断）；**壳元数据（`impl_key`/`schema_desc`/standalone payload 堆字符串与结构，见 §5.7）无条件释放**（已知 ABI，与 captures 析构分离）；经 `spec->thunk_slot` 归还 slab 槽位（§5.4）；释放 spec 壳。
+    - **阶段二（执行）**：对 worklist 逐项：`sweep_depth++` → 析构/释放 → `sweep_depth--` → depth 归零后统一 drain `sweep_pending`（drain 项按 §5.6 点 4 同一逻辑处理）。逐项动作：按 `impl_key` 查本代重绑表，指纹匹配且 `schema_desc` 与表条目**逐字节一致** → 用**表条目的** `destroy_fn` 析构捕获（注意：spec 上的函数指针已在 deinitialize 全部置 NULL，**禁止使用 spec->destroy_fn**——该字段仅供库存活期 sweeper 使用）；失配 → 捕获块整块泄漏（记诊断）；**壳元数据（`impl_key`/`schema_desc`/standalone payload 堆字符串与结构，见 §5.7）无条件释放**（已知 ABI，与 captures 析构分离）；释放 spec 壳（thunk 页归 hub 所有，spec 无 per-spec 代码资源）。
     - 重入守卫：阶段二或库存活期 sweeper 执行 `destroy_fn` 可能同步触发其他 free thunk → 嵌套 sweeper 见 `sweep_depth>0` 时把 spec 挂入 `sweep_pending`（`pending_next` 专用链）即返回；depth 归零后统一 drain。合同：**摘链先于析构，遍历期间不跨析构保留 registry 节点指针**。
 4. **库存活期 sweeper**（free thunk 尾调用，单节点操作；仅在 `refcount==0 && dead` 后被触发）：
     ```c
@@ -272,8 +276,7 @@ registry 是跨代花名册（非 owning，spec 生死由 Callable 引用计数 
         godot_mem_free((void *)spec->impl_key);                                  // 壳元数据无条件释放
         godot_mem_free((void *)spec->schema_desc);
         if (spec->interned) gdcc_hrx_standalone_payload_free(spec->captures);    // standalone：固定 ABI payload（字符串×3+结构），与 destroy_fn 无关
-        gdcc_hrx_slab_free_slot(hub, spec->thunk_slot);                          // slab 槽位归还（§5.4，经 hub 跨代管理状态）
-        godot_mem_free(spec);
+        godot_mem_free(spec);                                                    // thunk 页归 hub 所有，spec 无 per-spec 代码资源
         hub->sweep_depth--;
         if (hub->sweep_depth == 0) gdcc_hrx_pending_drain(hub);
     }
@@ -297,7 +300,7 @@ registry 是跨代花名册（非 owning，spec 生死由 Callable 引用计数 
 
 - 现状（`gdcc_callable.h:9-12, 335-400`）：同一 `(kind, owner, name)` 共享 interned spec，`free_func` 为 no-op，payload 字符串指向库内 `.rodata`，unload 时由 `gdcc_standalone_callable_registry_destroy_all()` 统一释放；每次 `callable_custom_create2` 产生**独立** custom object（§2.2 free 粒度条款）。
 - hrx 模式改造：
-    - interning 表为 `gdcc_hrx_hub.intern_table`（hub 拥有，按 identity 字符串哈希）；查找命中即 `refcount+1` 复用同一 `(thunk, spec)`——保持 §2.2 默认身份 `(call_func, userdata)` 的相等/hash 语义不变；**查找必须拒绝 `dead` spec**（其 Callable 已全部释放，正在等待清扫）；
+    - interning 表为 `gdcc_hrx_hub.intern_table`（hub 拥有，按 identity 字符串哈希）；查找命中即 `refcount+1` 复用同一 spec——§2.2 默认身份为 `(call_func, userdata)` 二元组：v14 后 `call_func` 全 spec 共享（同一 thunk 页同一偏移），相等实际归约为 `userdata`（= spec）同一性，与 per-spec thunk 时代价类完全一致，equal/hash 语义不变；**查找必须拒绝 `dead` 与 schema 失配 spec**（前者 Callable 已全部释放等待清扫；后者是 schema 变更 reload 留下的僵尸，复用会让新 Callable 永久失效——命中僵尸时先将其从 interning 表摘除再新建 spec 占位）；
     - `kind/owner/name` payload 处理：standalone 的 `captures` 为**固定 ABI 的 payload 堆克隆**（`gdcc_standalone_callable_spec` 同构结构 + 三个 `godot_mem_alloc` 字符串副本——`.rodata` 随库卸载，新代读旧 spec 会悬空）。该 payload 布局属已知 ABI（不随用户代码变化），因此其释放**不依赖 `destroy_fn`/schema 匹配**：作为壳元数据在 sweeper/清扫两条路径中**无条件释放**（字符串×3 + payload 结构）；相应地 standalone spec 的 `destroy_fn` **恒 NULL**（payload 析构走固定路径，schema 指纹仅保护 lambda 捕获）；
     - `free` thunk 按 §5.3 顺序：先递减 `refcount`，**归零才置 `dead`** 并 tail-jmp sweeper——禁止"共享 spec + 无计数 free"（首个析构即提前失效且永不回收）；sweeper 释放前必须先从 interning 表摘除（防同 identity 再创建命中尸检 spec），顺序见 §5.6 点 4；
     - `gdcc_standalone_callable_registry_destroy_all()` 与 hub interning 表职责切分：direct 模式维持现状（registry 统一释放）；hrx 模式下 interned spec 生命周期归 hub（registry 表本身不再登记），**禁止两套 registry 释放同一对象**。
@@ -403,20 +406,24 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
 
 ### HR-6 Callable 跨 reload 合同落地
 
+> 实施状态：已完成（2026-09）。随 HR-8 同步落地：`doc/gdcc_runtime_lib.md` 重写 `gdcc_callable.h` 条目为三态分流合同并新增 §HRX Hot-Reload Thunk Runtime 总章节（模式机/thunk/共享 thunk 页/hub/锚点/重绑清扫/协程 waiter/线程合同）与 `gdcc_hrx` 编译接线，协程 `cancel_all` 段补 HRX retain 查等键路径；`doc/gdcc_c_backend.md` 的 GDExtension Entry Lifecycle Contract 补 initialize 模式冻结（先于类注册）与 deinitialize 第 6 步 hub 失效置空（D8 末尾），删除"HR-8 未发射"保留注记。用户可见合同仍由本文 §7 承载（HR-9 端到端验收时随场景验证）。
+
 - **改动点**：随 HR-8 落地修订长期文档（`doc/gdcc_c_backend.md`、`doc/gdcc_runtime_lib.md`）：编辑器内 custom Callable 跨 reload 安全且按 §5.9 语义升级/失效；execmem 不可用时 fail-closed；非编辑器维持现状；worker 线程调用禁令；`Callable(对象, "方法名")` 连接跨 reload 始终有效；`to_string` 在 thunk 路径显示 `<CallableCustom>`。
 - **验收细则**：文档合并；HR-9 场景 5/5a/5b/5c/10/10b 覆盖 thunk 与 direct 双路径。
 
 ### HR-8 堆驻留 thunk Callable 间接派发
 
+> 实施状态：已完成（2026-09，§5 全合同落地，v14 共享 thunk 页形态）。**runtime**：新增 `gdcc_hrx.h/.c`——三变体手写位置无关 thunk 模板（零运行时补丁：spec 经回调 arg0 传入、hub 经 `spec->hub` 回指针获取，全部经 zig 汇编器逐字节核验并静态断言尺寸）、**共享 thunk 页**（hub 创建时一次性 RW→写→RX 发布四角色 thunk 到单页，此时无任何 Callable 存在，此后永不再写——"对已发布代码页降级"窗口从构造上不存在；v14 前为 per-spec slab 槽位，因 RX 恢复失败可波及已发布 sibling 的 BLOCKING 而废弃）、hub/spec（显式初始化、ABI 静态断言、spec 增 `hub` 回指针偏移 48）、standalone interning（hub 表、拒绝 dead/失配 spec、僵尸先摘除再新建、共享 spec 经默认身份 `(call_func, userdata)` 保持相等语义）、free thunk"先递减归零才置 dead"顺序、sweeper（intern 先摘除、重入 pending 队列 depth 归零 drain）、新代单遍历重绑+两阶段清扫（析构只用重绑表条目、指纹+desc 双层闸门、失配宁泄漏不误析构、壳元数据无条件释放）、Engine 单例 instance binding 锚点（`get_instance_binding` 追加语义、callbacks free/reference 全 NULL、失配孤岛协议且**失配后仍需过 probe**）、execmem probe 三态模式机（旧 hub 存在则无视 probe 结果接管；无模板 ISA probe 恒 false 保住导出构建）、`gdcc_hrx_callable_retain` 查等键。**分流**：`gdcc_callable.h` 两个创建入口按 `gdcc_hrx_get_mode()` 内部分流，UNAVAILABLE fail-closed 且消费 captures；standalone payload 改 `gdcc_hrx_standalone_payload` 固定 ABI 堆克隆（`gdcc_standalone_callable_spec` 成为其别名）；协程 signal waiter 经 `gdcc_new_lambda_callable_ex` 取回 spec 句柄存于 reg，bulk-cancel detach 在 thunk 模式改走 `gdcc_hrx_callable_retain`（同一 spec 身份），waiter 无重绑条目。**codegen**：`CHrxIdentityCatalog` 编目全模块 lambda/standalone 身份（impl_key 一律用 **resolve 后声明类 owner** 规范化——继承静态经子类/父类双路径引用为同一身份，canonical schema_desc=捕获/签名 C 存储类型编码、MD5 128-bit 指纹、数据化 argument_count），`entry.c.ftl` 顶部发射锚点 token（模块名 MD5 派生 64 位常量）+ identity 结构体重用创建点与重绑表，initialize 在类注册前调 `gdcc_hrx_initialize`，deinitialize 在 D8 末尾调 `gdcc_hrx_deinitialize`；standalone spec 解析抽取 `StandaloneCallableSpecSupport` 供发射点与编目共用。**frontend**：`FrontendLambdaPlan.sourceIdentityKey()`（`<Class>::<enclosingFunc>@+Δline:col`，构造器作 `_init`，相对偏移+1 基列）经 `LirFunctionDef.sourceIdentityKey`（XML `source_identity_key` 往返保留）透传后端；无 key lambda codegen fail-fast。**测试**：`GdccHrxRuntimeSmokeTest` 21 探针（三变体字节精确冻结+bundle 累计尺寸双锁、execmem probe、真机执行 thunk 往返、重绑升级/失配 fail-closed、共享 spec 引用计数顺序、dead 拒绝、防下溢（同 userdata 重复 free 形态）、重绑表 destroy 双层闸门、清扫重入 drain、**共享 thunk 页**（四角色全 spec 同址、跨代指针恒定、发布期字节快照 reload 后 memcmp 恒等、页不随代重建）、schema 失配 standalone 僵尸摘除后新建、锚点共存/callbacks/失配孤岛/失配+probe 失败冻结 UNAVAILABLE、**NULL tombstone 单槽清扫接管与叠加三槽清扫接管**（fake 引擎全真模拟 object.cpp 追加/摘除语义，探针经 `-DGDCC_HRX_TEST_HOOKS` 独有的 image 状态重置钩子在每次 re-init 真正重入 UNINITIALIZED 决策分支）、UNAVAILABLE fail-closed 消费 captures、direct 零回归、waiter 永不重绑、retain 查等键、三 ISA 交叉编译），`GdccCoroutineRuntimeSmokeTest` 增 HRX 模式 signal detach 集成探针（thunk 身份+retain detach+exactly-once），`CCodegenTest` 五个 golden/语义/负向测试（含 inherited standalone canonical 去重），`FrontendLambdaPlanSideTableTest`/`FrontendLambdaSuiteResolutionTest`/`FrontendLambdaLoweringTest`/`DomLirSerializerTest` key 正反锚定。`script/run-gradle-targeted-tests.sh` 相关测试类全绿。HR-9 场景 5a/5b/5c/10/10b 待 HR-9 落地时验证。
+
 - **改动点**（合同见 §5 全文）：
-    - 新增 runtime 模块 `gdcc_hrx.h/.c`（三变体 thunk 模板表与 emit、exec 内存 slab 池、hub/spec 管理、registry 与 interning 表操作、sweeper 与 pending 队列、重绑表消费、execmem probe、锚点 binding）；
+    - 新增 runtime 模块 `gdcc_hrx.h/.c`（三变体零补丁 thunk 模板表、共享 thunk 页发布、hub/spec 管理、registry 与 interning 表操作、sweeper 与 pending 队列、重绑表消费、execmem probe、锚点 binding）；
     - `gdcc_callable.h` 两个创建入口按 §5.8 三态分流；standalone interning 在 hrx 模式移入 hub（payload 字符串堆拷贝，§5.7）；
     - codegen：生成模块级重绑表（lambda + standalone 编目，`impl_key`/canonical `schema_desc`/128-bit 指纹/三函数指针/`argument_count`）；锚点 token 常量（per-extension 稳定 ID 派生）；协程 waiter 走 hrx 但无重绑条目（§5.8）；
     - **frontend 小改**（数据已齐备）：从 `FrontendLambdaPlan` 现有字段派生 `impl_key`——`owningClassCanonicalName` + 最外层具名 `enclosingCallable` 及其与 `lambda` 的 `range()` 起点差（helper 或 plan 派生方法 `sourceIdentityKey()`），透传到后端重绑表发射处；无需 AST/plan 结构变更；
     - `entry.c.ftl`：`initialize` 探测并冻结模式、获取/创建 hub（锚点走 `get_instance_binding`；拷贝进引擎的 free/reference 指针必须为 NULL、`create_callback` 不可省略、callbacks 结构体可为 static const）、注册 sweeper、执行重绑+两阶段清扫；`deinitialize` 按 D8 末尾执行失效置空。
 - **验收细则**：
-    - thunk 模板 golden test：三变体字节序列冻结断言 + 补丁偏移断言（含 `get_argument_count` 两参数 ABI、`is_valid` 嵌套调用帧）；
-    - 纯 C 单元测试（host 侧直接驱动，不经 Godot）：spec 创建/登记；**free 顺序**（共享 spec 首次 free 不失效、归零才 dead+sweep）；refcount 防下溢；sweeper 的 intern 摘除先于析构（同 identity 再创建不命中尸检 spec，含单桶 interned spec）；dead 幂等；slab"同页两 spec 先 free 一个另一个仍可 call"与"旧代槽位由新代回收"；两阶段清扫重入（destroy_fn 触发另一 free → pending 队列经 `pending_next`、depth 归零 drain）；descriptor 逐字节比对（指纹匹配但 desc 不同 → 不执行 destroy_fn）；新代阶段二只使用**重绑表条目**的 destroy_fn（spec 字段已置 NULL）；standalone payload 无条件释放（失配场景亦不泄漏壳）；壳元数据与 captures 分离释放；重绑按 `binding_state` 匹配/失配 + 独立 `spec->dead` 分流（禁止复活第三种 binding_state 枚举值）；锚点 callbacks 拷贝出的 free/reference 指针全 NULL、`create_callback` 仅在获取期执行；锚点获取/失配协议、**slot 0 已被占用时经 get_instance_binding 追加成功**、两个 GDCC 扩展 token 共存；probe 失败 fail-closed；
+    - thunk 模板 golden test：三变体字节序列冻结断言（零补丁；含 `get_argument_count` 两参数 ABI、`is_valid` 嵌套调用帧、free 经 `spec->hub` 二次加载 sweeper）；
+    - 纯 C 单元测试（host 侧直接驱动，不经 Godot）：spec 创建/登记；**free 顺序**（共享 spec 首次 free 不失效、归零才 dead+sweep）；refcount 防下溢；sweeper 的 intern 摘除先于析构（同 identity 再创建不命中尸检 spec，含单桶 interned spec）；dead 幂等；**共享 thunk 页**（全部 spec 的四个函数指针指向同一页同一偏移、跨代重绑后旧 Callable 函数指针不变、hub 页与 spec 生命周期解耦）；schema 失配 standalone 僵尸不得被新代同 key 创建复用（摘除后新建 fresh spec，旧 Callable 保持 fail-closed）；两阶段清扫重入（destroy_fn 触发另一 free → pending 队列经 `pending_next`、depth 归零 drain）；descriptor 逐字节比对（指纹匹配但 desc 不同 → 不执行 destroy_fn）；新代阶段二只使用**重绑表条目**的 destroy_fn（spec 字段已置 NULL）；standalone payload 无条件释放（失配场景亦不泄漏壳）；壳元数据与 captures 分离释放；重绑按 `binding_state` 匹配/失配 + 独立 `spec->dead` 分流（禁止复活第三种 binding_state 枚举值）；锚点 callbacks 拷贝出的 free/reference 指针全 NULL、`create_callback` 仅在获取期执行；锚点获取/失配协议（含**失配+probe 失败 → UNAVAILABLE**）、**slot 0 已被占用时经 get_instance_binding 追加成功**、两个 GDCC 扩展 token 共存；probe 失败 fail-closed；
     - impl_key 源身份：同 key 改 body → 重绑新实现（主路径）；两 lambda 换位 → 旧连接失效而非绑错 body；
     - 协程 waiter 漏网防护测试：cancel_all 后无 waiter Callable 可跳入已卸载库；
     - HR-9 场景 5a/5b/5c/10/10b 全部通过；

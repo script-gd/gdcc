@@ -18,10 +18,10 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Anchors the coroutine runtime compile wiring contract
-/// (doc/gdcc_runtime_lib.md §Coroutine Runtime): `gdcc/minicoro.c` and
-/// `gdcc/gdcc_coroutine.c` are extracted with the `gdcc/**` tree and appended to the
-/// native compiler inputs right after `godot/godot_binding.c`.
+/// Anchors the runtime compile wiring contract
+/// (doc/gdcc_runtime_lib.md §Coroutine Runtime, §HRX): `gdcc/minicoro.c`,
+/// `gdcc/gdcc_coroutine.c` and `gdcc/gdcc_hrx.c` are extracted with the `gdcc/**` tree and
+/// appended to the native compiler inputs right after `godot/godot_binding.c`.
 public class CProjectBuilderCoroutineRuntimeInputTest {
 
     @Test
@@ -41,15 +41,18 @@ public class CProjectBuilderCoroutineRuntimeInputTest {
         // The runtime sources must actually exist in the extracted include tree.
         assertTrue(Files.isRegularFile(expectedGdcc.resolve("minicoro.c")));
         assertTrue(Files.isRegularFile(expectedGdcc.resolve("gdcc_coroutine.c")));
+        assertTrue(Files.isRegularFile(expectedGdcc.resolve("gdcc_hrx.c")));
         assertTrue(Files.isRegularFile(expectedGdcc.resolve("minicoro.h")));
         assertTrue(Files.isRegularFile(expectedGdcc.resolve("gdcc_coroutine.h")));
+        assertTrue(Files.isRegularFile(expectedGdcc.resolve("gdcc_hrx.h")));
         // ...and enter the native compiler inputs in a fixed order right after godot_binding.c.
         assertEquals(
                 List.of(
                         projectDir.resolve("entry.c").toAbsolutePath().normalize(),
                         includeRoot.resolve("godot/godot_binding.c"),
                         expectedGdcc.resolve("minicoro.c"),
-                        expectedGdcc.resolve("gdcc_coroutine.c")
+                        expectedGdcc.resolve("gdcc_coroutine.c"),
+                        expectedGdcc.resolve("gdcc_hrx.c")
                 ),
                 compiler.cFiles()
         );

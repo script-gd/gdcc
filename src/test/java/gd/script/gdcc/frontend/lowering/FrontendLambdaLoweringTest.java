@@ -68,6 +68,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// collisions fail fast instead of silently skipping synthesis.
 final class FrontendLambdaLoweringTest {
 
+    /// HR-8: the synthesized lambda shell carries the plan-derived source identity key down
+    /// to the LIR/backend boundary (the rebind table refuses keyless lambdas).
+    @Test
+    void lambdaShellCarriesPlanSourceIdentityKey() throws Exception {
+        var prepared = analyzeAndSkeleton("lambda_shell_identity_key.gd", """
+                class_name LambdaShellIdentityKey
+                extends RefCounted
+                
+                func ping():
+                    var cb := func():
+                        return 1
+                    return cb
+                """);
+
+        new FrontendLoweringFunctionPreparationPass().run(prepared.context());
+
+        var shell = lambdaFunctions(requireClass(prepared, "LambdaShellIdentityKey"), 1).getFirst();
+        assertEquals("LambdaShellIdentityKey::ping@+1:15", shell.getSourceIdentityKey());
+    }
+
     /// Nested lambdas synthesize two hidden `is_lambda` shells whose capture lists match the
     /// published plans (the outer layer transit-captures `seed`).
     @Test

@@ -208,9 +208,18 @@ Usage and lifecycle rules:
   - `r_initialization->initialize = &initialize;`
   - `r_initialization->deinitialize = &deinitialize;`
 - `initialize(...)` must return without side effects for levels other than `GDEXTENSION_INITIALIZATION_SCENE`.
+- `initialize(...)` freezes the HRX Callable dispatch mode BEFORE any class registration or
+  static initialization can construct a custom Callable (HR-8; runtime contract:
+  `gdcc_runtime_lib.md` §HRX Hot-Reload Thunk Runtime): right after `gdcc_init()` (and the
+  coroutine gate), it calls `gdcc_hrx_initialize(class_library, GDCC_HRX_ANCHOR_TOKEN,
+  table, count)` — probe + freeze, hub takeover/creation through the per-extension anchor
+  token, sweeper registration, rebind of surviving specs and the two-phase sweep. The
+  module-level rebind table (`gdcc_hrx_rebind_table`, empty modules pass `NULL, 0`) and the
+  per-Callable identity structs are emitted at the top of `entry.c` by the identity
+  catalog; every lambda's stable `impl_key` (`<Class>::<func>@+Δline:col`) is derived by
+  the frontend into `LirFunctionDef.sourceIdentityKey` (keyless lambdas fail codegen).
 - `deinitialize(...)` must use the same level guard, then run the teardown in the fixed
-  hot-reload order (`hot_reload_implementation_plan.md` D8 v11; the plan additionally
-  reserves one step this backend does not emit yet: the hrx hub invalidation last as HR-8):
+  hot-reload order (`hot_reload_implementation_plan.md` D8 v11):
   1. print the unload message;
   2. HR-5: `gdcc_coro_cancel_all()` (emitted only when the module has coroutine functions)
      — abandon every in-flight coroutine FIRST, while the whole runtime is still fully
@@ -233,7 +242,14 @@ Usage and lifecycle rules:
      classes still inherit from it. During a reload the engine runs `free_instance` on every
      surviving instance from inside these calls — field destruction must therefore never
      depend on static backing (already torn down; the D3 discipline);
-  5. destroy the StringName/String registries and the standalone Callable intern storage.
+  5. destroy the StringName/String registries and the standalone Callable intern storage
+     (in HRX mode that storage was never populated — interning lives in the hub — so its
+     teardown is a no-op and the two never own the same spec);
+  6. HR-8: `gdcc_hrx_deinitialize()` LAST — detach the current sweeper, then NULL every
+     spec's function pointers (`dead`/`refcount` untouched). Callable references dropped by
+     the earlier steps still reach the live sweeper for best memory hygiene; afterwards only
+     Godot-side stragglers can fire, and those just mark specs dead for the next
+     generation's two-phase sweep.
 - This keeps class registration, StringName/String registries, standalone Callable intern
   storage, and module log output scoped to the scene-level lifecycle that Godot uses for
   runtime class availability.

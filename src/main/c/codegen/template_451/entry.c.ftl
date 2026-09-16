@@ -3,6 +3,9 @@
 <#-- @ftlvariable name="bodyRender" type="gd.script.gdcc.backend.c.gen.binding.GenerateRenderFacade" -->
 <#-- @ftlvariable name="staticInitClassDefs" type="java.util.List<gd.script.gdcc.lir.LirClassDef>" -->
 <#-- @ftlvariable name="inheritanceOrderedClassDefs" type="java.util.List<gd.script.gdcc.lir.LirClassDef>" -->
+<#-- @ftlvariable name="hrxAnchorToken" type="java.lang.String" -->
+<#-- @ftlvariable name="hrxIdentities" type="java.util.List<gd.script.gdcc.backend.c.gen.CHrxIdentityCatalog.HrxIdentityTemplateData>" -->
+<#-- @ftlvariable name="hrxRebindEntries" type="java.util.List<gd.script.gdcc.backend.c.gen.CHrxIdentityCatalog.HrxRebindTemplateData>" -->
 <#include "func.ftl">
 <#include "trim.ftl">
 
@@ -26,6 +29,30 @@ ${helper.renderGdTypeInC(property.type)} ${helper.renderStaticBackingSymbol(clas
 static void ${helper.renderStaticDefaultsSymbol(classDef.name)}(void);
 static void ${helper.renderStaticInitializersSymbol(classDef.name)}(void);
 </#list>
+
+<#-- HR-8 hot reload (hot_reload_implementation_plan.md §5): per-extension stable anchor -->
+<#-- token (derived from the module name only; only ever compared, never dereferenced) and -->
+<#-- the module-level Callable identity catalog. Identity structs are referenced both by the -->
+<#-- construct_lambda / construct_standalone_callable creation sites and by the rebind table -->
+<#-- the NEXT library generation uses to rebind surviving Callables to new implementations. -->
+#define GDCC_HRX_ANCHOR_TOKEN UINT64_C(0x${hrxAnchorToken})
+<#list hrxIdentities as identity>
+static const unsigned char ${identity.symbol}_schema[] = { ${identity.schemaBytes?join(", ")} };
+static const gdcc_hrx_identity ${identity.symbol} = {
+    .impl_key = u8"${identity.implKeyCString}",
+    .schema_desc = ${identity.symbol}_schema,
+    .schema_desc_len = sizeof(${identity.symbol}_schema),
+    .argument_count = ${identity.argumentCount},
+    .schema_fingerprint = { ${identity.fingerprintBytes?join(", ")} },
+};
+</#list>
+<#if hrxRebindEntries?size gt 0>
+static const gdcc_hrx_rebind_entry gdcc_hrx_rebind_table[] = {
+    <#list hrxRebindEntries as entry>
+    { &${entry.identitySymbol}, ${entry.implSymbol}, ${entry.destroySymbol!"NULL"}, ${entry.isValidSymbol} },
+    </#list>
+};
+</#if>
 
 GDE_EXPORT GDExtensionBool gdextension_entry(
     GDExtensionInterfaceGetProcAddress p_get_proc_address,
@@ -54,6 +81,12 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
     <#if helper.hasCoroutineFunctions()>
     gdcc_coro_set_hot_reload_active(gdcc_is_editor_hint());
     </#if>
+    <#-- HR-8: freeze the Callable dispatch mode BEFORE any class registration / static init -->
+    <#-- can construct a custom Callable: probe executable memory (editor only), take over the -->
+    <#-- anchored hub (or create it), register this generation's sweeper, then rebind surviving -->
+    <#-- specs and sweep the dead. Non-editor processes resolve to DIRECT and skip all of it. -->
+    gdcc_hrx_initialize(class_library, GDCC_HRX_ANCHOR_TOKEN,
+                        <#if hrxRebindEntries?size gt 0>gdcc_hrx_rebind_table, ${hrxRebindEntries?size}<#else>NULL, 0</#if>);
     <#--  Print start loading  -->
     {
         godot_Variant msg_variant = godot_new_Variant_with_String(GD_STATIC_S(u8"Loading ${module.moduleName}..."));
@@ -187,6 +220,13 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
     gdcc_sn_registry_destroy_all();
     gdcc_s_registry_destroy_all();
     gdcc_standalone_callable_registry_destroy_all();
+    <#--  HR-8 hub invalidation is the LAST teardown step (D8): earlier steps may still drop  -->
+    <#--  Callable references whose free thunks then reach the live sweeper for best memory   -->
+    <#--  hygiene; afterwards only Godot-side stragglers (deferred queues etc.) can fire, and  -->
+    <#--  those just mark the spec dead for the next generation's two-phase sweep. In HRX     -->
+    <#--  mode the legacy standalone registry above was never populated (interning lives in   -->
+    <#--  the hub), so there is no double-free; in DIRECT mode this call is a no-op.          -->
+    gdcc_hrx_deinitialize();
 }
 
 <#-- Per-class static lifecycle entry definitions (two-phase global static initialization). -->

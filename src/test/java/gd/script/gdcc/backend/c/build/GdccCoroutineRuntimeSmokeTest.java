@@ -39,7 +39,10 @@ class GdccCoroutineRuntimeSmokeTest {
         runtimeObjects = List.of(
                 compileObject(zig, GODOT_INCLUDE_DIR.resolve("godot_binding.c"), sharedDir.resolve("godot_binding.o")),
                 compileObject(zig, GDCC_INCLUDE_DIR.resolve("minicoro.c"), sharedDir.resolve("minicoro.o")),
-                compileObject(zig, GDCC_INCLUDE_DIR.resolve("gdcc_coroutine.c"), sharedDir.resolve("gdcc_coroutine.o"))
+                compileObject(zig, GDCC_INCLUDE_DIR.resolve("gdcc_coroutine.c"), sharedDir.resolve("gdcc_coroutine.o")),
+                // gdcc_coroutine.c dispatches lambda-Callable creation through gdcc_hrx (HR-8);
+                // the mode stays UNINITIALIZED in these fixtures, i.e. the direct path.
+                compileObject(zig, GDCC_INCLUDE_DIR.resolve("gdcc_hrx.c"), sharedDir.resolve("gdcc_hrx.o"))
         );
     }
 
@@ -640,6 +643,83 @@ class GdccCoroutineRuntimeSmokeTest {
                 "free:DONE"
         ));
         assertTrue(execution.output().contains("OK cancel_all"), execution::diagnostic);
+    }
+
+    @Test
+    void hrxModeSignalAwaitShouldDetachViaRetainAndFreeExactlyOnce() throws IOException, InterruptedException {
+        // HR-8 coroutine-waiter policy (hot_reload_implementation_plan.md §5.8): in thunk mode
+        // the connection's Callable identity is the (thunk, spec) pair, so the bulk-cancel
+        // detach must rebuild its EQUAL lookup key through `gdcc_hrx_callable_retain` on the
+        // registration's stored spec - never a fresh lambda Callable (which would miss the
+        // connection). The rest of the contract is mode-independent: disconnect first, wait
+        // released exactly once, a later emission never resumes the cancelled coroutine.
+        var source = FAKE_ENGINE + """
+                #include <gdcc_hrx.h>
+
+                static FakeState g_SIG;
+                static mco_coro *g_sig_co;
+                static godot_Variant g_sig_out;
+                static char g_emitter_storage;
+                static char g_engine_storage;
+                #define FAKE_EMITTER_ID 4000
+
+                static void sig_body(mco_coro *co) {
+                    log_event("sig_await");
+                    godot_Signal sig;
+                    fake_signal_write(&sig, FAKE_EMITTER_ID, "tick");
+                    gdcc_coro_await_signal(&sig, &g_sig_out, co, &g_SIG.header);
+                    CHECK(g_SIG.header.cancel, "sig must resume only through cancel");
+                    log_event("sig_cleanup");
+                    fake_state_write_ret(&g_SIG, 0);
+                }
+
+                int main(void) {
+                    if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
+                    gdcc_coro_set_hot_reload_active(true);
+                    // Editor process with working executable memory: the HRX thunk path.
+                    gdcc_hrx_mode hrx_mode = gdcc_hrx_initialize_core(
+                            NULL, (GDExtensionObjectPtr)&g_engine_storage, true, true, 0x55AAu, NULL, 0);
+                    CHECK(hrx_mode == GDCC_HRX_MODE_ACTIVE, "hrx must activate in editor mode");
+                    g_objects[g_object_count].id = FAKE_EMITTER_ID;
+                    g_objects[g_object_count].ptr = (GDExtensionObjectPtr)&g_emitter_storage;
+                    g_objects[g_object_count].freed = 0;
+                    g_object_count++;
+
+                    fake_state_init(&g_SIG, "SIG");
+                    g_sig_co = fake_make_coro(sig_body, &g_SIG);
+                    gdcc_coro_active_link(&g_SIG.header);
+                    mco_resume(g_sig_co);
+                    CHECK(mco_status(g_sig_co) == MCO_SUSPENDED, "sig must be signal-suspended");
+                    CHECK(g_SIG.header.signal_reg != NULL, "the signal wait must be registered");
+                    CHECK(g_connection_count == 1, "exactly one live connection expected");
+                    // Thunk-mode marker: the connection must carry the HRX spec pinned in the
+                    // hub registry (direct mode would carry the raw wait pointer instead).
+                    gdcc_hrx_hub *hub = gdcc_hrx_current_hub();
+                    CHECK(hub != NULL && hub->registry != NULL, "the waiter must be an HRX spec");
+                    CHECK(g_connections[0].callable->userdata == hub->registry,
+                            "the connection must carry the spec (thunk mode), not the raw wait pointer");
+
+                    gdcc_coro_cancel_all();
+
+                    CHECK(g_SIG.header.cancel, "the state must be cancelled");
+                    CHECK(g_SIG.header.signal_reg == NULL, "the registration must be cleared");
+                    CHECK(g_connection_count == 0,
+                            "the retain-based detach must locate and drop the pending connection");
+                    fake_emit_signal(FAKE_EMITTER_ID, "tick", NULL, 0); // must reach nothing
+
+                    fake_drop_ref((GDExtensionObjectPtr)&g_SIG);
+                    CHECK(g_SIG.destroy_slot_calls == 1, "the return slot is destroyed exactly once");
+                    // Two allocations remain by design: the cross-generation hub + its intern
+                    // table (anchor-owned, process-lifetime).
+                    CHECK(g_mem_balance == 2,
+                            "waiter, registration and spec shell must all be reclaimed (hub, intern table and the shared RX thunk page stay process-lifetime)");
+                    printf("OK hrx_signal_detach\\n");
+                    return 0;
+                }
+                """;
+        var execution = compileLinkAndRun("hrx_signal_detach_probe", source, runtimeObjects);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertTrue(execution.output().contains("OK hrx_signal_detach"), execution::diagnostic);
     }
 
     @Test
@@ -1509,13 +1589,33 @@ class GdccCoroutineRuntimeSmokeTest {
                 g_binding_count++;
             }
             static void *fake_get_binding(GDExtensionObjectPtr obj, void *token, const GDExtensionInstanceBindingCallbacks *callbacks) {
+                // Real engine semantics (object.cpp:2116-2147): the first token match wins;
+                // when its binding is NULL (miss OR tombstone) and callbacks are given, a NEW
+                // slot is appended and kept even if create_callback returns NULL.
+                void *binding = NULL;
                 for (int i = 0; i < g_binding_count; i++) {
-                    if (g_bindings[i].obj == obj && g_bindings[i].token == token) return g_bindings[i].binding;
+                    if (g_bindings[i].obj == obj && g_bindings[i].token == token) {
+                        binding = g_bindings[i].binding;
+                        break;
+                    }
                 }
-                if (callbacks == NULL || callbacks->create_callback == NULL) return NULL;
-                void *binding = callbacks->create_callback(token, obj);
-                if (binding != NULL) fake_append_binding(obj, token, binding);
+                if (binding != NULL || callbacks == NULL || callbacks->create_callback == NULL) return binding;
+                binding = callbacks->create_callback(token, obj);
+                fake_append_binding(obj, token, binding);
                 return binding;
+            }
+            static void fake_free_binding(GDExtensionObjectPtr obj, void *token) {
+                // Real engine semantics (object.cpp:2165-2185): remove the FIRST token match
+                // and shift the remaining slots down.
+                for (int i = 0; i < g_binding_count; i++) {
+                    if (g_bindings[i].obj == obj && g_bindings[i].token == token) {
+                        for (int j = i; j + 1 < g_binding_count; j++) {
+                            g_bindings[j] = g_bindings[j + 1];
+                        }
+                        g_binding_count--;
+                        return;
+                    }
+                }
             }
             static void fake_set_binding(GDExtensionObjectPtr obj, void *token, void *binding, const GDExtensionInstanceBindingCallbacks *callbacks) {
                 (void)callbacks;
@@ -2000,6 +2100,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 if (strcmp(name, "variant_get_object_instance_id") == 0) return (GDExtensionInterfaceFunctionPtr)fake_variant_get_object_instance_id_iface;
                 if (strcmp(name, "object_get_instance_from_id") == 0) return (GDExtensionInterfaceFunctionPtr)fake_object_get_instance_from_id;
                 if (strcmp(name, "object_get_instance_binding") == 0) return (GDExtensionInterfaceFunctionPtr)fake_get_binding;
+                if (strcmp(name, "object_free_instance_binding") == 0) return (GDExtensionInterfaceFunctionPtr)fake_free_binding;
                 if (strcmp(name, "object_set_instance_binding") == 0) return (GDExtensionInterfaceFunctionPtr)fake_set_binding;
                 if (strcmp(name, "object_destroy") == 0) return (GDExtensionInterfaceFunctionPtr)fake_object_destroy;
                 if (strcmp(name, "string_name_new_with_utf8_chars") == 0) return (GDExtensionInterfaceFunctionPtr)fake_string_name_new_with_utf8_chars;

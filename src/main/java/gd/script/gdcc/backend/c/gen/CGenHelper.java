@@ -427,6 +427,13 @@ public final class CGenHelper {
         return renderLambdaImplName(classDef, function) + "_get_argument_count";
     }
 
+    /// HR-8 identity-struct symbol for one lambda (hot_reload_implementation_plan.md §5.6):
+    /// the emitted `gdcc_hrx_identity` static that both the creation site and the module
+    /// rebind table reference.
+    public @NotNull String renderLambdaHrxIdentitySymbol(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return renderLambdaImplName(classDef, function) + "_hrx_identity";
+    }
+
     /// Heap / local capture-struct field storage. Object captures stay fat pointers by value.
     public @NotNull String renderLambdaCaptureFieldTypeInC(@NotNull GdType captureType) {
         TypeCheckUtil.requireNonCompilerOnly(captureType, "lambda capture field");

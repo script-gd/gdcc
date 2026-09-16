@@ -251,6 +251,43 @@ public class DomLirSerializerTest {
     }
 
     @Test
+    public void serialize_module_writesSourceIdentityKeyForLambdasAndRoundTrips() throws Exception {
+        // HR-8: the lambda-only `source_identity_key` attribute must survive the XML
+        // round-trip (the backend rebind table consumes the parsed/plumbed value), while a
+        // plain function never carries the attribute at all.
+        var fn = new LirFunctionDef("_lambda_0", "entry");
+        fn.setLambda(true);
+        fn.setHidden(true);
+        fn.setStatic(true);
+        fn.setSourceIdentityKey("Hero::run@+2:9");
+        fn.addBasicBlock(new LirBasicBlock("entry", List.of(new ReturnInsn(null))));
+        var plainFn = new LirFunctionDef("run", "entry");
+        plainFn.addBasicBlock(new LirBasicBlock("entry", List.of(new ReturnInsn(null))));
+
+        var cls = new LirClassDef("Hero", "Node", false, false, Map.of(), List.of(), List.of(), List.of(fn, plainFn));
+        var module = new LirModule("m", List.of(cls));
+        var xml = new DomLirSerializer().serializeToString(module);
+
+        assertTrue(xml.contains("source_identity_key=\"Hero::run@+2:9\""), xml);
+        var plainFunctionElement = xml.substring(xml.indexOf("name=\"run\""));
+        assertFalse(plainFunctionElement.startsWith("source_identity_key"));
+
+        var parsed = new DomLirParser(new gd.script.gdcc.scope.ClassRegistry(
+                gd.script.gdcc.gdextension.ExtensionApiLoader.loadDefault()
+        )).parse(xml);
+        var parsedLambda = parsed.getClassDefs().getFirst().getFunctions().stream()
+                .filter(f -> f.getName().equals("_lambda_0"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("Hero::run@+2:9", parsedLambda.getSourceIdentityKey());
+        var parsedPlain = parsed.getClassDefs().getFirst().getFunctions().stream()
+                .filter(f -> f.getName().equals("run"))
+                .findFirst()
+                .orElseThrow();
+        assertNull(parsedPlain.getSourceIdentityKey());
+    }
+
+    @Test
     public void serialize_module_writesCoroutineAttributeAndAwaitInsnRoundTrip() throws Exception {
         // Coroutine function whose body awaits a Variant (dynamic dispatch path); the XML
         // round-trip must preserve both the `is_coroutine` function attribute and the await insn.

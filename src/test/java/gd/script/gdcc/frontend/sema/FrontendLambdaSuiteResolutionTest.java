@@ -312,6 +312,36 @@ class FrontendLambdaSuiteResolutionTest {
     }
 
     @Test
+    void sourceIdentityKeysAnchorOutermostNamedEnclosingWithRelativeOffset() throws Exception {
+        // HR-8 impl_key contract on real source positions: both the outer and the nested
+        // lambda anchor at the SAME outermost named function `ping` with their own relative
+        // line offset and 1-based column (see also the fail-closed cases in
+        // FrontendLambdaPlanSideTableTest).
+        var analysisData = analyze("lambda_suite_identity_key.gd", """
+                class_name LambdaSuiteIdentityKey
+                extends Node
+                
+                func ping(seed: int):
+                    var cb := func():
+                        var inner := func():
+                            return seed
+                        return inner
+                """);
+        var pingFunction = findFunction(analysisData.unit().ast(), "ping");
+        var outerLambda = findNode(pingFunction.body(), LambdaExpression.class, _ -> true);
+        var innerLambda = findNode(outerLambda.body(), LambdaExpression.class, _ -> true);
+
+        var outerPlan = analysisData.analysisData().lambdaPlans().get(outerLambda);
+        var innerPlan = analysisData.analysisData().lambdaPlans().get(innerLambda);
+
+        assertNotNull(outerPlan);
+        assertNotNull(innerPlan);
+        assertEquals("LambdaSuiteIdentityKey::ping@+1:15", outerPlan.sourceIdentityKey());
+        assertEquals("LambdaSuiteIdentityKey::ping@+2:22", innerPlan.sourceIdentityKey());
+        assertTrue(analysisData.diagnostics().asList().isEmpty());
+    }
+
+    @Test
     void nestedLambdaCaptureTransfersWithFrozenOuterCaptureType() throws Exception {
         var analysisData = analyze("lambda_suite_nested.gd", """
                 class_name LambdaSuiteNested

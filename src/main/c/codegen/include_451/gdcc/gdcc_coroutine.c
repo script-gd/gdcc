@@ -182,6 +182,11 @@ typedef struct gdcc_coro_signal_wait {
 typedef struct gdcc_coro_signal_reg {
     godot_Signal sig;            // constructed copy; a Signal never retains its emitter
     gdcc_coro_signal_wait *wait; // non-owning back-pointer (the wait owns this reg)
+    /// HR-8: backing spec of the connection's Callable in HRX mode (non-owning; the spec's
+    /// captures ARE the wait above, so both die together). The bulk-cancel detach rebuilds
+    /// its lookup key from this handle because equality under thunks is the (thunk, spec)
+    /// pair, not the raw (call_func, wait) pair. NULL in direct mode.
+    void *hrx_spec;
 } gdcc_coro_signal_reg;
 
 static godot_bool gdcc_coro_signal_wait_is_valid(void *userdata) {
@@ -267,14 +272,25 @@ static void gdcc_coro_signal_detach(gdcc_coro_state_header *state) {
     if (reg == NULL) {
         return;
     }
-    godot_Callable probe = gdcc_new_lambda_callable(
-            reg->wait,
-            0,
-            gdcc_coro_signal_resume_call,
-            gdcc_coro_signal_wait_is_valid,
-            NULL, // free_func: the connection's own handle releases the wait (exactly once)
-            NULL
-    );
+    godot_Callable probe;
+    if (reg->hrx_spec != NULL) {
+        // HR-8 thunk mode: the connection's Callable identity is the (thunk, spec) pair, so
+        // the EQUAL lookup key must be a fresh reference to the SAME spec - never a rebuilt
+        // lambda Callable (which would get a new spec and silently fail to match). The
+        // connection's own handle still releases the wait exactly once; this probe's free
+        // thunk only decrements the shared refcount.
+        probe = gdcc_hrx_callable_retain((gdcc_hrx_spec *)reg->hrx_spec);
+    } else {
+        probe = gdcc_new_lambda_callable(
+                reg->wait,
+                0,
+                gdcc_coro_signal_resume_call,
+                gdcc_coro_signal_wait_is_valid,
+                NULL, // free_func: the connection's own handle releases the wait (exactly once)
+                NULL,
+                NULL  // no HRX identity: direct mode never reads it
+        );
+    }
     // Disconnect through a LOCAL Signal copy, never `&reg->sig`: removing the connection
     // runs the wait free callback synchronously, which destroys `reg->sig` and frees `reg`
     // itself - while `Signal::disconnect` keeps reading the signal name afterwards
@@ -314,6 +330,7 @@ static godot_int gdcc_coro_signal_connect_wait(godot_Signal *sig, godot_Variant 
         }
         reg->sig = godot_new_Signal_with_Signal(sig);
         reg->wait = wait;
+        reg->hrx_spec = NULL;
     }
     wait->reg = reg;
     wait->co = co;
@@ -323,13 +340,21 @@ static godot_int gdcc_coro_signal_connect_wait(godot_Signal *sig, godot_Variant 
     if (wait->self_obj != NULL) {
         own_object(wait->self_obj);
     }
-    godot_Callable callable = gdcc_new_lambda_callable(
+    // HR-8: in thunk mode the backing spec is handed out so the bulk-cancel detach can later
+    // rebuild an EQUAL lookup key from it (gdcc_coro_signal_detach). Waiter specs carry no
+    // rebind identity: they are callable this generation and permanently invalid after a
+    // reload (never a dangling jump into unloaded code).
+    void *hrx_spec = NULL;
+    godot_Callable callable = gdcc_new_lambda_callable_ex(
             wait,
             0,
             gdcc_coro_signal_resume_call,
             gdcc_coro_signal_wait_is_valid,
             gdcc_coro_signal_wait_free,
-            NULL
+            NULL,
+            NULL,
+            -1,
+            &hrx_spec
     );
     const godot_int connect_result = godot_Signal_connect(sig, &callable, godot_Object_CONNECT_ONE_SHOT);
     // Dropping the local Callable reference: on success the one-shot connection retains it
@@ -342,6 +367,9 @@ static godot_int gdcc_coro_signal_connect_wait(godot_Signal *sig, godot_Variant 
     }
     // Publish the registration only after a successful connect: from here on the wait is
     // "signal-suspended" and a bulk cancel may disconnect it through the state header.
+    if (reg != NULL) {
+        reg->hrx_spec = hrx_spec;
+    }
     if (self != NULL) {
         self->signal_reg = reg;
     }

@@ -85,6 +85,7 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
         // capture copy and the `_coro_param_self.instance_id` object_id channel.
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
+        lambda.setSourceIdentityKey("SyntaxWorker::schedule@+2:5");
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(GdVoidType.VOID);
@@ -115,6 +116,7 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
         // string anchors alone cannot see C declaration-order or type errors here.
         var coroLambda = new LirFunctionDef("_lambda_1", "entry");
         coroLambda.setLambda(true);
+        coroLambda.setSourceIdentityKey("SyntaxWorker::schedule@+6:9");
         coroLambda.setHidden(true);
         coroLambda.setStatic(true);
         coroLambda.setCoroutine(true);

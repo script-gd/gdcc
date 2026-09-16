@@ -121,6 +121,11 @@ public final class DomLirParser implements LirParser {
                     // (`Boolean.parseBoolean`): only the exact text "true" enables the marker, any
                     // other/missing value is false. The attribute name is exactly `is_coroutine`.
                     var coroutineF = Boolean.parseBoolean(fEl.getAttribute("is_coroutine"));
+                    // Optional hot-reload identity (HR-8); absent/blank attribute parses as null.
+                    var sourceIdentityKeyF = fEl.getAttribute("source_identity_key");
+                    if (sourceIdentityKeyF.isBlank()) {
+                        sourceIdentityKeyF = null;
+                    }
 
                     var annotationsF = new HashMap<String, String>();
                     var annsF = fEl.getElementsByTagName("annotation");
@@ -136,6 +141,7 @@ public final class DomLirParser implements LirParser {
                     fn.setVararg(isVarargF);
                     fn.setHidden(isHiddenF);
                     fn.setCoroutine(coroutineF);
+                    fn.setSourceIdentityKey(sourceIdentityKeyF);
                     fn.addAnnotations(annotationsF);
 
                     // parameters

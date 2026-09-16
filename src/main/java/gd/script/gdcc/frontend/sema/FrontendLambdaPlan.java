@@ -1,5 +1,7 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import gd.script.gdcc.type.GdType;
@@ -53,6 +55,32 @@ public record FrontendLambdaPlan(
 
     public boolean capturesSelf() {
         return capturePlan.capturesSelf();
+    }
+
+    /// Stable source identity of this lambda for hot-reload rebinding
+    /// (hot_reload_implementation_plan.md §5.6): `<Class>::<enclosingFunc>@+Δ<line>:<col>`.
+    /// `<Class>` is the canonical owning-class name (module-unique, so no file name is
+    /// needed); `<enclosingFunc>` is the outermost NAMED callable (`enclosingCallable` is
+    /// already normalized to it, with constructors rendered as `_init`); `Δline` is the
+    /// lambda's start line relative to that function's start line, so edits in OTHER
+    /// functions and whole-function moves keep the key stable; `<col>` is the lambda's own
+    /// 1-based start column. The lambda body is deliberately NOT part of the key: editing a
+    /// body must rebind to the new implementation, only positional shifts may invalidate.
+    public @NotNull String sourceIdentityKey() {
+        var enclosingName = switch (enclosingCallable) {
+            case FunctionDeclaration functionDeclaration -> functionDeclaration.name();
+            case ConstructorDeclaration _ -> "_init";
+            default -> throw new IllegalStateException(
+                    "Lambda '" + syntheticName + "' has an unexpected enclosing callable node: "
+                            + enclosingCallable.getClass().getSimpleName()
+                            + " (expected FunctionDeclaration or ConstructorDeclaration)"
+            );
+        };
+        var lambdaStart = lambda.range().startPoint();
+        var enclosingStart = enclosingCallable.range().startPoint();
+        var relativeLine = lambdaStart.row() - enclosingStart.row();
+        return owningClassCanonicalName + "::" + enclosingName
+                + "@+" + relativeLine + ":" + (lambdaStart.column() + 1);
     }
 
     /// Logical equivalence for idempotent merge. The side table is already keyed by `lambda`

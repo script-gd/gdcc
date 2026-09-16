@@ -282,6 +282,7 @@ final class ConstructLambdaInsnGenEngineTest {
     private static LirFunctionDef newLambda(String name, gd.script.gdcc.type.GdType returnType) {
         var lambda = new LirFunctionDef(name, "entry");
         lambda.setLambda(true);
+        lambda.setSourceIdentityKey("GDLambdaEngineNode::_ready@+2:5");
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(returnType);
