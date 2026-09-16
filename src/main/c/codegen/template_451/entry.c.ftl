@@ -51,6 +51,9 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
         return;
     }
     gdcc_init();
+    <#if helper.hasCoroutineFunctions()>
+    gdcc_coro_set_hot_reload_active(gdcc_is_editor_hint());
+    </#if>
     <#--  Print start loading  -->
     {
         godot_Variant msg_variant = godot_new_Variant_with_String(GD_STATIC_S(u8"Loading ${module.moduleName}..."));
@@ -148,7 +151,13 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
     <#--  a still-valid extension vtable. The reload path is safe either way (the engine       -->
     <#--  clears `_extension` inside unregistration there). Destroy/release paths may still    -->
     <#--  touch interned StringName/String state, so the runtime registries stay last.         -->
-    <#--  (HR-5 will insert gdcc_coro_cancel_all() right BEFORE this section.)                 -->
+    <#if helper.hasCoroutineFunctions()>
+    <#--  HR-5: abandon every in-flight coroutine FIRST, while the whole runtime (emitters,   -->
+    <#--  ClassDB, registries, static backing) is still fully operational: each state is      -->
+    <#--  disconnected from any pending one-shot signal, cancel-resumed to MCO_DEAD and its   -->
+    <#--  waiter edges released, so nothing outlives the library unload below.                -->
+    gdcc_coro_cancel_all();
+    </#if>
     <#list staticInitClassDefs?reverse as classDef>
     ${bodyRender.generateStaticDeinitializeBody(classDef)}</#list>
     <#--  Unregister ALL extension classes after static teardown and BEFORE the runtime        -->
@@ -807,6 +816,9 @@ void ${helper.renderCoroBodyFunctionName(classDef, func)}(mco_coro *${helper.ren
         coro_state->${helper.renderCoroHeaderField()}.done = true;
         return (godot_Object*)coro_state_obj;
     }
+    // HR-5: publish the state on the module-local active list (before the first resume, so
+    // even a synchronously-completing coroutine is listed until finalize unlinks it).
+    gdcc_coro_active_link(&coro_state->${helper.renderCoroHeaderField()});
     mco_resume(coro_state->${helper.renderCoroHeaderField()}.co);
     if (mco_status(coro_state->${helper.renderCoroHeaderField()}.co) == MCO_DEAD) {
         gdcc_coro_finalize(&coro_state->${helper.renderCoroHeaderField()});

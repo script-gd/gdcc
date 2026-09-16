@@ -3141,6 +3141,11 @@ public class CCodegenTest {
         );
         assertEquals(3, countOccurrences(deinitializeBody, "godot_classdb_unregister_extension_class("),
                 "every registered user class must be unregistered exactly once");
+        // HR-5 is coroutine-conditional: a module without coroutine functions never emits
+        // the bulk cancel (nor the coroutine runtime include), and never sets the
+        // hot-reload gate in initialize either.
+        assertFalse(deinitializeBody.contains("gdcc_coro_cancel_all"), deinitializeBody);
+        assertFalse(initializeBody.contains("gdcc_coro_set_hot_reload_active"), initializeBody);
     }
 
     @Test

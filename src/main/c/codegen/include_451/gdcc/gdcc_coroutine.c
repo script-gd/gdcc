@@ -36,6 +36,61 @@ void *gdcc_coro_binding_token(void) {
     return &gdcc_coro_binding_token_storage;
 }
 
+/// Module-local hot-reload gate (hot_reload_implementation_plan.md HR-5 dual-mode): set by
+/// the generated `initialize()` from `is_editor_hint()`. HR-5's tracking facilities (active
+/// list, signal-wait registration, bulk cancel) only exist so the editor can safely reload;
+/// release exports and editor-launched game processes never reload, so the gate keeps every
+/// HR-5 runtime cost (list maintenance, one registration allocation per signal await, the
+/// bulk cancel itself) out of those processes. Defaults to false: a module whose
+/// `initialize()` never ran (pure-C fixtures) behaves exactly like the pre-HR-5 runtime.
+static bool gdcc_hot_reload_active = false;
+
+void gdcc_coro_set_hot_reload_active(bool active) {
+    gdcc_hot_reload_active = active;
+}
+
+/// Module-local intrusive list of every in-flight coroutine state (HR-5). Non-owning: the
+/// list never keeps a state object alive by itself - the ordinary keep-alive edges do.
+/// A state is linked by the generated start thunk right after a successful `mco_create`
+/// (OOM states and RELOADED_SHELLs are never linked) and unlinked by `gdcc_coro_finalize`
+/// / `gdcc_coro_cancel` / `gdcc_coro_state_free`, whichever comes first.
+static gdcc_coro_state_header *gdcc_active_head = NULL;
+
+static bool gdcc_coro_active_is_linked(const gdcc_coro_state_header *state) {
+    return state->active_prev != NULL || state->active_next != NULL || gdcc_active_head == state;
+}
+
+/// Idempotent unlink; safe on never-linked states.
+static void gdcc_coro_active_unlink(gdcc_coro_state_header *state) {
+    if (!gdcc_coro_active_is_linked(state)) {
+        return;
+    }
+    if (state->active_prev != NULL) {
+        state->active_prev->active_next = state->active_next;
+    } else {
+        gdcc_active_head = state->active_next;
+    }
+    if (state->active_next != NULL) {
+        state->active_next->active_prev = state->active_prev;
+    }
+    state->active_prev = NULL;
+    state->active_next = NULL;
+}
+
+void gdcc_coro_active_link(gdcc_coro_state_header *state) {
+    if (state == NULL || !gdcc_hot_reload_active || gdcc_coro_active_is_linked(state)) {
+        // Gate-off: tracking is editor-only; the coroutine runs exactly as before HR-5
+        // (finalize/cancel/state_free unlink below stays a safe no-op).
+        return;
+    }
+    state->active_prev = NULL;
+    state->active_next = gdcc_active_head;
+    if (gdcc_active_head != NULL) {
+        gdcc_active_head->active_prev = state;
+    }
+    gdcc_active_head = state;
+}
+
 void gdcc_coro_state_header_init(gdcc_coro_state_header *state, const gdcc_coro_state_desc *desc, GDExtensionObjectPtr obj) {
     memset(state, 0, sizeof(*state)); // zeroed Variant storage is a constructed nil Variant
     state->magic = GDCC_CORO_STATE_MAGIC;
@@ -63,6 +118,10 @@ void gdcc_coro_state_free(gdcc_coro_state_header *state) {
     if (state == NULL) {
         return;
     }
+    // Defensive unlink: finalize/cancel normally already did this; a state that never ran
+    // either path (e.g. freed while still linked after a contract violation) must not leave
+    // a dangling node behind for `gdcc_coro_cancel_all`.
+    gdcc_coro_active_unlink(state);
     // A RELOADED_SHELL passes through safely: co == NULL (no stack was ever created) and
     // result_cache is still the constructed nil Variant from header init.
     if (state->co != NULL) {
@@ -101,13 +160,29 @@ void gdcc_coro_state_slot_destroy(godot_Object **slot) {
 
 /// One-shot signal wait userdata. Owns the strong reference to the awaiter's own state
 /// object for as long as the connection's Callable is alive; released by the free callback
-/// (one-shot fired, emitter died, or connect failure dropped the last Callable reference).
+/// (one-shot fired, emitter died, connect failure dropped the last Callable reference, or
+/// the HR-5 bulk-cancel disconnect below).
 typedef struct gdcc_coro_signal_wait {
     mco_coro *co;
     godot_Variant *out;
     GDExtensionObjectPtr self_obj; // strong edge: connection -> own state object (NULL in pure-C fixtures)
     gdcc_coro_state_header *self;  // own frame header, for the MCO_DEAD -> finalize cascade
+    /// HR-5 registration, allocated (with its Signal copy constructed) BEFORE the connect
+    /// so every failure path below has exactly one owner for it - this wait; published to
+    /// `self->signal_reg` only after a successful connect. NULL on the early-OOM path.
+    struct gdcc_coro_signal_reg *reg;
 } gdcc_coro_signal_wait;
+
+/// HR-5 registration of an in-flight one-shot signal wait, referenced from the state
+/// header (`signal_reg`, when the awaiter has a state object) and from the wait userdata.
+/// Carries everything the bulk-cancel path needs to disconnect the pending signal: the
+/// awaited Signal copy and the wait userdata whose (call_func, userdata) pair identifies
+/// the connection's Callable under Godot's default custom-Callable equality
+/// (gdextension_interface.cpp `default_compare_equal`). Freed by the wait free callback.
+typedef struct gdcc_coro_signal_reg {
+    godot_Signal sig;            // constructed copy; a Signal never retains its emitter
+    gdcc_coro_signal_wait *wait; // non-owning back-pointer (the wait owns this reg)
+} gdcc_coro_signal_reg;
 
 static godot_bool gdcc_coro_signal_wait_is_valid(void *userdata) {
     // The Callable holds a strong reference to the state object, so it is valid for as
@@ -120,6 +195,18 @@ static void gdcc_coro_signal_wait_free(void *userdata) {
     gdcc_coro_signal_wait *wait = userdata;
     if (wait == NULL) {
         return;
+    }
+    // Clear the HR-5 registration first: the connection is gone by the time this callback
+    // runs (fired, emitter died, connect failure, or bulk-cancel disconnect), so no later
+    // code path may disconnect a stale pair. The state back-pointer is cleared only when
+    // it still names this registration (defensive: exactly one reg exists per suspension).
+    if (wait->reg != NULL) {
+        if (wait->self != NULL && wait->self->signal_reg == wait->reg) {
+            wait->self->signal_reg = NULL;
+        }
+        godot_Signal_destroy(&wait->reg->sig);
+        godot_mem_free(wait->reg);
+        wait->reg = NULL;
     }
     if (wait->self_obj != NULL) {
         release_object(wait->self_obj);
@@ -165,6 +252,40 @@ static void gdcc_coro_signal_resume_call(
     }
 }
 
+/// HR-5: disconnects a pending one-shot signal wait before bulk-cancelling its coroutine.
+/// Rebuilds a Callable that is EQUAL to the connection's under Godot's default
+/// custom-Callable equality (same call_func + same userdata, gdextension_interface.cpp
+/// `default_compare_equal`), so `Signal_disconnect` locates and removes the connection;
+/// removing it drops the connection's own Callable reference, whose free callback runs
+/// synchronously - clearing the registration, releasing the keep-alive edge and freeing
+/// the wait userdata. The rebuilt handle is ONLY a lookup key: its free callback is NULL
+/// because the wait must be released exactly once, by the connection's handle. Without
+/// this a later emission would resume a coroutine whose stack was destroyed after the
+/// cancel, or write into a freed frame.
+static void gdcc_coro_signal_detach(gdcc_coro_state_header *state) {
+    gdcc_coro_signal_reg *reg = state->signal_reg;
+    if (reg == NULL) {
+        return;
+    }
+    godot_Callable probe = gdcc_new_lambda_callable(
+            reg->wait,
+            0,
+            gdcc_coro_signal_resume_call,
+            gdcc_coro_signal_wait_is_valid,
+            NULL, // free_func: the connection's own handle releases the wait (exactly once)
+            NULL
+    );
+    // Disconnect through a LOCAL Signal copy, never `&reg->sig`: removing the connection
+    // runs the wait free callback synchronously, which destroys `reg->sig` and frees `reg`
+    // itself - while `Signal::disconnect` keeps reading the signal name afterwards
+    // (`Object::_disconnect` erases the slot-map entry, then still consults `p_signal`).
+    // A local copy keeps that name alive across the call.
+    godot_Signal sig = godot_new_Signal_with_Signal(&reg->sig);
+    godot_Signal_disconnect(&sig, &probe);
+    godot_Callable_destroy(&probe);
+    godot_Signal_destroy(&sig);
+}
+
 /// Shared connect-and-yield core for the signal await paths.
 /// Returns godot_OK when the coroutine suspended and resumed normally (`out` written by the
 /// signal callback). Returns the connect error code without suspending and without touching
@@ -177,6 +298,24 @@ static godot_int gdcc_coro_signal_connect_wait(godot_Signal *sig, godot_Variant 
                 "gdcc_coro_signal_connect_wait", NULL, 0);
         return godot_ERR_OUT_OF_MEMORY;
     }
+    // HR-5: the registration is allocated and its Signal copy constructed BEFORE the
+    // connect, so every path below (including a connect failure, whose Callable destroy
+    // already runs the free callback) leaves exactly one owner for it - the wait. Skipped
+    // entirely when the hot-reload gate is off: tracking exists only for the editor bulk
+    // cancel, so non-editor processes pay no per-await allocation.
+    gdcc_coro_signal_reg *reg = NULL;
+    if (gdcc_hot_reload_active) {
+        reg = godot_mem_alloc(sizeof(gdcc_coro_signal_reg));
+        if (reg == NULL) {
+            godot_mem_free(wait);
+            GDCC_PRINT_RUNTIME_ERROR("gdcc: out of memory allocating coroutine signal wait registration",
+                    "gdcc_coro_signal_connect_wait", NULL, 0);
+            return godot_ERR_OUT_OF_MEMORY;
+        }
+        reg->sig = godot_new_Signal_with_Signal(sig);
+        reg->wait = wait;
+    }
+    wait->reg = reg;
     wait->co = co;
     wait->out = out;
     wait->self = self;
@@ -195,10 +334,16 @@ static godot_int gdcc_coro_signal_connect_wait(godot_Signal *sig, godot_Variant 
     const godot_int connect_result = godot_Signal_connect(sig, &callable, godot_Object_CONNECT_ONE_SHOT);
     // Dropping the local Callable reference: on success the one-shot connection retains it
     // (free_func runs when the connection is removed); on failure this destroy is the last
-    // reference, so free_func already released `wait` and the self edge - never free twice.
+    // reference, so free_func already released `wait`, the registration and the self edge -
+    // never free twice.
     godot_Callable_destroy(&callable);
     if (connect_result != godot_OK) {
         return connect_result;
+    }
+    // Publish the registration only after a successful connect: from here on the wait is
+    // "signal-suspended" and a bulk cancel may disconnect it through the state header.
+    if (self != NULL) {
+        self->signal_reg = reg;
     }
     mco_yield(co);
     // Resumed: `out` was written by the signal callback. A cancel-resume returns here with
@@ -380,6 +525,8 @@ void gdcc_coro_finalize(gdcc_coro_state_header *state) {
         // unloaded library generation.
         return;
     }
+    // No longer in flight: leave the HR-5 active list before any resume/emit below.
+    gdcc_coro_active_unlink(state);
     // (1) Copy the typed return slot into result_cache (the slot itself stays alive for
     // typed waiters and the done fast path).
     state->desc->pack_result(state);
@@ -423,6 +570,9 @@ void gdcc_coro_cancel(gdcc_coro_state_header *state) {
         return;
     }
     state->cancel = true;
+    // No longer in flight: leave the HR-5 active list (idempotent, also covers the
+    // nested-PREDELETE cascades triggered by the waiter-edge releases below).
+    gdcc_coro_active_unlink(state);
     if (state->co != NULL && mco_status(state->co) == MCO_SUSPENDED) {
         // The body checks the cancel flag right after every await resume point, jumps
         // straight to `__finally__` (the default `_return_val` from `__prepare__` is in
@@ -444,4 +594,31 @@ void gdcc_coro_cancel(gdcc_coro_state_header *state) {
     // The typed return slot is deliberately NOT destroyed here: whatever the cancel-path
     // `__finally__` wrote into it is destroyed by the generated `free_instance` (exactly
     // one `desc->destroy_ret_slot` per state, tolerating never-written slots).
+}
+
+void gdcc_coro_cancel_all(void) {
+    if (!gdcc_hot_reload_active) {
+        // Gate-off (release exports, editor-launched game processes): never bulk-cancel.
+        // In-flight coroutines keep their ordinary lifecycle - the keep-alive edges are
+        // released as emitters/owners die, driving the usual PREDELETE cancel path.
+        return;
+    }
+    // Head-pop loop: cancelling a state releases its waiter reference edges, which may
+    // cascade PREDELETE -> cancel -> unlink on OTHER listed states (and free them), so the
+    // head is re-read every round and `next` is never cached.
+    while (gdcc_active_head != NULL) {
+        gdcc_coro_state_header *state = gdcc_active_head;
+        gdcc_coro_active_unlink(state);
+        // Temporary strong reference: the signal detach releases the connection's
+        // keep-alive edge and the cancel below may release this state's last waiter edge -
+        // either could otherwise destroy the state object mid-operation.
+        if (state->obj != NULL) {
+            own_object(state->obj);
+        }
+        gdcc_coro_signal_detach(state);
+        gdcc_coro_cancel(state);
+        if (state->obj != NULL) {
+            release_object(state->obj);
+        }
+    }
 }

@@ -92,6 +92,8 @@ class CCoroutineStateClassCodegenTest {
         assertFalse(recreateBody.contains("mco_create"), recreateBody);
         assertFalse(recreateBody.contains("mco_resume"), recreateBody);
         assertFalse(recreateBody.contains("emit_completed"), recreateBody);
+        // D5/HR-5: the shell never joins the active-coroutine list either.
+        assertFalse(recreateBody.contains("gdcc_coro_active_link"), recreateBody);
         // The binding MUST use the coroutine token, never class_library (identify path).
         assertFalse(recreateBody.contains("class_library"), recreateBody);
 
@@ -166,6 +168,15 @@ class CCoroutineStateClassCodegenTest {
         var cCode = generatedFileText(files, "entry.c");
 
         var initializeBody = resolveFunctionBodyByPrefix(cCode, "void initialize(void* userdata");
+        // HR-5 dual-mode gate: set right after gdcc_init, strictly BEFORE the first class
+        // registration (static initializers and any user code can only run afterwards).
+        assertOrdered(
+                initializeBody,
+                "gdcc_init();",
+                "gdcc_coro_set_hot_reload_active(gdcc_is_editor_hint());",
+                "godot_classdb_register_extension_class5("
+        );
+        assertEquals(1, countOccurrences(initializeBody, "gdcc_coro_set_hot_reload_active("), initializeBody);
         assertOrdered(
                 initializeBody,
                 "GD_STATIC_SN(u8\"_gdcc_coro_state_Alpha__coro__a1\"), GD_STATIC_SN(u8\"RefCounted\")",
@@ -177,6 +188,7 @@ class CCoroutineStateClassCodegenTest {
         var deinitializeBody = resolveFunctionBodyByPrefix(cCode, "void deinitialize(void* userdata");
         assertOrdered(
                 deinitializeBody,
+                "gdcc_coro_cancel_all();",
                 "gdcc_static_Alpha_label",
                 "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"_gdcc_coro_state_Beta__coro__b2\"));",
                 "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"_gdcc_coro_state_Beta__coro__b1\"));",
@@ -186,6 +198,9 @@ class CCoroutineStateClassCodegenTest {
                 "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"Alpha\"));",
                 "gdcc_sn_registry_destroy_all();"
         );
+        // HR-5: the bulk cancel runs exactly once, before static teardown, so every
+        // in-flight coroutine is abandoned while the runtime is still fully operational.
+        assertEquals(1, countOccurrences(deinitializeBody, "gdcc_coro_cancel_all();"), deinitializeBody);
         assertEquals(6, countOccurrences(deinitializeBody, "godot_classdb_unregister_extension_class("),
                 "four state classes plus two user classes must each be unregistered exactly once");
     }
@@ -340,6 +355,18 @@ class CCoroutineStateClassCodegenTest {
         var selfFillIndex = thunkBody.indexOf("coro_state->_coro_param_self = $self;");
         assertTrue(selfFillIndex >= 0, thunkBody);
         assertTrue(thunkBody.indexOf("own_object(", selfFillIndex) > selfFillIndex, thunkBody);
+
+        // HR-5: the state joins the active list only AFTER a successful mco_create and
+        // BEFORE the first resume; the OOM branch must return without ever linking.
+        var oomBranchIndex = thunkBody.indexOf("mco_create(&coro_state->_coro_header.co, &coro_desc) != MCO_SUCCESS");
+        var linkIndex = thunkBody.indexOf("gdcc_coro_active_link(&coro_state->_coro_header);");
+        var firstResumeIndex = thunkBody.indexOf("mco_resume(coro_state->_coro_header.co);");
+        assertTrue(oomBranchIndex >= 0 && linkIndex > oomBranchIndex, thunkBody);
+        assertTrue(firstResumeIndex > linkIndex, thunkBody);
+        var oomReturnIndex = thunkBody.indexOf("return (godot_Object*)coro_state_obj;", oomBranchIndex);
+        assertTrue(oomReturnIndex >= 0 && oomReturnIndex < linkIndex,
+                "the OOM branch must return before the active-link call: " + thunkBody);
+        assertEquals(1, countOccurrences(thunkBody, "gdcc_coro_active_link("), thunkBody);
 
         // ---- engine entry (typed non-Variant): done fast path + detach/default/error branch ----
         var engineEntryBody = resolveFunctionBodyByPrefix(cCode, "godot_int Worker_sum_to(");

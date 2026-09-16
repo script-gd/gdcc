@@ -489,6 +489,702 @@ class GdccCoroutineRuntimeSmokeTest {
     }
 
     @Test
+    void cancelAllShouldDetachSignalsAndCancelEveryActiveState() throws IOException, InterruptedException {
+        // HR-5 bulk-abandonment anchors (hot_reload_implementation_plan.md): states linked
+        // by the start thunk are all cancelled - a signal-suspended one is DISCONNECTED
+        // first (a later emission must never resume a dead coroutine or write into a freed
+        // frame), a waiter-suspended one through the ordinary cancel path, a plain-yield
+        // one likewise; a finalized state is already unlinked and stays untouched (no
+        // re-pack, no re-emit, no cancel flag). Reference discipline: the temporary strong
+        // reference lets detach + cancel run while edges drop; creator references released
+        // afterwards drive the idempotent PREDELETE + exactly-once free_instance. The
+        // second cancel_all call must be a pure no-op, and nothing may leak.
+        var source = FAKE_ENGINE + """
+                
+                static FakeState g_SIG, g_WR, g_IDLE, g_DONE;
+                static mco_coro *g_sig_co, *g_wr_co, *g_idle_co, *g_done_co;
+                static int64_t g_wr_out;
+                static godot_Variant g_sig_out;
+                static char g_emitter_storage;
+                #define FAKE_EMITTER_ID 4000
+                
+                static void sig_body(mco_coro *co) {
+                    log_event("sig_await");
+                    godot_Signal sig;
+                    fake_signal_write(&sig, FAKE_EMITTER_ID, "tick");
+                    gdcc_coro_await_signal(&sig, &g_sig_out, co, &g_SIG.header);
+                    CHECK(g_SIG.header.cancel, "sig must resume only through cancel");
+                    log_event("sig_cleanup");
+                    fake_state_write_ret(&g_SIG, 0); // __prepare__ default consumed by the __finally__ analog
+                }
+                
+                static void wr_body(mco_coro *co) {
+                    log_event("wr_await");
+                    gdcc_coro_await_state(&g_SIG.header, &g_wr_out, co, &g_WR.header);
+                    CHECK(g_WR.header.cancel, "wr must resume only through cancel");
+                    log_event("wr_cleanup");
+                    fake_state_write_ret(&g_WR, 0);
+                }
+                
+                static void idle_body(mco_coro *co) {
+                    log_event("idle_yield");
+                    mco_yield(co);
+                    CHECK(g_IDLE.header.cancel, "idle must resume only through cancel");
+                    log_event("idle_cleanup");
+                    fake_state_write_ret(&g_IDLE, 0);
+                }
+                
+                static void done_body(mco_coro *co) {
+                    (void)co;
+                    fake_state_write_ret(&g_DONE, 5);
+                }
+                
+                int main(void) {
+                    if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
+                    gdcc_coro_set_hot_reload_active(true); // editor mode: HR-5 tracking on
+                    // Live emitter object (not a state): registered in the fake object table.
+                    g_objects[g_object_count].id = FAKE_EMITTER_ID;
+                    g_objects[g_object_count].ptr = (GDExtensionObjectPtr)&g_emitter_storage;
+                    g_objects[g_object_count].freed = 0;
+                    g_object_count++;
+                
+                    fake_state_init(&g_SIG, "SIG");
+                    fake_state_init(&g_WR, "WR");
+                    fake_state_init(&g_IDLE, "IDLE");
+                    fake_state_init(&g_DONE, "DONE");
+                    g_wr_out = -7; // sentinel: abandoned awaiter slots must stay untouched
+                    g_sig_co = fake_make_coro(sig_body, &g_SIG);
+                    g_wr_co = fake_make_coro(wr_body, &g_WR);
+                    g_idle_co = fake_make_coro(idle_body, &g_IDLE);
+                    g_done_co = fake_make_coro(done_body, &g_DONE);
+                    // Start-thunk role: link right after mco_create, before the first resume.
+                    gdcc_coro_active_link(&g_SIG.header);
+                    gdcc_coro_active_link(&g_WR.header);
+                    gdcc_coro_active_link(&g_IDLE.header);
+                    gdcc_coro_active_link(&g_DONE.header);
+                
+                    mco_resume(g_done_co); // DONE completes synchronously
+                    gdcc_coro_finalize(&g_DONE.header); // entry-thunk role; must unlink DONE
+                    CHECK(g_DONE.pack_calls == 1 && g_DONE.emit_calls == 1, "done state must finalize exactly once");
+                
+                    fake_add_ref((GDExtensionObjectPtr)&g_SIG); // wr's call-site OWNED ref (thunk semantics)
+                    mco_resume(g_sig_co); // SIG connects and suspends on the signal
+                    CHECK(mco_status(g_sig_co) == MCO_SUSPENDED, "sig must be signal-suspended");
+                    CHECK(g_SIG.header.signal_reg != NULL, "the signal wait must be registered on the state");
+                    CHECK(g_connection_count == 1, "exactly one live connection expected");
+                    CHECK(fake_refs_of((GDExtensionObjectPtr)&g_SIG) == 3,
+                            "main ref + wr call-site ref + connection keep-alive edge");
+                    mco_resume(g_wr_co); // WR registers a typed waiter on SIG and suspends
+                    CHECK(mco_status(g_wr_co) == MCO_SUSPENDED, "wr must be waiter-suspended");
+                    mco_resume(g_idle_co); // IDLE suspends on a plain yield
+                
+                    gdcc_coro_cancel_all();
+                
+                    CHECK(g_SIG.header.cancel && g_WR.header.cancel && g_IDLE.header.cancel,
+                            "every active state must be cancelled");
+                    CHECK(!g_DONE.header.cancel, "a finalized state must not be re-cancelled");
+                    CHECK(g_SIG.header.signal_reg == NULL, "bulk cancel must clear the signal registration");
+                    CHECK(g_connection_count == 0, "bulk cancel must disconnect the pending one-shot signal");
+                    CHECK(g_SIG.pack_calls == 0 && g_WR.pack_calls == 0 && g_IDLE.pack_calls == 0,
+                            "bulk cancel never packs");
+                    CHECK(g_SIG.emit_calls == 0 && g_WR.emit_calls == 0 && g_IDLE.emit_calls == 0,
+                            "bulk cancel never emits");
+                    CHECK(g_DONE.pack_calls == 1 && g_DONE.emit_calls == 1,
+                            "the finalized state must stay untouched by bulk cancel");
+                    CHECK(g_wr_out == -7, "the abandoned awaiter out slot stays unwritten");
+                
+                    // UAF guard anchor: emitting after the bulk cancel must not reach any
+                    // callback (the connection was disconnected above; a live connection
+                    // here would resume a dead coroutine and write into a freed frame).
+                    fake_emit_signal(FAKE_EMITTER_ID, "tick", NULL, 0);
+                
+                    gdcc_coro_cancel_all(); // idempotent: the list is already empty
+                
+                    // Creator references released: idempotent PREDELETE (cancel already
+                    // terminal) + exactly-once free_instance per state.
+                    fake_drop_ref((GDExtensionObjectPtr)&g_SIG);
+                    fake_drop_ref((GDExtensionObjectPtr)&g_WR);
+                    fake_drop_ref((GDExtensionObjectPtr)&g_IDLE);
+                    fake_drop_ref((GDExtensionObjectPtr)&g_DONE);
+                    CHECK(g_SIG.destroy_slot_calls == 1 && g_WR.destroy_slot_calls == 1
+                                    && g_IDLE.destroy_slot_calls == 1 && g_DONE.destroy_slot_calls == 1,
+                            "the return slot is destroyed exactly once per state, by free_instance");
+                    CHECK(g_print_error_count == 0, "no runtime errors expected");
+                    CHECK(g_mem_balance == 0,
+                            "waiter nodes, signal registrations and callable customs must all be freed");
+                    CHECK(g_variant_destroy_count == 5,
+                            "one destroy-then-write pack (DONE) + four result caches at state_free");
+                    printf("OK cancel_all\\n");
+                    return 0;
+                }
+                """;
+        var execution = compileLinkAndRun("cancel_all_probe", source, runtimeObjects);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertEvents(execution, List.of(
+                "pack_result:DONE",
+                "emit:DONE",
+                "sig_await",
+                "wr_await",
+                "idle_yield",
+                "idle_cleanup",
+                "wr_cleanup",
+                "disconnect:tick",
+                "sig_cleanup",
+                "destroy_slot:SIG",
+                "free:SIG",
+                "destroy_slot:WR",
+                "free:WR",
+                "destroy_slot:IDLE",
+                "free:IDLE",
+                "destroy_slot:DONE",
+                "free:DONE"
+        ));
+        assertTrue(execution.output().contains("OK cancel_all"), execution::diagnostic);
+    }
+
+    @Test
+    void cancelAllShouldFreeConnectionEdgeOnlyStateInsideTheLoop() throws IOException, InterruptedException {
+        // HR-5 fire-and-forget anchor: the state is held ONLY by the one-shot connection's
+        // keep-alive edge (creator reference dropped right after suspending - the void
+        // engine-entry shape). Inside cancel_all the detach removes that edge, leaving the
+        // temporary own as the last reference; releasing it must synchronously drive
+        // PREDELETE (cancel already terminal, so a no-op) + exactly-once free_instance
+        // BEFORE cancel_all returns. No double free, no second cancel, no leak.
+        var source = FAKE_ENGINE + """
+                
+                static FakeState g_FF;
+                static mco_coro *g_ff_co;
+                static godot_Variant g_ff_out;
+                static char g_emitter_storage2;
+                #define FAKE_EMITTER2_ID 4001
+                
+                static void ff_body(mco_coro *co) {
+                    log_event("ff_await");
+                    godot_Signal sig;
+                    fake_signal_write(&sig, FAKE_EMITTER2_ID, "tick");
+                    gdcc_coro_await_signal(&sig, &g_ff_out, co, &g_FF.header);
+                    CHECK(g_FF.header.cancel, "ff must resume only through cancel");
+                    log_event("ff_cleanup");
+                    fake_state_write_ret(&g_FF, 0);
+                }
+                
+                int main(void) {
+                    if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
+                    gdcc_coro_set_hot_reload_active(true); // editor mode: HR-5 tracking on
+                    g_objects[g_object_count].id = FAKE_EMITTER2_ID;
+                    g_objects[g_object_count].ptr = (GDExtensionObjectPtr)&g_emitter_storage2;
+                    g_objects[g_object_count].freed = 0;
+                    g_object_count++;
+                
+                    fake_state_init(&g_FF, "FF");
+                    g_ff_co = fake_make_coro(ff_body, &g_FF);
+                    gdcc_coro_active_link(&g_FF.header);
+                    mco_resume(g_ff_co);
+                    CHECK(mco_status(g_ff_co) == MCO_SUSPENDED, "ff must be signal-suspended");
+                    CHECK(g_connection_count == 1, "one live connection expected");
+                    fake_drop_ref((GDExtensionObjectPtr)&g_FF); // fire-and-forget detach
+                    CHECK(fake_refs_of((GDExtensionObjectPtr)&g_FF) == 1,
+                            "only the connection keep-alive edge remains");
+                
+                    gdcc_coro_cancel_all();
+                
+                    CHECK(g_FF.header.cancel, "ff must be cancelled");
+                    CHECK(g_FF.destroy_slot_calls == 1,
+                            "free_instance must run INSIDE cancel_all once the last edge drops");
+                    CHECK(g_FF.header.magic == 0, "state_free must revoke the identity inside cancel_all");
+                    // The cancel-resume -> MCO_DEAD -> state_free contract is anchored by
+                    // state_free's own violation report: zero print errors here proves the
+                    // stack was DEAD at free time (state_free destroyed it; no probe-side
+                    // mco_status/mco_destroy afterwards - that would be use-after-destroy).
+                    CHECK(g_FF.pack_calls == 0 && g_FF.emit_calls == 0, "cancel never packs or emits");
+                    CHECK(g_connection_count == 0, "the connection was disconnected by the bulk cancel");
+                    gdcc_coro_cancel_all(); // idempotent: nothing linked anymore
+                    CHECK(g_FF.destroy_slot_calls == 1, "still exactly one free_instance");
+                    CHECK(g_print_error_count == 0, "no runtime errors expected");
+                    CHECK(g_mem_balance == 0, "wait, registration and callable custom must all be freed");
+                    CHECK(g_variant_destroy_count == 1, "only the result cache is destroyed");
+                    printf("OK cancel_all_edge_only\\n");
+                    return 0;
+                }
+                """;
+        var execution = compileLinkAndRun("cancel_all_edge_only_probe", source, runtimeObjects);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertEvents(execution, List.of(
+                "ff_await",
+                "disconnect:tick",
+                "ff_cleanup",
+                "destroy_slot:FF",
+                "free:FF"
+        ));
+        assertTrue(execution.output().contains("OK cancel_all_edge_only"), execution::diagnostic);
+    }
+
+    @Test
+    void cancelAllShouldCascadeWaiterEdgeOnlyAwaiterWithoutDanglingHead() throws IOException, InterruptedException {
+        // HR-5 nested-release anchor: the awaiter is held ONLY by the callee's waiter edge
+        // (fire-and-forget chain). The callee is processed FIRST (linked last, so it heads
+        // the intrusive list); its cancel pops the waiter node and releases the awaiter's
+        // last reference, which must synchronously run PREDELETE -> cancel (resuming the
+        // awaiter to MCO_DEAD and unlinking it from the active list) -> free_instance, all
+        // INSIDE the cancel_all loop. The head-pop loop must then re-read a VALID head
+        // (never the freed awaiter) and finish without processing it twice.
+        var source = FAKE_ENGINE + """
+                
+                static FakeState g_CAL, g_AW;
+                static mco_coro *g_cal_co, *g_aw_co;
+                static int64_t g_aw_out;
+                
+                static void cal_body(mco_coro *co) {
+                    log_event("cal_yield");
+                    mco_yield(co);
+                    CHECK(g_CAL.header.cancel, "cal must resume only through cancel");
+                    log_event("cal_cleanup");
+                    fake_state_write_ret(&g_CAL, 0);
+                }
+                
+                static void aw_body(mco_coro *co) {
+                    log_event("aw_await");
+                    gdcc_coro_await_state(&g_CAL.header, &g_aw_out, co, &g_AW.header);
+                    CHECK(g_AW.header.cancel, "aw must resume only through cancel");
+                    log_event("aw_cleanup");
+                    fake_state_write_ret(&g_AW, 0);
+                }
+                
+                int main(void) {
+                    if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
+                    gdcc_coro_set_hot_reload_active(true); // editor mode: HR-5 tracking on
+                    fake_state_init(&g_CAL, "CAL");
+                    fake_state_init(&g_AW, "AW");
+                    g_aw_out = -7;
+                    g_cal_co = fake_make_coro(cal_body, &g_CAL);
+                    g_aw_co = fake_make_coro(aw_body, &g_AW);
+                    // Link the awaiter FIRST so the callee heads the list and is cancelled
+                    // first: its waiter-edge release drives the whole awaiter teardown
+                    // nested inside round one of the loop.
+                    gdcc_coro_active_link(&g_AW.header);
+                    gdcc_coro_active_link(&g_CAL.header);
+                
+                    mco_resume(g_cal_co); // CAL suspends on a plain yield
+                    fake_add_ref((GDExtensionObjectPtr)&g_CAL); // aw's call-site OWNED ref
+                    mco_resume(g_aw_co);  // AW registers on CAL and suspends
+                    CHECK(fake_refs_of((GDExtensionObjectPtr)&g_CAL) == 1, "call-site ref consumed");
+                    // Main keeps the callee (a suspended callee needs a keep-alive edge of
+                    // its own) and detaches the awaiter: fire-and-forget, held only by the
+                    // callee's waiter edge.
+                    fake_drop_ref((GDExtensionObjectPtr)&g_AW);
+                    CHECK(fake_refs_of((GDExtensionObjectPtr)&g_AW) == 1,
+                            "the awaiter is held only by the callee's waiter edge");
+                
+                    gdcc_coro_cancel_all();
+                
+                    CHECK(g_CAL.header.cancel && g_AW.header.cancel, "both states must be cancelled");
+                    CHECK(g_AW.destroy_slot_calls == 1,
+                            "the awaiter must be freed INSIDE the nested cascade of round one");
+                    CHECK(g_AW.header.magic == 0, "awaiter identity revoked by the nested free");
+                    // MCO_DEAD-at-free for both stacks is anchored by state_free's own
+                    // violation report (zero print errors below).
+                    CHECK(g_aw_out == -7, "the abandoned awaiter out slot stays unwritten");
+                    CHECK(g_CAL.pack_calls == 0 && g_AW.pack_calls == 0, "cancel never packs");
+                    gdcc_coro_cancel_all(); // idempotent
+                    CHECK(g_AW.destroy_slot_calls == 1,
+                            "the nested-freed awaiter is never re-processed");
+                    fake_drop_ref((GDExtensionObjectPtr)&g_CAL); // main releases the callee
+                    CHECK(g_CAL.destroy_slot_calls == 1, "callee freed exactly once");
+                    CHECK(g_print_error_count == 0, "no runtime errors expected");
+                    CHECK(g_mem_balance == 0, "the waiter node must be freed");
+                    CHECK(g_variant_destroy_count == 2, "only the two result caches are destroyed");
+                    printf("OK cancel_all_waiter_cascade\\n");
+                    return 0;
+                }
+                """;
+        var execution = compileLinkAndRun("cancel_all_waiter_cascade_probe", source, runtimeObjects);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertEvents(execution, List.of(
+                "cal_yield",
+                "aw_await",
+                "cal_cleanup",
+                "aw_cleanup",
+                "destroy_slot:AW",
+                "free:AW",
+                "destroy_slot:CAL",
+                "free:CAL"
+        ));
+        assertTrue(execution.output().contains("OK cancel_all_waiter_cascade"), execution::diagnostic);
+    }
+
+    @Test
+    void signalRegistrationShouldSurviveResuspensionAndEmitterDeath() throws IOException, InterruptedException {
+        // HR-5 registration-lifecycle anchors: (1) when a coroutine is resumed by an
+        // emission and RE-SUSPENDS on a second signal inside the same callback slice, the
+        // old wait's free callback (running after the callback) must NOT clear the newer
+        // registration (the identity guard); (2) when the emitter dies first, the
+        // connection teardown runs the free callback which clears the registration, so a
+        // later cancel_all never disconnects a stale pair.
+        var source = FAKE_ENGINE + """
+                
+                static FakeState g_RS, g_ED;
+                static mco_coro *g_rs_co, *g_ed_co;
+                static godot_Variant g_rs_out1, g_rs_out2, g_ed_out;
+                static char g_emitter_storage3, g_emitter_storage4;
+                #define FAKE_EMITTER3_ID 4002
+                #define FAKE_EMITTER4_ID 4003
+                
+                static void rs_body(mco_coro *co) {
+                    log_event("rs_await1");
+                    godot_Signal sig1;
+                    fake_signal_write(&sig1, FAKE_EMITTER3_ID, "tick");
+                    gdcc_coro_await_signal(&sig1, &g_rs_out1, co, &g_RS.header);
+                    CHECK(!g_RS.header.cancel, "rs must first resume through the real emission");
+                    log_event("rs_await2");
+                    godot_Signal sig2;
+                    fake_signal_write(&sig2, FAKE_EMITTER3_ID, "tock");
+                    gdcc_coro_await_signal(&sig2, &g_rs_out2, co, &g_RS.header);
+                    CHECK(g_RS.header.cancel, "rs must finish through the bulk cancel");
+                    log_event("rs_cleanup");
+                    fake_state_write_ret(&g_RS, 0);
+                }
+                
+                static void ed_body(mco_coro *co) {
+                    log_event("ed_await");
+                    godot_Signal sig;
+                    fake_signal_write(&sig, FAKE_EMITTER4_ID, "tick");
+                    gdcc_coro_await_signal(&sig, &g_ed_out, co, &g_ED.header);
+                    CHECK(g_ED.header.cancel, "ed must resume only through cancel");
+                    log_event("ed_cleanup");
+                    fake_state_write_ret(&g_ED, 0);
+                }
+                
+                int main(void) {
+                    if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
+                    gdcc_coro_set_hot_reload_active(true); // editor mode: HR-5 tracking on
+                    g_objects[g_object_count].id = FAKE_EMITTER3_ID;
+                    g_objects[g_object_count].ptr = (GDExtensionObjectPtr)&g_emitter_storage3;
+                    g_objects[g_object_count].freed = 0;
+                    g_object_count++;
+                    g_objects[g_object_count].id = FAKE_EMITTER4_ID;
+                    g_objects[g_object_count].ptr = (GDExtensionObjectPtr)&g_emitter_storage4;
+                    g_objects[g_object_count].freed = 0;
+                    g_object_count++;
+                
+                    fake_state_init(&g_RS, "RS");
+                    fake_state_init(&g_ED, "ED");
+                    g_rs_co = fake_make_coro(rs_body, &g_RS);
+                    g_ed_co = fake_make_coro(ed_body, &g_ED);
+                    gdcc_coro_active_link(&g_RS.header);
+                    gdcc_coro_active_link(&g_ED.header);
+                    mco_resume(g_rs_co); // RS suspends on tick
+                    mco_resume(g_ed_co); // ED suspends on tick (emitter4)
+                    CHECK(g_connection_count == 2, "two live connections expected");
+                    CHECK(g_RS.header.signal_reg != NULL && g_ED.header.signal_reg != NULL,
+                            "both waits registered");
+                
+                    // (1) Emit tick: the callback resumes RS, which re-suspends on tock and
+                    // publishes the NEW registration before the old wait's free callback
+                    // runs at the end of the emission.
+                    fake_emit_signal(FAKE_EMITTER3_ID, "tick", NULL, 0);
+                    // The identity guard must have kept the NEW registration: still
+                    // published, and the live connection is the tock one. (No pointer
+                    // comparison against the old registration - its value is indeterminate
+                    // once freed.)
+                    CHECK(g_RS.header.signal_reg != NULL,
+                            "the resuspension registration must survive the old free callback");
+                    int tock_connections = 0;
+                    for (int i = 0; i < g_connection_count; i++) {
+                        if (strcmp(g_connections[i].signal_name, "tock") == 0) tock_connections++;
+                    }
+                    CHECK(tock_connections == 1, "the live RS connection must be the tock one");
+                    CHECK(g_connection_count == 1 + 1, "tock plus ed's tick remain");
+                    CHECK(fake_variant_type_of(&g_rs_out1) == GDEXTENSION_VARIANT_TYPE_NIL,
+                            "0-arg emission resumes with nil");
+                
+                    // (2) Emitter death: the teardown removes ed's connection and the free
+                    // callback clears ED's registration; ED stays alive on its creator ref.
+                    fake_destroy_emitter(FAKE_EMITTER4_ID);
+                    CHECK(g_ED.header.signal_reg == NULL, "emitter death must clear the registration");
+                    CHECK(mco_status(g_ed_co) == MCO_SUSPENDED, "ed stays suspended after the emitter died");
+                
+                    gdcc_coro_cancel_all(); // detaches tock for RS; ED has nothing to detach
+                    CHECK(g_RS.header.cancel && g_ED.header.cancel, "both states cancelled");
+                    CHECK(g_RS.header.signal_reg == NULL, "the tock connection was disconnected");
+                    CHECK(g_connection_count == 0, "no connection survives the bulk cancel");
+                    CHECK(g_RS.pack_calls == 0 && g_ED.pack_calls == 0, "cancel never packs");
+                
+                    fake_drop_ref((GDExtensionObjectPtr)&g_RS);
+                    fake_drop_ref((GDExtensionObjectPtr)&g_ED);
+                    CHECK(g_RS.destroy_slot_calls == 1 && g_ED.destroy_slot_calls == 1,
+                            "exactly-once free_instance");
+                    CHECK(g_print_error_count == 0, "no runtime errors expected");
+                    CHECK(g_mem_balance == 0, "waits, registrations and callable customs freed");
+                    CHECK(g_variant_destroy_count == 2, "only the two result caches are destroyed");
+                    printf("OK signal_reg_lifecycle\\n");
+                    return 0;
+                }
+                """;
+        var execution = compileLinkAndRun("signal_reg_lifecycle_probe", source, runtimeObjects);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertEvents(execution, List.of(
+                "rs_await1",
+                "ed_await",
+                "emit_signal:tick",
+                "rs_await2",
+                "emitter_teardown:tick",
+                "ed_cleanup",
+                "disconnect:tock",
+                "rs_cleanup",
+                "destroy_slot:RS",
+                "free:RS",
+                "destroy_slot:ED",
+                "free:ED"
+        ));
+        assertTrue(execution.output().contains("OK signal_reg_lifecycle"), execution::diagnostic);
+    }
+
+    @Test
+    void hotReloadGateOffShouldDisableTrackingAndBulkCancel() throws IOException, InterruptedException {
+        // HR-5 dual-mode gate anchors: with the gate OFF (the default - release exports and
+        // editor-launched game processes never set it), active links are no-ops, no
+        // per-await signal registration is allocated, and cancel_all must not touch
+        // anything; the ordinary coroutine lifecycle (signal await, emission resume,
+        // finalize, PREDELETE cancel) is completely unaffected. Flipping the gate ON
+        // afterwards restores tracking + bulk cancel for subsequently linked states -
+        // the two sides of the same runtime.
+        var source = FAKE_ENGINE + """
+                
+                static FakeState g_G1, g_G2;
+                static mco_coro *g_g1_co, *g_g2_co;
+                static godot_Variant g_g1_out;
+                static char g_emitter_storage5;
+                #define FAKE_EMITTER5_ID 4004
+                
+                static void g1_body(mco_coro *co) {
+                    log_event("g1_await");
+                    godot_Signal sig;
+                    fake_signal_write(&sig, FAKE_EMITTER5_ID, "tick");
+                    gdcc_coro_await_signal(&sig, &g_g1_out, co, &g_G1.header);
+                    CHECK(!g_G1.header.cancel, "g1 must resume through the real emission, never a gated-off bulk cancel");
+                    log_event("g1_resumed");
+                    fake_state_write_ret(&g_G1, 11);
+                }
+                
+                static void g2_body(mco_coro *co) {
+                    log_event("g2_yield");
+                    mco_yield(co);
+                    CHECK(g_G2.header.cancel, "g2 must resume only through cancel");
+                    log_event("g2_cleanup");
+                    fake_state_write_ret(&g_G2, 0);
+                }
+                
+                int main(void) {
+                    if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
+                    // The gate stays OFF (its default) for the first half of this probe.
+                    g_objects[g_object_count].id = FAKE_EMITTER5_ID;
+                    g_objects[g_object_count].ptr = (GDExtensionObjectPtr)&g_emitter_storage5;
+                    g_objects[g_object_count].freed = 0;
+                    g_object_count++;
+                
+                    fake_state_init(&g_G1, "G1");
+                    fake_state_init(&g_G2, "G2");
+                    g_g1_co = fake_make_coro(g1_body, &g_G1);
+                    g_g2_co = fake_make_coro(g2_body, &g_G2);
+                    gdcc_coro_active_link(&g_G1.header); // no-op under the gate
+                    gdcc_coro_active_link(&g_G2.header);
+                
+                    mco_resume(g_g1_co); // G1 connects and suspends on the signal
+                    CHECK(mco_status(g_g1_co) == MCO_SUSPENDED, "g1 must be signal-suspended");
+                    CHECK(g_connection_count == 1, "the one-shot connection exists regardless of the gate");
+                    CHECK(g_G1.header.signal_reg == NULL, "gate-off: no registration is allocated");
+                    CHECK(fake_refs_of((GDExtensionObjectPtr)&g_G1) == 2,
+                            "main ref + connection keep-alive edge");
+                    mco_resume(g_g2_co);
+                    CHECK(mco_status(g_g2_co) == MCO_SUSPENDED, "g2 must be suspended");
+                
+                    gdcc_coro_cancel_all(); // no-op under the gate
+                    CHECK(!g_G1.header.cancel && !g_G2.header.cancel,
+                            "gate-off: bulk cancel must not touch anything");
+                    CHECK(mco_status(g_g1_co) == MCO_SUSPENDED && mco_status(g_g2_co) == MCO_SUSPENDED,
+                            "both coroutines remain suspended");
+                
+                    // Ordinary lifecycle unaffected: the emission resumes G1 to completion;
+                    // the signal callback's MCO_DEAD contract drives finalize inline.
+                    fake_emit_signal(FAKE_EMITTER5_ID, "tick", NULL, 0);
+                    CHECK(mco_status(g_g1_co) == MCO_DEAD, "g1 completed through the emission");
+                    CHECK(g_G1.pack_calls == 1 && g_G1.emit_calls == 1, "g1 finalized normally");
+                    CHECK(g_G1.header.signal_reg == NULL, "no registration ever existed");
+                
+                    // Flipping the gate on restores tracking + bulk cancel for states
+                    // linked afterwards.
+                    gdcc_coro_set_hot_reload_active(true);
+                    // Pin down that the gate-off links above really never published: before
+                    // re-linking, a bulk cancel must find the list EMPTY (field checks alone
+                    // cannot catch the single-node case prev==next==NULL && head==state).
+                    gdcc_coro_cancel_all();
+                    CHECK(!g_G2.header.cancel && mco_status(g_g2_co) == MCO_SUSPENDED,
+                            "the gate-off link must not have published onto the active list");
+                    gdcc_coro_active_link(&g_G2.header); // now it actually links
+                    gdcc_coro_cancel_all();
+                    CHECK(g_G2.header.cancel, "gate-on: bulk cancel abandons g2");
+                    CHECK(g_G2.pack_calls == 0 && g_G2.emit_calls == 0, "cancel never packs or emits");
+                
+                    fake_drop_ref((GDExtensionObjectPtr)&g_G1);
+                    fake_drop_ref((GDExtensionObjectPtr)&g_G2);
+                    CHECK(g_G1.destroy_slot_calls == 1 && g_G2.destroy_slot_calls == 1,
+                            "exactly-once free_instance");
+                    CHECK(g_print_error_count == 0, "no runtime errors expected");
+                    CHECK(g_mem_balance == 0,
+                            "no wait node leaks; g1's registration was never allocated under the gate");
+                    CHECK(g_variant_destroy_count == 3, "g1 pack + two result caches");
+                    printf("OK gate_off\\n");
+                    return 0;
+                }
+                """;
+        var execution = compileLinkAndRun("gate_off_probe", source, runtimeObjects);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertEvents(execution, List.of(
+                "g1_await",
+                "g2_yield",
+                "emit_signal:tick",
+                "g1_resumed",
+                "pack_result:G1",
+                "emit:G1",
+                "g2_cleanup",
+                "destroy_slot:G1",
+                "free:G1",
+                "destroy_slot:G2",
+                "free:G2"
+        ));
+        assertTrue(execution.output().contains("OK gate_off"), execution::diagnostic);
+    }
+
+    @Test
+    void gateOffEmitterDeathShouldDriveOrdinaryPredeleteCancel() throws IOException, InterruptedException {
+        // Gate-off exit-path anchor (the release-export shape): a signal-suspended state
+        // held ONLY by the connection keep-alive edge; when the emitter dies, the
+        // connection teardown runs the free callback (no registration exists under the
+        // gate), the self edge release drops the last reference, and the ordinary
+        // PREDELETE cancel path drives the coroutine to MCO_DEAD with exactly-once
+        // free_instance - identical to the pre-HR-5 behavior.
+        var source = FAKE_ENGINE + """
+                
+                static FakeState g_ED2;
+                static mco_coro *g_ed2_co;
+                static godot_Variant g_ed2_out;
+                static char g_emitter_storage6;
+                #define FAKE_EMITTER6_ID 4005
+                
+                static void ed2_body(mco_coro *co) {
+                    log_event("ed2_await");
+                    godot_Signal sig;
+                    fake_signal_write(&sig, FAKE_EMITTER6_ID, "tick");
+                    gdcc_coro_await_signal(&sig, &g_ed2_out, co, &g_ED2.header);
+                    CHECK(g_ED2.header.cancel, "ed2 must resume only through cancel");
+                    log_event("ed2_cleanup");
+                    fake_state_write_ret(&g_ED2, 0);
+                }
+                
+                int main(void) {
+                    if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
+                    // The gate stays OFF (its default) for the whole probe.
+                    g_objects[g_object_count].id = FAKE_EMITTER6_ID;
+                    g_objects[g_object_count].ptr = (GDExtensionObjectPtr)&g_emitter_storage6;
+                    g_objects[g_object_count].freed = 0;
+                    g_object_count++;
+                
+                    fake_state_init(&g_ED2, "ED2");
+                    g_ed2_co = fake_make_coro(ed2_body, &g_ED2);
+                    gdcc_coro_active_link(&g_ED2.header); // no-op under the gate
+                    mco_resume(g_ed2_co);
+                    CHECK(mco_status(g_ed2_co) == MCO_SUSPENDED, "ed2 must be signal-suspended");
+                    CHECK(g_ED2.header.signal_reg == NULL, "gate-off: no registration");
+                    fake_drop_ref((GDExtensionObjectPtr)&g_ED2); // only the connection edge remains
+                    CHECK(fake_refs_of((GDExtensionObjectPtr)&g_ED2) == 1,
+                            "held only by the connection keep-alive edge");
+                
+                    fake_destroy_emitter(FAKE_EMITTER6_ID);
+                
+                    CHECK(g_ED2.header.cancel, "the ordinary PREDELETE cancel path ran");
+                    CHECK(g_ED2.destroy_slot_calls == 1, "exactly-once free_instance");
+                    CHECK(g_ED2.header.magic == 0, "identity revoked by state_free");
+                    CHECK(g_ED2.pack_calls == 0 && g_ED2.emit_calls == 0, "cancel never packs or emits");
+                    CHECK(g_ED2.header.signal_reg == NULL, "still no registration");
+                    CHECK(g_connection_count == 0, "the emitter teardown removed the connection");
+                    CHECK(g_print_error_count == 0, "no runtime errors expected");
+                    CHECK(g_mem_balance == 0, "wait node and callable custom freed");
+                    CHECK(g_variant_destroy_count == 1, "only the result cache is destroyed");
+                    printf("OK gate_off_emitter_death\\n");
+                    return 0;
+                }
+                """;
+        var execution = compileLinkAndRun("gate_off_emitter_death_probe", source, runtimeObjects);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertEvents(execution, List.of(
+                "ed2_await",
+                "emitter_teardown:tick",
+                "ed2_cleanup",
+                "destroy_slot:ED2",
+                "free:ED2"
+        ));
+        assertTrue(execution.output().contains("OK gate_off_emitter_death"), execution::diagnostic);
+    }
+
+    @Test
+    void signalRegAllocationFailureShouldFailTheAwaitCleanly() throws IOException, InterruptedException {
+        // Gate-on OOM anchor for the HR-5 registration allocation: the wait allocation
+        // succeeds, the registration allocation fails - the connect must never happen, no
+        // keep-alive edge is taken (it is only own_object'ed AFTER the registration
+        // allocation), the wait is freed, and the static-path await applies its failure
+        // policy: runtime error, nil out, NO suspension. Exactly two diagnostics (the OOM
+        // report plus the await failure report).
+        var source = FAKE_ENGINE + """
+                
+                static FakeState g_OOM;
+                static godot_Variant g_oom_out;
+                static char g_emitter_storage7;
+                #define FAKE_EMITTER7_ID 4006
+                
+                int main(void) {
+                    if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
+                    gdcc_coro_set_hot_reload_active(true); // registration allocation only exists gate-on
+                    g_objects[g_object_count].id = FAKE_EMITTER7_ID;
+                    g_objects[g_object_count].ptr = (GDExtensionObjectPtr)&g_emitter_storage7;
+                    g_objects[g_object_count].freed = 0;
+                    g_object_count++;
+                
+                    fake_state_init(&g_OOM, "OOM");
+                    // First allocation (the wait) succeeds, second (the registration) fails.
+                    g_mem_alloc_fail_at_call = 2;
+                    godot_Signal sig;
+                    fake_signal_write(&sig, FAKE_EMITTER7_ID, "tick");
+                    memset(&g_oom_out, 0xAA, sizeof(g_oom_out));
+                    gdcc_coro_await_signal(&sig, &g_oom_out, NULL, &g_OOM.header);
+                
+                    CHECK(g_print_error_count == 2, "OOM report + await failure report");
+                    CHECK(strstr(g_last_error, "await failed to connect one-shot signal") != NULL,
+                            "the await applies the static-path failure policy");
+                    CHECK(fake_variant_type_of(&g_oom_out) == GDEXTENSION_VARIANT_TYPE_NIL,
+                            "failure resumes with nil");
+                    CHECK(g_connection_count == 0, "the connect never happened");
+                    CHECK(g_OOM.header.signal_reg == NULL, "no registration was published");
+                    CHECK(fake_refs_of((GDExtensionObjectPtr)&g_OOM) == 1,
+                            "no keep-alive edge was taken (only the creator ref remains)");
+                    CHECK(g_mem_balance == 0, "the wait was freed");
+                
+                    fake_drop_ref((GDExtensionObjectPtr)&g_OOM);
+                    CHECK(g_OOM.destroy_slot_calls == 1, "exactly-once free_instance");
+                    CHECK(g_print_error_count == 2, "no further errors");
+                    printf("OK signal_reg_oom\\n");
+                    return 0;
+                }
+                """;
+        var execution = compileLinkAndRun("signal_reg_oom_probe", source, runtimeObjects);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertEvents(execution, List.of(
+                "destroy_slot:OOM",
+                "free:OOM"
+        ));
+        assertTrue(execution.output().contains("OK signal_reg_oom"), execution::diagnostic);
+    }
+
+    @Test
     void identifyShouldRejectNonStateObjects() throws IOException, InterruptedException {        // Anchors `gdcc_coro_state_identify`: valid token+magic round-trip; rejection of
         // objects without the dedicated token binding, of bindings under a foreign token,
         // of bindings with a corrupted magic, and of NULL.
@@ -993,7 +1689,15 @@ class GdccCoroutineRuntimeSmokeTest {
             }
             
             // ---------- fake GDExtension interface entry points ----------
+            // Failure injection for allocation-path probes: 0 disables (default for every
+            // other probe); N fails the Nth fake_mem_alloc call (1-based) with NULL.
+            static int g_mem_alloc_call_count = 0;
+            static int g_mem_alloc_fail_at_call = 0;
             static void *fake_mem_alloc(size_t bytes) {
+                g_mem_alloc_call_count++;
+                if (g_mem_alloc_fail_at_call != 0 && g_mem_alloc_call_count == g_mem_alloc_fail_at_call) {
+                    return NULL;
+                }
                 g_mem_balance++;
                 return malloc(bytes == 0 ? 1 : bytes);
             }
@@ -1057,10 +1761,6 @@ class GdccCoroutineRuntimeSmokeTest {
             static void fake_ptr_destructor_noop(GDExtensionTypePtr ptr) {
                 (void)ptr;
             }
-            static GDExtensionPtrDestructor fake_variant_get_ptr_destructor(GDExtensionVariantType type) {
-                (void)type;
-                return fake_ptr_destructor_noop;
-            }
             static int g_mb_reference_sentinel;
             static int g_mb_unreference_sentinel;
             static GDExtensionMethodBindPtr fake_classdb_get_method_bind(GDExtensionConstStringNamePtr cls, GDExtensionConstStringNamePtr method, GDExtensionInt hash) {
@@ -1088,7 +1788,205 @@ class GdccCoroutineRuntimeSmokeTest {
                 }
                 fail("unexpected method bind ptrcall");
             }
-            
+
+            // ---------- fake Signal / Callable / connection layer (HR-5) ----------
+            // godot_Callable layout: bytes [0..8) FakeCallableCustom pointer (NULL = null
+            // callable). godot_Signal layout: bytes [0..8) emitter ObjectID, [8..16) signal
+            // name as a stable char* (same convention as the fake StringName).
+            #define FAKE_SIGNAL_OBJECT_OFF 0
+            #define FAKE_SIGNAL_NAME_OFF 8
+            #define FAKE_MAX_CONNECTIONS 16
+
+            typedef struct FakeCallableCustom {
+                void *userdata;
+                GDExtensionCallableCustomCall call_func;
+                GDExtensionCallableCustomFree free_func;
+                int refs;
+            } FakeCallableCustom;
+
+            static FakeCallableCustom *fake_callable_custom_of(const godot_Callable *callable) {
+                FakeCallableCustom *custom;
+                memcpy(&custom, callable, sizeof(custom));
+                return custom;
+            }
+            static void fake_callable_custom_write(godot_Callable *callable, FakeCallableCustom *custom) {
+                memset(callable, 0, sizeof(*callable));
+                memcpy(callable, &custom, sizeof(custom));
+            }
+            static void fake_callable_custom_release(FakeCallableCustom *custom) {
+                if (custom == NULL) return;
+                custom->refs--;
+                if (custom->refs == 0) {
+                    if (custom->free_func != NULL) custom->free_func(custom->userdata);
+                    fake_mem_free(custom);
+                }
+            }
+            // Godot's default custom-Callable equality: call_func + userdata
+            // (gdextension_interface.cpp `default_compare_equal`) - the HR-5 bulk-cancel
+            // detach rebuilds an equal Callable through exactly this rule.
+            static int fake_callable_equal(const FakeCallableCustom *a, const FakeCallableCustom *b) {
+                if (a == b) return 1;
+                if (a == NULL || b == NULL) return 0;
+                return a->call_func == b->call_func && a->userdata == b->userdata;
+            }
+
+            static void fake_callable_custom_create2(GDExtensionUninitializedTypePtr r_callable, GDExtensionCallableCustomInfo2 *info) {
+                FakeCallableCustom *custom = fake_mem_alloc(sizeof(FakeCallableCustom));
+                if (custom == NULL) fail("callable custom allocation failed");
+                custom->userdata = info->callable_userdata;
+                custom->call_func = info->call_func;
+                custom->free_func = info->free_func;
+                custom->refs = 1;
+                fake_callable_custom_write((godot_Callable *)r_callable, custom);
+            }
+            static void fake_callable_ptr_destructor(GDExtensionTypePtr ptr) {
+                fake_callable_custom_release(fake_callable_custom_of((const godot_Callable *)ptr));
+            }
+
+            static GDObjectInstanceID fake_signal_object_id_of(const godot_Signal *sig) {
+                GDObjectInstanceID id;
+                memcpy(&id, (const char *)sig + FAKE_SIGNAL_OBJECT_OFF, 8);
+                return id;
+            }
+            static const char *fake_signal_name_of(const godot_Signal *sig) {
+                const char *name;
+                memcpy(&name, (const char *)sig + FAKE_SIGNAL_NAME_OFF, sizeof(name));
+                return name;
+            }
+            static void fake_signal_write(godot_Signal *sig, GDObjectInstanceID id, const char *name) {
+                memset(sig, 0, sizeof(*sig));
+                memcpy((char *)sig + FAKE_SIGNAL_OBJECT_OFF, &id, 8);
+                memcpy((char *)sig + FAKE_SIGNAL_NAME_OFF, &name, sizeof(name));
+            }
+            static void fake_signal_ptr_destructor(GDExtensionTypePtr ptr) {
+                // A destroyed Signal no longer exposes its name; combined with the read in
+                // fake_builtin_signal_disconnect this pinpoints use-after-free of the
+                // caller's Signal storage instead of letting it read stale bytes.
+                const char *null_name = NULL;
+                memcpy((char *)ptr + FAKE_SIGNAL_NAME_OFF, &null_name, sizeof(null_name));
+            }
+            static void fake_signal_copy_ctor(GDExtensionUninitializedTypePtr out, const GDExtensionConstTypePtr *args) {
+                memcpy(out, args[0], GDCC_GODOT_SIZE_Signal); // pure value copy in the fake
+            }
+            static void fake_callable_copy_ctor(GDExtensionUninitializedTypePtr out, const GDExtensionConstTypePtr *args) {
+                FakeCallableCustom *custom = fake_callable_custom_of((const godot_Callable *)args[0]);
+                if (custom != NULL) custom->refs++;
+                fake_callable_custom_write((godot_Callable *)out, custom);
+            }
+            static GDExtensionPtrConstructor fake_variant_get_ptr_constructor(GDExtensionVariantType type, int32_t ctor) {
+                if (type == GDEXTENSION_VARIANT_TYPE_SIGNAL && ctor == 1) return fake_signal_copy_ctor;
+                if (type == GDEXTENSION_VARIANT_TYPE_CALLABLE && ctor == 1) return fake_callable_copy_ctor;
+                return NULL;
+            }
+
+            // Connection table: connect retains the Callable, disconnect / one-shot removal
+            // releases it; lookup follows the engine's default custom equality above.
+            static struct { GDObjectInstanceID emitter; const char *signal_name; FakeCallableCustom *callable; int one_shot; } g_connections[FAKE_MAX_CONNECTIONS];
+            static int g_connection_count = 0;
+
+            static void fake_builtin_signal_connect(GDExtensionTypePtr base, const GDExtensionConstTypePtr *args, GDExtensionTypePtr ret, int argcount) {
+                (void)argcount;
+                const godot_Signal *sig = (const godot_Signal *)base;
+                FakeCallableCustom *custom = fake_callable_custom_of((const godot_Callable *)args[0]);
+                godot_int flags;
+                memcpy(&flags, args[1], sizeof(flags));
+                godot_int result = godot_OK;
+                if (fake_object_get_instance_from_id(fake_signal_object_id_of(sig)) == NULL || custom == NULL) {
+                    result = godot_ERR_INVALID_PARAMETER;
+                } else {
+                    if (g_connection_count >= FAKE_MAX_CONNECTIONS) fail("connection table overflow");
+                    g_connections[g_connection_count].emitter = fake_signal_object_id_of(sig);
+                    g_connections[g_connection_count].signal_name = fake_signal_name_of(sig);
+                    g_connections[g_connection_count].callable = custom;
+                    g_connections[g_connection_count].one_shot = (flags & godot_Object_CONNECT_ONE_SHOT) != 0;
+                    g_connection_count++;
+                    custom->refs++;
+                }
+                if (ret != NULL) memcpy(ret, &result, sizeof(result));
+            }
+            static void fake_builtin_signal_disconnect(GDExtensionTypePtr base, const GDExtensionConstTypePtr *args, GDExtensionTypePtr ret, int argcount) {
+                (void)ret;
+                (void)argcount;
+                const godot_Signal *sig = (const godot_Signal *)base;
+                FakeCallableCustom *custom = fake_callable_custom_of((const godot_Callable *)args[0]);
+                GDObjectInstanceID emitter = fake_signal_object_id_of(sig);
+                const char *name = fake_signal_name_of(sig);
+                for (int i = 0; i < g_connection_count; i++) {
+                    if (g_connections[i].emitter == emitter && strcmp(g_connections[i].signal_name, name) == 0
+                            && fake_callable_equal(g_connections[i].callable, custom)) {
+                        log_eventf("disconnect:%s", name);
+                        FakeCallableCustom *held = g_connections[i].callable;
+                        g_connections[i] = g_connections[g_connection_count - 1];
+                        g_connection_count--;
+                        fake_callable_custom_release(held);
+                        // Engine fidelity: Object::_disconnect keeps reading the signal name
+                        // AFTER the slot-map erase (which ran the free callback above and
+                        // may have destroyed the caller's Signal storage). Reading it here
+                        // turns a use-after-free of the Signal into a deterministic failure.
+                        CHECK(fake_signal_name_of(sig) != NULL,
+                                "disconnect read the signal name after the free callback destroyed it");
+                        return;
+                    }
+                }
+            }
+            static GDExtensionPtrBuiltInMethod fake_variant_get_ptr_builtin_method(GDExtensionVariantType type, GDExtensionConstStringNamePtr method, GDExtensionInt hash) {
+                (void)hash;
+                const char *name;
+                memcpy(&name, method, sizeof(name));
+                if (type == GDEXTENSION_VARIANT_TYPE_SIGNAL && strcmp(name, "connect") == 0) return fake_builtin_signal_connect;
+                if (type == GDEXTENSION_VARIANT_TYPE_SIGNAL && strcmp(name, "disconnect") == 0) return fake_builtin_signal_disconnect;
+                return NULL;
+            }
+
+            // Engine-death emulation: the emitter is destroyed and the engine removes all
+            // its connections synchronously (each removal releases the connection's
+            // Callable reference, running the free callback inline).
+            static void fake_destroy_emitter(GDObjectInstanceID emitter) {
+                GDExtensionObjectPtr ptr = NULL;
+                for (int i = 0; i < g_object_count; i++) {
+                    if (g_objects[i].id == emitter && !g_objects[i].freed) ptr = g_objects[i].ptr;
+                }
+                if (ptr == NULL) fail("destroy_emitter on an unknown/dead emitter");
+                fake_object_destroy(ptr);
+                for (int i = 0; i < g_connection_count; i++) {
+                    if (g_connections[i].emitter != emitter) continue;
+                    log_eventf("emitter_teardown:%s", g_connections[i].signal_name);
+                    FakeCallableCustom *held = g_connections[i].callable;
+                    g_connections[i] = g_connections[g_connection_count - 1];
+                    g_connection_count--;
+                    i--;
+                    fake_callable_custom_release(held);
+                }
+            }
+
+            // Engine-emission emulation for probes: a one-shot connection is removed BEFORE
+            // its callback runs, while the emitter keeps a local Callable reference alive
+            // across the call (the free callback therefore runs only after the emission).
+            static void fake_emit_signal(GDObjectInstanceID emitter, const char *signal_name, const GDExtensionConstVariantPtr *args, GDExtensionInt argc) {
+                for (int i = 0; i < g_connection_count; i++) {
+                    if (g_connections[i].emitter != emitter || strcmp(g_connections[i].signal_name, signal_name) != 0) continue;
+                    FakeCallableCustom *custom = g_connections[i].callable;
+                    custom->refs++; // local emission reference
+                    if (g_connections[i].one_shot) {
+                        g_connections[i] = g_connections[g_connection_count - 1];
+                        g_connection_count--;
+                        i--;
+                        fake_callable_custom_release(custom); // the connection's edge (local ref still held)
+                    }
+                    log_eventf("emit_signal:%s", signal_name);
+                    godot_Variant ret;
+                    GDExtensionCallError err;
+                    custom->call_func(custom->userdata, args, argc, &ret, &err);
+                    fake_callable_custom_release(custom); // drop the local reference
+                }
+            }
+
+            static GDExtensionPtrDestructor fake_variant_get_ptr_destructor(GDExtensionVariantType type) {
+                if (type == GDEXTENSION_VARIANT_TYPE_CALLABLE) return fake_callable_ptr_destructor;
+                if (type == GDEXTENSION_VARIANT_TYPE_SIGNAL) return fake_signal_ptr_destructor;
+                return fake_ptr_destructor_noop;
+            }
+
             static void fake_unused_interface(void) {
             }
             static GDExtensionInterfaceFunctionPtr fake_get_proc_address(const char *name) {
@@ -1106,6 +2004,9 @@ class GdccCoroutineRuntimeSmokeTest {
                 if (strcmp(name, "object_destroy") == 0) return (GDExtensionInterfaceFunctionPtr)fake_object_destroy;
                 if (strcmp(name, "string_name_new_with_utf8_chars") == 0) return (GDExtensionInterfaceFunctionPtr)fake_string_name_new_with_utf8_chars;
                 if (strcmp(name, "variant_get_ptr_destructor") == 0) return (GDExtensionInterfaceFunctionPtr)fake_variant_get_ptr_destructor;
+                if (strcmp(name, "variant_get_ptr_constructor") == 0) return (GDExtensionInterfaceFunctionPtr)fake_variant_get_ptr_constructor;
+                if (strcmp(name, "variant_get_ptr_builtin_method") == 0) return (GDExtensionInterfaceFunctionPtr)fake_variant_get_ptr_builtin_method;
+                if (strcmp(name, "callable_custom_create2") == 0) return (GDExtensionInterfaceFunctionPtr)fake_callable_custom_create2;
                 if (strcmp(name, "classdb_get_method_bind") == 0) return (GDExtensionInterfaceFunctionPtr)fake_classdb_get_method_bind;
                 if (strcmp(name, "object_method_bind_ptrcall") == 0) return (GDExtensionInterfaceFunctionPtr)fake_object_method_bind_ptrcall;
                 return (GDExtensionInterfaceFunctionPtr)fake_unused_interface;
