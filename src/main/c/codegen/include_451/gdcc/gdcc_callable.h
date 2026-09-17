@@ -11,12 +11,11 @@
 /// Each unique `(kind, owner, name)` owns one `godot_mem_alloc`'d spec. `free_func` is a no-op
 /// because many Callable values share that pointer; the table is freed on library unload.
 ///
-/// Hot reload (HRX, hot_reload_implementation_plan.md §5): in editor processes both creation
-/// entries below dispatch through `gdcc_hrx` — Callables carry heap-resident thunks instead of
-/// library addresses, and standalone interning moves into the hub (the legacy registry below
-/// then stays empty, so its `destroy_all` is a safe no-op; the two never own the same spec).
-/// The payload layout is shared with `gdcc_hrx_standalone_payload` so the same `call`
-/// implementation serves both modes.
+/// In editor processes both creation entries below dispatch through `gdcc_hrx` — Callables
+/// carry heap-resident thunks instead of library addresses, and standalone interning moves
+/// into the hub (the legacy registry below then stays empty, so its `destroy_all` is a safe
+/// no-op; the two never own the same spec). The payload layout is shared with
+/// `gdcc_hrx_standalone_payload` so the same `call` implementation serves both modes.
 ///
 /// The includer must declare `class_library` before this header is processed.
 typedef gdcc_hrx_standalone_payload gdcc_standalone_callable_spec;

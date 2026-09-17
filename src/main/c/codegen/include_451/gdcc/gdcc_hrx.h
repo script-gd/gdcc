@@ -1,8 +1,8 @@
 #ifndef GDCC_HRX_H
 #define GDCC_HRX_H
 
-/// Hot-reload exchange (HRX): heap-resident thunk indirection for custom Callables.
-/// Contract: doc/module_impl/backend/hot_reload_implementation_plan.md §5.
+/// Hot-reload exchange: heap-resident thunk indirection for custom Callables.
+/// Contract: doc/module_impl/backend/hot_reload_implementation.md.
 ///
 /// In editor processes every custom Callable handed to Godot carries function pointers into
 /// thunks emitted in executable heap memory (owned by no library image, so they survive
@@ -20,8 +20,8 @@
 /// Layout version of spec/hub/thunk templates. The layouts below are ABI-frozen: fields may
 /// only be appended together with a version bump, because old-generation thunks read fixed
 /// offsets (asserted against the templates in gdcc_hrx.c).
-/// v2 (§5.11): appended `callsite_context` to gdcc_hrx_spec (tail-only, old v1 blocks lack it
-/// and are rejected by the abi_version guard before the field is ever read) and to
+/// Current layout appends `callsite_context` to gdcc_hrx_spec (tail-only; older blocks lack
+/// it and are rejected by the abi_version guard before the field is ever read) and to
 /// gdcc_hrx_identity (current-generation .rodata, always compiled with the matching header).
 #define GDCC_HRX_ABI_VERSION 2u
 #define GDCC_HRX_HUB_MAGIC UINT64_C(0x4744434348525855)
@@ -75,8 +75,8 @@ typedef struct gdcc_hrx_spec {
     struct gdcc_hrx_spec *next;
     struct gdcc_hrx_spec *intern_next;      // interning hash chain (standalone only)
     struct gdcc_hrx_spec *pending_next;     // sweep-pending queue link (sweep time only)
-    // v2 append (ABI tail): heap-copied normalized call-site context; read/released ONLY
-    // after an `abi_version >= 2` check — v1 blocks end right after `pending_next`.
+    // ABI tail: heap-copied normalized call-site context; read/released ONLY after an
+    // `abi_version >= 2` check — older blocks end right after `pending_next`.
     const char *callsite_context;
 } gdcc_hrx_spec;
 
@@ -108,7 +108,7 @@ typedef struct gdcc_hrx_identity {
     uint32_t schema_desc_len;
     int32_t argument_count;               // data-driven argument count (part of the schema surface)
     unsigned char schema_fingerprint[16]; // 128-bit fingerprint of schema_desc
-    // §5.11 third rebind gate: normalized call-site context. Current-generation .rodata only
+    // Normalized call-site context used during rebinding. Current-generation .rodata only
     // (never shared across generations), so appending here is layout-safe. NULL for standalone
     // identities; NULL-safe equality treats NULL==NULL as a match.
     const char *callsite_context;
@@ -136,7 +136,7 @@ typedef struct gdcc_hrx_standalone_payload {
     godot_bool returns_value;
 } gdcc_hrx_standalone_payload;
 
-/// Process-frozen dispatch mode (hot_reload_implementation_plan.md §5.4).
+/// Process-frozen dispatch mode. Selected once per process and reused by later generations.
 typedef enum gdcc_hrx_mode {
     GDCC_HRX_MODE_UNINITIALIZED = 0,
     GDCC_HRX_MODE_DIRECT_NON_RELOAD,  // non-editor process: legacy direct callables, zero HRX state
@@ -169,7 +169,7 @@ gdcc_hrx_mode gdcc_hrx_initialize_core(
         uint32_t entry_count
 );
 
-/// Generated `deinitialize()` tail (D8, after the runtime registries): detaches this
+/// Generated `deinitialize()` tail, after the runtime registries: detaches this
 /// generation's sweeper, then NULLs every spec's function pointers and marks them UNBOUND.
 /// Afterwards no path needs old-library code anymore; `dead`/`refcount` stay untouched.
 void gdcc_hrx_deinitialize(void);

@@ -12,27 +12,26 @@ import org.jetbrains.annotations.Nullable;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
-/// HR-8 module-level Callable identity catalog (contract:
-/// doc/module_impl/backend/hot_reload_implementation_plan.md §5.6). Collects every lambda and
-/// standalone custom Callable the module can create, derives each one's stable `impl_key` and
-/// canonical schema descriptor (capture layout + signature + abi version), and renders the
+/// Module-level Callable identity catalog. Collects every lambda and standalone custom
+/// Callable the module can create, derives each one's stable `impl_key` and canonical
+/// schema descriptor (capture layout + signature + abi version), and renders the
 /// per-extension anchor token. The catalog is emitted at the top of `entry.c`: identity
 /// structs feed both the creation sites (by symbol reference) and the module rebind table the
 /// next library generation uses to rebind surviving Callables to new implementations.
 public final class CHrxIdentityCatalog {
 
     /// HRX ABI version baked into every schema descriptor prefix (`gdcc-hrx:<N>;...`). MUST
-    /// equal `GDCC_HRX_ABI_VERSION` in `gdcc_hrx.h` (§5.11 same-source contract): if the two
-    /// drift, a spec passing the runtime abi_version guard could still match a stale descriptor
-    /// (or vice versa), silently voiding one of the two gates. A dedicated contract test pins
-    /// this constant against the C header macro.
+    /// equal `GDCC_HRX_ABI_VERSION` in `gdcc_hrx.h`: if the two drift, a spec passing the
+    /// runtime abi_version guard could still match a stale descriptor (or vice versa),
+    /// silently voiding one of the two gates. A dedicated contract test pins this constant
+    /// against the C header macro.
     public static final int HRX_ABI_VERSION = 2;
     private static final String SCHEMA_DESC_PREFIX = "gdcc-hrx:" + HRX_ABI_VERSION + ";";
 
     /// Template-facing identity struct data (`schemaBytes`/`fingerprintBytes` are unsigned
     /// 0..255 initializers for the emitted C arrays; `callSiteContextCString` is the escaped
     /// literal body of the normalized call-site context, or null → the template emits NULL
-    /// (standalone Callable identities never carry one, §5.11)).
+    /// (standalone Callable identities never carry one).
     public record HrxIdentityTemplateData(
             @NotNull String symbol,
             @NotNull String implKeyCString,
@@ -172,7 +171,7 @@ public final class CHrxIdentityCatalog {
                     toUnsignedBytes(schemaDesc.getBytes(StandardCharsets.UTF_8)),
                     toUnsignedBytes(fingerprint),
                     spec.argumentCount(),
-                    // Standalone Callable identities never carry a call-site context (§5.11).
+                    // Standalone Callable identities never carry a call-site context.
                     null
             ));
             // The shared standalone runtime functions (gdcc_callable.h statics) are the impl;

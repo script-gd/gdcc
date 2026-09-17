@@ -74,11 +74,11 @@ struct ${classDef.name} {
         <#if helper.requiresVtableField(classDef.name)>
         const void* _vtable;
         </#if>
-        <#-- Hot reload exactly-once destruction guard (hot_reload_implementation_plan.md D2): -->
-        <#-- lives ONLY in the root segment; derived wrappers reach it through the `_super` -->
-        <#-- chain (renderDestructedFlagAccessExpr). Set by `<C>_class_destructor`, cleared by -->
-        <#-- create/recreate; `free_instance_func` re-enters the destructor when the PREDELETE -->
-        <#-- path never ran (engine reload calls free_instance WITHOUT PREDELETE). -->
+        <#-- Exactly-once destruction guard: lives ONLY in the root segment; derived wrappers -->
+        <#-- reach it through the `_super` chain (renderDestructedFlagAccessExpr). Set by -->
+        <#-- `<C>_class_destructor`, cleared by create/recreate; `free_instance_func` re-enters -->
+        <#-- the destructor when the PREDELETE path never ran (engine reload calls free_instance -->
+        <#-- WITHOUT PREDELETE). -->
         GDExtensionBool _gdcc_destructed;
     </#if>
     <#list classDef.properties as property>

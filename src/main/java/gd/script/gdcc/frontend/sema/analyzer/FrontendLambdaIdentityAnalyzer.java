@@ -25,9 +25,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 
-/// Lambda identity pass (contract: `hot_reload_implementation_plan.md` §5.11). Assigns every
-/// lambda inside a supported executable body (a) its source pre-order ordinal within the
-/// outermost NAMED function/constructor body — the traversal is isomorphic to
+/// Lambda identity pass. Assigns every lambda inside a supported executable body (a) its
+/// source pre-order ordinal within the outermost NAMED function/constructor body — the
+/// traversal is isomorphic to
 /// `FrontendLoweringFunctionPreparationPass.collectLambdaContexts` (pre-order over
 /// `Node.getChildren()`; number the lambda on encounter, then recurse into its `body()` only),
 /// so the ordinal domain matches the HRX rebind table exactly — and (b) the normalized
@@ -123,10 +123,10 @@ public final class FrontendLambdaIdentityAnalyzer {
             insideNamedFunction = savedFlag;
         }
 
-        /// Walks the ancestor chain nearest-first and anchors at the nearest semantic parent
-        /// (hot_reload_implementation_plan.md §5.11 descriptor table). The search never escapes
-        /// the enclosing callable (a nested lambda's context is computed within its own lambda
-        /// boundary); unanchored forms fall back to `stmt(<nearest statement type>)`.
+        /// Walks the ancestor chain nearest-first and anchors at the nearest semantic parent.
+        /// The search never escapes the enclosing callable (a nested lambda's context is
+        /// computed within its own lambda boundary); unanchored forms fall back to
+        /// `stmt(<nearest statement type>)`.
         private @NotNull String computeContext(@NotNull LambdaExpression lambda) {
             var chain = ancestors.toArray(new Node[0]);
             String statementFallback = null;

@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Zig-gated pure-C smoke tests for the HRX hot-reload thunk runtime
-/// (`gdcc/gdcc_hrx.c`; contract: doc/module_impl/backend/hot_reload_implementation_plan.md §5).
+/// (`gdcc/gdcc_hrx.c`; contract: doc/module_impl/backend/hot_reload_implementation.md).
 /// The fixtures fake the Godot interface at the GDExtension function-pointer level while the
 /// shared thunk page uses REAL executable memory on the host, so on x86_64 the emitted machine
 /// code actually executes: call/is_valid/free/get_argument_count all run through real thunks,
@@ -432,9 +432,9 @@ class GdccHrxRuntimeSmokeTest {
 
     @Test
     void rebindShouldRespectTheCallsiteContextGate() throws IOException, InterruptedException {
-        // §5.11 third gate: same impl_key + same schema descriptor + MATCHING context rebinds
-        // (A); a context mismatch with identical key+schema fails closed (B — the statement-swap
-        // fix); NULL vs non-NULL never matches (C); NULL==NULL matches (D, standalone shape).
+        // Same impl_key + same schema descriptor + MATCHING context rebinds (A); a context
+        // mismatch with identical key+schema fails closed (B — the statement-swap fix);
+        // NULL vs non-NULL never matches (C); NULL==NULL matches (D, standalone shape).
         var source = """
                 static int g_impl1_calls = 0;
                 static int g_impl2_calls = 0;
@@ -592,11 +592,11 @@ class GdccHrxRuntimeSmokeTest {
 
     @Test
     void callsiteContextShouldBeHeapCopiedAndVersionGuarded() throws IOException, InterruptedException {
-        // §5.11 cross-generation safety: (1) the spec stores a HEAP COPY of the identity's
-        // context (generated .rodata dies at dlclose); (2) a v1-ABI spec is rejected by the
-        // version guard even when key+schema+context would all match; (3) shell_free only
-        // touches the appended field under abi_version >= 2, so a v1 block carrying a poison
-        // pointer there is swept without dereferencing it.
+        // Cross-generation safety: (1) the spec stores a HEAP COPY of the identity's
+        // context (generated .rodata dies at dlclose); (2) a legacy-ABI spec is rejected by
+        // the version guard even when key+schema+context would all match; (3) shell_free
+        // only touches the appended field under abi_version >= 2, so a legacy block carrying
+        // a poison pointer there is swept without dereferencing it.
         var source = """
                 static int g_impl1_calls = 0;
                 static void impl1(void *c, const GDExtensionConstVariantPtr *a, GDExtensionInt n,
@@ -1367,8 +1367,8 @@ class GdccHrxRuntimeSmokeTest {
     @Test
     void directModeShouldKeepTheLegacyDispatchIntact() throws IOException, InterruptedException {
         // Non-editor process: no hub, no anchor, no executable memory; the two creation
-        // entries behave exactly as before HR-8 (library function pointers + raw userdata),
-        // and the HRX creation APIs stay defensively inert.
+        // entries keep library function pointers and raw userdata, and the HRX creation
+        // APIs stay defensively inert.
         var source = """
                 static int g_free_calls = 0;
                 static void impl1(void *c, const GDExtensionConstVariantPtr *a, GDExtensionInt n,
@@ -1429,9 +1429,9 @@ class GdccHrxRuntimeSmokeTest {
 
     @Test
     void identitylessWaiterSpecShouldNeverRebindAcrossReload() throws IOException, InterruptedException {
-        // Coroutine signal waiters carry no rebind identity (HR-8 policy): callable this
-        // generation, permanently invalid after a reload — a stray connection can never jump
-        // into unloaded code. Its post-reload destruction is intentionally skipped (unknown
+        // Coroutine signal waiters carry no rebind identity: callable this generation,
+        // permanently invalid after a reload — a stray connection can never jump into
+        // unloaded code. Its post-reload destruction is intentionally skipped (unknown
         // layout) while the shell is reclaimed.
         var source = """
                 static int g_impl_calls = 0;

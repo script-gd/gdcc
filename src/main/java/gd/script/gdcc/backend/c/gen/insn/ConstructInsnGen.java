@@ -312,7 +312,7 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
         } catch (IllegalStateException e) {
             throw bodyBuilder.invalidInsn(e.getMessage());
         }
-        // HR-8: the trailing identity argument is consumed only in thunk (editor) mode; the
+        // The trailing identity argument is consumed only in thunk (editor) mode; the
         // symbol is defined at the top of entry.c by the module identity catalog.
         var identitySymbol = CHrxIdentityCatalog.standaloneIdentitySymbol(kind, spec.ownerName(), spec.callableName());
         bodyBuilder.assignVar(
@@ -452,7 +452,7 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                                 + helper.renderLambdaIsValidFuncName(clazz, lambda) + ", "
                                 + helper.renderLambdaFreeFuncName(clazz, lambda) + ", "
                                 + helper.renderLambdaGetArgumentCountFuncName(clazz, lambda) + ", "
-                                // HR-8: consumed only in thunk (editor) mode; defined at the
+                                // Consumed only in thunk (editor) mode; defined at the
                                 // top of entry.c by the module identity catalog.
                                 + "&" + helper.renderLambdaHrxIdentitySymbol(clazz, lambda)
                                 + ")",

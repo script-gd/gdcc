@@ -1988,7 +1988,7 @@ class FrontendSuiteResolverTest {
         analysisData.updateDiagnostics(diagnostics.snapshot());
         new FrontendVariableAnalyzer().analyze(analysisData, diagnostics);
         analysisData.updateDiagnostics(diagnostics.snapshot());
-        // HRX §5.11: suite resolution consumes the published identity table; the direct-resolver
+        // Suite resolution consumes the published identity table; the direct-resolver
         // harness must replicate the `FrontendSemanticAnalyzer` publication step.
         analysisData.updateLambdaIdentities(FrontendLambdaIdentityAnalyzer.analyze(analysisData));
         return new PhaseInput(unit, registry, analysisData, diagnostics);

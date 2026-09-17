@@ -73,8 +73,8 @@ public record FrontendLambdaPlan(
         return capturePlan.capturesSelf();
     }
 
-    /// Stable source identity of this lambda for hot-reload rebinding
-    /// (hot_reload_implementation_plan.md §5.11): `<Class>::<enclosingFunc>#<ordinal>`.
+    /// Stable source identity of this lambda for hot-reload rebinding:
+    /// `<Class>::<enclosingFunc>#<ordinal>`.
     /// `<Class>` is the canonical owning-class name (module-unique, so no file name is
     /// needed); `<enclosingFunc>` is the outermost NAMED callable (`enclosingCallable` is
     /// already normalized to it, with constructors rendered as `_init`); `ordinal` is the

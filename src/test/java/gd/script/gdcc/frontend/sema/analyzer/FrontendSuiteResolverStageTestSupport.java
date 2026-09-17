@@ -52,8 +52,8 @@ final class FrontendSuiteResolverStageTestSupport {
             @NotNull Set<FrontendSemanticStage> enabledStages
     ) {
         var checkedStages = Set.copyOf(enabledStages);
-        // HRX §5.11: replicate the `FrontendSemanticAnalyzer` identity publication step before
-        // direct suite resolution; the resolver fails fast on a recorded lambda without one.
+        // Replicate the `FrontendSemanticAnalyzer` identity publication step before direct
+        // suite resolution; the resolver fails fast on a recorded lambda without one.
         analysisData.updateLambdaIdentities(FrontendLambdaIdentityAnalyzer.analyze(analysisData));
         var delegate = new FrontendBodyOwnerProcedures();
         var ownerProcedures = new FrontendStatementResolver.OwnerProcedures() {

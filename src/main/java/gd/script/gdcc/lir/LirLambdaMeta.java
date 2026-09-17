@@ -5,16 +5,15 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.Objects;
 
-/// Lambda-only hot-reload identity metadata of a `LirFunctionDef` (contract:
-/// `hot_reload_implementation_plan.md` §5.11). Serialized as the `<meta>` child element of
-/// `<function>`; absent `<meta>` ⇔ `null` meta on the function.
+/// Lambda-only hot-reload identity metadata of a `LirFunctionDef`. Serialized as the
+/// `<meta>` child element of `<function>`; absent `<meta>` ⇔ `null` meta on the function.
 ///
 /// @param sourceIdentityKey stable source identity for HRX rebinding:
 ///                          `<Class>::<enclosingFunc>#<ordinal>`, derived by the frontend from
 ///                          `FrontendLambdaPlan.sourceIdentityKey()`; the C backend's rebind-table
 ///                          emission refuses keyless lambdas.
-/// @param callSiteContext   normalized call-site context descriptor for the HRX third rebind
-///                          gate (after impl_key and schema_desc), derived from
+/// @param callSiteContext   normalized call-site context descriptor used during rebinding
+///                          (after impl_key and schema_desc), derived from
 ///                          `FrontendLambdaPlan.callSiteContext()`; `null` means "no context
 ///                          recorded" (hand-built LIR fixtures) and the runtime treats NULL-safe
 ///                          equality as the rule (standalone Callable identities always carry

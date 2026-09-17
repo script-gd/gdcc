@@ -23,17 +23,18 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// HR-9 scenario 10b: a NON-editor Godot process (`is_editor_hint() == false`, the same value an
-/// editor-launched F5 game process observes — plan appendix A.3) must take the
-/// `DIRECT_NON_RELOAD` path of the §5.8 three-mode machine: lambdas, standalone Callables and
-/// method-name connections behave exactly as in pre-HRX releases. The behavioral mode anchor is
-/// the standalone Callable `to_string`: the direct path keeps gdcc's custom `GDCC.<kind>(...)`
-/// rendering, while the HRX thunk path always renders `<CallableCustom>` (asserted in the editor
-/// by `GodotEditorHotReloadIntegrationTest.lambdaConnectionRebindsToNewImplementationAfterReload`).
-/// DIRECT mode builds no hub and allocates no executable heap by construction; that structural
-/// half is anchored by `GdccHrxRuntimeSmokeTest.directModeShouldKeepTheLegacyDispatchIntact`.
-/// The headed F5 variant stays on the manual checklist (headless and F5 game processes share the
-/// same `is_editor_hint` value, so the mode decision is identical).
+/// A NON-editor Godot process (`is_editor_hint() == false`, the same value an editor-launched
+/// F5 game process observes) must take the `DIRECT_NON_RELOAD` path: lambdas, standalone
+/// Callables and method-name connections behave exactly as in the pre-thunk releases. The
+/// behavioral mode anchor is the standalone Callable `to_string`: the direct path keeps
+/// gdcc's custom `GDCC.<kind>(...)` rendering, while the thunk path always renders
+/// `<CallableCustom>` (asserted in the editor by
+/// `GodotEditorHotReloadIntegrationTest.lambdaConnectionRebindsToNewImplementationAfterReload`).
+/// DIRECT mode builds no hub and allocates no executable heap by construction; that
+/// structural half is anchored by
+/// `GdccHrxRuntimeSmokeTest.directModeShouldKeepTheLegacyDispatchIntact`. The headed F5
+/// variant stays on the manual checklist (headless and F5 game processes share the same
+/// `is_editor_hint` value, so the mode decision is identical).
 ///
 /// Environment-aware: skips through JUnit assumptions when Zig or `GODOT_BIN` is missing.
 public class GodotRuntimeDirectPathIntegrationTest {

@@ -63,8 +63,8 @@ public class FrontendSuiteResolver {
     ///
     /// NOTE: this is a per-CLASS naming counter, NOT the hot-reload identity ordinal — the
     /// ordinal lives in `FrontendAnalysisData.lambdaIdentities()` (published by
-    /// `FrontendLambdaIdentityAnalyzer` ahead of suite resolution, hot_reload_implementation_plan.md
-    /// §5.11). Never reuse this counter for identity.
+    /// `FrontendLambdaIdentityAnalyzer` ahead of suite resolution). Never reuse this counter
+    /// for identity.
     private final @NotNull Map<String, Integer> lambdaNameCountersByOwningClass = new HashMap<>();
     /// Lazily built reverse view of `FrontendAnalysisData.scopesByAst()` (Scope → declaration
     /// node), consumed only by `enclosingNonLambdaCallable(...)` when a lambda needs its nearest
@@ -301,8 +301,8 @@ public class FrontendSuiteResolver {
         );
         var identity = analysisData.lambdaIdentities().get(lambda);
         if (identity == null) {
-            // Fail fast per §5.11: a recorded lambda without identity facts means the identity
-            // pass drifted out of sync with the recording phase; defaulting to an empty context
+            // Fail fast: a recorded lambda without identity facts means the identity pass
+            // drifted out of sync with the recording phase; defaulting to an empty context
             // would silently void the context gate.
             throw new IllegalStateException(
                     "Lambda at " + lambda.range() + " has no published lambda identity"

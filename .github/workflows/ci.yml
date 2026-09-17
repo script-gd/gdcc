@@ -6,6 +6,7 @@ on:
     paths:
       - "src/main/**"
       - "src/test/**"
+      - ".github/workflows/ci.yml"
 
 permissions:
   contents: read
@@ -17,8 +18,33 @@ env:
 
 jobs:
   test:
-    name: Ubuntu Unit Tests
-    runs-on: ubuntu-latest
+    name: Unit Tests (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-latest
+            id: linux-x64
+            upload_jar: true
+          - name: Linux aarch64
+            os: ubuntu-24.04-arm
+            id: linux-aarch64
+            upload_jar: false
+          - name: Windows x64
+            os: windows-latest
+            id: windows-x64
+            upload_jar: false
+          - name: macOS aarch64
+            os: macos-latest
+            id: macos-aarch64
+            upload_jar: false
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Check out repository
@@ -40,9 +66,11 @@ jobs:
             .tools
             src/launcher/zig/.zig-cache
             ~/.cache/zig
-          key: ci-tools-${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-${{ hashFiles('src/launcher/zig/build.zig', 'src/launcher/zig/build.zig.zon') }}
+            ~/Library/Caches/zig
+            ~/AppData/Local/zig
+          key: ci-tools-${{ runner.os }}-${{ runner.arch }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-${{ hashFiles('src/launcher/zig/build.zig', 'src/launcher/zig/build.zig.zon') }}
           restore-keys: |
-            ci-tools-${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-
+            ci-tools-${{ runner.os }}-${{ runner.arch }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-
 
       - name: Cache native test outputs
         uses: actions/cache@v5
@@ -50,63 +78,144 @@ jobs:
           path: |
             tmp/test/shared-compiler-cache
             tmp/test/**/include
-          key: ci-native-test-outputs-${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-${{ hashFiles('src/main/**', 'src/test/**') }}
+          key: ci-native-test-outputs-${{ runner.os }}-${{ runner.arch }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-${{ hashFiles('src/main/**', 'src/test/**') }}
           restore-keys: |
-            ci-native-test-outputs-${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-
+            ci-native-test-outputs-${{ runner.os }}-${{ runner.arch }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-
 
       - name: Install Zig
-        shell: bash
         run: |
           set -euo pipefail
 
-          zig_archive="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          case "${RUNNER_OS}-${RUNNER_ARCH}" in
+            Linux-X64)
+              zig_triple="x86_64-linux"
+              zig_ext="tar.xz"
+              zig_name="zig"
+              ;;
+            Linux-ARM64)
+              zig_triple="aarch64-linux"
+              zig_ext="tar.xz"
+              zig_name="zig"
+              ;;
+            Windows-X64)
+              zig_triple="x86_64-windows"
+              zig_ext="zip"
+              zig_name="zig.exe"
+              ;;
+            macOS-ARM64)
+              zig_triple="aarch64-macos"
+              zig_ext="tar.xz"
+              zig_name="zig"
+              ;;
+            *)
+              echo "Unsupported runner: ${RUNNER_OS}-${RUNNER_ARCH}" >&2
+              exit 1
+              ;;
+          esac
+
+          zig_archive="zig-${zig_triple}-${ZIG_VERSION}.${zig_ext}"
           zig_url="https://zigmirror.com/${zig_archive}"
           zig_root="${GITHUB_WORKSPACE}/.tools/zig/${ZIG_VERSION}"
           zig_bin="${zig_root}/bin"
+          zig_exe="${zig_bin}/${zig_name}"
 
-          if [[ ! -x "${zig_bin}/zig" ]]; then
+          if [[ ! -x "${zig_exe}" ]]; then
             rm -rf "${zig_root}"
-            mkdir -p "${zig_root}" "${GITHUB_WORKSPACE}/.tools/downloads"
+            mkdir -p "${zig_root}" "${zig_bin}" "${GITHUB_WORKSPACE}/.tools/downloads"
             curl -fL --retry 3 --connect-timeout 20 --output "${GITHUB_WORKSPACE}/.tools/downloads/${zig_archive}" "${zig_url}"
-            tar -xJf "${GITHUB_WORKSPACE}/.tools/downloads/${zig_archive}" -C "${zig_root}" --strip-components=1
-            mkdir -p "${zig_bin}"
-            ln -sf "${zig_root}/zig" "${zig_bin}/zig"
+            if [[ "${zig_ext}" == "zip" ]]; then
+              unzip -q "${GITHUB_WORKSPACE}/.tools/downloads/${zig_archive}" -d "${zig_root}"
+              inner_name="${zig_archive%.zip}"
+              mv "${zig_root}/${inner_name}"/* "${zig_root}/"
+              rmdir "${zig_root}/${inner_name}"
+            else
+              tar -xJf "${GITHUB_WORKSPACE}/.tools/downloads/${zig_archive}" -C "${zig_root}" --strip-components=1
+            fi
+            if [[ "${zig_name}" == "zig.exe" ]]; then
+              cp -f "${zig_root}/zig.exe" "${zig_exe}"
+            else
+              ln -sf "${zig_root}/zig" "${zig_exe}"
+            fi
           fi
 
-          "${zig_bin}/zig" version
+          "${zig_exe}" version
           echo "${zig_bin}" >> "${GITHUB_PATH}"
-          echo "ZIG=${zig_bin}/zig" >> "${GITHUB_ENV}"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            echo "ZIG=$(cygpath -w "${zig_exe}")" >> "${GITHUB_ENV}"
+          else
+            echo "ZIG=${zig_exe}" >> "${GITHUB_ENV}"
+          fi
 
       - name: Install Godot
-        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          godot_file="Godot_v${GODOT_VERSION}-${GODOT_STATUS}_linux.x86_64"
-          godot_archive="${godot_file}.zip"
+          case "${RUNNER_OS}-${RUNNER_ARCH}" in
+            Linux-X64)
+              godot_archive="Godot_v${GODOT_VERSION}-${GODOT_STATUS}_linux.x86_64.zip"
+              godot_bin_rel="Godot_v${GODOT_VERSION}-${GODOT_STATUS}_linux.x86_64"
+              ;;
+            Linux-ARM64)
+              godot_archive="Godot_v${GODOT_VERSION}-${GODOT_STATUS}_linux.arm64.zip"
+              godot_bin_rel="Godot_v${GODOT_VERSION}-${GODOT_STATUS}_linux.arm64"
+              ;;
+            Windows-X64)
+              godot_archive="Godot_v${GODOT_VERSION}-${GODOT_STATUS}_win64.exe.zip"
+              godot_bin_rel="Godot_v${GODOT_VERSION}-${GODOT_STATUS}_win64.exe"
+              ;;
+            macOS-ARM64)
+              godot_archive="Godot_v${GODOT_VERSION}-${GODOT_STATUS}_macos.universal.zip"
+              godot_bin_rel="Godot.app/Contents/MacOS/Godot"
+              ;;
+            *)
+              echo "Unsupported runner: ${RUNNER_OS}-${RUNNER_ARCH}" >&2
+              exit 1
+              ;;
+          esac
+
           godot_url="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-${GODOT_STATUS}/${godot_archive}"
           godot_dir="${GITHUB_WORKSPACE}/.tools/godot/${GODOT_VERSION}-${GODOT_STATUS}"
-          godot_bin="${godot_dir}/${godot_file}"
+          godot_bin="${godot_dir}/${godot_bin_rel}"
 
           if [[ ! -x "${godot_bin}" ]]; then
             rm -rf "${godot_dir}"
             mkdir -p "${godot_dir}" "${GITHUB_WORKSPACE}/.tools/downloads"
-            curl -fL --retry 3 --connect-timeout 20 --output "${GITHUB_WORKSPACE}/.tools/downloads/${godot_archive}" "${godot_url}"
+            curl -fL --retry 3 --connect-timeout 20 \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/octet-stream" \
+              --output "${GITHUB_WORKSPACE}/.tools/downloads/${godot_archive}" \
+              "${godot_url}"
             unzip -q "${GITHUB_WORKSPACE}/.tools/downloads/${godot_archive}" -d "${godot_dir}"
-            chmod +x "${godot_bin}"
+          fi
+
+          chmod +x "${godot_bin}"
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            xattr -cr "${godot_dir}/Godot.app" 2>/dev/null || true
           fi
 
           "${godot_bin}" --version
-          echo "GODOT_BIN=${godot_bin}" >> "${GITHUB_ENV}"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            echo "GODOT_BIN=$(cygpath -w "${godot_bin}")" >> "${GITHUB_ENV}"
+          else
+            echo "GODOT_BIN=${godot_bin}" >> "${GITHUB_ENV}"
+          fi
 
       - name: Run unit tests
-        shell: bash
         env:
           GDCC_SHARED_C_COMPILER_CACHE: tmp/test/shared-compiler-cache
-        run: ./gradlew test jar --no-daemon --info --console=plain
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          if [[ "${{ matrix.upload_jar }}" == "true" ]]; then
+            ./gradlew test jar --no-daemon --info --console=plain
+          else
+            ./gradlew test --no-daemon --info --console=plain
+          fi
 
       - name: Package jar and runtime libraries
-        shell: bash
+        if: matrix.upload_jar
         run: |
           set -euo pipefail
 
@@ -133,27 +242,8 @@ jobs:
           )
           java -jar "build/libs/gdcc-${version}.jar" --version
 
-      - name: Package test report
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          report_dir="build/reports/tests/test"
-          report_zip="build/reports/gdcc-test-report.zip"
-
-          if [[ ! -d "${report_dir}" ]]; then
-            echo "Missing test report directory: ${report_dir}" >&2
-            exit 1
-          fi
-
-          rm -f "${report_zip}"
-          (
-            cd build/reports/tests
-            zip -qr ../gdcc-test-report.zip test
-          )
-
       - name: Upload jar and runtime libraries
+        if: matrix.upload_jar
         uses: actions/upload-artifact@v7
         with:
           name: gdcc-jar-and-libs
@@ -166,6 +256,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: gdcc-test-report
-          path: build/reports/gdcc-test-report.zip
+          name: gdcc-test-report-${{ matrix.id }}
+          path: build/reports/tests/test
           if-no-files-found: error

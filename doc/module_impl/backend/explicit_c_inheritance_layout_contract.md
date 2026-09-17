@@ -107,7 +107,7 @@
   8. send post-initialize notification when required
 - extension instance / binding 绑定只属于最派生创建路径；父 wrapper 作为子对象存在，不再单独创建或重复绑定。
 
-### 3.1 热重载 recreate 合同（`hot_reload_implementation_plan.md` D4/D5）
+### 3.1 热重载 recreate 合同（`hot_reload_implementation.md`）
 
 - 每个可创建类（含隐藏的协程状态类——引擎无豁免，缺一整个扩展被禁 reload）必须生成 `<C>_class_recreate_instance(void* p_class_userdata, GDExtensionObjectPtr p_object)` 并填入 creation info 的 `recreate_instance_func`。
 - recreate 语义（引擎 `Object::reset_internal_extension` 将返回值直接赋给 `_extension_instance`）：
@@ -115,7 +115,7 @@
     - 做：分配 wrapper → `<C>_set_object_ptr(self, p_object)` → 写 `_vtable`（与 create 共用 `renderVtableFieldInitExpr`——重绑到本代静态表）→ `_gdcc_destructed = false` → `godot_object_set_instance_binding`（与 create 相同的 library/callbacks）→ `<C>_class_init_fields(self)`。
     - 不做：不调 `classdb_construct_object2`（Godot 对象存活）；不调 `godot_object_set_instance`（引擎自挂 `_extension`，实例跟踪跨 reload 存活）；不发 POSTINITIALIZE；不做 RefCounted 初始化；不调 `<C>_class_constructor`、不跑 `_init`。
 - `<C>_class_init_fields(<C>* self)`：recreate 专用递归字段初始化 helper——base-first 递归父段后执行本类非 static 属性的 init apply helper；不调 `_init`。constructor 不复用它（`_init` 调用与父递归在 constructor 中交错，无法因式分解）。
-- 协程状态类 recreate 采用 RELOADED_SHELL 惰性壳（D5，见 `gdcc_runtime_lib.md` 协程 header 条款）：wrapper 整体 `memset` 置合法默认值 → `gdcc_coro_state_header_init`（新代 descriptor）→ `reloaded_shell = true` → coro token binding（`gdcc_coro_binding_token()`，禁止照抄 class_library）。
+- 协程状态类 recreate 采用 RELOADED_SHELL 惰性壳（见 `gdcc_runtime_lib.md` 协程 header 条款）：wrapper 整体 `memset` 置合法默认值 → `gdcc_coro_state_header_init`（新代 descriptor）→ `reloaded_shell = true` → coro token binding（`gdcc_coro_binding_token()`，禁止照抄 class_library）。
 - 属性恢复由引擎在 recreate 后经 property setter 完成；仅在 `_init` 中赋值的字段保持 initializer 值（用户合同）。
 
 ### 4. `RefCounted` 创建边界合同
@@ -163,10 +163,10 @@
 - 以下两处消费该顺序，禁止改回原始 module 顺序：
   - `entry.h.ftl` 的 wrapper struct 定义循环：非根 wrapper 以值嵌入父 wrapper（`Parent _super`），父 struct 定义必须先完整，否则 C 编译报 incomplete type 字段错误。
   - `entry.c.ftl` 的 ClassDB 注册循环：Godot 在 `_register_extension_class_internal` 中要求父 extension class 已注册（否则报 `non-existing parent class` 并放弃注册），并在注册时绑定父/子 extension 指针对。
-- `deinitialize()` 的类注销消费该顺序的**严格逆序**（`inheritanceOrderedClassDefs?reverse`，热重载 D8 v11）：Godot 拒绝在派生 extension 类仍在继承时注销基类（`Attempt to unregister class while other extension classes inherit from it`），且 reload 重注册以"先注销"为硬前置；隐藏的协程状态类先于用户类、按其生成序的严格逆序注销。类注销段位于 **static backing 销毁之后、runtime registry 销毁之前**（D8 v11：本 deinitialize 同时服务正常退出路径——引擎在正常退出时注销类**不会**清理 `_extension`，static 持有的实例若晚于注销释放将经悬空指针析构（UAF），故 static 销毁必须在前；reload 时 free_instance 在注销段内部执行，字段析构链因此不得依赖 static backing（§8 D3 纪律），registry 仍未销毁）。
+- `deinitialize()` 的类注销消费该顺序的**严格逆序**（`inheritanceOrderedClassDefs?reverse`）：Godot 拒绝在派生 extension 类仍在继承时注销基类（`Attempt to unregister class while other extension classes inherit from it`），且 reload 重注册以"先注销"为硬前置；隐藏的协程状态类先于用户类、按其生成序的严格逆序注销。类注销段位于 **static backing 销毁之后、runtime registry 销毁之前**（本 deinitialize 同时服务正常退出路径——引擎在正常退出时注销类**不会**清理 `_extension`，static 持有的实例若晚于注销释放将经悬空指针析构（UAF），故 static 销毁必须在前；reload 时 free_instance 在注销段内部执行，字段析构链因此不得依赖 static backing，registry 仍未销毁）。
 - static init 两段式全局初始化（见 `frontend_static_var_implementation.md` §5.2）复用同一拓扑序过滤含 static var 的类，不再维护独立排序实现。
 
-### 8. 字段析构 exactly-once 合同（热重载 D2）
+### 8. 字段析构 exactly-once 合同
 
 - 背景：正常路径在 PREDELETE 时析构字段，但引擎 reload 路径经 `Object::clear_internal_extension` 直接调用 `free_instance_func`，**不发 PREDELETE**——字段析构必须能在 free_instance 中补齐，且两条路径合计只执行一次。
 - 析构固定拆分为两层（命名不得更改）：
@@ -175,7 +175,7 @@
 - 两条调用路径都只经守卫入口：PREDELETE notification 调 `<C>_class_destructor`；`<C>_class_free_instance` 先判 `!_gdcc_destructed` 再调 `<C>_class_destructor`，最后 `godot_mem_free(self)`。
 - 根标志由 create（§3）与 recreate 显式置 `false`（`godot_mem_alloc` 不置零）。
 - 协程状态类**不接入**该标志：其 PREDELETE 只做 cancel（不析构 frame 字段），字段清理由其 `free_instance` 唯一承担，引擎对每条路径恰好各调一次 free_instance，天然 exactly-once。
-- 析构路径不得新增对 `GD_STATIC_S`/`GD_STATIC_SN` 惰性创建的依赖（D3 保守纪律：reload 时 free_instance 在 deinitialize 类注销段内执行，届时 registry 尚未销毁，现有路径可工作，但不得新增依赖以防御未来顺序调整）；字段析构链与协程字段清理**不得依赖 static backing**（D8 v11：static 销毁在类注销段之前，注销段内 free_instance 执行时 static 已销毁——它们只触碰 self 字段）；**Object 字段/capture/参数的释放一律经 `instance_id` → ObjectDB（`gdcc_object_live_ptr`），禁止经 fat ptr 缓存的 GDCC wrapper 取 raw object**——reload 批量 clear 的实例遍历顺序任意，被引用实例的 wrapper 可能已先释放而其 Godot 对象仍因强引用存活，解引用缓存 wrapper 即 UAF（wrapper 生命 ≠ 对象生命）。
+- 析构路径不得新增对 `GD_STATIC_S`/`GD_STATIC_SN` 惰性创建的依赖（reload 时 free_instance 在 deinitialize 类注销段内执行，届时 registry 尚未销毁，现有路径可工作，但不得新增依赖以防御未来顺序调整）；字段析构链与协程字段清理**不得依赖 static backing**（static 销毁在类注销段之前，注销段内 free_instance 执行时 static 已销毁——它们只触碰 self 字段）；**Object 字段/capture/参数的释放一律经 `instance_id` → ObjectDB（`gdcc_object_live_ptr`），禁止经 fat ptr 缓存的 GDCC wrapper 取 raw object**——reload 批量 clear 的实例遍历顺序任意，被引用实例的 wrapper 可能已先释放而其 Godot 对象仍因强引用存活，解引用缓存 wrapper 即 UAF（wrapper 生命 ≠ 对象生命）。
 
 ## 与 Godot 的对齐点
 

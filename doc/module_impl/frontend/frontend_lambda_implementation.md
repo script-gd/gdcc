@@ -46,8 +46,9 @@
   - `doc/module_impl/frontend/frontend_signal_support.md`
   - `doc/module_impl/frontend/frontend_for_range_loop_implementation.md`
   - `doc/module_impl/frontend/frontend_node_literal_implementation.md`
-  - `doc/gdcc_low_ir.md`（`construct_lambda`、`is_lambda`、`<captures>`）
+  - `doc/gdcc_low_ir.md`（`construct_lambda`、`is_lambda`、`<captures>`、`LirLambdaMeta`）
   - `doc/gdcc_runtime_lib.md`
+  - `doc/module_impl/backend/hot_reload_implementation.md`：lambda 热重载身份与 HRX Callable 分流
   - `doc/gdcc_ownership_lifecycle_spec.md`
   - `doc/module_impl/frontend/frontend_gdcompiler_type_implementation.md`
   - `doc/test_error/test_suite_engine_integration_known_limits.md`
@@ -405,7 +406,7 @@ GDCC LIR 只有 `construct_lambda` + capture 列表，没有独立 self-lambda o
 
 每个通过 compile surface 的 `LambdaExpression` 对应恰好一个 hidden `LirFunctionDef`：
 
-- 名字：`_lambda_<k>`，`k` 在 owning `LirClassDef` 内从 0 递增，与 AST 遍历 / 源码出现顺序一致。
+- 名字：`_lambda_<k>`，`k` 在 owning `LirClassDef` 内从 0 递增，与 AST 遍历 / 源码出现顺序一致。这是 **codegen 符号**，不是热重载重绑主键；重绑身份见 `hot_reload_implementation.md` §8（`<Class>::<enclosingFunc>#<ordinal>` + schema + `callSiteContext`）。禁止把 `_lambda_<k>` 计数器用作身份序号。
 - `setLambda(true)`、`setHidden(true)`、`setStatic(true)`。`setLambda(true)` 必须先于
   `addCapture`。**禁止**再写 `setStatic(false)`。
 - 参数表 = lambda 源码参数（含 inventory 已解析的声明类型）；**不含** `self` 参数。
@@ -427,6 +428,7 @@ Side table：`FrontendAnalysisData.lambdaPlans()`，AST-identity 键。
 - `returnType`（声明返回类型，nested resolve 入口一次解析并冻结）
 - enclosing callable AST
 - owning class canonical name
+- `identityOrdinal` / `callSiteContext`（由 `FrontendLambdaIdentityAnalyzer` 在 suite 解析前发布；缺条目 fail-fast）
 
 `samePlan` / `sameEntry` 比较 payload（`enclosingCallable` 按身份）；first-wins merge；
 同一节点不同 payload 必须 fail，不得覆盖。
@@ -441,9 +443,11 @@ $result = construct_lambda "<lambda_function_name>" $capture1 $capture2 ...
 - 有 capture：拷入 heap 上的 `${Class}_Capture_${func}`，`callable_userdata` 指向该块；
   `free_func` 按字段析构后 `godot_mem_free`。
 - `object_id` 按 §3.5：`capturesSelf` → enclosing `self.instance_id`，否则 `0`。
-- helper：`gdcc_new_lambda_callable(userdata, object_id, call, is_valid, free, get_argument_count)`
-  → `godot_callable_custom_create2`，token 与 standalone 共享。hash / equal / less /
-  to_string 留空，走 Godot 默认（`call_func` + userdata 指针身份）。
+- helper：`gdcc_new_lambda_callable(...)` / `gdcc_new_lambda_callable_ex(...)` 按 HRX 模式分流（见 `hot_reload_implementation.md` §7）：
+  - 非编辑器 `DIRECT`：`callable_userdata` 指向捕获块，回调直指库内函数；
+  - 编辑器 `HRX_ACTIVE`：回调指向堆 thunk，`callable_userdata` 为 spec，identity 由 catalog 发射；
+  - 编辑器 `HRX_UNAVAILABLE`：创建失败并消费 captures。
+  hash / equal / less / to_string 留空，走 Godot 默认（direct 为 `call_func` + userdata；HRX 为共享 thunk + spec）。
 - `call_func` 把 userdata 解成 `_capture`，再调 `${Class}_${lambdaName}($arg..., _capture)`。
   进入 `call_func` 前若 `object_id != 0` 且对象已死，应被 Godot / `is_valid_func` 挡掉。
 - 用户可见 arity = lambda 源码参数个数（**不含** capture）。

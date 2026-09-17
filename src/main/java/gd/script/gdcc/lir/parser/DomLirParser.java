@@ -121,11 +121,11 @@ public final class DomLirParser implements LirParser {
                     // (`Boolean.parseBoolean`): only the exact text "true" enables the marker, any
                     // other/missing value is false. The attribute name is exactly `is_coroutine`.
                     var coroutineF = Boolean.parseBoolean(fEl.getAttribute("is_coroutine"));
-                    // Optional lambda hot-reload metadata (HR-8 / §5.11): a DIRECT `<meta>`
-                    // child carrying `source_identity_key` (+ optional `call_site_context`);
-                    // absent element or blank key parses as null meta, a blank context as null
-                    // context. Direct-child scan only — `getElementsByTagName` would descend
-                    // into descendants and misattribute a nested `<meta>` (same pitfall as the
+                    // Optional lambda rebinding metadata: a DIRECT `<meta>` child carrying
+                    // `source_identity_key` (+ optional `call_site_context`); absent element or
+                    // blank key parses as null meta, a blank context as null context.
+                    // Direct-child scan only — `getElementsByTagName` would descend into
+                    // descendants and misattribute a nested `<meta>` (same pitfall as the
                     // class-level annotations below).
                     LirLambdaMeta lambdaMetaF = null;
                     Element metaEl = null;

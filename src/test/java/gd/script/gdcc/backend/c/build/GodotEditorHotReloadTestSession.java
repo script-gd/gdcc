@@ -31,8 +31,7 @@ import java.util.function.Consumer;
 /// Orchestrates one headless Godot editor hot-reload test session.
 ///
 /// The session is the editor-side counterpart of `GodotGdextensionTestRunner` (which stays
-/// untouched and keeps serving plain runtime launches). It implements the orchestration protocol
-/// from `doc/module_impl/backend/hot_reload_implementation_plan.md` §HR-9:
+/// untouched and keeps serving plain runtime launches).
 ///
 /// - `prepareProject` writes a minimal editor project (project.godot, `bin/` native library,
 ///   `reloadable = true` `.gdextension`, interpreted SceneTree driver script).

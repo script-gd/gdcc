@@ -7,7 +7,7 @@
 相关文档：
 
 - `doc/gdcc_c_backend.md`：C 后端总览，是 Native Compiler Cache 与 PCH Cache 的合同源头（缓存目录解析、PCH key 组成与自愈协议）。本文档从构建管线侧引用其结论，不重复定义。
-- `doc/gdcc_runtime_lib.md`：runtime C 源码（`godot_binding.c`、`minicoro.c`、`gdcc_coroutine.c`）的内容与宏配置合同。
+- `doc/gdcc_runtime_lib.md`：runtime C 源码（`godot_binding.c`、`minicoro.c`、`gdcc_coroutine.c`、`gdcc_hrx.c`）的内容与宏配置合同。
 
 ## 1. 范围与职责边界
 
@@ -33,7 +33,8 @@ native 输入顺序固定（`CProjectBuilder.buildProject()` 内联收集）：
 1. 本轮生成的 `.c`（当前为 `entry.c`）；
 2. `<includeRoot>/godot/godot_binding.c`；
 3. `<includeRoot>/gdcc/minicoro.c`；
-4. `<includeRoot>/gdcc/gdcc_coroutine.c`。
+4. `<includeRoot>/gdcc/gdcc_coroutine.c`；
+5. `<includeRoot>/gdcc/gdcc_hrx.c`。
 
 include 目录为 `<includeRoot>/gdcc` 与 `<includeRoot>/godot`。include root 解析：项目父目录存在 `shared-include/` 则用之，否则用项目内 `include/`；`CProjectBuilder.setIgnoreSharedInclude(true)` 强制项目本地（测试隔离缝）。runtime 资源从 classpath `include_451` 的 `gdcc/**`、`godot/**` 提取，`initProject()` 与每次 `buildProject()` 都执行；提取按内容比较，内容一致时不替换文件（保持 mtime 稳定，见 §4.4），内容变化时临时文件 + atomic replace。
 
@@ -74,6 +75,7 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
 
 - `windows-gnu` 的 LTO 链接失败（`frexpf`/`frexpl`/`modfl` undefined），但该 target 只能经 msvc→gnu 替换路径到达、该路径本就禁 LTO，故不进入回退判定集。
 - android/web-wasm32 的失败是 sysroot/runtime 限制（android 需 NDK/Bionic；wasm 上 minicoro 锁定 `MCO_USE_ASM` 按设计 fail loudly），与 LTO 无关：二者的 LTO 决策保持默认（RELEASE 取 `-flto=thin`），真实构建显式跳过或仅做 `-c` 编译。web 的 Emscripten 后端是独立 post-MVP 项目，不属于 zig 后端职责。
+- `macos-x86-64` / `macos-aarch64` 在 macOS 本机产出 `lib<name>.dylib`；从非 Darwin 主机交叉链接需要 Darwin sysroot，不进入 `ZigCcCompilerCrossTargetSmokeTest` 的 zig-bundled-libc 矩阵。
 - zig cc 拒绝透传 `-Wl,--thinlto-cache-dir`/`-fthinlto-cache-dir`，因此 ThinLTO 链接后端无法跨构建缓存；不直接驱动 `zig ld.lld`（见 §9 后续方向）。
 
 ## 4. PCH 使用（构建管线侧）
@@ -125,7 +127,7 @@ PCH 的完整合同（key 组成、布局、自愈协议）以 `doc/gdcc_c_backe
 ## 7. 产物、命名与时序
 
 - `CCompileResult.artifacts()`：第一项永远是最终共享库（CLI 经 `artifacts.getFirst()` 生成 `.gdextension`）；Windows 下 `<projectDir>/<outputBaseName>.pdb` 存在时列第二；object 与 PCH 文件绝不进入 artifacts。失败时 artifacts 为空，下游不从磁盘推断。
-- 输出基名 `<projectName>_<debug|release>_<architecture-lowercase>`，扩展名/前缀按 target 平台规则。
+- 输出基名 `<projectName>_<debug|release>_<architecture-lowercase>`，扩展名/前缀按 target 平台规则（Windows `.dll`、Linux/Android `lib*.so`、macOS `lib*.dylib`、Web `.wasm`）。
 - `CBuildResult.Timing` 字段：`includeExtraction`、`codeGeneration`、`generatedFileWrite`、`compileInputCollection`、`nativeCompile`（覆盖全部 TU 编译 + 链接全程）、`total`。
 - 链接直接经 `-o` 写正式产物，不做临时输出 + rename 的原子发布；失败时磁盘可残留旧产物或半成品。
 

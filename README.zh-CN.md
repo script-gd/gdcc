@@ -83,7 +83,7 @@ gdcc --project game/project.godot -o build/demo game/src/player.gd
 - `-o` / `--output <output>`：输出目标路径。省略时，GDCC 会根据输入文件名推导默认名称。
 - `--gde <version>`：Godot GDExtension API 版本。目前仅支持 `4.5.1`。
 - `--opt` / `--optimize <level>`：`debug` 或 `release`。
-- `--target <platform>`：目标平台，例如 `linux-x86-64`、`windows-x86-64` 或 `linux-aarch64`。
+- `--target <platform>`：目标平台，例如 `linux-x86-64`、`windows-x86-64`、`linux-aarch64` 或 `macos-aarch64`。
 - `--prefix <prefix>` 和 `--class-map Source=Canonical`：控制生成的顶层 canonical 类名。
 
 # 社区

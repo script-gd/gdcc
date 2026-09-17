@@ -40,7 +40,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 compileObject(zig, GODOT_INCLUDE_DIR.resolve("godot_binding.c"), sharedDir.resolve("godot_binding.o")),
                 compileObject(zig, GDCC_INCLUDE_DIR.resolve("minicoro.c"), sharedDir.resolve("minicoro.o")),
                 compileObject(zig, GDCC_INCLUDE_DIR.resolve("gdcc_coroutine.c"), sharedDir.resolve("gdcc_coroutine.o")),
-                // gdcc_coroutine.c dispatches lambda-Callable creation through gdcc_hrx (HR-8);
+                // gdcc_coroutine.c dispatches lambda-Callable creation through gdcc_hrx;
                 // the mode stays UNINITIALIZED in these fixtures, i.e. the direct path.
                 compileObject(zig, GDCC_INCLUDE_DIR.resolve("gdcc_hrx.c"), sharedDir.resolve("gdcc_hrx.o"))
         );
@@ -408,13 +408,13 @@ class GdccCoroutineRuntimeSmokeTest {
 
     @Test
     void reloadedShellShouldShortCircuitFinalizeCancelAndAwait() throws IOException, InterruptedException {
-        // D5 RELOADED_SHELL terminal-state anchors (hot_reload_implementation_plan.md): a
-        // shell is produced by the recreate path after the in-flight coroutine was silently
-        // cancelled at reload. finalize on a shell never packs/resumes/emits; cancel stays a
-        // pure no-op; awaiting a shell returns the determined cancellation result
-        // IMMEDIATELY (no suspend, typed out slot keeps its default, one diagnostic) while
-        // the await_state consume contract still releases the callee reference — which here
-        // drives the shell's own PREDELETE + free_instance, proving that path idempotent.
+        // Reloaded-shell terminal-state anchors: a shell is produced by the recreate path
+        // after the in-flight coroutine was silently cancelled at reload. finalize on a
+        // shell never packs/resumes/emits; cancel stays a pure no-op; awaiting a shell
+        // returns the determined cancellation result IMMEDIATELY (no suspend, typed out
+        // slot keeps its default, one diagnostic) while the await_state consume contract
+        // still releases the callee reference — which here drives the shell's own
+        // PREDELETE + free_instance, proving that path idempotent.
         var source = FAKE_ENGINE + """
                 
                 static FakeState g_SH, g_W;
@@ -493,15 +493,15 @@ class GdccCoroutineRuntimeSmokeTest {
 
     @Test
     void cancelAllShouldDetachSignalsAndCancelEveryActiveState() throws IOException, InterruptedException {
-        // HR-5 bulk-abandonment anchors (hot_reload_implementation_plan.md): states linked
-        // by the start thunk are all cancelled - a signal-suspended one is DISCONNECTED
-        // first (a later emission must never resume a dead coroutine or write into a freed
-        // frame), a waiter-suspended one through the ordinary cancel path, a plain-yield
-        // one likewise; a finalized state is already unlinked and stays untouched (no
-        // re-pack, no re-emit, no cancel flag). Reference discipline: the temporary strong
-        // reference lets detach + cancel run while edges drop; creator references released
-        // afterwards drive the idempotent PREDELETE + exactly-once free_instance. The
-        // second cancel_all call must be a pure no-op, and nothing may leak.
+        // Bulk-abandonment anchors: states linked by the start thunk are all cancelled - a
+        // signal-suspended one is DISCONNECTED first (a later emission must never resume a
+        // dead coroutine or write into a freed frame), a waiter-suspended one through the
+        // ordinary cancel path, a plain-yield one likewise; a finalized state is already
+        // unlinked and stays untouched (no re-pack, no re-emit, no cancel flag). Reference
+        // discipline: the temporary strong reference lets detach + cancel run while edges
+        // drop; creator references released afterwards drive the idempotent PREDELETE +
+        // exactly-once free_instance. The second cancel_all call must be a pure no-op, and
+        // nothing may leak.
         var source = FAKE_ENGINE + """
                 
                 static FakeState g_SIG, g_WR, g_IDLE, g_DONE;
@@ -544,7 +544,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 
                 int main(void) {
                     if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
-                    gdcc_coro_set_hot_reload_active(true); // editor mode: HR-5 tracking on
+                    gdcc_coro_set_hot_reload_active(true); // enable editor-only coroutine tracking
                     // Live emitter object (not a state): registered in the fake object table.
                     g_objects[g_object_count].id = FAKE_EMITTER_ID;
                     g_objects[g_object_count].ptr = (GDExtensionObjectPtr)&g_emitter_storage;
@@ -647,12 +647,12 @@ class GdccCoroutineRuntimeSmokeTest {
 
     @Test
     void hrxModeSignalAwaitShouldDetachViaRetainAndFreeExactlyOnce() throws IOException, InterruptedException {
-        // HR-8 coroutine-waiter policy (hot_reload_implementation_plan.md §5.8): in thunk mode
-        // the connection's Callable identity is the (thunk, spec) pair, so the bulk-cancel
-        // detach must rebuild its EQUAL lookup key through `gdcc_hrx_callable_retain` on the
-        // registration's stored spec - never a fresh lambda Callable (which would miss the
-        // connection). The rest of the contract is mode-independent: disconnect first, wait
-        // released exactly once, a later emission never resumes the cancelled coroutine.
+        // In thunk mode the connection's Callable identity is the (thunk, spec) pair, so
+        // the bulk-cancel detach must rebuild its EQUAL lookup key through
+        // `gdcc_hrx_callable_retain` on the registration's stored spec - never a fresh
+        // lambda Callable (which would miss the connection). The rest of the contract is
+        // mode-independent: disconnect first, wait released exactly once, a later emission
+        // never resumes the cancelled coroutine.
         var source = FAKE_ENGINE + """
                 #include <gdcc_hrx.h>
 
@@ -724,7 +724,7 @@ class GdccCoroutineRuntimeSmokeTest {
 
     @Test
     void cancelAllShouldFreeConnectionEdgeOnlyStateInsideTheLoop() throws IOException, InterruptedException {
-        // HR-5 fire-and-forget anchor: the state is held ONLY by the one-shot connection's
+        // Fire-and-forget anchor: the state is held ONLY by the one-shot connection's
         // keep-alive edge (creator reference dropped right after suspending - the void
         // engine-entry shape). Inside cancel_all the detach removes that edge, leaving the
         // temporary own as the last reference; releasing it must synchronously drive
@@ -750,7 +750,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 
                 int main(void) {
                     if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
-                    gdcc_coro_set_hot_reload_active(true); // editor mode: HR-5 tracking on
+                    gdcc_coro_set_hot_reload_active(true); // enable editor-only coroutine tracking
                     g_objects[g_object_count].id = FAKE_EMITTER2_ID;
                     g_objects[g_object_count].ptr = (GDExtensionObjectPtr)&g_emitter_storage2;
                     g_objects[g_object_count].freed = 0;
@@ -801,7 +801,7 @@ class GdccCoroutineRuntimeSmokeTest {
 
     @Test
     void cancelAllShouldCascadeWaiterEdgeOnlyAwaiterWithoutDanglingHead() throws IOException, InterruptedException {
-        // HR-5 nested-release anchor: the awaiter is held ONLY by the callee's waiter edge
+        // Nested-release anchor: the awaiter is held ONLY by the callee's waiter edge
         // (fire-and-forget chain). The callee is processed FIRST (linked last, so it heads
         // the intrusive list); its cancel pops the waiter node and releases the awaiter's
         // last reference, which must synchronously run PREDELETE -> cancel (resuming the
@@ -832,7 +832,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 
                 int main(void) {
                     if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
-                    gdcc_coro_set_hot_reload_active(true); // editor mode: HR-5 tracking on
+                    gdcc_coro_set_hot_reload_active(true); // enable editor-only coroutine tracking
                     fake_state_init(&g_CAL, "CAL");
                     fake_state_init(&g_AW, "AW");
                     g_aw_out = -7;
@@ -894,7 +894,7 @@ class GdccCoroutineRuntimeSmokeTest {
 
     @Test
     void signalRegistrationShouldSurviveResuspensionAndEmitterDeath() throws IOException, InterruptedException {
-        // HR-5 registration-lifecycle anchors: (1) when a coroutine is resumed by an
+        // Registration-lifecycle anchors: (1) when a coroutine is resumed by an
         // emission and RE-SUSPENDS on a second signal inside the same callback slice, the
         // old wait's free callback (running after the callback) must NOT clear the newer
         // registration (the identity guard); (2) when the emitter dies first, the
@@ -936,7 +936,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 
                 int main(void) {
                     if (!godot_initialize_interface(fake_get_proc_address)) fail("interface init");
-                    gdcc_coro_set_hot_reload_active(true); // editor mode: HR-5 tracking on
+                    gdcc_coro_set_hot_reload_active(true); // enable editor-only coroutine tracking
                     g_objects[g_object_count].id = FAKE_EMITTER3_ID;
                     g_objects[g_object_count].ptr = (GDExtensionObjectPtr)&g_emitter_storage3;
                     g_objects[g_object_count].freed = 0;
@@ -1021,7 +1021,7 @@ class GdccCoroutineRuntimeSmokeTest {
 
     @Test
     void hotReloadGateOffShouldDisableTrackingAndBulkCancel() throws IOException, InterruptedException {
-        // HR-5 dual-mode gate anchors: with the gate OFF (the default - release exports and
+        // Dual-mode gate anchors: with the gate OFF (the default - release exports and
         // editor-launched game processes never set it), active links are no-ops, no
         // per-await signal registration is allocated, and cancel_all must not touch
         // anything; the ordinary coroutine lifecycle (signal await, emission resume,
@@ -1142,7 +1142,7 @@ class GdccCoroutineRuntimeSmokeTest {
         // connection teardown runs the free callback (no registration exists under the
         // gate), the self edge release drops the last reference, and the ordinary
         // PREDELETE cancel path drives the coroutine to MCO_DEAD with exactly-once
-        // free_instance - identical to the pre-HR-5 behavior.
+        // free_instance - identical to the ordinary non-editor behavior.
         var source = FAKE_ENGINE + """
                 
                 static FakeState g_ED2;
@@ -1208,7 +1208,7 @@ class GdccCoroutineRuntimeSmokeTest {
 
     @Test
     void signalRegAllocationFailureShouldFailTheAwaitCleanly() throws IOException, InterruptedException {
-        // Gate-on OOM anchor for the HR-5 registration allocation: the wait allocation
+        // Gate-on OOM anchor for the registration allocation: the wait allocation
         // succeeds, the registration allocation fails - the connect must never happen, no
         // keep-alive edge is taken (it is only own_object'ed AFTER the registration
         // allocation), the wait is freed, and the static-path await applies its failure
@@ -1889,7 +1889,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 fail("unexpected method bind ptrcall");
             }
 
-            // ---------- fake Signal / Callable / connection layer (HR-5) ----------
+            // ---------- fake Signal / Callable / connection layer ----------
             // godot_Callable layout: bytes [0..8) FakeCallableCustom pointer (NULL = null
             // callable). godot_Signal layout: bytes [0..8) emitter ObjectID, [8..16) signal
             // name as a stable char* (same convention as the fake StringName).
@@ -1922,7 +1922,7 @@ class GdccCoroutineRuntimeSmokeTest {
                 }
             }
             // Godot's default custom-Callable equality: call_func + userdata
-            // (gdextension_interface.cpp `default_compare_equal`) - the HR-5 bulk-cancel
+            // (gdextension_interface.cpp `default_compare_equal`) - the bulk-cancel
             // detach rebuilds an equal Callable through exactly this rule.
             static int fake_callable_equal(const FakeCallableCustom *a, const FakeCallableCustom *b) {
                 if (a == b) return 1;

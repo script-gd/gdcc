@@ -98,10 +98,10 @@ public final class DomLirSerializer implements LirSerializer {
                 // Awaiting instructions are only legal inside `is_coroutine="true"` functions
                 // (contract: gdcc_low_ir.md §Functions / §Coroutine Instructions).
                 fEl.setAttribute("is_coroutine", Boolean.toString(fn.isCoroutine()));
-                // Lambda-only hot-reload identity metadata (HR-8 / §5.11): written only when
-                // present so plain functions never carry the element; the backend refuses
-                // keyless lambdas. `call_site_context` is omitted when null (hand-built LIR
-                // fixtures; the runtime gate is NULL-safe).
+                // Lambda-only rebinding metadata: written only when present so plain functions
+                // never carry the element; the backend refuses keyless lambdas.
+                // `call_site_context` is omitted when null (hand-built LIR fixtures; the
+                // runtime gate is NULL-safe).
                 if (fn.getLambdaMeta() != null) {
                     Element metaEl = doc.createElement("meta");
                     if (fn.getLambdaMeta().callSiteContext() != null) {

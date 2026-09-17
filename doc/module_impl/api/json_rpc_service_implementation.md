@@ -149,7 +149,8 @@ DTO codec 规则：
   wire 值有意与 CLI 参数拼写（`cli_implementation.md`）不同：`godotVersion` 为
   `"V451"`，`optimizationLevel` 为 `"DEBUG"` 或 `"RELEASE"`，`targetPlatform` 为
   `"WINDOWS_X86_64"`、`"WINDOWS_AARCH64"`、`"LINUX_X86_64"`、`"LINUX_AARCH64"`、
-  `"LINUX_RISCV64"`、`"ANDROID_X86_64"`、`"ANDROID_AARCH64"`、`"WEB_WASM32"` 之一。
+  `"LINUX_RISCV64"`、`"MACOS_X86_64"`、`"MACOS_AARCH64"`、`"ANDROID_X86_64"`、
+  `"ANDROID_AARCH64"`、`"WEB_WASM32"` 之一。
   `RpcJsonCodecTest` 钉死该表。
 - `java.nio.file.Path` 序列化为 `Path.toString()`（主机路径文本；暴露策略见 §2.7），
   反序列化经 `Path.of(...)`。

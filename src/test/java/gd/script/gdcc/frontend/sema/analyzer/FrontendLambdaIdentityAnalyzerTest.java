@@ -25,10 +25,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Lambda identity contract tests (hot_reload_implementation_plan.md §5.11): the ordinal
-/// primary key, the normalized call-site context descriptor, and the traversal domain. Each
-/// behavior is anchored in both directions — what MUST stay stable across a reload, and what
-/// MUST change so stale connections fail closed.
+/// Lambda identity contract tests: the ordinal primary key, the normalized call-site
+/// context descriptor, and the traversal domain. Each behavior is anchored in both
+/// directions — what MUST stay stable across a reload, and what MUST change so stale
+/// connections fail closed.
 class FrontendLambdaIdentityAnalyzerTest {
 
     // ----- ordinal contract -----
@@ -122,8 +122,8 @@ class FrontendLambdaIdentityAnalyzerTest {
 
     @Test
     void nonLambdaEditsKeepOrdinalsStable() throws Exception {
-        // The §5.11 ordinal win: inserting NON-lambda lines before a lambda, or editing its
-        // body, keeps both the key and the context — the connection rebinds.
+        // Inserting NON-lambda lines before a lambda, or editing its body, keeps both the
+        // key and the context — the connection rebinds.
         var before = analyze("""
                 class_name LambdaOrdinalStable
                 extends Node
@@ -233,11 +233,11 @@ class FrontendLambdaIdentityAnalyzerTest {
 
     @Test
     void awaitLambdaOperandProducesBareAwaitDescriptor() throws Exception {
-        // §5.11 contract: when the awaited operand IS the lambda, the descriptor is bare
-        // `await` — slicing the operand would embed the lambda body and break body-edit
-        // identity stability. (Unparenthesized `await func...` is rejected by the grammar;
-        // only the parenthesized form parses.) Two `await (func...)` lambdas in one function
-        // are therefore indistinguishable — a documented acceptable blind spot (§5.11 残余盲区 2).
+        // When the awaited operand IS the lambda, the descriptor is bare `await` — slicing
+        // the operand would embed the lambda body and break body-edit identity stability.
+        // (Unparenthesized `await func...` is rejected by the grammar; only the parenthesized
+        // form parses.) Two `await (func...)` lambdas in one function are therefore
+        // indistinguishable — a documented acceptable blind spot.
         var plans = analyze("""
                 class_name LambdaContextAwaitOperand
                 extends Node
@@ -337,9 +337,9 @@ class FrontendLambdaIdentityAnalyzerTest {
 
     @Test
     void distinguishableCallsiteSwapChangesContexts() throws Exception {
-        // §5.11 target form: two same-schema lambdas swapped between different signals. The
-        // impl_key ordinals collide (same function, same slots), but the contexts differ, so
-        // the runtime must fail closed instead of rebinding to each other's bodies.
+        // Two same-schema lambdas swapped between different signals. The impl_key ordinals
+        // collide (same function, same slots), but the contexts differ, so the runtime must
+        // fail closed instead of rebinding to each other's bodies.
         var v1 = analyze("""
                 class_name LambdaContextSwap
                 extends Node
@@ -376,9 +376,9 @@ class FrontendLambdaIdentityAnalyzerTest {
 
     @Test
     void identicalFormSwapKeepsIdenticalDescriptors() throws Exception {
-        // Documented residual blind spot (§5.11 残余盲区 2): two connects to the SAME signal
-        // with identical shapes are indistinguishable — this test pins the current
-        // (intentional) limitation so any future fix changes this expectation loudly.
+        // Documented residual blind spot: two connects to the SAME signal with identical
+        // shapes are indistinguishable — this test pins the current (intentional) limitation
+        // so any future fix changes this expectation loudly.
         var v1 = analyze("""
                 class_name LambdaContextSameForm
                 extends Node
@@ -407,7 +407,7 @@ class FrontendLambdaIdentityAnalyzerTest {
 
     @Test
     void extractRefactorChangesContextFailClosed() throws Exception {
-        // Documented §5.11 false-invalidation: extracting the lambda into a local changes the
+        // Documented false-invalidation: extracting the lambda into a local changes the
         // descriptor from call(...) to assign(...) — the old connection invalidates instead of
         // rebinding (fail-closed, never a wrong-body rebind).
         var inline = analyze("""

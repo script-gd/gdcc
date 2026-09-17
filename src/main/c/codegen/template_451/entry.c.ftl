@@ -30,11 +30,11 @@ static void ${helper.renderStaticDefaultsSymbol(classDef.name)}(void);
 static void ${helper.renderStaticInitializersSymbol(classDef.name)}(void);
 </#list>
 
-<#-- HR-8 hot reload (hot_reload_implementation_plan.md §5): per-extension stable anchor -->
-<#-- token (derived from the module name only; only ever compared, never dereferenced) and -->
-<#-- the module-level Callable identity catalog. Identity structs are referenced both by the -->
-<#-- construct_lambda / construct_standalone_callable creation sites and by the rebind table -->
-<#-- the NEXT library generation uses to rebind surviving Callables to new implementations. -->
+<#-- Per-extension stable anchor token (derived from the module name only; only ever -->
+<#-- compared, never dereferenced) and the module-level Callable identity catalog. Identity -->
+<#-- structs are referenced both by the construct_lambda / construct_standalone_callable -->
+<#-- creation sites and by the rebind table the NEXT library generation uses to rebind -->
+<#-- surviving Callables to new implementations. -->
 #define GDCC_HRX_ANCHOR_TOKEN UINT64_C(0x${hrxAnchorToken})
 <#list hrxIdentities as identity>
 static const unsigned char ${identity.symbol}_schema[] = { ${identity.schemaBytes?join(", ")} };
@@ -44,7 +44,7 @@ static const gdcc_hrx_identity ${identity.symbol} = {
     .schema_desc_len = sizeof(${identity.symbol}_schema),
     .argument_count = ${identity.argumentCount},
     .schema_fingerprint = { ${identity.fingerprintBytes?join(", ")} },
-    <#-- §5.11 third rebind gate: lambdas carry the normalized call-site context, standalones NULL. -->
+    <#-- Lambdas carry the normalized call-site context; standalone identities emit NULL. -->
     .callsite_context = <#if identity.callSiteContextCString??>u8"${identity.callSiteContextCString}"<#else>NULL</#if>,
 };
 </#list>
@@ -83,8 +83,8 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
     <#if helper.hasCoroutineFunctions()>
     gdcc_coro_set_hot_reload_active(gdcc_is_editor_hint());
     </#if>
-    <#-- HR-8: freeze the Callable dispatch mode BEFORE any class registration / static init -->
-    <#-- can construct a custom Callable: probe executable memory (editor only), take over the -->
+    <#-- Freeze the Callable dispatch mode BEFORE any class registration / static init can -->
+    <#-- construct a custom Callable: probe executable memory (editor only), take over the -->
     <#-- anchored hub (or create it), register this generation's sweeper, then rebind surviving -->
     <#-- specs and sweep the dead. Non-editor processes resolve to DIRECT and skip all of it. -->
     gdcc_hrx_initialize(class_library, GDCC_HRX_ANCHOR_TOKEN,
@@ -178,7 +178,7 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
         godot_Variant_destroy(&msg_variant);
     }
     <#--  Destroy static backing variables in reverse initialization order BEFORE the class    -->
-    <#--  unregistration below (D8 v11): this deinitialize serves BOTH the hot-reload and the  -->
+    <#--  unregistration below: this deinitialize serves BOTH the hot-reload and the           -->
     <#--  normal-exit paths, and the interface never tells them apart. On the normal-exit path -->
     <#--  the engine does NOT clear `_extension` when a class is unregistered, so releasing a  -->
     <#--  static-held instance AFTER unregistration would destruct it through a dangling       -->
@@ -187,7 +187,7 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
     <#--  clears `_extension` inside unregistration there). Destroy/release paths may still    -->
     <#--  touch interned StringName/String state, so the runtime registries stay last.         -->
     <#if helper.hasCoroutineFunctions()>
-    <#--  HR-5: abandon every in-flight coroutine FIRST, while the whole runtime (emitters,   -->
+    <#--  Abandon every in-flight coroutine FIRST, while the whole runtime (emitters,        -->
     <#--  ClassDB, registries, static backing) is still fully operational: each state is      -->
     <#--  disconnected from any pending one-shot signal, cancel-resumed to MCO_DEAD and its   -->
     <#--  waiter edges released, so nothing outlives the library unload below.                -->
@@ -196,13 +196,13 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
     <#list staticInitClassDefs?reverse as classDef>
     ${bodyRender.generateStaticDeinitializeBody(classDef)}</#list>
     <#--  Unregister ALL extension classes after static teardown and BEFORE the runtime        -->
-    <#--  registries (D8 v11): Godot rejects unregistering a class while other extension       -->
-    <#--  classes still inherit from it, and re-registration without prior unregistration is   -->
-    <#--  refused outright (ClassDB "already registered"), so the hot reload path depends on   -->
-    <#--  this section. During a reload the engine runs free_instance on every surviving       -->
-    <#--  instance from INSIDE these calls (clear_internal_extension) — field destruction      -->
-    <#--  must therefore never depend on static backing (already torn down above; the D3       -->
-    <#--  discipline), while the String/StringName registries below are still alive.           -->
+    <#--  registries: Godot rejects unregistering a class while other extension classes still  -->
+    <#--  inherit from it, and re-registration without prior unregistration is refused         -->
+    <#--  outright (ClassDB "already registered"), so the hot reload path depends on this      -->
+    <#--  section. During a reload the engine runs free_instance on every surviving instance   -->
+    <#--  from INSIDE these calls (clear_internal_extension) — field destruction must          -->
+    <#--  therefore never depend on static backing (already torn down above), while the        -->
+    <#--  String/StringName registries below are still alive.                                  -->
     <#--  Order: hidden coroutine state classes first (strict reverse of their generation      -->
     <#--  order), then user classes in the strict mirror of the base-before-derived            -->
     <#--  registration order (derived before base).                                            -->
@@ -222,12 +222,12 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
     gdcc_sn_registry_destroy_all();
     gdcc_s_registry_destroy_all();
     gdcc_standalone_callable_registry_destroy_all();
-    <#--  HR-8 hub invalidation is the LAST teardown step (D8): earlier steps may still drop  -->
-    <#--  Callable references whose free thunks then reach the live sweeper for best memory   -->
-    <#--  hygiene; afterwards only Godot-side stragglers (deferred queues etc.) can fire, and  -->
-    <#--  those just mark the spec dead for the next generation's two-phase sweep. In HRX     -->
-    <#--  mode the legacy standalone registry above was never populated (interning lives in   -->
-    <#--  the hub), so there is no double-free; in DIRECT mode this call is a no-op.          -->
+    <#--  Hub invalidation is the LAST teardown step: earlier steps may still drop Callable  -->
+    <#--  references whose free thunks then reach the live sweeper for best memory hygiene;   -->
+    <#--  afterwards only Godot-side stragglers (deferred queues etc.) can fire, and those    -->
+    <#--  just mark the spec dead for the next generation's two-phase sweep. In HRX mode the  -->
+    <#--  legacy standalone registry above was never populated (interning lives in the hub),  -->
+    <#--  so there is no double-free; in DIRECT mode this call is a no-op.                    -->
     gdcc_hrx_deinitialize();
 }
 
@@ -404,7 +404,7 @@ GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userda
     <#if vtableFieldInit?has_content>
     ${helper.renderVtableFieldAccessExpr(classDef.name)} = ${vtableFieldInit};
     </#if>
-    <#-- godot_mem_alloc does not zero-initialize: the exactly-once destruction guard (D2) -->
+    <#-- godot_mem_alloc does not zero-initialize: the exactly-once destruction guard -->
     <#-- must be cleared explicitly before the instance can run any destructor path. -->
     ${helper.renderDestructedFlagAccessExpr(classDef.name)} = false;
     godot_object_set_instance(obj, GD_STATIC_SN(u8"${classDef.name}"), self);
@@ -415,7 +415,7 @@ GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userda
     return obj;
 }
 
-<#-- Recursive field initializer for the hot reload recreate path (D4): replays the -->
+<#-- Recursive field initializer for the hot reload recreate path: replays the -->
 <#-- property initializers BASE-FIRST (parent segment first, mirroring the constructor's -->
 <#-- recursion) but deliberately skips every `_init` — the Godot object survived the reload, -->
 <#-- only the extension wrapper storage needs its initializer values back. The constructor -->
@@ -437,7 +437,7 @@ void ${classDef.name}_class_init_fields(${classDef.name}* self) {
     </#list>
 }
 
-<#-- Hot reload recreate (D4): the engine assigns our return value DIRECTLY to -->
+<#-- Hot reload recreate: the engine assigns our return value DIRECTLY to -->
 <#-- `_extension_instance` (Object::reset_internal_extension), so this MUST return the -->
 <#-- wrapper — never p_object. The Godot object is alive across the reload: no native -->
 <#-- construction, no `godot_object_set_instance` (the engine re-attaches `_extension` -->
@@ -475,10 +475,10 @@ void ${classDef.name}_class_free_instance(void* p_class_userdata, GDExtensionCla
         return;
     }
     ${classDef.name}* self = p_instance;
-    <#-- Exactly-once field destruction across BOTH paths (hot_reload_implementation_plan.md -->
-    <#-- D2): the normal path destructs at PREDELETE, but the engine reload path reaches this -->
-    <#-- function via clear_internal_extension WITHOUT ever sending PREDELETE — skipping the -->
-    <#-- destructor here would leak every destroyable field on reload. The guarded entry is -->
+    <#-- Exactly-once field destruction across BOTH paths: the normal path destructs at -->
+    <#-- PREDELETE, but the engine reload path reaches this function via -->
+    <#-- clear_internal_extension WITHOUT ever sending PREDELETE — skipping the destructor -->
+    <#-- here would leak every destroyable field on reload. The guarded entry is -->
     <#-- idempotent, so the PREDELETE-then-free sequence still destructs exactly once. -->
     if (!${helper.renderDestructedFlagAccessExpr(classDef.name)}) {
         ${classDef.name}_class_destructor(self);
@@ -669,7 +669,7 @@ GDExtensionObjectPtr ${stateName}_class_create_instance(void* p_class_userdata, 
     return obj;
 }
 
-<#-- Hot reload recreate for coroutine state classes: the RELOADED_SHELL lazy shell (D5). -->
+<#-- Hot reload recreate for coroutine state classes: a terminal reloaded shell. -->
 <#-- The in-flight coroutine is silently cancelled at reload (abandonment contract); the -->
 <#-- shell exists so the surviving Godot state object keeps a valid, idempotently freeable -->
 <#-- wrapper. The whole wrapper is zeroed FIRST (owning param/capture/return-slot fields -->
@@ -858,7 +858,7 @@ void ${helper.renderCoroBodyFunctionName(classDef, func)}(mco_coro *${helper.ren
         coro_state->${helper.renderCoroHeaderField()}.done = true;
         return (godot_Object*)coro_state_obj;
     }
-    // HR-5: publish the state on the module-local active list (before the first resume, so
+    // Publish the state on the module-local active list (before the first resume, so
     // even a synchronously-completing coroutine is listed until finalize unlinks it).
     gdcc_coro_active_link(&coro_state->${helper.renderCoroHeaderField()});
     mco_resume(coro_state->${helper.renderCoroHeaderField()}.co);

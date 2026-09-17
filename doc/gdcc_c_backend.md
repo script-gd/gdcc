@@ -209,8 +209,9 @@ Usage and lifecycle rules:
   - `r_initialization->deinitialize = &deinitialize;`
 - `initialize(...)` must return without side effects for levels other than `GDEXTENSION_INITIALIZATION_SCENE`.
 - `initialize(...)` freezes the HRX Callable dispatch mode BEFORE any class registration or
-  static initialization can construct a custom Callable (HR-8; runtime contract:
-  `gdcc_runtime_lib.md` §HRX Hot-Reload Thunk Runtime): right after `gdcc_init()` (and the
+  static initialization can construct a custom Callable (runtime contract:
+  `gdcc_runtime_lib.md` §HRX Hot-Reload Thunk Runtime; source of truth:
+  `module_impl/backend/hot_reload_implementation.md`): right after `gdcc_init()` (and the
   coroutine gate), it calls `gdcc_hrx_initialize(class_library, GDCC_HRX_ANCHOR_TOKEN,
   table, count)` — probe + freeze, hub takeover/creation through the per-extension anchor
   token, sweeper registration, rebind of surviving specs and the two-phase sweep. The
@@ -225,16 +226,16 @@ Usage and lifecycle rules:
   (HRX ABI v2, descriptor prefix `gdcc-hrx:2;`; runtime contract:
   `gdcc_runtime_lib.md` §HRX).
 - `deinitialize(...)` must use the same level guard, then run the teardown in the fixed
-  hot-reload order (`hot_reload_implementation_plan.md` D8 v11):
+  hot-reload order (`hot_reload_implementation.md`):
   1. print the unload message;
-  2. HR-5: `gdcc_coro_cancel_all()` (emitted only when the module has coroutine functions)
+  2. `gdcc_coro_cancel_all()` (emitted only when the module has coroutine functions)
      — abandon every in-flight coroutine FIRST, while the whole runtime is still fully
      operational: each state is disconnected from any pending one-shot signal,
      cancel-resumed to `MCO_DEAD`, and its waiter edges released, so nothing coroutine-owned
      outlives the library unload (runtime contract: `gdcc_runtime_lib.md` §Coroutine
-     Runtime). Dual-mode: `initialize()` gates all HR-5 tracking on `is_editor_hint()`
+     Runtime). Dual-mode: `initialize()` gates editor-only tracking on `is_editor_hint()`
      (`gdcc_coro_set_hot_reload_active`), so this call is a no-op in release exports and
-     editor-launched game processes — coroutines there behave exactly as before HR-5;
+     editor-launched game processes;
   3. destroy static backing variables in reverse initialization order — FIRST, because this
      deinitialize also serves the normal-exit path where the engine does NOT clear
      `_extension` during class unregistration: a static-held instance released after
@@ -247,24 +248,19 @@ Usage and lifecycle rules:
      was never unregistered, and rejects unregistering a base while derived extension
      classes still inherit from it. During a reload the engine runs `free_instance` on every
      surviving instance from inside these calls — field destruction must therefore never
-     depend on static backing (already torn down; the D3 discipline);
+     depend on static backing (already torn down);
   5. destroy the StringName/String registries and the standalone Callable intern storage
      (in HRX mode that storage was never populated — interning lives in the hub — so its
      teardown is a no-op and the two never own the same spec);
-  6. HR-8: `gdcc_hrx_deinitialize()` LAST — detach the current sweeper, then NULL every
+  6. `gdcc_hrx_deinitialize()` LAST — detach the current sweeper, then NULL every
      spec's function pointers (`dead`/`refcount` untouched). Callable references dropped by
      the earlier steps still reach the live sweeper for best memory hygiene; afterwards only
      Godot-side stragglers can fire, and those just mark specs dead for the next
      generation's two-phase sweep.
 - This keeps class registration, StringName/String registries, standalone Callable intern
   storage, and module log output scoped to the scene-level lifecycle that Godot uses for
-  runtime class availability.
-
-> HR-9 note (2026-09): the reload and normal-exit halves of this order (no unregistration
-> order errors, free->recreate->free-again chains, two consecutive reloads, hub
-> invalidation last) are exercised end-to-end by `GodotEditorHotReloadIntegrationTest`
-> scenarios 1/3/4/9; see the HR-9 status block of
-> `module_impl/backend/hot_reload_implementation_plan.md`.
+  runtime class availability. End-to-end coverage lives in
+  `GodotEditorHotReloadIntegrationTest`.
 
 ### Ptrcall Helper Return Carrier Contract
 

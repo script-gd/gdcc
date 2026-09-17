@@ -313,10 +313,9 @@ class FrontendLambdaSuiteResolutionTest {
 
     @Test
     void sourceIdentityKeysAnchorOutermostNamedEnclosingWithOrdinal() throws Exception {
-        // HRX v15 impl_key contract (§5.11): both the outer and the nested lambda anchor at
-        // the SAME outermost named function `ping`, numbered in source pre-order (the outer
-        // lambda is #0, the nested one inside its body is #1) — no source position feeds the
-        // key anymore.
+        // Both the outer and the nested lambda anchor at the SAME outermost named function
+        // `ping`, numbered in source pre-order (the outer lambda is #0, the nested one
+        // inside its body is #1) — no source position feeds the key.
         var analysisData = analyze("lambda_suite_identity_key.gd", """
                 class_name LambdaSuiteIdentityKey
                 extends Node

@@ -107,7 +107,7 @@ public class CVtableCodegenTest {
         assertFalse(resolveCreateInstanceBody(cCode, "VtB").contains("NULL"),
                 "pass-through classes must never initialize _vtable with NULL");
 
-        // Hot reload recreate (D4): the same four vtable roles must be rebound to THIS
+        // Hot reload recreate: the same four vtable roles must be rebound to THIS
         // library generation's table — identical expressions to create_instance.
         assertRecreateInstanceWrites(cCode, "VtA", "self->_vtable = &gdcc_VtA_vtable_inst;");
         assertRecreateInstanceWrites(cCode, "VtB", "self->_super._vtable = &gdcc_VtA_vtable_inst;");
@@ -145,7 +145,7 @@ public class CVtableCodegenTest {
         assertContainsAll(cCode,
                 "static const gdcc_SbA_vtable gdcc_SbAChild_vtable_inst = { .m_foo = gdcc_SbAChild_vslot_foo };");
 
-        // Hot reload recreate (D4) mirrors the same branch split: NULL for side branches,
+        // Hot reload recreate mirrors the same branch split: NULL for side branches,
         // own instance for the slotted branch.
         assertRecreateInstanceWrites(cCode, "SbRoot", "self->_vtable = NULL;");
         assertRecreateInstanceWrites(cCode, "SbB", "self->_super._vtable = NULL;");
@@ -476,7 +476,7 @@ public class CVtableCodegenTest {
         return resolveFunctionBodyByPrefix(cCode, "GDExtensionObjectPtr " + className + "_class_create_instance");
     }
 
-    /// Asserts the exact `_vtable` write inside one hot reload recreate_instance body (D4):
+    /// Asserts the exact `_vtable` write inside one hot reload recreate_instance body:
     /// the write must rebind the instance to THIS generation's table before the wrapper is
     /// handed back to the engine, i.e. before the final `return self;`.
     private static void assertRecreateInstanceWrites(@NotNull String cCode, @NotNull String className,

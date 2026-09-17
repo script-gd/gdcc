@@ -919,7 +919,7 @@ A Low IR file (which is a .xml format file) consists of 4 parts:
               is_vararg="false"
               is_hidden="false"
               is_coroutine="false">
-        <!-- Lambda-only hot-reload identity metadata (hot_reload_implementation_plan.md §5.11).
+        <!-- Lambda-only hot-reload identity metadata (hot_reload_implementation.md).
              Optional element: lambdas MUST carry it (the backend refuses keyless lambdas),
              plain functions never do. call_site_context is the optional third rebind gate
              (absent ⇔ NULL; the runtime gate is NULL-safe). -->

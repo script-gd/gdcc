@@ -149,8 +149,8 @@ compile-check 以 `Array/Dictionary literal is ... temporarily blocked` 失败�
 - 已记录 lambda 体内的 `$` / `%` 已 compile-ready（经隐式 `self` capture）；独立覆盖见 `get_node_lambda_flow_scene.gd` 与 `get_node_lambda_await_scene.gd`。property initializer 中的 `$` / `%` 仍为 DEFERRED 边界（见 `doc/module_impl/frontend/frontend_node_literal_implementation.md`）
 ## 11. 已记录：headless editor 热重载集成测试的引擎侧限制（Godot 4.5.2）
 
-`GodotEditorHotReloadIntegrationTest` / `GodotRuntimeDirectPathIntegrationTest`（HR-9，见
-`doc/module_impl/backend/hot_reload_implementation_plan.md` §6）在真机落地中确认的引擎侧限制：
+`GodotEditorHotReloadIntegrationTest` / `GodotRuntimeDirectPathIntegrationTest`（见
+`doc/module_impl/backend/hot_reload_implementation.md`）在真机落地中确认的引擎侧限制：
 
 - **quit 时崩溃竞态（上游缺陷，类 #123511/#111048）**：新工程首次发现扩展会把编辑器文档再
   生成排入 deferred 任务；若扩展卸载后 `Main::cleanup()` 的 `MessageQueue::flush()` 才执行

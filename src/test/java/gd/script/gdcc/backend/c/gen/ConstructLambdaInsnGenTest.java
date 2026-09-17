@@ -62,7 +62,7 @@ final class ConstructLambdaInsnGenTest {
         assertTrue(body.contains("Worker__lambda_0_free"), body);
         assertTrue(body.contains("Worker__lambda_0_is_valid"), body);
         assertTrue(body.contains("Worker__lambda_0_get_argument_count"), body);
-        // HR-8: the creation site references the module-catalog identity struct (consumed only
+        // The creation site references the module-catalog identity struct (consumed only
         // in thunk mode), defined at the top of entry.c.
         assertTrue(body.contains("&Worker__lambda_0_hrx_identity"), body);
         assertFalse(body.contains("godot_mem_alloc"), body);

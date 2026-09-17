@@ -1,7 +1,7 @@
-/// Hot-reload exchange (HRX) runtime: heap-resident thunk machinery for custom Callables.
-/// Contract: doc/module_impl/backend/hot_reload_implementation_plan.md §5.
+/// Hot-reload exchange runtime: heap-resident thunk machinery for custom Callables.
+/// Contract: doc/module_impl/backend/hot_reload_implementation.md.
 ///
-/// Cross-generation rules honored here (§2.3 of the plan):
+/// Cross-generation rules:
 ///  - everything that must outlive dlclose lives on the Godot heap (godot_mem_alloc) and is
 ///    explicitly initialized (the allocator does not zero);
 ///  - thunk code lives in OS executable pages owned by no library image;
@@ -41,8 +41,7 @@ _Static_assert(offsetof(gdcc_hrx_spec, refcount) == 36, "thunk ABI: spec.refcoun
 _Static_assert(offsetof(gdcc_hrx_spec, argument_count) == 40, "thunk ABI: spec.argument_count must be at 40");
 _Static_assert(offsetof(gdcc_hrx_spec, hub) == 48, "thunk ABI: spec.hub must be at 48");
 _Static_assert(offsetof(gdcc_hrx_hub, sweeper) == 40, "thunk ABI: hub.sweeper must be at 40");
-// §5.11 v2 append-only pin: the callsite_context tail must start exactly where the v1 layout
-// ended, so v1 blocks never overlap the new field.
+// The callsite_context field is appended after the legacy layout so older blocks never overlap it.
 _Static_assert(offsetof(gdcc_hrx_spec, callsite_context) == 136,
         "ABI v2: spec.callsite_context must append at offset 136 (v1 sizeof)");
 // ABI v2 append-only pin: the v1 block ends at 136 and v2 appends exactly one pointer there.
@@ -929,10 +928,9 @@ static godot_bool gdcc_hrx_desc_matches(const gdcc_hrx_spec *spec, const gdcc_hr
                 || memcmp(spec->schema_desc, identity->schema_desc, spec->schema_desc_len) == 0);
 }
 
-/// Third rebind gate (§5.11): NULL-safe callsite_context equality. Standalone identities carry
-/// NULL on both sides (match); exactly one NULL means a context-carrying lambda met a
-/// context-less entry (mismatch). Callers must have passed the abi_version guard first — the
-/// field is only read on current-version specs.
+/// Rebinding also compares callsite_context with NULL-safe equality. Standalone identities
+/// match when both contexts are NULL; a NULL/non-NULL pair does not match. Callers must have
+/// passed the abi_version guard first — the field is only read on current-version specs.
 static godot_bool gdcc_hrx_context_matches(const gdcc_hrx_spec *spec, const gdcc_hrx_identity *identity) {
     if (spec->callsite_context == NULL || identity->callsite_context == NULL) {
         return spec->callsite_context == identity->callsite_context;
@@ -946,9 +944,9 @@ static godot_bool gdcc_hrx_fingerprint_matches(const gdcc_hrx_spec *spec, const 
 }
 
 static void gdcc_hrx_rebind_and_sweep(gdcc_hrx_hub *hub, const gdcc_hrx_rebind_entry *entries, uint32_t entry_count) {
-    // Phase 1 (single pass, NO destruction): detach the fully-dead into a private worklist and
-    // rebind every survivor in place. Destruction is deferred to phase 2 because it may free
-    // sibling Callables whose specs must already hold the new generation's destroy_fn.
+    // First detach fully dead specs and rebind survivors without destroying anything.
+    // Destruction is deferred because it may free sibling Callables whose specs must already
+    // hold the new generation's destroy_fn.
     gdcc_hrx_spec *worklist = NULL;
     gdcc_hrx_spec *spec = hub->registry;
     while (spec != NULL) {
@@ -960,8 +958,8 @@ static void gdcc_hrx_rebind_and_sweep(gdcc_hrx_hub *hub, const gdcc_hrx_rebind_e
             worklist = spec;
         } else if (!spec->dead) {
             const gdcc_hrx_rebind_entry *entry = gdcc_hrx_find_rebind_entry(entries, entry_count, spec->impl_key);
-            // Version guard FIRST (§5.11): a v1 spec block predates callsite_context, so the
-            // field may only be read when the versions match (short-circuit order is load-bearing).
+            // Check the ABI version before reading callsite_context because older specs do not
+            // contain that field; the short-circuit order is required.
             if (entry != NULL && spec->abi_version == GDCC_HRX_ABI_VERSION
                     && gdcc_hrx_desc_matches(spec, entry->identity)
                     && gdcc_hrx_context_matches(spec, entry->identity)) {
@@ -977,9 +975,9 @@ static void gdcc_hrx_rebind_and_sweep(gdcc_hrx_hub *hub, const gdcc_hrx_rebind_e
         }
         spec = next;
     }
-    // Phase 2 (execute): destroy the dead worklist. The destroy_fn comes from the REBIND TABLE
-    // (never from the spec, whose pointers deinitialize NULLed); a fingerprint+descriptor match
-    // is required before any destruction, otherwise the capture block is intentionally leaked.
+    // Destroy the detached specs using the rebind table's destroy function (never the spec,
+    // whose pointers deinitialize NULLed). Require matching fingerprint and descriptor data;
+    // otherwise intentionally leak the capture block.
     while (worklist != NULL) {
         gdcc_hrx_spec *item = worklist;
         worklist = item->pending_next;
@@ -1011,7 +1009,7 @@ static void gdcc_hrx_rebind_and_sweep(gdcc_hrx_hub *hub, const gdcc_hrx_rebind_e
 // ---------------------------------------------------------------------------
 #define GDCC_HRX_INTERN_BUCKETS_INIT 64u
 
-/// Upper bound of NULL-tombstone slots swept before hub lookup (§5.5): each
+/// Upper bound of NULL-tombstone slots swept before hub lookup: each
 /// `free_instance_binding` removes the FIRST token match, so stacked tombstones left by
 /// repeated failed creations (or an unfixed runtime build) are cleared one per iteration
 /// until a real hub surfaces or none remain. `object_has_instance_binding` is not exposed
@@ -1177,7 +1175,7 @@ void gdcc_hrx_deinitialize(void) {
     if (g_hrx_mode != GDCC_HRX_MODE_ACTIVE || g_hrx_hub == NULL) {
         return;
     }
-    // D8 tail: detach the sweeper first (free thunks from now on only mark dead), then NULL
+    // Detach the sweeper first so later free thunks only mark specs dead, then NULL
     // every spec's code pointers. dead/refcount stay untouched for the next generation's sweep.
     gdcc_hrx_hub *hub = g_hrx_hub;
     hub->sweeper = NULL;

@@ -122,7 +122,7 @@ class FrontendLambdaPlanSideTableTest {
         );
     }
 
-    // ----- HR-8 sourceIdentityKey (hot_reload_implementation_plan.md §5.6 impl_key contract) -----
+    // ----- sourceIdentityKey / implementation-key contract -----
 
     private static @NotNull Range rangeAt(int startRow, int startColumn) {
         return new Range(0, 1, new Point(startRow, startColumn), new Point(startRow, startColumn + 1));
@@ -158,7 +158,7 @@ class FrontendLambdaPlanSideTableTest {
 
     @Test
     void sourceIdentityKeyShouldUseSourceOrdinalWithinTheOutermostNamedFunction() {
-        // §5.11 key format: `<Class>::<func>#<ordinal>` — no file name, no source position.
+        // Key format: `<Class>::<func>#<ordinal>` — no file name, no source position.
         var plan = planOf(lambdaAt(7, 8), functionAt("run", 5), "Hero", 0);
         assertEquals("Hero::run#0", plan.sourceIdentityKey());
     }

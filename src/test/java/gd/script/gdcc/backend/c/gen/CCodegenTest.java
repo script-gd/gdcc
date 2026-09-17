@@ -2895,7 +2895,7 @@ public class CCodegenTest {
                 "GDChildNode_set_object_ptr(self, obj);"
         );
         assertContainsAll(childConstructorBody, "GDParentNode_class_constructor(&self->_super);");
-        // D2 chain: field destruction recurses through the unguarded destruct_fields chain.
+        // Field destruction recurses through the unguarded destruct_fields chain.
         assertContainsAll(childDestructFieldsBody, "GDParentNode_class_destruct_fields(&self->_super);");
         // Object field teardown resolves the target through ObjectDB (never the cached
         // wrapper): the engine frees wrappers during a hot-reload bulk clear while the Godot
@@ -2910,16 +2910,15 @@ public class CCodegenTest {
         assertFalse(directParentConstructPattern.matcher(cCode).find());
     }
 
-    /// Hot reload D2 (hot_reload_implementation_plan.md): free_instance must re-enter field
-    /// destruction when the PREDELETE path never ran (the engine reload path calls
-    /// free_instance WITHOUT PREDELETE), while the normal PREDELETE-then-free sequence must
-    /// still destruct exactly once. This pins the guard layout: the root-only
-    /// `_gdcc_destructed` flag, the guarded `<C>_class_destructor` entry, and the unguarded
-    /// `<C>_class_destruct_fields` chain — with destroyable fields on BOTH base and derived
-    /// classes so a flag-set truncation of the parent segment fails here. Object field
-    /// teardown must resolve targets through ObjectDB (`gdcc_object_live_ptr`), never the
-    /// cached wrapper — the engine frees GDCC wrappers during a bulk reload clear while the
-    /// referenced Godot objects stay alive.
+    /// free_instance must re-enter field destruction when the PREDELETE path never ran
+    /// (the engine reload path calls free_instance WITHOUT PREDELETE), while the normal
+    /// PREDELETE-then-free sequence must still destruct exactly once. This pins the guard
+    /// layout: the root-only `_gdcc_destructed` flag, the guarded `<C>_class_destructor`
+    /// entry, and the unguarded `<C>_class_destruct_fields` chain — with destroyable fields
+    /// on BOTH base and derived classes so a flag-set truncation of the parent segment fails
+    /// here. Object field teardown must resolve targets through ObjectDB
+    /// (`gdcc_object_live_ptr`), never the cached wrapper — the engine frees GDCC wrappers
+    /// during a bulk reload clear while the referenced Godot objects stay alive.
     @Test
     public void freeInstancePerformsExactlyOnceGuardedFullDestruction() throws Exception {
         var parentClass = new LirClassDef("GDGuardParent", "Node");
@@ -3012,13 +3011,13 @@ public class CCodegenTest {
         assertContainsAll(childNotificationBody, "GDGuardChild_class_destructor(self);");
     }
 
-    /// Hot reload D4 (hot_reload_implementation_plan.md): every creatable class must supply
-    /// recreate_instance_func (Godot disables reload for the whole extension otherwise). The
-    /// recreate MUST return the wrapper (the engine assigns it directly to
-    /// `_extension_instance`) and rebuild ONLY extension-side state: no native construction,
-    /// no object_set_instance, no POSTINITIALIZE, no constructor/`_init` — property state is
-    /// restored by the engine through setters afterwards; only initializers are replayed
-    /// (base-first) through the new `<C>_class_init_fields` helper.
+    /// Every creatable class must supply recreate_instance_func (Godot disables reload for
+    /// the whole extension otherwise). The recreate MUST return the wrapper (the engine
+    /// assigns it directly to `_extension_instance`) and rebuild ONLY extension-side state:
+    /// no native construction, no object_set_instance, no POSTINITIALIZE, no
+    /// constructor/`_init` — property state is restored by the engine through setters
+    /// afterwards; only initializers are replayed (base-first) through
+    /// `<C>_class_init_fields`.
     @Test
     public void recreateInstanceRebuildsWrapperStateWithoutTouchingGodotObject() throws Exception {
         var parentClass = new LirClassDef("GDRecreateParent", "Node");
@@ -3062,7 +3061,7 @@ public class CCodegenTest {
                 "GDRecreateChild_class_init_fields(self);",
                 "return self;"
         );
-        // Forbidden on the recreate path (D4): the Godot object survived the reload.
+        // Forbidden on the recreate path: the Godot object survived the reload.
         assertFalse(recreateBody.contains("classdb_construct_object2"), recreateBody);
         assertFalse(recreateBody.contains("godot_object_set_instance("), recreateBody);
         assertFalse(recreateBody.contains("POSTINITIALIZE"), recreateBody);
@@ -3083,16 +3082,15 @@ public class CCodegenTest {
         assertContainsAll(parentInitFieldsBody, "GDRecreateParent_class_apply_property_init_base_text(self);");
     }
 
-    /// Hot reload D8 v11 (hot_reload_implementation_plan.md HR-4): deinitialize must destroy
-    /// static backing variables FIRST (the normal-exit path does not clear `_extension` when
-    /// a class is unregistered, so a static-held instance released after unregistration would
-    /// destruct through a dangling pointer), then unregister every extension class — Godot
-    /// rejects re-registration of a class that was never unregistered, and rejects
-    /// unregistering a base while derived extension classes still inherit from it — and only
-    /// then tear down the runtime registries. During a reload the engine runs free_instance
-    /// inside the unregistration calls, so field destruction must never depend on static
-    /// backing (already torn down; the D3 discipline), while the registries stay alive until
-    /// after the unregistration section.
+    /// deinitialize must destroy static backing variables FIRST (the normal-exit path does
+    /// not clear `_extension` when a class is unregistered, so a static-held instance
+    /// released after unregistration would destruct through a dangling pointer), then
+    /// unregister every extension class — Godot rejects re-registration of a class that was
+    /// never unregistered, and rejects unregistering a base while derived extension classes
+    /// still inherit from it — and only then tear down the runtime registries. During a
+    /// reload the engine runs free_instance inside the unregistration calls, so field
+    /// destruction must never depend on static backing (already torn down), while the
+    /// registries stay alive until after the unregistration section.
     @Test
     public void deinitializeUnregistersClassesInStrictReverseRegistrationOrder() throws Exception {
         var rootClass = new LirClassDef("GDUnregRoot", "Node");
@@ -3131,10 +3129,10 @@ public class CCodegenTest {
         );
 
         // Unregistration is the strict mirror: derived before base. Static backing is torn
-        // down FIRST (D8 v11: on the normal-exit path the engine does not clear `_extension`
-        // during unregistration, so a static-held instance released after unregistration
-        // would destruct through a dangling pointer), then the unregistration section, then
-        // the runtime registries.
+        // down FIRST (on the normal-exit path the engine does not clear `_extension` during
+        // unregistration, so a static-held instance released after unregistration would
+        // destruct through a dangling pointer), then the unregistration section, then the
+        // runtime registries.
         assertOrdered(
                 deinitializeBody,
                 "Unloading unregister_order_module...",
@@ -3148,19 +3146,19 @@ public class CCodegenTest {
         );
         assertEquals(3, countOccurrences(deinitializeBody, "godot_classdb_unregister_extension_class("),
                 "every registered user class must be unregistered exactly once");
-        // HR-5 is coroutine-conditional: a module without coroutine functions never emits
-        // the bulk cancel (nor the coroutine runtime include), and never sets the
-        // hot-reload gate in initialize either.
+        // Coroutine tracking is emitted only for modules containing coroutine functions:
+        // a module without them never emits the bulk cancel (nor the coroutine runtime
+        // include), and never sets the hot-reload gate in initialize either.
         assertFalse(deinitializeBody.contains("gdcc_coro_cancel_all"), deinitializeBody);
         assertFalse(initializeBody.contains("gdcc_coro_set_hot_reload_active"), initializeBody);
     }
 
-    /// HR-8 (hot_reload_implementation_plan.md §5.6): the module-level Callable identity
-    /// catalog — per-extension anchor token, per-lambda/standalone identity structs (stable
-    /// `impl_key` + canonical schema descriptor + 128-bit fingerprint + data argument count),
-    /// and the rebind table consumed by the next library generation. initialize() must freeze
-    /// the dispatch mode before any class registration can construct a Callable, and
-    /// deinitialize() must run the hub invalidation as the LAST teardown step (D8).
+    /// The module-level Callable identity catalog — per-extension anchor token,
+    /// per-lambda/standalone identity structs (stable `impl_key` + canonical schema
+    /// descriptor + 128-bit fingerprint + data argument count), and the rebind table
+    /// consumed by the next library generation. initialize() must freeze the dispatch mode
+    /// before any class registration can construct a Callable, and deinitialize() must run
+    /// the hub invalidation as the LAST teardown step.
     @Test
     public void hrxIdentityCatalogAndRebindTableAreEmittedForLambdasAndStandalones() throws Exception {
         var clazz = new LirClassDef("HrxWorker", "Node");
@@ -3205,7 +3203,7 @@ public class CCodegenTest {
                 "{ &HrxWorker__lambda_0_hrx_identity, HrxWorker__lambda_0_call, HrxWorker__lambda_0_free, HrxWorker__lambda_0_is_valid }"
         );
         // Standalone identity: interning key + shared runtime impl + always-NULL destroy, and
-        // no call-site context (§5.11: standalone identities never carry one).
+        // no call-site context (standalone identities never carry one).
         assertContainsAll(
                 cCode,
                 ".impl_key = u8\"standalone:utility::print\"",
@@ -3228,7 +3226,7 @@ public class CCodegenTest {
                 "gdcc_hrx_rebind_table, 2);",
                 "godot_classdb_register_extension_class5("
         );
-        // Hub invalidation is the LAST teardown step (D8): after the runtime registries.
+        // Hub invalidation is the LAST teardown step: after the runtime registries.
         assertOrdered(
                 deinitializeBody,
                 "gdcc_standalone_callable_registry_destroy_all();",
@@ -3236,7 +3234,7 @@ public class CCodegenTest {
         );
     }
 
-    /// HR-8 catalog canonicalization: the same inherited static referenced through a subclass
+    /// Catalog canonicalization: the same inherited static referenced through a subclass
     /// AND through its declaring class is ONE identity — one impl_key (resolved owner), one
     /// C symbol, one rebind row. Raw-owner keys would emit duplicate symbol definitions.
     @Test
@@ -3279,7 +3277,7 @@ public class CCodegenTest {
         assertEquals(1, countOccurrences(cCode, "{ &"), "exactly one rebind row expected: " + cCode);
     }
 
-    /// HR-8 negative: a module without any custom Callable still freezes the mode (coroutine
+    /// A module without any custom Callable still freezes the mode (coroutine
     /// signal waiters may exist), but passes an empty table instead of emitting one.
     @Test
     public void hrxInitializePassesNullTableWhenNoCustomCallablesExist() throws Exception {
@@ -3304,7 +3302,7 @@ public class CCodegenTest {
         assertFalse(cCode.contains("_hrx_identity_schema"), cCode);
     }
 
-    /// HR-8 schema semantics: the canonical descriptor tracks the capture/signature LAYOUT
+    /// Schema semantics: the canonical descriptor tracks the capture/signature LAYOUT
     /// (never the body), so two lambdas with different capture types must produce different
     /// descriptors (reload fails closed) while identical layouts share byte-identical
     /// descriptors (reload rebinds). This is the safety property behind "never mis-destroy".
@@ -3332,11 +3330,11 @@ public class CCodegenTest {
         );
     }
 
-    /// HRX v15 (§5.11) ABI contract: the Java schema-descriptor prefix must derive from the
-    /// SAME version the C runtime guards on — otherwise bumping only the C macro would leave
-    /// descriptors matching and silently void the abi_version guard. Pin both sides here:
-    /// the C header macro must equal the Java constant used for the descriptor prefix, and the
-    /// hub version must NOT move (a hub bump would orphan the entire old registry).
+    /// ABI contract: the Java schema-descriptor prefix must derive from the SAME version the
+    /// C runtime guards on — otherwise bumping only the C macro would leave descriptors
+    /// matching and silently void the abi_version guard. Pin both sides here: the C header
+    /// macro must equal the Java constant used for the descriptor prefix, and the hub version
+    /// must NOT move (a hub bump would orphan the entire old registry).
     @Test
     public void hrxAbiVersionConstantMatchesTheCHeaderMacro() throws Exception {
         var resource = "include_451/gdcc/gdcc_hrx.h";
@@ -3358,7 +3356,7 @@ public class CCodegenTest {
                 .compile("#define GDCC_HRX_HUB_VERSION (\\d+)u")
                 .matcher(header);
         assertTrue(hubMatcher.find(), "GDCC_HRX_HUB_VERSION macro not found in gdcc_hrx.h");
-        assertEquals(3, Integer.parseInt(hubMatcher.group(1)), "HUB_VERSION must stay 3 (hub layout unchanged by v15)");
+        assertEquals(3, Integer.parseInt(hubMatcher.group(1)), "HUB_VERSION must stay 3 (hub layout unchanged)");
         // The emitted descriptor must carry the same version prefix, so the descriptor gate and
         // the version guard can never drift apart.
         var catalog = buildSchemaProbeLambda(GdIntType.INT, GdIntType.INT);
@@ -3372,10 +3370,10 @@ public class CCodegenTest {
         assertTrue(desc.startsWith("gdcc-hrx:" + CHrxIdentityCatalog.HRX_ABI_VERSION + ";"), desc);
     }
 
-    /// HRX v15 catalog plumbing: the LIR call-site context reaches the emitted identity as a
-    /// C string literal, while standalone identities and context-less lambdas emit NULL
-    /// (NULL-safe equality treats NULL==NULL as a match — §5.7 standalone rebinding stays
-    /// unaffected by the third gate).
+    /// Catalog plumbing: the LIR call-site context reaches the emitted identity as a C
+    /// string literal, while standalone identities and context-less lambdas emit NULL
+    /// (NULL-safe equality treats NULL==NULL as a match, so standalone rebinding stays
+    /// unaffected).
     @Test
     public void hrxIdentityEmissionCarriesCallsiteContextOrNull() throws Exception {
         var clazz = new LirClassDef("HrxCtx", "Node");
@@ -3433,7 +3431,7 @@ public class CCodegenTest {
         return CHrxIdentityCatalog.collect(module, ctx, new CGenHelper(ctx, module.getClassDefs()));
     }
 
-    /// §5.11 catalog shape: lambdas carry the call-site context through the catalog into the
+    /// Catalog shape: lambdas carry the call-site context through the catalog into the
     /// emitted identity, while standalone identities stay NULL — the runtime's NULL-safe gate
     /// must never confuse the two.
     @Test
@@ -3471,8 +3469,8 @@ public class CCodegenTest {
         assertNull(standaloneIdentity.callSiteContextCString());
     }
 
-    /// HR-8 defensive: a lambda without a frontend-published source identity key must fail
-    /// the build loudly instead of silently producing an unrebindable Callable.
+    /// A lambda without a frontend-published source identity key must fail the build
+    /// loudly instead of silently producing an unrebindable Callable.
     @Test
     public void keylessLambdaShouldFailCodegenFast() throws java.io.IOException {
         var clazz = new LirClassDef("HrxKeyless", "Node");
@@ -3519,7 +3517,7 @@ public class CCodegenTest {
         assertEquals(1, countOccurrences(leafCreateInstanceBody, "godot_object_set_instance("));
         assertEquals(1, countOccurrences(leafCreateInstanceBody, "godot_object_set_instance_binding("));
 
-        // D2 root-flag access walks one `_super` hop per wrapper level (three-level chain).
+        // Root-flag access walks one `_super` hop per wrapper level (three-level chain).
         assertContainsAll(leafCreateInstanceBody, "self->_super._super._gdcc_destructed = false;");
         var leafFreeBody = resolveFunctionBodyByPrefix(cCode, "void GDLeafNode_class_free_instance");
         assertContainsAll(leafFreeBody, "if (!self->_super._super._gdcc_destructed)");

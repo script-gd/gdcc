@@ -69,9 +69,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// collisions fail fast instead of silently skipping synthesis.
 final class FrontendLambdaLoweringTest {
 
-    /// HR-8 + §5.11: the synthesized lambda shell carries the plan-derived source identity key
-    /// (ordinal form) and the call-site context down to the LIR/backend boundary (the rebind
-    /// table refuses keyless lambdas).
+    /// The synthesized lambda shell carries the plan-derived source identity key (ordinal
+    /// form) and the call-site context down to the LIR/backend boundary (the rebind table
+    /// refuses keyless lambdas).
     @Test
     void lambdaShellCarriesPlanSourceIdentityKey() throws Exception {
         var prepared = analyzeAndSkeleton("lambda_shell_identity_key.gd", """

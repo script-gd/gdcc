@@ -107,7 +107,7 @@ public final class GdccCommand implements Callable<Integer> {
     @Option(
             names = "--target",
             paramLabel = "<platform>",
-            description = "Target platform. Supported: windows-x86-64, windows-aarch64, linux-x86-64, linux-aarch64, linux-riscv64, android-x86-64, android-aarch64, web-wasm32. Defaults to the native host platform."
+            description = "Target platform. Supported: windows-x86-64, windows-aarch64, linux-x86-64, linux-aarch64, linux-riscv64, macos-x86-64, macos-aarch64, android-x86-64, android-aarch64, web-wasm32. Defaults to the native host platform."
     )
     String target;
 

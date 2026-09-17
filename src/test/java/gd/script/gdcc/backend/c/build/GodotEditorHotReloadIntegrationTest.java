@@ -27,18 +27,18 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Automated end-to-end editor hot-reload tests for
-/// `doc/module_impl/backend/hot_reload_implementation_plan.md` (§HR-9 scenarios 1/2/3/4/5/5a/
-/// 5b/5c/6/7/8/9; scenario 10b lives in `GodotRuntimeDirectPathIntegrationTest`, scenario 10 is
-/// the headless `GdScriptUnitTestCompileRunnerTest` regression leg).
+/// Automated end-to-end editor hot-reload tests (source of truth:
+/// `doc/module_impl/backend/hot_reload_implementation.md`). The non-editor direct-path
+/// counterpart lives in `GodotRuntimeDirectPathIntegrationTest`.
 ///
-/// Every test compiles a v1 (and v2/v3) native library from GDScript sources through the real
-/// frontend -> lowering -> C codegen -> Zig pipeline, installs it into a fresh editor project,
-/// and drives a headless Godot EDITOR via `GodotEditorHotReloadTestSession`. All behavioral
-/// assertions (instance survival, property restore, new-code dispatch, virtual re-hooking,
-/// coroutine cancellation, Callable rebind/invalidation semantics, static reset, engine-reported
-/// signature/parent errors) run inside the editor in an interpreted SceneTree driver; Java only
-/// orchestrates markers, atomic library swaps, exit codes and engine-side error substrings.
+/// Every test compiles one or more native library generations from GDScript sources through
+/// the real frontend -> lowering -> C codegen -> Zig pipeline, installs it into a fresh
+/// editor project, and drives a headless Godot EDITOR via `GodotEditorHotReloadTestSession`.
+/// All behavioral assertions (instance survival, property restore, new-code dispatch,
+/// virtual re-hooking, coroutine cancellation, Callable rebind/invalidation semantics,
+/// static reset, engine-reported signature/parent errors) run inside the editor in an
+/// interpreted SceneTree driver; Java only orchestrates markers, atomic library swaps, exit
+/// codes and engine-side error substrings.
 ///
 /// Environment-aware: skips through JUnit assumptions when Zig is missing, `GODOT_BIN` is unset,
 /// or the binary is not editor-capable.
@@ -54,10 +54,9 @@ public class GodotEditorHotReloadIntegrationTest {
     private static final String SHARED_COMPILER_CACHE_DIR_NAME = "shared-compiler-cache";
     private static final String UNREGISTER_ORDER_ERROR = "Attempt to unregister class while other extension classes inherit from it";
 
-    /// HR-9 scenario 1 + 2: basic reload — instance survives, STORAGE properties (exported and
-    /// non-exported) are restored, methods run NEW code after reload.
-    /// Covers HR-1 (reloadable accepted) and HR-3 (recreate + property restore). HR-4's
-    /// reverse-unregistration detection needs an inheritance chain, see the virtual/lifecycle cases.
+    /// Basic reload: the instance survives, STORAGE properties (exported and non-exported)
+    /// are restored, and methods run NEW code after reload. Reverse-unregistration detection
+    /// needs an inheritance chain; see the virtual/lifecycle cases.
     @Test
     void basicReloadPreservesInstancePropertiesAndRunsNewCode() throws Exception {
         requireToolingOrAbort();
@@ -92,13 +91,12 @@ public class GodotEditorHotReloadIntegrationTest {
         }
     }
 
-    /// HR-9 scenario 3: inheritance and polymorphism — an override-only class and a pass-through
-    /// class keep correct virtual dispatch after reload, and engine-driven `_process` enters the
-    /// NEW library implementation on the next frames (engine virtual re-hooking). Covers HR-3,
-    /// and HR-4 via the three-level extension inheritance chain (any unregistration order
-    /// violation makes the engine print its order error, asserted absent).
-    /// The fixture classes are `@tool` because gdcc suppresses frame-loop virtuals for non-tool
-    /// classes in the editor (matching Godot's non-tool script behavior).
+    /// Inheritance and polymorphism: an override-only class and a pass-through class keep
+    /// correct virtual dispatch after reload, and engine-driven `_process` enters the NEW
+    /// library implementation on the next frames (engine virtual re-hooking). Any
+    /// unregistration order violation makes the engine print its order error, asserted
+    /// absent. The fixture classes are `@tool` because gdcc suppresses frame-loop virtuals
+    /// for non-tool classes in the editor (matching Godot's non-tool script behavior).
     @Test
     void virtualDispatchAndProcessRehookAfterReload() throws Exception {
         requireToolingOrAbort();
@@ -145,12 +143,11 @@ public class GodotEditorHotReloadIntegrationTest {
         }
     }
 
-    /// HR-9 scenario 4: a coroutine suspended on a signal (with an awaiting parent coroutine) is
-    /// silently cancelled by reload — the asserted observable half of abandonment semantics: the
-    /// awaiting parent is never resumed, the cancelled body never continues, and the stale signal
-    /// emission afterwards is a no-op; a coroutine started on the NEW library completes normally.
-    /// Direct observation of the state object's `completed` signal is not part of this automated
-    /// leg. Covers HR-5 (and the RELOADED_SHELL path of HR-3).
+    /// A coroutine suspended on a signal (with an awaiting parent coroutine) is silently
+    /// cancelled by reload — the awaiting parent is never resumed, the cancelled body never
+    /// continues, and the stale signal emission afterwards is a no-op; a coroutine started
+    /// on the NEW library completes normally. Direct observation of the state object's
+    /// `completed` signal is not part of this automated leg.
     @Test
     void pendingCoroutinesAreSilentlyCancelledOnReload() throws Exception {
         requireToolingOrAbort();
@@ -185,14 +182,13 @@ public class GodotEditorHotReloadIntegrationTest {
         }
     }
 
-    /// HR-9 scenario 9 (behavioral matrix): normal PREDELETE->free before reload, reload
-    /// free->recreate, recreate then normal destruction, two consecutive reloads, base+derived
-    /// destroyable fields (String/Array/Dictionary contents and a RefCounted ObjectDB-path
-    /// property restored by the engine), HR-4 reverse unregistration across the inheritance
-    /// chain, and a suspended coroutine (with a parameter slot) cancelled on reload. Without
-    /// sanitizers this automated leg proves crash-freedom and value correctness; the
-    /// exactly-once/leak proof stays on the manual ASan/Valgrind checklist.
-    /// Covers HR-2 (behaviorally), HR-3, HR-4, HR-5.
+    /// Lifecycle matrix: normal PREDELETE->free before reload, reload free->recreate,
+    /// recreate then normal destruction, two consecutive reloads, base+derived destroyable
+    /// fields (String/Array/Dictionary contents and a RefCounted ObjectDB-path property
+    /// restored by the engine), reverse unregistration across the inheritance chain, and a
+    /// suspended coroutine (with a parameter slot) cancelled on reload. Without sanitizers
+    /// this automated leg proves crash-freedom and value correctness; the exactly-once/leak
+    /// proof stays on the manual ASan/Valgrind checklist.
     @Test
     void lifecycleMatrixAcrossTwoConsecutiveReloads() throws Exception {
         requireToolingOrAbort();
@@ -248,11 +244,10 @@ public class GodotEditorHotReloadIntegrationTest {
         }
     }
 
-    /// HR-9 scenario 5: a `Callable(object, "method-name")` signal connection survives reload and
-    /// dispatches into the NEW method body (engine `try_update` re-bind, plan §5.9 row 8 — always
-    /// valid, orthogonal to the lambda thunk machinery). The connection is armed on v1, the emit
-    /// after reload must observe v2 semantics through the SAME connection.
-    /// Covers HR-6 (method-name Callable leg of the user-visible contract).
+    /// A `Callable(object, "method-name")` signal connection survives reload and dispatches
+    /// into the NEW method body (engine `try_update` re-bind; always valid, orthogonal to
+    /// the lambda thunk machinery). The connection is armed on the first generation; the
+    /// emit after reload must observe the new generation through the SAME connection.
     @Test
     void methodNameConnectionSurvivesReloadAndRunsNewLogic() throws Exception {
         requireToolingOrAbort();
@@ -287,12 +282,11 @@ public class GodotEditorHotReloadIntegrationTest {
         }
     }
 
-    /// HR-9 scenario 5a: a lambda signal connection established on v1 keeps working after reload
-    /// and executes the NEW lambda body (plan §5.9 row 1 — thunk rebind: identical impl_key +
-    /// schema, changed body). Asserts both dispatch paths of the engine-held Callable copy
-    /// (signal emission and a direct `call()` on a driver-retained Callable), `is_valid()` staying
-    /// true across the rebind, and the thunk-path `to_string` contract (`<CallableCustom>`, §7).
-    /// Covers HR-6 + HR-8 (rebind leg).
+    /// A lambda signal connection established on the first generation keeps working after
+    /// reload and executes the NEW lambda body (identical impl_key + schema, changed body).
+    /// Asserts both dispatch paths of the engine-held Callable copy (signal emission and a
+    /// direct `call()` on a driver-retained Callable), `is_valid()` staying true across the
+    /// rebind, and the thunk-path `to_string` contract (`<CallableCustom>`).
     @Test
     void lambdaConnectionRebindsToNewImplementationAfterReload() throws Exception {
         requireToolingOrAbort();
@@ -327,20 +321,18 @@ public class GodotEditorHotReloadIntegrationTest {
         }
     }
 
-    /// HR-9 scenario 5b: lambda invalidation paths (plan §5.9 rows 2/3). Three legs in one
-    /// scenario: (a) capture-layout change -> schema mismatch, (b) lambda deletion -> impl_key
-    /// gone, (c) two DIFFERENT-schema lambdas swapping source positions -> each old key collides
-    /// with the other lambda's entry but the schema gate refuses the rebind, so the old Callable
-    /// is invalidated instead of being bound to the wrong body. The surviving sig_a lambda is the
-    /// positive control (rebound, runs v2 code; it is re-asserted after emit_b so a deleted
-    /// lambda rebound to its same-schema sibling would also fail). Assertions: `is_valid() ==
+    /// Lambda invalidation paths. Three legs in one scenario: (a) capture-layout change ->
+    /// schema mismatch, (b) lambda deletion -> impl_key gone, (c) two DIFFERENT-schema
+    /// lambdas swapping source positions -> each old key collides with the other lambda's
+    /// entry but the schema gate refuses the rebind, so the old Callable is invalidated
+    /// instead of being bound to the wrong body. The surviving sig_a lambda is the positive
+    /// control (rebound, runs new code; it is re-asserted after emit_b so a deleted lambda
+    /// rebound to its same-schema sibling would also fail). Assertions: `is_valid() ==
     /// false` on every retained Callable INCLUDING the engine-held sig_b connection (via
     /// `get_signal_connection_list`), and signal emission silently skips the dead connection.
     /// Actually CALLING an invalidated Callable is deliberately NOT exercised from the
     /// interpreted driver: on Godot 4.5.2 that raises the engine's standard error as a hard
-    /// SCRIPT ERROR ("on a null instance") and would kill the driver — that script-side form of
-    /// the standard error is documented in the plan's HR-9 status block.
-    /// Covers HR-6 + HR-8 (invalidation leg).
+    /// SCRIPT ERROR ("on a null instance") and would kill the driver.
     @Test
     void lambdaInvalidationPathsFailClosedAfterReload() throws Exception {
         requireToolingOrAbort();
@@ -375,15 +367,14 @@ public class GodotEditorHotReloadIntegrationTest {
         }
     }
 
-    /// HR-9 scenario 5c: deferred lambda calls queued BEFORE the reload execute AFTER it with
-    /// rebind/invalidation semantics identical to synchronous dispatch (plan §5.9 row 6 — the
-    /// MessageQueue holds Callable copies that share the same spec). The driver queues both
-    /// deferred calls and reloads within the same frame, so the queue flush at frame end observes
-    /// the new generation: the compatible lambda runs v2 code, the capture-mismatched one is
-    /// silently skipped. The engine's deferred-call error for the invalidated entry is a plain
-    /// ERROR print (not a SCRIPT ERROR), pinned textually on the Java side as positive evidence
-    /// that the invalid entry was actually attempted by the queue.
-    /// Covers HR-6 + HR-8 (deferred-copy leg).
+    /// Deferred lambda calls queued BEFORE the reload execute AFTER it with the same
+    /// rebind/invalidation semantics as synchronous dispatch (the MessageQueue holds Callable
+    /// copies that share the same spec). The driver queues both deferred calls and reloads
+    /// within the same frame, so the queue flush at frame end observes the new generation:
+    /// the compatible lambda runs new code, the capture-mismatched one is silently skipped.
+    /// The engine's deferred-call error for the invalidated entry is a plain ERROR print
+    /// (not a SCRIPT ERROR), pinned textually on the Java side as positive evidence that
+    /// the invalid entry was actually attempted by the queue.
     @Test
     void deferredLambdaCallsFollowRebindAndInvalidationSemanticsAfterReload() throws Exception {
         requireToolingOrAbort();
@@ -422,15 +413,14 @@ public class GodotEditorHotReloadIntegrationTest {
         }
     }
 
-    /// HR-9 scenario 6: after a method signature change, calls issued with the OLD signature
-    /// fail through the engine's standard error path without crashing (plan scenario 6; §7 "方法
-    /// 签名变更后，经旧缓存 MethodBind 的调用报错（引擎语义）"). Scope note: the automated leg is
-    /// a dynamic `Object.call()` with the old arity against the RELOADED (try_update'd)
-    /// MethodBind — on Godot 4.5.2 that reports the standard invalid-call error as a hard SCRIPT
-    /// ERROR. A literally stale (pre-reload cached) MethodBind* caller is native-only and outside
+    /// After a method signature change, calls issued with the OLD signature fail through
+    /// the engine's standard error path without crashing. The automated leg is a dynamic
+    /// `Object.call()` with the old arity against the reloaded (try_update'd) MethodBind —
+    /// on Godot 4.5.2 that reports the standard invalid-call error as a hard SCRIPT ERROR.
+    /// A literally stale (pre-reload cached) MethodBind* caller is native-only and outside
     /// an interpreted driver's reach; both paths share the "error, no crash" contract. The
-    /// driver advances its stage machine before triggering the error so the editor still quits
-    /// cleanly, and Java pins the diagnostic text.
+    /// driver advances its stage machine before triggering the error so the editor still
+    /// quits cleanly, and Java pins the diagnostic text.
     @Test
     void methodSignatureChangeBreaksStaleCallsWithoutCrash() throws Exception {
         requireToolingOrAbort();
@@ -474,7 +464,7 @@ public class GodotEditorHotReloadIntegrationTest {
         }
     }
 
-    /// HR-9 scenario 8: static variables reset to their initializer on reload — asserted against
+    /// Static variables reset to their initializer on reload — asserted against
     /// the NEW library's initializer (v1 writes 42 at runtime, v2's initializer is 5, so reading 5
     /// after reload proves the static backing was rebuilt from the new image, not preserved). A
     /// STORAGE instance property on the surviving instance is the contrast anchor (restored).
@@ -512,12 +502,12 @@ public class GodotEditorHotReloadIntegrationTest {
         }
     }
 
-    /// HR-9 scenario 7 (engine-parent leg): changing a class's ENGINE parent across reload is not
-    /// supported — the engine must complain (its known "requires editor restart" semantics), and
-    /// the gdcc side must not pretend success. The driver survives no matter what the engine does
-    /// to the extension, reports the reload status, and quits cleanly; Java pins the observed
-    /// engine diagnostic. The GDCC-parent leg is engine-silent by design and stays a documented
-    /// unsupported case (§7), not an automated assertion.
+    /// Changing a class's ENGINE parent across reload is not supported — the engine must
+    /// complain (its known "requires editor restart" semantics), and the gdcc side must not
+    /// pretend success. The driver survives no matter what the engine does to the extension,
+    /// reports the reload status, and quits cleanly; Java pins the observed engine
+    /// diagnostic. Changing a GDCC parent is engine-silent by design and stays a documented
+    /// unsupported case, not an automated assertion.
     @Test
     void engineParentChangeIsReportedByEngineAsUnsupported() throws Exception {
         requireToolingOrAbort();
@@ -555,7 +545,7 @@ public class GodotEditorHotReloadIntegrationTest {
             // driver prints HR_RELOAD_STATUS:0), but the parent-changed class is refused with
             // the restart-required diagnostic. Follow-up noise ("Attempt to unregister unexisting
             // extension class" and exit-time RID leak reports) is the engine's own fallout of the
-            // half-applied reload and is part of why the contract declares this unsupported (§7).
+            // half-applied reload and is part of why the contract declares this unsupported.
             assertTrue(
                     combinedOutput.contains("cannot change parent type from 'Node' to 'Node2D' on hot reload")
                             && combinedOutput.contains("Restart Godot for this change to take effect"),
@@ -568,19 +558,19 @@ public class GodotEditorHotReloadIntegrationTest {
         }
     }
 
-    /// HR-9 §5.11 acceptance trio (v15 lambda identity): all three legs run in ONE scenario.
+    /// Lambda identity acceptance trio; all three legs run in ONE scenario.
     /// Leg 1 (swap gate): two same-schema lambdas connected to sig_swap_a/sig_swap_b swap their
-    /// connect statements in v2. Ordinal keys stay `arm_swap#0/#1` but the callsite contexts
-    /// cross (base=sig_swap_a <-> base=sig_swap_b), so the third rebind gate must fail-closed
-    /// BOTH old connections — under the old position key this was the silent mis-binding case.
+    /// connect statements in the second generation. Ordinal keys stay `arm_swap#0/#1` but the
+    /// callsite contexts cross (base=sig_swap_a <-> base=sig_swap_b), so the context gate must
+    /// fail-closed BOTH old connections.
     /// Leg 2 (ordinal immunity): a plain non-lambda line is inserted before the sig_shift
     /// connect; the ordinal key `#0` and context are unchanged, so the connection must rebind
-    /// and run the v2 body (the old position key would have false-invalidated on the line shift).
+    /// and run the new body.
     /// Leg 3 (extract-variable false invalidation): `return func...` becomes
     /// `var cb := func...; return cb`, changing only the callsite context (`return` ->
-    /// `assign(var=cb, kind=var)`), so the retained v1 Callable must invalidate (documented
-    /// expected false invalidation) while a post-reload `make_cb()` yields a working callable.
-    /// Covers §5.11 HR-9 additions (callsite-context gate, ordinal immunity, refactor behavior).
+    /// `assign(var=cb, kind=var)`), so the retained first-generation Callable must invalidate
+    /// (documented expected false invalidation) while a post-reload `make_cb()` yields a
+    /// working callable.
     @Test
     void lambdaOrdinalKeyAndCallsiteContextGateAfterReload() throws Exception {
         requireToolingOrAbort();
@@ -1127,13 +1117,14 @@ public class GodotEditorHotReloadIntegrationTest {
                 """;
     }
 
-    /// §5.11 HR-9 trio fixture. v1 -> v2 edits: leg 1 swaps the two same-schema connect
-    /// statements inside `arm_swap` (ordinals stay #0/#1 but callsite contexts cross); leg 2
-    /// inserts a plain `var note` line before the `arm_shift` connect (ordinal unchanged, body
-    /// constant x10 -> x20 proves the rebind); leg 3 rewrites `return func...` as
-    /// `var cb := func...; return cb` (only the callsite context changes). All lambda bodies
-    /// stay capture-compatible (self only) so the schema gate alone would rebind everywhere —
-    /// legs 1 and 3 are decided purely by the callsite-context gate.
+    /// Identity-trio fixture. First-to-second generation edits: leg 1 swaps the two
+    /// same-schema connect statements inside `arm_swap` (ordinals stay #0/#1 but callsite
+    /// contexts cross); leg 2 inserts a plain `var note` line before the `arm_shift` connect
+    /// (ordinal unchanged, body constant x10 -> x20 proves the rebind); leg 3 rewrites
+    /// `return func...` as `var cb := func...; return cb` (only the callsite context
+    /// changes). All lambda bodies stay capture-compatible (self only) so the schema gate
+    /// alone would rebind everywhere — legs 1 and 3 are decided purely by the
+    /// callsite-context gate.
     private static @NotNull String hrOrdinalSource(int version) {
         if (version == 1) {
             return """
@@ -1887,7 +1878,7 @@ public class GodotEditorHotReloadIntegrationTest {
                     # Note: actually CALLING an invalidated Callable is not asserted here — in
                     # interpreted GDScript that raises the engine's standard error as a hard
                     # SCRIPT ERROR ("on a null instance"), which would kill this driver. The
-                    # engine error path is the documented standard behavior (plan §5.9 row 2).
+                    # engine error path is the documented standard behavior.
                     if pair_first.is_valid() or pair_second.is_valid():
                         _fail("swapped lambdas must invalidate, never bind the wrong body")
                         return

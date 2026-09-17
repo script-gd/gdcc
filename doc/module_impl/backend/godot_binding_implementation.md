@@ -33,10 +33,11 @@
 ## 当前最终状态
 
 GDCC 当前不 vendor、不解压、不编译 `gdextension-lite`。生成项目编译本模块
-`entry.c` 与静态 runtime source `<includeRoot>/godot/godot_binding.c`，外加协程
-runtime 的两个 `gdcc/**` translation unit（`<includeRoot>/gdcc/minicoro.c` 与
-`<includeRoot>/gdcc/gdcc_coroutine.c`，见 `doc/gdcc_runtime_lib.md` §Coroutine
-Runtime），并包含 `godot/**` 与 `gdcc/**` helper 树。
+`entry.c` 与静态 runtime source `<includeRoot>/godot/godot_binding.c`，外加
+runtime 的三个 `gdcc/**` translation unit（`<includeRoot>/gdcc/minicoro.c`、
+`<includeRoot>/gdcc/gdcc_coroutine.c` 与 `<includeRoot>/gdcc/gdcc_hrx.c`，见
+`doc/gdcc_runtime_lib.md` §Coroutine Runtime 与 §HRX），并包含 `godot/**` 与
+`gdcc/**` helper 树。
 
 `CCodegen.generate()` 稳定返回三个模块级 generated files：
 
@@ -441,7 +442,7 @@ constant 这类模块变化 symbol 才进入 module-local。
   - 编译输入包含 `godot_binding.c`
   - stale legacy vendor runtime source 不进入 `cFiles` 或 include dirs
 - `CProjectBuilderCoroutineRuntimeInputTest`
-  - `gdcc/minicoro.c` 与 `gdcc/gdcc_coroutine.c` 被提取并固定顺序进入 `cFiles`
+  - `gdcc/minicoro.c`、`gdcc/gdcc_coroutine.c` 与 `gdcc/gdcc_hrx.c` 被提取并固定顺序进入 `cFiles`
 - `GdccCoroutineRuntimeSmokeTest`（zig-gated）
   - 纯 C 层锚定 minicoro 往返、finalize 不变量、cancel 级联放弃、identify 拒绝与
     dynamic 分派的非 engine 分支

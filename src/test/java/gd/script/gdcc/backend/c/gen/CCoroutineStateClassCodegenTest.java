@@ -70,7 +70,7 @@ class CCoroutineStateClassCodegenTest {
                 "creation_info.recreate_instance_func = _gdcc_coro_state_Worker__coro__"),
                 "every coroutine state class must wire recreate_instance_func");
 
-        // ---- RELOADED_SHELL lazy shell (hot_reload_implementation_plan.md D5) ----
+        // ---- Reloaded coroutine shell ----
         var recreateBody = resolveFunctionBodyByPrefix(cCode,
                 "GDExtensionClassInstancePtr _gdcc_coro_state_Worker__coro__sum_to_class_recreate_instance(");
         assertOrdered(
@@ -86,14 +86,14 @@ class CCoroutineStateClassCodegenTest {
                 "&self->_coro_header, &_gdcc_coro_state_Worker__coro__sum_to_class_binding_callbacks);",
                 "return self;"
         );
-        // The shell never rebuilds or runs any coroutine machinery (D5).
+        // The shell never rebuilds or runs any coroutine machinery.
         assertFalse(recreateBody.contains("classdb_construct_object2"), recreateBody);
         assertFalse(recreateBody.contains("godot_object_set_instance("), recreateBody);
         assertFalse(recreateBody.contains("POSTINITIALIZE"), recreateBody);
         assertFalse(recreateBody.contains("mco_create"), recreateBody);
         assertFalse(recreateBody.contains("mco_resume"), recreateBody);
         assertFalse(recreateBody.contains("emit_completed"), recreateBody);
-        // D5/HR-5: the shell never joins the active-coroutine list either.
+        // The shell never joins the active-coroutine list either.
         assertFalse(recreateBody.contains("gdcc_coro_active_link"), recreateBody);
         // The binding MUST use the coroutine token, never class_library (identify path).
         assertFalse(recreateBody.contains("class_library"), recreateBody);
@@ -129,7 +129,7 @@ class CCoroutineStateClassCodegenTest {
                     "memset(self, 0, sizeof(" + stateName + "));"
             );
         }
-        // ---- deinitialize (D8): hidden state classes unregister in the strict reverse of
+        // ---- deinitialize: hidden state classes unregister in the strict reverse of
         // their generation order, all before the user class unregistrations and the runtime
         // registry teardown (free_instance runs inside these calls during a reload). ----
         var deinitializeBody = resolveFunctionBodyByPrefix(cCode, "void deinitialize(void* userdata");
@@ -149,7 +149,7 @@ class CCoroutineStateClassCodegenTest {
 
     @Test
     void coroutineStateClassesUnregisterInGlobalReverseGenerationOrder() {
-        // D8 demands the strict GLOBAL reverse of the row-major (classDefs × functions,
+        // Unregistration demands the strict GLOBAL reverse of the row-major (classDefs × functions,
         // coroutines only) generation order. Two classes with interleaved sync functions pin
         // both reversal axes: reversing only the per-class function list (or only the class
         // list) would still produce a symmetric-looking but wrong sequence here.
@@ -157,7 +157,7 @@ class CCoroutineStateClassCodegenTest {
         alpha.addFunction(voidCoroutine(alpha, "a1"));
         alpha.addFunction(syncMethod(alpha, "a_sync"));
         alpha.addFunction(voidCoroutine(alpha, "a2"));
-        // A destroyable static pins the joint D8 v11 ordering: static teardown precedes the
+        // A destroyable static pins the joint ordering: static teardown precedes the
         // FIRST hidden state-class unregistration (the coroutine-only fixture above cannot
         // catch a coroutine loop drifting ahead of static teardown).
         alpha.addProperty(new LirPropertyDef("label", GdStringType.STRING, true, null, null, null, Map.of()));
@@ -169,7 +169,7 @@ class CCoroutineStateClassCodegenTest {
         var cCode = generatedFileText(files, "entry.c");
 
         var initializeBody = resolveFunctionBodyByPrefix(cCode, "void initialize(void* userdata");
-        // HR-5 dual-mode gate: set right after gdcc_init, strictly BEFORE the first class
+        // Editor-only tracking gate: set right after gdcc_init, strictly BEFORE the first class
         // registration (static initializers and any user code can only run afterwards).
         assertOrdered(
                 initializeBody,
@@ -199,7 +199,7 @@ class CCoroutineStateClassCodegenTest {
                 "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"Alpha\"));",
                 "gdcc_sn_registry_destroy_all();"
         );
-        // HR-5: the bulk cancel runs exactly once, before static teardown, so every
+        // The bulk cancel runs exactly once, before static teardown, so every
         // in-flight coroutine is abandoned while the runtime is still fully operational.
         assertEquals(1, countOccurrences(deinitializeBody, "gdcc_coro_cancel_all();"), deinitializeBody);
         assertEquals(6, countOccurrences(deinitializeBody, "godot_classdb_unregister_extension_class("),
@@ -357,7 +357,7 @@ class CCoroutineStateClassCodegenTest {
         assertTrue(selfFillIndex >= 0, thunkBody);
         assertTrue(thunkBody.indexOf("own_object(", selfFillIndex) > selfFillIndex, thunkBody);
 
-        // HR-5: the state joins the active list only AFTER a successful mco_create and
+        // The state joins the active list only AFTER a successful mco_create and
         // BEFORE the first resume; the OOM branch must return without ever linking.
         var oomBranchIndex = thunkBody.indexOf("mco_create(&coro_state->_coro_header.co, &coro_desc) != MCO_SUCCESS");
         var linkIndex = thunkBody.indexOf("gdcc_coro_active_link(&coro_state->_coro_header);");

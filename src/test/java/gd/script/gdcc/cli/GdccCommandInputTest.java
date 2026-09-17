@@ -250,6 +250,23 @@ class GdccCommandInputTest {
     }
 
     @Test
+    void macosTargetOptionSelectsMacosPlatform(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(
+                "--target",
+                "macos-aarch64",
+                "-o",
+                tempDir.resolve("build/demo").toString(),
+                source.toString()
+        );
+
+        assertEquals(0, exitCode);
+        assertEquals(TargetPlatform.MACOS_AARCH64, terminal.api.getCompileOptions("demo").targetPlatform());
+    }
+
+    @Test
     void projectOptionGeneratesGdextensionMetadataWhenInputsBelongToThatGodotProject(@TempDir Path tempDir)
             throws IOException {
         var projectFile = writeSource(tempDir.resolve("game/project.godot"), "config_version=5\n");
@@ -371,7 +388,7 @@ class GdccCommandInputTest {
         );
         var invalidTargetExitCode = invalidTarget.command().commandLine().execute(
                 "--target",
-                "macos-x86_64",
+                "ios-x86-64",
                 "-o",
                 tempDir.resolve("build/demo").toString(),
                 source.toString()
@@ -383,7 +400,7 @@ class GdccCommandInputTest {
         assertTrue(invalidOpt.api.listModules().isEmpty());
 
         assertEquals(GdccCommand.EXIT_USAGE, invalidTargetExitCode);
-        assertTrue(invalidTarget.errText().contains("Unsupported --target value 'macos-x86_64'"), invalidTarget.errText());
+        assertTrue(invalidTarget.errText().contains("Unsupported --target value 'ios-x86-64'"), invalidTarget.errText());
         invalidTarget.assertCompilerNotInvoked();
         assertTrue(invalidTarget.api.listModules().isEmpty());
     }

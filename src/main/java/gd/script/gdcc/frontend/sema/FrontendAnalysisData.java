@@ -69,7 +69,7 @@ public final class FrontendAnalysisData {
     /// Published lambda identity/capture plans keyed by `LambdaExpression`. Inventory never
     /// publishes placeholder plans; the first entry is the complete `LAMBDA_RESOLUTION` payload.
     private final @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans;
-    /// HRX §5.11 lambda identity facts (source ordinal + normalized call-site context) keyed by
+    /// Lambda identity facts (source ordinal + normalized call-site context) keyed by
     /// `LambdaExpression`. Published by `FrontendLambdaIdentityAnalyzer` ahead of suite resolution;
     /// consumed by `FrontendSuiteResolver.fillAndPublishLambdaPlan`, which fails fast on a missing
     /// entry rather than defaulting an empty context (that would silently void the context gate).

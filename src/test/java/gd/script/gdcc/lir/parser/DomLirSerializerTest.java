@@ -252,7 +252,7 @@ public class DomLirSerializerTest {
 
     @Test
     public void serialize_module_writesLambdaMetaElementAndRoundTrips() throws Exception {
-        // HR-8 + §5.11: the lambda-only identity rides a nested
+        // The lambda-only identity rides a nested
         // `<meta call_site_context="..." source_identity_key="..."/>` element which must survive
         // the XML round-trip (the backend rebind table consumes the parsed values); a plain
         // function never carries the element at all.
