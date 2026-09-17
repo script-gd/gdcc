@@ -2,7 +2,7 @@
 
 ## 0. 文档状态
 
-- 状态：**计划，未实施**。本文描述分步实施方案与验收细则；实施落地后应拆分为长期事实源文档并修订本文状态。
+- 状态：**已实施（HR-0 ~ HR-9 全部完成，2026-09）**；**§5.11（lambda 身份升级：序号主键 + 调用点上下文）为 v15 设计定稿，尚未实施**。长期事实源已拆分承载：HRX runtime 合同见 `doc/gdcc_runtime_lib.md`（§HRX Hot-Reload Thunk Runtime）、entry 生命周期合同见 `doc/gdcc_c_backend.md`（D8）、用户可见语义合同见本文 §7；本文保留为实施过程与端到端验收记录。
 - 修订记录：
     - v2：经两轮审阅并按 `godotengine/godot@4.5.1-stable` 源码核验后，重写 §2 协议事实基线（reload 时间线、recreate 检查、属性保存/恢复过滤、重注册语义）、修正 recreate 返回值/binding 合同、重写用户可见语义合同（STORAGE 而非 export）、修正 D2 析构守卫截断缺陷、补充协程取消/惰性壳/Signal waiter 处理、收窄 Callable 限制范围。
     - v3：custom Callable 跨 reload 方案定稿——堆驻留 thunk + 双模派发（§5），替换 v2 的"文档化限制 + 待确认"立场；核验两项引擎事实：Godot 不凭 `GDExtensionCallableCustomInfo2.token` 自动失效 custom Callable（`core/extension/gdextension_interface.cpp`），`[dependencies]` 不保证依赖库跨 reload 存活（`gdextension_library_loader.cpp:236-239` 只关主库句柄）；据此否定 stable shim 伴随库路线，确立单库 thunk 路线。
@@ -15,10 +15,11 @@
     - v10：补齐 macOS x86_64（Intel）thunk 生成表述——§5.3 明确复用 x86_64 SysV 模板（macOS Intel 同为 System V AMD64 ABI，参数寄存器/16B 对齐/128B red zone 一致，模板零新增）；§5.4 macOS execmem 路径覆盖两架构（`MAP_JIT`/`pthread_jit_write_protect_np` 为 arm64 专属，Intel 不涉及；slab 页大小运行时查询，Intel 4K / Apple Silicon 16K）；§5.10 平台矩阵新增 macOS x86_64 行（universal2 编辑器 Intel 切片必须覆盖），RW→RX 实机验证项改为按架构分别核验。
     - v11（实施期修订，HR-4 双审阅发现并经用户确认）：**D8 顺序修订——static backing 销毁与类注销段对调**（static 销毁 → 类注销 → registry 销毁）。原顺序仅在 reload 路径安全；正常退出（非 reload）时 `_unregister_extension_class` 不调 `_clear_extension`（`gdextension.cpp` 非 reload 分支直接 `extension_classes.erase`），static backing 持有的 GDCC 实例在最后引用释放时会经悬空的 `_extension` 执行析构回调（UAF，链路经 `object.cpp:2263-2278, 933-935` 与 `main.cpp:4985,5016` 核验成立）；GDExtension 接口不暴露 `is_reloading`，无法运行时分流，故统一改为两路径皆安全的对调顺序，并扩展 D3 纪律（字段析构链/协程字段清理不得依赖 static backing）。HR-4 验收细则同步修订；`gdcc_c_backend.md` 与 `explicit_c_inheritance_layout_contract.md` 已同步。
     - v12（实施期修订，HR-9 自动化落地 HR-1~HR-5 部分）：`GodotEditorHotReloadTestSession` 与 4 个端到端场景测试已实现并全绿（Linux + Godot 4.5.2 editor，见 §6 HR-9 自动化节状态行）。关键新事实：**`_process` 挂载方式结论落定**——headless editor 下 `root.add_child()` 即可驱动节点 `_process`，但 fixture 类必须 `@tool`：gdcc 生成的 `call_virtual_with_data` 对非 tool 类的 `_process`/`_physics_process` 在 `gdcc_is_editor_hint()` 下既定跳过（非 tool 脚本编辑器语义对齐，见 `entry.c.ftl` 虚拟分派段），非热重载缺陷；冒烟验证项"需 `_process` 的场景挂载方式"据此闭环。
-    - v13（实施期修订，HR-9 自动化性能与健壮性）：① 耗时画像——nativeCompile 占绝对大头（约 19.7s × 9 次构建 ≈ 77% 总时长），编辑器启动约 10s/次，reload 本身毫秒级；② 加速落地——4 个场景的原生构建目录改为 `tmp/test/editor_hot_reload/build_<scenario>` 单目录跨 v1/v2/v3 复用并跨测试运行存活（路径一致使 zig 按 TU 内容缓存吸收 3 个运行时 TU，仅 `entry.c` 逐版本重编），预建 `shared-compiler-cache` 使 4 场景共享 PCH/zig 缓存根，测试类加 `@Execution(CONCURRENT)`（`ZigCcCompiler` 锁按 projectDir 粒度，构建真并行；编辑器进程互相独立）：全类墙钟 3m50s → 约 25~27s（热缓存 nativeCompile ≈ 0.4~0.5s/次）；③ **上游引擎缺陷实证**：`reload_extension` 返回后于重负载下立即 `quit` 会在 `Main::cleanup()` 的 `MessageQueue::flush()` 中崩溃（SIGSEGV）——机制同 `godotengine/godot#123511`/`#111048`（deferred 编辑器文档再生成在扩展卸载后执行，StringName 键悬空；4.5.2 本机以手写最小 C 扩展 probe_ext 复现，与 gdcc 无关；负载放大竞态窗口），缓解：driver 在最终 marker/quit 前停留 60 帧让消息队列在扩展存活期内排空（满核负载下验证 4/4 干净），手测清单遇同类崩溃亦按此处理。
-    - 实施进展（2026-09）：HR-0 ✅（附录 A）；HR-1 ✅；HR-2 ✅（D2，双审阅闭环）；HR-3 ✅（D4/D5，双审阅闭环：修复 alloc OOM 守卫、壳执行级测试）；HR-4 ✅（D8 v11，双审阅 + BLOCKING 修订闭环）；HR-5 ✅（D5 + 双模门控，双审阅闭环）；HR-6 ✅（文档合同，随 HR-8 落地）；HR-8 ✅（§5 全合同，实施期发现的事实纠偏见下）。详见 §6 各步骤状态行。
+    - v13（实施期修订，HR-9 自动化性能与健壮性）：① 耗时画像——nativeCompile 占绝对大头（约 19.7s × 9 次构建 ≈ 77% 总时长），编辑器启动约 10s/次，reload 本身毫秒级；② 加速落地——4 个场景的原生构建目录改为 `tmp/test/editor_hot_reload/build_<scenario>` 单目录跨 v1/v2/v3 复用并跨测试运行存活（路径一致使 zig 按 TU 内容缓存吸收 3 个运行时 TU，仅 `entry.c` 逐版本重编），预建 `shared-compiler-cache` 使 4 场景共享 PCH/zig 缓存根，测试类加 `@Execution(CONCURRENT)`（`ZigCcCompiler` 锁按 projectDir 粒度，构建真并行；编辑器进程互相独立）：全类墙钟 3m50s → 约 25~27s（热缓存 nativeCompile ≈ 0.4~0.5s/次）；③ **上游引擎缺陷实证**：`reload_extension` 返回后于重负载下立即 `quit` 会在 `Main::cleanup()` 的 `MessageQueue::flush()` 中崩溃（SIGSEGV）——机制同 `godotengine/godot#123511`/`#111048`（deferred 编辑器文档再生成在扩展卸载后执行，StringName 键悬空；4.5.2 本机以手写最小 C 扩展 probe_ext 复现，与 gdcc 无关；负载放大竞态窗口），缓解：driver 在最终 marker/quit 前停留让消息队列在扩展存活期内排空（初始 60 帧、满核负载下验证 4/4 干净；**HR-9 全场景落地后修订为 180 帧**——与 CPU 饱和的原生探针构建并发时 60 帧两次复现同类 SIGSEGV：文档再生成在受争夺 worker 线程上滞后，窗口需要的是墙钟时间而非帧数；180 帧在同负载强制重跑两轮全绿），手测清单遇同类崩溃亦按此处理。
+    - 实施进展（2026-09）：HR-0 ✅（附录 A）；HR-1 ✅；HR-2 ✅（D2，双审阅闭环）；HR-3 ✅（D4/D5，双审阅闭环：修复 alloc OOM 守卫、壳执行级测试）；HR-4 ✅（D8 v11，双审阅 + BLOCKING 修订闭环）；HR-5 ✅（D5 + 双模门控，双审阅闭环）；HR-6 ✅（文档合同，随 HR-8 落地）；HR-8 ✅（§5 全合同，实施期发现的事实纠偏见下）；HR-9 ✅（场景 1~10b 自动化端到端验收，Linux + Godot 4.5.2 editor/headless 真机全绿；Windows 副本机制与 macOS RW→RX 为平台专属待验证项）。详见 §6 各步骤状态行。
     - **HR-8 实施期事实纠偏**（相对 §5 设计稿，均为实现层细化而非合同变更）：① ~~四 thunk 合入**单 slab 槽位**~~（**已被 v14 取代**：per-spec slab 槽位整体废弃，改为每 hub 一页共享静态 thunk）；② standalone 身份结构与重绑表在 codegen 侧统一由 `CHrxIdentityCatalog` 发射（§5 预期的运行时字符串构造改为 codegen 静态发射，runtime 零格式化代码，schema_desc 跨代逐字节可比对）；③ `argument_count` 数据化字段并入 `gdcc_hrx_identity`（创建/重绑同源）；④ 锚点 token 派生输入定为模块名 MD5 前 64 位（不含 optimization/architecture）；⑤ 清扫重入 drain 与 §5.6 点 4 伪码等价地实现于 sweeper 尾部与阶段二尾部两处（深度归零即排空）。
     - v14（实施期修订，HR-8 双审阅复核期间发现的 BLOCKING 驱动）：**per-spec slab thunk 槽位整体废弃，改为每 hub 一页的共享静态 thunk**。动因：slab 写新槽位需把整页 RX→RW→RX，若 RX 恢复持久失败，同页已发布 sibling thunk 将执行 NX 页崩溃，fail-closed 被穿透（review-expert-c 复核指认）。关键事实核验（`core/extension/gdextension_interface.cpp:65-73,132-170,204-234`）：四个回调的 arg0 恒为 `callable_userdata`（= spec），默认相等为 `(call_func, userdata)` 二元组、默认哈希混合两指针——因此 spec 立即数本就是冗余（arg0 寄存器已携带），共享 `call_func` 后相等归约为 spec 同一性，与 per-spec thunk 的等价类完全一致。唯一缺口是 free thunk 需要 hub（sweeper）：spec 新增 `hub` 回指针字段（偏移 48，ABI 冻结），free thunk 经 `spec->hub->sweeper` 两次加载。§5.1 不变量 6、§5.2 结构、§5.3 模板合同（零补丁，离线汇编字节内嵌）、§5.4（slab→共享 thunk 页，hub 创建时一次性 RW→写→RX 后**永不再写**，probe 回退单循环；页与 hub 同寿命、跨代 thunk 地址恒定）、§5.6（摘除 slot 归还步骤）、§5.7（身份语义改述）同步修订；原 slab 验收项（同页 sibling 保活、跨代槽位回收）作废，替换为"全 spec 共享同一组 thunk 函数指针 + 跨代地址恒定"验收项。
+    - v15（设计修订，**待实施**）：lambda 身份匹配键升级定稿（新增 §5.11）——主键由位置偏移改为**源码序号**（`<Class>::<enclosingFunc>#<ordinal>`，最外层具名函数内 lambda 字面量的确定性源码先序序号），位置降级为诊断展示；新增**调用点上下文描述子**作为第三道硬门，修复已识别的"同 schema **可区分调用点**语句级换位静默误绑"盲区（§5.6/§5.9 原"换位不会绑错 body"的表述仅对异 schema/异列形态成立，HR-9 场景 5b 验证的是异 schema 腿；同形语句换位等不可区分形态列入 §5.11 残余盲区）。上游参考调研（2026-09）：GDScript 解释器 `GDScript::UpdatableFuncPtr` 槽位热替换（匹配键 = 外层函数内 lambda 序号 + 参数个数粗门，`godotengine/godot#81628`，**同盲区**，上游未解决；#88756 跨脚本集体失效事故证明匹配逻辑正确性/隔离性重于覆盖率）与 C# `ManagedCallable`（稳定 native 外壳 + 委托序列化迁移，lambda 符号名实为编译器序号名 `<Method>b__x_y`，捕获状态仅用于迁移而非匹配，#67511/#90837）——序号主键与参考实现持平且 schema 门更严，上下文门超出参考实现。体哈希消歧明确不做，完整残余盲区清单见 §5.11。当前已实施代码仍为位置 key（HR-8/HR-9 验收基线），§5.6/§5.9/§7/HR-8 验收细则相关条目已加交叉注记。
 - 关联文档：
     - `doc/gdcc_c_backend.md`：C 后端 ABI 与 entry 生命周期合同（Scene-level initialize/deinitialize）。
     - `doc/gdcc_runtime_lib.md`：runtime 全局 registry（String/StringName/standalone Callable）、协程运行时清理规则。
@@ -33,7 +34,7 @@
 
 - **目标**：编译产出的 GDExtension 库在 Godot 编辑器中支持热重载——重新编译后编辑器获得焦点时自动完成旧库卸载、新库加载、存活实例迁移，不崩溃、不泄漏（happy path），语义边界有明确合同。
 - **本期范围（最小完整闭环 + 健壮性）**：HR-0 ~ HR-9（注：编号 HR-7 已随端到端验收改号 HR-9 并移至最终步骤）。
-- **非本期范围（仅记录，见 §8）**：增量编译管线、`NOTIFICATION_EXTENSION_RELOADED` 用户钩子、同映像重复初始化加固、worker 线程 Callable 调用的 generation quiescence 协议、sljit 替换字节模板（§5.3 的隔离接口预留升级位）。
+- **非本期范围（仅记录，见 §8）**：增量编译管线、`NOTIFICATION_EXTENSION_RELOADED` 用户钩子、同映像重复初始化加固、worker 线程 Callable 调用的 generation quiescence 协议、sljit 替换字节模板（§5.3 的隔离接口预留升级位）、§5.11 lambda 身份升级（v15 设计已定稿，实施项见 §8）。
 
 ## 2. Godot 热重载协议事实基线（4.5.1-stable 已核验）
 
@@ -78,7 +79,7 @@
 | G5 | 实例 `_vtable` 指向库内静态 vtable，recreate 时必须重写为新库地址 | `virtual_override_vtable_implementation.md` §4 |
 | G6 | 挂起协程持有旧库代码指针（minicoro body、descriptor 回调、signal waiter Callable）；无统一取消机制 | `gdcc_coroutine.c`、`entry.c.ftl:499-538` |
 | G7 | Godot 侧存活的 custom Callable（lambda/standalone）持有旧库 `call_func`/`free_func`，跨 reload 调用即崩；副本可逃逸至信号连接、deferred 队列、Variant，无法枚举撤销；引擎无 token 自动失效（§2.2）→ **由 §5 方案（HR-8）解决** | `gdcc_callable.h:380-436`、`doc/gdcc_runtime_lib.md` |
-| G8 | 协程状态对象已被引擎跟踪（create 走 `godot_object_set_instance`，`entry.c.ftl:488`），但其 binding 使用 `gdcc_coro_binding_token()` 且 header 无"死亡/惰性壳"状态，recreate 语义需专门定义 | `entry.c.ftl:483-496`、`gdcc_coroutine.h:69-81` |
+| G8 | 协程状态对象已被引擎跟踪（create 走 `godot_object_set_instance`，`entry.c.ftl:659`），但其 binding 使用 `gdcc_coro_binding_token()` 且 header 无"死亡/惰性壳"状态，recreate 语义需专门定义 | `entry.c.ftl:662-663, 697-698`、`gdcc_coroutine.h:69-81` |
 
 ## 4. 关键设计决策
 
@@ -289,9 +290,10 @@ registry 是跨代花名册（非 owning，spec 生死由 Callable 引用计数 
     - **嵌套 lambda**：沿 `enclosingCallable` 上溯到最外层具名函数取基准，key 始终锚在具名实体上。
     语义：
     - 原地修改 lambda 实现（签名/捕获不变）→ 同一 key → **重绑新实现（热重载主路径，执行新代码）**；
-    - 两个 lambda 换位 → 相对偏移变化 → key 不复用 → 旧连接失配失效（fail-closed，**不会绑错 body**）。
+    - 两个 lambda 换位：异 schema 或列不重合 → key 失配或 schema 门拦截，失效而非绑错 body（HR-9 场景 5b 验证的即异 schema 形态）；**同 schema 且同列的语句级换位 → 位置 key 相撞且 schema 门通过 → 静默误绑**（现行已知盲区，§5.11 修复其中可区分调用点形态）。
     - **禁止**把 lambda 本体内容哈希加入指纹（会把"改 body"误判为失配，打爆主路径）；schema 指纹只服务析构/调用安全（布局+签名+abi_version）。
     - **frontend 合同（改动面小）**：`FrontendLambdaPlan` 已携带 `lambda`/`enclosingCallable` AST 节点（gdparser `Node.range()` 自带源位置）与 `owningClassCanonicalName`——**数据齐备，缺的只是派生计算**：新增 helper 由现有字段算出该 key（可在 plan 上加 `sourceIdentityKey()` 派生方法），透传到后端重绑表发射处；无需 AST/plan 结构变更。
+    - **v15 预告**：主键格式将由位置偏移升级为源码序号并新增调用点上下文硬门（同 schema 语句级换位误绑盲区修复），见 §5.11；本节其余条款（不含文件名、嵌套上溯、禁止体哈希入 schema 指纹、frontend 数据来源）继续有效，但 plan 将新增字段（不再"无结构变更"）。
 - **schema 指纹与 descriptor**：128-bit 指纹仅用于查找；执行 `destroy_fn` 前必须对 `schema_desc`（捕获字段 offset/size/表示/ownership 分类 + 签名 arity/参数/返回类型序列 + `abi_version` 的 canonical 编码）做长度+逐字节比对（防碰撞误析构）。
 - **reload 失败/锚点丢失的死 spec**：定义"安全泄漏"——新库加载失败或扩展被禁用期间释放的 Callable 仅标记 dead，spec/thunk 页/捕获留存至下次同模块成功加载时恢复清扫（仅限可达 hub）；锚点丢失的孤岛 hub 留存至进程退出（记诊断计数，不归入正常无泄漏合同）。
 - 线程约束：所有 registry/interning 变更与 sweeper 均在主线程；free thunk 的 `refcount--` 在主线程串行下安全（跨线程全生命周期禁令见 §5.8）。
@@ -326,8 +328,9 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
 |---|---|
 | 存活 lambda，签名+捕获布局未变 | 重绑到新实现，跨 reload 连接**执行新代码** |
 | 捕获布局/签名失配 | `UNBOUND_INCOMPATIBLE`：`is_valid=false` → 信号静默跳过；`call()` → 引擎标准错误；捕获块清扫时整块泄漏（不误析构） |
-| lambda 被删除/换位导致源身份 key 不复用 | 同上（无匹配条目；**不会绑错 body**） |
-| 本函数体内、lambda 之前增删行 | 相对行偏移变化 → 假失效（位置型 key 的最小失效面）；**其他函数增删、本函数整体移动不影响 key** |
+| lambda 被删除导致源身份 key 不复用 | 同上（无匹配条目；不会绑错 body） |
+| 两个 lambda 换位 | 异 schema 或列不重合：key 失配或 schema 门拦截 → 失效而非绑错 body（HR-9 场景 5b 已验证异 schema 腿）；**同 schema 且同列的语句级换位：位置 key 相撞 + schema 门通过 → 静默误绑（当前实施的已知盲区，§5.11 将其中可区分调用点形态修复为 fail-closed 失效，同形语句换位为共同残余盲区）** |
+| 本函数体内、lambda 之前增删行 | 相对行偏移变化 → 假失效（位置型 key 的最小失效面）；**其他函数增删、本函数整体移动不影响 key**（v15 序号主键后该失效面消除，见 §5.11 语义矩阵） |
 | 跨 reload 的 Callable 析构 | free thunk → sweeper（已是新代函数）按 `binding_state` 分流回收 |
 | deferred 队列/Variant 中的副本 | 与普通连接一致（spec 共享，refcount 保护） |
 | 编辑器内 execmem 不可用 | `HRX_UNAVAILABLE`：custom Callable 创建即无效 + 一次性错误；永不回退 direct |
@@ -337,6 +340,73 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
 
 - 平台矩阵：Linux x86_64（SysV 模板）、Windows x86_64（Win64 模板，第 5 参栈传/无 red zone）、**macOS x86_64（复用 SysV 模板**——macOS Intel 同为 System V AMD64 ABI；execmem 走 macOS 路径，`MAP_JIT` 为 arm64 专属不涉及；官方编辑器为 universal2，Intel Mac 运行 x86_64 切片故该目标必须覆盖**）**、Linux aarch64 与 macOS aarch64（arm64 模板 + icache flush 按工具链）；macOS 失败点为 Hardened Runtime 下 `mprotect(PROT_EXEC)`（两架构），由 probe 暴露并 fail-closed。
 - 待验证（并入 §6 HR-0）：Engine 单例 instance binding 以固定 token 跨 reload 存活（含 `clear_instance_bindings` 不触及的实证）；macOS 无 entitlement RW→RX 实机验证（**aarch64 与 x86_64 分别核验**——Apple 文档要求一致，但两架构历史执法强度可能不同，且 Intel 机还需覆盖老 macOS 版本）；`is_editor_hint` 在编辑器进程/编辑器启动的游戏进程/导出包三处取值。
+
+### 5.11 lambda 身份升级：序号主键 + 调用点上下文（v15 设计定稿，待实施）
+
+> 状态：设计定稿（2026-09，经双复核修订），**未实施**。当前代码仍为 §5.6 位置 key（HR-8/HR-9 验收基线）。本节实施后，下列现行条款整段作废并以本节为准：§5.6"impl_key 稳定源身份合同"全部子条款、§5.6 点 3 新代重绑判定段、§5.9 换位/增删行两行、§7 lambda 合同句、HR-8 验收细则 impl_key 条目；在此之前它们描述现行验收基线而非 v15 目标语义。
+
+#### 动因与上游调研结论
+
+位置 key 对"同函数内两个 **schema 相同**的 lambda 换位"不免疫：换位后旧 key 与新映像同位同列条目相撞且 schema 门通过 → 静默绑错 body。上游调研（详据见 v15 修订记录）：GDScript 解释器与 C# 绑定的身份键本质都是序号方案且存在同一盲区——序号主键使我们与参考实现持平（schema 门更严），调用点上下文门在**可区分调用点**形态上超出参考实现。
+
+#### 身份模型（三层）与重绑判定
+
+| 层 | 内容 | 职责 |
+|---|---|---|
+| 主键 `impl_key`（硬匹配） | `<Class>::<enclosingFunc>#<ordinal>`；`ordinal` = 最外层具名函数内 lambda 源码先序序号（0-based） | 定位候选条目 |
+| schema 门（硬门，不变） | `schema_desc` 逐字节一致（签名 + 捕获布局 + `abi_version`） | 调用/析构安全 |
+| 调用点上下文（硬门，新增） | 归一化描述子字符串 NULL-safe 相等 | 可区分形态的换位/插入消歧 |
+
+重绑判定（新代单遍历，含**跨代版本守卫**——v1 spec 堆块按 v1 `sizeof` 分配、无 v2 追加字段，越界读即 UB）：
+
+1. `spec->abi_version != GDCC_HRX_ABI_VERSION`（本代常量）→ `UNBOUND_INCOMPATIBLE`，**禁止读取任何 v2 追加字段**（`abi_version` 位于 v1 既有偏移，可读）；
+2. `impl_key` 命中本代重绑表 **且** `schema_desc` 逐字节一致——descriptor 前缀 `gdcc-hrx:N` 必须与 C 宏 `GDCC_HRX_ABI_VERSION` **同源生成**（现状 `CHrxIdentityCatalog` 硬编码 `"gdcc-hrx:1"`，只改 C 宏时 desc 仍匹配会使版本守卫失效，实施时抽共享常量）；
+3. `spec->callsite_context` 与表条目 `gdcc_hrx_identity.callsite_context`（本代 `.rodata`，非跨代 ABI，同步追加）NULL-safe 相等（standalone 双方恒 NULL 视为相等，不误伤 §5.7）。
+
+位置 `@+Δline:col` 降级为**诊断展示**（catalog/日志），不再参与匹配；嵌套 lambda 沿 `enclosingCallable` 上溯到最外层具名函数取序号域（同 §5.6 原合同）。
+
+#### 序号合同
+
+- `identityOrdinal` = 以**最外层具名函数 body** 为根、与 `FrontendLoweringFunctionPreparationPass.collectLambdaContexts`（`:384-415`）相同的先序序号：遇 `LambdaExpression` 先编号再只递归 `body()`——参数默认值等未进入 HRX 编目的字面量不占号，保证序号域与重绑表严格同集。
+- **禁止**复用 per-class 合成名计数器 `_lambda_<k>`（`FrontendSuiteResolver.java:439-442`：类级域，会被其他函数的 lambda 增删打翻，仅作隐藏函数名）；**禁止**由 `lambdaPlans().values()`/`FrontendAstSideTable.values()` 驱动编号（`IdentityHashMap` 迭代无序）——必须显式先序遍历。
+- 语义矩阵（相对位置 key 的变化）：
+    - 改 body / 该 lambda 之前增删**非 lambda** 行 / 其他函数改动 / 函数整体移动 → key 不变 → 重绑（**消除位置 key 的最小失效面**）；
+    - 函数内该 lambda 之前**增删 lambda** → 序号位移：新 `#n` 的 schema 或 context 不同 → 失效；**同形同 schema → 误绑（残余盲区 2）**；
+    - **可区分调用点**的语句级换位（`base`/`var`/`lhs` 等不同）→ 序号相撞但 context 不符 → **失效而非误绑**（修复目标形态）；
+    - 同形语句换位、同语句内表达式级换位、跨函数搬迁 → 见残余盲区。
+
+#### 调用点上下文描述子
+
+- **获取方式**：新增 frontend pass（命名候选 `FrontendLambdaContextAnalyzer`）——自 `SourceFile` 递归遍历并维护 (祖先链, 边描述, 子序号) 栈；遇 `LambdaExpression` 生成描述子，按 **AST 节点身份**存侧表（与 `lambdaPlans` 键控方式一致）；lambda body 作为新 callable root 递归（嵌套 lambda 上下文在其自身函数内重置）。parent map 构建模式已有先例：`FrontendAnalysisInspectionTool.java:837-849`；gdparser（`com.github.SuperIceCN:gdparser:0.5.3`）`Node` 无 parent 指针、`ASTWalker` handler 不携带祖先信息，故必须自建栈，**无需改库**。**顺序合同**：本 pass 必须先于 `FrontendSuiteResolver.fillAndPublishLambdaPlan` 完成；plan 创建查不到侧表条目 → **fail-fast**，禁止默认空串（空串会使 context 门恒等，消歧静默失效）。
+- **归一化规则**（锚到**最近语句级锚点**；片段文本经 `range()` 切片源码并做空白/括号归一化；链式表达式必须用 typed accessor（`steps()` 等）还原角色——`getChildren()` 不携带角色名，子下标与 `arguments()` 下标不对应）：
+
+| 源码形态 | 描述子 |
+|---|---|
+| `pinged.connect(func...)`、`self.sig_a.connect(func...)`、`$Timer.timeout.connect(func...)` | `call(base=<包围该 lambda 的那个 AttributeCallStep（connect 形态下即链尾）之前的整段链前缀切片>, method=connect, arg=0)`——`base` **不是** `AttributeExpression.base()`（那只是链头 `self`/`$Timer`），而是链前缀（`self.sig_a`、`$Timer.timeout`） |
+| `foo(x, func...)` | `call(callee=<callee 切片>, arg=1)` |
+| `var cb := func...` | `assign(var=cb, kind=var)` |
+| `x = func...` | `assign_expr(lhs=<left 切片>, op=<op>)`（含左值，否则两条赋值语句换位不可区分） |
+| `await sig_a` | `await(operand=<value 切片>)` |
+| `[a, func...]` | `array(idx=1)` |
+| `return func...` | `return`（同一函数内两 return 臂不可区分——残余盲区 2） |
+| 其他未建模形态 | `stmt(<容器节点类型名>)` 兜底（区分力弱，仅作 fail-closed 兜底） |
+
+- **已知代价（新引入的假失效面，fail-closed，实施时写入 §7）**：提取变量重构（`sig.connect(func...)` → `var cb := func...; sig.connect(cb)`）、局部变量改名、链前缀改名（如属性改名）；信号改名导致的失效语义正确（连接本随旧信号消亡）。
+- **残余盲区（本期不修，后果为误绑而非失效）**：
+    1. 同语句内表达式级换位且 schema 相同（`foo(funcA,funcB)` 实参对调、`[funcA,funcB]` 元素对调）——arg/idx 跟随位置，三门同撞；
+    2. **同形语句**的换位或前插（描述子相同）：同一信号两次 `connect`、同 callee 同实参序两调用、同左值两赋值、同操作数双 `await`、同函数双 `return`、同型 `stmt(T)` 兜底对；
+    3. lambda **跨函数搬迁**：源函数条目消失（旧连接失效，正确），但搬入方函数同形槽位相撞 → 可能误绑搬入方原有连接；
+    4. 嵌套 lambda 序号域共享：在外层 lambda 之前增删外层 lambda → 嵌套者序号位移，同形相撞同盲区 2，不同形则失效（可接受的保守面）。
+    统一缓解方向（后续项）：体哈希消歧可覆盖盲区 1/2 中 body 不同的子集；v15 决策不做（形态罕见，LIR 结构哈希的成本与确定性风险不成比例）。
+
+#### 实施改动面（待实施清单）
+
+- **frontend**：新增上下文 pass（顺序合同见上）；**侧表只承载 `callSiteContext`**（按 AST 节点身份），`identityOrdinal` 必须另由与 `collectLambdaContexts` 同构的 body 先序遍历（per-最外层具名函数计数器）赋值——禁止用 SourceFile 全文件 pass 的访问序编号（参数默认值等未入编目的字面量会占号，序号域与重绑表错位）；`FrontendLambdaPlan` 增 `identityOrdinal`（int）与 `callSiteContext`（String）字段，`sourceIdentityKey()` 格式改 `#<ordinal>`；`fillAndPublishLambdaPlan` 查侧表填充。
+- **LIR**：`LirFunctionDef` 增 `callSiteContext` 字段 + XML 往返（随 `sourceIdentityKey` 同路径；`DomLirSerializer`/`DomLirParser` 已有该机制，复核已核验 `LirFunctionDef.java:184-193`）。
+- **backend**：`CHrxIdentityCatalog` 发射序号格式 impl_key + context 字符串；desc 前缀 `gdcc-hrx:N` 抽共享常量与 `GDCC_HRX_ABI_VERSION` 同源。
+- **runtime**：`gdcc_hrx_identity`（本代 `.rodata`）与 `gdcc_hrx_spec`（跨代 ABI，**append-only** 尾部追加）各增 `const char *callsite_context`；`GDCC_HRX_ABI_VERSION` 1→2（**禁止**动 `GDCC_HRX_HUB_VERSION`——hub 失配会把整个旧 registry 变孤岛）；重绑按上节"版本守卫 + 三门"；`gdcc_hrx_shell_free`/sweeper 释放 `callsite_context` 以 `spec->abi_version >= 2` 守卫（旧块无此字段）；创建 spec 时与 `impl_key` 同样 `godot_mem_alloc` 堆拷贝（`callsite_context == NULL`（standalone）时不分配、字段保持 NULL，禁止 `strdup(NULL)`）；**v1→v2 首次 reload 为一次性全量失效**（版本守卫 + key 格式变更使所有旧 spec 判 UNBOUND，正确且预期，实施时写入 §7）
+- **文档回写（实施落地时同步）**：§7（删除"之前增删行即失效"、写入提取重构/改名假失效、换位承诺按本节收窄）、`doc/gdcc_c_backend.md` D8 身份段（现仍写 `@+Δline:col`）、`doc/gdcc_runtime_lib.md` §HRX。
+- **验收（HR-9 增补场景）**：① 同 schema **可区分调用点**语句级换位三形态（裸 `sig_a`/`sig_b`、`self.sig_a`/`self.sig_b`、`$A.timeout`/`$B.timeout`）→ 两连接失效而非误绑（5b 现仅覆盖异 schema 换位）；② 序号免疫——lambda 前增删非 lambda 行后仍重绑成功；③ 提取变量重构 → 假失效（合同锚定）。残余盲区形态写入用户合同，不做行为断言。
 
 ## 6. 分步实施与验收细则
 
@@ -354,7 +424,7 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
 
 ### HR-1 `.gdextension` 输出 `reloadable = true` ✅ 已完成
 
-> 实施状态：已完成（2026-09）。`GdextensionMetadataFile.render(...)`/`renderMultiPlatform(...)` 均在 `[configuration]` 段固定输出 `reloadable = true`（共享常量 `RELOADABLE_LINE`）；`GdextensionMetadataFileTest` 已补齐 `render()` 入口断言并更新 multi-platform 快照，`script/run-gradle-targeted-tests.sh --tests GdextensionMetadataFileTest` 通过。末条验收（test_project 重生成 + 编辑器告警消除）移交 HR-9 场景 1 验证。
+> 实施状态：已完成（2026-09）。`GdextensionMetadataFile.render(...)`/`renderMultiPlatform(...)` 均在 `[configuration]` 段固定输出 `reloadable = true`（共享常量 `RELOADABLE_LINE`）；`GdextensionMetadataFileTest` 已补齐 `render()` 入口断言并更新 multi-platform 快照，`script/run-gradle-targeted-tests.sh --tests GdextensionMetadataFileTest` 通过。末条验收（test_project 重生成 + 编辑器告警消除）已由 HR-9 场景 1 真机闭环（`reloadable = true` 被编辑器接受，全流程无相关告警报错）。
 
 - **改动点**：`GdextensionMetadataFile.java` 的 `render(...)` 与 `renderMultiPlatform(...)` 均在 `[configuration]` 段固定输出 `reloadable = true`（与 godot-cpp 模板一致；release 导出由引擎忽略 reload，无需 CLI 开关）。
 - **验收细则**：
@@ -396,24 +466,24 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
 
 ### HR-5 协程活跃注册表与统一取消
 
-> 实施状态：已完成（2026-09，双审阅闭环；**2026-09 追加双模运行时门控**）。runtime 层落地：header 新增 `signal_reg`（signal 挂起登记，connect 前分配、成功后发布、free callback 依身份守卫清除）与 `active_prev/active_next`（模块本地侵入式活跃链表，非持有）；`gdcc_coro_active_link()` 由 start thunk 在 `mco_create` 成功后、首次 `mco_resume` 前调用（OOM 态与 RELOADED_SHELL 从不入链），`finalize`/`cancel`/`state_free` 幂等 unlink。`gdcc_coro_cancel_all()` 摘头循环（释放 waiter 边可能级联 unlink/free 其他节点，故每轮重读 head）：unlink → 临时强引用保活 → `gdcc_coro_signal_detach`（以 Godot 默认 custom Callable 相等性 `call_func + userdata` 重建**查找钥匙**断开 one-shot 连接——钥匙的 free callback 为 NULL，wait 由连接自身句柄 exactly-once 释放；**disconnect 经局部 Signal 副本**：引擎 `_disconnect` 在 erase 同步销毁登记后仍读 `p_signal`，直接传 `&reg->sig` 构成 UAF——首轮审阅发现并已修复，fake 层 Signal 真析构 + disconnect 后读 name 使回归可被测试捕获）。**双模门控（方案 B，双审阅闭环）**：模块全局 `gdcc_hot_reload_active` 由生成的 `initialize()` 在 `gdcc_init()` 后、首个类注册前按 `is_editor_hint()` 设置——仅编辑器进程为 true；为 false（release 导出、F5 游戏进程、未设置的纯 C fixture）时 `active_link`/`cancel_all` 为 no-op、signal_reg 不分配，协程行为与 HR-5 之前完全一致、零跟踪开销；普通生命周期（await/finalize/PREDELETE cancel）与 recreate/RELOADED_SHELL 刻意不受门控（creatable 类缺 recreate 会被引擎禁用整个扩展 reload）。模板：`deinitialize()` 打印后、static 销毁前条件调用（`hasCoroutineFunctions()`）；start thunk 插入 link 调用；initialize 条件插入门控设置。测试：`GdccCoroutineRuntimeSmokeTest` 七 probe——`cancelAllShouldDetachSignalsAndCancelEveryActiveState`（四态混合主场景）、`cancelAllShouldFreeConnectionEdgeOnlyStateInsideTheLoop`（fire-and-forget 仅连接边保活，free 发生在循环内）、`cancelAllShouldCascadeWaiterEdgeOnlyAwaiterWithoutDanglingHead`（awaiter 仅 waiter 边保活，嵌套销毁 + head 重读安全）、`signalRegistrationShouldSurviveResuspensionAndEmitterDeath`（同次发射二次挂起身份守卫 + emitter 先死亡清登记）、`hotReloadGateOffShouldDisableTrackingAndBulkCancel`（门控正反两面，含 gate-on 后 re-link 前的空链表证明——覆盖单节点盲区）、`gateOffEmitterDeathShouldDriveOrdinaryPredeleteCancel`（gate-off 下 emitter 死亡走普通 PREDELETE 退出路径）、`signalRegAllocationFailureShouldFailTheAwaitCleanly`（reg OOM 失败注入：两次诊断 + nil + 无连接无边无挂起）；codegen 锚定 initialize 门控位置（gdcc_init 后、首个 `register_extension_class5` 前）与恰好一次、无协程 module 双负断言、deinitialize 顺序链、start thunk link 位置与 OOM/recreate 不 link。真引擎回归：`compilesAndValidatesCoroutineScripts`（22 例）与 `compilesAndValidatesLambdaScripts` 全绿。review-expert-a/c 双审阅（首轮 + 门控轮）：HIGH（detach Signal UAF + 最后保活边路径测试缺口）与 MEDIUM（gate-off link no-op 证明盲区）全部修复并复核 CONFIRMED/APPROVE。HR-9 场景 4（真引擎 reload 无协程泄漏）仍属最终验收。
+> 实施状态：已完成（2026-09，双审阅闭环；**2026-09 追加双模运行时门控**）。runtime 层落地：header 新增 `signal_reg`（signal 挂起登记，connect 前分配、成功后发布、free callback 依身份守卫清除）与 `active_prev/active_next`（模块本地侵入式活跃链表，非持有）；`gdcc_coro_active_link()` 由 start thunk 在 `mco_create` 成功后、首次 `mco_resume` 前调用（OOM 态与 RELOADED_SHELL 从不入链），`finalize`/`cancel`/`state_free` 幂等 unlink。`gdcc_coro_cancel_all()` 摘头循环（释放 waiter 边可能级联 unlink/free 其他节点，故每轮重读 head）：unlink → 临时强引用保活 → `gdcc_coro_signal_detach`（以 Godot 默认 custom Callable 相等性 `call_func + userdata` 重建**查找钥匙**断开 one-shot 连接——钥匙的 free callback 为 NULL，wait 由连接自身句柄 exactly-once 释放；**disconnect 经局部 Signal 副本**：引擎 `_disconnect` 在 erase 同步销毁登记后仍读 `p_signal`，直接传 `&reg->sig` 构成 UAF——首轮审阅发现并已修复，fake 层 Signal 真析构 + disconnect 后读 name 使回归可被测试捕获）。**双模门控（方案 B，双审阅闭环）**：模块全局 `gdcc_hot_reload_active` 由生成的 `initialize()` 在 `gdcc_init()` 后、首个类注册前按 `is_editor_hint()` 设置——仅编辑器进程为 true；为 false（release 导出、F5 游戏进程、未设置的纯 C fixture）时 `active_link`/`cancel_all` 为 no-op、signal_reg 不分配，协程行为与 HR-5 之前完全一致、零跟踪开销；普通生命周期（await/finalize/PREDELETE cancel）与 recreate/RELOADED_SHELL 刻意不受门控（creatable 类缺 recreate 会被引擎禁用整个扩展 reload）。模板：`deinitialize()` 打印后、static 销毁前条件调用（`hasCoroutineFunctions()`）；start thunk 插入 link 调用；initialize 条件插入门控设置。测试：`GdccCoroutineRuntimeSmokeTest` 七 probe——`cancelAllShouldDetachSignalsAndCancelEveryActiveState`（四态混合主场景）、`cancelAllShouldFreeConnectionEdgeOnlyStateInsideTheLoop`（fire-and-forget 仅连接边保活，free 发生在循环内）、`cancelAllShouldCascadeWaiterEdgeOnlyAwaiterWithoutDanglingHead`（awaiter 仅 waiter 边保活，嵌套销毁 + head 重读安全）、`signalRegistrationShouldSurviveResuspensionAndEmitterDeath`（同次发射二次挂起身份守卫 + emitter 先死亡清登记）、`hotReloadGateOffShouldDisableTrackingAndBulkCancel`（门控正反两面，含 gate-on 后 re-link 前的空链表证明——覆盖单节点盲区）、`gateOffEmitterDeathShouldDriveOrdinaryPredeleteCancel`（gate-off 下 emitter 死亡走普通 PREDELETE 退出路径）、`signalRegAllocationFailureShouldFailTheAwaitCleanly`（reg OOM 失败注入：两次诊断 + nil + 无连接无边无挂起）；codegen 锚定 initialize 门控位置（gdcc_init 后、首个 `register_extension_class5` 前）与恰好一次、无协程 module 双负断言、deinitialize 顺序链、start thunk link 位置与 OOM/recreate 不 link。真引擎回归：`compilesAndValidatesCoroutineScripts`（22 例）与 `compilesAndValidatesLambdaScripts` 全绿。review-expert-a/c 双审阅（首轮 + 门控轮）：HIGH（detach Signal UAF + 最后保活边路径测试缺口）与 MEDIUM（gate-off link no-op 证明盲区）全部修复并复核 CONFIRMED/APPROVE。HR-9 场景 4 已真机验证通过（无 sanitizer 自动化腿证明崩溃自由与值正确；泄漏证明留手测 ASan/Valgrind 清单）。
 
 - **改动点**：`gdcc_coroutine.h`/`gdcc_coroutine.c`：按 D5 实现活跃链表（不变量见 D5）、signal waiter 挂起边登记与断开、`gdcc_coro_cancel_all()`；`entry.c.ftl` `deinitialize()` 在打印之后、**static backing 销毁之前**调用（D8 v11：保守起见于一切资源存活时执行取消-resume 的 `__finally__` 清理）。
 - **验收细则**：
     - 纯 C runtime 测试（新增或扩展现有协程测试）：取消过程中释放相邻节点、嵌套 waiter 级联、重复调用 `cancel_all`、signal emitter 在取消后仍存活且 signal 永不触发、断开过程 free callback 重入；
     - `script/run-gradle-targeted-tests.sh --tests CCoroutineStateClassCodegenTest`（及新增测试类）通过；
-    - 取消语义符合 abandonment 合同：无 `completed` 发射、无 waiter resume（HR-9 场景 4 验证）。
+    - 取消语义符合 abandonment 合同：无 `completed` 发射、无 waiter resume（HR-9 场景 4 已验证"无 waiter resume"可观测半；`completed` 不发射的独立观测不在自动化腿内，留手测）。
 
 ### HR-6 Callable 跨 reload 合同落地
 
-> 实施状态：已完成（2026-09）。随 HR-8 同步落地：`doc/gdcc_runtime_lib.md` 重写 `gdcc_callable.h` 条目为三态分流合同并新增 §HRX Hot-Reload Thunk Runtime 总章节（模式机/thunk/共享 thunk 页/hub/锚点/重绑清扫/协程 waiter/线程合同）与 `gdcc_hrx` 编译接线，协程 `cancel_all` 段补 HRX retain 查等键路径；`doc/gdcc_c_backend.md` 的 GDExtension Entry Lifecycle Contract 补 initialize 模式冻结（先于类注册）与 deinitialize 第 6 步 hub 失效置空（D8 末尾），删除"HR-8 未发射"保留注记。用户可见合同仍由本文 §7 承载（HR-9 端到端验收时随场景验证）。
+> 实施状态：已完成（2026-09）。随 HR-8 同步落地：`doc/gdcc_runtime_lib.md` 重写 `gdcc_callable.h` 条目为三态分流合同并新增 §HRX Hot-Reload Thunk Runtime 总章节（模式机/thunk/共享 thunk 页/hub/锚点/重绑清扫/协程 waiter/线程合同）与 `gdcc_hrx` 编译接线，协程 `cancel_all` 段补 HRX retain 查等键路径；`doc/gdcc_c_backend.md` 的 GDExtension Entry Lifecycle Contract 补 initialize 模式冻结（先于类注册）与 deinitialize 第 6 步 hub 失效置空（D8 末尾），删除"HR-8 未发射"保留注记。用户可见合同仍由本文 §7 承载；§7 中场景可观测的条款已经 HR-9 场景 1~10b 端到端真机验证（见 §6 HR-9 自动化节状态行），未覆盖条款维持原状：协程 `completed` 不发射的独立观测、worker 线程禁令（§8 后续项）、`is_runtime` 沿用旧值、属性 initializer 副作用 exactly-once、ASan/Valgrind 泄漏证明，均留手测清单或后续工作。
 
 - **改动点**：随 HR-8 落地修订长期文档（`doc/gdcc_c_backend.md`、`doc/gdcc_runtime_lib.md`）：编辑器内 custom Callable 跨 reload 安全且按 §5.9 语义升级/失效；execmem 不可用时 fail-closed；非编辑器维持现状；worker 线程调用禁令；`Callable(对象, "方法名")` 连接跨 reload 始终有效；`to_string` 在 thunk 路径显示 `<CallableCustom>`。
 - **验收细则**：文档合并；HR-9 场景 5/5a/5b/5c/10/10b 覆盖 thunk 与 direct 双路径。
 
 ### HR-8 堆驻留 thunk Callable 间接派发
 
-> 实施状态：已完成（2026-09，§5 全合同落地，v14 共享 thunk 页形态）。**runtime**：新增 `gdcc_hrx.h/.c`——三变体手写位置无关 thunk 模板（零运行时补丁：spec 经回调 arg0 传入、hub 经 `spec->hub` 回指针获取，全部经 zig 汇编器逐字节核验并静态断言尺寸）、**共享 thunk 页**（hub 创建时一次性 RW→写→RX 发布四角色 thunk 到单页，此时无任何 Callable 存在，此后永不再写——"对已发布代码页降级"窗口从构造上不存在；v14 前为 per-spec slab 槽位，因 RX 恢复失败可波及已发布 sibling 的 BLOCKING 而废弃）、hub/spec（显式初始化、ABI 静态断言、spec 增 `hub` 回指针偏移 48）、standalone interning（hub 表、拒绝 dead/失配 spec、僵尸先摘除再新建、共享 spec 经默认身份 `(call_func, userdata)` 保持相等语义）、free thunk"先递减归零才置 dead"顺序、sweeper（intern 先摘除、重入 pending 队列 depth 归零 drain）、新代单遍历重绑+两阶段清扫（析构只用重绑表条目、指纹+desc 双层闸门、失配宁泄漏不误析构、壳元数据无条件释放）、Engine 单例 instance binding 锚点（`get_instance_binding` 追加语义、callbacks free/reference 全 NULL、失配孤岛协议且**失配后仍需过 probe**）、execmem probe 三态模式机（旧 hub 存在则无视 probe 结果接管；无模板 ISA probe 恒 false 保住导出构建）、`gdcc_hrx_callable_retain` 查等键。**分流**：`gdcc_callable.h` 两个创建入口按 `gdcc_hrx_get_mode()` 内部分流，UNAVAILABLE fail-closed 且消费 captures；standalone payload 改 `gdcc_hrx_standalone_payload` 固定 ABI 堆克隆（`gdcc_standalone_callable_spec` 成为其别名）；协程 signal waiter 经 `gdcc_new_lambda_callable_ex` 取回 spec 句柄存于 reg，bulk-cancel detach 在 thunk 模式改走 `gdcc_hrx_callable_retain`（同一 spec 身份），waiter 无重绑条目。**codegen**：`CHrxIdentityCatalog` 编目全模块 lambda/standalone 身份（impl_key 一律用 **resolve 后声明类 owner** 规范化——继承静态经子类/父类双路径引用为同一身份，canonical schema_desc=捕获/签名 C 存储类型编码、MD5 128-bit 指纹、数据化 argument_count），`entry.c.ftl` 顶部发射锚点 token（模块名 MD5 派生 64 位常量）+ identity 结构体重用创建点与重绑表，initialize 在类注册前调 `gdcc_hrx_initialize`，deinitialize 在 D8 末尾调 `gdcc_hrx_deinitialize`；standalone spec 解析抽取 `StandaloneCallableSpecSupport` 供发射点与编目共用。**frontend**：`FrontendLambdaPlan.sourceIdentityKey()`（`<Class>::<enclosingFunc>@+Δline:col`，构造器作 `_init`，相对偏移+1 基列）经 `LirFunctionDef.sourceIdentityKey`（XML `source_identity_key` 往返保留）透传后端；无 key lambda codegen fail-fast。**测试**：`GdccHrxRuntimeSmokeTest` 21 探针（三变体字节精确冻结+bundle 累计尺寸双锁、execmem probe、真机执行 thunk 往返、重绑升级/失配 fail-closed、共享 spec 引用计数顺序、dead 拒绝、防下溢（同 userdata 重复 free 形态）、重绑表 destroy 双层闸门、清扫重入 drain、**共享 thunk 页**（四角色全 spec 同址、跨代指针恒定、发布期字节快照 reload 后 memcmp 恒等、页不随代重建）、schema 失配 standalone 僵尸摘除后新建、锚点共存/callbacks/失配孤岛/失配+probe 失败冻结 UNAVAILABLE、**NULL tombstone 单槽清扫接管与叠加三槽清扫接管**（fake 引擎全真模拟 object.cpp 追加/摘除语义，探针经 `-DGDCC_HRX_TEST_HOOKS` 独有的 image 状态重置钩子在每次 re-init 真正重入 UNINITIALIZED 决策分支）、UNAVAILABLE fail-closed 消费 captures、direct 零回归、waiter 永不重绑、retain 查等键、三 ISA 交叉编译），`GdccCoroutineRuntimeSmokeTest` 增 HRX 模式 signal detach 集成探针（thunk 身份+retain detach+exactly-once），`CCodegenTest` 五个 golden/语义/负向测试（含 inherited standalone canonical 去重），`FrontendLambdaPlanSideTableTest`/`FrontendLambdaSuiteResolutionTest`/`FrontendLambdaLoweringTest`/`DomLirSerializerTest` key 正反锚定。`script/run-gradle-targeted-tests.sh` 相关测试类全绿。HR-9 场景 5a/5b/5c/10/10b 待 HR-9 落地时验证。
+> 实施状态：已完成（2026-09，§5.1~§5.10 全合同落地，v14 共享 thunk 页形态；不含 v15 新增的 §5.11 设计节）。**runtime**：新增 `gdcc_hrx.h/.c`——三变体手写位置无关 thunk 模板（零运行时补丁：spec 经回调 arg0 传入、hub 经 `spec->hub` 回指针获取，全部经 zig 汇编器逐字节核验并静态断言尺寸）、**共享 thunk 页**（hub 创建时一次性 RW→写→RX 发布四角色 thunk 到单页，此时无任何 Callable 存在，此后永不再写——"对已发布代码页降级"窗口从构造上不存在；v14 前为 per-spec slab 槽位，因 RX 恢复失败可波及已发布 sibling 的 BLOCKING 而废弃）、hub/spec（显式初始化、ABI 静态断言、spec 增 `hub` 回指针偏移 48）、standalone interning（hub 表、拒绝 dead/失配 spec、僵尸先摘除再新建、共享 spec 经默认身份 `(call_func, userdata)` 保持相等语义）、free thunk"先递减归零才置 dead"顺序、sweeper（intern 先摘除、重入 pending 队列 depth 归零 drain）、新代单遍历重绑+两阶段清扫（析构只用重绑表条目、指纹+desc 双层闸门、失配宁泄漏不误析构、壳元数据无条件释放）、Engine 单例 instance binding 锚点（`get_instance_binding` 追加语义、callbacks free/reference 全 NULL、失配孤岛协议且**失配后仍需过 probe**）、execmem probe 三态模式机（旧 hub 存在则无视 probe 结果接管；无模板 ISA probe 恒 false 保住导出构建）、`gdcc_hrx_callable_retain` 查等键。**分流**：`gdcc_callable.h` 两个创建入口按 `gdcc_hrx_get_mode()` 内部分流，UNAVAILABLE fail-closed 且消费 captures；standalone payload 改 `gdcc_hrx_standalone_payload` 固定 ABI 堆克隆（`gdcc_standalone_callable_spec` 成为其别名）；协程 signal waiter 经 `gdcc_new_lambda_callable_ex` 取回 spec 句柄存于 reg，bulk-cancel detach 在 thunk 模式改走 `gdcc_hrx_callable_retain`（同一 spec 身份），waiter 无重绑条目。**codegen**：`CHrxIdentityCatalog` 编目全模块 lambda/standalone 身份（impl_key 一律用 **resolve 后声明类 owner** 规范化——继承静态经子类/父类双路径引用为同一身份，canonical schema_desc=捕获/签名 C 存储类型编码、MD5 128-bit 指纹、数据化 argument_count），`entry.c.ftl` 顶部发射锚点 token（模块名 MD5 派生 64 位常量）+ identity 结构体重用创建点与重绑表，initialize 在类注册前调 `gdcc_hrx_initialize`，deinitialize 在 D8 末尾调 `gdcc_hrx_deinitialize`；standalone spec 解析抽取 `StandaloneCallableSpecSupport` 供发射点与编目共用。**frontend**：`FrontendLambdaPlan.sourceIdentityKey()`（`<Class>::<enclosingFunc>@+Δline:col`，构造器作 `_init`，相对偏移+1 基列）经 `LirFunctionDef.sourceIdentityKey`（XML `source_identity_key` 往返保留）透传后端；无 key lambda codegen fail-fast。**测试**：`GdccHrxRuntimeSmokeTest` 21 探针（三变体字节精确冻结+bundle 累计尺寸双锁、execmem probe、真机执行 thunk 往返、重绑升级/失配 fail-closed、共享 spec 引用计数顺序、dead 拒绝、防下溢（同 userdata 重复 free 形态）、重绑表 destroy 双层闸门、清扫重入 drain、**共享 thunk 页**（四角色全 spec 同址、跨代指针恒定、发布期字节快照 reload 后 memcmp 恒等、页不随代重建）、schema 失配 standalone 僵尸摘除后新建、锚点共存/callbacks/失配孤岛/失配+probe 失败冻结 UNAVAILABLE、**NULL tombstone 单槽清扫接管与叠加三槽清扫接管**（fake 引擎全真模拟 object.cpp 追加/摘除语义，探针经 `-DGDCC_HRX_TEST_HOOKS` 独有的 image 状态重置钩子在每次 re-init 真正重入 UNINITIALIZED 决策分支）、UNAVAILABLE fail-closed 消费 captures、direct 零回归、waiter 永不重绑、retain 查等键、三 ISA 交叉编译），`GdccCoroutineRuntimeSmokeTest` 增 HRX 模式 signal detach 集成探针（thunk 身份+retain detach+exactly-once），`CCodegenTest` 五个 golden/语义/负向测试（含 inherited standalone canonical 去重），`FrontendLambdaPlanSideTableTest`/`FrontendLambdaSuiteResolutionTest`/`FrontendLambdaLoweringTest`/`DomLirSerializerTest` key 正反锚定。`script/run-gradle-targeted-tests.sh` 相关测试类全绿。HR-9 场景 5a/5b/5c/10/10b 已全部真机验证通过（见 §6 HR-9 自动化节状态行）。
 
 - **改动点**（合同见 §5 全文）：
     - 新增 runtime 模块 `gdcc_hrx.h/.c`（三变体零补丁 thunk 模板表、共享 thunk 页发布、hub/spec 管理、registry 与 interning 表操作、sweeper 与 pending 队列、重绑表消费、execmem probe、锚点 binding）；
@@ -424,7 +494,7 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
 - **验收细则**：
     - thunk 模板 golden test：三变体字节序列冻结断言（零补丁；含 `get_argument_count` 两参数 ABI、`is_valid` 嵌套调用帧、free 经 `spec->hub` 二次加载 sweeper）；
     - 纯 C 单元测试（host 侧直接驱动，不经 Godot）：spec 创建/登记；**free 顺序**（共享 spec 首次 free 不失效、归零才 dead+sweep）；refcount 防下溢；sweeper 的 intern 摘除先于析构（同 identity 再创建不命中尸检 spec，含单桶 interned spec）；dead 幂等；**共享 thunk 页**（全部 spec 的四个函数指针指向同一页同一偏移、跨代重绑后旧 Callable 函数指针不变、hub 页与 spec 生命周期解耦）；schema 失配 standalone 僵尸不得被新代同 key 创建复用（摘除后新建 fresh spec，旧 Callable 保持 fail-closed）；两阶段清扫重入（destroy_fn 触发另一 free → pending 队列经 `pending_next`、depth 归零 drain）；descriptor 逐字节比对（指纹匹配但 desc 不同 → 不执行 destroy_fn）；新代阶段二只使用**重绑表条目**的 destroy_fn（spec 字段已置 NULL）；standalone payload 无条件释放（失配场景亦不泄漏壳）；壳元数据与 captures 分离释放；重绑按 `binding_state` 匹配/失配 + 独立 `spec->dead` 分流（禁止复活第三种 binding_state 枚举值）；锚点 callbacks 拷贝出的 free/reference 指针全 NULL、`create_callback` 仅在获取期执行；锚点获取/失配协议（含**失配+probe 失败 → UNAVAILABLE**）、**slot 0 已被占用时经 get_instance_binding 追加成功**、两个 GDCC 扩展 token 共存；probe 失败 fail-closed；
-    - impl_key 源身份：同 key 改 body → 重绑新实现（主路径）；两 lambda 换位 → 旧连接失效而非绑错 body；
+    - impl_key 源身份：同 key 改 body → 重绑新实现（主路径）；两 lambda 换位（异 schema）→ 旧连接失效而非绑错 body（同 schema 同列的语句级换位为已知盲区，§5.11 修复其中可区分调用点形态）；
     - 协程 waiter 漏网防护测试：cancel_all 后无 waiter Callable 可跳入已卸载库；
     - HR-9 场景 5a/5b/5c/10/10b 全部通过；
     - `script/run-gradle-targeted-tests.sh` 相关新旧测试类通过。
@@ -452,7 +522,7 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
     5. 方法名连接：`Callable(对象, "方法名")` 信号连接跨 reload 后仍触发且执行新逻辑。
     5a. lambda 连接跨 reload：存活节点持有 lambda 信号连接 → reload 后触发信号执行**新 lambda 逻辑**（thunk 重绑验证，§5.9 行 1）。
     5b. lambda 失效路径：修改 lambda 捕获结构或删除 lambda → reload → 旧连接 `is_valid=false`、信号静默跳过、无崩溃（§5.9 行 2/3）。
-    5c. deferred lambda：reload 前排队的 lambda deferred 调用，reload 后按重绑/失效语义执行，无崩溃（§5.9 行 5）。
+    5c. deferred lambda：reload 前排队的 lambda deferred 调用，reload 后按重绑/失效语义执行，无崩溃（§5.9 行 6）。
     6. 签名变更：修改某方法签名 → reload → 经旧缓存 bind 的调用报 invalid（引擎已知语义），不崩溃。
     7. 父类变更二分：改为引擎父类/不存在父类 → 引擎报错要求重启；改为另一个 GDCC 类 → 引擎不检查，列为不支持项，验证无静默损坏声明写入用户合同。
     8. 静态变量：static var reload 后重置为初始值。
@@ -460,7 +530,16 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
     10. 双模回归：headless（非编辑器）运行 `GodotGdextensionTestRunner` 既有集成测试全绿（direct 路径零回归、无可执行堆分配）。
     10b. 编辑器启动的游戏进程（F5 运行 `test_project`）：断言无 execmem 分配（direct 路径）、lambda 行为与 headless 一致（验证 §5.8 三进程取值结论）。
 - **自动化（正式交付项，v8 起）**：新增 `GodotEditorHotReloadTestSession`（与 `GodotGdextensionTestRunner` 并列，复用其 artifact 安装、双流读取、超时强杀、`GODOT_BIN`/Zig 探测与 assumption-skip 模式；runner 本体不动）。
-    - **实施状态（2026-09，HR-1~HR-5 部分已落地）**：`GodotEditorHotReloadTestSession`（`src/test/java/gd/script/gdcc/backend/c/build/`）已实现——editor capability probe（`--headless --editor --quit` 退出码，进程内缓存）、原子 rename 换库（staging 文件 + `ATOMIC_MOVE`）、双阶段 marker 仲裁（含 `HR_FAIL` 快速失败与提前退出检测）、超时强杀；`GodotEditorHotReloadIntegrationTest` 4 个测试方法覆盖场景 1+2（实例存活/属性恢复/新代码/无注销报错）、3（@tool 继承链虚分派 + `_process` 引擎重挂新实现）、4（挂起协程与等待方的 abandonment 可观测半边：等待方不恢复、被取消 body 不续跑、stale 信号无效、新代协程正常完成；独立 `completed` 发射观测不在自动化腿内）、9 行为段（正常 PREDELETE→free、reload free→recreate、recreate 后再析构、连续两次 reload、基类+派生类 destroyable 字段内容恢复、挂起协程含参数槽的取消——无 sanitizer 的自动化腿证明崩溃自由与值正确，exactly-once 与泄漏证明留在手测 ASan/Valgrind 清单）。`script/run-gradle-targeted-tests.sh --tests GodotEditorHotReloadIntegrationTest` 全绿（4/4，无 skip）。场景 5/5a/5b/5c/6/7/8/10/10b 待 HR-6/HR-8 落地后补齐。
+    - **实施状态（2026-09，全部场景已落地）**：`GodotEditorHotReloadTestSession`（`src/test/java/gd/script/gdcc/backend/c/build/`）已实现——editor capability probe（`--headless --editor --quit` 退出码，进程内缓存）、原子 rename 换库（staging 文件 + `ATOMIC_MOVE`）、双阶段 marker 仲裁（含 `HR_FAIL` 快速失败与提前退出检测）、超时强杀；`GodotEditorHotReloadIntegrationTest` 4 个测试方法覆盖场景 1+2（实例存活/属性恢复/新代码/无注销报错）、3（@tool 继承链虚分派 + `_process` 引擎重挂新实现）、4（挂起协程与等待方的 abandonment 可观测半边：等待方不恢复、被取消 body 不续跑、stale 信号无效、新代协程正常完成；独立 `completed` 发射观测不在自动化腿内）、9 行为段（正常 PREDELETE→free、reload free→recreate、recreate 后再析构、连续两次 reload、基类+派生类 destroyable 字段内容恢复、挂起协程含参数槽的取消——无 sanitizer 的自动化腿证明崩溃自由与值正确，exactly-once 与泄漏证明留在手测 ASan/Valgrind 清单）。随 HR-6/HR-8 落地补齐 7 个场景后，该类现共 11 个 `@Test` 方法（场景 1+2 合并为一个）覆盖场景 1~9 全部，`script/run-gradle-targeted-tests.sh --tests GodotEditorHotReloadIntegrationTest` 全绿（11/11，无 skip）。HR-6/HR-8 场景覆盖进度（2026-09，Linux + Godot 4.5.2 editor 真机，增量更新）：
+        - 场景 5 ✅ `methodNameConnectionSurvivesReloadAndRunsNewLogic`——`Callable(对象,"方法名")` 连接跨 reload 仍触发且执行 v2 新逻辑（§5.9 行 8）；
+        - 场景 5a ✅ `lambdaConnectionRebindsToNewImplementationAfterReload`——同 key 同 schema 改 body 重绑：信号发射与 driver 留存 Callable 直接 `call()` 双路径执行 v2 新逻辑、`is_valid()` 保持 true、thunk 路径 standalone `to_string` 为 `<CallableCustom>`（§5.9 行 1 + §7 合同）；
+        - 场景 5b ✅ `lambdaInvalidationPathsFailClosedAfterReload`——三腿失效（§5.9 行 2/3）：捕获布局变化（`reserved` 双版本声明、仅 v2 引用 → 仅 schema 失配）、lambda 删除（key 消失）、**异 schema 双 lambda 换位**（旧 key 与另一 lambda 条目相撞，schema 闸门拒绝重绑 → 失效而非绑错 body）；存活 lambda 正对照重绑执行 v2；`is_valid()=false`（含经 `get_signal_connection_list` 取得的引擎侧 sig_b 连接 Callable）、`emit_b` 后 `a_hits` 正对照复检（防同 schema 兄弟误绑）、信号静默跳过、无崩溃。附注：解释型脚本对失效 Callable 执行 `.call()` 会以 SCRIPT ERROR 硬错（"on a null instance"）——此即"引擎标准错误"的脚本侧形态，真机实测确认，driver 主动调用不属于自动化断言腿；
+        - 场景 5c ✅ `deferredLambdaCallsFollowRebindAndInvalidationSemanticsAfterReload`——同帧内先 `call_deferred` 排队再 `reload_extension`，帧末 MessageQueue flush 严格在 reload 后执行（§5.9 行 6）：兼容 lambda 经重绑执行 v2 body（`[110]`）、捕获失配 lambda 被静默跳过（`[]`）；失效条目的引擎 deferred 错误打印为普通 ERROR（非 SCRIPT ERROR），文本已被 Java 侧正向锚定（证明队列确实尝试了失效条目），driver 与 editor 无崩溃；
+        - 场景 6 ✅ `methodSignatureChangeBreaksStaleCallsWithoutCrash`——新签名调用正常；旧签名（2 参）调用在 Godot 4.5.2 上以 SCRIPT ERROR 硬报 `Invalid call to function 'pair_sum (via call)' ... Expected 1 argument(s)`（即"报 invalid（引擎已知语义）"的脚本侧形态）；driver 先推进状态机再触发该错，editor 不崩溃、干净 quit(0)，Java 锚定诊断文本；
+        - 场景 7 ✅（引擎父类腿）`engineParentChangeIsReportedByEngineAsUnsupported`——真机锚定：`reload_extension` 返回 OK，但引擎拒绝父类变更并报 `GDExtension class 'RuntimeHrParentChange' cannot change parent type from 'Node' to 'Node2D' on hot reload. Restart Godot for this change to take effect.`；随后的 `Attempt to unregister unexisting extension class` 与退出期 RID 泄漏报告属半应用 reload 的引擎侧尾波，正是 §7 声明"父类变更不支持"的依据；GDCC 父类腿引擎不检查，维持 §7 文档声明，不设自动化断言；
+        - 场景 8 ✅ `staticVariablesResetToInitializerAfterReload`——v1 运行时改写 static 为 42、v2 initializer 为 5，reload 后读到 5 证明 static backing 由新映像重建（非保留）；同实例 STORAGE 属性对照保留；
+        - 场景 10 ✅（双模回归）——`GdScriptUnitTestCompileRunnerTest` 的 `compilesAndValidatesLambdaScripts`/`compilesAndValidatesCoroutineScripts`/`compilesAndValidatesMemberScripts`（60/60）与 `GdccHrxRuntimeSmokeTest`（21/21，含 `directModeShouldKeepTheLegacyDispatchIntact` 的 direct 零 hub/零 execmem 结构锚定）在 headless 非编辑器进程全绿，direct 路径零回归；
+        - 场景 10b ✅ `GodotRuntimeDirectPathIntegrationTest.directModeKeepsLegacyCallableBehaviorInNonEditorProcess`（新增，`src/test/java/gd/script/gdcc/backend/c/build/`）——非 editor 进程（`is_editor_hint=false`，与 F5 游戏进程同值，A.3）下 lambda/standalone/方法名三种 Callable 行为与旧版一致；行为模式锚 = standalone `to_string` 保持 direct 专属 `GDCC.` 前缀（HRX  engaged 时必为 `<CallableCustom>`，反向腿由场景 5a 锚定），"无 execmem 分配"的结构半由上述 smoke 探针锚定；有窗 F5 变体留手测清单（模式判定输入相同）。
     - **已核验的引擎事实（4.5.1-stable）**：`GDExtensionManager.reload_extension(path)` 脚本可直接调用——同步、强制重载指定扩展（不看 mtime）、实例恢复与 `NOTIFICATION_EXTENSION_RELOADED` 在**返回前**完成（返回后可立即断言）；不触发 `extensions_reloaded` 但触发 `extension_unloading`/`extension_loaded`。`--headless --editor --script res://driver.gd` 为官方支持路径，脚本须继承 `SceneTree`/`MainLoop`（不能是 `EditorScript`）；`--editor` 自动 `set_extension_reloading_enabled(true)`；headless 无窗口，焦点自动 reload 不触发，全部走脚本显式触发。注意区别：`reload_extensions()`（按 mtime 扫描、GDScript 重载走 deferred）不用于测试。
     - **编排协议（双阶段标记）**：
         1. Java：`prepareEditorProject`——编译 v1 库、安装 `bin/` + `.gdextension`（`reloadable=true`）+ 解释型 driver 脚本（`SceneTree` 子类）；
@@ -481,7 +560,7 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
 - 属性 initializer 在 reload 时会对每个存活实例**重新执行**（recreate 重放 initializer 后引擎才经 setter 恢复保存值）：最终字段值由引擎恢复语义决定，但 initializer 的副作用（对象构造、函数调用）无法避免地再发生一次——用户代码不得依赖属性 initializer 的 exactly-once 副作用；被引擎恢复覆盖的 RefCounted initializer 值由 setter 正常释放，非 RefCounted Object initializer 值同理经 setter/析构路径处理，不形成泄漏。
 - static var 重置为初始值。
 - 进行中的协程被静默取消：`completed` **不**发射，等待方协程同样被取消。
-- 编辑器内 lambda/standalone Callable 跨 reload 安全：签名与捕获布局未变的连接**执行新代码**；捕获布局/签名失配、lambda 被删除/换位、或在**同一函数体内该 lambda 之前**增删行时，连接优雅失效（信号静默跳过、脚本 `call()` 报标准错误，不会绑到错误实现）；其他函数的改动与本函数整体移动**不影响**连接；`Callable(对象, "方法名")` 连接始终有效；thunk 路径下 Callable `to_string` 显示 `<CallableCustom>`。
+- 编辑器内 lambda/standalone Callable 跨 reload 安全：签名与捕获布局未变的连接**执行新代码**；捕获布局/签名失配、lambda 被删除、或在**同一函数体内该 lambda 之前**增删行时，连接优雅失效（信号静默跳过、脚本 `call()` 报标准错误，不会绑到错误实现）；**已知例外（现行位置 key）**：同 schema 且同列的两个 lambda 语句级换位可能静默绑到对方实现（§5.9/§5.11，v15 升级后可区分调用点形态转为优雅失效）；其他函数的改动与本函数整体移动**不影响**连接；`Callable(对象, "方法名")` 连接始终有效；thunk 路径下 Callable `to_string` 显示 `<CallableCustom>`。
 - custom Callable 全生命周期（创建/复制/存储/连接/调用/最终释放）不得离开主线程（`WorkerThreadPool`/`Thread.start` 等），违反属数据竞争；`Callable(对象,"方法名")` 的既有线程语义不受影响。
 - 编辑器内若系统禁止可执行堆内存（加固策略），custom Callable 创建将返回无效 Callable 并打印错误（fail-closed），而非回退到不受保护的实现。
 - 方法签名变更后，经旧缓存 MethodBind 的调用报错（引擎语义）；`is_runtime` 变更被引擎强制沿用旧值；父类变更不支持（改 GDCC 父类引擎不检查，属未定义行为）。
@@ -492,17 +571,19 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
 - `NOTIFICATION_EXTENSION_RELOADED` 用户钩子（如 `_on_extension_reloaded` 虚函数）。
 - 同映像重复初始化加固（dlclose 未真正卸载时 `_inited` 标志与 registry 的一致性；以"runtime 不引入线程/TLS"规避为主）。
 - worker 线程调用 custom Callable 的完整支持：generation quiescence 协议（原子状态机 + active-call pin + call-return trampoline + 并发回收），替代 §5.8 的线程禁止合同。
+- §5.11 lambda 身份升级的实施（序号主键 + 调用点上下文硬门）：frontend 上下文 pass、`FrontendLambdaPlan`/`LirFunctionDef` 字段透传、spec ABI append-only 追加与 `abi_version` 递增、HR-9 增补同 schema 换位/序号免疫/提取重构三场景。
+- （可选）体哈希消歧：修复 §5.11 残余的同语句内表达式级换位盲区；`DomLirSerializer` 可提供结构遍历基础。
 
 ## 附录 A：HR-0 残余契约核对结论（2026-09，按 `4.5.1-stable` 源码核验）
 
 ### A.1 协程 token binding 的引擎清理路径（HR-0 项 1）
 
-核验来源：`object.cpp:2102-2227`（set/get/free_instance_binding、clear/reset_internal_extension）、`gdextension.cpp:987-997`（clear_instance_bindings）、`gdextension_manager.cpp:282-298`（track/untrack_instance_binding）、`entry.c.ftl:483-497`。
+核验来源：`object.cpp:2102-2227`（set/get/free_instance_binding、clear/reset_internal_extension）、`gdextension.cpp:987-997`（clear_instance_bindings）、`gdextension_manager.cpp:282-298`（track/untrack_instance_binding）、`entry.c.ftl:662-663, 697-698`。
 
 - 协程状态对象的 `gdcc_coro_binding_token()` binding 是该对象上**唯一** binding，占 slot 0。reload 时 `Object::clear_internal_extension()` 先调旧库 `free_instance_func`（释放 wrapper 与 header 内存），随后仅将 slot 0 四字段置空——callbacks 全 NULL 故无任何代码回调，**先释放后置空的顺序无悬空解引用**。
 - `GDExtension::clear_instance_bindings()` 只按 **GDExtension\* token** 释放被跟踪 binding；而跟踪仅在 `get_instance_binding` 内 `!_extension && is_extension_reloading_enabled()` 时发生（非扩展实例对象），且 `GDExtensionManager::track_instance_binding` 只认 `p_token == GDExtension*`。协程 token（TU-static 地址）不匹配该条件，协程状态对象又是扩展实例（`_extension != nullptr`），**双重不命中**——协程 binding 的清理完全由 `clear_internal_extension`（经 `Extension::instances` 跟踪）承担，无遗漏路径。
 - recreate 重建无冲突：`clear_internal_extension` 已将 slot 0 置空，新代惰性壳 recreate 调 `godot_object_set_instance_binding`（写 slot 0）满足其 `_instance_bindings[0].binding == nullptr` 前置断言。
-- 附带确认（§5.5 锚点事实基线）：**固定常量 token（≠ GDExtension\*）的 binding 不会被 track，因此不被 `clear_instance_bindings` 触及；Engine 单例非扩展实例，`clear_internal_extension` 不适用**——HR-8 锚点跨 reload 存活的引擎机制源码层面成立（实机验证留给 HR-9 自动化）。
+- 附带确认（§5.5 锚点事实基线）：**固定常量 token（≠ GDExtension\*）的 binding 不会被 track，因此不被 `clear_instance_bindings` 触及；Engine 单例非扩展实例，`clear_internal_extension` 不适用**——HR-8 锚点跨 reload 存活的引擎机制源码层面成立；实机已由 HR-9 场景 5a/5b/5c 闭环（全部重绑/失效断言都依赖新代经锚点接管旧 hub，锚点任一失效即场景必败）。
 
 ### A.2 dlclose 真正卸载：方法学与 runtime TLS/线程审计（HR-0 项 2）
 
@@ -511,8 +592,8 @@ HRX_UNAVAILABLE   → 返回无效 Callable + 一次性错误（fail-closed）
 
 ### A.3 §5.10 待验证项结论（HR-0 项 4）
 
-- Engine 单例固定 token instance binding 跨 reload 存活：**源码确认成立**（A.1 末条）；实机验证项移交 HR-9 自动化（依赖 HR-8 落地）。
+- Engine 单例固定 token instance binding 跨 reload 存活：**源码确认成立**（A.1 末条）；实机验证已由 HR-9 场景 5a/5b/5c 闭环。
 - macOS 无 entitlement RW→RX 实机验证：本机为 Linux 无法验证，**保留为 macOS 专属待验证项**（aarch64 与 x86_64 分别核验）；HR-8 的 execmem probe fail-closed 设计已为此保底。
-- `is_editor_hint` 三进程取值（`main.cpp:2032-2034, 2161-2163` 核验）：仅 `--editor`/project manager 进程 `set_editor_hint(true)`；编辑器 F5 启动的游戏进程（独立进程，不带 `--editor`）与导出包均为 false。现有 `gdcc_is_editor_hint()`（`gdcc_helper.h:76-77`，经 fixed binding 查询 `gdcc_init()` 缓存的 Engine 单例）可直接作为 §5.4 三态模式机的进程判定输入；HR-9 场景 10b 实机复核。
+- `is_editor_hint` 三进程取值（`main.cpp:2032-2034, 2161-2163` 核验）：仅 `--editor`/project manager 进程 `set_editor_hint(true)`；编辑器 F5 启动的游戏进程（独立进程，不带 `--editor`）与导出包均为 false。现有 `gdcc_is_editor_hint()`（`gdcc_helper.h:76-77`，经 fixed binding 查询 `gdcc_init()` 缓存的 Engine 单例）可直接作为 §5.4 三态模式机的进程判定输入；已经 HR-9 场景 10b 实机复核（headless 非 editor 进程 direct 路径行为锚定全绿；有窗 F5 变体判定输入相同，留手测清单）。
 
 **总结论**：HR-0 全部未决项关闭；未推翻 §2/§4/§5 任何条款，主体设计不变。

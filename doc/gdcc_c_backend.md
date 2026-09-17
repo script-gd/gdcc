@@ -254,6 +254,12 @@ Usage and lifecycle rules:
   storage, and module log output scoped to the scene-level lifecycle that Godot uses for
   runtime class availability.
 
+> HR-9 note (2026-09): the reload and normal-exit halves of this order (no unregistration
+> order errors, free->recreate->free-again chains, two consecutive reloads, hub
+> invalidation last) are exercised end-to-end by `GodotEditorHotReloadIntegrationTest`
+> scenarios 1/3/4/9; see the HR-9 status block of
+> `module_impl/backend/hot_reload_implementation_plan.md`.
+
 ### Ptrcall Helper Return Carrier Contract
 
 - Backend-owned exact engine helpers in `engine_method_binds.h` call `godot_object_method_bind_ptrcall(...)` directly.

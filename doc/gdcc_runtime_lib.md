@@ -484,6 +484,12 @@ pointer is a thunk emitted into executable heap memory owned by no library image
 pointers stay valid across `dlclose`/`dlopen`, and the new library generation rebinds the
 surviving Callables to new implementations by identity key.
 
+> HR-9 note (2026-09): the observable halves of this contract (rebind / invalidation /
+> deferred-copy semantics, three-mode split incl. the direct-path `to_string` discriminator)
+> are verified end-to-end on Linux + Godot 4.5.2 by `GodotEditorHotReloadIntegrationTest`
+> (scenarios 5a/5b/5c) and `GodotRuntimeDirectPathIntegrationTest` (scenario 10b); see the
+> HR-9 status block of the plan document.
+
 - **Three-state mode machine** (process-frozen at `gdcc_hrx_initialize`, called by the
   generated `initialize()` before any class registration): `DIRECT_NON_RELOAD` (non-editor
   process: no hub, no anchor, no executable memory; the legacy direct path), `HRX_ACTIVE`

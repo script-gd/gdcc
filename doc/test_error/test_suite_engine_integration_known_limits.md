@@ -147,3 +147,21 @@ compile-check 以 `Array/Dictionary literal is ... temporarily blocked` 失败�
 - `$` / `%` 的接收槽静态类型固定上溯为 `Node`（GDCC 子类的同名 `get_node` override 不参与 `$` 解析），与 Godot compiler 的 `Node.get_node` 原生绑定语义一致
 - `$` 对缺失路径的运行时报错行为（Godot `get_node` 引擎错误）不在该 fixture 中触发，避免环境差异
 - 已记录 lambda 体内的 `$` / `%` 已 compile-ready（经隐式 `self` capture）；独立覆盖见 `get_node_lambda_flow_scene.gd` 与 `get_node_lambda_await_scene.gd`。property initializer 中的 `$` / `%` 仍为 DEFERRED 边界（见 `doc/module_impl/frontend/frontend_node_literal_implementation.md`）
+## 11. 已记录：headless editor 热重载集成测试的引擎侧限制（Godot 4.5.2）
+
+`GodotEditorHotReloadIntegrationTest` / `GodotRuntimeDirectPathIntegrationTest`（HR-9，见
+`doc/module_impl/backend/hot_reload_implementation_plan.md` §6）在真机落地中确认的引擎侧限制：
+
+- **quit 时崩溃竞态（上游缺陷，类 #123511/#111048）**：新工程首次发现扩展会把编辑器文档再
+  生成排入 deferred 任务；若扩展卸载后 `Main::cleanup()` 的 `MessageQueue::flush()` 才执行
+  到它，StringName 键悬空导致 SIGSEGV。缓解为 driver 在最终 marker/`quit` 前停留 **180 帧**
+  让队列在扩展存活期内排空——窗口要的是墙钟时间：与 CPU 饱和的原生构建并发时 60 帧曾两次
+  复现崩溃（文档再生成在受争夺 worker 线程上滞后），180 帧在同负载下强制重跑稳定全绿。
+- **fixture 类必须 `@tool` 才能观测 `_process`/`_physics_process`**：gdcc 对非 tool 类在编
+  辑器内既定跳过帧循环虚拟（非 tool 脚本编辑器语义对齐），非热重载缺陷。
+- **解释型 driver 不得主动调用已知失效的 Callable / 已知错误 arity 的方法**：两者在
+  GDScript 侧都以 SCRIPT ERROR 硬错（失效 Callable 为 "on a null instance"，arity 不符为
+  "Invalid call to function ... Expected N argument(s)"）并中止当前函数。断言此类引擎标
+  准错误时应先推进 driver 状态机再触发（或仅在 Java 侧锚定输出文本），否则 driver 会被
+  打死、场景以 marker 超时收场。MessageQueue 对失效 deferred Callable 的报告是普通 ERROR
+  （`Error calling deferred method`），不是 SCRIPT ERROR，不会杀 driver。
