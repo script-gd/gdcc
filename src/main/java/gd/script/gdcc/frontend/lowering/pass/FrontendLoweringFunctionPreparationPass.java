@@ -11,6 +11,7 @@ import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializer
 import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.lir.LirLambdaMeta;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.LirPropertyDef;
@@ -520,9 +521,10 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
         function.setHidden(true);
         function.setStatic(true);
         function.setReturnType(plan.returnType());
-        // HR-8: the stable source identity rides the LIR function down to the backend's rebind
-        // table; derived from the already-published plan (no AST/plan shape changes).
-        function.setSourceIdentityKey(plan.sourceIdentityKey());
+        // HR-8 + §5.11: the stable source identity and call-site context ride the LIR function
+        // down to the backend's rebind table; both derive from the already-published plan (no
+        // AST/plan shape changes).
+        function.setLambdaMeta(new LirLambdaMeta(plan.sourceIdentityKey(), plan.callSiteContext()));
         for (var parameter : lambdaExpression.parameters()) {
             var parameterName = parameter.name().trim();
             var binding = lambdaScope.resolveValueHere(parameterName);

@@ -251,15 +251,16 @@ public class DomLirSerializerTest {
     }
 
     @Test
-    public void serialize_module_writesSourceIdentityKeyForLambdasAndRoundTrips() throws Exception {
-        // HR-8: the lambda-only `source_identity_key` attribute must survive the XML
-        // round-trip (the backend rebind table consumes the parsed/plumbed value), while a
-        // plain function never carries the attribute at all.
+    public void serialize_module_writesLambdaMetaElementAndRoundTrips() throws Exception {
+        // HR-8 + §5.11: the lambda-only identity rides a nested
+        // `<meta call_site_context="..." source_identity_key="..."/>` element which must survive
+        // the XML round-trip (the backend rebind table consumes the parsed values); a plain
+        // function never carries the element at all.
         var fn = new LirFunctionDef("_lambda_0", "entry");
         fn.setLambda(true);
         fn.setHidden(true);
         fn.setStatic(true);
-        fn.setSourceIdentityKey("Hero::run@+2:9");
+        fn.setLambdaMeta(new LirLambdaMeta("Hero::run#0", "call(base=self.sig_a, method=connect, arg=0)"));
         fn.addBasicBlock(new LirBasicBlock("entry", List.of(new ReturnInsn(null))));
         var plainFn = new LirFunctionDef("run", "entry");
         plainFn.addBasicBlock(new LirBasicBlock("entry", List.of(new ReturnInsn(null))));
@@ -268,9 +269,20 @@ public class DomLirSerializerTest {
         var module = new LirModule("m", List.of(cls));
         var xml = new DomLirSerializer().serializeToString(module);
 
-        assertTrue(xml.contains("source_identity_key=\"Hero::run@+2:9\""), xml);
-        var plainFunctionElement = xml.substring(xml.indexOf("name=\"run\""));
-        assertFalse(plainFunctionElement.startsWith("source_identity_key"));
+        assertTrue(xml.contains("<meta"), xml);
+        assertTrue(xml.contains("source_identity_key=\"Hero::run#0\""), xml);
+        assertTrue(
+                xml.contains("call_site_context=\"call(base=self.sig_a, method=connect, arg=0)\""),
+                xml
+        );
+        // The plain function element must not carry a meta element; scope the assertion to its
+        // own element body so the lambda's meta cannot mask a regression. (The Transformer sorts
+        // attributes alphabetically, so locate the element by its name attribute, not a tag
+        // prefix.)
+        var plainStart = xml.indexOf("name=\"run\"");
+        var plainFunctionElement = xml.substring(plainStart, xml.indexOf("</function>", plainStart));
+        assertFalse(plainFunctionElement.contains("<meta"));
+        assertFalse(plainFunctionElement.contains("source_identity_key"));
 
         var parsed = new DomLirParser(new gd.script.gdcc.scope.ClassRegistry(
                 gd.script.gdcc.gdextension.ExtensionApiLoader.loadDefault()
@@ -279,12 +291,34 @@ public class DomLirSerializerTest {
                 .filter(f -> f.getName().equals("_lambda_0"))
                 .findFirst()
                 .orElseThrow();
-        assertEquals("Hero::run@+2:9", parsedLambda.getSourceIdentityKey());
+        assertEquals(
+                new LirLambdaMeta("Hero::run#0", "call(base=self.sig_a, method=connect, arg=0)"),
+                parsedLambda.getLambdaMeta()
+        );
         var parsedPlain = parsed.getClassDefs().getFirst().getFunctions().stream()
                 .filter(f -> f.getName().equals("run"))
                 .findFirst()
                 .orElseThrow();
-        assertNull(parsedPlain.getSourceIdentityKey());
+        assertNull(parsedPlain.getLambdaMeta());
+    }
+
+    @Test
+    public void serialize_module_lambdaMetaRoundTripsXmlSpecialCharacters() throws Exception {
+        // The context descriptor embeds normalized source slices, so quotes, `<`, `&` and `'`
+        // are all reachable characters; the DOM attribute escaping must round-trip them intact.
+        var fn = new LirFunctionDef("_lambda_0", "entry");
+        fn.setLambda(true);
+        var meta = new LirLambdaMeta("Hero::run#0", "call(base=foo(\"a<b&c'>\"), method=connect, arg=0)");
+        fn.setLambdaMeta(meta);
+        fn.addBasicBlock(new LirBasicBlock("entry", List.of(new ReturnInsn(null))));
+
+        var cls = new LirClassDef("Hero", "Node", false, false, Map.of(), List.of(), List.of(), List.of(fn));
+        var xml = new DomLirSerializer().serializeToString(new LirModule("m", List.of(cls)));
+
+        var parsed = new DomLirParser(new gd.script.gdcc.scope.ClassRegistry(
+                gd.script.gdcc.gdextension.ExtensionApiLoader.loadDefault()
+        )).parse(xml);
+        assertEquals(meta, parsed.getClassDefs().getFirst().getFunctions().getFirst().getLambdaMeta());
     }
 
     @Test

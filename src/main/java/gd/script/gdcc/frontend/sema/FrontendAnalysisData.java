@@ -69,6 +69,11 @@ public final class FrontendAnalysisData {
     /// Published lambda identity/capture plans keyed by `LambdaExpression`. Inventory never
     /// publishes placeholder plans; the first entry is the complete `LAMBDA_RESOLUTION` payload.
     private final @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans;
+    /// HRX §5.11 lambda identity facts (source ordinal + normalized call-site context) keyed by
+    /// `LambdaExpression`. Published by `FrontendLambdaIdentityAnalyzer` ahead of suite resolution;
+    /// consumed by `FrontendSuiteResolver.fillAndPublishLambdaPlan`, which fails fast on a missing
+    /// entry rather than defaulting an empty context (that would silently void the context gate).
+    private final @NotNull FrontendAstSideTable<FrontendLambdaIdentity> lambdaIdentities;
     /// Monotonic identity set of GDCC callables proven to be coroutines, i.e. directly containing a
     /// real await (signal/dynamic route) or awaiting a call to another coroutine. Keyed by the
     /// callable's skeleton `LirFunctionDef` — not by AST node — because every downstream consumer
@@ -106,6 +111,7 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets,
             @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans,
             @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans,
+            @NotNull FrontendAstSideTable<FrontendLambdaIdentity> lambdaIdentities,
             @NotNull Set<LirFunctionDef> coroutineFunctions,
             @NotNull Set<LambdaExpression> coroutineLambdaOwners,
             @NotNull List<FrontendAwaitCallPending> awaitCallPendings
@@ -135,6 +141,7 @@ public final class FrontendAnalysisData {
                 "containerLiteralPlans must not be null"
         );
         this.lambdaPlans = Objects.requireNonNull(lambdaPlans, "lambdaPlans must not be null");
+        this.lambdaIdentities = Objects.requireNonNull(lambdaIdentities, "lambdaIdentities must not be null");
         this.coroutineFunctions = Objects.requireNonNull(coroutineFunctions, "coroutineFunctions must not be null");
         this.coroutineLambdaOwners = Objects.requireNonNull(
                 coroutineLambdaOwners,
@@ -146,6 +153,7 @@ public final class FrontendAnalysisData {
     /// Creates an empty analysis data carrier with the full side-table topology already present.
     public static @NotNull FrontendAnalysisData bootstrap() {
         return new FrontendAnalysisData(
+                new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
@@ -237,6 +245,12 @@ public final class FrontendAnalysisData {
     public void updateLambdaPlans(@NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans) {
         FrontendPublishedFactTypeGuard.checkLambdaPlans(lambdaPlans);
         replaceSideTableContents(this.lambdaPlans, lambdaPlans, "lambdaPlans");
+    }
+
+    public void updateLambdaIdentities(
+            @NotNull FrontendAstSideTable<FrontendLambdaIdentity> lambdaIdentities
+    ) {
+        replaceSideTableContents(this.lambdaIdentities, lambdaIdentities, "lambdaIdentities");
     }
 
     /// Applies one single-owner patch without replacing any stable side-table reference.
@@ -404,6 +418,10 @@ public final class FrontendAnalysisData {
 
     public @NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans() {
         return lambdaPlans;
+    }
+
+    public @NotNull FrontendAstSideTable<FrontendLambdaIdentity> lambdaIdentities() {
+        return lambdaIdentities;
     }
 
     /// Read-only view of the coroutine callable set; mutation goes through `markCoroutineFunction`.

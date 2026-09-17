@@ -12,6 +12,7 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.lir.LirLambdaMeta;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
@@ -478,7 +479,7 @@ class CCoroutineStateClassCodegenTest {
         var workerClass = new LirClassDef("Worker", "RefCounted");
         var lambda = newFunction("_lambda_0", GdIntType.INT);
         lambda.setLambda(true);
-        lambda.setSourceIdentityKey("Worker::run@+2:5");
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run@+2:5", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setCoroutine(true);
@@ -515,7 +516,7 @@ class CCoroutineStateClassCodegenTest {
         var workerClass = new LirClassDef("Worker", "RefCounted");
         var lambda = newFunction("_lambda_0", GdIntType.INT);
         lambda.setLambda(true);
-        lambda.setSourceIdentityKey("Worker::run@+2:5");
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run@+2:5", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setCoroutine(true);
@@ -688,7 +689,7 @@ class CCoroutineStateClassCodegenTest {
         // cached object_id must read frame fields (no `$param` C slots exist in the body).
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
-        lambda.setSourceIdentityKey("Worker::run@+2:5");
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run@+2:5", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(GdVoidType.VOID);

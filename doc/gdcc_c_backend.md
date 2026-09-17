@@ -216,8 +216,14 @@ Usage and lifecycle rules:
   token, sweeper registration, rebind of surviving specs and the two-phase sweep. The
   module-level rebind table (`gdcc_hrx_rebind_table`, empty modules pass `NULL, 0`) and the
   per-Callable identity structs are emitted at the top of `entry.c` by the identity
-  catalog; every lambda's stable `impl_key` (`<Class>::<func>@+Δline:col`) is derived by
-  the frontend into `LirFunctionDef.sourceIdentityKey` (keyless lambdas fail codegen).
+  catalog; every lambda's stable `impl_key` (`<Class>::<func>#<ordinal>` — source
+  pre-order sequence within the outermost named function) plus its normalized
+  `callsite_context` descriptor is derived by the frontend into
+  `LirFunctionDef.lambdaMeta` (`LirLambdaMeta`: `sourceIdentityKey`/`callSiteContext`;
+  keyless lambdas fail codegen);
+  the context string is the third rebind gate alongside `impl_key` and `schema_desc`
+  (HRX ABI v2, descriptor prefix `gdcc-hrx:2;`; runtime contract:
+  `gdcc_runtime_lib.md` §HRX).
 - `deinitialize(...)` must use the same level guard, then run the teardown in the fixed
   hot-reload order (`hot_reload_implementation_plan.md` D8 v11):
   1. print the unload message;

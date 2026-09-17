@@ -18,6 +18,7 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.lir.LirLambdaMeta;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
@@ -68,6 +69,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -3166,7 +3168,7 @@ public class CCodegenTest {
         lambda.setLambda(true);
         lambda.setHidden(true);
         lambda.setStatic(true);
-        lambda.setSourceIdentityKey("HrxWorker::run@+2:5");
+        lambda.setLambdaMeta(new LirLambdaMeta("HrxWorker::run#0", "call(base=sig_a, method=connect, arg=0)"));
         lambda.addCapture(new LirCaptureDef("seed", GdIntType.INT, lambda));
         clazz.addFunction(lambda);
         var user = newFunction("make", GdVoidType.VOID);
@@ -3197,16 +3199,25 @@ public class CCodegenTest {
         assertContainsAll(
                 cCode,
                 "static const unsigned char HrxWorker__lambda_0_hrx_identity_schema[] = {",
-                ".impl_key = u8\"HrxWorker::run@+2:5\"",
+                ".impl_key = u8\"HrxWorker::run#0\"",
                 ".argument_count = 0",
+                ".callsite_context = u8\"call(base=sig_a, method=connect, arg=0)\"",
                 "{ &HrxWorker__lambda_0_hrx_identity, HrxWorker__lambda_0_call, HrxWorker__lambda_0_free, HrxWorker__lambda_0_is_valid }"
         );
-        // Standalone identity: interning key + shared runtime impl + always-NULL destroy.
+        // Standalone identity: interning key + shared runtime impl + always-NULL destroy, and
+        // no call-site context (§5.11: standalone identities never carry one).
         assertContainsAll(
                 cCode,
                 ".impl_key = u8\"standalone:utility::print\"",
                 "gdcc_standalone_callable_call, NULL, gdcc_standalone_callable_is_valid"
         );
+        var standaloneIdentityStart = cCode.indexOf("gdcc_hrx_identity gdcc_hrx_identity_sa_utility");
+        assertTrue(standaloneIdentityStart >= 0, cCode);
+        var standaloneIdentityInit = cCode.substring(
+                standaloneIdentityStart,
+                cCode.indexOf("};", standaloneIdentityStart)
+        );
+        assertTrue(standaloneIdentityInit.contains(".callsite_context = NULL"), standaloneIdentityInit);
         assertEquals(2, countOccurrences(cCode, "{ &"), "exactly two rebind rows expected");
 
         // Mode freeze happens before any class registration (no Callable may predate it).
@@ -3321,13 +3332,96 @@ public class CCodegenTest {
         );
     }
 
+    /// HRX v15 (§5.11) ABI contract: the Java schema-descriptor prefix must derive from the
+    /// SAME version the C runtime guards on — otherwise bumping only the C macro would leave
+    /// descriptors matching and silently void the abi_version guard. Pin both sides here:
+    /// the C header macro must equal the Java constant used for the descriptor prefix, and the
+    /// hub version must NOT move (a hub bump would orphan the entire old registry).
+    @Test
+    public void hrxAbiVersionConstantMatchesTheCHeaderMacro() throws Exception {
+        var resource = "include_451/gdcc/gdcc_hrx.h";
+        String header;
+        try (var in = CCodegenTest.class.getClassLoader().getResourceAsStream(resource)) {
+            assertNotNull(in, resource + " must be on the classpath");
+            header = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        var abiMatcher = java.util.regex.Pattern
+                .compile("#define GDCC_HRX_ABI_VERSION (\\d+)u")
+                .matcher(header);
+        assertTrue(abiMatcher.find(), "GDCC_HRX_ABI_VERSION macro not found in gdcc_hrx.h");
+        assertEquals(
+                CHrxIdentityCatalog.HRX_ABI_VERSION,
+                Integer.parseInt(abiMatcher.group(1)),
+                "Java HRX_ABI_VERSION must equal the C GDCC_HRX_ABI_VERSION"
+        );
+        var hubMatcher = java.util.regex.Pattern
+                .compile("#define GDCC_HRX_HUB_VERSION (\\d+)u")
+                .matcher(header);
+        assertTrue(hubMatcher.find(), "GDCC_HRX_HUB_VERSION macro not found in gdcc_hrx.h");
+        assertEquals(3, Integer.parseInt(hubMatcher.group(1)), "HUB_VERSION must stay 3 (hub layout unchanged by v15)");
+        // The emitted descriptor must carry the same version prefix, so the descriptor gate and
+        // the version guard can never drift apart.
+        var catalog = buildSchemaProbeLambda(GdIntType.INT, GdIntType.INT);
+        var descBytes = catalog.identities().getFirst().schemaBytes();
+        var desc = new String(
+                descBytes.stream().map(b -> (char) b.intValue()).collect(
+                        StringBuilder::new, StringBuilder::append, StringBuilder::append
+                ).toString().getBytes(java.nio.charset.StandardCharsets.ISO_8859_1),
+                java.nio.charset.StandardCharsets.ISO_8859_1
+        );
+        assertTrue(desc.startsWith("gdcc-hrx:" + CHrxIdentityCatalog.HRX_ABI_VERSION + ";"), desc);
+    }
+
+    /// HRX v15 catalog plumbing: the LIR call-site context reaches the emitted identity as a
+    /// C string literal, while standalone identities and context-less lambdas emit NULL
+    /// (NULL-safe equality treats NULL==NULL as a match — §5.7 standalone rebinding stays
+    /// unaffected by the third gate).
+    @Test
+    public void hrxIdentityEmissionCarriesCallsiteContextOrNull() throws Exception {
+        var clazz = new LirClassDef("HrxCtx", "Node");
+        var withCtx = newFunction("_lambda_0", GdIntType.INT);
+        withCtx.setLambda(true);
+        withCtx.setHidden(true);
+        withCtx.setStatic(true);
+        withCtx.setLambdaMeta(new LirLambdaMeta("HrxCtx::run#0", "call(base=self.sig_a, method=connect, arg=0)"));
+        clazz.addFunction(withCtx);
+        var noCtx = newFunction("_lambda_1", GdIntType.INT);
+        noCtx.setLambda(true);
+        noCtx.setHidden(true);
+        noCtx.setStatic(true);
+        noCtx.setLambdaMeta(new LirLambdaMeta("HrxCtx::run#1", null));
+        clazz.addFunction(noCtx);
+        var module = new LirModule("hrx_ctx_module", List.of(clazz));
+
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+        assertContainsAll(
+                cCode,
+                ".impl_key = u8\"HrxCtx::run#0\"",
+                ".callsite_context = u8\"call(base=self.sig_a, method=connect, arg=0)\""
+        );
+        var noCtxIdentityStart = cCode.indexOf("HrxCtx__lambda_1_hrx_identity = {");
+        assertTrue(noCtxIdentityStart >= 0, cCode);
+        var noCtxIdentityInit = cCode.substring(
+                noCtxIdentityStart,
+                cCode.indexOf("};", noCtxIdentityStart)
+        );
+        assertTrue(noCtxIdentityInit.contains(".callsite_context = NULL"), noCtxIdentityInit);
+    }
+
     private static CHrxIdentityCatalog buildSchemaProbeLambda(GdType captureType, GdType returnType) throws java.io.IOException {
         var clazz = new LirClassDef("HrxSchema", "Node");
         var lambda = newFunction("_lambda_0", returnType);
         lambda.setLambda(true);
         lambda.setHidden(true);
         lambda.setStatic(true);
-        lambda.setSourceIdentityKey("HrxSchema::run@+1:5");
+        lambda.setLambdaMeta(new LirLambdaMeta("HrxSchema::run#0", null));
         lambda.addCapture(new LirCaptureDef("seed", captureType, lambda));
         clazz.addFunction(lambda);
         var module = new LirModule("hrx_schema_module", List.of(clazz));
@@ -3337,6 +3431,44 @@ public class CCodegenTest {
         var ctx = new CodegenContext(projectInfo, new ClassRegistry(api));
         // Catalog-level check (no template rendering): capture/signature drive the descriptor.
         return CHrxIdentityCatalog.collect(module, ctx, new CGenHelper(ctx, module.getClassDefs()));
+    }
+
+    /// §5.11 catalog shape: lambdas carry the call-site context through the catalog into the
+    /// emitted identity, while standalone identities stay NULL — the runtime's NULL-safe gate
+    /// must never confuse the two.
+    @Test
+    public void hrxCatalogCarriesCallsiteContextForLambdasAndNullForStandalones() throws java.io.IOException {
+        var clazz = new LirClassDef("HrxCtx", "Node");
+        var lambda = newFunction("_lambda_0", GdVoidType.VOID);
+        lambda.setLambda(true);
+        lambda.setHidden(true);
+        lambda.setStatic(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("HrxCtx::arm#0", "call(base=sig_a, method=connect, arg=0)"));
+        clazz.addFunction(lambda);
+        var user = newFunction("arm", GdVoidType.VOID);
+        user.createAndAddVariable("cb", new GdCallableType());
+        entry(user).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb", StandaloneCallableKind.UTILITY, "", "print"));
+        entry(user).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(user);
+        var module = new LirModule("hrx_ctx_module", List.of(clazz));
+
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, new ClassRegistry(api));
+        var catalog = CHrxIdentityCatalog.collect(module, ctx, new CGenHelper(ctx, module.getClassDefs()));
+
+        var lambdaIdentity = catalog.identities().stream()
+                .filter(identity -> identity.symbol().contains("_lambda_0"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("call(base=sig_a, method=connect, arg=0)", lambdaIdentity.callSiteContextCString());
+        var standaloneIdentity = catalog.identities().stream()
+                .filter(identity -> identity.symbol().contains("_sa_"))
+                .findFirst()
+                .orElseThrow();
+        assertNull(standaloneIdentity.callSiteContextCString());
     }
 
     /// HR-8 defensive: a lambda without a frontend-published source identity key must fail

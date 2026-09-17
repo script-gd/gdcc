@@ -267,7 +267,7 @@ class GdccHrxRuntimeSmokeTest {
                 
                 static const unsigned char DESC_A[] = { 1, 2, 3, 4 };
                 static const gdcc_hrx_identity IDENTITY_A = {
-                    .impl_key = "Worker::run@+2:5",
+                    .impl_key = "Worker::run#0",
                     .schema_desc = DESC_A,
                     .schema_desc_len = sizeof(DESC_A),
                     .argument_count = 2,
@@ -362,20 +362,20 @@ class GdccHrxRuntimeSmokeTest {
                 static const unsigned char DESC[] = { 9, 8, 7 };
                 static const unsigned char DESC_OTHER[] = { 1, 1, 1, 1 };
                 static const gdcc_hrx_identity IDENTITY_A = {
-                    .impl_key = "Worker::run@+2:5", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .impl_key = "Worker::run#0", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
                     .argument_count = 2, .schema_fingerprint = { 1 },
                 };
                 // Same key + same descriptor, only a different argument count: still compatible.
                 static const gdcc_hrx_identity IDENTITY_A_NEW = {
-                    .impl_key = "Worker::run@+2:5", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .impl_key = "Worker::run#0", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
                     .argument_count = 3, .schema_fingerprint = { 1 },
                 };
                 static const gdcc_hrx_identity IDENTITY_B = {
-                    .impl_key = "Worker::hide@+4:9", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .impl_key = "Worker::hide#1", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
                     .argument_count = 1, .schema_fingerprint = { 2 },
                 };
                 static const gdcc_hrx_identity IDENTITY_B_CHANGED = {
-                    .impl_key = "Worker::hide@+4:9", .schema_desc = DESC_OTHER, .schema_desc_len = sizeof(DESC_OTHER),
+                    .impl_key = "Worker::hide#1", .schema_desc = DESC_OTHER, .schema_desc_len = sizeof(DESC_OTHER),
                     .argument_count = 1, .schema_fingerprint = { 2 },
                 };
                 static const gdcc_hrx_rebind_entry GEN2_TABLE[] = {
@@ -428,6 +428,255 @@ class GdccHrxRuntimeSmokeTest {
         var execution = compileLinkAndRun("rebind_probe", FAKE_ENGINE + source, runtimeObjects);
         assertEquals(0, execution.exitCode(), execution::diagnostic);
         assertTrue(execution.output().contains("OK rebind"), execution::diagnostic);
+    }
+
+    @Test
+    void rebindShouldRespectTheCallsiteContextGate() throws IOException, InterruptedException {
+        // §5.11 third gate: same impl_key + same schema descriptor + MATCHING context rebinds
+        // (A); a context mismatch with identical key+schema fails closed (B — the statement-swap
+        // fix); NULL vs non-NULL never matches (C); NULL==NULL matches (D, standalone shape).
+        var source = """
+                static int g_impl1_calls = 0;
+                static int g_impl2_calls = 0;
+                static void impl1(void *c, const GDExtensionConstVariantPtr *a, GDExtensionInt n,
+                        GDExtensionVariantPtr r, GDExtensionCallError *e) { g_impl1_calls++; }
+                static void impl2(void *c, const GDExtensionConstVariantPtr *a, GDExtensionInt n,
+                        GDExtensionVariantPtr r, GDExtensionCallError *e) { g_impl2_calls++; }
+                static GDExtensionBool valid1(void *c) { return true; }
+                static void noop_destroy(void *c) { (void)c; }
+                
+                static const unsigned char DESC[] = { 9, 8, 7 };
+                static const gdcc_hrx_identity IDENTITY_A = {
+                    .impl_key = "Worker::run#0", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .argument_count = 1, .schema_fingerprint = { 1 },
+                    .callsite_context = "call(base=sig_a, method=connect, arg=0)",
+                };
+                static const gdcc_hrx_identity IDENTITY_A_NEW = {
+                    .impl_key = "Worker::run#0", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .argument_count = 1, .schema_fingerprint = { 1 },
+                    .callsite_context = "call(base=sig_a, method=connect, arg=0)",
+                };
+                // Same key + same descriptor, different context: the swap form that must NOT rebind.
+                static const gdcc_hrx_identity IDENTITY_A_SWAPPED = {
+                    .impl_key = "Worker::run#0", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .argument_count = 1, .schema_fingerprint = { 1 },
+                    .callsite_context = "call(base=sig_b, method=connect, arg=0)",
+                };
+                static const gdcc_hrx_identity IDENTITY_C = {
+                    .impl_key = "Worker::run#2", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .argument_count = 1, .schema_fingerprint = { 1 },
+                    .callsite_context = NULL,
+                };
+                static const gdcc_hrx_identity IDENTITY_C_NEW = {
+                    .impl_key = "Worker::run#2", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .argument_count = 1, .schema_fingerprint = { 1 },
+                    .callsite_context = "call(base=sig_a, method=connect, arg=0)",
+                };
+                static const gdcc_hrx_identity IDENTITY_D = {
+                    .impl_key = "Worker::run#3", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .argument_count = 1, .schema_fingerprint = { 1 },
+                    .callsite_context = NULL,
+                };
+                static const gdcc_hrx_identity IDENTITY_D_NEW = {
+                    .impl_key = "Worker::run#3", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .argument_count = 1, .schema_fingerprint = { 1 },
+                    .callsite_context = NULL,
+                };
+                static const gdcc_hrx_rebind_entry GEN2_TABLE[] = {
+                    { &IDENTITY_A_NEW, impl2, noop_destroy, valid1 },
+                    { &IDENTITY_C_NEW, impl2, noop_destroy, valid1 },
+                    { &IDENTITY_D_NEW, impl2, noop_destroy, valid1 },
+                };
+                
+                int main(void) {
+                    godot_initialize_interface(fake_get_proc_address);
+                    gdcc_hrx_test_reset_image_state();
+                    gdcc_hrx_initialize_core(NULL, (GDExtensionObjectPtr)&g_engine_marker, true, true, 0x77u, NULL, 0);
+                    const int balance_base = g_mem_balance;
+                    int captures = 1;
+                    godot_Callable cb_a = gdcc_hrx_create_lambda(&captures, 0, impl1, valid1, noop_destroy, 1, &IDENTITY_A, NULL);
+                    godot_Callable cb_c = gdcc_hrx_create_lambda(&captures, 0, impl1, valid1, noop_destroy, 1, &IDENTITY_C, NULL);
+                    godot_Callable cb_d = gdcc_hrx_create_lambda(&captures, 0, impl1, valid1, noop_destroy, 1, &IDENTITY_D, NULL);
+                    FakeCallableCustom *custom_a = fake_callable_custom_of(&cb_a);
+                    FakeCallableCustom *custom_c = fake_callable_custom_of(&cb_c);
+                    FakeCallableCustom *custom_d = fake_callable_custom_of(&cb_d);
+                    gdcc_hrx_deinitialize();
+                
+                    gdcc_hrx_test_reset_image_state();
+                    gdcc_hrx_initialize_core(NULL, (GDExtensionObjectPtr)&g_engine_marker, true, true, 0x77u, GEN2_TABLE, 3);
+                
+                    // A: identical context -> rebound to the new implementation.
+                    CHECK(custom_a->is_valid_func(custom_a->userdata) == true, "matching context must rebind");
+                    custom_a->call_func(custom_a->userdata, NULL, 0, NULL, NULL);
+                    CHECK(g_impl2_calls == 1 && g_impl1_calls == 0, "context-matched spec must run the new impl");
+                    // C: NULL context (old) vs non-NULL context (new) -> fail closed.
+                    CHECK(custom_c->is_valid_func(custom_c->userdata) == false, "NULL-vs-non-NULL context must not rebind");
+                    // D: NULL context on both sides -> matches (standalone shape).
+                    CHECK(custom_d->is_valid_func(custom_d->userdata) == true, "NULL==NULL context must rebind");
+                    custom_d->call_func(custom_d->userdata, NULL, 0, NULL, NULL);
+                    CHECK(g_impl2_calls == 2, "the NULL/NULL spec must run the new impl");
+                
+                    godot_Callable_destroy(&cb_a);
+                    godot_Callable_destroy(&cb_c);
+                    godot_Callable_destroy(&cb_d);
+                    CHECK(g_mem_balance == balance_base, "all specs (incl. context copies) must be reclaimed");
+                    printf("OK rebind_context_gate\\n");
+                    return 0;
+                }
+                """;
+        var execution = compileLinkAndRun("rebind_context_gate_probe", FAKE_ENGINE + source, runtimeObjects);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertTrue(execution.output().contains("OK rebind_context_gate"), execution::diagnostic);
+    }
+
+    @Test
+    void rebindShouldFailClosedOnContextMismatch() throws IOException, InterruptedException {
+        // The swap fix at runtime level: a survivor whose context differs from the new entry's
+        // (same key + same schema) stays UNBOUND — the old Callable goes invalid and never runs.
+        var source = """
+                static int g_impl1_calls = 0;
+                static int g_impl2_calls = 0;
+                static void impl1(void *c, const GDExtensionConstVariantPtr *a, GDExtensionInt n,
+                        GDExtensionVariantPtr r, GDExtensionCallError *e) { g_impl1_calls++; }
+                static void impl2(void *c, const GDExtensionConstVariantPtr *a, GDExtensionInt n,
+                        GDExtensionVariantPtr r, GDExtensionCallError *e) { g_impl2_calls++; }
+                static GDExtensionBool valid1(void *c) { return true; }
+                static void noop_destroy(void *c) { (void)c; }
+                
+                static const unsigned char DESC[] = { 9, 8, 7 };
+                static const gdcc_hrx_identity IDENTITY_A = {
+                    .impl_key = "Worker::run#0", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .argument_count = 1, .schema_fingerprint = { 1 },
+                    .callsite_context = "call(base=sig_a, method=connect, arg=0)",
+                };
+                static const gdcc_hrx_identity IDENTITY_A_SWAPPED = {
+                    .impl_key = "Worker::run#0", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .argument_count = 1, .schema_fingerprint = { 1 },
+                    .callsite_context = "call(base=sig_b, method=connect, arg=0)",
+                };
+                static const gdcc_hrx_rebind_entry GEN2_TABLE[] = {
+                    { &IDENTITY_A_SWAPPED, impl2, noop_destroy, valid1 },
+                };
+                
+                int main(void) {
+                    godot_initialize_interface(fake_get_proc_address);
+                    gdcc_hrx_test_reset_image_state();
+                    gdcc_hrx_initialize_core(NULL, (GDExtensionObjectPtr)&g_engine_marker, true, true, 0x78u, NULL, 0);
+                    const int balance_base = g_mem_balance;
+                    int captures = 1;
+                    godot_Callable cb_a = gdcc_hrx_create_lambda(&captures, 0, impl1, valid1, noop_destroy, 1, &IDENTITY_A, NULL);
+                    FakeCallableCustom *custom_a = fake_callable_custom_of(&cb_a);
+                    gdcc_hrx_deinitialize();
+                
+                    gdcc_hrx_test_reset_image_state();
+                    gdcc_hrx_initialize_core(NULL, (GDExtensionObjectPtr)&g_engine_marker, true, true, 0x78u, GEN2_TABLE, 1);
+                
+                    // Context mismatch with identical key+schema: fail closed.
+                    CHECK(custom_a->is_valid_func(custom_a->userdata) == false, "mismatched context must stay invalid");
+                    GDExtensionCallError err = { 0 };
+                    godot_Variant ret;
+                    custom_a->call_func(custom_a->userdata, NULL, 0, &ret, &err);
+                    CHECK(g_impl1_calls == 0 && g_impl2_calls == 0, "a mismatched spec must never run any impl");
+                    CHECK(err.error == GDEXTENSION_CALL_ERROR_INVALID_METHOD, "mismatch must take the engine error path");
+                
+                    godot_Callable_destroy(&cb_a);
+                    CHECK(g_mem_balance == balance_base, "the mismatched spec must be reclaimed incl. its context copy");
+                    printf("OK rebind_context_mismatch\\n");
+                    return 0;
+                }
+                """;
+        var execution = compileLinkAndRun("rebind_context_mismatch_probe", FAKE_ENGINE + source, runtimeObjects);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertTrue(execution.output().contains("OK rebind_context_mismatch"), execution::diagnostic);
+    }
+
+    @Test
+    void callsiteContextShouldBeHeapCopiedAndVersionGuarded() throws IOException, InterruptedException {
+        // §5.11 cross-generation safety: (1) the spec stores a HEAP COPY of the identity's
+        // context (generated .rodata dies at dlclose); (2) a v1-ABI spec is rejected by the
+        // version guard even when key+schema+context would all match; (3) shell_free only
+        // touches the appended field under abi_version >= 2, so a v1 block carrying a poison
+        // pointer there is swept without dereferencing it.
+        var source = """
+                static int g_impl1_calls = 0;
+                static void impl1(void *c, const GDExtensionConstVariantPtr *a, GDExtensionInt n,
+                        GDExtensionVariantPtr r, GDExtensionCallError *e) { g_impl1_calls++; }
+                static GDExtensionBool valid1(void *c) { return true; }
+                static void noop_destroy(void *c) { (void)c; }
+                
+                static const unsigned char DESC[] = { 4, 2 };
+                static const gdcc_hrx_identity IDENTITY_CTX = {
+                    .impl_key = "Worker::run#0", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .argument_count = 1, .schema_fingerprint = { 1 },
+                    .callsite_context = "call(base=sig_a, method=connect, arg=0)",
+                };
+                static const gdcc_hrx_identity IDENTITY_CTX_NEW = {
+                    .impl_key = "Worker::run#0", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .argument_count = 1, .schema_fingerprint = { 1 },
+                    .callsite_context = "call(base=sig_a, method=connect, arg=0)",
+                };
+                static const gdcc_hrx_identity IDENTITY_PLAIN = {
+                    .impl_key = "Worker::run#1", .schema_desc = DESC, .schema_desc_len = sizeof(DESC),
+                    .argument_count = 1, .schema_fingerprint = { 1 },
+                    .callsite_context = NULL,
+                };
+                static const gdcc_hrx_rebind_entry GEN2_TABLE[] = {
+                    { &IDENTITY_CTX_NEW, impl1, noop_destroy, valid1 },
+                };
+                
+                int main(void) {
+                    godot_initialize_interface(fake_get_proc_address);
+                    gdcc_hrx_test_reset_image_state();
+                    gdcc_hrx_initialize_core(NULL, (GDExtensionObjectPtr)&g_engine_marker, true, true, 0x79u, NULL, 0);
+                    const int balance_base = g_mem_balance;
+                    int captures = 1;
+                
+                    // (1) heap copy: equal content, different storage.
+                    gdcc_hrx_spec *spec_ctx = NULL;
+                    godot_Callable cb_ctx = gdcc_hrx_create_lambda(&captures, 0, impl1, valid1, noop_destroy, 1, &IDENTITY_CTX, &spec_ctx);
+                    CHECK(spec_ctx != NULL, "spec must be exposed");
+                    CHECK(spec_ctx->callsite_context != NULL
+                            && spec_ctx->callsite_context != IDENTITY_CTX.callsite_context
+                            && strcmp(spec_ctx->callsite_context, IDENTITY_CTX.callsite_context) == 0,
+                            "callsite_context must be a heap copy of the identity's");
+                    CHECK(spec_ctx->abi_version == GDCC_HRX_ABI_VERSION, "spec records the current ABI version");
+                    // Watermark for step (3): everything allocated after this line belongs to
+                    // cb_plain alone, so destroying cb_plain must return the balance exactly here.
+                    const int balance_after_ctx = g_mem_balance;
+                    gdcc_hrx_spec *spec_plain = NULL;
+                    godot_Callable cb_plain = gdcc_hrx_create_lambda(&captures, 0, impl1, valid1, noop_destroy, 1, &IDENTITY_PLAIN, &spec_plain);
+                    CHECK(spec_plain != NULL && spec_plain->callsite_context == NULL,
+                            "a NULL identity context must stay NULL (no strdup(NULL))");
+                
+                    gdcc_hrx_deinitialize();
+                
+                    // (2) version guard: mark the context spec as a v1 relic — the rebind must
+                    // reject it even though key+schema+context would match the new table.
+                    spec_ctx->abi_version = 1u;
+                    gdcc_hrx_test_reset_image_state();
+                    gdcc_hrx_initialize_core(NULL, (GDExtensionObjectPtr)&g_engine_marker, true, true, 0x79u, GEN2_TABLE, 1);
+                    CHECK(spec_ctx->binding_state == GDCC_HRX_UNBOUND_INCOMPATIBLE,
+                            "a v1 spec must be rejected by the abi_version guard even when everything else matches");
+                    // Restore the version so shell_free may release the real context copy below.
+                    spec_ctx->abi_version = GDCC_HRX_ABI_VERSION;
+                
+                    // (3) shell_free guard: a v1 block must never have its (never-present) tail
+                    // field read or freed. Poison the tail of the plain spec and mark it v1:
+                    // sweeping it must not touch the poison pointer (a free of 0x1 would crash).
+                    spec_plain->callsite_context = (const char *)(uintptr_t)0x1;
+                    spec_plain->abi_version = 1u;
+                    godot_Callable_destroy(&cb_plain);
+                    CHECK(g_mem_balance == balance_after_ctx,
+                            "the v1 plain spec must be reclaimed without touching the tail field");
+                    godot_Callable_destroy(&cb_ctx);
+                    CHECK(g_mem_balance == balance_base, "the context spec must be reclaimed incl. its context copy");
+                    printf("OK callsite_context_lifecycle\\n");
+                    return 0;
+                }
+                """;
+        var execution = compileLinkAndRun("callsite_context_lifecycle_probe", FAKE_ENGINE + source, runtimeObjects);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertTrue(execution.output().contains("OK callsite_context_lifecycle"), execution::diagnostic);
     }
 
     @Test
@@ -636,7 +885,7 @@ class GdccHrxRuntimeSmokeTest {
                 static GDExtensionBool valid1(void *c) { return true; }
                 static void noop_destroy(void *c) { (void)c; }
                 static const gdcc_hrx_identity IDENTITY_U = {
-                    .impl_key = "Worker::guard@+1:1", .schema_desc = NULL, .schema_desc_len = 0,
+                    .impl_key = "Worker::guard#0", .schema_desc = NULL, .schema_desc_len = 0,
                     .argument_count = 0, .schema_fingerprint = { 0 },
                 };
                 
@@ -691,16 +940,16 @@ class GdccHrxRuntimeSmokeTest {
                 static const unsigned char DESC_B[] = { 3, 4 };
                 static const unsigned char DESC_B_ENTRY[] = { 9, 9, 9 };
                 static const gdcc_hrx_identity IDENTITY_A = {
-                    .impl_key = "Worker::a@+1:1", .schema_desc = DESC_A, .schema_desc_len = sizeof(DESC_A),
+                    .impl_key = "Worker::a#0", .schema_desc = DESC_A, .schema_desc_len = sizeof(DESC_A),
                     .argument_count = 0, .schema_fingerprint = { 0xAA },
                 };
                 static const gdcc_hrx_identity IDENTITY_B = {
-                    .impl_key = "Worker::b@+2:2", .schema_desc = DESC_B, .schema_desc_len = sizeof(DESC_B),
+                    .impl_key = "Worker::b#1", .schema_desc = DESC_B, .schema_desc_len = sizeof(DESC_B),
                     .argument_count = 0, .schema_fingerprint = { 0xBB },
                 };
                 // Table entry for B: same key, DIFFERENT descriptor and fingerprint 0xCC.
                 static const gdcc_hrx_identity IDENTITY_B_ENTRY = {
-                    .impl_key = "Worker::b@+2:2", .schema_desc = DESC_B_ENTRY, .schema_desc_len = sizeof(DESC_B_ENTRY),
+                    .impl_key = "Worker::b#1", .schema_desc = DESC_B_ENTRY, .schema_desc_len = sizeof(DESC_B_ENTRY),
                     .argument_count = 0, .schema_fingerprint = { 0xCC },
                 };
                 static const gdcc_hrx_rebind_entry GEN2_TABLE[] = {
@@ -762,11 +1011,11 @@ class GdccHrxRuntimeSmokeTest {
                     godot_Callable_destroy(sibling);
                 }
                 static const gdcc_hrx_identity IDENTITY_A = {
-                    .impl_key = "Worker::a@+1:1", .schema_desc = NULL, .schema_desc_len = 0,
+                    .impl_key = "Worker::a#0", .schema_desc = NULL, .schema_desc_len = 0,
                     .argument_count = 0, .schema_fingerprint = { 1 },
                 };
                 static const gdcc_hrx_identity IDENTITY_B = {
-                    .impl_key = "Worker::b@+2:2", .schema_desc = NULL, .schema_desc_len = 0,
+                    .impl_key = "Worker::b#1", .schema_desc = NULL, .schema_desc_len = 0,
                     .argument_count = 0, .schema_fingerprint = { 2 },
                 };
                 
@@ -807,15 +1056,15 @@ class GdccHrxRuntimeSmokeTest {
                 static GDExtensionBool valid1(void *c) { return true; }
                 static void noop_destroy(void *c) { (void)c; }
                 static const gdcc_hrx_identity IDENTITY_A = {
-                    .impl_key = "Worker::a@+1:1", .schema_desc = NULL, .schema_desc_len = 0,
+                    .impl_key = "Worker::a#0", .schema_desc = NULL, .schema_desc_len = 0,
                     .argument_count = 0, .schema_fingerprint = { 1 },
                 };
                 static const gdcc_hrx_identity IDENTITY_B = {
-                    .impl_key = "Worker::b@+2:2", .schema_desc = NULL, .schema_desc_len = 0,
+                    .impl_key = "Worker::b#1", .schema_desc = NULL, .schema_desc_len = 0,
                     .argument_count = 0, .schema_fingerprint = { 2 },
                 };
                 static const gdcc_hrx_identity IDENTITY_D = {
-                    .impl_key = "Worker::d@+4:4", .schema_desc = NULL, .schema_desc_len = 0,
+                    .impl_key = "Worker::d#3", .schema_desc = NULL, .schema_desc_len = 0,
                     .argument_count = 0, .schema_fingerprint = { 4 },
                 };
                 static const gdcc_hrx_rebind_entry GEN2_TABLE[] = {
@@ -1081,7 +1330,7 @@ class GdccHrxRuntimeSmokeTest {
                         GDExtensionVariantPtr r, GDExtensionCallError *e) { (void)c; }
                 static GDExtensionBool valid1(void *c) { return true; }
                 static const gdcc_hrx_identity IDENTITY_U = {
-                    .impl_key = "Worker::u@+1:1", .schema_desc = NULL, .schema_desc_len = 0,
+                    .impl_key = "Worker::u#0", .schema_desc = NULL, .schema_desc_len = 0,
                     .argument_count = 0, .schema_fingerprint = { 1 },
                 };
                 
@@ -1128,7 +1377,7 @@ class GdccHrxRuntimeSmokeTest {
                 static void free1(void *c) { g_free_calls++; }
                 static GDExtensionInt argc1(void *c, GDExtensionBool *ok) { if (ok != NULL) *ok = true; return 5; }
                 static const gdcc_hrx_identity IDENTITY_D = {
-                    .impl_key = "Worker::d@+1:1", .schema_desc = NULL, .schema_desc_len = 0,
+                    .impl_key = "Worker::d#0", .schema_desc = NULL, .schema_desc_len = 0,
                     .argument_count = 5, .schema_fingerprint = { 1 },
                 };
                 

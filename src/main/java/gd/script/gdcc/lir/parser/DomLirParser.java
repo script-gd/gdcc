@@ -121,10 +121,34 @@ public final class DomLirParser implements LirParser {
                     // (`Boolean.parseBoolean`): only the exact text "true" enables the marker, any
                     // other/missing value is false. The attribute name is exactly `is_coroutine`.
                     var coroutineF = Boolean.parseBoolean(fEl.getAttribute("is_coroutine"));
-                    // Optional hot-reload identity (HR-8); absent/blank attribute parses as null.
-                    var sourceIdentityKeyF = fEl.getAttribute("source_identity_key");
-                    if (sourceIdentityKeyF.isBlank()) {
-                        sourceIdentityKeyF = null;
+                    // Optional lambda hot-reload metadata (HR-8 / §5.11): a DIRECT `<meta>`
+                    // child carrying `source_identity_key` (+ optional `call_site_context`);
+                    // absent element or blank key parses as null meta, a blank context as null
+                    // context. Direct-child scan only — `getElementsByTagName` would descend
+                    // into descendants and misattribute a nested `<meta>` (same pitfall as the
+                    // class-level annotations below).
+                    LirLambdaMeta lambdaMetaF = null;
+                    Element metaEl = null;
+                    var fChildren = fEl.getChildNodes();
+                    for (int ci = 0; ci < fChildren.getLength(); ci++) {
+                        if (fChildren.item(ci) instanceof Element child && "meta".equals(child.getTagName())) {
+                            if (metaEl != null) {
+                                throw new IllegalArgumentException(
+                                        "<function> '" + fname + "' has multiple <meta> children"
+                                );
+                            }
+                            metaEl = child;
+                        }
+                    }
+                    if (metaEl != null) {
+                        var sourceIdentityKeyF = metaEl.getAttribute("source_identity_key");
+                        if (!sourceIdentityKeyF.isBlank()) {
+                            var callSiteContextF = metaEl.getAttribute("call_site_context");
+                            lambdaMetaF = new LirLambdaMeta(
+                                    sourceIdentityKeyF,
+                                    callSiteContextF.isBlank() ? null : callSiteContextF
+                            );
+                        }
                     }
 
                     var annotationsF = new HashMap<String, String>();
@@ -141,7 +165,7 @@ public final class DomLirParser implements LirParser {
                     fn.setVararg(isVarargF);
                     fn.setHidden(isHiddenF);
                     fn.setCoroutine(coroutineF);
-                    fn.setSourceIdentityKey(sourceIdentityKeyF);
+                    fn.setLambdaMeta(lambdaMetaF);
                     fn.addAnnotations(annotationsF);
 
                     // parameters

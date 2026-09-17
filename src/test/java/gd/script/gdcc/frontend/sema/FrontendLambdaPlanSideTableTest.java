@@ -64,7 +64,9 @@ class FrontendLambdaPlanSideTableTest {
                 ),
                 GdVariantType.VARIANT,
                 emptyFunction(),
-                "Hero"
+                "Hero",
+                0,
+                "assign(var=cb, kind=var)"
         ));
 
         var exception = assertThrows(
@@ -99,7 +101,9 @@ class FrontendLambdaPlanSideTableTest {
                 ),
                 GdVariantType.VARIANT,
                 emptyFunction(),
-                "Hero"
+                "Hero",
+                0,
+                "assign(var=cb, kind=var)"
         );
     }
 
@@ -137,7 +141,8 @@ class FrontendLambdaPlanSideTableTest {
     private static @NotNull FrontendLambdaPlan planOf(
             @NotNull LambdaExpression lambda,
             @NotNull Node enclosingCallable,
-            @NotNull String owningClassCanonicalName
+            @NotNull String owningClassCanonicalName,
+            int identityOrdinal
     ) {
         return new FrontendLambdaPlan(
                 lambda,
@@ -145,40 +150,39 @@ class FrontendLambdaPlanSideTableTest {
                 new FrontendLambdaCapturePlan(List.of(), false),
                 GdVariantType.VARIANT,
                 enclosingCallable,
-                owningClassCanonicalName
+                owningClassCanonicalName,
+                identityOrdinal,
+                "assign(var=cb, kind=var)"
         );
     }
 
     @Test
-    void sourceIdentityKeyShouldUseRelativeLineOffsetAndOneBasedColumn() {
-        // Lambda starts 2 rows and column 8 (0-based) after the enclosing function start:
-        // the key anchors `<Class>::<func>@+<Δline>:<1-based col>` with no file name.
-        var plan = planOf(lambdaAt(7, 8), functionAt("run", 5), "Hero");
-        assertEquals("Hero::run@+2:9", plan.sourceIdentityKey());
+    void sourceIdentityKeyShouldUseSourceOrdinalWithinTheOutermostNamedFunction() {
+        // §5.11 key format: `<Class>::<func>#<ordinal>` — no file name, no source position.
+        var plan = planOf(lambdaAt(7, 8), functionAt("run", 5), "Hero", 0);
+        assertEquals("Hero::run#0", plan.sourceIdentityKey());
     }
 
     @Test
-    void sourceIdentityKeyShouldSurviveWholeFunctionMovesAndOuterFunctionEdits() {
-        // The hot-reload main path: edits in OTHER functions (which shift every absolute row)
-        // and moving the enclosing function as a whole must keep the key stable, because only
-        // the RELATIVE offset inside the enclosing function feeds the key.
-        var before = planOf(lambdaAt(7, 8), functionAt("run", 5), "Hero");
-        var afterOuterEdits = planOf(lambdaAt(107, 8), functionAt("run", 105), "Hero");
+    void sourceIdentityKeyShouldIgnoreSourcePositionsEntirely() {
+        // The ordinal win: edits in OTHER functions, whole-function moves, and line/column
+        // shifts inside the same function all keep the key — only inserting/removing a lambda
+        // BEFORE this one inside the same function changes the ordinal.
+        var before = planOf(lambdaAt(7, 8), functionAt("run", 5), "Hero", 0);
+        var afterOuterEdits = planOf(lambdaAt(107, 1), functionAt("run", 105), "Hero", 0);
         assertEquals(before.sourceIdentityKey(), afterOuterEdits.sourceIdentityKey());
     }
 
     @Test
-    void sourceIdentityKeyShouldFailClosedWhenLambdaShiftsInsideItsFunction() {
-        // Lines added/removed inside the SAME function before the lambda change the relative
-        // offset: the key must NOT be reused (old connections invalidate instead of rebinding
-        // to a wrong body).
-        var before = planOf(lambdaAt(7, 8), functionAt("run", 5), "Hero");
-        var shifted = planOf(lambdaAt(8, 8), functionAt("run", 5), "Hero");
-        var movedColumn = planOf(lambdaAt(7, 9), functionAt("run", 5), "Hero");
-        var otherFunction = planOf(lambdaAt(7, 8), functionAt("attack", 5), "Hero");
-        var otherClass = planOf(lambdaAt(7, 8), functionAt("run", 5), "Villain");
-        assertNotEquals(before.sourceIdentityKey(), shifted.sourceIdentityKey());
-        assertNotEquals(before.sourceIdentityKey(), movedColumn.sourceIdentityKey());
+    void sourceIdentityKeyShouldFailClosedWhenOrdinalOrOwnerChanges() {
+        // A lambda inserted before this one shifts its ordinal; moving to another function or
+        // class changes the owner path: the key must NOT be reused (old connections invalidate
+        // instead of rebinding to a wrong body unless schema + context also collide).
+        var before = planOf(lambdaAt(7, 8), functionAt("run", 5), "Hero", 0);
+        var shiftedOrdinal = planOf(lambdaAt(7, 8), functionAt("run", 5), "Hero", 1);
+        var otherFunction = planOf(lambdaAt(7, 8), functionAt("attack", 5), "Hero", 0);
+        var otherClass = planOf(lambdaAt(7, 8), functionAt("run", 5), "Villain", 0);
+        assertNotEquals(before.sourceIdentityKey(), shiftedOrdinal.sourceIdentityKey());
         assertNotEquals(before.sourceIdentityKey(), otherFunction.sourceIdentityKey());
         assertNotEquals(before.sourceIdentityKey(), otherClass.sourceIdentityKey());
     }
@@ -187,7 +191,37 @@ class FrontendLambdaPlanSideTableTest {
     void sourceIdentityKeyShouldRenderConstructorEnclosingAsInit() {
         var range = rangeAt(5, 0);
         var constructor = new ConstructorDeclaration(List.of(), null, new Block(List.of(), range), range);
-        var plan = planOf(lambdaAt(9, 4), constructor, "Hero");
-        assertEquals("Hero::_init@+4:5", plan.sourceIdentityKey());
+        var plan = planOf(lambdaAt(9, 4), constructor, "Hero", 2);
+        assertEquals("Hero::_init#2", plan.sourceIdentityKey());
+    }
+
+    @Test
+    void constructorShouldRejectNegativeOrdinalAndBlankContext() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendLambdaPlan(
+                        lambdaAt(7, 8),
+                        "_lambda_0",
+                        new FrontendLambdaCapturePlan(List.of(), false),
+                        GdVariantType.VARIANT,
+                        functionAt("run", 5),
+                        "Hero",
+                        -1,
+                        "stmt(ExpressionStatement)"
+                )
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendLambdaPlan(
+                        lambdaAt(7, 8),
+                        "_lambda_0",
+                        new FrontendLambdaCapturePlan(List.of(), false),
+                        GdVariantType.VARIANT,
+                        functionAt("run", 5),
+                        "Hero",
+                        0,
+                        "  "
+                )
+        );
     }
 }

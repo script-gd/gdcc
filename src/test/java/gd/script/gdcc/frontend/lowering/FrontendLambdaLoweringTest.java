@@ -21,6 +21,7 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.lir.LirLambdaMeta;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.AwaitInsn;
@@ -68,14 +69,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// collisions fail fast instead of silently skipping synthesis.
 final class FrontendLambdaLoweringTest {
 
-    /// HR-8: the synthesized lambda shell carries the plan-derived source identity key down
-    /// to the LIR/backend boundary (the rebind table refuses keyless lambdas).
+    /// HR-8 + §5.11: the synthesized lambda shell carries the plan-derived source identity key
+    /// (ordinal form) and the call-site context down to the LIR/backend boundary (the rebind
+    /// table refuses keyless lambdas).
     @Test
     void lambdaShellCarriesPlanSourceIdentityKey() throws Exception {
         var prepared = analyzeAndSkeleton("lambda_shell_identity_key.gd", """
                 class_name LambdaShellIdentityKey
                 extends RefCounted
-                
+
                 func ping():
                     var cb := func():
                         return 1
@@ -85,7 +87,10 @@ final class FrontendLambdaLoweringTest {
         new FrontendLoweringFunctionPreparationPass().run(prepared.context());
 
         var shell = lambdaFunctions(requireClass(prepared, "LambdaShellIdentityKey"), 1).getFirst();
-        assertEquals("LambdaShellIdentityKey::ping@+1:15", shell.getSourceIdentityKey());
+        assertEquals(
+                new LirLambdaMeta("LambdaShellIdentityKey::ping#0", "assign(var=cb, kind=var)"),
+                shell.getLambdaMeta()
+        );
     }
 
     /// Nested lambdas synthesize two hidden `is_lambda` shells whose capture lists match the
@@ -810,7 +815,9 @@ final class FrontendLambdaLoweringTest {
                 FrontendLambdaCapturePlan.of(List.of()),
                 plan.returnType(),
                 plan.enclosingCallable(),
-                plan.owningClassCanonicalName()
+                plan.owningClassCanonicalName(),
+                plan.identityOrdinal(),
+                plan.callSiteContext()
         ));
 
         new FrontendLoweringFunctionPreparationPass().run(prepared.context());

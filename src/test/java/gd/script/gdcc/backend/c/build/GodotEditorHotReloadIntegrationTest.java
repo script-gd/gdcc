@@ -568,6 +568,53 @@ public class GodotEditorHotReloadIntegrationTest {
         }
     }
 
+    /// HR-9 §5.11 acceptance trio (v15 lambda identity): all three legs run in ONE scenario.
+    /// Leg 1 (swap gate): two same-schema lambdas connected to sig_swap_a/sig_swap_b swap their
+    /// connect statements in v2. Ordinal keys stay `arm_swap#0/#1` but the callsite contexts
+    /// cross (base=sig_swap_a <-> base=sig_swap_b), so the third rebind gate must fail-closed
+    /// BOTH old connections — under the old position key this was the silent mis-binding case.
+    /// Leg 2 (ordinal immunity): a plain non-lambda line is inserted before the sig_shift
+    /// connect; the ordinal key `#0` and context are unchanged, so the connection must rebind
+    /// and run the v2 body (the old position key would have false-invalidated on the line shift).
+    /// Leg 3 (extract-variable false invalidation): `return func...` becomes
+    /// `var cb := func...; return cb`, changing only the callsite context (`return` ->
+    /// `assign(var=cb, kind=var)`), so the retained v1 Callable must invalidate (documented
+    /// expected false invalidation) while a post-reload `make_cb()` yields a working callable.
+    /// Covers §5.11 HR-9 additions (callsite-context gate, ordinal immunity, refactor behavior).
+    @Test
+    void lambdaOrdinalKeyAndCallsiteContextGateAfterReload() throws Exception {
+        requireToolingOrAbort();
+        var scenario = "lambda_ordinal";
+        var projectDir = prepareScenarioProjectDir(scenario);
+        var buildDir = requireScenarioBuildDir(scenario);
+        var moduleName = "hr_e2e_lambda_ordinal";
+        var nameMap = Map.of("HrOrdinal", "RuntimeHrOrdinal");
+
+        var v1 = buildModule(
+                moduleName,
+                List.of(new SourceFileSpec(sourceLabel(scenario, "hr_ordinal.gd"), hrOrdinalSource(1))),
+                nameMap,
+                buildDir
+        );
+
+        try (var session = new GodotEditorHotReloadTestSession(projectDir)) {
+            session.prepareProject(requireSharedLibrary(v1), lambdaOrdinalDriver());
+            session.start();
+            session.awaitMarker(GodotEditorHotReloadTestSession.PHASE1_MARKER);
+
+            var v2 = buildModule(
+                    moduleName,
+                    List.of(new SourceFileSpec(sourceLabel(scenario, "hr_ordinal.gd"), hrOrdinalSource(2))),
+                    nameMap,
+                    buildDir
+            );
+            session.swapLibrary(requireSharedLibrary(v2));
+            session.awaitMarker(GodotEditorHotReloadTestSession.PHASE2_MARKER);
+
+            assertEditorRunClean(session);
+        }
+    }
+
     private static void requireToolingOrAbort() {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping editor hot reload integration test");
@@ -1077,6 +1124,96 @@ public class GodotEditorHotReloadIntegrationTest {
 
                 func tag() -> String:
                     return "v2"
+                """;
+    }
+
+    /// §5.11 HR-9 trio fixture. v1 -> v2 edits: leg 1 swaps the two same-schema connect
+    /// statements inside `arm_swap` (ordinals stay #0/#1 but callsite contexts cross); leg 2
+    /// inserts a plain `var note` line before the `arm_shift` connect (ordinal unchanged, body
+    /// constant x10 -> x20 proves the rebind); leg 3 rewrites `return func...` as
+    /// `var cb := func...; return cb` (only the callsite context changes). All lambda bodies
+    /// stay capture-compatible (self only) so the schema gate alone would rebind everywhere —
+    /// legs 1 and 3 are decided purely by the callsite-context gate.
+    private static @NotNull String hrOrdinalSource(int version) {
+        if (version == 1) {
+            return """
+                    class_name HrOrdinal
+                    extends Node
+
+                    signal sig_swap_a(value: int)
+                    signal sig_swap_b(value: int)
+                    signal sig_shift(value: int)
+
+                    var swap_a_hits: int = 0
+                    var swap_b_hits: int = 0
+                    var shift_hits: int = 0
+
+                    func arm_swap() -> void:
+                        sig_swap_a.connect(func(value: int) -> void:
+                            swap_a_hits += value
+                        )
+                        sig_swap_b.connect(func(value: int) -> void:
+                            swap_b_hits += value
+                        )
+
+                    func arm_shift() -> void:
+                        sig_shift.connect(func(value: int) -> void:
+                            shift_hits += value * 10
+                        )
+
+                    func make_cb() -> Callable:
+                        return func(value: int) -> int:
+                            return value + 7
+
+                    func emit_swap_a(value: int) -> void:
+                        sig_swap_a.emit(value)
+
+                    func emit_swap_b(value: int) -> void:
+                        sig_swap_b.emit(value)
+
+                    func emit_shift(value: int) -> void:
+                        sig_shift.emit(value)
+                    """;
+        }
+        return """
+                class_name HrOrdinal
+                extends Node
+
+                signal sig_swap_a(value: int)
+                signal sig_swap_b(value: int)
+                signal sig_shift(value: int)
+
+                var swap_a_hits: int = 0
+                var swap_b_hits: int = 0
+                var shift_hits: int = 0
+
+                func arm_swap() -> void:
+                    sig_swap_b.connect(func(value: int) -> void:
+                        swap_b_hits += value
+                    )
+                    sig_swap_a.connect(func(value: int) -> void:
+                        swap_a_hits += value
+                    )
+
+                func arm_shift() -> void:
+                    var note: int = 42
+                    sig_shift.connect(func(value: int) -> void:
+                        shift_hits += value * 20
+                    )
+
+                func make_cb() -> Callable:
+                    var cb := func(value: int) -> int:
+                        return value + 7
+                    return cb
+
+                func emit_swap_a(value: int) -> void:
+                    sig_swap_a.emit(value)
+
+                func emit_swap_b(value: int) -> void:
+                    sig_swap_b.emit(value)
+
+                func emit_shift(value: int) -> void:
+                    sig_shift.emit(value)
                 """;
     }
 
@@ -1854,6 +1991,125 @@ public class GodotEditorHotReloadIntegrationTest {
                         return
                     # See basicDriver._settle_before_quit (upstream engine issue #123511).
                     stage = 4
+                    settle_frame = frames
+
+                func _fail(msg: String) -> void:
+                    print("HR_FAIL: ", msg)
+                    quit(1)
+                """;
+    }
+
+    private static @NotNull String lambdaOrdinalDriver() {
+        return """
+                extends SceneTree
+
+                const FLAG_PATH := "res://hr_swap.flag"
+                const EXT_PATH := "res://HotReloadTest.gdextension"
+                const WAIT_TIMEOUT_MS := 280000
+
+                var frames := 0
+                var stage := 0
+                var wait_start_ms := 0
+                var settle_frame := 0
+                var inst = null
+                var swap_a_cb = null
+                var swap_b_cb = null
+                var shift_cb = null
+                var old_cb = null
+
+                func _process(_delta: float) -> bool:
+                    frames += 1
+                    if stage == 0 and frames >= 5:
+                        stage = 1
+                        _run_phase1()
+                    elif stage == 1:
+                        if FileAccess.file_exists(FLAG_PATH):
+                            DirAccess.remove_absolute(ProjectSettings.globalize_path(FLAG_PATH))
+                            stage = 2
+                            _run_phase2()
+                        elif Time.get_ticks_msec() - wait_start_ms > WAIT_TIMEOUT_MS:
+                            _fail("timeout waiting for swap flag")
+                    elif stage == 3 and frames - settle_frame >= 180:
+                        print("HR_PHASE2_OK")
+                        quit(0)
+                    return false
+
+                func _run_phase1() -> void:
+                    inst = ClassDB.instantiate("RuntimeHrOrdinal")
+                    if inst == null:
+                        _fail("instantiate(RuntimeHrOrdinal) returned null")
+                        return
+                    inst.call("arm_swap")
+                    inst.call("arm_shift")
+                    var conns_a: Array = inst.get_signal_connection_list("sig_swap_a")
+                    var conns_b: Array = inst.get_signal_connection_list("sig_swap_b")
+                    var conns_s: Array = inst.get_signal_connection_list("sig_shift")
+                    if conns_a.size() != 1 or conns_b.size() != 1 or conns_s.size() != 1:
+                        _fail("each signal should have exactly one connection: a=" + str(conns_a.size())
+                                + " b=" + str(conns_b.size()) + " s=" + str(conns_s.size()))
+                        return
+                    inst.call("emit_swap_a", 1)
+                    inst.call("emit_swap_b", 2)
+                    inst.call("emit_shift", 3)
+                    if inst.get("swap_a_hits") != 1 or inst.get("swap_b_hits") != 2 \\
+                            or inst.get("shift_hits") != 30:
+                        _fail("phase1 v1 connections mismatch: a=" + str(inst.get("swap_a_hits"))
+                                + " b=" + str(inst.get("swap_b_hits"))
+                                + " shift=" + str(inst.get("shift_hits")))
+                        return
+                    swap_a_cb = conns_a[0]["callable"]
+                    swap_b_cb = conns_b[0]["callable"]
+                    shift_cb = conns_s[0]["callable"]
+                    old_cb = inst.call("make_cb")
+                    if old_cb == null or not old_cb.is_valid() or old_cb.call(3) != 10:
+                        _fail("phase1 make_cb not usable")
+                        return
+                    wait_start_ms = Time.get_ticks_msec()
+                    print("HR_PHASE1_OK")
+
+                func _run_phase2() -> void:
+                    var status: int = GDExtensionManager.reload_extension(EXT_PATH)
+                    if status != OK:
+                        _fail("reload_extension returned " + str(status))
+                        return
+                    if not is_instance_valid(inst):
+                        _fail("instance invalid after reload")
+                        return
+                    # Leg 1: the swapped same-schema pair must fail closed on the
+                    # callsite-context gate — never rebound to the sibling's body.
+                    if swap_a_cb.is_valid() or swap_b_cb.is_valid():
+                        _fail("swapped lambdas must invalidate (context gate), never mis-bind")
+                        return
+                    inst.call("emit_swap_a", 5)
+                    inst.call("emit_swap_b", 6)
+                    if inst.get("swap_a_hits") != 1 or inst.get("swap_b_hits") != 2:
+                        _fail("invalidated swap connections must be silently skipped: a="
+                                + str(inst.get("swap_a_hits")) + " b=" + str(inst.get("swap_b_hits")))
+                        return
+                    # Leg 2: a non-lambda line insertion must not change the ordinal key —
+                    # the connection rebinds and runs the v2 body.
+                    if not shift_cb.is_valid():
+                        _fail("ordinal key must survive a non-lambda line insertion")
+                        return
+                    inst.call("emit_shift", 4)
+                    if inst.get("shift_hits") != 110:
+                        _fail("shift lambda did not rebind to v2 (want 110): "
+                                + str(inst.get("shift_hits")))
+                        return
+                    # Leg 3: extract-variable refactor changes the callsite context ->
+                    # expected fail-closed false invalidation.
+                    if old_cb.is_valid():
+                        _fail("extract-variable refactor must invalidate the v1 lambda")
+                        return
+                    var new_cb = inst.call("make_cb")
+                    if new_cb == null or not new_cb.is_valid() or new_cb.call(3) != 10:
+                        _fail("v2 make_cb must produce a working callable")
+                        return
+                    _settle_before_quit()
+
+                func _settle_before_quit() -> void:
+                    # See basicDriver._settle_before_quit (upstream engine issue #123511).
+                    stage = 3
                     settle_frame = frames
 
                 func _fail(msg: String) -> void:

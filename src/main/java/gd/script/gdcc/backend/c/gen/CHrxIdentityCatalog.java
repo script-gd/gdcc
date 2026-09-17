@@ -21,14 +21,25 @@ import java.util.*;
 /// next library generation uses to rebind surviving Callables to new implementations.
 public final class CHrxIdentityCatalog {
 
+    /// HRX ABI version baked into every schema descriptor prefix (`gdcc-hrx:<N>;...`). MUST
+    /// equal `GDCC_HRX_ABI_VERSION` in `gdcc_hrx.h` (§5.11 same-source contract): if the two
+    /// drift, a spec passing the runtime abi_version guard could still match a stale descriptor
+    /// (or vice versa), silently voiding one of the two gates. A dedicated contract test pins
+    /// this constant against the C header macro.
+    public static final int HRX_ABI_VERSION = 2;
+    private static final String SCHEMA_DESC_PREFIX = "gdcc-hrx:" + HRX_ABI_VERSION + ";";
+
     /// Template-facing identity struct data (`schemaBytes`/`fingerprintBytes` are unsigned
-    /// 0..255 initializers for the emitted C arrays).
+    /// 0..255 initializers for the emitted C arrays; `callSiteContextCString` is the escaped
+    /// literal body of the normalized call-site context, or null → the template emits NULL
+    /// (standalone Callable identities never carry one, §5.11)).
     public record HrxIdentityTemplateData(
             @NotNull String symbol,
             @NotNull String implKeyCString,
             @NotNull List<Integer> schemaBytes,
             @NotNull List<Integer> fingerprintBytes,
-            int argumentCount
+            int argumentCount,
+            @Nullable String callSiteContextCString
     ) {
     }
 
@@ -115,14 +126,15 @@ public final class CHrxIdentityCatalog {
                 if (!function.isLambda()) {
                     continue;
                 }
-                var implKey = function.getSourceIdentityKey();
-                if (implKey == null || implKey.isBlank()) {
+                var lambdaMeta = function.getLambdaMeta();
+                if (lambdaMeta == null) {
                     throw new IllegalStateException(
                             "Lambda function '" + classDef.getName() + "." + function.getName()
-                                    + "' has no source identity key; the frontend must publish"
+                                    + "' has no lambda meta (source identity key); the frontend must publish"
                                     + " FrontendLambdaPlan.sourceIdentityKey() for every lambda"
                     );
                 }
+                var implKey = lambdaMeta.sourceIdentityKey();
                 var symbol = helper.renderLambdaHrxIdentitySymbol(classDef, function);
                 var schemaDesc = buildLambdaSchemaDesc(helper, function);
                 var fingerprint = StringUtil.md5(schemaDesc.getBytes(StandardCharsets.UTF_8));
@@ -131,7 +143,12 @@ public final class CHrxIdentityCatalog {
                         StringUtil.escapeStringLiteral(implKey),
                         toUnsignedBytes(schemaDesc.getBytes(StandardCharsets.UTF_8)),
                         toUnsignedBytes(fingerprint),
-                        function.getParameterCount()
+                        function.getParameterCount(),
+                        // Lambdas always carry the frontend-computed descriptor; a null here means
+                        // a hand-built LIR fixture (tolerated: the runtime gate is NULL-safe).
+                        lambdaMeta.callSiteContext() == null
+                                ? null
+                                : StringUtil.escapeStringLiteral(lambdaMeta.callSiteContext())
                 ));
                 rebindEntries.add(new HrxRebindTemplateData(
                         symbol,
@@ -154,7 +171,9 @@ public final class CHrxIdentityCatalog {
                     StringUtil.escapeStringLiteral(identityKey),
                     toUnsignedBytes(schemaDesc.getBytes(StandardCharsets.UTF_8)),
                     toUnsignedBytes(fingerprint),
-                    spec.argumentCount()
+                    spec.argumentCount(),
+                    // Standalone Callable identities never carry a call-site context (§5.11).
+                    null
             ));
             // The shared standalone runtime functions (gdcc_callable.h statics) are the impl;
             // destroy stays NULL per the fixed-ABI payload contract.
@@ -213,7 +232,7 @@ public final class CHrxIdentityCatalog {
             @NotNull CGenHelper helper,
             @NotNull LirFunctionDef function
     ) {
-        var sb = new StringBuilder("gdcc-hrx:1;caps=");
+        var sb = new StringBuilder(SCHEMA_DESC_PREFIX).append("caps=");
         var first = true;
         for (var capture : function.getCaptureList()) {
             if (!first) {
@@ -243,7 +262,7 @@ public final class CHrxIdentityCatalog {
             @NotNull StandaloneCallableKind kind,
             @NotNull StandaloneCallableSpecSupport.StandaloneCallableSpec spec
     ) {
-        return "gdcc-hrx:1;sa;kind=" + kind.token()
+        return SCHEMA_DESC_PREFIX + "sa;kind=" + kind.token()
                 + ";argc=" + spec.argumentCount()
                 + ";va=" + (spec.vararg() ? '1' : '0')
                 + ";ret=" + (spec.returnsValue() ? '1' : '0')

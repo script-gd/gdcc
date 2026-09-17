@@ -485,9 +485,10 @@ pointers stay valid across `dlclose`/`dlopen`, and the new library generation re
 surviving Callables to new implementations by identity key.
 
 > HR-9 note (2026-09): the observable halves of this contract (rebind / invalidation /
-> deferred-copy semantics, three-mode split incl. the direct-path `to_string` discriminator)
-> are verified end-to-end on Linux + Godot 4.5.2 by `GodotEditorHotReloadIntegrationTest`
-> (scenarios 5a/5b/5c) and `GodotRuntimeDirectPathIntegrationTest` (scenario 10b); see the
+> deferred-copy semantics, three-mode split incl. the direct-path `to_string` discriminator,
+> the callsite-context third gate) are verified end-to-end on Linux + Godot 4.5.2 by
+> `GodotEditorHotReloadIntegrationTest`
+> (scenarios 5a/5b/5c/5d) and `GodotRuntimeDirectPathIntegrationTest` (scenario 10b); see the
 > HR-9 status block of the plan document.
 
 - **Three-state mode machine** (process-frozen at `gdcc_hrx_initialize`, called by the
@@ -535,8 +536,13 @@ surviving Callables to new implementations by identity key.
   surfaces and is taken over. Magic/version mismatch orphans the old hub untouched
   (leak-on-purpose) and mounts a fresh one.
 - **Spec**: Godot-heap `gdcc_hrx_spec` with explicit initialization; identity fields
-  (`impl_key`, canonical `schema_desc`, 128-bit fingerprint) are heap copies because
-  generated `.rodata` dies with the image. `callable_userdata` is pinned to the spec, and
+  (`impl_key`, canonical `schema_desc`, 128-bit fingerprint, `callsite_context`) are
+  heap copies because generated `.rodata` dies with the image. `callsite_context` is an
+  append-only ABI-v2 tail field (`GDCC_HRX_ABI_VERSION == 2`, pinned at offset 136 by a
+  static assert; `GDCC_HRX_HUB_VERSION` stays 3): v1 blocks end before it, so it is only
+  ever read or freed (`gdcc_hrx_shell_free`) under an `abi_version >= 2` guard, and the
+  first v1→v2 reload invalidates every v1 spec (expected one-time event).
+  `callable_userdata` is pinned to the spec, and
   the thunk reads the capture block from it. Life/death is `dead` (free thunk only);
   `binding_state` (BOUND/UNBOUND) is written by main-library code only.
 - **Standalone interning**: a hub intern-table hit is reused only while the spec is alive,
@@ -548,13 +554,19 @@ surviving Callables to new implementations by identity key.
   time (an inherited static referenced through a subclass and through its declaring class
   is one identity).
 - **Generation lifecycle**: `gdcc_hrx_initialize` registers the current sweeper and runs a
-  single-pass rebind (survivors with a byte-identical descriptor are upgraded in place to
-  the new implementation; mismatches stay UNBOUND) followed by a two-phase sweep (all
-  destruction deferred until every survivor is rebound; dead specs are destroyed through
-  the **rebind table's** `destroy_fn` — never the spec's NULLed pointers — and only when
-  fingerprint AND descriptor match; otherwise the capture block is intentionally leaked
-  while shell metadata is always freed). `gdcc_hrx_deinitialize` (D8, last teardown step)
-  detaches the sweeper and NULLs every spec's function pointers.
+  single-pass rebind followed by a two-phase sweep. The rebind applies three gates in
+  order — the `abi_version` guard FIRST (a v1 spec predates `callsite_context`, so the
+  field may only be read when `spec->abi_version == GDCC_HRX_ABI_VERSION`; a mismatch
+  fails closed without touching the tail), then `impl_key` lookup, then byte-identical
+  `schema_desc`, then NULL-safe `callsite_context` equality (NULL==NULL matches, which
+  keeps standalones rebinding; exactly one NULL never matches). Survivors passing all
+  gates are upgraded in place to the new implementation; mismatches stay UNBOUND. The
+  two-phase sweep defers all destruction until every survivor is rebound; dead specs are
+  destroyed through the **rebind table's** `destroy_fn` — never the spec's NULLed
+  pointers — and only when fingerprint AND descriptor match; otherwise the capture block
+  is intentionally leaked while shell metadata is always freed (the `callsite_context`
+  copy only under the `abi_version >= 2` guard). `gdcc_hrx_deinitialize` (D8, last
+  teardown step) detaches the sweeper and NULLs every spec's function pointers.
 - **Coroutine signal waiters**: included in HRX but with no rebind identity — callable this
   generation, permanently invalid after a reload (never a jump into unloaded code). The
   bulk-cancel detach rebuilds its EQUAL lookup key via `gdcc_hrx_callable_retain` on the

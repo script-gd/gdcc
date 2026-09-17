@@ -65,6 +65,74 @@ public class DomLirParserTest {
         assertEquals("authority", cls.getFunctions().getFirst().getAnnotations().get("rpc"));
     }
 
+    /// A `<meta>` with a blank `source_identity_key` carries no identity: parses as null meta so
+    /// the backend's keyless-lambda fail-fast still fires downstream.
+    @Test
+    public void parse_metaElementWithBlankSourceIdentityKeyYieldsNullMeta() throws Exception {
+        var xml = """
+                <ir>
+                  <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                    <functions>
+                      <function name="_lambda_0" is_static="true" is_abstract="false" is_lambda="true" is_vararg="false" is_hidden="true" is_coroutine="false">
+                        <meta source_identity_key="  " call_site_context="return"/>
+                      </function>
+                    </functions>
+                  </class_def>
+                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var mod = parser.parse(new StringReader(xml));
+
+        assertNull(mod.getClassDefs().getFirst().getFunctions().getFirst().getLambdaMeta());
+    }
+
+    /// Only DIRECT `<meta>` children of `<function>` carry identity: a `<meta>` nested deeper
+    /// (malformed fixture) must not be misattributed as the function's lambda identity.
+    @Test
+    public void parse_nestedMetaElementInsideVariablesIsNotMisattributed() throws Exception {
+        var xml = """
+                <ir>
+                  <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                    <functions>
+                      <function name="run" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false" is_coroutine="false">
+                        <variables>
+                          <meta source_identity_key="C::run#0"/>
+                        </variables>
+                      </function>
+                    </functions>
+                  </class_def>
+                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var mod = parser.parse(new StringReader(xml));
+
+        assertNull(mod.getClassDefs().getFirst().getFunctions().getFirst().getLambdaMeta());
+    }
+
+    /// Duplicate `<meta>` children are ambiguous identity; fail fast instead of silently taking
+    /// the first one.
+    @Test
+    public void parse_multipleMetaChildrenFailFast() throws Exception {
+        var xml = """
+                <ir>
+                  <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                    <functions>
+                      <function name="_lambda_0" is_static="true" is_abstract="false" is_lambda="true" is_vararg="false" is_hidden="true" is_coroutine="false">
+                        <meta source_identity_key="C::run#0"/>
+                        <meta source_identity_key="C::run#1"/>
+                      </function>
+                    </functions>
+                  </class_def>
+                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var ex = assertThrows(IllegalArgumentException.class, () -> parser.parse(new StringReader(xml)));
+        assertTrue(ex.getMessage().contains("multiple <meta>"), ex.getMessage());
+    }
+
     @Test
     public void parse_basicBlockInstructionsFromXml() throws Exception {
         var xml = """

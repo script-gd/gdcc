@@ -12,6 +12,7 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.lir.LirLambdaMeta;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
@@ -165,7 +166,7 @@ final class ConstructLambdaInsnGenTest {
         var clazz = newTestClass();
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
-        lambda.setSourceIdentityKey("Worker::run@+2:5");
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run#0", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(GdStringType.STRING);
@@ -213,7 +214,7 @@ final class ConstructLambdaInsnGenTest {
         var clazz = newTestClass();
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
-        lambda.setSourceIdentityKey("Worker::run@+2:5");
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run#0", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setCoroutine(true);
@@ -283,7 +284,7 @@ final class ConstructLambdaInsnGenTest {
     private static void addCapturelessLambda(LirClassDef clazz) {
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
-        lambda.setSourceIdentityKey("Worker::run@+2:5");
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run#0", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(GdIntType.INT);
@@ -298,7 +299,7 @@ final class ConstructLambdaInsnGenTest {
     private static void addIntCaptureLambda(LirClassDef clazz) {
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
-        lambda.setSourceIdentityKey("Worker::run@+2:5");
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run#0", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(GdIntType.INT);
@@ -312,7 +313,7 @@ final class ConstructLambdaInsnGenTest {
     private static void addSelfCaptureLambda(LirClassDef clazz) {
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
-        lambda.setSourceIdentityKey("Worker::run@+2:5");
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run#0", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(GdVoidType.VOID);

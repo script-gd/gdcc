@@ -312,15 +312,15 @@ class FrontendLambdaSuiteResolutionTest {
     }
 
     @Test
-    void sourceIdentityKeysAnchorOutermostNamedEnclosingWithRelativeOffset() throws Exception {
-        // HR-8 impl_key contract on real source positions: both the outer and the nested
-        // lambda anchor at the SAME outermost named function `ping` with their own relative
-        // line offset and 1-based column (see also the fail-closed cases in
-        // FrontendLambdaPlanSideTableTest).
+    void sourceIdentityKeysAnchorOutermostNamedEnclosingWithOrdinal() throws Exception {
+        // HRX v15 impl_key contract (§5.11): both the outer and the nested lambda anchor at
+        // the SAME outermost named function `ping`, numbered in source pre-order (the outer
+        // lambda is #0, the nested one inside its body is #1) — no source position feeds the
+        // key anymore.
         var analysisData = analyze("lambda_suite_identity_key.gd", """
                 class_name LambdaSuiteIdentityKey
                 extends Node
-                
+
                 func ping(seed: int):
                     var cb := func():
                         var inner := func():
@@ -336,8 +336,8 @@ class FrontendLambdaSuiteResolutionTest {
 
         assertNotNull(outerPlan);
         assertNotNull(innerPlan);
-        assertEquals("LambdaSuiteIdentityKey::ping@+1:15", outerPlan.sourceIdentityKey());
-        assertEquals("LambdaSuiteIdentityKey::ping@+2:22", innerPlan.sourceIdentityKey());
+        assertEquals("LambdaSuiteIdentityKey::ping#0", outerPlan.sourceIdentityKey());
+        assertEquals("LambdaSuiteIdentityKey::ping#1", innerPlan.sourceIdentityKey());
         assertTrue(analysisData.diagnostics().asList().isEmpty());
     }
 
@@ -432,7 +432,9 @@ class FrontendLambdaSuiteResolutionTest {
                 published.capturePlan(),
                 published.returnType(),
                 published.enclosingCallable(),
-                published.owningClassCanonicalName()
+                published.owningClassCanonicalName(),
+                published.identityOrdinal(),
+                published.callSiteContext()
         );
         var divergingTable = new FrontendAstSideTable<FrontendLambdaPlan>();
         divergingTable.put(lambda, diverging);
@@ -450,7 +452,9 @@ class FrontendLambdaSuiteResolutionTest {
                 published.capturePlan(),
                 published.returnType(),
                 published.enclosingCallable(),
-                published.owningClassCanonicalName()
+                published.owningClassCanonicalName(),
+                published.identityOrdinal(),
+                published.callSiteContext()
         );
         var equalTable = new FrontendAstSideTable<FrontendLambdaPlan>();
         equalTable.put(lambda, equal);

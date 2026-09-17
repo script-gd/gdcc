@@ -60,6 +60,11 @@ public class FrontendSuiteResolver {
     private final @NotNull FrontendParameterDefaultMetadataOwner parameterDefaultMetadataOwner;
     /// Per-owning-class counters backing `_lambda_<k>` synthetic names; resolution order follows
     /// source appearance order, so names stay stable across runs of the same module.
+    ///
+    /// NOTE: this is a per-CLASS naming counter, NOT the hot-reload identity ordinal — the
+    /// ordinal lives in `FrontendAnalysisData.lambdaIdentities()` (published by
+    /// `FrontendLambdaIdentityAnalyzer` ahead of suite resolution, hot_reload_implementation_plan.md
+    /// §5.11). Never reuse this counter for identity.
     private final @NotNull Map<String, Integer> lambdaNameCountersByOwningClass = new HashMap<>();
     /// Lazily built reverse view of `FrontendAnalysisData.scopesByAst()` (Scope → declaration
     /// node), consumed only by `enclosingNonLambdaCallable(...)` when a lambda needs its nearest
@@ -294,13 +299,26 @@ public class FrontendSuiteResolver {
                 context.sourcePath(),
                 context.diagnosticManager()
         );
+        var identity = analysisData.lambdaIdentities().get(lambda);
+        if (identity == null) {
+            // Fail fast per §5.11: a recorded lambda without identity facts means the identity
+            // pass drifted out of sync with the recording phase; defaulting to an empty context
+            // would silently void the context gate.
+            throw new IllegalStateException(
+                    "Lambda at " + lambda.range() + " has no published lambda identity"
+                            + " (source ordinal / call-site context); the lambda identity pass must"
+                            + " cover every recorded lambda before suite resolution"
+            );
+        }
         var plan = new FrontendLambdaPlan(
                 lambda,
                 nextLambdaSyntheticName(owningClass.getName()),
                 FrontendLambdaCapturePlan.of(captures),
                 returnType,
                 enclosingCallable,
-                owningClass.getName()
+                owningClass.getName(),
+                identity.ordinal(),
+                identity.callSiteContext()
         );
         context.typedEnvironment().putLambdaPlan(FrontendSemanticStage.LAMBDA_RESOLUTION, lambda, plan);
     }

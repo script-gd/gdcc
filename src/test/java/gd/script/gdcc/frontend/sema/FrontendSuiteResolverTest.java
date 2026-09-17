@@ -25,6 +25,7 @@ import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendInterfacePhase;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendLambdaIdentityAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendBodyOwnerProcedures;
@@ -1987,6 +1988,9 @@ class FrontendSuiteResolverTest {
         analysisData.updateDiagnostics(diagnostics.snapshot());
         new FrontendVariableAnalyzer().analyze(analysisData, diagnostics);
         analysisData.updateDiagnostics(diagnostics.snapshot());
+        // HRX §5.11: suite resolution consumes the published identity table; the direct-resolver
+        // harness must replicate the `FrontendSemanticAnalyzer` publication step.
+        analysisData.updateLambdaIdentities(FrontendLambdaIdentityAnalyzer.analyze(analysisData));
         return new PhaseInput(unit, registry, analysisData, diagnostics);
     }
 

@@ -41,6 +41,14 @@ _Static_assert(offsetof(gdcc_hrx_spec, refcount) == 36, "thunk ABI: spec.refcoun
 _Static_assert(offsetof(gdcc_hrx_spec, argument_count) == 40, "thunk ABI: spec.argument_count must be at 40");
 _Static_assert(offsetof(gdcc_hrx_spec, hub) == 48, "thunk ABI: spec.hub must be at 48");
 _Static_assert(offsetof(gdcc_hrx_hub, sweeper) == 40, "thunk ABI: hub.sweeper must be at 40");
+// §5.11 v2 append-only pin: the callsite_context tail must start exactly where the v1 layout
+// ended, so v1 blocks never overlap the new field.
+_Static_assert(offsetof(gdcc_hrx_spec, callsite_context) == 136,
+        "ABI v2: spec.callsite_context must append at offset 136 (v1 sizeof)");
+// ABI v2 append-only pin: the v1 block ends at 136 and v2 appends exactly one pointer there.
+// If this breaks, the field was NOT appended at the tail and the abi_version guard cannot
+// protect old-generation blocks from an out-of-bounds read.
+_Static_assert(offsetof(gdcc_hrx_spec, callsite_context) == 136, "ABI v2: spec.callsite_context must append at 136");
 
 // ---------------------------------------------------------------------------
 // Thunk templates (hand-assembled, position-independent, ABI-frozen, ZERO runtime patching).
@@ -650,13 +658,19 @@ static gdcc_hrx_spec *gdcc_hrx_spec_new(
     // spec must stay comparable for later generations.
     char *key_copy = NULL;
     unsigned char *desc_copy = NULL;
+    char *context_copy = NULL;
     const uint32_t desc_len = (identity != NULL) ? identity->schema_desc_len : 0u;
     if (identity != NULL && identity->impl_key != NULL) {
         key_copy = gdcc_hrx_heap_strdup(identity->impl_key);
         desc_copy = (unsigned char *)godot_mem_alloc(desc_len == 0 ? 1 : desc_len);
-        if (key_copy == NULL || desc_copy == NULL) {
+        // callsite_context may legitimately be NULL (standalone); heap_strdup passes NULL
+        // through, so an OOM failure is only distinguishable when the source is non-NULL.
+        context_copy = gdcc_hrx_heap_strdup(identity->callsite_context);
+        if (key_copy == NULL || desc_copy == NULL
+                || (identity->callsite_context != NULL && context_copy == NULL)) {
             godot_mem_free(key_copy);
             godot_mem_free(desc_copy);
+            godot_mem_free(context_copy);
             return NULL;
         }
         if (desc_len > 0) {
@@ -667,6 +681,7 @@ static gdcc_hrx_spec *gdcc_hrx_spec_new(
     if (spec == NULL) {
         godot_mem_free(key_copy);
         godot_mem_free(desc_copy);
+        godot_mem_free(context_copy);
         return NULL;
     }
     spec->impl_ptr = impl;
@@ -683,6 +698,7 @@ static gdcc_hrx_spec *gdcc_hrx_spec_new(
     spec->schema_desc = desc_copy;
     spec->schema_desc_len = desc_len;
     spec->reserved0 = 0;
+    spec->callsite_context = context_copy;
     if (identity != NULL && identity->impl_key != NULL) {
         memcpy(spec->schema_fingerprint, identity->schema_fingerprint, sizeof(spec->schema_fingerprint));
     } else {
@@ -692,6 +708,7 @@ static gdcc_hrx_spec *gdcc_hrx_spec_new(
     spec->next = NULL;
     spec->intern_next = NULL;
     spec->pending_next = NULL;
+    spec->callsite_context = context_copy;
     spec->hub = hub;
     return spec;
 }
@@ -704,6 +721,10 @@ static void gdcc_hrx_shell_free(gdcc_hrx_hub *hub, gdcc_hrx_spec *spec) {
     (void)hub;
     godot_mem_free((void *)spec->impl_key);
     godot_mem_free((void *)spec->schema_desc);
+    // v1 blocks predate the appended field: never read/free it through them.
+    if (spec->abi_version >= 2u) {
+        godot_mem_free((void *)spec->callsite_context);
+    }
     if (spec->interned) {
         gdcc_hrx_standalone_payload_free((gdcc_hrx_standalone_payload *)spec->captures);
     }
@@ -908,6 +929,17 @@ static godot_bool gdcc_hrx_desc_matches(const gdcc_hrx_spec *spec, const gdcc_hr
                 || memcmp(spec->schema_desc, identity->schema_desc, spec->schema_desc_len) == 0);
 }
 
+/// Third rebind gate (§5.11): NULL-safe callsite_context equality. Standalone identities carry
+/// NULL on both sides (match); exactly one NULL means a context-carrying lambda met a
+/// context-less entry (mismatch). Callers must have passed the abi_version guard first — the
+/// field is only read on current-version specs.
+static godot_bool gdcc_hrx_context_matches(const gdcc_hrx_spec *spec, const gdcc_hrx_identity *identity) {
+    if (spec->callsite_context == NULL || identity->callsite_context == NULL) {
+        return spec->callsite_context == identity->callsite_context;
+    }
+    return strcmp(spec->callsite_context, identity->callsite_context) == 0;
+}
+
 static godot_bool gdcc_hrx_fingerprint_matches(const gdcc_hrx_spec *spec, const gdcc_hrx_identity *identity) {
     return identity != NULL
             && memcmp(spec->schema_fingerprint, identity->schema_fingerprint, sizeof(spec->schema_fingerprint)) == 0;
@@ -928,7 +960,11 @@ static void gdcc_hrx_rebind_and_sweep(gdcc_hrx_hub *hub, const gdcc_hrx_rebind_e
             worklist = spec;
         } else if (!spec->dead) {
             const gdcc_hrx_rebind_entry *entry = gdcc_hrx_find_rebind_entry(entries, entry_count, spec->impl_key);
-            if (entry != NULL && gdcc_hrx_desc_matches(spec, entry->identity)) {
+            // Version guard FIRST (§5.11): a v1 spec block predates callsite_context, so the
+            // field may only be read when the versions match (short-circuit order is load-bearing).
+            if (entry != NULL && spec->abi_version == GDCC_HRX_ABI_VERSION
+                    && gdcc_hrx_desc_matches(spec, entry->identity)
+                    && gdcc_hrx_context_matches(spec, entry->identity)) {
                 // In-place upgrade to the new code; captures stay untouched.
                 spec->impl_ptr = entry->impl;
                 spec->destroy_fn = entry->destroy;

@@ -44,6 +44,8 @@ static const gdcc_hrx_identity ${identity.symbol} = {
     .schema_desc_len = sizeof(${identity.symbol}_schema),
     .argument_count = ${identity.argumentCount},
     .schema_fingerprint = { ${identity.fingerprintBytes?join(", ")} },
+    <#-- §5.11 third rebind gate: lambdas carry the normalized call-site context, standalones NULL. -->
+    .callsite_context = <#if identity.callSiteContextCString??>u8"${identity.callSiteContextCString}"<#else>NULL</#if>,
 };
 </#list>
 <#if hrxRebindEntries?size gt 0>

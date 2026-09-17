@@ -20,7 +20,10 @@
 /// Layout version of spec/hub/thunk templates. The layouts below are ABI-frozen: fields may
 /// only be appended together with a version bump, because old-generation thunks read fixed
 /// offsets (asserted against the templates in gdcc_hrx.c).
-#define GDCC_HRX_ABI_VERSION 1u
+/// v2 (§5.11): appended `callsite_context` to gdcc_hrx_spec (tail-only, old v1 blocks lack it
+/// and are rejected by the abi_version guard before the field is ever read) and to
+/// gdcc_hrx_identity (current-generation .rodata, always compiled with the matching header).
+#define GDCC_HRX_ABI_VERSION 2u
 #define GDCC_HRX_HUB_MAGIC UINT64_C(0x4744434348525855)
 #define GDCC_HRX_HUB_VERSION 3u
 
@@ -72,6 +75,9 @@ typedef struct gdcc_hrx_spec {
     struct gdcc_hrx_spec *next;
     struct gdcc_hrx_spec *intern_next;      // interning hash chain (standalone only)
     struct gdcc_hrx_spec *pending_next;     // sweep-pending queue link (sweep time only)
+    // v2 append (ABI tail): heap-copied normalized call-site context; read/released ONLY
+    // after an `abi_version >= 2` check — v1 blocks end right after `pending_next`.
+    const char *callsite_context;
 } gdcc_hrx_spec;
 
 typedef void (*gdcc_hrx_sweep_fn)(gdcc_hrx_spec *spec);
@@ -97,11 +103,15 @@ struct gdcc_hrx_hub {
 /// Codegen-emitted stable identity of one lambda or standalone Callable. All pointers reference
 /// generated `.rodata` (current-generation only); specs always store heap copies.
 typedef struct gdcc_hrx_identity {
-    const char *impl_key;                 // `<Class>::<func>@+Δline:col` or `standalone:<kind>:<owner>:<name>`
+    const char *impl_key;                 // `<Class>::<func>#<ordinal>` or `standalone:<kind>:<owner>:<name>`
     const unsigned char *schema_desc;     // canonical schema encoding (layout + signature + abi)
     uint32_t schema_desc_len;
     int32_t argument_count;               // data-driven argument count (part of the schema surface)
     unsigned char schema_fingerprint[16]; // 128-bit fingerprint of schema_desc
+    // §5.11 third rebind gate: normalized call-site context. Current-generation .rodata only
+    // (never shared across generations), so appending here is layout-safe. NULL for standalone
+    // identities; NULL-safe equality treats NULL==NULL as a match.
+    const char *callsite_context;
 } gdcc_hrx_identity;
 
 /// Codegen-emitted module-level rebind table entry: identity plus this generation's functions.
