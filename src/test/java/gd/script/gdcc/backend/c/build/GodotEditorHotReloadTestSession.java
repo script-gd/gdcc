@@ -14,10 +14,13 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -39,8 +42,8 @@ import java.util.function.Consumer;
 ///   and collects both output streams line by line.
 /// - The driver instantiates the gdcc classes under test via `ClassDB.instantiate`, asserts
 ///   pre-reload behavior and prints a phase marker (e.g. `HR_PHASE1_OK`).
-/// - `swapLibrary` atomically renames a freshly built library over the loaded one and drops the
-///   swap flag file the driver polls.
+/// - `swapLibrary` publishes each new build under a content-hash-suffixed file name, retargets
+///   the `.gdextension` at the new path, and only then drops the swap flag the driver polls.
 /// - The driver then calls `GDExtensionManager.reload_extension(...)` (synchronous: instance
 ///   recreation and property restore complete before it returns), asserts post-reload behavior,
 ///   prints the next marker and quits with a result code.
@@ -87,7 +90,9 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
     private final AtomicInteger exitCode = new AtomicInteger(-1);
     private @Nullable CompletableFuture<Void> markerFuture;
     private @Nullable String awaitedMarker;
-    private @Nullable String libraryFileName;
+    private @Nullable String buildFileName;
+    private @Nullable String publishedLibraryFileName;
+    private @Nullable String publishedContentHash;
     private @Nullable Process process;
     private @Nullable Thread stdoutReader;
     private @Nullable Thread stderrReader;
@@ -126,18 +131,11 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
         Files.writeString(projectDir.resolve("project.godot"), MINIMAL_PROJECT_GODOT, StandardCharsets.UTF_8);
         var binDir = projectDir.resolve("bin");
         Files.createDirectories(binDir);
-        var installedLibrary = binDir.resolve(v1Library.getFileName().toString());
-        Files.copy(v1Library, installedLibrary, StandardCopyOption.REPLACE_EXISTING);
-        libraryFileName = installedLibrary.getFileName().toString();
-        Files.writeString(
-                projectDir.resolve(GDEXTENSION_FILE_NAME),
-                GdextensionMetadataFile.render(
-                        "res://bin/" + libraryFileName,
-                        COptimizationLevel.DEBUG,
-                        TargetPlatform.getNativePlatform()
-                ),
-                StandardCharsets.UTF_8
-        );
+        buildFileName = v1Library.getFileName().toString();
+        publishedContentHash = hashLibraryContent(v1Library);
+        publishedLibraryFileName = hashedLibraryFileName(buildFileName, publishedContentHash);
+        Files.copy(v1Library, binDir.resolve(publishedLibraryFileName), StandardCopyOption.REPLACE_EXISTING);
+        writeGdextensionFile();
         Files.writeString(projectDir.resolve(DRIVER_FILE_NAME), driverSource, StandardCharsets.UTF_8);
     }
 
@@ -146,7 +144,7 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
         if (process != null) {
             throw new IllegalStateException("Session already started");
         }
-        if (libraryFileName == null) {
+        if (buildFileName == null) {
             throw new IllegalStateException("prepareProject must run before start");
         }
         var godotBinary = requireEditorCapableGodotOrAbort();
@@ -223,35 +221,96 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
         }
     }
 
-    /// Atomically swaps the loaded library for a newly built one and drops the swap flag file.
+    /// Publishes a newly built library under a content-hash-suffixed name, retargets the
+    /// `.gdextension` at it, and drops the swap flag file — in this order, so the driver's
+    /// `GDExtensionManager.reload_extension` always re-reads metadata that already points at a
+    /// fully staged library.
     ///
-    /// The rename is mandatory: overwriting a mapped `.so` in place re-fills its clean pages with
-    /// new content while dirty GOT pages keep the old version, so the next old-library call jumps
-    /// into mismatched code and SIGSEGVs. Unlink does not affect existing mappings, and the
-    /// engine's dlclose/dlopen pair then resolves the same path to the new inode.
+    /// A fresh path per content is mandatory: macOS dyld caches images by path and Godot's
+    /// `OS_MacOS::open_dynamic_library` ignores `generate_temp_files` (unlike the Windows `~`
+    /// copy), so re-dlopening the same path returns the previous image and the new code never
+    /// runs. Identical content keeps the same name on purpose: reloading byte-identical code is
+    /// a no-op on every platform.
+    ///
+    /// The staged rename is kept even though the target path is fresh: overwriting a mapped `.so`
+    /// in place re-fills its clean pages with new content while dirty GOT pages keep the old
+    /// version, and a partial file must never become visible to the editor's filesystem watcher.
     public void swapLibrary(@NotNull Path newLibrary) throws IOException {
         Objects.requireNonNull(newLibrary);
-        var name = libraryFileName;
-        if (name == null) {
+        var buildName = buildFileName;
+        if (buildName == null) {
             throw new IllegalStateException("prepareProject must run before swapLibrary");
         }
-        if (!newLibrary.getFileName().toString().equals(name)) {
+        if (!newLibrary.getFileName().toString().equals(buildName)) {
             throw new IOException(
-                    "Swap library name mismatch: expected " + name + " (same module output), got " + newLibrary.getFileName()
+                    "Swap library name mismatch: expected " + buildName + " (same module output), got " + newLibrary.getFileName()
             );
         }
+        var contentHash = hashLibraryContent(newLibrary);
+        if (contentHash.equals(publishedContentHash)) {
+            writeSwapFlag();
+            return;
+        }
         var binDir = projectDir.resolve("bin");
-        var stagedPath = binDir.resolve("." + name + ".new");
-        var targetPath = binDir.resolve(name);
+        var previousPublishedName = publishedLibraryFileName;
+        var publishedName = hashedLibraryFileName(buildName, contentHash);
+        var stagedPath = binDir.resolve("." + publishedName + ".new");
         Files.copy(newLibrary, stagedPath, StandardCopyOption.REPLACE_EXISTING);
         try {
-            Files.move(stagedPath, targetPath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            Files.move(stagedPath, binDir.resolve(publishedName), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (AtomicMoveNotSupportedException e) {
-            // Windows: the engine maps its own `~xxx.dll` copy, so the library path itself is not
-            // mapped and a non-atomic replace is safe there; POSIX keeps the mandatory rename.
-            Files.move(stagedPath, targetPath, StandardCopyOption.REPLACE_EXISTING);
+            // The target path is fresh (nothing mapped yet), so a non-atomic replace is safe;
+            // staging still guarantees no partially copied file is ever published.
+            Files.move(stagedPath, binDir.resolve(publishedName), StandardCopyOption.REPLACE_EXISTING);
         }
+        publishedLibraryFileName = publishedName;
+        publishedContentHash = contentHash;
+        writeGdextensionFile();
+        // Only now that metadata points at the new path may the old file go away: POSIX unlink
+        // keeps the still-mapped old image alive until dlclose, and on Windows the engine maps
+        // its own `~` copy, so the original was never locked.
+        if (previousPublishedName != null) {
+            Files.deleteIfExists(binDir.resolve(previousPublishedName));
+        }
+        writeSwapFlag();
+    }
+
+    private void writeGdextensionFile() throws IOException {
+        Files.writeString(
+                projectDir.resolve(GDEXTENSION_FILE_NAME),
+                GdextensionMetadataFile.render(
+                        "res://bin/" + publishedLibraryFileName,
+                        COptimizationLevel.DEBUG,
+                        TargetPlatform.getNativePlatform()
+                ),
+                StandardCharsets.UTF_8
+        );
+    }
+
+    private void writeSwapFlag() throws IOException {
         Files.writeString(projectDir.resolve(SWAP_FLAG_FILE_NAME), "swap\n", StandardCharsets.UTF_8);
+    }
+
+    /// Inserts `-<contentHash>` before the last extension so every content generation loads from
+    /// a path dyld has never seen.
+    private static @NotNull String hashedLibraryFileName(@NotNull String buildFileName, @NotNull String contentHash) {
+        var dotIndex = buildFileName.lastIndexOf('.');
+        if (dotIndex <= 0) {
+            return buildFileName + "-" + contentHash;
+        }
+        return buildFileName.substring(0, dotIndex) + "-" + contentHash + buildFileName.substring(dotIndex);
+    }
+
+    /// SHA-256 over the library bytes, truncated to 16 hex chars: collision-resistant enough to
+    /// distinguish build generations, short enough to stay a readable file name component.
+    private static @NotNull String hashLibraryContent(@NotNull Path library) throws IOException {
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is a required algorithm of every Java runtime", e);
+        }
+        return HexFormat.of().formatHex(digest.digest(Files.readAllBytes(library)), 0, 8);
     }
 
     /// Waits for the editor process to exit and returns its exit code.
@@ -490,6 +549,7 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
                             throw e;
                         }
                         try {
+                            //noinspection BusyWait
                             Thread.sleep(500);
                         } catch (InterruptedException interruptedException) {
                             Thread.currentThread().interrupt();

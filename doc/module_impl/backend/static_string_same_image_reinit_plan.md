@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（S1 已完成，S2 已完成，S3 已完成，待 S4 macOS E2E 复测）
+- 状态：In Progress（S1–S4 已完成，S6 harness 内容哈希换库已实施待 CI 验证，S5 待 S6 验证后进行）
 - 关联文档：
   - `doc/module_impl/backend/hot_reload_implementation.md`：热重载合同唯一事实源（§4 Entry 生命周期、§12 已知限制）
   - `doc/gdcc_runtime_lib.md`：runtime 库切片
@@ -28,6 +28,21 @@ CI 证据：run 334（commit `767bbbf`）macOS aarch64 job 中 `GodotEditorHotRe
 6. 级联后果：类/方法/属性注册全部落空 → marker 协议超时（`HR_PHASE2_OK` 未到）、语义断言失败（`HR_FAIL: swapped lambdas must invalidate`），以及一例 SIGSEGV（`deferredLambdaCallsFollowRebindAndInvalidationSemanticsAfterReload` 中 `Object::get_instance_binding` 崩溃，exit 134；注册表半成品状态下的继发症状，本计划修复后需复测确认是否独立缺陷）。
 
 `hot_reload_implementation.md` §12 已将"同映像重复初始化加固"列为已知非目标，本计划将其收敛为正式修复。
+
+### 1.1 S4 复测结论（CI run 35314462887，commit `fc71831`）
+
+S2/S3 修复有效：`register extension class ''` 错误与 SIGSEGV 全部消失——同映像下旧库能干净地重新注册并重建静态值。
+
+但 12 个用例仍全部失败，签名变为"重载后仍在执行旧代码"：`static var not reset to NEW initializer (want 5): 3`、`phase2 greet expected hello-v2, got hello-v1`、`Expected 2 argument(s)`（旧签名 MethodBind）等。根因是引擎级的：dyld 按路径缓存映像，同路径 `dlopen` 永远返回旧映像，**v2 代码从未进入进程**；registry 代际加固只能修复库内静态状态，无法改变被加载的代码本身。
+
+引擎源码证据（Godot 4.5.1；4.7.2-stable 与 master 均未修复）：
+
+- `core/extension/gdextension_library_loader.cpp:196`：编辑器中传入 `generate_temp_files = true`；
+- `platform/windows/os_windows.cpp:479-503`：实现为复制 `~foo.dll` 再加载（Windows 通过的原因）；
+- `platform/macos/os_macos.mm:385-413`：完全忽略该参数，直接 `dlopen(原路径)`；
+- Linux 无需复制：`dlclose` 真正卸载，重开同路径读到新文件。
+
+上游已知问题：godotengine/godot#90108、godotengine/godot#112202（均 open）。
 
 ## 2. 方案设计
 
@@ -150,13 +165,18 @@ if (g_sn_registry.generation == GDCC_REGISTRY_GEN_NEVER) {
   - 空 registry 上 `destroy_all` 安全且仍递增代际，NEVER 哨兵 statics 之后对任意代际号正常初始化（独立 probe）。
 - 验收：`script/run-gradle-targeted-tests.sh --tests GdccStaticStringRuntimeSmokeTest` 两个用例在 Linux x64 通过且非跳过；另做变异验证——临时把 `GD_STATIC_SN` 门控改回 init-once 语义后测试按预期失败（`FAIL hash of destroyed StringName`），确认测试对原缺陷敏感。Windows x64 / macOS aarch64 由 CI 覆盖（S4）；现有 smoke 套件同样未启用 ASan/valgrind，内存正确性由 fake allocator 余额断言锚定，与既有手段一致。
 
-### S4 macOS 热重载 E2E 复测
+### S4 macOS 热重载 E2E 复测（已完成）
 
-- 改动：无（验证步骤）。
-- 验收：
-  - macOS aarch64 CI 的 `GodotEditorHotReloadIntegrationTest` 12 个用例全部通过；
-  - `deferredLambdaCallsFollowRebindAndInvalidationSemanticsAfterReload` 的 SIGSEGV 消失；若仍崩溃，则将崩溃列为独立缺陷另行立项（不得在本计划内扩大范围）；
-  - Linux x64 / Windows x64 热重载用例无回归。
+- 结论：S2/S3 消除了注册损坏与崩溃（见 §1.1），但同路径重载在 macOS 必然返回旧映像，"执行新代码"类断言在库内修复层面原则上不可达。因此新增 S6，以测试 harness 内容哈希换库解决。
+- 遗留观察：`methodSignatureChangeBreaksStaleCallsWithoutCrash` 的 `Expected 2 argument(s)` SCRIPT ERROR、`hr_e2e_coro` 的 `free_static p_ptr is null` 均为同映像旧代码的下游症状，S6 后随 CI 复测确认消失。
+
+### S6 测试 harness 内容哈希换库（已实施，待 CI 验证）
+
+- 改动（仅测试代码）：`GodotEditorHotReloadTestSession` 每次发布按库内容 SHA-256（截断 16 hex）生成唯一文件名 `<base>-<hash>.<ext>`：v1 安装即哈希命名；`swapLibrary` 计算新内容哈希，相同则只写 swap flag（字节相同即无操作），不同则暂存 + 原子 rename 到新路径、重写 `.gdextension` libraries 指向新路径、删除上一代文件、最后写 swap flag。driver 无需改动（`reload_extension` 会重读 `.gdextension`）。
+- 顺序合同：新库落盘 → `.gdextension` 重指 → 旧文件删除 → flag。旧文件必须在元数据重指之后删除（POSIX unlink 对已映射映像安全；Windows 引擎映射的是自己的 `~` 副本，原文件从未被锁）。
+- 全平台统一应用（不做 macOS 分支）：Linux/Windows 行为不变（均为新映像），harness 保持单一流程。
+- 新增 `GodotEditorHotReloadTestSessionTest`（5 用例，无需 Godot 二进制）：v1 哈希命名、换代换路径并重写元数据、同内容只写 flag、三代路径互异、异名构建产物拒绝。
+- 验收：`script/run-gradle-targeted-tests.sh --tests GodotEditorHotReloadTestSessionTest` 通过且非跳过；CI macOS aarch64 `GodotEditorHotReloadIntegrationTest` 12 用例转绿，Linux/Windows 无回归。
 
 ### S5 文档回填与收尾
 
@@ -171,6 +191,6 @@ if (g_sn_registry.generation == GDCC_REGISTRY_GEN_NEVER) {
 
 ## 5. 非目标
 
-- 不解决 dyld 缓存本身（无法在 GDCC 侧改变 Godot 的 dlclose/dlopen 行为）。
-- 不引入 "测试 harness 在 macOS 上改名副本换库" 的规避方案——真实编辑器热重载在 macOS 同样命中同映像复用，runtime 加固是唯一正确修法。
+- 不解决 dyld 缓存本身（无法在 GDCC 侧改变 Godot 的 dlclose/dlopen 行为）；引擎层修复属上游事项（#90108 / #112202）。
+- ~~不引入 "测试 harness 改名副本换库" 的规避方案~~（S4 前决策，已被推翻）。S4 证据表明同映像复用下旧代码本身仍在运行，"执行新代码"断言无法靠 runtime 加固达成；S6 起 harness 改为内容哈希换库。runtime 加固（S2/S3）仍然必要：真实 macOS 用户若同路径重装，库至少能干净地重新注册而不崩溃。
 - deferred-lambda SIGSEGV 若在本计划修复后仍存在，另行立项。

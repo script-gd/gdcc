@@ -357,6 +357,7 @@ property initializer 与 parameter default 中的 lambda 不进入 `FrontendLamb
 | `GdccHrxRuntimeSmokeTest` | thunk、重绑三门、版本守卫、direct 模式、waiter 无重绑 |
 | `GdccCoroutineRuntimeSmokeTest` | cancel_all、shell、门控、HRX detach |
 | `GodotEditorHotReloadIntegrationTest` | headless editor 端到端 |
+| `GodotEditorHotReloadTestSessionTest` | 换库发布：内容哈希命名、元数据重指、同内容无操作 |
 | `GodotRuntimeDirectPathIntegrationTest` | 非编辑器 direct 路径 |
 | `CProjectBuilderCoroutineRuntimeInputTest` | native 输入含 `gdcc_hrx.c` |
 
@@ -374,6 +375,7 @@ property initializer 与 parameter default 中的 lambda 不进入 `FrontendLamb
 编排合同：
 
 - 换库必须原子 rename（先拷到临时文件再 `mv`）。禁止 in-place 覆盖已映射 `.so`：会把干净页灌成新内容而 GOT 脏页仍指向旧版，随后 SIGSEGV。
+- 每代库必须发布到新路径（测试 harness 按库内容 SHA-256 截断 16 hex 命名 `<base>-<hash>.<ext>`，并同步重写 `.gdextension` libraries 后再落 swap flag）：macOS dyld 按路径缓存映像，且 Godot 的 `OS_MacOS::open_dynamic_library` 未实现 `generate_temp_files`（4.7.2 仍未修；上游 godotengine/godot#90108、#112202），同路径 `dlopen` 永远返回旧映像。真实用户在 macOS 热重载同样需要每次构建更换库文件名。
 - driver 在最终 marker / `quit` 前停留 180 帧，让编辑器文档再生成在扩展存活期内排空（上游缺陷，类 godot#123511 / #111048）。
 - 观测 `_process` 的 fixture 必须 `@tool`。
 - 解释型 driver 不得主动调用已知失效的 Callable 或已知错误 arity 的方法（GDScript SCRIPT ERROR 会中止当前函数）。
@@ -396,6 +398,7 @@ property initializer 与 parameter default 中的 lambda 不进入 `FrontendLamb
 - 有窗口 F5 游戏进程以 `is_editor_hint()==false` 走 direct，与 headless 非 editor 判定相同，有窗变体保留手测。
 - 协程 `completed` 不发射尚无独立端到端观测断言。
 - ASan / Valgrind 对 exactly-once / 泄漏的完整证明不在自动化范围内。
+- macOS 同路径 GDExtension 重载返回旧映像（引擎级限制，dyld 路径缓存 + macOS 未实现 `generate_temp_files`，见 §10 编排合同）。同映像重复初始化已由 String/StringName registry 代际号加固：同映像下重新注册与静态重建是干净的，但执行的仍是旧代代码。
 - schema/context 失配时 lambda 捕获块故意泄漏；损坏锚点孤岛泄漏；tombstone 超过 8 个可能继续遮蔽新 hub。
 - §8.4 残余盲区仍可能误绑。
 
@@ -403,7 +406,6 @@ property initializer 与 parameter default 中的 lambda 不进入 `FrontendLamb
 
 - 增量编译与 dirty tracking
 - `NOTIFICATION_EXTENSION_RELOADED` 用户钩子
-- 同映像重复初始化加固（以“runtime 不引入线程/TLS”规避为主）
 - worker 线程 custom Callable 的 generation quiescence
 - 可选的 lambda body 哈希消歧
 - sljit 替换手写 thunk 模板（生成接口已隔离 ISA）
