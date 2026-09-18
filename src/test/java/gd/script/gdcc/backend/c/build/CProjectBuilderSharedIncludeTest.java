@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -38,7 +39,7 @@ public class CProjectBuilderSharedIncludeTest {
         Files.writeString(sharedIncludeDir.resolve("gdcc/gdcc_helper.h"), "BROKEN");
 
         var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, projectDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
-        var builder = new CProjectBuilder();
+        var builder = isolatedBuilder();
 
         builder.initProject(projectInfo);
 
@@ -62,7 +63,7 @@ public class CProjectBuilderSharedIncludeTest {
 
         var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, projectDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
         var compiler = new CapturingCompiler();
-        var builder = new CProjectBuilder(compiler);
+        var builder = isolatedBuilder(compiler);
 
         builder.initProject(projectInfo);
         var staleVendorFile = sharedIncludeDir.resolve(STALE_VENDOR_RUNTIME_SOURCE);
@@ -102,7 +103,7 @@ public class CProjectBuilderSharedIncludeTest {
 
         var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, projectDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
         var compiler = new CapturingCompiler();
-        var builder = new ModuleLocalGodotBindingFixtureProjectBuilder(compiler);
+        var builder = new ModuleLocalGodotBindingFixtureProjectBuilder(compiler, Map.of());
 
         builder.initProject(projectInfo);
         var staleVendorFile = sharedIncludeDir.resolve(STALE_VENDOR_RUNTIME_SOURCE);
@@ -152,7 +153,7 @@ public class CProjectBuilderSharedIncludeTest {
         Files.createDirectories(sharedIncludeDir);
 
         var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, projectDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
-        var builder = new CProjectBuilder();
+        var builder = isolatedBuilder();
         builder.setIgnoreSharedInclude(true);
 
         builder.initProject(projectInfo);
@@ -174,7 +175,7 @@ public class CProjectBuilderSharedIncludeTest {
         Files.writeString(sharedIncludePath, "not-a-directory");
 
         var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, projectDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
-        var builder = new CProjectBuilder();
+        var builder = isolatedBuilder();
 
         builder.initProject(projectInfo);
 
@@ -183,6 +184,103 @@ public class CProjectBuilderSharedIncludeTest {
         assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_intrinsic.h")));
         assertTrue(Files.isRegularFile(projectDir.resolve("include/godot/godot_binding.c")));
         assertFalse(Files.exists(sharedIncludePath.resolve("gdcc/gdcc_helper.h")));
+    }
+
+    @Test
+    public void usesEnvironmentIncludeAndCreatesItWhenMissing(@TempDir Path tempDir) throws IOException {
+        var workspaceDir = tempDir.resolve("workspace");
+        var projectDir = workspaceDir.resolve("project-a");
+        var envIncludeDir = tempDir.resolve("env").resolve("shared-include");
+        var siblingIncludeDir = workspaceDir.resolve("shared-include");
+        Files.createDirectories(projectDir);
+        Files.createDirectories(siblingIncludeDir);
+
+        var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, projectDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var compiler = new CapturingCompiler();
+        var builder = new CProjectBuilder(compiler, Map.of(CProjectBuilder.SHARED_INCLUDE_ENV, envIncludeDir.toString()));
+
+        builder.initProject(projectInfo);
+        var result = builder.buildProject(projectInfo, prepareCodegen(projectInfo));
+
+        assertTrue(result.success());
+        assertTrue(Files.isDirectory(envIncludeDir));
+        assertTrue(Files.isRegularFile(envIncludeDir.resolve("godot/godot_binding.c")));
+        assertFalse(Files.exists(projectDir.resolve("include")));
+        assertFalse(Files.exists(siblingIncludeDir.resolve("godot/godot_binding.c")));
+        assertEquals(
+                List.of(
+                        envIncludeDir.toAbsolutePath().normalize().resolve("gdcc"),
+                        envIncludeDir.toAbsolutePath().normalize().resolve("godot")
+                ),
+                compiler.includeDirs()
+        );
+    }
+
+    @Test
+    public void fallsBackToSiblingWhenEnvironmentIncludeIsBlank(@TempDir Path tempDir) throws IOException {
+        var workspaceDir = tempDir.resolve("workspace");
+        var projectDir = workspaceDir.resolve("project-a");
+        var siblingIncludeDir = workspaceDir.resolve("shared-include");
+        Files.createDirectories(projectDir);
+        Files.createDirectories(siblingIncludeDir);
+
+        var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, projectDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var builder = new CProjectBuilder(new ZigCcCompiler(), Map.of(CProjectBuilder.SHARED_INCLUDE_ENV, " "));
+
+        builder.initProject(projectInfo);
+
+        assertFalse(Files.exists(projectDir.resolve("include")));
+        assertTrue(Files.isRegularFile(siblingIncludeDir.resolve("godot/godot_binding.c")));
+    }
+
+    @Test
+    public void fallsBackToSiblingWhenEnvironmentIncludeIsAFile(@TempDir Path tempDir) throws IOException {
+        var workspaceDir = tempDir.resolve("workspace");
+        var projectDir = workspaceDir.resolve("project-a");
+        var siblingIncludeDir = workspaceDir.resolve("shared-include");
+        var envIncludePath = tempDir.resolve("env-include");
+        Files.createDirectories(projectDir);
+        Files.createDirectories(siblingIncludeDir);
+        Files.writeString(envIncludePath, "not-a-directory");
+
+        var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, projectDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var builder = new CProjectBuilder(
+                new ZigCcCompiler(),
+                Map.of(CProjectBuilder.SHARED_INCLUDE_ENV, envIncludePath.toString())
+        );
+
+        builder.initProject(projectInfo);
+
+        assertFalse(Files.exists(projectDir.resolve("include")));
+        assertTrue(Files.isRegularFile(siblingIncludeDir.resolve("godot/godot_binding.c")));
+    }
+
+    @Test
+    public void ignoreSharedIncludeBeatsEnvironmentInclude(@TempDir Path tempDir) throws IOException {
+        var workspaceDir = tempDir.resolve("workspace");
+        var projectDir = workspaceDir.resolve("project-a");
+        var envIncludeDir = tempDir.resolve("env").resolve("shared-include");
+        Files.createDirectories(projectDir);
+
+        var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, projectDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var builder = new CProjectBuilder(
+                new ZigCcCompiler(),
+                Map.of(CProjectBuilder.SHARED_INCLUDE_ENV, envIncludeDir.toString())
+        );
+        builder.setIgnoreSharedInclude(true);
+
+        builder.initProject(projectInfo);
+
+        assertTrue(Files.isRegularFile(projectDir.resolve("include/godot/godot_binding.c")));
+        assertFalse(Files.exists(envIncludeDir));
+    }
+
+    private static @NotNull CProjectBuilder isolatedBuilder() {
+        return isolatedBuilder(new ZigCcCompiler());
+    }
+
+    private static @NotNull CProjectBuilder isolatedBuilder(@NotNull CCompiler compiler) {
+        return new CProjectBuilder(compiler, Map.of());
     }
 
     private static @NotNull CCodegen prepareCodegen(@NotNull CProjectInfo projectInfo) throws IOException {

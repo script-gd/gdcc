@@ -36,7 +36,7 @@ native 输入顺序固定（`CProjectBuilder.buildProject()` 内联收集）：
 4. `<includeRoot>/gdcc/gdcc_coroutine.c`；
 5. `<includeRoot>/gdcc/gdcc_hrx.c`。
 
-include 目录为 `<includeRoot>/gdcc` 与 `<includeRoot>/godot`。include root 解析：项目父目录存在 `shared-include/` 则用之，否则用项目内 `include/`；`CProjectBuilder.setIgnoreSharedInclude(true)` 强制项目本地（测试隔离缝）。runtime 资源从 classpath `include_451` 的 `gdcc/**`、`godot/**` 提取，`initProject()` 与每次 `buildProject()` 都执行；提取按内容比较，内容一致时不替换文件（保持 mtime 稳定，见 §4.4），内容变化时临时文件 + atomic replace。
+include 目录为 `<includeRoot>/gdcc` 与 `<includeRoot>/godot`。include root 解析优先级：`CProjectBuilder.setIgnoreSharedInclude(true)` 强制项目本地 `include/`（测试隔离缝）；否则若 `GDCC_SHARED_INCLUDE` 指向可用路径则创建并使用该目录（相对路径按进程 cwd 规范化为绝对路径）；再否则项目父目录存在 `shared-include/` 则用之，最后回退项目内 `include/`。空白值、无效路径、文件、无法创建的路径均跳过环境变量并回退。runtime 资源从 classpath `include_451` 的 `gdcc/**`、`godot/**` 提取，`initProject()` 与每次 `buildProject()` 都执行；提取按内容比较，内容一致时不替换文件（保持 mtime 稳定，见 §4.4），内容变化时临时文件 + atomic replace。
 
 ## 3. 编译与链接命令合同
 

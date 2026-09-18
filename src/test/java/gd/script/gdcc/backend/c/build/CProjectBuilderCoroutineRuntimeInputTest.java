@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -31,7 +32,7 @@ public class CProjectBuilderCoroutineRuntimeInputTest {
 
         var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, projectDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
         var compiler = new CapturingCompiler();
-        var builder = new CProjectBuilder(compiler);
+        var builder = new CProjectBuilder(compiler, Map.of());
 
         var result = builder.buildProject(projectInfo, prepareCodegen(projectInfo));
 

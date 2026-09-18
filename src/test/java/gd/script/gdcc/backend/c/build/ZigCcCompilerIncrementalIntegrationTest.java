@@ -107,7 +107,7 @@ public class ZigCcCompilerIncrementalIntegrationTest {
     private static @NotNull CCompileResult recompileAfterEntryTouch(@NotNull Path projectDir, @NotNull CProjectInfo projectInfo) throws IOException {
         var entryC = projectDir.resolve("entry.c");
         Files.writeString(entryC, Files.readString(entryC) + "\n/* incremental rebuild probe */\n");
-        var includeRoot = projectDir.resolve("include");
+        var includeRoot = new CProjectBuilder().resolveIncludeRoot(projectDir);
         var includeDirs = List.of(includeRoot.resolve("gdcc"), includeRoot.resolve("godot"));
         // Mirror the runtime TU list from CProjectBuilder constants so a newly added runtime
         // source (e.g. gdcc_hrx.c) can never be silently dropped from the incremental link.

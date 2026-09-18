@@ -111,7 +111,9 @@ class ApiCompilePipelineTest {
     @Test
     void compileWithModuleLocalBindingKeepsGeneratedLinksAndNativeInputsStable(@TempDir Path tempDir) throws Exception {
         var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
-        var api = ApiCompileTestSupport.newApi(new ModuleLocalGodotBindingFixtureProjectBuilder(compiler));
+        var builder = new ModuleLocalGodotBindingFixtureProjectBuilder(compiler);
+        builder.setIgnoreSharedInclude(true);
+        var api = ApiCompileTestSupport.newApi(builder);
         var projectPath = tempDir.resolve("module-local-project");
 
         api.createModule("demo", "Module Local Demo");

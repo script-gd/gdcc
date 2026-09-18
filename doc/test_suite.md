@@ -186,6 +186,13 @@ setting `GDCC_SHARED_C_COMPILER_CACHE`, for example `tmp/test/shared-compiler-ca
 creates that directory when it is missing. If the variable is blank, invalid, points to a file, or
 cannot be created, the backend falls back to its default project-local cache selection.
 
+The same suite can share one runtime include tree by setting `GDCC_SHARED_INCLUDE`, for example
+`tmp/test/shared-include`. The builder creates that directory when it is missing and extracts the
+runtime headers and sources there so every case uses the same `-I` paths. Blank,
+invalid, file, or uncreatable values fall back to sibling `shared-include/` or the per-project
+`include/` directory. `CProjectBuilder.setIgnoreSharedInclude(true)` still forces a project-local
+tree.
+
 ## Running the Suite
 
 The current JUnit entry is:

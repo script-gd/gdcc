@@ -471,9 +471,11 @@ class GdccCommandInputTest {
         var source = writeSource(tempDir.resolve("module_local.gd"), validSource("ModuleLocalCliSmoke"));
         var outputDir = tempDir.resolve("build/demo");
         var compiler = CliCompileTestSupport.TestCompiler.succeeding();
+        var builder = new ModuleLocalGodotBindingFixtureProjectBuilder(compiler);
+        builder.setIgnoreSharedInclude(true);
         var terminal = new Terminal(
                 compiler,
-                CliCompileTestSupport.newApi(new ModuleLocalGodotBindingFixtureProjectBuilder(compiler))
+                CliCompileTestSupport.newApi(builder)
         );
 
         var exitCode = terminal.command().commandLine().execute(

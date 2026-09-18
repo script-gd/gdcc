@@ -12,6 +12,15 @@ Blank values, invalid paths, files, or paths that cannot be created fall back to
 project-location behavior: use the project parent's `shared-compiler-cache` directory when it
 already exists, otherwise use the project's own `compiler-cache` directory.
 
+`CProjectBuilder` can share one runtime include tree across projects the same way. If
+`GDCC_SHARED_INCLUDE` is set to a usable directory path, the builder creates that directory when
+necessary and extracts `include_451` `gdcc/**` / `godot/**` there for `-I` and the fixed runtime
+TUs. `setIgnoreSharedInclude(true)` still forces the project-local `include/` directory. Blank
+values, invalid paths, files, or paths that cannot be created fall back to the existing
+project-location behavior: use the project parent's `shared-include` directory when it already
+exists, otherwise use the project's own `include` directory. Relative env values are resolved
+against the process working directory.
+
 ### PCH Cache
 
 `ZigCcCompiler` additionally caches a precompiled header of `godot_binding.h` under

@@ -33,7 +33,7 @@ final class CliCompileTestSupport {
     }
 
     static @NotNull API newApi(@NotNull TestCompiler compiler) {
-        return newApi(new CProjectBuilder(compiler), CompileTaskHooks.none());
+        return newApi(isolatedBuilder(compiler), CompileTaskHooks.none());
     }
 
     static @NotNull API newApi(@NotNull CProjectBuilder projectBuilder) {
@@ -41,7 +41,7 @@ final class CliCompileTestSupport {
     }
 
     static @NotNull API newApi(@NotNull TestCompiler compiler, @NotNull CompileTaskHooks hooks) {
-        return newApi(new CProjectBuilder(compiler), hooks);
+        return newApi(isolatedBuilder(compiler), hooks);
     }
 
     static @NotNull API newApi(@NotNull CProjectBuilder projectBuilder, @NotNull CompileTaskHooks hooks) {
@@ -72,6 +72,12 @@ final class CliCompileTestSupport {
         } catch (ReflectiveOperationException exception) {
             throw new AssertionError("Failed to create test API", exception);
         }
+    }
+
+    private static @NotNull CProjectBuilder isolatedBuilder(@NotNull CCompiler compiler) {
+        var builder = new CProjectBuilder(compiler);
+        builder.setIgnoreSharedInclude(true);
+        return builder;
     }
 
     static @NotNull CompileResult awaitLastResult(@NotNull API api, @NotNull String moduleId) {

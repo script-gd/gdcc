@@ -77,6 +77,7 @@ jobs:
         with:
           path: |
             tmp/test/shared-compiler-cache
+            tmp/test/shared-include
             tmp/test/**/include
           key: ci-native-test-outputs-${{ runner.os }}-${{ runner.arch }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-${{ hashFiles('src/main/**', 'src/test/**') }}
           restore-keys: |
@@ -205,6 +206,7 @@ jobs:
       - name: Run unit tests
         env:
           GDCC_SHARED_C_COMPILER_CACHE: tmp/test/shared-compiler-cache
+          GDCC_SHARED_INCLUDE: tmp/test/shared-include
         run: |
           set -euo pipefail
           chmod +x ./gradlew
