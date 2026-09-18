@@ -10,6 +10,7 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.lir.LirLambdaMeta;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
@@ -85,6 +86,7 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
         // capture copy and the `_coro_param_self.instance_id` object_id channel.
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("SyntaxWorker::schedule#0", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(GdVoidType.VOID);
@@ -115,6 +117,7 @@ class CCoroutineGeneratedCSyntaxSmokeTest {
         // string anchors alone cannot see C declaration-order or type errors here.
         var coroLambda = new LirFunctionDef("_lambda_1", "entry");
         coroLambda.setLambda(true);
+        coroLambda.setLambdaMeta(new LirLambdaMeta("SyntaxWorker::schedule#1", null));
         coroLambda.setHidden(true);
         coroLambda.setStatic(true);
         coroLambda.setCoroutine(true);

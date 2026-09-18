@@ -5,6 +5,15 @@
 #include <gdcc_string.h>
 #include <gdcc_string_name.h>
 
+// Per-TU registry contract:
+// the GD_STATIC_S / GD_STATIC_SN expansions below (directly and inside
+// GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR) register into the TU-local registry of whichever TU
+// expands them, and only the generated entry TU ever calls the matching destroy_all. The helpers
+// in this header must therefore only be reached from generated entry code; runtime .c files
+// (gdcc_hrx.c, gdcc_coroutine.c, ...) must NOT call gdcc_make_property / gdcc_bind_property or
+// expand the macros directly — their TU-local registry copies would leak on unload and their
+// generation stamps would never be re-armed.
+
 #ifndef GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR
 #define GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(                                             \
         accessor_name,                                                                        \

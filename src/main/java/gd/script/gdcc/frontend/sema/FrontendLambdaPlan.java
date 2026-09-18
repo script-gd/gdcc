@@ -1,5 +1,7 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import gd.script.gdcc.type.GdType;
@@ -24,13 +26,22 @@ import java.util.Objects;
 /// @param enclosingCallable        nearest non-lambda callable AST (`FunctionDeclaration` /
 ///                                  `ConstructorDeclaration`); identity, not a reconstructed node
 /// @param owningClassCanonicalName canonical name of the owning `LirClassDef`
+/// @param identityOrdinal          source pre-order sequence number of this lambda within its
+///                                  outermost named function body (assigned by
+///                                  `FrontendLambdaIdentityAnalyzer`, isomorphic to the lowering
+///                                  pass's lambda discovery traversal)
+/// @param callSiteContext          normalized call-site context descriptor (never null; the
+///                                  `stmt(...)` fallback always applies — NULL contexts exist only
+///                                  for backend-synthesized standalone Callable identities)
 public record FrontendLambdaPlan(
         @NotNull LambdaExpression lambda,
         @NotNull String syntheticName,
         @NotNull FrontendLambdaCapturePlan capturePlan,
         @NotNull GdType returnType,
         @NotNull Node enclosingCallable,
-        @NotNull String owningClassCanonicalName
+        @NotNull String owningClassCanonicalName,
+        int identityOrdinal,
+        @NotNull String callSiteContext
 ) {
     public FrontendLambdaPlan {
         Objects.requireNonNull(lambda, "lambda must not be null");
@@ -45,6 +56,13 @@ public record FrontendLambdaPlan(
         if (owningClassCanonicalName.isBlank()) {
             throw new IllegalArgumentException("owningClassCanonicalName must not be blank");
         }
+        if (identityOrdinal < 0) {
+            throw new IllegalArgumentException("identityOrdinal must be >= 0: " + identityOrdinal);
+        }
+        Objects.requireNonNull(callSiteContext, "callSiteContext must not be null");
+        if (callSiteContext.isBlank()) {
+            throw new IllegalArgumentException("callSiteContext must not be blank");
+        }
     }
 
     public @NotNull List<LambdaCaptureEntry> captures() {
@@ -53,6 +71,28 @@ public record FrontendLambdaPlan(
 
     public boolean capturesSelf() {
         return capturePlan.capturesSelf();
+    }
+
+    /// Stable source identity of this lambda for hot-reload rebinding:
+    /// `<Class>::<enclosingFunc>#<ordinal>`.
+    /// `<Class>` is the canonical owning-class name (module-unique, so no file name is
+    /// needed); `<enclosingFunc>` is the outermost NAMED callable (`enclosingCallable` is
+    /// already normalized to it, with constructors rendered as `_init`); `ordinal` is the
+    /// deterministic source pre-order sequence number within that function body. Body edits,
+    /// non-lambda line shifts and whole-function moves keep the key stable; only a lambda
+    /// inserted/removed before this one inside the same function shifts the number (the
+    /// schema/call-site gates then decide rebind vs fail-closed).
+    public @NotNull String sourceIdentityKey() {
+        var enclosingName = switch (enclosingCallable) {
+            case FunctionDeclaration functionDeclaration -> functionDeclaration.name();
+            case ConstructorDeclaration _ -> "_init";
+            default -> throw new IllegalStateException(
+                    "Lambda '" + syntheticName + "' has an unexpected enclosing callable node: "
+                            + enclosingCallable.getClass().getSimpleName()
+                            + " (expected FunctionDeclaration or ConstructorDeclaration)"
+            );
+        };
+        return owningClassCanonicalName + "::" + enclosingName + "#" + identityOrdinal;
     }
 
     /// Logical equivalence for idempotent merge. The side table is already keyed by `lambda`
@@ -64,6 +104,8 @@ public record FrontendLambdaPlan(
                 && FrontendLambdaCapturePlan.samePlan(first.capturePlan(), second.capturePlan())
                 && FrontendAnalysisData.sameType(first.returnType(), second.returnType())
                 && first.enclosingCallable() == second.enclosingCallable()
-                && first.owningClassCanonicalName().equals(second.owningClassCanonicalName());
+                && first.owningClassCanonicalName().equals(second.owningClassCanonicalName())
+                && first.identityOrdinal() == second.identityOrdinal()
+                && first.callSiteContext().equals(second.callSiteContext());
     }
 }

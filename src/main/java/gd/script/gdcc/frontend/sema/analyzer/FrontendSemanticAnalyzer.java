@@ -232,6 +232,10 @@ public final class FrontendSemanticAnalyzer {
         // publication path runs. Shared facts can only enter stable storage through
         // SuiteResolver's per-owner export transaction.
         var interfaceSurface = interfacePhase.analyze(classRegistry, analysisData);
+        // Lambda identities (source ordinal + call-site
+        // context) must be fully published before any lambda plan is created during suite
+        // resolution; the resolver fails fast on a recorded lambda with no identity entry.
+        analysisData.updateLambdaIdentities(FrontendLambdaIdentityAnalyzer.analyze(analysisData));
         suiteResolver.resolve(interfaceSurface, classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 

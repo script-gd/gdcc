@@ -86,7 +86,7 @@ Useful options:
 - `-o` / `--output <output>`: output target path. If omitted, GDCC derives a name from the input files.
 - `--gde <version>`: Godot GDExtension API version. Currently only `4.5.1` is supported.
 - `--opt` / `--optimize <level>`: `debug` or `release`.
-- `--target <platform>`: target platform, such as `linux-x86-64`, `windows-x86-64`, or `linux-aarch64`.
+- `--target <platform>`: target platform, such as `linux-x86-64`, `windows-x86-64`, `linux-aarch64`, or `macos-aarch64`.
 - `--prefix <prefix>` and `--class-map Source=Canonical`: control generated top-level canonical class names.
 
 # Community

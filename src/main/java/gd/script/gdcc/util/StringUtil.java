@@ -3,12 +3,36 @@ package gd.script.gdcc.util;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 public final class StringUtil {
+    private static final Pattern ANSI_CSI_PATTERN = Pattern.compile("\\u001B\\[[0-9;?]*[A-Za-z]");
+
     private StringUtil() {
+    }
+
+    /// Deterministic MD5 digest. Only used where a stable fixed-size fingerprint of compiler
+    /// internal data is required (never for security purposes).
+    public static byte @NotNull [] md5(byte @NotNull [] input) {
+        try {
+            return MessageDigest.getInstance("MD5").digest(input);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("MD5 MessageDigest is not available", e);
+        }
+    }
+
+    /// Uppercase hex of the first `count` bytes (fewer when the array is shorter).
+    public static @NotNull String toHex(byte @NotNull [] bytes, int count) {
+        var sb = new StringBuilder(count * 2);
+        for (var i = 0; i < count && i < bytes.length; i++) {
+            sb.append(String.format("%02X", bytes[i] & 0xFF));
+        }
+        return sb.toString();
     }
 
     public static @NotNull String requireNonBlank(@Nullable String value, @NotNull String fieldName) {
@@ -33,6 +57,15 @@ public final class StringUtil {
 
     public static @NotNull String trimToEmpty(@Nullable String value) {
         return value == null ? "" : value.trim();
+    }
+
+    /// Removes ANSI escape sequences in CSI form (covering the SGR styling picocli emits) so
+    /// assertions on captured CLI output stay stable across hosts: picocli renders styling on
+    /// ANSI-capable terminals (e.g. Windows CI agents) but not on plain pipes, so tests must
+    /// compare plain text. Not a general-purpose ANSI parser: OSC hyperlinks and other non-CSI
+    /// sequences are intentionally out of scope.
+    public static @NotNull String stripAnsi(@NotNull String text) {
+        return ANSI_CSI_PATTERN.matcher(text).replaceAll("");
     }
 
     public static @Nullable String trimToNull(@Nullable String value) {

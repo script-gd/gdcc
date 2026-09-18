@@ -25,7 +25,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// build must link and produce the artifact. Linux targets exercise `-flto=thin`; windows
 /// targets exercise ThinLTO on the MSVC ABI when running on a Windows host, and the
 /// substituted MinGW build without LTO everywhere else (the msvc→gnu rule never enters the
-/// ThinLTO fallback decision).
+/// ThinLTO fallback decision). macOS needs a Darwin sysroot to link from a non-macOS host,
+/// so it is not in this matrix; native macOS CI covers host dylib builds.
 ///
 /// Known limitations (deliberately not smoke-tested here, unrelated to LTO): web-wasm32 fails
 /// by design — minicoro locks `MCO_USE_ASM` and zig ships no Emscripten sysroot — and android

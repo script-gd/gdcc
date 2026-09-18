@@ -40,7 +40,7 @@ final class ApiCompileTestSupport {
     }
 
     static @NotNull API newApi(@NotNull RecordingCompiler compiler) {
-        return newApi(new CProjectBuilder(compiler));
+        return newApi(isolatedBuilder(compiler));
     }
 
     static @NotNull API newApi(@NotNull CProjectBuilder projectBuilder) {
@@ -58,7 +58,7 @@ final class ApiCompileTestSupport {
             @NotNull CompileTaskHooks compileTaskHooks
     ) {
         return newApi(
-                new CProjectBuilder(compiler),
+                isolatedBuilder(compiler),
                 compileTaskHooks
         );
     }
@@ -84,7 +84,7 @@ final class ApiCompileTestSupport {
             @NotNull Duration compileTaskSweepInterval
     ) {
         return newApi(
-                new CProjectBuilder(compiler),
+                isolatedBuilder(compiler),
                 compileTaskHooks,
                 clock,
                 completedCompileTaskTtl,
@@ -107,6 +107,12 @@ final class ApiCompileTestSupport {
                 completedCompileTaskTtl,
                 compileTaskSweepInterval
         );
+    }
+
+    private static @NotNull CProjectBuilder isolatedBuilder(@NotNull CCompiler compiler) {
+        var builder = new CProjectBuilder(compiler);
+        builder.setIgnoreSharedInclude(true);
+        return builder;
     }
 
     static @NotNull ModuleOperationBlocker blockModuleOperation(@NotNull API api, @NotNull String moduleId) {

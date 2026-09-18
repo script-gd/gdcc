@@ -111,7 +111,9 @@ class ApiCompilePipelineTest {
     @Test
     void compileWithModuleLocalBindingKeepsGeneratedLinksAndNativeInputsStable(@TempDir Path tempDir) throws Exception {
         var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
-        var api = ApiCompileTestSupport.newApi(new ModuleLocalGodotBindingFixtureProjectBuilder(compiler));
+        var builder = new ModuleLocalGodotBindingFixtureProjectBuilder(compiler);
+        builder.setIgnoreSharedInclude(true);
+        var api = ApiCompileTestSupport.newApi(builder);
         var projectPath = tempDir.resolve("module-local-project");
 
         api.createModule("demo", "Module Local Demo");
@@ -158,7 +160,8 @@ class ApiCompilePipelineTest {
                         normalizedProjectPath.resolve("entry.c"),
                         normalizedProjectPath.resolve("include/godot/godot_binding.c"),
                         normalizedProjectPath.resolve("include/gdcc/minicoro.c"),
-                        normalizedProjectPath.resolve("include/gdcc/gdcc_coroutine.c")
+                        normalizedProjectPath.resolve("include/gdcc/gdcc_coroutine.c"),
+                        normalizedProjectPath.resolve("include/gdcc/gdcc_hrx.c")
                 ),
                 compiler.lastCFiles().stream().map(path -> path.toAbsolutePath().normalize()).toList()
         );

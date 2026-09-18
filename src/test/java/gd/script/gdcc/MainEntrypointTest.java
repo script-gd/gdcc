@@ -1,6 +1,7 @@
 package gd.script.gdcc;
 
 import gd.script.gdcc.util.GdccVersion;
+import gd.script.gdcc.util.StringUtil;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -66,10 +67,12 @@ class MainEntrypointTest {
         System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
         try {
             var exitCode = Main.run(args);
+            // Picocli renders ANSI styling on capable terminals (e.g. Windows CI agents);
+            // assertions must compare plain text.
             return new CapturedRun(
                     exitCode,
-                    out.toString(StandardCharsets.UTF_8),
-                    err.toString(StandardCharsets.UTF_8)
+                    StringUtil.stripAnsi(out.toString(StandardCharsets.UTF_8)),
+                    StringUtil.stripAnsi(err.toString(StandardCharsets.UTF_8))
             );
         } finally {
             System.setOut(originalOut);

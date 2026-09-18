@@ -946,12 +946,16 @@ public class CCodegen implements Codegen {
                     this::generateStaticDeinitializeBody,
                     templateUsageBuffer
             );
+            var hrxCatalog = CHrxIdentityCatalog.collect(module, ctx, helper);
             var cTplCtx = Map.of(
                     "module", module,
                     "helper", helper,
                     "bodyRender", bodyRender,
                     "staticInitClassDefs", staticInitClassDefs,
-                    "inheritanceOrderedClassDefs", inheritanceOrderedClassDefs
+                    "inheritanceOrderedClassDefs", inheritanceOrderedClassDefs,
+                    "hrxAnchorToken", hrxCatalog.anchorTokenHex(),
+                    "hrxIdentities", hrxCatalog.identities(),
+                    "hrxRebindEntries", hrxCatalog.rebindEntries()
             );
             var cSrc = TemplateLoader.renderFromClasspath("template_451/entry.c.ftl", cTplCtx);
             usageSession.commit(templateUsageBuffer);

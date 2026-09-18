@@ -12,6 +12,15 @@ Blank values, invalid paths, files, or paths that cannot be created fall back to
 project-location behavior: use the project parent's `shared-compiler-cache` directory when it
 already exists, otherwise use the project's own `compiler-cache` directory.
 
+`CProjectBuilder` can share one runtime include tree across projects the same way. If
+`GDCC_SHARED_INCLUDE` is set to a usable directory path, the builder creates that directory when
+necessary and extracts `include_451` `gdcc/**` / `godot/**` there for `-I` and the fixed runtime
+TUs. `setIgnoreSharedInclude(true)` still forces the project-local `include/` directory. Blank
+values, invalid paths, files, or paths that cannot be created fall back to the existing
+project-location behavior: use the project parent's `shared-include` directory when it already
+exists, otherwise use the project's own `include` directory. Relative env values are resolved
+against the process working directory.
+
 ### PCH Cache
 
 `ZigCcCompiler` additionally caches a precompiled header of `godot_binding.h` under
@@ -208,10 +217,62 @@ Usage and lifecycle rules:
   - `r_initialization->initialize = &initialize;`
   - `r_initialization->deinitialize = &deinitialize;`
 - `initialize(...)` must return without side effects for levels other than `GDEXTENSION_INITIALIZATION_SCENE`.
-- `deinitialize(...)` must use the same level guard before printing unload messages or destroying GDCC static registries.
+- `initialize(...)` freezes the HRX Callable dispatch mode BEFORE any class registration or
+  static initialization can construct a custom Callable (runtime contract:
+  `gdcc_runtime_lib.md` §HRX Hot-Reload Thunk Runtime; source of truth:
+  `module_impl/backend/hot_reload_implementation.md`): right after `gdcc_init()` (and the
+  coroutine gate), it calls `gdcc_hrx_initialize(class_library, GDCC_HRX_ANCHOR_TOKEN,
+  table, count)` — probe + freeze, hub takeover/creation through the per-extension anchor
+  token, sweeper registration, rebind of surviving specs and the two-phase sweep. The
+  module-level rebind table (`gdcc_hrx_rebind_table`, empty modules pass `NULL, 0`) and the
+  per-Callable identity structs are emitted at the top of `entry.c` by the identity
+  catalog; every lambda's stable `impl_key` (`<Class>::<func>#<ordinal>` — source
+  pre-order sequence within the outermost named function) plus its normalized
+  `callsite_context` descriptor is derived by the frontend into
+  `LirFunctionDef.lambdaMeta` (`LirLambdaMeta`: `sourceIdentityKey`/`callSiteContext`;
+  keyless lambdas fail codegen);
+  the context string is the third rebind gate alongside `impl_key` and `schema_desc`
+  (HRX ABI v2, descriptor prefix `gdcc-hrx:2;`; runtime contract:
+  `gdcc_runtime_lib.md` §HRX).
+- `deinitialize(...)` must use the same level guard, then run the teardown in the fixed
+  hot-reload order (`hot_reload_implementation.md`):
+  1. print the unload message;
+  2. `gdcc_coro_cancel_all()` (emitted only when the module has coroutine functions)
+     — abandon every in-flight coroutine FIRST, while the whole runtime is still fully
+     operational: each state is disconnected from any pending one-shot signal,
+     cancel-resumed to `MCO_DEAD`, and its waiter edges released, so nothing coroutine-owned
+     outlives the library unload (runtime contract: `gdcc_runtime_lib.md` §Coroutine
+     Runtime). Dual-mode: `initialize()` gates editor-only tracking on `is_editor_hint()`
+     (`gdcc_coro_set_hot_reload_active`), so this call is a no-op in release exports and
+     editor-launched game processes;
+  3. destroy static backing variables in reverse initialization order — FIRST, because this
+     deinitialize also serves the normal-exit path where the engine does NOT clear
+     `_extension` during class unregistration: a static-held instance released after
+     unregistration would destruct through a dangling extension pointer (UAF). The reload
+     path is safe under either relative order;
+  4. unregister every extension class with `godot_classdb_unregister_extension_class` —
+     hidden coroutine state classes first (strict reverse of their generation order), then
+     user classes in the strict mirror of the base-before-derived registration order
+     (`inheritanceOrderedClassDefs` reversed). Godot rejects re-registration of a class that
+     was never unregistered, and rejects unregistering a base while derived extension
+     classes still inherit from it. During a reload the engine runs `free_instance` on every
+     surviving instance from inside these calls — field destruction must therefore never
+     depend on static backing (already torn down);
+  5. destroy the StringName/String registries and the standalone Callable intern storage
+     (in HRX mode that storage was never populated — interning lives in the hub — so its
+     teardown is a no-op and the two never own the same spec). String/StringName
+     `destroy_all` also bumps the TU-local registry generation so same-image re-init
+     rebuilds interned literals (`gdcc_runtime_lib.md` §Static String/StringName Registry;
+     `hot_reload_implementation.md` §4.1);
+  6. `gdcc_hrx_deinitialize()` LAST — detach the current sweeper, then NULL every
+     spec's function pointers (`dead`/`refcount` untouched). Callable references dropped by
+     the earlier steps still reach the live sweeper for best memory hygiene; afterwards only
+     Godot-side stragglers can fire, and those just mark specs dead for the next
+     generation's two-phase sweep.
 - This keeps class registration, StringName/String registries, standalone Callable intern
   storage, and module log output scoped to the scene-level lifecycle that Godot uses for
-  runtime class availability.
+  runtime class availability. End-to-end coverage lives in
+  `GodotEditorHotReloadIntegrationTest`.
 
 ### Ptrcall Helper Return Carrier Contract
 

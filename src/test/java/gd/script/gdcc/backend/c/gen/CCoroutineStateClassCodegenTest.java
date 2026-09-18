@@ -12,9 +12,11 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.lir.LirLambdaMeta;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
+import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.lir.insn.ConstructLambdaInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.lir.insn.VariantSetInsn;
@@ -31,6 +33,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -45,6 +48,163 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// thunk (OOM path included) and the engine entry three-branch dispatch - while synchronous
 /// functions keep their byte-level codegen shape.
 class CCoroutineStateClassCodegenTest {
+
+    @Test
+    void coroutineStateClassRecreateBuildsReloadedShell() {
+        var workerClass = newWorkerModule();
+        var files = generate(workerClass);
+        var cCode = generatedFileText(files, "entry.c");
+
+        // ---- Creation info: recreate is mandatory for reloadable extensions (engine disables
+        // reload for the WHOLE extension when any creatable class lacks it — the hidden state
+        // classes get no exemption), so every state class must wire it. ----
+        assertContainsAll(
+                cCode,
+                "creation_info.recreate_instance_func = _gdcc_coro_state_Worker__coro__sum_to_class_recreate_instance;",
+                "creation_info.recreate_instance_func = _gdcc_coro_state_Worker__coro__wait_done_class_recreate_instance;",
+                "creation_info.recreate_instance_func = _gdcc_coro_state_Worker__coro__fetch_class_recreate_instance;",
+                "creation_info.recreate_instance_func = _gdcc_coro_state_Worker__coro__display_name_class_recreate_instance;",
+                "creation_info.recreate_instance_func = _gdcc_coro_state_Worker__coro__spawn_peer_class_recreate_instance;"
+        );
+        assertEquals(5, countOccurrences(cCode,
+                "creation_info.recreate_instance_func = _gdcc_coro_state_Worker__coro__"),
+                "every coroutine state class must wire recreate_instance_func");
+
+        // ---- Reloaded coroutine shell ----
+        var recreateBody = resolveFunctionBodyByPrefix(cCode,
+                "GDExtensionClassInstancePtr _gdcc_coro_state_Worker__coro__sum_to_class_recreate_instance(");
+        assertOrdered(
+                recreateBody,
+                "_gdcc_coro_state_Worker__coro__sum_to* self = godot_mem_alloc(sizeof(_gdcc_coro_state_Worker__coro__sum_to));",
+                // Owning fields are zeroed into legal default values BEFORE the header init,
+                // keeping the free_instance cleanup path safe and idempotent on the shell.
+                "memset(self, 0, sizeof(_gdcc_coro_state_Worker__coro__sum_to));",
+                "self->_object = p_object;",
+                "gdcc_coro_state_header_init(&self->_coro_header, &_gdcc_coro_state_Worker__coro__sum_to_desc, p_object);",
+                "self->_coro_header.reloaded_shell = true;",
+                "godot_object_set_instance_binding(p_object, gdcc_coro_binding_token(),",
+                "&self->_coro_header, &_gdcc_coro_state_Worker__coro__sum_to_class_binding_callbacks);",
+                "return self;"
+        );
+        // The shell never rebuilds or runs any coroutine machinery.
+        assertFalse(recreateBody.contains("classdb_construct_object2"), recreateBody);
+        assertFalse(recreateBody.contains("godot_object_set_instance("), recreateBody);
+        assertFalse(recreateBody.contains("POSTINITIALIZE"), recreateBody);
+        assertFalse(recreateBody.contains("mco_create"), recreateBody);
+        assertFalse(recreateBody.contains("mco_resume"), recreateBody);
+        assertFalse(recreateBody.contains("emit_completed"), recreateBody);
+        // The shell never joins the active-coroutine list either.
+        assertFalse(recreateBody.contains("gdcc_coro_active_link"), recreateBody);
+        // The binding MUST use the coroutine token, never class_library (identify path).
+        assertFalse(recreateBody.contains("class_library"), recreateBody);
+
+        // The typed return slot written flag stays false (zeroed) on the shell — the void
+        // state class has no ret slot but builds the same shell shape.
+        var voidRecreateBody = resolveFunctionBodyByPrefix(cCode,
+                "GDExtensionClassInstancePtr _gdcc_coro_state_Worker__coro__wait_done_class_recreate_instance(");
+        assertOrdered(
+                voidRecreateBody,
+                "memset(self, 0, sizeof(_gdcc_coro_state_Worker__coro__wait_done));",
+                "self->_object = p_object;",
+                "gdcc_coro_state_header_init(&self->_coro_header, &_gdcc_coro_state_Worker__coro__wait_done_desc, p_object);",
+                "self->_coro_header.reloaded_shell = true;",
+                "godot_object_set_instance_binding(p_object, gdcc_coro_binding_token(),",
+                "return self;"
+        );
+        assertFalse(voidRecreateBody.contains("godot_object_set_instance("), voidRecreateBody);
+        assertFalse(voidRecreateBody.contains("mco_create"), voidRecreateBody);
+        assertFalse(voidRecreateBody.contains("class_library"), voidRecreateBody);
+        // OOM contract: every recreate bails out with NULL BEFORE touching the wrapper
+        // (the engine degrades gracefully on recreate failure) — pinned per state class so
+        // the guard cannot drift after the memset on any of them.
+        for (var functionName : List.of("sum_to", "wait_done", "fetch", "display_name", "spawn_peer")) {
+            var stateName = "_gdcc_coro_state_Worker__coro__" + functionName;
+            var shellBody = resolveFunctionBodyByPrefix(cCode,
+                    "GDExtensionClassInstancePtr " + stateName + "_class_recreate_instance(");
+            assertOrdered(
+                    shellBody,
+                    stateName + "* self = godot_mem_alloc(sizeof(" + stateName + "));",
+                    "if (self == NULL)",
+                    "return NULL;",
+                    "memset(self, 0, sizeof(" + stateName + "));"
+            );
+        }
+        // ---- deinitialize: hidden state classes unregister in the strict reverse of
+        // their generation order, all before the user class unregistrations and the runtime
+        // registry teardown (free_instance runs inside these calls during a reload). ----
+        var deinitializeBody = resolveFunctionBodyByPrefix(cCode, "void deinitialize(void* userdata");
+        assertOrdered(
+                deinitializeBody,
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"_gdcc_coro_state_Worker__coro__spawn_peer\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"_gdcc_coro_state_Worker__coro__display_name\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"_gdcc_coro_state_Worker__coro__fetch\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"_gdcc_coro_state_Worker__coro__wait_done\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"_gdcc_coro_state_Worker__coro__sum_to\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"Worker\"));",
+                "gdcc_sn_registry_destroy_all();"
+        );
+        assertEquals(6, countOccurrences(deinitializeBody, "godot_classdb_unregister_extension_class("),
+                "five state classes plus the user class must each be unregistered exactly once");
+    }
+
+    @Test
+    void coroutineStateClassesUnregisterInGlobalReverseGenerationOrder() {
+        // Unregistration demands the strict GLOBAL reverse of the row-major (classDefs × functions,
+        // coroutines only) generation order. Two classes with interleaved sync functions pin
+        // both reversal axes: reversing only the per-class function list (or only the class
+        // list) would still produce a symmetric-looking but wrong sequence here.
+        var alpha = new LirClassDef("Alpha", "RefCounted");
+        alpha.addFunction(voidCoroutine(alpha, "a1"));
+        alpha.addFunction(syncMethod(alpha, "a_sync"));
+        alpha.addFunction(voidCoroutine(alpha, "a2"));
+        // A destroyable static pins the joint ordering: static teardown precedes the
+        // FIRST hidden state-class unregistration (the coroutine-only fixture above cannot
+        // catch a coroutine loop drifting ahead of static teardown).
+        alpha.addProperty(new LirPropertyDef("label", GdStringType.STRING, true, null, null, null, Map.of()));
+        var beta = new LirClassDef("Beta", "RefCounted");
+        beta.addFunction(voidCoroutine(beta, "b1"));
+        beta.addFunction(syncMethod(beta, "b_sync"));
+        beta.addFunction(voidCoroutine(beta, "b2"));
+        var files = preparedCodegen(new LirModule("coro_unregister_order_module", List.of(alpha, beta))).generate();
+        var cCode = generatedFileText(files, "entry.c");
+
+        var initializeBody = resolveFunctionBodyByPrefix(cCode, "void initialize(void* userdata");
+        // Editor-only tracking gate: set right after gdcc_init, strictly BEFORE the first class
+        // registration (static initializers and any user code can only run afterwards).
+        assertOrdered(
+                initializeBody,
+                "gdcc_init();",
+                "gdcc_coro_set_hot_reload_active(gdcc_is_editor_hint());",
+                "godot_classdb_register_extension_class5("
+        );
+        assertEquals(1, countOccurrences(initializeBody, "gdcc_coro_set_hot_reload_active("), initializeBody);
+        assertOrdered(
+                initializeBody,
+                "GD_STATIC_SN(u8\"_gdcc_coro_state_Alpha__coro__a1\"), GD_STATIC_SN(u8\"RefCounted\")",
+                "GD_STATIC_SN(u8\"_gdcc_coro_state_Alpha__coro__a2\"), GD_STATIC_SN(u8\"RefCounted\")",
+                "GD_STATIC_SN(u8\"_gdcc_coro_state_Beta__coro__b1\"), GD_STATIC_SN(u8\"RefCounted\")",
+                "GD_STATIC_SN(u8\"_gdcc_coro_state_Beta__coro__b2\"), GD_STATIC_SN(u8\"RefCounted\")"
+        );
+
+        var deinitializeBody = resolveFunctionBodyByPrefix(cCode, "void deinitialize(void* userdata");
+        assertOrdered(
+                deinitializeBody,
+                "gdcc_coro_cancel_all();",
+                "gdcc_static_Alpha_label",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"_gdcc_coro_state_Beta__coro__b2\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"_gdcc_coro_state_Beta__coro__b1\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"_gdcc_coro_state_Alpha__coro__a2\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"_gdcc_coro_state_Alpha__coro__a1\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"Beta\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"Alpha\"));",
+                "gdcc_sn_registry_destroy_all();"
+        );
+        // The bulk cancel runs exactly once, before static teardown, so every
+        // in-flight coroutine is abandoned while the runtime is still fully operational.
+        assertEquals(1, countOccurrences(deinitializeBody, "gdcc_coro_cancel_all();"), deinitializeBody);
+        assertEquals(6, countOccurrences(deinitializeBody, "godot_classdb_unregister_extension_class("),
+                "four state classes plus two user classes must each be unregistered exactly once");
+    }
 
     @Test
     void coroutineModuleShouldGenerateStateClassBodyThunkAndEngineEntries() {
@@ -118,6 +278,15 @@ class CCoroutineStateClassCodegenTest {
                 "godot_mem_free(self);"
         );
 
+        // ---- Object param / Object ret-slot teardown resolves through ObjectDB, never the
+        // cached wrapper (hot-reload bulk clear frees wrappers while objects stay alive) ----
+        var peerFreeBody = resolveFunctionBodyByPrefix(cCode, "void _gdcc_coro_state_Worker__coro__spawn_peer_class_free_instance(");
+        assertContainsAll(peerFreeBody, "release_object(gdcc_object_live_ptr(self->_coro_param_peer.instance_id));");
+        assertFalse(peerFreeBody.contains("_live_object(self->_coro_param_peer)"), peerFreeBody);
+        var peerDestroyRetBody = resolveFunctionBodyByPrefix(cCode, "void _gdcc_coro_state_Worker__coro__spawn_peer_destroy_ret_slot(");
+        assertContainsAll(peerDestroyRetBody, "release_object(gdcc_object_live_ptr(self->_coro_ret.instance_id));");
+        assertFalse(peerDestroyRetBody.contains("_live_object(self->_coro_ret)"), peerDestroyRetBody);
+
         // ---- desc callbacks: pack copies and preserves the slot; typed copy_ret_slot ----
         var packBody = resolveFunctionBodyByPrefix(cCode, "void _gdcc_coro_state_Worker__coro__sum_to_pack_result(");
         assertContainsAll(
@@ -187,6 +356,18 @@ class CCoroutineStateClassCodegenTest {
         var selfFillIndex = thunkBody.indexOf("coro_state->_coro_param_self = $self;");
         assertTrue(selfFillIndex >= 0, thunkBody);
         assertTrue(thunkBody.indexOf("own_object(", selfFillIndex) > selfFillIndex, thunkBody);
+
+        // The state joins the active list only AFTER a successful mco_create and
+        // BEFORE the first resume; the OOM branch must return without ever linking.
+        var oomBranchIndex = thunkBody.indexOf("mco_create(&coro_state->_coro_header.co, &coro_desc) != MCO_SUCCESS");
+        var linkIndex = thunkBody.indexOf("gdcc_coro_active_link(&coro_state->_coro_header);");
+        var firstResumeIndex = thunkBody.indexOf("mco_resume(coro_state->_coro_header.co);");
+        assertTrue(oomBranchIndex >= 0 && linkIndex > oomBranchIndex, thunkBody);
+        assertTrue(firstResumeIndex > linkIndex, thunkBody);
+        var oomReturnIndex = thunkBody.indexOf("return (godot_Object*)coro_state_obj;", oomBranchIndex);
+        assertTrue(oomReturnIndex >= 0 && oomReturnIndex < linkIndex,
+                "the OOM branch must return before the active-link call: " + thunkBody);
+        assertEquals(1, countOccurrences(thunkBody, "gdcc_coro_active_link("), thunkBody);
 
         // ---- engine entry (typed non-Variant): done fast path + detach/default/error branch ----
         var engineEntryBody = resolveFunctionBodyByPrefix(cCode, "godot_int Worker_sum_to(");
@@ -298,6 +479,7 @@ class CCoroutineStateClassCodegenTest {
         var workerClass = new LirClassDef("Worker", "RefCounted");
         var lambda = newFunction("_lambda_0", GdIntType.INT);
         lambda.setLambda(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run@+2:5", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setCoroutine(true);
@@ -334,6 +516,7 @@ class CCoroutineStateClassCodegenTest {
         var workerClass = new LirClassDef("Worker", "RefCounted");
         var lambda = newFunction("_lambda_0", GdIntType.INT);
         lambda.setLambda(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run@+2:5", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setCoroutine(true);
@@ -390,13 +573,15 @@ class CCoroutineStateClassCodegenTest {
         );
 
         // ---- free_instance: capture destroys after the parameter sweep, before the ret slot ----
+        // Object captures release through ObjectDB (gdcc_object_live_ptr), never the cached
+        // wrapper — reload bulk clear frees wrappers while the Godot objects stay alive.
         var freeBody = resolveFunctionBodyByPrefix(cCode, "void _gdcc_coro_state_Worker__coro___lambda_0_class_free_instance(");
         assertContainsAll(
                 freeBody,
-                "release_object(",
-                "_live_object(self->_coro_capture_self)",
+                "release_object(gdcc_object_live_ptr(self->_coro_capture_self.instance_id));",
                 "godot_String_destroy(&(self->_coro_capture_label));"
         );
+        assertFalse(freeBody.contains("_live_object(self->_coro_capture_self)"), freeBody);
         var captureFreeIndex = freeBody.indexOf("godot_String_destroy(&(self->_coro_capture_label));");
         var retDestroyIndex = freeBody.indexOf("_destroy_ret_slot(&self->_coro_header);");
         assertAll(
@@ -504,6 +689,7 @@ class CCoroutineStateClassCodegenTest {
         // cached object_id must read frame fields (no `$param` C slots exist in the body).
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run@+2:5", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(GdVoidType.VOID);
@@ -602,6 +788,24 @@ class CCoroutineStateClassCodegenTest {
         return func;
     }
 
+    /// Minimal void coroutine owned by `owner` (self parameter + immediate return), used by
+    /// the multi-class unregistration-order fixture.
+    private static @NotNull LirFunctionDef voidCoroutine(@NotNull LirClassDef owner, @NotNull String name) {
+        var func = newCoroutine(name, GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("self", new GdObjectType(owner.getName()), null, func));
+        entry(func).setTerminator(new ReturnInsn(null));
+        return func;
+    }
+
+    /// Minimal synchronous method owned by `owner`, interleaved between coroutines to prove
+    /// the unregistration order only reverses the coroutine subsequence.
+    private static @NotNull LirFunctionDef syncMethod(@NotNull LirClassDef owner, @NotNull String name) {
+        var func = newFunction(name, GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("self", new GdObjectType(owner.getName()), null, func));
+        entry(func).setTerminator(new ReturnInsn(null));
+        return func;
+    }
+
     private static @NotNull LirFunctionDef newFunction(String name, GdType returnType) {
         var func = new LirFunctionDef(name);
         func.setReturnType(returnType);
@@ -615,7 +819,10 @@ class CCoroutineStateClassCodegenTest {
     }
 
     private static @NotNull CCodegen preparedCodegen(LirClassDef workerClass) {
-        var module = new LirModule("coroutine_state_class_module", List.of(workerClass));
+        return preparedCodegen(new LirModule("coroutine_state_class_module", List.of(workerClass)));
+    }
+
+    private static @NotNull CCodegen preparedCodegen(LirModule module) {
         // Callable locals materialize their default via `construct_builtin Callable()` in
         // `__prepare__`, which validates against the builtin-class metadata of the fixture.
         var callableBuiltin = new ExtensionBuiltinClass(
@@ -659,8 +866,16 @@ class CCoroutineStateClassCodegenTest {
                 .orElseThrow(() -> new AssertionError("Generated file not found: " + filePath));
     }
 
-    private static @NotNull String resolveFunctionBodyByPrefix(String source, String functionPrefix) {
-        var start = source.indexOf(functionPrefix);
+    private static void assertOrdered(String text, String... fragmentsInOrder) {
+        var searchFromIndex = 0;
+        for (var fragment : fragmentsInOrder) {
+            var index = text.indexOf(fragment, searchFromIndex);
+            assertTrue(index >= 0, () -> "Missing fragment: " + fragment + "\n" + text);
+            searchFromIndex = index + fragment.length();
+        }
+    }
+
+    private static @NotNull String resolveFunctionBodyByPrefix(String source, String functionPrefix) {        var start = source.indexOf(functionPrefix);
         assertTrue(start >= 0, () -> "Function not found: " + functionPrefix + "\n" + source);
         var braceStart = source.indexOf('{', start);
         assertTrue(braceStart >= 0, () -> "Function body not found: " + functionPrefix);

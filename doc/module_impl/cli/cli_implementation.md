@@ -289,6 +289,7 @@ CLI 可以在成功编译后生成 Godot 可读取的 `.gdextension` metadata �
 - metadata 内的 library path 使用相对 `.gdextension` 文件所在目录的路径。当前 backend artifact 写在同一个 output
   directory 下，因此通常是 artifact 文件名。
 - `web-wasm32` 产物的 `.wasm` 文件也可以作为 metadata `[libraries]` entry 的 library path。
+- macOS 产物使用 `lib*.dylib`，metadata 平台名为 `macos`；arch-qualified 键里 AArch64 写 Godot 的 `arm64`（`macos.debug.arm64`）。
 
 生成内容复用 C backend 的 `GdextensionMetadataFile` 规则，与 Godot runtime 测试项目使用的 metadata 形状一致：
 
@@ -340,7 +341,7 @@ new CompileOptions(
 
 - 接受 `TargetPlatform` 当前枚举值的 CLI 形式，大小写不敏感，`-` 与 `_` 在输入中等价。
 - 支持值为 `windows-x86-64`、`windows-aarch64`、`linux-x86-64`、`linux-aarch64`、`linux-riscv64`、
-  `android-x86-64`、`android-aarch64`、`web-wasm32`。
+  `macos-x86-64`、`macos-aarch64`、`android-x86-64`、`android-aarch64`、`web-wasm32`。
 - 省略时使用 `TargetPlatform.getNativePlatform()`。
 - `--target` 只设置 backend output platform，不改变 `-o` / `--output` 指向的 host build directory。
 - unsupported `--target` 在 API state mutation 和 compile task 创建前返回 usage error。

@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -106,13 +107,16 @@ public class ZigCcCompilerIncrementalIntegrationTest {
     private static @NotNull CCompileResult recompileAfterEntryTouch(@NotNull Path projectDir, @NotNull CProjectInfo projectInfo) throws IOException {
         var entryC = projectDir.resolve("entry.c");
         Files.writeString(entryC, Files.readString(entryC) + "\n/* incremental rebuild probe */\n");
-        var includeRoot = projectDir.resolve("include");
+        var includeRoot = new CProjectBuilder().resolveIncludeRoot(projectDir);
         var includeDirs = List.of(includeRoot.resolve("gdcc"), includeRoot.resolve("godot"));
-        var cFiles = List.of(
-                entryC,
-                includeRoot.resolve("godot/godot_binding.c"),
-                includeRoot.resolve("gdcc/minicoro.c"),
-                includeRoot.resolve("gdcc/gdcc_coroutine.c"));
+        // Mirror the runtime TU list from CProjectBuilder constants so a newly added runtime
+        // source (e.g. gdcc_hrx.c) can never be silently dropped from the incremental link.
+        var cFiles = new ArrayList<Path>();
+        cFiles.add(entryC);
+        cFiles.add(includeRoot.resolve(CProjectBuilder.GODOT_RUNTIME_SOURCE_PATH));
+        for (var runtimeSourcePath : CProjectBuilder.GDCC_RUNTIME_SOURCE_PATHS) {
+            cFiles.add(includeRoot.resolve(runtimeSourcePath));
+        }
         return new ZigCcCompiler().compile(projectDir, includeDirs, cFiles, outputBaseName(projectInfo),
                 projectInfo.getOptimizationLevel(), projectInfo.getTargetPlatform());
     }

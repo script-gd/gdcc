@@ -1,5 +1,6 @@
 package gd.script.gdcc.logger;
 
+import gd.script.gdcc.util.StringUtil;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
@@ -12,7 +13,6 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GdccSlf4jServiceProviderTest {
-    private static final Pattern ANSI_PATTERN = Pattern.compile("\\u001B\\[[;\\d]*m");
 
     @Test
     void shouldUseEmbeddedProviderAsDefault() {
@@ -40,7 +40,7 @@ class GdccSlf4jServiceProviderTest {
                 .filter(line -> !line.isBlank())
                 .toList();
         var firstLine = lines.getFirst();
-        var plainLine = ANSI_PATTERN.matcher(firstLine).replaceAll("");
+        var plainLine = StringUtil.stripAnsi(firstLine);
 
         assertTrue(Pattern.compile("^\\u001B\\[36m\\d{2}:\\d{2}:\\d{2}\\u001B\\[39m\\u001B\\[0m .*$").matcher(firstLine).matches());
         assertTrue(firstLine.contains("\u001B[33m[WARNING]\u001B[39m\u001B[0m"));

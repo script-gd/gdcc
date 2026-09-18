@@ -7,10 +7,13 @@ import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 import static java.time.Duration.ofNanos;
 
@@ -18,28 +21,37 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
     private static final String INCLUDE_RESOURCE_DIR = "include_451";
     private static final String PROJECT_INCLUDE_DIR_NAME = "include";
     private static final String SHARED_INCLUDE_DIR_NAME = "shared-include";
+    static final String SHARED_INCLUDE_ENV = "GDCC_SHARED_INCLUDE";
     private static final String GDCC_INCLUDE_DIR_NAME = "gdcc";
     private static final String GODOT_INCLUDE_DIR_NAME = "godot";
-    private static final String GODOT_RUNTIME_SOURCE_PATH = GODOT_INCLUDE_DIR_NAME + "/godot_binding.c";
-    /// GDCC-owned runtime translation units (coroutine support). Extracted with the rest of
-    /// the `gdcc/**` tree and compiled alongside `godot_binding.c`.
-    /// Contract: doc/gdcc_runtime_lib.md §Coroutine Runtime.
-    private static final List<String> GDCC_RUNTIME_SOURCE_PATHS = List.of(
+    /// Package-visible so incremental-build tests mirror the exact runtime TU list instead of
+    /// hardcoding a copy that silently drifts when runtime sources are added or removed.
+    static final String GODOT_RUNTIME_SOURCE_PATH = GODOT_INCLUDE_DIR_NAME + "/godot_binding.c";
+    /// GDCC-owned runtime translation units (coroutine + hot-reload thunk support). Extracted
+    /// with the rest of the `gdcc/**` tree and compiled alongside `godot_binding.c`.
+    /// Contract: doc/gdcc_runtime_lib.md §Coroutine Runtime, §HRX (gdcc_hrx).
+    static final List<String> GDCC_RUNTIME_SOURCE_PATHS = List.of(
             GDCC_INCLUDE_DIR_NAME + "/minicoro.c",
-            GDCC_INCLUDE_DIR_NAME + "/gdcc_coroutine.c"
+            GDCC_INCLUDE_DIR_NAME + "/gdcc_coroutine.c",
+            GDCC_INCLUDE_DIR_NAME + "/gdcc_hrx.c"
     );
 
     private CCompiler cCompiler;
     private boolean ignoreSharedInclude;
+    private final @NotNull Map<String, String> environment;
 
     public CProjectBuilder() {
-        this.cCompiler = new ZigCcCompiler();
-        this.ignoreSharedInclude = false;
+        this(new ZigCcCompiler(), System.getenv());
     }
 
     // For tests - allow injecting a fake/compiler wrapper
     public CProjectBuilder(@NotNull CCompiler cCompiler) {
-        this.cCompiler = cCompiler;
+        this(cCompiler, System.getenv());
+    }
+
+    CProjectBuilder(@NotNull CCompiler cCompiler, @NotNull Map<String, String> environment) {
+        this.cCompiler = Objects.requireNonNull(cCompiler, "cCompiler must not be null");
+        this.environment = Objects.requireNonNull(environment, "environment must not be null");
         this.ignoreSharedInclude = false;
     }
 
@@ -138,10 +150,31 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
         return new CBuildResult(compileResult, generatedFiles, timing);
     }
 
-    private @NotNull Path resolveIncludeRoot(@NotNull Path projectPath) {
+    @NotNull Path resolveIncludeRoot(@NotNull Path projectPath) {
+        return resolveIncludeRoot(projectPath, ignoreSharedInclude, environment);
+    }
+
+    static @NotNull Path resolveIncludeRoot(
+            @NotNull Path projectPath,
+            boolean ignoreSharedInclude,
+            @NotNull Map<String, String> environment
+    ) {
         var normalizedProjectPath = projectPath.toAbsolutePath().normalize();
         if (ignoreSharedInclude) {
             return normalizedProjectPath.resolve(PROJECT_INCLUDE_DIR_NAME);
+        }
+
+        var envIncludeValue = environment.get(SHARED_INCLUDE_ENV);
+        if (envIncludeValue != null && !envIncludeValue.isBlank()) {
+            try {
+                var envIncludeDir = Path.of(envIncludeValue).toAbsolutePath().normalize();
+                Files.createDirectories(envIncludeDir);
+                if (Files.isDirectory(envIncludeDir)) {
+                    return envIncludeDir;
+                }
+            } catch (IOException | InvalidPathException exception) {
+                // Fall back to the sibling/project-local include rule below.
+            }
         }
 
         var projectParent = normalizedProjectPath.getParent();
@@ -151,7 +184,7 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
 
         var sharedInclude = projectParent.resolve(SHARED_INCLUDE_DIR_NAME);
         if (Files.isDirectory(sharedInclude)) {
-            return sharedInclude;
+            return sharedInclude.toAbsolutePath().normalize();
         }
         return normalizedProjectPath.resolve(PROJECT_INCLUDE_DIR_NAME);
     }

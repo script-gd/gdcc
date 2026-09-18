@@ -865,6 +865,9 @@ class CConstructInsnGenTest {
         assertTrue(body.contains("u8\"utility\""), body);
         assertTrue(body.contains("u8\"print\""), body);
         assertTrue(body.contains("2648703342LL"), body);
+        // The creation site references the module-catalog identity struct (consumed only
+        // in thunk mode), named deterministically from the standalone identity.
+        assertTrue(body.contains("&gdcc_hrx_identity_sa_utility_global_print_"), body);
         assertFalse(body.contains("godot_new_Callable_with_Object_StringName("), body);
     }
 

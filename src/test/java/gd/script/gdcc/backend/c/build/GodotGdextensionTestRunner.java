@@ -627,11 +627,9 @@ public final class GodotGdextensionTestRunner {
 
     /// Returns the preferred dynamic-library suffix for the platform-specific artifact selection.
     private static @NotNull String librarySuffix(@NotNull TargetPlatform targetPlatform) {
-        return switch (targetPlatform) {
-            case WINDOWS_X86_64, WINDOWS_AARCH64 -> ".dll";
-            case LINUX_X86_64, LINUX_AARCH64, LINUX_RISCV64, ANDROID_X86_64, ANDROID_AARCH64 -> ".so";
-            case WEB_WASM32 -> ".wasm";
-        };
+        var fileName = targetPlatform.sharedLibraryFileName("x");
+        var dot = fileName.lastIndexOf('.');
+        return fileName.substring(dot);
     }
 
     private static @NotNull Map<String, String> collectScriptResourceIds(

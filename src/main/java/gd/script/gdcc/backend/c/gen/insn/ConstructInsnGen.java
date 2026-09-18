@@ -2,6 +2,8 @@ package gd.script.gdcc.backend.c.gen.insn;
 
 import gd.script.gdcc.backend.c.gen.CBodyBuilder;
 import gd.script.gdcc.backend.c.gen.CInsnGen;
+import gd.script.gdcc.backend.c.gen.CHrxIdentityCatalog;
+import gd.script.gdcc.backend.c.gen.StandaloneCallableSpecSupport;
 import gd.script.gdcc.enums.GdInstruction;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.lir.LirInstruction;
@@ -17,7 +19,6 @@ import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
 import gd.script.gdcc.lir.insn.ConstructionInstruction;
 import gd.script.gdcc.lir.insn.StandaloneCallableKind;
 import gd.script.gdcc.scope.ClassDef;
-import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.RefCountedStatus;
 import gd.script.gdcc.type.GdArrayType;
@@ -305,11 +306,15 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
             @NotNull String ownerName,
             @NotNull String callableName
     ) {
-        var spec = switch (kind) {
-            case UTILITY -> resolveUtilityStandaloneSpec(bodyBuilder, callableName);
-            case STATIC_GDCC -> resolveGdccStaticStandaloneSpec(bodyBuilder, ownerName, callableName);
-            case STATIC_ENGINE -> resolveEngineStaticStandaloneSpec(bodyBuilder, ownerName, callableName);
-        };
+        StandaloneCallableSpecSupport.StandaloneCallableSpec spec;
+        try {
+            spec = StandaloneCallableSpecSupport.resolve(bodyBuilder.classRegistry(), kind, ownerName, callableName);
+        } catch (IllegalStateException e) {
+            throw bodyBuilder.invalidInsn(e.getMessage());
+        }
+        // The trailing identity argument is consumed only in thunk (editor) mode; the
+        // symbol is defined at the top of entry.c by the module identity catalog.
+        var identitySymbol = CHrxIdentityCatalog.standaloneIdentitySymbol(kind, spec.ownerName(), spec.callableName());
         bodyBuilder.assignVar(
                 target,
                 bodyBuilder.valueOfExpr(
@@ -320,126 +325,12 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                                 + spec.utilityHash() + "LL, "
                                 + spec.argumentCount() + ", "
                                 + spec.vararg() + ", "
-                                + spec.returnsValue()
+                                + spec.returnsValue() + ", "
+                                + "&" + identitySymbol
                                 + ")",
                         resultVar.type()
                 )
         );
-    }
-
-    private @NotNull StandaloneCallableSpec resolveUtilityStandaloneSpec(
-            @NotNull CBodyBuilder bodyBuilder,
-            @NotNull String callableName
-    ) {
-        var utility = bodyBuilder.classRegistry().findUtilityFunction(callableName);
-        if (utility == null) {
-            throw bodyBuilder.invalidInsn(
-                    "construct_standalone_callable utility '" + callableName + "' is not registered"
-            );
-        }
-        return new StandaloneCallableSpec(
-                "",
-                utility.name(),
-                Integer.toUnsignedLong(utility.hash()),
-                utility.getParameterCount(),
-                utility.isVararg(),
-                !(utility.getReturnType() instanceof GdVoidType)
-        );
-    }
-
-    private @NotNull StandaloneCallableSpec resolveGdccStaticStandaloneSpec(
-            @NotNull CBodyBuilder bodyBuilder,
-            @NotNull String ownerName,
-            @NotNull String callableName
-    ) {
-        var startClass = bodyBuilder.classRegistry().resolveClassDefByName(ownerName);
-        if (startClass == null || !startClass.isGdccClass()) {
-            throw bodyBuilder.invalidInsn(
-                    "construct_standalone_callable static_gdcc owner '" + ownerName + "' is not a GDCC class"
-            );
-        }
-        var lookup = requireStaticFunctionInHierarchy(bodyBuilder, ownerName, callableName, "static_gdcc");
-        if (!lookup.ownerClass().isGdccClass()) {
-            throw bodyBuilder.invalidInsn(
-                    "construct_standalone_callable static_gdcc '" + ownerName
-                            + "." + callableName + "' is not a generated static function"
-            );
-        }
-        var function = requireStaticFunction(bodyBuilder, lookup.ownerClass(), callableName, "static_gdcc");
-        return new StandaloneCallableSpec(
-                lookup.ownerClass().getName(),
-                function.getName(),
-                0L,
-                function.getParameterCount(),
-                function.isVararg(),
-                !(function.getReturnType() instanceof GdVoidType)
-        );
-    }
-
-    private @NotNull StandaloneCallableSpec resolveEngineStaticStandaloneSpec(
-            @NotNull CBodyBuilder bodyBuilder,
-            @NotNull String ownerName,
-            @NotNull String callableName
-    ) {
-        var lookup = requireStaticFunctionInHierarchy(bodyBuilder, ownerName, callableName, "static_engine");
-        if (!(lookup.ownerClass() instanceof ExtensionGdClass engineClass)) {
-            throw bodyBuilder.invalidInsn(
-                    "construct_standalone_callable static_engine owner '" + ownerName + "' is not an engine class"
-            );
-        }
-        var function = requireStaticFunction(bodyBuilder, engineClass, callableName, "static_engine");
-        return new StandaloneCallableSpec(
-                engineClass.getName(),
-                function.getName(),
-                0L,
-                function.getParameterCount(),
-                function.isVararg(),
-                !(function.getReturnType() instanceof GdVoidType)
-        );
-    }
-
-    private @NotNull ClassRegistry.ClassStaticFunctionLookup requireStaticFunctionInHierarchy(
-            @NotNull CBodyBuilder bodyBuilder,
-            @NotNull String ownerName,
-            @NotNull String callableName,
-            @NotNull String kindToken
-    ) {
-        var lookup = bodyBuilder.classRegistry().findStaticFunctionInHierarchy(ownerName, callableName);
-        if (lookup == null) {
-            throw bodyBuilder.invalidInsn(
-                    "construct_standalone_callable " + kindToken + " '" + ownerName
-                            + "." + callableName + "' is not a generated static function"
-            );
-        }
-        return lookup;
-    }
-
-    private @NotNull FunctionDef requireStaticFunction(
-            @NotNull CBodyBuilder bodyBuilder,
-            @NotNull ClassDef classDef,
-            @NotNull String callableName,
-            @NotNull String kindToken
-    ) {
-        FunctionDef found = null;
-        for (var function : classDef.getFunctions()) {
-            if (!function.getName().equals(callableName) || !function.isStatic()) {
-                continue;
-            }
-            if (found != null) {
-                throw bodyBuilder.invalidInsn(
-                        "construct_standalone_callable " + kindToken + " '" + classDef.getName()
-                                + "." + callableName + "' is overloaded"
-                );
-            }
-            found = function;
-        }
-        if (found == null) {
-            throw bodyBuilder.invalidInsn(
-                    "construct_standalone_callable " + kindToken + " '" + classDef.getName()
-                            + "." + callableName + "' is not a generated static function"
-            );
-        }
-        return found;
     }
 
     private void emitConstructLambda(
@@ -560,7 +451,10 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                                 + helper.renderLambdaCallFuncName(clazz, lambda) + ", "
                                 + helper.renderLambdaIsValidFuncName(clazz, lambda) + ", "
                                 + helper.renderLambdaFreeFuncName(clazz, lambda) + ", "
-                                + helper.renderLambdaGetArgumentCountFuncName(clazz, lambda)
+                                + helper.renderLambdaGetArgumentCountFuncName(clazz, lambda) + ", "
+                                // Consumed only in thunk (editor) mode; defined at the
+                                // top of entry.c by the module identity catalog.
+                                + "&" + helper.renderLambdaHrxIdentitySymbol(clazz, lambda)
                                 + ")",
                         resultVar.type()
                 )
@@ -586,16 +480,6 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
 
     private @NotNull String escapeCString(@NotNull String value) {
         return StringUtil.escapeStringLiteral(value);
-    }
-
-    private record StandaloneCallableSpec(
-            @NotNull String ownerName,
-            @NotNull String callableName,
-            long utilityHash,
-            int argumentCount,
-            boolean vararg,
-            boolean returnsValue
-    ) {
     }
 
     private @NotNull List<CBodyBuilder.ValueRef> resolveConstructorArguments(@NotNull CBodyBuilder bodyBuilder,

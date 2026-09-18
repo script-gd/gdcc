@@ -123,10 +123,7 @@ public class CProjectBuilderIntegrationTest {
         var builder = new CProjectBuilder();
 
         builder.initProject(projectInfo);
-        var projectIncludeDir = tempDir.resolve("include");
-        var projectParent = tempDir.toAbsolutePath().normalize().getParent();
-        var sharedIncludeDir = projectParent == null ? tempDir.resolveSibling("shared-include") : projectParent.resolve("shared-include");
-        assertTrue(Files.exists(projectIncludeDir) || Files.exists(sharedIncludeDir));
+        assertTrue(Files.isDirectory(builder.resolveIncludeRoot(tempDir)));
 
         var codegen = new CCodegen();
         var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);

@@ -21,12 +21,11 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
     private boolean isLambda;
     private boolean isVararg;
     private boolean isHidden;
-    /// Stackful-coroutine marker (contract: `gdcc_low_ir.md` §Functions). Defaults to `false`;
-    /// like `entryBlockId` it is not part of the bulk constructors and is set via setter.
-    /// Serialized as the XML function attribute `is_coroutine` (missing ⇔ `false`). The backend
-    /// generates entry thunk + minicoro body + hidden state class only when true, and `await`
-    /// instructions may only appear inside such functions.
     private boolean isCoroutine;
+    /// Lambda-only hot-reload identity metadata (`LirLambdaMeta`; XML `<meta>` child element of
+    /// `<function>`, absent ⇔ `null`). Carries the stable source identity key and the normalized
+    /// call-site context descriptor consumed by the C backend's HRX rebind-table emission.
+    private @Nullable LirLambdaMeta lambdaMeta;
     private Map<String, String> annotations;
     private final List<LirParameterDef> parameters;
     private final Map<String, LirCaptureDef> captures;
@@ -178,6 +177,16 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
     /// function body suspends; the value is consumed by the C backend's coroutine codegen path.
     public void setCoroutine(boolean coroutine) {
         this.isCoroutine = coroutine;
+    }
+
+    /// Lambda-only hot-reload identity metadata (XML `<meta>` child element; absent ⇔ `null`).
+    /// Only meaningful for lambda functions; the backend refuses lambdas without it.
+    public @Nullable LirLambdaMeta getLambdaMeta() {
+        return lambdaMeta;
+    }
+
+    public void setLambdaMeta(@Nullable LirLambdaMeta lambdaMeta) {
+        this.lambdaMeta = lambdaMeta;
     }
 
     public @NotNull Map<String, String> getAnnotations() {

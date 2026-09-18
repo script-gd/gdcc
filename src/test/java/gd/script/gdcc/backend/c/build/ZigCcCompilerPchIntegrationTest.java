@@ -170,7 +170,8 @@ public class ZigCcCompilerPchIntegrationTest {
                 projectDir.resolve("entry.c"),
                 includeRoot.resolve("godot/godot_binding.c"),
                 includeRoot.resolve("gdcc/minicoro.c"),
-                includeRoot.resolve("gdcc/gdcc_coroutine.c"));
+                includeRoot.resolve("gdcc/gdcc_coroutine.c"),
+                includeRoot.resolve("gdcc/gdcc_hrx.c"));
         return newPchCompiler(cacheRoot).compile(projectDir, includeDirs, cFiles, outputBaseName(projectInfo),
                 projectInfo.getOptimizationLevel(), projectInfo.getTargetPlatform());
     }

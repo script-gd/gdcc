@@ -15,8 +15,10 @@ import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.lir.LirBasicBlock;
+import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.lir.LirLambdaMeta;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
@@ -24,17 +26,20 @@ import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
+import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralFloatInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
+import gd.script.gdcc.lir.insn.StandaloneCallableKind;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.lir.insn.VariantGetInsn;
 import gd.script.gdcc.lir.insn.VariantSetInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdccCoroStateType;
 import gd.script.gdcc.type.GdccForRangeIterType;
@@ -63,6 +68,8 @@ import java.util.regex.Pattern;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -2870,7 +2877,7 @@ public class CCodegenTest {
         );
         var childCreateInstanceBody = resolveCreateInstanceBody(cCode, "GDChildNode");
         var childConstructorBody = resolveClassConstructorBody(cCode, "GDChildNode");
-        var childDestructorBody = resolveClassDestructorBody(cCode, "GDChildNode");
+        var childDestructFieldsBody = resolveFunctionBodyByPrefix(cCode, "void GDChildNode_class_destruct_fields");
 
         assertContainsAll(
                 hCode,
@@ -2888,8 +2895,12 @@ public class CCodegenTest {
                 "GDChildNode_set_object_ptr(self, obj);"
         );
         assertContainsAll(childConstructorBody, "GDParentNode_class_constructor(&self->_super);");
-        assertContainsAll(childDestructorBody, "GDParentNode_class_destructor(&self->_super);");
-        assertContainsAll(cCode, "try_release_object(gdcc_GDParentNode_fat_ptr_live_object(self->peer), self->peer.instance_id);");
+        // Field destruction recurses through the unguarded destruct_fields chain.
+        assertContainsAll(childDestructFieldsBody, "GDParentNode_class_destruct_fields(&self->_super);");
+        // Object field teardown resolves the target through ObjectDB (never the cached
+        // wrapper): the engine frees wrappers during a hot-reload bulk clear while the Godot
+        // objects stay alive.
+        assertContainsAll(cCode, "try_release_object(gdcc_object_live_ptr(self->peer.instance_id), self->peer.instance_id);");
 
         assertEquals("Node", resolveConstructTarget(cCode, "GDParentNode"));
         assertEquals("Node", resolveConstructTarget(cCode, "GDChildNode"));
@@ -2897,6 +2908,587 @@ public class CCodegenTest {
                 "GDExtensionObjectPtr\\s+GDChildNode_class_create_instance\\([^)]*\\)\\s*\\{\\s*GDExtensionObjectPtr obj = godot_classdb_construct_object2\\(GD_STATIC_SN\\(u8\"GDParentNode\"\\)\\);",
                 Pattern.DOTALL);
         assertFalse(directParentConstructPattern.matcher(cCode).find());
+    }
+
+    /// free_instance must re-enter field destruction when the PREDELETE path never ran
+    /// (the engine reload path calls free_instance WITHOUT PREDELETE), while the normal
+    /// PREDELETE-then-free sequence must still destruct exactly once. This pins the guard
+    /// layout: the root-only `_gdcc_destructed` flag, the guarded `<C>_class_destructor`
+    /// entry, and the unguarded `<C>_class_destruct_fields` chain — with destroyable fields
+    /// on BOTH base and derived classes so a flag-set truncation of the parent segment fails
+    /// here. Object field teardown must resolve targets through ObjectDB
+    /// (`gdcc_object_live_ptr`), never the cached wrapper — the engine frees GDCC wrappers
+    /// during a bulk reload clear while the referenced Godot objects stay alive.
+    @Test
+    public void freeInstancePerformsExactlyOnceGuardedFullDestruction() throws Exception {
+        var parentClass = new LirClassDef("GDGuardParent", "Node");
+        parentClass.addProperty(new LirPropertyDef("base_text", GdStringType.STRING));
+
+        var childClass = new LirClassDef("GDGuardChild", "GDGuardParent");
+        childClass.addProperty(new LirPropertyDef("own_text", GdStringType.STRING));
+        childClass.addProperty(new LirPropertyDef("peer", new GdObjectType("GDGuardParent")));
+        childClass.addProperty(new LirPropertyDef("plain_int", GdIntType.INT));
+
+        var module = new LirModule("destruction_guard_module", List.of(parentClass, childClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
+
+        // The flag lives only in the ROOT wrapper segment; the derived struct embeds the
+        // parent by value and must not repeat it.
+        var parentStructBody = resolveFunctionBodyByPrefix(hCode, "struct GDGuardParent {");
+        var childStructBody = resolveFunctionBodyByPrefix(hCode, "struct GDGuardChild {");
+        assertContainsAll(parentStructBody, "GDExtensionBool _gdcc_destructed;");
+        assertFalse(childStructBody.contains("_gdcc_destructed"), childStructBody);
+
+        // Guarded entry: the only place the flag is tested and set; reaches the root flag
+        // through the wrapper `_super` chain for the derived class.
+        var childDestructorBody = resolveClassDestructorBody(cCode, "GDGuardChild");
+        assertOrdered(
+                childDestructorBody,
+                "if (self == NULL)",
+                "if (self->_super._gdcc_destructed)",
+                "self->_super._gdcc_destructed = true;",
+                "GDGuardChild_class_destruct_fields(self);"
+        );
+        var rootDestructorBody = resolveClassDestructorBody(cCode, "GDGuardParent");
+        assertOrdered(
+                rootDestructorBody,
+                "if (self == NULL)",
+                "if (self->_gdcc_destructed)",
+                "self->_gdcc_destructed = true;",
+                "GDGuardParent_class_destruct_fields(self);"
+        );
+
+        // Unguarded chain: destroys own fields, then recurses through the parent's CHAIN
+        // function (never the guarded entry); no flag access anywhere in the chain. Object
+        // fields go through ObjectDB — the cached wrapper is forbidden in teardown.
+        var childDestructFieldsBody = resolveFunctionBodyByPrefix(cCode, "void GDGuardChild_class_destruct_fields");
+        assertContainsAll(
+                childDestructFieldsBody,
+                "godot_String_destroy(&(self->own_text));",
+                "try_release_object(gdcc_object_live_ptr(self->peer.instance_id), self->peer.instance_id);",
+                "GDGuardParent_class_destruct_fields(&self->_super);"
+        );
+        assertFalse(childDestructFieldsBody.contains("_gdcc_destructed"), childDestructFieldsBody);
+        assertFalse(childDestructFieldsBody.contains("GDGuardParent_class_destructor("), childDestructFieldsBody);
+        assertFalse(childDestructFieldsBody.contains("_fat_ptr_live_object(self->"), childDestructFieldsBody);
+        var parentDestructFieldsBody = resolveFunctionBodyByPrefix(cCode, "void GDGuardParent_class_destruct_fields");
+        assertContainsAll(parentDestructFieldsBody, "godot_String_destroy(&(self->base_text));");
+        assertFalse(parentDestructFieldsBody.contains("_gdcc_destructed"), parentDestructFieldsBody);
+
+        // free_instance funnels into the guarded entry before releasing the wrapper.
+        var childFreeBody = resolveFunctionBodyByPrefix(cCode, "void GDGuardChild_class_free_instance");
+        assertOrdered(
+                childFreeBody,
+                "if (p_instance == NULL)",
+                "if (!self->_super._gdcc_destructed)",
+                "GDGuardChild_class_destructor(self);",
+                "godot_mem_free(self);"
+        );
+
+        // create_instance clears the flag explicitly (godot_mem_alloc does not zero) BEFORE
+        // the instance is attached — the engine cannot reach free_instance for this wrapper
+        // before set_instance, so the guard is never read uninitialized.
+        var childCreateBody = resolveCreateInstanceBody(cCode, "GDGuardChild");
+        assertOrdered(
+                childCreateBody,
+                "self->_super._gdcc_destructed = false;",
+                "godot_object_set_instance("
+        );
+
+        // PREDELETE keeps funneling through the same guarded entry.
+        var childNotificationBody = resolveFunctionBodyByPrefix(cCode, "void GDGuardChild_class_notification");
+        assertContainsAll(childNotificationBody, "GDGuardChild_class_destructor(self);");
+    }
+
+    /// Every creatable class must supply recreate_instance_func (Godot disables reload for
+    /// the whole extension otherwise). The recreate MUST return the wrapper (the engine
+    /// assigns it directly to `_extension_instance`) and rebuild ONLY extension-side state:
+    /// no native construction, no object_set_instance, no POSTINITIALIZE, no
+    /// constructor/`_init` — property state is restored by the engine through setters
+    /// afterwards; only initializers are replayed (base-first) through
+    /// `<C>_class_init_fields`.
+    @Test
+    public void recreateInstanceRebuildsWrapperStateWithoutTouchingGodotObject() throws Exception {
+        var parentClass = new LirClassDef("GDRecreateParent", "Node");
+        parentClass.addProperty(new LirPropertyDef("base_text", GdStringType.STRING));
+
+        var childClass = new LirClassDef("GDRecreateChild", "GDRecreateParent");
+        childClass.addProperty(new LirPropertyDef("own_text", GdStringType.STRING));
+
+        var module = new LirModule("recreate_instance_module", List.of(parentClass, childClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+
+        // Creation info must wire recreate for every class (engine-mandated for reloadable).
+        assertContainsAll(
+                cCode,
+                "creation_info.recreate_instance_func = GDRecreateParent_class_recreate_instance;",
+                "creation_info.recreate_instance_func = GDRecreateChild_class_recreate_instance;"
+        );
+
+        var recreateBody = resolveFunctionBodyByPrefix(cCode,
+                "GDExtensionClassInstancePtr GDRecreateChild_class_recreate_instance");
+        assertOrdered(
+                recreateBody,
+                "GDRecreateChild* self = godot_mem_alloc(sizeof(GDRecreateChild));",
+                // OOM must bail out with NULL (the engine degrades gracefully on recreate
+                // failure) instead of dereferencing the unallocated wrapper.
+                "if (self == NULL)",
+                "return NULL;",
+                "GDRecreateChild_set_object_ptr(self, p_object);",
+                "self->_super._gdcc_destructed = false;",
+                "godot_object_set_instance_binding(p_object, class_library, self, &GDRecreateChild_class_binding_callbacks);",
+                "GDRecreateChild_class_init_fields(self);",
+                "return self;"
+        );
+        // Forbidden on the recreate path: the Godot object survived the reload.
+        assertFalse(recreateBody.contains("classdb_construct_object2"), recreateBody);
+        assertFalse(recreateBody.contains("godot_object_set_instance("), recreateBody);
+        assertFalse(recreateBody.contains("POSTINITIALIZE"), recreateBody);
+        assertFalse(recreateBody.contains("GDRecreateChild_class_constructor"), recreateBody);
+        assertFalse(recreateBody.contains("__init("), recreateBody);
+        assertFalse(recreateBody.contains("gdcc_ref_counted_init_raw("), recreateBody);
+
+        // init_fields replays initializers BASE-FIRST (parent segment first), never `_init`.
+        var initFieldsBody = resolveFunctionBodyByPrefix(cCode, "void GDRecreateChild_class_init_fields");
+        assertOrdered(
+                initFieldsBody,
+                "GDRecreateParent_class_init_fields(&self->_super);",
+                "GDRecreateChild_class_apply_property_init_own_text(self);"
+        );
+        assertFalse(initFieldsBody.contains("__init("), initFieldsBody);
+        assertFalse(initFieldsBody.contains("_class_constructor"), initFieldsBody);
+        var parentInitFieldsBody = resolveFunctionBodyByPrefix(cCode, "void GDRecreateParent_class_init_fields");
+        assertContainsAll(parentInitFieldsBody, "GDRecreateParent_class_apply_property_init_base_text(self);");
+    }
+
+    /// deinitialize must destroy static backing variables FIRST (the normal-exit path does
+    /// not clear `_extension` when a class is unregistered, so a static-held instance
+    /// released after unregistration would destruct through a dangling pointer), then
+    /// unregister every extension class — Godot rejects re-registration of a class that was
+    /// never unregistered, and rejects unregistering a base while derived extension classes
+    /// still inherit from it — and only then tear down the runtime registries. During a
+    /// reload the engine runs free_instance inside the unregistration calls, so field
+    /// destruction must never depend on static backing (already torn down), while the
+    /// registries stay alive until after the unregistration section.
+    @Test
+    public void deinitializeUnregistersClassesInStrictReverseRegistrationOrder() throws Exception {
+        var rootClass = new LirClassDef("GDUnregRoot", "Node");
+        // Abstract classes are still registered (is_abstract), so they must be unregistered too.
+        rootClass.setAbstract(true);
+        var midClass = new LirClassDef("GDUnregMid", "GDUnregRoot");
+        var leafClass = new LirClassDef("GDUnregLeaf", "GDUnregMid");
+        // A destroyable static forces a static-deinitialize section to anchor against.
+        leafClass.addProperty(staticProperty("label", GdStringType.STRING));
+        // Deliberately derived-first: `module.classDefs` is NOT inheritance-ordered, so this
+        // fixture fails if the template ever unregisters along raw module order instead of
+        // the inheritance-topology order.
+        var module = new LirModule("unregister_order_module", List.of(leafClass, midClass, rootClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+        var initializeBody = resolveFunctionBodyByPrefix(cCode, "void initialize(void* userdata");
+        var deinitializeBody = resolveFunctionBodyByPrefix(cCode, "void deinitialize(void* userdata");
+
+        // Registration runs base-before-derived (class name + parent name pairs are unique
+        // anchors within the registration blocks).
+        assertOrdered(
+                initializeBody,
+                "GD_STATIC_SN(u8\"GDUnregRoot\"), GD_STATIC_SN(u8\"Node\")",
+                "GD_STATIC_SN(u8\"GDUnregMid\"), GD_STATIC_SN(u8\"GDUnregRoot\")",
+                "GD_STATIC_SN(u8\"GDUnregLeaf\"), GD_STATIC_SN(u8\"GDUnregMid\")"
+        );
+
+        // Unregistration is the strict mirror: derived before base. Static backing is torn
+        // down FIRST (on the normal-exit path the engine does not clear `_extension` during
+        // unregistration, so a static-held instance released after unregistration would
+        // destruct through a dangling pointer), then the unregistration section, then the
+        // runtime registries.
+        assertOrdered(
+                deinitializeBody,
+                "Unloading unregister_order_module...",
+                "gdcc_static_GDUnregLeaf_label",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"GDUnregLeaf\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"GDUnregMid\"));",
+                "godot_classdb_unregister_extension_class(class_library, GD_STATIC_SN(u8\"GDUnregRoot\"));",
+                "gdcc_sn_registry_destroy_all();",
+                "gdcc_s_registry_destroy_all();",
+                "gdcc_standalone_callable_registry_destroy_all();"
+        );
+        assertEquals(3, countOccurrences(deinitializeBody, "godot_classdb_unregister_extension_class("),
+                "every registered user class must be unregistered exactly once");
+        // Coroutine tracking is emitted only for modules containing coroutine functions:
+        // a module without them never emits the bulk cancel (nor the coroutine runtime
+        // include), and never sets the hot-reload gate in initialize either.
+        assertFalse(deinitializeBody.contains("gdcc_coro_cancel_all"), deinitializeBody);
+        assertFalse(initializeBody.contains("gdcc_coro_set_hot_reload_active"), initializeBody);
+    }
+
+    /// The module-level Callable identity catalog — per-extension anchor token,
+    /// per-lambda/standalone identity structs (stable `impl_key` + canonical schema
+    /// descriptor + 128-bit fingerprint + data argument count), and the rebind table
+    /// consumed by the next library generation. initialize() must freeze the dispatch mode
+    /// before any class registration can construct a Callable, and deinitialize() must run
+    /// the hub invalidation as the LAST teardown step.
+    @Test
+    public void hrxIdentityCatalogAndRebindTableAreEmittedForLambdasAndStandalones() throws Exception {
+        var clazz = new LirClassDef("HrxWorker", "Node");
+        var lambda = newFunction("_lambda_0", GdIntType.INT);
+        lambda.setLambda(true);
+        lambda.setHidden(true);
+        lambda.setStatic(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("HrxWorker::run#0", "call(base=sig_a, method=connect, arg=0)"));
+        lambda.addCapture(new LirCaptureDef("seed", GdIntType.INT, lambda));
+        clazz.addFunction(lambda);
+        var user = newFunction("make", GdVoidType.VOID);
+        user.createAndAddVariable("cb", new GdCallableType());
+        entry(user).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb", StandaloneCallableKind.UTILITY, "", "print"));
+        entry(user).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(user);
+        var module = new LirModule("hrx_catalog_module", List.of(clazz));
+
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+        var initializeBody = resolveFunctionBodyByPrefix(cCode, "void initialize(void* userdata");
+        var deinitializeBody = resolveFunctionBodyByPrefix(cCode, "void deinitialize(void* userdata");
+
+        // Anchor token: per-extension 64-bit constant, defined once.
+        assertContainsAll(cCode, "#define GDCC_HRX_ANCHOR_TOKEN UINT64_C(0x");
+        assertEquals(1, countOccurrences(cCode, "#define GDCC_HRX_ANCHOR_TOKEN"), cCode);
+
+        // Lambda identity: key + schema descriptor + fingerprint + argument count, with the
+        // rebind table row pointing at the generated per-lambda functions.
+        assertContainsAll(
+                cCode,
+                "static const unsigned char HrxWorker__lambda_0_hrx_identity_schema[] = {",
+                ".impl_key = u8\"HrxWorker::run#0\"",
+                ".argument_count = 0",
+                ".callsite_context = u8\"call(base=sig_a, method=connect, arg=0)\"",
+                "{ &HrxWorker__lambda_0_hrx_identity, HrxWorker__lambda_0_call, HrxWorker__lambda_0_free, HrxWorker__lambda_0_is_valid }"
+        );
+        // Standalone identity: interning key + shared runtime impl + always-NULL destroy, and
+        // no call-site context (standalone identities never carry one).
+        assertContainsAll(
+                cCode,
+                ".impl_key = u8\"standalone:utility::print\"",
+                "gdcc_standalone_callable_call, NULL, gdcc_standalone_callable_is_valid"
+        );
+        var standaloneIdentityStart = cCode.indexOf("gdcc_hrx_identity gdcc_hrx_identity_sa_utility");
+        assertTrue(standaloneIdentityStart >= 0, cCode);
+        var standaloneIdentityInit = cCode.substring(
+                standaloneIdentityStart,
+                cCode.indexOf("};", standaloneIdentityStart)
+        );
+        assertTrue(standaloneIdentityInit.contains(".callsite_context = NULL"), standaloneIdentityInit);
+        assertEquals(2, countOccurrences(cCode, "{ &"), "exactly two rebind rows expected");
+
+        // Mode freeze happens before any class registration (no Callable may predate it).
+        assertOrdered(
+                initializeBody,
+                "gdcc_init();",
+                "gdcc_hrx_initialize(class_library, GDCC_HRX_ANCHOR_TOKEN,",
+                "gdcc_hrx_rebind_table, 2);",
+                "godot_classdb_register_extension_class5("
+        );
+        // Hub invalidation is the LAST teardown step: after the runtime registries.
+        assertOrdered(
+                deinitializeBody,
+                "gdcc_standalone_callable_registry_destroy_all();",
+                "gdcc_hrx_deinitialize();"
+        );
+    }
+
+    /// Catalog canonicalization: the same inherited static referenced through a subclass
+    /// AND through its declaring class is ONE identity — one impl_key (resolved owner), one
+    /// C symbol, one rebind row. Raw-owner keys would emit duplicate symbol definitions.
+    @Test
+    public void hrxIdentityCatalogDedupesInheritedStandaloneToTheDeclaringOwner() throws Exception {
+        var parentClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var build = newFunction("build", GdVoidType.VOID);
+        build.setStatic(true);
+        parentClass.addFunction(build);
+        var childClass = new LirClassDef("WorkerChild", "Worker", false, false, Map.of(), List.of(), List.of(), List.of());
+
+        var viaChild = newFunction("via_child", GdVoidType.VOID);
+        viaChild.createAndAddVariable("cb", new GdCallableType());
+        entry(viaChild).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb", StandaloneCallableKind.STATIC_GDCC, "WorkerChild", "build"));
+        entry(viaChild).appendInstruction(new ReturnInsn(null));
+        childClass.addFunction(viaChild);
+
+        var viaParent = newFunction("via_parent", GdVoidType.VOID);
+        viaParent.createAndAddVariable("cb", new GdCallableType());
+        entry(viaParent).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb", StandaloneCallableKind.STATIC_GDCC, "Worker", "build"));
+        entry(viaParent).appendInstruction(new ReturnInsn(null));
+        parentClass.addFunction(viaParent);
+
+        var module = new LirModule("hrx_canonical_module", List.of(parentClass, childClass));
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+        assertEquals(1, countOccurrences(cCode, ".impl_key = u8\"standalone:static_gdcc:Worker:build\""),
+                "exactly one canonical identity may be emitted: " + cCode);
+        assertFalse(cCode.contains("standalone:static_gdcc:WorkerChild:build"),
+                "the raw subclass owner must never reach an identity: " + cCode);
+        assertEquals(1, countOccurrences(cCode, "static const gdcc_hrx_identity gdcc_hrx_identity_sa_static_gdcc_Worker_build"),
+                "the canonical symbol must be defined exactly once: " + cCode);
+        assertEquals(1, countOccurrences(cCode, "{ &"), "exactly one rebind row expected: " + cCode);
+    }
+
+    /// A module without any custom Callable still freezes the mode (coroutine
+    /// signal waiters may exist), but passes an empty table instead of emitting one.
+    @Test
+    public void hrxInitializePassesNullTableWhenNoCustomCallablesExist() throws Exception {
+        var clazz = new LirClassDef("HrxEmpty", "Node");
+        var module = new LirModule("hrx_empty_module", List.of(clazz));
+
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+        var initializeBody = resolveFunctionBodyByPrefix(cCode, "void initialize(void* userdata");
+        assertOrdered(
+                initializeBody,
+                "gdcc_hrx_initialize(class_library, GDCC_HRX_ANCHOR_TOKEN,",
+                "NULL, 0);"
+        );
+        assertFalse(cCode.contains("gdcc_hrx_rebind_table"), cCode);
+        assertFalse(cCode.contains("_hrx_identity_schema"), cCode);
+    }
+
+    /// Schema semantics: the canonical descriptor tracks the capture/signature LAYOUT
+    /// (never the body), so two lambdas with different capture types must produce different
+    /// descriptors (reload fails closed) while identical layouts share byte-identical
+    /// descriptors (reload rebinds). This is the safety property behind "never mis-destroy".
+    @Test
+    public void lambdaSchemaDescriptorShouldTrackCaptureAndSignatureLayout() throws java.io.IOException {
+        var intCapture = buildSchemaProbeLambda(GdIntType.INT, GdIntType.INT);
+        var stringCapture = buildSchemaProbeLambda(GdStringType.STRING, GdIntType.INT);
+        var intCaptureAgain = buildSchemaProbeLambda(GdIntType.INT, GdIntType.INT);
+        var differentReturn = buildSchemaProbeLambda(GdIntType.INT, GdStringType.STRING);
+
+        assertNotEquals(
+                intCapture.identities().getFirst().schemaBytes(),
+                stringCapture.identities().getFirst().schemaBytes(),
+                "capture layout must feed the descriptor"
+        );
+        assertEquals(
+                intCapture.identities().getFirst().schemaBytes(),
+                intCaptureAgain.identities().getFirst().schemaBytes(),
+                "identical layouts must share the descriptor (rebind-compatible)"
+        );
+        assertNotEquals(
+                intCapture.identities().getFirst().schemaBytes(),
+                differentReturn.identities().getFirst().schemaBytes(),
+                "the signature (return type) must feed the descriptor"
+        );
+    }
+
+    /// ABI contract: the Java schema-descriptor prefix must derive from the SAME version the
+    /// C runtime guards on — otherwise bumping only the C macro would leave descriptors
+    /// matching and silently void the abi_version guard. Pin both sides here: the C header
+    /// macro must equal the Java constant used for the descriptor prefix, and the hub version
+    /// must NOT move (a hub bump would orphan the entire old registry).
+    @Test
+    public void hrxAbiVersionConstantMatchesTheCHeaderMacro() throws Exception {
+        var resource = "include_451/gdcc/gdcc_hrx.h";
+        String header;
+        try (var in = CCodegenTest.class.getClassLoader().getResourceAsStream(resource)) {
+            assertNotNull(in, resource + " must be on the classpath");
+            header = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        var abiMatcher = java.util.regex.Pattern
+                .compile("#define GDCC_HRX_ABI_VERSION (\\d+)u")
+                .matcher(header);
+        assertTrue(abiMatcher.find(), "GDCC_HRX_ABI_VERSION macro not found in gdcc_hrx.h");
+        assertEquals(
+                CHrxIdentityCatalog.HRX_ABI_VERSION,
+                Integer.parseInt(abiMatcher.group(1)),
+                "Java HRX_ABI_VERSION must equal the C GDCC_HRX_ABI_VERSION"
+        );
+        var hubMatcher = java.util.regex.Pattern
+                .compile("#define GDCC_HRX_HUB_VERSION (\\d+)u")
+                .matcher(header);
+        assertTrue(hubMatcher.find(), "GDCC_HRX_HUB_VERSION macro not found in gdcc_hrx.h");
+        assertEquals(3, Integer.parseInt(hubMatcher.group(1)), "HUB_VERSION must stay 3 (hub layout unchanged)");
+        // The emitted descriptor must carry the same version prefix, so the descriptor gate and
+        // the version guard can never drift apart.
+        var catalog = buildSchemaProbeLambda(GdIntType.INT, GdIntType.INT);
+        var descBytes = catalog.identities().getFirst().schemaBytes();
+        var desc = new String(
+                descBytes.stream().map(b -> (char) b.intValue()).collect(
+                        StringBuilder::new, StringBuilder::append, StringBuilder::append
+                ).toString().getBytes(java.nio.charset.StandardCharsets.ISO_8859_1),
+                java.nio.charset.StandardCharsets.ISO_8859_1
+        );
+        assertTrue(desc.startsWith("gdcc-hrx:" + CHrxIdentityCatalog.HRX_ABI_VERSION + ";"), desc);
+    }
+
+    /// Catalog plumbing: the LIR call-site context reaches the emitted identity as a C
+    /// string literal, while standalone identities and context-less lambdas emit NULL
+    /// (NULL-safe equality treats NULL==NULL as a match, so standalone rebinding stays
+    /// unaffected).
+    @Test
+    public void hrxIdentityEmissionCarriesCallsiteContextOrNull() throws Exception {
+        var clazz = new LirClassDef("HrxCtx", "Node");
+        var withCtx = newFunction("_lambda_0", GdIntType.INT);
+        withCtx.setLambda(true);
+        withCtx.setHidden(true);
+        withCtx.setStatic(true);
+        withCtx.setLambdaMeta(new LirLambdaMeta("HrxCtx::run#0", "call(base=self.sig_a, method=connect, arg=0)"));
+        clazz.addFunction(withCtx);
+        var noCtx = newFunction("_lambda_1", GdIntType.INT);
+        noCtx.setLambda(true);
+        noCtx.setHidden(true);
+        noCtx.setStatic(true);
+        noCtx.setLambdaMeta(new LirLambdaMeta("HrxCtx::run#1", null));
+        clazz.addFunction(noCtx);
+        var module = new LirModule("hrx_ctx_module", List.of(clazz));
+
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+        List<GeneratedFile> files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+        assertContainsAll(
+                cCode,
+                ".impl_key = u8\"HrxCtx::run#0\"",
+                ".callsite_context = u8\"call(base=self.sig_a, method=connect, arg=0)\""
+        );
+        var noCtxIdentityStart = cCode.indexOf("HrxCtx__lambda_1_hrx_identity = {");
+        assertTrue(noCtxIdentityStart >= 0, cCode);
+        var noCtxIdentityInit = cCode.substring(
+                noCtxIdentityStart,
+                cCode.indexOf("};", noCtxIdentityStart)
+        );
+        assertTrue(noCtxIdentityInit.contains(".callsite_context = NULL"), noCtxIdentityInit);
+    }
+
+    private static CHrxIdentityCatalog buildSchemaProbeLambda(GdType captureType, GdType returnType) throws java.io.IOException {
+        var clazz = new LirClassDef("HrxSchema", "Node");
+        var lambda = newFunction("_lambda_0", returnType);
+        lambda.setLambda(true);
+        lambda.setHidden(true);
+        lambda.setStatic(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("HrxSchema::run#0", null));
+        lambda.addCapture(new LirCaptureDef("seed", captureType, lambda));
+        clazz.addFunction(lambda);
+        var module = new LirModule("hrx_schema_module", List.of(clazz));
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, new ClassRegistry(api));
+        // Catalog-level check (no template rendering): capture/signature drive the descriptor.
+        return CHrxIdentityCatalog.collect(module, ctx, new CGenHelper(ctx, module.getClassDefs()));
+    }
+
+    /// Catalog shape: lambdas carry the call-site context through the catalog into the
+    /// emitted identity, while standalone identities stay NULL — the runtime's NULL-safe gate
+    /// must never confuse the two.
+    @Test
+    public void hrxCatalogCarriesCallsiteContextForLambdasAndNullForStandalones() throws java.io.IOException {
+        var clazz = new LirClassDef("HrxCtx", "Node");
+        var lambda = newFunction("_lambda_0", GdVoidType.VOID);
+        lambda.setLambda(true);
+        lambda.setHidden(true);
+        lambda.setStatic(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("HrxCtx::arm#0", "call(base=sig_a, method=connect, arg=0)"));
+        clazz.addFunction(lambda);
+        var user = newFunction("arm", GdVoidType.VOID);
+        user.createAndAddVariable("cb", new GdCallableType());
+        entry(user).appendInstruction(new ConstructStandaloneCallableInsn(
+                "cb", StandaloneCallableKind.UTILITY, "", "print"));
+        entry(user).appendInstruction(new ReturnInsn(null));
+        clazz.addFunction(user);
+        var module = new LirModule("hrx_ctx_module", List.of(clazz));
+
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, new ClassRegistry(api));
+        var catalog = CHrxIdentityCatalog.collect(module, ctx, new CGenHelper(ctx, module.getClassDefs()));
+
+        var lambdaIdentity = catalog.identities().stream()
+                .filter(identity -> identity.symbol().contains("_lambda_0"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("call(base=sig_a, method=connect, arg=0)", lambdaIdentity.callSiteContextCString());
+        var standaloneIdentity = catalog.identities().stream()
+                .filter(identity -> identity.symbol().contains("_sa_"))
+                .findFirst()
+                .orElseThrow();
+        assertNull(standaloneIdentity.callSiteContextCString());
+    }
+
+    /// A lambda without a frontend-published source identity key must fail the build
+    /// loudly instead of silently producing an unrebindable Callable.
+    @Test
+    public void keylessLambdaShouldFailCodegenFast() throws java.io.IOException {
+        var clazz = new LirClassDef("HrxKeyless", "Node");
+        var lambda = newFunction("_lambda_0", GdIntType.INT);
+        lambda.setLambda(true);
+        lambda.setHidden(true);
+        lambda.setStatic(true);
+        clazz.addFunction(lambda);
+        var module = new LirModule("hrx_keyless_module", List.of(clazz));
+
+        var api = ExtensionApiLoader.loadDefault();
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+        var ex = assertThrows(IllegalStateException.class, codegen::generate);
+        assertTrue(ex.getMessage().contains("source identity key"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("HrxKeyless._lambda_0"), ex.getMessage());
     }
 
     @Test
@@ -2924,6 +3516,13 @@ public class CCodegenTest {
         var leafCreateInstanceBody = resolveCreateInstanceBody(cCode, "GDLeafNode");
         assertEquals(1, countOccurrences(leafCreateInstanceBody, "godot_object_set_instance("));
         assertEquals(1, countOccurrences(leafCreateInstanceBody, "godot_object_set_instance_binding("));
+
+        // Root-flag access walks one `_super` hop per wrapper level (three-level chain).
+        assertContainsAll(leafCreateInstanceBody, "self->_super._super._gdcc_destructed = false;");
+        var leafFreeBody = resolveFunctionBodyByPrefix(cCode, "void GDLeafNode_class_free_instance");
+        assertContainsAll(leafFreeBody, "if (!self->_super._super._gdcc_destructed)");
+        var leafDestructorBody = resolveClassDestructorBody(cCode, "GDLeafNode");
+        assertContainsAll(leafDestructorBody, "self->_super._super._gdcc_destructed = true;");
     }
 
     @Test
@@ -3507,8 +4106,8 @@ public class CCodegenTest {
         // deinitialize(): YES -> release_object, UNKNOWN -> try_release_object with cached id,
         // NO -> no cleanup statement at all.
         var deinitializeSection = extractSection(cCode, "void deinitialize(void* userdata, GDExtensionInitializationLevel p_level)");
-        assertTrue(deinitializeSection.contains("release_object(gdcc_Worker_fat_ptr_live_object(gdcc_static_Worker_peer));"), deinitializeSection);
-        assertTrue(deinitializeSection.contains("try_release_object(gdcc_Object_fat_ptr_live_object(gdcc_static_Worker_target), gdcc_static_Worker_target.instance_id);"), deinitializeSection);
+        assertTrue(deinitializeSection.contains("release_object(gdcc_object_live_ptr(gdcc_static_Worker_peer.instance_id));"), deinitializeSection);
+        assertTrue(deinitializeSection.contains("try_release_object(gdcc_object_live_ptr(gdcc_static_Worker_target.instance_id), gdcc_static_Worker_target.instance_id);"), deinitializeSection);
         assertFalse(deinitializeSection.contains("gdcc_static_Worker_node"), deinitializeSection);
     }
 
