@@ -15,16 +15,17 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Zig-gated pure-C smoke tests for the static String/StringName same-image reinit hardening
-/// (`gdcc/gdcc_string.h`, `gdcc/gdcc_string_name.h`; lifecycle contract:
-/// doc/module_impl/backend/hot_reload_implementation.md §4).
+/// Zig-gated pure-C smoke tests for generation-gated String/StringName reconstruction after
+/// registry `destroy_all` (`gdcc/gdcc_string.h`, `gdcc/gdcc_string_name.h`; contracts:
+/// `gdcc_runtime_lib.md` §Static String/StringName Registry and
+/// `hot_reload_implementation.md` §4.1).
 /// Each probe TU includes the two headers directly, making the probe itself the registry-owning TU
 /// (mirroring the generated entry TU), and runs initialize -> destroy_all -> initialize within one
-/// process — the exact macOS same-image reload shape where function-local statics survive while the
-/// registry is emptied. A fake Godot engine behind the GDExtension function-pointer table provides
-/// counting String/StringName storage, so construction/destruction/hash invocations are asserted
-/// exactly; destructors also poison the dead storage so a stuck init gate would fail loudly instead
-/// of silently passing. Skipped via assumption when no zig is on the machine.
+/// process — the same-image reload shape where function-local statics survive while the registry is
+/// emptied. A fake Godot engine behind the GDExtension function-pointer table provides counting
+/// String/StringName storage, so construction/destruction/hash invocations are asserted exactly;
+/// destructors also poison the dead storage so a stuck generation gate would fail loudly instead of
+/// silently passing. Skipped via assumption when no zig is on the machine.
 class GdccStaticStringRuntimeSmokeTest {
     private static final Path GODOT_INCLUDE_DIR = Path.of("src/main/c/codegen/include_451/godot").toAbsolutePath().normalize();
     private static final Path GDCC_INCLUDE_DIR = Path.of("src/main/c/codegen/include_451/gdcc").toAbsolutePath().normalize();
@@ -371,7 +372,7 @@ class GdccStaticStringRuntimeSmokeTest {
                 CHECK(g_sn_from_string_construct == 2 * gen1_sn_constructs, "gen2 StringName rebuild count wrong");
                 CHECK(g_s_utf8_construct == 2 * gen1_s_constructs, "gen2 String rebuild count wrong");
                 CHECK(g_sn_registry.count == 3 && g_n_registry.count == 1, "gen2 registry re-registration incomplete");
-                // The original bug returned destroyed/empty values here; content must be fully valid.
+                 // Generation 2 must expose valid content after generation 1 destroyed its storage.
                 CHECK(strcmp(g2.cls_utf8, "GDCCProbeClass") == 0, "gen2 class name invalid");
                 CHECK(strcmp(g2.method_utf8, "_ready") == 0, "gen2 method name invalid");
                 CHECK(strcmp(g2.msg_utf8, "Loading probe...") == 0, "gen2 message invalid");

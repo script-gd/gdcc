@@ -23,7 +23,7 @@ typedef struct StringDestroyRegistry {
 static StringDestroyRegistry g_n_registry = {nullptr};
 
 static void gdcc_s_registry_add(godot_String* p_sn) {
-    // No deduplication, relying on macro logic of "only once per static object"
+    // No deduplication: each expansion site registers once per generation.
     if (g_n_registry.count == g_n_registry.capacity) {
         const uint32_t new_cap = (g_n_registry.capacity == 0) ? 128u : (g_n_registry.capacity * 2u);
         const size_t new_size = (size_t)new_cap * sizeof(godot_String*);

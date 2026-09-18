@@ -48,9 +48,9 @@ extend the runtime-provided `godot_*` surface.
 
 - `gdcc_likely.h`: portable `likely(...)` / `unlikely(...)` branch prediction macros.
 - `gdcc_string.h`: static `godot_String` registry and `GD_STATIC_S(...)` helper used by generated
-  registration code.
+  registration code. See §Static String/StringName Registry.
 - `gdcc_string_name.h`: static `godot_StringName` registry plus `GD_STATIC_SN(...)` and
-  `GD_STATIC_SN_HASH(...)` helpers.
+  `GD_STATIC_SN_HASH(...)` helpers. See §Static String/StringName Registry.
 - `gdcc_bind.h`: property metadata helpers and the `GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(...)`
   macro used by generated exact-engine method-bind accessors.
 - `gdcc_call.h`: convenience Variant packers and `GD_OBJECT_CALL*` helpers for dynamic object calls.
@@ -191,6 +191,46 @@ extend the runtime-provided `godot_*` surface.
   See §Coroutine Runtime for the full contract. Unlike the other `gdcc/**` helpers these two
   files are not header-only: `gdcc_coroutine.c` is a real translation unit, added to native
   compiler inputs together with `minicoro.c`.
+
+## Static String/StringName Registry
+
+This section freezes the intern-and-destroy contract for generated String/StringName literals
+(`GD_STATIC_S`, `GD_STATIC_SN`, `GD_STATIC_SN_HASH`). It is **not** the HRX standalone Callable
+intern table in `gdcc_callable.h` / §HRX, whose `generation` is a hub/spec field with a different
+lifetime. Hot-reload lifecycle placement is in `hot_reload_implementation.md` §4.1.
+
+Each header owns a TU-local `static` registry (`g_n_registry` / `g_sn_registry`) with
+`items` / `count` / `capacity` / `generation`. `generation` starts at `0`. Function-local
+expansion-site stamps start at `GDCC_REGISTRY_GEN_NEVER` (`UINT64_MAX`, defined once under
+`#ifndef` because both headers usually share a TU).
+
+- `destroy_all()` destroys every registered Godot value, frees the `items` array, zeros
+  `items`/`count`/`capacity`, then increments `generation`. An empty registry is a safe no-op
+  that still advances `generation`. If the increment lands on `GDCC_REGISTRY_GEN_NEVER` it wraps
+  to `0`, so the sentinel never aliases a live generation.
+- The three macros gate reconstruction on stamp ≠ current TU-local `generation`. A mismatch
+  rebuilds the Godot value, re-registers the pointer, and stores the current generation. Same-
+  generation re-entry is a single 64-bit compare; no thread/TLS (see
+  `hot_reload_implementation.md` §3.3).
+- Fresh image: stamp `NEVER` ≠ registry `0` → normal first init. Same-image reuse (function-
+  local statics survive `destroy_all`): leftover stamp `n` ≠ bumped `n+1` → rebuild. A NEVER-
+  stamped site may initialize against any current generation, not only `0`.
+- `GD_STATIC_SN_HASH` keeps an independent hash stamp. The inner `GD_STATIC_SN` expansion's
+  function-local static is not visible across statement expressions, and the hash must be
+  recomputed whenever the StringName was rebuilt.
+- There is no content dedup: each expansion site registers its own storage once per generation.
+- Per-TU ownership: expansions register into whichever TU includes the header. Live production
+  calls must share that copy with `gdcc_sn_registry_destroy_all` / `gdcc_s_registry_destroy_all`
+  in generated `entry.c` (`entry.c.ftl` after class unregistration, before HRX deinitialize).
+  Runtime `.c` files (`gdcc_hrx.c`, `gdcc_coroutine.c`, …) include `gdcc_helper.h` and therefore
+  expand `gdcc_bind.h` helpers that contain these macros, but they must not call those helpers
+  or the macros themselves — their TU-local copy would leak on unload and would never be
+  re-armed. Tests that include the two headers directly are themselves the registry-owning TU.
+- After `destroy_all()`, generated and runtime code must not expand the macros again in that
+  deinitialize. Class unregistration still runs with the registries alive.
+- Same-image reconstruction keeps ClassDB registration and interned literals valid; it does not
+  make a same-path `dlopen` execute new code. Loading new code on macOS requires a fresh library
+  path (`hot_reload_implementation.md` §10).
 
 ## Coroutine Runtime (minicoro + gdcc_coroutine)
 

@@ -2,6 +2,7 @@
 
 > 本文档是 GDExtension 热重载当前代码事实、长期合同和维护边界的唯一事实源。
 > 修改相关代码时必须同步修订本文。HRX runtime 细节、entry 生命周期、wrapper 布局的模块切片分别由关联文档承载，但不得与本文冲突。
+> 同映像 String/StringName 代际重建与测试 harness 内容哈希换库已吸收进本文 §4.1 / §10，不再保留独立计划文档。
 
 ## 文档状态
 
@@ -13,6 +14,8 @@
   - 用户类与隐藏协程状态类的 `recreate_instance_func`、`free_instance`、字段析构
   - 协程 bulk cancel 与 `RELOADED_SHELL`
   - HRX 堆驻留 thunk、hub/spec ABI、standalone interning、lambda 身份重绑
+  - String/StringName registry 同映像代际重建
+  - 测试 harness 内容哈希换库
 - 不覆盖：
   - GDCC 类自身 ClassDB 方法/属性/信号注册细节；见 `godot_binding_implementation.md` 与 `entry.c.ftl` 注册段
   - vtable slot 规划本身；见 `virtual_override_vtable_implementation.md`（recreate 必须重写本代 `_vtable`）
@@ -20,7 +23,7 @@
   - 对象 ownership 通用规则；见 `gdcc_ownership_lifecycle_spec.md` 与 `backend_ownership_lifecycle_contract.md`
 - 关联文档：
   - `doc/gdcc_c_backend.md`：C 后端 ABI 与 entry 生命周期切片
-  - `doc/gdcc_runtime_lib.md`：协程 runtime 与 HRX runtime 切片
+  - `doc/gdcc_runtime_lib.md`：协程 runtime、HRX runtime、String/StringName registry 代际合同
   - `doc/module_impl/backend/explicit_c_inheritance_layout_contract.md`：wrapper 布局、create/recreate/free、析构 exactly-once
   - `doc/module_impl/backend/virtual_override_vtable_implementation.md`：vtable 与 `_vtable` 初始化
   - `doc/module_impl/frontend/frontend_lambda_implementation.md`：lambda 合成函数、plan 与 lowering；重绑身份见本文 §8
@@ -132,6 +135,28 @@ entry.c deinitialize
 - 析构路径不得新增对 `GD_STATIC_S` / `GD_STATIC_SN` 惰性创建的依赖。注销段内 registry 仍存活，现有 `GD_STATIC_SN` 使用安全。
 - Object 存储释放一律经 `instance_id` → ObjectDB（`gdcc_object_live_ptr`），禁止解引用 fat pointer 缓存的 GDCC wrapper。reload 批量 clear 的遍历顺序任意：被引用实例的 wrapper 可能已释放，而其 Godot 对象因强引用仍存活。
 - HRX 模式下 standalone interned spec 归 hub，legacy registry 为空，其 `destroy_all` 为 no-op；direct 模式相反。禁止两套 registry 释放同一对象。
+
+### 4.1 String/StringName registry 代际合同
+
+C 层细节见 `gdcc_runtime_lib.md` §Static String/StringName Registry。本节只冻结热重载生命周期不变量。
+
+同映像复用（macOS dyld 按路径缓存，见 §10 / §12）下，`deinitialize()` 销毁 registry 中的全部 Godot 值并清空表，但函数内 `static` 仍驻留。因此 `GD_STATIC_S` / `GD_STATIC_SN` / `GD_STATIC_SN_HASH` 以 TU-local registry 的 `generation` 为门控，而不是 init-once 布尔。
+
+合同：
+
+- `destroy_all()` 销毁并清空当前表后递增 `generation`；空表调用安全且仍递增；递增跳过哨兵 `GDCC_REGISTRY_GEN_NEVER`（`UINT64_MAX`）。
+- 宏展开点各持独立代际戳，初值为哨兵。戳与当前代际不等时重建 Godot 值并重新登记；同代访问只做一次 64 位比较，不引入线程/TLS（§3.3）。
+- `GD_STATIC_SN_HASH` 必须有独立戳，代际变化时重新计算 hash。
+- 产生函数内 static 的宏调用必须写入与 `destroy_all()` 相同 TU 的 registry 副本。生产 live 调用点仅允许 generated entry TU。runtime `.c`（`gdcc_hrx.c`、`gdcc_coroutine.c` 等）可以 include 这些头（`gdcc_bind.h` helper 定义会随头文件预处理展开），但禁止调用 `gdcc_make_property` / `gdcc_bind_property` 或在 runtime `.c` 内直接展开 `GD_STATIC_S` / `GD_STATIC_SN`。测试 probe 若直接包含这两个头，则自身即 registry-owning TU。
+- registry 销毁之后禁止再使用这两个宏。注销段内 registry 仍存活，现有 `GD_STATIC_SN` 使用安全。
+- 该合同只保证同映像下静态值干净重建、类能重新注册。它不能让同路径 `dlopen` 执行新代码。测试 harness 用 §10 的内容哈希换库规避 dyld 路径缓存；生产构建仍发布固定库名，macOS 同路径重载会继续执行旧代码（§12）。
+
+同映像下其他映像驻留状态的分类（判定：映像保持映射；只有「持有会被 `deinitialize` 销毁的 Godot 对象」且「带 init-once 门控」或「deinit 改写而 init 不重置」才会出错）：
+
+- 每代由 `initialize()` 重置、无需代际门控：GDScript static backing、各 `class_library`、`_gd_engine`、`godot_interface.c` 接口表、`gdcc_standalone_callable_registry`、协程 `gdcc_hot_reload_active` / `gdcc_active_head`、minicoro `mco_current_co` TLS。
+- 同映像下保持有效的函数指针 / `static const`（真实换映像由类注销、HRX thunk、RELOADED_SHELL 覆盖）：默认参数 userdata、vtable 实例、HRX rebind 表、协程描述符。
+- 设计内跨代持久：builtin/utility/fixed/引擎 MethodBind 缓存、operator evaluator 缓存、`g_hrx_orphaned_hub_count`、协程 binding token。
+- 仅诊断：`g_hrx_unavailable_reported` 一旦置位，后续代不再重复报告 execmem 不可用。
 
 `gdcc_is_editor_hint()` 取值：仅 `--editor` / project manager 进程为 true；编辑器 F5 启动的游戏进程与导出包为 false。三态模式机以该值为进程判定输入。
 
@@ -355,6 +380,7 @@ property initializer 与 parameter default 中的 lambda 不进入 `FrontendLamb
 | `CCodegenTest` / `CVtableCodegenTest` / `CCoroutineStateClassCodegenTest` | recreate、析构守卫、deinitialize 顺序、vtable 重写、RELOADED_SHELL、身份 catalog 发射 |
 | `FrontendLambdaIdentityAnalyzerTest` 及 plan/lowering/LIR 往返测试 | 序号、描述子、fail-closed、XML meta |
 | `GdccHrxRuntimeSmokeTest` | thunk、重绑三门、版本守卫、direct 模式、waiter 无重绑 |
+| `GdccStaticStringRuntimeSmokeTest` | 同映像 `destroy_all` 后 String/StringName 重建、hash 重算、空表幂等销毁 |
 | `GdccCoroutineRuntimeSmokeTest` | cancel_all、shell、门控、HRX detach |
 | `GodotEditorHotReloadIntegrationTest` | headless editor 端到端 |
 | `GodotEditorHotReloadTestSessionTest` | 换库发布：内容哈希命名、元数据重指、同内容无操作 |
@@ -375,7 +401,7 @@ property initializer 与 parameter default 中的 lambda 不进入 `FrontendLamb
 编排合同：
 
 - 换库必须原子 rename（先拷到临时文件再 `mv`）。禁止 in-place 覆盖已映射 `.so`：会把干净页灌成新内容而 GOT 脏页仍指向旧版，随后 SIGSEGV。
-- 每代库必须发布到新路径（测试 harness 按库内容 SHA-256 截断 16 hex 命名 `<base>-<hash>.<ext>`，并同步重写 `.gdextension` libraries 后再落 swap flag）：macOS dyld 按路径缓存映像，且 Godot 的 `OS_MacOS::open_dynamic_library` 未实现 `generate_temp_files`（4.7.2 仍未修；上游 godotengine/godot#90108、#112202），同路径 `dlopen` 永远返回旧映像。真实用户在 macOS 热重载同样需要每次构建更换库文件名。
+- 变更后的库必须发布到新路径。测试 harness 按库内容 SHA-256 截断 16 hex 命名 `<base>-<hash>.<ext>`（v1 安装即哈希命名）。内容相同则只写 swap flag、不改路径；内容不同则按「暂存 + 原子 rename 到新路径 → 重写 `.gdextension` libraries → 删除上一代文件 → 写 swap flag」发布。driver 只轮询 flag，因此 `reload_extension` 时元数据已指向完整新库。A→B→A 内容轮回会回到 hash A 的路径：若 dyld 仍缓存该映像，返回的是字节相同的 A，语义正确。macOS dyld 按路径缓存映像，且 Godot 的 `OS_MacOS::open_dynamic_library` 未实现 `generate_temp_files`（4.7.2 仍未修；上游 godotengine/godot#90108、#112202），同路径 `dlopen` 永远返回旧映像。真实用户在 macOS 热重载同样需要每次构建更换库文件名。该流程全平台统一，不做 macOS 分支。
 - driver 在最终 marker / `quit` 前停留 180 帧，让编辑器文档再生成在扩展存活期内排空（上游缺陷，类 godot#123511 / #111048）。
 - 观测 `_process` 的 fixture 必须 `@tool`。
 - 解释型 driver 不得主动调用已知失效的 Callable 或已知错误 arity 的方法（GDScript SCRIPT ERROR 会中止当前函数）。
@@ -388,6 +414,7 @@ property initializer 与 parameter default 中的 lambda 不进入 `FrontendLamb
 - 重绑必须先于任何析构。捕获析构可能同步释放其他 Callable。
 - 身份主键用序号而不是源位置，才能让“改 body / 插非 lambda 行”走热重载主路径；调用点上下文只能消歧可区分形态，同形换位仍是已知缺口。
 - Java 与 C 的 ABI 版本是两个字面常量，只能靠契约测试防漂移。
+- 同映像复用下函数内 static 必须由 registry 代际门控，不能靠 init-once 布尔；代际加固不能替代换路径加载新代码。
 
 ## 12. 已知限制与非目标
 
@@ -398,7 +425,7 @@ property initializer 与 parameter default 中的 lambda 不进入 `FrontendLamb
 - 有窗口 F5 游戏进程以 `is_editor_hint()==false` 走 direct，与 headless 非 editor 判定相同，有窗变体保留手测。
 - 协程 `completed` 不发射尚无独立端到端观测断言。
 - ASan / Valgrind 对 exactly-once / 泄漏的完整证明不在自动化范围内。
-- macOS 同路径 GDExtension 重载返回旧映像（引擎级限制，dyld 路径缓存 + macOS 未实现 `generate_temp_files`，见 §10 编排合同）。同映像重复初始化已由 String/StringName registry 代际号加固：同映像下重新注册与静态重建是干净的，但执行的仍是旧代代码。
+- macOS 同路径 GDExtension 重载返回旧映像（引擎级限制，dyld 路径缓存 + macOS 未实现 `generate_temp_files`，见 §10）。同映像下静态 String/StringName 的重建合同见 §4.1：库能干净地重新注册，但执行的仍是旧代代码。
 - schema/context 失配时 lambda 捕获块故意泄漏；损坏锚点孤岛泄漏；tombstone 超过 8 个可能继续遮蔽新 hub。
 - §8.4 残余盲区仍可能误绑。
 
@@ -406,6 +433,7 @@ property initializer 与 parameter default 中的 lambda 不进入 `FrontendLamb
 
 - 增量编译与 dirty tracking
 - `NOTIFICATION_EXTENSION_RELOADED` 用户钩子
+- 修复 Godot macOS `generate_temp_files` / dyld 路径缓存（上游事项）
 - worker 线程 custom Callable 的 generation quiescence
 - 可选的 lambda body 哈希消歧
 - sljit 替换手写 thunk 模板（生成接口已隔离 ISA）

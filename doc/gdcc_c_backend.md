@@ -260,7 +260,10 @@ Usage and lifecycle rules:
      depend on static backing (already torn down);
   5. destroy the StringName/String registries and the standalone Callable intern storage
      (in HRX mode that storage was never populated — interning lives in the hub — so its
-     teardown is a no-op and the two never own the same spec);
+     teardown is a no-op and the two never own the same spec). String/StringName
+     `destroy_all` also bumps the TU-local registry generation so same-image re-init
+     rebuilds interned literals (`gdcc_runtime_lib.md` §Static String/StringName Registry;
+     `hot_reload_implementation.md` §4.1);
   6. `gdcc_hrx_deinitialize()` LAST — detach the current sweeper, then NULL every
      spec's function pointers (`dead`/`refcount` untouched). Callable references dropped by
      the earlier steps still reach the live sweeper for best memory hygiene; afterwards only

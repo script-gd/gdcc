@@ -291,8 +291,8 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
         Files.writeString(projectDir.resolve(SWAP_FLAG_FILE_NAME), "swap\n", StandardCharsets.UTF_8);
     }
 
-    /// Inserts `-<contentHash>` before the last extension so every content generation loads from
-    /// a path dyld has never seen.
+    /// Inserts `-<contentHash>` before the last extension so changed content loads from a distinct
+    /// path. Identical bytes reuse the previous name.
     private static @NotNull String hashedLibraryFileName(@NotNull String buildFileName, @NotNull String contentHash) {
         var dotIndex = buildFileName.lastIndexOf('.');
         if (dotIndex <= 0) {

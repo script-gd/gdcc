@@ -30,7 +30,7 @@ typedef struct gdcc_StringNameWithHash {
 static StringNameDestroyRegistry g_sn_registry = {nullptr};
 
 static void gdcc_sn_registry_add(godot_StringName* p_sn) {
-    // No deduplication, relying on macro logic of "only once per static object"
+    // No deduplication: each expansion site registers once per generation.
     if (g_sn_registry.count == g_sn_registry.capacity) {
         const uint32_t new_cap = (g_sn_registry.capacity == 0) ? 128u : (g_sn_registry.capacity * 2u);
         const size_t new_size = (size_t)new_cap * sizeof(godot_StringName*);

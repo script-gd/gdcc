@@ -12,11 +12,12 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Pins the content-hash publish scheme of `GodotEditorHotReloadTestSession`: every library
-/// generation must land under a fresh `bin/` path and the `.gdextension` must be retargeted
-/// before the swap flag appears, because macOS dyld caches images by path and Godot never loads
-/// new code from a path it has dlopened before (upstream issues godotengine/godot#90108 and
-/// godotengine/godot#112202). Everything here runs without a Godot binary.
+/// Pins the content-hash publish scheme of `GodotEditorHotReloadTestSession`: each
+/// changed-content publication uses a fresh `bin/` path and the `.gdextension` is retargeted
+/// before the swap flag appears. macOS dyld caches images by path, so reloading a previously
+/// loaded path can reuse the old image (upstream godotengine/godot#90108 and #112202).
+/// Byte-identical content is a no-op and keeps the existing path. Everything here runs without
+/// a Godot binary.
 class GodotEditorHotReloadTestSessionTest {
     private static final String BUILD_FILE_NAME = "libhr_e2e_dummy_debug_x86_64.so";
     private static final String DRIVER_SOURCE = "extends SceneTree\n";
