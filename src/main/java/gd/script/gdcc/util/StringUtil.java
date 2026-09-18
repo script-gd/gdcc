@@ -8,8 +8,11 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 public final class StringUtil {
+    private static final Pattern ANSI_CSI_PATTERN = Pattern.compile("\\u001B\\[[0-9;?]*[A-Za-z]");
+
     private StringUtil() {
     }
 
@@ -54,6 +57,15 @@ public final class StringUtil {
 
     public static @NotNull String trimToEmpty(@Nullable String value) {
         return value == null ? "" : value.trim();
+    }
+
+    /// Removes ANSI escape sequences in CSI form (covering the SGR styling picocli emits) so
+    /// assertions on captured CLI output stay stable across hosts: picocli renders styling on
+    /// ANSI-capable terminals (e.g. Windows CI agents) but not on plain pipes, so tests must
+    /// compare plain text. Not a general-purpose ANSI parser: OSC hyperlinks and other non-CSI
+    /// sequences are intentionally out of scope.
+    public static @NotNull String stripAnsi(@NotNull String text) {
+        return ANSI_CSI_PATTERN.matcher(text).replaceAll("");
     }
 
     public static @Nullable String trimToNull(@Nullable String value) {

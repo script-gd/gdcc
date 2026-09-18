@@ -20,11 +20,13 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
     private static final String SHARED_INCLUDE_DIR_NAME = "shared-include";
     private static final String GDCC_INCLUDE_DIR_NAME = "gdcc";
     private static final String GODOT_INCLUDE_DIR_NAME = "godot";
-    private static final String GODOT_RUNTIME_SOURCE_PATH = GODOT_INCLUDE_DIR_NAME + "/godot_binding.c";
+    /// Package-visible so incremental-build tests mirror the exact runtime TU list instead of
+    /// hardcoding a copy that silently drifts when runtime sources are added or removed.
+    static final String GODOT_RUNTIME_SOURCE_PATH = GODOT_INCLUDE_DIR_NAME + "/godot_binding.c";
     /// GDCC-owned runtime translation units (coroutine + hot-reload thunk support). Extracted
     /// with the rest of the `gdcc/**` tree and compiled alongside `godot_binding.c`.
     /// Contract: doc/gdcc_runtime_lib.md §Coroutine Runtime, §HRX (gdcc_hrx).
-    private static final List<String> GDCC_RUNTIME_SOURCE_PATHS = List.of(
+    static final List<String> GDCC_RUNTIME_SOURCE_PATHS = List.of(
             GDCC_INCLUDE_DIR_NAME + "/minicoro.c",
             GDCC_INCLUDE_DIR_NAME + "/gdcc_coroutine.c",
             GDCC_INCLUDE_DIR_NAME + "/gdcc_hrx.c"

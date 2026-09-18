@@ -12,6 +12,18 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class StringUtilTest {
     @Test
+    public void stripAnsiRemovesPicocliStyleSequences() {
+        // Real picocli rendering on ANSI-capable terminals (observed on Windows CI agents).
+        assertEquals("-o, --output", StringUtil.stripAnsi("\u001B[33m-o\u001B[39m, \u001B[33m--output\u001B[39m"));
+        assertEquals("Usage: gdcc", StringUtil.stripAnsi("Usage: \u001B[1mgdcc\u001B[21m\u001B[0m"));
+    }
+
+    @Test
+    public void stripAnsiKeepsPlainTextUntouched() {
+        assertEquals("Usage: gdcc [-hVv] files...", StringUtil.stripAnsi("Usage: gdcc [-hVv] files..."));
+    }
+
+    @Test
     public void requireNonBlankPreservesNonBlankInput() {
         var value = "  value  ";
 

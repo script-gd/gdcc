@@ -92,8 +92,10 @@ class RpcJsonCodecTest {
                   "outputMountRoot": "/__build__"
                 }
                 """, codec.toJsonTree(withNullPath));
+        // Path crosses the wire as host `Path.toString()` text, so the pinned expectation follows
+        // the host separator instead of hardcoding the POSIX form (Windows renders backslashes).
         assertEquals(
-                "/tmp/gdcc-project",
+                withHostPath.projectPath().toString(),
                 codec.toJsonTree(withHostPath).getAsJsonObject().get("projectPath").getAsString()
         );
         assertEquals(withNullPath, codec.bindParams(codec.toJsonTree(withNullPath), CompileOptions.class));
@@ -102,16 +104,19 @@ class RpcJsonCodecTest {
 
     @Test
     void compileResultSerializesAllComponentsWithoutDerivedMethods() {
+        // Path-typed components serialize as host `Path.toString()` text (Windows renders
+        // backslashes); plain-String components like the link target keep their literal form.
+        var projectDir = Path.of("/tmp/gdcc-project");
         var result = new CompileResult(
                 CompileResult.Outcome.SUCCESS,
-                options(Path.of("/tmp/gdcc-project")),
+                options(projectDir),
                 Map.of("Player", "game.Player"),
                 List.of("/src/main.gd"),
                 new DiagnosticSnapshot(List.of()),
                 null,
                 "",
-                List.of(Path.of("/tmp/gdcc-project/entry.c")),
-                List.of(Path.of("/tmp/gdcc-project/libdemo.so")),
+                List.of(projectDir.resolve("entry.c")),
+                List.of(projectDir.resolve("libdemo.so")),
                 List.of(new VfsEntrySnapshot.LinkEntrySnapshot(
                         "/__build__/libdemo.so", "libdemo.so",
                         VfsEntrySnapshot.LinkKind.LOCAL, "/tmp/gdcc-project/libdemo.so", null
@@ -125,7 +130,7 @@ class RpcJsonCodecTest {
                   "outcome": "SUCCESS",
                   "compileOptions": {
                     "godotVersion": "V451",
-                    "projectPath": "/tmp/gdcc-project",
+                    "projectPath": "%s",
                     "optimizationLevel": "DEBUG",
                     "targetPlatform": "LINUX_X86_64",
                     "strictMode": false,
@@ -136,8 +141,8 @@ class RpcJsonCodecTest {
                   "diagnostics": {"diagnostics": []},
                   "failureMessage": null,
                   "buildLog": "",
-                  "generatedFiles": ["/tmp/gdcc-project/entry.c"],
-                  "artifacts": ["/tmp/gdcc-project/libdemo.so"],
+                  "generatedFiles": ["%s"],
+                  "artifacts": ["%s"],
                   "outputLinks": [{
                     "kind": "LINK",
                     "path": "/__build__/libdemo.so",
@@ -148,7 +153,11 @@ class RpcJsonCodecTest {
                     "brokenReason": null
                   }]
                 }
-                """, json);
+                """.formatted(
+                jsonStringBody(projectDir.toString()),
+                jsonStringBody(projectDir.resolve("entry.c").toString()),
+                jsonStringBody(projectDir.resolve("libdemo.so").toString())
+        ), json);
         // Derived record methods are not components and must never leak onto the wire.
         assertFalse(json.has("success"));
     }
@@ -669,6 +678,13 @@ class RpcJsonCodecTest {
 
     private static void assertJson(String expected, JsonElement actual) {
         assertEquals(JsonParser.parseString(expected), actual);
+    }
+
+    /// Escapes host-rendered path text for embedding into a JSON string literal inside an
+    /// expected-json template. Backslashes (Windows separators) are the only JSON-special
+    /// characters that can appear in host path text.
+    private static String jsonStringBody(String hostPathText) {
+        return hostPathText.replace("\\", "\\\\");
     }
 
     private static com.google.gson.JsonObject parse(String json) {

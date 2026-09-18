@@ -372,7 +372,13 @@ final class ConstructLambdaInsnGenEngineTest {
                         print("self object_id check passed.")
                     else:
                         push_error("self object_id check failed.")
-                
+
+                    # Freeing an in-tree node while the parent is still propagating child setup
+                    # is rejected by the engine on some platforms (observed on macOS headless),
+                    # so the destructive check runs at idle time via a deferred call.
+                    _run_freed_check.call_deferred(target, self_cb)
+
+                func _run_freed_check(target: Node, self_cb: Callable) -> void:
                     var helper := Node.new()
                     helper.add_user_signal("fired")
                     helper.connect("fired", self_cb)
