@@ -4,10 +4,19 @@
 #include <godot_binding.h>
 #include "gdcc_likely.h"
 
+// See gdcc_string_name.h for the generation-sentinel rationale; guarded because both headers are
+// usually included into the same TU.
+#ifndef GDCC_REGISTRY_GEN_NEVER
+#define GDCC_REGISTRY_GEN_NEVER UINT64_MAX
+#endif
+
 typedef struct StringDestroyRegistry {
     godot_String** items;
     uint32_t count;
     uint32_t capacity;
+    // Bumped by destroy_all so GD_STATIC_S expansion sites rebuild destroyed values after a
+    // same-image reload; see gdcc_string_name.h.
+    uint64_t generation;
 } StringDestroyRegistry;
 
 
@@ -38,22 +47,25 @@ static void gdcc_s_registry_destroy_all(void) {
     g_n_registry.items = NULL;
     g_n_registry.count = 0;
     g_n_registry.capacity = 0;
+    g_n_registry.generation++;
+    if (g_n_registry.generation == GDCC_REGISTRY_GEN_NEVER) {
+        // Reaching the sentinel needs 2^64 reloads; wrap so it can never alias a real generation.
+        g_n_registry.generation = 0;
+    }
 }
 
-// Macro: In-place declaration + first initialization + registration + return pointer
+// Macro: In-place declaration + generation-gated (re)initialization + registration + return pointer.
 // E.g. godot_String *name = GD_STATIC_S(u8"_ready");
+// Same per-TU contract as GD_STATIC_SN (gdcc_string_name.h): generated entry TU only, never from
+// runtime .c files.
 #define GD_STATIC_S(U8_LIT)                                                       \
     ({                                                                            \
         static godot_String _gd_s;                                                \
-        static bool _gd_s_inited = false;                                         \
-        static bool _gd_s_registered = false;                                     \
-        if (unlikely(!_gd_s_inited)) {                                            \
+        static uint64_t _gd_s_gen = GDCC_REGISTRY_GEN_NEVER;                      \
+        if (unlikely(_gd_s_gen != g_n_registry.generation)) {                     \
             _gd_s = godot_new_String_with_utf8_chars((const char*)(U8_LIT));      \
-            _gd_s_inited = true;                                                  \
-        }                                                                         \
-        if (unlikely(!_gd_s_registered)) {                                        \
             gdcc_s_registry_add(&_gd_s);                                          \
-            _gd_s_registered = true;                                              \
+            _gd_s_gen = g_n_registry.generation;                                  \
         }                                                                         \
         &_gd_s;                                                                   \
     })

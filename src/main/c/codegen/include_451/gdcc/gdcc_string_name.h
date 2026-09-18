@@ -4,10 +4,22 @@
 #include <godot_binding.h>
 #include "gdcc_likely.h"
 
+// Generation stamp sentinel for GD_STATIC_SN / GD_STATIC_S expansion sites. Function-local statics
+// start at this value so a fresh image (registry generation 0) always mismatches and initializes.
+// destroy_all skips over it when wrapping, so it never aliases a real generation.
+#ifndef GDCC_REGISTRY_GEN_NEVER
+#define GDCC_REGISTRY_GEN_NEVER UINT64_MAX
+#endif
+
 typedef struct StringNameDestroyRegistry {
     godot_StringName** items;
     uint32_t count;
     uint32_t capacity;
+    // Bumped by destroy_all. On same-image reload (e.g. macOS dyld reusing a dlclose'd path) the
+    // function-local statics of GD_STATIC_SN survive while every StringName is destroyed here, so
+    // the macros gate re-construction on a generation mismatch instead of init-once booleans that
+    // would stay stuck at true and hand back destroyed values.
+    uint64_t generation;
 } StringNameDestroyRegistry;
 
 typedef struct gdcc_StringNameWithHash {
@@ -42,34 +54,42 @@ static void gdcc_sn_registry_destroy_all(void) {
     g_sn_registry.items = NULL;
     g_sn_registry.count = 0;
     g_sn_registry.capacity = 0;
+    g_sn_registry.generation++;
+    if (g_sn_registry.generation == GDCC_REGISTRY_GEN_NEVER) {
+        // Reaching the sentinel needs 2^64 reloads; wrap so it can never alias a real generation.
+        g_sn_registry.generation = 0;
+    }
 }
 
-// Macro: In-place declaration + first initialization + registration + return pointer
+// Macro: In-place declaration + generation-gated (re)initialization + registration + return pointer.
 // E.g. godot_StringName *name = GD_STATIC_SN(u8"_ready");
+// Per-TU contract: expansions register into the TU-local g_sn_registry, so live calls are only
+// allowed in the generated entry TU whose deinitialize() destroys that same registry copy. Runtime
+// .c files (gdcc_hrx.c, gdcc_coroutine.c, ...) must NOT expand this macro or call helpers that do
+// (gdcc_make_property, gdcc_bind_property) — their TU-local registry copy would leak on unload.
 #define GD_STATIC_SN(U8_LIT)                                                       \
     ({                                                                             \
         static godot_StringName _gd_sn;                                            \
-        static bool _gd_sn_inited = false;                                         \
-        static bool _gd_sn_registered = false;                                     \
-        if (unlikely(!_gd_sn_inited)) {                                            \
+        static uint64_t _gd_sn_gen = GDCC_REGISTRY_GEN_NEVER;                      \
+        if (unlikely(_gd_sn_gen != g_sn_registry.generation)) {                    \
             _gd_sn = godot_new_StringName_with_utf8_chars((const char*)(U8_LIT));  \
-            _gd_sn_inited = true;                                                  \
-        }                                                                          \
-        if (unlikely(!_gd_sn_registered)) {                                        \
             gdcc_sn_registry_add(&_gd_sn);                                         \
-            _gd_sn_registered = true;                                              \
+            _gd_sn_gen = g_sn_registry.generation;                                 \
         }                                                                          \
         &_gd_sn;                                                                   \
     })
 
+// The hash cache needs its own generation stamp: a statement expression cannot read the inner
+// GD_STATIC_SN expansion's function-local static, and the hash must be recomputed whenever the
+// StringName was rebuilt for a new generation.
 #define GD_STATIC_SN_HASH(U8_LIT)                                                   \
     ({                                                                              \
         static godot_int _gd_sn_hash = 0;                                           \
-        static bool _gd_sn_hash_inited = false;                                     \
+        static uint64_t _gd_sn_hash_gen = GDCC_REGISTRY_GEN_NEVER;                  \
         godot_StringName *_gd_sn_ptr = GD_STATIC_SN((const char*)(U8_LIT));         \
-        if (unlikely(!_gd_sn_hash_inited)) {                                        \
+        if (unlikely(_gd_sn_hash_gen != g_sn_registry.generation)) {                \
             _gd_sn_hash = godot_StringName_hash(_gd_sn_ptr);                        \
-            _gd_sn_hash_inited = true;                                              \
+            _gd_sn_hash_gen = g_sn_registry.generation;                             \
         }                                                                           \
         (gdcc_StringNameWithHash){ .name = _gd_sn_ptr, .hash = _gd_sn_hash };       \
     })

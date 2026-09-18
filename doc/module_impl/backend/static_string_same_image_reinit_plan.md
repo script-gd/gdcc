@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：Planned（未实施）
+- 状态：In Progress（S1 已完成，S2 已完成，S3 已完成，待 S4 macOS E2E 复测）
 - 关联文档：
   - `doc/module_impl/backend/hot_reload_implementation.md`：热重载合同唯一事实源（§4 Entry 生命周期、§12 已知限制）
   - `doc/gdcc_runtime_lib.md`：runtime 库切片
@@ -129,24 +129,26 @@ if (g_sn_registry.generation == GDCC_REGISTRY_GEN_NEVER) {
   - 全部 `destroy_all` 调用点。
 - 验收：审计表覆盖全部命中项；每项结论为"每代重置 / 跨代持久（含理由）/ 需修复（纳入 S2 范围）"。宏展开点审计表必须区分三类：(a) live 调用点所在 TU；(b) 头文件内 static helper 的预处理展开（`gdcc_bind.h` 的 `gdcc_make_property` / `gdcc_bind_property`）；(c) 仅 include、无 live 使用的 runtime TU。验收条件：(a) 与 `destroy_all` 调用同 TU；(b)(c) 无实际写入其 TU-local registry 的调用。
 
-### S2 registry 代际号与宏改造
+### S2 registry 代际号与宏改造（已完成）
 
 - 改动：`gdcc_string_name.h`、`gdcc_string.h`（registry 结构体、`destroy_all`、三个宏）；`gdcc_bind.h` 与两个宏头补充 §2.3 per-TU 合同的禁止性注释（禁止 runtime `.c` 新增对 `gdcc_make_property` / `gdcc_bind_property` 或宏本身的调用）；如 S1 审计发现同类缺陷一并修复。
-- 验收：
+- 实施记录：S1 未发现其他同类缺陷，改动按计划收敛于两个宏头 + `gdcc_bind.h` 合同注释。`GDCC_REGISTRY_GEN_NEVER` 以 `#ifndef` 保护在两个宏头各定义一次（两床头可独立包含，禁止新增公共头文件以免扩大资源清单）。
+- 验收（全部通过）：
   - `./gradlew classes` 编译通过；
-  - `script/run-gradle-targeted-tests.sh --tests CCodegenTest` 等 codegen 快照测试通过（宏展开形态变化可能命中代码生成断言，需同步更新快照预期，但不得改变生成代码的语义契约）；
-  - `GdccHrxRuntimeSmokeTest` / `GdccCoroutineRuntimeSmokeTest` 通过（runtime 头文件改动波及所有 native smoke 测试）。
+  - `script/run-gradle-targeted-tests.sh --tests CCodegenTest,CCoroutineStateClassCodegenTest,GodotAbiHeaderCompileTest,GdccHrxRuntimeSmokeTest,GdccCoroutineRuntimeSmokeTest` 全绿（快照断言只命中生成的宏调用点与 destroy 顺序，宏体形态变化不影响生成代码语义契约）。
 
-### S3 同映像重复初始化 C 层单元测试
+### S3 同映像重复初始化 C 层单元测试（已完成）
 
-- 改动：新增 native smoke 测试（沿用 `GdccHrxRuntimeSmokeTest` 的 zig 编译可执行文件形态，链接真实 `godot_binding.c`），测试 TU 在同一进程内执行 `initialize → deinitialize → initialize` 序列模拟同映像复用，以构造/析构计数与 registry 状态为断言依据（**不比较 static 存储指针**——函数内 static 地址在同映像复用下本来就不变，指针比较会假失败）。
-- 断言至少包括：
-  - 两代 `GD_STATIC_SN` / `GD_STATIC_S` 构造次数相等，且第二代返回的 StringName/String 内容非空、语义相等（可比较 utf8 内容与 hash）；
-  - `destroy_all` 后析构计数等于累计构造计数，`count` / `capacity` 归零；
-  - 第二代 registry `count` 与第一代一致（重注册完整、无条目缺失）；
-  - `GD_STATIC_SN_HASH` 的 `godot_StringName_hash` 调用次数随代际增加（hash 被重算而非沿用旧缓存）；
-  - 在第二次 `initialize` 之前连续调用两次 `destroy_all`，第二次析构计数不变（幂等，不 double-free）。
-- 验收：新测试在 Linux x64 / Windows x64 / macOS aarch64 CI 全绿；ASan/valgrind 无新增报告（复用现有 smoke 测试的内存检查手段）。
+- 改动：新增 `GdccStaticStringRuntimeSmokeTest`（沿用 `GdccHrxRuntimeSmokeTest` 的 zig 编译可执行文件形态，链接真实 `godot_binding.c`）。probe TU 直接包含两个宏头、充当 registry 属主 TU（镜像生成的 entry TU），在同一进程内执行 `initialize → destroy_all ×2 → initialize` 序列模拟同映像复用，以构造/析构/hash 调用计数与 registry 状态为断言依据（不比较 static 存储指针）。fake engine 在 8 字节不透明负载中存放拥有的 utf8 副本，析构时毒化调用方存储，使卡死的门控必然显式失败而非静默读到旧值。
+- 断言覆盖：
+  - 两代 `GD_STATIC_SN` / `GD_STATIC_S` 构造次数相等，第二代返回内容非空、utf8 与 hash 语义相等；
+  - 同代重复进入不重建、不重注册、不重算 hash（快速路径锚定）；
+  - `destroy_all` 后 `count` / `capacity` / `items` 归零、代际号递增，析构计数等于累计构造计数；
+  - 第二次 `destroy_all` 析构计数与内存余额不变（幂等，不 double-free）；
+  - 第二代 registry `count` 与第一代一致（重注册完整）；
+  - `GD_STATIC_SN_HASH` 的 hash 调用次数随代际增加（重算而非沿用旧缓存）；
+  - 空 registry 上 `destroy_all` 安全且仍递增代际，NEVER 哨兵 statics 之后对任意代际号正常初始化（独立 probe）。
+- 验收：`script/run-gradle-targeted-tests.sh --tests GdccStaticStringRuntimeSmokeTest` 两个用例在 Linux x64 通过且非跳过；另做变异验证——临时把 `GD_STATIC_SN` 门控改回 init-once 语义后测试按预期失败（`FAIL hash of destroyed StringName`），确认测试对原缺陷敏感。Windows x64 / macOS aarch64 由 CI 覆盖（S4）；现有 smoke 套件同样未启用 ASan/valgrind，内存正确性由 fake allocator 余额断言锚定，与既有手段一致。
 
 ### S4 macOS 热重载 E2E 复测
 
