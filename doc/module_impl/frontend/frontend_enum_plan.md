@@ -1,0 +1,710 @@
+# Frontend Enum 实施计划（常量绑定路线）
+
+> 本文档是 GDScript `enum` 特性的实施计划与验收细则。设计方向：**enum 作为常量绑定实现**——
+> 匿名枚举成员与命名枚举组都注册为类作用域中的只读 `CONSTANT` 绑定，成员访问在编译期
+> 直接物化为整数字面量，命名枚举组本身在值上下文物化为 Dictionary 构造。
+> 无新 LIR 指令、无 C 模板/运行时改动，复用现有 LIR/backend surface；
+> backend 改动仅限 Step 8 在 `CGenHelper` 新增一条 hint 映射规则（Java codegen 侧）。
+
+- 状态：实施计划（尚未落地；已经过多轮评审修订）
+- 适用范围：
+  - `src/main/java/gd/script/gdcc/scope/**`
+  - `src/main/java/gd/script/gdcc/frontend/scope/**`
+  - `src/main/java/gd/script/gdcc/frontend/sema/**`
+  - `src/main/java/gd/script/gdcc/frontend/lowering/**`
+  - `src/main/java/gd/script/gdcc/lir/LirClassDef.java`（仅常量表扩展）
+  - `src/main/java/gd/script/gdcc/backend/c/gen/CGenHelper.java`（仅 Step 8 的 hint 映射规则）
+- 关联文档：
+  - `doc/module_impl/common_rules.md`
+  - `frontend_rules.md`
+  - `frontend_global_constant_implementation.md`（全局枚举/常量裸访问事实源）
+  - `frontend_top_binding_analyzer_implementation.md`
+  - `frontend_visible_value_resolver_implementation.md`
+  - `frontend_chain_binding_expr_type_implementation.md`
+  - `scope_architecture_refactor_plan.md`
+  - `scope_analyzer_implementation.md`
+  - `scope_type_resolver_implementation.md`
+  - `inner_class_implementation.md`
+  - `frontend_lowering_skeleton_pre_pass_implementation.md`
+  - `frontend_lowering_cfg_pass_implementation.md`
+  - `frontend_container_literal_implementation.md`
+  - `frontend_parameter_default_implementation.md`
+  - `diagnostic_manager.md`
+
+---
+
+## 1. 背景与目标
+
+### 1.1 Godot 4.x enum 语义（对齐目标）
+
+- `enum {A, B = 5, C}`（匿名）：成员是注入当前类作用域的 int 常量（`A=0, B=5, C=6`），可裸访问。
+- `enum State {IDLE, JUMP = 5}`（命名）：`State` 是一个 **Dictionary 常量**（等价于
+  `const State = {"IDLE": 0, "JUMP": 5}`，key 为 String——Godot 4.5 源码
+  `gdscript_analyzer.cpp` 以 `dictionary[String(...)] = value` 构建并 `make_read_only()`），
+  成员经 `State.IDLE` 访问；
+  命名枚举成员**不**注入当前作用域。
+- 未赋值的成员 = 前一成员值 + 1，首成员默认 0；允许不同成员同值。
+- 成员值必须是编译期可求值的 int 常量表达式（Godot 走完整 constant expression reduction）。
+- 命名枚举可作类型标注：`var x: State` / `Array[State]`，实际类型为 `int`。
+- 命名枚举支持 Dictionary 方法：`State.keys()` / `State.values()`。
+- 枚举只在类体（含 inner class 体）合法；函数体内 `enum` 在 Godot 中是解析错误。
+- 类常量/枚举沿继承链可见（子类可裸用父类枚举）。本计划 MVP 只继承 **body 值查找**；
+  枚举 initializer 引用父类常量属延后边界（见 §2.2）。
+
+### 1.2 现状差距（调研结论）
+
+| 层 | 现状 |
+|---|---|
+| parser/AST | 外部 `gdparser:0.5.4` 已完整解析 `enum_definition` → `EnumDeclaration(@Nullable String name, List<EnumMember> members, Range)`；`EnumMember(String name, @Nullable Expression value, Range)`。匿名枚举 `name == null`。`ASTNodeHandler` 已提供 `handleEnumDeclaration` / `handleEnumMember` 回调 |
+| skeleton | `FrontendClassSkeletonBuilder.fillClassMembers`（:285-358）对 `EnumDeclaration` 落 `default -> {}`，完全忽略 |
+| scope | `ClassScope.defineConstant(...)`（:136-144）已存在但无生产调用；`indexDirectMembers`（:229-239）只索引 property/signal/function；`resolveInheritedValueMember`（:249-267）不继承常量 |
+| 用户级 `const` | 类级被 skeleton 忽略；块级被 `FrontendVariableAnalyzer` 显式拒绝（`sema.unsupported_variable_inventory_subtree`）。本计划**不**承接 class `const`，仅为 enum 建立常量通道 |
+| 函数体内 `enum` | **当前是静默 no-op**：`FrontendStatementResolver.resolveStatement`（:92）default → `runUnsupported`（`FrontendBodyOwnerProcedures`:818-831），其 `default -> {}` 不发任何诊断。本计划必须新增诊断路径，不能当成既有合同消费 |
+| 全局枚举/常量 | 已闭环：`ClassRegistry → ScopeValue(CONSTANT) → FrontendBinding(CONSTANT) → OpaqueExprValueItem → LiteralIntInsn`，可复用 |
+| chain | `reduceGdccStaticLoad`（`FrontendChainReductionHelper`:1056-1103）对 GDCC 类常量返回 UNSUPPORTED；`ReceiverState`（:187-197）不携带 declaration，须用 `ReductionRequest.chainExpression()` + `bindingLookup()`（:334-342）绕开 |
+| lowering | `FrontendOpaqueExprInsnLoweringProcessors` CONSTANT 分支（:149-169）只认 `ExtensionGlobalConstant` / `ExtensionEnumValue` / `GdScriptLanguageConstant`，其余 fail-fast |
+| 既有测试 | `FrontendClassSkeletonTest.buildEmitsExplicitDiagnosticsForDeferredTypeMetaSources`（:654-701）断言 `var from_enum: LocalState` 回退 Variant + `sema.type_resolution`；命名枚举类型标注落地后该断言必须更新 |
+
+### 1.3 总体设计
+
+```text
+EnumDeclaration（类体，含 inner class 体）
+  └─ skeleton 枚举预 pass（FrontendClassSkeletonBuilder + FrontendEnumConstantEvaluator）
+       ├─ 冲突校验 → 求值成员常量表达式（受限子集，见 §2.4）
+       ├─ 全部成功才落地事实；失败发 sema.class_skeleton + skippedSubtreeRoots，不留半成品
+       └─ 落地物：ClassDef 常量表条目 + declared-type scaffold 上的 GDCC_ENUM type-meta
+            └─ scope phase
+                 ├─ ClassScope 索引常量 → value 命名空间 ScopeValueKind.CONSTANT
+                 ├─ 继承 walk 扩展到常量表
+                 └─ 正式 ClassScope 注册命名枚举 type-meta
+  消费端：
+  ├─ 裸成员 `IDLE` / 裸组名 `State` → top binding CONSTANT binding（现有映射零改动）
+  ├─ `State.IDLE` → chain binding 枚举成员 route → RESOLVED(CONSTANT, int)
+  ├─ `var x: State` → ScopeTypeResolver → int（经 type-meta instanceType）
+  └─ lowering：
+       ├─ 裸成员 / `State.IDLE` → LiteralIntInsn（编译期字面量）
+       └─ 裸 `State` → LiteralStringInsn/LiteralIntInsn + ConstructContainerLiteralInsn
+```
+
+关键架构决策：
+
+1. **常量事实的唯一事实源是 `ClassDef` 常量表**，由 skeleton 写入、scope 阶段消费。
+   成员值只在 skeleton 求值一次；body phase 与 lowering 只消费已发布事实，不重扫 AST、
+   不重新求值（对齐「lowering 不得重新扫描 AST」合同）。
+2. **命名枚举 = Dictionary 类型的 CONSTANT 值绑定**，不是 TYPE_META 值路线。
+   `State` 在 value 命名空间命中 `ScopeValueKind.CONSTANT`；top binding 的
+   value-wins-over-TYPE_META 规则（`frontend_top_binding_analyzer_implementation.md` §3.2）
+   天然生效，`shouldPreferGlobalEnumTypeMeta` 只对 `ScopeValueKind.GLOBAL_ENUM` 生效，不受干扰。
+3. **命名枚举同时在 type-meta 命名空间注册**（`ScopeTypeMetaKind.GDCC_ENUM`，
+   `instanceType = GdIntType.INT`，`pseudoType = true`），供两处消费：
+   类型标注解析（`ScopeTypeResolver.tryResolveDeclaredType` 取 `instanceType()`）与
+   词法可见但值隔离上下文（如 inner class）中的 `State.IDLE` 静态成员 route。
+4. **`State.IDLE` 两条入口**：
+   - 声明类及子类内（value 路线）：`State` 绑 CONSTANT 值；chain reduction 在 property step 上
+     识别「chain base 是 enum-group CONSTANT binding」并把**已存在的成员**解析为编译期常量；
+     成员未命中时完全 fall through 到既有 Dictionary/builtin 路径（不得吞掉 `State.keys` 等
+     Dictionary method-reference 合同）。
+   - inner class 等词法可见但值隔离的上下文（type-meta 路线）：`State` 值查找 miss、
+     type-meta 命中 GDCC_ENUM，`State.IDLE` 走 static-load 分支解析成员。
+   两条路线发布同一形态的 member fact（`RESOLVED + CONSTANT + int + declaration=成员常量元数据`），
+   lowering 统一物化 `LiteralIntInsn`，不构造 Dictionary、不产生 `LoadStaticInsn`。
+
+---
+
+## 2. 语义合同
+
+### 2.1 MVP 支持面
+
+| 场景 | 示例 | 结果 | 验收锚点 |
+|---|---|---|---|
+| 匿名枚举成员裸访问 | `enum {IDLE, RUNNING}` → 函数体内 `IDLE` | `CONSTANT` binding，int，`LiteralIntInsn(0)` | Step 4/7 |
+| 显式值与自动递增 | `enum {A = 5, B, C = A + 1}` | `A=5, B=6, C=6` | Step 2 |
+| 一元/二元常量表达式 | `enum {MASK = 1 << 3, NEG = -1, ALL = 0xF0 \| MASK}` | 受限求值器（§2.4） | Step 2 |
+| 引用同枚举前序成员 | `enum {A = 1, B = A + 1}` | 允许 | Step 2 |
+| 引用同类前序枚举常量 | `enum {A} enum {B = A}` | 允许（查 ClassDef 已收集常量） | Step 2 |
+| 引用全局常量/全局枚举裸成员 | `enum {NIL = TYPE_NIL, E = OK}` | 允许（查 `ClassRegistry`） | Step 2 |
+| 命名枚举成员访问 | `State.IDLE` | 编译期 int 常量，`LiteralIntInsn` | Step 5/6/7 |
+| 命名枚举作 Dictionary 值（声明类及子类内） | `print(State)`、`State.keys()`、`State["IDLE"]` | 每次求值物化新 Dictionary（key=String，对齐 Godot 源码；Godot 另将字典 `make_read_only()` 且共享单例，MVP 差异见 §2.2）；方法调用与 subscript 走既有 Dictionary route | Step 5/7 |
+| 命名枚举作类型标注 | `var x: State`、`var a: Array[State]`、`func f(p: State)` | `int` / `Array[int]`；仅限声明类的词法作用域（含其 inner class 的词法链） | Step 2/3 |
+| `@export` 枚举类型标注 | `@export var x: State` | skeleton 生成 `PROPERTY_HINT_ENUM` 用 hint_string（`Idle:0,Jump:5` 格式），编辑器出下拉 | Step 8 |
+| 类型推断 | `var x := State.IDLE` | `int` | Step 4/5 |
+| 继承可见性（值侧） | 子类裸用父类匿名成员 / 命名枚举 | `resolveInheritedValueMember` 扩展常量表（仅限 body 值查找；initializer 引用父类常量见 §2.2） | Step 3 |
+| inner class 内访问外层命名枚举成员 | inner 体内 `State.IDLE` | type-meta 路线（§1.3.4） | Step 5 |
+| static 上下文 | `static func f(): return IDLE` | `ResolveRestriction.allowClassConstants` 已允许（static/instance 均为 true） | Step 3 |
+| property initializer / parameter default | `var x = State.IDLE`、`func f(x = IDLE)` | **有意放行**，两条路径分别成立：property initializer 经 shared `Scope.resolveValue(...)` class-scope lookup 命中静态只读枚举常量（不经 `FrontendVisibleValueResolver`；island 只拦截 self/实例成员，不拦截类常量）；parameter default 经 `PARAMETER_DEFAULT` domain 命中（拦截参数/局部/capture；`self` 与实例成员仅在 instance 方法默认值中允许，static 方法禁止——既有合同不变） | Step 4 |
+| match pattern | `match s: State.IDLE:` / `IDLE:` | 走既有 LITERAL/EXPRESSION pattern 合同，零改动 | Step 5 |
+| `is`/`as` 以枚举名为目标 | `x is State`、`x as State` | 擦除语义：经 declared-type 路径取 `instanceType` 得 int，等价于 `is int` / `as int`，不新增特判 | Step 3 |
+
+### 2.2 明确不支持 / 延后（deferred boundary）
+
+带恢复行为的边界（发诊断 + 跳过）必须在锚定 Step 落地 negative 测试
+（正确 category + 子树跳过 + 兄弟存活）；延后/已知限制类边界以「文档化 +
+行为不变锚点测试」验收（与 §6 DoD 1 同口径）：
+
+| 场景 | 行为 | 验收锚点 |
+|---|---|---|
+| 函数体内 `enum` | **新增诊断**：`runUnsupported` 增加 `EnumDeclaration` 分支，发单条 `sema.unsupported_binding_subtree` error（锚定声明根）+ skip 子树；对齐 Godot（函数内 enum 是解析错误）。当前静默 no-op 是被修复对象 | Step 4 |
+| 跨类限定访问 | `Other.State.IDLE`、`Other.IDLE`：`reduceGdccStaticLoad` 常量分支整体延后，维持既有 UNSUPPORTED 事实与诊断（与 class `const` 同边界） | Step 5 |
+| 类型标注的继承可见 | 子类内 `var x: ParentEnum`：type-meta 查找纯词法不沿继承 walk，回退 Variant + `sema.type_resolution` warning；与 inner class 类型现状一致 | Step 3 |
+| inner class 内的枚举 Dictionary 操作 | inner class 内仅 `State.IDLE` 可用；裸 `State` 值、`State.keys()`、`State["IDLE"]` 按既有值隔离/type-meta 合同拒绝（见 §2.6），**不**为本特性放开 inner-class 值隔离 | Step 5 |
+| 成员值引用命名枚举成员 | `enum {A = State.IDLE}`：求值器子集不含 attribute 表达式，`sema.class_skeleton` error | Step 2 |
+| 成员值引用 class `const` | `enum {A = FOO}`（`const FOO = 5`）：class `const` 整体延后，求值器查不到即发 `sema.class_skeleton` error | Step 2 |
+| 成员值引用父类枚举常量 | `class Child extends Parent:` 内 `enum {NEXT = BASE + 1}`：skeleton 按源码序而非继承序填充类，求值器看不到父类常量表；发 `sema.class_skeleton` error（继承序求值属独立工作，不在 MVP 暗中解决） | Step 2 |
+| 成员值为非 int / 非受支持形态 | 浮点、字符串、bool、调用、三元、`**`、attribute、subscript 等：`sema.class_skeleton` error + 跳过该枚举 | Step 2 |
+| 匿名/命名枚举成员的重复值 | `enum {A = 1, B = 1}` | **允许**（对齐 Godot），非边界 | Step 2（正向用例防误判） |
+| 空枚举 `enum State {}` | 先以解析测试锁定 gdparser 产物形态；若允许空成员列表则发 `sema.class_skeleton` error（Godot 要求至少一个成员） | Step 2 |
+| 枚举 Dictionary 的运行时只读性 | Godot 对枚举字典 `make_read_only()` 且共享单例；MVP 每次裸 `State` 物化新 Dictionary，`State["X"] = 1` 写保护不做（Godot 为运行时错误） | Step 9 记入已知限制 |
+
+### 2.3 数据模型（新增，均在 `gd.script.gdcc.scope` 包）
+
+```java
+/// 一个已求值的脚本枚举成员常量。匿名成员 groupName == null。
+public record GdScriptEnumConstant(
+        @NotNull String memberName,
+        long value,
+        @Nullable String groupName,
+        @NotNull String ownerClassCanonicalName
+) {}
+
+/// 命名枚举组：命名枚举绑定的 declaration 载体，成员按源码顺序。
+public record GdScriptEnumGroup(
+        @NotNull String name,
+        @NotNull List<GdScriptEnumConstant> members,
+        @NotNull String ownerClassCanonicalName
+) {
+    public @Nullable GdScriptEnumConstant findMember(@NotNull String memberName) { ... }
+}
+
+/// ClassDef 常量表条目。type 当前只出现 int（成员）与 Dictionary（命名组）；
+/// declaration 为 GdScriptEnumConstant 或 GdScriptEnumGroup，未来 class const 复用本表。
+public record GdScriptClassConstant(
+        @NotNull String name,
+        @NotNull GdType type,
+        @NotNull Object declaration
+) {}
+```
+
+- `ClassDef` 接口新增 `default @NotNull List<? extends GdScriptClassConstant> getConstants() { return List.of(); }`
+  ——`ExtensionBuiltinClass` / `ExtensionGdClass` 走 default 空表，**引擎/builtin 常量不进入此表**，
+  继续走既有 extension metadata 通道（`findEngineClassConstantInHierarchy` 等）；只有
+  `LirClassDef` 覆写并新增 `addConstant(...)`。backend 不消费该表。
+- `ScopeTypeMetaKind` 新增 `GDCC_ENUM`：「GDCC 类声明的命名枚举用于类型位置」，
+  `instanceType` 恒为 `GdIntType.INT`，`pseudoType = true`，`declaration` 为 `GdScriptEnumGroup`（非空）。
+  该枚举值的全部穷尽分派点见 Step 3.4。
+
+### 2.4 枚举常量求值器（`FrontendEnumConstantEvaluator`）
+
+新 helper，放在 `gd.script.gdcc.frontend.sema.analyzer.support`（与 `FrontendExportAnnotationSupport`
+同包；skeleton 编译期求值已有 `@export` 参数求值先例）。输入为 `EnumMember.value()` 表达式与
+「同枚举已求值成员 + 同类已收集常量 + `ClassRegistry`」只读视图，输出 `long`。
+
+支持的表达式形态（递归）：
+
+| AST | 语义 |
+|---|---|
+| `LiteralExpression`（integer） | 按 gdparser int lexeme 解析（`0x`/`0b`/`0o` 前缀与 `_` 分隔符）。**提取共享 helper 到 `gd.script.gdcc.util.StringUtil`**（建议 `parseGdIntegerLexeme(String): Long`，malformed/溢出返回 null；不含符号位——符号由 `UnaryExpression` 承担）：该 lexeme 解析当前在 `FrontendContainerLiteralSemanticSupport.parseIntLiteral` 与 `FrontendExportAnnotationSupport.renderIntegerLiteral` 各有一份私有实现，按 `common_rules.md` 合并并更新两处调用点；同时迁移 body literal lowering 中两处裸 `Long.parseLong(sourceText)`（`FrontendOpaqueExprInsnLoweringProcessors` integer/integral-number 分支），使普通整数字面量与枚举求值共享同一 lexeme 语义。LIR 文本解析器的十进制 parse 属不同语法域，不动 |
+| `UnaryExpression` | `-` / `+` / `~` 作用于 int |
+| `BinaryExpression` | `+ - * / % << >> & \| ^` 作用于 int；`/`、`%` 遇除数 0 报错 |
+| `IdentifierExpression` | 依次查：同枚举前序成员 → 同类已收集常量（int 才可用）→ **祖先枚举名 blocker**（见下）→ `ClassRegistry.findGlobalEnumValueByBareName` / 全局 int 常量；命中 GDScript 语言常量（PI 等 float）须报「enum 值必须是 int」 |
+| 其他 | 报错（`sema.class_skeleton`，锚定成员节点），整枚枚举跳过 |
+
+自动递增：未赋值成员 = 前成员 + 1（首成员 0），按 `long` 语义。
+
+**祖先枚举名 blocker（防穿透）**：skeleton 按源码序而非继承序填充类，求值器看不到父类
+常量值；但父类枚举常量名若与全局常量同名（如父类 `enum { OK = 123 }`，全局有 `OK`），
+直接落到全局 fallback 会静默求出错误的值。因此求值器在全局 fallback 之前必须先查
+「祖先枚举名集合」：预 pass 启动时，对本类的 GDCC 祖先类（经 header discovery 的类图与
+sourceClassRelations 拿 AST，不要求祖先已完成求值）做一次纯结构扫描，收集其枚举声明的
+组名与匿名成员名；identifier 命中该集合即报 deferred-boundary 的 `sema.class_skeleton`
+error（「暂不支持引用继承的枚举常量」），不落到全局查找。引擎祖先不收集（其常量本就
+不可裸访问）。
+
+### 2.5 命名空间注册矩阵
+
+| 绑定 | 命名空间 | kind | type | declaration | 注册点 |
+|---|---|---|---|---|---|
+| 匿名成员 `IDLE` | ClassScope value | `CONSTANT` | `int` | `GdScriptEnumConstant` | `ClassScope` 索引 `ClassDef.getConstants()` |
+| 命名枚举 `State` | ClassScope value | `CONSTANT` | `Dictionary`（generic） | `GdScriptEnumGroup` | 同上 |
+| 命名枚举 `State` | ClassScope type-meta | `GDCC_ENUM` | instanceType=`int` | `GdScriptEnumGroup` | skeleton 枚举预 pass 注册到 declared-type scaffold；`FrontendScopeAnalyzer` 在 `handleSourceFile`（顶层类）与 `handleClassDeclaration`（inner class）两处注册到正式 ClassScope |
+
+- value 侧冲突校验在 skeleton 枚举预 pass 完成（见 Step 2），保证 scope 阶段 `defineDirectValue` /
+  `defineTypeMeta` 的 fail-fast 永不因用户代码触发。
+- 继承：值侧沿 `ClassDef` 常量表 walk（`resolveInheritedValueMember` 扩展）；type-meta 侧不继承
+  （与 inner class 类型-meta 现状一致）。
+- 遮蔽：callable-local `var`/参数/for iterator 遮蔽枚举常量沿用既有逐层 lookup；类常量遮蔽全局
+  同名常量沿用「ClassScope 先于 ClassRegistry root」；枚举常量遮蔽父类同名成员合法（nearest wins）。
+- 边缘语义：枚举成员名与 Dictionary 方法同名（如 `enum State {keys}`）时，`State.keys`
+  命中枚举成员（枚举分支先于 builtin fallback）；`State.keys()` 调用步不受枚举分支影响，
+  仍走 Dictionary 方法 route。
+
+### 2.6 诊断 owner 与 category
+
+不新增 category。同步更新 `diagnostic_manager.md` 相应条目语义：
+
+| category | owner | 场景 |
+|---|---|---|
+| `sema.class_skeleton` | skeleton（枚举预 pass） | 枚举成员重名、成员/组名与同类 property/signal/function/常量/inner class 冲突、值表达式不可求值或非 int、空枚举 |
+| `sema.unsupported_binding_subtree` | top binding（**本计划新增** `runUnsupported` 的 `EnumDeclaration` 分支；当前该 statement 被静默忽略） | 函数体内 `enum` 语句 |
+| `sema.member_resolution` | chain binding（既有 FAILED member trace 路径） | `State.MISSING`：枚举分支只拦截已存在成员，miss fall through 到既有 Dictionary/builtin miss 路径，由该路径发此类目 |
+| `sema.unsupported_chain_route` | chain binding（既有 UNSUPPORTED route 路径） | 跨类 `Other.State` / `Other.IDLE`（`reduceGdccStaticLoad` 延后边界） |
+| `sema.call_resolution` | chain binding（既有 FAILED call trace 路径） | inner class 内 `State.keys()` 等 pseudo-type 调用：`ScopeMethodResolver` 对 pseudoType 返回 `Failed(UNSUPPORTED_STATIC_RECEIVER)`，chain 映射为 `Status.FAILED` 后发此类目（与 `Variant.Type.keys()` 同类） |
+| `sema.expression_resolution` | expr analyzer（既有 `TYPE_META` ordinary-value failed 路径，`FrontendExpressionSemanticSupport`） | 值位置消费枚举 type-meta（如 inner class 内裸 `State`）。注：`frontend_rules.md` 书面合同称 bare TYPE_META misuse 首条 `sema.binding` 由 top binding 发出，但现状代码（`tryPublishTypeMetaBinding` 不发诊断、`FrontendExpressionSemanticSupport` failed、expr analyzer 发 `sema.expression_resolution`）与之存在**先于本计划的偏差**；本计划沿用现状、不扩大也不修复该偏差（偏差修复是独立工作，见 §5 风险 9） |
+
+恢复合同按枚举位置区分两类：
+
+- **类体（含 inner class 体）内的非法枚举**：skeleton 枚举预 pass 发诊断 +
+  记入 `skippedSubtreeRoots()`（scope phase 消费该 side table），同类其他成员与同 module
+  其他类不受影响。
+- **函数体内的枚举**：body 阶段 `runUnsupported` 发诊断后由 statement resolver 结构性停止
+  下钻（不为该子树发布任何 fact），**不写 `skippedSubtreeRoots()`**——该 side table 是
+  skeleton→scope 的阶段间协议，body 阶段晚于 scope phase，写入无消费者。兄弟 statement
+  照常发布事实。
+
+### 2.7 与现有 route 的兼容性
+
+- 全局枚举/常量五级 `resolveValueHere` 顺序不变；本计划只向 **ClassScope 层**注入命中，
+  全局 root 命名空间零改动。
+- `Variant.Type.TYPE_NIL` 等限定式 `load_static` 路线不变；`GLOBAL_ENUM` kind 语义不变；
+  引擎类枚举裸名禁令（如裸 `MOUSE_MODE_VISIBLE`）不变。
+- static var 仍为 `PROPERTY` binding kind；枚举常量为 `CONSTANT`，两者不混淆。
+- 常量不可写：裸 `IDLE = 5` 由 `ScopeValue.constant()` 经既有左值校验拒绝；
+  `State.IDLE = 5` 由 assignment 语义对 `bindingKind == CONSTANT` 的 member target 分类拒绝
+  （`FrontendAssignmentSemanticSupport`），两条路径都已存在，CFG 不为枚举开写路径。
+- compile-only gate 零改动：枚举成员 fact 为 `RESOLVED(CONSTANT)`，不命中既有
+  BLOCKED/DEFERRED/FAILED/UNSUPPORTED 阻断面，也不命中既有 RESOLVED feature blocker
+  （Dictionary method-reference、builtin type-meta static method-reference）；类级
+  `EnumDeclaration` 不是 executable statement，不进入 compile surface。
+- 命名枚举 value 绑定为 `CONSTANT`（非 `GLOBAL_ENUM`），不触发 dual-role type-meta 交换。
+
+---
+
+## 3. 端到端链路（实施后）
+
+```text
+enum State { IDLE, JUMP = 5 }            # skeleton 枚举预 pass: IDLE=0, JUMP=5
+enum { RED, GREEN = State.JUMP }         # ❌ 拒绝：求值器不含 attribute 表达式
+@export var weapon: State                # skeleton 生成 annotations["export"]="Idle:0,Jump:5"
+                                         #   → backend 注册 PROPERTY_HINT_ENUM，编辑器出下拉
+func f():
+    var a = RED                          # （若匿名成员合法）OpaqueExprValueItem → literal_int
+    var b = State.JUMP                   # MemberLoadItem（无 receiver）→ literal_int 5
+    var c = State                        # OpaqueExprValueItem → literal_string_name×2 + literal_int×2
+                                         #   → construct_container_literal
+    var d: State = State.IDLE            # 类型标注解析为 int
+```
+
+---
+
+## 4. 分步实施与验收细则
+
+> 每步独立可验证；除 Step 9 列出的契约变更外，任一步不得让既有测试变红。
+> 遵守「单批修改不超过 5 个文件」的分批约束。
+
+### Step 1：常量元数据与 `ClassDef` 常量表
+
+改动：
+
+- 新增 `gd/script/gdcc/scope/GdScriptEnumConstant.java`、`GdScriptEnumGroup.java`、
+  `GdScriptClassConstant.java`（record，§2.3）。
+- `gd/script/gdcc/scope/ClassDef.java`：新增 `default getConstants()` 返回 `List.of()`，
+  注释写明该表只服务 GDCC 源常量，引擎/builtin 常量继续走 extension metadata 通道。
+- `gd/script/gdcc/lir/LirClassDef.java`：覆写 `getConstants()` + 新增 `addConstant(...)`。
+
+验收：
+
+- 新增常量表单元测试：default 为空表、`addConstant` 保序、只读视图不可变。
+- 回归：`./gradlew classes --no-daemon --info --console=plain` 通过。
+
+### Step 2：skeleton 枚举预 pass 与常量求值
+
+改动：
+
+- 提取共享 int lexeme 解析 helper 到 `StringUtil.parseGdIntegerLexeme`（§2.4），合并全部
+  四处调用点：`FrontendContainerLiteralSemanticSupport.parseIntLiteral`、
+  `FrontendExportAnnotationSupport.renderIntegerLiteral`、`FrontendOpaqueExprInsnLoweringProcessors`
+  的 integer 与 integral-number 两个分支。
+- 新增 `frontend/sema/analyzer/support/FrontendEnumConstantEvaluator.java`（§2.4）。
+- `FrontendClassSkeletonBuilder.fillClassMembers`：在主循环**之前**执行枚举预 pass
+  （对每个类，含 inner class）。前置重构：`fillClassMembers` 与 `requireDeclaredTypeScope`
+  的 `declaredTypeScope` 形参/返回类型由 `Scope` 收窄为 `ClassScope`——`defineTypeMeta`
+  定义在 `AbstractFrontendScope` 而非 `Scope` 接口，scaffold map 本身就是
+  `IdentityHashMap<Node, ClassScope>`，收窄符合真实数据形态：
+  1. 预收集本类全部成员名（property/signal/function/inner class source name）作为初始冲突表
+     ——主循环尚未填充 classDef，不能依赖它；
+  2. 逐枚 `EnumDeclaration`：组内成员重名（单枚内部校验）、与冲突表冲突（**匿名枚举只查
+     成员名，命名枚举只查组名**；命名成员不注入类级命名空间，不参与查表）、空枚举校验
+     → 求值（§2.4）；
+  3. **单枚全部成功才落地**：写 `LirClassDef` 常量表（匿名成员逐条 `GdScriptEnumConstant`；
+     命名枚举一条 `GdScriptEnumGroup`），向 `declaredTypeScope`（scaffold `ClassScope`）
+     `defineTypeMeta(GDCC_ENUM, instanceType=int)`，并立刻并入冲突表供后续枚举校验——
+     **匿名枚举只并入成员名，命名枚举只并入组名**（命名成员不注入类级命名空间，
+     `enum State {IDLE}` 与 `enum {IDLE}`、与 `var IDLE` 均可并存；组内成员重名在单枚
+     内部校验）。枚举按枚独立成败，不做全类 all-or-nothing；
+  4. 任一失败：发 `sema.class_skeleton`（锚定该枚 `EnumDeclaration`）+ `markSkippedSubtreeRoots`，
+     常量表与 type-meta 均不落地（禁止"先挂 type-meta、失败后掏空值绑定"的半成品状态）。
+- 主循环新增 `case EnumDeclaration -> {}`（预 pass 已处理，显式忽略）。
+- 该预 pass 保证 `var x: State` 与声明顺序无关（类型标注经 scaffold 在 member fill 期间解析）。
+
+验收（新增 `FrontendEnumSkeletonTest` 或并入 `FrontendClassSkeletonTest`）：
+
+- happy：匿名自动递增、显式值（含负数、`0x`/`0b`/`_` lexeme、移位/位运算）、引用前序成员、
+  引用同类前序枚举常量、引用全局常量（`TYPE_NIL`/`OK`）、命名枚举组写入常量表、
+  `var x: State` property 类型为 int（含先声明属性后声明枚举的顺序无关用例）、
+  枚举声明在 inner class 体、命名成员与类级名字并存（`enum State {IDLE}` 与
+  `var IDLE` / `func IDLE()` / `enum {IDLE}` 均合法）。
+- negative（逐条锚定 category + 跳过子树 + 兄弟存活）：
+  - 组内成员重名；组名与 property/inner class 同名；**匿名**成员名与同类 property 同名
+  - 值表达式非法：调用、attribute（`State.IDLE` 引用）、字符串字面量、float、除零、
+    引用未声明名、引用 class `const`、引用 GDScript 语言常量（PI → 非 int）、
+    引用父类枚举常量（`enum {NEXT = BASE + 1}`，继承序求值延后）
+  - 枚举间冲突：`enum {A} enum {A}`（匿名成员重名）、`enum State{IDLE} enum State{JUMP}`
+    （组名重名）、`enum State{IDLE} enum {State}`（组名 vs 匿名成员）
+  - 祖先枚举名防穿透：父类 `enum { OK = 123 }` + 子类 `enum { NEXT = OK }` 必须报
+    `sema.class_skeleton`（不得静默落到全局 `OK`）
+  - 引用后序成员（`enum {A = B, B = 1}`）报错
+  - 空枚举：先以解析测试锁定 AST 产物形态，再按结论锚定诊断
+  - 求值失败的枚举：`var x: State` 不得解析为 int（回退 Variant + `sema.type_resolution`），
+    锚定「无半成品 type-meta」
+- 回归：`FrontendClassSkeletonTest`、`FrontendClassSkeletonAnnotationTest`、
+  `FrontendInheritanceCycleTest` 不变红；lexeme helper 合并后，普通 body 整数字面量的
+  `0x`/`0b`/`0o`/`_` 与溢出行为有针对性回归（四处调用点共享同一实现）。
+
+### Step 3：scope phase 接线
+
+改动：
+
+- `ClassScope`：`indexDirectMembers` 在 functions 之后追加索引 `classDef.getConstants()`
+  （经 `defineConstant`）；`resolveInheritedValueMember` 追加沿继承链查 `getConstants()`。
+- `ScopeTypeMetaKind`：新增 `GDCC_ENUM`。
+- `FrontendScopeAnalyzer`：
+  - 枚举 type-meta 注册必须覆盖**两类 class boundary**：顶层脚本类的 `ClassScope` 由
+    `handleSourceFile`（:146-158）创建，inner class 由 `handleClassDeclaration`（:284-295）
+    创建。抽取共享 helper `defineEnumTypeMetas(ClassScope, ClassDef)`：为
+    `classDef.getConstants()` 中 `declaration instanceof GdScriptEnumGroup` 的条目
+    `defineTypeMeta(...)`（`canonicalName = ownerCanonical + "." + name`，
+    `sourceName = name`，`pseudoType = true`），并在两处 handler 都调用——只挂
+    `handleClassDeclaration` 会让顶层类的命名枚举 type-meta 缺失，函数体内
+    `var x: State` 与 inner class 的 `State.IDLE` 都会失效；
+  - 显式 `handleEnumDeclaration -> SKIP_CHILDREN`（回调由 gdparser `ASTNodeHandler` 提供）：
+    成员值表达式已由 skeleton 求值，scope phase 不得为其记录无用 scope 事实。
+- `FrontendInterfacePhase` 与 `FrontendVariableAnalyzer` 的枚举子树跳过（回调
+  `handleEnumDeclaration` 由 gdparser `ASTNodeHandler` 提供），按 walker 分列：
+  - `FrontendInterfacePhase` 主 walker（`handleNode` 默认 CONTINUE，且不咨询
+    `skippedSubtreeRoots`）：显式 `handleEnumDeclaration -> SKIP_CHILDREN`，防止枚举成员
+    表达式内的 lambda 被 callable inventory 收录；
+  - `FrontendVariableAnalyzer` 主 binder（`handleNode` 默认 SKIP_CHILDREN）：无需改动，
+    以测试锚定该现状；
+  - `FrontendVariableAnalyzer` 的 `UnsupportedVariableBoundaryReporter`（`handleNode`
+    默认 CONTINUE）：显式 `handleEnumDeclaration -> SKIP_CHILDREN`；
+  - `FrontendVariableAnalyzer` 的 `LambdaCaptureSourceScanner`（`handleNode` 默认
+    CONTINUE）：显式 `handleEnumDeclaration -> SKIP_CHILDREN`，防止函数体/lambda 体内
+    枚举成员表达式被收为 capture 或 nested-lambda 事件。
+- **`GDCC_ENUM` 穷尽分派点逐一补齐**（新增枚举值会让无 default 的 switch 编译失败，
+  以下每处须按语义补齐，不得只为过编译）：
+  1. `FrontendDualRoleTypeMetaRouteSupport.supportsTopLevelTypeMeta`（:94-98）：补齐穷尽分派
+     （`GDCC_ENUM` 与 `GLOBAL_ENUM` 同规则，`declaration() != null`）。注意该函数只服务
+     dual-role bias 判定；inner class 的 `State.IDLE` route 实际由正式 ClassScope 的
+     type-meta 注册 + `tryPublishTypeMetaBinding` 启用，与本函数无关；
+  2. `FrontendConstructorResolutionSupport.resolveConstructor`（:81-96）：
+     `GDCC_ENUM` 拒绝构造（`State.new()` 非法，对齐 `GLOBAL_ENUM`）；
+  3. `FrontendChainReductionHelper.reduceStaticLoadStep`（:904-912）：新增 `GDCC_ENUM` 成员解析分支
+     （Step 5 实施）；
+  4. `FrontendChainReductionHelper.resolveStaticMethodReference`（:2569-2579）：
+     `GDCC_ENUM` 返回 null（枚举无静态方法）；
+  5. `FrontendClassSkeletonBuilder` superclass 判定（:1625-1657）：`GDCC_ENUM` 拒绝
+     （枚举名不能作 `extends` 目标）；
+  6. `ScopeMethodResolver.resolveStaticOwnerClass`（:1096-1125）：`GDCC_ENUM` 维持
+     pseudoType 拒绝/UNSUPPORTED 语义。
+  实施时先全量 grep `ScopeTypeMetaKind` 确认无遗漏分派点。
+
+验收：
+
+- scope 测试新增：类内裸成员命中 `CONSTANT`（`constant=true, writable=false`）、
+  子类继承命中、static restriction 下允许、inner class 值隔离（裸 `State` 不命中 value）
+  与 type-meta 词法可见（`State` 命中 `GDCC_ENUM`）。
+- negative：被 skeleton 跳过的坏枚举不产生 scope 事实；同名局部 `var` 遮蔽枚举成员；
+  `extends State`（枚举名作超类）被拒绝。
+- 行为不变锚点：子类内 `var x: ParentEnum` 维持 Variant 回退 + `sema.type_resolution`
+  warning（类型标注不沿继承）。
+- type-meta 注册覆盖两类 class boundary：顶层类函数体内 `var x: State` 解析为 int；
+  inner class 内 `var y: State` 同样成立（词法链）；`x is State` / `x as State` 按
+  擦除语义等价于 int target。
+- 回归：`FrontendScopeAnalyzerTest`、`ScopeProtocolTest`、
+  `FrontendStaticContextValueRestrictionTest`、`FrontendInnerClassScopeIsolationTest`、
+  `ClassRegistryScopeTest`、`ScopeTypeMetaChainTest` 不变红。
+
+### Step 4：top binding / visible resolver / 表达式类型接通
+
+改动：
+
+- `FrontendBodyOwnerProcedures.runUnsupported`（:818-831）新增 `case EnumDeclaration`：
+  发单条 `sema.unsupported_binding_subtree` error（锚定声明根），覆盖函数体内 `enum`。
+  这是新诊断路径，不是既有行为。该分支不写 `skippedSubtreeRoots()`（body 阶段晚于
+  scope phase，写入无消费者）；statement resolver 结构性停止下钻，子树不发布任何 fact。
+- 预期 `FrontendVisibleValueResolver`、`publishScopeValueBinding`
+  （`CONSTANT -> CONSTANT` 映射已存在）、`FrontendExpressionSemanticSupport` 无需改动；
+  若发现 class-constant 命中被既有 fail-fast 分支拦截，按最小改动修复并记录原因。
+
+验收：
+
+- top binding 测试：裸匿名成员与裸 `State` 发布 `FrontendBindingKind.CONSTANT`，
+  `declarationSite` 为对应枚举元数据；局部 `var` 遮蔽枚举成员。
+- expr type 测试：`IDLE` → int；`State` → Dictionary。
+- negative：函数体内 `enum` → 单条 `sema.unsupported_binding_subtree` error + 子树无
+  任何 published facts + 兄弟 statement 正常发布事实；未知名仍走 `sema.binding` + `UNKNOWN`。
+- property initializer 与 parameter default island 消费枚举常量的正向用例
+  （`var x = State.IDLE`、`func f(x = IDLE)`）。
+- 回归：`FrontendBodyOwnerProceduresExprTypeTest`、`FrontendVisibleValueResolverTest`、
+  `FrontendSuiteResolverTest`、`FrontendInterfacePhaseTest`、`FrontendVariableAnalyzerTest` 不变红。
+
+### Step 5：chain binding 枚举成员 route
+
+改动（`FrontendChainReductionHelper`）：
+
+- `reducePropertyStep`（:670-710）在 TYPE_META 早退（:677-679）之后、读取 `receiverType` 之前
+  插入枚举分支，条件：**`stepIndex == 0`** 且 `request.chainExpression().base()` 为
+  `IdentifierExpression` 且 `request.bindingLookup()` 命中 `CONSTANT` 且
+  `declarationSite instanceof GdScriptEnumGroup`（`stepIndex` 限制必需：reduction 对每个
+  step 都会进入本函数，而 `chainExpression().base()` 始终是链头；缺了它，
+  `State.IDLE.JUMP` 的第二 step 会把 `JUMP` 误解析为枚举成员而不是按 int receiver 拒绝）：
+  - 成员存在 → 发布 `RESOLVED`、`bindingKind=CONSTANT`、`resultType=int`、
+    `declarationSite=GdScriptEnumConstant`，outgoing receiver 为 int；
+  - **成员不存在 → 完全 fall through 到既有 Dictionary/builtin 路径**（不定制诊断，
+    不吞掉 `State.keys` 等 Dictionary method-reference 的既有合同）；该路径成员 miss
+    的诊断固定为 chain binding 持有的 `sema.member_resolution`。
+- `reduceStaticLoadStep`（:904-912）新增 `case GDCC_ENUM`，委托给新私有 helper
+  `reduceGdccEnumStaticLoad(...)`：从 `receiverTypeMeta.declaration()`（`GdScriptEnumGroup`）
+  解析成员——成员存在 → `resolvedStaticLoadTrace(..., CONSTANT, int, 成员元数据)`；
+  成员不存在或 declaration 形态异常 → `failedStaticLoadTrace`（`sema.member_resolution`）。
+  注意该 switch 是 switch expression，不存在可 fall-through 的公共尾部，必须自成完整分支。
+- 不扩展 `reduceGdccStaticLoad` 的跨类常量路线（`Other.State` 保持 UNSUPPORTED 延后边界，
+  诊断固定为 chain binding 持有的 `sema.unsupported_chain_route`）。
+
+验收：
+
+- chain 测试（`FrontendBodyOwnerProceduresChainBindingTest` 或新类）：
+  - `State.IDLE` RESOLVED int + declaration 正确；
+  - `State.keys()` 仍走 Dictionary 方法 route，`State.keys`（无括号）维持既有
+    Dictionary method-reference 事实（不被枚举分支吞没）；
+  - `State.MISSING` → `sema.member_resolution`（既有 Dictionary/builtin miss 路径）；
+  - `State.IDLE.JUMP`、`State.IDLE.keys`：首步后按 int receiver 继续，不得再命中枚举分支；
+  - inner class 内 `State.IDLE` 经 GDCC_ENUM static 分支 RESOLVED；
+  - inner class 内裸 `State` 维持值隔离拒绝；inner class 内 `State.keys()` →
+    `sema.call_resolution`（pseudoType `UNSUPPORTED_STATIC_RECEIVER` 既有映射）；
+  - 跨类 `Other.State.IDLE` / `Other.IDLE` 维持 `sema.unsupported_chain_route`
+    （`reduceGdccStaticLoad` 既有延后边界）；
+  - `State.IDLE = 5` 在 sema 拒绝（CONSTANT member target 分类）。
+- 回归：`FrontendChainReductionHelperTest`、`FrontendBodyOwnerProceduresChainBindingTest` 不变红。
+
+### Step 6：CFG 物化
+
+改动（`FrontendCfgGraphBuilder`）：
+
+- `buildAttributeExpressionValue`（:2154-2175）在 type-meta head 判断之外新增「枚举常量组 head」
+  判断：base 为 `IdentifierExpression` 且其 `symbolBindings()` 为 `CONSTANT` +
+  `declarationSite instanceof GdScriptEnumGroup`，且首 step 为 `AttributePropertyStep` 且其
+  `resolvedMembers()` fact 为 `RESOLVED` + `declarationSite instanceof GdScriptEnumConstant` 时，
+  **不物化 base**，直接发 `MemberLoadItem(step, memberName, null, resultValueId)`
+  （receiverless，与 type-meta head 同形），后续 step 从 int receiver 继续。
+- 该分支不得挂 writable route；`State.IDLE = 5` 已在 sema 拒绝，CFG 不新增赋值路径。
+- 裸 `State` / 裸匿名成员维持 `OpaqueExprValueItem` 不变。
+- type-meta 路线（inner class）已天然走既有 `buildTypeMetaHeadMemberStep` receiverless 形态，零改动。
+- 同步在 `frontend_lowering_cfg_pass_implementation.md` 补记 receiverless `MemberLoadItem`
+  新增「枚举常量成员」来源（现合同只覆盖 type-meta 路线）。
+
+验收：
+
+- `FrontendCfgGraphBuilderTest` 新增：`State.IDLE` 无 base value item、产出 receiverless
+  `MemberLoadItem`；裸 `State` 保持 opaque 表面。
+- 回归：既有 CFG 测试不变红（含全局枚举 `Variant.Type` 路线）。
+
+### Step 7：body lowering
+
+改动：
+
+- `FrontendOpaqueExprInsnLoweringProcessors` CONSTANT 分支（:149-169）新增：
+  - `declarationSite instanceof GdScriptEnumConstant` → `LiteralIntInsn(resultSlotId, value)`；
+  - `declarationSite instanceof GdScriptEnumGroup` → 按源码顺序为每个成员发射
+    `LiteralStringInsn`（key，对齐 Godot 的 String key 事实）与 `LiteralIntInsn`（value）
+    到临时 slot，最后
+    `ConstructContainerLiteralInsn(resultSlotId, operands)`：
+    - `ConstructContainerLiteralInsn` 操作数为 `List<LirInstruction.Operand>` 且必须全部是
+      `VariableOperand`（key/value 交替），result slot 类型为 generic Dictionary；
+    - 现有 session temp 分配器均为专用（`allocateGdScriptLanguageFunctionTemp` /
+      `allocateWritableRouteTemp` / `materializeForLoopIntConstant`），**不得挪用**；
+      新增专用分配 helper（如 `allocateEnumGroupLiteralTemp(purpose, type)`）；
+    - 该物化路线作为 OpaqueExprValueItem 的常量展开，不经过 `containerLiteralPlans`
+      （该 side table 只约束 AST `DictionaryExpression`），不违反既有合同；
+  - 其余 declaration 形态保持 fail-fast。
+- `FrontendSequenceItemInsnLoweringProcessors.FrontendMemberLoadInsnLoweringProcessor.lower`
+  （:1131 起）在 receiverKind 分派**之前**插入：
+  `RESOLVED && declarationSite instanceof GdScriptEnumConstant` → `LiteralIntInsn`。
+  该分支同时覆盖 Step 6 的 value 路线 receiverless item 与 type-meta 路线的 receiverless item。
+
+验收：
+
+- lowering 测试（`FrontendLoweringBodyInsnPassTest` 等）：
+  - 裸匿名成员 → `LiteralIntInsn`；`State.JUMP` → `LiteralIntInsn(5)`；
+  - 裸 `State` → 成员数量的 String/int literal + 单条 `construct_container_literal`，
+    操作数为 VariableOperand 交替序列；
+  - 断言只针对 insn opcode 与 payload（对齐既有 lowering 测试风格）。
+- 回归：`FrontendLoweringBodyInsnPassTest`、`CBodyBuilderPhaseCTest`、
+  `CNewDataInsnGenTest`、`CLoadStaticInsnGenTest` 不变红。
+
+### Step 8：`@export` 枚举 hint_string 生成（编辑器下拉支持）
+
+依赖 Step 2/3（枚举元数据与 `GDCC_ENUM` type-meta 已可用）。前端生成 annotation value，
+后端消费该 value 生成 `PROPERTY_HINT_ENUM` 注册——链路其余部分（annotations 透传、
+`export_enum` → hint 映射、模板注册）均已存在。
+
+改动：
+
+- 前端 skeleton（`FrontendClassSkeletonBuilder.toLirProperty` / `applyPropertyAnnotations`
+  附近）：
+  - 场景：裸 `@export`（不含 `export_range` 等其他 variant）且 declared type 文本经
+    `declaredTypeScope` 解析命中 `ScopeTypeMetaKind.GDCC_ENUM` 的 property；
+  - 从 type-meta `declaration`（`GdScriptEnumGroup`）取成员表，按 Godot 格式
+    （`gdscript_parser.cpp` `export_annotations()` 的 ENUM 分支）生成 hint_string：
+    `capitalize(成员名):值` 逗号拼接；capitalize 对齐 Godot 行为（下划线转空格、
+    逐词首字母大写），新增 `StringUtil` helper 承载；
+  - 写入 `LirPropertyDef.annotations`：`"export" -> "<hint_string>"`（保持诚实 key，
+    不合成用户未写的 `export_enum`）；
+  - 时机保证：枚举预 pass（Step 2）先于成员填充，同类枚举组此时已可查；枚举求值失败
+    （type-meta 未注册）→ 类型回退 Variant → 维持既有行为，不生成 hint；
+  - 时机说明：不在 lowering 生成——lowering 时声明类型已擦除为 int，且 lowering 不得
+    重新解释 AST 语义；lowering 透传同一 `LirPropertyDef` 对象，skeleton 写入即自动可见。
+- 后端 `CGenHelper.renderPropertyMetadata`：裸 `export` 分支新增规则——property 类型为
+  int 且 annotation value 非空 → `godot_PROPERTY_HINT_ENUM` + `GD_STATIC_S(hint_string)`；
+  value 为空串维持现状（按类型推导/NONE）。若 `PROPERTY_USAGE_CLASS_IS_ENUM` 常量可用
+  （`godot_global_enums.h` 由 extension API dump 生成），一并设置 usage 与
+  class_name=枚举名以对齐 Godot PropertyInfo；不可用则只设 hint/hint_string
+  （编辑器下拉仅依赖这两者），差异记入已知限制。
+- 非目标：`@export_enum(EnumName)` 自动展开（Godot 同样不支持，注解参数是字符串）；
+  引擎全局枚举（`GLOBAL_ENUM`）类型标注的 export hint（机制相同，留作扩展）；
+  `@export_range` 等其他 variant 与枚举类型组合的行为不变。
+
+验收：
+
+- skeleton/annotation 测试：`@export var x: State`（`enum State {IDLE, JUMP = 5}`）→
+  `annotations["export"] == "Idle:0,Jump:5"`；成员名含下划线的用例锚定 capitalize 规则
+  （如 `STATE_IDLE` → `State Idle:0`）。
+- backend 测试（`CGenHelperTest`）：裸 export + int + 非空 value →
+  `godot_PROPERTY_HINT_ENUM` + hint_string 文本；value 为空串 → 维持现状映射。
+- negative：求值失败的枚举 + `@export var x: State` → 无 hint、既有诊断不变；
+  `@export_range` 与枚举类型组合行为不变。
+- 回归：`FrontendClassSkeletonAnnotationTest`、`FrontendAnnotationUsageAnalyzerTest`、
+  `CGenHelperTest` 不变红。
+- 文档同步：`frontend_annotation_implementation.md`（:160）把「脚本 enum 导出当前不支持」
+  改写为已支持并记录 hint_string 生成规则与 `StringUtil` capitalize 合同；
+  `gdcc_c_backend.md` 若涉及属性注册 hint 映射则补记。
+
+### Step 9：compile 全链路、既有测试更新与文档同步
+
+改动：
+
+- 更新 `FrontendClassSkeletonTest.buildEmitsExplicitDiagnosticsForDeferredTypeMetaSources`：
+  `var from_enum: LocalState` 现解析为 int（不再是 deferred type-meta source），
+  从该用例中移除枚举相关断言（`Alias`/`Preloaded` 断言保留），并新增独立的
+  「枚举类型标注转正」正向用例。
+- 端到端：`FrontendCompileCheckAnalyzer` 相关测试补「枚举 surface 不产生 compile blocker」；
+  视环境可用性在 `src/test/test_suite` 增补枚举 compile/run 锚点（Zig 不可用时按既有约定跳过）。
+- 文档同步（同一批提交；实施时逐份核实再改，不只凭行号）：
+  - `frontend_rules.md`：MVP 约定中「class constant 整体延后」拆写——类级枚举常量进入支持面，
+    class `const` 与跨类常量访问仍延后；补枚举条目；并记录 bare TYPE_META misuse 诊断 owner 的
+    **已知临时偏差**（现状由 expr analyzer 发 `sema.expression_resolution`，与 :18 冻结的
+    `sema.binding` 合同不一致；后续独立任务以对齐 frozen 规则为目标迁移，本说明不是新的
+    冻结 owner 合同）；
+  - `diagnostic_manager.md`：`sema.class_skeleton` 补枚举声明诊断；
+    `sema.unsupported_binding_subtree` 补函数体内枚举；交叉引用上述 TYPE_META owner 偏差；
+  - `frontend_global_constant_implementation.md`：§5 的 CONSTANT 物化 declaration 白名单补
+    `GdScriptEnumConstant` / `GdScriptEnumGroup`；§2.2 只改「class constant 收集与绑定整体延后」
+    表述并交叉引用本文档——引擎类枚举裸名禁令行（如 `MOUSE_MODE_VISIBLE`）不动；
+  - `frontend_chain_binding_expr_type_implementation.md`：改写「GDCC script class static load 与
+    class-level `const` / enum 继承必须继续 UNSUPPORTED」条款——枚举成员 route 已落地，
+    class `const` 与跨类常量访问仍延后；同文件其余 class-constant 封口表述逐一审阅；
+  - `frontend_top_binding_analyzer_implementation.md`：§2.3/非目标中 class constant binding
+    延后表述更新为「类枚举常量已支持」；§5.3 category 覆盖补函数体内枚举；§6.3 消费边界更新；
+  - `frontend_visible_value_resolver_implementation.md`：类常量可见性来源更新；
+  - `scope_analyzer_implementation.md` / `scope_architecture_refactor_plan.md`：ClassScope 常量索引、
+    继承 walk、`GDCC_ENUM` type-meta kind；
+  - `scope_type_resolver_implementation.md`：枚举 type-meta 作为新的类型解析来源；
+  - `inner_class_implementation.md`：词法 type-meta 可见性新增命名枚举来源，值隔离边界不变；
+  - `frontend_parameter_default_implementation.md`（:51）：「source `const` 仍 deferred」
+    拆写为「class `const` 仍 deferred；类枚举常量经既有 island 放行」；
+  - `frontend_type_check_analyzer_implementation.md` / `frontend_compile_check_analyzer_implementation.md`
+    / `frontend_container_literal_implementation.md` / `frontend_singleton_implementation.md`
+    / `frontend_variable_analyzer_implementation.md`：逐一核实其中「class constant/enum 延后」
+    表述，只拆写枚举部分，class `const` 边界保持原样；
+  - `frontend_match_statement_implementation.md`：枚举成员 pattern 经 EXPRESSION 合同转正；
+  - `frontend_static_var_implementation.md`：CONSTANT 与 PROPERTY 区分不变，补交叉引用；
+  - `frontend_lowering_cfg_pass_implementation.md`：receiverless `MemberLoadItem` 合同补枚举来源；
+  - `frontend_annotation_implementation.md`：见 Step 8（脚本 enum 导出 hint 已转正，
+    该步承担其改写）；
+  - `frontend_global_constant_implementation.md`（:54）：parameter default 行的 deferred
+    表述与枚举常量放行对齐（裸全局常量合同本身不变）；
+  - `frontend_implicit_conversion_matrix.md`（:174-175）：补记 GDCC 脚本枚举不是一等类型、
+    声明类型直接擦除为 int，矩阵中 enum 行的 `N` 仅指一等 enum 转换模型；
+  - `frontend_cast_expression_implementation.md` / `frontend_is_type_test_implementation.md`：
+    补记枚举名 target 经 declared-type 擦除为 int。
+- 本文档状态由「实施计划」改写为事实源（冻结已实现合同，移除步骤流水账）。
+
+验收：
+
+- 行为不变锚点：`State["X"] = 1` 不产生编译期写保护诊断（维持 subscript 写入现状）。
+- `./gradlew clean build --no-daemon --info --console=plain` 全量通过。
+- 定向回归清单（`script/run-gradle-targeted-tests.sh`，实施时以实际类名为准）：
+  `FrontendClassSkeletonTest`、`FrontendScopeAnalyzerTest`、`FrontendSemanticAnalyzerFrameworkTest`、
+  `FrontendBodyOwnerProceduresExprTypeTest`、`FrontendBodyOwnerProceduresChainBindingTest`、
+  `FrontendVisibleValueResolverTest`、`FrontendChainReductionHelperTest`、`FrontendCfgGraphBuilderTest`、
+  `FrontendLoweringBodyInsnPassTest`、`FrontendCompileCheckAnalyzerTest`、`FrontendVariableAnalyzerTest`、
+  `FrontendInterfacePhaseTest`、`FrontendSuiteResolverTest`、`FrontendStaticContextValueRestrictionTest`、
+  `FrontendInnerClassScopeIsolationTest`、`ScopeProtocolTest`、`ClassRegistryScopeTest`、
+  `ScopeTypeMetaChainTest`、`FrontendTypeCheckAnalyzerTest`、`FrontendMatchSemanticsTest`、
+  `FrontendMatchSupportTest`、`FrontendCfgGraphBuilderMatchTest`。
+
+---
+
+## 5. 风险与边界
+
+1. **`MemberLoadItem` receiverless 形态的 receiverKind 语义**：枚举成员 fact 的
+   `receiverKind` 保持 `INSTANCE`（源级 receiver 是值），但 CFG 产出无 base 的 item。
+   lowering 的枚举分支必须位于 receiverKind 分派之前（fail-fast 合同：INSTANCE 缺 base 会抛错）。
+   该 item 形态扩展必须在 `frontend_lowering_cfg_pass_implementation.md` 补记。
+2. **`ScopeTypeMetaKind.GDCC_ENUM` 穷尽分派**：新增枚举值会使所有无 default 的 switch
+   编译失败（已确认 6 处，见 Step 3.4）。每处按语义补齐，不允许只补 case 过编译；
+   实施第一步先 grep 全量分派点。
+3. **求值器子集与 Godot 完整常量表达式的差距**：调用、attribute、三元、`**`、float 均拒绝。
+   这是有意的 fail-closed 边界；拓宽时必须先扩展求值器测试，再放开语法面。
+4. **类型标注的继承盲区**：子类 `var x: ParentEnum` 回退 Variant + warning。
+   若未来补齐，需让 declared-type scaffold 与正式 ClassScope 的 type-meta 注册都沿继承链收集
+   枚举 type-meta——这属于 type-meta 继承策略的独立决策（inner class 类型同样不继承），
+   不在本计划内暗中解决。
+5. **枚举 Dictionary 的可变性**：Godot 对命名枚举字典 `make_read_only()` 并共享单例；
+   MVP 每次裸引用物化新 Dictionary，运行时改写不会影响其他引用点，与 Godot 存在
+   可观察差异；MVP 接受该差异并文档化（若后续要对齐，需共享存储 + 只读标记，属独立工作）。
+6. **声明顺序**：枚举值只允许引用同枚举前序成员与同类已收集（源码序更早）常量；
+   Godot 对类级声明为两阶段、允许前向引用，本计划按源码序求值是有意收窄，诊断信息需明确。
+7. **parser 依赖**：`EnumDeclaration`/`EnumMember` 形态由外部 `gdparser:0.5.4` 决定；
+   空枚举、trailing comma、成员值缺失等边界形态需在 Step 2 先用解析测试锁定 AST 产物，
+   再定诊断行为。
+8. **半成品事实防范**：枚举预 pass 必须「单枚全部成功才落地」。若 type-meta 已注册而求值失败，
+   `var x: State` 会静默解析为 int 而值绑定不存在——Step 2 的 negative 验收专门锚定该场景。
+9. **bare TYPE_META misuse 诊断 owner 的既有偏差**：`frontend_rules.md` 冻结「top binding 发
+   首条 `sema.binding`」，但现状代码由 expr analyzer 发 `sema.expression_resolution`
+   （`tryPublishTypeMetaBinding` 不发诊断，`FrontendExpressionSemanticSupport` 产 FAILED fact）。
+   该偏差先于本计划存在，影响所有 TYPE_META misuse（inner class 名误用等），不是枚举特有问题。
+   本计划不扩大也不修复该偏差；是否把 owner 对齐回 frozen 规则属于独立决策，须单独评估
+   既有测试基线后另行实施。
+
+---
+
+## 6. 完成定义（DoD）
+
+1. §2.1 支持面全部通过对应测试；§2.2 中带恢复行为的边界（发诊断 + 跳过的场景）在其锚定
+   Step 有 negative 测试（正确 category + 子树跳过 + 兄弟存活）；延后/已知限制类边界
+   （`@export` hint、Dictionary 运行时只读性等）以「文档化 + 行为不变锚点测试」验收，
+   不要求诊断三件套。
+2. §4 全部 Step 的验收细则执行完毕，回归清单不变红，全量 `clean build` 通过。
+3. §4 Step 9 的文档同步清单全部落地；本文档改写为事实源。
+4. 无新增 compiler-only 类型、无新 LIR 指令、无 backend 改动、无新 diagnostic category
+   （若实施中发现必须新增，回到本文档修订并说明）。
