@@ -298,8 +298,10 @@
 engine `TYPE_META` static load 的 constant / enum value 查询必须走 `ClassRegistry` 的 inherited static lookup：
 直接类优先，随后沿 engine metadata 的 `inherits` 链近到远查找，并在 resolved member 的 declaration metadata /
 detail 中保留实际 owner。builtin metadata 当前没有 superclass edge，因此 builtin static load 继续 direct-only，
-但通过同形状 registry 入口接入，避免 frontend 与 backend 漂移。GDCC script class static load 与 class-level
-`const` / enum 继承仍不在当前支持面内，必须继续发布 `UNSUPPORTED`，不能回退成普通 miss 或 dynamic route。
+但通过同形状 registry 入口接入，避免 frontend 与 backend 漂移。GDCC script class static load 已支持
+static 方法引用、static property 与脚本枚举常量/枚举组（含逐继承层 nearest-layer-wins 查找与近层非静态成员
+终端遮蔽）；class-level `const`、未声明名与嵌套类限定符仍不在当前支持面内，
+必须继续发布 `UNSUPPORTED`，不能回退成普通 miss 或 dynamic route。
 
 当前 constructor route 的事实源合同已经闭合到 downstream：
 

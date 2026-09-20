@@ -1,6 +1,7 @@
 package gd.script.gdcc.frontend.sema.analyzer.support;
 
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
@@ -19,12 +20,15 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.GdScriptClassConstant;
 import gd.script.gdcc.scope.GdScriptEnumConstant;
 import gd.script.gdcc.scope.GdScriptEnumGroup;
+import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.scope.ScopeTypeMeta;
 import gd.script.gdcc.scope.ScopeTypeMetaKind;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdCallableType;
+import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
@@ -48,6 +52,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -989,6 +994,471 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
+    void reduceResolvesEnumGroupHeadMemberAsCompileTimeConstant() {
+        // Value route: the head binds the named enum group as a CONSTANT value (Dictionary), so
+        // the first property step resolves an existing member as a compile-time int constant.
+        var enumGroup = stateGroup("Owner");
+        var jumpMember = enumGroup.findMember("JUMP");
+        assertNotNull(jumpMember);
+        var headBinding = new FrontendBinding("State", FrontendBindingKind.CONSTANT, enumGroup);
+
+        var result = FrontendChainReductionHelper.reduce(requestWithBindings(
+                chain(identifier("State"), property("JUMP")),
+                FrontendChainReductionHelper.ReceiverState.resolvedInstance(genericDictionary()),
+                newRegistry(List.of(), List.of()),
+                noExpressionTypes(),
+                _ -> headBinding
+        ));
+
+        var trace = result.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, trace.status());
+        assertEquals(FrontendChainReductionHelper.RouteKind.INSTANCE_PROPERTY, trace.routeKind());
+        var member = trace.suggestedMember();
+        assertNotNull(member);
+        assertAll(
+                () -> assertEquals(FrontendBindingKind.CONSTANT, member.bindingKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, member.receiverKind()),
+                () -> assertEquals(ScopeOwnerKind.GDCC, member.ownerKind()),
+                () -> assertEquals(GdIntType.INT, member.resultType()),
+                () -> assertSame(jumpMember, member.declarationSite()),
+                () -> assertEquals(
+                        FrontendReceiverKind.INSTANCE,
+                        result.finalReceiver().receiverKind()
+                ),
+                () -> assertEquals(GdIntType.INT, result.finalReceiver().receiverType())
+        );
+    }
+
+    @Test
+    void reduceFallsThroughToBuiltinRouteWhenEnumGroupMemberMisses() {
+        // Member miss must not be intercepted or re-diagnosed by the enum branch: the step falls
+        // through to the ordinary Dictionary/builtin lookup and keeps its failure shape.
+        var enumGroup = stateGroup("Owner");
+        var headBinding = new FrontendBinding("State", FrontendBindingKind.CONSTANT, enumGroup);
+
+        var result = FrontendChainReductionHelper.reduce(requestWithBindings(
+                chain(identifier("State"), property("MISSING")),
+                FrontendChainReductionHelper.ReceiverState.resolvedInstance(genericDictionary()),
+                newRegistry(List.of(), List.of()),
+                noExpressionTypes(),
+                _ -> headBinding
+        ));
+
+        var trace = result.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, trace.status());
+        assertNotNull(trace.detailReason());
+        assertTrue(trace.detailReason().contains("Builtin member lookup"), trace.detailReason());
+        var member = trace.suggestedMember();
+        assertNotNull(member);
+        assertAll(
+                () -> assertEquals(FrontendBindingKind.UNKNOWN, member.bindingKind()),
+                () -> assertNull(member.declarationSite())
+        );
+    }
+
+    @Test
+    void reduceDoesNotInterceptSynthesizedSubscriptPropertyStep() {
+        // Subscript reduction synthesizes a property step that shares stepIndex 0 with the chain
+        // head; the identity guard must keep the enum branch off so `State["IDLE"]`-shaped chains
+        // keep Dictionary subscript semantics instead of resolving the key as an enum member.
+        var enumGroup = stateGroup("Owner");
+        var headBinding = new FrontendBinding("State", FrontendBindingKind.CONSTANT, enumGroup);
+
+        var result = FrontendChainReductionHelper.reduce(requestWithBindings(
+                chain(identifier("State"), subscript("IDLE", literal("\"IDLE\""))),
+                FrontendChainReductionHelper.ReceiverState.resolvedInstance(genericDictionary()),
+                newRegistry(List.of(), List.of()),
+                noExpressionTypes(),
+                _ -> headBinding
+        ));
+
+        var trace = result.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.StepKind.SUBSCRIPT, trace.stepKind());
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, trace.status());
+        assertNotNull(trace.detailReason());
+        assertTrue(trace.detailReason().contains("Builtin member lookup"), trace.detailReason());
+    }
+
+    @Test
+    void reduceSkipsEnumBranchWhenHeadBindingIsNotEnumGroupConstant() {
+        // A local variable shadowing the group name binds LOCAL_VAR, so the enum branch must not
+        // fire and the property step keeps ordinary Dictionary lookup semantics.
+        var shadowBinding = new FrontendBinding("State", FrontendBindingKind.LOCAL_VAR, null);
+
+        var result = FrontendChainReductionHelper.reduce(requestWithBindings(
+                chain(identifier("State"), property("IDLE")),
+                FrontendChainReductionHelper.ReceiverState.resolvedInstance(genericDictionary()),
+                newRegistry(List.of(), List.of()),
+                noExpressionTypes(),
+                _ -> shadowBinding
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, result.stepTraces().getFirst().status());
+    }
+
+    @Test
+    void reduceResolvesCrossClassEnumConstantAndGroupViaStaticLoad() {
+        var enumGroup = stateGroup("Other");
+        var other = newClass("Other");
+        var idleConstant = new GdScriptEnumConstant("IDLE", 0, null, "Other");
+        other.addScriptConstant(new GdScriptClassConstant("IDLE", GdIntType.INT, idleConstant));
+        other.addScriptConstant(new GdScriptClassConstant("State", genericDictionary(), enumGroup));
+        var registry = newRegistry(List.of(), List.of(), List.of(), List.of(other));
+
+        var memberResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Other"), property("IDLE")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("Other", new GdObjectType("Other"), ScopeTypeMetaKind.GDCC_CLASS, other, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        var memberTrace = memberResult.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, memberTrace.status());
+        assertEquals(FrontendChainReductionHelper.RouteKind.STATIC_LOAD, memberTrace.routeKind());
+        var member = memberTrace.suggestedMember();
+        assertNotNull(member);
+        assertAll(
+                () -> assertEquals(FrontendBindingKind.CONSTANT, member.bindingKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, member.receiverKind()),
+                () -> assertEquals(GdIntType.INT, member.resultType()),
+                () -> assertSame(idleConstant, member.declarationSite()),
+                () -> assertEquals(GdIntType.INT, memberResult.finalReceiver().receiverType())
+        );
+
+        var groupResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Other"), property("State")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("Other", new GdObjectType("Other"), ScopeTypeMetaKind.GDCC_CLASS, other, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        var groupTrace = groupResult.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, groupTrace.status());
+        var group = groupTrace.suggestedMember();
+        assertNotNull(group);
+        assertAll(
+                () -> assertEquals(FrontendBindingKind.CONSTANT, group.bindingKind()),
+                () -> assertEquals("Dictionary", group.resultType().getTypeName()),
+                () -> assertSame(enumGroup, group.declarationSite()),
+                // The outgoing receiver is a plain Dictionary instance (no type-meta retained),
+                // so any suffix keeps Dictionary semantics.
+                () -> assertEquals(
+                        FrontendReceiverKind.INSTANCE,
+                        groupResult.finalReceiver().receiverKind()
+                ),
+                () -> assertEquals("Dictionary", groupResult.finalReceiver().receiverType().getTypeName())
+        );
+    }
+
+    @Test
+    void reduceResolvesInheritedEnumConstantsWithNearestLayerWinning() {
+        var base = newClass("Base");
+        var parentIdle = new GdScriptEnumConstant("PARENT_IDLE", 1, null, "Base");
+        base.addScriptConstant(new GdScriptClassConstant("PARENT_IDLE", GdIntType.INT, parentIdle));
+        var baseLegacy = new LirPropertyDef("LEGACY", GdIntType.INT);
+        baseLegacy.setStatic(true);
+        base.addProperty(baseLegacy);
+
+        var sub = newClass("Sub");
+        sub.setSuperName("Base");
+        var subLegacy = new GdScriptEnumConstant("LEGACY", 7, null, "Sub");
+        sub.addScriptConstant(new GdScriptClassConstant("LEGACY", GdIntType.INT, subLegacy));
+        var registry = newRegistry(List.of(), List.of(), List.of(), List.of(base, sub));
+
+        var inheritedResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Sub"), property("PARENT_IDLE")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("Sub", new GdObjectType("Sub"), ScopeTypeMetaKind.GDCC_CLASS, sub, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        var inheritedMember = inheritedResult.stepTraces().getFirst().suggestedMember();
+        assertNotNull(inheritedMember);
+        assertAll(
+                () -> assertEquals(FrontendBindingKind.CONSTANT, inheritedMember.bindingKind()),
+                () -> assertSame(parentIdle, inheritedMember.declarationSite())
+        );
+
+        // Cross-category shadowing: the subclass enum constant wins over the same-named static
+        // property declared on the superclass (nearest layer wins).
+        var shadowResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Sub"), property("LEGACY")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("Sub", new GdObjectType("Sub"), ScopeTypeMetaKind.GDCC_CLASS, sub, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        var shadowMember = shadowResult.stepTraces().getFirst().suggestedMember();
+        assertNotNull(shadowMember);
+        assertAll(
+                () -> assertEquals(FrontendBindingKind.CONSTANT, shadowMember.bindingKind()),
+                () -> assertSame(subLegacy, shadowMember.declarationSite())
+        );
+
+        // The declaring class itself still resolves the static property unchanged.
+        var baseResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Base"), property("LEGACY")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("Base", new GdObjectType("Base"), ScopeTypeMetaKind.GDCC_CLASS, base, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        var baseMember = baseResult.stepTraces().getFirst().suggestedMember();
+        assertNotNull(baseMember);
+        assertAll(
+                () -> assertEquals(FrontendBindingKind.PROPERTY, baseMember.bindingKind()),
+                () -> assertSame(baseLegacy, baseMember.declarationSite())
+        );
+    }
+
+    @Test
+    void reduceInterceptsGroupContinuationMemberExactlyOnce() {
+        var enumGroup = stateGroup("Other");
+        var jumpMember = enumGroup.findMember("JUMP");
+        assertNotNull(jumpMember);
+        var other = newClass("Other");
+        other.addScriptConstant(new GdScriptClassConstant("State", genericDictionary(), enumGroup));
+        var registry = newRegistry(List.of(), List.of(), List.of(), List.of(other));
+        var head = FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                typeMeta("Other", new GdObjectType("Other"), ScopeTypeMetaKind.GDCC_CLASS, other, false)
+        );
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Other"), property("State"), property("JUMP")),
+                head,
+                registry,
+                noExpressionTypes()
+        ));
+        assertEquals(2, result.stepTraces().size());
+        var groupMember = result.stepTraces().get(0).suggestedMember();
+        var intercepted = result.stepTraces().get(1).suggestedMember();
+        assertNotNull(groupMember);
+        assertNotNull(intercepted);
+        assertAll(
+                () -> assertSame(enumGroup, groupMember.declarationSite()),
+                () -> assertEquals(FrontendBindingKind.CONSTANT, intercepted.bindingKind()),
+                () -> assertEquals(GdIntType.INT, intercepted.resultType()),
+                () -> assertSame(jumpMember, intercepted.declarationSite()),
+                () -> assertEquals(GdIntType.INT, result.finalReceiver().receiverType())
+        );
+
+        // The intercept state clears itself after the member hit: `.MISSING_AFTER` continues on
+        // the int receiver and fails the ordinary builtin lookup instead of re-entering the group.
+        var clearedResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Other"), property("State"), property("JUMP"), property("MISSING_AFTER")),
+                head,
+                registry,
+                noExpressionTypes()
+        ));
+        var lastTrace = clearedResult.stepTraces().getLast();
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, lastTrace.status());
+        assertNotNull(lastTrace.detailReason());
+        assertTrue(lastTrace.detailReason().contains("'int'"), lastTrace.detailReason());
+    }
+
+    @Test
+    void reduceKeepsDictionaryRouteForGroupContinuationMissAndCall() {
+        var enumGroup = stateGroup("Other");
+        var other = newClass("Other");
+        other.addScriptConstant(new GdScriptClassConstant("State", genericDictionary(), enumGroup));
+        var registry = newRegistry(
+                List.of(dictionaryBuiltinWithKeys()),
+                List.of(),
+                List.of(),
+                List.of(other)
+        );
+        var head = FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                typeMeta("Other", new GdObjectType("Other"), ScopeTypeMetaKind.GDCC_CLASS, other, false)
+        );
+
+        // Member miss on the group is not intercepted: the step fails as an ordinary Dictionary
+        // member lookup (the `sema.member_resolution` surface downstream).
+        var missResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Other"), property("State"), property("MISSING")),
+                head,
+                registry,
+                noExpressionTypes()
+        ));
+        var missTrace = missResult.stepTraces().getLast();
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, missTrace.status());
+        assertNotNull(missTrace.detailReason());
+        assertTrue(missTrace.detailReason().contains("Builtin member lookup"), missTrace.detailReason());
+
+        // Call steps are never intercepted: `Other.State.keys()` keeps the Dictionary method
+        // route even though the group continuation is armed.
+        var callResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Other"), property("State"), call("keys")),
+                head,
+                registry,
+                noExpressionTypes()
+        ));
+        var callTrace = callResult.stepTraces().getLast();
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, callTrace.status());
+        var resolvedCall = callTrace.suggestedCall();
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedCall.callKind());
+    }
+
+    @Test
+    void reduceKeepsUnsupportedFallbackForUnknownAndNestedQualifierNames() {
+        var other = newClass("Other");
+        var registry = newRegistry(List.of(), List.of(), List.of(), List.of(other));
+        var head = FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                typeMeta("Other", new GdObjectType("Other"), ScopeTypeMetaKind.GDCC_CLASS, other, false)
+        );
+
+        var unknownResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Other"), property("MISSING")),
+                head,
+                registry,
+                noExpressionTypes()
+        ));
+        var unknownTrace = unknownResult.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.UNSUPPORTED, unknownTrace.status());
+        assertNotNull(unknownTrace.detailReason());
+        assertTrue(unknownTrace.detailReason().contains("Static load route on GDCC class"), unknownTrace.detailReason());
+        var unknownMember = unknownTrace.suggestedMember();
+        assertNotNull(unknownMember);
+        assertAll(
+                () -> assertEquals(FrontendBindingKind.CONSTANT, unknownMember.bindingKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, unknownMember.receiverKind())
+        );
+
+        // Nested-class qualifier: `Inner` is not a static member of `Outer`, so the step keeps
+        // the UNSUPPORTED boundary (nested qualification stays deferred).
+        var outer = newClass("Outer");
+        var nestedRegistry = newRegistry(List.of(), List.of(), List.of(), List.of(outer));
+        var nestedResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Outer"), property("Inner")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("Outer", new GdObjectType("Outer"), ScopeTypeMetaKind.GDCC_CLASS, outer, false)
+                ),
+                nestedRegistry,
+                noExpressionTypes()
+        ));
+        assertEquals(
+                FrontendChainReductionHelper.Status.UNSUPPORTED,
+                nestedResult.stepTraces().getFirst().status()
+        );
+    }
+
+    @Test
+    void reduceStopsStaticLoadWalkAtNonStaticMemberShadow() {
+        // `Base.VALUE` must not leak through to the ancestor enum constant: the instance
+        // property on the nearer layer is a terminal shadowing hit and the step keeps the
+        // pre-existing UNSUPPORTED boundary for class-qualified instance members.
+        var grand = newClass("Grand");
+        var grandValue = new GdScriptEnumConstant("VALUE", 9, null, "Grand");
+        grand.addScriptConstant(new GdScriptClassConstant("VALUE", GdIntType.INT, grandValue));
+        var base = newClass("Base");
+        base.setSuperName("Grand");
+        base.addProperty(new LirPropertyDef("VALUE", GdIntType.INT));
+        var registry = newRegistry(List.of(), List.of(), List.of(), List.of(grand, base));
+
+        var shadowedResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Base"), property("VALUE")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("Base", new GdObjectType("Base"), ScopeTypeMetaKind.GDCC_CLASS, base, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        assertEquals(
+                FrontendChainReductionHelper.Status.UNSUPPORTED,
+                shadowedResult.stepTraces().getFirst().status()
+        );
+
+        // Direct access on the declaring class still resolves the constant.
+        var directResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Grand"), property("VALUE")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("Grand", new GdObjectType("Grand"), ScopeTypeMetaKind.GDCC_CLASS, grand, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        var directMember = directResult.stepTraces().getFirst().suggestedMember();
+        assertNotNull(directMember);
+        assertSame(grandValue, directMember.declarationSite());
+    }
+
+    @Test
+    void reducePrefersSameLayerStaticMethodAndRespectsNearestLayerAcrossCategories() {
+        // Same-layer probe order: static method beats the enum constant.
+        var dual = newClass("Dual");
+        var dualConstant = new GdScriptEnumConstant("PICK", 1, null, "Dual");
+        dual.addFunction(newMethod("PICK", GdIntType.INT, true));
+        dual.addScriptConstant(new GdScriptClassConstant("PICK", GdIntType.INT, dualConstant));
+
+        // Cross-layer cross-category: the subclass enum constant shadows the superclass static
+        // method (nearest layer wins).
+        var base = newClass("MethodBase");
+        base.addFunction(newMethod("LEGACY_FN", GdIntType.INT, true));
+        var sub = newClass("MethodSub");
+        sub.setSuperName("MethodBase");
+        var subConstant = new GdScriptEnumConstant("LEGACY_FN", 7, null, "MethodSub");
+        sub.addScriptConstant(new GdScriptClassConstant("LEGACY_FN", GdIntType.INT, subConstant));
+        var registry = newRegistry(List.of(), List.of(), List.of(), List.of(dual, base, sub));
+
+        var sameLayerResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Dual"), property("PICK")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("Dual", new GdObjectType("Dual"), ScopeTypeMetaKind.GDCC_CLASS, dual, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        var sameLayerMember = sameLayerResult.stepTraces().getFirst().suggestedMember();
+        assertNotNull(sameLayerMember);
+        assertEquals(FrontendBindingKind.STATIC_METHOD, sameLayerMember.bindingKind());
+
+        var shadowResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("MethodSub"), property("LEGACY_FN")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("MethodSub", new GdObjectType("MethodSub"), ScopeTypeMetaKind.GDCC_CLASS, sub, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        var shadowMember = shadowResult.stepTraces().getFirst().suggestedMember();
+        assertNotNull(shadowMember);
+        assertAll(
+                () -> assertEquals(FrontendBindingKind.CONSTANT, shadowMember.bindingKind()),
+                () -> assertSame(subConstant, shadowMember.declarationSite())
+        );
+    }
+
+    @Test
+    void reduceTerminatesStaticLoadWalkOnInheritanceCycle() {
+        // Malformed metadata with a superclass cycle must still terminate at the UNSUPPORTED
+        // boundary via the visited-set guard.
+        var a = newClass("CycleA");
+        a.setSuperName("CycleB");
+        var b = newClass("CycleB");
+        b.setSuperName("CycleA");
+        var registry = newRegistry(List.of(), List.of(), List.of(), List.of(a, b));
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("CycleA"), property("MISSING")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("CycleA", new GdObjectType("CycleA"), ScopeTypeMetaKind.GDCC_CLASS, a, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+
+        assertEquals(
+                FrontendChainReductionHelper.Status.UNSUPPORTED,
+                result.stepTraces().getFirst().status()
+        );
+    }
+
+    @Test
     void reduceResolvesEngineAndBuiltinClassEnumValues() {
         var engineClass = new ExtensionGdClass(
                 "Input",
@@ -1399,6 +1869,64 @@ class FrontendChainReductionHelperTest {
                 null,
                 expressionTypeResolver,
                 noteSink
+        );
+    }
+
+    /// Reduction request variant with an explicit head-binding lookup, used by enum value-route
+    /// tests whose fixture bypasses the published side tables.
+    private static @NotNull FrontendChainReductionHelper.ReductionRequest requestWithBindings(
+            @NotNull AttributeExpression chain,
+            @NotNull FrontendChainReductionHelper.ReceiverState head,
+            @NotNull ClassRegistry registry,
+            @NotNull FrontendChainReductionHelper.ExpressionTypeResolver expressionTypeResolver,
+            @NotNull Function<IdentifierExpression, FrontendBinding> bindingLookup
+    ) {
+        return new FrontendChainReductionHelper.ReductionRequest(
+                chain,
+                head,
+                FrontendAnalysisData.bootstrap(),
+                registry,
+                null,
+                expressionTypeResolver,
+                _ -> {
+                },
+                bindingLookup
+        );
+    }
+
+    private static @NotNull GdDictionaryType genericDictionary() {
+        return new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
+    }
+
+    private static @NotNull GdScriptEnumGroup stateGroup(@NotNull String ownerClass) {
+        return new GdScriptEnumGroup("State", List.of(
+                new GdScriptEnumConstant("IDLE", 0, "State", ownerClass),
+                new GdScriptEnumConstant("JUMP", 5, "State", ownerClass)
+        ), ownerClass);
+    }
+
+    private static @NotNull ExtensionBuiltinClass dictionaryBuiltinWithKeys() {
+        var keys = new ExtensionBuiltinClass.ClassMethod(
+                "keys",
+                "Array",
+                false,
+                true,
+                false,
+                false,
+                0L,
+                List.of(),
+                List.of(),
+                null
+        );
+        return new ExtensionBuiltinClass(
+                "Dictionary",
+                true,
+                List.of(),
+                List.of(keys),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
         );
     }
 

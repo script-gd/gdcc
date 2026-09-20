@@ -6,7 +6,7 @@
 > 无新 LIR 指令、无 C 模板/运行时改动，复用现有 LIR/backend surface；
 > backend 改动仅限 Step 8 在 `CGenHelper` 新增一条 hint 映射规则（Java codegen 侧）。
 
-- 状态：实施中（Step 1-4 已完成并通过验收；Step 5-9 尚未落地；已经过多轮评审修订；
+- 状态：实施中（Step 1-5 已完成并通过验收；Step 6-9 尚未落地；已经过多轮评审修订；
   2026-09 修订：跨类枚举限定访问 `Other.State.IDLE` / `Other.IDLE` 由延后边界转为支持面，
   并入 Step 5-7，见 §1.3.5、§2.1、Step 5 修订记录）
 - 适用范围：
@@ -611,6 +611,66 @@ func f():
     receiver 继续，不再命中枚举分支。
 - 嵌套类限定符（`Outer.Inner.State.IDLE`）不在本步支持：`.Inner` 在 GDCC static-load
   路线中无 inner-class 成员分支，维持 UNSUPPORTED。
+
+实施记录（2026-09-20，production 部分）：
+
+- `reduceStaticLoadStep` 的 `GDCC_ENUM` case 与 `reduceGdccEnumStaticLoad`
+  （`FrontendChainReductionHelper`:954、:967-992）在 Step 2/3 已提前落地，核对与 Step 5
+  合同逐条一致（成员命中 → `CONSTANT + int + GdScriptEnumConstant`；miss/畸形 declaration →
+  FAILED + `sema.member_resolution`），本步零改动复用。
+- `reducePropertyStep`（:697-727，value 路线分支 :708-727）在 TYPE_META 早退之后、
+  `receiverType` 读取之前插入 value 路线枚举分支。两个防护均为实测必需：`stepIndex == 0`
+  阻止 `State.IDLE.JUMP` 的第二 step 误命中组成员；step 恒等检查
+  （`steps().getFirst() == step`）阻止 `reduceSubscriptStep` 以同 stepIndex 合成的
+  property step 误触发（`State["IDLE"]` 经 parser 为 `SubscriptExpression`，本就不经
+  chain；恒等防护锚定 helper 直测构造的 subscript-first chain 形态）。
+- 新增共享 fact helper `resolvedEnumMemberTrace`：value 路线与组延续拦截发布同一形态
+  （`RESOLVED + CONSTANT + int + declaration=GdScriptEnumConstant`、INSTANCE receiver、
+  route `INSTANCE_PROPERTY`、outgoing int）。
+- `reduceGdccStaticLoad`（:1135-1192）重构为逐继承层统一 walk（nearest layer wins）：每层按
+  「static 方法（`resolveStaticMethodReferenceOnLayer`）→ static property
+  （`findStaticPropertyOnLayer`）→ 枚举常量/组（`findEnumConstantOnLayer` 读
+  `getScriptConstants()`，仅接受 `GdScriptEnumConstant`/`GdScriptEnumGroup` declaration
+  形态）」顺序探测，首层命中即停；三类探测全 miss 但该层声明了任意同名成员（实例方法 /
+  实例 property / 信号，`declaresAnyMemberOnLayer` :1266-1288）时**终止 walk** 落入
+  UNSUPPORTED——近层非静态成员是终端遮蔽命中，不得泄漏到祖先枚举常量（对齐 Godot 统一
+  成员命名空间遮蔽与值侧 `resolveInheritedValueMember` 的分层语义，同时保持 class 限定
+  访问实例成员的既有 UNSUPPORTED 边界）；全部层 miss 落入既有 UNSUPPORTED fallback
+  （detail 文案前缀 `Static load route on GDCC class` 保持不变，尾部补枚举常量类别）。
+  `resolveMethodReference` 与 `ClassRegistry.findStaticPropertyInHierarchy` 保持原样
+  （前者仍服务 engine/builtin static load 与 call 路线，后者仍服务 backend 静态存储），
+  既有回归确认无测试锚定旧的整链类别优先顺序。
+- 组延续拦截在 `reduce` 主循环内以局部变量 `enumGroupContinuation` 实现（不改
+  `ReceiverState` 数据模型）：仅在前一 step 的已发布 fact `declarationSite instanceof
+  GdScriptEnumGroup` 且当前为 `AttributePropertyStep` 且成员存在时拦截；拦截 fact 携带
+  成员 declaration，状态自行清除（`Other.State.IDLE.JUMP` 的 `.JUMP` 按 int receiver
+  失败）；状态为循环局部，天然保证跨 chain 隔离。
+- `FrontendMatchSupport.isConstantPatternOperand` 已消费末 step fact 的
+  `bindingKind == CONSTANT`，match pattern 零改动获得 `Other.State.IDLE` 常量操作数识别。
+- `FrontendAssignmentSemanticSupport` 已将 `CONSTANT` bindingKind 的 member fact 分类为
+  不可赋值目标，`State.IDLE = 5` 拒绝路径零改动获得。
+
+测试记录（2026-09-20）：
+
+- `FrontendChainReductionHelperTest` 新增 12 个 helper 级用例（总计 51）：value 路线常量
+  命中 / 成员 miss 完整 fall through / subscript 合成 step 恒等防护 / 非组绑定遮蔽不触发 /
+  跨类常量与组解析 / 继承常量 + 跨类别 nearest-layer-wins 遮蔽（父类 static property 与
+  static method 两种）/ 组延续拦截恰好一次 / 组延续 miss 与 call 走 Dictionary route /
+  未知名与嵌套限定符维持 UNSUPPORTED / 近层实例成员终端遮蔽 / 同层探测顺序
+  （static 方法优先于枚举常量）/ 继承环 visited 防护终止。
+- 新增 `FrontendEnumChainBindingTest`（22 个集成用例）：类内 value 路线（成员常量 fact +
+  `:=` 推断 int）、Dictionary 方法 route 与 method-reference 不吞没、成员名遮蔽 Dictionary
+  方法的边缘规则（读命中成员、调用走 Dictionary）、成员 miss 的 `sema.member_resolution`、
+  int receiver 后续失败、inner class type-meta 路线、inner class 裸组值隔离与
+  `State.keys()` 的 `sema.call_resolution` 边界、CONSTANT member 赋值拒绝、跨类
+  `Other.State.IDLE`/`Other.IDLE`/继承成员/组链尾、跨 module 两 unit 用例、跨类组
+  Dictionary route（含 `Other.State["IDLE"]` subscript 不折叠）、跨类 miss、组延续拦截后
+  int receiver 失败（`+ 1` 二元后缀对照）、跨类别遮蔽锚点、近层实例成员终端遮蔽
+  （`Other.VALUE` 不泄漏祖先枚举常量、`Grand.VALUE` 直达作对照）、`Other.MISSING` 与
+  `Outer.Inner.State.IDLE` 的 UNSUPPORTED 边界、组延续状态跨 chain 隔离、
+  property initializer / parameter default / match pattern 常量操作数三个 domain 锚点。
+- 回归：`gd.script.gdcc.frontend.sema.**` 与 `gd.script.gdcc.frontend.lowering.**`
+  全绿（含 `Worker.VALUE` UNSUPPORTED 锚定不变）。
 
 验收：
 
