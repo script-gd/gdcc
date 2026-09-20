@@ -450,11 +450,16 @@ public final class FrontendContainerLiteralSemanticSupport {
                 case "false" -> ConstantKey.boolKey(false);
                 case "integer", "number" -> {
                     if (literal.kind().equals("number") && literal.sourceText().contains(".")) {
-                        yield ConstantKey.floatKey(parseFloatLiteral(literal.sourceText()));
+                        var parsedFloat = StringUtil.parseGdFloatLexeme(literal.sourceText());
+                        yield parsedFloat == null ? null : ConstantKey.floatKey(parsedFloat);
                     }
-                    yield ConstantKey.intKey(parseIntLiteral(literal.sourceText()));
+                    var parsedInt = StringUtil.parseGdIntegerLexeme(literal.sourceText());
+                    yield parsedInt == null ? null : ConstantKey.intKey(parsedInt);
                 }
-                case "float" -> ConstantKey.floatKey(parseFloatLiteral(literal.sourceText()));
+                case "float" -> {
+                    var parsedFloat = StringUtil.parseGdFloatLexeme(literal.sourceText());
+                    yield parsedFloat == null ? null : ConstantKey.floatKey(parsedFloat);
+                }
                 case "string", "string_name" -> ConstantKey.stringLikeKey(
                         StringUtil.decodeGdStringLexeme(literal.sourceText())
                 );
@@ -469,26 +474,7 @@ public final class FrontendContainerLiteralSemanticSupport {
         }
     }
 
-    /// Parses gdparser integer lexemes including `0x`/`0b`/`0o` prefixes and `_`.
-    private static long parseIntLiteral(@NotNull String sourceText) {
-        var normalized = sourceText.replace("_", "").trim();
-        if (normalized.startsWith("0x") || normalized.startsWith("0X")) {
-            return Long.parseLong(normalized.substring(2), 16);
-        }
-        if (normalized.startsWith("0b") || normalized.startsWith("0B")) {
-            return Long.parseLong(normalized.substring(2), 2);
-        }
-        if (normalized.startsWith("0o") || normalized.startsWith("0O")) {
-            return Long.parseLong(normalized.substring(2), 8);
-        }
-        return Long.parseLong(normalized);
-    }
-
-    private static double parseFloatLiteral(@NotNull String sourceText) {
-        return Double.parseDouble(sourceText.replace("_", "").trim());
-    }
-
-    /// Decodes `^"..."` NodePath lexemes through the shared StringUtil decoder (single escape
+    /// Decodes `^"..."` NodePath lexemes through the shared StringUtil decoder (single escape)
     /// source). Unreducible/malformed shapes return null so duplicate-key analysis treats the key
     /// as non-constant instead of failing the whole literal.
     private static @Nullable String tryDecodeNodePathLexeme(@NotNull String sourceText) {

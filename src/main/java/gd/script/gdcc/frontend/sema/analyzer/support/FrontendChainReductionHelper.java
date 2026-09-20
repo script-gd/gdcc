@@ -15,6 +15,7 @@ import gd.script.gdcc.gdextension.ExtensionGlobalEnum;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.FunctionDef;
+import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.scope.ScopeTypeMeta;
 import gd.script.gdcc.scope.ScopeValueKind;
@@ -903,6 +904,7 @@ public final class FrontendChainReductionHelper {
         }
         return switch (receiverTypeMeta.kind()) {
             case GLOBAL_ENUM -> reduceGlobalEnumStaticLoad(stepIndex, step, incomingReceiver, receiverTypeMeta);
+            case GDCC_ENUM -> reduceGdccEnumStaticLoad(stepIndex, step, incomingReceiver, receiverTypeMeta);
             case BUILTIN ->
                     reduceBuiltinStaticLoad(stepIndex, step, incomingReceiver, request.classRegistry(), receiverTypeMeta);
             case ENGINE_CLASS ->
@@ -910,6 +912,36 @@ public final class FrontendChainReductionHelper {
             case GDCC_CLASS ->
                     reduceGdccStaticLoad(stepIndex, step, incomingReceiver, request.classRegistry(), receiverTypeMeta);
         };
+    }
+
+    /// Resolves a member of a GDCC source enum group reached through its type-meta binding (the
+    /// value-isolated route, e.g. an inner class referencing an outer class enum). Members
+    /// materialize as plain int constants, mirroring the global-enum static load shape.
+    private static @NotNull StepTrace reduceGdccEnumStaticLoad(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ScopeTypeMeta receiverTypeMeta
+    ) {
+        if (!(receiverTypeMeta.declaration() instanceof GdScriptEnumGroup enumGroup)) {
+            var detailReason = "GDCC enum static load receiver '" + receiverTypeMeta.displayName()
+                    + "' has malformed declaration metadata";
+            return failedStaticLoadTrace(stepIndex, step, incomingReceiver, null, receiverTypeMeta, detailReason);
+        }
+        var member = enumGroup.findMember(step.name());
+        if (member == null) {
+            var detailReason = "Enum value '" + step.name() + "' not found in enum '" + enumGroup.name() + "'";
+            return failedStaticLoadTrace(stepIndex, step, incomingReceiver, null, receiverTypeMeta, detailReason);
+        }
+        return resolvedStaticLoadTrace(
+                stepIndex,
+                step,
+                incomingReceiver,
+                FrontendBindingKind.CONSTANT,
+                ScopeOwnerKind.GDCC,
+                GdIntType.INT,
+                member
+        );
     }
 
     private static @NotNull StepTrace reduceGlobalEnumStaticLoad(
@@ -2567,7 +2599,8 @@ public final class FrontendChainReductionHelper {
             @NotNull String memberName
     ) {
         return switch (receiverTypeMeta.kind()) {
-            case GLOBAL_ENUM -> null;
+            // Enums expose no static methods; method-reference lookup misses by contract.
+            case GLOBAL_ENUM, GDCC_ENUM -> null;
             case BUILTIN -> {
                 var builtinClass = resolveBuiltinStaticOwner(classRegistry, receiverTypeMeta);
                 yield builtinClass == null ? null : resolveMethodReference(classRegistry, builtinClass, memberName, true);

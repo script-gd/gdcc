@@ -225,7 +225,12 @@ public final class FrontendExportAnnotationSupport {
         }
         try {
             return switch (literal.kind()) {
-                case "integer" -> renderIntegerLiteral(literal.sourceText(), negative);
+                case "integer" -> {
+                    // Shared lexeme semantics with enum evaluation and body literal lowering;
+                    // the unary sign stays outside the helper and is applied here.
+                    var parsedInt = StringUtil.parseGdIntegerLexeme(literal.sourceText());
+                    yield parsedInt == null ? null : Long.toString(negative ? -parsedInt : parsedInt);
+                }
                 case "float" -> renderFloatLiteral(literal.sourceText(), negative);
                 default -> null;
             };
@@ -234,32 +239,12 @@ public final class FrontendExportAnnotationSupport {
         }
     }
 
-    /// Parses gdparser integer lexemes including `0x`/`0b`/`0o` prefixes and `_` separators
-    /// (same lexeme set as the container literal helper). A literal that overflows 64-bit long
-    /// still maps to the generic number-literal diagnostic — the fixed diagnostic template set
-    /// has no dedicated overflow row.
-    private static @NotNull String renderIntegerLiteral(@NotNull String sourceText, boolean negative) {
-        var clean = sourceText.replace("_", "");
-        var radix = 10;
-        if (clean.startsWith("0x") || clean.startsWith("0X")) {
-            radix = 16;
-            clean = clean.substring(2);
-        } else if (clean.startsWith("0b") || clean.startsWith("0B")) {
-            radix = 2;
-            clean = clean.substring(2);
-        } else if (clean.startsWith("0o") || clean.startsWith("0O")) {
-            radix = 8;
-            clean = clean.substring(2);
-        }
-        var value = Long.parseLong(clean, radix);
-        return Long.toString(negative ? -value : value);
-    }
-
     private static @NotNull String renderFloatLiteral(@NotNull String sourceText, boolean negative) {
-        var value = Double.parseDouble(sourceText.replace("_", ""));
-        if (negative) {
-            value = -value;
+        var parsed = StringUtil.parseGdFloatLexeme(sourceText);
+        if (parsed == null) {
+            throw new NumberFormatException("malformed float lexeme: " + sourceText);
         }
+        var value = negative ? -parsed : parsed;
         if (value == Math.rint(value) && Math.abs(value) < 1e15) {
             // Integral floats render without a fraction to match Godot's hint_string shape.
             return Long.toString((long) value);

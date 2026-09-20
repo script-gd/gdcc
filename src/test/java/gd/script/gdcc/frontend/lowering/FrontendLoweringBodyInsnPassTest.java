@@ -8947,6 +8947,83 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersIntegerLiteralsAcrossRadixesAndSeparators() throws Exception {
+        // Body literal lowering shares the GDScript integer lexeme helper with enum evaluation,
+        // so `0x`/`0b`/`0o` prefixes and `_` separators must materialize identically here.
+        var prepared = prepareContext(
+                "body_insn_int_literal_lexemes.gd",
+                """
+                        class_name BodyInsnIntLiteralLexemes
+                        extends RefCounted
+
+                        func ping() -> int:
+                            var hex = 0xF0
+                            var bin = 0b101
+                            var oct = 0o17
+                            var sep = 1_000_000
+                            return hex + bin + oct + sep
+                        """,
+                Map.of("BodyInsnIntLiteralLexemes", "RuntimeBodyInsnIntLiteralLexemes"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnIntLiteralLexemes",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var literalValues = allInstructions(pingContext.targetFunction()).stream()
+                .filter(LiteralIntInsn.class::isInstance)
+                .map(LiteralIntInsn.class::cast)
+                .map(LiteralIntInsn::value)
+                .toList();
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(List.of(0xF0L, 0b101L, 15L, 1_000_000L), literalValues)
+        );
+    }
+
+    @Test
+    void runLowersFloatLiteralsWithSeparatorsAndExponents() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_float_literal_lexemes.gd",
+                """
+                        class_name BodyInsnFloatLiteralLexemes
+                        extends RefCounted
+
+                        func ping() -> float:
+                            var frac = 1.5
+                            var sep = 1_000.5
+                            var exp = 1.5e-2
+                            return frac + sep + exp
+                        """,
+                Map.of("BodyInsnFloatLiteralLexemes", "RuntimeBodyInsnFloatLiteralLexemes"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnFloatLiteralLexemes",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var literalValues = allInstructions(pingContext.targetFunction()).stream()
+                .filter(LiteralFloatInsn.class::isInstance)
+                .map(LiteralFloatInsn.class::cast)
+                .map(LiteralFloatInsn::value)
+                .toList();
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(List.of(1.5, 1_000.5, 1.5e-2), literalValues)
+        );
+    }
+
+    @Test
     void runLowersBareExtremeConstantIdentifierIntoInt64Literal() throws Exception {
         var prepared = prepareContext(
                 "body_insn_bare_extreme_constant.gd",

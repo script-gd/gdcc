@@ -107,6 +107,121 @@ public final class StringUtil {
         return text.lines().toList();
     }
 
+    /// Parses a GDScript integer literal lexeme into its 64-bit value.
+    ///
+    /// Accepted shape: optional `0x`/`0b`/`0o` radix prefix (either case) plus digits with `_`
+    /// separators. The sign is intentionally excluded from this contract — unary `+`/`-` is owned
+    /// by `UnaryExpression` handling in the parser AST, so signed input returns null. Malformed or
+    /// overflowing lexemes also return null instead of throwing, letting reduction-style callers
+    /// treat failure as "not a constant" without exception plumbing. Underscores are only legal
+    /// between two digits of the active radix, matching the Godot tokenizer: leading, trailing,
+    /// doubled, or prefix-adjacent underscores are malformed.
+    public static @Nullable Long parseGdIntegerLexeme(@NotNull String lexeme) {
+        var text = Objects.requireNonNull(lexeme, "lexeme must not be null").trim();
+        if (text.isEmpty() || text.charAt(0) == '+' || text.charAt(0) == '-') {
+            return null;
+        }
+        var radix = 10;
+        var digits = text;
+        if (digits.startsWith("0x") || digits.startsWith("0X")) {
+            radix = 16;
+            digits = digits.substring(2);
+        } else if (digits.startsWith("0b") || digits.startsWith("0B")) {
+            radix = 2;
+            digits = digits.substring(2);
+        } else if (digits.startsWith("0o") || digits.startsWith("0O")) {
+            radix = 8;
+            digits = digits.substring(2);
+        }
+        if (digits.isEmpty() || !hasLegalUnderscorePlacement(digits, radix)) {
+            return null;
+        }
+        try {
+            return Long.parseLong(digits.replace("_", ""), radix);
+        } catch (NumberFormatException _) {
+            return null;
+        }
+    }
+
+    /// Parses a GDScript float literal lexeme into its IEEE-754 value.
+    ///
+    /// Accepted shape: decimal significand with optional fraction and optional `e`/`E` exponent
+    /// (`1.5`, `.5`, `1.`, `1e10`, `1.5e-2`), plus `_` separators between decimal digits. The
+    /// overall sign is excluded from this contract — unary `+`/`-` is owned by `UnaryExpression`
+    /// — so a leading sign returns null; an exponent sign (`1e-2`) remains part of the lexeme.
+    /// Malformed lexemes return null instead of throwing.
+    public static @Nullable Double parseGdFloatLexeme(@NotNull String lexeme) {
+        var text = Objects.requireNonNull(lexeme, "lexeme must not be null").trim();
+        if (text.isEmpty() || text.charAt(0) == '+' || text.charAt(0) == '-') {
+            return null;
+        }
+        if (!hasLegalUnderscorePlacement(text, 10) || !isGdFloatLexemeBody(text.replace("_", ""))) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(text.replace("_", ""));
+        } catch (NumberFormatException _) {
+            return null;
+        }
+    }
+
+    /// Underscores in a number literal must sit between two digits of the active radix; any other
+    /// placement (edges, doubled, next to the radix prefix) makes the lexeme malformed.
+    private static boolean hasLegalUnderscorePlacement(@NotNull String digits, int radix) {
+        for (var i = 0; i < digits.length(); i++) {
+            if (digits.charAt(i) != '_') {
+                continue;
+            }
+            if (i == 0 || i == digits.length() - 1) {
+                return false;
+            }
+            if (Character.digit(digits.charAt(i - 1), radix) < 0
+                    || Character.digit(digits.charAt(i + 1), radix) < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// Significand (decimal digits with optional fraction) plus optional exponent. The significand
+    /// must contain at least one digit; exponent digits are required when `e`/`E` is present.
+    private static boolean isGdFloatLexemeBody(@NotNull String body) {
+        var index = 0;
+        var seenDigit = false;
+        while (index < body.length() && isDecimalDigit(body.charAt(index))) {
+            seenDigit = true;
+            index++;
+        }
+        if (index < body.length() && body.charAt(index) == '.') {
+            index++;
+            while (index < body.length() && isDecimalDigit(body.charAt(index))) {
+                seenDigit = true;
+                index++;
+            }
+        }
+        if (!seenDigit) {
+            return false;
+        }
+        if (index < body.length() && (body.charAt(index) == 'e' || body.charAt(index) == 'E')) {
+            index++;
+            if (index < body.length() && (body.charAt(index) == '+' || body.charAt(index) == '-')) {
+                index++;
+            }
+            var exponentStart = index;
+            while (index < body.length() && isDecimalDigit(body.charAt(index))) {
+                index++;
+            }
+            if (index == exponentStart) {
+                return false;
+            }
+        }
+        return index == body.length();
+    }
+
+    private static boolean isDecimalDigit(char character) {
+        return character >= '0' && character <= '9';
+    }
+
     public static @NotNull String escapeStringLiteral(@NotNull String value) {
         var sb = new StringBuilder();
         for (var i = 0; i < value.length(); ) {

@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema;
 
 import gd.script.gdcc.frontend.FrontendClassNameContract;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendAnnotationCollector;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendEnumConstantEvaluator;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExportAnnotationSupport;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdparser.frontend.ast.*;
@@ -15,8 +16,15 @@ import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.lir.LirSignalDef;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.GdScriptClassConstant;
+import gd.script.gdcc.scope.GdScriptEnumConstant;
+import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeTypeMeta;
+import gd.script.gdcc.scope.ScopeTypeMetaKind;
+import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -76,6 +84,16 @@ public final class FrontendClassSkeletonBuilder {
             sourceClassRelations.add(sourceClassRelation);
         }
         publishClassShells(sourceClassRelations, classRegistry);
+        // Module-wide canonical index for the enum pre-pass ancestor blocker: the blocker scans
+        // ancestor class bodies structurally, so it needs every accepted GDCC relation regardless
+        // of which source unit is currently being filled.
+        var relationsByCanonicalName = new HashMap<String, FrontendOwnedClassRelation>();
+        for (var sourceClassRelation : sourceClassRelations) {
+            relationsByCanonicalName.put(sourceClassRelation.canonicalName(), sourceClassRelation);
+            for (var innerClassRelation : sourceClassRelation.innerClassRelations()) {
+                relationsByCanonicalName.put(innerClassRelation.canonicalName(), innerClassRelation);
+            }
+        }
         // Static-property conflict checks are deferred until every class shell has been filled:
         // member filling follows source order, not inheritance order, so an ancestor's properties
         // are only guaranteed to exist in the registry after this loop completes.
@@ -88,7 +106,12 @@ public final class FrontendClassSkeletonBuilder {
                     analysisData,
                     module.topLevelCanonicalNameMap()
             );
-            fillSourceClassRelationMembers(sourceClassRelation, context, pendingStaticPropertyChecks);
+            fillSourceClassRelationMembers(
+                    sourceClassRelation,
+                    context,
+                    pendingStaticPropertyChecks,
+                    relationsByCanonicalName
+            );
         }
         validateStaticPropertyHierarchyConflicts(pendingStaticPropertyChecks, classRegistry, diagnosticManager, analysisData);
 
@@ -159,7 +182,8 @@ public final class FrontendClassSkeletonBuilder {
     private void fillSourceClassRelationMembers(
             @NotNull FrontendSourceClassRelation sourceClassRelation,
             @NotNull SkeletonBuildContext context,
-            @NotNull List<PendingStaticPropertyConflictCheck> pendingStaticPropertyChecks
+            @NotNull List<PendingStaticPropertyConflictCheck> pendingStaticPropertyChecks,
+            @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName
     ) {
         var declaredTypeScopes = buildDeclaredTypeScopes(sourceClassRelation, context.classRegistry());
         fillClassMembers(
@@ -167,7 +191,8 @@ public final class FrontendClassSkeletonBuilder {
                 sourceClassRelation.unit().ast().statements(),
                 requireDeclaredTypeScope(declaredTypeScopes, sourceClassRelation.astOwner()),
                 context,
-                pendingStaticPropertyChecks
+                pendingStaticPropertyChecks,
+                relationsByCanonicalName
         );
         for (var innerClassRelation : sourceClassRelation.innerClassRelations()) {
             fillClassMembers(
@@ -175,7 +200,8 @@ public final class FrontendClassSkeletonBuilder {
                     innerClassRelation.declaration().body().statements(),
                     requireDeclaredTypeScope(declaredTypeScopes, innerClassRelation.astOwner()),
                     context,
-                    pendingStaticPropertyChecks
+                    pendingStaticPropertyChecks,
+                    relationsByCanonicalName
             );
         }
     }
@@ -275,13 +301,16 @@ public final class FrontendClassSkeletonBuilder {
     /// entry. The parent class only receives signals/properties/functions/constructors declared
     /// directly in its own statement list. Constructors are lowered into the special `_init`
     /// function slot on `ClassDef` so downstream code can keep using one shared member surface.
+    /// Enum declarations are fully handled by the enum pre-pass running before the main loop.
     private void fillClassMembers(
             @NotNull LirClassDef classDef,
             @NotNull List<Statement> statements,
-            @NotNull Scope declaredTypeScope,
+            @NotNull ClassScope declaredTypeScope,
             @NotNull SkeletonBuildContext context,
-            @NotNull List<PendingStaticPropertyConflictCheck> pendingStaticPropertyChecks
+            @NotNull List<PendingStaticPropertyConflictCheck> pendingStaticPropertyChecks,
+            @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName
     ) {
+        runEnumConstantPrePass(classDef, statements, declaredTypeScope, context, relationsByCanonicalName);
         for (var statement : statements) {
             switch (statement) {
                 case SignalStatement signalStatement -> {
@@ -353,10 +382,309 @@ public final class FrontendClassSkeletonBuilder {
                         constructorDeclaration,
                         context
                 );
+                case EnumDeclaration _ -> {
+                    // Handled by the enum pre-pass before this loop; nothing left to do here.
+                }
                 default -> {
                 }
             }
         }
+    }
+
+    /// Validates and evaluates every `EnumDeclaration` of one class body before regular member
+    /// filling starts.
+    ///
+    /// Running ahead of the main loop gives two guarantees:
+    /// - constant facts land on the `ClassDef` constant table before any member type resolution
+    ///   runs, so declaration order between enums and properties does not matter;
+    /// - named enum groups publish their `GDCC_ENUM` type-meta onto the declared-type scaffold
+    ///   before `var x: State` style annotations are resolved.
+    ///
+    /// Enums succeed or fail independently: a rejected enum produces exactly one
+    /// `sema.class_skeleton` diagnostic, skips its own subtree, and leaves sibling enums/members
+    /// untouched. Nothing is published for a failed enum — no constant rows and no type-meta — so
+    /// downstream phases never observe half-evaluated enum facts.
+    private void runEnumConstantPrePass(
+            @NotNull LirClassDef classDef,
+            @NotNull List<Statement> statements,
+            @NotNull ClassScope declaredTypeScope,
+            @NotNull SkeletonBuildContext context,
+            @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName
+    ) {
+        var enumDeclarations = new ArrayList<EnumDeclaration>();
+        for (var statement : statements) {
+            if (statement instanceof EnumDeclaration enumDeclaration) {
+                enumDeclarations.add(enumDeclaration);
+            }
+        }
+        if (enumDeclarations.isEmpty()) {
+            return;
+        }
+        // The main loop has not filled the class shell yet, so the conflict table is collected
+        // from the AST directly: property/signal/function names plus direct inner-class source
+        // names. Named enum members are intentionally absent — they never enter the class-level
+        // namespace, so `enum State {IDLE}` may coexist with a same-named class member `IDLE`.
+        var reservedNames = getReserveNames(statements);
+        var ancestorEnumNames = collectAncestorEnumNames(classDef.getSuperName(), relationsByCanonicalName);
+        for (var enumDeclaration : enumDeclarations) {
+            processEnumDeclaration(
+                    classDef,
+                    enumDeclaration,
+                    reservedNames,
+                    declaredTypeScope,
+                    context,
+                    ancestorEnumNames
+            );
+        }
+    }
+
+    private static @NotNull HashSet<String> getReserveNames(@NotNull List<Statement> statements) {
+        var reservedNames = new HashSet<String>();
+        for (var statement : statements) {
+            switch (statement) {
+                case SignalStatement signalStatement -> reservedNames.add(signalStatement.name().trim());
+                case VariableDeclaration variableDeclaration -> {
+                    if (variableDeclaration.kind() == DeclarationKind.VAR) {
+                        reservedNames.add(variableDeclaration.name().trim());
+                    }
+                }
+                case FunctionDeclaration functionDeclaration ->
+                        reservedNames.add(functionDeclaration.name().trim());
+                // Constructors share the `_init` slot with same-named functions.
+                case ConstructorDeclaration _ -> reservedNames.add("_init");
+                case ClassDeclaration classDeclaration -> reservedNames.add(classDeclaration.name().trim());
+                default -> {
+                }
+            }
+        }
+        return reservedNames;
+    }
+
+    /// Validates and evaluates one enum declaration, publishing its facts only when every member
+    /// resolves. Anonymous enums publish one constant row per member; named enums publish one
+    /// Dictionary-typed group row plus the `GDCC_ENUM` type-meta on the declared-type scaffold.
+    /// Successfully published names join the class-level conflict table for later enums.
+    private void processEnumDeclaration(
+            @NotNull LirClassDef classDef,
+            @NotNull EnumDeclaration enumDeclaration,
+            @NotNull Set<String> reservedNames,
+            @NotNull ClassScope declaredTypeScope,
+            @NotNull SkeletonBuildContext context,
+            @NotNull Set<String> ancestorEnumNames
+    ) {
+        var groupName = StringUtil.trimToNull(enumDeclaration.name());
+        var members = enumDeclaration.members();
+        var enumLabel = groupName != null ? "Enum '" + groupName + "'" : "Anonymous enum";
+        // The parser may have already rejected something inside this enum (its recovery drops a
+        // broken initializer, leaving a `value == null` member that looks like an auto-increment
+        // candidate). Publishing constants from such a subtree would fabricate values, so the enum
+        // is skipped without publication — and without a second diagnostic on the same root cause
+        // (single-owner recovery rule: parse owns the initializer error).
+        if (hasParserDiagnosticInside(enumDeclaration, context)) {
+            markSkippedSubtreeRoots(List.of(enumDeclaration), context.analysisData());
+            return;
+        }
+        // gdparser error recovery maps an empty enum body to one phantom member with an empty
+        // name while keeping parse diagnostics empty, so both shapes collapse into the same
+        // "at least one member" rule here.
+        if (members.isEmpty() || members.stream().anyMatch(member -> member.name().isBlank())) {
+            rejectEnumDeclaration(
+                    enumDeclaration,
+                    enumDeclaration,
+                    enumLabel + " on class '" + classDef.getName() + "' must declare at least one member",
+                    context
+            );
+            return;
+        }
+        // Duplicate members inside a single enum are rejected regardless of naming form.
+        var seenMemberNames = new HashSet<String>();
+        for (var member : members) {
+            var memberName = member.name().trim();
+            if (!seenMemberNames.add(memberName)) {
+                rejectEnumDeclaration(
+                        enumDeclaration,
+                        enumDeclaration,
+                        enumLabel + " on class '" + classDef.getName()
+                                + "' declares duplicate member '" + memberName + "'",
+                        context
+                );
+                return;
+            }
+        }
+        // Class-level conflict check: anonymous enums occupy one name per member, named enums
+        // occupy only the group name (their members stay inside the Dictionary value).
+        if (groupName != null) {
+            if (reservedNames.contains(groupName)) {
+                rejectEnumDeclaration(
+                        enumDeclaration,
+                        enumDeclaration,
+                        enumLabel + " on class '" + classDef.getName()
+                                + "' conflicts with an existing class member named '" + groupName + "'",
+                        context
+                );
+                return;
+            }
+        } else {
+            for (var member : members) {
+                var memberName = member.name().trim();
+                if (reservedNames.contains(memberName)) {
+                    rejectEnumDeclaration(
+                            enumDeclaration,
+                            enumDeclaration,
+                            enumLabel + " on class '" + classDef.getName() + "' declares member '"
+                                    + memberName + "' which conflicts with an existing class member",
+                            context
+                    );
+                    return;
+                }
+            }
+        }
+        // Evaluate member values in source order without publishing anything: a failed enum must
+        // leave neither constant rows nor type-meta behind.
+        var evaluatedMembers = new ArrayList<GdScriptEnumConstant>();
+        var earlierMemberValues = new LinkedHashMap<String, Long>();
+        long nextAutoValue = 0;
+        for (var member : members) {
+            var memberName = member.name().trim();
+            long value;
+            if (member.value() != null) {
+                var evaluation = FrontendEnumConstantEvaluator.evaluate(
+                        member.value(),
+                        earlierMemberValues,
+                        classDef.getScriptConstants(),
+                        ancestorEnumNames,
+                        context.classRegistry()
+                );
+                switch (evaluation) {
+                    case FrontendEnumConstantEvaluator.Evaluation.Rejected rejected -> {
+                        rejectEnumDeclaration(
+                                enumDeclaration,
+                                member,
+                                enumLabel + " on class '" + classDef.getName() + "' member '" + memberName
+                                        + "' has no supported int constant value: " + rejected.reason(),
+                                context
+                        );
+                        return;
+                    }
+                    case FrontendEnumConstantEvaluator.Evaluation.Resolved resolved -> value = resolved.value();
+                }
+            } else {
+                // Auto-increment follows Godot: first member defaults to 0, later members continue
+                // from the previous member's value.
+                value = nextAutoValue;
+            }
+            earlierMemberValues.put(memberName, value);
+            evaluatedMembers.add(new GdScriptEnumConstant(memberName, value, groupName, classDef.getName()));
+            nextAutoValue = value + 1;
+        }
+        if (groupName != null) {
+            var enumGroup = new GdScriptEnumGroup(groupName, List.copyOf(evaluatedMembers), classDef.getName());
+            classDef.addScriptConstant(new GdScriptClassConstant(
+                    groupName,
+                    new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT),
+                    enumGroup
+            ));
+            declaredTypeScope.defineTypeMeta(new ScopeTypeMeta(
+                    classDef.getName() + "." + groupName,
+                    groupName,
+                    GdIntType.INT,
+                    ScopeTypeMetaKind.GDCC_ENUM,
+                    enumGroup,
+                    true
+            ));
+            reservedNames.add(groupName);
+        } else {
+            for (var member : evaluatedMembers) {
+                classDef.addScriptConstant(new GdScriptClassConstant(member.memberName(), GdIntType.INT, member));
+                reservedNames.add(member.memberName());
+            }
+        }
+    }
+
+    /// Emits the single `sema.class_skeleton` diagnostic for one rejected enum and skips its
+    /// whole subtree. `diagnosticAnchor` stays as precise as the failure allows (member node for
+    /// value evaluation errors, the enum declaration itself for structural errors).
+    private void rejectEnumDeclaration(
+            @NotNull EnumDeclaration enumDeclaration,
+            @NotNull Node diagnosticAnchor,
+            @NotNull String message,
+            @NotNull SkeletonBuildContext context
+    ) {
+        context.diagnostics().error(
+                "sema.class_skeleton",
+                message,
+                context.sourcePath(),
+                FrontendRange.fromAstRange(diagnosticAnchor.range())
+        );
+        markSkippedSubtreeRoots(List.of(enumDeclaration), context.analysisData());
+    }
+
+    /// Checks whether the parser already reported an error inside this enum's source range. Parse
+    /// diagnostics live in the same shared manager (parse runs before skeleton), and enum bodies
+    /// contain only members, so any `parse.*` diagnostic whose range is contained in the enum
+    /// declaration range marks the whole enum as parse-broken.
+    private boolean hasParserDiagnosticInside(
+            @NotNull EnumDeclaration enumDeclaration,
+            @NotNull SkeletonBuildContext context
+    ) {
+        var enumRange = FrontendRange.fromAstRange(enumDeclaration.range());
+        var sourcePath = context.sourcePath().toString().replace('\\', '/');
+        for (var diagnostic : context.diagnostics().snapshot().asList()) {
+            if (!diagnostic.category().startsWith("parse.")) {
+                continue;
+            }
+            var range = diagnostic.range();
+            if (range == null || diagnostic.sourcePath() == null
+                    || !diagnostic.sourcePath().equals(sourcePath)) {
+                continue;
+            }
+            if (range.startByte() >= enumRange.startByte() && range.endByte() <= enumRange.endByte()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Collects the enum names declared by the GDCC ancestor chain of one class: named enum group
+    /// names plus anonymous enum member names.
+    ///
+    /// The scan is purely structural, so it never depends on ancestor fill order. The walk stops
+    /// at the first non-module (engine/native) ancestor: those classes expose no bare-visible
+    /// script enums, and no GDCC class can sit above them on the chain.
+    private @NotNull Set<String> collectAncestorEnumNames(
+            @NotNull String superClassCanonicalName,
+            @NotNull Map<String, FrontendOwnedClassRelation> relationsByCanonicalName
+    ) {
+        var names = new HashSet<String>();
+        var visited = new HashSet<String>();
+        var currentSuperName = superClassCanonicalName;
+        while (!currentSuperName.isBlank() && visited.add(currentSuperName)) {
+            var relation = relationsByCanonicalName.get(currentSuperName);
+            if (relation == null) {
+                break;
+            }
+            for (var statement : classBodyStatementsOf(relation)) {
+                if (statement instanceof EnumDeclaration enumDeclaration) {
+                    if (enumDeclaration.name() != null) {
+                        names.add(enumDeclaration.name().trim());
+                    } else {
+                        for (var member : enumDeclaration.members()) {
+                            names.add(member.name().trim());
+                        }
+                    }
+                }
+            }
+            currentSuperName = relation.superClassRef().canonicalName();
+        }
+        return names;
+    }
+
+    private @NotNull List<Statement> classBodyStatementsOf(@NotNull FrontendOwnedClassRelation relation) {
+        return switch (relation.astOwner()) {
+            case SourceFile sourceFile -> sourceFile.statements();
+            case ClassDeclaration classDeclaration -> classDeclaration.body().statements();
+            default -> List.of();
+        };
     }
 
     /// Builds accepted inner class relations in pre-order so downstream consumers keep seeing the
@@ -748,7 +1076,7 @@ public final class FrontendClassSkeletonBuilder {
         }
     }
 
-    private @NotNull Scope requireDeclaredTypeScope(
+    private @NotNull ClassScope requireDeclaredTypeScope(
             @NotNull IdentityHashMap<Node, ClassScope> scopesByAstOwner,
             @NotNull Node astOwner
     ) {
@@ -1647,12 +1975,12 @@ public final class FrontendClassSkeletonBuilder {
                         typeMeta,
                         "builtin types cannot be used as superclasses in frontend superclass binding"
                 );
-                case GLOBAL_ENUM -> HeaderSuperBindingDecision.rejected(
-                        HeaderSuperBindingKind.REJECTED_GLOBAL_ENUM,
+                case GLOBAL_ENUM, GDCC_ENUM -> HeaderSuperBindingDecision.rejected(
+                        HeaderSuperBindingKind.REJECTED_ENUM,
                         rawExtendsText,
                         null,
                         typeMeta,
-                        "global enum names cannot be used as superclasses in frontend superclass binding"
+                        "enum names cannot be used as superclasses in frontend superclass binding"
                 );
             };
         }
@@ -1738,7 +2066,7 @@ public final class FrontendClassSkeletonBuilder {
         REJECTED_CANONICAL_TEXT,
         REJECTED_UNSUPPORTED_GDCC_SOURCE,
         REJECTED_BUILTIN,
-        REJECTED_GLOBAL_ENUM,
+        REJECTED_ENUM,
         REJECTED_UNRESOLVED
     }
 

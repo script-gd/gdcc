@@ -379,6 +379,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - skeleton 会把 annotation side-table 写入共享 `FrontendAnalysisData`
 - builder 不会创造或重复导入第二份 parse diagnostics
 - GDCC signal 若与 inherited engine/native signal 同名，skeleton 发 `sema.class_skeleton` 并跳过该 `SignalStatement`；inherited GDCC signal 的 nearest-child shadow 仍合法
+- 类体（含 inner class 体）内的枚举声明由 skeleton 枚举预 pass 统一处理：冲突校验（成员重名、组名/匿名成员名与同类成员冲突、枚举间冲突）、空枚举、成员值求值失败（非受支持常量表达式、除零/取余零、非法移位、引用后序/未知/父类枚举常量等）均发单条 `sema.class_skeleton` error 并跳过该枚举子树；求值失败锚定成员节点，结构错误锚定枚举声明节点；单枚枚举独立成败，失败枚不落地常量表与 type-meta（无半成品），同类其他成员与同 module 其他类不受影响。注：非 int 字面量（string/float/bool 等）不会到达求值器，由 parser 先行诊断
+- parser 已对某枚枚举内部（如非法初值）发出 `parse.*` 诊断时，skeleton 跳过该枚举子树且不发布任何枚举事实，也不重复发 skeleton 诊断（单一诊断 owner 合同）
 
 ### 3.3 analyzer
 

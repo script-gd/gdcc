@@ -202,24 +202,24 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
             switch (node.kind()) {
                 case "integer" -> block.appendNonTerminatorInstruction(new LiteralIntInsn(
                         resultSlotId,
-                        Long.parseLong(sourceText)
+                        requireGdIntegerLiteral(session, item, sourceText)
                 ));
                 case "number" -> {
                     if (sourceText.contains(".")) {
                         block.appendNonTerminatorInstruction(new LiteralFloatInsn(
                                 resultSlotId,
-                                Double.parseDouble(sourceText)
+                                requireGdFloatLiteral(session, item, sourceText)
                         ));
                         return block;
                     }
                     block.appendNonTerminatorInstruction(new LiteralIntInsn(
                             resultSlotId,
-                            Long.parseLong(sourceText)
+                            requireGdIntegerLiteral(session, item, sourceText)
                     ));
                 }
                 case "float" -> block.appendNonTerminatorInstruction(new LiteralFloatInsn(
                         resultSlotId,
-                        Double.parseDouble(sourceText)
+                        requireGdFloatLiteral(session, item, sourceText)
                 ));
                 case "string" -> block.appendNonTerminatorInstruction(new LiteralStringInsn(
                         resultSlotId,
@@ -449,6 +449,37 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
             ));
             return block;
         }
+    }
+
+    /// Parses an integer literal lexeme through the shared helper so body literals support the
+    /// same `0x`/`0b`/`0o`/`_` surface as enum evaluation. The parser only emits well-formed
+    /// lexemes, so a null parse indicates a frontend protocol violation — fail fast instead of
+    /// silently widening the literal surface.
+    private static long requireGdIntegerLiteral(
+            @NotNull FrontendBodyLoweringSession session,
+            @NotNull OpaqueExprValueItem item,
+            @NotNull String sourceText
+    ) {
+        var value = StringUtil.parseGdIntegerLexeme(sourceText);
+        if (value == null) {
+            throw session.unsupportedSequenceItem(item, "malformed integer literal lexeme: " + sourceText);
+        }
+        return value;
+    }
+
+    /// Parses a float literal lexeme through the shared helper so body literals support the same
+    /// `_` / exponent surface as container-literal reduction. A null parse is a frontend protocol
+    /// violation because the parser only emits well-formed lexemes.
+    private static double requireGdFloatLiteral(
+            @NotNull FrontendBodyLoweringSession session,
+            @NotNull OpaqueExprValueItem item,
+            @NotNull String sourceText
+    ) {
+        var value = StringUtil.parseGdFloatLexeme(sourceText);
+        if (value == null) {
+            throw session.unsupportedSequenceItem(item, "malformed float literal lexeme: " + sourceText);
+        }
+        return value;
     }
 
     private static @NotNull OpaqueExprValueItem requireContext(

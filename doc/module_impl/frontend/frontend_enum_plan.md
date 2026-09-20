@@ -6,7 +6,7 @@
 > 无新 LIR 指令、无 C 模板/运行时改动，复用现有 LIR/backend surface；
 > backend 改动仅限 Step 8 在 `CGenHelper` 新增一条 hint 映射规则（Java codegen 侧）。
 
-- 状态：实施计划（尚未落地；已经过多轮评审修订）
+- 状态：实施中（Step 1-2 已完成并通过验收；Step 3-9 尚未落地；已经过多轮评审修订）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/scope/**`
   - `src/main/java/gd/script/gdcc/frontend/scope/**`
@@ -184,10 +184,11 @@ public record GdScriptClassConstant(
 ) {}
 ```
 
-- `ClassDef` 接口新增 `default @NotNull List<? extends GdScriptClassConstant> getConstants() { return List.of(); }`
-  ——`ExtensionBuiltinClass` / `ExtensionGdClass` 走 default 空表，**引擎/builtin 常量不进入此表**，
-  继续走既有 extension metadata 通道（`findEngineClassConstantInHierarchy` 等）；只有
-  `LirClassDef` 覆写并新增 `addConstant(...)`。backend 不消费该表。
+- `ClassDef` 接口新增 `default @NotNull List<? extends GdScriptClassConstant> getScriptConstants() { return List.of(); }`
+  ——该表是脚本源常量通道（当前为 enum 事实；未来 class `const` 复用）。`ExtensionBuiltinClass` /
+  `ExtensionGdClass` 走 default 空表，**引擎/builtin 常量不进入此表**，继续走既有
+  extension metadata 通道（`findEngineClassConstantInHierarchy` 等）；只有
+  `LirClassDef` 覆写并新增 `addScriptConstant(...)`。backend 不消费该表。
 - `ScopeTypeMetaKind` 新增 `GDCC_ENUM`：「GDCC 类声明的命名枚举用于类型位置」，
   `instanceType` 恒为 `GdIntType.INT`，`pseudoType = true`，`declaration` 为 `GdScriptEnumGroup`（非空）。
   该枚举值的全部穷尽分派点见 Step 3.4。
@@ -223,7 +224,7 @@ error（「暂不支持引用继承的枚举常量」），不落到全局查找
 
 | 绑定 | 命名空间 | kind | type | declaration | 注册点 |
 |---|---|---|---|---|---|
-| 匿名成员 `IDLE` | ClassScope value | `CONSTANT` | `int` | `GdScriptEnumConstant` | `ClassScope` 索引 `ClassDef.getConstants()` |
+| 匿名成员 `IDLE` | ClassScope value | `CONSTANT` | `int` | `GdScriptEnumConstant` | `ClassScope` 索引 `ClassDef.getScriptConstants()` |
 | 命名枚举 `State` | ClassScope value | `CONSTANT` | `Dictionary`（generic） | `GdScriptEnumGroup` | 同上 |
 | 命名枚举 `State` | ClassScope type-meta | `GDCC_ENUM` | instanceType=`int` | `GdScriptEnumGroup` | skeleton 枚举预 pass 注册到 declared-type scaffold；`FrontendScopeAnalyzer` 在 `handleSourceFile`（顶层类）与 `handleClassDeclaration`（inner class）两处注册到正式 ClassScope |
 
@@ -300,22 +301,43 @@ func f():
 > 每步独立可验证；除 Step 9 列出的契约变更外，任一步不得让既有测试变红。
 > 遵守「单批修改不超过 5 个文件」的分批约束。
 
-### Step 1：常量元数据与 `ClassDef` 常量表
+### Step 1：常量元数据与 `ClassDef` 常量表（已完成）
 
 改动：
 
 - 新增 `gd/script/gdcc/scope/GdScriptEnumConstant.java`、`GdScriptEnumGroup.java`、
   `GdScriptClassConstant.java`（record，§2.3）。
-- `gd/script/gdcc/scope/ClassDef.java`：新增 `default getConstants()` 返回 `List.of()`，
-  注释写明该表只服务 GDCC 源常量，引擎/builtin 常量继续走 extension metadata 通道。
-- `gd/script/gdcc/lir/LirClassDef.java`：覆写 `getConstants()` + 新增 `addConstant(...)`。
+- `gd/script/gdcc/scope/ClassDef.java`：新增 `default getScriptConstants()` 返回 `List.of()`，
+  注释写明该表只服务脚本源常量，引擎/builtin 常量继续走 extension metadata 通道。
+- `gd/script/gdcc/lir/LirClassDef.java`：覆写 `getScriptConstants()` + 新增 `addScriptConstant(...)`。
 
 验收：
 
-- 新增常量表单元测试：default 为空表、`addConstant` 保序、只读视图不可变。
+- 新增常量表单元测试：default 为空表、`addScriptConstant` 保序、只读视图不可变。
 - 回归：`./gradlew classes --no-daemon --info --console=plain` 通过。
 
-### Step 2：skeleton 枚举预 pass 与常量求值
+### Step 2：skeleton 枚举预 pass 与常量求值（已完成）
+
+实施记录（与原文档的偏差，均已按计划验收口径落地）：
+
+- `ScopeTypeMetaKind.GDCC_ENUM` 提前到本步落地（原文列在 Step 3）：预 pass 注册 scaffold
+  type-meta 必需该枚举值。6 处穷尽分派点已按 Step 3.4 语义全部补齐；其中
+  `reduceStaticLoadStep` 的 `GDCC_ENUM` 成员解析分支（`reduceGdccEnumStaticLoad`）也一并实现
+  （新增枚举值导致无 default 的 switch 无法编译，且该分支语义在 §1.3.4 已完整定义），其
+  chain 层验收测试仍在 Step 5 归属范围内补充。
+- `buildEmitsExplicitDiagnosticsForDeferredTypeMetaSources` 已在本步更新（行为翻转点）：
+  `from_enum` 现解析为 int，`sema.type_resolution` 断言从 3 条降为 2 条（Alias/Preloaded
+  保留），§4 Step 9 的对应条目届时只需复核。
+- 空枚举产物形态已由 `FrontendEnumParseBehaviorTest` 锁定：gdparser 0.5.4 对空枚举体产出
+  **一个空名字的幽灵成员**（解析诊断为空），非空成员列表；预 pass 据此以「成员名 blank 或
+  成员列表为空」判定空枚举并发 `sema.class_skeleton`。
+- 字符串/float/bool/三元作为枚举成员值**不会到达求值器**：gdparser 直接报
+  `parse.lowering` 诊断并丢弃初值（值位置只剩 null）。因此 §2.2「非 int 字面量」边界由
+  parser 层兜底：skeleton 检测到枚举子树范围内存在 `parse.*` 诊断时，跳过该枚举子树且
+  **不发布任何常量/type-meta**、不重复发 skeleton 诊断（单一 owner 合同）；
+  求值器层的 negative 锚点覆盖 call/attribute/subscript 等语法面。
+- `fillSourceClassRelationMembers` 新增模块级 `relationsByCanonicalName` 形参（祖先枚举名
+  blocker 需要跨 unit 类图），既有反射探针测试的调用点已适配。
 
 改动：
 
@@ -373,14 +395,14 @@ func f():
 
 改动：
 
-- `ClassScope`：`indexDirectMembers` 在 functions 之后追加索引 `classDef.getConstants()`
-  （经 `defineConstant`）；`resolveInheritedValueMember` 追加沿继承链查 `getConstants()`。
+- `ClassScope`：`indexDirectMembers` 在 functions 之后追加索引 `classDef.getScriptConstants()`
+  （经 `defineConstant`）；`resolveInheritedValueMember` 追加沿继承链查 `getScriptConstants()`。
 - `ScopeTypeMetaKind`：新增 `GDCC_ENUM`。
 - `FrontendScopeAnalyzer`：
   - 枚举 type-meta 注册必须覆盖**两类 class boundary**：顶层脚本类的 `ClassScope` 由
     `handleSourceFile`（:146-158）创建，inner class 由 `handleClassDeclaration`（:284-295）
     创建。抽取共享 helper `defineEnumTypeMetas(ClassScope, ClassDef)`：为
-    `classDef.getConstants()` 中 `declaration instanceof GdScriptEnumGroup` 的条目
+    `classDef.getScriptConstants()` 中 `declaration instanceof GdScriptEnumGroup` 的条目
     `defineTypeMeta(...)`（`canonicalName = ownerCanonical + "." + name`，
     `sourceName = name`，`pseudoType = true`），并在两处 handler 都调用——只挂
     `handleClassDeclaration` 会让顶层类的命名枚举 type-meta 缺失，函数体内

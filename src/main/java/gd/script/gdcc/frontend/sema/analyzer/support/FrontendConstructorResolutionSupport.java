@@ -79,7 +79,8 @@ final class FrontendConstructorResolutionSupport {
         Objects.requireNonNull(argumentExpressions, "argumentExpressions must not be null");
         Objects.requireNonNull(argumentTypes, "argumentTypes must not be null");
         return switch (receiverTypeMeta.kind()) {
-            case GLOBAL_ENUM -> failed(
+            // Script enum groups share the global-enum rule: enums are not constructible.
+            case GLOBAL_ENUM, GDCC_ENUM -> failed(
                     receiverTypeMeta.declaration(),
                     null,
                     "Type meta '" + receiverTypeMeta.displayName() + "' does not support constructor calls"

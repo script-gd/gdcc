@@ -685,7 +685,8 @@ class FrontendClassSkeletonTest {
         var deferredClass = findClassByName(topLevelClassDefs(result), "DeferredTypeSources");
 
         assertObjectTypeName(findPropertyByName(deferredClass, "direct").getType(), "HelperScript");
-        assertEquals(GdVariantType.VARIANT, findPropertyByName(deferredClass, "from_enum").getType());
+        // Named enum type annotations now resolve to int through the skeleton enum pre-pass.
+        assertEquals(GdIntType.INT, findPropertyByName(deferredClass, "from_enum").getType());
         assertEquals(GdVariantType.VARIANT, findPropertyByName(deferredClass, "from_alias").getType());
         assertEquals(GdVariantType.VARIANT, findPropertyByName(deferredClass, "from_preload").getType());
 
@@ -694,8 +695,8 @@ class FrontendClassSkeletonTest {
                 .filter(diagnostic -> diagnostic.sourcePath() != null
                         && diagnostic.sourcePath().endsWith("deferred_type_sources.gd"))
                 .toList();
-        assertEquals(3, typeResolutionDiagnostics.size());
-        assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("LocalState")));
+        assertEquals(2, typeResolutionDiagnostics.size());
+        assertTrue(typeResolutionDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("LocalState")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Alias")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Preloaded")));
     }
@@ -935,10 +936,15 @@ class FrontendClassSkeletonTest {
         invokeBuilderMethod(
                 builder,
                 "fillSourceClassRelationMembers",
-                new Class<?>[]{FrontendSourceClassRelation.class, shellContext.getClass(), List.class},
+                new Class<?>[]{FrontendSourceClassRelation.class, shellContext.getClass(), List.class, Map.class},
                 shellRelation,
                 shellContext,
-                new ArrayList<>()
+                new ArrayList<>(),
+                Map.of(
+                        shellRelation.canonicalName(), shellRelation,
+                        shellRelation.innerClassRelations().getFirst().canonicalName(),
+                        shellRelation.innerClassRelations().getFirst()
+                )
         );
         assertEquals("changed", shellRelation.topLevelClassDef().getSignals().getFirst().getName());
         assertEquals("_init", shellRelation.topLevelClassDef().getFunctions().getFirst().getName());

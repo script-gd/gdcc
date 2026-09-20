@@ -19,6 +19,8 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.GdScriptEnumConstant;
+import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.ScopeTypeMeta;
 import gd.script.gdcc.scope.ScopeTypeMetaKind;
 import gd.script.gdcc.type.GdArrayType;
@@ -928,6 +930,62 @@ class FrontendChainReductionHelperTest {
         var engineResultType = engineMember.resultType();
         assertNotNull(engineResultType);
         assertEquals("int", engineResultType.getTypeName());
+    }
+
+    @Test
+    void reduceResolvesGdccEnumStaticLoadMembers() {
+        var enumGroup = new GdScriptEnumGroup("State", List.of(
+                new GdScriptEnumConstant("IDLE", 0, "State", "Owner"),
+                new GdScriptEnumConstant("JUMP", 5, "State", "Owner")
+        ), "Owner");
+        var registry = newRegistry(List.of(), List.of(), List.of(), List.of());
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("State"), property("JUMP")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("State", GdIntType.INT, ScopeTypeMetaKind.GDCC_ENUM, enumGroup, true)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        var member = result.stepTraces().getFirst().suggestedMember();
+        assertNotNull(member);
+        assertAll(
+                () -> assertEquals(FrontendBindingKind.CONSTANT, member.bindingKind()),
+                () -> assertEquals("int", member.resultType().getTypeName()),
+                () -> assertInstanceOf(GdScriptEnumConstant.class, member.declarationSite()),
+                () -> assertEquals(5L, ((GdScriptEnumConstant) member.declarationSite()).value())
+        );
+    }
+
+    @Test
+    void reduceFailsGdccEnumStaticLoadForUnknownMemberAndMalformedDeclaration() {
+        var enumGroup = new GdScriptEnumGroup("State", List.of(
+                new GdScriptEnumConstant("IDLE", 0, "State", "Owner")
+        ), "Owner");
+        var registry = newRegistry(List.of(), List.of(), List.of(), List.of());
+
+        var missResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("State"), property("MISSING")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("State", GdIntType.INT, ScopeTypeMetaKind.GDCC_ENUM, enumGroup, true)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, missResult.stepTraces().getFirst().status());
+
+        var malformedResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("State"), property("IDLE")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("State", GdIntType.INT, ScopeTypeMetaKind.GDCC_ENUM, null, true)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, malformedResult.stepTraces().getFirst().status());
     }
 
     @Test

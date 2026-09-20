@@ -222,6 +222,80 @@ public class StringUtilTest {
         );
     }
 
+    @Test
+    public void parseGdIntegerLexemeParsesAllRadixesAndSeparators() {
+        assertAll(
+                () -> assertEquals(42L, StringUtil.parseGdIntegerLexeme("42")),
+                () -> assertEquals(0L, StringUtil.parseGdIntegerLexeme("0")),
+                () -> assertEquals(31L, StringUtil.parseGdIntegerLexeme("0x1F")),
+                () -> assertEquals(31L, StringUtil.parseGdIntegerLexeme("0X1f")),
+                () -> assertEquals(10L, StringUtil.parseGdIntegerLexeme("0b1010")),
+                () -> assertEquals(15L, StringUtil.parseGdIntegerLexeme("0o17")),
+                () -> assertEquals(1_000_000L, StringUtil.parseGdIntegerLexeme("1_000_000")),
+                () -> assertEquals(0xFFFFL, StringUtil.parseGdIntegerLexeme("0xFF_FF")),
+                () -> assertEquals(42L, StringUtil.parseGdIntegerLexeme("  42  ")),
+                () -> assertEquals(Long.MAX_VALUE, StringUtil.parseGdIntegerLexeme("9223372036854775807"))
+        );
+    }
+
+    @Test
+    public void parseGdIntegerLexemeRejectsMalformedSignedAndOverflowingLexemes() {
+        assertAll(
+                // The sign is owned by the AST unary expression, not by this lexeme helper.
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("-5")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("+5")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("   ")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("0x")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("12a")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("0xG")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("1.5")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("9223372036854775808")),
+                // Hex bit patterns above the signed 64-bit range count as overflow, not wrap.
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("0xFFFFFFFFFFFFFFFF")),
+                // Underscores are legal only between two digits of the active radix.
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("1__0")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("_1")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("1_")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("0x_FF")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("0xF_")),
+                () -> assertThrows(NullPointerException.class, () -> StringUtil.parseGdIntegerLexeme(null))
+        );
+    }
+
+    @Test
+    public void parseGdFloatLexemeParsesDecimalFractionAndExponentForms() {
+        assertAll(
+                () -> assertEquals(1.5, StringUtil.parseGdFloatLexeme("1.5")),
+                () -> assertEquals(0.5, StringUtil.parseGdFloatLexeme(".5")),
+                () -> assertEquals(1.0, StringUtil.parseGdFloatLexeme("1.")),
+                () -> assertEquals(1.0e10, StringUtil.parseGdFloatLexeme("1e10")),
+                () -> assertEquals(1.5e-2, StringUtil.parseGdFloatLexeme("1.5e-2")),
+                () -> assertEquals(1.5e2, StringUtil.parseGdFloatLexeme("1.5E+2")),
+                () -> assertEquals(1_000.5, StringUtil.parseGdFloatLexeme("1_000.5")),
+                () -> assertEquals(1.5, StringUtil.parseGdFloatLexeme("  1.5  "))
+        );
+    }
+
+    @Test
+    public void parseGdFloatLexemeRejectsMalformedSignedAndUnderscoreLexemes() {
+        assertAll(
+                () -> assertNull(StringUtil.parseGdFloatLexeme("-1.5")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("+1.5")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("   ")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme(".")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("e10")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("1e")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("1.5.2")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("1__0.5")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("_1.5")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("1.5_")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("1._5")),
+                () -> assertThrows(NullPointerException.class, () -> StringUtil.parseGdFloatLexeme(null))
+        );
+    }
+
     private static void assertMalformedNodePathLexeme(String lexeme) {
         var error = assertThrows(IllegalArgumentException.class, () -> StringUtil.decodeNodePathLexeme(lexeme));
         assertEquals("Invalid GDScript node path lexeme: " + lexeme, error.getMessage());
