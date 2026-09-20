@@ -6,7 +6,7 @@
 > 无新 LIR 指令、无 C 模板/运行时改动，复用现有 LIR/backend surface；
 > backend 改动仅限 Step 8 在 `CGenHelper` 新增一条 hint 映射规则（Java codegen 侧）。
 
-- 状态：实施中（Step 1-3 已完成并通过验收；Step 4-9 尚未落地；已经过多轮评审修订；
+- 状态：实施中（Step 1-4 已完成并通过验收；Step 5-9 尚未落地；已经过多轮评审修订；
   2026-09 修订：跨类枚举限定访问 `Other.State.IDLE` / `Other.IDLE` 由延后边界转为支持面，
   并入 Step 5-7，见 §1.3.5、§2.1、Step 5 修订记录）
 - 适用范围：
@@ -514,11 +514,27 @@ func f():
   `FrontendStaticContextValueRestrictionTest`、`FrontendInnerClassScopeIsolationTest`、
   `ClassRegistryScopeTest`、`ScopeTypeMetaChainTest` 不变红。
 
-### Step 4：top binding / visible resolver / 表达式类型接通
+### Step 4：top binding / visible resolver / 表达式类型接通（已完成）
+
+实施记录（与原文档的偏差，均已按计划验收口径落地）：
+
+- `FrontendVisibleValueResolver`、`publishScopeValueBinding`、`FrontendExpressionSemanticSupport`
+  确认零改动：ClassScope 常量经 shared `Scope.resolveValue(...)` 命中后按既有
+  `CONSTANT -> CONSTANT` 映射发布（`FrontendBodyOwnerProcedures`:1765-1776），
+  `declarationSite` 原样透传（`FrontendBinding` 对 declaration 类型无白名单），expr type
+  直接取 `resolvedValue.type()`。property initializer 与 parameter default 两个 island
+  同样零改动放行（island 拦截集合不含 CONSTANT；static/instance restriction 对类常量均
+  allowed）。
+- island 正向锚点使用裸成员形态（`var x = IDLE`、`func f(x = IDLE)`）：原文验收列举的
+  `var x = State.IDLE` 是 qualified chain 路线，其 `reducePropertyStep` 枚举分支属 Step 5；
+  qualified island 锚点由 Step 5 验收的「跨类 domain 锚点」条款统一覆盖
+  （`var x = Other.State.IDLE`、`func f(x = Other.IDLE)`），本步不重复。
+- 诊断消息采用与 bare lambda 一致的描述式文案（"Enum declaration is only supported at
+  class body level"），经 `reportUnsupportedBindingMessage` 发出。
 
 改动：
 
-- `FrontendBodyOwnerProcedures.runUnsupported`（:818-831）新增 `case EnumDeclaration`：
+- `FrontendBodyOwnerProcedures.runUnsupported`（:819-843）新增 `case EnumDeclaration`（:835-840）：
   发单条 `sema.unsupported_binding_subtree` error（锚定声明根），覆盖函数体内 `enum`。
   这是新诊断路径，不是既有行为。该分支不写 `skippedSubtreeRoots()`（body 阶段晚于
   scope phase，写入无消费者）；statement resolver 结构性停止下钻，子树不发布任何 fact。
@@ -526,7 +542,7 @@ func f():
   （`CONSTANT -> CONSTANT` 映射已存在）、`FrontendExpressionSemanticSupport` 无需改动；
   若发现 class-constant 命中被既有 fail-fast 分支拦截，按最小改动修复并记录原因。
 
-验收：
+验收（已落地 `FrontendEnumBodyBindingExprTypeTest`，9 个用例）：
 
 - top binding 测试：裸匿名成员与裸 `State` 发布 `FrontendBindingKind.CONSTANT`，
   `declarationSite` 为对应枚举元数据；局部 `var` 遮蔽枚举成员。
@@ -534,7 +550,8 @@ func f():
 - negative：函数体内 `enum` → 单条 `sema.unsupported_binding_subtree` error + 子树无
   任何 published facts + 兄弟 statement 正常发布事实；未知名仍走 `sema.binding` + `UNKNOWN`。
 - property initializer 与 parameter default island 消费枚举常量的正向用例
-  （`var x = State.IDLE`、`func f(x = IDLE)`）。
+  （`var x = IDLE`、`func f(x = IDLE)` 裸成员形态；qualified 形态 `var x = State.IDLE`
+  由 Step 5 的 chain 枚举分支与 domain 锚点覆盖，见实施记录）。
 - 回归：`FrontendBodyOwnerProceduresExprTypeTest`、`FrontendVisibleValueResolverTest`、
   `FrontendSuiteResolverTest`、`FrontendInterfacePhaseTest`、`FrontendVariableAnalyzerTest` 不变红。
 

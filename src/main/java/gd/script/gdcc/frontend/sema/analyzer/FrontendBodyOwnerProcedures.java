@@ -14,6 +14,7 @@ import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.DictionaryExpression;
+import dev.superice.gdparser.frontend.ast.EnumDeclaration;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
@@ -826,6 +827,17 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     reportStandaloneLambdaStatement(context, functionDeclaration);
             case ConstructorDeclaration constructorDeclaration ->
                     reportStandaloneLambdaStatement(context, constructorDeclaration);
+            // Function-body `enum` mirrors Godot's parser-level rejection with a single boundary
+            // error owned by top binding. The statement resolver never descends into unsupported
+            // roots, so the subtree publishes no facts while sibling statements keep resolving;
+            // `skippedSubtreeRoots()` stays untouched because that side table is a skeleton→scope
+            // protocol with no consumer at body phase.
+            case EnumDeclaration enumDeclaration ->
+                    reportUnsupportedBindingMessage(
+                            context,
+                            enumDeclaration,
+                            "Enum declaration is only supported at class body level"
+                    );
             default -> {
             }
         }
