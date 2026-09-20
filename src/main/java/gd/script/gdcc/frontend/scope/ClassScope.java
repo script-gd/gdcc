@@ -52,7 +52,8 @@ public final class ClassScope extends AbstractFrontendScope {
     /// What lives here:
     /// - direct properties declared by `currentClass`
     /// - direct signals declared by `currentClass`
-    /// - class constants explicitly registered through `defineConstant(...)`
+    /// - script-source constants published on `ClassDef.getScriptConstants()` (currently enum
+    ///   members/groups; indexed here through `defineConstant(...)`)
     ///
     /// What intentionally does **not** live here:
     /// - inherited properties from super classes
@@ -226,6 +227,11 @@ public final class ClassScope extends AbstractFrontendScope {
     ///   `defineSignal(...)` calls from the analyzer
     /// - during the temporary declared-type scaffold in `FrontendClassSkeletonBuilder`, the shells are
     ///   still member-empty, so this remains a no-op and only explicit type-meta publication matters
+    ///
+    /// Script constants (enum members/groups) ride the same channel: the skeleton enum pre-pass has
+    /// already validated all name conflicts and published the constant table before any real
+    /// `ClassScope` is constructed, so indexing here can rely on the fail-fast duplicate check below
+    /// never firing for user code.
     private void indexDirectMembers(@NotNull ClassDef classDef) {
         for (var property : classDef.getProperties()) {
             defineDirectValue(toPropertyScopeValue(property));
@@ -235,6 +241,9 @@ public final class ClassScope extends AbstractFrontendScope {
         }
         for (var function : classDef.getFunctions()) {
             defineFunction(function);
+        }
+        for (var constant : classDef.getScriptConstants()) {
+            defineConstant(constant.name(), constant.type(), constant.declaration());
         }
     }
 
@@ -260,6 +269,26 @@ public final class ClassScope extends AbstractFrontendScope {
             for (var signal : inheritedClass.getSignals()) {
                 if (signal.getName().equals(name)) {
                     return toClassValueResult(toSignalScopeValue(signal), restriction);
+                }
+            }
+            // Script constants (enum members/groups) are inherited as plain value bindings:
+            // subclasses may reference parent enum constants unqualified, nearest class layer wins.
+            // Engine/builtin constants stay on the extension metadata channel and never enter
+            // `getScriptConstants()`, so this loop cannot leak engine enum bare names.
+            for (var constant : inheritedClass.getScriptConstants()) {
+                if (constant.name().equals(name)) {
+                    return toClassValueResult(
+                            new ScopeValue(
+                                    constant.name(),
+                                    constant.type(),
+                                    ScopeValueKind.CONSTANT,
+                                    constant.declaration(),
+                                    true,
+                                    false,
+                                    true
+                            ),
+                            restriction
+                    );
                 }
             }
         }

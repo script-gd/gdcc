@@ -6,7 +6,9 @@
 > 无新 LIR 指令、无 C 模板/运行时改动，复用现有 LIR/backend surface；
 > backend 改动仅限 Step 8 在 `CGenHelper` 新增一条 hint 映射规则（Java codegen 侧）。
 
-- 状态：实施中（Step 1-2 已完成并通过验收；Step 3-9 尚未落地；已经过多轮评审修订）
+- 状态：实施中（Step 1-3 已完成并通过验收；Step 4-9 尚未落地；已经过多轮评审修订；
+  2026-09 修订：跨类枚举限定访问 `Other.State.IDLE` / `Other.IDLE` 由延后边界转为支持面，
+  并入 Step 5-7，见 §1.3.5、§2.1、Step 5 修订记录）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/scope/**`
   - `src/main/java/gd/script/gdcc/frontend/scope/**`
@@ -50,6 +52,9 @@
 - 枚举只在类体（含 inner class 体）合法；函数体内 `enum` 在 Godot 中是解析错误。
 - 类常量/枚举沿继承链可见（子类可裸用父类枚举）。本计划 MVP 只继承 **body 值查找**；
   枚举 initializer 引用父类常量属延后边界（见 §2.2）。
+- 跨类限定访问在 Godot 中是一等能力：`Other.State.IDLE`、继承后的 `Other.PARENT_IDLE`、
+  `Other.State`（Dictionary 值）均合法。本计划将其纳入支持面（Step 5-7，编译期常量折叠
+  路线）；class `const` 的限定访问不在此列（见 §2.2）。
 
 ### 1.2 现状差距（调研结论）
 
@@ -61,7 +66,7 @@
 | 用户级 `const` | 类级被 skeleton 忽略；块级被 `FrontendVariableAnalyzer` 显式拒绝（`sema.unsupported_variable_inventory_subtree`）。本计划**不**承接 class `const`，仅为 enum 建立常量通道 |
 | 函数体内 `enum` | **当前是静默 no-op**：`FrontendStatementResolver.resolveStatement`（:92）default → `runUnsupported`（`FrontendBodyOwnerProcedures`:818-831），其 `default -> {}` 不发任何诊断。本计划必须新增诊断路径，不能当成既有合同消费 |
 | 全局枚举/常量 | 已闭环：`ClassRegistry → ScopeValue(CONSTANT) → FrontendBinding(CONSTANT) → OpaqueExprValueItem → LiteralIntInsn`，可复用 |
-| chain | `reduceGdccStaticLoad`（`FrontendChainReductionHelper`:1056-1103）对 GDCC 类常量返回 UNSUPPORTED；`ReceiverState`（:187-197）不携带 declaration，须用 `ReductionRequest.chainExpression()` + `bindingLookup()`（:334-342）绕开 |
+| chain | `reduceGdccStaticLoad`（`FrontendChainReductionHelper`:1056-1103）对 GDCC 类常量返回 UNSUPPORTED；`ReceiverState`（:187-197）不携带 declaration，须用 `ReductionRequest.chainExpression()` + `bindingLookup()`（:334-342）绕开。**Step 5 修订后**：GDCC 类常量分支落地枚举常量/枚举组两条子路线（见 Step 5 改动），ReceiverState 保持不变，组延续经「前一 step fact」拦截实现 |
 | lowering | `FrontendOpaqueExprInsnLoweringProcessors` CONSTANT 分支（:149-169）只认 `ExtensionGlobalConstant` / `ExtensionEnumValue` / `GdScriptLanguageConstant`，其余 fail-fast |
 | 既有测试 | `FrontendClassSkeletonTest.buildEmitsExplicitDiagnosticsForDeferredTypeMetaSources`（:654-701）断言 `var from_enum: LocalState` 回退 Variant + `sema.type_resolution`；命名枚举类型标注落地后该断言必须更新 |
 
@@ -80,10 +85,11 @@ EnumDeclaration（类体，含 inner class 体）
   消费端：
   ├─ 裸成员 `IDLE` / 裸组名 `State` → top binding CONSTANT binding（现有映射零改动）
   ├─ `State.IDLE` → chain binding 枚举成员 route → RESOLVED(CONSTANT, int)
+  ├─ `Other.State.IDLE` / `Other.IDLE` → chain binding GDCC 类常量分支 → 同形 fact
   ├─ `var x: State` → ScopeTypeResolver → int（经 type-meta instanceType）
   └─ lowering：
-       ├─ 裸成员 / `State.IDLE` → LiteralIntInsn（编译期字面量）
-       └─ 裸 `State` → LiteralStringInsn/LiteralIntInsn + ConstructContainerLiteralInsn
+       ├─ 裸成员 / `State.IDLE` / `Other.State.IDLE` / `Other.IDLE` → LiteralIntInsn（编译期字面量）
+       └─ 裸 `State` / `Other.State` → LiteralStringInsn/LiteralIntInsn + ConstructContainerLiteralInsn
 ```
 
 关键架构决策：
@@ -108,6 +114,24 @@ EnumDeclaration（类体，含 inner class 体）
      type-meta 命中 GDCC_ENUM，`State.IDLE` 走 static-load 分支解析成员。
    两条路线发布同一形态的 member fact（`RESOLVED + CONSTANT + int + declaration=成员常量元数据`），
    lowering 统一物化 `LiteralIntInsn`，不构造 Dictionary、不产生 `LoadStaticInsn`。
+5. **跨类限定访问（qualified 路线，Step 5 修订新增）**：`Other.State.IDLE` / `Other.IDLE`。
+   chain 阶段晚于整个模块的 skeleton 完成点，目标类的常量表此时必然已填充完毕，因此
+   跨类解析不存在求值序问题（该问题只影响 skeleton 期的枚举 initializer，见 §2.2）。
+   - 链头 `Other` 经既有 type-meta head 路线解析为 GDCC_CLASS receiver，零改动；
+   - `reduceGdccStaticLoad` 的 static 成员查找随本分支**重构为逐继承层统一 walk**
+     （nearest layer wins，对齐 §2.5 遮蔽原则）：每一类层按「static 方法 → static property →
+     枚举常量/枚举组（`getScriptConstants()`）」顺序查找，首层命中即停——
+     命中 `GdScriptEnumConstant`（`Other.IDLE`，含继承成员）→ 直接发布同形 member fact；
+     命中 `GdScriptEnumGroup`（`Other.State`）→ 发布组 fact（`CONSTANT` + Dictionary +
+     declaration=组元数据），**outgoing receiver 为 Dictionary 实例**（不保留 type-meta）；
+   - 组延续拦截：reduction 驱动在处理 property step 时检查**前一 step 已发布 fact** 的
+     `declarationSite instanceof GdScriptEnumGroup`——成员存在则拦截并发布同形 member fact
+     （`Other.State.IDLE` → 编译期常量）；成员不存在或当前为 call/subscript step 则不拦截，
+     自然落到 Dictionary 路线。由此 `Other.State.keys()`、`Other.State["IDLE"]` 与裸
+     `Other.State` 全部按 Dictionary 语义工作，与类内 value 路线的边缘语义完全一致
+     （成员名优先于 Dictionary 方法名的 property 读取规则同样适用）；
+   - 未命中任何枚举常量/组（含 class `const`，其声明不进入常量表、与未声明名不可区分）
+     → 维持既有 UNSUPPORTED fallback 与 `sema.unsupported_chain_route`，既有锚定不变。
 
 ---
 
@@ -129,6 +153,8 @@ EnumDeclaration（类体，含 inner class 体）
 | `@export` 枚举类型标注 | `@export var x: State` | skeleton 生成 `PROPERTY_HINT_ENUM` 用 hint_string（`Idle:0,Jump:5` 格式），编辑器出下拉 | Step 8 |
 | 类型推断 | `var x := State.IDLE` | `int` | Step 4/5 |
 | 继承可见性（值侧） | 子类裸用父类匿名成员 / 命名枚举 | `resolveInheritedValueMember` 扩展常量表（仅限 body 值查找；initializer 引用父类常量见 §2.2） | Step 3 |
+| 跨类限定成员访问 | `Other.State.IDLE`、`Other.IDLE`（含目标类继承来的成员） | 编译期 int 常量，`LiteralIntInsn`；`reduceGdccStaticLoad` 枚举分支 + 组延续拦截（§1.3.5） | Step 5/6/7 |
+| 跨类枚举组作 Dictionary 值 | `print(Other.State)`、`Other.State.keys()`、`Other.State["IDLE"]` | 每次求值物化新 Dictionary，方法调用与 subscript 走既有 Dictionary route | Step 5/6/7 |
 | inner class 内访问外层命名枚举成员 | inner 体内 `State.IDLE` | type-meta 路线（§1.3.4） | Step 5 |
 | static 上下文 | `static func f(): return IDLE` | `ResolveRestriction.allowClassConstants` 已允许（static/instance 均为 true） | Step 3 |
 | property initializer / parameter default | `var x = State.IDLE`、`func f(x = IDLE)` | **有意放行**，两条路径分别成立：property initializer 经 shared `Scope.resolveValue(...)` class-scope lookup 命中静态只读枚举常量（不经 `FrontendVisibleValueResolver`；island 只拦截 self/实例成员，不拦截类常量）；parameter default 经 `PARAMETER_DEFAULT` domain 命中（拦截参数/局部/capture；`self` 与实例成员仅在 instance 方法默认值中允许，static 方法禁止——既有合同不变） | Step 4 |
@@ -144,7 +170,8 @@ EnumDeclaration（类体，含 inner class 体）
 | 场景 | 行为 | 验收锚点 |
 |---|---|---|
 | 函数体内 `enum` | **新增诊断**：`runUnsupported` 增加 `EnumDeclaration` 分支，发单条 `sema.unsupported_binding_subtree` error（锚定声明根）+ skip 子树；对齐 Godot（函数内 enum 是解析错误）。当前静默 no-op 是被修复对象 | Step 4 |
-| 跨类限定访问 | `Other.State.IDLE`、`Other.IDLE`：`reduceGdccStaticLoad` 常量分支整体延后，维持既有 UNSUPPORTED 事实与诊断（与 class `const` 同边界） | Step 5 |
+| 跨类限定访问：class `const` 与未声明名 | `Other.FOO`（`const FOO = 5`）、`Other.MISSING`：class `const` 整体延后且其声明不进入常量表，与未声明名在 chain 阶段不可区分，统一维持既有 UNSUPPORTED fallback + `sema.unsupported_chain_route`（`Worker.VALUE` 既有锚定不变）；枚举常量/枚举组已转为支持面（§1.3.5） | Step 5 |
+| 嵌套类限定符 | `Outer.Inner.State.IDLE`：`.Inner` 在 GDCC static-load 路线中无 inner-class 成员分支，维持 UNSUPPORTED 延后 | Step 5 |
 | 类型标注的继承可见 | 子类内 `var x: ParentEnum`：type-meta 查找纯词法不沿继承 walk，回退 Variant + `sema.type_resolution` warning；与 inner class 类型现状一致 | Step 3 |
 | inner class 内的枚举 Dictionary 操作 | inner class 内仅 `State.IDLE` 可用；裸 `State` 值、`State.keys()`、`State["IDLE"]` 按既有值隔离/type-meta 合同拒绝（见 §2.6），**不**为本特性放开 inner-class 值隔离 | Step 5 |
 | 成员值引用命名枚举成员 | `enum {A = State.IDLE}`：求值器子集不含 attribute 表达式，`sema.class_skeleton` error | Step 2 |
@@ -153,7 +180,7 @@ EnumDeclaration（类体，含 inner class 体）
 | 成员值为非 int / 非受支持形态 | 浮点、字符串、bool、调用、三元、`**`、attribute、subscript 等：`sema.class_skeleton` error + 跳过该枚举 | Step 2 |
 | 匿名/命名枚举成员的重复值 | `enum {A = 1, B = 1}` | **允许**（对齐 Godot），非边界 | Step 2（正向用例防误判） |
 | 空枚举 `enum State {}` | 先以解析测试锁定 gdparser 产物形态；若允许空成员列表则发 `sema.class_skeleton` error（Godot 要求至少一个成员） | Step 2 |
-| 枚举 Dictionary 的运行时只读性 | Godot 对枚举字典 `make_read_only()` 且共享单例；MVP 每次裸 `State` 物化新 Dictionary，`State["X"] = 1` 写保护不做（Godot 为运行时错误） | Step 9 记入已知限制 |
+| 枚举 Dictionary 的运行时只读性 | Godot 对枚举字典 `make_read_only()` 且共享单例；MVP 每次求值（裸 `State` 或 `Other.State`）物化新 Dictionary，`State["X"] = 1` 写保护不做（Godot 为运行时错误） | Step 9 记入已知限制 |
 
 ### 2.3 数据模型（新增，均在 `gd.script.gdcc.scope` 包）
 
@@ -236,7 +263,11 @@ error（「暂不支持引用继承的枚举常量」），不落到全局查找
   同名常量沿用「ClassScope 先于 ClassRegistry root」；枚举常量遮蔽父类同名成员合法（nearest wins）。
 - 边缘语义：枚举成员名与 Dictionary 方法同名（如 `enum State {keys}`）时，`State.keys`
   命中枚举成员（枚举分支先于 builtin fallback）；`State.keys()` 调用步不受枚举分支影响，
-  仍走 Dictionary 方法 route。
+  仍走 Dictionary 方法 route。跨类 qualified 路线沿用同一规则：`Other.State.keys` 命中
+  枚举成员（组延续拦截），`Other.State.keys()` 走 Dictionary 方法 route。
+- 跨类限定访问不引入新的注册：qualified 路线只消费目标类已发布的常量表事实，
+  不向当前作用域注入任何绑定；`Other` 链头的 source-facing → canonical 解析沿用既有
+  type-meta head 路线（`resolveSourceFacingTypeMeta`），不新增别名通道。
 
 ### 2.6 诊断 owner 与 category
 
@@ -246,8 +277,8 @@ error（「暂不支持引用继承的枚举常量」），不落到全局查找
 |---|---|---|
 | `sema.class_skeleton` | skeleton（枚举预 pass） | 枚举成员重名、成员/组名与同类 property/signal/function/常量/inner class 冲突、值表达式不可求值或非 int、空枚举 |
 | `sema.unsupported_binding_subtree` | top binding（**本计划新增** `runUnsupported` 的 `EnumDeclaration` 分支；当前该 statement 被静默忽略） | 函数体内 `enum` 语句 |
-| `sema.member_resolution` | chain binding（既有 FAILED member trace 路径） | `State.MISSING`：枚举分支只拦截已存在成员，miss fall through 到既有 Dictionary/builtin miss 路径，由该路径发此类目 |
-| `sema.unsupported_chain_route` | chain binding（既有 UNSUPPORTED route 路径） | 跨类 `Other.State` / `Other.IDLE`（`reduceGdccStaticLoad` 延后边界） |
+| `sema.member_resolution` | chain binding（既有 FAILED member trace 路径） | `State.MISSING`：枚举分支只拦截已存在成员，miss fall through 到既有 Dictionary/builtin miss 路径，由该路径发此类目；跨类 `Other.State.MISSING` 同路径（组延续拦截不命中 → Dictionary miss） |
+| `sema.unsupported_chain_route` | chain binding（既有 UNSUPPORTED route 路径） | 跨类 `Other.FOO` / `Other.MISSING`：class `const` 与未声明名的 GDCC static-load 延后边界（枚举常量/枚举组已转出本类目） |
 | `sema.call_resolution` | chain binding（既有 FAILED call trace 路径） | inner class 内 `State.keys()` 等 pseudo-type 调用：`ScopeMethodResolver` 对 pseudoType 返回 `Failed(UNSUPPORTED_STATIC_RECEIVER)`，chain 映射为 `Status.FAILED` 后发此类目（与 `Variant.Type.keys()` 同类） |
 | `sema.expression_resolution` | expr analyzer（既有 `TYPE_META` ordinary-value failed 路径，`FrontendExpressionSemanticSupport`） | 值位置消费枚举 type-meta（如 inner class 内裸 `State`）。注：`frontend_rules.md` 书面合同称 bare TYPE_META misuse 首条 `sema.binding` 由 top binding 发出，但现状代码（`tryPublishTypeMetaBinding` 不发诊断、`FrontendExpressionSemanticSupport` failed、expr analyzer 发 `sema.expression_resolution`）与之存在**先于本计划的偏差**；本计划沿用现状、不扩大也不修复该偏差（偏差修复是独立工作，见 §5 风险 9） |
 
@@ -267,6 +298,9 @@ error（「暂不支持引用继承的枚举常量」），不落到全局查找
   全局 root 命名空间零改动。
 - `Variant.Type.TYPE_NIL` 等限定式 `load_static` 路线不变；`GLOBAL_ENUM` kind 语义不变；
   引擎类枚举裸名禁令（如裸 `MOUSE_MODE_VISIBLE`）不变。
+- GDCC 类 static-load 的其余边界不变：static property/method 路线零改动；class `const`、
+  未声明名与嵌套类限定符维持 UNSUPPORTED；跨类枚举分支只在常量表命中时接管，
+  miss 时完全落回既有 fallback，不改变 `Worker.VALUE` 式既有锚定行为。
 - static var 仍为 `PROPERTY` binding kind；枚举常量为 `CONSTANT`，两者不混淆。
 - 常量不可写：裸 `IDLE = 5` 由 `ScopeValue.constant()` 经既有左值校验拒绝；
   `State.IDLE = 5` 由 assignment 语义对 `bindingKind == CONSTANT` 的 member target 分类拒绝
@@ -292,6 +326,9 @@ func f():
     var c = State                        # OpaqueExprValueItem → literal_string_name×2 + literal_int×2
                                          #   → construct_container_literal
     var d: State = State.IDLE            # 类型标注解析为 int
+    var e = Other.State.JUMP             # 跨类：组延续拦截 → literal_int 5
+    var f2 = Other.RED                   # 跨类匿名成员（含继承）→ literal_int
+    var g = Other.State                  # 跨类组值 → 与裸 `State` 同形的 Dictionary 物化
 ```
 
 ---
@@ -391,7 +428,29 @@ func f():
   `FrontendInheritanceCycleTest` 不变红；lexeme helper 合并后，普通 body 整数字面量的
   `0x`/`0b`/`0o`/`_` 与溢出行为有针对性回归（四处调用点共享同一实现）。
 
-### Step 3：scope phase 接线
+### Step 3：scope phase 接线（已完成）
+
+实施记录（与原文档的偏差，均已按计划验收口径落地）：
+
+- `GDCC_ENUM` 的 6 处穷尽分派点在 Step 2 已提前落地，本步逐一复核确认语义齐备（含
+  `reduceGdccEnumStaticLoad`、`resolveStaticMethodReference` 返回 null、superclass 判定拒绝、
+  `resolveStaticOwnerClass` 拒绝），全量 grep 无遗漏分派点，本步无新增改动。
+- `extends State`（枚举名作超类）实际经 header 发现阶段的 `REJECTED_UNRESOLVED` 路径拒绝：
+  命名枚举 type-meta 只注册在 ClassScope 词法链，不进入 `ClassRegistry` 根命名空间，
+  因此 superclass 判定的 `GLOBAL_ENUM, GDCC_ENUM -> REJECTED_ENUM` 分支对脚本枚举保持
+  防御性语义；用户可观察行为（单条 `sema.class_skeleton` error + 跳过该 class 子树 +
+  兄弟存活）与计划一致，已由 `FrontendEnumScopeTest.enumNameRejectedAsSuperclassTarget` 锚定。
+- gdparser 探针结论：枚举成员值位置的 lambda 无法存活（`enum { X = func(): return 1 }` 与
+  `enum { X = [func(): return 1] }` 均产生 parse 诊断且初值被丢弃为 null），因此
+  `FrontendInterfacePhase` / `FrontendVariableAnalyzer` 两个 walker 的
+  `handleEnumDeclaration -> SKIP_CHILDREN` 是防御性合同，不存在可区分的行为差异，不单独
+  立测试；可观察锚点改为 scope phase 的跳过——合法枚举的成员值表达式不产生任何
+  `scopesByAst` 事实（`enumSubtreePublishesNoScopeFactsForMemberValueExpressions`）。
+- 评审后补强两类 class boundary 的区分性锚点：`innerClassPublishesOwnEnumConstantsAndTypeMeta`
+  让枚举只声明在 inner class 体内（删除 `handleClassDeclaration` 的注册调用即失败）；
+  `isAndAsEnumTargetsEraseToInt` 跑完整语义管线，直接断言 `typeTestTargets` 的
+  `TargetKnown(int)` 与 cast 表达式 publishedType=int，替代仅靠裸 resolver 的间接锚定。
+- `FrontendVariableAnalyzer` 主 binder 按原计划零改动（`handleNode` 默认 SKIP_CHILDREN）。
 
 改动：
 
@@ -439,7 +498,7 @@ func f():
      pseudoType 拒绝/UNSUPPORTED 语义。
   实施时先全量 grep `ScopeTypeMetaKind` 确认无遗漏分派点。
 
-验收：
+验收（已落地 `FrontendEnumScopeTest`，14 个用例）：
 
 - scope 测试新增：类内裸成员命中 `CONSTANT`（`constant=true, writable=false`）、
   子类继承命中、static restriction 下允许、inner class 值隔离（裸 `State` 不命中 value）
@@ -479,7 +538,13 @@ func f():
 - 回归：`FrontendBodyOwnerProceduresExprTypeTest`、`FrontendVisibleValueResolverTest`、
   `FrontendSuiteResolverTest`、`FrontendInterfacePhaseTest`、`FrontendVariableAnalyzerTest` 不变红。
 
-### Step 5：chain binding 枚举成员 route
+### Step 5：chain binding 枚举成员 route（含跨类限定访问，2026-09 修订纳入）
+
+修订记录：原合同将跨类 `Other.State.IDLE` / `Other.IDLE` 整体延后（UNSUPPORTED +
+`sema.unsupported_chain_route`）。2026-09 修订将脚本枚举的跨类限定访问转入支持面
+（方案：chain 层扩展 + 复用编译期常量物化，§1.3.5）；class `const`、未声明名与
+嵌套类限定符仍维持 UNSUPPORTED 边界。调研确认无既有测试锚定被翻转行为
+（`Worker.VALUE` 用例锚定的是未声明名 fallback，修订后保持不变）。
 
 改动（`FrontendChainReductionHelper`）：
 
@@ -499,8 +564,36 @@ func f():
   解析成员——成员存在 → `resolvedStaticLoadTrace(..., CONSTANT, int, 成员元数据)`；
   成员不存在或 declaration 形态异常 → `failedStaticLoadTrace`（`sema.member_resolution`）。
   注意该 switch 是 switch expression，不存在可 fall-through 的公共尾部，必须自成完整分支。
-- 不扩展 `reduceGdccStaticLoad` 的跨类常量路线（`Other.State` 保持 UNSUPPORTED 延后边界，
-  诊断固定为 chain binding 持有的 `sema.unsupported_chain_route`）。
+- **跨类枚举分支（修订新增）**：`reduceGdccStaticLoad`（:1088-1134）的 static 成员查找
+  重构为**逐继承层统一 walk**（nearest layer wins）：对每一类层（目标类 → 父类 → …）按
+  「static 方法 → static property → 枚举常量/枚举组（`getScriptConstants()`）」顺序查找，
+  首层命中即停，全部层 miss 时落入既有 UNSUPPORTED fallback：
+  - 命中 `GdScriptEnumConstant`（`Other.IDLE`，含继承成员）→ 发布同形 member fact
+    （`RESOLVED + CONSTANT + int + declaration=成员元数据`），outgoing receiver 为 int；
+  - 命中 `GdScriptEnumGroup`（`Other.State`）→ 发布组 fact（`RESOLVED + CONSTANT +
+    Dictionary + declaration=组元数据`），**outgoing receiver 为 Dictionary 实例**
+    （不保留 type-meta，使后续 call/subscript/miss 全部落到 Dictionary 语义）；
+  - UNSUPPORTED fallback 语义不变（class `const` 与未声明名边界不变）；
+  - 注意：现状是「方法整链优先、再 property 整链」的类别优先顺序
+    （`resolveStaticMethodReference` → `findStaticPropertyInHierarchy` 各自遍历整条继承链），
+    逐层化会把跨类别跨层遮蔽（如父类 static property 与子类枚举常量同名）归一化为
+    nearest layer wins——既更符合 Godot 成员遮蔽语义，也让「子类枚举遮蔽父类同名成员」
+    在 qualified 路线下成立。实施时必须先核对无既有测试锚定旧的类别优先顺序
+    （`Worker.VALUE`、`SubWorker.shared` 等同类同类别用例不受影响），并新增跨类别遮蔽
+    锚点；既有 helper 可复用其单层查找形态。
+- **组延续拦截（修订新增）**：reduction 驱动在分派 property step 前检查前一 step 已发布
+  fact 的 `declarationSite instanceof GdScriptEnumGroup`（在 reduction 循环内以局部状态
+  跟踪上一 step fact，不改 `ReceiverState` 数据模型）：
+  - 当前 step 为 `AttributePropertyStep` 且组成员存在 → 拦截并发布同形 member fact，
+    outgoing receiver 为 int（`Other.State.IDLE` → 编译期常量）；
+  - 成员不存在、或当前为 call/subscript step → 不拦截，落入既有 Dictionary 路线
+    （`Other.State.MISSING` → `sema.member_resolution`；`Other.State.keys()` → Dictionary
+    方法 route）——与类内 value 路线的拦截语义逐条对齐，包括成员名与 Dictionary 方法
+    同名时 property 读取命中成员、call 步不受影响的边缘规则；
+  - 拦截只在「紧邻组 step 之后」发生一次：`Other.State.IDLE.JUMP` 的 `.JUMP` 按 int
+    receiver 继续，不再命中枚举分支。
+- 嵌套类限定符（`Outer.Inner.State.IDLE`）不在本步支持：`.Inner` 在 GDCC static-load
+  路线中无 inner-class 成员分支，维持 UNSUPPORTED。
 
 验收：
 
@@ -513,10 +606,36 @@ func f():
   - inner class 内 `State.IDLE` 经 GDCC_ENUM static 分支 RESOLVED；
   - inner class 内裸 `State` 维持值隔离拒绝；inner class 内 `State.keys()` →
     `sema.call_resolution`（pseudoType `UNSUPPORTED_STATIC_RECEIVER` 既有映射）；
-  - 跨类 `Other.State.IDLE` / `Other.IDLE` 维持 `sema.unsupported_chain_route`
-    （`reduceGdccStaticLoad` 既有延后边界）；
+  - 跨类正向（修订新增）：
+    - `Other.State.IDLE` → RESOLVED int + `declaration=GdScriptEnumConstant`；
+    - `Other.IDLE` → RESOLVED int；`Other.PARENT_IDLE`（成员声明在 `Other` 父类）→ RESOLVED；
+    - 跨 module 文件的两类用例（`Other` 在不同 source unit）；
+    - `Other.State` 链尾 → RESOLVED Dictionary + `declaration=GdScriptEnumGroup`；
+    - `Other.State.keys()` 走 Dictionary 方法 route；`enum State {keys}` 场景下
+      `Other.State.keys` 命中枚举成员、`Other.State.keys()` 走 Dictionary 调用；
+    - `Other.State.IDLE + 1` 等 suffix 继续按 int receiver 解析；
+    - 跨类别遮蔽：父类声明 static property/方法与同名子类枚举常量并存时，
+      `Other.NAME` 命中子类枚举常量（nearest layer wins，见改动条款的顺序归一说明）；
+  - 跨类 negative（修订新增）：
+    - `Other.State.MISSING` → `sema.member_resolution`；
+    - `Other.State.IDLE.JUMP`：`.IDLE` 拦截后 `.JUMP` 必须按 int receiver 继续并失败，
+      不得再次从组解析——锚定组延续拦截状态即时清除（`Other.State.IDLE + 1` 是二元
+      表达式，不经第三 attribute step，不能替代本锚点）；
+    - 拦截状态跨 chain 隔离：前一条 chain 以枚举组结尾（`var g = Other.State`，最后 fact 为
+      `GdScriptEnumGroup`），后一条无关 chain 的首个 property step 恰与组成员同名
+      （`var v = Other.GROUP_ONLY`，类级无此常量）→ 后一条必须维持 UNSUPPORTED +
+      `sema.unsupported_chain_route`，不得被残留组状态误拦截为成员命中
+      （两条都以 `Other.State` 开头的用例不具区分性：各自的首 step 会覆盖残留状态）；
+    - `Other.MISSING`（未声明名）→ 维持 `sema.unsupported_chain_route`（既有边界锚定）；
+    - `Outer.Inner.State.IDLE` → 维持 `sema.unsupported_chain_route`（嵌套类限定符延后）；
+  - 跨类 domain 锚点（修订新增，复用既有 island/domain 合同，不放宽任何边界）：
+    - property initializer：`var x = Other.State.IDLE` → RESOLVED int；
+    - parameter default：`func f(x = Other.IDLE)` → RESOLVED int；
+    - match pattern：`match s: Other.State.IDLE:` → 被 `FrontendMatchSupport` 识别为
+      常量操作数（末 step fact `bindingKind == CONSTANT`），而非普通运行时 expression pattern；
   - `State.IDLE = 5` 在 sema 拒绝（CONSTANT member target 分类）。
-- 回归：`FrontendChainReductionHelperTest`、`FrontendBodyOwnerProceduresChainBindingTest` 不变红。
+- 回归：`FrontendChainReductionHelperTest`、`FrontendBodyOwnerProceduresChainBindingTest` 不变红
+  （特别核对 `analyzeSealsUnsupportedGdccStaticLoadAtBoundary` 的 `Worker.VALUE` 断言不变）。
 
 ### Step 6：CFG 物化
 
@@ -531,13 +650,25 @@ func f():
 - 该分支不得挂 writable route；`State.IDLE = 5` 已在 sema 拒绝，CFG 不新增赋值路径。
 - 裸 `State` / 裸匿名成员维持 `OpaqueExprValueItem` 不变。
 - type-meta 路线（inner class）已天然走既有 `buildTypeMetaHeadMemberStep` receiverless 形态，零改动。
+- **跨类 qualified 路线（2026-09 修订新增）**：`Other` 为 GDCC_CLASS type-meta head，首 step
+  fact 为 `declarationSite instanceof GdScriptEnumGroup` 时：
+  - 若紧随其后的 property step fact 为 `RESOLVED + declarationSite instanceof
+    GdScriptEnumConstant`（组延续拦截命中），则**不物化组 Dictionary**，直接为该成员 step 发
+    receiverless `MemberLoadItem`（枚举组 step 消除），后续 step 从 int receiver 继续；
+  - 否则（链尾、call/subscript 延续）正常为组 step 发 receiverless `MemberLoadItem`，
+    由 lowering 物化 Dictionary（`Other.State`、`Other.State.keys()` 等路线）；
+  - 消除判断只消费已发布的相邻 step facts，不重新解析成员关系，不违反「lowering/CFG
+    不得重扫语义」合同。
 - 同步在 `frontend_lowering_cfg_pass_implementation.md` 补记 receiverless `MemberLoadItem`
-  新增「枚举常量成员」来源（现合同只覆盖 type-meta 路线）。
+  新增「枚举常量成员」与「跨类枚举组」两个来源（现合同只覆盖 type-meta 路线）。
 
 验收：
 
 - `FrontendCfgGraphBuilderTest` 新增：`State.IDLE` 无 base value item、产出 receiverless
-  `MemberLoadItem`；裸 `State` 保持 opaque 表面。
+  `MemberLoadItem`；裸 `State` 保持 opaque 表面；`Other.State.IDLE` 经组 step 消除产出单个
+  receiverless `MemberLoadItem`（无 Dictionary 物化）；`Other.IDLE` 与 `Other.PARENT_IDLE`
+  产出单个 receiverless `MemberLoadItem`；`Other.State` 链尾与 `Other.State.keys()` 保留组
+  `MemberLoadItem`（不消除）；`Other.State["IDLE"]` 保留组物化并接续 subscript item。
 - 回归：既有 CFG 测试不变红（含全局枚举 `Variant.Type` 路线）。
 
 ### Step 7：body lowering
@@ -561,7 +692,14 @@ func f():
 - `FrontendSequenceItemInsnLoweringProcessors.FrontendMemberLoadInsnLoweringProcessor.lower`
   （:1131 起）在 receiverKind 分派**之前**插入：
   `RESOLVED && declarationSite instanceof GdScriptEnumConstant` → `LiteralIntInsn`。
-  该分支同时覆盖 Step 6 的 value 路线 receiverless item 与 type-meta 路线的 receiverless item。
+  该分支同时覆盖 Step 6 的 value 路线 receiverless item、type-meta 路线的 receiverless item
+  与跨类 qualified 路线的 receiverless item（三者 fact 形态一致）。
+- 同处新增（2026-09 修订新增）：`RESOLVED && declarationSite instanceof GdScriptEnumGroup` →
+  按与 opaque 分支**共享的发射 helper**物化 Dictionary（String key + int value 字面量序列 +
+  `ConstructContainerLiteralInsn`）；覆盖跨类 `Other.State` 链尾与 Dictionary 延续路线的组
+  `MemberLoadItem`。提取共享 helper 时同步改造 opaque 分支调用点，两处共用同一临时 slot
+  分配器（`allocateEnumGroupLiteralTemp`）。MemberLoad 中其余 declaration 形态维持既有
+  分派与 fail-fast 合同，不受枚举分支影响。
 
 验收：
 
@@ -569,6 +707,10 @@ func f():
   - 裸匿名成员 → `LiteralIntInsn`；`State.JUMP` → `LiteralIntInsn(5)`；
   - 裸 `State` → 成员数量的 String/int literal + 单条 `construct_container_literal`，
     操作数为 VariableOperand 交替序列；
+  - 跨类（修订新增）：`Other.State.JUMP` → `LiteralIntInsn(5)`（无 Dictionary 物化）；
+    `Other.IDLE` / `Other.PARENT_IDLE` → `LiteralIntInsn`；
+    `Other.State` 链尾 → 与裸 `State` 同形的 literal 序列 + `construct_container_literal`；
+    `Other.State["IDLE"]` → 组物化后接 subscript 读取（不经常量折叠，走 Dictionary 语义）；
   - 断言只针对 insn opcode 与 payload（对齐既有 lowering 测试风格）。
 - 回归：`FrontendLoweringBodyInsnPassTest`、`CBodyBuilderPhaseCTest`、
   `CNewDataInsnGenTest`、`CLoadStaticInsnGenTest` 不变红。
@@ -632,7 +774,8 @@ func f():
   视环境可用性在 `src/test/test_suite` 增补枚举 compile/run 锚点（Zig 不可用时按既有约定跳过）。
 - 文档同步（同一批提交；实施时逐份核实再改，不只凭行号）：
   - `frontend_rules.md`：MVP 约定中「class constant 整体延后」拆写——类级枚举常量进入支持面，
-    class `const` 与跨类常量访问仍延后；补枚举条目；并记录 bare TYPE_META misuse 诊断 owner 的
+    跨类枚举常量/枚举组限定访问同步支持（§1.3.5）；class `const`（含其跨类限定访问）仍延后；
+    补枚举条目；并记录 bare TYPE_META misuse 诊断 owner 的
     **已知临时偏差**（现状由 expr analyzer 发 `sema.expression_resolution`，与 :18 冻结的
     `sema.binding` 合同不一致；后续独立任务以对齐 frozen 规则为目标迁移，本说明不是新的
     冻结 owner 合同）；
@@ -642,8 +785,9 @@ func f():
     `GdScriptEnumConstant` / `GdScriptEnumGroup`；§2.2 只改「class constant 收集与绑定整体延后」
     表述并交叉引用本文档——引擎类枚举裸名禁令行（如 `MOUSE_MODE_VISIBLE`）不动；
   - `frontend_chain_binding_expr_type_implementation.md`：改写「GDCC script class static load 与
-    class-level `const` / enum 继承必须继续 UNSUPPORTED」条款——枚举成员 route 已落地，
-    class `const` 与跨类常量访问仍延后；同文件其余 class-constant 封口表述逐一审阅；
+    class-level `const` / enum 继承必须继续 UNSUPPORTED」条款（:298-302 等）——枚举成员 route
+    与跨类枚举限定访问均已落地，class `const`、未声明名与嵌套类限定符仍延后；同文件其余
+    class-constant 封口表述逐一审阅；补记组延续拦截的事实形态（前一 step fact 驱动）；
   - `frontend_top_binding_analyzer_implementation.md`：§2.3/非目标中 class constant binding
     延后表述更新为「类枚举常量已支持」；§5.3 category 覆盖补函数体内枚举；§6.3 消费边界更新；
   - `frontend_visible_value_resolver_implementation.md`：类常量可见性来源更新；
@@ -667,12 +811,23 @@ func f():
   - `frontend_implicit_conversion_matrix.md`（:174-175）：补记 GDCC 脚本枚举不是一等类型、
     声明类型直接擦除为 int，矩阵中 enum 行的 `N` 仅指一等 enum 转换模型；
   - `frontend_cast_expression_implementation.md` / `frontend_is_type_test_implementation.md`：
-    补记枚举名 target 经 declared-type 擦除为 int。
+    补记枚举名 target 经 declared-type 擦除为 int；
+  - `diagnostic_manager.md`：`sema.unsupported_chain_route` 的适用场景收窄为 class `const`、
+    未声明名与嵌套类限定符的 GDCC static-load；`sema.member_resolution` 补跨类枚举组
+    成员 miss 场景（与类内 `State.MISSING` 同路径）；
+  - `superclass_canonical_name_contract.md` / `gdcc_facing_class_name_contract.md`：补记跨类
+    枚举访问中 `Other` 链头的 source-facing → canonical 解析位置（既有 type-meta head 路线，
+    不新增别名通道），交叉引用本文档 §1.3.5；
+  - `frontend_type_check_analyzer_implementation.md` / `frontend_compile_check_analyzer_implementation.md`：
+    补记跨类枚举成员 fact 为 `RESOLVED(CONSTANT, int)`，不产生 compile blocker，两 analyzer
+    只消费其 int 事实不新增诊断。
 - 本文档状态由「实施计划」改写为事实源（冻结已实现合同，移除步骤流水账）。
 
 验收：
 
-- 行为不变锚点：`State["X"] = 1` 不产生编译期写保护诊断（维持 subscript 写入现状）。
+- 行为不变锚点：`State["X"] = 1` 不产生编译期写保护诊断（维持 subscript 写入现状）；
+  `Worker.VALUE`（未声明名的 GDCC static-load）维持 `UNSUPPORTED` +
+  `sema.unsupported_chain_route`（跨类枚举分支不吞掉既有 fallback）。
 - `./gradlew clean build --no-daemon --info --console=plain` 全量通过。
 - 定向回归清单（`script/run-gradle-targeted-tests.sh`，实施时以实际类名为准）：
   `FrontendClassSkeletonTest`、`FrontendScopeAnalyzerTest`、`FrontendSemanticAnalyzerFrameworkTest`、
@@ -688,9 +843,13 @@ func f():
 
 ## 5. 风险与边界
 
-1. **`MemberLoadItem` receiverless 形态的 receiverKind 语义**：枚举成员 fact 的
-   `receiverKind` 保持 `INSTANCE`（源级 receiver 是值），但 CFG 产出无 base 的 item。
-   lowering 的枚举分支必须位于 receiverKind 分派之前（fail-fast 合同：INSTANCE 缺 base 会抛错）。
+1. **`MemberLoadItem` receiverless 形态与各入口路线的 receiverKind 语义**：枚举成员 fact 的
+   `receiverKind` 按入口路线区分——类内 value 路线（`State.IDLE` 经 `reducePropertyStep`
+   枚举分支）与跨类组延续成员 step（`Other.State.IDLE` 的 `.IDLE`）为 `INSTANCE`
+   （源级 receiver 是值）；type-meta 路线（inner class `State.IDLE`）、跨类直接成员
+   （`Other.IDLE`）与跨类组 fact（`Other.State`）经 `resolvedStaticLoadTrace` 发布，固定为
+   `TYPE_META`。两条路线下 CFG 都产出无 base 的 receiverless item，因此 lowering 的
+   枚举分支必须位于 receiverKind 分派之前（fail-fast 合同：INSTANCE 缺 base 会抛错）。
    该 item 形态扩展必须在 `frontend_lowering_cfg_pass_implementation.md` 补记。
 2. **`ScopeTypeMetaKind.GDCC_ENUM` 穷尽分派**：新增枚举值会使所有无 default 的 switch
    编译失败（已确认 6 处，见 Step 3.4）。每处按语义补齐，不允许只补 case 过编译；
@@ -717,6 +876,16 @@ func f():
    该偏差先于本计划存在，影响所有 TYPE_META misuse（inner class 名误用等），不是枚举特有问题。
    本计划不扩大也不修复该偏差；是否把 owner 对齐回 frozen 规则属于独立决策，须单独评估
    既有测试基线后另行实施。
+10. **跨类组延续拦截的次序敏感性（2026-09 修订新增）**：`Other.State.IDLE` 的正确性依赖
+    「前一 step fact 为枚举组」的拦截判断；若 reduction 驱动的事实跟踪与 step 推进不同步，
+    会把 Dictionary property miss 误折叠为成员命中或反之。必须由 Step 5 的正反用例锚定
+    （成员命中折叠、`MISSING` 落 Dictionary miss、call 步不拦截、同名 `keys` 边缘规则、
+    `Other.State.IDLE.JUMP` 第三 step 按 int receiver 失败、两条独立 chain 的状态隔离），
+    且拦截状态不得跨链泄漏（每条 chain 独立）。
+11. **跨类访问的 skeleton 就绪性前提（2026-09 修订新增）**：qualified 路线的安全性依赖
+    「chain 阶段晚于模块级 skeleton 完成点」这一流水线顺序——届时目标类常量表必然已填充。
+    该前提只覆盖 body 期消费；skeleton 期求值器（枚举 initializer）不在其保护范围内，
+    继续按 §2.2 延后。若未来调整 phase 顺序（如 skeleton/body 交错），必须重新评估本路线。
 
 ---
 
