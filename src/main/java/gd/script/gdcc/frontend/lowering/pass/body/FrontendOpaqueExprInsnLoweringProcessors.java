@@ -23,6 +23,8 @@ import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.util.StringUtil;
 import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
+import gd.script.gdcc.scope.GdScriptEnumConstant;
+import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.GdScriptLanguageConstant;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdNodePathType;
@@ -161,6 +163,17 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                     }
                     if (binding.declarationSite() instanceof GdScriptLanguageConstant languageConstant) {
                         block.appendNonTerminatorInstruction(new LiteralFloatInsn(resultSlotId, languageConstant.value()));
+                        return block;
+                    }
+                    // Script enum members fold to their frozen int value; a bare named enum group
+                    // expands to its `{"NAME": value, ...}` Dictionary literal through the shared
+                    // session helper so it matches the MemberLoad group-tail emission exactly.
+                    if (binding.declarationSite() instanceof GdScriptEnumConstant enumConstant) {
+                        block.appendNonTerminatorInstruction(new LiteralIntInsn(resultSlotId, enumConstant.value()));
+                        return block;
+                    }
+                    if (binding.declarationSite() instanceof GdScriptEnumGroup enumGroup) {
+                        session.materializeEnumGroupDictionary(block, enumGroup, resultSlotId);
                         return block;
                     }
                     throw session.unsupportedSequenceItem(

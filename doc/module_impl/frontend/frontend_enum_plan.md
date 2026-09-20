@@ -6,7 +6,7 @@
 > 无新 LIR 指令、无 C 模板/运行时改动，复用现有 LIR/backend surface；
 > backend 改动仅限 Step 8 在 `CGenHelper` 新增一条 hint 映射规则（Java codegen 侧）。
 
-- 状态：实施中（Step 1-6 已完成并通过验收；Step 7-9 尚未落地；已经过多轮评审修订；
+- 状态：实施中（Step 1-7 已完成并通过验收；Step 8-9 尚未落地；已经过多轮评审修订；
   2026-09 修订：跨类枚举限定访问 `Other.State.IDLE` / `Other.IDLE` 由延后边界转为支持面，
   并入 Step 5-7，见 §1.3.5、§2.1、Step 5 修订记录）
 - 适用范围：
@@ -845,6 +845,56 @@ func f():
 - 回归：`FrontendLoweringBodyInsnPassTest`、`CBodyBuilderPhaseCTest`、
   `CNewDataInsnGenTest`、`CLoadStaticInsnGenTest` 不变红。
 
+实施记录（2026-09-21，production 部分）：
+
+- 共享物化 helper 落于 `FrontendBodyLoweringSession.materializeEnumGroupDictionary`：与既有
+  `materializeForLoopIntConstant` 同类（session 拥有 temp 分配与发射），opaque 与 MemberLoad
+  两处共用。发射序列按 `GdScriptEnumGroup.members()` 源码序为每成员发射
+  `LiteralStringInsn(key temp)` + `LiteralIntInsn(value temp)`，最后
+  `ConstructContainerLiteralInsn(resultSlotId, 交替 VariableOperand)`；result slot 必须为
+  `GdDictionaryType`（组常量在 skeleton 即注册为 generic Dictionary 类型，`construct` 的
+  容器族由 result slot 类型推导），漂移即 fail-fast。不经过 `containerLiteralPlans`。
+- 专用分配器 `allocateEnumGroupLiteralTemp(purpose, type)`（前缀 `cfg_enum_group_`）采用与
+  `allocateGdScriptLanguageFunctionTemp` 相同的 skip-occupied 循环（该前缀是合法源码标识符，
+  不得静默覆盖用户变量），不挪用 writable-route / boundary / for-range 分配器。
+- opaque 侧：`FrontendOpaqueExprInsnLoweringProcessors` 的 CONSTANT 分支新增
+  `GdScriptEnumConstant` → `LiteralIntInsn`、`GdScriptEnumGroup` → 共享 helper 两个形态，
+  其余 declaration 维持 fail-fast。
+- MemberLoad 侧：`FrontendMemberLoadInsnLoweringProcessor.lower` 在 DYNAMIC 早退之后、
+  receiverKind 分派之前插入两个 RESOLVED 分支（`GdScriptEnumConstant` → `LiteralIntInsn`；
+  `GdScriptEnumGroup` → 共享 helper）。统一覆盖 Step 6 三条 receiverless 路线
+  （value / 跨类 type-meta / 组链尾），引擎枚举成员维持既有 TYPE_META `LoadStaticInsn`。
+
+测试记录（2026-09-21）：
+
+- `FrontendLoweringBodyInsnPassTest` 新增 7 个用例，共享断言 helper
+  `assertEnumGroupDictionaryEmission`（String key / int value literal 数量与源码序、
+  交替 VariableOperand 与 literal producer 连接、key/value 临时 slot 的 String/int 类型登记）：
+  - 裸匿名成员 `JUMP` → `LiteralIntInsn(5)`（opaque CONSTANT 分支）；
+  - `State.JUMP` → `LiteralIntInsn(5)`，且无 `construct_container_literal`、无
+    `LoadStaticInsn`（value 路线折叠，不物化组、不碰运行时静态存储）；
+  - 裸 `State` → 完整 Dictionary 物化序列，construct result 连接 return 且 slot 类型为
+    `GdDictionaryType`；
+  - `Other.State.JUMP` → `LiteralIntInsn(5)` 且无组物化（跨类消除在 body 层闭环）；
+  - `Other.IDLE` / `Other.PARENT_IDLE` → `LiteralIntInsn(3/7)`（直接 + 继承常量）；
+  - `Other.State` 链尾 → 与裸 `State` 完全同形的 Dictionary 物化序列；
+  - `Other.State["IDLE"]` → 组物化后接 GENERIC `VariantGetInsn`（key pack 成 Variant 是该
+    链形既有 subscript 物化形态，非 KEYED），`variantId` 锚定读取来源为物化的 Dictionary，
+    且只有两个组值 literal、无折叠常量——Dictionary 语义保持。
+- 评审整改后增补 3 个锚点：
+  - `Side.SIDE_LEFT` → 唯一 `LoadStaticInsn("SIDE_LEFT")` 且无组物化（引擎枚举成员不被
+    脚本枚举折叠分支改道）；
+  - 同函数两次 `State` 物化 → 2 条 construct、8 个互不相同且已注册的 key/value 临时
+    slot（专用分配器 counter 不回退）；
+  - `Other.State.keys()` → 组物化 + `CallMethodInsn("keys")`，`objectId` 锚定调用发生在
+    物化的 Dictionary slot 上，call result 连接 return（call 延续路线端到端闭环）。
+- 评审整改：`materializeEnumGroupDictionary` 的 result slot 守卫强化为「generic
+  `Dictionary[Variant, Variant]`」（`isGenericDictionary`），fail-fast 消息补 slot id；
+  共享断言 helper 同步锚定 generic；生产/测试注释去除对计划步骤号的依赖。
+- 回归：`gd.script.gdcc.frontend.**` 全绿；`CBodyBuilderPhaseCTest` /
+  `CNewDataInsnGenTest` / `CLoadStaticInsnGenTest`（`gd.script.gdcc.backend.c.gen` 包）
+  全绿。
+
 ### Step 8：`@export` 枚举 hint_string 生成（编辑器下拉支持）
 
 依赖 Step 2/3（枚举元数据与 `GDCC_ENUM` type-meta 已可用）。前端生成 annotation value，
@@ -902,6 +952,15 @@ func f():
   「枚举类型标注转正」正向用例。
 - 端到端：`FrontendCompileCheckAnalyzer` 相关测试补「枚举 surface 不产生 compile blocker」；
   视环境可用性在 `src/test/test_suite` 增补枚举 compile/run 锚点（Zig 不可用时按既有约定跳过）。
+  （2026-09-21 提前落地 test_suite 部分：新增 `enum/` 分组 7 对资源——
+  `anonymous_member_values`（auto-increment/显式/负数/位运算/前序引用）、`named_member_access`
+  （折叠常量参与算术/比较/for-range）、`group_dictionary_access`（`State["JUMP"]`/`keys()`/
+  组 Dictionary roundtrip，Dictionary 形状断言在 validation 侧）、`cross_class_access`
+  （inner class `Other.State.JUMP`/直接/继承常量/跨类 subscript 与 keys）、`type_erasure`
+  （标注局部/参数/`is`/`Array[State]`）、`initializer_and_defaults`（属性初始化器与参数
+  默认值）、`match_constant_patterns`（`match` 枚举常量 pattern 含跨类）；runner 新增
+  `ENUM_SCRIPT_PATHS` 与 `compilesAndValidatesEnumScripts` 工厂，`EXPECTED_SCRIPT_PATHS`
+  同步；本机 zig + Godot 4.5.2 下 8/8 通过。Step 9 其余条目不变。）
 - 文档同步（同一批提交；实施时逐份核实再改，不只凭行号）：
   - `frontend_rules.md`：MVP 约定中「class constant 整体延后」拆写——类级枚举常量进入支持面，
     跨类枚举常量/枚举组限定访问同步支持（§1.3.5）；class `const`（含其跨类限定访问）仍延后；
