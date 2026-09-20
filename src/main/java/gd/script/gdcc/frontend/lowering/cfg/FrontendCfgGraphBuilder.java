@@ -119,6 +119,8 @@ import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.lir.insn.StandaloneCallableKind;
+import gd.script.gdcc.scope.GdScriptEnumConstant;
+import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdDictionaryType;
@@ -2162,8 +2164,40 @@ public final class FrontendCfgGraphBuilder {
         if (isTypeMetaHeadAttributeExpression(attributeExpression)) {
             return buildTypeMetaHeadAttributeExpressionValue(cursor, attributeExpression, preferredResultValueId);
         }
+        if (isEnumGroupHeadAttributeExpression(attributeExpression)) {
+            return buildEnumGroupHeadAttributeExpressionValue(cursor, attributeExpression, preferredResultValueId);
+        }
         var currentBuild = buildValue(cursor, attributeExpression.base(), null);
-        for (var stepIndex = 0; stepIndex < attributeExpression.steps().size(); stepIndex++) {
+        return applyAttributeStepsFrom(currentBuild, attributeExpression, 0, preferredResultValueId);
+    }
+
+    /// Bare enum group heads (`State.IDLE`) bind the group identifier as a CONSTANT Dictionary
+    /// value, but a first property step resolved to a `GdScriptEnumConstant` is a compile-time
+    /// int member: the group base is not materialized and the member step is emitted as a
+    /// receiverless `MemberLoadItem` of the same shape as a type-meta static load. No writable
+    /// route is mounted — semantic analysis already rejects enum constants as assignment targets.
+    private @NotNull ValueBuild buildEnumGroupHeadAttributeExpressionValue(
+            @NotNull BuildCursor cursor,
+            @NotNull AttributeExpression attributeExpression,
+            @Nullable String preferredResultValueId
+    ) {
+        var memberStep = (AttributePropertyStep) attributeExpression.steps().getFirst();
+        var currentBuild = emitReceiverlessEnumConstantMemberLoad(
+                cursor,
+                memberStep,
+                attributeExpression.steps().size() == 1 ? preferredResultValueId : null
+        );
+        return applyAttributeStepsFrom(currentBuild, attributeExpression, 1, preferredResultValueId);
+    }
+
+    private @NotNull ValueBuild applyAttributeStepsFrom(
+            @NotNull ValueBuild initialBuild,
+            @NotNull AttributeExpression attributeExpression,
+            int firstStepIndex,
+            @Nullable String preferredResultValueId
+    ) {
+        var currentBuild = initialBuild;
+        for (var stepIndex = firstStepIndex; stepIndex < attributeExpression.steps().size(); stepIndex++) {
             var step = attributeExpression.steps().get(stepIndex);
             currentBuild = applyAttributeStep(
                     currentBuild,
@@ -2172,6 +2206,27 @@ public final class FrontendCfgGraphBuilder {
             );
         }
         return currentBuild;
+    }
+
+    /// Shared emission for every script enum constant route (bare group head, cross-class group
+    /// elimination): a receiverless `MemberLoadItem` anchored at the member step, whose fact is
+    /// already RESOLVED to a `GdScriptEnumConstant`. Body lowering turns it into an int literal.
+    /// The returned build deliberately carries no writable route — semantic analysis rejects
+    /// enum constants as assignment targets, so CFG must not open an assignment path.
+    private @NotNull ValueBuild emitReceiverlessEnumConstantMemberLoad(
+            @NotNull BuildCursor cursor,
+            @NotNull AttributePropertyStep memberStep,
+            @Nullable String preferredResultValueId
+    ) {
+        var publishedMember = requireLoweringReadyMember(memberStep);
+        var resultValueId = chooseResultValueId(preferredResultValueId);
+        cursor.currentSequence().items().add(new MemberLoadItem(
+                memberStep,
+                publishedMember.memberName(),
+                null,
+                resultValueId
+        ));
+        return new ValueBuild(cursor, memberStep, resultValueId, null);
     }
 
     /// Type-meta chain heads such as `Vector3.ZERO`, `Color.RED`, `Node.new()` or `Worker.build(...)`
@@ -2190,21 +2245,32 @@ public final class FrontendCfgGraphBuilder {
             @NotNull AttributeExpression attributeExpression,
             @Nullable String preferredResultValueId
     ) {
+        var steps = attributeExpression.steps();
+        // Cross-class enum group chains (`Other.State.IDLE`): when the head step resolved to a
+        // script enum group and the immediately following property step resolved to one of its
+        // constants, the group Dictionary is not materialized; the member step becomes the
+        // receiverless load instead. Only published adjacent step facts are consumed here — CFG
+        // must not re-resolve members. Chain tails and call/subscript continuations keep the
+        // group load so body lowering can materialize the Dictionary value.
+        if (steps.size() >= 2
+                && steps.get(0) instanceof AttributePropertyStep groupStep
+                && isResolvedScriptEnumGroupMember(groupStep)
+                && steps.get(1) instanceof AttributePropertyStep memberStep
+                && isResolvedScriptEnumConstantMember(memberStep)) {
+            var currentBuild = emitReceiverlessEnumConstantMemberLoad(
+                    cursor,
+                    memberStep,
+                    steps.size() == 2 ? preferredResultValueId : null
+            );
+            return applyAttributeStepsFrom(currentBuild, attributeExpression, 2, preferredResultValueId);
+        }
         var currentBuild = buildTypeMetaHeadFirstStepValue(
                 cursor,
                 attributeExpression,
-                attributeExpression.steps().getFirst(),
-                attributeExpression.steps().size() == 1 ? preferredResultValueId : null
+                steps.getFirst(),
+                steps.size() == 1 ? preferredResultValueId : null
         );
-        for (var stepIndex = 1; stepIndex < attributeExpression.steps().size(); stepIndex++) {
-            var step = attributeExpression.steps().get(stepIndex);
-            currentBuild = applyAttributeStep(
-                    currentBuild,
-                    step,
-                    stepIndex + 1 == attributeExpression.steps().size() ? preferredResultValueId : null
-            );
-        }
-        return currentBuild;
+        return applyAttributeStepsFrom(currentBuild, attributeExpression, 1, preferredResultValueId);
     }
 
     /// Shared first-step dispatch for every type-meta head path (value reads, discarded void calls,
@@ -2257,6 +2323,33 @@ public final class FrontendCfgGraphBuilder {
             @NotNull AttributeSubscriptStep attributeSubscriptStep,
             @Nullable String preferredResultValueId
     ) {
+        // Enum group subscript heads (`Other.State["IDLE"]`) carry the RESOLVED enum group fact
+        // on the subscript step: load the group through the same receiverless container shape as
+        // a static property container, then apply a plain base[key] subscript. No writable route
+        // is mounted — the group Dictionary is a compile-time constant, and semantic analysis
+        // rejects writes into it.
+        var subscriptMember = requireAnalysisData().resolvedMembers().get(attributeSubscriptStep);
+        if (subscriptMember != null
+                && subscriptMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                && subscriptMember.declarationSite() instanceof GdScriptEnumGroup) {
+            var groupValueId = nextValueId();
+            cursor.currentSequence().items().add(new MemberLoadItem(
+                    attributeSubscriptStep,
+                    subscriptMember.memberName(),
+                    null,
+                    groupValueId
+            ));
+            var argumentsBuild = buildArgumentValues(cursor, attributeSubscriptStep.arguments());
+            var resultValueId = chooseResultValueId(preferredResultValueId);
+            argumentsBuild.cursor().currentSequence().items().add(new SubscriptLoadItem(
+                    attributeSubscriptStep,
+                    null,
+                    groupValueId,
+                    argumentsBuild.valueIds(),
+                    resultValueId
+            ));
+            return new ValueBuild(argumentsBuild.cursor(), attributeSubscriptStep, resultValueId, null);
+        }
         var containerMember = requireTypeMetaStaticContainerMember(attributeSubscriptStep);
         var containerValueId = nextValueId();
         cursor.currentSequence().items().add(new MemberLoadItem(
@@ -4368,6 +4461,33 @@ public final class FrontendCfgGraphBuilder {
         return attributeExpression.base() instanceof IdentifierExpression identifierExpression
                 && requireAnalysisData().symbolBindings().get(identifierExpression) instanceof FrontendBinding binding
                 && binding.kind() == FrontendBindingKind.TYPE_META;
+    }
+
+    /// Value-route enum group heads (`State.IDLE`): the base identifier binds CONSTANT with a
+    /// `GdScriptEnumGroup` declaration, and the first property step resolved to a
+    /// `GdScriptEnumConstant` member. Both facts are published by chain binding (Step 5); CFG
+    /// only consumes them. Anything else keeps the ordinary base-materializing path.
+    private boolean isEnumGroupHeadAttributeExpression(@NotNull AttributeExpression attributeExpression) {
+        return attributeExpression.base() instanceof IdentifierExpression identifierExpression
+                && requireAnalysisData().symbolBindings().get(identifierExpression) instanceof FrontendBinding binding
+                && binding.kind() == FrontendBindingKind.CONSTANT
+                && binding.declarationSite() instanceof GdScriptEnumGroup
+                && attributeExpression.steps().getFirst() instanceof AttributePropertyStep firstPropertyStep
+                && isResolvedScriptEnumConstantMember(firstPropertyStep);
+    }
+
+    private boolean isResolvedScriptEnumConstantMember(@NotNull AttributePropertyStep attributePropertyStep) {
+        var publishedMember = requireAnalysisData().resolvedMembers().get(attributePropertyStep);
+        return publishedMember != null
+                && publishedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                && publishedMember.declarationSite() instanceof GdScriptEnumConstant;
+    }
+
+    private boolean isResolvedScriptEnumGroupMember(@NotNull AttributePropertyStep attributePropertyStep) {
+        var publishedMember = requireAnalysisData().resolvedMembers().get(attributePropertyStep);
+        return publishedMember != null
+                && publishedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                && publishedMember.declarationSite() instanceof GdScriptEnumGroup;
     }
 
     private static boolean isLogicalNotExpression(@NotNull UnaryExpression unaryExpression) {

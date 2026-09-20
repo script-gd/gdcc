@@ -6,7 +6,7 @@
 > 无新 LIR 指令、无 C 模板/运行时改动，复用现有 LIR/backend surface；
 > backend 改动仅限 Step 8 在 `CGenHelper` 新增一条 hint 映射规则（Java codegen 侧）。
 
-- 状态：实施中（Step 1-5 已完成并通过验收；Step 6-9 尚未落地；已经过多轮评审修订；
+- 状态：实施中（Step 1-6 已完成并通过验收；Step 7-9 尚未落地；已经过多轮评审修订；
   2026-09 修订：跨类枚举限定访问 `Other.State.IDLE` / `Other.IDLE` 由延后边界转为支持面，
   并入 Step 5-7，见 §1.3.5、§2.1、Step 5 修订记录）
 - 适用范围：
@@ -746,7 +746,60 @@ func f():
   receiverless `MemberLoadItem`（无 Dictionary 物化）；`Other.IDLE` 与 `Other.PARENT_IDLE`
   产出单个 receiverless `MemberLoadItem`；`Other.State` 链尾与 `Other.State.keys()` 保留组
   `MemberLoadItem`（不消除）；`Other.State["IDLE"]` 保留组物化并接续 subscript item。
-- 回归：既有 CFG 测试不变红（含全局枚举 `Variant.Type` 路线）。
+- 回归：既有 CFG 测试不变红（含全局枚举 `Side.SIDE_LEFT` 路线）。
+
+实施记录（2026-09-20）：
+
+- value 路线：`buildAttributeExpressionValue`（`FrontendCfgGraphBuilder`:2167-2169）在
+  type-meta 判断后接入 `isEnumGroupHeadAttributeExpression`（:4470-4478），命中即转入
+  `buildEnumGroupHeadAttributeExpressionValue`（:2179-2191）：不物化组 base，经共享的
+  `emitReceiverlessEnumConstantMemberLoad`（:2216-2230）发 receiverless
+  `MemberLoadItem`，返回的 `ValueBuild` 携带 **null writable route**（计划合同）；后续
+  step 经新提取的 `applyAttributeStepsFrom`（:2193-2209，三条路线共用）从 int receiver 继续。
+- 跨类 qualified 路线：`buildTypeMetaHeadAttributeExpressionValue`（:2249-2265）在首 step
+  分派前执行组消除——只读相邻两个已发布 step facts（`isResolvedScriptEnumGroupMember` /
+  `isResolvedScriptEnumConstantMember`，:4479-4491），命中即为成员 step 发 receiverless
+  load 并从 index 2 继续；链尾/call 延续走既有 type-meta 路径保留组 load。
+- **与原文档的偏差（AST 形态修正）**：`Other.State["IDLE"]` 经 parser 为单个
+  `AttributeSubscriptStep("State", ["IDLE"])`（组 fact 锚定在 subscript step 上），而非
+  「property step + subscript step」。因此：
+  - `reduceSubscriptStep`（`FrontendChainReductionHelper`:2271-2291）的容器 fact 发布过滤
+    从「仅 PROPERTY」放宽为「PROPERTY 或 `declarationSite instanceof GdScriptEnumGroup`」，
+    否则 subscript step 上没有任何组 fact 可消费（波及面已核对：body lowering 各消费点均以
+    PROPERTY/PropertyDef 为条件，`resolveSubscriptContainerFacts` 在 `memberNameOrNull ==
+    null` 时早退，不受影响）；
+  - compile gate 不变量（`FrontendCompileCheckAnalyzer`:856-864）同步放宽为「RESOLVED
+    container property **or script enum group** provenance」；
+  - `buildTypeMetaHeadSubscriptStep`（:2320-2352）新增枚举组容器分支：receiverless 组
+    `MemberLoadItem` + 普通 key `SubscriptLoadItem`，不挂 writable route（组为编译期常量）。
+- `FrontendMatchSupport.isConstantPatternOperand`（:131-146）收窄末 step 形态为
+  `AttributePropertyStep`：subscript step 上新增的组容器 fact（CONSTANT +
+  `GdScriptEnumGroup`）描述的是容器而非下标结果，`Other.State["IDLE"]` / 运行时 key 下标
+  不得被误判为 match 常量操作数（既有行为在放宽前由「subscript 从不发布 CONSTANT fact」
+  隐式保证，现需显式排除）。
+- 裸 `State` / 裸匿名成员维持 `OpaqueExprValueItem` 零改动；`Other.IDLE` /
+  `Other.PARENT_IDLE` 经既有 `buildTypeMetaHeadMemberStep` 天然闭合，零改动。
+- 文档同步：`frontend_lowering_cfg_pass_implementation.md` 8.2 节补记 receiverless
+  `MemberLoadItem` 的「枚举常量成员」与「跨类枚举组」来源及组保留路线。
+
+测试记录（2026-09-20）：
+
+- `FrontendCfgGraphBuilderTest` 新增 8 个用例：`State.IDLE` 单 receiverless
+  `MemberLoadItem` 且无 base item；裸 `State` 保持 `OpaqueExprValueItem`；
+  `Other.State.IDLE` 组消除（含 inner class `Inner.Mode.ON` 同形锚点）；`Other.IDLE` 与
+  `Other.PARENT_IDLE` receiverless；`Other.State` 链尾保留组 load；`Other.State.keys()`
+  保留组 load + `CallItem(keys)` receiver 接续；`Other.State["IDLE"]` 保留组物化 +
+  subscript item（锚定真实 AST 形态与 `memberNameOrNull == null` 的 plain subscript）；
+  `Variant.Type.TYPE_NIL` 的两级访问 sema 未解析（维持既有 FAILED 边界），全局枚举回归锚点
+  改用受支持的 `Side.SIDE_LEFT`（GLOBAL_ENUM type-meta 路线不触发任何脚本枚举分支）。
+- `FrontendEnumChainBindingTest` 新增 `matchPatternRejectsEnumGroupSubscriptAsConstantOperand`：
+  `match` 中 `Other.State["IDLE"]` 不得分类为常量操作数（正向 `Other.State.IDLE` 常量
+  操作数锚点既有）。
+- `FrontendCompileCheckAnalyzerTest` 的 subscript 不变量用例更名为
+  `analyzeFailsFastWhenSubscriptStepMemberFactIsNotResolvedContainerProvenance`，消息断言随
+  合同放宽同步（fail-fast 行为不变，仍锚定 DYNAMIC 事实被拒）。
+- 回归：`gd.script.gdcc.frontend.**` 全绿（含 type-meta subscript 容器既有用例与
+  `Worker.values[0]` 锚点）。
 
 ### Step 7：body lowering
 

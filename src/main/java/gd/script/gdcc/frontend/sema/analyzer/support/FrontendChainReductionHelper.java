@@ -2268,12 +2268,15 @@ public final class FrontendChainReductionHelper {
         // lowering consumes the fact as container provenance (`receiver.member[key]`): the
         // published container type feeds `SubscriptLeaf.containerSourceType`, and static
         // containers additionally redirect the named-base scratch/writeback from the Variant
-        // named route to `LoadStaticInsn`/`StoreStaticInsn`. Dynamic containers (Variant
-        // receivers) stay unpublished and keep the Variant named route.
+        // named route to `LoadStaticInsn`/`StoreStaticInsn`. Script enum groups
+        // (`Other.State["IDLE"]`, CONSTANT + GdScriptEnumGroup) are published as well so CFG can
+        // materialize the constant group Dictionary load. Dynamic containers (Variant receivers)
+        // and other constant forms stay unpublished and keep the Variant named route.
         var containerMember = memberResolution.suggestedMember();
         var publishableContainerMember = containerMember != null
                 && containerMember.status() == FrontendMemberResolutionStatus.RESOLVED
-                && containerMember.bindingKind() == FrontendBindingKind.PROPERTY
+                && (containerMember.bindingKind() == FrontendBindingKind.PROPERTY
+                        || containerMember.declarationSite() instanceof GdScriptEnumGroup)
                 ? containerMember
                 : null;
         return new StepTrace(

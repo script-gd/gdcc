@@ -38,6 +38,7 @@ import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -796,6 +797,34 @@ class FrontendEnumChainBindingTest {
         var fact = analyzed.analysisData().resolvedMembers().get(idleStep);
         assertNotNull(fact);
         assertEquals(FrontendBindingKind.CONSTANT, fact.bindingKind());
+    }
+
+    @Test
+    void matchPatternRejectsEnumGroupSubscriptAsConstantOperand() throws Exception {
+        var analyzed = analyze("enum_chain_match_group_subscript.gd", """
+                class_name EnumChainMatchGroupSubscript
+                extends RefCounted
+
+                class Other:
+                    enum State { IDLE, JUMP }
+
+                func ping(state):
+                    match state:
+                        Other.State["IDLE"]:
+                            pass
+                """);
+
+        assertTrue(analyzed.diagnostics().isEmpty(), () -> "Unexpected diagnostics: " + analyzed.diagnostics());
+        var ping = findFunction(analyzed.unit().ast(), "ping");
+        var matchStatement = findNode(ping.body(), MatchStatement.class, _ -> true);
+        var pattern = assertInstanceOf(
+                AttributeExpression.class,
+                matchStatement.sections().getFirst().patterns().getFirst()
+        );
+        // The subscript step carries the CONSTANT enum group container fact, but the subscript
+        // result is a runtime Dictionary read — match support must not classify the pattern as
+        // a compile-time constant operand.
+        assertFalse(FrontendMatchSupport.isConstantPatternOperand(analyzed.analysisData(), pattern));
     }
 
     private static @NotNull AnalyzedInput analyze(

@@ -2923,7 +2923,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeFailsFastWhenSubscriptStepMemberFactIsNotResolvedProperty() throws Exception {
+    void analyzeFailsFastWhenSubscriptStepMemberFactIsNotResolvedContainerProvenance() throws Exception {
         var preparedInput = prepareCompileCheckInput("compile_check_subscript_member_fact_guard.gd", """
                 class_name CompileCheckSubscriptMemberFactGuard
                 extends RefCounted
@@ -2958,7 +2958,7 @@ class FrontendCompileCheckAnalyzerTest {
                 ))
         );
 
-        assertTrue(exception.getMessage().contains("RESOLVED container property provenance"));
+        assertTrue(exception.getMessage().contains("RESOLVED container property or script enum group provenance"));
     }
 
     @Test

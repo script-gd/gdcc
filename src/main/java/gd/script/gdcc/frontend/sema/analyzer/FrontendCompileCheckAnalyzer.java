@@ -26,6 +26,7 @@ import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdType;
@@ -855,9 +856,10 @@ public class FrontendCompileCheckAnalyzer {
                 var publishedMember = Objects.requireNonNull(entry.getValue(), "publishedMember must not be null");
                 if (anchor instanceof AttributeSubscriptStep
                         && (publishedMember.status() != FrontendMemberResolutionStatus.RESOLVED
-                        || publishedMember.bindingKind() != FrontendBindingKind.PROPERTY)) {
+                        || (publishedMember.bindingKind() != FrontendBindingKind.PROPERTY
+                        && !(publishedMember.declarationSite() instanceof GdScriptEnumGroup)))) {
                     throw new IllegalStateException(
-                            "AttributeSubscriptStep member facts must be RESOLVED container property provenance"
+                            "AttributeSubscriptStep member facts must be RESOLVED container property or script enum group provenance"
                     );
                 }
                 if (shouldBlockUnsupportedMethodReference(anchor, publishedMember)) {
@@ -1185,11 +1187,13 @@ public class FrontendCompileCheckAnalyzer {
         }
 
         /// Member facts must stay anchored at the exact property step that produced them. The single
-        /// exception is an attribute-subscript step carrying a RESOLVED container property fact
-        /// (`receiver.member[key]`, instance or static), which chain binding re-anchors from the
-        /// internally synthesized property step so body lowering can recover the container type and
-        /// redirect static containers to static storage; only RESOLVED facts ever use that anchor,
-        /// so the compile-blocking scan below still never reports them.
+        /// exception is an attribute-subscript step carrying a RESOLVED container provenance fact
+        /// (`receiver.member[key]` container property, instance or static; or a script enum group
+        /// such as `Other.State["IDLE"]`), which chain binding re-anchors from the internally
+        /// synthesized property step so body lowering can recover the container type, redirect
+        /// static containers to static storage, and let CFG materialize constant group Dictionary
+        /// loads; only RESOLVED facts ever use that anchor, so the compile-blocking scan below
+        /// still never reports them.
         private static @NotNull Node requireResolvedMemberAnchor(@NotNull Node node) {
             if (node instanceof AttributePropertyStep || node instanceof AttributeSubscriptStep) {
                 return node;
