@@ -76,6 +76,129 @@ public final class StringUtil {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
+    /// Godot `String.capitalize()` port (core/string/ustring.cpp), kept behavior-identical so
+    /// editor-facing texts (e.g. script-enum export hint_string entries) match the engine:
+    /// compound words split at `aA` / `AAa` / `2Aa` / `2aa` / `A2`/`a2` boundaries, `_`, `-` and
+    /// whitespace collapse into single spaces, everything lowercases, then each word uppercases
+    /// its first letter — `STATE_IDLE` -> `State Idle`, `my_enum_value2` -> `My Enum Value 2`.
+    /// GDScript identifiers may contain Unicode letters (the tokenizer follows UAX#31), so all
+    /// classification runs on code points with Unicode case tables; digits stay ASCII-only,
+    /// matching Godot `is_digit`.
+    public static @NotNull String capitalize(@NotNull String text) {
+        Objects.requireNonNull(text, "text must not be null");
+        // Godot `strip_edges` drops edge code points <= 32, which differs from `String.strip()`'s
+        // Unicode-whitespace set in both directions, so the port keeps its own edge scan.
+        var words = stripGodotEdges(separateCompoundWords(text));
+        var sb = new StringBuilder(words.length());
+        for (var slice : words.split(" ")) {
+            if (slice.isEmpty()) {
+                continue;
+            }
+            if (!sb.isEmpty()) {
+                sb.append(' ');
+            }
+            var head = slice.codePointAt(0);
+            sb.appendCodePoint(Character.toUpperCase(head)).append(slice, Character.charCount(head), slice.length());
+        }
+        return sb.toString();
+    }
+
+    /// Word-splitting half of `capitalize`: inserts a space at every compound-word boundary
+    /// (Godot conditions a-d), then normalizes `_`/`-`/whitespace to spaces and lowercases.
+    private static @NotNull String separateCompoundWords(@NotNull String text) {
+        if (text.isEmpty()) {
+            return text;
+        }
+        var cps = text.codePoints().toArray();
+        var len = cps.length;
+        var sb = new StringBuilder(len + 4);
+        var start = 0;
+        var prevUpper = Character.isUpperCase(cps[0]);
+        var prevLower = Character.isLowerCase(cps[0]);
+        var prevDigit = isAsciiDigit(cps[0]);
+        for (var i = 1; i < len; i++) {
+            var currUpper = Character.isUpperCase(cps[i]);
+            var currLower = Character.isLowerCase(cps[i]);
+            var currDigit = isAsciiDigit(cps[i]);
+            var nextLower = i + 1 < len && Character.isLowerCase(cps[i + 1]);
+            var boundary = (prevLower && currUpper)                         // aA
+                    || ((prevUpper || prevDigit) && currUpper && nextLower) // AAa, 2Aa
+                    || (prevDigit && currLower && nextLower)                // 2aa
+                    || ((prevUpper || prevLower) && currDigit);             // A2, a2
+            if (boundary) {
+                appendCodePoints(sb, cps, start, i).append(' ');
+                start = i;
+            }
+            prevUpper = currUpper;
+            prevLower = currLower;
+            prevDigit = currDigit;
+        }
+        appendCodePoints(sb, cps, start, len);
+        // Separator replacement and lowercasing both run per code point (Godot iterates char32_t).
+        var result = new StringBuilder(sb.length());
+        for (var offset = 0; offset < sb.length(); ) {
+            var cp = sb.codePointAt(offset);
+            offset += Character.charCount(cp);
+            if (cp == '_' || isGodotHyphen(cp) || isGodotWhitespace(cp)) {
+                result.append(' ');
+            } else {
+                result.appendCodePoint(Character.toLowerCase(cp));
+            }
+        }
+        return result.toString();
+    }
+
+    private static @NotNull StringBuilder appendCodePoints(
+            @NotNull StringBuilder sb,
+            int @NotNull [] codePoints,
+            int from,
+            int to
+    ) {
+        for (var i = from; i < to; i++) {
+            sb.appendCodePoint(codePoints[i]);
+        }
+        return sb;
+    }
+
+    private static boolean isAsciiDigit(int codePoint) {
+        return codePoint >= '0' && codePoint <= '9';
+    }
+
+    /// Exact `is_hyphen` from Godot `char_utils.h`: ASCII minus plus U+2010/U+2011.
+    private static boolean isGodotHyphen(int codePoint) {
+        return codePoint == '-' || codePoint == 0x2010 || codePoint == 0x2011;
+    }
+
+    /// Exact `strip_edges` semantics: edge code points <= 32 are removed (Godot does not use a
+    /// Unicode whitespace table here).
+    private static @NotNull String stripGodotEdges(@NotNull String text) {
+        var start = 0;
+        var end = text.length();
+        while (start < end && text.codePointAt(start) <= 32) {
+            start += Character.charCount(text.codePointAt(start));
+        }
+        while (end > start && text.codePointBefore(end) <= 32) {
+            end -= Character.charCount(text.codePointBefore(end));
+        }
+        return text.substring(start, end);
+    }
+
+    /// Exact `is_whitespace` set from Godot `char_utils.h`: ASCII controls/space plus the
+    /// Unicode space separators Godot recognizes (note 0x2000-0x200b range and NBSP inclusion).
+    private static boolean isGodotWhitespace(int codePoint) {
+        return codePoint == ' '
+                || (codePoint >= 0x09 && codePoint <= 0x0d)
+                || codePoint == 0x85
+                || codePoint == 0xa0
+                || codePoint == 0x1680
+                || (codePoint >= 0x2000 && codePoint <= 0x200b)
+                || codePoint == 0x2028
+                || codePoint == 0x2029
+                || codePoint == 0x202f
+                || codePoint == 0x205f
+                || codePoint == 0x3000;
+    }
+
     public static @NotNull String normalizeIndentedSnippet(@NotNull String rawSnippet) {
         var normalized = rawSnippet.replace("\r\n", "\n").replace('\r', '\n').strip();
         if (normalized.isEmpty()) {

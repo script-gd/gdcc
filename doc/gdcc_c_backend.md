@@ -354,6 +354,12 @@ Usage and lifecycle rules:
   - wrapper-local string-family materialization uses the wrapper-only inbound helper after the runtime gate has accepted the cached runtime type; cross-case materialization must call `StringName(String)` / `String(StringName)` and destroy the intermediate value
   - the helper itself is not a validation boundary; the generated wrapper gate order owns safety and `r_error`
 - `ptrcall` ABI shape remains unchanged by this contract.
+- Script-enum bare `@export` property registration: an int property whose bare-`export`
+  annotation value is the frontend-generated non-empty `capitalize(Name):value` hint_string
+  registers with `godot_PROPERTY_HINT_ENUM` + that hint_string; an empty value keeps the plain
+  type-derived mapping. The frontend owns hint_string generation; Godot's additional
+  `PROPERTY_USAGE_CLASS_IS_ENUM` / enum class_name stays a documented divergence because the
+  erased LIR does not carry the enum type name.
 - Typed dictionary ABI is now maintained as a separate implemented contract:
   - `doc/module_impl/backend/typed_dictionary_abi_contract.md`
 - Implementation touchpoints should stay centralized in backend helpers/templates:

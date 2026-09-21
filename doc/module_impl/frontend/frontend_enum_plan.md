@@ -6,7 +6,7 @@
 > 无新 LIR 指令、无 C 模板/运行时改动，复用现有 LIR/backend surface；
 > backend 改动仅限 Step 8 在 `CGenHelper` 新增一条 hint 映射规则（Java codegen 侧）。
 
-- 状态：实施中（Step 1-7 已完成并通过验收；Step 8-9 尚未落地；已经过多轮评审修订；
+- 状态：实施中（Step 1-8 已完成并通过验收；Step 9 尚未落地；已经过多轮评审修订；
   2026-09 修订：跨类枚举限定访问 `Other.State.IDLE` / `Other.IDLE` 由延后边界转为支持面，
   并入 Step 5-7，见 §1.3.5、§2.1、Step 5 修订记录）
 - 适用范围：
@@ -895,7 +895,7 @@ func f():
   `CNewDataInsnGenTest` / `CLoadStaticInsnGenTest`（`gd.script.gdcc.backend.c.gen` 包）
   全绿。
 
-### Step 8：`@export` 枚举 hint_string 生成（编辑器下拉支持）
+### Step 8：`@export` 枚举 hint_string 生成（编辑器下拉支持，已完成）
 
 依赖 Step 2/3（枚举元数据与 `GDCC_ENUM` type-meta 已可用）。前端生成 annotation value，
 后端消费该 value 生成 `PROPERTY_HINT_ENUM` 注册——链路其余部分（annotations 透传、
@@ -919,10 +919,10 @@ func f():
     重新解释 AST 语义；lowering 透传同一 `LirPropertyDef` 对象，skeleton 写入即自动可见。
 - 后端 `CGenHelper.renderPropertyMetadata`：裸 `export` 分支新增规则——property 类型为
   int 且 annotation value 非空 → `godot_PROPERTY_HINT_ENUM` + `GD_STATIC_S(hint_string)`；
-  value 为空串维持现状（按类型推导/NONE）。若 `PROPERTY_USAGE_CLASS_IS_ENUM` 常量可用
-  （`godot_global_enums.h` 由 extension API dump 生成），一并设置 usage 与
-  class_name=枚举名以对齐 Godot PropertyInfo；不可用则只设 hint/hint_string
-  （编辑器下拉仅依赖这两者），差异记入已知限制。
+  value 为空串维持现状（按类型推导/NONE）。`PROPERTY_USAGE_CLASS_IS_ENUM` 常量虽在
+  `godot_global_enums.h` 可用，但 Godot 同时要求 class_name=枚举限定名，而 LIR 类型擦除后
+  不再携带枚举名——实施为只设 hint/hint_string（编辑器下拉仅依赖这两者），
+  usage/class_name 差异记入 `frontend_annotation_implementation.md` 已知限制。
 - 非目标：`@export_enum(EnumName)` 自动展开（Godot 同样不支持，注解参数是字符串）；
   引擎全局枚举（`GLOBAL_ENUM`）类型标注的 export hint（机制相同，留作扩展）；
   `@export_range` 等其他 variant 与枚举类型组合的行为不变。
@@ -941,6 +941,55 @@ func f():
 - 文档同步：`frontend_annotation_implementation.md`（:160）把「脚本 enum 导出当前不支持」
   改写为已支持并记录 hint_string 生成规则与 `StringUtil` capitalize 合同；
   `gdcc_c_backend.md` 若涉及属性注册 hint 映射则补记。
+
+#### Step 8 实施记录（2026-09-21）
+
+- [x] `StringUtil.capitalize`：忠实移植 Godot `ustring.cpp` 的 `capitalize()` /
+  `_separate_compound_words()`（aA、AAa/2Aa、2aa、A2/a2 四类边界拆分 + `_`/`-`/空白归一为空格
+  + 逐词首字母大写）；按 code point 遍历并以 Unicode 大小写表分类（GDScript 标识符遵循
+  UAX#31，tokenizer 接受 Unicode 字母），digit 保持 Godot `is_digit` 的 ASCII 语义、
+  whitespace 对齐 `char_utils.h` 精确集合。`StringUtilTest` 新增 4 个用例（复合词规则/
+  边界拆分/Unicode 字母/退化输入），全绿。
+- [x] 前端 skeleton 生成 hint_string：`FrontendClassSkeletonBuilder.toLirProperty` 新增
+  `applyScriptEnumExportHint`——仅裸 `@export`（无 `export_*` variant）且声明类型文本经
+  `FrontendModuleSkeleton.resolveSourceFacingTypeMeta`（source-facing type-meta 查找：词法名
+  优先、顶层 class remap 兜底；**不是**完整 declared-type resolver——限定类型名
+  `Other.State` 与容器文本 `Array[State]` 不命名 type-meta，保持无 hint）命中 `GDCC_ENUM`
+  时，按声明顺序输出 `capitalize(成员名):值` 逗号串写入 `"export"` key；求值失败的枚举无
+  type-meta → Variant 回退无 hint，显式 variant（含与裸 export 堆叠）不受影响。测试：
+  `FrontendClassSkeletonAnnotationTest` 新增 4 用例（正向显式值+下划线成员 capitalize+
+  负值成员+诚实 key 无 `export_enum` 合成、非枚举/失败枚举负面、`:=`/`Array[State]`/限定
+  类型名形状负面、显式 variant 与堆叠不变），`FrontendAnnotationUsageAnalyzerTest`
+  新增全链路正向 `analyzeAllowsBareExportOnScriptEnumTypedProperty`；
+  `FrontendEnumSkeletonTest`/`FrontendEnumScopeTest` 回归全绿。
+- [x] 后端 `CGenHelper.renderBareExportPropertyMetadata`：int 属性 + 裸 `export` 非空值 →
+  `GDEXTENSION_VARIANT_TYPE_INT` + `godot_PROPERTY_HINT_ENUM` + `GD_STATIC_S(hint_string)` +
+  `PROPERTY_USAGE_DEFAULT`（空值维持原类型派生映射）；常量头 `godot_global_enums.h` 已可用。
+  已知限制（记入 annotation 文档）：Godot 额外设置的 `PROPERTY_USAGE_CLASS_IS_ENUM` 与
+  class_name=枚举名无法生成——LIR 擦除后不再携带枚举名，编辑器下拉仅依赖 hint/hint_string。
+  `CGenHelperTest` 新增 2 用例（非空值全字段断言/空值回退），`CCodegenTest` 回归全绿。
+- [x] e2e（test_suite `enum/` 分组）新增 `export_hint.gd` 资源对：脚本侧锚定
+  `@export var current: State = State.JUMP`（枚举成员初始化器）、`@export var heading:
+  Direction`（下划线成员 capitalize）、`@export_range` + 枚举类型（variant 不变）与未注解
+  枚举属性（NO_EDITOR 不变）；validation 侧经 `get_property_list()` 断言
+  type/hint/hint_string/class_name/usage 及初始化器运行值。`EXPECTED_SCRIPT_PATHS` 已同步；
+  `doc/test_suite.md` 枚举段落更新为 Step 1-8 支持面。本机 zig + Godot 4.5.2 下
+  9/9（8 个枚举用例 + 资源清单）通过。
+- [x] 文档同步：`frontend_annotation_implementation.md`（支持面、§3.2 skeleton 生成路径、
+  §5.2 value 表、§5.3 :160 改写、§5.5 backend 规则、§6 测试锚点、§7 CLASS_IS_ENUM/class_name
+  差异记入已知限制）、`gdcc_c_backend.md`（Variant outward 段落补脚本 enum 注册规则）、
+  `variant_abi_contract.md`（outward hint 编码补 int+非空值分支）、`frontend_rules.md`
+  （:126 export 家族合同补脚本 enum 句）、本文档（头部状态、DoD :1115/:1119 改写、Step 8
+  标记完成）。
+- [x] 双代理审阅与整改：review-expert-a/c 首轮 REQUEST_CHANGES，已修复——capitalize 从
+  ASCII 假设重写为 code point + Unicode 大小写分类（tokenizer 遵循 UAX#31，实测
+  `is_unicode_identifier_start/continue`）、whitespace/hyphen/strip_edges 对齐
+  `char_utils.h`/`ustring.cpp` 精确集合（U+2010/U+2011 hyphen、边缘 code point <= 32）、
+  注释与实施记录删除「覆盖限定名/同一类型解析路径」不实表述、补诚实 key（无
+  `export_enum` 合成）/负值成员/`:=`/`Array[State]`/限定类型名负面锚点、`2aa` 边界与
+  Unicode hyphen/控制字符 strip 用例、backend 段落 CLASS_IS_ENUM 表述改写为已实施行为。
+  复核：review-expert-a APPROVE；review-expert-c 二轮 REQUEST_CHANGES（hyphen/strip 语义
+  + 计划文档残留段落）整改后终审 APPROVE。
 
 ### Step 9：compile 全链路、既有测试更新与文档同步
 
@@ -1082,9 +1131,10 @@ func f():
 
 1. §2.1 支持面全部通过对应测试；§2.2 中带恢复行为的边界（发诊断 + 跳过的场景）在其锚定
    Step 有 negative 测试（正确 category + 子树跳过 + 兄弟存活）；延后/已知限制类边界
-   （`@export` hint、Dictionary 运行时只读性等）以「文档化 + 行为不变锚点测试」验收，
-   不要求诊断三件套。
+   （Dictionary 运行时只读性、enum 导出的 `PROPERTY_USAGE_CLASS_IS_ENUM`/class_name 差异等）
+   以「文档化 + 行为不变锚点测试」验收，不要求诊断三件套。
 2. §4 全部 Step 的验收细则执行完毕，回归清单不变红，全量 `clean build` 通过。
 3. §4 Step 9 的文档同步清单全部落地；本文档改写为事实源。
-4. 无新增 compiler-only 类型、无新 LIR 指令、无 backend 改动、无新 diagnostic category
-   （若实施中发现必须新增，回到本文档修订并说明）。
+4. 无新增 compiler-only 类型、无新 LIR 指令、无 backend 模板/运行时改动、无新 diagnostic
+   category（Step 8 在 `CGenHelper` 新增的 hint 映射规则为计划内 Java codegen 侧改动；
+   其余若实施中发现必须新增，回到本文档修订并说明）。

@@ -75,6 +75,50 @@ public class StringUtilTest {
     }
 
     @Test
+    public void capitalizeFollowsGodotCompoundWordRules() {
+        // Expectations mirror Godot ustring.cpp `capitalize()`: underscores/hyphens/whitespace
+        // collapse to single spaces, everything lowercases, each word uppercases its head.
+        assertEquals("State Idle", StringUtil.capitalize("STATE_IDLE"));
+        assertEquals("Idle", StringUtil.capitalize("IDLE"));
+        assertEquals("Jump", StringUtil.capitalize("Jump"));
+        assertEquals("Move Left", StringUtil.capitalize("move-left"));
+        assertEquals("My Enum Value 2", StringUtil.capitalize("my_enum_value2"));
+    }
+
+    @Test
+    public void capitalizeSplitsGodotCaseAndDigitBoundaries() {
+        // Boundary conditions a-d from `_separate_compound_words`: aA, AAa/2Aa, 2aa, A2/a2.
+        assertEquals("Move Left", StringUtil.capitalize("moveLeft"));
+        assertEquals("Http Server 2fa", StringUtil.capitalize("HTTPServer2FA"));
+        assertEquals("Version 2 Value", StringUtil.capitalize("version2Value"));
+        assertEquals("V 2 Aa", StringUtil.capitalize("v2aa"));
+        assertEquals("State 2d", StringUtil.capitalize("STATE_2D"));
+    }
+
+    @Test
+    public void capitalizeClassifiesUnicodeLettersLikeGodot() {
+        // GDScript identifiers follow UAX#31, so Unicode letters must hit the same case
+        // boundaries as Godot's char32_t implementation (nÜ is an aA boundary).
+        assertEquals("Klein Übergang", StringUtil.capitalize("kleinÜbergang"));
+        // Godot `is_hyphen` also covers U+2010/U+2011; `strip_edges` removes edge chars <= 32
+        // (control characters included), unlike Java's Unicode-whitespace `strip()`.
+        assertEquals("State Idle", StringUtil.capitalize("state\u2010idle"));
+        assertEquals("Idle", StringUtil.capitalize("\u0001idle"));
+    }
+
+    @Test
+    public void capitalizeHandlesDegenerateInputs() {
+        assertEquals("", StringUtil.capitalize(""));
+        assertEquals("A", StringUtil.capitalize("a"));
+        assertEquals("A", StringUtil.capitalize("A"));
+        // Separator-only runs collapse away instead of fabricating empty words.
+        assertEquals("", StringUtil.capitalize("__"));
+        assertEquals("", StringUtil.capitalize("---"));
+        assertEquals("", StringUtil.capitalize("   "));
+        assertEquals("Idle", StringUtil.capitalize("_idle_"));
+    }
+
+    @Test
     public void normalizeIndentedSnippetAndSplitLinesNormalizeMultilineText() {
         var raw = "\r\n    alpha\r\n      beta\r\n\r\n";
         var normalized = StringUtil.normalizeIndentedSnippet(raw);

@@ -1541,8 +1541,26 @@ public final class CGenHelper {
     /// with the property type class name as hint_string and class_name (Godot parity). Other
     /// Object types were already rejected by the frontend export validation; if one still reaches
     /// here it falls through to the plain type-derived surface.
+    ///
+    /// Script-enum exception: the frontend writes the generated `Name:value` hint_string under
+    /// the bare `export` key, so an int property carrying a non-empty value renders
+    /// `PROPERTY_HINT_ENUM` with that string — the editor dropdown consumes exactly these two
+    /// fields. An empty value is the plain bare-export encoding and keeps the type-derived
+    /// mapping. Godot additionally ORs `PROPERTY_USAGE_CLASS_IS_ENUM` and sets class_name to the
+    /// enum type name, but the erased LIR no longer carries that name; the divergence is
+    /// recorded as a known limitation in `frontend_annotation_implementation.md`.
     private @NotNull BoundMetadata renderBareExportPropertyMetadata(@NotNull PropertyDef propertyDef) {
         var type = propertyDef.getType();
+        var exportValue = propertyDef.getAnnotations().get("export");
+        if (type instanceof GdIntType && exportValue != null && !exportValue.isEmpty()) {
+            return new BoundMetadata(
+                    "GDEXTENSION_VARIANT_TYPE_INT",
+                    "godot_PROPERTY_HINT_ENUM",
+                    "GD_STATIC_S(u8\"" + escapeStringLiteral(exportValue) + "\")",
+                    "GD_STATIC_SN(u8\"\")",
+                    "godot_PROPERTY_USAGE_DEFAULT"
+            );
+        }
         if (type instanceof GdObjectType objectType) {
             var hintEnumLiteral = resolveExportObjectHintEnum(objectType);
             if (hintEnumLiteral != null) {

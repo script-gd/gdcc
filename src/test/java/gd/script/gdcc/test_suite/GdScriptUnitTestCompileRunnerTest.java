@@ -115,6 +115,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "default_args/too_many_arguments_negative.gd",
             "enum/anonymous_member_values.gd",
             "enum/cross_class_access.gd",
+            "enum/export_hint.gd",
             "enum/group_dictionary_access.gd",
             "enum/initializer_and_defaults.gd",
             "enum/match_constant_patterns.gd",

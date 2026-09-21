@@ -63,10 +63,13 @@ backend-focused codegen tests instead.
 Enum e2e pairs live under `enum/` (anonymous member evaluation, named/cross-class member
 access, group-as-Dictionary via subscript/`keys()`/roundtrip, `int` type erasure for
 annotations/`is`/typed arrays, property initializers and parameter defaults, `match` constant
-patterns). Keep compiled-script usage inside the Step 1-7 support surface: no `values()`,
-missing-key reads, group mutation/read-only expectations, StringName keys, `@export` hints
-(Step 8), or signal parameters. Rich Dictionary-shape assertions belong in the validation
-script, which runs as ordinary Godot GDScript.
+patterns, `export_hint.gd` for script-enum bare `@export` metadata). Keep compiled-script usage
+inside the Step 1-8 support surface: no `values()`, missing-key reads, group mutation/read-only
+expectations, StringName keys, or signal parameters. The export-hint case asserts the
+engine-side `get_property_list()` entries (`PROPERTY_HINT_ENUM` + `capitalize(Name):value`
+hint_string, explicit-variant and unexported controls) through the same property-metadata
+conventions as the `annotation/` group. Rich Dictionary-shape assertions belong in the
+validation script, which runs as ordinary Godot GDScript.
 
 ## How Discovery Works
 

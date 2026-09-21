@@ -19,6 +19,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.GdScriptClassConstant;
 import gd.script.gdcc.scope.GdScriptEnumConstant;
 import gd.script.gdcc.scope.GdScriptEnumGroup;
+import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeTypeMeta;
 import gd.script.gdcc.scope.ScopeTypeMetaKind;
@@ -765,6 +766,7 @@ public final class FrontendClassSkeletonBuilder {
         var propertyDef = new LirPropertyDef(variableDeclaration.name().trim(), propertyType);
         propertyDef.setStatic(variableDeclaration.isStatic());
         applyPropertyAnnotations(variableDeclaration, propertyDef, context);
+        applyScriptEnumExportHint(variableDeclaration, declaredTypeScope, propertyDef, context);
         return propertyDef;
     }
 
@@ -795,6 +797,66 @@ public final class FrontendClassSkeletonBuilder {
                 }
             }
         }
+    }
+
+    /// Bare `@export` on a property whose declared type resolves to a successfully evaluated
+    /// script enum earns a generated `Name:value` hint_string (Godot `export_annotations` ENUM
+    /// branch parity), stored under the honest `"export"` key so the backend maps it to
+    /// `PROPERTY_HINT_ENUM`. Runs at skeleton time because the enum pre-pass has already
+    /// published `GDCC_ENUM` type-meta while lowering would only see the erased `int` type.
+    ///
+    /// Skipped shapes keep their previous behavior:
+    /// - explicit export variants (`@export_range` etc.) own their metadata, even stacked with
+    ///   a bare `@export`;
+    /// - failed enums publish no type-meta, so their Variant fallback carries no hint;
+    /// - non-enum declared types keep the empty bare-export encoding.
+    private void applyScriptEnumExportHint(
+            @NotNull VariableDeclaration variableDeclaration,
+            @NotNull Scope declaredTypeScope,
+            @NotNull LirPropertyDef propertyDef,
+            @NotNull SkeletonBuildContext context
+    ) {
+        var annotations = propertyDef.getAnnotations();
+        if (!annotations.containsKey("export") || hasExplicitExportVariant(annotations)) {
+            return;
+        }
+        var typeRef = variableDeclaration.type();
+        if (typeRef == null) {
+            return;
+        }
+        // Look the declared type text up as a type-meta name through the same source-facing
+        // scope protocol the declared-type resolver uses (lexical names first, top-level class
+        // remap as fallback). This intentionally is not the full declared-type resolver:
+        // qualified `Other.State` type annotations and container texts like `Array[State]`
+        // never name a GDCC_ENUM type-meta and stay hint-free.
+        var typeMeta = FrontendModuleSkeleton.resolveSourceFacingTypeMeta(
+                declaredTypeScope,
+                typeRef.sourceText().trim(),
+                ResolveRestriction.unrestricted(),
+                context.moduleTopLevelCanonicalNameMap()
+        ).allowedValueOrNull();
+        if (typeMeta == null
+                || typeMeta.kind() != ScopeTypeMetaKind.GDCC_ENUM
+                || !(typeMeta.declaration() instanceof GdScriptEnumGroup enumGroup)) {
+            return;
+        }
+        var hintString = new StringBuilder();
+        for (var member : enumGroup.members()) {
+            if (!hintString.isEmpty()) {
+                hintString.append(',');
+            }
+            hintString.append(StringUtil.capitalize(member.memberName())).append(':').append(member.value());
+        }
+        annotations.put("export", hintString.toString());
+    }
+
+    private static boolean hasExplicitExportVariant(@NotNull Map<String, String> annotations) {
+        for (var key : annotations.keySet()) {
+            if (key.startsWith("export_")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// Skeleton build only understands the small property annotation subset that already maps to

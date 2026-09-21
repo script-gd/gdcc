@@ -637,6 +637,45 @@ class CGenHelperTest {
     }
 
     @Test
+    @DisplayName("renderPropertyMetadata should render enum hint for bare export int with generated hint_string")
+    void renderPropertyMetadataShouldRenderEnumHintForBareExportIntWithHintString() {
+        // Script-enum exports: the frontend stores the generated `Name:value` hint_string under
+        // the bare "export" key; the int-typed property maps to PROPERTY_HINT_ENUM.
+        var property = new LirPropertyDef(
+                "current",
+                GdIntType.INT,
+                false,
+                null,
+                null,
+                null,
+                Map.of("export", "Idle:0,Jump:5")
+        );
+
+        var metadata = helper.renderPropertyMetadata(property);
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_INT", metadata.typeEnumLiteral());
+        assertEquals("godot_PROPERTY_HINT_ENUM", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"Idle:0,Jump:5\")", metadata.hintStringExpr());
+        assertEquals("GD_STATIC_SN(u8\"\")", metadata.classNameExpr());
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderPropertyMetadata should keep type-derived mapping for bare export int with empty value")
+    void renderPropertyMetadataShouldKeepTypeDerivedMappingForBareExportIntWithEmptyValue() {
+        // Plain bare `@export` encodes an empty value: no enum hint, the int type-derived
+        // metadata stays exactly as before the script-enum rule existed.
+        var property = new LirPropertyDef("score", GdIntType.INT, false, null, null, null, Map.of("export", ""));
+
+        var metadata = helper.renderPropertyMetadata(property);
+
+        assertEquals("GDEXTENSION_VARIANT_TYPE_INT", metadata.typeEnumLiteral());
+        assertEquals("godot_PROPERTY_HINT_NONE", metadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"\")", metadata.hintStringExpr());
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT", metadata.usageExpr());
+    }
+
+    @Test
     @DisplayName("renderPropertyMetadata should preserve non-export property usage for non-Variant types")
     void renderPropertyMetadataShouldPreserveNonExportNonVariantUsage() {
         var property = new LirPropertyDef("score", GdIntType.INT, false, null, null, null, Map.of());
