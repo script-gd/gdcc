@@ -30,7 +30,7 @@
   - 不在这里建模 read / write / call / assignable / lvalue 语义
   - 不在这里实现 parameter default、block-local `const` 的正式 binding；已记录 lambda 由 nested suite resolution 承接，合同见 `frontend_lambda_implementation.md`。`match` 由 `resolveMatchStatement` 的 pattern-context 分派承接，LITERAL / EXPRESSION 叶子仍走本 analyzer 的普通管线
   - 不在这里扩展 shared `Scope` 协议
-  - 不在这里处理 class constant binding；该能力仍延后到 MVP 之后
+  - 不在这里处理普通 class-level `const` binding；该能力仍延后到 MVP 之后（脚本枚举常量/枚举组已发布为 `CONSTANT` binding，见 `frontend_enum_implementation.md`）
 
 ---
 
@@ -144,7 +144,7 @@
 - `UTILITY_FUNCTION` 表示 global utility function 对应的 function-like symbol category，可被 bare callee 与 value use-site 共同消费
 - `METHOD` 表示实例方法 overload set 的 function-like symbol category，可被 bare callee 与 value use-site 共同消费
 - `STATIC_METHOD` 表示静态方法 overload set 的 function-like symbol category，可被 bare callee 与 value use-site 共同消费
-- `CONSTANT` 仍保留在枚举中，但 class-level `const` 当前不属于本 analyzer 的正式支持面
+- `CONSTANT` 的正式支持面当前为全局常量、全局枚举成员、GDScript 语言常量与脚本枚举常量/枚举组；普通 class-level `const` 仍不属于本 analyzer 的正式支持面
 - `CAPTURE` 由已记录 lambda 的 nested suite resolution 正式产出（声明处类型写入 `FrontendLambdaPlan` 与 scope）；本 analyzer 不在自己的 walk 里发明 capture binding
 
 ### 2.4 当前明确不发布的事实
@@ -466,6 +466,7 @@ builtin static namespace 当前仍 direct-only，因为 ExtensionAPI builtin met
 - parameter default subtree
 - lambda subtree（仅未记录的 lambda；已 `recordCallable` 的 lambda 走 nested suite resolution，不产生此 category）
 - block-local `const` initializer subtree
+- function body 内的 `enum` declaration subtree（对齐 Godot 的 parser 级拒绝；类体枚举由 skeleton 枚举预 pass 统一处理，不经本 category）
 - missing-scope / skipped subtree
 
 ### 5.4 root-level 恢复合同
@@ -558,7 +559,7 @@ builtin static namespace 当前仍 direct-only，因为 ExtensionAPI builtin met
 - 一般 type position binding
 - member namespace binding
 - tail static member binding
-- class constant binding
+- 普通 class-level `const` binding
 
 ---
 

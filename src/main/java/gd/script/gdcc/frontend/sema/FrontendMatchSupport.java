@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.DictionaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -132,8 +133,14 @@ public final class FrontendMatchSupport {
                 || attributeExpression.steps().isEmpty()) {
             return false;
         }
-        var lastStep = attributeExpression.steps().getLast();
-        var member = analysisData.resolvedMembers().get(lastStep);
+        // Only a property step can carry a constant member value fact. Subscript steps publish
+        // container provenance (static property containers, or script enum groups such as
+        // `Other.State["IDLE"]`) whose CONSTANT binding describes the container, not the
+        // subscript result — a runtime Dictionary read is never a compile-time constant.
+        if (!(attributeExpression.steps().getLast() instanceof AttributePropertyStep lastPropertyStep)) {
+            return false;
+        }
+        var member = analysisData.resolvedMembers().get(lastPropertyStep);
         return member != null
                 && member.status() == FrontendMemberResolutionStatus.RESOLVED
                 && member.bindingKind() == FrontendBindingKind.CONSTANT;

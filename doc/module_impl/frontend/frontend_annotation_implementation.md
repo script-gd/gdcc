@@ -30,6 +30,7 @@
 
 - `@tool`：script 级标记（Godot `AnnotationInfo::SCRIPT` 对齐），贯通 parse → skeleton → LIR → backend 帧循环 gate。
 - `@export` 家族：`export`、`export_range`、`export_enum`、`export_flags`、`export_flags_2d_render/2d_physics/2d_navigation/3d_render/3d_physics/3d_navigation/avoidance`、`export_file`、`export_file_path`、`export_dir`、`export_global_file`、`export_global_dir`、`export_multiline`、`export_placeholder`、`export_exp_easing`、`export_color_no_alpha`、`export_node_path`。
+- 脚本 enum 裸 `@export`：声明类型命中 `GDCC_ENUM` type-meta 的 property 由 skeleton 生成 `capitalize(成员名):值` hint_string（§3.2 / §5.2），backend 渲染 `PROPERTY_HINT_ENUM`。
 - 当前不支持（保留 side-table 事实并走既有边界）：
     - `@export_category` / `@export_group` / `@export_subgroup`：需要 LIR 表达分组条目与 property 的相对顺序并接入 ClassDB group 注册 API，属较大变更。
     - `@export_storage`、`@export_custom`、`@export_tool_button`：依赖 usage flag 自由组合 / Callable property / `@tool` 完整编辑器语义。
@@ -57,6 +58,7 @@
     - 已支持家族但参数 malformed → 只 retention 不写 metadata、不发诊断（参数诊断归 usage analyzer）。
     - `tool` / `icon` 即使挂在 member 或尾随锚点上也只 retention，不发 `sema.unsupported_annotation`。
     - 其余 property 注解 → `sema.unsupported_annotation` error + retention。
+- 脚本 enum hint_string 由 `applyScriptEnumExportHint` 在 skeleton 生成（枚举预 pass 已发布 `GDCC_ENUM` type-meta，lowering 阶段声明类型已擦除为 `int`、无从再生成）：仅当 property 携带裸 `export`（无任何 `export_*` variant key）且声明类型经 source-facing type-meta 查找命中 `GDCC_ENUM` 时，按声明顺序输出 `StringUtil.capitalize(成员名):求值整数` 逗号串覆写 `"export"` value；求值失败的枚举无 type-meta → Variant 回退，不生成 hint。
 - LIR 承载：`LirClassDef.isTool` 与 class/property `<annotation key value/>` 经 `DomLirSerializer` / `DomLirParser` roundtrip；class 级 annotation 读回只取 `class_def` 的直接子元素（不会混入后代 property/function 注解）。
 
 ### 3.3 Annotation-usage phase
@@ -140,7 +142,7 @@
 | `export_exp_easing` | `""` / `"attenuation,positive_only"` | `PROPERTY_HINT_EXP_EASING` | `float`（与 `int` 互通） |
 | `export_color_no_alpha` | `""` | `PROPERTY_HINT_COLOR_NO_ALPHA` | `Color` |
 | `export_node_path` | `"Node2D,Sprite2D"` | `PROPERTY_HINT_NODE_PATH_VALID_TYPES` | `NodePath` |
-| `export`（裸） | `""` | 类型派生（含 Object → Resource/Node hint） | 可定型 + Object 家族限制（§5.3） |
+| `export`（裸） | `""`；脚本 enum 类型时为生成的 `"Idle:0,Jump:5"` 形态 | 空 value → 类型派生（含 Object → Resource/Node hint）；`int` + 非空 value → `PROPERTY_HINT_ENUM` | 可定型 + Object 家族限制（§5.3）；脚本 enum 类型标注 |
 
 layer 系列内部的固定全序为 `2d_render → 2d_physics → 2d_navigation → 3d_render → 3d_physics → 3d_navigation → avoidance`（与 backend 优先级列表一致；压缩行不影响单 key 场景的选择）。
 
@@ -157,7 +159,7 @@ usage analyzer 的有效类型判定为四态（`resolveEffectiveExportType`）�
 
 5. 默认检查族（range / flags / layer flags / exp_easing）的 `int` 与 `float` 声明类型互通。
 6. 容器声明类型（`Array[T]` / packed array / `Dictionary`）上的全部 export variant 一律报类型不兼容（不做 Godot 的 Array peel，§7）；裸 `export` 不受限。
-7. 裸 `@export` 的 Object 家族限制：`Resource` 派生或 `Node` 派生放行；其余 Object 类型（如裸 `RefCounted`）报错；脚本 enum 导出当前不支持。
+7. 裸 `@export` 的 Object 家族限制：`Resource` 派生或 `Node` 派生放行；其余 Object 类型（如裸 `RefCounted`）报错。脚本 enum 类型标注已支持（声明类型擦除为 `int`，hint_string 由 skeleton 生成，§3.2）。
 8. 裸 `@export` 导出 `Node` 派生类型时，owner class 必须派生自 `Node`。
 
 ### 5.4 `@tool` 合同
@@ -169,7 +171,7 @@ usage analyzer 的有效类型判定为四态（`resolveEffectiveExportType`）�
 ### 5.5 Backend 渲染合同
 
 - variant 选择按 §5.2 表自上而下的固定全序（裸 `export` 垫底），不依赖 `HashMap` 迭代顺序；同名 variant 重复出现为 last-wins，不发诊断（与 Godot 硬错误的刻意差异）。
-- 命中 variant → hint/hint_string 完全由注解 value 驱动；仅命中裸 `export` → 类型派生 hint（typed Array/Dictionary 维持 `PROPERTY_HINT_ARRAY_TYPE` / `DICTIONARY_TYPE`；`GdObjectType` 经 `ClassRegistry` 判定 Resource 派生 → `PROPERTY_HINT_RESOURCE_TYPE`、Node 派生 → `PROPERTY_HINT_NODE_TYPE`，hint_string/class_name 取 property 类型类名）。
+- 命中 variant → hint/hint_string 完全由注解 value 驱动；仅命中裸 `export` 且 value 为空 → 类型派生 hint（typed Array/Dictionary 维持 `PROPERTY_HINT_ARRAY_TYPE` / `DICTIONARY_TYPE`；`GdObjectType` 经 `ClassRegistry` 判定 Resource 派生 → `PROPERTY_HINT_RESOURCE_TYPE`、Node 派生 → `PROPERTY_HINT_NODE_TYPE`，hint_string/class_name 取 property 类型类名）；仅命中裸 `export` 且 property 为 `int`、value 非空（脚本 enum 生成的 hint_string）→ `PROPERTY_HINT_ENUM` + 该 hint_string 原文。
 - 任一 export 家族 key 存在 → base usage 为 `PROPERTY_USAGE_DEFAULT`；否则 `NO_EDITOR`；`Variant` 叠加 `PROPERTY_USAGE_NIL_IS_VARIANT`。
 - backend 不重复校验参数合法性；未知 key 静默忽略。
 
@@ -184,13 +186,13 @@ usage analyzer 的有效类型判定为四态（`resolveEffectiveExportType`）�
 ## 6. 测试锚点
 
 - Parser：`FrontendAnnotationParseBehaviorTest`（注解 AST 形态与参数保留）。
-- Collector / skeleton：`FrontendClassSkeletonAnnotationTest`（`@tool` 置位与传播、property 映射、malformed retention、unsupported 边界）。
-- Usage：`FrontendAnnotationUsageAnalyzerTest`（placement / static / arity / 类型兼容 / Object 家族 / 上游抑制 / `@tool`）。
+- Collector / skeleton：`FrontendClassSkeletonAnnotationTest`（`@tool` 置位与传播、property 映射、malformed retention、unsupported 边界、脚本 enum 裸 `@export` hint_string 生成与失败枚举/显式 variant 负面）。
+- Usage：`FrontendAnnotationUsageAnalyzerTest`（placement / static / arity / 类型兼容 / Object 家族 / 上游抑制 / `@tool` / 脚本 enum 裸 `@export` 全链路正向）。
 - 参数 helper：`FrontendExportAnnotationSupportTest`（arity、字面量、编码）。
-- 字符串解码：`StringUtilTest`（各 lexeme 形式与转义全集，含 6 位 `\U`）。
+- 字符串解码与 `capitalize`：`StringUtilTest`（各 lexeme 形式与转义全集，含 6 位 `\U`；Godot `capitalize` 复合词规则）。
 - LIR roundtrip：`DomLirSerializerTest` / `DomLirParserTest`（`is_tool`、class annotation 直接子元素边界）。
-- Backend：`CGenHelperTest`（variant hint/usage/classNameExpr 渲染）、`CCodegenTest`（注册参数与帧循环 gate 的有序代码生成断言）。
-- 端到端：`GdScriptUnitTestCompileRunnerTest` 的 annotation 脚本（如 `tool_process_runtime.gd`，只验证非 editor 路径可执行）。
+- Backend：`CGenHelperTest`（variant hint/usage/classNameExpr 渲染、裸 `export` int + 非空 value 的 `PROPERTY_HINT_ENUM` 规则与空值回退）、`CCodegenTest`（注册参数与帧循环 gate 的有序代码生成断言）。
+- 端到端：`GdScriptUnitTestCompileRunnerTest` 的 annotation 脚本（如 `tool_process_runtime.gd`，只验证非 editor 路径可执行）与 `enum/export_hint.gd`（引擎侧 `get_property_list()` 锚定脚本 enum 的 `PROPERTY_HINT_ENUM` / hint_string / usage 与显式 variant、未注解对照）。
 
 ## 7. 已知限制与 Godot 刻意差异
 
@@ -202,6 +204,7 @@ usage analyzer 的有效类型判定为四态（`resolveEffectiveExportType`）�
 - `@export_node_path` 的类名存在性与 `Node` 派生检查（Godot 查 ClassDB）：gdcc 不做。
 - `@export_flags` 的条目名校验、显式整数值（`"Name:2"`）与 32 位上限检查：gdcc 不做。
 - 非 tool 类在编辑器内仍执行 `_ready` / `_notification` / `_input` 等非帧循环回调（Godot placeholder 机制抑制全部回调）。
+- 脚本 enum 导出与 Godot PropertyInfo 的差异：Godot 额外 OR `PROPERTY_USAGE_CLASS_IS_ENUM` 并把 class_name 设为枚举限定名；gdcc 的 LIR 在类型擦除后不再携带枚举名，只发布 hint/hint_string（编辑器下拉仅依赖这两者）。若要对齐需让 LIR 承载枚举名（结构化 export metadata，同推断导出条目同属架构级变更）。
 - initializer 推断类型不进入导出 metadata（已确认接受的差异）：显式标注类型时导出类型=声明类型；未标注/`:=` 时保持 `Variant` + `NIL_IS_VARIANT`，类型回退只用于诊断。对齐 Godot 的推断导出需要引入结构化 export metadata（导出 type / hint / hint_string / class_name / usage）并贯通 LIR 模型、XML serializer/parser 与 backend——`Map<String, String>` 无法承载，属架构级变更。
 
 ## 8. 长期风险与维护提醒

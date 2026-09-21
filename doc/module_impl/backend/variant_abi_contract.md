@@ -83,7 +83,8 @@
 - outward ABI 的 `hint` / `hint_string` / `class_name` 由 export 注解合同驱动：
   - 带 `@export*` variant key 的 property：`hint` 为 key 对应的 `PROPERTY_HINT_*`，`hint_string` 为注解 value 原文，`class_name` 为空
   - 裸 `@export` 的 Object property：Resource 派生 → `PROPERTY_HINT_RESOURCE_TYPE`、Node 派生 → `PROPERTY_HINT_NODE_TYPE`，`hint_string` 与 `class_name` 均为 property 类型类名
-  - 裸 `@export` 的非 Object property：复用 `renderBoundMetadata`（typed Array/Dictionary 仍发 `ARRAY_TYPE` / `DICTIONARY_TYPE`，其余 `HINT_NONE`），`class_name` 为空，usage 为 `DEFAULT`
+  - 裸 `@export` 的 int property 且注解 value 非空（脚本 enum 生成的 `capitalize(Name):value` hint_string）：`PROPERTY_HINT_ENUM` + 该 hint_string 原文，`class_name` 为空，usage 为 `DEFAULT`；Godot 额外的 `PROPERTY_USAGE_CLASS_IS_ENUM` 与枚举 class_name 因 LIR 不携带枚举名而不发布（见 `frontend_annotation_implementation.md` 已知限制）
+  - 裸 `@export` 的非 Object property（含 value 为空的 int）：复用 `renderBoundMetadata`（typed Array/Dictionary 仍发 `ARRAY_TYPE` / `DICTIONARY_TYPE`，其余 `HINT_NONE`），`class_name` 为空，usage 为 `DEFAULT`
   - 无 export 的 property：同上 hint 规则，usage 为 `NO_EDITOR`
   - method argument / return metadata：不受 export 合同驱动，继续走 `renderBoundMetadata`（含 typed-container hint），`class_name` 为空
 - `void` 不允许进入 outward metadata helper：

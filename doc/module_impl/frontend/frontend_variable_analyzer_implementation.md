@@ -112,7 +112,7 @@
 
 需要明确区分：
 
-- class property / class const 不属于本 analyzer 的 callable-local inventory
+- class property / class const / 脚本枚举常量与命名枚举组不属于本 analyzer 的 callable-local inventory；脚本枚举常量已由 skeleton 常量表 + `ClassScope` 常量索引发布（见 `frontend_enum_implementation.md`），普通 class-level `const` 仍 deferred
 - block-local `const` 属于本 analyzer 已识别但当前明确 deferred 的输入
 - lambda capture 的名字与 `sourceDeclaration` 已写入 scope，但其声明处类型不在本阶段填充；scope 上的 `CAPTURE` 绑定保持 `Variant` 占位，且 `FrontendAnalysisData.lambdaPlans()` 在本 analyzer 完成后仍为空
 

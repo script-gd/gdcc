@@ -94,7 +94,9 @@ public final class FrontendDualRoleTypeMetaRouteSupport {
     public static boolean supportsTopLevelTypeMeta(@NotNull ScopeTypeMeta typeMeta) {
         return switch (Objects.requireNonNull(typeMeta, "typeMeta must not be null").kind()) {
             case GDCC_CLASS, ENGINE_CLASS, BUILTIN -> !typeMeta.pseudoType();
-            case GLOBAL_ENUM -> typeMeta.declaration() != null;
+            // Script enum groups follow the global-enum rule: only a metadata-backed enum may
+            // dual-route between value and type-meta namespaces.
+            case GLOBAL_ENUM, GDCC_ENUM -> typeMeta.declaration() != null;
         };
     }
 

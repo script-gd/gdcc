@@ -75,6 +75,50 @@ public class StringUtilTest {
     }
 
     @Test
+    public void capitalizeFollowsGodotCompoundWordRules() {
+        // Expectations mirror Godot ustring.cpp `capitalize()`: underscores/hyphens/whitespace
+        // collapse to single spaces, everything lowercases, each word uppercases its head.
+        assertEquals("State Idle", StringUtil.capitalize("STATE_IDLE"));
+        assertEquals("Idle", StringUtil.capitalize("IDLE"));
+        assertEquals("Jump", StringUtil.capitalize("Jump"));
+        assertEquals("Move Left", StringUtil.capitalize("move-left"));
+        assertEquals("My Enum Value 2", StringUtil.capitalize("my_enum_value2"));
+    }
+
+    @Test
+    public void capitalizeSplitsGodotCaseAndDigitBoundaries() {
+        // Boundary conditions a-d from `_separate_compound_words`: aA, AAa/2Aa, 2aa, A2/a2.
+        assertEquals("Move Left", StringUtil.capitalize("moveLeft"));
+        assertEquals("Http Server 2fa", StringUtil.capitalize("HTTPServer2FA"));
+        assertEquals("Version 2 Value", StringUtil.capitalize("version2Value"));
+        assertEquals("V 2 Aa", StringUtil.capitalize("v2aa"));
+        assertEquals("State 2d", StringUtil.capitalize("STATE_2D"));
+    }
+
+    @Test
+    public void capitalizeClassifiesUnicodeLettersLikeGodot() {
+        // GDScript identifiers follow UAX#31, so Unicode letters must hit the same case
+        // boundaries as Godot's char32_t implementation (nÜ is an aA boundary).
+        assertEquals("Klein Übergang", StringUtil.capitalize("kleinÜbergang"));
+        // Godot `is_hyphen` also covers U+2010/U+2011; `strip_edges` removes edge chars <= 32
+        // (control characters included), unlike Java's Unicode-whitespace `strip()`.
+        assertEquals("State Idle", StringUtil.capitalize("state\u2010idle"));
+        assertEquals("Idle", StringUtil.capitalize("\u0001idle"));
+    }
+
+    @Test
+    public void capitalizeHandlesDegenerateInputs() {
+        assertEquals("", StringUtil.capitalize(""));
+        assertEquals("A", StringUtil.capitalize("a"));
+        assertEquals("A", StringUtil.capitalize("A"));
+        // Separator-only runs collapse away instead of fabricating empty words.
+        assertEquals("", StringUtil.capitalize("__"));
+        assertEquals("", StringUtil.capitalize("---"));
+        assertEquals("", StringUtil.capitalize("   "));
+        assertEquals("Idle", StringUtil.capitalize("_idle_"));
+    }
+
+    @Test
     public void normalizeIndentedSnippetAndSplitLinesNormalizeMultilineText() {
         var raw = "\r\n    alpha\r\n      beta\r\n\r\n";
         var normalized = StringUtil.normalizeIndentedSnippet(raw);
@@ -219,6 +263,80 @@ public class StringUtilTest {
                 () -> assertMalformedGetNodeLexeme("plain"),
                 () -> assertMalformedGetNodeLexeme("^\"a/b\""),
                 () -> assertMalformedGetNodeLexeme("")
+        );
+    }
+
+    @Test
+    public void parseGdIntegerLexemeParsesAllRadixesAndSeparators() {
+        assertAll(
+                () -> assertEquals(42L, StringUtil.parseGdIntegerLexeme("42")),
+                () -> assertEquals(0L, StringUtil.parseGdIntegerLexeme("0")),
+                () -> assertEquals(31L, StringUtil.parseGdIntegerLexeme("0x1F")),
+                () -> assertEquals(31L, StringUtil.parseGdIntegerLexeme("0X1f")),
+                () -> assertEquals(10L, StringUtil.parseGdIntegerLexeme("0b1010")),
+                () -> assertEquals(15L, StringUtil.parseGdIntegerLexeme("0o17")),
+                () -> assertEquals(1_000_000L, StringUtil.parseGdIntegerLexeme("1_000_000")),
+                () -> assertEquals(0xFFFFL, StringUtil.parseGdIntegerLexeme("0xFF_FF")),
+                () -> assertEquals(42L, StringUtil.parseGdIntegerLexeme("  42  ")),
+                () -> assertEquals(Long.MAX_VALUE, StringUtil.parseGdIntegerLexeme("9223372036854775807"))
+        );
+    }
+
+    @Test
+    public void parseGdIntegerLexemeRejectsMalformedSignedAndOverflowingLexemes() {
+        assertAll(
+                // The sign is owned by the AST unary expression, not by this lexeme helper.
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("-5")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("+5")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("   ")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("0x")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("12a")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("0xG")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("1.5")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("9223372036854775808")),
+                // Hex bit patterns above the signed 64-bit range count as overflow, not wrap.
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("0xFFFFFFFFFFFFFFFF")),
+                // Underscores are legal only between two digits of the active radix.
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("1__0")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("_1")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("1_")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("0x_FF")),
+                () -> assertNull(StringUtil.parseGdIntegerLexeme("0xF_")),
+                () -> assertThrows(NullPointerException.class, () -> StringUtil.parseGdIntegerLexeme(null))
+        );
+    }
+
+    @Test
+    public void parseGdFloatLexemeParsesDecimalFractionAndExponentForms() {
+        assertAll(
+                () -> assertEquals(1.5, StringUtil.parseGdFloatLexeme("1.5")),
+                () -> assertEquals(0.5, StringUtil.parseGdFloatLexeme(".5")),
+                () -> assertEquals(1.0, StringUtil.parseGdFloatLexeme("1.")),
+                () -> assertEquals(1.0e10, StringUtil.parseGdFloatLexeme("1e10")),
+                () -> assertEquals(1.5e-2, StringUtil.parseGdFloatLexeme("1.5e-2")),
+                () -> assertEquals(1.5e2, StringUtil.parseGdFloatLexeme("1.5E+2")),
+                () -> assertEquals(1_000.5, StringUtil.parseGdFloatLexeme("1_000.5")),
+                () -> assertEquals(1.5, StringUtil.parseGdFloatLexeme("  1.5  "))
+        );
+    }
+
+    @Test
+    public void parseGdFloatLexemeRejectsMalformedSignedAndUnderscoreLexemes() {
+        assertAll(
+                () -> assertNull(StringUtil.parseGdFloatLexeme("-1.5")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("+1.5")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("   ")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme(".")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("e10")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("1e")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("1.5.2")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("1__0.5")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("_1.5")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("1.5_")),
+                () -> assertNull(StringUtil.parseGdFloatLexeme("1._5")),
+                () -> assertThrows(NullPointerException.class, () -> StringUtil.parseGdFloatLexeme(null))
         );
     }
 

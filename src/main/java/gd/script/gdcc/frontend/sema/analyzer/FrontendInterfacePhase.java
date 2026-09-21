@@ -7,6 +7,7 @@ import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.ElifClause;
+import dev.superice.gdparser.frontend.ast.EnumDeclaration;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
@@ -121,6 +122,14 @@ public class FrontendInterfacePhase {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             walkStatements(classDeclaration.body().statements());
+            return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
+        /// Class-body enums are consumed by the skeleton enum pre-pass; enum subtrees at any other
+        /// position are outside this phase's surface. Either way this walker must not descend:
+        /// nothing inside an enum subtree may enter the callable/lambda inventory.
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleEnumDeclaration(@NotNull EnumDeclaration enumDeclaration) {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 

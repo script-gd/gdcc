@@ -529,6 +529,160 @@ class FrontendClassSkeletonAnnotationTest {
         assertTrue(result.diagnostics().isEmpty());
     }
 
+    /// Bare `@export` on a script-enum-typed property earns the generated `Name:value`
+    /// hint_string (Godot ENUM export parity): member names render through the Godot
+    /// `capitalize` rules and keep their evaluated integer values in declaration order.
+    @Test
+    void buildGeneratesEnumHintStringForBareExportOnEnumTypedProperty() throws Exception {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "enum_export_props.gd"), """
+                class_name EnumExportProps
+                extends Node
+                
+                enum State { IDLE, JUMP = 5 }
+                enum Direction { MOVE_LEFT, MOVE_RIGHT = 4 }
+                enum Signed { NEG = -1, ZERO }
+                
+                @export var current: State
+                @export var heading: Direction
+                @export var flag: Signed
+                """, diagnostics);
+
+        var result = new FrontendClassSkeletonBuilder().build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "EnumExportProps");
+        var current = findPropertyByName(classDef, "current");
+        var heading = findPropertyByName(classDef, "heading");
+
+        assertEquals("Idle:0,Jump:5", current.getAnnotations().get("export"));
+        assertEquals("int", current.getType().getTypeName());
+        // The hint rides the honest bare-export key only — no `export_enum` is synthesized.
+        assertFalse(current.getAnnotations().containsKey("export_enum"));
+        assertEquals("Move Left:0,Move Right:4", heading.getAnnotations().get("export"));
+        // Negative member values keep their sign in the hint_string.
+        assertEquals("Neg:-1,Zero:0", findPropertyByName(classDef, "flag").getAnnotations().get("export"));
+        assertTrue(result.diagnostics().isEmpty());
+    }
+
+    /// The generated hint never leaks outside the bare-export + enum-type shape: plain int keeps
+    /// the empty encoding, and a failed enum publishes no type-meta so the Variant fallback
+    /// stays hint-free while its existing diagnostics remain untouched.
+    @Test
+    void buildKeepsBareExportEncodingForNonEnumOrFailedEnumTypes() throws Exception {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "enum_export_negative.gd"), """
+                class_name EnumExportNegative
+                extends Node
+                
+                enum Broken { A = SOME_UNDEFINED }
+                
+                @export var plain: int
+                @export var fallback: Broken
+                """, diagnostics);
+
+        var result = new FrontendClassSkeletonBuilder().build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "EnumExportNegative");
+        var fallback = findPropertyByName(classDef, "fallback");
+
+        assertEquals("", findPropertyByName(classDef, "plain").getAnnotations().get("export"));
+        assertEquals("", fallback.getAnnotations().get("export"));
+        assertEquals("Variant", fallback.getType().getTypeName());
+        assertFalse(result.diagnostics().isEmpty());
+    }
+
+    /// Declared-type shapes that never name a `GDCC_ENUM` type-meta keep the empty bare-export
+    /// encoding: `:=` inference, `Array[State]` containers, and qualified `Other.State` type
+    /// annotations (cross-class type annotation is not in the enum support surface — only
+    /// value-side access is — so the property falls back to Variant with its usual warning).
+    @Test
+    void buildKeepsBareExportEncodingForNonEnumDeclaredTypeShapes() throws Exception {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "enum_export_shapes.gd"), """
+                class_name EnumExportShapes
+                extends Node
+                
+                enum State { IDLE }
+                
+                class Other:
+                    enum Inner { A }
+                
+                @export var inferred := State.IDLE
+                @export var many: Array[State]
+                @export var qualified: Other.Inner
+                """, diagnostics);
+
+        var result = new FrontendClassSkeletonBuilder().build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "EnumExportShapes");
+        var many = findPropertyByName(classDef, "many");
+        var qualified = findPropertyByName(classDef, "qualified");
+
+        assertEquals("", findPropertyByName(classDef, "inferred").getAnnotations().get("export"));
+        assertEquals("", many.getAnnotations().get("export"));
+        assertEquals("Array[int]", many.getType().getTypeName());
+        assertEquals("", qualified.getAnnotations().get("export"));
+        assertEquals("Variant", qualified.getType().getTypeName());
+    }
+
+    /// Explicit export variants keep owning their metadata on enum-typed properties, and a bare
+    /// `@export` stacked next to a variant does not receive the generated enum hint.
+    @Test
+    void buildLeavesExplicitExportVariantsUntouchedOnEnumTypedProperty() throws Exception {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "enum_export_variants.gd"), """
+                class_name EnumExportVariants
+                extends Node
+                
+                enum State { IDLE, JUMP = 5 }
+                
+                @export_range(0, 10) var ranged: State
+                @export_enum("A", "B") var named: State
+                @export @export_range(0, 10) var stacked: State
+                """, diagnostics);
+
+        var result = new FrontendClassSkeletonBuilder().build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "EnumExportVariants");
+        var stacked = findPropertyByName(classDef, "stacked");
+
+        var ranged = findPropertyByName(classDef, "ranged");
+        assertEquals("0,10", ranged.getAnnotations().get("export_range"));
+        assertFalse(ranged.getAnnotations().containsKey("export"));
+        assertEquals("A,B", findPropertyByName(classDef, "named").getAnnotations().get("export_enum"));
+        assertEquals("", stacked.getAnnotations().get("export"));
+        assertEquals("0,10", stacked.getAnnotations().get("export_range"));
+        assertTrue(result.diagnostics().isEmpty());
+    }
+
     /// Malformed export arguments stay retention-only during skeleton build: no metadata, no
     /// diagnostic (the usage analyzer owns argument diagnostics).
     @Test

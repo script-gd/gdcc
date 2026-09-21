@@ -13,7 +13,11 @@ import gd.script.gdcc.frontend.scope.CallableScopeKind;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.Scope;
+import gd.script.gdcc.scope.ScopeTypeMeta;
+import gd.script.gdcc.scope.ScopeTypeMetaKind;
+import gd.script.gdcc.type.GdIntType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -30,6 +34,8 @@ import java.util.Objects;
 /// - top-level script `ClassScope` per `SourceFile`
 /// - nested `ClassDeclaration` -> `ClassScope` boundaries driven by source-local skeleton relations
 /// - immediate inner-class type-meta publication on each class boundary
+/// - named-enum `GDCC_ENUM` type-meta publication on each class boundary, mirroring the facts the
+///   skeleton enum pre-pass registered on the temporary declared-type scaffold
 /// - callable `CallableScope` for functions, constructors, and lambdas
 /// - dedicated callable-body `BlockScope`
 /// - dedicated control-flow `BlockScope`s for `if` / `elif` / `else`, `while`, `for`, and
@@ -154,6 +160,7 @@ public class FrontendScopeAnalyzer {
             for (var innerRelation : requireSourceClassRelation(sourceFile).findImmediateInnerRelations(sourceFile)) {
                 sourceFileScope.defineTypeMeta(innerRelation.toTypeMeta());
             }
+            defineEnumTypeMetas(sourceFileScope, requireClassDef(sourceFile));
             withCurrentScope(sourceFileScope, () -> walkChildren(sourceFile));
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
@@ -286,12 +293,21 @@ public class FrontendScopeAnalyzer {
             for (var innerRelation : requireSourceClassRelation(node).findImmediateInnerRelations(node)) {
                 classScope.defineTypeMeta(innerRelation.toTypeMeta());
             }
+            defineEnumTypeMetas(classScope, classDef);
 
             // `ClassDeclaration.body` is a `Block` in the AST, but semantically it is only the
             // member container of the class boundary. It must reuse the enclosing `ClassScope`
             // instead of materializing an extra `BlockScope`.
             recordScope(node.body(), classScope);
             withCurrentScope(classScope, () -> walkNodes(node.body().statements()));
+            return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
+        /// Enum declarations are fully consumed by the skeleton enum pre-pass: member value
+        /// expressions have already been evaluated there, so scope analysis must not descend and
+        /// record useless per-expression scope facts for them.
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleEnumDeclaration(@NotNull EnumDeclaration node) {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -350,6 +366,32 @@ public class FrontendScopeAnalyzer {
             var blockScope = new BlockScope(currentScope(), kind);
             recordScope(block, blockScope);
             withCurrentScope(blockScope, () -> walkNodes(block.statements()));
+        }
+
+        /// Publishes `GDCC_ENUM` type-metas for the named enum groups declared directly on
+        /// `classDef`.
+        ///
+        /// The skeleton enum pre-pass registers the same type-metas only on the temporary
+        /// declared-type scaffold, which is a different `ClassScope` instance from the real one
+        /// built here. Both class boundaries (`handleSourceFile` for the top-level script class and
+        /// `handleClassDeclaration` for inner classes) must therefore re-publish these facts so
+        /// declared-type resolution (`var x: State` -> int via `instanceType`) and the inner-class
+        /// `State.IDLE` static route can see them through the ordinary lexical type-meta chain.
+        /// Rejected enums never enter `getScriptConstants()`, so a missing type-meta cannot leave
+        /// a half-published enum behind.
+        private void defineEnumTypeMetas(@NotNull ClassScope classScope, @NotNull ClassDef classDef) {
+            for (var constant : classDef.getScriptConstants()) {
+                if (constant.declaration() instanceof GdScriptEnumGroup enumGroup) {
+                    classScope.defineTypeMeta(new ScopeTypeMeta(
+                            classDef.getName() + "." + enumGroup.name(),
+                            enumGroup.name(),
+                            GdIntType.INT,
+                            ScopeTypeMetaKind.GDCC_ENUM,
+                            enumGroup,
+                            true
+                    ));
+                }
+            }
         }
 
         private void withCurrentScope(@NotNull Scope scope, @NotNull Runnable action) {

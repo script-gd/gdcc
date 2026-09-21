@@ -38,7 +38,7 @@
   - `doc/gdcc_ownership_lifecycle_spec.md`
 - 明确非目标：
   - `const` 数组/字典的常量折叠、常量池共享和 recursive read-only 语义
-  - block-local `const`、class constant、annotation default 等当前 frontend 本身尚未支持的上下文
+  - block-local `const`、普通 class-level `const`、annotation default 等当前 frontend 本身尚未支持的上下文
   - `match` 数组/字典 pattern；`ArrayExpression.openEnded()` / `DictionaryExpression.openEnded()` 对应的 `..` pattern opening 不作为普通字面量处理
   - nested typed container，例如 `Array[Array[int]]` 或 `Dictionary[String, Array[int]]`；Godot 4.5 不支持 nested typed Array，当前 typed-container ABI 也 fail-closed
   - 将普通数组字面量隐式转换为 `Packed*Array`；conversion matrix 明确不支持 `Array -> Packed*Array`
@@ -222,7 +222,7 @@ Semantic 层负责直接可归约常量键的重复检查：
 - 非直接字面量 key 不做静态猜测，运行时后写覆盖先写。
 - 重复键错误由 `FrontendTypeCheckAnalyzer` 以 `sema.type_check` 发布，锚定后出现的 key，并在消息中指出首次出现位置。
 
-在完整 constant-expression evaluator 实现之前，不得声称覆盖函数常量、class constant 或容器下标常量键。
+在完整 constant-expression evaluator 实现之前，不得声称覆盖函数常量、普通 class-level `const` 或容器下标常量键。
 
 ### 2.6 `openEnded`
 

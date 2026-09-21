@@ -1,6 +1,7 @@
 package gd.script.gdcc.lir;
 
 import gd.script.gdcc.scope.ClassDef;
+import gd.script.gdcc.scope.GdScriptClassConstant;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -18,6 +19,7 @@ public final class LirClassDef implements ClassDef {
     private final List<LirSignalDef> signals;
     private final List<LirPropertyDef> properties;
     private final List<LirFunctionDef> functions;
+    private final List<GdScriptClassConstant> scriptConstants;
     private @Nullable String sourceFile;
 
     public LirClassDef(
@@ -38,6 +40,7 @@ public final class LirClassDef implements ClassDef {
         this.signals = new ArrayList<>(signals);
         this.properties = new ArrayList<>(properties);
         this.functions = new ArrayList<>(functions);
+        this.scriptConstants = new ArrayList<>();
     }
 
     public LirClassDef(
@@ -52,6 +55,7 @@ public final class LirClassDef implements ClassDef {
         this.signals = new ArrayList<>();
         this.properties = new ArrayList<>();
         this.functions = new ArrayList<>();
+        this.scriptConstants = new ArrayList<>();
     }
 
     /// Canonical class identity used by the registry and downstream phases.
@@ -99,8 +103,8 @@ public final class LirClassDef implements ClassDef {
         return annotations.get(key);
     }
 
-    public String setAnnotation(String key, String value) {
-        return annotations.put(key, value);
+    public void setAnnotation(String key, String value) {
+        annotations.put(key, value);
     }
 
     public void clearAnnotations() {
@@ -160,6 +164,16 @@ public final class LirClassDef implements ClassDef {
 
     public boolean removeFunction(@NotNull LirFunctionDef function) {
         return functions.remove(function);
+    }
+
+    /// Script-source constants (enum members/groups) in declaration order.
+    @Override
+    public @UnmodifiableView @NotNull List<GdScriptClassConstant> getScriptConstants() {
+        return Collections.unmodifiableList(scriptConstants);
+    }
+
+    public void addScriptConstant(@NotNull GdScriptClassConstant constant) {
+        scriptConstants.add(constant);
     }
 
     public @Nullable String getSourceFile() {

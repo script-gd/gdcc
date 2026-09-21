@@ -118,6 +118,8 @@ $result_id = object_cast "<class_name>" $value_id
 6. structured type text 失败或合法但未知 bare identifier 直接 `FAILED`（比 `is` 更严格，不降级为 unresolved Object）。
 7. 成功时发布 `expressionTypes()[cast] = RESOLVED(targetType)`；**不**维护独立 castTargets side-table。
 
+脚本枚举名 target（如 `x as State`）不新增特判：步骤 5 的 declared-type 解析命中 `GDCC_ENUM` type-meta，取其 `instanceType` 擦除为 `int`，`x as State` 等价于 `x as int`（见 `frontend_enum_implementation.md`）。
+
 ### 3.2 Diagnostic owners
 
 | 场景 | Category | Severity | Owner |

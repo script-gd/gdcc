@@ -1118,7 +1118,7 @@ public final class ScopeMethodResolver {
                         "Class metadata for static receiver '" + receiverTypeMeta.displayName() + "' is unavailable"
                 );
             }
-            case GLOBAL_ENUM -> throw new ScopeMethodResolutionException(
+            case GLOBAL_ENUM, GDCC_ENUM -> throw new ScopeMethodResolutionException(
                     FailureKind.UNSUPPORTED_STATIC_RECEIVER,
                     "Type meta '" + receiverTypeMeta.displayName() + "' does not support static method lookup"
             );

@@ -43,6 +43,8 @@ import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
+import gd.script.gdcc.scope.GdScriptEnumConstant;
+import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.lir.LirBasicBlock;
@@ -1147,6 +1149,22 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
             if (resolvedMember.status() == FrontendMemberResolutionStatus.DYNAMIC) {
                 lowerDynamicMemberLoad(session, block, node, resolvedMember, resultSlotId);
+                return block;
+            }
+            // Script enum facts bypass the receiver-kind dispatch entirely: every receiverless
+            // constant load (`State.IDLE`, `Other.State.IDLE`, `Inner.Mode.ON`, `Other.IDLE`)
+            // folds to its frozen int value, and the group chain tail (`Other.State`) expands to
+            // the same Dictionary literal sequence as the bare-group opaque path through the
+            // shared session helper. Engine enum members keep the existing TYPE_META
+            // `LoadStaticInsn` route below.
+            if (resolvedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                    && resolvedMember.declarationSite() instanceof GdScriptEnumConstant enumConstant) {
+                block.appendNonTerminatorInstruction(new LiteralIntInsn(resultSlotId, enumConstant.value()));
+                return block;
+            }
+            if (resolvedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                    && resolvedMember.declarationSite() instanceof GdScriptEnumGroup enumGroup) {
+                session.materializeEnumGroupDictionary(block, enumGroup, resultSlotId);
                 return block;
             }
             switch (resolvedMember.receiverKind()) {
