@@ -159,6 +159,7 @@ header `extends` 仍是 frontend 自己的 source-facing 绑定协议，不等�
 
 - header `extends` 解析仍独立于 shared declared-type resolver
 - member declared type 的覆盖面仍强于 header `extends`
+- 跨类脚本枚举访问（如 `Other.State.IDLE` / `Other.IDLE`）的 `Other` 链头沿既有 type-meta head 路线，经 `FrontendModuleSkeleton` 的「先 lexical、miss 后 remap」source-facing 解析落到 canonical 类名；不新增别名通道（见 `frontend_enum_implementation.md`）
 - 后续若要让 header inheritance 与 shared resolver 严格对齐，必须单独设计新的 super path 绑定协议，不能默认复用当前字符串字段
 
 ---

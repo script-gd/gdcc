@@ -262,7 +262,9 @@ class FrontendLambdaCapturePlannerTest {
                 new FrontendLambdaCapturePlan(List.of(capture), false),
                 GdVariantType.VARIANT,
                 enclosing,
-                "Hero"
+                "Hero",
+                0,
+                "assign(var=cb, kind=var)"
         );
         var second = new FrontendLambdaPlan(
                 lambda,
@@ -270,7 +272,9 @@ class FrontendLambdaCapturePlannerTest {
                 new FrontendLambdaCapturePlan(List.of(capture.withType(GdIntType.INT)), false),
                 GdVariantType.VARIANT,
                 enclosing,
-                "Hero"
+                "Hero",
+                0,
+                "assign(var=cb, kind=var)"
         );
         assertTrue(FrontendLambdaPlan.samePlan(first, second));
 
@@ -280,7 +284,9 @@ class FrontendLambdaCapturePlannerTest {
                 first.capturePlan(),
                 first.returnType(),
                 enclosing,
-                "Hero"
+                "Hero",
+                0,
+                "assign(var=cb, kind=var)"
         );
         assertFalse(FrontendLambdaPlan.samePlan(first, renamed));
     }

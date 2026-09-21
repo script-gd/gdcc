@@ -116,7 +116,6 @@ import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
-import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
@@ -851,21 +850,21 @@ class FrontendLoweringBodyInsnPassTest {
                 // mutate in place) exactly like the instance bare route.
                 () -> assertEquals(2, writeInstructions.stream()
                         .filter(LoadStaticInsn.class::isInstance)
-                        .count(), () -> writeDump),
+                        .count(), writeDump),
                 () -> assertEquals(1, writeInstructions.stream()
                         .filter(StoreStaticInsn.class::isInstance)
                         .map(StoreStaticInsn.class::cast)
                         .filter(instruction -> instruction.staticName().equals("values"))
-                        .count(), () -> writeDump),
+                        .count(), writeDump),
                 () -> assertEquals(1, writeInstructions.stream()
                         .filter(VariantSetIndexedInsn.class::isInstance)
-                        .count(), () -> writeDump),
+                        .count(), writeDump),
                 // The bare Dictionary write freezes the generic variant-set family (same as the
                 // instance bare route); keyed specialization is anchored by dedicated subscript
                 // family tests.
                 () -> assertEquals(1, writeInstructions.stream()
                         .filter(VariantSetInsn.class::isInstance)
-                        .count(), () -> writeDump),
+                        .count(), writeDump),
                 () -> assertTrue(writeInstructions.stream()
                                 .noneMatch(VariantSetNamedInsn.class::isInstance),
                         "static container write must not use VariantSetNamedInsn"),
@@ -873,15 +872,15 @@ class FrontendLoweringBodyInsnPassTest {
                 // read+write both go through static storage (attribute leaf always writes back).
                 () -> assertEquals(2, compoundInstructions.stream()
                         .filter(LoadStaticInsn.class::isInstance)
-                        .count(), () -> compoundDump),
+                        .count(), compoundDump),
                 () -> assertEquals(1, compoundInstructions.stream()
                         .filter(StoreStaticInsn.class::isInstance)
-                        .count(), () -> compoundDump),
+                        .count(), compoundDump),
                 () -> assertTrue(compoundInstructions.stream()
                                 .filter(CallStaticMethodInsn.class::isInstance)
                                 .map(CallStaticMethodInsn.class::cast)
                                 .anyMatch(instruction -> instruction.methodName().equals("make_worker")),
-                        () -> compoundDump),
+                        compoundDump),
                 () -> assertTrue(compoundInstructions.stream()
                         .noneMatch(instruction -> instruction instanceof VariantGetNamedInsn
                                 || instruction instanceof VariantSetNamedInsn)),
@@ -1703,7 +1702,7 @@ class FrontendLoweringBodyInsnPassTest {
                         .filter(LoadStaticInsn.class::isInstance)
                         .map(LoadStaticInsn.class::cast)
                         .filter(instruction -> instruction.staticName().equals("vectors"))
-                        .count(), () -> nestedDump),
+                        .count(), nestedDump),
                 // Both static scratches must carry the declared container type (`Array[Vector2]`),
                 // never Variant, or the backend static load/store assignability checks reject them.
                 () -> assertTrue(instructions.stream()
@@ -1713,15 +1712,15 @@ class FrontendLoweringBodyInsnPassTest {
                                 .allMatch(instruction -> writeContext.targetFunction()
                                         .getVariableById(instruction.resultId())
                                         .type() instanceof GdArrayType),
-                        () -> nestedDump),
+                        nestedDump),
                 () -> assertEquals(1, instructions.stream()
                         .filter(VariantSetIndexedInsn.class::isInstance)
-                        .count(), () -> nestedDump),
+                        .count(), nestedDump),
                 () -> assertEquals(1, instructions.stream()
                         .filter(StoreStaticInsn.class::isInstance)
                         .map(StoreStaticInsn.class::cast)
                         .filter(instruction -> instruction.staticName().equals("vectors"))
-                        .count(), () -> nestedDump),
+                        .count(), nestedDump),
                 () -> assertTrue(instructions.stream()
                                 .filter(StorePropertyInsn.class::isInstance)
                                 .map(StorePropertyInsn.class::cast)
@@ -1796,7 +1795,7 @@ class FrontendLoweringBodyInsnPassTest {
                         "the outer static receiver is still evaluated for side effects and ordering"),
                 () -> assertEquals(1, instructions.stream()
                         .filter(VariantSetIndexedInsn.class::isInstance)
-                        .count(), () -> dump),
+                        .count(), dump),
                 () -> assertTrue(instructions.stream()
                                 .filter(StorePropertyInsn.class::isInstance)
                                 .map(StorePropertyInsn.class::cast)
@@ -8947,6 +8946,560 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersBareAnonymousEnumMemberIntoIntLiteral() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_enum_anon_member.gd",
+                """
+                        class_name BodyInsnEnumAnonMember
+                        extends RefCounted
+                        
+                        enum { IDLE, JUMP = 5 }
+                        
+                        func pick() -> int:
+                            return JUMP
+                        """,
+                Map.of("BodyInsnEnumAnonMember", "RuntimeBodyInsnEnumAnonMember"),
+                true
+        );
+        var pickContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEnumAnonMember",
+                "pick"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var literalInsn = requireOnlyInstruction(pickContext.targetFunction(), LiteralIntInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pickContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(5L, literalInsn.value()),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    /// `State.JUMP` takes the enum-group value route (receiverless `MemberLoadItem`); body
+    /// lowering must fold it to the frozen member value without materializing the group
+    /// Dictionary or touching runtime static storage.
+    @Test
+    void runLowersEnumGroupMemberValueRouteIntoIntLiteral() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_enum_value_route.gd",
+                """
+                        class_name BodyInsnEnumValueRoute
+                        extends RefCounted
+                        
+                        enum State { IDLE, JUMP = 5 }
+                        
+                        func pick() -> int:
+                            return State.JUMP
+                        """,
+                Map.of("BodyInsnEnumValueRoute", "RuntimeBodyInsnEnumValueRoute"),
+                true
+        );
+        var pickContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEnumValueRoute",
+                "pick"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var literalInsn = requireOnlyInstruction(pickContext.targetFunction(), LiteralIntInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pickContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(5L, literalInsn.value()),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId()),
+                () -> assertTrue(
+                        allInstructions(pickContext.targetFunction()).stream()
+                                .noneMatch(ConstructContainerLiteralInsn.class::isInstance),
+                        "value route must not materialize the enum group Dictionary"
+                ),
+                () -> assertTrue(
+                        allInstructions(pickContext.targetFunction()).stream()
+                                .noneMatch(LoadStaticInsn.class::isInstance),
+                        "script enum constants must not read runtime static storage"
+                )
+        );
+    }
+
+    /// A bare named enum group materializes as the Godot-shaped `{"NAME": value, ...}` generic
+    /// Dictionary: per member one String key literal and one int value literal in source order,
+    /// then a single `construct_container_literal` with alternating `VariableOperand`s.
+    @Test
+    void runLowersBareEnumGroupIntoDictionaryLiteral() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_enum_bare_group.gd",
+                """
+                        class_name BodyInsnEnumBareGroup
+                        extends RefCounted
+                        
+                        enum State { IDLE, JUMP = 5 }
+                        
+                        func pick() -> Dictionary:
+                            return State
+                        """,
+                Map.of("BodyInsnEnumBareGroup", "RuntimeBodyInsnEnumBareGroup"),
+                true
+        );
+        var pickContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEnumBareGroup",
+                "pick"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var construct = requireOnlyInstruction(pickContext.targetFunction(), ConstructContainerLiteralInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pickContext.targetFunction());
+
+        assertEnumGroupDictionaryEmission(
+                pickContext.targetFunction(),
+                List.of(Map.entry("IDLE", 0L), Map.entry("JUMP", 5L))
+        );
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(construct.resultId(), returnInsn.returnValueId()),
+                () -> assertInstanceOf(
+                        GdDictionaryType.class,
+                        pickContext.targetFunction().getVariableById(construct.resultId()).type()
+                )
+        );
+    }
+
+    /// `Other.State.JUMP` keeps the cross-class group elimination: the group step never
+    /// materializes and the member folds to its int value, exactly like the value route.
+    @Test
+    void runLowersCrossClassEnumGroupMemberIntoIntLiteral() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_enum_cross_member.gd",
+                """
+                        class_name BodyInsnEnumCrossMember
+                        extends RefCounted
+                        
+                        class Other:
+                            enum State { IDLE, JUMP = 5 }
+                        
+                        func pick() -> int:
+                            return Other.State.JUMP
+                        """,
+                Map.of("BodyInsnEnumCrossMember", "RuntimeBodyInsnEnumCrossMember"),
+                true
+        );
+        var pickContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEnumCrossMember",
+                "pick"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var literalInsn = requireOnlyInstruction(pickContext.targetFunction(), LiteralIntInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pickContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(5L, literalInsn.value()),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId()),
+                () -> assertTrue(
+                        allInstructions(pickContext.targetFunction()).stream()
+                                .noneMatch(ConstructContainerLiteralInsn.class::isInstance),
+                        "cross-class group elimination must not materialize the Dictionary"
+                ),
+                () -> assertTrue(
+                        allInstructions(pickContext.targetFunction()).stream()
+                                .noneMatch(LoadStaticInsn.class::isInstance),
+                        "script enum constants must not read runtime static storage"
+                )
+        );
+    }
+
+    /// Direct cross-class enum constants (`Other.IDLE`) and inherited ones (`Other.PARENT_IDLE`)
+    /// resolve to `GdScriptEnumConstant` members through the ordinary type-meta route and fold
+    /// to their int values just like the group-qualified forms.
+    @Test
+    void runLowersCrossClassDirectEnumConstantsIntoIntLiteral() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_enum_cross_direct.gd",
+                """
+                        class_name BodyInsnEnumCrossDirect
+                        extends RefCounted
+                        
+                        class Base:
+                            enum { PARENT_IDLE = 7 }
+                        
+                        class Other extends Base:
+                            enum { IDLE = 3 }
+                        
+                        func own() -> int:
+                            return Other.IDLE
+                        
+                        func inherited() -> int:
+                            return Other.PARENT_IDLE
+                        """,
+                Map.of("BodyInsnEnumCrossDirect", "RuntimeBodyInsnEnumCrossDirect"),
+                true
+        );
+        var ownContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEnumCrossDirect",
+                "own"
+        );
+        var inheritedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEnumCrossDirect",
+                "inherited"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var ownLiteral = requireOnlyInstruction(ownContext.targetFunction(), LiteralIntInsn.class);
+        var ownReturn = requireOnlyReturnInsn(ownContext.targetFunction());
+        var inheritedLiteral = requireOnlyInstruction(inheritedContext.targetFunction(), LiteralIntInsn.class);
+        var inheritedReturn = requireOnlyReturnInsn(inheritedContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(3L, ownLiteral.value()),
+                () -> assertEquals(ownLiteral.resultId(), ownReturn.returnValueId()),
+                () -> assertEquals(7L, inheritedLiteral.value()),
+                () -> assertEquals(inheritedLiteral.resultId(), inheritedReturn.returnValueId()),
+                () -> assertTrue(
+                        allInstructions(inheritedContext.targetFunction()).stream()
+                                .noneMatch(LoadStaticInsn.class::isInstance),
+                        "inherited script enum constants must not read runtime static storage"
+                )
+        );
+    }
+
+    /// The cross-class group chain tail (`Other.State` used as a value) keeps the group load and
+    /// must emit the exact same Dictionary literal sequence as the bare-group opaque route.
+    @Test
+    void runLowersCrossClassEnumGroupTailIntoDictionaryLiteral() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_enum_cross_group_tail.gd",
+                """
+                        class_name BodyInsnEnumCrossGroupTail
+                        extends RefCounted
+                        
+                        class Other:
+                            enum State { IDLE, JUMP = 5 }
+                        
+                        func pick() -> Dictionary:
+                            return Other.State
+                        """,
+                Map.of("BodyInsnEnumCrossGroupTail", "RuntimeBodyInsnEnumCrossGroupTail"),
+                true
+        );
+        var pickContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEnumCrossGroupTail",
+                "pick"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var construct = requireOnlyInstruction(pickContext.targetFunction(), ConstructContainerLiteralInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pickContext.targetFunction());
+
+        assertEnumGroupDictionaryEmission(
+                pickContext.targetFunction(),
+                List.of(Map.entry("IDLE", 0L), Map.entry("JUMP", 5L))
+        );
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(construct.resultId(), returnInsn.returnValueId()),
+                () -> assertInstanceOf(
+                        GdDictionaryType.class,
+                        pickContext.targetFunction().getVariableById(construct.resultId()).type()
+                )
+        );
+    }
+
+    /// `Other.State["IDLE"]` keeps Dictionary semantics end to end: the group materializes, the
+    /// subscript reads from the materialized Dictionary at runtime (the generic Variant get with
+    /// a packed key is the existing subscript-route shape for this chain form), and the member
+    /// value must not fold into the returned slot (only the two Dictionary value literals may
+    /// exist).
+    @Test
+    void runLowersCrossClassEnumGroupSubscriptThroughDictionarySemantics() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_enum_cross_subscript.gd",
+                """
+                        class_name BodyInsnEnumCrossSubscript
+                        extends RefCounted
+                        
+                        class Other:
+                            enum State { IDLE, JUMP = 5 }
+                        
+                        func pick() -> int:
+                            return Other.State["IDLE"]
+                        """,
+                Map.of("BodyInsnEnumCrossSubscript", "RuntimeBodyInsnEnumCrossSubscript"),
+                true
+        );
+        var pickContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEnumCrossSubscript",
+                "pick"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var construct = requireOnlyInstruction(pickContext.targetFunction(), ConstructContainerLiteralInsn.class);
+        var variantGet = requireOnlyInstruction(pickContext.targetFunction(), VariantGetInsn.class);
+        var intLiterals = allInstructions(pickContext.targetFunction()).stream()
+                .filter(LiteralIntInsn.class::isInstance)
+                .map(LiteralIntInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(4, construct.operands().size()),
+                () -> assertEquals(
+                        List.of(0L, 5L),
+                        intLiterals.stream().map(LiteralIntInsn::value).toList(),
+                        "only the two Dictionary value literals may be emitted; no folded member constant"
+                ),
+                () -> assertEquals(
+                        construct.resultId(),
+                        variantGet.variantId(),
+                        "subscript must read from the materialized enum group Dictionary"
+                ),
+                () -> assertTrue(
+                        intLiterals.stream().noneMatch(insn -> insn.resultId().equals(variantGet.resultId())),
+                        "subscript result must come from the Dictionary read, not a folded literal"
+                )
+        );
+    }
+
+    /// Engine enum members (`Side.SIDE_LEFT`) must keep the existing TYPE_META `LoadStaticInsn`
+    /// route: the script-enum fold branches key on `GdScriptEnumConstant`/`GdScriptEnumGroup`
+    /// declaration sites and must not reroute engine metadata to a literal.
+    @Test
+    void runKeepsEngineEnumMemberOnStaticLoadRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_engine_enum_route.gd",
+                """
+                        class_name BodyInsnEngineEnumRoute
+                        extends RefCounted
+                        
+                        func side() -> int:
+                            return Side.SIDE_LEFT
+                        """,
+                Map.of("BodyInsnEngineEnumRoute", "RuntimeBodyInsnEngineEnumRoute"),
+                true
+        );
+        var sideContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEngineEnumRoute",
+                "side"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var staticLoad = requireOnlyInstruction(sideContext.targetFunction(), LoadStaticInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("SIDE_LEFT", staticLoad.staticName()),
+                () -> assertTrue(
+                        allInstructions(sideContext.targetFunction()).stream()
+                                .noneMatch(ConstructContainerLiteralInsn.class::isInstance)
+                )
+        );
+    }
+
+    /// Two group materializations in one function must not share key/value temp slots: the
+    /// dedicated allocator counter never rewinds, so each emission owns a fresh slot set.
+    @Test
+    void runAllocatesDistinctTempsForRepeatedEnumGroupMaterialization() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_enum_group_twice.gd",
+                """
+                        class_name BodyInsnEnumGroupTwice
+                        extends RefCounted
+                        
+                        enum State { IDLE, JUMP = 5 }
+                        
+                        func pair() -> Dictionary:
+                            var first = State
+                            var second = State
+                            return first
+                        """,
+                Map.of("BodyInsnEnumGroupTwice", "RuntimeBodyInsnEnumGroupTwice"),
+                true
+        );
+        var pairContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEnumGroupTwice",
+                "pair"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var constructs = allInstructions(pairContext.targetFunction()).stream()
+                .filter(ConstructContainerLiteralInsn.class::isInstance)
+                .map(ConstructContainerLiteralInsn.class::cast)
+                .toList();
+        var operandSlotIds = constructs.stream()
+                .flatMap(construct -> construct.operands().stream())
+                .map(operand -> ((LirInstruction.VariableOperand) operand).id())
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(2, constructs.size()),
+                () -> assertNotEquals(constructs.get(0).resultId(), constructs.get(1).resultId()),
+                () -> assertEquals(8, operandSlotIds.size()),
+                () -> assertEquals(
+                        8,
+                        operandSlotIds.stream().distinct().count(),
+                        "each materialization must own a fresh key/value temp slot set"
+                ),
+                () -> assertTrue(
+                        operandSlotIds.stream()
+                                .allMatch(slotId -> pairContext.targetFunction().getVariableById(slotId) != null),
+                        "every key/value temp slot must be registered on the function"
+                )
+        );
+    }
+
+    /// The call continuation `Other.State.keys()` materializes the group Dictionary once and
+    /// calls `keys` on that very slot, closing the group -> call receiver chain end to end.
+    @Test
+    void runLowersEnumGroupCallContinuationOnMaterializedDictionary() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_enum_group_keys.gd",
+                """
+                        class_name BodyInsnEnumGroupKeys
+                        extends RefCounted
+                        
+                        class Other:
+                            enum State { IDLE, JUMP = 5 }
+                        
+                        func names() -> Array:
+                            return Other.State.keys()
+                        """,
+                Map.of("BodyInsnEnumGroupKeys", "RuntimeBodyInsnEnumGroupKeys"),
+                true
+        );
+        var namesContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnEnumGroupKeys",
+                "names"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var construct = requireOnlyInstruction(namesContext.targetFunction(), ConstructContainerLiteralInsn.class);
+        var call = requireOnlyInstruction(namesContext.targetFunction(), CallMethodInsn.class);
+        var returnInsn = requireOnlyReturnInsn(namesContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("keys", call.methodName()),
+                () -> assertEquals(
+                        construct.resultId(),
+                        call.objectId(),
+                        "keys() must be called on the materialized enum group Dictionary slot"
+                ),
+                () -> assertEquals(call.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersIntegerLiteralsAcrossRadixesAndSeparators() throws Exception {
+        // Body literal lowering shares the GDScript integer lexeme helper with enum evaluation,
+        // so `0x`/`0b`/`0o` prefixes and `_` separators must materialize identically here.
+        var prepared = prepareContext(
+                "body_insn_int_literal_lexemes.gd",
+                """
+                        class_name BodyInsnIntLiteralLexemes
+                        extends RefCounted
+
+                        func ping() -> int:
+                            var hex = 0xF0
+                            var bin = 0b101
+                            var oct = 0o17
+                            var sep = 1_000_000
+                            return hex + bin + oct + sep
+                        """,
+                Map.of("BodyInsnIntLiteralLexemes", "RuntimeBodyInsnIntLiteralLexemes"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnIntLiteralLexemes",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var literalValues = allInstructions(pingContext.targetFunction()).stream()
+                .filter(LiteralIntInsn.class::isInstance)
+                .map(LiteralIntInsn.class::cast)
+                .map(LiteralIntInsn::value)
+                .toList();
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(List.of(0xF0L, 0b101L, 15L, 1_000_000L), literalValues)
+        );
+    }
+
+    @Test
+    void runLowersFloatLiteralsWithSeparatorsAndExponents() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_float_literal_lexemes.gd",
+                """
+                        class_name BodyInsnFloatLiteralLexemes
+                        extends RefCounted
+
+                        func ping() -> float:
+                            var frac = 1.5
+                            var sep = 1_000.5
+                            var exp = 1.5e-2
+                            return frac + sep + exp
+                        """,
+                Map.of("BodyInsnFloatLiteralLexemes", "RuntimeBodyInsnFloatLiteralLexemes"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnFloatLiteralLexemes",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var literalValues = allInstructions(pingContext.targetFunction()).stream()
+                .filter(LiteralFloatInsn.class::isInstance)
+                .map(LiteralFloatInsn.class::cast)
+                .map(LiteralFloatInsn::value)
+                .toList();
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(List.of(1.5, 1_000.5, 1.5e-2), literalValues)
+        );
+    }
+
+    @Test
     void runLowersBareExtremeConstantIdentifierIntoInt64Literal() throws Exception {
         var prepared = prepareContext(
                 "body_insn_bare_extreme_constant.gd",
@@ -12292,6 +12845,67 @@ class FrontendLoweringBodyInsnPassTest {
         }
         assertEquals(1, matches.size(), "Expected exactly one ReturnInsn terminator");
         return matches.getFirst();
+    }
+
+    /// Asserts the exact script-enum-group Dictionary emission shared by the bare-group opaque
+    /// route and the group chain-tail MemberLoad route: per member one `literal_string` key and
+    /// one `literal_int` value in source order, then a single `construct_container_literal` whose
+    /// operands alternate key/value `VariableOperand`s produced by those literals. The key/value
+    /// temp slots must be registered with their String/int types so the backend can pack them,
+    /// and the result slot must be the generic `Dictionary[Variant, Variant]` the skeleton
+    /// registers for enum groups.
+    private static void assertEnumGroupDictionaryEmission(
+            @NotNull LirFunctionDef function,
+            @NotNull List<Map.Entry<String, Long>> members
+    ) {
+        var stringLiterals = allInstructions(function).stream()
+                .filter(LiteralStringInsn.class::isInstance)
+                .map(LiteralStringInsn.class::cast)
+                .toList();
+        var intLiterals = allInstructions(function).stream()
+                .filter(LiteralIntInsn.class::isInstance)
+                .map(LiteralIntInsn.class::cast)
+                .toList();
+        var construct = requireOnlyInstruction(function, ConstructContainerLiteralInsn.class);
+
+        assertAll(
+                () -> assertEquals(
+                        members.stream().map(Map.Entry::getKey).toList(),
+                        stringLiterals.stream().map(LiteralStringInsn::value).toList(),
+                        "one String key literal per member, in source order"
+                ),
+                () -> assertEquals(
+                        members.stream().map(Map.Entry::getValue).toList(),
+                        intLiterals.stream().map(LiteralIntInsn::value).toList(),
+                        "one int value literal per member, in source order"
+                ),
+                () -> assertEquals(members.size() * 2, construct.operands().size()),
+                () -> assertTrue(
+                        ((GdDictionaryType) function.getVariableById(construct.resultId()).type())
+                                .isGenericDictionary(),
+                        "enum group result slot must be the generic Dictionary"
+                )
+        );
+        for (var index = 0; index < members.size(); index++) {
+            var keyOperand = construct.operands().get(index * 2);
+            var valueOperand = construct.operands().get(index * 2 + 1);
+            var keyLiteral = stringLiterals.get(index);
+            var valueLiteral = intLiterals.get(index);
+            assertAll(
+                    () -> assertInstanceOf(LirInstruction.VariableOperand.class, keyOperand),
+                    () -> assertInstanceOf(LirInstruction.VariableOperand.class, valueOperand),
+                    () -> assertEquals(keyLiteral.resultId(), ((LirInstruction.VariableOperand) keyOperand).id()),
+                    () -> assertEquals(valueLiteral.resultId(), ((LirInstruction.VariableOperand) valueOperand).id()),
+                    () -> assertInstanceOf(
+                            GdStringType.class,
+                            function.getVariableById(keyLiteral.resultId()).type()
+                    ),
+                    () -> assertInstanceOf(
+                            GdIntType.class,
+                            function.getVariableById(valueLiteral.resultId()).type()
+                    )
+            );
+        }
     }
 
     private static @NotNull LiteralExpression findLiteralExpression(

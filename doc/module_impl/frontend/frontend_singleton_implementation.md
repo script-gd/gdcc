@@ -89,7 +89,7 @@ frontend 当前正式支持的 engine singleton surface 包括：
 
 - source-level `@GlobalScope` / `GlobalScope` type-meta receiver
 - autoload singleton 作为 first-class binding
-- GDCC 脚本类 class-level `const` / `enum` 继承解析（仍属于后续边界）
+- GDCC 脚本类普通 class-level `const` 继承解析（仍属于后续边界；脚本枚举常量/枚举组的 value-side 继承已支持，见 `frontend_enum_implementation.md`）
 - 把 singleton method call 表达成 `CallGlobalInsn` 或旧 `LoadSingletonInsn` / `load_singleton` surface
 - 把 singleton getter 结果建模为 `OWNED` object producer
 
@@ -476,12 +476,10 @@ backend 必须提供并使用 `ModuleLocalGodotBinding.singleton(lookupName, ret
 
 ### 10.2 GDCC 脚本类 class-level 成员继承（后续边界）
 
-`ClassScope.resolveInheritedValueMember(...)` 当前只继承 property / signal，未把父类 class-level `const` 纳入
-value lookup；父类 `enum` / `enum value` 的可见性合同也尚未在 scope / type-meta 路线中冻结。
-
-若当前 AST / skeleton 已能表达 class enum 或 enum value，按 Godot 语义将父类 enum type / value 作为 class members
-纳入同一继承合同；若 enum declaration 尚未完整进入 scope model，应在文档和测试中明确留下受阻边界，不把它
-伪装成已支持。
+`ClassScope.resolveInheritedValueMember(...)` 除 property / signal 外已把父类脚本枚举常量/枚举组纳入
+value lookup（最近继承层 wins，见 `frontend_enum_implementation.md`）；普通 class-level `const` 的继承
+仍未纳入，属于后续边界。`GDCC_ENUM` type-meta 只走词法命名空间、不沿继承链扩散——子类内
+`var x: ParentEnum` 回退 Variant + `sema.type_resolution` warning，与 inner class 类型现状一致。
 
 ### 10.3 共享命名空间风险
 

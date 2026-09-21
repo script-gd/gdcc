@@ -27,6 +27,7 @@ import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.ElifClause;
+import dev.superice.gdparser.frontend.ast.EnumDeclaration;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
@@ -953,6 +954,14 @@ public class FrontendVariableAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
+        /// Enum declarations only appear legally at class-body level, which this scan never
+        /// enters. Skipping here keeps enum member value expressions out of the
+        /// unsupported-variable scan regardless of where the subtree appears.
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleEnumDeclaration(@NotNull EnumDeclaration enumDeclaration) {
+            return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
         @Override
         public @NotNull FrontendASTTraversalDirective handleFunctionDeclaration(
                 @NotNull FunctionDeclaration functionDeclaration
@@ -1038,6 +1047,13 @@ public class FrontendVariableAnalyzer {
         @Override
         public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
             events.add(new NestedLambdaEvent(lambdaExpression));
+            return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
+        /// Class-body enums are consumed by the skeleton enum pre-pass; either way identifiers
+        /// inside an enum subtree must never become capture events here.
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleEnumDeclaration(@NotNull EnumDeclaration enumDeclaration) {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 

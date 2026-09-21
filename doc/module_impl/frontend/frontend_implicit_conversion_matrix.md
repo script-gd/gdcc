@@ -171,8 +171,8 @@ GDExtension `call_func` inbound wrapper 两条路径的完成度对齐；它不�
 | stable `Variant` -> concrete target | Y | Y | GDCC 当前已接通 ordinary `Variant` boundary，并通过 `unpack_variant` materialize |
 | 任意 object subclass -> object superclass | Y | Y | 例如 `Sprite2D -> Node -> Object` |
 | `null` / `Nil` -> object target | Y | Y | Godot 接受；GDCC frontend 通过 boundary helper 显式物化 object-typed `LiteralNullInsn` |
-| `enum` value -> `int` | Y | N | GDCC 当前没有 enum 一等类型模型 |
-| `int` -> enum target | Y | N | Godot 允许但通常伴随 warning/显式语义讨论；GDCC 当前未建模 |
+| `enum` value -> `int` | Y | N | GDCC 没有 enum 一等类型模型；脚本枚举不是一等 `GdType`，声明类型经 declared-type `instanceType` 直接擦除为 `int`（见 `frontend_enum_implementation.md`），本行 `N` 仅指一等 enum 转换模型 |
+| `int` -> enum target | Y | N | Godot 允许但通常伴随 warning/显式语义讨论；GDCC 未建模一等 enum target，脚本枚举标注即 `int`，无需转换 |
 
 ---
 

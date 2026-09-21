@@ -243,11 +243,12 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - top binding 命中的 blocked / unknown / shadowing 诊断
 - `sema.unsupported_binding_subtree`
   - top binding 对 parameter default、block-local `const` 等明确 unsupported subtree 的边界 error
+  - function body 内的 `enum` declaration 由 top binding（`runUnsupported`）发单条 error 并跳过子树（对齐 Godot 的 parser 级拒绝）；类体（含 inner class 体）内的枚举声明由 skeleton 枚举预 pass 处理，归属 `sema.class_skeleton`，不经本 category
   - 已 `recordCallable` 的 lambda 与已毕业的 `match` 改走 nested / match-pattern resolution，不再发此诊断；未记录的 lambda（property initializer 等）继续按此边界 fail-closed
   - statement 位置的裸 lambda 语句（parser 映射为 statement 级 `FunctionDeclaration` / `ConstructorDeclaration`，名为 `<anonymous>` 或所书名字）在 interface 记录边界不被收录为 callable owner；enclosing suite 的 top binding（`runUnsupported`）以该 declaration 为锚发单条 error，type-check / compile gate 跳过该子树且不补发同级诊断
   - top binding 对 missing-scope / skipped subtree 的恢复诊断继续允许使用 warning
 - `sema.member_resolution`
-  - chain binding 中 blocked / failed member step 的语义错误
+  - chain binding 中 blocked / failed member step 的语义错误；跨类枚举组成员 miss（如 `Other.State.MISSING`）与类内 `State.MISSING` 同路径归入本 category
 - `sema.call_resolution`
   - chain binding 中 blocked / failed call step 的语义错误
   - 以及“实例语法命中 static method”这类 route note/warning
@@ -260,7 +261,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - chain binding 的 deferred subtree warning
   - 以及首个 deferred chain recovery root 的恢复诊断
 - `sema.unsupported_chain_route`
-  - chain binding 对当前 MVP 明确认定 unsupported 的 static / constructor / suffix route 边界 error
+  - chain binding 对当前 MVP 明确认定 unsupported 的 static / constructor / suffix route 边界 error；GDCC static-load 场景下当前仅覆盖普通 class-level `const`、未声明名与嵌套类限定符（脚本枚举常量/枚举组 route 已转正，见 `frontend_enum_implementation.md`）
 - `sema.expression_resolution`
   - expr analyzer 对 bare call 与其他 expression-only 路径的 failed recovery error
 - `sema.deferred_expression_resolution`
@@ -379,6 +380,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - skeleton 会把 annotation side-table 写入共享 `FrontendAnalysisData`
 - builder 不会创造或重复导入第二份 parse diagnostics
 - GDCC signal 若与 inherited engine/native signal 同名，skeleton 发 `sema.class_skeleton` 并跳过该 `SignalStatement`；inherited GDCC signal 的 nearest-child shadow 仍合法
+- 类体（含 inner class 体）内的枚举声明由 skeleton 枚举预 pass 统一处理：冲突校验（成员重名、组名/匿名成员名与同类成员冲突、枚举间冲突）、空枚举、成员值求值失败（非受支持常量表达式、除零/取余零、非法移位、引用后序/未知/父类枚举常量等）均发单条 `sema.class_skeleton` error 并跳过该枚举子树；求值失败锚定成员节点，结构错误锚定枚举声明节点；单枚枚举独立成败，失败枚不落地常量表与 type-meta（无半成品），同类其他成员与同 module 其他类不受影响。注：非 int 字面量（string/float/bool 等）不会到达求值器，由 parser 先行诊断
+- parser 已对某枚枚举内部（如非法初值）发出 `parse.*` 诊断时，skeleton 跳过该枚举子树且不发布任何枚举事实，也不重复发 skeleton 诊断（单一诊断 owner 合同）
 
 ### 3.3 analyzer
 

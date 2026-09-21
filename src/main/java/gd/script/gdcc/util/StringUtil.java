@@ -3,12 +3,36 @@ package gd.script.gdcc.util;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 public final class StringUtil {
+    private static final Pattern ANSI_CSI_PATTERN = Pattern.compile("\\u001B\\[[0-9;?]*[A-Za-z]");
+
     private StringUtil() {
+    }
+
+    /// Deterministic MD5 digest. Only used where a stable fixed-size fingerprint of compiler
+    /// internal data is required (never for security purposes).
+    public static byte @NotNull [] md5(byte @NotNull [] input) {
+        try {
+            return MessageDigest.getInstance("MD5").digest(input);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("MD5 MessageDigest is not available", e);
+        }
+    }
+
+    /// Uppercase hex of the first `count` bytes (fewer when the array is shorter).
+    public static @NotNull String toHex(byte @NotNull [] bytes, int count) {
+        var sb = new StringBuilder(count * 2);
+        for (var i = 0; i < count && i < bytes.length; i++) {
+            sb.append(String.format("%02X", bytes[i] & 0xFF));
+        }
+        return sb.toString();
     }
 
     public static @NotNull String requireNonBlank(@Nullable String value, @NotNull String fieldName) {
@@ -35,12 +59,144 @@ public final class StringUtil {
         return value == null ? "" : value.trim();
     }
 
+    /// Removes ANSI escape sequences in CSI form (covering the SGR styling picocli emits) so
+    /// assertions on captured CLI output stay stable across hosts: picocli renders styling on
+    /// ANSI-capable terminals (e.g. Windows CI agents) but not on plain pipes, so tests must
+    /// compare plain text. Not a general-purpose ANSI parser: OSC hyperlinks and other non-CSI
+    /// sequences are intentionally out of scope.
+    public static @NotNull String stripAnsi(@NotNull String text) {
+        return ANSI_CSI_PATTERN.matcher(text).replaceAll("");
+    }
+
     public static @Nullable String trimToNull(@Nullable String value) {
         if (value == null) {
             return null;
         }
         var trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    /// Godot `String.capitalize()` port (core/string/ustring.cpp), kept behavior-identical so
+    /// editor-facing texts (e.g. script-enum export hint_string entries) match the engine:
+    /// compound words split at `aA` / `AAa` / `2Aa` / `2aa` / `A2`/`a2` boundaries, `_`, `-` and
+    /// whitespace collapse into single spaces, everything lowercases, then each word uppercases
+    /// its first letter — `STATE_IDLE` -> `State Idle`, `my_enum_value2` -> `My Enum Value 2`.
+    /// GDScript identifiers may contain Unicode letters (the tokenizer follows UAX#31), so all
+    /// classification runs on code points with Unicode case tables; digits stay ASCII-only,
+    /// matching Godot `is_digit`.
+    public static @NotNull String capitalize(@NotNull String text) {
+        Objects.requireNonNull(text, "text must not be null");
+        // Godot `strip_edges` drops edge code points <= 32, which differs from `String.strip()`'s
+        // Unicode-whitespace set in both directions, so the port keeps its own edge scan.
+        var words = stripGodotEdges(separateCompoundWords(text));
+        var sb = new StringBuilder(words.length());
+        for (var slice : words.split(" ")) {
+            if (slice.isEmpty()) {
+                continue;
+            }
+            if (!sb.isEmpty()) {
+                sb.append(' ');
+            }
+            var head = slice.codePointAt(0);
+            sb.appendCodePoint(Character.toUpperCase(head)).append(slice, Character.charCount(head), slice.length());
+        }
+        return sb.toString();
+    }
+
+    /// Word-splitting half of `capitalize`: inserts a space at every compound-word boundary
+    /// (Godot conditions a-d), then normalizes `_`/`-`/whitespace to spaces and lowercases.
+    private static @NotNull String separateCompoundWords(@NotNull String text) {
+        if (text.isEmpty()) {
+            return text;
+        }
+        var cps = text.codePoints().toArray();
+        var len = cps.length;
+        var sb = new StringBuilder(len + 4);
+        var start = 0;
+        var prevUpper = Character.isUpperCase(cps[0]);
+        var prevLower = Character.isLowerCase(cps[0]);
+        var prevDigit = isAsciiDigit(cps[0]);
+        for (var i = 1; i < len; i++) {
+            var currUpper = Character.isUpperCase(cps[i]);
+            var currLower = Character.isLowerCase(cps[i]);
+            var currDigit = isAsciiDigit(cps[i]);
+            var nextLower = i + 1 < len && Character.isLowerCase(cps[i + 1]);
+            var boundary = (prevLower && currUpper)                         // aA
+                    || ((prevUpper || prevDigit) && currUpper && nextLower) // AAa, 2Aa
+                    || (prevDigit && currLower && nextLower)                // 2aa
+                    || ((prevUpper || prevLower) && currDigit);             // A2, a2
+            if (boundary) {
+                appendCodePoints(sb, cps, start, i).append(' ');
+                start = i;
+            }
+            prevUpper = currUpper;
+            prevLower = currLower;
+            prevDigit = currDigit;
+        }
+        appendCodePoints(sb, cps, start, len);
+        // Separator replacement and lowercasing both run per code point (Godot iterates char32_t).
+        var result = new StringBuilder(sb.length());
+        for (var offset = 0; offset < sb.length(); ) {
+            var cp = sb.codePointAt(offset);
+            offset += Character.charCount(cp);
+            if (cp == '_' || isGodotHyphen(cp) || isGodotWhitespace(cp)) {
+                result.append(' ');
+            } else {
+                result.appendCodePoint(Character.toLowerCase(cp));
+            }
+        }
+        return result.toString();
+    }
+
+    private static @NotNull StringBuilder appendCodePoints(
+            @NotNull StringBuilder sb,
+            int @NotNull [] codePoints,
+            int from,
+            int to
+    ) {
+        for (var i = from; i < to; i++) {
+            sb.appendCodePoint(codePoints[i]);
+        }
+        return sb;
+    }
+
+    private static boolean isAsciiDigit(int codePoint) {
+        return codePoint >= '0' && codePoint <= '9';
+    }
+
+    /// Exact `is_hyphen` from Godot `char_utils.h`: ASCII minus plus U+2010/U+2011.
+    private static boolean isGodotHyphen(int codePoint) {
+        return codePoint == '-' || codePoint == 0x2010 || codePoint == 0x2011;
+    }
+
+    /// Exact `strip_edges` semantics: edge code points <= 32 are removed (Godot does not use a
+    /// Unicode whitespace table here).
+    private static @NotNull String stripGodotEdges(@NotNull String text) {
+        var start = 0;
+        var end = text.length();
+        while (start < end && text.codePointAt(start) <= 32) {
+            start += Character.charCount(text.codePointAt(start));
+        }
+        while (end > start && text.codePointBefore(end) <= 32) {
+            end -= Character.charCount(text.codePointBefore(end));
+        }
+        return text.substring(start, end);
+    }
+
+    /// Exact `is_whitespace` set from Godot `char_utils.h`: ASCII controls/space plus the
+    /// Unicode space separators Godot recognizes (note 0x2000-0x200b range and NBSP inclusion).
+    private static boolean isGodotWhitespace(int codePoint) {
+        return codePoint == ' '
+                || (codePoint >= 0x09 && codePoint <= 0x0d)
+                || codePoint == 0x85
+                || codePoint == 0xa0
+                || codePoint == 0x1680
+                || (codePoint >= 0x2000 && codePoint <= 0x200b)
+                || codePoint == 0x2028
+                || codePoint == 0x2029
+                || codePoint == 0x202f
+                || codePoint == 0x205f
+                || codePoint == 0x3000;
     }
 
     public static @NotNull String normalizeIndentedSnippet(@NotNull String rawSnippet) {
@@ -72,6 +228,121 @@ public final class StringUtil {
 
     public static @NotNull List<String> splitLines(@NotNull String text) {
         return text.lines().toList();
+    }
+
+    /// Parses a GDScript integer literal lexeme into its 64-bit value.
+    ///
+    /// Accepted shape: optional `0x`/`0b`/`0o` radix prefix (either case) plus digits with `_`
+    /// separators. The sign is intentionally excluded from this contract — unary `+`/`-` is owned
+    /// by `UnaryExpression` handling in the parser AST, so signed input returns null. Malformed or
+    /// overflowing lexemes also return null instead of throwing, letting reduction-style callers
+    /// treat failure as "not a constant" without exception plumbing. Underscores are only legal
+    /// between two digits of the active radix, matching the Godot tokenizer: leading, trailing,
+    /// doubled, or prefix-adjacent underscores are malformed.
+    public static @Nullable Long parseGdIntegerLexeme(@NotNull String lexeme) {
+        var text = Objects.requireNonNull(lexeme, "lexeme must not be null").trim();
+        if (text.isEmpty() || text.charAt(0) == '+' || text.charAt(0) == '-') {
+            return null;
+        }
+        var radix = 10;
+        var digits = text;
+        if (digits.startsWith("0x") || digits.startsWith("0X")) {
+            radix = 16;
+            digits = digits.substring(2);
+        } else if (digits.startsWith("0b") || digits.startsWith("0B")) {
+            radix = 2;
+            digits = digits.substring(2);
+        } else if (digits.startsWith("0o") || digits.startsWith("0O")) {
+            radix = 8;
+            digits = digits.substring(2);
+        }
+        if (digits.isEmpty() || !hasLegalUnderscorePlacement(digits, radix)) {
+            return null;
+        }
+        try {
+            return Long.parseLong(digits.replace("_", ""), radix);
+        } catch (NumberFormatException _) {
+            return null;
+        }
+    }
+
+    /// Parses a GDScript float literal lexeme into its IEEE-754 value.
+    ///
+    /// Accepted shape: decimal significand with optional fraction and optional `e`/`E` exponent
+    /// (`1.5`, `.5`, `1.`, `1e10`, `1.5e-2`), plus `_` separators between decimal digits. The
+    /// overall sign is excluded from this contract — unary `+`/`-` is owned by `UnaryExpression`
+    /// — so a leading sign returns null; an exponent sign (`1e-2`) remains part of the lexeme.
+    /// Malformed lexemes return null instead of throwing.
+    public static @Nullable Double parseGdFloatLexeme(@NotNull String lexeme) {
+        var text = Objects.requireNonNull(lexeme, "lexeme must not be null").trim();
+        if (text.isEmpty() || text.charAt(0) == '+' || text.charAt(0) == '-') {
+            return null;
+        }
+        if (!hasLegalUnderscorePlacement(text, 10) || !isGdFloatLexemeBody(text.replace("_", ""))) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(text.replace("_", ""));
+        } catch (NumberFormatException _) {
+            return null;
+        }
+    }
+
+    /// Underscores in a number literal must sit between two digits of the active radix; any other
+    /// placement (edges, doubled, next to the radix prefix) makes the lexeme malformed.
+    private static boolean hasLegalUnderscorePlacement(@NotNull String digits, int radix) {
+        for (var i = 0; i < digits.length(); i++) {
+            if (digits.charAt(i) != '_') {
+                continue;
+            }
+            if (i == 0 || i == digits.length() - 1) {
+                return false;
+            }
+            if (Character.digit(digits.charAt(i - 1), radix) < 0
+                    || Character.digit(digits.charAt(i + 1), radix) < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// Significand (decimal digits with optional fraction) plus optional exponent. The significand
+    /// must contain at least one digit; exponent digits are required when `e`/`E` is present.
+    private static boolean isGdFloatLexemeBody(@NotNull String body) {
+        var index = 0;
+        var seenDigit = false;
+        while (index < body.length() && isDecimalDigit(body.charAt(index))) {
+            seenDigit = true;
+            index++;
+        }
+        if (index < body.length() && body.charAt(index) == '.') {
+            index++;
+            while (index < body.length() && isDecimalDigit(body.charAt(index))) {
+                seenDigit = true;
+                index++;
+            }
+        }
+        if (!seenDigit) {
+            return false;
+        }
+        if (index < body.length() && (body.charAt(index) == 'e' || body.charAt(index) == 'E')) {
+            index++;
+            if (index < body.length() && (body.charAt(index) == '+' || body.charAt(index) == '-')) {
+                index++;
+            }
+            var exponentStart = index;
+            while (index < body.length() && isDecimalDigit(body.charAt(index))) {
+                index++;
+            }
+            if (index == exponentStart) {
+                return false;
+            }
+        }
+        return index == body.length();
+    }
+
+    private static boolean isDecimalDigit(char character) {
+        return character >= '0' && character <= '9';
     }
 
     public static @NotNull String escapeStringLiteral(@NotNull String value) {

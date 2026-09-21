@@ -35,23 +35,28 @@ import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.BuiltinCastInsn;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
+import gd.script.gdcc.lir.insn.ConstructContainerLiteralInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
+import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.ObjectCastInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.FunctionDef;
+import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.ParameterDef;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.RefCountedStatus;
 import gd.script.gdcc.type.GdContainerType;
 import gd.script.gdcc.type.GdCompilerType;
+import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -109,6 +114,7 @@ public final class FrontendBodyLoweringSession {
     private int matchHelperCounter;
     private int returnNilCounter;
     private int languageFunctionTempCounter;
+    private int enumGroupLiteralTempCounter;
 
     public FrontendBodyLoweringSession(
             @NotNull FunctionLoweringContext functionContext,
@@ -1514,6 +1520,69 @@ public final class FrontendBodyLoweringSession {
         ensureVariable(slotId, GdIntType.INT);
         block.appendNonTerminatorInstruction(new LiteralIntInsn(slotId, value));
         return slotId;
+    }
+
+    /// Allocates one body-local temp owned by script enum group Dictionary materialization.
+    ///
+    /// Enum group literal emission needs per-member key/value scratch slots that must stay
+    /// separated from published CFG value ids, writable-route scratch, and language-function
+    /// temps, so this allocator owns a dedicated counter/prefix instead of borrowing another
+    /// owner's. The skip-occupied loop mirrors `allocateGdScriptLanguageFunctionTemp`:
+    /// `cfg_enum_group_*` is a legal source identifier, so a user variable could already occupy
+    /// the next id and must never be silently overwritten by a synthetic literal.
+    @NotNull String allocateEnumGroupLiteralTemp(@NotNull String purpose, @NotNull GdType type) {
+        var tempType = Objects.requireNonNull(type, "type must not be null");
+        var prefix = "cfg_enum_group_" + StringUtil.requireNonBlank(purpose, "purpose") + "_";
+        while (true) {
+            var slotId = prefix + enumGroupLiteralTempCounter++;
+            if (function.getVariableById(slotId) != null) {
+                continue;
+            }
+            function.createAndAddVariable(slotId, tempType);
+            return slotId;
+        }
+    }
+
+    /// Materializes one script enum group as a generic `Dictionary` literal
+    /// (`{"NAME": value, ...}`), mirroring the runtime shape Godot gives a named enum constant.
+    ///
+    /// Both consumers (the bare-group `OpaqueExprValueItem` CONSTANT expansion and the
+    /// receiverless group `MemberLoadItem` left by chain tails / call / subscript continuations)
+    /// must emit the exact same instruction sequence, so the emission lives here next to the
+    /// dedicated temp allocator. Members follow `GdScriptEnumGroup.members()` source order and
+    /// keys are `String` literals, matching Godot's `dictionary[String(name)] = value` build. The
+    /// pre-declared result slot must carry the generic `Dictionary[Variant, Variant]` type the
+    /// skeleton registers for enum groups: `construct_container_literal` derives the container
+    /// family from the result slot type, so any drift in the published CFG value type is a
+    /// protocol violation and fails fast instead of building the wrong container.
+    void materializeEnumGroupDictionary(
+            @NotNull LirBasicBlock block,
+            @NotNull GdScriptEnumGroup enumGroup,
+            @NotNull String resultSlotId
+    ) {
+        Objects.requireNonNull(enumGroup, "enumGroup must not be null");
+        var resultVariable = function.getVariableById(
+                Objects.requireNonNull(resultSlotId, "resultSlotId must not be null")
+        );
+        if (resultVariable == null
+                || !(resultVariable.type() instanceof GdDictionaryType dictionaryType)
+                || !dictionaryType.isGenericDictionary()) {
+            throw new IllegalStateException(
+                    "Enum group '" + enumGroup.name() + "' materialization requires a generic "
+                            + "Dictionary-typed result slot '" + resultSlotId + "', but got "
+                            + (resultVariable == null ? "<missing slot>" : resultVariable.type().getTypeName())
+            );
+        }
+        var operands = new ArrayList<LirInstruction.Operand>(enumGroup.members().size() * 2);
+        for (var member : enumGroup.members()) {
+            var keySlotId = allocateEnumGroupLiteralTemp("key", GdStringType.STRING);
+            block.appendNonTerminatorInstruction(new LiteralStringInsn(keySlotId, member.memberName()));
+            operands.add(new LirInstruction.VariableOperand(keySlotId));
+            var valueSlotId = allocateEnumGroupLiteralTemp("value", GdIntType.INT);
+            block.appendNonTerminatorInstruction(new LiteralIntInsn(valueSlotId, member.value()));
+            operands.add(new LirInstruction.VariableOperand(valueSlotId));
+        }
+        block.appendNonTerminatorInstruction(new ConstructContainerLiteralInsn(resultSlotId, List.copyOf(operands)));
     }
 
     /// Allocates one synthetic basic block owned by writable-route lowering.

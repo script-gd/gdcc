@@ -23,6 +23,8 @@ import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.util.StringUtil;
 import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
+import gd.script.gdcc.scope.GdScriptEnumConstant;
+import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.GdScriptLanguageConstant;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdNodePathType;
@@ -163,6 +165,17 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                         block.appendNonTerminatorInstruction(new LiteralFloatInsn(resultSlotId, languageConstant.value()));
                         return block;
                     }
+                    // Script enum members fold to their frozen int value; a bare named enum group
+                    // expands to its `{"NAME": value, ...}` Dictionary literal through the shared
+                    // session helper so it matches the MemberLoad group-tail emission exactly.
+                    if (binding.declarationSite() instanceof GdScriptEnumConstant enumConstant) {
+                        block.appendNonTerminatorInstruction(new LiteralIntInsn(resultSlotId, enumConstant.value()));
+                        return block;
+                    }
+                    if (binding.declarationSite() instanceof GdScriptEnumGroup enumGroup) {
+                        session.materializeEnumGroupDictionary(block, enumGroup, resultSlotId);
+                        return block;
+                    }
                     throw session.unsupportedSequenceItem(
                             item,
                             "constant binding is not supported by frontend body lowering: " + binding.symbolName()
@@ -202,24 +215,24 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
             switch (node.kind()) {
                 case "integer" -> block.appendNonTerminatorInstruction(new LiteralIntInsn(
                         resultSlotId,
-                        Long.parseLong(sourceText)
+                        requireGdIntegerLiteral(session, item, sourceText)
                 ));
                 case "number" -> {
                     if (sourceText.contains(".")) {
                         block.appendNonTerminatorInstruction(new LiteralFloatInsn(
                                 resultSlotId,
-                                Double.parseDouble(sourceText)
+                                requireGdFloatLiteral(session, item, sourceText)
                         ));
                         return block;
                     }
                     block.appendNonTerminatorInstruction(new LiteralIntInsn(
                             resultSlotId,
-                            Long.parseLong(sourceText)
+                            requireGdIntegerLiteral(session, item, sourceText)
                     ));
                 }
                 case "float" -> block.appendNonTerminatorInstruction(new LiteralFloatInsn(
                         resultSlotId,
-                        Double.parseDouble(sourceText)
+                        requireGdFloatLiteral(session, item, sourceText)
                 ));
                 case "string" -> block.appendNonTerminatorInstruction(new LiteralStringInsn(
                         resultSlotId,
@@ -449,6 +462,37 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
             ));
             return block;
         }
+    }
+
+    /// Parses an integer literal lexeme through the shared helper so body literals support the
+    /// same `0x`/`0b`/`0o`/`_` surface as enum evaluation. The parser only emits well-formed
+    /// lexemes, so a null parse indicates a frontend protocol violation — fail fast instead of
+    /// silently widening the literal surface.
+    private static long requireGdIntegerLiteral(
+            @NotNull FrontendBodyLoweringSession session,
+            @NotNull OpaqueExprValueItem item,
+            @NotNull String sourceText
+    ) {
+        var value = StringUtil.parseGdIntegerLexeme(sourceText);
+        if (value == null) {
+            throw session.unsupportedSequenceItem(item, "malformed integer literal lexeme: " + sourceText);
+        }
+        return value;
+    }
+
+    /// Parses a float literal lexeme through the shared helper so body literals support the same
+    /// `_` / exponent surface as container-literal reduction. A null parse is a frontend protocol
+    /// violation because the parser only emits well-formed lexemes.
+    private static double requireGdFloatLiteral(
+            @NotNull FrontendBodyLoweringSession session,
+            @NotNull OpaqueExprValueItem item,
+            @NotNull String sourceText
+    ) {
+        var value = StringUtil.parseGdFloatLexeme(sourceText);
+        if (value == null) {
+            throw session.unsupportedSequenceItem(item, "malformed float literal lexeme: " + sourceText);
+        }
+        return value;
     }
 
     private static @NotNull OpaqueExprValueItem requireContext(

@@ -33,7 +33,7 @@
   - 不在这里新增 `FrontendAnalysisData` side table
   - 不在这里重做表达式求值、binding、member/call 解析或 scope 构建
   - 不在这里补 suite merge、missing-return、all-path return exhaustiveness 分析
-  - 不在这里转正 parameter default、block-local `const`、class `const` 的正式 body 语义
+  - 不在这里转正 parameter default、block-local `const`、class `const` 的正式 body 语义；脚本枚举成员（含跨类 `Other.State.IDLE` / `Other.IDLE`）由上游发布为 `RESOLVED(CONSTANT, int)` fact，本 analyzer 只消费其 int 事实、不新增诊断
   - `match` 形状校验已落地（bind 与多 pattern 互斥、字典 key 常量性）；EXPRESSION pattern 不设形状白名单；始终 walk 全部 section body，route-not-ready 不在这里发错
   - `lambda` body 遍历已落地：已 record lambda 经 `scanNestedLambdaBodies` 显式 re-entry 由 `handleLambdaExpression` walk body（以 `lambdaPlans()` 存在性为闸门，继承 enclosing callable 的 restriction/static context）；return slot 为 `FrontendLambdaPlan.returnType()`（nested resolve 入口一次解析的声明返回类型），return 不匹配或声明非 void/Variant 下的 bare `return` 走普通 `sema.type_check` 诊断；未记录 lambda（property initializer / parameter default）保持 fail-closed，不进入 body。match section 内的 lambda 现已记录，会进入 body 遍历
   - 不在这里实现或发布 `FrontendForIterationPlan`（它由 for-iteration resolution owner 发布）；type-check 只消费已发布 plan 做 route-aware header 校验（range arity / argument int slot / 显式 iterator element conversion）并遍历 for body，不重新推导 iterable route

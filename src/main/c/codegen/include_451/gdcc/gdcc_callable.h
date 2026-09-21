@@ -2,6 +2,7 @@
 #define GDCC_CALLABLE_H
 
 #include <godot_binding.h>
+#include <gdcc_hrx.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -10,16 +11,14 @@
 /// Each unique `(kind, owner, name)` owns one `godot_mem_alloc`'d spec. `free_func` is a no-op
 /// because many Callable values share that pointer; the table is freed on library unload.
 ///
+/// In editor processes both creation entries below dispatch through `gdcc_hrx` — Callables
+/// carry heap-resident thunks instead of library addresses, and standalone interning moves
+/// into the hub (the legacy registry below then stays empty, so its `destroy_all` is a safe
+/// no-op; the two never own the same spec). The payload layout is shared with
+/// `gdcc_hrx_standalone_payload` so the same `call` implementation serves both modes.
+///
 /// The includer must declare `class_library` before this header is processed.
-typedef struct gdcc_standalone_callable_spec {
-    const char *kind;
-    const char *owner;
-    const char *name;
-    godot_int utility_hash;
-    int argument_count;
-    godot_bool is_vararg;
-    godot_bool returns_value;
-} gdcc_standalone_callable_spec;
+typedef gdcc_hrx_standalone_payload gdcc_standalone_callable_spec;
 
 typedef struct gdcc_standalone_callable_registry {
     gdcc_standalone_callable_spec **items;
@@ -368,8 +367,24 @@ static inline godot_Callable gdcc_new_standalone_callable(
         godot_int utility_hash,
         int argument_count,
         godot_bool is_vararg,
-        godot_bool returns_value
+        godot_bool returns_value,
+        const gdcc_hrx_identity *hrx_identity
 ) {
+    switch (gdcc_hrx_get_mode()) {
+        case GDCC_HRX_MODE_ACTIVE:
+            // HRX: interning lives in the hub; the payload is heap-cloned inside.
+            return gdcc_hrx_create_standalone(
+                    kind, owner ? owner : "", name, utility_hash, argument_count,
+                    is_vararg, returns_value,
+                    gdcc_standalone_callable_call, gdcc_standalone_callable_is_valid,
+                    hrx_identity
+            );
+        case GDCC_HRX_MODE_UNAVAILABLE:
+            gdcc_hrx_report_unavailable();
+            return gdcc_hrx_invalid_callable();
+        default:
+            break; // DIRECT (and UNINITIALIZED pure-C fixtures): legacy path below
+    }
     const gdcc_standalone_callable_spec *spec = gdcc_standalone_callable_spec_of(
             kind,
             owner ? owner : "",
@@ -407,14 +422,46 @@ static inline godot_Callable gdcc_new_standalone_callable(
 ///
 /// `call_func` / `free_func` / `is_valid_func` / `get_argument_count_func` are generated
 /// per lambda. Hash / equal stay Godot's default (`call_func` + userdata pointer identity).
-static inline godot_Callable gdcc_new_lambda_callable(
+///
+/// HRX dispatch (mode from `gdcc_hrx_get_mode()`):
+/// - ACTIVE: the Callable carries heap-resident thunks; `hrx_identity` (nullable) is the
+///   rebind identity, `hrx_argument_count` the data-driven argument count, and `out_hrx_spec`
+///   (nullable) receives the backing spec (the coroutine signal-detach path needs it to
+///   rebuild an EQUAL lookup key);
+/// - UNAVAILABLE (fail-closed): the creation is refused and the captures are consumed with
+///   `free_func`, mirroring the "last reference dropped" semantics of a failed connect;
+/// - DIRECT/UNINITIALIZED: the legacy direct path (observably identical to pre-HRX).
+static inline godot_Callable gdcc_new_lambda_callable_ex(
         void *userdata,
         GDObjectInstanceID object_id,
         GDExtensionCallableCustomCall call_func,
         GDExtensionCallableCustomIsValid is_valid_func,
         GDExtensionCallableCustomFree free_func,
-        GDExtensionCallableCustomGetArgumentCount get_argument_count_func
+        GDExtensionCallableCustomGetArgumentCount get_argument_count_func,
+        const gdcc_hrx_identity *hrx_identity,
+        int32_t hrx_argument_count,
+        void **out_hrx_spec
 ) {
+    if (out_hrx_spec != NULL) {
+        *out_hrx_spec = NULL;
+    }
+    switch (gdcc_hrx_get_mode()) {
+        case GDCC_HRX_MODE_ACTIVE:
+            return gdcc_hrx_create_lambda(
+                    userdata, object_id, call_func, is_valid_func, free_func,
+                    hrx_argument_count, hrx_identity, (gdcc_hrx_spec **)out_hrx_spec
+            );
+        case GDCC_HRX_MODE_UNAVAILABLE: {
+            gdcc_hrx_report_unavailable();
+            godot_Callable refused = gdcc_hrx_invalid_callable();
+            if (free_func != NULL) {
+                free_func(userdata);
+            }
+            return refused;
+        }
+        default:
+            break;
+    }
     godot_Callable result;
     if (call_func == NULL) {
         memset(&result, 0, sizeof(result));
@@ -435,6 +482,23 @@ static inline godot_Callable gdcc_new_lambda_callable(
     };
     godot_callable_custom_create2((GDExtensionUninitializedTypePtr)&result, &info);
     return result;
+}
+
+static inline godot_Callable gdcc_new_lambda_callable(
+        void *userdata,
+        GDObjectInstanceID object_id,
+        GDExtensionCallableCustomCall call_func,
+        GDExtensionCallableCustomIsValid is_valid_func,
+        GDExtensionCallableCustomFree free_func,
+        GDExtensionCallableCustomGetArgumentCount get_argument_count_func,
+        const gdcc_hrx_identity *hrx_identity
+) {
+    return gdcc_new_lambda_callable_ex(
+            userdata, object_id, call_func, is_valid_func, free_func, get_argument_count_func,
+            hrx_identity,
+            hrx_identity != NULL ? hrx_identity->argument_count : -1,
+            NULL
+    );
 }
 
 #endif //GDCC_CALLABLE_H

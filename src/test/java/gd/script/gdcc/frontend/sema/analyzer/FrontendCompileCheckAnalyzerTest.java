@@ -138,6 +138,61 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeForCompileKeepsScriptEnumSurfaceOutOfCompileBlocks() throws Exception {
+        var source = """
+                class_name CompileCheckScriptEnumSurface
+                extends RefCounted
+
+                enum State { IDLE, RUNNING = 4, JUMP }
+                enum { ANON_A, ANON_B }
+
+                class Other:
+                    enum Mode { ON, OFF }
+
+                var current: State = State.RUNNING
+
+                func describe() -> int:
+                    var local: State = State.JUMP
+                    var folded := State.IDLE + local + ANON_B
+                    var looked_up: int = State["RUNNING"]
+                    var qualified := Other.Mode.ON + Other.Mode["OFF"]
+                    for name in State.keys():
+                        folded += 1
+                    return folded + looked_up + qualified
+                """;
+
+        var compiled = analyzeForCompile("compile_check_script_enum_surface.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compileDiagnostics.isEmpty(), compileDiagnostics::toString);
+    }
+
+    @Test
+    void analyzeForCompileKeepsEnumGroupSubscriptWriteFreeOfWriteProtection() throws Exception {
+        // Behavior anchor: `State["X"]` is a plain subscript on an identifier — the CONSTANT
+        // write protection only rejects bare `State = ...` and member targets like
+        // `State.IDLE = ...`, not container element writes. The enum group Dictionary write
+        // keeps the ordinary subscript-write surface and must not grow a compile-time
+        // write-protection diagnostic.
+        var compiled = analyzeForCompile("compile_check_enum_group_subscript_write.gd", """
+                class_name CompileCheckEnumGroupSubscriptWrite
+                extends RefCounted
+
+                enum State { IDLE, RUNNING }
+
+                func mutate() -> void:
+                    State["X"] = 1
+                """);
+
+        assertFalse(compiled.diagnostics().hasErrors(), compiled.diagnostics()::toString);
+        assertTrue(compiled.diagnostics().asList().stream()
+                        .noneMatch(diagnostic -> diagnostic.message().contains("read-only")
+                                || diagnostic.message().contains("not writable")
+                                || diagnostic.message().contains("not an assignable")),
+                compiled.diagnostics()::toString);
+    }
+
+    @Test
     void analyzeForCompileAllowsArrayAndDictionaryLiterals() throws Exception {
         var source = """
                 class_name CompileCheckContainerLiterals
@@ -2923,7 +2978,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeFailsFastWhenSubscriptStepMemberFactIsNotResolvedProperty() throws Exception {
+    void analyzeFailsFastWhenSubscriptStepMemberFactIsNotResolvedContainerProvenance() throws Exception {
         var preparedInput = prepareCompileCheckInput("compile_check_subscript_member_fact_guard.gd", """
                 class_name CompileCheckSubscriptMemberFactGuard
                 extends RefCounted
@@ -2958,7 +3013,7 @@ class FrontendCompileCheckAnalyzerTest {
                 ))
         );
 
-        assertTrue(exception.getMessage().contains("RESOLVED container property provenance"));
+        assertTrue(exception.getMessage().contains("RESOLVED container property or script enum group provenance"));
     }
 
     @Test

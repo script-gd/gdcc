@@ -85,6 +85,7 @@ class FrontendAnalysisDataTest {
         assertTrue(analysisData.typeTestTargets().isEmpty());
         assertTrue(analysisData.containerLiteralPlans().isEmpty());
         assertTrue(analysisData.lambdaPlans().isEmpty());
+        assertTrue(analysisData.lambdaIdentities().isEmpty());
         assertThrows(IllegalStateException.class, analysisData::moduleSkeleton);
         assertThrows(IllegalStateException.class, analysisData::diagnostics);
     }
@@ -132,6 +133,21 @@ class FrontendAnalysisDataTest {
 
         assertSame(originalSideTable, analysisData.scopesByAst());
         assertSame(scope, analysisData.scopesByAst().get(astNode));
+    }
+
+    @Test
+    void updateLambdaIdentitiesCopiesContentsWithoutReplacingStableSideTableReference() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var originalSideTable = analysisData.lambdaIdentities();
+        var replacement = new FrontendAstSideTable<FrontendLambdaIdentity>();
+        var astNode = passNode();
+        var identity = new FrontendLambdaIdentity(0, "return");
+        replacement.put(astNode, identity);
+
+        analysisData.updateLambdaIdentities(replacement);
+
+        assertSame(originalSideTable, analysisData.lambdaIdentities());
+        assertSame(identity, analysisData.lambdaIdentities().get(astNode));
     }
 
     @Test

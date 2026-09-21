@@ -623,6 +623,11 @@ CFG / body-lowering 合同：
   - static member load 产出 `MemberLoadItem(..., null, ...)`
   - static/constructor call 产出 `CallItem(..., null, ...)`
 - 因而 `Vector3.ZERO`、`Color.RED`、`ClassName.SOME_CONST` 以及它们后续继续链式访问的写法都属于当前 compile-ready surface
+- 脚本枚举常量成员同样是 receiverless `MemberLoadItem`（`baseValueIdOrNull == null`）的正式来源，只消费已发布 facts，不重跑成员解析：
+  - value 路线（`State.IDLE`）：base identifier 绑定 `CONSTANT + GdScriptEnumGroup`、首 property step 为 `RESOLVED + GdScriptEnumConstant` 时，不物化组 base，直接以成员 step 为 anchor 发 receiverless load；
+  - 跨类/内部类 type-meta 路线（`Other.State.IDLE`、`Inner.Mode.ON`）：首 step fact 为 `GdScriptEnumGroup` 且紧邻 property step fact 为 `GdScriptEnumConstant` 时消除组 step，直接为成员 step 发 receiverless load；
+  - 组链尾（`Other.State`）、call 延续（`Other.State.keys()`）与 subscript 延续（`Other.State["IDLE"]`，组 fact 锚定在 subscript step 上）保留组的 receiverless load，交由 body lowering 物化 Dictionary；
+  - 上述分支均不挂 writable route（枚举常量/组不是合法赋值目标，sema 已拒绝）；裸 `State` 组标识符维持 `OpaqueExprValueItem` 不变；
 - builtin instance property read 同样已经闭环为 compile-ready surface：
   - `vector.x`、`Color(...).r`、`Basis.IDENTITY.x` 在 CFG 中继续只是 ordinary `MemberLoadItem`
   - body lowering 对其统一发出 `LoadPropertyInsn`

@@ -12,6 +12,7 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.lir.LirLambdaMeta;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
@@ -61,6 +62,9 @@ final class ConstructLambdaInsnGenTest {
         assertTrue(body.contains("Worker__lambda_0_free"), body);
         assertTrue(body.contains("Worker__lambda_0_is_valid"), body);
         assertTrue(body.contains("Worker__lambda_0_get_argument_count"), body);
+        // The creation site references the module-catalog identity struct (consumed only
+        // in thunk mode), defined at the top of entry.c.
+        assertTrue(body.contains("&Worker__lambda_0_hrx_identity"), body);
         assertFalse(body.contains("godot_mem_alloc"), body);
         assertFalse(body.contains("$self.instance_id"), body);
     }
@@ -162,6 +166,7 @@ final class ConstructLambdaInsnGenTest {
         var clazz = newTestClass();
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run#0", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(GdStringType.STRING);
@@ -209,6 +214,7 @@ final class ConstructLambdaInsnGenTest {
         var clazz = newTestClass();
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run#0", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setCoroutine(true);
@@ -278,6 +284,7 @@ final class ConstructLambdaInsnGenTest {
     private static void addCapturelessLambda(LirClassDef clazz) {
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run#0", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(GdIntType.INT);
@@ -292,6 +299,7 @@ final class ConstructLambdaInsnGenTest {
     private static void addIntCaptureLambda(LirClassDef clazz) {
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run#0", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(GdIntType.INT);
@@ -305,6 +313,7 @@ final class ConstructLambdaInsnGenTest {
     private static void addSelfCaptureLambda(LirClassDef clazz) {
         var lambda = new LirFunctionDef("_lambda_0", "entry");
         lambda.setLambda(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("Worker::run#0", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(GdVoidType.VOID);

@@ -105,7 +105,7 @@ public class ZigCcCompiler implements CCompiler {
     /// TUs force-including the PCH, by simple file name, anchored to the fixed
     /// `CProjectBuilder` native inputs. A TU that does not include `godot_binding.h`
     /// (`minicoro.c`) must never be added here.
-    private static final Set<String> PCH_WHITELIST_TU_NAMES = Set.of("entry.c", "godot_binding.c", "gdcc_coroutine.c");
+    private static final Set<String> PCH_WHITELIST_TU_NAMES = Set.of("entry.c", "godot_binding.c", "gdcc_coroutine.c", "gdcc_hrx.c");
     private static final String PCH_FALLBACK_PREFIX = "[gdcc] PCH unavailable this round: ";
     private static final String PCH_REJECTED_RETRY_NOTE =
             "[gdcc] zig rejected the PCH during TU compilation; the whole round was retried without -include-pch\n";

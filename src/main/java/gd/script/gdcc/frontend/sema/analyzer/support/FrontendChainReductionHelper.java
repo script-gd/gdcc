@@ -15,6 +15,10 @@ import gd.script.gdcc.gdextension.ExtensionGlobalEnum;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.FunctionDef;
+import gd.script.gdcc.scope.GdScriptClassConstant;
+import gd.script.gdcc.scope.GdScriptEnumConstant;
+import gd.script.gdcc.scope.GdScriptEnumGroup;
+import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.scope.ScopeTypeMeta;
 import gd.script.gdcc.scope.ScopeValueKind;
@@ -419,29 +423,52 @@ public final class FrontendChainReductionHelper {
                 StringUtil.requireNonBlank(currentReceiver.detailReason(), "currentReceiver.detailReason")
         );
 
+        // Arms when the immediately preceding step published an enum-group fact (the cross-class
+        // `Other.State` route). An immediately following property step naming an existing member
+        // is then intercepted as a compile-time int constant instead of a Dictionary member
+        // lookup; call/subscript steps and member misses are never intercepted and keep plain
+        // Dictionary semantics. The intercepting fact carries the member declaration, so the
+        // state clears itself and `Other.State.IDLE.JUMP` continues on the int receiver.
+        GdScriptEnumGroup enumGroupContinuation = null;
         for (var stepIndex = 0; stepIndex < input.chainExpression().steps().size(); stepIndex++) {
             var step = input.chainExpression().steps().get(stepIndex);
-            StepTrace trace;
-            if (currentReceiver.status() == Status.RESOLVED) {
-                trace = reduceStep(stepIndex, step, currentReceiver, input, notes);
-            } else if (shouldResolveFirstBlockedStepExactly(
-                    stepIndex,
-                    currentReceiver,
-                    Objects.requireNonNull(upstreamCause)
-            )) {
-                trace = reduceFirstBlockedStepExactly(
+            StepTrace trace = null;
+            if (enumGroupContinuation != null
+                    && currentReceiver.status() == Status.RESOLVED
+                    && step instanceof AttributePropertyStep propertyStep) {
+                var continuationMember = enumGroupContinuation.findMember(propertyStep.name());
+                if (continuationMember != null) {
+                    trace = resolvedEnumMemberTrace(stepIndex, propertyStep, currentReceiver, continuationMember);
+                }
+            }
+            if (trace == null) {
+                if (currentReceiver.status() == Status.RESOLVED) {
+                    trace = reduceStep(stepIndex, step, currentReceiver, input, notes);
+                } else if (shouldResolveFirstBlockedStepExactly(
                         stepIndex,
-                        step,
                         currentReceiver,
-                        input,
-                        notes,
-                        upstreamCause
-                );
-            } else {
-                trace = propagateStep(stepIndex, step, currentReceiver, Objects.requireNonNull(upstreamCause));
+                        Objects.requireNonNull(upstreamCause)
+                )) {
+                    trace = reduceFirstBlockedStepExactly(
+                            stepIndex,
+                            step,
+                            currentReceiver,
+                            input,
+                            notes,
+                            upstreamCause
+                    );
+                } else {
+                    trace = propagateStep(stepIndex, step, currentReceiver, Objects.requireNonNull(upstreamCause));
+                }
             }
             traces.add(trace);
             currentReceiver = trace.outgoingReceiver();
+            var publishedMember = trace.suggestedMember();
+            enumGroupContinuation = trace.status() == Status.RESOLVED
+                    && publishedMember != null
+                    && publishedMember.declarationSite() instanceof GdScriptEnumGroup publishedGroup
+                    ? publishedGroup
+                    : null;
             if (recoveryRoot == null && trace.status() != Status.RESOLVED) {
                 recoveryRoot = step;
             }
@@ -678,6 +705,27 @@ public final class FrontendChainReductionHelper {
             return reduceStaticLoadStep(stepIndex, step, incomingReceiver, request);
         }
 
+        // Named-enum value route (declaring class and subclass bodies): the chain head binds the
+        // group as a CONSTANT value, so an existing member resolves to a compile-time int
+        // constant. `stepIndex == 0` is required because the base expression always names the
+        // chain head; without it, `State.IDLE.JUMP` would misresolve `.JUMP` against the group.
+        // The step-identity guard rejects the property step synthesized by subscript reduction,
+        // which reuses the same stepIndex. Member miss falls through untouched so `State.keys`
+        // method-reference and `State.MISSING` member-resolution contracts stay intact.
+        if (stepIndex == 0
+                && request.chainExpression().steps().getFirst() == step
+                && request.chainExpression().base() instanceof IdentifierExpression baseIdentifier) {
+            var headBinding = request.bindingLookup().apply(baseIdentifier);
+            if (headBinding != null
+                    && headBinding.kind() == FrontendBindingKind.CONSTANT
+                    && headBinding.declarationSite() instanceof GdScriptEnumGroup enumGroup) {
+                var member = enumGroup.findMember(step.name());
+                if (member != null) {
+                    return resolvedEnumMemberTrace(stepIndex, step, incomingReceiver, member);
+                }
+            }
+        }
+
         var receiverType = Objects.requireNonNull(incomingReceiver.receiverType(), "receiverType must not be null");
         if (receiverType instanceof GdVariantType) {
             var detailReason = "Variant receiver routes property access '" + step.name() + "' through runtime-dynamic semantics";
@@ -903,6 +951,7 @@ public final class FrontendChainReductionHelper {
         }
         return switch (receiverTypeMeta.kind()) {
             case GLOBAL_ENUM -> reduceGlobalEnumStaticLoad(stepIndex, step, incomingReceiver, receiverTypeMeta);
+            case GDCC_ENUM -> reduceGdccEnumStaticLoad(stepIndex, step, incomingReceiver, receiverTypeMeta);
             case BUILTIN ->
                     reduceBuiltinStaticLoad(stepIndex, step, incomingReceiver, request.classRegistry(), receiverTypeMeta);
             case ENGINE_CLASS ->
@@ -910,6 +959,36 @@ public final class FrontendChainReductionHelper {
             case GDCC_CLASS ->
                     reduceGdccStaticLoad(stepIndex, step, incomingReceiver, request.classRegistry(), receiverTypeMeta);
         };
+    }
+
+    /// Resolves a member of a GDCC source enum group reached through its type-meta binding (the
+    /// value-isolated route, e.g. an inner class referencing an outer class enum). Members
+    /// materialize as plain int constants, mirroring the global-enum static load shape.
+    private static @NotNull StepTrace reduceGdccEnumStaticLoad(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ScopeTypeMeta receiverTypeMeta
+    ) {
+        if (!(receiverTypeMeta.declaration() instanceof GdScriptEnumGroup enumGroup)) {
+            var detailReason = "GDCC enum static load receiver '" + receiverTypeMeta.displayName()
+                    + "' has malformed declaration metadata";
+            return failedStaticLoadTrace(stepIndex, step, incomingReceiver, null, receiverTypeMeta, detailReason);
+        }
+        var member = enumGroup.findMember(step.name());
+        if (member == null) {
+            var detailReason = "Enum value '" + step.name() + "' not found in enum '" + enumGroup.name() + "'";
+            return failedStaticLoadTrace(stepIndex, step, incomingReceiver, null, receiverTypeMeta, detailReason);
+        }
+        return resolvedStaticLoadTrace(
+                stepIndex,
+                step,
+                incomingReceiver,
+                FrontendBindingKind.CONSTANT,
+                ScopeOwnerKind.GDCC,
+                GdIntType.INT,
+                member
+        );
     }
 
     private static @NotNull StepTrace reduceGlobalEnumStaticLoad(
@@ -1060,24 +1139,59 @@ public final class FrontendChainReductionHelper {
             @NotNull ClassRegistry classRegistry,
             @NotNull ScopeTypeMeta receiverTypeMeta
     ) {
-        var methodReference = resolveStaticMethodReference(classRegistry, receiverTypeMeta, step.name());
-        if (methodReference != null) {
-            return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
-        }
-        var propertyLookup = classRegistry.findStaticPropertyInHierarchy(receiverTypeMeta.canonicalName(), step.name());
-        if (propertyLookup != null) {
-            return resolvedStaticLoadTrace(
-                    stepIndex,
-                    step,
-                    incomingReceiver,
-                    FrontendBindingKind.PROPERTY,
-                    ScopeOwnerKind.GDCC,
-                    propertyLookup.property().getType(),
-                    propertyLookup.property()
-            );
+        // Nearest-layer-wins walk over the inheritance chain: each layer probes static methods,
+        // then static properties, then script enum constants/groups, and the first hit publishes.
+        // The former whole-hierarchy-per-category order (all methods, then all properties) let a
+        // superclass member of an earlier category shadow a subclass member of a later one; the
+        // layered walk mirrors Godot's member shadowing and lets a subclass enum constant win.
+        var visited = new HashSet<String>();
+        for (var current = classRegistry.resolveClassDefFromTypeMeta(receiverTypeMeta);
+                current != null && visited.add(current.getName());
+                current = classRegistry.resolveSuperclass(current)) {
+            var methodReference = resolveStaticMethodReferenceOnLayer(classRegistry, current, step.name());
+            if (methodReference != null) {
+                return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
+            }
+            var staticProperty = findStaticPropertyOnLayer(current, step.name());
+            if (staticProperty != null) {
+                return resolvedStaticLoadTrace(
+                        stepIndex,
+                        step,
+                        incomingReceiver,
+                        FrontendBindingKind.PROPERTY,
+                        ScopeOwnerKind.GDCC,
+                        staticProperty.getType(),
+                        staticProperty
+                );
+            }
+            var enumConstant = findEnumConstantOnLayer(current, step.name());
+            if (enumConstant != null) {
+                // Members carry int and groups carry the generic Dictionary type; the outgoing
+                // receiver is therefore a plain instance value in both cases, so a group at the
+                // chain tail keeps Dictionary semantics for any suffix.
+                return resolvedStaticLoadTrace(
+                        stepIndex,
+                        step,
+                        incomingReceiver,
+                        FrontendBindingKind.CONSTANT,
+                        ScopeOwnerKind.GDCC,
+                        enumConstant.type(),
+                        enumConstant.declaration()
+                );
+            }
+            // A non-static member or signal with the same name on this layer is a terminal
+            // shadowing hit: class-qualified access to it is invalid, and the walk must not
+            // leak through to an ancestor enum constant. This mirrors Godot's unified
+            // member-namespace shadowing and the value-side `resolveInheritedValueMember`
+            // layering, and preserves the pre-existing UNSUPPORTED boundary for
+            // class-qualified instance members.
+            if (declaresAnyMemberOnLayer(current, step.name())) {
+                break;
+            }
         }
         var detailReason = "Static load route on GDCC class '" + receiverTypeMeta.displayName()
-                + "' resolved to neither a static method reference nor a static property; it is outside the current support boundary";
+                + "' resolved to neither a static method reference, a static property, nor a script enum constant; "
+                + "it is outside the current support boundary";
         return new StepTrace(
                 stepIndex,
                 step,
@@ -1099,6 +1213,127 @@ public final class FrontendChainReductionHelper {
                 null,
                 false,
                 detailReason
+        );
+    }
+
+    /// Single-layer static method probe for the GDCC static-load walk. Unlike
+    /// [resolveMethodReference], it never descends into superclasses; layering is owned by the
+    /// caller so that all member categories compete per layer (nearest layer wins).
+    private static @Nullable MethodReferenceResolution resolveStaticMethodReferenceOnLayer(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ClassDef owner,
+            @NotNull String memberName
+    ) {
+        var ownerMethods = owner.getFunctions().stream()
+                .filter(function -> function.getName().equals(memberName))
+                .filter(FunctionDef::isStatic)
+                .toList();
+        if (ownerMethods.isEmpty()) {
+            return null;
+        }
+        var ownerKind = resolveMethodOwnerKind(classRegistry, owner);
+        if (ownerKind == null) {
+            return null;
+        }
+        return new MethodReferenceResolution(
+                memberName,
+                FrontendBindingKind.STATIC_METHOD,
+                RouteKind.STATIC_METHOD,
+                owner,
+                ownerKind,
+                List.copyOf(ownerMethods)
+        );
+    }
+
+    /// Single-layer static property probe for the GDCC static-load walk; layering is owned by the
+    /// caller (see [resolveStaticMethodReferenceOnLayer]).
+    private static @Nullable PropertyDef findStaticPropertyOnLayer(
+            @NotNull ClassDef owner,
+            @NotNull String memberName
+    ) {
+        for (var property : owner.getProperties()) {
+            if (property.getName().equals(memberName) && property.isStatic()) {
+                return property;
+            }
+        }
+        return null;
+    }
+
+    /// Terminal-shadow probe for the GDCC static-load walk: true when the layer declares any
+    /// member with the name, regardless of category or static-ness. Static members are probed
+    /// before this check runs, so a `true` here always means an instance method, an instance
+    /// property, or a signal.
+    private static boolean declaresAnyMemberOnLayer(
+            @NotNull ClassDef owner,
+            @NotNull String memberName
+    ) {
+        for (var function : owner.getFunctions()) {
+            if (function.getName().equals(memberName)) {
+                return true;
+            }
+        }
+        for (var property : owner.getProperties()) {
+            if (property.getName().equals(memberName)) {
+                return true;
+            }
+        }
+        for (var signal : owner.getSignals()) {
+            if (signal.getName().equals(memberName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Single-layer script constant probe for the GDCC static-load walk. The table currently
+    /// carries only enum-shaped declarations (class `const` stays outside it by design), so any
+    /// other declaration shape is ignored defensively instead of being published as a constant.
+    private static @Nullable GdScriptClassConstant findEnumConstantOnLayer(
+            @NotNull ClassDef owner,
+            @NotNull String memberName
+    ) {
+        for (var constant : owner.getScriptConstants()) {
+            if (constant.name().equals(memberName)
+                    && (constant.declaration() instanceof GdScriptEnumConstant
+                            || constant.declaration() instanceof GdScriptEnumGroup)) {
+                return constant;
+            }
+        }
+        return null;
+    }
+
+    /// Publishes the uniform enum-member fact shared by the value route (`State.IDLE` with the
+    /// group bound as a CONSTANT value) and the cross-class group continuation intercept
+    /// (`Other.State.IDLE`): an instance-receiver property step that resolves to a compile-time
+    /// int constant. The member metadata on `declarationSite` lets lowering fold the access into
+    /// a literal without materializing the group Dictionary.
+    private static @NotNull StepTrace resolvedEnumMemberTrace(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull GdScriptEnumConstant member
+    ) {
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.PROPERTY,
+                RouteKind.INSTANCE_PROPERTY,
+                incomingReceiver,
+                Status.RESOLVED,
+                ReceiverState.resolvedInstance(GdIntType.INT),
+                null,
+                FrontendResolvedMember.resolved(
+                        step.name(),
+                        FrontendBindingKind.CONSTANT,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        incomingReceiver.receiverType(),
+                        GdIntType.INT,
+                        member
+                ),
+                null,
+                false,
+                null
         );
     }
 
@@ -2033,12 +2268,15 @@ public final class FrontendChainReductionHelper {
         // lowering consumes the fact as container provenance (`receiver.member[key]`): the
         // published container type feeds `SubscriptLeaf.containerSourceType`, and static
         // containers additionally redirect the named-base scratch/writeback from the Variant
-        // named route to `LoadStaticInsn`/`StoreStaticInsn`. Dynamic containers (Variant
-        // receivers) stay unpublished and keep the Variant named route.
+        // named route to `LoadStaticInsn`/`StoreStaticInsn`. Script enum groups
+        // (`Other.State["IDLE"]`, CONSTANT + GdScriptEnumGroup) are published as well so CFG can
+        // materialize the constant group Dictionary load. Dynamic containers (Variant receivers)
+        // and other constant forms stay unpublished and keep the Variant named route.
         var containerMember = memberResolution.suggestedMember();
         var publishableContainerMember = containerMember != null
                 && containerMember.status() == FrontendMemberResolutionStatus.RESOLVED
-                && containerMember.bindingKind() == FrontendBindingKind.PROPERTY
+                && (containerMember.bindingKind() == FrontendBindingKind.PROPERTY
+                        || containerMember.declarationSite() instanceof GdScriptEnumGroup)
                 ? containerMember
                 : null;
         return new StepTrace(
@@ -2567,7 +2805,8 @@ public final class FrontendChainReductionHelper {
             @NotNull String memberName
     ) {
         return switch (receiverTypeMeta.kind()) {
-            case GLOBAL_ENUM -> null;
+            // Enums expose no static methods; method-reference lookup misses by contract.
+            case GLOBAL_ENUM, GDCC_ENUM -> null;
             case BUILTIN -> {
                 var builtinClass = resolveBuiltinStaticOwner(classRegistry, receiverTypeMeta);
                 yield builtinClass == null ? null : resolveMethodReference(classRegistry, builtinClass, memberName, true);

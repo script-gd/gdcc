@@ -7,6 +7,7 @@
 - 关联文档：
     - `doc/module_impl/frontend/frontend_super_call_implementation.md`：前端 super 语法合同（绑定 / 语义 / lowering）。
     - `doc/module_impl/backend/explicit_c_inheritance_layout_contract.md`：wrapper `_super` 偏移 0 嵌入布局与禁裸 cast 合同。
+    - `doc/module_impl/backend/hot_reload_implementation.md`：recreate 必须重写本代 `_vtable`。
     - `doc/module_impl/backend/call_method_implementation.md`：`CALL_METHOD` 分派模式总表。
     - `doc/module_impl/frontend/frontend_engine_virtual_override_implementation.md`：engine virtual 覆写的前端精确签名合同。
     - `doc/gdcc_low_ir.md`：`call_super_method` 指令语义。
@@ -68,7 +69,7 @@
 3. `slotted(C)` 且（引入或覆写）→ 写 `&gdcc_<C>_vtable_inst`；
 4. pass-through → 写最近非 pass-through 祖先解析到的同一表值（**禁止写 NULL**：该实例经祖先静态类型间接调用时会真实读取此字段）。
 
-字段访问链沿 **wrapper 链**求值（镜像 `_set_object_ptr` 递归）。每个类的 create_instance 写入**按本类解析**的表值——实例化哪个类就由哪个类的 create_instance 执行，父类 create_instance 不参与。
+字段访问链沿 **wrapper 链**求值（镜像 `_set_object_ptr` 递归）。每个类的 create_instance 写入**按本类解析**的表值——实例化哪个类就由哪个类的 create_instance 执行，父类 create_instance 不参与。`<C>_class_recreate_instance` 必须用同一 `renderVtableFieldInitExpr` 写入本代静态表；pass-through 同样禁止写 `NULL`。
 
 ## 5. engine virtual 父类转发合同
 

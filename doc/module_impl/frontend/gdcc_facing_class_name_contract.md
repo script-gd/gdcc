@@ -102,6 +102,8 @@ inner class canonical spelling 已冻结为：
 
 对 compiler-owned class 级保留前缀 `_gdcc_coro_state_` 与保留序列 `__coro__`（§1.3）的输入边界同样冻结：用户源码类名命中该前缀或包含该序列时，按上面「用户源码类名违规」的同一条路径处理；`topLevelCanonicalNameMap` 包含该序列时按上面 mapping 违规的同一条路径处理。
 
+跨类脚本枚举访问（如 `Other.State.IDLE` / `Other.IDLE`）中的 `Other` 链头复用上述边界：沿既有 type-meta head 路线经 source-facing → canonical 解析（先 lexical、miss 后 remap），不为枚举访问新增 alias 通道（见 `frontend_enum_implementation.md`）。
+
 ### 2.2 source-facing `extends` 协议
 
 header `extends` 继续是 frontend 自己的 source-facing 绑定协议，而不是 canonical text 输入口。

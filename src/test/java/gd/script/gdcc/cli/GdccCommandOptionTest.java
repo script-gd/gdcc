@@ -1,6 +1,7 @@
 package gd.script.gdcc.cli;
 
 import gd.script.gdcc.util.GdccVersion;
+import gd.script.gdcc.util.StringUtil;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine.Command;
@@ -49,7 +50,7 @@ class GdccCommandOptionTest {
         assertEquals(0, exitCode);
         terminal.assertNoErr();
 
-        var help = terminal.outText();
+        var help = StringUtil.stripAnsi(terminal.outText());
         assertTrue(help.contains("files"), help);
         assertTrue(help.contains("-o, --output"), help);
         assertTrue(help.contains("Defaults to input filenames"), help);

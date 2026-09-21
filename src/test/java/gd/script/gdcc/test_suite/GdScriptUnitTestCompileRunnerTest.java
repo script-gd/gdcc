@@ -113,6 +113,14 @@ public class GdScriptUnitTestCompileRunnerTest {
             "default_args/per_call_reevaluation.gd",
             "default_args/too_few_arguments_negative.gd",
             "default_args/too_many_arguments_negative.gd",
+            "enum/anonymous_member_values.gd",
+            "enum/cross_class_access.gd",
+            "enum/export_hint.gd",
+            "enum/group_dictionary_access.gd",
+            "enum/initializer_and_defaults.gd",
+            "enum/match_constant_patterns.gd",
+            "enum/named_member_access.gd",
+            "enum/type_erasure.gd",
             "initializer/local/arithmetic_chain.gd",
             "initializer/local/constructors_and_constants.gd",
             "initializer/local/int_to_float_boundaries.gd",
@@ -254,6 +262,7 @@ public class GdScriptUnitTestCompileRunnerTest {
     private static final List<String> CONTROL_FLOW_SCRIPT_PATHS = scriptPathsWithPrefix("control_flow/");
     private static final List<String> COROUTINE_SCRIPT_PATHS = scriptPathsWithPrefix("coroutine/");
     private static final List<String> DEFAULT_ARGS_SCRIPT_PATHS = scriptPathsWithPrefix("default_args/");
+    private static final List<String> ENUM_SCRIPT_PATHS = scriptPathsWithPrefix("enum/");
     private static final List<String> INITIALIZER_SCRIPT_PATHS = scriptPathsWithPrefix("initializer/");
     private static final List<String> LAMBDA_SCRIPT_PATHS = scriptPathsWithPrefix("lambda/");
     private static final List<String> MEMBER_SCRIPT_PATHS = scriptPathsWithPrefix("member/");
@@ -350,6 +359,14 @@ public class GdScriptUnitTestCompileRunnerTest {
         return compileAndValidateBundledUnitScripts(
                 DEFAULT_ARGS_SCRIPT_PATHS,
                 "Zig not found; skipping default-argument GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesEnumScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                ENUM_SCRIPT_PATHS,
+                "Zig not found; skipping enum GDScript compile-run tests"
         );
     }
 

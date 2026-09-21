@@ -379,6 +379,33 @@ class FrontendAnnotationUsageAnalyzerTest {
         assertEquals("Node2D,Sprite2D", findProperty(classDef, "target_path").getAnnotations().get("export_node_path"));
     }
 
+    /// Script-enum-typed properties accept a bare `@export` end to end: the erased int type
+    /// passes the usage checks and the skeleton-generated enum hint_string survives the full
+    /// semantic pipeline on the property metadata.
+    @Test
+    void analyzeAllowsBareExportOnScriptEnumTypedProperty() throws Exception {
+        var analyzedModule = analyze("""
+                class_name EnumBareExport
+                extends Node
+                
+                enum State { IDLE, JUMP = 5 }
+                
+                @export var current: State
+                """);
+
+        assertTrue(diagnosticsByCategory(
+                analyzedModule.analysisData().diagnostics().asList(),
+                "sema.annotation_usage"
+        ).isEmpty(), () -> analyzedModule.analysisData().diagnostics().asList().toString());
+        assertTrue(diagnosticsByCategory(
+                analyzedModule.analysisData().diagnostics().asList(),
+                "sema.unsupported_annotation"
+        ).isEmpty());
+
+        var classDef = findClassDef(analyzedModule.analysisData(), "EnumBareExport");
+        assertEquals("Idle:0,Jump:5", findProperty(classDef, "current").getAnnotations().get("export"));
+    }
+
     /// Variant-declared properties fall back to the initializer's published type; a
     /// still-undetermined Variant skips the default type check (Godot parity) without the
     /// property type being rewritten.

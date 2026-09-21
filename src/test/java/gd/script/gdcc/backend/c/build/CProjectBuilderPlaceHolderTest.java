@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -35,7 +36,7 @@ public class CProjectBuilderPlaceHolderTest {
             }
         };
 
-        var builder = new CProjectBuilder(fakeCompiler);
+        var builder = new CProjectBuilder(fakeCompiler, Map.of());
 
         // init project (should extract includes into tempDir/include)
         builder.initProject(projectInfo);

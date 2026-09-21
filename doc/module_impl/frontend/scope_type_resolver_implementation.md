@@ -63,7 +63,7 @@
 当前行为：
 
 - 先做 exact type-meta lookup
-  - lexical `sourceName` 绑定可先于 global name 命中
+  - lexical `sourceName` 绑定可先于 global name 命中；命名脚本枚举组经 `ClassScope` 发布的 `GDCC_ENUM` type-meta 在同一路径命中（`instanceType` 为 `int`，见 `frontend_enum_implementation.md`）
   - registry 仍可命中 builtin / engine / gdcc / global enum / strict container text
 - exact lookup miss 后，只重试顶层 `Array[...]` 与 `Dictionary[..., ...]`
 - nested structured container text 继续被拒绝
@@ -122,7 +122,7 @@
 - 在真实 scope phase 之前，builder 会先构建一条仅用于类型解析的最小 `ClassScope` 链
   - root 为 `ClassRegistry`
   - 每个 accepted class 一个 `ClassScope`
-  - 每个 class scope 只发布 direct inner class 的 `type-meta`
+  - 每个 class scope 只发布 direct inner class 与本 class 直接声明的命名枚举组（`GDCC_ENUM`）的 `type-meta`
   - 不预填充 value/function/parameter/local binding
 
 ### 2.4 Frontend scope analyzer

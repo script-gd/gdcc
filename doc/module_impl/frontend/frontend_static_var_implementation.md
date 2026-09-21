@@ -114,7 +114,7 @@
 
 - static property 必须通过 `PropertyDef.isStatic()` 识别。CFG / body lowering 的 `isStaticPropertyBinding` 只能检查 `declarationSite() instanceof PropertyDef && isStatic()`，不得回退到 parser `VariableDeclaration`。
 - `ClassName.name` 命中 GDCC static property 时，chain binding 发布 `FrontendBindingKind.PROPERTY` 的 RESOLVED static load/store route。
-- 既有只读常量 trace（engine / builtin / global constant / enum）必须继续使用 `FrontendBindingKind.CONSTANT`。不得把共享 `resolvedStaticLoadTrace` 整体改成 `PROPERTY`。
+- 既有只读常量 trace（engine / builtin / global constant / enum，以及脚本枚举常量/枚举组、含跨类 route）必须继续使用 `FrontendBindingKind.CONSTANT`——脚本枚举成员/枚举组绝不发布为 `PROPERTY`。不得把共享 `resolvedStaticLoadTrace` 整体改成 `PROPERTY`。
 - 非 static property 经 `ClassName.name` 访问继续 fail-closed。
 - class property（含 static）不属于 `FrontendVariableAnalyzer` 的 callable-local inventory。
 

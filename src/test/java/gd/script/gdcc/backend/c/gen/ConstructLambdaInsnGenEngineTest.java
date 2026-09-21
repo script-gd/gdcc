@@ -13,6 +13,7 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirCaptureDef;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.lir.LirLambdaMeta;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirParameterDef;
@@ -282,6 +283,7 @@ final class ConstructLambdaInsnGenEngineTest {
     private static LirFunctionDef newLambda(String name, gd.script.gdcc.type.GdType returnType) {
         var lambda = new LirFunctionDef(name, "entry");
         lambda.setLambda(true);
+        lambda.setLambdaMeta(new LirLambdaMeta("GDLambdaEngineNode::_ready#0", null));
         lambda.setHidden(true);
         lambda.setStatic(true);
         lambda.setReturnType(returnType);
@@ -370,7 +372,13 @@ final class ConstructLambdaInsnGenEngineTest {
                         print("self object_id check passed.")
                     else:
                         push_error("self object_id check failed.")
-                
+
+                    # Freeing an in-tree node while the parent is still propagating child setup
+                    # is rejected by the engine on some platforms (observed on macOS headless),
+                    # so the destructive check runs at idle time via a deferred call.
+                    _run_freed_check.call_deferred(target, self_cb)
+
+                func _run_freed_check(target: Node, self_cb: Callable) -> void:
                     var helper := Node.new()
                     helper.add_user_signal("fired")
                     helper.connect("fired", self_cb)

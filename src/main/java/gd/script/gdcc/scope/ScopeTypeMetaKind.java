@@ -15,5 +15,10 @@ public enum ScopeTypeMetaKind {
     /// A global enum name used in type position.
     ///
     /// The current minimal implementation maps this to `int` on the runtime/value side.
-    GLOBAL_ENUM
+    GLOBAL_ENUM,
+    /// A named enum declared by a GDCC user class, used in type position.
+    ///
+    /// Script enums are not first-class types: the instance type is always `int`, the
+    /// `GdScriptEnumGroup` declaration is always present, and the binding is a pseudo type.
+    GDCC_ENUM
 }

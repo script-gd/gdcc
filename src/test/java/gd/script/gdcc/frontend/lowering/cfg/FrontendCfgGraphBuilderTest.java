@@ -2592,6 +2592,377 @@ class FrontendCfgGraphBuilderTest {
         );
     }
 
+    /// Value-route enum member (`State.IDLE`): the enum group base is not materialized at all;
+    /// the constant member step becomes a single receiverless `MemberLoadItem` of the same shape
+    /// as a type-meta static load, and body lowering later folds it into an int literal.
+    @Test
+    void buildExecutableBodyLowersEnumGroupHeadMemberAsReceiverlessConstantLoad() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_enum_group_head_member.gd",
+                """
+                        class_name CfgBuilderEnumGroupHeadMember
+                        extends RefCounted
+                        
+                        enum State { IDLE, JUMP = 5 }
+                        
+                        func current() -> int:
+                            return State.IDLE
+                        """,
+                "current",
+                Map.of("CfgBuilderEnumGroupHeadMember", "RuntimeCfgBuilderEnumGroupHeadMember")
+        );
+        var returnStatement = assertInstanceOf(ReturnStatement.class, analyzed.function().body().statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var memberStep = assertInstanceOf(AttributePropertyStep.class, expression.steps().getFirst());
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode(entryNode.nextId()));
+        var memberLoad = assertInstanceOf(MemberLoadItem.class, entryNode.items().getFirst());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                // Exactly one item: no `OpaqueExprValueItem` for the `State` group base.
+                () -> assertEquals(1, entryNode.items().size()),
+                () -> assertSame(memberStep, memberLoad.anchor()),
+                () -> assertEquals("IDLE", memberLoad.memberName()),
+                () -> assertNull(memberLoad.baseValueIdOrNull()),
+                () -> assertEquals(List.of(), memberLoad.operandValueIds()),
+                () -> assertEquals(memberLoad.resultValueId(), stopNode.returnValueIdOrNull())
+        );
+    }
+
+    /// A bare enum group identifier (`State`) stays an `OpaqueExprValueItem` carrying the
+    /// CONSTANT binding; only the group-head + constant-member chain shape triggers the
+    /// receiverless constant load route.
+    @Test
+    void buildExecutableBodyKeepsBareEnumGroupAsOpaqueValue() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_bare_enum_group.gd",
+                """
+                        class_name CfgBuilderBareEnumGroup
+                        extends RefCounted
+                        
+                        enum State { IDLE, JUMP = 5 }
+                        
+                        func table() -> Dictionary:
+                            return State
+                        """,
+                "table",
+                Map.of("CfgBuilderBareEnumGroup", "RuntimeCfgBuilderBareEnumGroup")
+        );
+        var returnStatement = assertInstanceOf(ReturnStatement.class, analyzed.function().body().statements().getFirst());
+        var identifier = assertInstanceOf(IdentifierExpression.class, returnStatement.value());
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode(entryNode.nextId()));
+        var opaqueValue = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().getFirst());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(1, entryNode.items().size()),
+                () -> assertSame(identifier, opaqueValue.expression()),
+                () -> assertEquals(List.of(), opaqueValue.operandValueIds()),
+                () -> assertEquals(opaqueValue.resultValueId(), stopNode.returnValueIdOrNull())
+        );
+    }
+
+    /// Cross-class qualified member (`Other.State.IDLE`): the enum group step is eliminated —
+    /// no Dictionary materialization for `Other.State` — and the constant member step is emitted
+    /// as the single receiverless `MemberLoadItem`. The same elimination applies to inner-class
+    /// type-meta heads (`Inner.Mode.ON`).
+    @Test
+    void buildExecutableBodyEliminatesCrossClassEnumGroupLoadBeforeConstantMember() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_cross_enum_group_member.gd",
+                """
+                        class_name CfgBuilderCrossEnumGroupMember
+                        extends RefCounted
+                        
+                        class Other:
+                            enum State { IDLE, JUMP = 5 }
+                        
+                        class Inner:
+                            enum Mode { OFF, ON }
+                        
+                        func current() -> int:
+                            return Other.State.IDLE
+                        
+                        func mode() -> int:
+                            return Inner.Mode.ON
+                        """,
+                "current",
+                Map.of("CfgBuilderCrossEnumGroupMember", "RuntimeCfgBuilderCrossEnumGroupMember")
+        );
+        var currentReturn = assertInstanceOf(ReturnStatement.class, analyzed.function().body().statements().getFirst());
+        var currentExpression = assertInstanceOf(AttributeExpression.class, currentReturn.value());
+        var memberStep = assertInstanceOf(AttributePropertyStep.class, currentExpression.steps().get(1));
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode(entryNode.nextId()));
+        var memberLoad = assertInstanceOf(MemberLoadItem.class, entryNode.items().getFirst());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                // The group step publishes no item: the eliminated group would otherwise appear
+                // as a receiverless `MemberLoadItem` anchored at `groupStep`.
+                () -> assertEquals(1, entryNode.items().size()),
+                () -> assertSame(memberStep, memberLoad.anchor()),
+                () -> assertEquals("IDLE", memberLoad.memberName()),
+                () -> assertNull(memberLoad.baseValueIdOrNull()),
+                () -> assertEquals(List.of(), memberLoad.operandValueIds()),
+                () -> assertEquals(memberLoad.resultValueId(), stopNode.returnValueIdOrNull())
+        );
+
+        var innerFunction = requireFunctionDeclaration(analyzed.module().units().getFirst().ast(), "mode");
+        var innerReturn = assertInstanceOf(ReturnStatement.class, innerFunction.body().statements().getFirst());
+        var innerExpression = assertInstanceOf(AttributeExpression.class, innerReturn.value());
+        var innerMemberStep = assertInstanceOf(AttributePropertyStep.class, innerExpression.steps().get(1));
+
+        var innerBuild = new FrontendCfgGraphBuilder().buildExecutableBody(innerFunction.body(), analyzed.analysisData());
+        var innerEntry = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, innerBuild.graph().requireNode(innerBuild.graph().entryNodeId()));
+        var innerMemberLoad = assertInstanceOf(MemberLoadItem.class, innerEntry.items().getFirst());
+
+        assertAll(
+                () -> assertEquals(1, innerEntry.items().size()),
+                () -> assertSame(innerMemberStep, innerMemberLoad.anchor()),
+                () -> assertEquals("ON", innerMemberLoad.memberName()),
+                () -> assertNull(innerMemberLoad.baseValueIdOrNull()),
+                () -> assertEquals(List.of(), innerMemberLoad.operandValueIds())
+        );
+    }
+
+    /// Direct cross-class enum constants (`Other.IDLE`, inherited `Other.PARENT_IDLE`) already
+    /// flow through the ordinary type-meta member route; they must surface as receiverless
+    /// `MemberLoadItem`s without any base materialization.
+    @Test
+    void buildExecutableBodyLowersCrossClassEnumConstantsAsReceiverlessLoads() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_cross_enum_constant.gd",
+                """
+                        class_name CfgBuilderCrossEnumConstant
+                        extends RefCounted
+                        
+                        class Base:
+                            enum { PARENT_IDLE = 3 }
+                        
+                        class Other extends Base:
+                            enum { IDLE = 9 }
+                        
+                        func own() -> int:
+                            return Other.IDLE
+                        
+                        func inherited() -> int:
+                            return Other.PARENT_IDLE
+                        """,
+                "own",
+                Map.of("CfgBuilderCrossEnumConstant", "RuntimeCfgBuilderCrossEnumConstant")
+        );
+        var ownReturn = assertInstanceOf(ReturnStatement.class, analyzed.function().body().statements().getFirst());
+        var ownExpression = assertInstanceOf(AttributeExpression.class, ownReturn.value());
+        var ownStep = assertInstanceOf(AttributePropertyStep.class, ownExpression.steps().getFirst());
+
+        var ownBuild = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var ownEntry = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, ownBuild.graph().requireNode(ownBuild.graph().entryNodeId()));
+        var ownStop = assertInstanceOf(FrontendCfgGraph.StopNode.class, ownBuild.graph().requireNode(ownEntry.nextId()));
+        var ownLoad = assertInstanceOf(MemberLoadItem.class, ownEntry.items().getFirst());
+
+        var inheritedFunction = requireFunctionDeclaration(analyzed.module().units().getFirst().ast(), "inherited");
+        var inheritedReturn = assertInstanceOf(ReturnStatement.class, inheritedFunction.body().statements().getFirst());
+        var inheritedExpression = assertInstanceOf(AttributeExpression.class, inheritedReturn.value());
+        var inheritedStep = assertInstanceOf(AttributePropertyStep.class, inheritedExpression.steps().getFirst());
+
+        var inheritedBuild = new FrontendCfgGraphBuilder().buildExecutableBody(inheritedFunction.body(), analyzed.analysisData());
+        var inheritedEntry = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, inheritedBuild.graph().requireNode(inheritedBuild.graph().entryNodeId()));
+        var inheritedLoad = assertInstanceOf(MemberLoadItem.class, inheritedEntry.items().getFirst());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(1, ownEntry.items().size()),
+                () -> assertSame(ownStep, ownLoad.anchor()),
+                () -> assertEquals("IDLE", ownLoad.memberName()),
+                () -> assertNull(ownLoad.baseValueIdOrNull()),
+                () -> assertEquals(List.of(), ownLoad.operandValueIds()),
+                () -> assertEquals(ownLoad.resultValueId(), ownStop.returnValueIdOrNull()),
+                () -> assertEquals(1, inheritedEntry.items().size()),
+                () -> assertSame(inheritedStep, inheritedLoad.anchor()),
+                () -> assertEquals("PARENT_IDLE", inheritedLoad.memberName()),
+                () -> assertNull(inheritedLoad.baseValueIdOrNull()),
+                () -> assertEquals(List.of(), inheritedLoad.operandValueIds())
+        );
+    }
+
+    /// A cross-class enum group at chain tail (`Other.State`) keeps its receiverless group
+    /// `MemberLoadItem`: there is no adjacent constant-member step to eliminate into, and body
+    /// lowering materializes the Dictionary value from the group fact.
+    @Test
+    void buildExecutableBodyKeepsCrossClassEnumGroupTailLoad() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_cross_enum_group_tail.gd",
+                """
+                        class_name CfgBuilderCrossEnumGroupTail
+                        extends RefCounted
+                        
+                        class Other:
+                            enum State { IDLE, JUMP = 5 }
+                        
+                        func table() -> Dictionary:
+                            return Other.State
+                        """,
+                "table",
+                Map.of("CfgBuilderCrossEnumGroupTail", "RuntimeCfgBuilderCrossEnumGroupTail")
+        );
+        var returnStatement = assertInstanceOf(ReturnStatement.class, analyzed.function().body().statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var groupStep = assertInstanceOf(AttributePropertyStep.class, expression.steps().getFirst());
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode(entryNode.nextId()));
+        var groupLoad = assertInstanceOf(MemberLoadItem.class, entryNode.items().getFirst());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(1, entryNode.items().size()),
+                () -> assertSame(groupStep, groupLoad.anchor()),
+                () -> assertEquals("State", groupLoad.memberName()),
+                () -> assertNull(groupLoad.baseValueIdOrNull()),
+                () -> assertEquals(List.of(), groupLoad.operandValueIds()),
+                () -> assertEquals(groupLoad.resultValueId(), stopNode.returnValueIdOrNull())
+        );
+    }
+
+    /// `Other.State.keys()`: the following step is a call, not a constant member, so the group
+    /// load is preserved and feeds the Dictionary method call as its receiver.
+    @Test
+    void buildExecutableBodyKeepsCrossClassEnumGroupDictionaryCallContinuation() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_cross_enum_group_call.gd",
+                """
+                        class_name CfgBuilderCrossEnumGroupCall
+                        extends RefCounted
+                        
+                        class Other:
+                            enum State { IDLE, JUMP = 5 }
+                        
+                        func names() -> Array:
+                            return Other.State.keys()
+                        """,
+                "names",
+                Map.of("CfgBuilderCrossEnumGroupCall", "RuntimeCfgBuilderCrossEnumGroupCall")
+        );
+        var returnStatement = assertInstanceOf(ReturnStatement.class, analyzed.function().body().statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var groupStep = assertInstanceOf(AttributePropertyStep.class, expression.steps().getFirst());
+        var callStep = assertInstanceOf(AttributeCallStep.class, expression.steps().get(1));
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode(entryNode.nextId()));
+        var groupLoad = assertInstanceOf(MemberLoadItem.class, entryNode.items().get(0));
+        var keysCall = assertInstanceOf(CallItem.class, entryNode.items().get(1));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(2, entryNode.items().size()),
+                () -> assertSame(groupStep, groupLoad.anchor()),
+                () -> assertEquals("State", groupLoad.memberName()),
+                () -> assertNull(groupLoad.baseValueIdOrNull()),
+                () -> assertSame(callStep, keysCall.anchor()),
+                () -> assertEquals("keys", keysCall.callableName()),
+                () -> assertEquals(List.of(groupLoad.resultValueId()), keysCall.operandValueIds()),
+                () -> assertEquals(keysCall.resultValueId(), stopNode.returnValueIdOrNull())
+        );
+    }
+
+    /// `Other.State["IDLE"]`: the parser folds the group name into a single head subscript step
+    /// carrying the RESOLVED enum group fact, so the group Dictionary load is preserved in the
+    /// static-container shape (receiverless `MemberLoadItem` + plain key subscript) and no
+    /// constant folding happens at CFG level.
+    @Test
+    void buildExecutableBodyKeepsCrossClassEnumGroupSubscriptContinuation() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_cross_enum_group_subscript.gd",
+                """
+                        class_name CfgBuilderCrossEnumGroupSubscript
+                        extends RefCounted
+                        
+                        class Other:
+                            enum State { IDLE, JUMP = 5 }
+                        
+                        func current():
+                            return Other.State["IDLE"]
+                        """,
+                "current",
+                Map.of("CfgBuilderCrossEnumGroupSubscript", "RuntimeCfgBuilderCrossEnumGroupSubscript")
+        );
+        var returnStatement = assertInstanceOf(ReturnStatement.class, analyzed.function().body().statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var subscriptStep = assertInstanceOf(AttributeSubscriptStep.class, expression.steps().getFirst());
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode(entryNode.nextId()));
+        var groupLoad = assertInstanceOf(MemberLoadItem.class, entryNode.items().get(0));
+        var keyItem = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().get(1));
+        var subscriptLoad = assertInstanceOf(SubscriptLoadItem.class, entryNode.items().get(2));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(3, entryNode.items().size()),
+                // The group load is anchored at the subscript step (chain binding re-anchors the
+                // enum group member fact there) and carries no receiver value id.
+                () -> assertSame(subscriptStep, groupLoad.anchor()),
+                () -> assertEquals("State", groupLoad.memberName()),
+                () -> assertNull(groupLoad.baseValueIdOrNull()),
+                () -> assertEquals(List.of(), groupLoad.operandValueIds()),
+                // The subscript is a plain base[key] read on the group Dictionary value.
+                () -> assertSame(subscriptStep, subscriptLoad.anchor()),
+                () -> assertNull(subscriptLoad.memberNameOrNull()),
+                () -> assertEquals(groupLoad.resultValueId(), subscriptLoad.baseValueId()),
+                () -> assertEquals(List.of(keyItem.resultValueId()), subscriptLoad.argumentValueIds()),
+                () -> assertEquals(subscriptLoad.resultValueId(), stopNode.returnValueIdOrNull())
+        );
+    }
+    /// Global engine enum loads (`Side.SIDE_LEFT`) keep the existing type-meta route: the head
+    /// binds as GLOBAL_ENUM type-meta and the constant is engine metadata, not a
+    /// `GdScriptEnumConstant`, so neither script-enum branch may fire.
+    @Test
+    void buildExecutableBodyKeepsGlobalEngineEnumRouteUnchanged() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_engine_enum_route.gd",
+                """
+                        class_name CfgBuilderEngineEnumRoute
+                        extends RefCounted
+                        
+                        func side() -> int:
+                            return Side.SIDE_LEFT
+                        """,
+                "side",
+                Map.of("CfgBuilderEngineEnumRoute", "RuntimeCfgBuilderEngineEnumRoute")
+        );
+        var returnStatement = assertInstanceOf(ReturnStatement.class, analyzed.function().body().statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var memberStep = assertInstanceOf(AttributePropertyStep.class, expression.steps().getFirst());
+
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode(build.graph().entryNodeId()));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode(entryNode.nextId()));
+        var memberLoad = assertInstanceOf(MemberLoadItem.class, entryNode.items().getFirst());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(1, entryNode.items().size()),
+                () -> assertSame(memberStep, memberLoad.anchor()),
+                () -> assertEquals("SIDE_LEFT", memberLoad.memberName()),
+                () -> assertNull(memberLoad.baseValueIdOrNull()),
+                () -> assertEquals(List.of(), memberLoad.operandValueIds()),
+                () -> assertEquals(memberLoad.resultValueId(), stopNode.returnValueIdOrNull())
+        );
+    }
+
     /// Type-meta head subscript write (`Worker.values[i] = v`): the assignment payload is rooted at
     /// `STATIC_CONTEXT`, the leaf is a plain SUBSCRIPT on the loaded container value, and the
     /// promoted static property sits as the single terminal commit step — the same route shape the

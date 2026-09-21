@@ -427,6 +427,12 @@ public final class CGenHelper {
         return renderLambdaImplName(classDef, function) + "_get_argument_count";
     }
 
+    /// Identity-struct symbol for one lambda: the emitted `gdcc_hrx_identity` static that
+    /// both the creation site and the module rebind table reference.
+    public @NotNull String renderLambdaHrxIdentitySymbol(@NotNull ClassDef classDef, @NotNull FunctionDef function) {
+        return renderLambdaImplName(classDef, function) + "_hrx_identity";
+    }
+
     /// Heap / local capture-struct field storage. Object captures stay fat pointers by value.
     public @NotNull String renderLambdaCaptureFieldTypeInC(@NotNull GdType captureType) {
         TypeCheckUtil.requireNonCompilerOnly(captureType, "lambda capture field");
@@ -468,21 +474,25 @@ public final class CGenHelper {
         return copyFunc + "(&(" + sourceExpr + "))";
     }
 
-    /// `free_func` cleanup for one heap capture field. Object fields release via the fat-pointer
-    /// live raw + cached `instance_id`; destroyable builtins use the ordinary destroy helper.
+    /// `free_func` cleanup for one heap capture field. Object fields resolve `instance_id`
+    /// through ObjectDB before release — cached GDCC wrappers are never dereferenced during
+    /// teardown (hot-reload bulk clear frees wrappers while the referenced Godot objects stay
+    /// alive); destroyable builtins use the ordinary destroy helper.
     public @NotNull String renderLambdaCaptureFreeStmt(@NotNull GdType captureType, @NotNull String fieldExpr) {
         return renderManagedStorageFreeStmt(captureType, fieldExpr);
     }
 
     /// Single-point cleanup formula for one owned managed storage slot (lambda capture field or
-    /// static backing variable). Object storage releases through the fat-pointer live raw plus
-    /// cached `instance_id` per `RefCountedStatus`; destroyable builtins use the destroy helper;
-    /// everything else needs no cleanup.
+    /// static backing variable). Object storage releases through the instance ID resolved via
+    /// ObjectDB (`gdcc_object_live_ptr`) — NEVER through the cached fat-pointer wrapper:
+    /// during a hot reload the engine frees a GDCC wrapper while its Godot object is still
+    /// alive (bulk `clear_internal_extension` order is arbitrary), so dereferencing a cached
+    /// wrapper in any teardown path (free_instance, capture free, static teardown) is a UAF.
+    /// Destroyable builtins use the destroy helper; everything else needs no cleanup.
     private @NotNull String renderManagedStorageFreeStmt(@NotNull GdType storageType, @NotNull String storageExpr) {
         TypeCheckUtil.requireNonCompilerOnly(storageType, "managed storage free");
         if (storageType instanceof GdObjectType objectType) {
-            var fatType = renderObjectFatPtrStorageType(objectType);
-            var liveExpr = fatType + "_live_object(" + storageExpr + ")";
+            var liveExpr = "gdcc_object_live_ptr(" + storageExpr + ".instance_id)";
             return switch (context.classRegistry().getRefCountedStatus(objectType)) {
                 case YES -> "release_object(" + liveExpr + ");";
                 case UNKNOWN -> "try_release_object(" + liveExpr + ", " + storageExpr + ".instance_id);";
@@ -1538,8 +1548,26 @@ public final class CGenHelper {
     /// with the property type class name as hint_string and class_name (Godot parity). Other
     /// Object types were already rejected by the frontend export validation; if one still reaches
     /// here it falls through to the plain type-derived surface.
+    ///
+    /// Script-enum exception: the frontend writes the generated `Name:value` hint_string under
+    /// the bare `export` key, so an int property carrying a non-empty value renders
+    /// `PROPERTY_HINT_ENUM` with that string — the editor dropdown consumes exactly these two
+    /// fields. An empty value is the plain bare-export encoding and keeps the type-derived
+    /// mapping. Godot additionally ORs `PROPERTY_USAGE_CLASS_IS_ENUM` and sets class_name to the
+    /// enum type name, but the erased LIR no longer carries that name; the divergence is
+    /// recorded as a known limitation in `frontend_annotation_implementation.md`.
     private @NotNull BoundMetadata renderBareExportPropertyMetadata(@NotNull PropertyDef propertyDef) {
         var type = propertyDef.getType();
+        var exportValue = propertyDef.getAnnotations().get("export");
+        if (type instanceof GdIntType && exportValue != null && !exportValue.isEmpty()) {
+            return new BoundMetadata(
+                    "GDEXTENSION_VARIANT_TYPE_INT",
+                    "godot_PROPERTY_HINT_ENUM",
+                    "GD_STATIC_S(u8\"" + escapeStringLiteral(exportValue) + "\")",
+                    "GD_STATIC_SN(u8\"\")",
+                    "godot_PROPERTY_USAGE_DEFAULT"
+            );
+        }
         if (type instanceof GdObjectType objectType) {
             var hintEnumLiteral = resolveExportObjectHintEnum(objectType);
             if (hintEnumLiteral != null) {
@@ -1897,6 +1925,19 @@ public final class CGenHelper {
     /// (`self->_super._super._vtable`). Walks the WRAPPER chain via the registry — mirroring
     /// the struct-embedding decision in entry.h.ftl — so pass-through ancestors are never skipped.
     public @NotNull String renderVtableFieldAccessExpr(@NotNull String className) {
+        return renderRootWrapperFieldAccessExpr(className, "_vtable");
+    }
+
+    /// Expression reaching the root `_gdcc_destructed` guard flag from a `<C>* self` — same
+    /// wrapper `_super` chain walk as the vtable field (the flag lives only in the root
+    /// segment, shared by every derived wrapper through offset-0 embedding).
+    public @NotNull String renderDestructedFlagAccessExpr(@NotNull String className) {
+        return renderRootWrapperFieldAccessExpr(className, "_gdcc_destructed");
+    }
+
+    /// Shared root-segment field access: `self-><field>` for root classes, otherwise one
+    /// `_super` hop per GDCC wrapper ancestor (`self->_super._super.<field>`).
+    private @NotNull String renderRootWrapperFieldAccessExpr(@NotNull String className, @NotNull String fieldName) {
         var registry = context.classRegistry();
         var chain = new StringBuilder("self");
         var visited = new HashSet<String>();
@@ -1905,7 +1946,7 @@ public final class CGenHelper {
             var currentDef = registry.findGdccClass(current);
             if (currentDef == null) {
                 throw new IllegalArgumentException(
-                        "Unknown GDCC class '" + current + "' while rendering the vtable field access of '" + className + "'");
+                        "Unknown GDCC class '" + current + "' while rendering the root field access of '" + className + "'");
             }
             var superName = currentDef.getSuperName();
             if (!registry.isGdccClass(superName)) {
@@ -1913,12 +1954,12 @@ public final class CGenHelper {
             }
             if (!visited.add(superName)) {
                 throw new IllegalStateException(
-                        "Detected GDCC inheritance cycle while rendering the vtable field access of '" + className + "'");
+                        "Detected GDCC inheritance cycle while rendering the root field access of '" + className + "'");
             }
             chain.append(chain.length() == "self".length() ? "->_super" : "._super");
             current = superName;
         }
-        chain.append(chain.length() == "self".length() ? "->_vtable" : "._vtable");
+        chain.append(chain.length() == "self".length() ? "->" : ".").append(fieldName);
         return chain.toString();
     }
 

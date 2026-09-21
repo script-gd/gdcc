@@ -48,9 +48,9 @@ extend the runtime-provided `godot_*` surface.
 
 - `gdcc_likely.h`: portable `likely(...)` / `unlikely(...)` branch prediction macros.
 - `gdcc_string.h`: static `godot_String` registry and `GD_STATIC_S(...)` helper used by generated
-  registration code.
+  registration code. See §Static String/StringName Registry.
 - `gdcc_string_name.h`: static `godot_StringName` registry plus `GD_STATIC_SN(...)` and
-  `GD_STATIC_SN_HASH(...)` helpers.
+  `GD_STATIC_SN_HASH(...)` helpers. See §Static String/StringName Registry.
 - `gdcc_bind.h`: property metadata helpers and the `GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(...)`
   macro used by generated exact-engine method-bind accessors.
 - `gdcc_call.h`: convenience Variant packers and `GD_OBJECT_CALL*` helpers for dynamic object calls.
@@ -127,14 +127,34 @@ extend the runtime-provided `godot_*` surface.
     default-argument materialization) carry them. A `call_global "load"` reaching the backend
     fails fast as malformed IR.
 - `gdcc_callable.h`: custom Callables for `construct_standalone_callable` and
-  `construct_lambda`. Owns `gdcc_new_standalone_callable` (growable heap intern table of
-  `gdcc_standalone_callable_spec`, one `godot_mem_alloc` per unique `(kind, owner, name)`,
-  `ClassDB.class_call_static` forwarding, `gdcc_standalone_callable_registry_destroy_all()`
-  on unload) and `gdcc_new_lambda_callable(userdata, object_id, call/is_valid/free/argc)`.
+  `construct_lambda`, in two dispatch modes decided by `gdcc_hrx_get_mode()` at call time
+  (§HRX Hot-Reload Thunk Runtime below):
+  - **DIRECT mode** (non-editor processes, and pure-C fixtures that never initialize HRX):
+    the legacy behavior, observably unchanged. Owns `gdcc_new_standalone_callable`
+    (growable heap intern table of `gdcc_standalone_callable_spec` — an alias of
+    `gdcc_hrx_standalone_payload` so both modes share one `call` implementation —
+    one `godot_mem_alloc` per unique `(kind, owner, name)`, `ClassDB.class_call_static`
+    forwarding, `gdcc_standalone_callable_registry_destroy_all()` on unload) and
+    `gdcc_new_lambda_callable(userdata, object_id, call/is_valid/free/argc, hrx_identity)`.
+  - **HRX ACTIVE mode** (editor processes with executable memory): both entries delegate to
+    `gdcc_hrx_create_lambda` / `gdcc_hrx_create_standalone`; Callables carry heap-resident
+    thunks and standalone interning moves into the hub — the legacy registry above then
+    stays empty, so its `destroy_all` remains a safe no-op and the two never own the same
+    spec. The trailing `hrx_identity` argument (a module-catalog `gdcc_hrx_identity` struct)
+    is consumed only in this mode; standalone specs always have `destroy_fn == NULL` because
+    their fixed-ABI payload is released unconditionally as shell metadata.
+  - **HRX UNAVAILABLE mode** (editor processes where executable memory probing failed):
+    creation is refused fail-closed (invalid Callable + one-time error), never a fallback to
+    the direct path; the caller's capture block is consumed with its `free_func`, mirroring
+    the "failed creation drops the last reference" semantics.
   Lambda `object_id` is supplied by the caller from a cached fat-pointer `instance_id`
   when the lambda captures `self`; otherwise it is `0`. The helper never recovers an ID
   from a raw object pointer. Hash/equal stay Godot's default (`call_func` + userdata
-  pointer identity). The includer must declare `class_library` first.
+  pointer identity; in HRX mode the shared `(thunk, spec)` pair preserves that semantics
+  for interned standalones). The includer must declare `class_library` first.
+- `gdcc_hrx.h` / `gdcc_hrx.c`: hot-reload exchange (HRX) runtime — heap-resident thunk
+  machinery for custom Callables (§HRX Hot-Reload Thunk Runtime). Not header-only: a real
+  translation unit added to native compiler inputs.
   - Object **values** in generated code are per-type fat pointers (`gdcc_<Type>_fat_ptr` from
     module `object_fat_ptr_types.h`); `gdcc_helper.h` owns the shared raw/ID query and lifecycle
     surface used by those helpers.
@@ -171,6 +191,46 @@ extend the runtime-provided `godot_*` surface.
   See §Coroutine Runtime for the full contract. Unlike the other `gdcc/**` helpers these two
   files are not header-only: `gdcc_coroutine.c` is a real translation unit, added to native
   compiler inputs together with `minicoro.c`.
+
+## Static String/StringName Registry
+
+This section freezes the intern-and-destroy contract for generated String/StringName literals
+(`GD_STATIC_S`, `GD_STATIC_SN`, `GD_STATIC_SN_HASH`). It is **not** the HRX standalone Callable
+intern table in `gdcc_callable.h` / §HRX, whose `generation` is a hub/spec field with a different
+lifetime. Hot-reload lifecycle placement is in `hot_reload_implementation.md` §4.1.
+
+Each header owns a TU-local `static` registry (`g_n_registry` / `g_sn_registry`) with
+`items` / `count` / `capacity` / `generation`. `generation` starts at `0`. Function-local
+expansion-site stamps start at `GDCC_REGISTRY_GEN_NEVER` (`UINT64_MAX`, defined once under
+`#ifndef` because both headers usually share a TU).
+
+- `destroy_all()` destroys every registered Godot value, frees the `items` array, zeros
+  `items`/`count`/`capacity`, then increments `generation`. An empty registry is a safe no-op
+  that still advances `generation`. If the increment lands on `GDCC_REGISTRY_GEN_NEVER` it wraps
+  to `0`, so the sentinel never aliases a live generation.
+- The three macros gate reconstruction on stamp ≠ current TU-local `generation`. A mismatch
+  rebuilds the Godot value, re-registers the pointer, and stores the current generation. Same-
+  generation re-entry is a single 64-bit compare; no thread/TLS (see
+  `hot_reload_implementation.md` §3.3).
+- Fresh image: stamp `NEVER` ≠ registry `0` → normal first init. Same-image reuse (function-
+  local statics survive `destroy_all`): leftover stamp `n` ≠ bumped `n+1` → rebuild. A NEVER-
+  stamped site may initialize against any current generation, not only `0`.
+- `GD_STATIC_SN_HASH` keeps an independent hash stamp. The inner `GD_STATIC_SN` expansion's
+  function-local static is not visible across statement expressions, and the hash must be
+  recomputed whenever the StringName was rebuilt.
+- There is no content dedup: each expansion site registers its own storage once per generation.
+- Per-TU ownership: expansions register into whichever TU includes the header. Live production
+  calls must share that copy with `gdcc_sn_registry_destroy_all` / `gdcc_s_registry_destroy_all`
+  in generated `entry.c` (`entry.c.ftl` after class unregistration, before HRX deinitialize).
+  Runtime `.c` files (`gdcc_hrx.c`, `gdcc_coroutine.c`, …) include `gdcc_helper.h` and therefore
+  expand `gdcc_bind.h` helpers that contain these macros, but they must not call those helpers
+  or the macros themselves — their TU-local copy would leak on unload and would never be
+  re-armed. Tests that include the two headers directly are themselves the registry-owning TU.
+- After `destroy_all()`, generated and runtime code must not expand the macros again in that
+  deinitialize. Class unregistration still runs with the registries alive.
+- Same-image reconstruction keeps ClassDB registration and interned literals valid; it does not
+  make a same-path `dlopen` execute new code. Loading new code on macOS requires a fresh library
+  path (`hot_reload_implementation.md` §10).
 
 ## Coroutine Runtime (minicoro + gdcc_coroutine)
 
@@ -240,6 +300,16 @@ typed-slot callbacks) is generated by the backend templates.
   - `obj`: `GDExtensionObjectPtr` back-pointer to the state object, filled at creation.
   - `co`: `mco_coro *` (NULL until the entry thunk creates the coroutine).
   - `done` / `cancel` flags.
+  - `reloaded_shell` flag: RELOADED_SHELL terminal state set only by the generated
+    `recreate_instance_func` on the engine hot-reload path
+    (`hot_reload_implementation.md`). Mutually exclusive with running any body:
+    `gdcc_coro_finalize`, `gdcc_coro_cancel` and `gdcc_coro_register_waiter` all
+    short-circuit on it — awaiting a shell returns the determined cancellation result
+    immediately without suspending (Variant waiters get nil, typed waiters keep their
+    default slot), the shell never resumes waiters and never emits `completed`. The
+    generated shell wrapper is zeroed before header init, so the existing `free_instance`
+    cleanup stays safe and idempotent (`co == NULL`, empty waiters, nil `result_cache`,
+    never-written return slot).
   - `result_cache`: `godot_Variant`, always in constructed state from `POSTINITIALIZE`
     (zero-initialized storage is a nil Variant); `free_instance` destroys it
     unconditionally. Because the storage is always constructed, every write into it must
@@ -247,6 +317,21 @@ typed-slot callbacks) is generated by the backend templates.
     then `godot_variant_new_copy(&result_cache, ...)`; never `new_copy` into constructed
     storage, never `memset` over a live Variant.
   - `waiters`: head of the waiter list (`gdcc_coro_waiter`).
+  - `signal_reg`: editor-only registration of an in-flight one-shot signal wait (opaque
+    `gdcc_coro_signal_reg *`, owned by the connect/free-callback pair); published to the
+    state header only after a successful connect, and cleared by the wait free callback
+    (which may lag the connection removal until the current emission completes — a
+    coroutine resuspended on a second signal inside the callback has already published its
+    newer registration, protected by the identity guard). Consumed by
+    `gdcc_coro_cancel_all` to disconnect the pending signal before cancel-resuming. No
+    registration is allocated at all when the hot-reload gate is off (see
+    `gdcc_coro_set_hot_reload_active`).
+  - `active_prev` / `active_next`: intrusive links of the module-local active-coroutine
+    list (non-owning). The generated start thunk links a state right after a successful
+    `mco_create` (OOM states and RELOADED_SHELLs are never linked, and linking is a no-op
+    while the hot-reload gate is off); `gdcc_coro_finalize`, `gdcc_coro_cancel` and
+    `gdcc_coro_state_free` unlink idempotently regardless of the gate, so the list holds
+    exactly the in-flight, cancellable states.
 - `gdcc_coro_state_desc`: per-class descriptor carrying generated callbacks, so the generic
   TU never touches typed frame fields:
   - `pack_result(state)`: finalize step 1; copies the typed return slot into `result_cache`
@@ -277,7 +362,9 @@ typed-slot callbacks) is generated by the backend templates.
 - `gdcc_coro_state_free(state)`: the generic half of the state class `free_instance` —
   reports a runtime error if the coroutine is neither `MCO_DEAD` nor never-created
   (`co == NULL` on the OOM path), skips `mco_destroy` when `co == NULL`, otherwise
-  `mco_destroy`, destroys the always-constructed `result_cache`, and revokes `magic`. The
+  `mco_destroy`, destroys the always-constructed `result_cache`, and revokes `magic`.
+  Also defensively unlinks the state from the editor-only active list (finalize/cancel normally
+  already did). The
   generated `free_instance` half calls `desc->destroy_ret_slot` **exactly once**, then
   destroys the typed parameter fields and frees the wrapper.
 - `gdcc_coro_state_slot_init()` / `gdcc_coro_state_slot_destroy(slot)`: slot helpers for
@@ -308,7 +395,14 @@ typed-slot callbacks) is generated by the backend templates.
   arguments; callback arguments are only ever copied, never consumed) and then
   `mco_resume(co)`. Connect failure is a deliberate deviation from Godot's
   hang-forever-after-failed-connect: report a runtime error, fill `out` with nil, and
-  return **without** suspending.
+  return **without** suspending. Editor-only registration contract: after a successful connect the
+  wait is registered on the state header (`signal_reg`, carrying a Signal copy plus the
+  wait userdata); the free callback clears that registration (only when it still names
+  this registration — a coroutine resuspended on a second signal inside the same emission
+  must not lose the newer registration) and destroys the Signal copy. The registration
+  lives until the connection's last Callable copy is released: on a one-shot emission the
+  engine removes the connection BEFORE the callback but keeps a local Callable reference
+  until the emission completes, so the clear may lag the removal — never longer.
 - `gdcc_coro_await_state(gdcc_coro_state_header *callee, void *out_typed, mco_coro *co,
   gdcc_coro_state_header *self)`: static coroutine-call path. If `callee->done`,
   `desc->copy_ret_slot(callee, out_typed)` copies the typed result out and returns
@@ -381,19 +475,148 @@ typed-slot callbacks) is generated by the backend templates.
   `desc->destroy_ret_slot`. `co == NULL` (the coroutine frame was never
   created, e.g. OOM in the thunk) is tolerated: cancel does not resume anything, and
   `free_instance` still performs its ordinary cleanup of the already-initialized state
-  fields.
+  fields. Cancel also unlinks the state from the editor-only active list (idempotent), which is
+  what makes the nested-PREDELETE cascades triggered by its own waiter-edge releases safe
+  during a bulk cancel.
+- `gdcc_coro_active_link(state)`: active-list insertion, called by the generated
+  start thunk immediately after a successful `mco_create` and before the first
+  `mco_resume` (never for OOM states or RELOADED_SHELLs). Idempotent; unlinking is always
+  runtime-internal (finalize / cancel / `gdcc_coro_state_free`). No-op when the
+  hot-reload gate is off.
+- `gdcc_coro_set_hot_reload_active(bool)`: editor-only tracking gate, module-global, default
+  false. The generated `initialize()` sets it from `is_editor_hint()` right after
+  `gdcc_init()` — true only in the editor process, where a reload can actually happen.
+  When off (release exports, editor-launched game processes, pure-C fixtures that never
+  set it), tracking is bypassed: `gdcc_coro_active_link` and
+  `gdcc_coro_cancel_all` are no-ops and no per-await signal registration is allocated, so
+  coroutines keep the ordinary lifecycle with zero tracking cost. The ordinary
+  lifecycle (await/finalize/PREDELETE cancel) is unaffected either way.
+- `gdcc_coro_cancel_all()`: bulk abandonment for hot reload, called from the
+  generated `deinitialize()` before static teardown and class unregistration, so
+  every in-flight coroutine is deterministically abandoned while the whole runtime is
+  still operational. Head-pop loop (released waiter edges may cascade PREDELETEs that
+  unlink and free other listed states, so the head is re-read every round and `next` is
+  never cached); per state: unlink, take a temporary strong reference (the signal detach
+  releases the connection's keep-alive edge; the cancel may release the last waiter
+  edge), disconnect a pending one-shot signal wait, then run the ordinary cancel path.
+  The disconnect rebuilds a Callable that is equal to the connection's under Godot's
+  default custom-Callable equality (`call_func` + `userdata`,
+  `gdextension_interface.cpp` `default_compare_equal`) purely as a lookup key — in DIRECT
+  mode it is a fresh lambda Callable with a NULL free callback (the connection's own
+  handle releases the wait exactly once), while in HRX mode it is a
+  `gdcc_hrx_callable_retain` on the registration's stored spec (the identity there is the
+  shared `(thunk, spec)` pair; the retained key only drops the refcount on destroy).
+  After the detach a later emission can never resume the dead coroutine or write into a
+  freed frame. Finalized states (already unlinked), OOM states and RELOADED_SHELLs
+  (never linked) are untouched; the call is idempotent.
 - `free_instance` of a state class asserts the coroutine is `MCO_DEAD` or never-created
   (`co == NULL`, OOM path; via `gdcc_coro_state_free`), then — in generated code — calls
   `desc->destroy_ret_slot` exactly once, destroys the typed parameter fields and frees the
   wrapper.
 
+## HRX Hot-Reload Thunk Runtime (gdcc_hrx)
+
+This section freezes the HRX runtime contract (source of truth:
+`module_impl/backend/hot_reload_implementation.md`). It exists so a custom Callable held
+by Godot never stores a library code address: in editor processes every
+`call`/`free`/`is_valid`/`get_argument_count` pointer is a thunk emitted into executable
+heap memory owned by no library image, so the pointers stay valid across
+`dlclose`/`dlopen`, and the new library generation rebinds the surviving Callables to new
+implementations by identity key. Observable rebind / invalidation / deferred-copy
+semantics and the direct-path split are covered by
+`GodotEditorHotReloadIntegrationTest` and `GodotRuntimeDirectPathIntegrationTest`.
+
+- **Three-state mode machine** (process-frozen at `gdcc_hrx_initialize`, called by the
+  generated `initialize()` before any class registration): `DIRECT_NON_RELOAD` (non-editor
+  process: no hub, no anchor, no executable memory; the legacy direct path), `HRX_ACTIVE`
+  (editor + probe success: thunk path), `HRX_UNAVAILABLE` (editor + probe failure:
+  fail-closed, creation refused, **never** a fallback to direct). If an older generation
+  already published a hub, the new generation takes it over regardless of the probe result
+  (a foreign/corrupt anchor is **not** such proof: after orphaning it, the probe still gates
+  the fresh hub). `gdcc_hrx_execmem_probe()` runs the full RW→write→RX→execute→unmap round
+  trip. Architectures without a thunk template set (e.g. riscv64) still compile the runtime;
+  the probe fails closed there so export builds for those targets keep working.
+- **Thunk templates**: hand-assembled, position-independent, ABI-frozen byte arrays for
+  x86_64 SysV (also macOS Intel), x86_64 Win64 and aarch64 (icache flushed after writes) —
+  **zero runtime patching**: the spec arrives via the callback's first argument (Godot
+  always passes `callable_userdata`, verified `gdextension_interface.cpp:132-170,230-234`),
+  and the free thunk reaches the hub through the spec's `hub` back-pointer
+  (`spec->hub->sweeper`). A thunk only reads its spec, marks state and tail-calls: no heap
+  allocation, no list mutation, no Variant destruction. The free thunk decrements `refcount`
+  first and only the zero crossing sets `dead` and tail-jumps the current sweeper (a shared
+  spec must never die early); `call` swaps arg0 to the capture block and forwards the rest
+  untouched; `get_argument_count` implements the two-parameter ABI from spec data.
+- **Shared thunk page**: all four role thunks are written into ONE OS page
+  (`mmap`/`VirtualAlloc`, RW→RX) **once at hub creation** — before any Callable exists —
+  and the page is **never written again**, so no protection demote of a page holding
+  published code can ever occur (this replaces the per-spec slab-slot design: a stuck-RX
+  restore there would have stranded live sibling thunks on a non-executable page). Every
+  spec's function pointers reference the same page at frozen role offsets; the page lives
+  exactly as long as its hub (thunk addresses stay constant across reload generations;
+  an orphaned hub's page leaks with it, on purpose).
+- **Hub + anchor**: the cross-generation `gdcc_hrx_hub` (registry roster, standalone
+  interning table, sweeper slot, sweep-depth/pending queue, shared thunk page) is reached through
+  the Engine singleton's **instance binding** under a per-extension constant token
+  (codegen-derived from the module name; only ever compared, never dereferenced). Lookup
+  always uses `object_get_instance_binding` (append semantics — `set_instance_binding`
+  only writes slot 0 and would fail when occupied); the callbacks handed to the engine
+  have `free`/`reference` == NULL (the engine copies them) and a non-NULL
+  `create_callback` (never stored). The engine keeps a freshly appended slot even when
+  `create_callback` returns NULL (object.cpp:2116-2147), so every failed creation must
+  immediately drop that NULL tombstone with `object_free_instance_binding` — otherwise it
+  shadows every later lookup of the token (first match wins) and no hub could ever take
+  over. initialize additionally runs a bounded tombstone sweep (free-first-match per
+  iteration, cap `GDCC_HRX_TOMBSTONE_SWEEP_MAX`) before the hub lookup, so a valid hub
+  buried under stacked tombstones (repeated failed creations or an unfixed runtime build)
+  surfaces and is taken over. Magic/version mismatch orphans the old hub untouched
+  (leak-on-purpose) and mounts a fresh one.
+- **Spec**: Godot-heap `gdcc_hrx_spec` with explicit initialization; identity fields
+  (`impl_key`, canonical `schema_desc`, 128-bit fingerprint, `callsite_context`) are
+  heap copies because generated `.rodata` dies with the image. `callsite_context` is an
+  append-only ABI-v2 tail field (`GDCC_HRX_ABI_VERSION == 2`, pinned at offset 136 by a
+  static assert; `GDCC_HRX_HUB_VERSION` stays 3): v1 blocks end before it, so it is only
+  ever read or freed (`gdcc_hrx_shell_free`) under an `abi_version >= 2` guard, and the
+  first v1→v2 reload invalidates every v1 spec (expected one-time event).
+  `callable_userdata` is pinned to the spec, and
+  the thunk reads the capture block from it. Life/death is `dead` (free thunk only);
+  `binding_state` (BOUND/UNBOUND) is written by main-library code only.
+- **Standalone interning**: a hub intern-table hit is reused only while the spec is alive,
+  `BOUND_COMPATIBLE` **and** descriptor-identical to the requested identity. A schema-changing
+  reload leaves the old standalone an interned zombie (fail-closed for its existing
+  Callables); the new generation's same-key create detaches that zombie from the intern
+  table and builds a fresh spec, so the new signature works while old Callables stay
+  invalid. Identity keys are canonicalized to the resolved declaring-class owner at codegen
+  time (an inherited static referenced through a subclass and through its declaring class
+  is one identity).
+- **Generation lifecycle**: `gdcc_hrx_initialize` registers the current sweeper and runs a
+  single-pass rebind followed by a two-phase sweep. The rebind applies three gates in
+  order — the `abi_version` guard FIRST (a v1 spec predates `callsite_context`, so the
+  field may only be read when `spec->abi_version == GDCC_HRX_ABI_VERSION`; a mismatch
+  fails closed without touching the tail), then `impl_key` lookup, then byte-identical
+  `schema_desc`, then NULL-safe `callsite_context` equality (NULL==NULL matches, which
+  keeps standalones rebinding; exactly one NULL never matches). Survivors passing all
+  gates are upgraded in place to the new implementation; mismatches stay UNBOUND. The
+  two-phase sweep defers all destruction until every survivor is rebound; dead specs are
+  destroyed through the **rebind table's** `destroy_fn` — never the spec's NULLed
+  pointers — and only when fingerprint AND descriptor match; otherwise the capture block
+  is intentionally leaked while shell metadata is always freed (the `callsite_context`
+  copy only under the `abi_version >= 2` guard). `gdcc_hrx_deinitialize` (last
+  teardown step) detaches the sweeper and NULLs every spec's function pointers.
+- **Coroutine signal waiters**: included in HRX but with no rebind identity — callable this
+  generation, permanently invalid after a reload (never a jump into unloaded code). The
+  bulk-cancel detach rebuilds its EQUAL lookup key via `gdcc_hrx_callable_retain` on the
+  registration's stored spec (same `(thunk, spec)` pair under Godot's default identity).
+- **Thread contract**: a custom Callable's whole lifecycle (create, copy, store, connect,
+  call, final release) must stay on the main thread; the runtime does not police violations.
+  `Callable(object, "method")` connections are unaffected and always valid across reloads.
+
 ### Compile wiring
 
-`CProjectBuilder.buildProject(...)` appends `<includeRoot>/gdcc/minicoro.c` and
-`<includeRoot>/gdcc/gdcc_coroutine.c` to the native compiler inputs next to
-`<includeRoot>/godot/godot_binding.c`. The `godot_binding.c` aggregation structure is
-unchanged. Resource extraction already covers the whole `gdcc/**` tree, so the new files
-need no extra extraction rules.
+`CProjectBuilder.buildProject(...)` appends `<includeRoot>/gdcc/minicoro.c`,
+`<includeRoot>/gdcc/gdcc_coroutine.c` and `<includeRoot>/gdcc/gdcc_hrx.c` to the native
+compiler inputs next to `<includeRoot>/godot/godot_binding.c`. The `godot_binding.c`
+aggregation structure is unchanged. Resource extraction already covers the whole `gdcc/**`
+tree, so the new files need no extra extraction rules.
 
 ## Binding Generator Overview
 

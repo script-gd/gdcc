@@ -47,6 +47,20 @@ public interface ClassDef {
 
     boolean hasFunction(@NotNull String functionName);
 
+    /// Returns script-source constants declared by this class, in declaration order.
+    ///
+    /// This table is the GDScript-side constant channel only (currently script enum members and
+    /// named enum groups; user-level `const` is deferred but will reuse it). Engine/builtin class
+    /// constants stay on the extension metadata channel
+    /// (`ClassRegistry.findEngineClassConstantInHierarchy(...)` and friends) and never appear
+    /// here, so non-GDCC class definitions keep the default empty table. The backend does not
+    /// consume this table.
+    @NotNull
+    @UnmodifiableView
+    default List<? extends GdScriptClassConstant> getScriptConstants() {
+        return List.of();
+    }
+
     /**
      * For LIR-described user classes this is always true.
      */

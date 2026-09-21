@@ -23,6 +23,16 @@
 
 typedef struct gdcc_coro_state_header gdcc_coro_state_header;
 
+/// Opaque editor-only registration of one in-flight one-shot signal wait.
+/// Published to the state header only after a
+/// successful connect and cleared by the wait free callback — which may lag the connection
+/// removal until the current emission releases its last Callable copy (a coroutine
+/// resuspended on a second signal inside the callback has already published its newer
+/// registration, protected by the identity guard). Consumed by `gdcc_coro_cancel_all` to
+/// disconnect the pending signal before cancel-resuming, so a later emission can never
+/// resume a dead coroutine or write into a freed frame. Defined in gdcc_coroutine.c.
+typedef struct gdcc_coro_signal_reg gdcc_coro_signal_reg;
+
 /// Per-state-class descriptor with generated callbacks, so this generic TU never touches
 /// typed frame fields. Generated once per coroutine function by the backend templates.
 typedef struct gdcc_coro_state_desc {
@@ -76,8 +86,23 @@ struct gdcc_coro_state_header {
     mco_coro *co;                     // NULL until the entry thunk creates the coroutine
     bool done;                        // finalize published result_cache
     bool cancel;                      // cancel-resume requested (mutually exclusive with done)
+    /// Reloaded-shell terminal state: set only by the generated recreate_instance_func on
+    /// the engine hot-reload path. The shell shares the
+    /// done/cancel exclusion discipline — finalize/cancel/await all short-circuit on it, the
+    /// coroutine body is never run, and the generated free_instance stays safe and idempotent
+    /// (co == NULL, waiters == NULL, result_cache stays the constructed nil Variant).
+    bool reloaded_shell;
     godot_Variant result_cache;       // always constructed; zeroed storage is a nil Variant
     gdcc_coro_waiter *waiters;        // head of the waiter list
+    /// Active one-shot signal wait registration, owned by the connect/free-callback
+    /// pair in gdcc_coroutine.c. NULL when no published registration exists; see the
+    /// typedef doc for the exact publish/clear timing.
+    gdcc_coro_signal_reg *signal_reg;
+    /// Intrusive links of the module-local active-coroutine list (non-owning). A
+    /// state is linked by the generated start thunk right after a successful `mco_create`
+    /// (never for OOM states or RELOADED_SHELLs) and unlinked by finalize/cancel/state_free.
+    gdcc_coro_state_header *active_prev;
+    gdcc_coro_state_header *active_next;
 };
 
 /// Address of a gdcc_coroutine.c-internal global, used as the dedicated instance-binding
@@ -193,5 +218,35 @@ void gdcc_coro_finalize(gdcc_coro_state_header *state);
 /// `free_instance` (exactly one `desc->destroy_ret_slot` per state). Tolerates
 /// `co == NULL` (state object died before `mco_create`, e.g. OOM in the entry thunk).
 void gdcc_coro_cancel(gdcc_coro_state_header *state);
+
+/// Links a freshly created coroutine state onto the module-local active list.
+/// Called by the generated start thunk immediately after a successful `mco_create` and
+/// before the first `mco_resume`; never called for OOM states (`co == NULL`) or
+/// RELOADED_SHELLs, so every listed state is cancellable. Idempotent. No-op when the
+/// hot-reload gate is off (see `gdcc_coro_set_hot_reload_active`).
+void gdcc_coro_active_link(gdcc_coro_state_header *state);
+
+/// Editor-only tracking gate: the generated `initialize()` sets this from
+/// `is_editor_hint()` — true only in the editor process, where a reload can actually
+/// happen. When off (release exports, editor-launched game processes, pure-C fixtures
+/// that never set it), tracking is bypassed: `gdcc_coro_active_link` and
+/// `gdcc_coro_cancel_all` are no-ops and no per-await signal registration is allocated,
+/// so coroutines keep the ordinary lifecycle with zero tracking cost. The gate is
+/// module-global and defaults to false.
+void gdcc_coro_set_hot_reload_active(bool active);
+
+/// Hot-reload bulk abandonment, called from the
+/// generated `deinitialize()` BEFORE static teardown and class unregistration: every
+/// in-flight coroutine of this module is deterministically abandoned while the whole
+/// runtime (registries, ClassDB, emitters) is still fully operational. Per state, in
+/// order: unlink from the active list, take a temporary strong reference (the signal
+/// detach below releases the connection's keep-alive edge and cancel cascades release
+/// waiter edges - either can drop the last owner), disconnect a pending one-shot signal
+/// wait so a later emission can never resume a dead coroutine, then run the ordinary
+/// `gdcc_coro_cancel` path. Re-reads the list head every round because released waiter
+/// edges may cascade PREDELETEs that unlink (and free) other states; never touches
+/// finalized states (already unlinked), OOM states or RELOADED_SHELLs (never linked).
+/// No-op when the hot-reload gate is off.
+void gdcc_coro_cancel_all(void);
 
 #endif //GDCC_COROUTINE_H
