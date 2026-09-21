@@ -34,7 +34,7 @@
   - 不引入 whole-module fixpoint，不把 body 语义改造成多轮全局收敛
   - 不新增新的全局 side table，也不让已有 side table 互相越权
   - 不把 `FrontendBinding` 重塑为 usage-aware 模型
-  - 不在这里转正 parameter default、block-local `const`、class constant 的正式 body 语义；已记录 lambda 合同见 `frontend_lambda_implementation.md`。`match` 的 LITERAL / EXPRESSION 叶子仍走普通 chain/expr 管线，WILDCARD / BINDING / ARRAY / DICTIONARY 由 pattern-context 分派隔离，不得把整棵 pattern 交给本管线
+  - 不在这里转正 parameter default、block-local `const`、普通 class-level `const` 的正式 body 语义（脚本枚举常量/枚举组 route 已由本管线支持，见 `frontend_enum_implementation.md`）；已记录 lambda 合同见 `frontend_lambda_implementation.md`。`match` 的 LITERAL / EXPRESSION 叶子仍走普通 chain/expr 管线，WILDCARD / BINDING / ARRAY / DICTIONARY 由 pattern-context 分派隔离，不得把整棵 pattern 交给本管线
   - 不在这里实现 for iteration planning、iterator slot refinement 或 lowering route classification
   - 不在这里扩张 keyed builtin、numeric promotion 或其它 typed-boundary 兼容矩阵；`StringName` / `String` 互转由 `frontend_implicit_conversion_matrix.md` 与 shared boundary helper 独立管理
 
@@ -162,7 +162,7 @@
 - `FrontendChainBindingAnalyzer` 不写 `expressionTypes()`
 - `FrontendExprTypeAnalyzer` 不改写 `resolvedMembers()`，且只允许向 `resolvedCalls()` 补充 bare `CallExpression` published facts
 - `FrontendTopBindingAnalyzer` 继续不解析尾部成员、尾部调用或 assignment target
-- class property `var` initializer subtree 已进入这三张表的正式 published support surface；class constant initializer 仍不属于该支持面
+- class property `var` initializer subtree 已进入这三张表的正式 published support surface；普通 class-level `const` initializer 仍不属于该支持面
 - 但这张 published support surface 的稳定含义只保证 subtree facts 可发布，不自动承诺同 class 非静态依赖已属于 MVP 正式语义面
 
 `FrontendResolvedMember` 当前至少稳定承载以下维度：
@@ -303,6 +303,13 @@ static 方法引用、static property 与脚本枚举常量/枚举组（含逐�
 终端遮蔽）；class-level `const`、未声明名与嵌套类限定符仍不在当前支持面内，
 必须继续发布 `UNSUPPORTED`，不能回退成普通 miss 或 dynamic route。
 
+跨类脚本枚举访问的落点：`Other.IDLE`（含目标类继承来的成员）与 `Other.State` 组 fact 经
+`resolvedStaticLoadTrace` 发布（receiverKind 固定 `TYPE_META`）；`Other.State.IDLE` 由组延续拦截完成——
+当前一 step 的 published declaration 为 `GdScriptEnumGroup` 且紧随的命名 property step 命中组成员时，
+发布 declaration 为 `GdScriptEnumConstant` 的 RESOLVED member fact（receiverKind 为 `INSTANCE`）；call、
+subscript 或 member miss 不触发该拦截，拦截状态不跨 chain 泄漏。两条路线的成员 fact 最终都在
+lowering 折叠为 int literal（细节见 `frontend_enum_implementation.md`）。
+
 当前 constructor route 的事实源合同已经闭合到 downstream：
 
 - `.new(...)` 与 bare builtin direct constructor 统一发布为 `FrontendResolvedCall(callKind = CONSTRUCTOR)`
@@ -357,7 +364,7 @@ static 方法引用、static property 与脚本枚举常量/枚举组（含逐�
 
 同时保持以下边界不变：
 
-- class constant initializer 仍不进入正式 body-phase 支持面
+- 普通 class-level `const` initializer 仍不进入正式 body-phase 支持面
 - property initializer 只开放表达式子树，不引入 class-body `:=` backfill 或新的 executable scope
 - 同 class 非静态依赖在 MVP 中仍需显式封口；不要把 property initializer 的 published subtree support 误写成完整实例初始化语义
 - 这里的 published support surface 只表示 side-table 可发布；它不自动承诺同 class non-static property / method / signal / `self` 已在 property initializer 中具备稳定语义
@@ -483,7 +490,7 @@ writable / compatibility 规则为：
 - parameter default
 - 未记录 lambda subtree（property initializer / parameter default / skipped subtree；已记录 lambda 由 nested suite resolution 承接，见 `frontend_lambda_implementation.md`）
 - block-local `const`
-- class constant
+- 普通 class-level `const`（脚本枚举常量/枚举组不在此列）
 - scope-local 手动 `type-meta`
 
 `ForStatement` 已使用 header-only statement boundary：iterator type 与 iterable expression 在外层 lexical context 中运行 owner procedures，flush 后通过普通 child-suite path 解析 `FOR_BODY`。For body 中的 ordinary expressions 与 locals 复用本合同；typed result 不能决定是否进入 body。Iteration plan 与 iterator exact refinement 属于后续独立 owner，不由 chain/expr owner 猜测。
@@ -552,7 +559,7 @@ expr-owned diagnostics 的硬约束是：
 - status/published-type 映射必须集中在 `FrontendChainStatusBridge`，不能让 chain / expr analyzer 再各自复制一套桥接逻辑
 - 局部表达式语义必须集中在 `FrontendExpressionSemanticSupport`、`FrontendSubscriptSemanticSupport`、`FrontendAssignmentSemanticSupport`，不能回退到 analyzer 内各写一份局部特判
 - route-head-only `TYPE_META` 继续只作为 static-route base 使用，不进入 ordinary expression publication
-- keyed builtin subscript、wide implicit assignment conversion、class constant、scope-local type alias 等边界必须继续显式 `UNSUPPORTED` / deferred；不要为了“继续分析”把 feature boundary 静默降级成普通 miss
+- keyed builtin subscript、wide implicit assignment conversion、普通 class-level `const`、scope-local type alias 等边界必须继续显式 `UNSUPPORTED` / deferred；不要为了“继续分析”把 feature boundary 静默降级成普通 miss
 - property writable metadata 必须继续统一复用 `PropertyDefAccessSupport`；不要在 scope publication、assignment helper、其他 frontend 路径里各写一套 engine/builtin property writable 解释
 
 ---

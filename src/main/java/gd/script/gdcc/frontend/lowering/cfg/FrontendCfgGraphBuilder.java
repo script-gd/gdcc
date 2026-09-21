@@ -4465,7 +4465,7 @@ public final class FrontendCfgGraphBuilder {
 
     /// Value-route enum group heads (`State.IDLE`): the base identifier binds CONSTANT with a
     /// `GdScriptEnumGroup` declaration, and the first property step resolved to a
-    /// `GdScriptEnumConstant` member. Both facts are published by chain binding (Step 5); CFG
+    /// `GdScriptEnumConstant` member. Both facts are published by chain binding; CFG
     /// only consumes them. Anything else keeps the ordinary base-materializing path.
     private boolean isEnumGroupHeadAttributeExpression(@NotNull AttributeExpression attributeExpression) {
         return attributeExpression.base() instanceof IdentifierExpression identifierExpression

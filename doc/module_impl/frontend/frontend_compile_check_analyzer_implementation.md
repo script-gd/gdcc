@@ -156,6 +156,8 @@ initializer subtree；无 initializer 的 declaration 不产生 compile-surface 
 
 `PreloadExpression` 不属于当前显式 compile-block 列表：shared semantic 要求字符串字面量路径并发布 `RESOLVED(Resource)`（非字面量由 `sema.expression_resolution` 持有失败事实，generic published-fact scan 自然阻断），CFG/body 经 `OpaqueExprValueItem` 由专用 processor 改写为 `load_static "@GlobalScope" "ResourceLoader"` + `call_method "load"` 指令对，backend singleton + ENGINE 实例 dispatch 已闭环。类级 `const X = preload(...)` 不在此列：class-constant 工作流整体不在 MVP 范围（见 `frontend_rules.md`），维持既有拦截。
 
+脚本枚举成员/枚举组（含跨类限定访问 `Other.IDLE` / `Other.State.IDLE`）同样不属于显式 compile-block 列表：上游发布 `RESOLVED(CONSTANT, int)` 成员 fact 与枚举组 Dictionary fact，不命中 compile blocker，generic scan 放行（见 `frontend_enum_implementation.md`）。
+
 `ArrayExpression` / `DictionaryExpression` 不属于当前显式 compile-block 列表：shared semantic 发布 `FrontendContainerLiteralPlan`，CFG/body 经 `ContainerLiteralItem` 发射 `construct_container_literal`，backend `ContainerLiteralInsnGen` 已闭环（见 `frontend_container_literal_implementation.md`）。
 
 `LambdaExpression` 不再无条件形态级封口，而是按 published plan 分流：

@@ -48,7 +48,7 @@
   - 不做 unreachable-section-after-wildcard warning（Godot 有 `UNREACHABLE_PATTERN`，列为后续可选）
   - 不在 parser 层精确复刻 `..` 的位置/唯一性校验（gdparser 0.5.3 只暴露 `openEnded`）
   - 不支持仅键字典形态 `{"a", "b"}`（gdparser 无法表示，见 §10）
-  - 不毕业 block-local `const`、parameter default、class constant
+  - 不毕业 block-local `const`、parameter default、普通 class-level `const`
   - 不为 match 引入 `GdCompilerType` 或新 LIR 指令 / intrinsic
 
 ---
@@ -471,8 +471,10 @@ header (subject once)
 - **expression pattern 超集**：Godot 合法 ⇒ gdcc 合法且行为一致；逆不成立。`f()` / `a+1` /
   `d["k"]` / `self.prop` 等在 Godot 编辑器会报错，**不可移植**。不新增 portability lint。
   字典 key 不在超集内。
-- **class constant / 类枚举成员 pattern**：仍受 class-constant 延后合同约束；失败由既有
-  upstream 诊断兜底。限定式全局枚举 chain（`Variant.Type.TYPE_NIL`）已毕业。
+- **普通 class-level `const` pattern**：仍受 class-constant 延后合同约束；失败由既有
+  upstream 诊断兜底。类枚举成员 pattern（`State.IDLE`、跨类 `Other.State.IDLE`、匿名成员裸名）
+  经 EXPRESSION 合同已转正（见 `frontend_enum_implementation.md`）。
+  限定式全局枚举 chain（`Variant.Type.TYPE_NIL`）已毕业。
 - **跨 match 同名 bind + 非 Variant lambda capture**：CFG fail-fast，暂不支持。
 - **无独立 type-pattern route**：`x is T` 不是 match pattern 形态。
 - 静态折叠产生「建图但不可达」的 body；CFG 不变量必须继续成立。可选「跳过 body 建图」仅限

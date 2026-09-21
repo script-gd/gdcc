@@ -43,7 +43,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Step 4 acceptance for `frontend_enum_plan.md`: bare enum constants flow through top binding /
+/// Script enum body binding (`frontend_enum_implementation.md`): bare enum constants flow through
+/// top binding /
 /// visible value resolver / expression typing with zero changes (`CONSTANT` kind, enum metadata
 /// provenance, int/Dictionary published types), property-initializer and parameter-default
 /// islands consume them, and a function-body `enum` statement is closed by one

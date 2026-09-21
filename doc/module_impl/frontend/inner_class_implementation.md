@@ -46,6 +46,7 @@
   - outer class
   - immediate / lexical 可见 inner class
   - same-module top-level gdcc class
+  - 当前 class 或 outer lexical 链上已发布的命名脚本枚举组（`GDCC_ENUM`，声明类型擦除为 `int`）
 
 当前实现明确不负责：
 
@@ -156,8 +157,8 @@ inner class 在 scope 中的长期规则：
 - local type-meta lookup 使用 `sourceName`
 - 命中后携带的 `ScopeTypeMeta` 同时保留 `canonicalName` 与 `sourceName`
 - 命中后 `displayName()` 统一返回 `canonicalName`
-- top-level `ClassScope` 只发布 direct inner classes 的 type-meta
-- inner `ClassScope` 只发布其 direct inner classes 的 type-meta
+- top-level `ClassScope` 只发布 direct inner classes 与本 class 直接声明的命名枚举组（`GDCC_ENUM`）的 type-meta
+- inner `ClassScope` 只发布其 direct inner classes 与直接命名枚举组（`GDCC_ENUM`）的 type-meta
 - 当前 class 自身可在其类型解析上下文中按 `sourceName` 参与 declared type 解析
 - outer class 通过 lexical parent chain 贡献 outer type visibility
 - inner class 不进入 value namespace，也不改变既有 function namespace 规则
@@ -219,7 +220,7 @@ skeleton 成员填充当前不再把 `ClassRegistry#findType(...)` 当作 declar
 
 - 基于 accepted relation 构建的最小 class-scope 链
 - shared `ScopeTypeResolver` 的 strict no-mapper overload
-- lexical type namespace 对 self / outer / direct inner / same-module gdcc class 的可见性
+- lexical type namespace 对 self / outer / direct inner / same-module gdcc class 以及当前/outer lexical 链上命名脚本枚举组（`GDCC_ENUM`）的可见性
 
 当前恢复策略：
 
@@ -260,7 +261,7 @@ registry 侧 type-meta 合同已经冻结为：
 shared resolver 与 inner class 的稳定集成点为：
 
 - bare type name 走 `scope.resolveTypeMeta(...)`
-- lexical scope 能先于 global root 命中 direct / outer 可见 inner class `sourceName`
+- lexical scope 能先于 global root 命中 direct / outer 可见 inner class `sourceName` 与命名脚本枚举组（`GDCC_ENUM`）
 - 命中 inner class 后统一回到 canonical `GdObjectType`
 - 顶层 `Array[T]` / `Dictionary[K, V]` 在容器 leaf type 上复用同一 lexical type namespace
 

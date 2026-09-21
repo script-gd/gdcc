@@ -50,8 +50,8 @@ frontend 当前正式支持的裸全局常量 surface 包括：
 - 限定式 `Variant.Type.TYPE_NIL` 等 chain 路径已支持，本表面不改变其 `load_static` 行为。
 - `match` pattern 中的全局常量/枚举裸访问：`match` 已进入 shared semantic，LITERAL / EXPRESSION 叶子走普通 `EXPRESSION` 合同（本表面的 `CONSTANT` binding 在 pattern 位置同样生效）。互通说明见 `frontend_match_statement_implementation.md`。
 - 类枚举成员的裸访问（如裸 `MOUSE_MODE_VISIBLE` 不带 `Input.` 前缀）：Godot 同样禁止，不支持。
-- class constant 的收集与绑定：整体延后；`CONSTANT` 分支对非全局 declaration 保持 fail-fast。
-- block-local `const` initializer、parameter default 等 deferred boundary 内使用裸全局常量：沿用既有 deferred 合同，不扩展。
+- 普通 class-level `const` 的收集与绑定：整体延后；脚本 enum 常量/枚举组（`GdScriptEnumConstant` / `GdScriptEnumGroup`）已由 `CONSTANT` 路径正式支持（合同见 `frontend_enum_implementation.md`），`CONSTANT` 分支仅对剩余非全局 declaration 形态保持 fail-fast。
+- block-local `const` initializer 等 deferred boundary 内使用裸全局常量：沿用既有 deferred 合同，不扩展；source-function parameter default island 已按其独立合同转正（见 `frontend_parameter_default_implementation.md`），不在本条覆盖范围内。
 - `store_static` / 对常量赋值：本就拒绝，不变。
 - 不新增任何 frontend 诊断与 diagnostic owner。
 - 不提供 `UINT64_MAX` / `UINT*_MIN`（引擎同样不存在，且 `UINT64_MAX` 超出 Godot `int64` 值域）。
@@ -147,8 +147,10 @@ frontend 当前正式支持的裸全局常量 surface 包括：
 1. `declarationSite instanceof ExtensionGlobalConstant` → `LiteralIntInsn(resultSlotId, value)`（JSON 全局常量 + 合成极值常量）
 2. `declarationSite instanceof ExtensionEnumValue` → `LiteralIntInsn(resultSlotId, value)`（裸全局枚举成员）
 3. `declarationSite instanceof GdScriptLanguageConstant` → `LiteralFloatInsn(resultSlotId, value)`（`PI` / `TAU` / `INF` / `NAN`）
+4. `declarationSite instanceof GdScriptEnumConstant` → `LiteralIntInsn(resultSlotId, value)`（脚本枚举成员：匿名成员、命名组成员与跨类限定成员共用）
+5. `declarationSite instanceof GdScriptEnumGroup` → 物化命名枚举组 Dictionary 字面量（见 `frontend_enum_implementation.md` 的组物化合同）
 
-其余 declaration 形态继续 `throw unsupportedSequenceItem(...)`（class constant / block-local const 等 deferred 面保持 fail-fast）。
+其余 declaration 形态（普通 class-level `const`、block-local `const` 等 deferred 面）继续 `throw unsupportedSequenceItem(...)` 保持 fail-fast。
 
 对照面（本表面不得改动）：
 

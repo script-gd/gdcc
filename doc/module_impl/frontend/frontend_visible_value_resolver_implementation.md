@@ -225,7 +225,7 @@ parameter default-value expression 已不再是封口域：非 island 请求（`
 
 - parameter 只在 executable callable body 内按“始终可见”处理；`PARAMETER_DEFAULT` 域中 parameter 命中一律停在本层并返回 `FOUND_BLOCKED`（默认表达式不允许引用参数）
 - ordinary local `var` 只有在 declaration 结束位置早于 use-site 起始位置时才视为可见；`PARAMETER_DEFAULT` 域中 local 命中同样停在本层并 `FOUND_BLOCKED`
-- class property / signal / class const / global enum / global constant / 全局枚举成员裸名 / GDScript 语言常量 / singleton 等 non-callable-local binding 不受 statement-order 过滤影响
+- class property / signal / class const / 脚本枚举常量与命名枚举组 / global enum / global constant / 全局枚举成员裸名 / GDScript 语言常量 / singleton 等 non-callable-local binding 不受 statement-order 过滤影响；脚本枚举常量/枚举组的 direct 与继承可见性由 `ClassScope` 常量索引提供（见 `frontend_enum_implementation.md`）
 
 ### 5.2 initializer 自引用
 

@@ -16,6 +16,7 @@
 - 当前合同中“已识别但明确不支持”的 feature boundary 统一发 error；只有真正的 deferred/暂缓恢复路径才保留 warning。
 - body phase 的 diagnostic owner 必须保持单一：
   - top binding 负责 bare `TYPE_META` ordinary-value misuse 的首条 `sema.binding`
+    - 已知临时偏差：现状代码对该场景由 expr analyzer 发 `sema.expression_resolution`（`tryPublishTypeMetaBinding` 不发诊断，FAILED fact 由 expression 支持层兜底），与本冻结 owner 合同不一致；该偏差先于脚本枚举特性存在，影响所有 TYPE_META misuse（inner class 名误用等），后续以独立任务对齐回本冻结规则，本说明不是新的冻结 owner 合同
   - chain binding 负责 `sema.member_resolution` / `sema.call_resolution` / `sema.static_access_via_instance` / chain deferred/unsupported boundary
   - expr analyzer 负责 `sema.expression_resolution` / `sema.deferred_expression_resolution` / `sema.unsupported_expression_route` / `sema.discarded_expression`
   - var-type-post analyzer 负责 `sema.variable_slot_publication`
@@ -71,7 +72,7 @@
 - path-based `extends`、autoload superclass、global-script-class superclass 绑定不实施。
 - 多 gdcc module 的 header superclass 绑定不在最小可行产品范围内。
 - source function 参数默认值已进入 shared island 语义与 compile surface（见 `frontend_parameter_default_implementation.md`）：默认值表达式只可见字面量/常量/枚举/类型/单例/builtin 构造器/utility/global/static 调用，instance 方法额外可见 `self` 与实例成员；constructor/`_init`/lambda 参数默认值、默认值内 `await`、对参数/局部变量/capture 的引用仍 fail-closed。
-- class constant 的收集、注册、继承可见性与绑定不在 MVP 范围内，整体延后到 MVP 之后再实施。
+- 普通 class-level `const` 的收集、注册、继承可见性与绑定不在 MVP 范围内，整体延后到 MVP 之后再实施；脚本 enum 已进入当前支持面——常量求值、`ClassScope` 常量索引、类内/继承/跨类限定访问、枚举类型标注（声明类型擦除为 `int`）、裸 `@export` 枚举 hint_string 均已闭环，合同见 `frontend_enum_implementation.md`。
 - callable scope / block scope 中手动声明或发布的类型别名不在 MVP 范围内；frontend body phase 必须对这类 scope-local `type-meta` 采用 fail-closed 的 deferred / unsupported 处理，而不是把它们当成普通 class-like `TYPE_META` 消费。
 - H1 subscript MVP 只正式支持 container family 的最小 typed contract：`Array[T]`、`Dictionary[K, V]`、packed array family。
 - 上述 container-family subscript 当前统一复用 `FrontendVariantBoundaryCompatibility` 做 key/index typed-boundary 校验；因此 plain `Dictionary`（`Dictionary[Variant, Variant]`）已接受 `String` 等 stable key 写入 `Variant` key slot，`Dictionary[float, V]` 也会因 ordinary `int -> float` boundary 接受 `int` key。`Dictionary[StringName, V]` 与 `Dictionary[String, V]` 的 key boundary 分别通过 ordinary `String -> StringName` / `StringName -> String` constructor materialization 生效。MVP 仍不追求复刻 Godot 更宽的 keyed/index 兼容规则；`Array` / packed array 的 `float` index 仍禁止，因为这需要 `float -> int` 收窄转换。

@@ -48,7 +48,7 @@
 5. **可见性（受限）**：
    - **instance 方法**：默认表达式可引用字面量、常量/枚举/类型/singleton、builtin 构造器、utility/global function 调用，以及 **`self` 与实例成员**（实例属性/方法调用）；此时 synthetic default 函数首参携带 `self`（§4.2）。
    - **static 方法**：禁止引用 `self` / 实例成员（对齐 Godot static 限制），只允许调用帧无关的名字。
-   - 两者均**不允许**引用参数（含先行参数）、局部变量、capture；source `const`（类常量/局部常量）仍属 deferred 边界。违反时 fail-closed 诊断（见 §6）。
+   - 两者均**不允许**引用参数（含先行参数）、局部变量、capture；普通 class-level `const` 与局部 `const` 仍属 deferred 边界，脚本枚举常量经既有 parameter-default island 放行（见 `frontend_enum_implementation.md`）。违反时 fail-closed 诊断（见 §6）。
 6. **arity 规则**：省略只能发生在带默认值后缀；实参数 `< required 数` → too-few error；非 vararg 时实参数 `>` 参数总数 → too-many error。该规则在 resolver 层由 `ScopeMethodResolver` 实现，source function 的默认值元数据流入既有检查。
 7. **默认值中调用的函数**自身仍需满足全部调用规则；void 调用的结果不得作为默认值。
 

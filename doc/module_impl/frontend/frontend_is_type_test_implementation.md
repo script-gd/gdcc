@@ -81,6 +81,8 @@ shared semantic 成功解析后发布 `FrontendExpressionType.RESOLVED(GdBoolTyp
 - `TargetKnown(GdType)`：已解析的非参数化 builtin、`Variant`、Engine/gdcc Object 类或单层参数化 `Array[T]` / `Dictionary[K,V]`。
 - `TargetUnresolvedObject(name)`：RHS 是合法 Godot 标识符，但 `ScopeTypeResolver` 未找到对应类型。`name` 保留源码标识符文本，供 downstream 运行时路径使用。
 
+脚本枚举名 target（如 `x is State`）不新增 route：declared-type 解析命中 `GDCC_ENUM` type-meta，取其 `instanceType` 擦除为 `int`，发布 `TargetKnown(int)`，`x is State` 等价于 `x is int`（见 `frontend_enum_implementation.md`）。
+
 `negated` 只保留在 AST 中，影响 lowering 时的常量取反或 `NOT` 包装，不改变表达式类型和 target side-table 的内容。
 
 ### 3.2 拒绝与降级边界

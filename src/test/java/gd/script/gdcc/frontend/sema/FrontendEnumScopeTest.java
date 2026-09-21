@@ -48,14 +48,14 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Scope-phase acceptance tests for the enum plan's Step 3 wiring
-/// (`frontend_enum_plan.md` §4 Step 3): `ClassScope` indexes `ClassDef.getScriptConstants()` as
+/// Scope-phase tests for the script enum wiring (`frontend_enum_implementation.md`):
+/// `ClassScope` indexes `ClassDef.getScriptConstants()` as
 /// read-only `CONSTANT` value bindings, the inheritance walk extends to the same table, and named
 /// enum groups are re-published as `GDCC_ENUM` type-metas on both class boundaries (top-level
 /// `SourceFile` and inner `ClassDeclaration`).
 ///
 /// Most tests here stop after skeleton + scope (+ variable where shadowing needs it), so they
-/// cannot accidentally anchor Step 4+ behavior; `isAndAsEnumTargetsEraseToInt` is the deliberate
+/// cannot accidentally anchor body-phase behavior; `isAndAsEnumTargetsEraseToInt` is the deliberate
 /// exception, running the full semantic pipeline to assert published type-test/cast facts.
 class FrontendEnumScopeTest {
     @Test
@@ -601,8 +601,8 @@ class FrontendEnumScopeTest {
     }
 
     /// Runs parse + skeleton + scope + variable phases only, mirroring the phase input shape used
-    /// by `FrontendInterfacePhaseTest`: body owner publication (Step 4+ surface) stays out of
-    /// scope for these Step 3 acceptance tests.
+    /// by `FrontendInterfacePhaseTest`: body owner publication stays out of scope for these
+    /// scope-phase tests.
     private static @NotNull Fixture analyze(@NotNull List<SourceSpec> sources) throws IOException {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();

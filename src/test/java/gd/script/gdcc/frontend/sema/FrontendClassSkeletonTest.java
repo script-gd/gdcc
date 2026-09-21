@@ -665,13 +665,11 @@ class FrontendClassSkeletonTest {
         var deferredUnit = parserService.parseUnit(Path.of("tmp", "deferred_type_sources.gd"), """
                 class_name DeferredTypeSources
                 extends RefCounted
-                
-                enum LocalState { IDLE, RUNNING }
+
                 const Alias = HelperScript
                 const Preloaded = preload("res://helper_script.gd")
-                
+
                 var direct: HelperScript
-                var from_enum: LocalState
                 var from_alias: Alias
                 var from_preload: Preloaded
                 """, diagnostics);
@@ -685,8 +683,6 @@ class FrontendClassSkeletonTest {
         var deferredClass = findClassByName(topLevelClassDefs(result), "DeferredTypeSources");
 
         assertObjectTypeName(findPropertyByName(deferredClass, "direct").getType(), "HelperScript");
-        // Named enum type annotations now resolve to int through the skeleton enum pre-pass.
-        assertEquals(GdIntType.INT, findPropertyByName(deferredClass, "from_enum").getType());
         assertEquals(GdVariantType.VARIANT, findPropertyByName(deferredClass, "from_alias").getType());
         assertEquals(GdVariantType.VARIANT, findPropertyByName(deferredClass, "from_preload").getType());
 
@@ -696,9 +692,40 @@ class FrontendClassSkeletonTest {
                         && diagnostic.sourcePath().endsWith("deferred_type_sources.gd"))
                 .toList();
         assertEquals(2, typeResolutionDiagnostics.size());
-        assertTrue(typeResolutionDiagnostics.stream().noneMatch(diagnostic -> diagnostic.message().contains("LocalState")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Alias")));
         assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Preloaded")));
+    }
+
+    @Test
+    void buildResolvesEnumTypedPropertyAnnotationToInt() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "enum_typed_properties.gd"), """
+                class_name EnumTypedProperties
+                extends RefCounted
+
+                enum LocalState { IDLE, RUNNING }
+
+                var from_enum: LocalState
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var enumClass = findClassByName(topLevelClassDefs(result), "EnumTypedProperties");
+
+        assertEquals(GdIntType.INT, findPropertyByName(enumClass, "from_enum").getType());
+        assertTrue(result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.type_resolution"))
+                .filter(diagnostic -> diagnostic.sourcePath() != null
+                        && diagnostic.sourcePath().endsWith("enum_typed_properties.gd"))
+                .noneMatch(diagnostic -> diagnostic.message().contains("LocalState")));
     }
 
     @Test

@@ -249,7 +249,7 @@ inner class boundary 当前必须建立在 `FrontendModuleSkeleton.sourceClassRe
 
 ### 5.2 immediate inner type-meta 发布规则
 
-当前顶层 `ClassScope` 和每个 inner `ClassScope` 都只发布 direct inner classes 的 type-meta，不平铺全部后代。
+当前顶层 `ClassScope` 和每个 inner `ClassScope` 都只发布 direct inner classes 的 type-meta 与本 class 直接声明的命名枚举组 `GDCC_ENUM` type-meta，不平铺全部后代。脚本枚举常量/枚举组的 value 事实由 `ClassScope` 常量索引（构造期快照 `ClassDef.getScriptConstants()`）提供：value lookup 先命中 direct 常量，继承查找按最近父类层级继续查找枚举成员/枚举组；`GDCC_ENUM` type-meta 本身仍只走词法命名空间、不沿继承链扩散（跨类继承枚举访问走 GDCC static-load 路线，见 `frontend_enum_implementation.md`）。
 
 这条规则对后续工程是强约束，因为：
 

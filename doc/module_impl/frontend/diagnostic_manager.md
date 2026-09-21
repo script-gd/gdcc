@@ -243,11 +243,12 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - top binding 命中的 blocked / unknown / shadowing 诊断
 - `sema.unsupported_binding_subtree`
   - top binding 对 parameter default、block-local `const` 等明确 unsupported subtree 的边界 error
+  - function body 内的 `enum` declaration 由 top binding（`runUnsupported`）发单条 error 并跳过子树（对齐 Godot 的 parser 级拒绝）；类体（含 inner class 体）内的枚举声明由 skeleton 枚举预 pass 处理，归属 `sema.class_skeleton`，不经本 category
   - 已 `recordCallable` 的 lambda 与已毕业的 `match` 改走 nested / match-pattern resolution，不再发此诊断；未记录的 lambda（property initializer 等）继续按此边界 fail-closed
   - statement 位置的裸 lambda 语句（parser 映射为 statement 级 `FunctionDeclaration` / `ConstructorDeclaration`，名为 `<anonymous>` 或所书名字）在 interface 记录边界不被收录为 callable owner；enclosing suite 的 top binding（`runUnsupported`）以该 declaration 为锚发单条 error，type-check / compile gate 跳过该子树且不补发同级诊断
   - top binding 对 missing-scope / skipped subtree 的恢复诊断继续允许使用 warning
 - `sema.member_resolution`
-  - chain binding 中 blocked / failed member step 的语义错误
+  - chain binding 中 blocked / failed member step 的语义错误；跨类枚举组成员 miss（如 `Other.State.MISSING`）与类内 `State.MISSING` 同路径归入本 category
 - `sema.call_resolution`
   - chain binding 中 blocked / failed call step 的语义错误
   - 以及“实例语法命中 static method”这类 route note/warning
@@ -260,7 +261,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - chain binding 的 deferred subtree warning
   - 以及首个 deferred chain recovery root 的恢复诊断
 - `sema.unsupported_chain_route`
-  - chain binding 对当前 MVP 明确认定 unsupported 的 static / constructor / suffix route 边界 error
+  - chain binding 对当前 MVP 明确认定 unsupported 的 static / constructor / suffix route 边界 error；GDCC static-load 场景下当前仅覆盖普通 class-level `const`、未声明名与嵌套类限定符（脚本枚举常量/枚举组 route 已转正，见 `frontend_enum_implementation.md`）
 - `sema.expression_resolution`
   - expr analyzer 对 bare call 与其他 expression-only 路径的 failed recovery error
 - `sema.deferred_expression_resolution`

@@ -69,9 +69,9 @@
 
 - `getParentScope()` 恒为 `null`
 - `setParentScope(non-null)` 必须拒绝，保持 root invariant
-- `resolveValueHere(...)` 处理 singleton / global enum
+- `resolveValueHere(...)` 处理 singleton / global enum group / global constant / 裸全局枚举成员 / GDScript 语言常量
 - `resolveFunctionsHere(...)` 处理 utility function
-- `resolveTypeMetaHere(...)` 处理 builtin / engine / gdcc class、global enum type、strict typed container
+- `resolveTypeMetaHere(...)` 处理 builtin / engine / gdcc class、global enum type、strict typed container；GDCC 脚本命名枚举组（`GDCC_ENUM`）不由 global root 发布，而由各 `ClassScope` 在词法链上发布
 - 兼容入口 `findType(...)`、`findSingletonType(...)`、`findGlobalEnum(...)`、`findUtilityFunctionSignature(...)` 继续保留，但后续 frontend binder 不应再把 `findType(...)` 当作最终语义判定器
 
 ### 2.2 `Scope` 协议已经从“lexical skeleton”升级为正式 binding protocol
@@ -105,11 +105,11 @@
 
 - `ResolveRestriction.unrestricted()`：兼容旧调用方与 unrestricted 测试
 - `ResolveRestriction.staticContext()` 允许无 base 命中：
-  - class const
+  - class-scope 常量（当前正式支持面为脚本枚举常量/枚举组；普通 class-level `const` 仍由 frontend 边界拦截）
   - static property
   - static method
 - `ResolveRestriction.instanceContext()` 允许无 base 命中：
-  - class const
+  - class-scope 常量（同上）
   - instance property / instance method
   - static property / static method
 - 当前 restriction 只影响未限定 class-member 的 value/function lookup
@@ -160,10 +160,10 @@
 
 当前 `ClassScope` 的事实：
 
-- 直接索引当前类 direct property / direct signal / direct method
+- 直接索引当前类 direct property / direct signal / direct method / 脚本常量（枚举成员/枚举组，构造期快照自 `ClassDef.getScriptConstants()`）
 - 真实 `FrontendScopeAnalyzer` 路径依赖 `ClassScope` 构造期的自动索引：analyzer 只需要显式发布 direct inner type-meta，不需要额外调用 `defineProperty(...)` / `defineSignal(...)`
 - `FrontendClassSkeletonBuilder.buildDeclaredTypeScopes(...)` 属于更早的 type-only scaffold；那里的 `ClassScope` 仍会走同一构造逻辑，但因为 class shell 尚未填入成员，所以 value/function 视图保持为空是刻意行为
-- inherited property / signal / method 只在 direct miss 时回退
+- inherited property / signal / method / 脚本常量只在 direct miss 时回退
 - 类成员继承查找属于当前 class scope layer，不是额外 lexical parent
 - class-local type-meta 只走 lexical namespace，不沿继承链扩散
 
@@ -400,6 +400,7 @@ AST 节点与 scope 的关联仍应由 side-table 维护，而不是把 AST 节�
 - `ClassName.static_method(...)` 走 static method 路径
 - `ClassName.new(...)` / builtin ctor / object ctor 走 constructor resolution / `construct_*`
 - `EnumType.VALUE` / builtin constant / engine integer constant 走 `load_static`
+- GDCC 脚本枚举：跨类/inner-class 的 TYPE_META 入口走 static-load *reduction*，但 lowering 在 receiverKind 分派前把枚举成员折成 `LiteralIntInsn`、把枚举组物化为 Dictionary 字面量，不发 `LoadStaticInsn`（见 `frontend_enum_implementation.md` §7）
 - 禁止在 binder/type inference 中回退到宽松 `findType(...)`
 
 ### 4.4 当前必须继续保留 deferred / unsupported 的来源

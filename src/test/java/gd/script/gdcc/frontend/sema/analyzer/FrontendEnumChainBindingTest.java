@@ -44,7 +44,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Step 5 acceptance for `frontend_enum_plan.md`: enum members resolve through chain binding on
+/// Script enum chain binding (`frontend_enum_implementation.md`): enum members resolve through
+/// chain binding on
 /// three routes (in-class value route, inner-class type-meta static load, cross-class qualified
 /// static load plus group continuation), member misses and Dictionary-shaped suffixes keep their
 /// pre-existing resolution contracts, and the unsupported boundary for unknown names, class
