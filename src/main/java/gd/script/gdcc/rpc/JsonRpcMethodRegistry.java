@@ -61,10 +61,11 @@ public final class JsonRpcMethodRegistry {
         return handlers.size();
     }
 
-    public static @NotNull JsonRpcMethodRegistry create() {
+    public static @NotNull JsonRpcMethodRegistry create(@NotNull RpcServerShutdown shutdown) {
+        Objects.requireNonNull(shutdown, "shutdown must not be null");
         var handlers = new LinkedHashMap<String, RpcHandler>();
-        handlers.put("server.ping", (api, codec, params) -> "pong");
-        handlers.put("server.info", (api, codec, params) -> {
+        handlers.put("server.ping", (_, _, _) -> "pong");
+        handlers.put("server.info", (_, _, _) -> {
             var info = GdccVersion.current();
             return new ServerInfo(
                     info.version(),
@@ -72,6 +73,14 @@ public final class JsonRpcMethodRegistry {
                     info.commit(),
                     API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE
             );
+        });
+        // `server.shutdown` is process control, not an `API` facade mapping: the handler only
+        // records the exit intent (idempotent) and returns an empty object. The actual exit is
+        // triggered by the HTTP transport after the response exchange is fully written and
+        // closed (`RpcServerShutdown` documents the deadlock that any earlier exit causes).
+        handlers.put("server.shutdown", (api, codec, params) -> {
+            shutdown.requestExit();
+            return Map.of();
         });
         handlers.put("module.create", (api, codec, params) -> {
             var bound = codec.bindParams(params, RpcParams.ModuleCreateParams.class);
@@ -81,7 +90,7 @@ public final class JsonRpcMethodRegistry {
             var bound = codec.bindParams(params, RpcParams.ModuleGetParams.class);
             return api.getModule(bound.moduleId());
         });
-        handlers.put("module.list", (api, codec, params) -> api.listModules());
+        handlers.put("module.list", (api, _, _) -> api.listModules());
         handlers.put("module.delete", (api, codec, params) -> {
             var bound = codec.bindParams(params, RpcParams.ModuleDeleteParams.class);
             return api.deleteModule(bound.moduleId());

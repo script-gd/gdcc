@@ -9,7 +9,8 @@
 
 ## 文档状态
 
-- 状态：实施计划（Phase 0 已实施并通过验收；Phase 1+ 尚未实施；已经过多轮并行评审并修订）
+- 状态：实施计划（Phase 0 已实施并通过验收；**Phase 1 已实施并通过验收**；
+  Phase 2+ 尚未实施；已经过多轮并行评审并修订）
 - 更新日期：2026-09-23
 - Phase 0 验收结果（2026-09-23）：P0-A/B/C 全绿（`EditorAddonIntegrationProbeTest`
   3/3 通过，无跳过）。`_init` 语义与 typed array 返回的探针结论已回填 §3.2/§2.3。
@@ -33,6 +34,103 @@
      `ObjectReturnConsumptionLeakIntegrationTest` 钉住的"构造点 init_ref 归一化 +
      包装器 consume 净零转移"既有设计一致）。该缺陷阻断一切"gdcc 方法返回新建
      RefCounted 对象"的路径（含 `_create_script`）。
+- Phase 1 验收结果（2026-09-23，自动化项全绿，手动项待 §8.3）：
+  - `EditorAddonScriptLanguageAnalysisTest` 5/5 通过：全部 `.gd3`（语言/脚本/加载器/
+    保存器/常驻服务/客户端，共 6 个源）单模块 analyze+lowering 干净；全部编译源去注释
+    +去字符串内容后无 `await`；`plugin.gd`/`gdcc_dock.gd`/`server_launcher.gd` 解析
+    干净；两个安装出口（单/多平台）产物均 `reloadable = false`；无动态库产物的安装
+    抛 `IOException`（负例）。`plugin.cfg` 五字段由既有
+    `EditorAddonClientAnalysisTest` 覆盖，未重复。
+  - `RpcServerShutdownTest` 3/3 通过（dispatcher 层 `{}` + 幂等、进程内 HTTP 层
+    响应先于退出且退出动作恰好一次、真实子进程 200+body 后退出码 0 且端口关闭）；
+    `JsonRpcDispatcherTest` 路由数更新为 26；`RpcJsonCodecTest` 增补 `{}` wire 形状。
+  - `EditorAddonScriptLanguageEngineTest` 4/4 通过（无跳过）：`language`（语言注册、
+    加载/保存/重读/worker 线程加载往返、`_validate` valid、禁用/启用循环中语言实例
+    同一性）；`launch`（冷启动自动拉起 `gdcc serve`、ping 通过、禁用插件后进程退出）；
+    `launch_bad`（不存在可执行文件：报错不崩溃）；`launch_none`（无命令无服务：
+    被动失败，不拉起）。
+  - 既有回归：`EditorAddonIntegrationProbeTest` 3/3、`EditorAddonBootstrapEngineTest`
+    1/1（多源编译后仍绿）、`EditorAddonClientAnalysisTest` 与 RPC 全套无回归。
+- Phase 1 实现偏差（相对下文设计，均已按"事实源维护"口径回填）：
+  1. `_debug_*` 可表达虚函数**全部显式实现**为空答案（§2.2 C 档原计划跳过）：引擎在
+     任何脚本错误的打印路径上会对**每个**已注册语言调用
+     `_debug_get_current_stack_info`（ScriptLanguageExtension 是 required 虚函数，
+     缺省实现报 `ERR_PRINT_ONCE` 级错误）。`_debug_get_stack_level_instance`
+     （`void*`）与 `_profiling_*` 组仍跳过。
+- 探针结论（2026-09-23，P0 全绿）：typed array 返回可实现——
+  `ProbeLang._get_public_functions/_get_public_annotations`（`-> Array[Dictionary]`）
+  与 `ProbeScript._get_documentation/_get_members`（`-> Array[Dictionary]` /
+  `-> Array[StringName]`）通过 analyze+lowering 与 native compile；P0-C 运行时经
+  `found._get_public_functions()`/`script._get_documentation()`/`script._get_members()`
+  实调验证虚分发与空 typed array 往返（`typed_array_virtuals` 步骤）。
+  2. dock 的 host/port 输入持久化到 EditorSettings `gdcc/server/host|port`（计划只
+     写了启动命令一项）：拉起用例必须把端点导向测试空闲端口，否则会收养/碰撞开发机
+     6099 上的真实服务；顺带修正"每次重启编辑器重输端口"的体验缺口。服务的诊断
+     RPC 端点仍固定 127.0.0.1:6099，不与 dock 联动（§3.6 不变）。
+  3. 引擎 harness 落地细节：headless 编辑器 + 注入 `addons/gdcc_test_driver` 驱动插件
+     （`plugin.cfg` + `driver_plugin.gd`，不随插件发布）；子进程配置目录经
+     `APPDATA`/`XDG_CONFIG_HOME`/`HOME` 重定向隔离，EditorSettings 写入不污染真实
+     用户配置；拉起命令在测试中为 `java -cp <测试 classpath> gd.script.gdcc.Main serve`
+     （自包含，不依赖预构建 jar），占位符替换路径与生产一致。
+  4. `GdccEditorService` Phase 1 只落地生命周期面（注册/注销/探针验证/端点回写/
+     `ensure_server_hook` 注入/`notify_filesystem_changed` 空操作接线）；诊断缓存与
+     查询接口属 Phase 3，未提前加桩。
+  5. `_preferred_file_name_casing`（enum 返回类型未经探针验证）与 loader/saver 的
+     可选虚函数（`_recognize_path`、`_get_dependencies`、`_get_resource_script_class`
+     等）未实现，基类默认行为安全。
+- Phase 1 评审记录（2026-09-23，review-expert-a + review-expert-c 并行评审，经三轮修复
+  复核至全部确认解决；修复后全部自动化用例复测通过）：
+  - 采纳并修复（高危/阻塞）：
+    1. `server.shutdown` 退出触发最终形态：handler 置 `AtomicBoolean` + **请求线程上的
+       ThreadLocal 服务标记**；HTTP 层仅在"实际调用了该方法的 exchange"写完并关闭后
+       触发退出（`consumeServingExchange`）——先收紧为"服务 exchange"的启发式快照仍
+       存在无关请求冒领窗口，评审复核后改为线程作用域标记。并发双 shutdown 的合同
+       收窄为：先完成写回者触发退出，另一并发调用方可能断连（双方请求同一退出，
+       结果等价）；顺序重复调用的幂等 `{}` 不变。
+    2. `server_launcher.gd` 所有权记录为按端点的列表，`shutdown_owned` 逐条处理且
+       不丢弃记录：RPC 预算按剩余均分，耗尽后进入带小额固定探测预算的 kill 兜底
+       （软上限；消除"首个服务卡死导致后续记录被跳过并清空"的所有权丢失回归）。
+    3. `_finish_head` 加 `_finishing` 守卫：回调重入 `ensure_running` 时只入队不启动。
+    4. `_send_shutdown_rpc` 累积响应体并按 `Content-Length` 校验完整读取。
+    5. `GdccScriptFormatSaver._save`：检查 `store_string` 布尔返回 + close 后显式
+       READ 重开 + `get_error` + 内容比对（`flush()` 不更新 `get_error`，
+       `get_file_as_string` 把读取失败与空文件混为 `""`，均已在注释钉死）；写失败
+       不再误报 OK。
+    6. `plugin.gd` 的 `install(...)` 移到 `auto_setup_module()` 之前，失败时
+       `_rollback_failed_enter_tree()` 完整回滚 dock/client/launcher 并恢复
+       `use_thread`。
+    7. `GdccScript._set_source_code` 置 `_valid = true`（有源码即有效，`_reload` 失败
+       才置回）。
+    8. `GdccScript` 页眉扫描只解析列 0 起始行；关键字边界为空格/制表符
+       （`_keyword_matches`）；同行 `class_name X extends Y` 的 `extends` 查找按
+       双侧空白边界扫描（`_find_keyword_index`，兼容制表符）。
+    9. `server_launcher._spawn` 返回 `[err, pid]`，空命令文本报 `ERR_INVALID_PARAMETER`
+       而非误报 `ERR_CANT_FORK`。
+  - 采纳并修复（测试质量）：安装器负例先创建真实非库文件再断言
+    `No dynamic library artifact`（原用例因文件不存在提前在 `Files.exists` 处失败，
+    未触达目标分支）。
+  - 驳回（附证据，评审已接受）："extends 覆盖 class_name"为误读（`extends` 分支写
+    `_base_type`，引擎测试两行式样例已实证）；busy 协调器防御性清零路径数学上正确
+    （迟到的 -1 被钳制且不触碰标志位），删除反而会重新引入禁用即泄漏全速模式的既有
+    bug。
+  - 新增引擎测试锚点：`save_bad_path`（坏路径保存返回非 OK）、`create_script_valid`
+    （`_create_script` + `_set_source_code` 后 `_is_valid`）、`header_scan_edges`
+    （制表符分隔 + 缩进干扰行 + 同行混合分隔）。新增单元测试
+    `servingExchangeMarkerIsScopedToTheRequestingThread`（ThreadLocal 服务标记的
+    线程作用域与单次消费）。
+  - 遗留项：R23（§9，运行期注销语言的引擎侧竞态崩溃，观测一次后未能复现）——
+    **2026-09-23 已确认**：禁用插件属低频操作，仅登记不特殊处理，保持"禁用即注销"
+    合同不变。
+  - 手动测试缺陷修复（2026-09-23）：创建资源对话框直接 `ClassDB.instantiate` 创建
+    `GdccScript`（绕过 loader/语言工厂的 `setup()`）导致 `_language` 为 null，推入
+    脚本编辑器时引擎对 `get_language()` 无判空解引用（`script_text_editor.cpp` 高亮/
+    校验路径），signal 11 崩溃。修复：`GdccScript._get_language()` 自愈回退——先查
+    已注册语言表（ACTIVE），再查常驻服务实例（UNINSTALLED，实例常驻不释放）；
+    `GdccEditorService` 新增 `get_language_instance()` 访问器。回归锚点：
+    `EditorAddonScriptLanguageEngineTest` 新增 `create_resource` 用例（模拟
+    CreateDialog→InspectorDock 序列：ClassDB 实例化 + 属性枚举 + 保存 +
+    `edit_resource`，外加禁用态下同路径不崩溃且语言仍可解析）。注：创建脚本对话框
+    不出现 GD3 是 R5 已知限制，不在本修复范围。
 - 范围：
   - `src/editor_addon/addons/gdcc/**`（新增 `.gd3` 源文件 + `server_launcher.gd` +
     `plugin.gd`/`gdcc_dock.gd` 接线）
@@ -175,17 +273,14 @@ Godot 编辑器
   `_get_global_class_name`、`_make_template`、`_get_built_in_templates`、
   `_get_doc_comment_delimiters`（非 required）、`_preferred_file_name_casing`
   （非 required）。
-- C 档（跳过，接受默认值与可能的 `ERR_PRINT_ONCE`）：全部 `_debug_*`、
-  `_profiling_*`、`_get_public_functions`、`_get_public_constants`、
-  `_get_public_annotations`。其中 `_debug_get_stack_level_instance` 返回 `void*`、
-  `_profiling_get_*` 接收 `ScriptLanguageExtensionProfilingInfo*`，gdcc 无法表达；
-  `_get_public_*` 返回 `Dictionary[]`。**探针结论（2026-09-23，P0 全绿）：typed array
-  返回可实现**——`ProbeLang._get_public_functions/_get_public_annotations`
-  （`-> Array[Dictionary]`）与 `ProbeScript._get_documentation/_get_members`
-  （`-> Array[Dictionary]` / `-> Array[StringName]`）通过 analyze+lowering 与 native
-  compile；P0-C 运行时经 `found._get_public_functions()`/`script._get_documentation()`/
-  `script._get_members()` 实调验证虚分发与空 typed array 往返
-  （`typed_array_virtuals` 步骤）。实现期应把这些条目补为显式空实现以消除日志噪音。调试/性能分析本就在非目标内，这些路径不会被触发。
+- C 档（跳过，接受默认值与可能的 `ERR_PRINT_ONCE`）：`_profiling_*` 全部与
+  `_debug_get_stack_level_instance`（返回 `void*` / 接收
+  `ScriptLanguageExtensionProfilingInfo*`，gdcc 无法表达；调试/性能分析本就在非目标内，
+  这些路径不会被触发）。**修正（Phase 1 实施期发现）**：其余 `_debug_*` 与
+  `_get_public_functions`、`_get_public_annotations`、`_get_public_constants` 全部
+  显式实现为空答案——引擎的脚本调试器在任何脚本错误的打印路径上会对**每个**已注册
+  语言调用 `debug_get_current_stack_info`（typed array 返回可实现，见下方探针结论），
+  跳过会污染编辑器日志。
 
 关键 Dictionary 契约（逐字来自 `core/object/script_language_extension.h`，4.5）：
 
@@ -628,8 +723,10 @@ dock 在 gdcc 语言注册之前就依赖它（§1.1）。形态为 `Node`，由
   机器相关的开发机配置，不应随 `project.godot` 提交（与 `text_editor/external/exec_path`
   等工具路径先例一致）。plugin.gd 在 `_enter_tree` 用 `add_property_info` 注册该条目；
   dock 的"启动命令"输入框直接读写它，每次拉起前重新读取（不缓存）。
-- 命令模板：支持 `{host}` / `{port}` 占位符，拉起前替换为目标端点；典型值
-  `java -jar D:/tools/gdcc/gdcc-0.0.2.jar serve --host {host} --port {port}`。
+- 命令模板：支持 `{host}` / `{port}` 占位符，拉起前替换为目标端点；典型值使用 zig
+  启动器 `gdcc serve --host {host} --port {port}`（zig 启动器原样转发参数给 jar，
+  `json_rpc_service_implementation.md` §2.5；非 PATH 安装时写启动器的完整路径，如
+  `D:/tools/gdcc/gdcc.exe serve --host {host} --port {port}`）。
   解析规则为空白分词 + 双引号成组（无 shell 展开、无管道；首 token 为可执行文件，
   其余为参数）。无占位符时按原样执行（服务须自行监听目标端点）。命令文本是用户
   显式配置的本地命令，以编辑器权限执行，文档明示其信任边界。
@@ -854,14 +951,14 @@ Phase 1 的编辑器内 harness。）
 typed array 返回探针结论已写入本文档（§3.2/§2.3）；探针暴露的两个 gdcc 后端缺陷
 已修复并附回归测试（见文档状态节）。
 
-### Phase 1：资源骨架（无诊断）+ 服务拉起
+### Phase 1：资源骨架（无诊断）+ 服务拉起 ✅（2026-09-23 自动化验收通过，手动验收通过）
 
 实施：`GdccScript`、加载器/保存器、`GdccScriptLanguage`（`_validate` 暂恒返回
 `{"valid": true}`）、`GdccEditorService` 常驻单实例与注册/注销、`plugin.gd` 接线
 （含 use_thread 暂存/恢复）、安装器多源文件收集与 `reloadable=false` 全出口后处理。
 外加服务拉起功能（§3.7）：服务端新增 `server.shutdown` RPC（方法 handler 只置
 `AtomicBoolean` 并返回 `{}`，幂等；`JsonRpcHttpHandler` 在该 exchange 写完并
-close 之后，由**不属于请求 executor 的平台线程**调 `System.exit(0)`——禁止在方法
+close 之后，由**不属于请求 executor** 的平台线程调 `System.exit(0)`——禁止在方法
 handler 内启动退出线程、禁止用 sleep 赌写回完成，否则与 hook 里的
 `executor.close()`/`stop(0)` 死锁，§2.8；同步更新
 `json_rpc_service_implementation.md` 方法表与编解码测试）、`server_launcher.gd`、
@@ -878,14 +975,17 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
 - `EditorAddonScriptLanguageEngineTest`（新增，`GODOT_BIN`+Zig 门控；harness 见
   §8.2）：语言已注册（遍历 `Engine.get_script_language*` 找到 `GD3`）；
   `ResourceLoader.load("res://.../sample.gd3")` 返回对象的
-  `get_language().get_name() == "GD3"` 且源码往返一致；`ResourceSaver.save` 后文件
+  `_get_language()._get_name() == "GD3"`（`Script` 在 4.5 不绑定公开 `get_language()`，
+  只有 `ScriptExtension` 上的 `_get_language` 可调）且源码往返一致；`ResourceSaver.save` 后文件
   内容更新；`ResourceLoader.load_threaded_request` + `load_threaded_get_status` 轮询
   + `load_threaded_get` 的 worker 线程加载路径同样成功（覆盖 §2.4 约束）；
   直接调用语言的 `_validate` 返回 `valid == true`。
 - 拉起功能引擎测试（同 harness）：Java 侧先找一个空闲端口但不侦听，驱动插件把
   EditorSettings `gdcc/server/launch_command` 设为
-  `java -jar <已构建 jar> serve --host 127.0.0.1 --port {port}`（占位符由 launcher
-  替换为该端口）——冷启动无服务时 dock 连接经自动拉起最终成功（`ping` 通过）；
+  `java -cp <测试 classpath> gd.script.gdcc.Main serve --host {host} --port {port}`
+  （占位符由 launcher 替换为该端口；测试自包含，不依赖预构建 jar——与生产推荐的
+  zig 启动器 `gdcc serve` 形式不同，见文档状态节偏差 3）——冷启动无服务时 dock
+  连接经自动拉起最终成功（`ping` 通过）；
   随后禁用插件，断言被拉起的进程退出（端口关闭/`is_process_running == false`）。
   负例：启动命令指向不存在的可执行文件 → 状态行报错且不崩溃；启动命令留空且无
   服务 → 维持现状 fail-fast 报错（回归既有行为）。
@@ -1021,6 +1121,10 @@ EditorSettings `gdcc/server/launch_command` 与端口写好后触发连接，验
 | R20 | 编辑器崩溃导致拉起的服务成为孤儿进程 | 低 | 崩溃路径本就无法执行插件代码；下次会话端口探测将其收养为外部服务（只连不关），不会泄漏累积（§3.7） |
 | R21 | `server.shutdown` 不可达（服务挂起/半死连接）时服务残留 | 低 | 2s 有界等待后按 R19 双条件决定是否 `OS.kill`；服务已死但 PID 被复用时宁可残留也不误杀；Windows 下硬切不执行 shutdown hook 的事实写入 §2.8 |
 | R22 | 启动命令以编辑器权限执行任意本地命令 | 低 | 命令仅来自用户显式配置（EditorSettings），插件不自动生成命令文本；文档明示信任边界（§3.7） |
+| R23 | 运行期注销脚本语言与编辑器子系统迭代 `ScriptServer` 语言表的引擎侧竞态 | 中 | Phase 1 引擎测试曾观测到一次（批量跑、高负载）：禁用窗口内引擎报 `ScriptServer::get_language(1)` 越界（`_language_count = 1`）后空指针崩溃（0xC0000005）。此后 13 次手动复现 + 6 次强制重跑 + 多轮批量均未再出现。引擎 4.5 的
+`get_language`/`unregister_language` 各自加锁而 `get_language_count` 是非锁定内联
+读取（`core/object/script_language.cpp/.h`），调用方先取的计数在按索引取值时可能已
+失效（TOCTOU），且越界返回 nullptr 后调用方未判空。无崩溃栈，调用点未最终定位；插件生产代码不按索引取语言（测试驱动的 `_find_gd3_language` 按索引遍历但每次循环重读计数，单线程下安全，不像肇事调用方）。候选缓解（未采纳，需评估）：禁用时不注销语言只置 UNINSTALLED（偏离 §3.5 合同，架构级变更）；或把注销延迟到编辑器静默帧（缩小窗口但不消除）。**当前视为已观测但尚未缓解的风险**：保持"禁用即注销"合同；经评估（2026-09-23）禁用插件属低频操作且崩溃仅观测到一次，暂不特殊处理，若重现率上升再评估 |
 
 ---
 

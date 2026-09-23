@@ -1,0 +1,57 @@
+@tool
+class_name GdccScriptFormatLoader
+extends ResourceFormatLoader
+
+## Loads `.gd3` files as GdccScript resources (implementation plan §2.4/§3.3).
+##
+## HARD CONSTRAINT — thread safety: `_load` can run on a WorkerThreadPool thread (threaded
+## resource loading), so it is a pure load: only the path arguments, `FileAccess`, and fresh
+## GdccScript construction. It must never touch Nodes, the LSP/RPC clients, the diagnostics
+## cache, or `get_path()` (the engine binds the path only after `_load` returns). `_language`
+## is written once before registration and read-only afterwards, which keeps this race-free.
+
+var _language: GdccScriptLanguage = null
+
+
+func setup(language: GdccScriptLanguage) -> void:
+    _language = language
+
+
+func _get_recognized_extensions() -> PackedStringArray:
+    return PackedStringArray(["gd3"])
+
+
+func _handles_type(type: StringName) -> bool:
+    return type == &"Script" or type == &"GdccScript"
+
+
+func _get_resource_type(path: String) -> String:
+    if path.ends_with(".gd3"):
+        return "GdccScript"
+    return ""
+
+
+func _get_resource_uid(path: String) -> int:
+    return -1
+
+
+func _exists(path: String) -> bool:
+    return path.ends_with(".gd3") and FileAccess.file_exists(path)
+
+
+## Cache-mode convention (mirrors the lua-gdextension reference loader): 1 = CACHE_MODE_REUSE
+## answers from the engine cache, 2/4 = CACHE_MODE_REPLACE* take the path over so later loads
+## see this instance; other modes always load fresh.
+func _load(path: String, original_path: String, use_sub_threads: bool, cache_mode: int) -> Variant:
+    if cache_mode == 1:
+        var cached: Resource = ResourceLoader.get_cached_ref(path)
+        if cached != null:
+            return cached
+    if not FileAccess.file_exists(path):
+        return null
+    var script: GdccScript = GdccScript.new()
+    script.setup(_language)
+    script.load_from_text(path, FileAccess.get_file_as_string(path))
+    if cache_mode == 2 or cache_mode == 4:
+        script.take_over_path(path)
+    return script

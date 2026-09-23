@@ -13,13 +13,23 @@ extends VBoxContainer
 # Server error code for ApiModuleAlreadyExistsException (the RPC exception mapping), used to
 # turn module creation into delete-and-recreate during plugin-load auto setup.
 const ERR_MODULE_ALREADY_EXISTS := -32001
+const SETTING_LAUNCH_COMMAND := "gdcc/server/launch_command"
+const SETTING_SERVER_HOST := "gdcc/server/host"
+const SETTING_SERVER_PORT := "gdcc/server/port"
 
 var _client: GdccRpcClient
 var _editor_interface: EditorInterface
+# Low-power busy reporting goes to the plugin's coordinator (the single writer of
+# `OS.low_processor_usage_mode`); the dock never touches the global flag itself.
+var _report_busy: Callable
+# Shared server launcher owned by the plugin; used to bring the service up before the first
+# connection attempt when the user configured a launch command.
+var _launcher: Node
 
 var _host_input: LineEdit
 var _port_input: LineEdit
 var _module_input: LineEdit
+var _launch_command_input: LineEdit
 var _log_output: TextEdit
 var _action_buttons: Array[Button] = []
 
@@ -30,24 +40,30 @@ var _current_task_id: int = -1
 var _current_task_host: String = ""
 var _current_task_port: int = 0
 var _busy_count: int = 0
-var _saved_low_processor_mode: bool = true
 
 
 # Injected by plugin.gd before the dock enters the tree; `_ready` builds the UI afterwards.
-func setup(client: GdccRpcClient, editor_interface: EditorInterface) -> void:
+func setup(client: GdccRpcClient, editor_interface: EditorInterface, busy_reporter: Callable, launcher: Node) -> void:
     _client = client
     _editor_interface = editor_interface
+    _report_busy = busy_reporter
+    _launcher = launcher
 
 
 func _ready() -> void:
+    var editor_settings := _editor_interface.get_editor_settings()
     var endpoint_row := HBoxContainer.new()
     endpoint_row.add_child(_make_label("Host"))
-    _host_input = _make_line_edit("127.0.0.1", 110)
+    _host_input = _make_line_edit(_read_setting_text(editor_settings, SETTING_SERVER_HOST, "127.0.0.1"), 110)
     endpoint_row.add_child(_host_input)
     endpoint_row.add_child(_make_label("Port"))
-    _port_input = _make_line_edit("6099", 60)
+    _port_input = _make_line_edit(_read_setting_text(editor_settings, SETTING_SERVER_PORT, "6099"), 60)
     endpoint_row.add_child(_port_input)
     add_child(endpoint_row)
+    # Persist endpoint edits like the launch command: machine-local server addressing should
+    # survive an editor restart.
+    _host_input.text_changed.connect(_on_host_changed)
+    _port_input.text_changed.connect(_on_port_changed)
 
     var module_row := HBoxContainer.new()
     module_row.add_child(_make_label("Module"))
@@ -55,6 +71,19 @@ func _ready() -> void:
     _module_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     module_row.add_child(_module_input)
     add_child(module_row)
+
+    # Launch-command row: empty means "never auto-launch" (pure passive connect). Reads and
+    # writes the machine-local EditorSettings entry directly; the launcher re-reads it before
+    # every spawn, so no cached copy is kept here.
+    var launch_row := HBoxContainer.new()
+    launch_row.add_child(_make_label("Launch"))
+    _launch_command_input = _make_line_edit("", 0)
+    _launch_command_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _launch_command_input.placeholder_text = "gdcc serve --host {host} --port {port}"
+    _launch_command_input.text = _read_setting_text(editor_settings, SETTING_LAUNCH_COMMAND, "")
+    _launch_command_input.text_changed.connect(_on_launch_command_changed)
+    launch_row.add_child(_launch_command_input)
+    add_child(launch_row)
 
     var session_row := HBoxContainer.new()
     _add_button(session_row, "Ping", _on_ping_pressed)
@@ -107,10 +136,10 @@ func _set_action_buttons_enabled(enabled: bool) -> void:
 
 func _exit_tree() -> void:
     # GDScript has no try/finally: if the plugin is disabled mid-request, the pending
-    # coroutines are dropped with the dock and `_end_busy` never runs — restore the global
-    # low-processor flag here or the editor would stay in full-speed mode until restart.
+    # coroutines are dropped with the dock and `_end_busy` never runs — drain the residual
+    # count through the coordinator here or the editor would stay in full-speed mode.
     if _busy_count > 0:
-        OS.low_processor_usage_mode = _saved_low_processor_mode
+        _report_busy.call(-_busy_count)
         _busy_count = 0
 
 
@@ -125,21 +154,42 @@ func _log_error(action: String, rpc: Dictionary) -> void:
     _log(action + " failed [" + str(error["code"]) + "]: " + str(error["message"]))
 
 
-# Busy bookkeeping for the editor-idle liveness mitigation; nesting-safe via a counter. Action
-# buttons are disabled while busy so re-entrant Compile presses cannot race `_current_task_id`.
+# Busy bookkeeping for the editor-idle liveness mitigation; nesting-safe via a counter. The
+# actual global flag write happens in the plugin's coordinator; the dock only reports deltas
+# and manages its own buttons. Action buttons are disabled while busy so re-entrant Compile
+# presses cannot race `_current_task_id`.
 func _begin_busy() -> void:
     if _busy_count == 0:
-        _saved_low_processor_mode = OS.low_processor_usage_mode
-        OS.low_processor_usage_mode = false
         _set_action_buttons_enabled(false)
     _busy_count += 1
+    _report_busy.call(1)
 
 
 func _end_busy() -> void:
     _busy_count = maxi(_busy_count - 1, 0)
+    _report_busy.call(-1)
     if _busy_count == 0:
-        OS.low_processor_usage_mode = _saved_low_processor_mode
         _set_action_buttons_enabled(true)
+
+
+func _on_launch_command_changed(new_text: String) -> void:
+    _editor_interface.get_editor_settings().set_setting(SETTING_LAUNCH_COMMAND, new_text.strip_edges())
+
+
+func _on_host_changed(new_text: String) -> void:
+    _editor_interface.get_editor_settings().set_setting(SETTING_SERVER_HOST, new_text.strip_edges())
+
+
+func _on_port_changed(new_text: String) -> void:
+    _editor_interface.get_editor_settings().set_setting(SETTING_SERVER_PORT, int(new_text.strip_edges()))
+
+
+## Reads a machine-local editor setting as text, falling back to the given default when the
+## setting was never registered (e.g. a stripped-down editor build).
+func _read_setting_text(settings: EditorSettings, key: String, fallback: String) -> String:
+    if settings.has_setting(key):
+        return str(settings.get_setting(key))
+    return fallback
 
 
 func _apply_endpoint() -> void:
@@ -308,8 +358,19 @@ func _on_cancel_pressed() -> void:
 # left by a previous editor session first — then points projectPath at a per-module host
 # build dir so Compile works without manual setup. Failures are only logged: the server may
 # simply not be running yet, and the manual buttons stay usable.
+#
+# When a launch command is configured the launcher brings the service up first; without one
+# (or when spawning fails) the flow falls through to the same passive connection attempts as
+# before, which simply log their failure.
 func auto_setup_module() -> void:
     _apply_endpoint()
+    if _launcher != null:
+        _begin_busy()
+        var ensure_result: Array = await _launcher.ensure_running_async(_client.host, _client.port)
+        _end_busy()
+        if int(ensure_result[0]) != OK:
+            _log("compile service not reachable and could not be launched (error "
+                    + str(ensure_result[0]) + "); continuing with passive connection")
     var module_id: String = str(ProjectSettings.get_setting("application/config/name", "")).strip_edges()
     # The module id doubles as a host directory name below; replace characters that are
     # illegal in file names instead of letting the compile fail later in createDirectories.

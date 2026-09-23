@@ -68,7 +68,7 @@ entry.c deinitialize
 
 | 层 | 落点 |
 |---|---|
-| 元数据 | `GdextensionMetadataFile` 始终输出 `reloadable = true` |
+| 元数据 | `GdextensionMetadataFile` 始终输出 `reloadable = true`（渲染合同不变；`EditorAddonProjectInstaller` 的全部安装出口把产物改写为 `false`，因为 `gdcc_for_editor` 注册的 `ScriptLanguageExtension` 实例被 `ScriptServer` 以裸指针持有，热重载会留悬空指针——见 `doc/module_impl/editor_addon/gd3_editor_integration_implementation.md` §6） |
 | entry | `src/main/c/codegen/template_451/entry.c.ftl` / `entry.h.ftl` |
 | HRX runtime | `src/main/c/codegen/include_451/gdcc/gdcc_hrx.h` / `gdcc_hrx.c` |
 | Callable 分流 | `src/main/c/codegen/include_451/gdcc/gdcc_callable.h` |

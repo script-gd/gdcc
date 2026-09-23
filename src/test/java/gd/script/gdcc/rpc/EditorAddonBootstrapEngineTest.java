@@ -32,7 +32,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Gated on zig and `GODOT_BIN`; aborts cleanly when either is missing.
 class EditorAddonBootstrapEngineTest {
     private static final Path ADDON_PROJECT_DIR = Path.of("src/editor_addon");
-    private static final Path CLIENT_SOURCE_PATH = ADDON_PROJECT_DIR.resolve("addons/gdcc/gdcc_rpc_client.gd3");
     private static final Path CASE_ROOT = Path.of("tmp/test/editor_addon_bootstrap/default");
     private static final String RESULT_MARKER = "RPC_TEST_RESULT: ";
     /// Java-side timeout stays strictly above the driver's own 90s compile-poll deadline.
@@ -203,9 +202,10 @@ class EditorAddonBootstrapEngineTest {
         }
 
         // 1) Compile the client library natively through the public API (in-process; the server
-        //    the driver talks to is a separate API instance started below).
+        //    the driver talks to is a separate API instance started below). The module now
+        //    bundles every addon `.gd3` source; this test still exercises only the RPC client.
         var compileResult = EditorAddonProjectInstaller.compileClientLibrary(
-                CASE_ROOT.resolve("client-build"), CLIENT_SOURCE_PATH, TargetPlatform.getNativePlatform());
+                CASE_ROOT.resolve("client-build"), TargetPlatform.getNativePlatform());
         assertEquals(CompileResult.Outcome.SUCCESS, compileResult.outcome(),
                 () -> "client library native build failed: " + compileResult.failureMessage()
                         + "\nbuild log:\n" + compileResult.buildLog());

@@ -9,7 +9,12 @@
 ## 文档状态
 
 - 状态：事实源维护中
-- 更新日期：2026-09-13
+- 更新日期：2026-09-23
+- 近期变更（2026-09-23）：新增第 26 个方法 `server.shutdown`（进程控制，见 §2.2 表末
+  时序合同与 §5 的三级测试锚点）；编辑器插件侧落地 gd3 语言集成 Phase 1（常驻
+  `GdccEditorService`、`server_launcher.gd`、dock 启动命令/端点持久化、低功耗 busy
+  协调器改由 `plugin.gd` 单一写入，详见
+  `doc/module_impl/editor_addon/gd3_editor_integration_implementation.md`）。
 - 范围：
   - `src/main/java/gd/script/gdcc/rpc/**`
   - `src/main/java/gd/script/gdcc/api/ModuleState.java`（`.gd`/`.gd3` 源码收集过滤）
@@ -28,8 +33,8 @@
   - 认证/授权、TLS、非 loopback 暴露加固。
   - JSON-RPC 批量请求、位置（by-index）参数、WebSocket/流式传输。
   - 将编辑器插件发布到任何资产库。
-  - 让 `plugin.gd` / dock UI 脚本可被 gdcc 编译。只有客户端库
-    （`gdcc_rpc_client.gd3`）是自举编译目标。
+- 让 `plugin.gd` / dock / `server_launcher.gd` 等解释型脚本可被 gdcc 编译。只有
+  `.gd3` 源文件（客户端库与 §4.1 列出的语言集成文件）是自举编译目标。
 
 ---
 
@@ -81,7 +86,8 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 
 ### 2.2 方法面
 
-方法名采用点分命名空间，与公开 `API` 面一一对应，共 25 个方法。
+方法名采用点分命名空间，与公开 `API` 面一一对应，共 26 个方法（唯一的例外是进程控制
+方法 `server.shutdown`，它不映射 `API` 门面，见本节表末说明）。
 `API.recordCurrentCompileTaskEvent(...)` 被排除，因为它绑定进程内编译线程，远程调用
 没有意义；未分页的 `listCompileTaskEvents(taskId)` 重载也被排除，因为 RPC 面始终使用
 分页、带索引的变体。
@@ -94,6 +100,7 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 |---|---|---|
 | `server.ping` | 无 | `"pong"` |
 | `server.info` | 无 | `{version, branch, commit, maxCompileTaskEventPageSize}` |
+| `server.shutdown` | 无 | `{}` |
 | `module.create` | `{moduleId, moduleName}` | `ModuleSnapshot` |
 | `module.get` | `{moduleId}` | `ModuleSnapshot` |
 | `module.list` | `{}` | `ModuleSnapshot[]` |
@@ -122,6 +129,25 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 
 - `compile.listEvents` 始终使用分页、带索引的 API 变体，以保证 wire shape 稳定；
   `maxCount` 受 `API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE`（1000）上限约束。
+- `server.shutdown` 请求进程级优雅退出，幂等：重复调用返回相同的 `{}`。时序合同（由
+  `RpcServerShutdown` 与 `JsonRpcHttpHandler` 实现，`RpcServerShutdownTest` 钉死）：
+  方法 handler **只**登记退出意图（`AtomicBoolean` + 请求线程上的 ThreadLocal 服务标记）
+  并返回 `{}`；HTTP 层在**实际调用了该方法的 exchange** 写完响应且
+  try-with-resources 关闭之后（由 ThreadLocal 标记精确识别，无关并发请求不可能冒领），
+  由一条**不属于请求 executor** 的平台线程调用 `System.exit(0)`。禁止在 handler 内启动
+  退出线程、禁止在请求线程上直接 `System.exit`（JDK `HttpServer.stop(0)` 等待 handler
+  返回，shutdown hook 的 `stop(0)`/`executor.close()` 会与尚未返回的请求线程互相等待
+  死锁）、禁止用 sleep 赌写回完成。notification 形态（无 `id`）同样触发退出（204 后
+  生效）。边界：若服务 exchange 在写回前断开，进程按设计保持运行（客户端从未看到确认；
+  编辑器侧的端口探测+kill 兜底覆盖清理，见集成计划 §3.7）；两个**并发** shutdown 请求
+  各自标记自己的 exchange，先完成写回者触发退出，另一并发调用方可能观测到连接中断而
+  非 `{}`（二者请求的是同一退出，结果等价）。退出后的优雅收尾由 `gdcc serve` 既有的
+  JVM shutdown hook 完成（`server.close()` + `API.close()`，见 §2.5）。仅 `OS.kill`
+  不够：Windows 上它是 `TerminateProcess`，不执行 shutdown hook。该方法服务于编辑器
+  插件的服务进程管理（
+  `doc/module_impl/editor_addon/gd3_editor_integration_implementation.md` §2.8/§3.7）；
+  GDScript 客户端库不为其提供 wrapper（调用方是 `_exit_tree` 中帧泵可能已停的
+  `server_launcher.gd`，用裸 `HTTPClient` 有界轮询）。
 - `options.set` 接受与 `options.get` 返回完全相同的 JSON 形状（对称 wire format）；
   `compileOptions` 必须是完整对象，因为 `API.setCompileOptions` 替换整个快照。
 - `classMap.*` 是 `getTopLevelCanonicalNameMap` / `setTopLevelCanonicalNameMap` 的
@@ -230,7 +256,7 @@ DTO codec 规则：
 - `RpcServeCommand` 是 picocli `Callable<Integer>`，带 `mixinStandardHelpOptions`：
   `--host`（默认 `127.0.0.1`）、`--port`（默认 `6099`）、`--max-request-bytes`
   （默认 16 MiB）。它拥有服务端生命周期：创建 `API`、创建并启动 `JsonRpcServer`、
-  阻塞至 SIGINT、优雅停止。
+  阻塞至 SIGINT 或 `server.shutdown` RPC（§2.2）、优雅停止。
 - `server.info` 复用 CLI `--version` 输出已在使用的 `gdcc-version.properties` 生成
   资源机制。
 - zig launcher 原样把用户参数传给 jar，因此 `gdcc serve` 无需 launcher 改动即可在
@@ -311,11 +337,21 @@ DTO codec 规则：
   version="0.1.0"
   script="plugin.gd"
   ```
-- `plugin.gd` — `@tool extends EditorPlugin`；拥有 dock 与一个 `GdccRpcClient` 节点；
-  在编辑器中解释执行（不是自举目标）。
-- `gdcc_dock.gd` — `@tool extends VBoxContainer`；用代码构建的最小 UI：host/port 输入、
-  连接检查（`server.ping`）、module id 输入、按钮（创建 module、上传当前脚本、
-  analyze、compile、cancel），以及只读日志 `TextEdit`。解释执行。
+- `plugin.gd` — `@tool extends EditorPlugin`；拥有 dock、一个 dock 专用
+  `GdccRpcClient` 节点与 `server_launcher.gd` 实例；持有低功耗 busy 协调器
+  （`OS.low_processor_usage_mode` 单一写入者，§6.3）；负责 `GdccEditorService`
+  常驻节点的就位与 `install(...)`/`uninstall()` 调用（含
+  `network/language_server/use_thread` 的暂存/恢复）。在编辑器中解释执行（不是自举
+  目标）。
+- `gdcc_dock.gd` — `@tool extends VBoxContainer`；用代码构建的最小 UI：host/port/
+  启动命令输入（持久化到 EditorSettings `gdcc/server/*`）、连接检查（`server.ping`）、
+  module id 输入、按钮（创建 module、上传当前脚本、analyze、compile、cancel），以及
+  只读日志 `TextEdit`。解释执行。
+- `server_launcher.gd` — `@tool extends Node`；按需拉起/所有权内关闭 `gdcc serve`
+  （解释执行；dock 在 gdcc 语言注册前就依赖它）。合同见集成计划 §3.7。
+- `gdcc_editor_service.gd3`、`gdcc_script_language.gd3`、`gdcc_script.gd3`、
+  `gdcc_script_format_loader.gd3`、`gdcc_script_format_saver.gd3` — `.gd3` 语言集成
+  （编译目标；与客户端同模块 `gdcc_for_editor`）。合同见集成计划 §3。
 - `gdcc_rpc_client.gd3` — JSON-RPC 客户端库源码。**自举编译目标。** 使用专属扩展名
   `.gd3` 而非 `.gd`：Godot 引擎（含编辑器）不加载、不解析、不注册 `.gd3` 文件，
   因此源码中的 `class_name GdccRpcClient` 与编译产物 GDExtension 注册的同名类
@@ -576,6 +612,15 @@ fixture，列入 §7 后续工作。
   （`state`/`stage`/`completedUnits`/`totalUnits`；没有单独的 `progress` 字段，
   `createdAt`/`completedAt` 是 ISO-8601 字符串），以及最终的
   `CompileResult.outcome`。
+- dock 的 host/port/启动命令三个输入框持久化到 EditorSettings
+  （`gdcc/server/host`、`gdcc/server/port`、`gdcc/server/launch_command`；
+  机器级开发机配置，不进 project.godot）。`auto_setup_module` 在任何连接尝试前先经
+  `server_launcher.gd` 的 `ensure_running_async`（见集成计划 §3.7）：已侦听则直连
+  （外部服务，绝不关闭）；未配置命令则保持被动失败行为；配置了命令则按
+  `{host}`/`{port}` 占位符拉起并等待就绪（≤15s）。`server_launcher.gd` 还持有
+  `shutdown_owned()`（插件 `_exit_tree` 最后一步）：对本会话拉起的进程发
+  `server.shutdown` RPC，收到 200 响应即完成；不可达且端口仍在侦听时才 `OS.kill`
+  兜底（PID 复用防护，见集成计划 §9 R19）。
 - dock 绝不阻塞编辑器主线程；所有网络等待都是信号 await。编辑器空闲活性的已实现
   缓解见 §6.3。
 
@@ -604,7 +649,13 @@ fixture，列入 §7 后续工作。
   `maxCount` 按 `1000` 而非 `0` 处理；缺 `moduleId` → `-32602`，即使 API 抛出的
   是 `NullPointerException`）、§2.4 的每个错误码（通过真实 `API` 实例触发）、
   notification 执行后不产生响应对象、批量拒绝、空事件日志使
-  `compile.getLatestEvent` 返回 `null`，以及全部 25 个方法的路由。
+  `compile.getLatestEvent` 返回 `null`，以及全部 26 个方法的路由。
+- 进程关闭：`RpcServerShutdownTest` —— `server.shutdown` 的三级合同：dispatcher 层
+  （`{}` 结果 + 意图登记幂等）；进程内 HTTP 层（注入非退出测试 latch：200 + `{}` 到达
+  客户端**之后**退出动作恰好触发一次、运行在 `gdcc-rpc-exit` 平台线程而非请求
+  executor 虚拟线程、notification 204 路径同样触发）；真实子进程层（
+  `java -cp <测试 classpath> gd.script.gdcc.Main serve --port <空闲端口>`：读到 200 与
+  body 之后进程才退出且退出码为 0，端口随后关闭）。
 - HTTP 传输：`RpcServerHttpTest` —— 临时端口上的真实服务端加 JDK `HttpClient`：
   POST 往返、`Content-Type` 强制（`415`）、经有界读取的大小上限（`413`，用刚好
   超过上限的 body 覆盖）、非 POST（`405` 带 `Allow: POST`）、格式错误的 JSON
@@ -638,6 +689,28 @@ fixture，列入 §7 后续工作。
   `gdcc_dock.gd` 的解析级检查（仅解析，不 lowering，因为编辑器专用 API 不是自举
   目标）与 `plugin.cfg` 五字段检查。若分析或 lowering 拒绝了客户端的某个构造，
   按 §4.2 简化客户端后重跑；不得削弱测试期望。
+- `.gd3` 语言集成静态门禁：`EditorAddonScriptLanguageAnalysisTest`（gd3 编辑器集成
+  计划 Phase 1）—— `addons/gdcc/` 下**全部** `.gd3` 源码（语言/脚本/加载器/保存器/
+  常驻服务/客户端）作为一个模块 analyze+lowering 干净（跨类引用可解析）；全部编译源
+  去注释+去字符串内容后无 `await`；`plugin.gd`/`gdcc_dock.gd`/`server_launcher.gd`
+  仅语法解析；安装器两个 `.gdextension` 安装出口（单平台/多平台）产物均含
+  `reloadable = false` 且无 `reloadable = true`（热重载悬空指针防护，集成计划 §6；
+  后端 `GdextensionMetadataFile` 的 `reloadable = true` 渲染合同不变，改写只做在
+  安装器后处理）；无动态库产物的安装必须抛 `IOException`（负例）。
+- `.gd3` 语言集成引擎测试（zig + `GODOT_BIN` 门控）：
+  `EditorAddonScriptLanguageEngineTest` —— 真实 headless **编辑器**
+  （`--headless --editor --path <副本> --quit-after <兜底帧数>`），驱动插件
+  `addons/gdcc_test_driver`（仅测试用，不随插件发布）逐行输出 `GD3_TEST_RESULT: `。
+  子进程的配置目录被重定向进用例目录（`APPDATA`/`XDG_CONFIG_HOME`/`HOME`），
+  EditorSettings 写入（`use_thread`、启动命令等）绝不污染真实用户配置。用例：
+  `language`（语言注册 GD3、`ResourceLoader.load` 往返、`ResourceSaver.save` 往返、
+  `_reload` 重读、worker 线程 `load_threaded_*` 路径、`_validate` 返回 valid、
+  禁用/启用循环中语言实例同一性）；`launch`（冷启动无服务时经配置的启动命令自动拉起
+  `gdcc serve`——测试用 `java -cp <测试 classpath> gd.script.gdcc.Main serve` 而非
+  预构建 jar 以保持自包含——dock 连接成功，禁用插件后被拉起的进程退出）；
+  `launch_bad`（不存在的可执行文件：launcher 输出 `GDCC server launcher: ...`
+  错误行且编辑器不崩溃）；`launch_none`（无启动命令且无服务：维持被动失败，
+  不拉起任何进程）。
 - 引擎自举（zig + Godot 门控）：`EditorAddonBootstrapEngineTest` —— 端到端自举
   证明：
   1. 通过公开 `API`（`gdcc_rpc_client.gd3` 以 `.gd3` 虚拟路径写入模块 VFS +
@@ -723,10 +796,12 @@ test_suite 中新增聚焦 fixture 单独定位环节（特别是 2、4）。
 发送与同步失败完成依赖 `SceneTree.process_frame`，且 `HTTPRequest` 默认在主循环中
 推进；Godot 编辑器默认开启 `OS.low_processor_usage_mode`，无输入/重绘时主循环跳过
 迭代，`process_frame` 不发射、HTTP 不前进。自举测试的 `--headless` 全速主循环测
-不到该场景，headless ping 碰巧成功也不能证明编辑器空闲活性。已实现的缓解：dock
-（解释型，可用编辑器 API）在任何请求在途期间暂时关闭
-`OS.low_processor_usage_mode`（`_busy_count` 计数），最后一个在途动作结束后恢复原
-模式；客户端另以 `request_timeout` 设置 `HTTPRequest.timeout` 兜底挂起请求。真实
+不到该场景，headless ping 碰巧成功也不能证明编辑器空闲活性。已实现的缓解（
+2026-09-23 起）：`plugin.gd` 持有**单一写入者** busy 协调器——dock 与
+`server_launcher.gd` 只在 busy 起止时向它上报 ±1（`_report_busy`），首个 0→1 时保存
+原值并置 `false`，归 0 时恢复该原值（不写死 `true`）；dock 与 launcher 不再直写
+`OS.*`，双写入者互相覆盖的风险由此消除（集成计划 §3.5/§3.6）。客户端另以
+`request_timeout` 设置 `HTTPRequest.timeout` 兜底挂起请求。真实
 编辑器手工验收必须包含"点击 ping/compile 后不再移动鼠标，请求仍能完成"一条。
 
 ### 6.4 其余已知事项

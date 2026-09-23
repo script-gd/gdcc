@@ -1,0 +1,140 @@
+@tool
+class_name GdccEditorService
+extends Node
+
+## Registration hub and diagnostics scheduler for the `.gd3` editor integration
+## (implementation plan §3.5). PROCESS-RESIDENT SINGLETON: the plugin parks exactly one
+## instance under the scene tree root (fixed node name `GdccEditorService`) and never frees it
+## on disable — loaded GdccScript resources and open editor tabs keep calling
+## `script.get_language()`, so the language instance must stay valid for the whole session and
+## re-enablement re-registers the SAME instance instead of creating a second `GD3` language.
+##
+## Two states only: UNINSTALLED (`_active == false`, every public entry point is a safe no-op)
+## and ACTIVE.
+
+var _active: bool = false
+var _editor_interface: EditorInterface = null
+var _language: GdccScriptLanguage = null
+var _loader: GdccScriptFormatLoader = null
+var _saver: GdccScriptFormatSaver = null
+# Dedicated RPC client (child node `GdccEditorRpcClient`): its HTTP queue is separate from the
+# dock's client, so background analysis traffic can never starve dock actions and vice versa.
+var _rpc_client: GdccRpcClient = null
+var _lsp_host: String = "127.0.0.1"
+var _lsp_port: int = 6005
+# Whole-module analysis including the compile-only gate (`sema.compile_check`) — the editor
+# diagnostics goal is to surface real compile failures early, not just parse errors.
+var analyze_include_lowering: bool = true
+# Injected by the plugin entry point; signature contract:
+# `func(host: String, port: int, on_ready: Callable) -> void`. The hook has no return value —
+# its only success signal is the `on_ready` callback's error code.
+var ensure_server_hook: Callable
+
+
+func is_active() -> bool:
+    return _active
+
+
+## The resident language instance (never null after the first install, never freed). Scripts
+## created directly via ClassDB (bypassing the loader's `setup()`) self-heal their language
+## reference through this accessor when the language is not currently registered.
+func get_language_instance() -> GdccScriptLanguage:
+    return _language
+
+
+## Registers the language, loader, and saver. Instances are created once (first call) and
+## reused on every later call; endpoint parameters are written back on EVERY call so a
+## re-enable can retarget the clients. Registration order is language → loader → saver with a
+## probe after each engine call that cannot report failure directly (the loader/saver
+## registration functions return void); any failure rolls back in reverse order and leaves the
+## service UNINSTALLED.
+func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int, rpc_host: String, rpc_port: int) -> int:
+    if _language == null:
+        _language = GdccScriptLanguage.new()
+        _language.setup(self)
+        _loader = GdccScriptFormatLoader.new()
+        _loader.setup(_language)
+        _saver = GdccScriptFormatSaver.new()
+        _rpc_client = GdccRpcClient.new()
+        _rpc_client.name = &"GdccEditorRpcClient"
+        add_child(_rpc_client)
+    _editor_interface = editor_interface
+    _lsp_host = lsp_host
+    _lsp_port = lsp_port
+    _rpc_client.host = rpc_host
+    _rpc_client.port = rpc_port
+    if _active:
+        return OK
+    var err: int = Engine.register_script_language(_language)
+    if err != OK:
+        # Directly observable failure (16-language cap / name clash) — nothing to roll back.
+        return err
+    ResourceLoader.add_resource_format_loader(_loader, false)
+    if not _probe_loader():
+        ResourceLoader.remove_resource_format_loader(_loader)
+        Engine.unregister_script_language(_language)
+        return FAILED
+    ResourceSaver.add_resource_format_saver(_saver, false)
+    if not _probe_saver():
+        ResourceSaver.remove_resource_format_saver(_saver)
+        ResourceLoader.remove_resource_format_loader(_loader)
+        Engine.unregister_script_language(_language)
+        return FAILED
+    _active = true
+    return OK
+
+
+## Reverse order of install(); unregisters only, never frees — the resident instances stay
+## valid for resources and tabs still referencing them, and a later install() re-registers
+## the same instances.
+func uninstall() -> void:
+    if not _active:
+        return
+    ResourceSaver.remove_resource_format_saver(_saver)
+    ResourceLoader.remove_resource_format_loader(_loader)
+    Engine.unregister_script_language(_language)
+    _active = false
+
+
+## Forwarding target for the editor's `filesystem_changed` signal (connected by the plugin).
+## The .gd3 file-set mirror it maintains belongs to the diagnostics channel; with no channel
+## attached this is intentionally a no-op.
+func notify_filesystem_changed() -> void:
+    pass
+
+
+## Loader registration postcondition probe: `add_resource_format_loader` returns void, so a
+## silent failure can only be detected by loading a real `.gd3` through the engine and
+## checking the result type and content round-trip. CACHE_MODE_IGNORE (0) keeps the probe
+## independent of anything the cache may hold from an earlier session.
+func _probe_loader() -> bool:
+    var probe_path: String = "user://gdcc_loader_install_probe.gd3"
+    var probe_source: String = "@tool\nextends RefCounted\n"
+    var file: FileAccess = FileAccess.open(probe_path, FileAccess.WRITE)
+    if file == null:
+        return false
+    file.store_string(probe_source)
+    file.close()
+    var loaded: Resource = ResourceLoader.load(probe_path, "", 0)
+    DirAccess.remove_absolute(probe_path)
+    if loaded == null or not (loaded is GdccScript):
+        return false
+    var script: GdccScript = loaded as GdccScript
+    return script.get_source_code() == probe_source and script._get_language() == _language
+
+
+## Saver postcondition probe, same style as the loader probe: save a real GdccScript through
+## the engine and read the file back byte-for-byte.
+func _probe_saver() -> bool:
+    var probe_path: String = "user://gdcc_saver_install_probe.gd3"
+    var probe_source: String = "@tool\nextends RefCounted\n"
+    var script: GdccScript = _language._create_script() as GdccScript
+    if script == null:
+        return false
+    script.load_from_text(probe_path, probe_source)
+    var err: int = ResourceSaver.save(script, probe_path, 0)
+    if err != OK:
+        return false
+    var read_back: String = FileAccess.get_file_as_string(probe_path)
+    DirAccess.remove_absolute(probe_path)
+    return read_back == probe_source

@@ -73,15 +73,37 @@ public final class JsonRpcDispatcher {
     private final @NotNull API api;
     private final @NotNull RpcJsonCodec codec;
     private final @NotNull JsonRpcMethodRegistry registry;
+    private final @NotNull RpcServerShutdown shutdown;
 
     public JsonRpcDispatcher(@NotNull API api) {
-        this(api, new RpcJsonCodec(), JsonRpcMethodRegistry.create());
+        this(api, RpcServerShutdown.systemExit());
+    }
+
+    /// Test entry point with an observable (non-exiting) shutdown latch.
+    JsonRpcDispatcher(@NotNull API api, @NotNull RpcServerShutdown shutdown) {
+        this(api, new RpcJsonCodec(), JsonRpcMethodRegistry.create(shutdown), shutdown);
     }
 
     JsonRpcDispatcher(@NotNull API api, @NotNull RpcJsonCodec codec, @NotNull JsonRpcMethodRegistry registry) {
+        this(api, codec, registry, RpcServerShutdown.systemExit());
+    }
+
+    private JsonRpcDispatcher(
+            @NotNull API api,
+            @NotNull RpcJsonCodec codec,
+            @NotNull JsonRpcMethodRegistry registry,
+            @NotNull RpcServerShutdown shutdown
+    ) {
         this.api = Objects.requireNonNull(api, "api must not be null");
         this.codec = Objects.requireNonNull(codec, "codec must not be null");
         this.registry = Objects.requireNonNull(registry, "registry must not be null");
+        this.shutdown = Objects.requireNonNull(shutdown, "shutdown must not be null");
+    }
+
+    /// The process-exit latch shared with the `server.shutdown` handler; the HTTP transport
+    /// checks it after every fully-written exchange.
+    public @NotNull RpcServerShutdown shutdown() {
+        return shutdown;
     }
 
     /// Dispatches one raw request body. Returns the response envelope, or `null` when the request

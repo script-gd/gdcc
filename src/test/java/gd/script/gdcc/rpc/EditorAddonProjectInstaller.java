@@ -46,9 +46,11 @@ public final class EditorAddonProjectInstaller {
     static final String EXTENSION_SUB_DIR = "addons/gdcc";
     static final String EXTENSION_FILE_NAME = "gdcc_for_editor.gdextension";
     private static final Path ADDON_PROJECT_DIR = Path.of("src/editor_addon");
-    private static final Path CLIENT_SOURCE_PATH = ADDON_PROJECT_DIR
-            .resolve(EXTENSION_SUB_DIR)
-            .resolve("gdcc_rpc_client.gd3");
+    private static final Path ADDON_SOURCE_DIR = ADDON_PROJECT_DIR.resolve(EXTENSION_SUB_DIR);
+    /// Exact text the backend renderer emits; the post-processing rewrite fails fast when the
+    /// upstream format drifts instead of silently shipping a hot-reloadable language extension.
+    private static final String RELOADABLE_TRUE_MARKER = "reloadable = true";
+    private static final String RELOADABLE_FALSE_MARKER = "reloadable = false";
     private static final Path BUILD_ROOT = Path.of("tmp/editor_addon_build");
     private static final long COMPILE_TIMEOUT_MINUTES = 5;
 
@@ -64,8 +66,8 @@ public final class EditorAddonProjectInstaller {
     /// own filesystem scan, so no `extension_list.cfg` is written into the source tree's
     /// `.godot/` cache.
     static void main(String[] args) throws Exception {
-        if (!Files.exists(CLIENT_SOURCE_PATH)) {
-            System.err.println("Client source not found at " + CLIENT_SOURCE_PATH.toAbsolutePath()
+        if (!Files.isDirectory(ADDON_SOURCE_DIR)) {
+            System.err.println("Addon source directory not found at " + ADDON_SOURCE_DIR.toAbsolutePath()
                     + " — run this from the repository root.");
             System.exit(1);
         }
@@ -87,9 +89,9 @@ public final class EditorAddonProjectInstaller {
     /// host platform family).
     private static void buildNative() throws IOException {
         var targetPlatform = TargetPlatform.getNativePlatform();
-        System.out.println("Compiling " + CLIENT_SOURCE_PATH + " for the host platform ("
+        System.out.println("Compiling " + ADDON_SOURCE_DIR + "/*.gd3 for the host platform ("
                 + targetPlatform + ") ...");
-        var result = compileClientLibrary(buildDirFor(targetPlatform), CLIENT_SOURCE_PATH, targetPlatform);
+        var result = compileClientLibrary(buildDirFor(targetPlatform), targetPlatform);
         requireBuildSuccess(result, targetPlatform);
         installExtension(
                 ADDON_PROJECT_DIR, EXTENSION_SUB_DIR, result.artifacts(), EXTENSION_FILE_NAME,
@@ -102,8 +104,8 @@ public final class EditorAddonProjectInstaller {
     private static void buildPlatforms(List<TargetPlatform> platforms) throws IOException {
         var artifactsByPlatform = new LinkedHashMap<TargetPlatform, List<Path>>();
         for (var platform : platforms) {
-            System.out.println("Compiling " + CLIENT_SOURCE_PATH + " for " + platform + " ...");
-            var result = compileClientLibrary(buildDirFor(platform), CLIENT_SOURCE_PATH, platform);
+            System.out.println("Compiling " + ADDON_SOURCE_DIR + "/*.gd3 for " + platform + " ...");
+            var result = compileClientLibrary(buildDirFor(platform), platform);
             requireBuildSuccess(result, platform);
             artifactsByPlatform.put(platform, result.artifacts());
         }
@@ -152,13 +154,13 @@ public final class EditorAddonProjectInstaller {
         }
     }
 
-    /// Compiles `gdcc_rpc_client.gd3` into a native GDExtension library under `projectPath`
-    /// (generated C files and the zig artifact land there; only the artifact is copied on
-    /// installation). The module id fixes the artifact basename
-    /// (`libgdcc_for_editor_debug_<arch>.so` on Linux).
+    /// Compiles every addon `.gd3` source (see `listAddonSources`) into a native GDExtension
+    /// library under `projectPath` (generated C files and the zig artifact land there; only
+    /// the artifact is copied on installation). The module id fixes the artifact basename
+    /// (`libgdcc_for_editor_debug_<arch>.so` on Linux). All sources go into one module so
+    /// cross-class references resolve.
     static CompileResult compileClientLibrary(
             Path projectPath,
-            Path clientSourcePath,
             TargetPlatform targetPlatform
     ) throws IOException {
         try (var api = new API()) {
@@ -167,8 +169,10 @@ public final class EditorAddonProjectInstaller {
                     GodotVersion.V451, projectPath.toAbsolutePath(),
                     COptimizationLevel.DEBUG, targetPlatform,
                     false, CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT));
-            api.putFile(MODULE_ID, "/src/gdcc_rpc_client.gd3",
-                    Files.readString(clientSourcePath));
+            for (var source : listAddonSources()) {
+                // VFS layout contract: every addon source sits at /src/<file name>.gd3.
+                api.putFile(MODULE_ID, "/src/" + source.getFileName().toString(), Files.readString(source));
+            }
             var taskId = api.compile(MODULE_ID);
             var deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(COMPILE_TIMEOUT_MINUTES);
             while (System.nanoTime() < deadline) {
@@ -185,6 +189,18 @@ public final class EditorAddonProjectInstaller {
                 }
             }
             throw new AssertionError("Client library build did not complete within the deadline");
+        }
+    }
+
+    /// Every `.gd3` source file of the addon (sorted by file name for a stable VFS layout).
+    /// Interpreted `.gd` plugin scripts are deliberately excluded — they are not gdcc compile
+    /// targets.
+    static List<Path> listAddonSources() throws IOException {
+        try (var stream = Files.list(ADDON_SOURCE_DIR)) {
+            return stream
+                    .filter(path -> path.getFileName().toString().endsWith(".gd3"))
+                    .sorted()
+                    .toList();
         }
     }
 
@@ -250,12 +266,10 @@ public final class EditorAddonProjectInstaller {
         var binDir = extensionDir.resolve("bin");
         Files.createDirectories(binDir);
         var library = copyArtifactsAndFindLibrary(artifacts, binDir, targetPlatform.toString());
-        Files.writeString(
+        writeExtensionMetadata(
                 extensionDir.resolve(extensionFileName),
                 GdextensionMetadataFile.render(
-                        resourcePrefix + "bin/" + library.getFileName(), optimizationLevel, targetPlatform),
-                StandardCharsets.UTF_8
-        );
+                        resourcePrefix + "bin/" + library.getFileName(), optimizationLevel, targetPlatform));
         if (writeExtensionList) {
             writeExtensionListFile(projectDir, resourcePrefix + extensionFileName);
         }
@@ -281,14 +295,32 @@ public final class EditorAddonProjectInstaller {
             var library = copyArtifactsAndFindLibrary(entry.getValue(), binDir, entry.getKey().toString());
             libraryPathByPlatform.put(entry.getKey(), resourcePrefix + "bin/" + library.getFileName());
         }
-        Files.writeString(
+        writeExtensionMetadata(
                 extensionDir.resolve(extensionFileName),
-                GdextensionMetadataFile.renderMultiPlatform(libraryPathByPlatform, optimizationLevel),
-                StandardCharsets.UTF_8
-        );
+                GdextensionMetadataFile.renderMultiPlatform(libraryPathByPlatform, optimizationLevel));
         if (writeExtensionList) {
             writeExtensionListFile(projectDir, resourcePrefix + extensionFileName);
         }
+    }
+
+    /// Post-processing applied to EVERY installed `.gdextension`: the addon registers a
+    /// `ScriptLanguageExtension` whose instance the engine's `ScriptServer` stores as a raw
+    /// pointer, so a hot reload (which destroys and recreates the extension's instances)
+    /// would leave the editor holding a dangling pointer. The backend renderer deliberately
+    /// keeps emitting `reloadable = true` (its own contract is unchanged); the rewrite lives
+    /// here, at the single point all install exits funnel through. Fails fast when the
+    /// upstream marker is missing so a renderer format drift can never silently ship a
+    /// reloadable language extension.
+    private static void writeExtensionMetadata(Path target, String rendered) throws IOException {
+        if (!rendered.contains(RELOADABLE_TRUE_MARKER)) {
+            throw new IllegalStateException("Rendered .gdextension metadata does not contain '"
+                    + RELOADABLE_TRUE_MARKER + "'; the renderer format must have drifted.");
+        }
+        Files.writeString(
+                target,
+                rendered.replace(RELOADABLE_TRUE_MARKER, RELOADABLE_FALSE_MARKER),
+                StandardCharsets.UTF_8
+        );
     }
 
     /// Copies the artifacts into `binDir` and returns the copied single dynamic library.

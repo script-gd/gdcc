@@ -483,7 +483,8 @@ class JsonRpcDispatcherTest {
 
     @Test
     void allDocumentedMethodsAreRouted() {
-        assertEquals(25, JsonRpcMethodRegistry.create().methodCount());
+        assertEquals(26, JsonRpcMethodRegistry.create(RpcServerShutdown.forTesting(() -> {
+        })).methodCount());
 
         api.createModule("demo", "Demo");
         api.putFile("demo", "/src/main.gd", "class_name RoutingDemo\nextends Node\n");
@@ -492,9 +493,12 @@ class JsonRpcDispatcherTest {
         awaitTaskTerminal(taskId);
 
         // Every method must resolve to a handler; domain failures are fine, -32601 is not.
+        // `server.shutdown` only records the exit intent on this dispatcher's latch (no HTTP
+        // transport is involved here, so the exit is never triggered).
         var calls = Map.ofEntries(
                 Map.entry("server.ping", new JsonObject()),
                 Map.entry("server.info", new JsonObject()),
+                Map.entry("server.shutdown", new JsonObject()),
                 Map.entry("module.create", params("moduleId", "second", "moduleName", "Second")),
                 Map.entry("module.get", params("moduleId", "demo")),
                 Map.entry("module.list", new JsonObject()),
@@ -519,7 +523,7 @@ class JsonRpcDispatcherTest {
                 Map.entry("compile.clearEvents", params("taskId", taskId)),
                 Map.entry("analyze.run", params("moduleId", "demo"))
         );
-        assertEquals(25, calls.size());
+        assertEquals(26, calls.size());
 
         long startedTask = 0;
         for (var entry : calls.entrySet()) {

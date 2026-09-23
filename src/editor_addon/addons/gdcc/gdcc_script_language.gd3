@@ -1,0 +1,265 @@
+@tool
+class_name GdccScriptLanguage
+extends ScriptLanguageExtension
+
+## Virtual `ScriptLanguage` for `.gd3` files (implementation plan §2.2/§3.2). Registered by
+## GdccEditorService and held by every loaded GdccScript, so the instance is process-resident
+## and never freed for the whole editor session.
+##
+## Every `required` virtual that editor code paths can reach is implemented explicitly —
+## falling through to the base GDVIRTUAL defaults would print ERR_PRINT_ONCE noise. The
+## `_debug_*` / `_profiling_*` group is skipped on purpose: debugging and profiling are
+## non-goals and those paths are never triggered; the `void*` / `ProfilingInfo*` signatures
+## are not expressible anyway.
+
+var _service: GdccEditorService = null
+
+
+## Dependency injection by the service; both are process-resident, so the reference stays valid
+## across plugin disable/enable cycles.
+func setup(service: GdccEditorService) -> void:
+    _service = service
+
+
+func _init() -> void:
+    # Doubles as the engine `_init` virtual and the gdcc constructor hook (probe-verified);
+    # the engine never calls `init()` on a late-registered language.
+    pass
+
+
+func _get_name() -> String:
+    return "GD3"
+
+
+func _get_type() -> String:
+    return "GdccScript"
+
+
+func _get_extension() -> String:
+    return "gd3"
+
+
+func _get_recognized_extensions() -> PackedStringArray:
+    return PackedStringArray(["gd3"])
+
+
+func _get_reserved_words() -> PackedStringArray:
+    # GDScript keyword set: `.gd3` shares GDScript surface syntax, so highlighting and word
+    # movement behave identically to `.gd`.
+    return PackedStringArray([
+        "if", "elif", "else", "for", "while", "match", "break", "continue", "pass", "return",
+        "class", "class_name", "extends", "is", "in", "as", "self", "super", "signal", "func",
+        "static", "const", "enum", "var", "breakpoint", "preload", "await", "assert", "void",
+        "and", "or", "not", "true", "false", "null",
+    ])
+
+
+func _is_control_flow_keyword(keyword: String) -> bool:
+    return keyword == "if" or keyword == "elif" or keyword == "else" or keyword == "for" \
+            or keyword == "while" or keyword == "match" or keyword == "break" \
+            or keyword == "continue" or keyword == "pass" or keyword == "return"
+
+
+func _get_comment_delimiters() -> PackedStringArray:
+    return PackedStringArray(["#"])
+
+
+func _get_doc_comment_delimiters() -> PackedStringArray:
+    return PackedStringArray(["##"])
+
+
+func _get_string_delimiters() -> PackedStringArray:
+    return PackedStringArray(["\" \"", "' '", "\"\"\" \"\"\""])
+
+
+## Diagnostics are merged here in a later phase; the resource skeleton keeps every script
+## valid so the editor never blocks editing on an analyzer. Returning `valid: true` is also
+## the safe answer while the owning service is uninstalled (open tabs keep calling this).
+func _validate(script: String, path: String, validate_functions: bool, validate_errors: bool, validate_warnings: bool, validate_safe_lines: bool) -> Dictionary:
+    return {"valid": true}
+
+
+func _validate_path(path: String) -> String:
+    return ""
+
+
+func _create_script() -> Object:
+    var script: GdccScript = GdccScript.new()
+    script.setup(self)
+    return script
+
+
+func _supports_builtin_mode() -> bool:
+    # A `.gd3` must never become a scene built-in script (no instantiation path exists).
+    return false
+
+
+func _supports_documentation() -> bool:
+    return false
+
+
+func _can_inherit_from_file() -> bool:
+    return false
+
+
+func _handles_global_class_type(type: String) -> bool:
+    return type == "GdccScript"
+
+
+func _has_named_classes() -> bool:
+    return false
+
+
+func _find_function(function: String, code: String) -> int:
+    return code.find("func " + function)
+
+
+func _make_function(class_name: String, function_name: String, function_args: PackedStringArray) -> String:
+    return "func " + function_name + "(" + ", ".join(function_args) + "):\n\tpass\n"
+
+
+func _can_make_function() -> bool:
+    return false
+
+
+func _open_in_external_editor(script: Script, line: int, column: int) -> int:
+    return ERR_UNAVAILABLE
+
+
+func _overrides_external_editor() -> bool:
+    return false
+
+
+func _complete_code(code: String, path: String, owner: Object) -> Dictionary:
+    # Degraded answer; the LSP-backed implementation lands with the completion phase.
+    return {"result": ERR_UNAVAILABLE, "force": false, "call_hint": "", "options": []}
+
+
+func _lookup_code(code: String, symbol: String, path: String, owner: Object) -> Dictionary:
+    return {"result": ERR_UNAVAILABLE, "type": 0}
+
+
+func _auto_indent_code(code: String, from_line: int, to_line: int) -> String:
+    return code
+
+
+func _get_global_class_name(path: String) -> Dictionary:
+    return {}
+
+
+func _make_template(template: String, class_name: String, base_class_name: String) -> Script:
+    return null
+
+
+func _get_built_in_templates(object: StringName) -> Array[Dictionary]:
+    var result: Array[Dictionary] = []
+    return result
+
+
+func _is_using_templates() -> bool:
+    return false
+
+
+func _finish() -> void:
+    pass
+
+
+func _frame() -> void:
+    pass
+
+
+func _thread_enter() -> void:
+    pass
+
+
+func _thread_exit() -> void:
+    pass
+
+
+func _add_global_constant(name: StringName, value: Variant) -> void:
+    pass
+
+
+func _add_named_global_constant(name: StringName, value: Variant) -> void:
+    pass
+
+
+func _remove_named_global_constant(name: StringName) -> void:
+    pass
+
+
+func _reload_all_scripts() -> void:
+    pass
+
+
+func _reload_scripts(scripts: Array, soft_reload: bool) -> void:
+    pass
+
+
+func _reload_tool_script(script: Script, soft_reload: bool) -> void:
+    pass
+
+
+## Explicit empty implementations for the non-required `_get_public_*` group (typed-array
+## returns are supported, probe-verified): silences the editor's documentation queries without
+## the base default's log noise.
+func _get_public_functions() -> Array[Dictionary]:
+    var result: Array[Dictionary] = []
+    return result
+
+
+func _get_public_annotations() -> Array[Dictionary]:
+    var result: Array[Dictionary] = []
+    return result
+
+
+func _get_public_constants() -> Dictionary:
+    return {}
+
+
+## The editor's script debugger queries EVERY registered language on its error-print path
+## (`_debug_get_current_stack_info` is called unconditionally when an unrelated script error
+## is printed), so the expressible `_debug_*` virtuals are implemented as inert empty answers
+## instead of accepting the base class's ERR_PRINT_ONCE. `.gd3` never executes, so there are
+## never stack levels to report. Only `_debug_get_stack_level_instance` (`void*` return, not
+## expressible) and the `_profiling_*` group (profiling is a non-goal and never triggered for
+## a language that runs no code) stay at their base defaults.
+func _debug_get_current_stack_info() -> Array[Dictionary]:
+    var result: Array[Dictionary] = []
+    return result
+
+
+func _debug_get_error() -> String:
+    return ""
+
+
+func _debug_get_stack_level_count() -> int:
+    return 0
+
+
+func _debug_get_stack_level_line(level: int) -> int:
+    return -1
+
+
+func _debug_get_stack_level_function(level: int) -> String:
+    return ""
+
+
+func _debug_get_stack_level_source(level: int) -> String:
+    return ""
+
+
+func _debug_get_stack_level_locals(level: int, max_subitems: int, max_depth: int) -> Dictionary:
+    return {}
+
+
+func _debug_get_stack_level_members(level: int, max_subitems: int, max_depth: int) -> Dictionary:
+    return {}
+
+
+func _debug_get_globals(max_subitems: int, max_depth: int) -> Dictionary:
+    return {}
+
+
+func _debug_parse_stack_level_expression(level: int, expression: String, max_subitems: int, max_depth: int) -> String:
+    return ""

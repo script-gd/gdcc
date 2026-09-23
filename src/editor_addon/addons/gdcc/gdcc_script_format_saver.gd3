@@ -1,0 +1,45 @@
+@tool
+class_name GdccScriptFormatSaver
+extends ResourceFormatSaver
+
+## Writes `.gd3` resources back to disk (implementation plan §2.4/§3.3): a plain text
+## round-trip of the in-memory source, nothing else. Write failures are reported — the file
+## may already be truncated by the `WRITE` open, so returning OK on a failed write would make
+## the editor treat unsaved changes as saved. Note `FileAccess.get_error()` does NOT reflect
+## flush/close-time failures (the stdio buffer is only drained there), so the authoritative
+## check is a read-back comparison after close.
+
+func _save(resource: Resource, path: String, flags: int) -> int:
+    var script: GdccScript = resource as GdccScript
+    if script == null:
+        return ERR_INVALID_PARAMETER
+    var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+    if file == null:
+        return ERR_CANT_OPEN
+    var source: String = script.get_source_code()
+    var wrote: bool = file.store_string(source)
+    file.close()
+    if not wrote:
+        return ERR_FILE_CANT_WRITE
+    # `get_file_as_string` conflates "empty file" with "read failure" (both return ""), so
+    # verify with an explicit open first — a vanished/unreadable file must not pass because
+    # the source happened to be empty.
+    var read_back_file: FileAccess = FileAccess.open(path, FileAccess.READ)
+    if read_back_file == null:
+        return ERR_FILE_CANT_READ
+    var read_back: String = read_back_file.get_as_text()
+    var read_error: int = read_back_file.get_error()
+    read_back_file.close()
+    if read_error != OK:
+        return read_error
+    if read_back != source:
+        return ERR_FILE_CANT_WRITE
+    return OK
+
+
+func _recognize(resource: Resource) -> bool:
+    return resource is GdccScript
+
+
+func _get_recognized_extensions(resource: Resource) -> PackedStringArray:
+    return PackedStringArray(["gd3"])

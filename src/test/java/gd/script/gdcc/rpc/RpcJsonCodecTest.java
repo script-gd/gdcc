@@ -2,6 +2,7 @@ package gd.script.gdcc.rpc;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
 import gd.script.gdcc.api.API;
@@ -365,6 +366,16 @@ class RpcJsonCodecTest {
     void nullResultSerializesAsJsonNull() {
         // `compile.clearEvents` and an empty `compile.getLatestEvent` both return a `null` result.
         assertInstanceOf(JsonNull.class, codec.toJsonTree(null));
+    }
+
+    @Test
+    void emptyMapResultSerializesAsEmptyObject() {
+        // `server.shutdown` returns `Map.of()`; the wire shape must be exactly `{}` (not `null`)
+        // so the GDScript-side caller always sees a Dictionary.
+        var tree = codec.toJsonTree(Map.of());
+        assertInstanceOf(JsonObject.class, tree);
+        assertTrue(tree.getAsJsonObject().keySet().isEmpty());
+        assertEquals("{}", tree.toString());
     }
 
     @Test
