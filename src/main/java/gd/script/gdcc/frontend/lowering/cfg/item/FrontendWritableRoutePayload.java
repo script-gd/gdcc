@@ -187,6 +187,22 @@ public record FrontendWritableRoutePayload(
                 memberNameOrNull = StringUtil.requireNonBlank(memberNameOrNull, "memberNameOrNull");
             }
             switch (kind) {
+                case DIRECT_SLOT -> {
+                    // Direct-slot writeback targets the route root slot itself, so no container,
+                    // key, or member payload is meaningful on this step kind.
+                    if (containerValueIdOrNull != null) {
+                        throw new IllegalArgumentException("DIRECT_SLOT step must not publish containerValueIdOrNull");
+                    }
+                    if (!operandValueIds.isEmpty()) {
+                        throw new IllegalArgumentException("DIRECT_SLOT step must not publish operandValueIds");
+                    }
+                    if (memberNameOrNull != null) {
+                        throw new IllegalArgumentException("DIRECT_SLOT step must not publish memberNameOrNull");
+                    }
+                    if (subscriptAccessKindOrNull != null) {
+                        throw new IllegalArgumentException("DIRECT_SLOT step must not publish subscriptAccessKindOrNull");
+                    }
+                }
                 case PROPERTY -> {
                     if (!operandValueIds.isEmpty()) {
                         throw new IllegalArgumentException("PROPERTY step must not publish operandValueIds");
@@ -218,6 +234,7 @@ public record FrontendWritableRoutePayload(
     }
 
     public enum StepKind {
+        DIRECT_SLOT,
         PROPERTY,
         SUBSCRIPT
     }

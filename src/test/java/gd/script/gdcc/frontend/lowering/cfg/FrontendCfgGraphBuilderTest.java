@@ -1095,6 +1095,202 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
+    void buildExecutableBodyAppendsDirectSlotCommitStepForSnapshotReceiverCall() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_identifier_receiver_nested_call_writeback.gd",
+                """
+                        class_name CfgBuilderIdentifierReceiverNestedCallWriteback
+                        extends RefCounted
+                        
+                        func helper(value: int) -> int:
+                            return value + 1
+                        
+                        func ping(seed: int) -> PackedInt32Array:
+                            var values := PackedInt32Array()
+                            values.push_back(helper(seed))
+                            return values
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderIdentifierReceiverNestedCallWriteback",
+                        "RuntimeCfgBuilderIdentifierReceiverNestedCallWriteback"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var outerCallValue = entryNode.items().stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .filter(item -> item.callableName().equals("push_back"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing outer push_back CallItem"));
+        var payload = outerCallValue.writableRoutePayloadOrNull();
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertNotNull(payload),
+                () -> assertEquals(
+                        FrontendWritableRoutePayload.RootKind.DIRECT_SLOT,
+                        payload.root().kind()
+                ),
+                () -> assertEquals(
+                        FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT,
+                        payload.leaf().kind()
+                ),
+                () -> assertEquals(1, payload.reverseCommitSteps().size()),
+                () -> assertEquals(
+                        FrontendWritableRoutePayload.StepKind.DIRECT_SLOT,
+                        payload.reverseCommitSteps().getFirst().kind()
+                ),
+                () -> assertSame(
+                        payload.leaf().anchor(),
+                        payload.reverseCommitSteps().getFirst().anchor()
+                )
+        );
+    }
+
+    @Test
+    void buildExecutableBodyKeepsCommitStepsEmptyForAliasPublishedReceiverCall() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_identifier_receiver_alias_writeback.gd",
+                """
+                        class_name CfgBuilderIdentifierReceiverAliasWriteback
+                        extends RefCounted
+                        
+                        func ping(values: PackedInt32Array, seed: int) -> void:
+                            values.push_back(seed)
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderIdentifierReceiverAliasWriteback",
+                        "RuntimeCfgBuilderIdentifierReceiverAliasWriteback"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var callValue = entryNode.items().stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .filter(item -> item.callableName().equals("push_back"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing push_back CallItem"));
+        var payload = callValue.writableRoutePayloadOrNull();
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertNotNull(payload),
+                () -> assertTrue(entryNode.items().stream().anyMatch(DirectSlotAliasValueItem.class::isInstance)),
+                () -> assertTrue(payload.reverseCommitSteps().isEmpty())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyAppendsDirectSlotCommitStepForValueProducingSnapshotReceiverCall() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_identifier_receiver_value_call_writeback.gd",
+                """
+                        class_name CfgBuilderIdentifierReceiverValueCallWriteback
+                        extends RefCounted
+                        
+                        func make_key(raw: String) -> String:
+                            return raw
+                        
+                        func ping(seed: String) -> bool:
+                            var dict: Dictionary = {"a": 1}
+                            return dict.erase(make_key(seed))
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderIdentifierReceiverValueCallWriteback",
+                        "RuntimeCfgBuilderIdentifierReceiverValueCallWriteback"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var eraseCallValue = entryNode.items().stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .filter(item -> item.callableName().equals("erase"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing erase CallItem"));
+        var payload = eraseCallValue.writableRoutePayloadOrNull();
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertNotNull(payload),
+                () -> assertNotNull(eraseCallValue.resultValueIdOrNull()),
+                () -> assertEquals(
+                        FrontendWritableRoutePayload.RootKind.DIRECT_SLOT,
+                        payload.root().kind()
+                ),
+                () -> assertEquals(
+                        FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT,
+                        payload.leaf().kind()
+                ),
+                () -> assertEquals(1, payload.reverseCommitSteps().size()),
+                () -> assertEquals(
+                        FrontendWritableRoutePayload.StepKind.DIRECT_SLOT,
+                        payload.reverseCommitSteps().getFirst().kind()
+                )
+        );
+    }
+
+    @Test
+    void buildExecutableBodySkipsDirectSlotCommitStepForParameterReceiverUntilBackendSupportsRefAssignment() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_parameter_receiver_nested_call_writeback.gd",
+                """
+                        class_name CfgBuilderParameterReceiverNestedCallWriteback
+                        extends RefCounted
+                        
+                        func helper(value: int) -> int:
+                            return value + 1
+                        
+                        func ping(values: PackedInt32Array, seed: int) -> void:
+                            values.push_back(helper(seed))
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderParameterReceiverNestedCallWriteback",
+                        "RuntimeCfgBuilderParameterReceiverNestedCallWriteback"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var outerCallValue = entryNode.items().stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .filter(item -> item.callableName().equals("push_back"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing outer push_back CallItem"));
+        var payload = outerCallValue.writableRoutePayloadOrNull();
+
+        // Parameters are borrowed `ref=true` slots: until the backend grows an assign-through-pointer
+        // contract, the snapshot route must stay step-less instead of emitting an unlowerable writeback.
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertNotNull(payload),
+                () -> assertEquals(
+                        FrontendWritableRoutePayload.RootKind.DIRECT_SLOT,
+                        payload.root().kind()
+                ),
+                () -> assertEquals(
+                        FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT,
+                        payload.leaf().kind()
+                ),
+                () -> assertTrue(payload.reverseCommitSteps().isEmpty())
+        );
+    }
+
+    @Test
     void buildExecutableBodyStillPublishesSelfAliasWhenArgumentContainsNestedCall() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_self_receiver_nested_call.gd",
@@ -2926,6 +3122,7 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals(subscriptLoad.resultValueId(), stopNode.returnValueIdOrNull())
         );
     }
+
     /// Global engine enum loads (`Side.SIDE_LEFT`) keep the existing type-meta route: the head
     /// binds as GLOBAL_ENUM type-meta and the constant is engine metadata, not a
     /// `GdScriptEnumConstant`, so neither script-enum branch may fire.

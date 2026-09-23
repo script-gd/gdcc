@@ -447,6 +447,13 @@ final class FrontendWritableRouteSupport {
             boolean terminalStep
     ) {
         return switch (step) {
+            case DirectSlotCommitStep slotStep -> {
+                // The direct slot owns no outer owner, so the writeback is always terminal:
+                // `$local = mutated_temp` shares the already-detached value-semantic buffer
+                // (refcount churn only) and reference carriers are filtered out by the gate.
+                block.appendNonTerminatorInstruction(new AssignInsn(slotStep.slotId(), writtenBackValueSlotId));
+                yield nextOuterCarrierSlotId(slotStep, writtenBackValueSlotId, terminalStep);
+            }
             case InstancePropertyCommitStep propertyStep -> {
                 session.emitAssertObjectLiveIfNeeded(block, propertyStep.receiverSlotId());
                 block.appendNonTerminatorInstruction(new StorePropertyInsn(
@@ -678,6 +685,7 @@ final class FrontendWritableRouteSupport {
             boolean terminalStep
     ) {
         return switch (step) {
+            case DirectSlotCommitStep slotStep -> slotStep.slotId();
             case InstancePropertyCommitStep propertyStep -> propertyStep.receiverSlotId();
             case DynamicPropertyCommitStep propertyStep -> propertyStep.receiverSlotId();
             case StaticPropertyCommitStep _ -> {
@@ -1212,12 +1220,26 @@ final class FrontendWritableRouteSupport {
     /// It is not another "leaf" hierarchy. The leaf describes the innermost direct operation; commit
     /// steps describe the outer owners that must observe the already-mutated carrier value.
     sealed interface FrontendWritableCommitStep permits
+            DirectSlotCommitStep,
             InstanceContainerSubscriptCommitStep,
             InstancePropertyCommitStep,
             DynamicPropertyCommitStep,
             StaticPropertyCommitStep,
             StaticContainerSubscriptCommitStep,
             SubscriptCommitStep {
+    }
+
+    /// Writes the mutated carrier back into the route root's own local/parameter slot. This is the
+    /// terminal step for mutating calls whose bare direct-slot receiver stayed on the ordinary
+    /// temp snapshot surface: the call mutated one `cfg_tmp_*` copy, so the mutated value must be
+    /// assigned back into the source slot once the call returns. Alias-published receivers never
+    /// carry this step because they already mutate the source slot in place.
+    record DirectSlotCommitStep(
+            @NotNull String slotId
+    ) implements FrontendWritableCommitStep {
+        DirectSlotCommitStep {
+            slotId = StringUtil.requireNonBlank(slotId, "slotId");
+        }
     }
 
     /// Writes the mutated carrier back into `receiver.property`.

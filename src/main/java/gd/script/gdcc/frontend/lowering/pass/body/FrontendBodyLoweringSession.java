@@ -491,6 +491,18 @@ public final class FrontendBodyLoweringSession {
             @NotNull FrontendWritableRoutePayload.StepDescriptor step
     ) {
         return switch (Objects.requireNonNull(step, "step must not be null").kind()) {
+            case DIRECT_SLOT -> {
+                // Direct-slot writeback targets the route root's own local/parameter slot; any
+                // other root kind means publication leaked a malformed direct step.
+                if (root.kind() != FrontendWritableRoutePayload.RootKind.DIRECT_SLOT) {
+                    throw new IllegalStateException(
+                            "DIRECT_SLOT reverse-commit step requires DIRECT_SLOT root, but got " + root.kind()
+                    );
+                }
+                yield new FrontendWritableRouteSupport.DirectSlotCommitStep(
+                        resolveDirectWritableRootSlot(root.anchor())
+                );
+            }
             case PROPERTY -> {
                 var propertyName = Objects.requireNonNull(step.memberNameOrNull(), "PROPERTY step must publish memberNameOrNull");
                 var dynamicMember = dynamicWritableMemberOrNull(step.anchor(), "reverse-commit property step");

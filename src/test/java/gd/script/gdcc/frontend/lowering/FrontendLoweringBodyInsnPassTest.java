@@ -4653,6 +4653,301 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runWritesBackDirectSlotSnapshotReceiverAfterMutatingCall() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_direct_slot_snapshot_writeback.gd",
+                """
+                        class_name BodyInsnDirectSlotSnapshotWriteback
+                        extends RefCounted
+
+                        func helper(value: String) -> String:
+                            return value
+
+                        func ping(part: String) -> PackedStringArray:
+                            var parr := PackedStringArray()
+                            parr.append(helper(part))
+                            return parr
+                        """,
+                Map.of(
+                        "BodyInsnDirectSlotSnapshotWriteback",
+                        "RuntimeBodyInsnDirectSlotSnapshotWriteback"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDirectSlotSnapshotWriteback",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var appendCall = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("append"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing append CallMethodInsn"));
+        var writebackAssigns = instructions.stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.resultId().equals("parr") && insn.sourceId().equals(appendCall.objectId()))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(appendCall.objectId().startsWith("cfg_tmp_")),
+                () -> assertEquals(1, writebackAssigns.size()),
+                () -> assertTrue(
+                        instructionIndex(instructions, appendCall) < instructionIndex(instructions, writebackAssigns.getFirst())
+                )
+        );
+    }
+
+    @Test
+    void runWritesBackDirectSlotSnapshotReceiverInsideForLoop() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_direct_slot_snapshot_writeback_loop.gd",
+                """
+                        class_name BodyInsnDirectSlotSnapshotWritebackLoop
+                        extends RefCounted
+
+                        func ping(parts: PackedStringArray) -> PackedStringArray:
+                            var parr := PackedStringArray()
+                            for part in parts:
+                                parr.append(str(part))
+                            return parr
+                        """,
+                Map.of(
+                        "BodyInsnDirectSlotSnapshotWritebackLoop",
+                        "RuntimeBodyInsnDirectSlotSnapshotWritebackLoop"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDirectSlotSnapshotWritebackLoop",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var appendCall = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("append"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing append CallMethodInsn"));
+        var writebackAssigns = instructions.stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.resultId().equals("parr") && insn.sourceId().equals(appendCall.objectId()))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(appendCall.objectId().startsWith("cfg_tmp_")),
+                () -> assertEquals(1, writebackAssigns.size())
+        );
+    }
+
+    @Test
+    void runKeepsAliasPublishedDirectSlotReceiverWithoutWriteback() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_direct_slot_alias_no_writeback.gd",
+                """
+                        class_name BodyInsnDirectSlotAliasNoWriteback
+                        extends RefCounted
+
+                        func ping(values: PackedInt32Array, seed: int) -> void:
+                            values.push_back(seed)
+                        """,
+                Map.of(
+                        "BodyInsnDirectSlotAliasNoWriteback",
+                        "RuntimeBodyInsnDirectSlotAliasNoWriteback"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDirectSlotAliasNoWriteback",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var pushBackCall = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("push_back"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing push_back CallMethodInsn"));
+        var writebackAssigns = instructions.stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.resultId().equals("values"))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("values", pushBackCall.objectId()),
+                () -> assertEquals(0, writebackAssigns.size())
+        );
+    }
+
+    @Test
+    void runSkipsDirectSlotWritebackForSharedArrayReceiverCall() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_direct_slot_snapshot_shared_array.gd",
+                """
+                        class_name BodyInsnDirectSlotSnapshotSharedArray
+                        extends RefCounted
+
+                        func ping(seed: int) -> Array:
+                            var arr: Array = [1]
+                            arr.append(str(seed))
+                            return arr
+                        """,
+                Map.of(
+                        "BodyInsnDirectSlotSnapshotSharedArray",
+                        "RuntimeBodyInsnDirectSlotSnapshotSharedArray"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDirectSlotSnapshotSharedArray",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var appendCall = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("append"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing append CallMethodInsn"));
+        var writebackAssigns = instructions.stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.resultId().equals("arr") && insn.sourceId().equals(appendCall.objectId()))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // Shared/reference carriers mutate the snapshot's underlying data in place, so the
+                // static writeback gate must skip the direct-slot commit step entirely.
+                () -> assertTrue(appendCall.objectId().startsWith("cfg_tmp_")),
+                () -> assertEquals(0, writebackAssigns.size())
+        );
+    }
+
+    @Test
+    void runEmitsRuntimeGatedDirectSlotWritebackForDynamicVariantReceiver() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_variant_direct_slot_writeback.gd",
+                """
+                        class_name BodyInsnDynamicVariantDirectSlotWriteback
+                        extends RefCounted
+
+                        func helper(value: Variant) -> Variant:
+                            return value
+
+                        func ping(seed: Variant) -> Variant:
+                            var payload: Variant = PackedStringArray()
+                            payload.append(helper(seed))
+                            return payload
+                        """,
+                Map.of(
+                        "BodyInsnDynamicVariantDirectSlotWriteback",
+                        "RuntimeBodyInsnDynamicVariantDirectSlotWriteback"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicVariantDirectSlotWriteback",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var appendCall = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("append"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing append CallMethodInsn"));
+        var gateCalls = instructions.stream()
+                .filter(CallGlobalInsn.class::isInstance)
+                .map(CallGlobalInsn.class::cast)
+                .filter(insn -> insn.functionName().equals("gdcc_variant_requires_writeback"))
+                .toList();
+        var gateBranches = instructions.stream()
+                .filter(GoIfInsn.class::isInstance)
+                .map(GoIfInsn.class::cast)
+                .toList();
+        var writebackAssigns = instructions.stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.resultId().equals("payload") && insn.sourceId().equals(appendCall.objectId()))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(appendCall.objectId().startsWith("cfg_tmp_")),
+                () -> assertEquals(1, gateCalls.size()),
+                () -> assertEquals(appendCall.objectId(), onlyVariableOperandId(gateCalls.getFirst().args())),
+                () -> assertEquals(1, gateBranches.size()),
+                () -> assertEquals(gateCalls.getFirst().resultId(), gateBranches.getFirst().conditionVarId()),
+                () -> assertEquals(1, writebackAssigns.size())
+        );
+        var applyBlock = requireBlock(function, gateBranches.getFirst().trueBbId());
+        var applyAssign = assertInstanceOf(AssignInsn.class, applyBlock.getNonTerminatorInstructions().getFirst());
+        var applyGoto = assertInstanceOf(GotoInsn.class, applyBlock.getTerminator());
+        var skipBlock = requireBlock(function, gateBranches.getFirst().falseBbId());
+        var skipGoto = assertInstanceOf(GotoInsn.class, skipBlock.getTerminator());
+        var skipWritebackAssigns = skipBlock.getNonTerminatorInstructions().stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.resultId().equals("payload"))
+                .toList();
+        var continuationBlock = requireBlock(function, applyGoto.targetBbId());
+        // The continuation must keep threading the rest of the sequence after the gate; follow
+        // the goto chain from the continuation until the block that owns the return terminator.
+        LirBasicBlock returnBlock = continuationBlock;
+        while (returnBlock.getTerminator() instanceof GotoInsn gotoInsn) {
+            returnBlock = requireBlock(function, gotoInsn.targetBbId());
+        }
+        assertInstanceOf(ReturnInsn.class, returnBlock.getTerminator());
+        assertAll(
+                () -> assertEquals("payload", applyAssign.resultId()),
+                () -> assertEquals(appendCall.objectId(), applyAssign.sourceId()),
+                // The runtime skip branch must stay writeback-free (shared carriers mutate the
+                // snapshot's underlying data in place), and both branches must rejoin on one
+                // continuation block that keeps lowering the rest of the sequence.
+                () -> assertEquals(0, skipWritebackAssigns.size()),
+                () -> assertEquals(applyGoto.targetBbId(), skipGoto.targetBbId())
+        );
+    }
+
+    @Test
     void runWritesBackPropertyBackedValueSemanticReceiverAfterResolvedMutatingCall() throws Exception {
         var prepared = prepareContext(
                 "body_insn_property_mutating_call.gd",

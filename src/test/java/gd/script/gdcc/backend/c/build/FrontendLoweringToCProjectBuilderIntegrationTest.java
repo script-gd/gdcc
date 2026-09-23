@@ -144,25 +144,25 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         var source = """
                 class_name ParamDefaultSmoke
                 extends Node
-
+                
                 var marker: int = 5
-
+                
                 func ping(a: int, count: int = 40) -> int:
                     return a + count
-
+                
                 static func sping(a: int, count: int = 7) -> int:
                     return a + count
-
+                
                 func multi(a: int, b: int = 1, c: int = 2) -> int:
                     return a * 100 + b * 10 + c
-
+                
                 func marker_default(value: int = marker) -> int:
                     return value
-
+                
                 func append_probe(items: Array[int] = [0]) -> int:
                     items.append(1)
                     return items.size()
-
+                
                 func run_exact_checks() -> int:
                     var sum = 0
                     sum += ping(1)
@@ -173,12 +173,12 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                     sum += multi(1, 5)
                     sum += marker_default()
                     return sum
-
+                
                 func run_reeval_checks() -> int:
                     var first = append_probe()
                     var second = append_probe()
                     return first * 10 + second
-
+                
                 # gdcc-internal dynamic route: a Variant receiver forces the VARIANT_DYNAMIC
                 # lowering path, which reaches the same callee-prologue wrapper through the engine.
                 func run_dynamic_checks() -> int:
@@ -406,10 +406,10 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         var source = """
                 class_name StringFamilyInboundWrapperSmoke
                 extends Node
-
+                
                 func take_string_name(value: StringName) -> StringName:
                     return value
-
+                
                 func take_string(value: String) -> String:
                     return value
                 """;
@@ -1733,6 +1733,122 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     }
 
     @Test
+    void lowerFrontendDirectSlotSnapshotWritebackBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping direct-slot snapshot writeback integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_direct_slot_snapshot_writeback_runtime");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name DirectSlotSnapshotWritebackSmoke
+                extends Node
+                
+                func identity(value: String) -> String:
+                    return value
+                
+                func join_parts(parts: PackedStringArray) -> String:
+                    var parr := PackedStringArray()
+                    for part in parts:
+                        parr.append(identity(part))
+                    return "".join(parr)
+                
+                func append_via_helper(raw: String) -> int:
+                    var encoded := PackedStringArray(["x"])
+                    encoded.append(identity(raw))
+                    return encoded.size()
+                
+                func append_dynamic(source: Variant, seed: Variant) -> int:
+                    var payload: Variant = source
+                    payload.append(str(seed))
+                    return payload.size()
+                """;
+        var module = parseModule(
+                tempDir.resolve("direct_slot_snapshot_writeback_smoke.gd"),
+                source,
+                Map.of("DirectSlotSnapshotWritebackSmoke", "RuntimeDirectSlotSnapshotWritebackSmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(1, lowered.getClassDefs().size());
+        assertEquals("RuntimeDirectSlotSnapshotWritebackSmoke", lowered.getClassDefs().getFirst().getName());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_direct_slot_snapshot_writeback_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "DirectSlotSnapshotWritebackSmokeNode",
+                        "RuntimeDirectSlotSnapshotWritebackSmoke",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(directSlotSnapshotWritebackTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("direct-slot snapshot writeback loop check passed."),
+                () -> "Loop snapshot writeback runtime check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("direct-slot snapshot writeback nested check passed."),
+                () -> "Nested-argument snapshot writeback runtime check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("direct-slot snapshot writeback dynamic check passed."),
+                () -> "Dynamic Variant snapshot writeback runtime check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("direct-slot snapshot writeback dynamic shared check passed."),
+                () -> "Dynamic Variant shared-carrier skip runtime check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("direct-slot snapshot writeback loop check failed."),
+                () -> "Loop snapshot writeback runtime check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("direct-slot snapshot writeback nested check failed."),
+                () -> "Nested-argument snapshot writeback runtime check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("direct-slot snapshot writeback dynamic check failed."),
+                () -> "Dynamic Variant snapshot writeback runtime check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("direct-slot snapshot writeback dynamic shared check failed."),
+                () -> "Dynamic Variant shared-carrier skip runtime check should not fail.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
     void lowerFrontendWritableRouteRuntimeEdgesBuildNativeLibraryAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping writable-route edge integration test");
@@ -2219,25 +2335,25 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         var childSource = """
                 class_name CrossFileChild
                 extends CrossFileBase
-
+                
                 func child_value() -> int:
                     return base_value() + 1
                 """;
         var baseSource = """
                 class_name CrossFileBase
                 extends RefCounted
-
+                
                 func base_value() -> int:
                     return 41
                 """;
         var hostSource = """
                 class_name CrossFileInheritanceHost
                 extends Node
-
+                
                 func make_child_sum() -> int:
                     var child: CrossFileChild = CrossFileChild.new()
                     return child.base_value() + child.child_value()
-
+                
                 func dispatch_via_base(base_ref: CrossFileBase) -> int:
                     return base_ref.base_value()
                 """;
@@ -2345,15 +2461,15 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     private static @NotNull String crossFileInheritanceTestScript() {
         return """
                 extends Node
-
+                
                 const TARGET_NODE_NAME = "CrossFileInheritanceHostNode"
-
+                
                 func _ready() -> void:
                     var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
                     if target == null:
                         push_error("Target node missing.")
                         return
-
+                
                     # Engine-side instantiation of a class that extends another file's class,
                     # plus inherited/own method dispatch on the gdcc-compiled host.
                     var child = RuntimeCrossFileChild.new()
@@ -2362,7 +2478,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend cross-file inheritance instantiate dispatch check passed.")
                     else:
                         push_error("frontend cross-file inheritance instantiate dispatch check failed.")
-
+                
                     # A derived instance passed through the base-typed parameter boundary must
                     # still dispatch to the base owner method via the safe upcast path.
                     var via_base = int(target.call("dispatch_via_base", child))
@@ -2370,7 +2486,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend cross-file inheritance upcast dispatch check passed.")
                     else:
                         push_error("frontend cross-file inheritance upcast dispatch check failed.")
-
+                
                     var is_ok = child is RuntimeCrossFileBase
                     var classdb_ok = ClassDB.is_parent_class("RuntimeCrossFileChild", "RuntimeCrossFileBase")
                     var is_class_ok = child.is_class("RuntimeCrossFileChild") and child.is_class("RuntimeCrossFileBase") and child.is_class("RefCounted") and not child.is_class("CrossFileChild") and not child.is_class("CrossFileBase")
@@ -2443,27 +2559,27 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     private static @NotNull String parameterDefaultTestScript() {
         return """
                 extends Node
-
+                
                 const TARGET_NODE_NAME = "ParamDefaultSmokeNode"
-
+                
                 func _ready() -> void:
                     var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
                     if target == null:
                         push_error("Target node missing.")
                         return
-
+                
                     var exact_result = int(target.call("run_exact_checks"))
                     if exact_result == 323:
                         print("parameter default exact-route check passed.")
                     else:
                         push_error("parameter default exact-route check failed: got %s." % exact_result)
-
+                
                     var reeval_result = int(target.call("run_reeval_checks"))
                     if reeval_result == 22:
                         print("parameter default re-evaluation check passed.")
                     else:
                         push_error("parameter default re-evaluation check failed: got %s." % reeval_result)
-
+                
                     # The dynamic route (Object.call -> GDExtensionMethodBind::call ->
                     # callee-prologue wrapper) fills omitted trailing arguments at runtime.
                     var dynamic_result = int(target.call("ping", 1))
@@ -2471,25 +2587,25 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("parameter default dynamic-route check passed.")
                     else:
                         push_error("parameter default dynamic-route check failed: got %s." % dynamic_result)
-
+                
                     var dynamic_multi = int(target.call("multi", 1))
                     if dynamic_multi == 112:
                         print("parameter default dynamic multi-slot check passed.")
                     else:
                         push_error("parameter default dynamic multi-slot check failed: got %s." % dynamic_multi)
-
+                
                     var dynamic_reeval = int(target.call("append_probe")) * 10 + int(target.call("append_probe"))
                     if dynamic_reeval == 22:
                         print("parameter default dynamic re-evaluation check passed.")
                     else:
                         push_error("parameter default dynamic re-evaluation check failed: got %s." % dynamic_reeval)
-
+                
                     var gdcc_dynamic = int(target.call("run_dynamic_checks"))
                     if gdcc_dynamic == 41003:
                         print("parameter default gdcc dynamic-route check passed.")
                     else:
                         push_error("parameter default gdcc dynamic-route check failed: got %s." % gdcc_dynamic)
-
+                
                     # Too-few below the required prefix surfaces as a call error whose
                     # `expected` is the required count (1), not the full arity (2). The failed
                     # call aborts this GDScript function, so this probe must stay LAST.
@@ -2872,6 +2988,44 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                 """;
     }
 
+    private static @NotNull String directSlotSnapshotWritebackTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "DirectSlotSnapshotWritebackSmokeNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var joined = String(target.call("join_parts", PackedStringArray(["a", "b", "c"])))
+                    if joined == "abc":
+                        print("direct-slot snapshot writeback loop check passed.")
+                    else:
+                        push_error("direct-slot snapshot writeback loop check failed.")
+                
+                    var grown = int(target.call("append_via_helper", "y"))
+                    if grown == 2:
+                        print("direct-slot snapshot writeback nested check passed.")
+                    else:
+                        push_error("direct-slot snapshot writeback nested check failed.")
+                
+                    var dynamic_packed = int(target.call("append_dynamic", PackedStringArray(), "s"))
+                    if dynamic_packed == 1:
+                        print("direct-slot snapshot writeback dynamic check passed.")
+                    else:
+                        push_error("direct-slot snapshot writeback dynamic check failed.")
+                
+                    var dynamic_array = int(target.call("append_dynamic", Array(), "s"))
+                    if dynamic_array == 1:
+                        print("direct-slot snapshot writeback dynamic shared check passed.")
+                    else:
+                        push_error("direct-slot snapshot writeback dynamic shared check failed.")
+                """;
+    }
+
     private static @NotNull String writableRouteRuntimeEdgeTestScript() {
         return """
                 extends Node
@@ -2980,15 +3134,15 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     private static @NotNull String stringFamilyInboundCallWrapperTestScript() {
         return """
                 extends Node
-
+                
                 const TARGET_NODE_NAME = "StringFamilyInboundWrapperNode"
-
+                
                 func _ready() -> void:
                     var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
                     if target == null:
                         push_error("Target node missing.")
                         return
-
+                
                     var name_from_text = target.call("take_string_name", "from-text")
                     var text_from_name = target.call("take_string", &"from-name")
                     var exact_name = target.call("take_string_name", &"exact-name")
@@ -2997,7 +3151,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend String/StringName inbound dynamic call check passed.")
                     else:
                         push_error("frontend String/StringName inbound dynamic call check failed.")
-
+                
                     target.call("take_string_name", NodePath("bad"))
                     print("frontend String/StringName inbound dynamic call after bad call.")
                 """;

@@ -407,11 +407,12 @@ public final class FrontendCfgGraphBuilder {
             @NotNull AttributeCallStep attributeCallStep,
             @NotNull FrontendResolvedCall publishedCall
     ) {
-        receiverBuild = maybePublishDirectSlotReceiverAlias(
+        var receiverPublication = maybePublishDirectSlotReceiverAlias(
                 receiverBuild,
                 publishedCall,
                 attributeCallStep.arguments()
         );
+        receiverBuild = receiverPublication.receiverBuild();
         var argumentsBuild = buildArgumentValues(receiverBuild.cursor(), attributeCallStep.arguments());
         var receiverRoute = routePayloadOrValueRoot(receiverBuild);
         argumentsBuild.cursor().currentSequence().items().add(new CallItem(
@@ -424,7 +425,11 @@ public final class FrontendCfgGraphBuilder {
                         attributeCallStep,
                         receiverRoute.root(),
                         receiverRoute.leaf(),
-                        appendCallReceiverCommitSteps(receiverRoute, publishedCall)
+                        appendCallReceiverCommitSteps(
+                                receiverRoute,
+                                publishedCall,
+                                receiverPublication.aliasPublished()
+                        )
                 )
         ));
         return argumentsBuild.cursor();
@@ -3572,11 +3577,12 @@ public final class FrontendCfgGraphBuilder {
             case AttributeCallStep attributeCallStep -> {
                 var publishedCall = requireLoweringReadyCall(attributeCallStep);
                 checkValueProducingCall(publishedCall, attributeCallStep, "attribute call step");
-                receiverBuild = maybePublishDirectSlotReceiverAlias(
+                var receiverPublication = maybePublishDirectSlotReceiverAlias(
                         receiverBuild,
                         publishedCall,
                         attributeCallStep.arguments()
                 );
+                receiverBuild = receiverPublication.receiverBuild();
                 var argumentsBuild = buildArgumentValues(receiverBuild.cursor(), attributeCallStep.arguments());
                 var resultValueId = chooseResultValueId(preferredResultValueId);
                 var receiverRoute = routePayloadOrValueRoot(receiverBuild);
@@ -3590,12 +3596,19 @@ public final class FrontendCfgGraphBuilder {
                         // therefore need the promoted leaf to appear in reverseCommitSteps. Without this,
                         // property/subscript receivers would carry provenance but no actual post-call
                         // writeback plan. Static property receivers stay terminal (see
-                        // appendCallReceiverCommitSteps).
+                        // appendCallReceiverCommitSteps). A bare direct-slot receiver that stayed on the
+                        // ordinary temp snapshot surface (alias publication rejected) additionally needs
+                        // a direct-slot commit step so the mutated temp is written back to its source
+                        // local/parameter slot after the call.
                         new FrontendWritableRoutePayload(
                                 attributeCallStep,
                                 receiverRoute.root(),
                                 receiverRoute.leaf(),
-                                appendCallReceiverCommitSteps(receiverRoute, publishedCall)
+                                appendCallReceiverCommitSteps(
+                                        receiverRoute,
+                                        publishedCall,
+                                        receiverPublication.aliasPublished()
+                                )
                         )
                 ));
                 yield valueRootBuild(argumentsBuild.cursor(), attributeCallStep, resultValueId);
@@ -3820,38 +3833,46 @@ public final class FrontendCfgGraphBuilder {
     ///   otherwise alias publication would prematurely promise live-slot behavior for a deferred surface
     /// - for identifier-backed roots, later argument evaluation must stay inside a proven
     ///   no-rebinding subset; otherwise builder deliberately keeps the ordinary temp snapshot
-    private @NotNull ValueBuild maybePublishDirectSlotReceiverAlias(
+    ///
+    /// The returned flag tells the caller whether the live-slot alias was actually published. A
+    /// `false` result means the receiver stayed on the ordinary temp snapshot surface, so a
+    /// mutating call must plan an explicit post-call writeback into the source slot (see
+    /// `appendCallReceiverCommitSteps`).
+    private @NotNull DirectSlotReceiverPublication maybePublishDirectSlotReceiverAlias(
             @NotNull ValueBuild receiverBuild,
             @NotNull FrontendResolvedCall publishedCall,
             @NotNull List<Expression> arguments
     ) {
         if (!FrontendCallMutabilitySupport.mayMutateReceiver(publishedCall)) {
-            return receiverBuild;
+            return new DirectSlotReceiverPublication(receiverBuild, false);
         }
         var routePayload = receiverBuild.writableRoutePayloadOrNull();
         if (routePayload == null
                 || routePayload.root().kind() != FrontendWritableRoutePayload.RootKind.DIRECT_SLOT
                 || routePayload.leaf().kind() != FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT) {
-            return receiverBuild;
+            return new DirectSlotReceiverPublication(receiverBuild, false);
         }
         if (!(receiverBuild.valueAnchor() instanceof IdentifierExpression || receiverBuild.valueAnchor() instanceof SelfExpression)) {
-            return receiverBuild;
+            return new DirectSlotReceiverPublication(receiverBuild, false);
         }
         var items = receiverBuild.cursor().currentSequence().items();
         if (!(items.getLast() instanceof OpaqueExprValueItem opaqueValueItem)
                 || !opaqueValueItem.resultValueId().equals(receiverBuild.resultValueId())
                 || opaqueValueItem.expression() != receiverBuild.valueAnchor()) {
-            return receiverBuild;
+            return new DirectSlotReceiverPublication(receiverBuild, false);
         }
         var aliasRoot = requireDirectSlotAliasRoot(receiverBuild);
         if (!shouldPublishDirectSlotAlias(aliasRoot, arguments)) {
-            return receiverBuild;
+            return new DirectSlotReceiverPublication(receiverBuild, false);
         }
         items.removeLast();
-        return emitDirectSlotAliasValue(
-                receiverBuild.cursor(),
-                (Expression) receiverBuild.valueAnchor(),
-                receiverBuild.resultValueId()
+        return new DirectSlotReceiverPublication(
+                emitDirectSlotAliasValue(
+                        receiverBuild.cursor(),
+                        (Expression) receiverBuild.valueAnchor(),
+                        receiverBuild.resultValueId()
+                ),
+                true
         );
     }
 
@@ -4113,10 +4134,45 @@ public final class FrontendCfgGraphBuilder {
     /// in place through the loaded value. Mutating calls on value-semantic or unknown (`Variant`)
     /// carriers keep the promotion so the static-terminal contract fails fast instead of
     /// silently dropping a required write-back.
+    ///
+    /// A bare direct-slot receiver (ordinary local/parameter) that could not publish its
+    /// live-slot alias stays on the ordinary temp snapshot surface: the call then mutates one
+    /// `cfg_tmp_*` copy instead of the source slot. Value-semantic carriers (`Packed*Array`,
+    /// `String`, ...) would otherwise lose the mutation to copy-on-write detach, so the route
+    /// must append one terminal `DIRECT_SLOT` commit step that writes the mutated temp back into
+    /// the root slot after the call. Alias-published receivers already mutate the source slot in
+    /// place and must keep the step list unchanged (a self-assign writeback would be a
+    /// destroy-then-copy hazard). This writeback stays unconditional at lowering time because no
+    /// currently legal argument-evaluation surface can rebind a caller local slot; any future
+    /// rebinding-capable argument form must revisit this contract before opting out of the
+    /// snapshot fallback.
+    ///
+    /// The step is currently limited to `LOCAL_VAR` roots. `PARAMETER` roots stay on the legacy
+    /// snapshot behavior because LIR parameters are borrowed `ref=true` pointers and the backend
+    /// deliberately rejects every assignment into reference variables (parameter rebinding is
+    /// unsupported as a whole today); writing back through the borrowed pointer needs a dedicated
+    /// backend assign-through-pointer contract instead of a lowering-side patch.
     private @NotNull List<FrontendWritableRoutePayload.StepDescriptor> appendCallReceiverCommitSteps(
             @NotNull FrontendWritableRoutePayload routePayload,
-            @NotNull FrontendResolvedCall publishedCall
+            @NotNull FrontendResolvedCall publishedCall,
+            boolean receiverAliasPublished
     ) {
+        if (!receiverAliasPublished
+                && FrontendCallMutabilitySupport.mayMutateReceiver(publishedCall)
+                && routePayload.root().kind() == FrontendWritableRoutePayload.RootKind.DIRECT_SLOT
+                && routePayload.leaf().kind() == FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT
+                && isLocalVarDirectSlotRoute(routePayload)) {
+            var steps = new ArrayList<>(routePayload.reverseCommitSteps());
+            steps.add(new FrontendWritableRoutePayload.StepDescriptor(
+                    FrontendWritableRoutePayload.StepKind.DIRECT_SLOT,
+                    routePayload.leaf().anchor(),
+                    null,
+                    List.of(),
+                    null,
+                    null
+            ));
+            return List.copyOf(steps);
+        }
         var receiverType = publishedCall.receiverType();
         var staticBarePropertyReceiver =
                 routePayload.root().kind() == FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT
@@ -4129,6 +4185,17 @@ public final class FrontendCfgGraphBuilder {
             return routePayload.reverseCommitSteps();
         }
         return appendPromotedLeaf(routePayload);
+    }
+
+    /// Only `LOCAL_VAR` bindings qualify for the direct-slot snapshot writeback: parameters are
+    /// borrowed `ref=true` slots that the backend cannot yet assign into, and `CAPTURE` storage
+    /// has no live-slot writeback contract at all. Anything else must fail closed to the legacy
+    /// snapshot behavior instead of promising a writeback the backend cannot express.
+    private boolean isLocalVarDirectSlotRoute(@NotNull FrontendWritableRoutePayload routePayload) {
+        if (!(routePayload.leaf().anchor() instanceof IdentifierExpression identifierExpression)) {
+            return false;
+        }
+        return requirePublishedBinding(identifierExpression).kind() == FrontendBindingKind.LOCAL_VAR;
     }
 
     private @Nullable FrontendWritableRoutePayload.StepDescriptor promoteLeafToCommitStep(
@@ -5584,6 +5651,15 @@ public final class FrontendCfgGraphBuilder {
         private DirectSlotAliasRoot {
             Objects.requireNonNull(expression, "expression must not be null");
             Objects.requireNonNull(kind, "kind must not be null");
+        }
+    }
+
+    private record DirectSlotReceiverPublication(
+            @NotNull ValueBuild receiverBuild,
+            boolean aliasPublished
+    ) {
+        private DirectSlotReceiverPublication {
+            Objects.requireNonNull(receiverBuild, "receiverBuild must not be null");
         }
     }
 
