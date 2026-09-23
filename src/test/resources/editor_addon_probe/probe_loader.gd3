@@ -1,0 +1,45 @@
+@tool
+class_name ProbeLoader
+extends ResourceFormatLoader
+
+## Phase 0 probe: ResourceFormatLoader overrides plus the cache-mode conventions
+## (CACHE_MODE_REUSE -> get_cached_ref, CACHE_MODE_REPLACE* -> take_over_path) and the
+## `_load(...) -> Variant` route (implementation plan §2.4/§5). `_load` stays a pure load:
+## file read plus object graph construction, no service or cache side effects.
+
+var _language: ProbeLang = null
+
+func setup(language: ProbeLang) -> void:
+    _language = language
+
+func _get_recognized_extensions() -> PackedStringArray:
+    return PackedStringArray(["gd3probe"])
+
+func _handles_type(type: StringName) -> bool:
+    return type == &"Script" or type == &"ProbeScript"
+
+func _get_resource_type(path: String) -> String:
+    if path.ends_with(".gd3probe"):
+        return "ProbeScript"
+    return ""
+
+func _get_resource_uid(path: String) -> int:
+    return -1
+
+func _exists(path: String) -> bool:
+    return path.ends_with(".gd3probe") and FileAccess.file_exists(path)
+
+func _load(path: String, original_path: String, use_sub_threads: bool, cache_mode: int) -> Variant:
+    if cache_mode == 1:
+        var cached: Resource = ResourceLoader.get_cached_ref(path)
+        if cached != null:
+            return cached
+    if not FileAccess.file_exists(path):
+        return null
+    var text: String = FileAccess.get_file_as_string(path)
+    var script: ProbeScript = ProbeScript.new()
+    script.setup(_language)
+    script.set_source(text)
+    if cache_mode == 2 or cache_mode == 4:
+        script.take_over_path(path)
+    return script

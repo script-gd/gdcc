@@ -1483,6 +1483,94 @@ class CGenHelperTest {
     }
 
     @Test
+    @DisplayName("typed container leaves feed the bind name so same-shape wrappers never collide")
+    void typedContainerLeavesFeedTheBindName() {
+        // Regression: BindingData equality distinguishes typed containers, so the bind-name
+        // encoding must too — `Array[Dictionary]` and `Array[StringName]` returns previously
+        // both rendered as `ret_Array` and emitted duplicate wrapper symbols (probe P0-B).
+        var worker = new LirClassDef("Worker", "RefCounted");
+
+        var dictList = new LirFunctionDef("dict_list");
+        dictList.setReturnType(new GdArrayType(new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT)));
+        dictList.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, dictList));
+        worker.addFunction(dictList);
+
+        var nameList = new LirFunctionDef("name_list");
+        nameList.setReturnType(new GdArrayType(GdStringNameType.STRING_NAME));
+        nameList.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, nameList));
+        worker.addFunction(nameList);
+
+        var plainList = new LirFunctionDef("plain_list");
+        plainList.setReturnType(new GdArrayType(GdVariantType.VARIANT));
+        plainList.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, plainList));
+        worker.addFunction(plainList);
+
+        var dictListBindName = helper.renderFuncBindName(worker, dictList);
+        var nameListBindName = helper.renderFuncBindName(worker, nameList);
+        var plainListBindName = helper.renderFuncBindName(worker, plainList);
+        assertNotEquals(dictListBindName, nameListBindName);
+        assertNotEquals(dictListBindName, plainListBindName);
+        assertNotEquals(nameListBindName, plainListBindName);
+        // Generic containers keep the engine-facing plain spelling; typed containers embed
+        // length-prefixed element segments.
+        assertTrue(plainListBindName.endsWith("ret_Array"), plainListBindName);
+        assertTrue(dictListBindName.endsWith("ret_Array_10_Dictionary"), dictListBindName);
+        assertTrue(nameListBindName.endsWith("ret_Array_10_StringName"), nameListBindName);
+
+        // Typed parameters participate the same way (Dictionary[String, int] vs plain).
+        var typedParam = new LirFunctionDef("typed_param");
+        typedParam.setReturnType(GdVoidType.VOID);
+        typedParam.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, typedParam));
+        typedParam.addParameter(new LirParameterDef("table",
+                new GdDictionaryType(GdStringType.STRING, GdIntType.INT), null, typedParam));
+        worker.addFunction(typedParam);
+
+        var plainParam = new LirFunctionDef("plain_param");
+        plainParam.setReturnType(GdVoidType.VOID);
+        plainParam.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, plainParam));
+        plainParam.addParameter(new LirParameterDef("table",
+                new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT), null, plainParam));
+        worker.addFunction(plainParam);
+
+        assertNotEquals(helper.renderFuncBindName(worker, typedParam),
+                helper.renderFuncBindName(worker, plainParam));
+    }
+
+    @Test
+    @DisplayName("bind name container segments are injective across underscore-carrying type names")
+    void bindNameContainerSegmentsAreInjective() {
+        // Type names may contain `_`, so a bare `_` join would still collide; length-prefixed
+        // container segments must keep these pairs distinct.
+        var worker = new LirClassDef("Worker", "RefCounted");
+
+        var fooBarBaz = new LirFunctionDef("foo_bar_baz");
+        fooBarBaz.setReturnType(new GdDictionaryType(new GdObjectType("Foo"), new GdObjectType("Bar_Baz")));
+        fooBarBaz.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, fooBarBaz));
+        worker.addFunction(fooBarBaz);
+
+        var fooBarBazSwapped = new LirFunctionDef("foo_bar_baz_swapped");
+        fooBarBazSwapped.setReturnType(new GdDictionaryType(new GdObjectType("Foo_Bar"), new GdObjectType("Baz")));
+        fooBarBazSwapped.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, fooBarBazSwapped));
+        worker.addFunction(fooBarBazSwapped);
+
+        assertNotEquals(helper.renderFuncBindName(worker, fooBarBaz),
+                helper.renderFuncBindName(worker, fooBarBazSwapped));
+
+        var nested = new LirFunctionDef("nested");
+        nested.setReturnType(new GdArrayType(new GdArrayType(GdStringType.STRING)));
+        nested.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, nested));
+        worker.addFunction(nested);
+
+        var flatUnderscore = new LirFunctionDef("flat_underscore");
+        flatUnderscore.setReturnType(new GdArrayType(new GdObjectType("Array_String")));
+        flatUnderscore.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, flatUnderscore));
+        worker.addFunction(flatUnderscore);
+
+        assertNotEquals(helper.renderFuncBindName(worker, nested),
+                helper.renderFuncBindName(worker, flatUnderscore));
+    }
+
+    @Test
     @DisplayName("BindingData rejects out-of-range defaultSlotCount")
     void bindingDataRejectsOutOfRangeDefaultSlotCount() {
         // More default slots than parameters.

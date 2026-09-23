@@ -1175,20 +1175,28 @@ public final class ClassRegistry implements Scope {
         // Check GDCC user classes
         var gdccClass = gdccClassByName.get(className);
         if (gdccClass != null) {
-            // Traverse inheritance chain to check for RefCounted
+            // Traverse the inheritance chain: GDCC ancestors are walked through; the first
+            // native engine ancestor decides RefCounted-ness from extension metadata (a
+            // concrete class rooted at plain Object is never RefCounted — the UNKNOWN Object
+            // special case above only covers static Object-typed values, not a concrete
+            // Object-rooted class). Sparse registries (test fixtures) may lack engine
+            // metadata for the well-known native roots, so the name-based answers stay as
+            // fallback for exactly those names.
             var current = gdccClass;
             while (current != null && !current.getSuperName().isEmpty()) {
                 var superCanonicalName = current.getSuperName();
+                var engineSuper = gdClassByName.get(superCanonicalName);
+                if (engineSuper != null) {
+                    return engineSuper.isRefcounted() ? RefCountedStatus.YES : RefCountedStatus.NO;
+                }
                 if (superCanonicalName.equals("RefCounted") || superCanonicalName.equals("Resource")) {
                     return RefCountedStatus.YES;
                 }
-                current = gdccClassByName.get(superCanonicalName);
                 if (superCanonicalName.equals("Object") || superCanonicalName.equals("Node")) {
-                    // Reached Object without finding RefCounted, it's NO
                     return RefCountedStatus.NO;
                 }
+                current = gdccClassByName.get(superCanonicalName);
             }
-            // If we reached Object without finding RefCounted, it's NO
             return RefCountedStatus.NO;
         }
         // Unknown type

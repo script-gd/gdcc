@@ -1,0 +1,142 @@
+@tool
+class_name ProbeEngineCalls
+extends RefCounted
+
+## Phase 0 probe: exercises the engine API call routes the editor integration needs
+## (implementation plan §5): language/loader/saver registration, threaded loading,
+## StreamPeerTCP (including the get_partial_data [err, bytes] array unpack), file and
+## directory access, sentinel-character text processing, time/system calls, editor-only
+## type reachability, and is_instance_valid. These bodies must compile; the runtime smoke
+## only drives the registration and virtual-dispatch paths.
+
+var lang: ProbeLang = null
+
+func probe_registration() -> int:
+    if lang == null:
+        return ERR_INVALID_PARAMETER
+    var err: int = Engine.register_script_language(lang)
+    if err != OK:
+        return err
+    var count: int = Engine.get_script_language_count()
+    var found: bool = false
+    var index: int = 0
+    while index < count:
+        var candidate: ScriptLanguage = Engine.get_script_language(index)
+        if candidate == lang:
+            found = true
+        index = index + 1
+    Engine.unregister_script_language(lang)
+    if not found:
+        return FAILED
+    return OK
+
+func probe_resource_registration() -> int:
+    var loader: ProbeLoader = ProbeLoader.new()
+    loader.setup(lang)
+    var saver: ProbeSaver = ProbeSaver.new()
+    ResourceLoader.add_resource_format_loader(loader, false)
+    ResourceSaver.add_resource_format_saver(saver, false)
+    ResourceLoader.remove_resource_format_loader(loader)
+    ResourceSaver.remove_resource_format_saver(saver)
+    return OK
+
+func probe_threaded_load(path: String) -> int:
+    var err: int = ResourceLoader.load_threaded_request(path, "", false, 1)
+    if err != OK:
+        return err
+    var status: int = ResourceLoader.load_threaded_get_status(path, [])
+    var guard: int = 0
+    while status == 1 and guard < 100000:
+        status = ResourceLoader.load_threaded_get_status(path, [])
+        guard = guard + 1
+    if status != 2:
+        return FAILED
+    var resource: Resource = ResourceLoader.load_threaded_get(path)
+    if resource == null:
+        return FAILED
+    return OK
+
+func probe_network(host: String, port: int) -> int:
+    var peer: StreamPeerTCP = StreamPeerTCP.new()
+    var err: int = peer.connect_to_host(host, port)
+    if err != OK:
+        return err
+    err = peer.poll()
+    var status: int = peer.get_status()
+    if status != 2:
+        peer.disconnect_from_host()
+        return ERR_CANT_CONNECT
+    var available: int = peer.get_available_bytes()
+    if available > 0:
+        var partial: Array = peer.get_partial_data(available)
+        if partial.size() == 2:
+            var read_err: int = int(partial[0])
+            var chunk: PackedByteArray = partial[1]
+            if read_err == OK and chunk.size() > 0:
+                err = peer.put_data(chunk)
+    peer.disconnect_from_host()
+    return err
+
+func probe_files(dir_path: String, file_path: String) -> int:
+    if not FileAccess.file_exists(file_path):
+        return ERR_DOES_NOT_EXIST
+    var text: String = FileAccess.get_file_as_string(file_path)
+    var file: FileAccess = FileAccess.open(file_path, FileAccess.WRITE)
+    if file == null:
+        return ERR_CANT_OPEN
+    file.store_string(text)
+    file.close()
+    var names: PackedStringArray = PackedStringArray()
+    collect_dir(dir_path, names)
+    return names.size()
+
+func collect_dir(path: String, out_names: PackedStringArray) -> void:
+    var dir: DirAccess = DirAccess.open(path)
+    if dir == null:
+        return
+    dir.list_dir_begin()
+    var entry: String = dir.get_next()
+    while entry != "":
+        if dir.current_is_dir():
+            if entry != "." and entry != "..":
+                collect_dir(path + "/" + entry, out_names)
+        else:
+            out_names.append(entry)
+        entry = dir.get_next()
+    dir.list_dir_end()
+
+func probe_text(code: String) -> int:
+    var sentinel: String = String.chr(0xFFFF)
+    var index: int = code.find(sentinel)
+    if index < 0:
+        return -1
+    var clean: String = code.substr(0, index) + code.substr(index + 1, code.length() - index - 1)
+    var lines: PackedStringArray = clean.split("\n")
+    var comment_lines: int = 0
+    var i: int = 0
+    while i < lines.size():
+        var line: String = lines[i]
+        if line.begins_with("#"):
+            comment_lines = comment_lines + 1
+        if line.length() > 0 and line.unicode_at(0) == 35:
+            comment_lines = comment_lines + 1
+        i = i + 1
+    var color: Color = Color(1, 1, 1)
+    var codes: PackedInt32Array = PackedInt32Array()
+    codes.append(int(color.r))
+    codes.append(comment_lines)
+    return codes.size()
+
+func probe_time_system() -> int:
+    var started: int = Time.get_ticks_msec()
+    var pid: int = OS.get_process_id()
+    if pid <= 0:
+        return -1
+    return Time.get_ticks_msec() - started
+
+func probe_editor_type(editor_interface: EditorInterface) -> bool:
+    var local: EditorInterface = editor_interface
+    return is_instance_valid(local)
+
+func probe_lifecycle(obj: Object) -> bool:
+    return is_instance_valid(obj)

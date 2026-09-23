@@ -1,0 +1,23 @@
+@tool
+class_name ProbeSaver
+extends ResourceFormatSaver
+
+## Phase 0 probe: ResourceFormatSaver overrides, including the `resource as ProbeScript`
+## cross-class cast guard before writing the source text back (implementation plan §3.3/§5).
+
+func _save(resource: Resource, path: String, flags: int) -> int:
+    var script: ProbeScript = resource as ProbeScript
+    if script == null:
+        return ERR_INVALID_PARAMETER
+    var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+    if file == null:
+        return ERR_CANT_OPEN
+    file.store_string(script.get_source_code())
+    file.close()
+    return OK
+
+func _recognize(resource: Resource) -> bool:
+    return resource is ProbeScript
+
+func _get_recognized_extensions(resource: Resource) -> PackedStringArray:
+    return PackedStringArray(["gd3probe"])

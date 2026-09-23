@@ -612,6 +612,30 @@ class CConstructInsnGenTest {
     }
 
     @Test
+    @DisplayName("construct_object should externally initialize gdcc create_instance results whose RefCounted ancestry passes through an engine class")
+    void constructObjectShouldConvertGdccWrapperTargetInheritingRefCountedThroughEngineClass() {
+        // Regression: a gdcc class extending a RefCounted engine class (ResourceFormatLoader
+        // -> RefCounted) was misclassified NO by getRefCountedStatus, skipping the
+        // init_ref normalization and letting the call wrapper consume-destroy the object.
+        var holderClass = new LirClassDef("Holder", "Node", false, false, Map.of(), List.of(), List.of(), List.of());
+        var loaderClass = new LirClassDef("ProbeLoader", "ResourceFormatLoader");
+        var func = newFunction("construct_gdcc_object");
+        func.createAndAddVariable("loader", new GdObjectType("ProbeLoader"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("loader", "ProbeLoader"));
+        holderClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(holderClass, loaderClass));
+        var codegen = newCodegen(module, List.of(holderClass, loaderClass), apiWithConstructibleObjectClasses());
+        var body = codegen.generateFuncBody(holderClass, func);
+
+        assertTrue(body.contains("gdcc_ref_counted_init_raw(ProbeLoader_class_create_instance(NULL, false), true)"), body);
+        assertTrue(body.contains("gdcc_ProbeLoader_fat_ptr_from_raw((GDExtensionObjectPtr)("), body);
+        assertFalse(body.contains("own_object("), body);
+        assertFalse(body.contains("try_own_object("), body);
+    }
+
+    @Test
     @DisplayName("construct_object should reject non-object result slots")
     void constructObjectShouldRejectNonObjectResultSlot() {
         var clazz = newTestClass();
@@ -1697,6 +1721,7 @@ class CConstructInsnGenTest {
                         new ExtensionGdClass("Object", false, true, "", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
                         new ExtensionGdClass("Node", false, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
                         new ExtensionGdClass("RefCounted", true, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
+                        new ExtensionGdClass("ResourceFormatLoader", true, true, "RefCounted", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
                         new ExtensionGdClass("EditorOnlyThing", false, false, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
                         new ExtensionGdClass(
                                 "JSON",

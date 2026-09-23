@@ -9,8 +9,30 @@
 
 ## 文档状态
 
-- 状态：实施计划（尚未实施；已经过多轮并行评审并修订）
-- 更新日期：2026-09-22
+- 状态：实施计划（Phase 0 已实施并通过验收；Phase 1+ 尚未实施；已经过多轮并行评审并修订）
+- 更新日期：2026-09-23
+- Phase 0 验收结果（2026-09-23）：P0-A/B/C 全绿（`EditorAddonIntegrationProbeTest`
+  3/3 通过，无跳过）。`_init` 语义与 typed array 返回的探针结论已回填 §3.2/§2.3。
+  探针暴露并已修复两个 gdcc 后端缺陷（阻塞级，修复侧已含回归测试）：
+  1. 绑定包装器符号名冲突：`BindingData` 相等性区分 typed 容器元素类型，但 bind name
+     编码把所有 `GdArrayType`/`GdDictionaryType` 折叠为 `Array`/`Dictionary`，同类中两个
+     仅容器元素类型不同的方法（如 `Array[Dictionary]` 与 `Array[StringName]` 返回）生成
+     重复 C 符号。修复：bind name 编码嵌入容器元素类型、且容器元素段采用长度前缀
+     （`Array_<len>_<elem>`，`Dictionary_<klen>_<key>_<vlen>_<value>`；类型名自身可含
+     `_`，裸 `_` 拼接仍可有二义），泛型容器拼写不变，见
+     `CGenHelper.renderFuncBindTypeName`。
+  2. `ClassRegistry.getRefCountedStatus` 的 GDCC 类继承链遍历在遇到首个引擎祖先时
+     不查引擎元数据，直接落 NO：经引擎类间接继承 RefCounted 的 GDCC 类
+     （`extends ScriptExtension` / `ResourceFormatLoader` 等）被误判为非 RefCounted，
+     `ConstructInsnGen` 因此跳过 `gdcc_ref_counted_init_raw` 归一化，新建对象保持
+     未跟踪态（refcount=1, refcount_init=1）；`call_` 包装器打包时
+     `Variant(Object*)` 的 `init_ref` 对新对象是**收养**语义（净增 0，Variant 接管
+     初始创建引用，Godot 4.5 variant.cpp/ref_counted.cpp），随后的 consume 释放把
+     刚被收养的引用释放回 0——gdcc 方法向解释侧返回新建对象得到 null。修复：
+     遍历时用引擎元数据 `isRefcounted()` 判定首个引擎祖先（与
+     `ObjectReturnConsumptionLeakIntegrationTest` 钉住的"构造点 init_ref 归一化 +
+     包装器 consume 净零转移"既有设计一致）。该缺陷阻断一切"gdcc 方法返回新建
+     RefCounted 对象"的路径（含 `_create_script`）。
 - 范围：
   - `src/editor_addon/addons/gdcc/**`（新增 `.gd3` 源文件 + `server_launcher.gd` +
     `plugin.gd`/`gdcc_dock.gd` 接线）
@@ -157,8 +179,13 @@ Godot 编辑器
   `_profiling_*`、`_get_public_functions`、`_get_public_constants`、
   `_get_public_annotations`。其中 `_debug_get_stack_level_instance` 返回 `void*`、
   `_profiling_get_*` 接收 `ScriptLanguageExtensionProfilingInfo*`，gdcc 无法表达；
-  `_get_public_*` 返回 `Dictionary[]`，若探针证实 typed array 返回可实现则补为显式
-  空实现以消除日志噪音。调试/性能分析本就在非目标内，这些路径不会被触发。
+  `_get_public_*` 返回 `Dictionary[]`。**探针结论（2026-09-23，P0 全绿）：typed array
+  返回可实现**——`ProbeLang._get_public_functions/_get_public_annotations`
+  （`-> Array[Dictionary]`）与 `ProbeScript._get_documentation/_get_members`
+  （`-> Array[Dictionary]` / `-> Array[StringName]`）通过 analyze+lowering 与 native
+  compile；P0-C 运行时经 `found._get_public_functions()`/`script._get_documentation()`/
+  `script._get_members()` 实调验证虚分发与空 typed array 往返
+  （`typed_array_virtuals` 步骤）。实现期应把这些条目补为显式空实现以消除日志噪音。调试/性能分析本就在非目标内，这些路径不会被触发。
 
 关键 Dictionary 契约（逐字来自 `core/object/script_language_extension.h`，4.5）：
 
@@ -210,8 +237,8 @@ Godot 编辑器
 - `_get_global_name() -> StringName`：解析 `class_name` 行，缺省空。
 - `_get_base_script() -> Script`：null。`_inherits_script(script) -> bool`：false。
   `_instance_has(object) -> bool`：false。
-- `_get_doc_class_name() -> StringName`、`_get_documentation()`（空，若 typed array
-  可表达）、`_get_class_icon_path()`（空串，非 required）。
+- `_get_doc_class_name() -> StringName`、`_get_documentation()`（空；typed array 可表达
+  已由探针证实，见 §2.2 C 档结论）、`_get_class_icon_path()`（空串，非 required）。
 - `_has_method/_has_static_method/_has_script_signal` → false；
   `_has_property_default_value` → false、`_get_property_default_value` → null
   （required，显式实现避免日志噪音）；`_get_method_info` → `{}`（required，同理）；
@@ -223,10 +250,10 @@ Godot 编辑器
   `_can_instantiate() == false` 自洽）：`_instance_create`、
   `_placeholder_instance_create`、`_placeholder_erased`。残留风险：`.gd3` 被误挂载到
   节点时编辑器拿不到占位实例（§9 R7）。
-- 跳过（`TypedArray[StringName]`/`TypedArray[Dictionary]` 返回类型的 override 支持需
-  探针验证，且默认空列表行为安全）：`_get_members`、`_get_constants`、
-  `_get_script_method_list`、`_get_script_property_list`、`_get_script_signal_list`。
-  探针通过则补为显式空实现。
+- 跳过（`TypedArray[StringName]`/`TypedArray[Dictionary]` 返回类型的 override 支持已
+  由探针验证可实现，见本节上方与 §2.2 C 档的探针结论；默认空列表行为安全）：
+  `_get_members`、`_get_constants`、`_get_script_method_list`、
+  `_get_script_property_list`、`_get_script_signal_list`。实现期补为显式空实现。
 
 ### 2.4 ResourceFormatLoader / ResourceFormatSaver
 
@@ -430,10 +457,14 @@ func _is_using_templates() -> bool:     return false    # Phase 5 前
 func _get_global_class_name(path: String) -> Dictionary # Phase 5
 ```
 
-`_init` 语义注意：在 gdcc 中 `func _init()` 可能固定被识别为类构造钩子而非
-`ScriptLanguageExtension._init` engine virtual（由探针确认，§5）。两种结果都可接受：
-若被当作构造钩子，则省略该 override，接受一次性 `ERR_PRINT_ONCE`；无论如何语言注册
-晚于 `ScriptServer::init_languages()`，引擎不会对本语言调用 `init()`。
+`_init` 语义结论（2026-09-23 探针证实，P0 全绿）：gdcc 把 `func _init() -> void`
+建模为类构造钩子（骨架层固定 `void _init(...)`），同时后端按名字匹配把它注册为
+`ScriptLanguageExtension._init` 的 engine virtual 分发（`checkVirtualMethod` 走名称
+查找）；`() -> void` 签名与元数据一致，两条路径兼容，无需省略该 override。探针
+`ProbeLang` 定义 `_init() -> void` 后 analyze+lowering、native compile 与运行时
+（`ClassDB.instantiate` + `Engine.register_script_language`）全部通过。注意语义边
+界不变：语言注册晚于 `ScriptServer::init_languages()`，引擎不会对本语言调用
+`init()`；构造钩子形参默认值仍不支持（frontend 既有约束）。
 
 ### 3.3 `gdcc_script_format_loader.gd3` / `gdcc_script_format_saver.gd3`
 
@@ -810,12 +841,18 @@ Phase 1 的编辑器内 harness。）
 每阶段结束跑 `./gradlew classes --no-daemon --console=plain` + 相关定向测试
 （`pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests ...`）。
 
-### Phase 0：编译与运行时探针
+### Phase 0：编译与运行时探针 ✅（2026-09-23 验收通过）
 
-实施：§5 探针文件 + `EditorAddonIntegrationProbeTest`（P0-A）+ Zig 门控 compile 断言
-（P0-B）+ `GODOT_BIN` 门控运行时冒烟（P0-C）。
-验收：P0-A/B/C 全绿；探针覆盖 §5 表中每一行；`_init` 语义结论与 typed array 返回
-探针结论写入本文档（§3.2/§2.3）。
+实施：§5 探针文件（`src/test/resources/editor_addon_probe/`：`probe_lang.gd3`、
+`probe_script.gd3`、`probe_loader.gd3`、`probe_saver.gd3`、`probe_engine_calls.gd3`）
++ `EditorAddonIntegrationProbeTest`（P0-A）+ Zig 门控 compile 断言（P0-B）+
+`GODOT_BIN` 门控运行时冒烟（P0-C，最小工程 + `-s` SceneTree 驱动，断言
+`ClassDB.class_exists`、注册返回 `OK`、`get_script_language` 取回后经
+`_get_name`/`_get_extension`/`_get_recognized_extensions` 绑定调用返回预期值、
+`_create_script` 全链路往返）。
+验收：P0-A/B/C 全绿（3/3，无跳过）；探针覆盖 §5 表中每一行；`_init` 语义结论与
+typed array 返回探针结论已写入本文档（§3.2/§2.3）；探针暴露的两个 gdcc 后端缺陷
+已修复并附回归测试（见文档状态节）。
 
 ### Phase 1：资源骨架（无诊断）+ 服务拉起
 

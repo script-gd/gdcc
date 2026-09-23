@@ -1,0 +1,158 @@
+@tool
+class_name ProbeLang
+extends ScriptLanguageExtension
+
+## Phase 0 probe: proves a gdcc class can extend ScriptLanguageExtension, override its
+## engine virtuals (including typed-array returns), and cross-reference ProbeScript
+## (doc/module_impl/editor_addon/gd3_editor_integration_implementation.md §5).
+## `_init() -> void` doubles as the §3.2 semantics probe: gdcc models it as the class
+## constructor while the signature also matches the ScriptLanguageExtension._init virtual.
+
+func _init() -> void:
+    pass
+
+func _get_name() -> String:
+    return "GD3Probe"
+
+func _get_type() -> String:
+    return "ProbeScript"
+
+func _get_extension() -> String:
+    return "gd3probe"
+
+func _get_recognized_extensions() -> PackedStringArray:
+    return PackedStringArray(["gd3probe"])
+
+func _get_reserved_words() -> PackedStringArray:
+    return PackedStringArray(["if", "elif", "else", "for", "while", "func", "var", "return"])
+
+func _is_control_flow_keyword(keyword: String) -> bool:
+    return keyword == "if" or keyword == "elif" or keyword == "else" or keyword == "for" or keyword == "while" or keyword == "match"
+
+func _get_comment_delimiters() -> PackedStringArray:
+    return PackedStringArray(["#"])
+
+func _get_doc_comment_delimiters() -> PackedStringArray:
+    return PackedStringArray(["##"])
+
+func _get_string_delimiters() -> PackedStringArray:
+    return PackedStringArray(["\" \"", "' '"])
+
+func _validate(script: String, path: String, validate_functions: bool, validate_errors: bool, validate_warnings: bool, validate_safe_lines: bool) -> Dictionary:
+    return {"valid": true, "errors": [], "warnings": []}
+
+func _validate_path(path: String) -> String:
+    return ""
+
+func _create_script() -> Object:
+    var script: ProbeScript = ProbeScript.new()
+    script.setup(self)
+    return script
+
+# Bound-method twin of `_create_script`: lets the runtime smoke discriminate a broken
+# virtual return channel from a broken instantiation/return path in general.
+func make_script() -> Object:
+    var script: ProbeScript = ProbeScript.new()
+    script.setup(self)
+    return script
+
+# Instantiation diagnosis: 0 = live instance, 1 = new() returned null, 2 = dead instance.
+func check_instantiation() -> int:
+    var script: ProbeScript = ProbeScript.new()
+    if script == null:
+        return 1
+    script.setup(self)
+    if not is_instance_valid(script):
+        return 2
+    return 0
+
+func _supports_builtin_mode() -> bool:
+    return false
+
+func _supports_documentation() -> bool:
+    return false
+
+func _can_inherit_from_file() -> bool:
+    return false
+
+func _handles_global_class_type(type: String) -> bool:
+    return type == "ProbeScript"
+
+func _has_named_classes() -> bool:
+    return false
+
+func _find_function(function: String, code: String) -> int:
+    return code.find("func " + function)
+
+func _make_function(class_name: String, function_name: String, function_args: PackedStringArray) -> String:
+    return "func " + function_name + "():\n    pass\n"
+
+func _can_make_function() -> bool:
+    return false
+
+func _open_in_external_editor(script: Script, line: int, column: int) -> int:
+    return ERR_UNAVAILABLE
+
+func _overrides_external_editor() -> bool:
+    return false
+
+func _complete_code(code: String, path: String, owner: Object) -> Dictionary:
+    return {"result": ERR_UNAVAILABLE, "force": false, "call_hint": "", "options": []}
+
+func _lookup_code(code: String, symbol: String, path: String, owner: Object) -> Dictionary:
+    return {"result": ERR_UNAVAILABLE, "type": 0}
+
+func _auto_indent_code(code: String, from_line: int, to_line: int) -> String:
+    return code
+
+func _get_global_class_name(path: String) -> Dictionary:
+    return {}
+
+func _finish() -> void:
+    pass
+
+func _frame() -> void:
+    pass
+
+func _thread_enter() -> void:
+    pass
+
+func _thread_exit() -> void:
+    pass
+
+func _add_global_constant(name: StringName, value: Variant) -> void:
+    pass
+
+func _add_named_global_constant(name: StringName, value: Variant) -> void:
+    pass
+
+func _remove_named_global_constant(name: StringName) -> void:
+    pass
+
+func _reload_all_scripts() -> void:
+    pass
+
+func _reload_scripts(scripts: Array, soft_reload: bool) -> void:
+    pass
+
+func _reload_tool_script(script: Script, soft_reload: bool) -> void:
+    pass
+
+func _is_using_templates() -> bool:
+    return false
+
+func _get_public_constants() -> Dictionary:
+    return {}
+
+# Typed-array override probes (typedarray::Dictionary in the engine metadata).
+func _get_public_functions() -> Array[Dictionary]:
+    var result: Array[Dictionary] = []
+    return result
+
+func _get_public_annotations() -> Array[Dictionary]:
+    var result: Array[Dictionary] = []
+    return result
+
+func _get_built_in_templates(object: StringName) -> Array[Dictionary]:
+    var result: Array[Dictionary] = []
+    return result

@@ -934,9 +934,11 @@ public final class CGenHelper {
 
     /// Consume the internal OWNED object return carrier `r` after call-wrapper Variant packing.
     ///
-    /// Packing (`to_variant` + `variant_new_copy` + `Variant_destroy`) establishes Variant ownership
-    /// but does not consume the function's OWNED strong reference on `r`. Release that reference
-    /// here so ownership transfers net-zero into `r_return`. Empty for non-object / non-RefCounted.
+    /// Packing (`to_variant` + `variant_new_copy` + `Variant_destroy`) establishes Variant
+    /// ownership. Every OWNED object inside gdcc codegen is Variant-tracked
+    /// (`gdcc_ref_counted_init_raw` at construction sites normalizes the initial reference),
+    /// so packing ADDS a reference; release the function's OWNED strong reference on `r` here
+    /// so ownership transfers net-zero into `r_return`. Empty for non-object / non-RefCounted.
     /// Must only be used on the return carrier — never on BORROWED argument locals.
     public @NotNull String renderCallWrapperOwnedObjectReturnConsumeStmt(
             @NotNull GdType returnType,
@@ -1130,6 +1132,37 @@ public final class CGenHelper {
         };
     }
 
+    /// Bind-name type segment for [renderFuncBindName]. Unlike [renderGdTypeName] (an
+    /// engine-facing spelling shared with builtin constructor lookups), this encoding embeds
+    /// container element types: `BindingData` equality distinguishes typed containers, so the
+    /// symbol encoding must too — otherwise two same-shape methods that differ only in
+    /// container leaves (`Array[Dictionary]` vs `Array[StringName]`) emit colliding wrapper
+    /// symbols. Generic containers keep the plain spelling (`Array`, `Dictionary`) so existing
+    /// bind names are unaffected.
+    ///
+    /// Container element segments are length-prefixed (`Array_<len>_<elem>`,
+    /// `Dictionary_<klen>_<key>_<vlen>_<value>`): type names may themselves contain `_`
+    /// (including inner-class canonical names with `__sub__`), so a bare `_` join would stay
+    /// ambiguous (`Dictionary[Foo, Bar_Baz]` vs `Dictionary[Foo_Bar, Baz]`,
+    /// `Array[Array[String]]` vs `Array[Array_String]`). Length prefixes make the container
+    /// encoding injective. Residual, accepted edge: the trailing `_static`/`_K_defslot`
+    /// markers could still alias a user class literally named e.g. `int_static`.
+    private @NotNull String renderFuncBindTypeName(@NotNull GdType gdType) {
+        return switch (gdType) {
+            case GdArrayType arrayType when !arrayType.isGenericArray() -> {
+                var elementName = renderFuncBindTypeName(arrayType.getValueType());
+                yield "Array_" + elementName.length() + "_" + elementName;
+            }
+            case GdDictionaryType dictionaryType when !dictionaryType.isGenericDictionary() -> {
+                var keyName = renderFuncBindTypeName(dictionaryType.getKeyType());
+                var valueName = renderFuncBindTypeName(dictionaryType.getValueType());
+                yield "Dictionary_" + keyName.length() + "_" + keyName
+                        + "_" + valueName.length() + "_" + valueName;
+            }
+            default -> renderGdTypeName(gdType);
+        };
+    }
+
     /// Thin wrapper around the shared scope-layer parser for extension metadata normalization.
     ///
     /// The shared parser now understands exported families such as `typeddictionary::K;V`, but the
@@ -1146,10 +1179,10 @@ public final class CGenHelper {
         var sb = new StringBuilder("_");
         sb.append(paramTypes.size()).append("_arg_");
         for (var paramType : paramTypes) {
-            sb.append(renderGdTypeName(paramType)).append("_");
+            sb.append(renderFuncBindTypeName(paramType)).append("_");
         }
         if (returnType != null && !(returnType instanceof GdVoidType)) {
-            sb.append("ret_").append(renderGdTypeName(returnType));
+            sb.append("ret_").append(renderFuncBindTypeName(returnType));
         } else {
             sb.append("no_ret");
         }
