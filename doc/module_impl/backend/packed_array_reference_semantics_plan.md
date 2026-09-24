@@ -336,6 +336,53 @@ PARAM_DEFAULT_SHARED(17)、ELEMENT_REBIND(18)、STRING_ITER_ELEMENTS(19)、IN_ME
 
 ### Phase B：C 运行时基础设施（仅新增，不改既有文件）
 
+#### Phase B 状态（2026-09-24 完成）
+
+**已完成并验收。** 产物清单：
+
+- `include_451/gdcc/gdcc_packed_ref.h`（新增；未做任何 include 接线，未修改既有头文件）：
+  - 文件头注释完整记录 §4.1 核心不变式与白名单 (a)(b)(c)(d) 到具名 helper 的映射表。
+  - per-family 内部指针 getter 缓存（per-TU `static`，与 `_gd_engine` 先例一致）+
+    `gdcc_packed_ref_init()` 一次性解析全部 10 个 family，缺失即 fail-fast
+    （`godot_print_error` + `abort()`，宏内字符串化给出 family 名）。
+  - `gdcc_packed_<slug>_internal_ptr`：NULL self / 未初始化两路为 gdcc 侧 fail-fast，
+    getter 返回 NULL 仅为兜底检查（nil/错型 Variant 取内部指针在引擎侧本就是 UB，
+    不保证干净返回 NULL，§7.5）；const 转换安全性与"调用方保证 family 匹配"在宏内块
+    注释中说明（宏内禁用 `//` 注释——C 翻译阶段 2 行拼接会吞掉宏体，实测踩坑后改块注释）。
+  - fail-fast 路径（`gdcc_packed_ref_fail`，`_Noreturn`）：优先 `godot_print_error`，
+    接口未就绪（`gdcc_interface_print_error == NULL`）时回退 stderr，随后 `abort()`；
+    `gdcc_packed_ref_init` 入口先检查 getter 接口全局已解析。
+  - `gdcc_packed_ref_copy` / `gdcc_packed_ref_destroy`（Variant 持有者拷贝/析构别名）、
+    `gdcc_packed_ref_is`（get_type 精确匹配，供 `is`/cast，NULL/nil 安全返回 false）。
+  - 白名单具名 helper（10 family × 6）：`new_empty`(b)、`wrap_temp`(c)、
+    `variant_from_struct`(a 入向)、`struct_from_variant`(a 出向)、`new_copy`(d 同型，
+    兼供 §4.3.7 同 family `as`)、`new_from_array`(d 跨类型)。
+- `src/test/java/gd/script/gdcc/backend/c/build/GdccPackedRefRuntimeSmokeTest.java`（新增，
+  8 测试全绿，zig-gated）：
+  - `headerShouldCompileStandalone`：头文件自包含编译 smoke（不依赖其他 gdcc 头与
+    `class_library` 全局）。
+  - `helpersShouldProvideSharedIdentityAndWhitelistedConversions`：fake 引擎按引擎身份合同
+    建模（Variant 拷贝共享同一堆数组；struct↔Variant 每次穿越产生新身份），逐 helper
+    正反锚定——别名仅经 `variant_new_copy`（断言 struct 拷贝构造零调用）、别名 mutation
+    双向可见、ptrcall 入向/出向双向隔离（§1.3）、`wrap_temp` 临时析构恰好一次、
+    `new_copy` 新身份+内容相等+源 mutation 不可见（§2-22）、`new_from_array` 走
+    ctor index 2、`is` 对 NULL/nil/异族均为 false、10 family getter 各解析恰好一次、
+    销毁恰好一次且无泄漏、happy path 零引擎错误；Int32 全 helper + Byte/Vector4 两个
+    附加 family 的 empty/is/alias 验证宏实例独立性。
+  - fail-fast 负向锚定（均要求非零退出 + 具体错误信息 + 探针尾部 FAIL 标记不出现，确保
+    abort 发生在 helper 内部而非探针自身返回）：`initShouldFailFastWhenInternalGetterMissing`
+    （getter 缺失，错误信息含 family 名）、`internalPtrShouldFailFastWithoutInit`（未初始化）、
+    `internalPtrShouldFailFastOnNullVariant`（NULL self）、
+    `internalPtrShouldFailFastWhenGetterReturnsNull`（getter 返 NULL 兜底；错型/nil 仍为
+    §7.5 调用方 UB，不做探针）、`initShouldFailFastBeforeInterfaceInit`（接口未就绪时
+    `print_error` 为 NULL，fail 路径回退 stderr）、
+    `internalPtrShouldRequireInitInEveryTranslationUnit`（多 TU：第二 TU 未初始化必须
+    fail-fast，锁定 per-TU 缓存合同）。
+- 验收记录：`./gradlew classes --no-daemon --console=plain` 通过；
+  `script/run-gradle-targeted-tests.sh --tests GdccPackedRefRuntimeSmokeTest` 8/8 通过；
+  `CProjectBuilderSharedIncludeTest,GodotAbiHeaderCompileTest` 回归通过（新头文件经
+  `ResourceExtractor` 递归提取机制自动进入生成项目 include 树，无需清单改动）。
+
 - 内容：新增 `include_451/gdcc/gdcc_packed_ref.h`：per-family 内部指针 getter 缓存与
   初始化（对 `godot_variant_get_ptr_internal_getter(<TYPE>)` 求值一次 + 可用性
   fail-fast）；empty-Variant 构造 helper；Variant 拷贝/析构别名；`get_type()` 类型检查
