@@ -1,0 +1,45 @@
+# Packed*Array 引用语义双跑对照 golden
+#
+# 本文件由 Godot Engine v4.5.2.stable.official.6ce3de25a 解释器运行
+# `packed_ref_probes.gd`（经解释器侧 driver）锁定，是
+# packed_array_reference_semantics_plan.md §2 语义矩阵 24 行 + 动态 Variant
+# receiver 用例的可执行 golden。行顺序与 PackedRefProbes.run_all 的执行顺序
+# （即 PackedRefSemanticsCaseRegistry 登记顺序）一致。
+#
+# 解析规则（ProbeOutput）：仅 `PROBE|<CASE>|<payload>` 三段式行有效；注释与空行
+# 仅允许出现在 golden 资源中，运行时输出里的非 PROBE 行视为引擎噪声忽略。
+#
+# 锁定记录：tmp/probes/packed_ref_semantics/results.txt（第 1–17 行）与
+# tmp/probes/packed_ref_semantics/results_phase_a.txt（第 18–24 行及动态 Variant
+# receiver 用例）。第 22 行（AS_SAME_FAMILY）实测为 COW 拷贝语义，修正了计划
+# 原始的"保持共享"预期。
+
+PROBE|LOCAL_ALIAS|int=2,2;string=2,2
+PROBE|PARAM_VISIBILITY|int=2;string=2
+PROBE|SCRIPT_PROPERTY|self=2;outside=2
+PROBE|TYPED_ARRAY_ELEMENT|2
+PROBE|DICT_VALUE|2
+PROBE|BUILTIN_PROPERTY_MUTATION|without_reassign=1
+PROBE|BUILTIN_PROPERTY_REASSIGN|with_reassign=2
+PROBE|PLUS_EQUALS_REBIND|2,1
+PROBE|DUPLICATE|2,1
+PROBE|SIGNAL_ARG|2
+PROBE|FOR_ITER|sum=6;size=4;mutation_visits=4
+PROBE|APPEND_ARRAY_ALIAS|3,3
+PROBE|RESIZE_ALIAS|1,1
+PROBE|INDEX_WRITE_ALIAS|99,99
+PROBE|VARIANT_IDENTITY|3,3,3
+PROBE|PARAM_DEFAULT_SHARED|2,2
+PROBE|ELEMENT_REBIND|e=2,1;slot=1,9
+PROBE|STRING_ITER_ELEMENTS|one!two!;one,two
+PROBE|IN_MEMBERSHIP|1,0,1,0
+PROBE|EQUALITY|1,1,1,1
+PROBE|DICT_KEY_HASH|same_content=v;mutated=missing;fresh=missing;size_after_mutate=1;size_after_reinsert=2
+PROBE|AS_SAME_FAMILY|2,1,2
+PROBE|CORO_AWAIT|before=2,1;during=3,2;after=4,3
+PROBE|SIGNAL_MULTI|2,5,2
+PROBE|DYNAMIC_VARIANT_MUTATION|2,2
+# STATIC_VAR 与 LAMBDA_CAPTURE 位于伴随库（packed_ref_probes_blocked.gd），两侧输出
+# 均追加在主库序列之后；现行 gdcc 对二者编译期 fail-closed，详见注册表 Phase D 注释。
+PROBE|STATIC_VAR|2
+PROBE|LAMBDA_CAPTURE|2

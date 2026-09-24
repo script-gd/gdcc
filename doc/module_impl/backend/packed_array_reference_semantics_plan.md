@@ -75,13 +75,13 @@ Godot 4.5.2 headless 下实测；第 18–22 行为审阅补充场景，其中�
 | 15 | `a[0] = 99` 索引写 | 共享 | 共享 |
 | 16 | `Variant` ↔ typed 转换（赋值） | 保持共享（三方共享） | 保持共享 |
 | 17 | 参数默认值 | 每次调用物化新数组 | 每次调用物化新数组（不变） |
-| 18 | 元素写入重绑定：`var e := arr[0]; arr[0] = 新数组` | `e` 仍指向旧数组（元素槽重绑定） | 重绑定（待探针确认） |
+| 18 | 元素写入重绑定：`var e := arr[0]; arr[0] = 新数组` | `e` 仍指向旧数组（元素槽重绑定） | 重绑定（已探针锁定：`ELEMENT_REBIND e=2,1;slot=1,9`） |
 | 19 | PackedStringArray 迭代 | 元素为 String 副本，值相等 | 元素副本（不变） |
-| 20 | `in` 成员测试 | 内容匹配 | 内容匹配（待探针确认） |
-| 21 | `==`/`!=` | 内容相等（含别名、内容相同身份不同、mutation 后别名三种子场景） | 内容相等（待探针确认哈希与 Dictionary 键行为） |
-| 22 | `v as PackedInt32Array`（同 family） | 保持共享 | 保持共享（待探针确认） |
-| 23 | 协程形参/捕获在 await 挂起前后双向 mutation | 待探针确认（预期共享） | 与探针一致 |
-| 24 | 多参数 typed 信号携带 packed | 待探针确认（预期共享） | 与探针一致 |
+| 20 | `in` 成员测试 | 内容匹配 | 内容匹配（已探针锁定：`IN_MEMBERSHIP 1,0,1,0`） |
+| 21 | `==`/`!=` | 内容相等（含别名、内容相同身份不同、mutation 后别名三种子场景） | 内容相等（已探针锁定：`EQUALITY 1,1,1,1`；哈希与 Dictionary 键行为经 `DICT_KEY_HASH` 锁定：键按内容哈希，插入后经共享别名 mutation 使旧条目查找 missing，以 mutation 后的键再插入产生第二个条目） |
+| 22 | `v as PackedInt32Array`（同 family） | **COW 拷贝（新身份），非共享** | COW 拷贝（已探针锁定：`AS_SAME_FAMILY 2,1,2`——`a.push_back(7)` 后 a=2、b=1、v=2；v 与 a 共享，b 为独立新身份。**推翻本表原始"保持共享"预期**，§4.3.7 随之修订） |
+| 23 | 协程形参/捕获在 await 挂起前后双向 mutation | 双向可见（已探针锁定：`CORO_AWAIT before=2,1;during=3,2;after=4,3`） | 与探针一致 |
+| 24 | 多参数 typed 信号携带 packed | 共享（已探针锁定：`SIGNAL_MULTI 2,5,2`） | 与探针一致 |
 
 ## 3. 引擎机制依据（godotengine/godot 4.5 分支核实）
 
@@ -178,9 +178,12 @@ Godot 4.5.2 headless 下实测；第 18–22 行为审阅补充场景，其中�
    **禁止**将 `+`/`+=` 优化为对内部指针的 in-place `append_array`（会把 mutation 泄漏给
    旧别名，违反 §2 第 8 行）。哈希与 Dictionary 键行为以解释器实测 golden 为准，不作假设。
 7. **cast 与类型测试**：`is` 经 `Variant.get_type()` 与目标 `GDExtensionVariantType` 比较。
-   `as` cast 在运行时类型同属目标 packed family 时执行**类型检查 + Variant 拷贝**
-   （保持身份）；现行 `BuiltinCastInsnGen.java:92-134` 走 `godot_variant_construct` 路径，
-   必须为该场景单列分支。其余合法转换遵循既有 cast 合同。
+   `as` cast 在运行时类型同属目标 packed family 时**产生 COW 拷贝（新身份）**——Phase A
+   探针实测（§2 第 22 行）：解释器的 `v as PackedInt32Array` 产出独立新数组（等价于
+   同型构造的 COW 拷贝），`a.push_back(7)` 后 `a=2, b=1, v=2`。实现形态：内部指针 →
+   `godot_new_Packed*Array_with_Packed*Array`（同型拷贝构造，属白名单 (d) 同类豁免）→
+   立即包装为新 Variant。~~类型检查 + Variant 拷贝（保持身份）~~的原始设计与实测不符，
+   已修订。其余合法转换遵循既有 cast 合同。
 8. **for-in 迭代器重写**（`intrinsic/for_packed_array_iter.h` + Java 侧
    `GdccForPackedArrayIterType` 布局注释 + intrinsic 发射，三者必须同一阶段变更）：
    - state 持有源数组的 **Variant 拷贝**（共享）与 index；**不再**持有 COW struct 快照。
@@ -235,7 +238,7 @@ reverse-commit，这是错误的。改造后按 route provenance 决策（谓词
 | direct-slot（PARAMETER） | fail-closed，mutation 丢失 | **不涉及 step**；形参改 `godot_Variant*` 共享身份（§4.3.1），mutation 天然可见 |
 | 内建引擎属性 route（`poly.polygon`） | 写回（与解释器相反） | **移除写回**（§1.3 第 3 条；getter 副本语义） |
 | GDCC 脚本属性 route | 写回 | 保留（冗余无害，标记可选清理） |
-| STATIC_CONTEXT bare 静态属性 route（`FrontendCfgGraphBuilder.appendCallReceiverCommitSteps` 静态分支，现行按 family 谓词决定 promotion） | 写回 | 保留（冗余无害，与脚本属性 route 相同；谓词改造时不得误关） |
+| STATIC_CONTEXT bare 静态属性 route（`FrontendCfgGraphBuilder.appendCallReceiverCommitSteps` 静态分支，现行按 family 谓词决定 promotion） | **编译期 fail-closed**（Phase A 实测修订：值语义 carrier 的 promotion 被 `FrontendCfgGraph` static-terminal 合同拒绝，非"现行写回"；见下方 Phase A 状态） | Variant 存储使静态 leaf 共享身份后，谓词改造为 route-provenance-aware 时该 route 自然解锁；不再追加 promotion step，mutation 经共享身份天然可见 |
 | Array/Dictionary 元素 route | 写回 | 保留（冗余无害，标记可选清理） |
 | method-result route（`get_baked_points().push_back`） | 不写回 | 不写回（不变） |
 
@@ -270,6 +273,66 @@ C 先行时遗留的冗余写回是 identity 自赋值，无害。
      禁用并标注所属 Phase。
 - 验收：`script/run-gradle-targeted-tests.sh --tests <新测试类>` 通过；禁用清单与 §2
   矩阵逐行对应；探针 transcript 存 `tmp/probes/` 备查。
+
+#### Phase A 状态（2026-09-24 完成）
+
+**已完成并验收。** 产物清单：
+
+- 探针与 golden 锁定：
+  - `tmp/probes/packed_ref_semantics/project/packed_ref_semantics_phase_a.gd`（新增，
+    §2 第 18–24 行探针源码）与 `tmp/probes/packed_ref_semantics/results_phase_a.txt`
+    （Godot 4.5.2 实测 transcript）。
+  - `src/test/resources/packed_ref_semantics/packed_ref_probes.gd`（双跑共享探针库，
+    覆盖 §2 全部 24 行 + 动态 Variant receiver 用例，共 25 个主库用例 + 2 个伴随库
+    用例）。
+  - `src/test/resources/packed_ref_semantics/packed_ref_probes_blocked.gd`（编译受阻
+    伴随库，见下）。
+  - `src/test/resources/packed_ref_semantics/packed_ref_semantics_golden.txt`（golden，
+    由解释器运行锁定；第 1–17 行数值与 `tmp/probes/.../results.txt` 完全一致）。
+- 双跑对照 harness（`src/test/java/gd/script/gdcc/backend/c/build/packedref/`，包
+  `gd.script.gdcc.backend.c.build.packedref`）：
+  `PackedRefSemanticsDualRunHarness`（双项目组装 + 双跑编排）、`ProbeOutput`（严格
+  `PROBE|<CASE>|<payload>` 解析）、`ProbeGoldenComparison`（payload 仅检查启用集、
+  结构检查无条件）、`PackedRefSemanticsCase`（用例注册表，含 §2 行号与启用 Phase）、
+  `PackedArrayReferenceSemanticsDualRunTest`（集成测试：解释器侧全量比对 golden，
+  gdcc 侧结构 + 启用集 payload 比对，逐用例 DynamicTest）。
+- 单元测试（同包）：`ProbeOutputTest`（正反锚定解析合同）、`ProbeGoldenComparisonTest`
+  （正反锚定比较语义，含禁用用例豁免）、`PackedRefSemanticsCaseRegistryTest`
+  （注册表与 golden 同步、§2 矩阵逐行覆盖、Phase 锚定、compile-blocked 不变式）。
+- 运行 transcript 存档：`tmp/test/packed_ref_semantics_dual_run/transcripts/`（每次
+  运行刷新）与 `tmp/probes/packed_ref_semantics/dual_run/`（快照备查）。
+
+**启用清单（Phase A 实测当前已通过，10 例）**：SCRIPT_PROPERTY(3)、TYPED_ARRAY_ELEMENT(5)、
+DICT_VALUE(6)、BUILTIN_PROPERTY_REASSIGN(7b)、PLUS_EQUALS_REBIND(8)、DUPLICATE(9)、
+PARAM_DEFAULT_SHARED(17)、ELEMENT_REBIND(18)、STRING_ITER_ELEMENTS(19)、IN_MEMBERSHIP(20)。
+
+**禁用清单（与 §2 矩阵逐行对应，括号内为归属 Phase）**：
+- Phase C（运行时分歧，现行值语义 struct 存储所致）：LOCAL_ALIAS(1)、PARAM_VISIBILITY(2)、
+  SIGNAL_ARG(10)、FOR_ITER(12)、APPEND_ARRAY_ALIAS(13)、RESIZE_ALIAS(14)、
+  INDEX_WRITE_ALIAS(15)、VARIANT_IDENTITY(16)、EQUALITY(21)、DICT_KEY_HASH(21-hash)、
+  AS_SAME_FAMILY(22)。
+- Phase D（§5 前端 route/gate 改造）：BUILTIN_PROPERTY_MUTATION(7a)、
+  DYNAMIC_VARIANT_MUTATION(dyn-variant)、STATIC_VAR(4)、LAMBDA_CAPTURE(11)。
+- Phase F（全量验收，计划 §8 锁定）：CORO_AWAIT(23)、SIGNAL_MULTI(24)。
+
+**Phase A 实测对原计划的两处事实修订**：
+
+1. **§2 第 22 行（`v as PackedInt32Array`）**：探针实测为 COW 拷贝（新身份），非保持
+   共享。§4.3.7 已修订。
+2. **§2 第 4、11 行（STATIC_VAR、LAMBDA_CAPTURE）在现行 gdcc 下为编译期 fail-closed**，
+   非运行时分歧：
+   - STATIC_VAR：`static_packed.push_back(7)` 的可写 route 以 STATIC_CONTEXT 为根、
+     静态属性 leaf 自身即终态，packed 属值语义写回 family，
+     `FrontendCfgGraphBuilder.appendCallReceiverCommitSteps` 静态分支仍追加 promotion
+     step，被 `FrontendCfgGraph.validateStaticWritableRouteTerminalContract` 拒绝。
+   - LAMBDA_CAPTURE：对 CAPTURE binding 的 mutating 调用在 direct-slot alias 发布处被
+     否决（`requireDirectSlotAliasRoot`，"before lambda/capture semantics are
+     implemented"）。
+   - 二者置于伴随库 `packed_ref_probes_blocked.gd` 单独编译；编译失败即记录为
+     compile-blocked（`GDCC_COMPILE_BLOCKED_CASE_NAMES`）；意外编译成功时集成测试经
+     `assertFalse(gdccBlockedModuleCompiled)` 硬性失败，提示将用例迁回主库。
+3. **SIGNAL_MULTI（§2-24）在现行 gdcc 下运行期崩溃**（`variant_get_indexed failed`，
+   编译后的信号回调索引读缺陷），无 PROBE 行产出；Phase F 解锁时需先行修复该缺陷。
 
 ### Phase B：C 运行时基础设施（仅新增，不改既有文件）
 
@@ -324,8 +387,9 @@ C 先行时遗留的冗余写回是 identity 自赋值，无害。
   别名、传参、返回、cast、pack/unpack、wrapper 中转）只允许
   `godot_new_Variant_with_Variant`；ptrcall 入向/出向与显式构造只允许调用白名单
   helper。grep 命中即违规。
-- 验收：Phase A 中归属本阶段的用例（1–6、7b、8–16、18–22）启用并通过；
-  append_array/duplicate/slice 参数与返回值专项测试通过；混合类型运算符
+- 验收：Phase A 中归属本阶段的用例（1–3、5–6、7b、8–10、12–16、18–22）启用并通过；
+  第 4、11 行（STATIC_VAR、LAMBDA_CAPTURE）为编译期 fail-closed，由 Phase D 解锁
+  （见 Phase A 状态修订 2）。append_array/duplicate/slice 参数与返回值专项测试通过；混合类型运算符
   （`int in PackedInt32Array`，标量 left 按值、packed right 取内部指针）载体测试通过；ptrcall 例外**运行测试**
   （断言身份不共享）通过；`script/run-gradle-targeted-tests.sh` 目标测试通过后执行
   `./gradlew test --no-daemon --console=plain` 全量回归通过。
@@ -342,8 +406,8 @@ C 先行时遗留的冗余写回是 identity 自赋值，无害。
   内建引擎 getter route 新增用例断言**不生成** `StorePropertyInsn`；
   `FrontendCfgGraphBuilder.appendCallReceiverCommitSteps` 的 STATIC_CONTEXT bare 属性
   分支按 §5 表保留冗余写回。
-- 验收：Phase A 中 7a 与动态 Variant receiver 用例启用并通过；目标测试通过后全量回归
-  通过。**遵守本节顶部硬顺序约束。**
+- 验收：Phase A 中 7a、动态 Variant receiver 用例、STATIC_VAR 与 LAMBDA_CAPTURE（编译期
+  fail-closed 解锁后）启用并通过；目标测试通过后全量回归通过。**遵守本节顶部硬顺序约束。**
 
 ### Phase E：文档重写
 
