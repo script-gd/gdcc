@@ -133,9 +133,9 @@ public final class CBuiltinBuilder {
         }
     }
 
-    /// Packed*Array construction never calls the native constructor wrappers directly
-    /// (packed_array_reference_semantics_plan.md §4.1 whitelist, §4.3.2): the target is a Variant
-    /// slot, so results are produced by the `gdcc_packed_ref.h` helpers instead.
+    /// Packed*Array construction never calls the native constructor wrappers directly: the
+    /// target is a Variant slot, so results are produced by the whitelisted `gdcc_packed_ref.h`
+    /// helpers instead.
     /// - `Packed*Array()` -> `new_empty` (whitelist (b); empty-array Variant, never nil)
     /// - `Packed*Array(other same family)` -> `new_copy` (whitelist (d); independent COW copy)
     /// - `Packed*Array(array)` -> `new_from_array` (whitelist (d); cross-type conversion)

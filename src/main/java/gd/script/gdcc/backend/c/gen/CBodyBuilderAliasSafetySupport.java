@@ -15,7 +15,7 @@ import java.util.Objects;
 /// - classification is phrased only in terms of the current sealed `ValueRef` / `TargetRef` surface,
 ///   so future additions have to update this file instead of silently falling through a builder-local default
 ///
-/// Variant-backed Packed*Array review (packed_array_reference_semantics_plan.md §4.1): the
+/// Variant-backed Packed*Array storage: the
 /// stable-carrier staging is kept — it stays correct under Variant holder semantics, and dropping
 /// it for one family would fork the conservative overwrite discipline struct slots still rely on.
 final class CBodyBuilderAliasSafetySupport {

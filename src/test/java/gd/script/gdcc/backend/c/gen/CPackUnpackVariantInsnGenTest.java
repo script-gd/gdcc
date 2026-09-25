@@ -40,8 +40,8 @@ public class CPackUnpackVariantInsnGenTest {
     @Test
     @DisplayName("pack_variant of Packed*Array is an identity-sharing Variant holder copy")
     void packPackedArraySharesIdentityThroughVariantHolderCopy() {
-        // packed_array_reference_semantics_plan.md §4.1: pack never crosses the struct boundary;
-        // the Variant copy shares the underlying array (§2 row 16 three-way sharing).
+        // pack never crosses the struct boundary; the Variant copy shares the underlying array
+        // (three-way sharing).
         var body = generatePackedBody(true);
         assertTrue(body.contains("$variant = godot_new_Variant_with_Variant(&$packed);"), body);
         assertFalse(body.contains("godot_new_Variant_with_PackedInt32Array"), body);
@@ -50,7 +50,7 @@ public class CPackUnpackVariantInsnGenTest {
     @Test
     @DisplayName("unpack_variant to Packed*Array emits exact-kind share / Array conversion / error branches")
     void unpackPackedArrayEmitsCheckedShareAndArrayConversion() {
-        // Plan §4.1 unpack contract: exact-kind payload shares identity; Array payload converts
+        // Unpack contract: exact-kind payload shares identity; Array payload converts
         // through whitelist (d) `new_from_array` (independent array, interpreter-anchored);
         // anything else is a runtime type error. No struct unpack helper may appear.
         var body = generatePackedBody(false);

@@ -559,9 +559,8 @@ class IndexStoreInsnGenTest {
     @Test
     @DisplayName("variant_set_indexed passes Packed*Array self storage directly without pack/writeback")
     void variantSetIndexedPackedInt32ArraySelfWritesBack() {
-        // Variant-backed packed storage (packed_array_reference_semantics_plan.md §4.3.5): the
-        // setter mutates the shared array in place through the storage Variant, so no self temp,
-        // no pack and no unpack-writeback may be emitted.
+        // Variant-backed packed storage: the setter mutates the shared array in place through
+        // the storage Variant, so no self temp, no pack and no unpack-writeback may be emitted.
         var body = generateBody(
                 new VariantSetIndexedInsn("self", "idx", "value"),
                 List.of(
@@ -580,7 +579,7 @@ class IndexStoreInsnGenTest {
     @Test
     @DisplayName("variant_set_indexed allows ref Packed*Array self (borrowed Variant* shared identity)")
     void variantSetIndexedRefPackedInt32ArraySelfFails() {
-        // The value-semantic ref-self ban is lifted (plan §4.3.5): a ref packed parameter is a
+        // The value-semantic ref-self ban is lifted: a ref packed parameter is a
         // borrowed Variant pointer whose shared array mutates in place, visible to the caller.
         var body = generateBody(
                 new VariantSetIndexedInsn("self_ref", "idx", "value"),

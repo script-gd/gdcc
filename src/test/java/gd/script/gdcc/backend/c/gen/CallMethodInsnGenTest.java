@@ -1277,9 +1277,9 @@ class CallMethodInsnGenTest {
     @Test
     @DisplayName("CALL_METHOD builtin packed receiver passes the Variant internal pointer")
     void callBuiltinPackedMethodPassesInternalPointerReceiver() {
-        // packed_array_reference_semantics_plan.md §4.3.3: builtin wrapper signatures stay native
-        // (`godot_PackedInt32Array *self`), so the Variant-backed receiver renders its internal
-        // pointer — in-place mutation on the shared array, never a detached copy.
+        // Builtin wrapper signatures stay native (`godot_PackedInt32Array *self`), so the
+        // Variant-backed receiver renders its internal pointer — in-place mutation on the
+        // shared array, never a detached copy.
         var clazz = newClass("Worker");
         var func = newFunction("call_packed_push_back");
         func.createAndAddVariable("numbers", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
@@ -1303,7 +1303,7 @@ class CallMethodInsnGenTest {
     @Test
     @DisplayName("CALL_METHOD builtin packed argument passes the Variant internal pointer")
     void callBuiltinPackedMethodPassesInternalPointerArgument() {
-        // Plan §4.3.4: packed ARGUMENTS of builtin methods (e.g. `append_array`) equally render
+        // Packed ARGUMENTS of builtin methods (e.g. `append_array`) equally render
         // the internal pointer, so appended content lands on the receiver's shared array.
         var clazz = newClass("Worker");
         var func = newFunction("call_packed_append_array");
@@ -1327,7 +1327,7 @@ class CallMethodInsnGenTest {
     @Test
     @DisplayName("CALL_METHOD packed builtin return wraps the raw struct through wrap_temp")
     void callBuiltinPackedReturnWrapsRawStructThroughWrapTemp() {
-        // Plan §4.3.4 + whitelist (c): `duplicate()` yields a fresh native struct that is wrapped
+        // Whitelist (c): `duplicate()` yields a fresh native struct that is wrapped
         // into the target Variant slot immediately — the result is an independent new array.
         var clazz = newClass("Worker");
         var func = newFunction("call_packed_duplicate");
@@ -1352,8 +1352,8 @@ class CallMethodInsnGenTest {
     @DisplayName("CALL_METHOD packed builtin with a default-filled scalar arg wraps the packed return")
     void callBuiltinPackedSliceWithDefaultArgWrapsReturn() {
         // `slice(begin, end = 2147483647)` combines every adaptation axis at once: internal-pointer
-        // receiver, caller-provided scalar arg, caller-side default materialization (plan §2-17
-        // unchanged), and a fresh packed result wrapped through whitelist (c).
+        // receiver, caller-provided scalar arg, caller-side default materialization (fresh array
+        // per call, unchanged), and a fresh packed result wrapped through whitelist (c).
         var clazz = newClass("Worker");
         var func = newFunction("call_packed_slice");
         func.createAndAddVariable("numbers", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
@@ -1395,7 +1395,7 @@ class CallMethodInsnGenTest {
 
         var body = generateBody(clazz, func, newApi(List.of(arrayBuiltinWithTypedarrayPackedByteArrayParam()), List.of()), List.of(clazz));
         // The builtin wrapper keeps the native packed param ABI; the Variant-backed argument
-        // passes its internal pointer (packed_array_reference_semantics_plan.md §4.3.4).
+        // passes its internal pointer.
         assertTrue(body.contains("godot_Array_accept_packed(&$array, gdcc_packed_byte_array_internal_ptr(&$bytes))"), body);
         assertFalse(body.contains("godot_new_PackedByteArray"), body);
     }
@@ -1437,7 +1437,7 @@ class CallMethodInsnGenTest {
 
         var body = generateBody(clazz, func, newApi(List.of(arrayBuiltinWithTypedarrayPackedVector3ArrayReturn()), List.of()), List.of(clazz));
         // Packed builtin return: raw struct temporary wrapped into the Variant slot through
-        // whitelist (c) wrap_temp (plan §4.3.4) — never a direct struct->Variant assignment.
+        // whitelist (c) wrap_temp — never a direct struct->Variant assignment.
         assertTrue(body.contains("godot_PackedVector3Array "), body);
         assertTrue(body.contains("= godot_Array_fetch_packed_vectors(&$array);"), body);
         assertTrue(body.contains("gdcc_packed_vector3_array_wrap_temp(&"), body);

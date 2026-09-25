@@ -130,7 +130,7 @@ public final class CGenHelper {
 
     /// C parameter type of a generated `gdcc_eval_*` helper.
     /// Object operands are internal fat pointers (by value); non-objects keep their usual ref shape.
-    /// Packed operands are the exception (plan §4.3.6): the helper keeps the native struct pointer
+    /// Packed operands are the exception: the helper keeps the native struct pointer
     /// shape the engine evaluator ABI expects, and the call site extracts the Variant-internal
     /// pointer via `gdcc_packed_<slug>_internal_ptr(...)`.
     public @NotNull String renderOperatorEvaluatorHelperTypeInC(@NotNull GdType type) {
@@ -388,10 +388,9 @@ public final class CGenHelper {
                                 renderContainerElementTypeInC(gdDictionaryType.getValueType()) + ")";
                     }
                 }
-                // Variant-backed reference semantics (packed_array_reference_semantics_plan.md §4.1):
-                // the canonical storage of every packed slot is a Variant whose internal
-                // `PackedArrayRef` is shared with all aliases; the raw struct only appears inside
-                // whitelisted `gdcc_packed_ref.h` boundary helpers.
+                // Variant-backed reference semantics: the canonical storage of every packed slot
+                // is a Variant whose internal `PackedArrayRef` is shared with all aliases; the
+                // raw struct only appears inside whitelisted `gdcc_packed_ref.h` boundary helpers.
                 case GdPackedArrayType _ -> "godot_Variant";
             };
             case GdObjectType gdObjectType -> renderObjectFatPtrStorageType(gdObjectType);
@@ -423,7 +422,7 @@ public final class CGenHelper {
                     }
                 }
                 // Packed parameters share identity with the caller through a Variant storage
-                // pointer (plan §4.3.1); no assign-through-pointer writeback is needed.
+                // pointer; no assign-through-pointer writeback is needed.
                 case GdPackedArrayType _ -> "godot_Variant*";
             };
             case GdObjectType gdObjectType -> renderObjectFatPtrParameterType(gdObjectType);
@@ -847,7 +846,7 @@ public final class CGenHelper {
     /// - object fat params first materialize a raw local, then pass `&argN_raw`
     /// - packed Variant params materialize a raw struct copy, then pass `&argN_packed`
     ///   (whitelist (a): the engine boundary receives a Vector-layer copy, so in-engine mutation
-    ///   never leaks back into the caller's shared array — the plan §1.3 exception shape)
+    ///   never leaks back into the caller's shared array — the documented ptrcall exception shape)
     /// - other value-shaped params pass `&arg`
     /// - storage-pointer params pass the helper argument directly
     /// - enum/bitfield params first point at a helper-local raw slot
@@ -1158,7 +1157,7 @@ public final class CGenHelper {
         return type instanceof GdPackedArrayType;
     }
 
-    /// Ptrcall packed arg (plan §1.3 exception 1, §4.3.11 inbound): materialize the raw struct
+    /// Ptrcall packed arg (identity-isolation exception, inbound): materialize the raw struct
     /// slot into a wrapper-local Variant via whitelist (a). The callee shares identity with this
     /// local only — mutation never leaks back across the ptrcall boundary.
     public @NotNull String renderPtrcallPackedArgDecl(@NotNull GdType paramType, int index) {
@@ -1180,7 +1179,7 @@ public final class CGenHelper {
         return "godot_Variant_destroy(&arg" + index + ");";
     }
 
-    /// Ptrcall packed return (plan §4.3.11 outbound): copy the callee's Variant result into the
+    /// Ptrcall packed return (outbound): copy the callee's Variant result into the
     /// raw struct return slot via whitelist (a), then release the callee's holder.
     public @NotNull String renderPtrcallPackedReturnWrite(@NotNull GdType returnType, @NotNull String resultName) {
         if (!(returnType instanceof GdPackedArrayType packedType)) {
@@ -1295,21 +1294,20 @@ public final class CGenHelper {
     }
 
     public @NotNull String renderUnpackFunctionName(@NotNull GdType type) {
-        if (type instanceof GdCompilerType) {
-            throw new IllegalArgumentException("compiler-only type leaked into Variant unpack: " + type.getTypeName());
-        }
-        if (type instanceof GdObjectType objectType) {
-            // Object unpack materializes a fat pointer that preserves the Variant's instance ID.
-            return renderObjectFatPtrStorageType(objectType) + "_from_variant";
-        } else if (type instanceof GdPackedArrayType) {
-            // Packed storage IS a Variant: unpack degenerates to an identity-sharing holder copy
-            // (plan §4.1). Callers that accept arbitrary runtime Variants must emit the exact-kind
-            // `gdcc_packed_ref_is` check first (InsnGenSupport.unpackVariantAssign does); the
-            // call_func wrapper gate and engine metadata already guarantee the kind on their paths.
-            return "godot_new_Variant_with_Variant";
-        } else {
-            return "godot_new_" + renderGdTypeName(type) + "_with_Variant";
-        }
+        return switch (type) {
+            case GdCompilerType _ ->
+                    throw new IllegalArgumentException("compiler-only type leaked into Variant unpack: " + type.getTypeName());
+            case GdObjectType objectType ->
+                    // Object unpack materializes a fat pointer that preserves the Variant's instance ID.
+                    renderObjectFatPtrStorageType(objectType) + "_from_variant";
+            case GdPackedArrayType _ ->
+                    // Packed storage IS a Variant: unpack degenerates to an identity-sharing holder
+                    // copy. Callers that accept arbitrary runtime Variants must emit the exact-kind
+                    // `gdcc_packed_ref_is` check first (InsnGenSupport.unpackVariantAssign does); the
+                    // call_func wrapper gate and engine metadata already guarantee the kind on their paths.
+                    "godot_new_Variant_with_Variant";
+            default -> "godot_new_" + renderGdTypeName(type) + "_with_Variant";
+        };
     }
 
     /// Render the inbound `call_func` runtime gate for one non-Variant wrapper argument.
@@ -1415,7 +1413,7 @@ public final class CGenHelper {
                 return renderObjectFatPtrStorageType(objectType) + "_to_variant";
             }
             // Packing a packed value is a Variant holder copy: the Variant shares the same
-            // underlying array identity (plan §4.1; satisfies §2 row 16 three-way sharing).
+            // underlying array identity (three-way sharing).
             case GdPackedArrayType _ -> {
                 return "godot_new_Variant_with_Variant";
             }
@@ -1453,7 +1451,7 @@ public final class CGenHelper {
             case GdVoidType _, GdNilType _ ->
                     throw new IllegalArgumentException("Type " + type.getTypeName() + " does not support copy assignment");
             // Packed*Array copy is a Variant holder copy: the destination shares the source's
-            // underlying array identity (plan §4.1 core invariant — never struct copy-construct).
+            // underlying array identity (core invariant — never struct copy-construct).
             case GdPackedArrayType _ -> "godot_new_Variant_with_Variant";
             default -> {
                 var symbolTypeName = renderGdTypeName(type);
@@ -1466,18 +1464,22 @@ public final class CGenHelper {
         if (!type.isDestroyable()) {
             throw new IllegalArgumentException("Type " + type.getTypeName() + " is not destroyable");
         }
-        if (type instanceof GdCompilerType compilerType) {
-            compilerType.validateCStorageContract();
-            return compilerType.getCDestroyHelperName();
-        }
-        if (type instanceof GdObjectType) {
-            return "godot_object_destroy";
-        } else if (type instanceof GdPackedArrayType) {
-            // Packed slots are Variant holders; destroying one releases this holder's share of the
-            // shared array (plan §4.3.9) instead of destroying a by-value struct.
-            return "godot_Variant_destroy";
-        } else {
-            return "godot_" + renderGdTypeName(type) + "_destroy";
+        switch (type) {
+            case GdCompilerType compilerType -> {
+                compilerType.validateCStorageContract();
+                return compilerType.getCDestroyHelperName();
+            }
+            case GdObjectType _ -> {
+                return "godot_object_destroy";
+            }
+            case GdPackedArrayType _ -> {
+                // Packed slots are Variant holders; destroying one releases this holder's share of the
+                // shared array instead of destroying a by-value struct.
+                return "godot_Variant_destroy";
+            }
+            default -> {
+                return "godot_" + renderGdTypeName(type) + "_destroy";
+            }
         }
     }
 

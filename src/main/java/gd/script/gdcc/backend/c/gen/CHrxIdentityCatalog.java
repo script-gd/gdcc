@@ -228,7 +228,7 @@ public final class CHrxIdentityCatalog {
     /// Lambda schema descriptor: canonical encoding of the capture layout + signature +
     /// abi version (never the body). Each field contributes its semantic type name AND its C
     /// storage type: the storage type alone no longer pins the representation — since the
-    /// Variant-backed packed storage switch (packed_array_reference_semantics_plan.md §4.1),
+    /// Variant-backed packed storage switch,
     /// every Packed*Array family AND plain Variant share the `godot_Variant` C spelling, so a
     /// capture/param/return swapped between packed families (or to/from Variant) would otherwise
     /// keep the same fingerprint and hot-reload would rebind an old holder into an implementation

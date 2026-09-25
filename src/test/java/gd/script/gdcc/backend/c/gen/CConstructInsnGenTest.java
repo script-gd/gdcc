@@ -413,7 +413,7 @@ class CConstructInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func);
-        // Whitelist (b) empty-array Variant construction (plan §4.3.2); the bare struct
+        // Whitelist (b) empty-array Variant construction; the bare struct
         // constructor must no longer appear in emitted business code.
         assertTrue(body.contains("$packed = gdcc_packed_int32_array_new_empty();"), body);
         assertFalse(body.contains("godot_new_PackedInt32Array()"), body);
@@ -422,9 +422,9 @@ class CConstructInsnGenTest {
     @Test
     @DisplayName("construct_builtin Packed*Array with same-family argument emits whitelisted new_copy")
     void constructPackedArrayWithSameFamilyArgEmitsNewCopy() {
-        // packed_array_reference_semantics_plan.md §4.1 whitelist (d): explicit same-family
-        // construction is an independent COW copy with a fresh identity (equivalent to
-        // `duplicate()`), emitted through gdcc_packed_ref.h — never the native copy constructor.
+        // Whitelist (d): explicit same-family construction is an independent COW copy with a
+        // fresh identity (equivalent to `duplicate()`), emitted through gdcc_packed_ref.h —
+        // never the native copy constructor.
         var clazz = newTestClass();
         var func = newFunction("construct_packed_copy");
         func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
@@ -444,7 +444,7 @@ class CConstructInsnGenTest {
     @DisplayName("construct_builtin Packed*Array with Array argument emits whitelisted new_from_array")
     void constructPackedArrayWithArrayArgEmitsNewFromArray() {
         // Whitelist (d) cross-type construction: `PackedInt32Array([1, 2])` converts the Array
-        // argument into a fresh packed array (plan §4.1(d)).
+        // argument into a fresh packed array.
         var clazz = newTestClass();
         var func = newFunction("construct_packed_from_array");
         func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
@@ -1628,8 +1628,8 @@ class CConstructInsnGenTest {
     private record PackedCtorCase(String label, String typeName, GdType type, String constructorCall) {
     }
 
-    /// Packed construction targets the Variant slot through the whitelisted empty-array helper
-    /// (packed_array_reference_semantics_plan.md §4.3.2), never a bare `godot_new_Packed*()`.
+    /// Packed construction targets the Variant slot through the whitelisted empty-array helper,
+    /// never a bare `godot_new_Packed*()`.
     private List<PackedCtorCase> packedCtorCases() {
         return List.of(
                 new PackedCtorCase("packed_byte", "PackedByteArray", GdPackedNumericArrayType.PACKED_BYTE_ARRAY, "gdcc_packed_byte_array_new_empty()"),

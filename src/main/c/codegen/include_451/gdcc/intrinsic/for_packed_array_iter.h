@@ -5,8 +5,8 @@
 #include <gdcc_likely.h>
 #include <gdcc_packed_ref.h>
 
-/// Per-family Packed*Array for-in iterator helpers (LIVE iteration,
-/// packed_array_reference_semantics_plan.md §4.3.8, §2 row 12).
+/// Per-family Packed*Array for-in iterator helpers (LIVE iteration: elements appended during
+/// iteration are visited by the current pass).
 ///
 /// Each Packed*Array has its own state struct and typed helpers so `get`/`copy`/`destroy`
 /// need no runtime kind switch. The state holds a Variant holder COPY of the source array

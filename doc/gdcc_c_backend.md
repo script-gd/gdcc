@@ -215,7 +215,7 @@ Usage and lifecycle rules:
   out. Ordinary GDScript<->GDExtension calls go through `call_func` (Variant ABI) and DO preserve identity; only
   ptrcall extension-to-extension paths are affected. Locked by runtime tests, see
   `PackedRefStorageModelSmokeTest.ptrcallBoundaryShouldIsolateCallerIdentityInBothDirections` and the detailed
-  rationale in `module_impl/backend/packed_array_reference_semantics_plan.md` (section 1.3), which links back here.
+   rationale in `module_impl/backend/packed_array_implementation.md`, which links back here.
 - Documented behavior change: mutating calls on builtin engine properties (e.g. `poly.polygon.push_back(x)`)
   are no longer written back, matching the interpreter (the getter returns a copy). Assignment routes on the same
   property (`poly.polygon = p`, `poly.polygon[0] = v`) still write back (read-modify-write persists).

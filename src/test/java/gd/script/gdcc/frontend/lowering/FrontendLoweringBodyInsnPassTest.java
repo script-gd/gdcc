@@ -4997,7 +4997,7 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
-    /// §2-7a: a mutating call on a builtin engine property must not write the packed carrier back
+    /// 7a: a mutating call on a builtin engine property must not write the packed carrier back
     /// — the getter returns a detached copy and the interpreter does not persist the mutation. The
     /// explicit reassignment store (7b) is a separate leaf write and must stay.
     @Test
@@ -5055,7 +5055,7 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
-    /// §2-7c counterpart of the 7a writeback removal: subscript assignment on the same builtin
+    /// Counterpart of the 7a writeback removal: subscript assignment on the same builtin
     /// engine property persists in the interpreter (read-modify-write), so the assignment route
     /// must keep the named-base writeback even though the mutating-call route drops it.
     @Test

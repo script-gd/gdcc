@@ -1,11 +1,12 @@
 class_name PackedCallFuncIdentity
 extends Node
 
-## Packed*Array 引用语义 call_func 边界锚点（packed_array_reference_semantics_plan.md
-## §2 第 2/16 行 + §4.3.12）：GDScript 解释器经普通方法调用（call_func Variant ABI）把
-## packed 数组交给编译类，callee 的 mutation 必须与调用方共享身份；反向（编译类持有数组、
-## 解释器后续观测）同样共享。ptrcall ABI 例外不在这条路径上（见
-## PackedRefStorageModelSmokeTest 的运行锚定）。
+## Packed*Array reference-semantics call_func boundary anchor: the GDScript interpreter hands
+## a packed array to the compiled class through an ordinary method call (call_func Variant
+## ABI), and callee mutations must share identity with the caller; the reverse direction
+## (the compiled class retains the array, the interpreter observes it later) shares identity
+## as well. The ptrcall ABI exception does not apply to this path (see the runtime anchoring
+## in PackedRefStorageModelSmokeTest).
 
 var retained: PackedInt32Array
 

@@ -988,8 +988,8 @@ class CConstructInsnGenEngineTest {
         }
 
         private String constructorCall() {
-            // Whitelist (b) empty-array Variant construction (packed_array_reference_semantics_plan.md
-            // §4.3.2): the label is `packed <slug> array`, the helper is `gdcc_packed_<slug>_array_new_empty()`.
+            // Whitelist (b) empty-array Variant construction: the label is `packed <slug> array`,
+            // the helper is `gdcc_packed_<slug>_array_new_empty()`.
             var slug = label.replace("packed ", "").replace(" array", "").replace(' ', '_');
             return "gdcc_packed_" + slug + "_array_new_empty()";
         }

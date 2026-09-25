@@ -17,14 +17,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Zig-gated tests for `gdcc/gdcc_packed_ref.h`, the runtime infrastructure of
-/// `packed_array_reference_semantics_plan.md` (Variant-backed Packed*Array storage, plan §4.1).
+/// Zig-gated tests for `gdcc/gdcc_packed_ref.h`, the runtime infrastructure of the
+/// Variant-backed Packed*Array storage model.
 ///
 /// Test shapes:
 /// - a compile-only probe proving the header is self-contained (no other gdcc header needed);
 /// - a happy-path runtime probe behind a fake Godot engine that models the engine identity
 ///   contract: Variant copy shares one heap array (holders counting), while every struct<->Variant
-///   crossing produces a NEW array identity (the basis of the ptrcall exception, plan §1.3).
+///   crossing produces a NEW array identity (the basis of the ptrcall exception).
 ///   This lets the probes assert exactly which whitelisted conversion each helper performs —
 ///   e.g. aliasing must go through `variant_new_copy` and never through the struct copy ctor;
 /// - two fail-fast probes (missing per-family getter at init, accessor used before init) that
@@ -621,7 +621,7 @@ class GdccPackedRefRuntimeSmokeTest {
                 godot_PackedInt32Array *wrapped_internal = gdcc_packed_int32_array_internal_ptr(&wrapped);
                 CHECK(probe_size_i32(wrapped_internal) == 1 && probe_get(wrapped_internal, 0) == 100, "wrapped content wrong");
             
-                // ---- new_copy (whitelist d same-type; `as` same-family shape, plan §4.3.7) ----
+                // ---- new_copy (whitelist d same-type; `as` same-family shape) ----
                 godot_Variant copied = gdcc_packed_int32_array_new_copy(&alias);
                 CHECK(g_ctor_calls[GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY][1] == 1,
                         "same-type copy must use the struct copy ctor on the internal pointer");
@@ -718,7 +718,7 @@ class GdccPackedRefRuntimeSmokeTest {
 
     /// NULL-result backstop: against an engine whose getter does return NULL (the fake models a
     /// nil-backed Variant this way), the accessor must fail-fast instead of propagating NULL.
-    /// A type-mismatched Variant remains caller-side UB and is deliberately NOT probed (plan §7.5).
+    /// A type-mismatched Variant remains caller-side UB and is deliberately NOT probed.
     private static final String NULL_INTERNAL_PROBE = """
             int main(void) {
                 CHECK(godot_initialize_interface(fake_get_proc_address) != 0, "interface init failed");

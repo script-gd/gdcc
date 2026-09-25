@@ -3,11 +3,11 @@ package gd.script.gdcc.backend.c.gen;
 import gd.script.gdcc.type.GdPackedArrayType;
 import org.jetbrains.annotations.NotNull;
 
-/// Central naming surface for the `gdcc_packed_ref.h` per-family helpers
-/// (packed_array_reference_semantics_plan.md §4.1): in the Variant-backed storage model every
-/// Packed*Array slot holds a `godot_Variant`, and the raw struct<->Variant boundary may only be
-/// crossed through the whitelisted named helpers below. Keeping the names here lets codegen
-/// reference the whitelist without re-deriving C identifier spellings at each call site.
+/// Central naming surface for the `gdcc_packed_ref.h` per-family helpers. In the Variant-backed
+/// storage model every Packed*Array slot holds a `godot_Variant`, and the raw struct<->Variant
+/// boundary may only be crossed through the whitelisted named helpers below. Keeping the names
+/// here lets codegen reference the whitelist without re-deriving C identifier spellings at each
+/// call site.
 ///
 /// Slugs intentionally match the `GDCC_PACKED_REF_DEFINE_FAMILY` instantiations (e.g.
 /// `PackedInt32Array` -> `int32_array` -> `gdcc_packed_int32_array_*`).
@@ -39,42 +39,42 @@ public final class PackedRefCNames {
         return "gdcc_packed_" + requireFamilySlug(type) + "_" + helperSuffix;
     }
 
-    /// Receiver/argument base for builtin method, index and operator calls (plan §4.3.3):
+    /// Receiver/argument base for builtin method, index and operator calls:
     /// `gdcc_packed_<slug>_internal_ptr(<variantAddrExpr>)` where the argument expression must
     /// already be the address of the Variant storage (`&$var` or a ref parameter pointer).
     public static @NotNull String internalPtrExpr(@NotNull GdPackedArrayType type, @NotNull String variantAddrExpr) {
         return helperName(type, "internal_ptr") + "(" + variantAddrExpr + ")";
     }
 
-    /// Whitelist (b): empty-array Variant construction for default initialization (plan §4.3.2).
+    /// Whitelist (b): empty-array Variant construction for default initialization.
     public static @NotNull String newEmptyExpr(@NotNull GdPackedArrayType type) {
         return helperName(type, "new_empty") + "()";
     }
 
     /// Whitelist (c): wrap a native struct temporary (builtin method/operator return) into a
-    /// fresh Variant, destroying the temporary (plan §4.3.4, §4.3.6).
+    /// fresh Variant, destroying the temporary.
     public static @NotNull String wrapTempExpr(@NotNull GdPackedArrayType type, @NotNull String tempAddrExpr) {
         return helperName(type, "wrap_temp") + "(" + tempAddrExpr + ")";
     }
 
-    /// Whitelist (a) inbound: ptrcall raw struct argument slot -> materialized Variant (plan §4.3.11).
+    /// Whitelist (a) inbound: ptrcall raw struct argument slot -> materialized Variant.
     public static @NotNull String variantFromStructExpr(@NotNull GdPackedArrayType type, @NotNull String structPtrExpr) {
         return helperName(type, "variant_from_struct") + "(" + structPtrExpr + ")";
     }
 
     /// Whitelist (a) outbound: Variant -> raw struct copy for ptrcall return slots / engine
-    /// ptrcall argument materialization (plan §4.3.11).
+    /// ptrcall argument materialization.
     public static @NotNull String structFromVariantExpr(@NotNull GdPackedArrayType type, @NotNull String variantAddrExpr) {
         return helperName(type, "struct_from_variant") + "(" + variantAddrExpr + ")";
     }
 
     /// Whitelist (d) same-family copy construction: explicit `Packed*Array(other)` and
-    /// same-family `as` casts produce an independent COW copy with a fresh identity (plan §4.3.7).
+    /// same-family `as` casts produce an independent COW copy with a fresh identity.
     public static @NotNull String newCopyExpr(@NotNull GdPackedArrayType type, @NotNull String variantAddrExpr) {
         return helperName(type, "new_copy") + "(" + variantAddrExpr + ")";
     }
 
-    /// Whitelist (d) cross-type construction from `godot_Array` (plan §4.1(d)).
+    /// Whitelist (d) cross-type construction from `godot_Array`.
     public static @NotNull String newFromArrayExpr(@NotNull GdPackedArrayType type, @NotNull String arrayAddrExpr) {
         return helperName(type, "new_from_array") + "(" + arrayAddrExpr + ")";
     }

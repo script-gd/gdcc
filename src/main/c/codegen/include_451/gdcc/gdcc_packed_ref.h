@@ -6,8 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/// Variant-backed Packed*Array storage infrastructure (packed_array_reference_semantics_plan.md
-/// design contract §4.1).
+/// Variant-backed Packed*Array storage infrastructure.
 ///
 /// In the reference-semantics model every Packed*Array slot (locals, parameters, fields, coroutine
 /// frames, wrappers) stores a `godot_Variant` whose internal `PackedArrayRef` is shared with all
@@ -17,18 +16,18 @@
 /// never calls the raw `godot_new_Packed*Array_with_*` / `godot_new_Variant_with_Packed*Array`
 /// symbols directly (enforced by grep):
 ///
-///   (a) ptrcall ABI boundary, both directions (plan §1.3 exception 1, §4.3.11):
+///   (a) ptrcall ABI boundary, both directions (the identity-isolation exception):
 ///       - `gdcc_packed_<slug>_variant_from_struct`  inbound materialization of a raw arg slot
 ///       - `gdcc_packed_<slug>_struct_from_variant`  outbound copy written to the return slot
 ///       Both directions copy at the engine `Vector` layer, so mutation across the ptrcall
 ///       boundary is intentionally NOT shared.
 ///   (b) `gdcc_packed_<slug>_new_empty`  default initialization to an empty array Variant;
-///       the temporary struct has no sharers at this point (plan §4.3.2). A nil Variant is never
+///       the temporary struct has no sharers at this point. A nil Variant is never
 ///       a valid packed value: it has no internal pointer and method calls on it fail.
 ///   (c) `gdcc_packed_<slug>_wrap_temp`  wraps a native struct temporary produced by a builtin
 ///       method/operator return (e.g. `duplicate`, `slice`, `+`) into a fresh Variant and
-///       destroys the temporary; the result is an independent new array (plan §4.3.4, §4.3.6).
-///   (d) construction with arguments (plan §4.1(d), §4.3.7):
+///       destroys the temporary; the result is an independent new array.
+///   (d) construction with arguments:
 ///       - `gdcc_packed_<slug>_new_copy`  same-family copy construct (`Packed*Array(other)` and
 ///         same-family `as` cast): produces an independent new array, never shares identity
 ///       - `gdcc_packed_<slug>_new_from_array`  cross-type construct from `godot_Array`
@@ -66,7 +65,7 @@ static inline void gdcc_packed_ref_destroy(godot_Variant *value) {
     godot_variant_destroy((GDExtensionVariantPtr)value);
 }
 
-/// Runtime family test used by `is`/cast lowering (plan §4.3.7): exact Variant kind match.
+/// Runtime family test used by `is`/cast lowering: exact Variant kind match.
 static inline godot_bool gdcc_packed_ref_is(const godot_Variant *value, GDExtensionVariantType expected_kind) {
     return value != NULL && godot_variant_get_type(value) == expected_kind;
 }
@@ -78,9 +77,9 @@ static inline godot_bool gdcc_packed_ref_is(const godot_Variant *value, GDExtens
 static GDExtensionVariantGetInternalPtrFunc gdcc_packed_##Slug##_getter = NULL; \
 \
 /* Internal value pointer of the family Variant, used as the base for builtin method / index / \
- * operator calls (plan §4.3.3). The engine getter is exposed only in a non-const signature but \
+ * operator calls. The engine getter is exposed only in a non-const signature but \
  * does not mutate the Variant, so the const cast is safe. The caller must guarantee the Variant \
- * actually holds this family (`gdcc_packed_ref_is`); a mismatch is engine-level UB (plan §7.5) \
+ * actually holds this family (`gdcc_packed_ref_is`); a mismatch is engine-level UB \
  * and is NOT reliably detectable here — the NULL result check below is only a backstop for an \
  * engine that does return NULL, not a type-mismatch guard. \
  * NOTE: keep macro-body comments as block comments — `//` would swallow the rest of the macro. */ \

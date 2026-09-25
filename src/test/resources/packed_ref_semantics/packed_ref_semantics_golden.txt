@@ -1,20 +1,21 @@
-# Packed*Array 引用语义双跑对照 golden
+# Dual-run comparison golden for Packed*Array reference semantics
 #
-# 本文件由 Godot Engine v4.5.2.stable.official.6ce3de25a 解释器运行
-# `packed_ref_probes.gd`（经解释器侧 driver）锁定，是
-# packed_array_reference_semantics_plan.md §2 语义矩阵 24 行 + 动态 Variant
-# receiver 用例 + Phase F 混合场景与 4 个补充用例（复杂控制流 / 返回值身份 /
-# 引擎方法边界 / PackedStringArray 专项）的可执行 golden。行顺序与
-# PackedRefProbes.run_all 的执行顺序一致；本文件承载 payload 事实，§2 矩阵
-# 用例清单（名称与顺序）由 PackedRefSemanticsGoldenInventoryTest 锚定。
+# This file is locked by a Godot Engine v4.5.2.stable.official.6ce3de25a interpreter run of
+# `packed_ref_probes.gd` (via the interpreter-side driver). It is the executable golden for
+# the 24-row semantics matrix plus the dynamic Variant receiver case, the mixed scenario,
+# and 4 supplementary cases (complex control flow / return-value identity / engine method
+# boundary / PackedStringArray specifics). Line order mirrors the PackedRefProbes.run_all
+# execution order; this file owns payload facts, while the case inventory (names and order)
+# is anchored by PackedRefSemanticsGoldenInventoryTest.
 #
-# 解析规则（ProbeOutput）：仅 `PROBE|<CASE>|<payload>` 三段式行有效；注释与空行
-# 仅允许出现在 golden 资源中，运行时输出里的非 PROBE 行视为引擎噪声忽略。
+# Parsing rules (ProbeOutput): only `PROBE|<CASE>|<payload>` three-segment lines are valid;
+# comments and blank lines may appear in the golden resource only — non-PROBE lines in
+# runtime output are treated as engine noise and ignored.
 #
-# 锁定记录：tmp/probes/packed_ref_semantics/results.txt（第 1–17 行）与
-# tmp/probes/packed_ref_semantics/results_phase_a.txt（第 18–24 行及动态 Variant
-# receiver 用例）。第 22 行（AS_SAME_FAMILY）实测为 COW 拷贝语义，修正了计划
-# 原始的"保持共享"预期。
+# Locking record: tmp/probes/packed_ref_semantics/results.txt (rows 1-17) and
+# tmp/probes/packed_ref_semantics/results_phase_a.txt (rows 18-24 and the dynamic Variant
+# receiver case). Row 22 (AS_SAME_FAMILY) was measured to be COW-copy semantics, revising
+# the original "preserve sharing" expectation.
 
 PROBE|LOCAL_ALIAS|int=2,2;string=2,2
 PROBE|PARAM_VISIBILITY|int=2;string=2
@@ -42,15 +43,17 @@ PROBE|AS_SAME_FAMILY|3,1,3,2
 PROBE|CORO_AWAIT|before=2,1;during=3,2;after=4,3
 PROBE|SIGNAL_MULTI|2,5,2
 PROBE|DYNAMIC_VARIANT_MUTATION|2,2
-# STATIC_VAR 与 LAMBDA_CAPTURE 已随前端 route 改造（解锁静态 bare 属性 route 与 CAPTURE
-# alias 的编译期 fail-closed）迁回主探针库，按序追加在主库输出末尾。
+# STATIC_VAR and LAMBDA_CAPTURE live in the main probe library (unblocked by the frontend
+# route work that lifted the compile-time fail-closed gates on the static bare-property
+# route and CAPTURE alias) and are appended in order at the end of the main library output.
 PROBE|STATIC_VAR|2
 PROBE|LAMBDA_CAPTURE|2
-# MIXED_COMBINATION：Phase F 混合场景（属性 + 信号 + lambda + 协程 await + for 活迭代），
-# 由解释器运行锁定。
+# MIXED_COMBINATION: mixed scenario (property + signal + lambda + coroutine await + for
+# live iteration), locked by an interpreter run.
 PROBE|MIXED_COMBINATION|sum=12;visits=3;property=4;local=2
-# Phase F 补充用例（复杂控制流分支 mutation / 返回值身份 / 引擎方法 packed 参数与返回 /
-# PackedStringArray 专项），均由解释器运行锁定。
+# Supplementary cases (complex control-flow branch mutation / return-value identity /
+# engine method packed argument and return / PackedStringArray specifics), all locked by
+# interpreter runs.
 PROBE|CONTROL_FLOW_BRANCHES|[1, 2, 3, 20, 30, 60];6,1
 PROBE|RETURN_VALUE_SHARING|built=3;src=3,8;branch=4;fresh=2;lambda=2,51;coro=4,4
 PROBE|ENGINE_METHOD_PACKED_ARG|a/b/c;4,4;[1, 2, 3, 9];[1, 2, 3]

@@ -96,7 +96,7 @@ public final class CallGlobalInsnGen implements CInsnGen<CallGlobalInsn> {
 
         // Utility wrappers keep the native Packed*Array ABI (e.g. `godot_var_to_bytes` returns a
         // raw struct, `godot_compress` takes one); adapt packed positions to the Variant-backed
-        // storage (plan §4.3.3/§4.3.4). Vararg tails are Variant-only and never combine with packed.
+        // storage. Vararg tails are Variant-only and never combine with packed.
         var fixedParamTypes = new ArrayList<GdType>(fixedArgs.size());
         for (var i = 0; i < fixedArgs.size(); i++) {
             fixedParamTypes.add(signature.parameters().get(i).type());

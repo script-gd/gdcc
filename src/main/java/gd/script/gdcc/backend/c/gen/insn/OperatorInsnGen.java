@@ -244,7 +244,7 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         var helperFunctionName = resolver.renderUnaryEvaluatorHelperName(op, operandVar.type(), semanticResultType);
         // Evaluator helpers keep the native packed ABI (`const godot_Packed*Array*` operand /
         // raw struct result); packed positions adapt through the internal pointer / wrap_temp
-        // boundary instead of the generic storage rendering (plan §4.3.6).
+        // boundary instead of the generic storage rendering.
         var unaryParamTypes = List.of(operandVar.type());
         if (PackedNativeAbiCallSupport.requiresPackedAdaptation(semanticResultType, unaryParamTypes)) {
             PackedNativeAbiCallSupport.emitCall(

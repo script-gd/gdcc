@@ -51,8 +51,8 @@ public final class ExplicitCastSupport {
 
         if (sameStaticType(source, target)) {
             // Packed*Array same-family `as` is NOT an identity op: the Godot interpreter produces
-            // a COW copy with a fresh identity (packed_array_reference_semantics_plan.md §2-22,
-            // §4.3.7; probe-locked on 4.5.2 for both static and Variant sources). Route it through
+            // a COW copy with a fresh identity (probe-locked on Godot 4.5.2 for both static and
+            // Variant sources). Route it through
             // the runtime-cast surface so the backend emits the whitelisted copy.
             if (source instanceof GdPackedArrayType) {
                 return ExplicitCastDecision.BUILTIN_RUNTIME_CAST;

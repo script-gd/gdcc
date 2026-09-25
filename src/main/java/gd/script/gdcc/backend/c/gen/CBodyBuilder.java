@@ -1175,7 +1175,7 @@ public final class CBodyBuilder {
                 case GdDictionaryType _ -> "godot_new_Dictionary()";
                 // Packed default initialization must produce an empty-array Variant, never a bare
                 // struct or a nil Variant (nil has no internal pointer; method calls would fail) —
-                // whitelist (b), plan §4.3.2.
+                // whitelist (b).
                 case GdPackedArrayType packedArrayType -> PackedRefCNames.newEmptyExpr(packedArrayType);
             };
             default -> "godot_new_" + type.getTypeName() + "()";

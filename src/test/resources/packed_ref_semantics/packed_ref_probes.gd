@@ -1,23 +1,27 @@
 class_name PackedRefProbes
 extends RefCounted
 
-## Packed*Array 引用语义双跑对照探针库（gdcc 编译侧与解释器侧共用同一源文件）。
+## Dual-run comparison probe library for Packed*Array reference semantics (the gdcc-compiled
+## side and the interpreter side share this same source file).
 ##
-## 每个 probe_* 方法对应 packed_array_reference_semantics_plan.md §2 语义矩阵的一行
-## （或一行的子场景），打印一行 `PROBE|<CASE>|<payload>`；golden 文件
-## `packed_ref_semantics_golden.txt` 由 Godot 4.5.2 解释器运行锁定。
+## Each probe_* method covers one row (or one sub-scenario) of the Packed*Array reference
+## semantics matrix and prints one `PROBE|<CASE>|<payload>` line; the golden file
+## `packed_ref_semantics_golden.txt` is locked by a Godot 4.5.2 interpreter run.
 ##
-## 探针方法必须是确定性的、按固定顺序经 run_all 执行；golden 文件的行序与 run_all
-## 执行顺序一一对应（golden 承载 payload 事实，§2 矩阵用例清单由
-## PackedRefSemanticsGoldenInventoryTest 锚定），新增场景时在 golden 文件中同步登记。
+## Probe methods must be deterministic and execute in a fixed order via run_all; the golden
+## line order mirrors the run_all execution order (the golden owns payload facts, while the
+## case inventory — names and order — is anchored by PackedRefSemanticsGoldenInventoryTest).
+## Register new scenarios in the golden file in sync.
 ##
-## 注意：供 gdcc 编译的源文件不要使用超出当前编译器能力面的语法；库内禁止
-## preload/class_name 自引用，保持编译单元自包含。
+## Note: this file is compiled by gdcc, so do not use syntax beyond the compiler's current
+## capability surface; no preload/class_name self-references inside the library — keep the
+## compilation unit self-contained.
 
 signal array_signal(value: PackedInt32Array)
 signal multi_signal(values: PackedInt32Array, tag: int, names: PackedStringArray)
 
-## CORO_AWAIT 的挂起期观测值由协程体写入，主探针恢复后读取（见 probe_coroutine_await）。
+## The suspended-period observations of CORO_AWAIT are written by the coroutine body and read
+## after the main probe resumes (see probe_coroutine_await).
 var coro_during := "unset"
 
 class PropertyHolder extends RefCounted:
@@ -29,11 +33,12 @@ class PropertyHolder extends RefCounted:
 	func size() -> int:
 		return payloads.size()
 
-## 全部探针的固定执行入口。CORO_AWAIT / MIXED_COMBINATION / RETURN_VALUE_SHARING
-## 为协程（内部 await），其余为同步方法；本方法是协程（内部 await），
-## 执行到末尾时自行调用 tree.quit()。driver 以 fire-and-forget 方式调用（不得 await）：
-## 解释器 await gdcc 编译的 void 协程会报 "Trying to get a return value of a method that
-## returns void"，因此 quit 责任在库内而不在 driver。
+## Fixed execution entry point for all probes. CORO_AWAIT / MIXED_COMBINATION /
+## RETURN_VALUE_SHARING are coroutines (they await internally); the rest are synchronous.
+## This method is itself a coroutine and calls tree.quit() itself at the end. The driver calls
+## it fire-and-forget (must not await): the interpreter reports "Trying to get a return value
+## of a method that returns void" when awaiting a gdcc-compiled void coroutine, so the quit
+## responsibility lives in the library, not in the driver.
 func run_all(tree: SceneTree) -> void:
 	probe_local_alias()
 	probe_parameter_visibility()
@@ -70,7 +75,7 @@ func run_all(tree: SceneTree) -> void:
 	probe_string_array_mutation()
 	tree.quit()
 
-## §2-1：局部别名共享。
+## Local alias sharing.
 func probe_local_alias() -> void:
 	var a := PackedInt32Array([1])
 	var b := a
@@ -80,7 +85,7 @@ func probe_local_alias() -> void:
 	strings.push_back("seven")
 	print("PROBE|LOCAL_ALIAS|int=%d,%d;string=%d,%d" % [a.size(), b.size(), strings.size(), strings_alias.size()])
 
-## §2-2：callee 对形参的 mutation 对调用方可见。
+## Callee mutations on a parameter are visible to the caller.
 func mutate_parameter(p: PackedInt32Array) -> void:
 	p.push_back(7)
 
@@ -94,7 +99,7 @@ func probe_parameter_visibility() -> void:
 	mutate_string_parameter(strings)
 	print("PROBE|PARAM_VISIBILITY|int=%d;string=%d" % [r.size(), strings.size()])
 
-## §2-3：脚本属性 mutation 持久（self 内部与外部访问两条路径）。
+## Script property mutation persists (both self-internal and external access paths).
 func probe_script_property() -> void:
 	var self_obj := PropertyHolder.new()
 	self_obj.mutate_self()
@@ -103,19 +108,19 @@ func probe_script_property() -> void:
 	outside_obj.payloads.push_back(7)
 	print("PROBE|SCRIPT_PROPERTY|self=%d;outside=%d" % [self_size, outside_obj.payloads.size()])
 
-## §2-5：typed Array 元素 mutation 持久。
+## Typed Array element mutation persists.
 func probe_typed_array_element() -> void:
 	var arr: Array[PackedInt32Array] = [PackedInt32Array([1])]
 	arr[0].push_back(7)
 	print("PROBE|TYPED_ARRAY_ELEMENT|%d" % arr[0].size())
 
-## §2-6：Dictionary 值中的 packed mutation 持久。
+## Packed mutation inside a Dictionary value persists.
 func probe_dictionary_value() -> void:
 	var d := {"k": PackedInt32Array([1])}
 	d["k"].push_back(7)
 	print("PROBE|DICT_VALUE|%d" % d["k"].size())
 
-## §2-7a：内建引擎属性 getter 返回副本——直接 mutation 不持久。
+## Builtin engine property getter returns a copy — direct mutation does not persist.
 func probe_builtin_property_mutation() -> void:
 	var poly := Polygon2D.new()
 	poly.polygon = PackedVector2Array([Vector2.ZERO])
@@ -124,7 +129,7 @@ func probe_builtin_property_mutation() -> void:
 	poly.free()
 	print("PROBE|BUILTIN_PROPERTY_MUTATION|without_reassign=%d" % size_without_reassign)
 
-## §2-7b：内建引擎属性显式重赋值持久。
+## Builtin engine property explicit reassignment persists.
 func probe_builtin_property_reassign() -> void:
 	var poly := Polygon2D.new()
 	poly.polygon = PackedVector2Array([Vector2.ZERO])
@@ -135,8 +140,9 @@ func probe_builtin_property_reassign() -> void:
 	poly.free()
 	print("PROBE|BUILTIN_PROPERTY_REASSIGN|with_reassign=%d" % size_with_reassign)
 
-## §2-7c：内建引擎属性的索引写持久（解释器 read-modify-write）——与 7a 方法调用
-## 不持久相对，是"写回移除仅限定 mutating-call route"修订的行为锚点。
+## Builtin engine property subscript write persists (interpreter read-modify-write) — in
+## contrast to the 7a method call not persisting; this anchors the "writeback removal is
+## limited to the mutating-call route" behavior.
 func probe_builtin_property_subscript_write() -> void:
 	var poly := Polygon2D.new()
 	poly.polygon = PackedVector2Array([Vector2.ZERO, Vector2(3, 3)])
@@ -145,21 +151,21 @@ func probe_builtin_property_subscript_write() -> void:
 	poly.free()
 	print("PROBE|BUILTIN_PROPERTY_SUBSCRIPT_WRITE|%s" % observed)
 
-## §2-8：`a += b` 产生新数组并重绑定，旧别名不可见。
+## `a += b` produces a new array and rebinds; old aliases do not observe it.
 func probe_plus_equals_rebind() -> void:
 	var a := PackedInt32Array([1])
 	var b := a
 	a += PackedInt32Array([2])
 	print("PROBE|PLUS_EQUALS_REBIND|%d,%d" % [a.size(), b.size()])
 
-## §2-9：`duplicate()` 产生独立副本。
+## `duplicate()` produces an independent copy.
 func probe_duplicate() -> void:
 	var a := PackedInt32Array([1])
 	var b := a.duplicate()
 	a.push_back(7)
 	print("PROBE|DUPLICATE|%d,%d" % [a.size(), b.size()])
 
-## §2-10：typed 信号参数 mutation 对发射方可见。
+## Typed signal argument mutation is visible to the emitter.
 func _on_array_signal(value: PackedInt32Array) -> void:
 	value.push_back(7)
 
@@ -170,7 +176,7 @@ func probe_signal_argument() -> void:
 	print("PROBE|SIGNAL_ARG|%d" % source.size())
 	array_signal.disconnect(_on_array_signal)
 
-## §2-12：`for-in` 活迭代——迭代期间追加的元素会被本轮访问。
+## `for-in` live iteration — elements appended during iteration are visited by the current pass.
 func probe_for_iteration() -> void:
 	var a := PackedInt32Array([1, 2, 3])
 	var total := 0
@@ -185,28 +191,28 @@ func probe_for_iteration() -> void:
 			pushed = true
 	print("PROBE|FOR_ITER|sum=%d;size=%d;mutation_visits=%d" % [total, a.size(), visited])
 
-## §2-13：`append_array` mutation 经别名共享。
+## `append_array` mutation is shared through aliases.
 func probe_append_array_alias() -> void:
 	var a := PackedInt32Array([1])
 	var b := a
 	a.append_array(PackedInt32Array([2, 3]))
 	print("PROBE|APPEND_ARRAY_ALIAS|%d,%d" % [a.size(), b.size()])
 
-## §2-14：`resize` mutation 经别名共享。
+## `resize` mutation is shared through aliases.
 func probe_resize_alias() -> void:
 	var a := PackedInt32Array([1, 2, 3])
 	var b := a
 	a.resize(1)
 	print("PROBE|RESIZE_ALIAS|%d,%d" % [a.size(), b.size()])
 
-## §2-15：索引写经别名共享。
+## Subscript writes are shared through aliases.
 func probe_index_write_alias() -> void:
 	var a := PackedInt32Array([1, 2])
 	var b := a
 	a[0] = 99
 	print("PROBE|INDEX_WRITE_ALIAS|%d,%d" % [a[0], b[0]])
 
-## §2-16：Variant 双向转换保持共享（a/v/b 三方共享）。
+## Variant round-trip conversion preserves sharing (three-way sharing of a/v/b).
 func probe_variant_identity() -> void:
 	var a := PackedInt32Array([1])
 	var v: Variant = a
@@ -215,7 +221,7 @@ func probe_variant_identity() -> void:
 	v.push_back(8)
 	print("PROBE|VARIANT_IDENTITY|%d,%d,%d" % [a.size(), b.size(), v.size()])
 
-## §2-17：参数默认值每次调用物化新数组。
+## Parameter default values materialize a fresh array per call.
 func parameter_default(p: PackedInt32Array = PackedInt32Array([1])) -> int:
 	p.push_back(7)
 	return p.size()
@@ -225,14 +231,16 @@ func probe_parameter_default() -> void:
 	var second := parameter_default()
 	print("PROBE|PARAM_DEFAULT_SHARED|%d,%d" % [first, second])
 
-## §2-18：元素槽重绑定——`arr[0] = 新数组` 后先前取出的 e 仍指向旧数组。
+## Element slot rebinding — after `arr[0] = <new array>`, a previously extracted e still
+## points at the old array.
 func probe_element_rebind() -> void:
 	var arr: Array[PackedInt32Array] = [PackedInt32Array([1, 2])]
 	var e := arr[0]
 	arr[0] = PackedInt32Array([9])
 	print("PROBE|ELEMENT_REBIND|e=%d,%d;slot=%d,%d" % [e.size(), e[0], arr[0].size(), arr[0][0]])
 
-## §2-19：PackedStringArray 迭代元素为 String 副本——改循环变量不影响数组。
+## PackedStringArray iteration elements are String copies — mutating the loop variable does
+## not affect the array.
 func probe_string_iter_elements() -> void:
 	var a := PackedStringArray(["one", "two"])
 	var joined := ""
@@ -241,7 +249,7 @@ func probe_string_iter_elements() -> void:
 		joined += s
 	print("PROBE|STRING_ITER_ELEMENTS|%s;%s" % [joined, ",".join(a)])
 
-## §2-20：`in` 成员测试按内容匹配。
+## `in` membership test matches by content.
 func probe_in_membership() -> void:
 	var a := PackedInt32Array([1, 2, 3])
 	var int_hit := 2 in a
@@ -251,7 +259,8 @@ func probe_in_membership() -> void:
 	var str_miss := "three" in s
 	print("PROBE|IN_MEMBERSHIP|%d,%d,%d,%d" % [int(int_hit), int(int_miss), int(str_hit), int(str_miss)])
 
-## §2-21：`==`/`!=` 内容相等（别名、mutation 后别名、同内容异身份、不等四个子场景）。
+## `==`/`!=` compare by content (four sub-scenarios: alias, alias after mutation, same content
+## different identity, unequal).
 func probe_equality() -> void:
 	var a := PackedInt32Array([1, 2])
 	var b := a
@@ -263,8 +272,8 @@ func probe_equality() -> void:
 	var neq_different := a != same_content
 	print("PROBE|EQUALITY|%d,%d,%d,%d" % [int(eq_alias), int(eq_alias_after_mutation), int(eq_same_content), int(neq_different)])
 
-## §2-21 补充：Dictionary 键按内容哈希；键插入后经共享别名 mutation 使旧条目
-## 查找失败，以 mutation 后的键再插入产生第二个条目。
+## Dictionary keys hash by content: mutating an inserted key through a shared alias makes the
+## old entry lookup fail, and re-inserting the mutated key creates a second entry.
 func probe_dict_key_hash() -> void:
 	var k := PackedInt32Array([1, 2])
 	var d := {k: "v"}
@@ -279,10 +288,10 @@ func probe_dict_key_hash() -> void:
 		str(lookup_same_content), str(lookup_mutated_key), str(lookup_mutated_fresh), after_mutation_size, d.size()
 	])
 
-## §2-22：同 family `as` 产生 COW 拷贝（新身份）而非共享——探针实测锁定，
-## 修正计划 §2 第 22 行原始预期。a.push_back(7) 后 a=2、b=1、v=2。
-## 补充探针：静态同型 `as`（c）同样是 COW 拷贝——第二次 push 后
-## a=3、v=3（共享）、b=1、c=2（两个 `as` 结果各自独立）。
+## Same-family `as` produces a COW copy (fresh identity), NOT sharing — locked by interpreter
+## probing. After a.push_back(7): a=2, b=1, v=2.
+## Additional probe: a static same-type `as` (c) is likewise a COW copy — after the second
+## push: a=3, v=3 (shared), b=1, c=2 (the two `as` results are independent).
 func probe_as_same_family() -> void:
 	var a := PackedInt32Array([1])
 	var v: Variant = a
@@ -292,8 +301,10 @@ func probe_as_same_family() -> void:
 	a.push_back(8)
 	print("PROBE|AS_SAME_FAMILY|%d,%d,%d,%d" % [a.size(), b.size(), v.size(), c.size()])
 
-## §2-23：协程形参/捕获在 await 挂起前后双向可见。恢复顺序依赖 process_frame
-## 按连接先后分发：协程体先恢复（记录 during 并 push 4/44），主探针后恢复打印。
+## Coroutine parameter/capture mutations are visible in both directions across await
+## suspension. The resume order relies on process_frame dispatching in connection order: the
+## coroutine body resumes first (records during and pushes 4/44), the main probe resumes
+## afterwards and prints.
 func _coro_mutator(param: PackedInt32Array, captured: PackedInt32Array, tree: SceneTree) -> void:
 	param.push_back(2)
 	await tree.process_frame
@@ -312,7 +323,7 @@ func probe_coroutine_await(tree: SceneTree) -> void:
 	await tree.process_frame
 	print("PROBE|CORO_AWAIT|before=%s;during=%s;after=%d,%d" % [before, coro_during, param.size(), captured.size()])
 
-## §2-24：多参数 typed 信号携带 packed，回调 mutation 对发射方可见。
+## Multi-argument typed signal carrying packed: callback mutation is visible to the emitter.
 func _on_multi_signal(values: PackedInt32Array, tag: int, names: PackedStringArray) -> void:
 	values.push_back(tag)
 	names.push_back("seven")
@@ -325,17 +336,18 @@ func probe_signal_multi() -> void:
 	print("PROBE|SIGNAL_MULTI|%d,%d,%d" % [values.size(), values[1], names.size()])
 	multi_signal.disconnect(_on_multi_signal)
 
-## 计划 §5 动态 Variant receiver route 用例：Variant 变量上的动态
-## mutating 调用经共享身份对原变量可见。
+## Dynamic Variant receiver route case: a dynamic mutating call on a Variant variable is
+## visible to the original variable through the shared identity.
 func probe_dynamic_variant_receiver() -> void:
 	var a := PackedInt32Array([1])
 	var v: Variant = a
 	v.push_back(7)
 	print("PROBE|DYNAMIC_VARIANT_MUTATION|%d,%d" % [a.size(), v.size()])
 
-## §2-4：静态变量 mutation 持久（Variant 存储下静态 leaf 共享身份）。
-## 注意必须显式类型标注：`static var x := ...` 不做类型推导（metadata 落 Variant），
-## Variant 静态载体的 mutating 调用仍是 gdcc 既有 fail-closed 面，不属于本用例目标。
+## Static variable mutation persists (the static leaf shares identity under Variant storage).
+## Note the explicit type annotation is required: `static var x := ...` performs no type
+## inference (metadata falls back to Variant), and mutating calls on a Variant static carrier
+## remain a pre-existing gdcc fail-closed surface — not this case's target.
 static var static_packed: PackedInt32Array = PackedInt32Array([1])
 
 func mutate_static() -> void:
@@ -348,18 +360,22 @@ func probe_static_var() -> void:
 	mutate_static()
 	print("PROBE|STATIC_VAR|%d" % read_static_size())
 
-## §2-11：lambda 捕获后 mutation 双向可见（捕获槽 Variant 共享身份）。
+## Lambda capture mutations are visible in both directions (the capture slot is a Variant
+## sharing identity).
 func probe_lambda_capture() -> void:
 	var a := PackedInt32Array([1])
 	var callback := func() -> void: a.push_back(7)
 	callback.call()
 	print("PROBE|LAMBDA_CAPTURE|%d" % a.size())
 
-## 混合场景（计划 §6 Phase F 全量验收）：脚本属性 + lambda 捕获 + 信号 + 协程 await +
-## for 活迭代组合在同一条确定性链路中互相观测。流程：协程体先 push 2 后挂起；主探针对
-## 属性数组做 for 活迭代，迭代体发射信号使数组增长（新元素被本轮访问）；主探针 await
-## 后协程恢复（先恢复方），调用捕获 lambda 增长 local 并再 push 属性；主探针后恢复打印
-## 全部观测值。属性 / 捕获 / 信号参数 / 迭代源全部经共享身份互相可见。
+## Mixed scenario: script property + lambda capture + signal + coroutine await + for live
+## iteration combined in one deterministic chain observing each other. Flow: the coroutine body
+## pushes 2 then suspends; the main probe live-iterates the property array, and the iteration
+## body emits a signal that grows the array (the new element is visited by the current pass);
+## after the main probe awaits, the coroutine resumes first, calls the captured lambda to grow
+## local and pushes the property again; the main probe resumes last and prints all
+## observations. Property / capture / signal argument / iteration source are all visible to
+## each other through the shared identity.
 var mix_property := PackedInt32Array([1])
 var mix_lambda: Callable
 
@@ -390,9 +406,10 @@ func probe_mixed_combination(tree: SceneTree) -> void:
 	print("PROBE|MIXED_COMBINATION|sum=%d;visits=%d;property=%d;local=%d" % [
 		sum, visits, mix_property.size(), local.size()])
 
-## 复杂控制流（Phase F 补充）：if/elif/else 嵌套与 match（字面值 / 合并分支 / guard /
-## 通配 / 嵌套 match）的分支体内直接 mutation packed，分支选择与分支内 mutation 经
-## 共享身份对别名可见，最终内容取决于实际命中分支。
+## Complex control flow: nested if/elif/else and match (literal / combined branches / guard /
+## wildcard / nested match) with direct packed mutation inside branch bodies; branch selection
+## and in-branch mutation are visible to aliases through the shared identity, and the final
+## content depends on the actually hit branches.
 func probe_control_flow_branches() -> void:
 	var a := PackedInt32Array([1])
 	var alias := a
@@ -432,10 +449,12 @@ func probe_control_flow_branches() -> void:
 			a.push_back(60)
 	print("PROBE|CONTROL_FLOW_BRANCHES|%s;%d,%d" % [str(a), alias.size(), tag])
 
-## 返回值身份合同（Phase F 补充）：局部构建返回（无第二持有者，可用可 mutation）、
-## 参数 mutation 后返回（原数组与返回别名共享）、多分支返回（字段返回共享 / 新建返回
-## 独立）、lambda 捕获返回（捕获槽共享）、协程 await 后返回（恢复后 mutation 与返回
-## 别名、字段三方共享）。
+## Return-value identity contract: returning a locally built array (no second holder; usable
+## and mutable), returning after mutating a parameter (the original array and the returned
+## alias share), multi-branch returns (field returns share / freshly built returns are
+## independent), returning through a lambda capture (capture slot shares), and returning after
+## a coroutine await (post-resume mutations are visible on both the returned alias and the
+## field).
 var return_field := PackedInt32Array([100])
 
 func _ret_build_local() -> PackedInt32Array:
@@ -478,12 +497,13 @@ func probe_return_value_sharing(tree: SceneTree) -> void:
 		built.size(), src.size(), src[2], via_branch.size(), fresh.size(),
 		captured.size(), captured[1], via_coro.size(), return_field.size()])
 
-## 引擎方法边界（Phase F 补充）：builtin 方法返回 packed（String.split，wrap_temp 路径）
-## 后原位 mutation 经别名可见；builtin 方法接收 packed 参数（String.join，internal_ptr
-## 路径）读出别名上 mutation 后内容；实例引擎方法
-## StreamPeerBuffer.set_data_array/get_data_array 的 packed 参数与返回（引擎拷贝语义
-## 两侧一致：set 后本地 mutation 不回流进首次 get；get 返回独立新数组——mutation 后
-## 再次 get 仍为引擎内部状态）。
+## Engine method boundary: in-place mutation after a builtin method returns packed
+## (String.split, wrap_temp path) is visible through an alias; a builtin method receiving a
+## packed argument (String.join, internal_ptr path) reads the post-mutation content on the
+## alias; the instance engine methods StreamPeerBuffer.set_data_array/get_data_array take
+## packed arguments and return packed values (engine copy semantics on both sides: local
+## mutation after set does not flow back into the first get; get returns an independent new
+## array — a second get after mutation still yields the engine-internal state).
 func probe_engine_method_packed_arg() -> void:
 	var parts := "a,b".split(",")
 	var parts_alias := parts
@@ -499,9 +519,10 @@ func probe_engine_method_packed_arg() -> void:
 	print("PROBE|ENGINE_METHOD_PACKED_ARG|%s;%d,%d;%s;%s" % [
 		joined, bytes.size(), read_back.size(), str(read_back), str(reread)])
 
-## PackedStringArray 专项（Phase F 补充）：别名 push_back / 索引写 / insert / remove_at
-## 经共享身份可见；内容 ==/!=（身份不同内容相同、共享别名 mutation 后两子场景）；
-## sort/reverse 作用于共享身份后的内容确认。
+## PackedStringArray specifics: aliased push_back / subscript write / insert / remove_at are
+## visible through the shared identity; content ==/!= (two sub-scenarios: same content
+## different identity, and after shared-alias mutation); content confirmation after
+## sort/reverse applied through the shared identity.
 func probe_string_array_mutation() -> void:
 	var a := PackedStringArray(["one"])
 	var alias := a

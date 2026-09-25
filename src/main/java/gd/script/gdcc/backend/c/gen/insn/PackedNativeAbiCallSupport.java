@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.Objects;
 
 /// Shared emitter for calls whose callee keeps the NATIVE Packed*Array ABI while gdcc-internal
-/// storage is Variant-backed (packed_array_reference_semantics_plan.md §4.3.3/§4.3.4/§4.3.6).
+/// storage is Variant-backed.
 /// Applies to builtin-class method wrappers (e.g. `godot_PackedInt32Array_push_back`), builtin
 /// constructor wrappers with packed arguments (e.g. `godot_new_Array_with_PackedInt32Array`),
 /// generated operator evaluator helpers, and utility wrappers (e.g. `godot_var_to_bytes`).
@@ -112,7 +112,7 @@ public final class PackedNativeAbiCallSupport {
         if (paramType instanceof GdPackedArrayType packedParamType) {
             if (!(argValue.type() instanceof GdPackedArrayType)) {
                 // A Variant/other-typed argument would reach the internal-pointer getter with an
-                // unverified payload kind, which is engine-level UB (plan §7.5); the frontend must
+                // unverified payload kind, which is engine-level UB; the frontend must
                 // unpack/check first instead of routing through this emitter.
                 throw bodyBuilder.invalidInsn("Packed native-ABI call '" + calleeName + "' argument #" + (index + 1)
                         + " must be statically packed (got '" + argValue.type().getTypeName() + "')");

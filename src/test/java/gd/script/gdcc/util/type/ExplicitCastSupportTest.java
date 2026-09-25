@@ -257,8 +257,8 @@ class ExplicitCastSupportTest {
 
     @Test
     void sameFamilyPackedCastIsRuntimeCastNotIdentity() {
-        // packed_array_reference_semantics_plan.md §2-22/§4.3.7: same-family `as` produces a COW
-        // copy with a FRESH identity (interpreter-probed), so the classifier must route it to the
+        // Same-family `as` produces a COW copy with a FRESH identity (interpreter-probed), so
+        // the classifier must route it to the
         // runtime-cast surface (BuiltinCastInsnGen emits whitelisted `new_copy`) — never IDENTITY,
         // which would lower to a sharing AssignInsn.
         assertEquals(
@@ -277,7 +277,8 @@ class ExplicitCastSupportTest {
     }
 
     @Test
-    void arrayPackedFamilyBidirectional() {        assertEquals(
+    void arrayPackedFamilyBidirectional() {
+        assertEquals(
                 ExplicitCastDecision.BUILTIN_RUNTIME_CAST,
                 ExplicitCastSupport.classify(
                         registry,

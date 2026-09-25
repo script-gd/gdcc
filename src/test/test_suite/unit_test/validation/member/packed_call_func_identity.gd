@@ -1,7 +1,9 @@
 extends Node
 
-## 验证编译类经 call_func 边界保持 packed 数组身份共享（引用语义），任一方向的 mutation
-## 双方可见。若身份在 wrapper 处断裂（退回值语义），下列观测会全部分歧。
+## Validates that the compiled class preserves packed array identity sharing across the
+## call_func boundary (reference semantics): mutations in either direction are visible to
+## both sides. If identity broke at the wrapper (regressing to value semantics), every
+## observation below would diverge.
 
 func _ready() -> void:
     var target = get_parent().get_node_or_null("__UNIT_TEST_TARGET_NODE_NAME__")
@@ -9,28 +11,29 @@ func _ready() -> void:
         push_error("Target node missing.")
         return
 
-    # typed 形参：callee push_back 对解释器调用方可见（§2-2）。
+    # typed parameter: callee push_back is visible to the interpreter caller.
     var a := PackedInt32Array([1])
     var n: int = target.call("mutate_and_count", a)
     if n != 2 or a.size() != 2 or a[1] != 7:
         push_error("Typed-param mutation not visible to caller: n=%s a=%s" % [n, str(a)])
         return
 
-    # typed 形参 append_array：同边界共享（§2-13）。
+    # typed parameter append_array: shared across the same boundary.
     var extra := PackedInt32Array([8, 9])
     var m: int = target.call("append_and_count", a, extra)
     if m != 4 or a.size() != 4 or a[3] != 9:
         push_error("append_array mutation not visible to caller: m=%s a=%s" % [m, str(a)])
         return
 
-    # Variant 形参：packed payload 经 Variant 持有者拷贝共享身份（§2-16）。
+    # Variant parameter: the packed payload shares identity through a Variant holder copy.
     var v := PackedInt32Array([1])
     var k: int = target.call("mutate_variant", v)
     if k != 2 or v.size() != 2 or v[1] != 9:
         push_error("Variant-param mutation not visible to caller: k=%s v=%s" % [k, str(v)])
         return
 
-    # 反向共享：编译类字段持有数组后，解释器持有的别名仍能看到后续 mutation（身份保持）。
+    # Reverse sharing: after the compiled class retains the array in a field, the alias held
+    # by the interpreter still observes subsequent mutations (identity preserved).
     var b := PackedInt32Array([1])
     target.call("retain_and_touch", b)
     if b.size() != 2 or b[1] != 5:
@@ -41,8 +44,9 @@ func _ready() -> void:
         push_error("Later callee-side mutation not visible to caller alias: b=%s" % str(b))
         return
 
-    # 返回边界身份保持：callee 经 return 交出的 retained 字段与字段本身、调用方别名三方共享
-    # （§2-16 覆盖返回方向）；调用方 mutation 经字段观测可见，callee mutation 经返回别名可见。
+    # Return boundary identity: the retained field handed out via return is shared three-way
+    # with the field itself and the caller alias; caller mutations are observable through the
+    # field, and callee mutations are visible through the returned alias.
     var r: PackedInt32Array = target.call("produce_retained")
     r.push_back(11)
     if int(target.call("read_retained_size")) != 4 or b.size() != 4 or b[3] != 11:
@@ -56,8 +60,9 @@ func _ready() -> void:
         push_error("Callee-side mutation not visible to returned alias: r=%s" % str(r))
         return
 
-    # 新建返回值：callee 未持有第二持有者，调用方得到可用、可继续 mutation 的新数组
-    # （身份独立性无从观测，不作锚定；返回边界的身份合同由上方 retained 用例锚定）。
+    # Freshly built return value: the callee holds no second holder, so the caller receives a
+    # usable, further-mutable new array (identity independence is unobservable here and not
+    # anchored; the return-boundary identity contract is anchored by the retained case above).
     var p: PackedInt32Array = target.call("produce")
     p.push_back(3)
     if p.size() != 3:

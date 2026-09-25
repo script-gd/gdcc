@@ -1,10 +1,10 @@
 class_name PackedRefFullUsage
 extends Node
 
-## Packed*Array 引用语义的全用法组合锚点（packed_array_reference_semantics_plan.md
-## Phase F 验收）：函数调用 / while / for 活迭代 / if / match / 三元 / 实例字段 /
-## lambda 捕获 / 协程 await / 信号在同一条链路中共用 packed 共享身份，每个构造的
-## mutation 都必须按引用语义互相可见。
+## Full-usage combination anchor for Packed*Array reference semantics: function calls /
+## while / for live iteration / if / match / ternary / instance fields / lambda capture /
+## coroutine await / signals share one packed identity along a single chain, and every
+## construct's mutations must be visible to each other by reference semantics.
 
 signal grown(value: PackedInt32Array, tag: int)
 signal resume_now
@@ -29,7 +29,7 @@ func _on_grown(value: PackedInt32Array, tag: int) -> void:
     signal_hits += 1
     value.push_back(tag)
 
-## 函数调用 + while + 三元 + for 活迭代 + match + if：field [1] -> [1,2,7]，返回 1133。
+## Function calls + while + ternary + for live iteration + match + if: field [1] -> [1,2,7], returns 1133.
 func run_control_flow() -> int:
     _bump(field, 2)
     var sum := 0
@@ -52,7 +52,7 @@ func run_control_flow() -> int:
         sum += 300
     return sum * 10 + visits
 
-## lambda 捕获 + 信号参数：captured [5] -> lambda push 6 -> 信号回调 push 8，返回 381。
+## Lambda capture + signal argument: captured [5] -> lambda pushes 6 -> signal callback pushes 8, returns 381.
 func run_signal_lambda() -> int:
     var captured := PackedInt32Array([5])
     var cb := func() -> void: captured.push_back(6)
@@ -62,7 +62,8 @@ func run_signal_lambda() -> int:
     grown.disconnect(_on_grown)
     return captured.size() * 100 + captured[2] * 10 + signal_hits
 
-## 协程：挂起前 push 3（字段共享立即可见），resume_now 后 push 4 并置完成位。
+## Coroutine: pushes 3 before suspending (field sharing is immediately visible), then after
+## resume_now pushes 4 and sets the completion flag.
 func start_coroutine() -> void:
     _coro_body()
 

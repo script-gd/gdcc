@@ -395,8 +395,8 @@ class COperatorInsnGenTest {
     @Test
     @DisplayName("int in PackedInt32Array keeps scalar left by value and passes packed right internal pointer")
     void packedMixedInKeepsScalarByValueAndPassesPackedInternalPointer() {
-        // packed_array_reference_semantics_plan.md §4.3.6: per-operand ABI — the scalar left stays
-        // by-value while the packed right renders the Variant internal pointer.
+        // Per-operand ABI: the scalar left stays by-value while the packed right renders the
+        // Variant internal pointer.
         var body = generateBody(
                 packedInApi(),
                 new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
@@ -416,7 +416,7 @@ class COperatorInsnGenTest {
     @Test
     @DisplayName("Packed*Array == passes both operands as internal pointers (content equality)")
     void packedEqualityPassesInternalPointersForBothOperands() {
-        // §2 row 21: `==` is content equality evaluated by the engine on the shared arrays.
+        // `==` is content equality evaluated by the engine on the shared arrays.
         var body = generateBody(
                 packedCompareApi(),
                 new BinaryOpInsn("result", GodotOperator.EQUAL, "left", "right"),
@@ -436,7 +436,7 @@ class COperatorInsnGenTest {
     @Test
     @DisplayName("Packed*Array + receives a fresh raw struct and wraps it into the Variant slot")
     void packedAddReceivesRawStructAndWrapsThroughWrapTemp() {
-        // §4.3.6 + §2 row 8: `+` must produce a NEW array (rebind semantics for `+=`); in-place
+        // `+` must produce a NEW array (rebind semantics for `+=`); in-place
         // append on an internal pointer would leak the mutation to existing aliases. The evaluator
         // returns a native struct that the call site wraps via whitelist (c) `wrap_temp`.
         var body = generateBody(

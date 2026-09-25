@@ -83,8 +83,8 @@ public final class BuiltinCastInsnGen implements CInsnGen<BuiltinCastInsn> {
         }
 
         // Same-family packed `as` (reaching here because ExplicitCastSupport no longer classifies
-        // it as IDENTITY): the interpreter produces a COW copy with a FRESH identity (plan §2-22,
-        // §4.3.7; probe AS_SAME_FAMILY), never a share — emit whitelist (d) `new_copy` directly.
+        // it as IDENTITY): the interpreter produces a COW copy with a FRESH identity (probe
+        // AS_SAME_FAMILY), never a share — emit whitelist (d) `new_copy` directly.
         if (resolvedTarget instanceof GdPackedArrayType packedTarget
                 && valueVariable.type() instanceof GdPackedArrayType packedSource
                 && packedSource.getTypeName().equals(packedTarget.getTypeName())) {

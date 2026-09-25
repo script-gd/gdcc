@@ -1,7 +1,8 @@
 extends Node
 
-## 全用法组合的观测锚点：若 packed 在任何构造（函数调用 / 循环 / 分支 / lambda / 协程 /
-## 信号）中退回值语义，聚合结果会立刻分歧。
+## Observation anchor for the full-usage combination: if packed regressed to value semantics
+## in any construct (function calls / loops / branches / lambda / coroutine / signals), the
+## aggregated result would diverge immediately.
 
 func _ready() -> void:
     var target = get_parent().get_node_or_null("__UNIT_TEST_TARGET_NODE_NAME__")

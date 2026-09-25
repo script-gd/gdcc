@@ -303,9 +303,8 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         var returnTypeForDispatch = resolved.returnType();
 
         // Builtin-class wrapper calls keep the native Packed*Array ABI (receiver base, packed
-        // parameters, packed return); adapt those positions to the Variant-backed storage here
-        // (plan §4.3.3/§4.3.4). Engine/GDCC callees already take Variant storage pointers and need
-        // no adaptation.
+        // parameters, packed return); adapt those positions to the Variant-backed storage here.
+        // Engine/GDCC callees already take Variant storage pointers and need no adaptation.
         if (resolved.mode() == BackendMethodCallResolver.DispatchMode.BUILTIN) {
             var abiParamTypes = new ArrayList<GdType>(
                     fixedCount + (resolved.isStatic() ? 0 : 1));

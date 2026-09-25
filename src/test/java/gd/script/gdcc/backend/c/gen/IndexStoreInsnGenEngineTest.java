@@ -87,7 +87,7 @@ class IndexStoreInsnGenEngineTest {
         assertTrue(entrySource.contains("godot_new_Variant_with_Array($arr)"), entrySource);
         assertTrue(entrySource.contains("godot_new_Variant_with_Dictionary($dict)"), entrySource);
         // Packed pack/unpack are identity-sharing Variant holder copies, and the indexed store
-        // passes the packed storage Variant directly (no pack/unpack writeback, plan §4.3.5).
+        // passes the packed storage Variant directly (no pack/unpack writeback).
         // (`packed` is a ref parameter: an already-pointer `godot_Variant*`, hence no `&`.)
         // The unpack share branch materializes the holder copy into a carrier BEFORE destroying
         // the old slot value (carrier-first overwrite discipline).

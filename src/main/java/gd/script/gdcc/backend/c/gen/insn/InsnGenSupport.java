@@ -94,7 +94,7 @@ final class InsnGenSupport {
         bodyBuilder.callAssign(target, unpackFunctionName, targetType, List.of(variantValue));
     }
 
-    /// Variant -> packed unpack (packed_array_reference_semantics_plan.md §4.1, §2 row 16):
+    /// Variant -> packed unpack:
     /// - exact family payload: identity-sharing Variant holder copy (three-way sharing is the
     ///   contract — no struct detach at the boundary);
     /// - Array payload: cross-type conversion through whitelist (d) `new_from_array`, producing an

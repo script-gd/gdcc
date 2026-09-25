@@ -277,7 +277,7 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
         if (selfVar.type() instanceof GdVariantType) {
             return new SelfOperand(bodyBuilder.valueOfVar(selfVar), null, false);
         }
-        // Packed*Array storage IS a Variant (packed_array_reference_semantics_plan.md §4.3.5):
+        // Packed*Array storage IS a Variant:
         // pass the storage slot directly to the Variant indexed/named setter, which mutates the
         // shared array in place through the Variant's internal reference. No pack/call/unpack
         // writeback is emitted, and `ref` self (a borrowed Variant* parameter) is equally legal.
@@ -373,7 +373,7 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
 
     private boolean isIndexedValueSemanticSelfType(@NotNull GdType type) {
         // Packed*Array is intentionally absent: it left the value-semantic self family when its
-        // storage became Variant-backed (plan §4.3.5); `materializeSelfOperand` passes it directly.
+        // storage became Variant-backed; `materializeSelfOperand` passes it directly.
         return type instanceof GdStringType ||
                 type instanceof GdVectorType;
     }

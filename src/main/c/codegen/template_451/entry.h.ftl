@@ -775,7 +775,7 @@ static void ptrcall${helper.renderFuncBindName(bindingData)}(
     void* method_userdata, GDExtensionClassInstancePtr p_instance,
     const GDExtensionConstTypePtr* p_args, GDExtensionTypePtr r_return) {
     // Object args/returns use raw Godot pointer slots; self is owner fat for instance methods.
-    // Packed args arrive as raw struct slots (plan §1.3 ptrcall exception): each is materialized
+    // Packed args arrive as raw struct slots (the ptrcall identity-isolation exception): each is materialized
     // into a wrapper-local Variant via whitelist (a) and destroyed on the way out, so callee
     // mutation stays isolated from the caller's array across this boundary.
 <#-- The default flavor shares the same userdata layout as the call wrapper: ptrcall keeps the -->

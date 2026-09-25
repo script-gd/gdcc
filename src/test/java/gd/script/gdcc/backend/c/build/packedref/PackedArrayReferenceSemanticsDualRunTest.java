@@ -14,13 +14,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Dual-run golden comparison for the Packed*Array reference-semantics behavior contract
-/// (packed_array_reference_semantics_plan.md §2 matrix + §1.3 exceptions).
+/// (semantics matrix + documented ABI exceptions).
 ///
 /// The same `packed_ref_probes.gd` source runs once under the Godot interpreter and once
 /// compiled by gdcc; both sides must reproduce the committed golden file in full. Truth
 /// sources: the golden file owns case PAYLOADS and is always validated against the
 /// interpreter side first (it is the baseline the golden was locked with), while
-/// {@link PackedRefSemanticsGoldenInventoryTest} anchors the §2 matrix case inventory
+/// {@link PackedRefSemanticsGoldenInventoryTest} anchors the case inventory
 /// (names + order, Godot-independent) so coverage cannot silently shrink.
 ///
 /// Gating: skipped via JUnit assumptions when `GODOT_BIN` is missing; the gdcc side is
@@ -55,8 +55,8 @@ public class PackedArrayReferenceSemanticsDualRunTest {
     }
 
     /// The gdcc side must reproduce the same full golden: every case present, every payload
-    /// equal, no unknown cases, golden relative order. This is the executable form of the §2
-    /// behavior matrix plus the §1.3 documented exceptions.
+    /// equal, no unknown cases, golden relative order. This is the executable form of the
+    /// behavior matrix plus the documented ABI exceptions.
     @Test
     void gdccRunMatchesGolden() {
         Assumptions.assumeTrue(

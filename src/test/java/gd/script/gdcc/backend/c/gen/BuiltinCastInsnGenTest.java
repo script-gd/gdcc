@@ -38,9 +38,9 @@ class BuiltinCastInsnGenTest {
     @Test
     @DisplayName("same-family Packed*Array `as` emits whitelisted new_copy (COW copy, fresh identity)")
     void sameFamilyPackedCastEmitsNewCopy() {
-        // packed_array_reference_semantics_plan.md §4.3.7 / §2-22: `v as PackedInt32Array` must
-        // NOT share identity — the whitelisted same-family copy constructor produces an
-        // independent COW copy. The generic variant_construct path must not be used here.
+        // `v as PackedInt32Array` must NOT share identity — the whitelisted same-family copy
+        // constructor produces an independent COW copy. The generic variant_construct path must
+        // not be used here.
         var body = generate(
                 gd.script.gdcc.type.GdPackedNumericArrayType.PACKED_INT32_ARRAY,
                 "PackedInt32Array",

@@ -1948,9 +1948,9 @@ public class CCodegenTest {
 
     @Test
     public void generatesPackedWrapperVariantCallBoundaryAndPtrcallMaterialization() throws Exception {
-        // packed_array_reference_semantics_plan.md §4.3.11/§4.3.12: the call_func boundary keeps
-        // identity (gate + Variant holder copy), while the ptrcall boundary materializes/copies
-        // through the whitelisted helpers (mutation isolation is intentional there).
+        // The call_func boundary keeps identity (gate + Variant holder copy), while the
+        // ptrcall boundary materializes/copies through the whitelisted helpers (mutation
+        // isolation is intentional there).
         var workerClass = new LirClassDef("PackedWrapperWorker", "Node");
         var echo = new LirFunctionDef("echo");
         echo.setReturnType(GdPackedNumericArrayType.PACKED_INT32_ARRAY);
@@ -1988,7 +1988,7 @@ public class CCodegenTest {
                 "godot_Variant_destroy(&arg0);"
         );
 
-        // ptrcall wrapper (§1.3 exception): raw struct slot -> Variant materialization inbound,
+        // ptrcall wrapper (identity-isolation exception): raw struct slot -> Variant materialization inbound,
         // Variant -> raw struct copy outbound; both materialized values are wrapper-owned.
         var ptrcallBody = resolveFunctionBodyByPrefix(hCode, resolveOwnedWrapperPrefix(hCode, "static void ptrcall", bindName));
         assertContainsAll(
@@ -2010,8 +2010,9 @@ public class CCodegenTest {
                 "godot_Variant_destroy(&arg0);"
         );
 
-        // 生成代码禁令（plan §4.1 白名单约束）：业务发射产物中只允许白名单 helper 穿越
-        // struct<->Variant 边界；逐一扫描全部生成文件，命中即违规。
+        // Generated-code prohibition (the whitelist constraint): business emission artifacts may
+        // only cross the struct<->Variant boundary through whitelisted helpers; scan every
+        // generated file and treat any hit as a violation.
         var bannedPatterns = List.of(
                 "godot_new_Packed\\w*Array_with_\\w+\\(",
                 "godot_new_Variant_with_Packed\\w*Array\\(",
@@ -2030,8 +2031,8 @@ public class CCodegenTest {
 
     @Test
     public void generatesEngineMethodHelperPackedArgMaterializationAndReturnWrap() throws Exception {
-        // packed_array_reference_semantics_plan.md §4.3.4 outbound engine-method boundary:
-        // a packed ARGUMENT must be materialized into a helper-owned native struct slot
+        // Outbound engine-method boundary: a packed ARGUMENT must be materialized into a
+        // helper-owned native struct slot
         // (whitelist (a) struct_from_variant) before ptrcall and destroyed after — the
         // caller's internal pointer must never reach the engine args array, or the engine
         // would share/mutate the caller's array identity; a packed RETURN must arrive in a
@@ -3491,7 +3492,7 @@ public class CCodegenTest {
     }
 
     /// Variant-backed packed storage makes every packed family share the `godot_Variant` C
-    /// spelling (packed_array_reference_semantics_plan.md §4.1); the schema must still
+    /// spelling; the schema must still
     /// distinguish them (and Variant itself) via the semantic type name, or a hot reload would
     /// rebind a stale holder into a different family's internal-pointer getter (engine-level UB).
     @Test
