@@ -32,12 +32,11 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /// Orchestrates the Packed*Array reference-semantics dual-run comparison: the same probe
-/// source runs twice side by side per module — once under the Godot interpreter (the golden
-/// baseline) and once compiled by gdcc — and both outputs are normalized for comparison.
+/// source runs twice side by side — once under the Godot interpreter (the golden baseline) and
+/// once compiled by gdcc — and both outputs are normalized for comparison.
 ///
 /// - interpreter run: a standalone Godot project where the probe library stays plain GDScript
 ///   and a `SceneTree` driver `preload`s it (headless `-s` launches have no editor-generated
@@ -45,32 +44,20 @@ import java.util.concurrent.TimeUnit;
 /// - gdcc run: the identical library source is compiled by gdcc into a GDExtension library and
 ///   the same driver body instantiates the registered class instead.
 ///
-/// The probe surface is split into two modules because `STATIC_VAR` exercises a construct the
-/// current gdcc rejects at compile time (fail-closed static bare-property route, see the
-/// companion library header): the main module must always compile, while the blocked module
-/// is compiled best-effort — a failure records the case as compile-blocked, and an unexpected
-/// success is reported so the case can be migrated back into the main module.
-///
-/// Each side's outputs are concatenated in registry order (main module first, blocked module
-/// last) before parsing, so one golden file covers both. Raw transcripts of every run are
-/// written under `TRANSCRIPTS_DIR` for failure triage.
+/// Raw transcripts of every run are written under `TRANSCRIPTS_DIR` for failure triage.
 ///
 /// This harness is a new dual-project comparison facility; it deliberately does not reuse the
 /// scene-based `GodotGdextensionTestRunner` (which targets `main.tscn` node fixtures) or the
 /// gdscript-unit verifier scripts.
 public final class PackedRefSemanticsDualRunHarness {
-    /// Classpath directory holding the shared probe libraries and the golden file.
+    /// Classpath directory holding the shared probe library and the golden file.
     public static final @NotNull String RESOURCE_DIR = "/packed_ref_semantics";
     public static final @NotNull String PROBE_LIBRARY_RESOURCE = RESOURCE_DIR + "/packed_ref_probes.gd";
-    public static final @NotNull String BLOCKED_PROBE_LIBRARY_RESOURCE = RESOURCE_DIR + "/packed_ref_probes_blocked.gd";
     public static final @NotNull String GOLDEN_RESOURCE = RESOURCE_DIR + "/packed_ref_semantics_golden.txt";
 
     /// Fixed workspace for this harness (existing convention: deterministic, not cleaned up).
     public static final @NotNull Path WORK_DIR = Path.of("tmp/test/packed_ref_semantics_dual_run").toAbsolutePath();
     public static final @NotNull Path TRANSCRIPTS_DIR = WORK_DIR.resolve("transcripts");
-
-    /// Cases living in the compile-blocked companion module (subset of the disabled cases).
-    public static final @NotNull Set<String> GDCC_COMPILE_BLOCKED_CASE_NAMES = Set.of("STATIC_VAR", "LAMBDA_CAPTURE");
 
     private static final @NotNull String DRIVER_SCRIPT_NAME = "driver.gd";
     private static final @NotNull Duration PROCESS_TIMEOUT = Duration.ofSeconds(60);
@@ -80,45 +67,31 @@ public final class PackedRefSemanticsDualRunHarness {
             "PackedRefProbes",
             PROBE_LIBRARY_RESOURCE,
             "probes.run_all(self)",
-            "packed_ref_semantics.gdextension",
-            false
-    );
-    private static final @NotNull ProbeModuleSpec BLOCKED_MODULE = new ProbeModuleSpec(
-            "packed_ref_semantics_blocked",
-            "PackedRefProbesBlocked",
-            BLOCKED_PROBE_LIBRARY_RESOURCE,
-            "probes.run_all()",
-            "packed_ref_semantics_blocked.gdextension",
-            true
+            "packed_ref_semantics.gdextension"
     );
 
     private PackedRefSemanticsDualRunHarness() {
     }
 
     /// One probe module: gdcc module name, registered class name, library resource, the driver
-    /// body line invoking the probes, the `.gdextension` file name for the gdcc side, and
-    /// whether the driver calls `quit()` itself (main module: the library's coroutine
-    /// `run_all` quits the tree after its final probe because the interpreter cannot await a
-    /// compiled void coroutine; blocked module: fully synchronous, so the driver quits).
+    /// body line invoking the probes, and the `.gdextension` file name for the gdcc side. The
+    /// driver never calls `quit()` itself: the library's coroutine `run_all` quits the tree after
+    /// its final probe because the interpreter cannot await a compiled void coroutine.
     private record ProbeModuleSpec(
             @NotNull String moduleName,
             @NotNull String className,
             @NotNull String libraryResource,
             @NotNull String driverInvocation,
-            @NotNull String gdextensionFileName,
-            boolean driverQuitsAfter
+            @NotNull String gdextensionFileName
     ) {
     }
 
-    /// Outputs of one dual run. `gdccOutput`/`gdccStdout` are null when Zig was unavailable;
-    /// `gdccBlockedModuleCompiled` records whether the fail-closed companion module
-    /// unexpectedly compiled (tripwire signal for migrating its cases back into the main module).
+    /// Outputs of one dual run. `gdccOutput`/`gdccStdout` are null when Zig was unavailable.
     public record DualRunResult(
             @NotNull ProbeOutput interpreterOutput,
             @NotNull String interpreterStdout,
             @Nullable ProbeOutput gdccOutput,
-            @Nullable String gdccStdout,
-            boolean gdccBlockedModuleCompiled
+            @Nullable String gdccStdout
     ) {
     }
 
@@ -140,47 +113,24 @@ public final class PackedRefSemanticsDualRunHarness {
         var gdccStderr = new StringBuilder();
         var gdccStarted = false;
         try {
-            // Interpreter side: both modules always run (plain GDScript has no compile gate).
             var interpreterMain = runInterpreterModule(godotBinary, MAIN_MODULE);
             interpreterStdout.append(interpreterMain.stdout());
             interpreterStderr.append(interpreterMain.stderr());
-            var interpreterBlocked = runInterpreterModule(godotBinary, BLOCKED_MODULE);
-            interpreterStdout.append(interpreterBlocked.stdout());
-            interpreterStderr.append(interpreterBlocked.stderr());
             var interpreterOutput = ProbeOutput.parse(interpreterStdout.toString());
 
             ProbeOutput gdccOutput = null;
-            var blockedModuleCompiled = false;
             if (ZigUtil.findZig() != null) {
                 gdccStarted = true;
                 var gdccMain = runBuiltGdccModule(godotBinary, MAIN_MODULE, compileModuleChecked(MAIN_MODULE));
                 gdccStdout.append(gdccMain.stdout());
                 gdccStderr.append(gdccMain.stderr());
-
-                // The blocked module is only compile-blocked while its constructs stay
-                // fail-closed. Compile/lowering failures are recorded; a module that compiled
-                // and then fails at runtime is a real regression and its IOException propagates
-                // (the already-collected main-module transcript still lands via finally).
-                CBuildResult blockedBuild = null;
-                try {
-                    blockedBuild = compileModuleChecked(BLOCKED_MODULE);
-                } catch (IOException | IllegalArgumentException | IllegalStateException e) {
-                    gdccStderr.append("\n[gdcc harness] compile-blocked module skipped: ").append(e).append('\n');
-                }
-                if (blockedBuild != null) {
-                    var gdccBlocked = runBuiltGdccModule(godotBinary, BLOCKED_MODULE, blockedBuild);
-                    gdccStdout.append(gdccBlocked.stdout());
-                    gdccStderr.append(gdccBlocked.stderr());
-                    blockedModuleCompiled = true;
-                }
                 gdccOutput = ProbeOutput.parse(gdccStdout.toString());
             }
             return new DualRunResult(
                     interpreterOutput,
                     interpreterStdout.toString(),
                     gdccOutput,
-                    gdccStarted ? gdccStdout.toString() : null,
-                    blockedModuleCompiled
+                    gdccStarted ? gdccStdout.toString() : null
             );
         } finally {
             writeTranscriptsQuietly(
@@ -484,17 +434,11 @@ public final class PackedRefSemanticsDualRunHarness {
     /// Renders the shared `SceneTree` driver skeleton. Two lifetime/ownership contracts:
     /// `probes` is an instance variable because `_initialize` returns while the coroutine probe
     /// chain is still suspended, and releasing the probe object there would kill the pending
-    /// coroutine states with it; `quit()` ownership is per module — the main module's coroutine
-    /// `run_all` quits the tree itself (the interpreter cannot await a gdcc-compiled void
-    /// coroutine, so the driver must fire-and-forget), while the blocked module is fully
-    /// synchronous and the driver quits after it returns.
+    /// coroutine states with it; the driver never quits itself — the library's coroutine
+    /// `run_all` quits the tree (the interpreter cannot await a gdcc-compiled void coroutine, so
+    /// the driver must fire-and-forget).
     private static @NotNull String driverSource(@NotNull String acquisitionExpression, @NotNull ProbeModuleSpec spec) {
-        var body = new StringBuilder("extends SceneTree\n\nvar probes\n\nfunc _initialize() -> void:\n");
-        body.append('\t').append("probes = ").append(acquisitionExpression).append('\n');
-        body.append('\t').append(spec.driverInvocation()).append('\n');
-        if (spec.driverQuitsAfter()) {
-            body.append("\tquit()\n");
-        }
-        return body.toString();
+        return "extends SceneTree\n\nvar probes\n\nfunc _initialize() -> void:\n" + '\t' + "probes = " + acquisitionExpression + '\n' +
+                '\t' + spec.driverInvocation() + '\n';
     }
 }

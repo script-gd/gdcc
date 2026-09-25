@@ -23,6 +23,7 @@ import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdColorType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
@@ -30,6 +31,8 @@ import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
+import gd.script.gdcc.type.GdPackedStringArrayType;
+import gd.script.gdcc.type.GdPackedVectorArrayType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -154,7 +157,21 @@ class CallGlobalInsnGenEngineTest {
         assertTrue(combinedOutput.contains("helper string true check passed."), "String should require writeback.\nOutput:\n" + combinedOutput);
         assertTrue(combinedOutput.contains("helper vector2 true check passed."), "Vector2 should require writeback.\nOutput:\n" + combinedOutput);
         assertTrue(combinedOutput.contains("helper vector3i true check passed."), "Vector3i should require writeback.\nOutput:\n" + combinedOutput);
-        assertTrue(combinedOutput.contains("helper packed array true check passed."), "PackedInt32Array should require writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper vector4 true check passed."), "Vector4 should require writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper color true check passed."), "Color should require writeback.\nOutput:\n" + combinedOutput);
+        // All ten packed kinds share the engine-side array identity with their owner slot, so the
+        // runtime gate must skip the writeback for each of them (including PackedVector4Array,
+        // which historically leaked into the default-true branch).
+        assertTrue(combinedOutput.contains("helper packed byte false check passed."), "PackedByteArray should skip writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper packed int32 false check passed."), "PackedInt32Array should skip writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper packed int64 false check passed."), "PackedInt64Array should skip writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper packed float32 false check passed."), "PackedFloat32Array should skip writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper packed float64 false check passed."), "PackedFloat64Array should skip writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper packed string false check passed."), "PackedStringArray should skip writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper packed vector2 false check passed."), "PackedVector2Array should skip writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper packed vector3 false check passed."), "PackedVector3Array should skip writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper packed color false check passed."), "PackedColorArray should skip writeback.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("helper packed vector4 false check passed."), "PackedVector4Array should skip writeback.\nOutput:\n" + combinedOutput);
         assertTrue(combinedOutput.contains("helper array false check passed."), "Array should skip writeback.\nOutput:\n" + combinedOutput);
         assertTrue(combinedOutput.contains("helper dictionary false check passed."), "Dictionary should skip writeback.\nOutput:\n" + combinedOutput);
         assertTrue(combinedOutput.contains("helper object false check passed."), "Object should skip writeback.\nOutput:\n" + combinedOutput);
@@ -547,9 +564,59 @@ class CallGlobalInsnGenEngineTest {
         clazz.addFunction(newVariantWritebackProbeFunction("probe_string", GdStringType.STRING, selfType));
         clazz.addFunction(newVariantWritebackProbeFunction("probe_vector2", GdFloatVectorType.VECTOR2, selfType));
         clazz.addFunction(newVariantWritebackProbeFunction("probe_vector3i", GdIntVectorType.VECTOR3I, selfType));
+        // Vector4/Color anchor the retained value-semantic true group around the packed carve-out.
+        clazz.addFunction(newVariantWritebackProbeFunction("probe_vector4", GdFloatVectorType.VECTOR4, selfType));
+        clazz.addFunction(newVariantWritebackProbeFunction("probe_color", GdColorType.COLOR, selfType));
+        // All ten packed kinds must answer false individually; PACKED_VECTOR4_ARRAY in particular
+        // historically leaked into the default-true branch.
+        clazz.addFunction(newVariantWritebackProbeFunction(
+                "probe_packed_byte_array",
+                GdPackedNumericArrayType.PACKED_BYTE_ARRAY,
+                selfType
+        ));
         clazz.addFunction(newVariantWritebackProbeFunction(
                 "probe_packed_int32_array",
                 GdPackedNumericArrayType.PACKED_INT32_ARRAY,
+                selfType
+        ));
+        clazz.addFunction(newVariantWritebackProbeFunction(
+                "probe_packed_int64_array",
+                GdPackedNumericArrayType.PACKED_INT64_ARRAY,
+                selfType
+        ));
+        clazz.addFunction(newVariantWritebackProbeFunction(
+                "probe_packed_float32_array",
+                GdPackedNumericArrayType.PACKED_FLOAT32_ARRAY,
+                selfType
+        ));
+        clazz.addFunction(newVariantWritebackProbeFunction(
+                "probe_packed_float64_array",
+                GdPackedNumericArrayType.PACKED_FLOAT64_ARRAY,
+                selfType
+        ));
+        clazz.addFunction(newVariantWritebackProbeFunction(
+                "probe_packed_string_array",
+                GdPackedStringArrayType.PACKED_STRING_ARRAY,
+                selfType
+        ));
+        clazz.addFunction(newVariantWritebackProbeFunction(
+                "probe_packed_vector2_array",
+                GdPackedVectorArrayType.PACKED_VECTOR2_ARRAY,
+                selfType
+        ));
+        clazz.addFunction(newVariantWritebackProbeFunction(
+                "probe_packed_vector3_array",
+                GdPackedVectorArrayType.PACKED_VECTOR3_ARRAY,
+                selfType
+        ));
+        clazz.addFunction(newVariantWritebackProbeFunction(
+                "probe_packed_color_array",
+                GdPackedVectorArrayType.PACKED_COLOR_ARRAY,
+                selfType
+        ));
+        clazz.addFunction(newVariantWritebackProbeFunction(
+                "probe_packed_vector4_array",
+                GdPackedVectorArrayType.PACKED_VECTOR4_ARRAY,
                 selfType
         ));
         clazz.addFunction(newVariantWritebackProbeFunction(
@@ -769,11 +836,66 @@ class CallGlobalInsnGenEngineTest {
                         print("helper vector3i true check passed.")
                     else:
                         push_error("helper vector3i true check failed.")
-                
-                    if bool(target.call("probe_packed_int32_array", PackedInt32Array([1, 2]))):
-                        print("helper packed array true check passed.")
+
+                    if bool(target.call("probe_vector4", Vector4(1.0, 2.0, 3.0, 4.0))):
+                        print("helper vector4 true check passed.")
                     else:
-                        push_error("helper packed array true check failed.")
+                        push_error("helper vector4 true check failed.")
+
+                    if bool(target.call("probe_color", Color(0.1, 0.2, 0.3))):
+                        print("helper color true check passed.")
+                    else:
+                        push_error("helper color true check failed.")
+
+                    if not bool(target.call("probe_packed_byte_array", PackedByteArray([1, 2]))):
+                        print("helper packed byte false check passed.")
+                    else:
+                        push_error("helper packed byte false check failed.")
+
+                    if not bool(target.call("probe_packed_int32_array", PackedInt32Array([1, 2]))):
+                        print("helper packed int32 false check passed.")
+                    else:
+                        push_error("helper packed int32 false check failed.")
+
+                    if not bool(target.call("probe_packed_int64_array", PackedInt64Array([1, 2]))):
+                        print("helper packed int64 false check passed.")
+                    else:
+                        push_error("helper packed int64 false check failed.")
+
+                    if not bool(target.call("probe_packed_float32_array", PackedFloat32Array([1.0, 2.0]))):
+                        print("helper packed float32 false check passed.")
+                    else:
+                        push_error("helper packed float32 false check failed.")
+
+                    if not bool(target.call("probe_packed_float64_array", PackedFloat64Array([1.0, 2.0]))):
+                        print("helper packed float64 false check passed.")
+                    else:
+                        push_error("helper packed float64 false check failed.")
+
+                    if not bool(target.call("probe_packed_string_array", PackedStringArray(["a", "b"]))):
+                        print("helper packed string false check passed.")
+                    else:
+                        push_error("helper packed string false check failed.")
+
+                    if not bool(target.call("probe_packed_vector2_array", PackedVector2Array([Vector2.ZERO]))):
+                        print("helper packed vector2 false check passed.")
+                    else:
+                        push_error("helper packed vector2 false check failed.")
+
+                    if not bool(target.call("probe_packed_vector3_array", PackedVector3Array([Vector3.ZERO]))):
+                        print("helper packed vector3 false check passed.")
+                    else:
+                        push_error("helper packed vector3 false check failed.")
+
+                    if not bool(target.call("probe_packed_color_array", PackedColorArray([Color.WHITE]))):
+                        print("helper packed color false check passed.")
+                    else:
+                        push_error("helper packed color false check failed.")
+
+                    if not bool(target.call("probe_packed_vector4_array", PackedVector4Array([Vector4.ZERO]))):
+                        print("helper packed vector4 false check passed.")
+                    else:
+                        push_error("helper packed vector4 false check failed.")
                 
                     if not bool(target.call("probe_array", [1, 2])):
                         print("helper array false check passed.")

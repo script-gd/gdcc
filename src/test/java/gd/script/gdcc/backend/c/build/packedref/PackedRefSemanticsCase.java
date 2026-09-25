@@ -27,11 +27,6 @@ public record PackedRefSemanticsCase(
     public enum AssertionGate {
         /// gdcc-compiled output must match the interpreter golden.
         ASSERTED,
-        /// Deferred on the frontend writeback route/gate rework: builtin-engine-property
-        /// mutation must stop persisting through the getter copy, dynamic-Variant writeback
-        /// gates must flip for packed carriers, and the fail-closed static/lambda routes must
-        /// unlock (compile-blocked companion cases).
-        DEFERRED_FRONTEND_WRITEBACK_ROUTES,
         /// Deferred to the full-matrix acceptance sweep: coroutine/signal combination coverage
         /// completes the matrix once every constituent route is proven.
         DEFERRED_FULL_MATRIX_ACCEPTANCE
@@ -104,8 +99,9 @@ public record PackedRefSemanticsCase(
             baseline("SCRIPT_PROPERTY", "3"),
             baseline("TYPED_ARRAY_ELEMENT", "5"),
             baseline("DICT_VALUE", "6"),
-            new PackedRefSemanticsCase("BUILTIN_PROPERTY_MUTATION", "7a", AssertionGate.DEFERRED_FRONTEND_WRITEBACK_ROUTES, false),
+            asserted("BUILTIN_PROPERTY_MUTATION", "7a"),
             baseline("BUILTIN_PROPERTY_REASSIGN", "7b"),
+            asserted("BUILTIN_PROPERTY_SUBSCRIPT_WRITE", "7c"),
             baseline("PLUS_EQUALS_REBIND", "8"),
             baseline("DUPLICATE", "9"),
             asserted("SIGNAL_ARG", "10"),
@@ -123,12 +119,11 @@ public record PackedRefSemanticsCase(
             asserted("AS_SAME_FAMILY", "22"),
             new PackedRefSemanticsCase("CORO_AWAIT", "23", AssertionGate.DEFERRED_FULL_MATRIX_ACCEPTANCE, false),
             new PackedRefSemanticsCase("SIGNAL_MULTI", "24", AssertionGate.DEFERRED_FULL_MATRIX_ACCEPTANCE, false),
-            new PackedRefSemanticsCase("DYNAMIC_VARIANT_MUTATION", "dyn-variant", AssertionGate.DEFERRED_FRONTEND_WRITEBACK_ROUTES, false),
-            // STATIC_VAR（§2-4）：静态 bare 属性 route 的可写 promotion 被 static-terminal 合同
-            // fail-closed（编译期），置于伴随库单独编译；route 改造落地后迁回主库。
-            new PackedRefSemanticsCase("STATIC_VAR", "4", AssertionGate.DEFERRED_FRONTEND_WRITEBACK_ROUTES, false),
-            // LAMBDA_CAPTURE（§2-11）：对 CAPTURE binding 的 mutating 调用在 direct-slot alias
-            // 发布处被否决（编译期）；route 改造落地后迁回主库。
-            new PackedRefSemanticsCase("LAMBDA_CAPTURE", "11", AssertionGate.DEFERRED_FRONTEND_WRITEBACK_ROUTES, false)
+            asserted("DYNAMIC_VARIANT_MUTATION", "dyn-variant"),
+            // STATIC_VAR（§2-4）与 LAMBDA_CAPTURE（§2-11）已随前端 writeback route 改造解锁
+            // （静态 bare 属性 leaf 共享身份后无需 promotion step；CAPTURE alias 发布放行），
+            // 迁回主探针库并转为断言态。
+            asserted("STATIC_VAR", "4"),
+            asserted("LAMBDA_CAPTURE", "11")
     );
 }

@@ -19,9 +19,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class PackedRefSemanticsCaseRegistryTest {
 
     /// Behavior-matrix row labels that must each be covered by exactly one registered case.
-    /// ("21" is split into EQUALITY and the "21-hash" sub-case; "7" splits into 7a/7b.)
+    /// ("21" is split into EQUALITY and the "21-hash" sub-case; "7" splits into 7a/7b/7c.)
     private static final Set<String> MATRIX_ROWS = Set.of(
-            "1", "2", "3", "4", "5", "6", "7a", "7b", "8", "9", "10", "11", "12", "13", "14",
+            "1", "2", "3", "4", "5", "6", "7a", "7b", "7c", "8", "9", "10", "11", "12", "13", "14",
             "15", "16", "17", "18", "19", "20", "21", "21-hash", "22", "23", "24"
     );
 
@@ -101,8 +101,9 @@ class PackedRefSemanticsCaseRegistryTest {
 
     @Test
     void assertedSetCoversRegressionFloorAndStorageModelCases() {
-        // The current assertion set: the regression floor plus every case whose behavior the
-        // Variant-backed storage model unlocked. Deferred cases stay visible but unasserted.
+        // The current assertion set: the regression floor plus every case unlocked by the
+        // Variant-backed storage model and the frontend writeback route/gate rework. Only the
+        // full-matrix acceptance cases stay deferred.
         assertEquals(
                 Set.of(
                         "SCRIPT_PROPERTY", "TYPED_ARRAY_ELEMENT", "DICT_VALUE",
@@ -111,45 +112,22 @@ class PackedRefSemanticsCaseRegistryTest {
                         "IN_MEMBERSHIP",
                         "LOCAL_ALIAS", "PARAM_VISIBILITY", "SIGNAL_ARG", "FOR_ITER",
                         "APPEND_ARRAY_ALIAS", "RESIZE_ALIAS", "INDEX_WRITE_ALIAS",
-                        "VARIANT_IDENTITY", "EQUALITY", "DICT_KEY_HASH", "AS_SAME_FAMILY"
+                        "VARIANT_IDENTITY", "EQUALITY", "DICT_KEY_HASH", "AS_SAME_FAMILY",
+                        "BUILTIN_PROPERTY_MUTATION", "BUILTIN_PROPERTY_SUBSCRIPT_WRITE",
+                        "DYNAMIC_VARIANT_MUTATION", "STATIC_VAR", "LAMBDA_CAPTURE"
                 ),
                 PackedRefSemanticsCase.assertedCaseNames()
         );
         var deferred = new HashSet<>(PackedRefSemanticsCase.cases().stream().map(PackedRefSemanticsCase::probeName).toList());
         deferred.removeAll(PackedRefSemanticsCase.assertedCaseNames());
         assertEquals(
-                Set.of("BUILTIN_PROPERTY_MUTATION", "DYNAMIC_VARIANT_MUTATION", "STATIC_VAR",
-                        "LAMBDA_CAPTURE", "CORO_AWAIT", "SIGNAL_MULTI"),
+                Set.of("CORO_AWAIT", "SIGNAL_MULTI"),
                 deferred
         );
     }
 
     @Test
-    void compileBlockedCasesAreRegisteredAndDeferred() {
-        // The companion-module split contract: a compile-blocked case must stay registered
-        // (golden coverage continues on the interpreter side) and must never be part of the
-        // asserted set. Currency of the blocked set itself is enforced by the harness at
-        // runtime (an unexpected successful compile is reported in the transcript).
-        for (var caseName : PackedRefSemanticsDualRunHarness.GDCC_COMPILE_BLOCKED_CASE_NAMES) {
-            assertFalse(
-                    PackedRefSemanticsCase.requireCase(caseName).isAsserted(),
-                    "compile-blocked case must stay deferred: " + caseName
-            );
-        }
-    }
-
-    @Test
     void deferredCasesPinTheirSemanticGate() {
-        // Frontend writeback route/gate rework: builtin-engine-property mutation must stop
-        // persisting; the dynamic-Variant gate must flip; the compile-blocked static/lambda
-        // routes must unlock.
-        for (var name : Set.of("BUILTIN_PROPERTY_MUTATION", "DYNAMIC_VARIANT_MUTATION", "STATIC_VAR", "LAMBDA_CAPTURE")) {
-            assertEquals(
-                    PackedRefSemanticsCase.AssertionGate.DEFERRED_FRONTEND_WRITEBACK_ROUTES,
-                    PackedRefSemanticsCase.requireCase(name).gate(),
-                    "gate mismatch for " + name
-            );
-        }
         // Full-matrix acceptance: the coroutine/signal combination rows.
         for (var name : Set.of("CORO_AWAIT", "SIGNAL_MULTI")) {
             assertEquals(
@@ -158,15 +136,14 @@ class PackedRefSemanticsCaseRegistryTest {
                     "gate mismatch for " + name
             );
         }
-        // Every case outside the deferred groups must be asserted — a silently deferred case
+        // Every case outside the deferred group must be asserted — a silently deferred case
         // would shrink the golden-aligned inventory unnoticed.
         for (var probeCase : PackedRefSemanticsCase.cases()) {
-            if (probeCase.gate() != PackedRefSemanticsCase.AssertionGate.DEFERRED_FRONTEND_WRITEBACK_ROUTES
-                    && probeCase.gate() != PackedRefSemanticsCase.AssertionGate.DEFERRED_FULL_MATRIX_ACCEPTANCE) {
+            if (probeCase.gate() != PackedRefSemanticsCase.AssertionGate.DEFERRED_FULL_MATRIX_ACCEPTANCE) {
                 assertEquals(
                         PackedRefSemanticsCase.AssertionGate.ASSERTED,
                         probeCase.gate(),
-                        "case outside the deferred groups must be asserted: " + probeCase.probeName()
+                        "case outside the deferred group must be asserted: " + probeCase.probeName()
                 );
             }
         }

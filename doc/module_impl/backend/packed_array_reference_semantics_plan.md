@@ -65,6 +65,7 @@ Godot 4.5.2 headless 下实测；第 18–22 行为审阅补充场景，其中�
 | 6 | Dictionary 值中的 packed mutation | 持久可见 | 持久可见 |
 | 7a | 内建属性 getter（`poly.polygon.push_back`） | **不持久**（返回副本） | 不持久（需移除现行写回） |
 | 7b | 内建属性重赋值（`var p=...; p.push_back; poly.polygon=p`） | 持久 | 持久（不变） |
+| 7c | 内建属性索引写（`poly.polygon[0] = v`） | **持久**（read-modify-write；Phase D 补测锁定：`BUILTIN_PROPERTY_SUBSCRIPT_WRITE (9.0, 9.0)`） | 持久（赋值 route 写回保留） |
 | 8 | `a += b` | 产生新数组并**重绑定**，旧别名不可见 | 重绑定 |
 | 9 | `a.duplicate()` | 独立副本 | 独立副本 |
 | 10 | 信号参数 mutation | 发射方可见 | 发射方可见 |
@@ -584,6 +585,116 @@ fail-fast 分支（NULL self / 未初始化 / getter 返 NULL / init 接口与 f
   `./gradlew test --no-daemon --console=plain` 全量回归通过。
 
 ### Phase D：前端 gate 与 route 调整
+
+#### Phase D 状态（2026-09-25 完成）
+
+**已完成并验收。** 产物清单（按 §5 表逐条对应）：
+
+- **route-provenance 谓词分流（§5 首段）**：`FrontendWritableTypeWritebackSupport` 引入
+  `WritebackRouteProvenance`（DIRECT_SLOT / STATIC_PROPERTY / ENGINE_PROPERTY_CALL /
+  SCRIPT_PROPERTY / CONTAINER_ELEMENT / GENERIC）；packed 对前三个 route 返回 `false`，
+  对保留写回的三个 route 保持 `true`（这三处写回的目标是共享身份的脚本/容器存储或赋值
+  route 的 read-modify-write 合同，保留为同身份冗余存回或语义必需，非"任意漏识别都无害"
+  ——engine 属性漏识别的风险见下方识别方法说明），其余 family 矩阵不变。另拆出 per-route
+  谓词 `requiresDirectSlotSnapshotCommit`（仅 packed 豁免），因为 CFG builder 的 DIRECT_SLOT
+  step 发布历史上**不经过** family 谓词（对 Array/Dictionary 等共享 carrier 也无条件发布，
+  冗余自赋值），本阶段只切除 packed，避免计划外行为变更。
+- **direct-slot snapshot commit 停止发布（§5 第 1 行）**：
+  `FrontendCfgGraphBuilder.appendCallReceiverCommitSteps` 的 direct-slot 分支对 packed
+  receiver 不再追加 `DIRECT_SLOT` step（snapshot 为 Variant 持有者拷贝，共享身份）。
+- **PARAMETER 行（§5 第 2 行）**：不涉及 step（`isLocalVarDirectSlotRoute` 仍仅放行
+  LOCAL_VAR）；Phase C 的 Variant 形参已使命共享身份，注释同步更新。
+- **内建引擎属性 route 移除 packed 写回（§5 第 3 行 / §1.3 第 3 条）**：
+  `InstancePropertyCommitStep` 新增 `engineProperty` 字段，由
+  `FrontendBodyLoweringSession.isEngineOwnedWritablePropertyStep` 正向识别（attribute route 经
+  `resolvedMembers` 的 `ScopeOwnerKind.ENGINE`；bare identifier route 经 binding
+  declarationSite 为 `ExtensionGdClass.PropertyInfo`；`LirPropertyDef` 与未知锚点保守归为
+  script-owned）。识别是单向安全的：script 属性永远不会被误标为 engine-owned（否则保留的
+  脚本属性写回合同会被错误跳过）；反向漏识别（engine 属性未被识别）不是无害冗余——保留的
+  写回会把 getter 副本的 mutation 错误持久化，因此新锚点形态必须在该方法中显式分类，
+  不得依赖默认值。**实证收窄**：
+  补充探针证实解释器中 `poly.polygon[0] = v`（索引写）**持久**（read-modify-write），仅方法
+  调用 mutation 不持久，因此移除严格限定 mutating-call route——
+  `reverseCommitWithRuntimeGate` 新增 `ReverseCommitRouteOrigin` 参数（`MUTATING_CALL` 按 step
+  provenance 判定；`ASSIGNMENT` 一律 GENERIC 保持既有 family 答案），赋值 route 写回不变。
+- **STATIC_CONTEXT bare 静态属性 route 解锁（§5 第 5 行）**：builder 静态分支改用
+  `STATIC_PROPERTY` provenance，packed → `false` → 不再追加 promotion step，静态 leaf 保持
+  终态，`validateStaticWritableRouteTerminalContract` 合同原样保留（未放宽）。
+- **LAMBDA_CAPTURE 解锁**：`requireDirectSlotAliasRoot` 放行 CAPTURE（新增
+  `DirectSlotAliasRootKind.CAPTURE`），alias 绑定 lambda 自身捕获槽；Variant 持有者拷贝使
+  捕获与外部共享数组身份，mutation 双向可见；对 capture 名的**赋值**仍保持 copy-on-capture
+  （不 rebound 外层槽），不在本次变更范围。
+- **动态 Variant receiver gate（§5 末段）**：`gdcc_variant_requires_writeback` 将 9 个 packed
+  kind 移入 `false` 组并**显式补列 `PACKED_VECTOR4_ARRAY`**（修复其落入 `default: true` 的
+  漏洞）；`default` 保持 `true` 冻结合同不变；String/Vector*/Color 等其余值类型分支保持
+  `true`。apply/skip 控制流骨架未动。
+
+**双跑验收（Godot 4.5.2 + zig 实测）**：归属本阶段的 5 个用例全部启用并通过——
+BUILTIN_PROPERTY_MUTATION（7a，gdcc 由分歧 `2` 收敛为 golden `without_reassign=1`）、
+DYNAMIC_VARIANT_MUTATION、STATIC_VAR、LAMBDA_CAPTURE，以及审阅加固新增的
+BUILTIN_PROPERTY_SUBSCRIPT_WRITE（7c，两侧实测 `(9.0, 9.0)` 一致）。STATIC_VAR/LAMBDA_CAPTURE 已迁回主
+探针库 `packed_ref_probes.gd`（`run_all` 末尾，golden 行序不变）；伴随库
+`packed_ref_probes_blocked.gd`、`GDCC_COMPILE_BLOCKED_CASE_NAMES` 与 tripwire 断言一并退役
+（提前完成 Phase F 清理清单中的伴随库拆除项；`AssertionGate`/`baseline` 脚手架留待 Phase F
+统一退役）。`AssertionGate.DEFERRED_FRONTEND_WRITEBACK_ROUTES` 枚举值随之删除，剩余暂缓仅
+CORO_AWAIT / SIGNAL_MULTI（`DEFERRED_FULL_MATRIX_ACCEPTANCE`，Phase F）。
+
+**Phase D 实测对原计划的补充修订**：
+
+1. **7a 移除范围收窄至 mutating-call route**：计划 §5 字面为"内建引擎属性 route 移除
+   写回"，但补测证实解释器对内建属性的**索引写**（`poly.polygon[0] = v`）持久
+   （read-modify-write，§2 新增 7c 行并锁定 golden），故赋值 route 的写回必须保留；实现经
+   `ReverseCommitRouteOrigin` 分流，`frontend_dynamic_call_lowering_implementation.md` 等文档
+   在 Phase E 同步。
+2. **STATIC_VAR 探针必须显式类型标注**：`static var x := ...` 在 gdcc 不做类型推导
+   （metadata 落 Variant，`frontend_static_var_implementation.md` §110），Variant 静态载体
+   的 mutating 调用仍是既有 fail-closed 面（非本阶段目标）；探针改为
+   `static var static_packed: PackedInt32Array = ...`，golden payload 不变。
+
+**审阅加固记录（review-expert-a / review-expert-c 并行审阅后修复，均经复核确认解决）**：
+
+1. **注释精确性（expert-a）**：`FrontendCfgGraphBuilder` 两处注释把"共享身份"误述为
+   参数/捕获的普遍事实（仅 packed 成立）；改写为结构事实（`DIRECT_SLOT` step 仅服务
+   LOCAL_VAR；PARAMETER/CAPTURE 不发布 step），packed 专属共享语义归位于各自分支注释。
+2. **7c 真实路由回归锚点（expert-c）**：新增双跑用例
+   `BUILTIN_PROPERTY_SUBSCRIPT_WRITE`（§2-7c，两侧实测 `(9.0, 9.0)` 一致）与 LIR 级测试
+   `runKeepsBuiltinEnginePropertySubscriptWritebackOnAssignmentRoute`（真实 `poly.polygon[0] = v`
+   源：named-base `VariantSetNamedInsn` 写回保留），锁定"写回移除仅限定 mutating-call route"
+   的修订不被未来变更回归。
+3. **"冗余无害"表述修正（expert-c）**：`isEngineOwnedWritablePropertyStep`、
+   `gdcc_variant_requires_writeback` 与本节的注释/说明改为精确区分两个误判方向——script
+   属性误标为 engine 会错误丢写回（单向安全识别禁止），engine 属性漏识别会错误持久化
+   （已知分歧风险，新锚点形态必须显式分类）。
+
+**测试锚定（正反两方面）**：
+
+- `FrontendWritableTypeWritebackSupportTest` 重写：全 family × 全 provenance 矩阵、10 个
+  packed family 逐一路由正反锚定、`requiresDirectSlotSnapshotCommit` 仅 packed 豁免、
+  compiler-only 类型两入口均抛错。
+- `FrontendCfgGraphBuilderTest`：packed snapshot receiver 断言**无** `DIRECT_SLOT` step
+  （Dictionary snapshot 仍发布 step 的既有锚定保持不变）；静态 packed mutating 调用由
+  fail-fast 反转为构建成功且 leaf 终态无 step；CAPTURE alias root 由 fail-fast 反转为发布
+  alias 且无 step；parameter snapshot step-less 锚定保留（更名去除过时
+  "UntilBackendSupportsRefAssignment" 表述）。
+- `FrontendLoweringBodyInsnPassTest`：两个 packed snapshot 写回用例反转为无写回 AssignInsn；
+  新增 `runSkipsWritebackForBuiltinEnginePropertyPackedReceiverMutatingCall`（`poly.polygon`
+  上 `push_back` 后**无**第二个 `StorePropertyInsn`，重赋值 store 保留）与
+  `runKeepsBuiltinEnginePropertySubscriptWritebackOnAssignmentRoute`（真实 `poly.polygon[0] = v`
+  源，named-base 写回保留）；脚本属性 route `StorePropertyInsn` 锚定
+  （`runWritesBackPropertyBackedValueSemanticReceiverAfterResolvedMutatingCall`
+  与 `runLowersTypedInstanceContainerSubscriptThroughPropertyRoute`）原样保持。
+- `FrontendWritableRouteSupportTest`：新增 4 个 provenance 锚定——mutating-call gate 对 packed
+  engine 属性跳过 / 对 packed script 属性保留 / runtime-gate 路径 mutating-call 跳过 /
+  assignment route 对同一 engine 属性 step 保留（正反锁定 routeOrigin 分流）。
+- `CallGlobalInsnGenEngineTest.callGlobalVariantWritebackHelperShouldMatchRuntimeFamilyMatrix`：
+  真机矩阵扩展为 10 个 packed kind 全 `false` + String/Vector2/Vector3i/Vector4/Color 保持
+  `true` + Array/Dictionary/Object 保持 `false`。
+- 注册表/harness：`PackedRefSemanticsCaseRegistryTest` 更新 asserted/deferred 集合锚定并删除
+  compile-blocked 不变式测试；`PackedArrayReferenceSemanticsDualRunTest` 移除 tripwire；
+  harness 移除 blocked 模块机制（双模块合并运行逻辑简化为主模块单跑）。
+
+**回归**：`./gradlew test --no-daemon --console=plain` 全量通过（4645 测试，0 失败，含审阅
+加固后终态复跑）。
 
 - 内容：§5 全表——`FrontendWritableTypeWritebackSupport` 引入 route-provenance 分流；
   CFG builder 停止为 packed direct-slot receiver 发布 `DIRECT_SLOT` step；内建引擎属性

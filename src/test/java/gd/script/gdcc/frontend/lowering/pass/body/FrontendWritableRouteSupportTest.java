@@ -1155,7 +1155,8 @@ class FrontendWritableRouteSupportTest {
                 (_, _, _, currentCarrierSlotId) -> {
                     emitterCalls.add(currentCarrierSlotId);
                     return "unused_gate";
-                }
+                },
+                FrontendWritableRouteSupport.ReverseCommitRouteOrigin.MUTATING_CALL
         );
         var instructions = block.getNonTerminatorInstructions();
         var storeInsn = assertInstanceOf(StorePropertyInsn.class, instructions.getFirst());
@@ -1200,7 +1201,8 @@ class FrontendWritableRouteSupportTest {
                 (_, _, _, currentCarrierSlotId) -> {
                     emitterCalls.add(currentCarrierSlotId);
                     return "unused_gate";
-                }
+                },
+                FrontendWritableRouteSupport.ReverseCommitRouteOrigin.ASSIGNMENT
         );
 
         assertAll(
@@ -1250,7 +1252,8 @@ class FrontendWritableRouteSupportTest {
                             List.of(new LirInstruction.VariableOperand(currentCarrierSlotId))
                     ));
                     return gateSlotId;
-                }
+                },
+                FrontendWritableRouteSupport.ReverseCommitRouteOrigin.MUTATING_CALL
         );
         var entryInstructions = block.getNonTerminatorInstructions();
         var gateCallInsn = assertInstanceOf(CallGlobalInsn.class, entryInstructions.getFirst());
@@ -1280,6 +1283,163 @@ class FrontendWritableRouteSupportTest {
                 () -> assertEquals("self", outerStoreInsn.objectId()),
                 () -> assertEquals("items", outerStoreInsn.propertyName()),
                 () -> assertEquals("items_slot", outerStoreInsn.valueId())
+        );
+    }
+
+    /// The engine-owned property layer of a mutating-call route must skip the packed writeback:
+    /// the getter returned a detached copy and the interpreter does not persist the mutation.
+    @Test
+    void reverseCommitSkipsPackedEnginePropertyStepForMutatingCallGate() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.targetFunction().addBasicBlock(block);
+        session.ensureVariable("packed_slot", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("polygon"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "engine receiver root",
+                        "packed_slot",
+                        GdPackedNumericArrayType.PACKED_INT32_ARRAY
+                ),
+                new FrontendWritableRouteSupport.DirectSlotLeaf(
+                        "packed_slot",
+                        GdPackedNumericArrayType.PACKED_INT32_ARRAY
+                ),
+                List.of(new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "polygon", true))
+        );
+
+        FrontendWritableRouteSupport.reverseCommit(
+                session,
+                block,
+                chain,
+                "packed_slot",
+                FrontendWritableRouteSupport.createStaticCarrierWritebackGate(session)
+        );
+
+        assertTrue(block.getNonTerminatorInstructions().isEmpty());
+    }
+
+    /// The same packed carrier on a GDCC script property layer keeps the redundant same-identity
+    /// store (retained route), anchoring that the engine-property skip is provenance-scoped.
+    @Test
+    void reverseCommitKeepsPackedScriptPropertyStepForMutatingCallGate() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.targetFunction().addBasicBlock(block);
+        session.ensureVariable("packed_slot", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("payloads"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "script receiver root",
+                        "packed_slot",
+                        GdPackedNumericArrayType.PACKED_INT32_ARRAY
+                ),
+                new FrontendWritableRouteSupport.DirectSlotLeaf(
+                        "packed_slot",
+                        GdPackedNumericArrayType.PACKED_INT32_ARRAY
+                ),
+                List.of(new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "payloads"))
+        );
+
+        FrontendWritableRouteSupport.reverseCommit(
+                session,
+                block,
+                chain,
+                "packed_slot",
+                FrontendWritableRouteSupport.createStaticCarrierWritebackGate(session)
+        );
+
+        var storeInsn = assertInstanceOf(StorePropertyInsn.class, block.getNonTerminatorInstructions().getFirst());
+        assertAll(
+                () -> assertEquals("self", storeInsn.objectId()),
+                () -> assertEquals("payloads", storeInsn.propertyName()),
+                () -> assertEquals("packed_slot", storeInsn.valueId())
+        );
+    }
+
+    /// Runtime-gate walk on a mutating-call route: the packed engine-property layer must skip
+    /// inline without ever consulting the runtime emitter (the carrier is statically packed).
+    @Test
+    void reverseCommitWithRuntimeGateSkipsPackedEnginePropertyForMutatingCallRoute() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.targetFunction().addBasicBlock(block);
+        session.ensureVariable("packed_slot", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("polygon"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "engine receiver root",
+                        "packed_slot",
+                        GdPackedNumericArrayType.PACKED_INT32_ARRAY
+                ),
+                new FrontendWritableRouteSupport.DirectSlotLeaf(
+                        "packed_slot",
+                        GdPackedNumericArrayType.PACKED_INT32_ARRAY
+                ),
+                List.of(new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "polygon", true))
+        );
+
+        var emitterCalls = new ArrayList<String>();
+        var continuationBlock = FrontendWritableRouteSupport.reverseCommitWithRuntimeGate(
+                session,
+                block,
+                chain,
+                "packed_slot",
+                (_, _, _, currentCarrierSlotId) -> {
+                    emitterCalls.add(currentCarrierSlotId);
+                    return "unused_gate";
+                },
+                FrontendWritableRouteSupport.ReverseCommitRouteOrigin.MUTATING_CALL
+        );
+
+        assertAll(
+                () -> assertSame(block, continuationBlock),
+                () -> assertEquals(List.of(), emitterCalls),
+                () -> assertTrue(block.getNonTerminatorInstructions().isEmpty()),
+                () -> assertFalse(block.hasTerminator())
+        );
+    }
+
+    /// The identical engine-property step on an assignment route keeps the writeback: the
+    /// interpreter persists `obj.prop[i] = v` through read-modify-write, so only mutating-call
+    /// routes may skip.
+    @Test
+    void reverseCommitWithRuntimeGateKeepsPackedEnginePropertyForAssignmentRoute() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.targetFunction().addBasicBlock(block);
+        session.ensureVariable("packed_slot", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("polygon"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "engine receiver root",
+                        "packed_slot",
+                        GdPackedNumericArrayType.PACKED_INT32_ARRAY
+                ),
+                new FrontendWritableRouteSupport.DirectSlotLeaf(
+                        "packed_slot",
+                        GdPackedNumericArrayType.PACKED_INT32_ARRAY
+                ),
+                List.of(new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "polygon", true))
+        );
+
+        var continuationBlock = FrontendWritableRouteSupport.reverseCommitWithRuntimeGate(
+                session,
+                block,
+                chain,
+                "packed_slot",
+                (_, _, _, currentCarrierSlotId) -> {
+                    throw new IllegalStateException("statically packed carrier must never reach the runtime emitter");
+                },
+                FrontendWritableRouteSupport.ReverseCommitRouteOrigin.ASSIGNMENT
+        );
+
+        var storeInsn = assertInstanceOf(StorePropertyInsn.class, block.getNonTerminatorInstructions().getFirst());
+        assertAll(
+                () -> assertSame(block, continuationBlock),
+                () -> assertEquals("self", storeInsn.objectId()),
+                () -> assertEquals("polygon", storeInsn.propertyName()),
+                () -> assertEquals("packed_slot", storeInsn.valueId())
         );
     }
 

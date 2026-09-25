@@ -40,6 +40,7 @@ func run_all(tree: SceneTree) -> void:
 	probe_dictionary_value()
 	probe_builtin_property_mutation()
 	probe_builtin_property_reassign()
+	probe_builtin_property_subscript_write()
 	probe_plus_equals_rebind()
 	probe_duplicate()
 	probe_signal_argument()
@@ -58,6 +59,8 @@ func run_all(tree: SceneTree) -> void:
 	await probe_coroutine_await(tree)
 	probe_signal_multi()
 	probe_dynamic_variant_receiver()
+	probe_static_var()
+	probe_lambda_capture()
 	tree.quit()
 
 ## §2-1：局部别名共享。
@@ -124,6 +127,16 @@ func probe_builtin_property_reassign() -> void:
 	var size_with_reassign := poly.polygon.size()
 	poly.free()
 	print("PROBE|BUILTIN_PROPERTY_REASSIGN|with_reassign=%d" % size_with_reassign)
+
+## §2-7c：内建引擎属性的索引写持久（解释器 read-modify-write）——与 7a 方法调用
+## 不持久相对，是"写回移除仅限定 mutating-call route"修订的行为锚点。
+func probe_builtin_property_subscript_write() -> void:
+	var poly := Polygon2D.new()
+	poly.polygon = PackedVector2Array([Vector2.ZERO, Vector2(3, 3)])
+	poly.polygon[0] = Vector2(9, 9)
+	var observed := poly.polygon[0]
+	poly.free()
+	print("PROBE|BUILTIN_PROPERTY_SUBSCRIPT_WRITE|%s" % observed)
 
 ## §2-8：`a += b` 产生新数组并重绑定，旧别名不可见。
 func probe_plus_equals_rebind() -> void:
@@ -312,3 +325,25 @@ func probe_dynamic_variant_receiver() -> void:
 	var v: Variant = a
 	v.push_back(7)
 	print("PROBE|DYNAMIC_VARIANT_MUTATION|%d,%d" % [a.size(), v.size()])
+
+## §2-4：静态变量 mutation 持久（Variant 存储下静态 leaf 共享身份）。
+## 注意必须显式类型标注：`static var x := ...` 不做类型推导（metadata 落 Variant），
+## Variant 静态载体的 mutating 调用仍是 gdcc 既有 fail-closed 面，不属于本用例目标。
+static var static_packed: PackedInt32Array = PackedInt32Array([1])
+
+func mutate_static() -> void:
+	static_packed.push_back(7)
+
+func read_static_size() -> int:
+	return static_packed.size()
+
+func probe_static_var() -> void:
+	mutate_static()
+	print("PROBE|STATIC_VAR|%d" % read_static_size())
+
+## §2-11：lambda 捕获后 mutation 双向可见（捕获槽 Variant 共享身份）。
+func probe_lambda_capture() -> void:
+	var a := PackedInt32Array([1])
+	var callback := func() -> void: a.push_back(7)
+	callback.call()
+	print("PROBE|LAMBDA_CAPTURE|%d" % a.size())

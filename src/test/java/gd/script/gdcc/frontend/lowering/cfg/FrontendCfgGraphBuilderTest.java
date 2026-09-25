@@ -799,20 +799,19 @@ class FrontendCfgGraphBuilderTest {
         );
     }
 
-    /// A mutating method on a value-semantic / unknown-carrier static member (`PackedByteArray`
-    /// requires post-call write-back) cannot keep the static property leaf terminal, so the
-    /// promoted commit step must hit the static-terminal contract fail-fast instead of silently
-    /// dropping the write-back.
+    /// A mutating method on a Variant-backed packed static member needs no write-back at all:
+    /// the loaded value shares identity with the static storage, so the bare static property leaf
+    /// stays terminal and the route publishes no commit step (the static-terminal contract passes).
     @Test
-    void buildExecutableBodyFailsFastForMutatingCallOnWritebackCarrierStaticMember() throws Exception {
+    void buildExecutableBodyKeepsStaticPackedMemberLeafTerminalForMutatingCall() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_static_packed_call.gd",
                 """
                         class_name CfgBuilderStaticPackedCall
                         extends RefCounted
-                        
+
                         static var bytes: PackedByteArray
-                        
+
                         func ping() -> void:
                             bytes.append(1)
                         """,
@@ -823,14 +822,29 @@ class FrontendCfgGraphBuilderTest {
                 )
         );
 
-        var exception = assertThrows(
-                IllegalArgumentException.class,
-                () -> new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var appendCall = entryNode.items().stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .filter(item -> item.callableName().equals("append"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing append CallItem"));
+        var payload = requireNotNull(
+                appendCall.writableRoutePayloadOrNull(),
+                "static packed mutating call should publish a writable payload"
         );
 
-        assertTrue(
-                exception.getMessage().contains("must keep a static property leaf terminal"),
-                exception.getMessage()
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT, payload.root().kind()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.PROPERTY, payload.leaf().kind()),
+                () -> assertNull(payload.leaf().containerValueIdOrNull()),
+                () -> assertTrue(
+                        payload.reverseCommitSteps().isEmpty(),
+                        "packed static receiver must not publish a promotion step"
+                )
         );
     }
 
@@ -1095,16 +1109,16 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
-    void buildExecutableBodyAppendsDirectSlotCommitStepForSnapshotReceiverCall() throws Exception {
+    void buildExecutableBodySkipsDirectSlotCommitStepForPackedSnapshotReceiverCall() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_identifier_receiver_nested_call_writeback.gd",
                 """
                         class_name CfgBuilderIdentifierReceiverNestedCallWriteback
                         extends RefCounted
-                        
+
                         func helper(value: int) -> int:
                             return value + 1
-                        
+
                         func ping(seed: int) -> PackedInt32Array:
                             var values := PackedInt32Array()
                             values.push_back(helper(seed))
@@ -1128,6 +1142,10 @@ class FrontendCfgGraphBuilderTest {
                 .orElseThrow(() -> new AssertionError("Missing outer push_back CallItem"));
         var payload = outerCallValue.writableRoutePayloadOrNull();
 
+        // The packed snapshot temp is a Variant holder copy sharing identity with `values`, so
+        // the mutating call is already visible through the source slot and no DIRECT_SLOT commit
+        // step is published (the snapshot surface itself is unchanged: nested-call arguments still
+        // block alias publication).
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
                 () -> assertNotNull(payload),
@@ -1139,15 +1157,7 @@ class FrontendCfgGraphBuilderTest {
                         FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT,
                         payload.leaf().kind()
                 ),
-                () -> assertEquals(1, payload.reverseCommitSteps().size()),
-                () -> assertEquals(
-                        FrontendWritableRoutePayload.StepKind.DIRECT_SLOT,
-                        payload.reverseCommitSteps().getFirst().kind()
-                ),
-                () -> assertSame(
-                        payload.leaf().anchor(),
-                        payload.reverseCommitSteps().getFirst().anchor()
-                )
+                () -> assertTrue(payload.reverseCommitSteps().isEmpty())
         );
     }
 
@@ -1242,7 +1252,7 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
-    void buildExecutableBodySkipsDirectSlotCommitStepForParameterReceiverUntilBackendSupportsRefAssignment() throws Exception {
+    void buildExecutableBodySkipsDirectSlotCommitStepForParameterReceiver() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_parameter_receiver_nested_call_writeback.gd",
                 """
@@ -1273,8 +1283,8 @@ class FrontendCfgGraphBuilderTest {
                 .orElseThrow(() -> new AssertionError("Missing outer push_back CallItem"));
         var payload = outerCallValue.writableRoutePayloadOrNull();
 
-        // Parameters are borrowed `ref=true` slots: until the backend grows an assign-through-pointer
-        // contract, the snapshot route must stay step-less instead of emitting an unlowerable writeback.
+        // Packed parameters are Variant-backed slots sharing identity with the caller's value, so
+        // the snapshot route stays step-less: the mutation is already visible without a writeback.
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
                 () -> assertNotNull(payload),
@@ -1910,13 +1920,13 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
-    void buildExecutableBodyFailsFastWhenReceiverBindingIsCaptureAliasRoot() throws Exception {
+    void buildExecutableBodyPublishesDirectSlotAliasForCaptureReceiver() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_capture_receiver_alias.gd",
                 """
                         class_name CfgBuilderCaptureReceiverAlias
                         extends RefCounted
-                        
+
                         func ping(values: PackedInt32Array, seed: int) -> void:
                             values.push_back(seed)
                         """,
@@ -1940,15 +1950,26 @@ class FrontendCfgGraphBuilderTest {
                 )
         );
 
-        var exception = assertThrows(
-                IllegalStateException.class,
-                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var callValue = entryNode.items().stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .filter(item -> item.callableName().equals("push_back"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing push_back CallItem"));
+        var payload = requireNotNull(
+                callValue.writableRoutePayloadOrNull(),
+                "capture receiver mutating call should publish a writable payload"
         );
 
+        // Capture receivers alias their own capture slot: Variant-backed packed captures share the
+        // outer array identity, so the in-place alias mutation is visible on both sides and no
+        // commit step is needed (assignment to the capture name stays copy-on-capture).
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
-                () -> assertTrue(exception.getMessage().contains("does not support CAPTURE binding"), exception.getMessage()),
-                () -> assertTrue(exception.getMessage().contains("lambda/capture semantics"), exception.getMessage())
+                () -> assertTrue(entryNode.items().stream().anyMatch(DirectSlotAliasValueItem.class::isInstance)),
+                () -> assertTrue(payload.reverseCommitSteps().isEmpty())
         );
     }
 

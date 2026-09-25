@@ -12,7 +12,6 @@ import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Dual-run golden comparison for the Packed*Array reference-semantics migration.
@@ -66,15 +65,6 @@ public class PackedArrayReferenceSemanticsDualRunTest {
         Assumptions.assumeTrue(
                 dualRun.gdccOutput() != null,
                 "Zig not found; gdcc side was not built (interpreter baseline still validated)"
-        );
-        // Migration tripwire: once the companion module's constructs stop being fail-closed
-        // (frontend writeback route work), this fails and its cases must be migrated back into
-        // the main probe library (and their registry gates re-evaluated).
-        assertFalse(
-                dualRun.gdccBlockedModuleCompiled(),
-                "Compile-blocked companion module unexpectedly compiled; migrate "
-                        + PackedRefSemanticsDualRunHarness.GDCC_COMPILE_BLOCKED_CASE_NAMES
-                        + " back into the main probe library"
         );
         var comparison = ProbeGoldenComparison.compare(
                 dualRun.gdccOutput(),

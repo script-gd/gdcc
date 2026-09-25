@@ -27,6 +27,7 @@ import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.FrontendTypeTestTarget;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
+import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
@@ -48,6 +49,7 @@ import gd.script.gdcc.scope.GdScriptEnumGroup;
 import gd.script.gdcc.scope.ParameterDef;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.RefCountedStatus;
+import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdContainerType;
 import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdDictionaryType;
@@ -521,7 +523,8 @@ public final class FrontendBodyLoweringSession {
                 }
                 yield new FrontendWritableRouteSupport.InstancePropertyCommitStep(
                         resolveWritableContainerSlot(root, step.containerValueIdOrNull()),
-                        propertyName
+                        propertyName,
+                        isEngineOwnedWritablePropertyStep(step.anchor())
                 );
             }
             case SUBSCRIPT -> {
@@ -663,6 +666,34 @@ public final class FrontendBodyLoweringSession {
             }
             default -> root.kind() == FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT
                     && root.anchor() == propertyAnchor;
+        };
+    }
+
+    /// Positive identification of engine-owned instance properties for the packed mutating-call
+    /// writeback removal: the engine getter returns a detached copy, so a mutating-call route must
+    /// not persist the mutated carrier back. Identification is intentionally one-sided — a script
+    /// property (`LirPropertyDef`) is never marked engine-owned, because wrongly skipping that
+    /// writeback would drop the retained script-property store contract. The other direction is a
+    /// known-divergence risk rather than harmless: an engine property that escapes both checks
+    /// keeps its writeback and would wrongly persist the mutation, so new anchor shapes must be
+    /// classified here explicitly instead of relying on the default.
+    private boolean isEngineOwnedWritablePropertyStep(@NotNull Node propertyAnchor) {
+        return switch (Objects.requireNonNull(propertyAnchor, "propertyAnchor must not be null")) {
+            case AttributePropertyStep _ -> {
+                var resolvedMember = requireResolvedMember(propertyAnchor);
+                yield resolvedMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                        && resolvedMember.bindingKind() == FrontendBindingKind.PROPERTY
+                        && resolvedMember.ownerKind() == ScopeOwnerKind.ENGINE;
+            }
+            // Engine-declared properties carry `ExtensionGdClass.PropertyInfo` as their binding
+            // declaration site (it implements `PropertyDef` but is engine metadata, not GDCC
+            // script storage); script properties carry the skeleton-produced `LirPropertyDef`.
+            case IdentifierExpression identifierExpression -> {
+                var binding = requireBinding(identifierExpression);
+                yield binding.kind() == FrontendBindingKind.PROPERTY
+                        && binding.declarationSite() instanceof ExtensionGdClass.PropertyInfo;
+            }
+            default -> false;
         };
     }
 

@@ -3828,9 +3828,11 @@ public final class FrontendCfgGraphBuilder {
     /// - the receiver is already a direct-slot writable root
     /// - the current publication is still the generic opaque temp path
     /// - the receiver belongs to one explicit root category (`SelfExpression`, `LOCAL_VAR`,
-    ///   `PARAMETER`) instead of an implicit/self-context fallback
-    /// - `CAPTURE` is intentionally excluded until lambda/capture lowering semantics are frozen;
-    ///   otherwise alias publication would prematurely promise live-slot behavior for a deferred surface
+    ///   `PARAMETER`, `CAPTURE`) instead of an implicit/self-context fallback
+    /// - `CAPTURE` aliases the lambda's own capture slot: Variant-backed packed captures share the
+    ///   outer array identity, so in-place mutation through the alias is exactly interpreter
+    ///   capture semantics (assignment to the capture name stays copy-on-capture and never
+    ///   rebinds the outer slot)
     /// - for identifier-backed roots, later argument evaluation must stay inside a proven
     ///   no-rebinding subset; otherwise builder deliberately keeps the ordinary temp snapshot
     ///
@@ -3896,14 +3898,12 @@ public final class FrontendCfgGraphBuilder {
                 yield switch (binding.kind()) {
                     case LOCAL_VAR -> new DirectSlotAliasRoot(identifierExpression, DirectSlotAliasRootKind.LOCAL_VAR);
                     case PARAMETER -> new DirectSlotAliasRoot(identifierExpression, DirectSlotAliasRootKind.PARAMETER);
-                    case CAPTURE -> throw new IllegalStateException(
-                            "Direct-slot alias publication does not support CAPTURE binding before lambda/capture semantics are implemented"
-                    );
+                    case CAPTURE -> new DirectSlotAliasRoot(identifierExpression, DirectSlotAliasRootKind.CAPTURE);
                     case SELF -> throw new IllegalStateException(
                             "Direct-slot alias publication must use explicit SelfExpression instead of identifier binding kind SELF"
                     );
                     default -> throw new IllegalStateException(
-                            "Direct-slot alias publication requires LOCAL_VAR/PARAMETER binding, but got "
+                            "Direct-slot alias publication requires LOCAL_VAR/PARAMETER/CAPTURE binding, but got "
                                     + binding.kind()
                     );
                 };
@@ -4130,38 +4130,43 @@ public final class FrontendCfgGraphBuilder {
     /// container slot), so it must never be promoted into a non-terminal commit step whenever the
     /// promoted step could only ever produce a no-op write-back: either the call is provably
     /// const (`mayMutateReceiver == false`, so body lowering skips the reverse commit entirely),
-    /// or the receiver is a reference carrier (`Array`/`Dictionary`/objects/primitives) mutated
-    /// in place through the loaded value. Mutating calls on value-semantic or unknown (`Variant`)
-    /// carriers keep the promotion so the static-terminal contract fails fast instead of
-    /// silently dropping a required write-back.
+    /// or the receiver carrier is identity-shared with the static storage (`Array`/`Dictionary`/
+    /// objects/primitives, and Variant-backed `Packed*Array`) mutated in place through the loaded
+    /// value. Mutating calls on remaining value-semantic or unknown (`Variant`) carriers keep the
+    /// promotion so the static-terminal contract fails fast instead of silently dropping a
+    /// required write-back.
     ///
     /// A bare direct-slot receiver (ordinary local/parameter) that could not publish its
     /// live-slot alias stays on the ordinary temp snapshot surface: the call then mutates one
-    /// `cfg_tmp_*` copy instead of the source slot. Value-semantic carriers (`Packed*Array`,
-    /// `String`, ...) would otherwise lose the mutation to copy-on-write detach, so the route
-    /// must append one terminal `DIRECT_SLOT` commit step that writes the mutated temp back into
-    /// the root slot after the call. Alias-published receivers already mutate the source slot in
-    /// place and must keep the step list unchanged (a self-assign writeback would be a
-    /// destroy-then-copy hazard). This writeback stays unconditional at lowering time because no
-    /// currently legal argument-evaluation surface can rebind a caller local slot; any future
-    /// rebinding-capable argument form must revisit this contract before opting out of the
-    /// snapshot fallback.
+    /// `cfg_tmp_*` copy instead of the source slot. Value-semantic carriers other than
+    /// `Packed*Array` (`String`, ...) would otherwise lose the mutation to copy-on-write detach,
+    /// so the route must append one terminal `DIRECT_SLOT` commit step that writes the mutated
+    /// temp back into the root slot after the call. Packed receivers skip the step: their snapshot
+    /// temp is a Variant holder copy sharing the source slot's array identity, so the mutation is
+    /// already visible and the write-back would be a redundant self-assign. Alias-published
+    /// receivers already mutate the source slot in place and must keep the step list unchanged (a
+    /// self-assign writeback would be a destroy-then-copy hazard). This writeback stays
+    /// unconditional at lowering time for the remaining families because no currently legal
+    /// argument-evaluation surface can rebind a caller local slot; any future rebinding-capable
+    /// argument form must revisit this contract before opting out of the snapshot fallback.
     ///
-    /// The step is currently limited to `LOCAL_VAR` roots. `PARAMETER` roots stay on the legacy
-    /// snapshot behavior because LIR parameters are borrowed `ref=true` pointers and the backend
-    /// deliberately rejects every assignment into reference variables (parameter rebinding is
-    /// unsupported as a whole today); writing back through the borrowed pointer needs a dedicated
-    /// backend assign-through-pointer contract instead of a lowering-side patch.
+    /// The step is currently limited to `LOCAL_VAR` roots. `PARAMETER` and `CAPTURE` roots never
+    /// publish it: packed parameters/captures already share the array identity with their source
+    /// through Variant-backed storage, while rebinding a parameter or a capture name stays
+    /// unsupported/copy-on-capture as a whole, so there is no writeback contract to express here.
     private @NotNull List<FrontendWritableRoutePayload.StepDescriptor> appendCallReceiverCommitSteps(
             @NotNull FrontendWritableRoutePayload routePayload,
             @NotNull FrontendResolvedCall publishedCall,
             boolean receiverAliasPublished
     ) {
+        var receiverType = publishedCall.receiverType();
         if (!receiverAliasPublished
                 && FrontendCallMutabilitySupport.mayMutateReceiver(publishedCall)
                 && routePayload.root().kind() == FrontendWritableRoutePayload.RootKind.DIRECT_SLOT
                 && routePayload.leaf().kind() == FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT
-                && isLocalVarDirectSlotRoute(routePayload)) {
+                && isLocalVarDirectSlotRoute(routePayload)
+                && (receiverType == null
+                || FrontendWritableTypeWritebackSupport.requiresDirectSlotSnapshotCommit(receiverType))) {
             var steps = new ArrayList<>(routePayload.reverseCommitSteps());
             steps.add(new FrontendWritableRoutePayload.StepDescriptor(
                     FrontendWritableRoutePayload.StepKind.DIRECT_SLOT,
@@ -4173,7 +4178,6 @@ public final class FrontendCfgGraphBuilder {
             ));
             return List.copyOf(steps);
         }
-        var receiverType = publishedCall.receiverType();
         var staticBarePropertyReceiver =
                 routePayload.root().kind() == FrontendWritableRoutePayload.RootKind.STATIC_CONTEXT
                         && routePayload.leaf().kind() == FrontendWritableRoutePayload.LeafKind.PROPERTY
@@ -4181,16 +4185,18 @@ public final class FrontendCfgGraphBuilder {
         if (staticBarePropertyReceiver
                 && (!FrontendCallMutabilitySupport.mayMutateReceiver(publishedCall)
                 || (receiverType != null
-                && !FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(receiverType)))) {
+                && !FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(
+                        receiverType,
+                        FrontendWritableTypeWritebackSupport.WritebackRouteProvenance.STATIC_PROPERTY)))) {
             return routePayload.reverseCommitSteps();
         }
         return appendPromotedLeaf(routePayload);
     }
 
-    /// Only `LOCAL_VAR` bindings qualify for the direct-slot snapshot writeback: parameters are
-    /// borrowed `ref=true` slots that the backend cannot yet assign into, and `CAPTURE` storage
-    /// has no live-slot writeback contract at all. Anything else must fail closed to the legacy
-    /// snapshot behavior instead of promising a writeback the backend cannot express.
+    /// Only `LOCAL_VAR` bindings qualify for the direct-slot snapshot writeback. `PARAMETER` and
+    /// `CAPTURE` roots are deliberately excluded from snapshot writeback (their mutating receivers
+    /// use alias publication instead), and any other root must fail closed to the legacy snapshot
+    /// behavior instead of promising a writeback the route cannot express.
     private boolean isLocalVarDirectSlotRoute(@NotNull FrontendWritableRoutePayload routePayload) {
         if (!(routePayload.leaf().anchor() instanceof IdentifierExpression identifierExpression)) {
             return false;
@@ -5666,7 +5672,8 @@ public final class FrontendCfgGraphBuilder {
     private enum DirectSlotAliasRootKind {
         EXPLICIT_SELF,
         LOCAL_VAR,
-        PARAMETER
+        PARAMETER,
+        CAPTURE
     }
 
     private enum DirectSlotAliasArgumentSafety {
