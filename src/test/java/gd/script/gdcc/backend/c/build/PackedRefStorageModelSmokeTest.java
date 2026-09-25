@@ -238,6 +238,12 @@ public class PackedRefStorageModelSmokeTest {
                 memcpy(&type, v, 8);
                 return (GDExtensionVariantType)type;
             }
+            // A NIL Variant is a zeroed slot (type tag NIL + NULL ref); without this the
+            // iterator init path would destroy an UNINITIALIZED Variant (garbage ref pointer),
+            // which only passes by stack-luck on some platforms (real CI runners segfaulted).
+            static void fake_variant_new_nil(GDExtensionUninitializedVariantPtr out) {
+                fake_variant_write(out, GDEXTENSION_VARIANT_TYPE_NIL, NULL);
+            }
             static void fake_variant_new_copy(GDExtensionUninitializedVariantPtr out, GDExtensionConstVariantPtr src) {
                 g_variant_copy_calls++;
                 FakePackedI32 *ref = fake_variant_ref(src);
@@ -350,6 +356,7 @@ public class PackedRefStorageModelSmokeTest {
                 if (strcmp(name, "mem_free") == 0) return (GDExtensionInterfaceFunctionPtr)fake_mem_free;
                 if (strcmp(name, "print_error") == 0) return (GDExtensionInterfaceFunctionPtr)fake_print_error;
                 if (strcmp(name, "variant_get_type") == 0) return (GDExtensionInterfaceFunctionPtr)fake_variant_get_type;
+                if (strcmp(name, "variant_new_nil") == 0) return (GDExtensionInterfaceFunctionPtr)fake_variant_new_nil;
                 if (strcmp(name, "variant_new_copy") == 0) return (GDExtensionInterfaceFunctionPtr)fake_variant_new_copy;
                 if (strcmp(name, "variant_destroy") == 0) return (GDExtensionInterfaceFunctionPtr)fake_variant_destroy;
                 if (strcmp(name, "variant_get_ptr_internal_getter") == 0) return (GDExtensionInterfaceFunctionPtr)fake_get_internal_getter;
