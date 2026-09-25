@@ -413,13 +413,104 @@ class CConstructInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func);
-        assertTrue(body.contains("godot_new_PackedInt32Array()"));
+        // Whitelist (b) empty-array Variant construction (plan §4.3.2); the bare struct
+        // constructor must no longer appear in emitted business code.
+        assertTrue(body.contains("$packed = gdcc_packed_int32_array_new_empty();"), body);
+        assertFalse(body.contains("godot_new_PackedInt32Array()"), body);
+    }
+
+    @Test
+    @DisplayName("construct_builtin Packed*Array with same-family argument emits whitelisted new_copy")
+    void constructPackedArrayWithSameFamilyArgEmitsNewCopy() {
+        // packed_array_reference_semantics_plan.md §4.1 whitelist (d): explicit same-family
+        // construction is an independent COW copy with a fresh identity (equivalent to
+        // `duplicate()`), emitted through gdcc_packed_ref.h — never the native copy constructor.
+        var clazz = newTestClass();
+        var func = newFunction("construct_packed_copy");
+        func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        func.createAndAddVariable("other", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
+                "packed",
+                List.of(new LirInstruction.VariableOperand("other"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithFullPackedConstructors());
+        assertTrue(body.contains("$packed = gdcc_packed_int32_array_new_copy(&$other);"), body);
+        assertFalse(body.contains("godot_new_PackedInt32Array"), body);
+    }
+
+    @Test
+    @DisplayName("construct_builtin Packed*Array with Array argument emits whitelisted new_from_array")
+    void constructPackedArrayWithArrayArgEmitsNewFromArray() {
+        // Whitelist (d) cross-type construction: `PackedInt32Array([1, 2])` converts the Array
+        // argument into a fresh packed array (plan §4.1(d)).
+        var clazz = newTestClass();
+        var func = newFunction("construct_packed_from_array");
+        func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        func.createAndAddVariable("source", new GdArrayType(GdVariantType.VARIANT));
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
+                "packed",
+                List.of(new LirInstruction.VariableOperand("source"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithFullPackedConstructors());
+        assertTrue(body.contains("$packed = gdcc_packed_int32_array_new_from_array(&$source);"), body);
+        assertFalse(body.contains("godot_new_PackedInt32Array"), body);
+    }
+
+    @Test
+    @DisplayName("construct_builtin Packed*Array with cross-family argument fails fast (no such constructor)")
+    void constructPackedArrayWithCrossFamilyArgFailsFast() {
+        // PackedInt32Array(PackedFloat64Array) has no metadata constructor; the whitelist must
+        // fail closed instead of emitting an unsound conversion.
+        var clazz = newTestClass();
+        var func = newFunction("construct_packed_cross_family");
+        func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        func.createAndAddVariable("other", GdPackedNumericArrayType.PACKED_FLOAT64_ARRAY);
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
+                "packed",
+                List.of(new LirInstruction.VariableOperand("other"))
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithFullPackedConstructors())
+        );
+        assertTrue(ex.getMessage().contains("is not defined in ExtensionBuiltinClass"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("construct_builtin Array with packed argument adapts to the internal pointer")
+    void constructArrayWithPackedArgAdaptsToInternalPointer() {
+        // Non-packed constructor targets keep the native wrapper ABI: `Array(packed)` calls
+        // `godot_new_Array_with_PackedInt32Array(const godot_PackedInt32Array *)`, so the
+        // Variant-backed argument renders its internal pointer.
+        var clazz = newTestClass();
+        var func = newFunction("construct_array_from_packed");
+        func.createAndAddVariable("array", new GdArrayType(GdVariantType.VARIANT));
+        func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
+                "array",
+                List.of(new LirInstruction.VariableOperand("packed"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithFullPackedConstructors());
+        // The constructor result moves into the target through the owned-carrier overwrite
+        // (construct new -> destroy old -> move), so the assertion anchors the adapted call.
+        assertTrue(
+                body.contains("godot_new_Array_with_PackedInt32Array(gdcc_packed_int32_array_internal_ptr(&$packed));"),
+                body
+        );
+        assertTrue(body.contains("$array = __gdcc_tmp_owned_move_"), body);
     }
 
     @Test
     @DisplayName("construct_array should reject class_name when result type is Packed*Array")
-    void constructArrayShouldRejectClassNameForPackedArray() {
-        var clazz = newTestClass();
+    void constructArrayShouldRejectClassNameForPackedArray() {        var clazz = newTestClass();
         var func = newFunction("construct_packed_array_with_class_name");
         func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
 
@@ -1251,7 +1342,8 @@ class CConstructInsnGenTest {
 
         var body = codegen.generateFuncBody(clazz, func);
         assertTrue(body.contains("__prepare__: // __prepare__"));
-        assertTrue(body.contains("godot_new_PackedInt32Array()"));
+        assertTrue(body.contains("gdcc_packed_int32_array_new_empty()"), body);
+        assertFalse(body.contains("godot_new_PackedInt32Array"), body);
     }
 
     @Test
@@ -1533,17 +1625,22 @@ class CConstructInsnGenTest {
         return null;
     }
 
+    private record PackedCtorCase(String label, String typeName, GdType type, String constructorCall) {
+    }
+
+    /// Packed construction targets the Variant slot through the whitelisted empty-array helper
+    /// (packed_array_reference_semantics_plan.md §4.3.2), never a bare `godot_new_Packed*()`.
     private List<PackedCtorCase> packedCtorCases() {
         return List.of(
-                new PackedCtorCase("packed_byte", "PackedByteArray", GdPackedNumericArrayType.PACKED_BYTE_ARRAY),
-                new PackedCtorCase("packed_int32", "PackedInt32Array", GdPackedNumericArrayType.PACKED_INT32_ARRAY),
-                new PackedCtorCase("packed_int64", "PackedInt64Array", GdPackedNumericArrayType.PACKED_INT64_ARRAY),
-                new PackedCtorCase("packed_float32", "PackedFloat32Array", GdPackedNumericArrayType.PACKED_FLOAT32_ARRAY),
-                new PackedCtorCase("packed_float64", "PackedFloat64Array", GdPackedNumericArrayType.PACKED_FLOAT64_ARRAY),
-                new PackedCtorCase("packed_string", "PackedStringArray", GdPackedStringArrayType.PACKED_STRING_ARRAY),
-                new PackedCtorCase("packed_vector2", "PackedVector2Array", GdPackedVectorArrayType.PACKED_VECTOR2_ARRAY),
-                new PackedCtorCase("packed_vector3", "PackedVector3Array", GdPackedVectorArrayType.PACKED_VECTOR3_ARRAY),
-                new PackedCtorCase("packed_vector4", "PackedVector4Array", GdPackedVectorArrayType.PACKED_VECTOR4_ARRAY)
+                new PackedCtorCase("packed_byte", "PackedByteArray", GdPackedNumericArrayType.PACKED_BYTE_ARRAY, "gdcc_packed_byte_array_new_empty()"),
+                new PackedCtorCase("packed_int32", "PackedInt32Array", GdPackedNumericArrayType.PACKED_INT32_ARRAY, "gdcc_packed_int32_array_new_empty()"),
+                new PackedCtorCase("packed_int64", "PackedInt64Array", GdPackedNumericArrayType.PACKED_INT64_ARRAY, "gdcc_packed_int64_array_new_empty()"),
+                new PackedCtorCase("packed_float32", "PackedFloat32Array", GdPackedNumericArrayType.PACKED_FLOAT32_ARRAY, "gdcc_packed_float32_array_new_empty()"),
+                new PackedCtorCase("packed_float64", "PackedFloat64Array", GdPackedNumericArrayType.PACKED_FLOAT64_ARRAY, "gdcc_packed_float64_array_new_empty()"),
+                new PackedCtorCase("packed_string", "PackedStringArray", GdPackedStringArrayType.PACKED_STRING_ARRAY, "gdcc_packed_string_array_new_empty()"),
+                new PackedCtorCase("packed_vector2", "PackedVector2Array", GdPackedVectorArrayType.PACKED_VECTOR2_ARRAY, "gdcc_packed_vector2_array_new_empty()"),
+                new PackedCtorCase("packed_vector3", "PackedVector3Array", GdPackedVectorArrayType.PACKED_VECTOR3_ARRAY, "gdcc_packed_vector3_array_new_empty()"),
+                new PackedCtorCase("packed_vector4", "PackedVector4Array", GdPackedVectorArrayType.PACKED_VECTOR4_ARRAY, "gdcc_packed_vector4_array_new_empty()")
         );
     }
 
@@ -1605,6 +1702,41 @@ class CConstructInsnGenTest {
                 List.of(),
                 List.of(),
                 packedBuiltins,
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    /// The exact constructor set Godot 4.5 exposes for a packed family: `()`, `(same family)`,
+    /// `(Array)` — mirrored by the `gdcc_packed_ref.h` whitelist (b)/(d) helpers. The `Array`
+    /// builtin additionally gets a `(PackedInt32Array)` constructor for the `Array(packed)` case.
+    private ExtensionAPI apiWithFullPackedConstructors() {
+        var builtins = new ArrayList<ExtensionBuiltinClass>();
+        for (var typeName : List.of("PackedInt32Array", "PackedFloat64Array")) {
+            builtins.add(newBuiltinClass(
+                    typeName,
+                    List.of(
+                            new ExtensionBuiltinClass.ConstructorInfo(typeName, 0, List.of()),
+                            newConstructor(typeName, typeName),
+                            newConstructor(typeName, "Array")
+                    )
+            ));
+        }
+        builtins.add(newBuiltinClass(
+                "Array",
+                List.of(
+                        new ExtensionBuiltinClass.ConstructorInfo("Array", 0, List.of()),
+                        newConstructor("Array", "PackedInt32Array")
+                )
+        ));
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                builtins,
                 List.of(),
                 List.of(),
                 List.of()
@@ -1742,12 +1874,6 @@ class CConstructInsnGenTest {
                 0,
                 List.of(new ExtensionFunctionArgument("from", argType, null, null))
         );
-    }
-
-    private record PackedCtorCase(String label, String typeName, GdType type) {
-        private String constructorCall() {
-            return "godot_new_" + typeName + "()";
-        }
     }
 
     private record FlatFloatHelperCtorCase(

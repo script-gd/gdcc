@@ -35,10 +35,9 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-/// Orchestrates the Packed*Array reference-semantics dual-run comparison
-/// (packed_array_reference_semantics_plan.md §6 Phase A).
-///
-/// The same probe source runs twice side by side per module:
+/// Orchestrates the Packed*Array reference-semantics dual-run comparison: the same probe
+/// source runs twice side by side per module — once under the Godot interpreter (the golden
+/// baseline) and once compiled by gdcc — and both outputs are normalized for comparison.
 ///
 /// - interpreter run: a standalone Godot project where the probe library stays plain GDScript
 ///   and a `SceneTree` driver `preload`s it (headless `-s` launches have no editor-generated

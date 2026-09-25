@@ -35,11 +35,11 @@ PROBE|STRING_ITER_ELEMENTS|one!two!;one,two
 PROBE|IN_MEMBERSHIP|1,0,1,0
 PROBE|EQUALITY|1,1,1,1
 PROBE|DICT_KEY_HASH|same_content=v;mutated=missing;fresh=missing;size_after_mutate=1;size_after_reinsert=2
-PROBE|AS_SAME_FAMILY|2,1,2
+PROBE|AS_SAME_FAMILY|3,1,3,2
 PROBE|CORO_AWAIT|before=2,1;during=3,2;after=4,3
 PROBE|SIGNAL_MULTI|2,5,2
 PROBE|DYNAMIC_VARIANT_MUTATION|2,2
 # STATIC_VAR 与 LAMBDA_CAPTURE 位于伴随库（packed_ref_probes_blocked.gd），两侧输出
-# 均追加在主库序列之后；现行 gdcc 对二者编译期 fail-closed，详见注册表 Phase D 注释。
+# 均追加在主库序列之后；现行 gdcc 对二者编译期 fail-closed，详见注册表中对应用例的门控注释。
 PROBE|STATIC_VAR|2
 PROBE|LAMBDA_CAPTURE|2

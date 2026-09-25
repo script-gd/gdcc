@@ -36,6 +36,39 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Positive/negative codegen coverage for backend `builtin_cast`.
 class BuiltinCastInsnGenTest {
     @Test
+    @DisplayName("same-family Packed*Array `as` emits whitelisted new_copy (COW copy, fresh identity)")
+    void sameFamilyPackedCastEmitsNewCopy() {
+        // packed_array_reference_semantics_plan.md §4.3.7 / §2-22: `v as PackedInt32Array` must
+        // NOT share identity — the whitelisted same-family copy constructor produces an
+        // independent COW copy. The generic variant_construct path must not be used here.
+        var body = generate(
+                gd.script.gdcc.type.GdPackedNumericArrayType.PACKED_INT32_ARRAY,
+                "PackedInt32Array",
+                gd.script.gdcc.type.GdPackedNumericArrayType.PACKED_INT32_ARRAY
+        );
+        assertTrue(body.contains("gdcc_packed_int32_array_new_copy(&$value)"), body);
+        assertFalse(body.contains("godot_variant_construct"), body);
+        assertFalse(body.contains("godot_new_PackedInt32Array"), body);
+    }
+
+    @Test
+    @DisplayName("Variant-source packed `as` keeps the variant_construct conversion path")
+    void variantSourcePackedCastKeepsConstructPath() {
+        // A Variant source may hold any convertible payload at runtime, so the engine-side
+        // construct performs the checked conversion; the final packed unpack then shares the
+        // constructed (already fresh) identity into the target slot.
+        var body = generate(
+                GdVariantType.VARIANT,
+                "PackedInt32Array",
+                gd.script.gdcc.type.GdPackedNumericArrayType.PACKED_INT32_ARRAY
+        );
+        assertTrue(body.contains("godot_variant_construct"), body);
+        assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY"), body);
+        assertTrue(body.contains("gdcc_packed_ref_is("), body);
+        assertFalse(body.contains("gdcc_packed_int32_array_new_copy"), body);
+    }
+
+    @Test
     @DisplayName("int as float packs once and constructs with FLOAT enum")
     void intAsFloatEmitsConstruct() {
         var body = generate(GdIntType.INT, "float", GdFloatType.FLOAT);

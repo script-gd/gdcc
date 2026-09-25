@@ -9,17 +9,16 @@ import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Anchors {@link PackedRefSemanticsCase} to the plan contract: the registry must cover the
-/// §2 matrix rows exactly (each row maps to at least one case), stay in sync with the
-/// committed golden resource, and keep the plan-mandated phase assignments for the rows
-/// pinned to Phase D (7a + dynamic Variant receiver) and Phase F (23, 24).
+/// Anchors {@link PackedRefSemanticsCase} to the harness contract: the registry must cover the
+/// behavior-matrix rows exactly (each row maps to at least one case), stay in sync with the
+/// committed golden resource, keep the regression-floor set intact, and pin every deferred
+/// case to its semantic gate.
 class PackedRefSemanticsCaseRegistryTest {
 
-    /// §2 matrix row labels that must each be covered by exactly one registered case.
+    /// Behavior-matrix row labels that must each be covered by exactly one registered case.
     /// ("21" is split into EQUALITY and the "21-hash" sub-case; "7" splits into 7a/7b.)
     private static final Set<String> MATRIX_ROWS = Set.of(
             "1", "2", "3", "4", "5", "6", "7a", "7b", "8", "9", "10", "11", "12", "13", "14",
@@ -51,7 +50,7 @@ class PackedRefSemanticsCaseRegistryTest {
     void rejectsMalformedProbeName() {
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new PackedRefSemanticsCase("lowercase", "1", PackedRefSemanticsCase.EnablePhase.A)
+                () -> new PackedRefSemanticsCase("lowercase", "1", PackedRefSemanticsCase.AssertionGate.ASSERTED, false)
         );
     }
 
@@ -68,20 +67,21 @@ class PackedRefSemanticsCaseRegistryTest {
     }
 
     @Test
-    void phaseAEnabledSetMatchesRegistryPhaseFlags() {
+    void assertedSetMatchesRegistryGates() {
         var expected = PackedRefSemanticsCase.cases().stream()
-                .filter(probeCase -> probeCase.enablePhase() == PackedRefSemanticsCase.EnablePhase.A)
+                .filter(PackedRefSemanticsCase::isAsserted)
                 .map(PackedRefSemanticsCase::probeName)
                 .collect(Collectors.toSet());
 
-        assertEquals(expected, PackedRefSemanticsCase.phaseAEnabledCaseNames());
-        assertFalse(expected.isEmpty(), "Phase A must enable the currently passing baseline cases");
+        assertEquals(expected, PackedRefSemanticsCase.assertedCaseNames());
+        assertFalse(expected.isEmpty(), "the harness must always assert its golden-aligned set");
     }
 
     @Test
-    void phaseAEnabledSetMatchesPlanPhaseAStatus() {
-        // Pins the exact Phase A enabled inventory recorded in plan §6 "Phase A 状态" — a case
-        // silently flipped from A to C would otherwise shrink the asserted baseline unnoticed.
+    void regressionFloorNeverShrinks() {
+        // The regression floor: cases golden-aligned since the harness was introduced. A case
+        // silently leaving the floor would hide a baseline regression behind the growing
+        // asserted set, so the exact inventory is pinned here.
         assertEquals(
                 Set.of(
                         "SCRIPT_PROPERTY", "TYPED_ARRAY_ELEMENT", "DICT_VALUE",
@@ -89,54 +89,86 @@ class PackedRefSemanticsCaseRegistryTest {
                         "PARAM_DEFAULT_SHARED", "ELEMENT_REBIND", "STRING_ITER_ELEMENTS",
                         "IN_MEMBERSHIP"
                 ),
-                PackedRefSemanticsCase.phaseAEnabledCaseNames()
+                PackedRefSemanticsCase.baselineCaseNames()
+        );
+        // The floor must stay asserted: baseline membership without assertion is a contract bug.
+        for (var probeCase : PackedRefSemanticsCase.cases()) {
+            if (probeCase.baseline()) {
+                assertTrue(probeCase.isAsserted(), "baseline case must stay asserted: " + probeCase.probeName());
+            }
+        }
+    }
+
+    @Test
+    void assertedSetCoversRegressionFloorAndStorageModelCases() {
+        // The current assertion set: the regression floor plus every case whose behavior the
+        // Variant-backed storage model unlocked. Deferred cases stay visible but unasserted.
+        assertEquals(
+                Set.of(
+                        "SCRIPT_PROPERTY", "TYPED_ARRAY_ELEMENT", "DICT_VALUE",
+                        "BUILTIN_PROPERTY_REASSIGN", "PLUS_EQUALS_REBIND", "DUPLICATE",
+                        "PARAM_DEFAULT_SHARED", "ELEMENT_REBIND", "STRING_ITER_ELEMENTS",
+                        "IN_MEMBERSHIP",
+                        "LOCAL_ALIAS", "PARAM_VISIBILITY", "SIGNAL_ARG", "FOR_ITER",
+                        "APPEND_ARRAY_ALIAS", "RESIZE_ALIAS", "INDEX_WRITE_ALIAS",
+                        "VARIANT_IDENTITY", "EQUALITY", "DICT_KEY_HASH", "AS_SAME_FAMILY"
+                ),
+                PackedRefSemanticsCase.assertedCaseNames()
+        );
+        var deferred = new HashSet<>(PackedRefSemanticsCase.cases().stream().map(PackedRefSemanticsCase::probeName).toList());
+        deferred.removeAll(PackedRefSemanticsCase.assertedCaseNames());
+        assertEquals(
+                Set.of("BUILTIN_PROPERTY_MUTATION", "DYNAMIC_VARIANT_MUTATION", "STATIC_VAR",
+                        "LAMBDA_CAPTURE", "CORO_AWAIT", "SIGNAL_MULTI"),
+                deferred
         );
     }
 
     @Test
-    void compileBlockedCasesAreRegisteredAndNotPhaseAEnabled() {
+    void compileBlockedCasesAreRegisteredAndDeferred() {
         // The companion-module split contract: a compile-blocked case must stay registered
         // (golden coverage continues on the interpreter side) and must never be part of the
-        // Phase A enabled set. Currency of the blocked set itself is enforced by the harness
-        // at runtime (an unexpected successful compile is reported in the transcript).
+        // asserted set. Currency of the blocked set itself is enforced by the harness at
+        // runtime (an unexpected successful compile is reported in the transcript).
         for (var caseName : PackedRefSemanticsDualRunHarness.GDCC_COMPILE_BLOCKED_CASE_NAMES) {
-            var probeCase = PackedRefSemanticsCase.requireCase(caseName);
-            assertNotEquals(
-                    PackedRefSemanticsCase.EnablePhase.A,
-                    probeCase.enablePhase(),
-                    "compile-blocked case must not be Phase A enabled: " + caseName
+            assertFalse(
+                    PackedRefSemanticsCase.requireCase(caseName).isAsserted(),
+                    "compile-blocked case must stay deferred: " + caseName
             );
         }
     }
 
     @Test
-    void planMandatedPhaseAssignmentsArePinned() {
-        // Plan §6 Phase D acceptance: 7a and the dynamic Variant receiver case; STATIC_VAR and
-        // LAMBDA_CAPTURE are compile-blocked on §5 frontend route surfaces (fail-closed static
-        // bare-property promotion / CAPTURE alias publication), so they are pinned to D as well.
-        assertEquals(PackedRefSemanticsCase.EnablePhase.D, PackedRefSemanticsCase.requireCase("BUILTIN_PROPERTY_MUTATION").enablePhase());
-        assertEquals(PackedRefSemanticsCase.EnablePhase.D, PackedRefSemanticsCase.requireCase("DYNAMIC_VARIANT_MUTATION").enablePhase());
-        assertEquals(PackedRefSemanticsCase.EnablePhase.D, PackedRefSemanticsCase.requireCase("STATIC_VAR").enablePhase());
-        assertEquals(PackedRefSemanticsCase.EnablePhase.D, PackedRefSemanticsCase.requireCase("LAMBDA_CAPTURE").enablePhase());
-        // Plan §6 Phase F: full acceptance enables rows 23 and 24.
-        assertEquals(PackedRefSemanticsCase.EnablePhase.F, PackedRefSemanticsCase.requireCase("CORO_AWAIT").enablePhase());
-        assertEquals(PackedRefSemanticsCase.EnablePhase.F, PackedRefSemanticsCase.requireCase("SIGNAL_MULTI").enablePhase());
-        // Every remaining disabled case belongs to the Phase C storage-model switch batch.
-        for (var probeCase : PackedRefSemanticsCase.cases()) {
-            if (probeCase.enablePhase() == PackedRefSemanticsCase.EnablePhase.A) {
-                continue;
-            }
-            var name = probeCase.probeName();
-            if (name.equals("BUILTIN_PROPERTY_MUTATION") || name.equals("DYNAMIC_VARIANT_MUTATION")
-                    || name.equals("STATIC_VAR") || name.equals("LAMBDA_CAPTURE")
-                    || name.equals("CORO_AWAIT") || name.equals("SIGNAL_MULTI")) {
-                continue;
-            }
+    void deferredCasesPinTheirSemanticGate() {
+        // Frontend writeback route/gate rework: builtin-engine-property mutation must stop
+        // persisting; the dynamic-Variant gate must flip; the compile-blocked static/lambda
+        // routes must unlock.
+        for (var name : Set.of("BUILTIN_PROPERTY_MUTATION", "DYNAMIC_VARIANT_MUTATION", "STATIC_VAR", "LAMBDA_CAPTURE")) {
             assertEquals(
-                    PackedRefSemanticsCase.EnablePhase.C,
-                    probeCase.enablePhase(),
-                    "disabled case outside the D/F pinned set must belong to Phase C: " + name
+                    PackedRefSemanticsCase.AssertionGate.DEFERRED_FRONTEND_WRITEBACK_ROUTES,
+                    PackedRefSemanticsCase.requireCase(name).gate(),
+                    "gate mismatch for " + name
             );
+        }
+        // Full-matrix acceptance: the coroutine/signal combination rows.
+        for (var name : Set.of("CORO_AWAIT", "SIGNAL_MULTI")) {
+            assertEquals(
+                    PackedRefSemanticsCase.AssertionGate.DEFERRED_FULL_MATRIX_ACCEPTANCE,
+                    PackedRefSemanticsCase.requireCase(name).gate(),
+                    "gate mismatch for " + name
+            );
+        }
+        // Every case outside the deferred groups must be asserted — a silently deferred case
+        // would shrink the golden-aligned inventory unnoticed.
+        for (var probeCase : PackedRefSemanticsCase.cases()) {
+            if (probeCase.gate() != PackedRefSemanticsCase.AssertionGate.DEFERRED_FRONTEND_WRITEBACK_ROUTES
+                    && probeCase.gate() != PackedRefSemanticsCase.AssertionGate.DEFERRED_FULL_MATRIX_ACCEPTANCE) {
+                assertEquals(
+                        PackedRefSemanticsCase.AssertionGate.ASSERTED,
+                        probeCase.gate(),
+                        "case outside the deferred groups must be asserted: " + probeCase.probeName()
+                );
+            }
         }
     }
 }

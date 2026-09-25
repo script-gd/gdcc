@@ -15,18 +15,17 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Dual-run golden comparison for the Packed*Array reference-semantics migration
-/// (packed_array_reference_semantics_plan.md §6 Phase A, §8 acceptance mapping).
+/// Dual-run golden comparison for the Packed*Array reference-semantics migration.
 ///
 /// The same `packed_ref_probes.gd` source runs once under the Godot interpreter and once
-/// compiled by gdcc; both sides must reproduce the committed golden file for every Phase-A
-/// enabled case. The interpreter side is always validated against the full golden (it is the
-/// baseline the golden was locked with), so a wrong `GODOT_BIN` version or a broken probe
-/// library fails fast instead of silently re-baselining.
+/// compiled by gdcc; both sides must reproduce the committed golden file for every case the
+/// registry currently asserts. The interpreter side is always validated against the full
+/// golden (it is the baseline the golden was locked with), so a wrong `GODOT_BIN` version or
+/// a broken probe library fails fast instead of silently re-baselining.
 ///
-/// Cases whose gdcc-side alignment is scheduled for Phase C/D/F are registered in
-/// {@link PackedRefSemanticsCase} with their phase and reported as skipped per case, keeping
-/// the disabled inventory visible in test reports.
+/// Cases deferred on a capability gap are registered in {@link PackedRefSemanticsCase} with
+/// their gate and reported as skipped per case, keeping the deferred inventory visible in
+/// test reports.
 ///
 /// Gating: skipped via JUnit assumptions when `GODOT_BIN` is missing; the gdcc side is
 /// additionally skipped when Zig is unavailable (the interpreter baseline still runs).
@@ -60,9 +59,8 @@ public class PackedArrayReferenceSemanticsDualRunTest {
     }
 
     /// Structural checks for the gdcc side (unknown cases, duplicates and emission order are
-    /// harness bugs regardless of per-case phase), plus payload equality for the Phase-A
-    /// enabled subset. Divergent-but-disabled cases run and appear in the transcript but are
-    /// not asserted here.
+    /// harness bugs regardless of per-case gating), plus payload equality for every currently
+    /// asserted case. Deferred cases run and appear in the transcript but are not asserted.
     @Test
     void gdccRunMatchesGoldenStructureAndEnabledCases() {
         Assumptions.assumeTrue(
@@ -70,8 +68,8 @@ public class PackedArrayReferenceSemanticsDualRunTest {
                 "Zig not found; gdcc side was not built (interpreter baseline still validated)"
         );
         // Migration tripwire: once the companion module's constructs stop being fail-closed
-        // (Phase C/D work), this fails and its cases must be migrated back into the main probe
-        // library (and their registry phases re-evaluated).
+        // (frontend writeback route work), this fails and its cases must be migrated back into
+        // the main probe library (and their registry gates re-evaluated).
         assertFalse(
                 dualRun.gdccBlockedModuleCompiled(),
                 "Compile-blocked companion module unexpectedly compiled; migrate "
@@ -81,7 +79,7 @@ public class PackedArrayReferenceSemanticsDualRunTest {
         var comparison = ProbeGoldenComparison.compare(
                 dualRun.gdccOutput(),
                 golden,
-                PackedRefSemanticsCase.phaseAEnabledCaseNames()
+                PackedRefSemanticsCase.assertedCaseNames()
         );
         assertTrue(
                 comparison.matches(),
@@ -91,13 +89,13 @@ public class PackedArrayReferenceSemanticsDualRunTest {
     }
 
     /// Per-case granularity: every case re-checks its interpreter payload against the golden;
-    /// Phase-A-enabled cases additionally assert gdcc-side payload equality, while C/D/F cases
-    /// report as skipped with their scheduled phase.
+    /// asserted cases additionally assert gdcc-side payload equality, while gated cases report
+    /// as skipped with their deferral reason.
     @TestFactory
     List<DynamicTest> perCaseGoldenAlignment() {
         return PackedRefSemanticsCase.cases().stream()
                 .map(probeCase -> DynamicTest.dynamicTest(
-                        probeCase.probeName() + " [§2-" + probeCase.matrixRow() + ", Phase " + probeCase.enablePhase() + "]",
+                        probeCase.probeName() + " [§2-" + probeCase.matrixRow() + ", " + probeCase.gate() + "]",
                         () -> assertCaseAlignment(probeCase)
                 ))
                 .toList();
@@ -111,8 +109,8 @@ public class PackedArrayReferenceSemanticsDualRunTest {
                 dualRun.interpreterOutput().requirePayload(caseName),
                 "Interpreter payload diverges from golden for case " + caseName
         );
-        if (probeCase.enablePhase() != PackedRefSemanticsCase.EnablePhase.A) {
-            Assumptions.abort("gdcc-side golden alignment scheduled for Phase " + probeCase.enablePhase());
+        if (!probeCase.isAsserted()) {
+            Assumptions.abort("gdcc-side golden alignment deferred: " + probeCase.gate());
         }
         Assumptions.assumeTrue(
                 dualRun.gdccOutput() != null,

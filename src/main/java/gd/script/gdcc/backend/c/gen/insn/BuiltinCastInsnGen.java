@@ -2,6 +2,7 @@ package gd.script.gdcc.backend.c.gen.insn;
 
 import gd.script.gdcc.backend.c.gen.CBodyBuilder;
 import gd.script.gdcc.backend.c.gen.CInsnGen;
+import gd.script.gdcc.backend.c.gen.PackedRefCNames;
 import gd.script.gdcc.enums.GdInstruction;
 import gd.script.gdcc.lir.LirVariable;
 import gd.script.gdcc.lir.insn.BuiltinCastInsn;
@@ -10,6 +11,7 @@ import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdPackedArrayType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.util.type.ExplicitCastDecision;
@@ -78,6 +80,24 @@ public final class BuiltinCastInsnGen implements CInsnGen<BuiltinCastInsn> {
                             valueVariable.type().getTypeName() + "' -> '" + resolvedTarget.getTypeName() +
                             "' (identity/Variant/Object paths must use other insns)"
             );
+        }
+
+        // Same-family packed `as` (reaching here because ExplicitCastSupport no longer classifies
+        // it as IDENTITY): the interpreter produces a COW copy with a FRESH identity (plan §2-22,
+        // §4.3.7; probe AS_SAME_FAMILY), never a share — emit whitelist (d) `new_copy` directly.
+        if (resolvedTarget instanceof GdPackedArrayType packedTarget
+                && valueVariable.type() instanceof GdPackedArrayType packedSource
+                && packedSource.getTypeName().equals(packedTarget.getTypeName())) {
+            var sourceAddr = bodyBuilder.renderArgument(bodyBuilder.valueOfVar(valueVariable), false);
+            if (!sourceAddr.temps().isEmpty()) {
+                throw bodyBuilder.invalidInsn("builtin_cast same-family packed source must not require temporaries");
+            }
+            bodyBuilder.moveOwnedCallIntoSlot(
+                    bodyBuilder.targetOfVar(resultVariable),
+                    PackedRefCNames.newCopyExpr(packedTarget, sourceAddr.code()),
+                    packedTarget
+            );
+            return;
         }
 
         emitVariantConstructCast(bodyBuilder, resultVariable, valueVariable, resolvedTarget);

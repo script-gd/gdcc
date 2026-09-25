@@ -2,11 +2,12 @@
 #define GDCC_PACKED_REF_H
 
 #include <godot_binding.h>
+#include <gdcc_likely.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 /// Variant-backed Packed*Array storage infrastructure (packed_array_reference_semantics_plan.md
-/// Phase B; design contract §4.1).
+/// design contract §4.1).
 ///
 /// In the reference-semantics model every Packed*Array slot (locals, parameters, fields, coroutine
 /// frames, wrappers) stores a `godot_Variant` whose internal `PackedArrayRef` is shared with all
@@ -14,7 +15,7 @@
 /// `godot_variant_destroy`. The only places where a value may cross the struct<->Variant boundary
 /// are the whitelisted conversions below, each behind a named per-family helper so generated code
 /// never calls the raw `godot_new_Packed*Array_with_*` / `godot_new_Variant_with_Packed*Array`
-/// symbols directly (Phase C enforces this by grep):
+/// symbols directly (enforced by grep):
 ///
 ///   (a) ptrcall ABI boundary, both directions (plan §1.3 exception 1, §4.3.11):
 ///       - `gdcc_packed_<slug>_variant_from_struct`  inbound materialization of a raw arg slot
@@ -84,14 +85,14 @@ static GDExtensionVariantGetInternalPtrFunc gdcc_packed_##Slug##_getter = NULL; 
  * engine that does return NULL, not a type-mismatch guard. \
  * NOTE: keep macro-body comments as block comments — `//` would swallow the rest of the macro. */ \
 static inline godot_Packed##TypeName *gdcc_packed_##Slug##_internal_ptr(const godot_Variant *self) { \
-    if (self == NULL) { \
+    if (unlikely(self == NULL)) { \
         gdcc_packed_ref_fail("gdcc_packed_" #Slug "_internal_ptr called with NULL Variant"); \
     } \
-    if (gdcc_packed_##Slug##_getter == NULL) { \
+    if (unlikely(gdcc_packed_##Slug##_getter == NULL)) { \
         gdcc_packed_ref_fail("gdcc_packed_" #Slug "_internal_ptr used before gdcc_packed_ref_init()"); \
     } \
     void *internal = gdcc_packed_##Slug##_getter((GDExtensionVariantPtr)self); \
-    if (internal == NULL) { \
+    if (unlikely(internal == NULL)) { \
         gdcc_packed_ref_fail("variant_get_ptr_internal_getter returned NULL internal pointer for " #TypeName); \
     } \
     return (godot_Packed##TypeName *)internal; \
@@ -143,13 +144,13 @@ GDCC_PACKED_REF_DEFINE_FAMILY(vector4_array, Vector4Array, GDEXTENSION_VARIANT_T
 /// Resolves and caches every family's internal pointer getter; fail-fast on the first missing one
 /// so an engine without `variant_get_ptr_internal_getter` support never reaches a call site.
 static void gdcc_packed_ref_init(void) {
-    if (gdcc_interface_variant_get_ptr_internal_getter == NULL) {
+    if (unlikely(gdcc_interface_variant_get_ptr_internal_getter == NULL)) {
         gdcc_packed_ref_fail("variant_get_ptr_internal_getter interface unresolved "
                 "(gdcc_packed_ref_init called before godot_initialize_interface?)");
     }
 #define GDCC_PACKED_REF_INIT_FAMILY(Slug, TypeName, VariantKind) \
     gdcc_packed_##Slug##_getter = godot_variant_get_ptr_internal_getter(VariantKind); \
-    if (gdcc_packed_##Slug##_getter == NULL) { \
+    if (unlikely(gdcc_packed_##Slug##_getter == NULL)) { \
         gdcc_packed_ref_fail("variant_get_ptr_internal_getter unavailable for " #TypeName); \
     }
 

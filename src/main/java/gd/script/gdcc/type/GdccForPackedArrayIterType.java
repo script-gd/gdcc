@@ -11,9 +11,12 @@ import java.util.stream.Collectors;
 
 /// Compiler-only storage type for one specialized Packed*Array `for-in` iterator family.
 ///
-/// Each concrete Packed*Array has its own state instance (no shared kind-tagged union). The C storage
-/// owns a typed COW snapshot, a typed element base pointer, index, and size. Copy bumps the COW
-/// handle; get reads the typed pointer without runtime family dispatch.
+/// Each concrete Packed*Array has its own state instance (no shared kind-tagged union). The C
+/// storage is a LIVE-iteration state (packed_array_reference_semantics_plan.md §4.3.8): a Variant
+/// holder copy sharing the source array's identity, plus the current index — no COW snapshot, no
+/// cached size, no cached element base pointer. `should_continue`/`get` re-evaluate the live size
+/// and resolve elements per access, so elements appended during iteration are visited and
+/// mutation-driven reallocation cannot dangle a cached pointer.
 public final class GdccForPackedArrayIterType implements GdCompilerType {
     public static final @NotNull GdccForPackedArrayIterType FOR_PACKED_BYTE_ARRAY_ITER =
             new GdccForPackedArrayIterType("byte_array", "ByteArray", GdPackedNumericArrayType.PACKED_BYTE_ARRAY);

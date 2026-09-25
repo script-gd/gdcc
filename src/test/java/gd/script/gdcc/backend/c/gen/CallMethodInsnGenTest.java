@@ -1275,6 +1275,109 @@ class CallMethodInsnGenTest {
     }
 
     @Test
+    @DisplayName("CALL_METHOD builtin packed receiver passes the Variant internal pointer")
+    void callBuiltinPackedMethodPassesInternalPointerReceiver() {
+        // packed_array_reference_semantics_plan.md §4.3.3: builtin wrapper signatures stay native
+        // (`godot_PackedInt32Array *self`), so the Variant-backed receiver renders its internal
+        // pointer — in-place mutation on the shared array, never a detached copy.
+        var clazz = newClass("Worker");
+        var func = newFunction("call_packed_push_back");
+        func.createAndAddVariable("numbers", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        func.createAndAddVariable("value", GdIntType.INT);
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "push_back",
+                "numbers",
+                List.of(new LirInstruction.VariableOperand("value"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(packedInt32ArrayBuiltin()), List.of()), List.of(clazz));
+        assertTrue(
+                body.contains("godot_PackedInt32Array_push_back(gdcc_packed_int32_array_internal_ptr(&$numbers), $value);"),
+                body
+        );
+        assertFalse(body.contains("godot_PackedInt32Array_push_back(&"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD builtin packed argument passes the Variant internal pointer")
+    void callBuiltinPackedMethodPassesInternalPointerArgument() {
+        // Plan §4.3.4: packed ARGUMENTS of builtin methods (e.g. `append_array`) equally render
+        // the internal pointer, so appended content lands on the receiver's shared array.
+        var clazz = newClass("Worker");
+        var func = newFunction("call_packed_append_array");
+        func.createAndAddVariable("numbers", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        func.createAndAddVariable("extra", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "append_array",
+                "numbers",
+                List.of(new LirInstruction.VariableOperand("extra"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(packedInt32ArrayBuiltin()), List.of()), List.of(clazz));
+        assertTrue(
+                body.contains("godot_PackedInt32Array_append_array(gdcc_packed_int32_array_internal_ptr(&$numbers), gdcc_packed_int32_array_internal_ptr(&$extra));"),
+                body
+        );
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD packed builtin return wraps the raw struct through wrap_temp")
+    void callBuiltinPackedReturnWrapsRawStructThroughWrapTemp() {
+        // Plan §4.3.4 + whitelist (c): `duplicate()` yields a fresh native struct that is wrapped
+        // into the target Variant slot immediately — the result is an independent new array.
+        var clazz = newClass("Worker");
+        var func = newFunction("call_packed_duplicate");
+        func.createAndAddVariable("numbers", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        func.createAndAddVariable("copy", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        entry(func).appendInstruction(new CallMethodInsn(
+                "copy",
+                "duplicate",
+                "numbers",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(packedInt32ArrayBuiltin()), List.of()), List.of(clazz));
+        assertTrue(body.contains("= godot_PackedInt32Array_duplicate(gdcc_packed_int32_array_internal_ptr(&$numbers));"), body);
+        assertTrue(body.contains("gdcc_packed_int32_array_wrap_temp(&"), body);
+        assertTrue(body.contains("$copy = __gdcc_tmp_owned_move_"), body);
+        assertFalse(body.contains("godot_new_Variant_with_PackedInt32Array"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD packed builtin with a default-filled scalar arg wraps the packed return")
+    void callBuiltinPackedSliceWithDefaultArgWrapsReturn() {
+        // `slice(begin, end = 2147483647)` combines every adaptation axis at once: internal-pointer
+        // receiver, caller-provided scalar arg, caller-side default materialization (plan §2-17
+        // unchanged), and a fresh packed result wrapped through whitelist (c).
+        var clazz = newClass("Worker");
+        var func = newFunction("call_packed_slice");
+        func.createAndAddVariable("numbers", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        func.createAndAddVariable("begin", GdIntType.INT);
+        func.createAndAddVariable("sliced", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        entry(func).appendInstruction(new CallMethodInsn(
+                "sliced",
+                "slice",
+                "numbers",
+                List.of(new LirInstruction.VariableOperand("begin"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(packedInt32ArrayBuiltin()), List.of()), List.of(clazz));
+        assertTrue(body.contains("gdcc_packed_int32_array_internal_ptr(&$numbers)"), body);
+        assertTrue(body.matches("(?s).*godot_PackedInt32Array __gdcc_tmp_packed_native_ret_\\d+ = "
+                + "godot_PackedInt32Array_slice\\(gdcc_packed_int32_array_internal_ptr\\(&\\$numbers\\), \\$begin, "
+                + "__gdcc_tmp_default_arg_2_\\d+\\);.*"), body);
+        assertTrue(body.contains("gdcc_packed_int32_array_wrap_temp(&"), body);
+        assertTrue(body.contains("$sliced = __gdcc_tmp_owned_move_"), body);
+        assertFalse(body.contains("godot_new_Variant_with_PackedInt32Array"), body);
+    }
+
+    @Test
     @DisplayName("CALL_METHOD should normalize typedarray PackedByteArray parameter to packed array type")
     void callMethodShouldNormalizeTypedarrayPackedByteArrayParameter() {
         var clazz = newClass("Worker");
@@ -1291,7 +1394,10 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(arrayBuiltinWithTypedarrayPackedByteArrayParam()), List.of()), List.of(clazz));
-        assertTrue(body.contains("godot_Array_accept_packed(&$array, &$bytes)"), body);
+        // The builtin wrapper keeps the native packed param ABI; the Variant-backed argument
+        // passes its internal pointer (packed_array_reference_semantics_plan.md §4.3.4).
+        assertTrue(body.contains("godot_Array_accept_packed(&$array, gdcc_packed_byte_array_internal_ptr(&$bytes))"), body);
+        assertFalse(body.contains("godot_new_PackedByteArray"), body);
     }
 
     @Test
@@ -1330,7 +1436,12 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(arrayBuiltinWithTypedarrayPackedVector3ArrayReturn()), List.of()), List.of(clazz));
-        assertTrue(body.contains("godot_Array_fetch_packed_vectors(&$array)"), body);
+        // Packed builtin return: raw struct temporary wrapped into the Variant slot through
+        // whitelist (c) wrap_temp (plan §4.3.4) — never a direct struct->Variant assignment.
+        assertTrue(body.contains("godot_PackedVector3Array "), body);
+        assertTrue(body.contains("= godot_Array_fetch_packed_vectors(&$array);"), body);
+        assertTrue(body.contains("gdcc_packed_vector3_array_wrap_temp(&"), body);
+        assertFalse(body.contains("godot_new_Variant_with_PackedVector3Array"), body);
     }
 
     @Test
@@ -2146,8 +2257,74 @@ class CallMethodInsnGenTest {
         );
     }
 
-    private ExtensionBuiltinClass arrayBuiltinWithTypedarrayPackedByteArrayParam() {
-        var method = new ExtensionBuiltinClass.ClassMethod(
+    /// Minimal `PackedInt32Array` builtin fixture with one void method taking a scalar, one void
+    /// method taking a packed array, and one packed-returning method — enough to anchor the
+    /// native-ABI adaptation of every packed call position.
+    private ExtensionBuiltinClass packedInt32ArrayBuiltin() {
+        var pushBack = new ExtensionBuiltinClass.ClassMethod(
+                "push_back",
+                "void",
+                false,
+                true,
+                false,
+                false,
+                0L,
+                List.of(new ExtensionFunctionArgument("value", "int", null, null)),
+                List.of(),
+                null
+        );
+        var appendArray = new ExtensionBuiltinClass.ClassMethod(
+                "append_array",
+                "void",
+                false,
+                true,
+                false,
+                false,
+                0L,
+                List.of(new ExtensionFunctionArgument("array", "PackedInt32Array", null, null)),
+                List.of(),
+                null
+        );
+        var duplicate = new ExtensionBuiltinClass.ClassMethod(
+                "duplicate",
+                "PackedInt32Array",
+                false,
+                true,
+                false,
+                false,
+                0L,
+                List.of(),
+                List.of(),
+                new ExtensionBuiltinClass.ClassMethod.ReturnValue("PackedInt32Array")
+        );
+        var slice = new ExtensionBuiltinClass.ClassMethod(
+                "slice",
+                "PackedInt32Array",
+                false,
+                true,
+                false,
+                false,
+                0L,
+                List.of(
+                        new ExtensionFunctionArgument("begin", "int", null, null),
+                        new ExtensionFunctionArgument("end", "int", "2147483647", null)
+                ),
+                List.of(),
+                new ExtensionBuiltinClass.ClassMethod.ReturnValue("PackedInt32Array")
+        );
+        return new ExtensionBuiltinClass(
+                "PackedInt32Array",
+                false,
+                List.of(),
+                List.of(pushBack, appendArray, duplicate, slice),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionBuiltinClass arrayBuiltinWithTypedarrayPackedByteArrayParam() {        var method = new ExtensionBuiltinClass.ClassMethod(
                 "accept_packed",
                 "int",
                 false,

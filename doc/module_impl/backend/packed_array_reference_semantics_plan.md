@@ -293,7 +293,8 @@ C 先行时遗留的冗余写回是 identity 自赋值，无害。
   `gd.script.gdcc.backend.c.build.packedref`）：
   `PackedRefSemanticsDualRunHarness`（双项目组装 + 双跑编排）、`ProbeOutput`（严格
   `PROBE|<CASE>|<payload>` 解析）、`ProbeGoldenComparison`（payload 仅检查启用集、
-  结构检查无条件）、`PackedRefSemanticsCase`（用例注册表，含 §2 行号与启用 Phase）、
+  结构检查无条件）、`PackedRefSemanticsCase`（用例注册表，含 §2 行号与启用标记——
+  Phase C 时重构为语义门控 + baseline 回归下限，见 Phase C 状态节）、
   `PackedArrayReferenceSemanticsDualRunTest`（集成测试：解释器侧全量比对 golden，
   gdcc 侧结构 + 启用集 payload 比对，逐用例 DynamicTest）。
 - 单元测试（同包）：`ProbeOutputTest`（正反锚定解析合同）、`ProbeGoldenComparisonTest`
@@ -396,7 +397,148 @@ PARAM_DEFAULT_SHARED(17)、ELEMENT_REBIND(18)、STRING_ITER_ELEMENTS(19)、IN_ME
 
 ### Phase C：后端存储模型切换（含迭代器与全部 ABI 边界）
 
-- 内容（文件清单为必改集合，实施时按 §4.3 各条执行）：
+#### Phase C 状态（2026-09-25 完成）
+
+**已完成并验收。** 产物清单（按 §6 清单逐条对应）：
+
+- **核心不变式落地（§4.1）**：
+  - `CGenHelper.java`：packed 存储/参数 C 类型映射改 `godot_Variant`/`godot_Variant*`
+    （`renderGdTypeInC`/`renderGdTypeRefInC`）；copy/destroy/pack/unpack 分别映射为
+    `godot_new_Variant_with_Variant`/`godot_Variant_destroy`（后者）。新增
+    `checkPackedType` 与 ptrcall/engine-helper/operator-evaluator 的 packed 专用渲染
+    （`renderPtrcallPackedArgDecl`/`renderPtrcallPackedArgDestroyStmt`/
+    `renderPtrcallPackedReturnWrite`/`renderEngineMethodHelperPackedSlotDecl` 等）；
+    `renderPtrcallNonObjectArgExpr` 对 packed fail-fast（强制走白名单物化分支）。
+  - `PackedRefCNames.java`（新增）：`gdcc_packed_ref.h` 全部具名 helper 的集中命名 surface，
+    slug 映射 fail-fast，全部 10 family 与头文件宏实例一一对应。
+  - `PackedNativeAbiCallSupport.java`（新增）：原生 ABI wrapper（builtin 方法/构造/运算符
+    evaluator/utility）的统一调用点适配——packed 形参渲染 `internal_ptr`，packed 返回值经
+    原生临时 struct + `wrap_temp` 落入 Variant 槽；discard 路径即时析构；非 packed 位置保持
+    通用渲染。调用方：CallMethodInsnGen（BUILTIN mode 钩子）、CallGlobalInsnGen（utility）、
+    OperatorInsnGen（BUILTIN_EVALUATOR）、CBuiltinBuilder（非 packed 目标构造器的 packed
+    实参，如 `Array(packed)`）。
+- **构造（§4.3.2、§4.1(b)(d)）**：`CBuiltinBuilder.constructBuiltin` 新增 packed 分支——
+  零参 → `new_empty`，同型实参 → `new_copy`，Array 实参 → `new_from_array`；
+  `hasConstructor` 元数据校验保留为有效性闸门（Godot 4.5 packed 构造器恰好是这三个），
+  跨 family 等非法组合 fail-closed。`CBodyBuilder.renderDefaultValueExpr` 的 packed 默认值
+  改发 `new_empty`（`__prepare__`、默认参数、协程默认值等全部默认值路径随之切换）。
+  `CConstructInsnGen`/`CConstructInsnGenEngineTest` 断言已反转为白名单形状并含负向锚定。
+- **赋值/返回/析构（§4.3.1、§4.3.9）**：`assignVar`/`returnValue`/scope-exit 析构/协程 frame
+  copy/destroy/lambda 捕获/静态 backing 全部经 helper 名映射自动切换为 Variant 持有者
+  拷贝与 `godot_Variant_destroy`。`CBodyBuilderAliasSafetySupport` 复核结论：**保留**
+  stable-carrier 路径（Variant 拷贝 carrier 在 holder 语义下依然正确，且 String/Vector 等
+  struct 槽仍依赖该保守路径；文件头注释记录了该评估）。
+- **方法调用 receiver/实参/返回（§4.3.3、§4.3.4）**：builtin wrapper 签名不变，调用点经
+  `PackedNativeAbiCallSupport` 适配（receiver=internal_ptr(&$var)，packed 实参同，packed
+  返回 wrap_temp）。覆盖 `push_back`/`append_array`/`duplicate`/`slice`（含默认参数补全）
+  单测锚定（`CallMethodInsnGenTest`）。
+- **索引读写（§4.3.5）**：`IndexStoreInsnGen` 的 packed self 改为直传存储 Variant（与
+  Variant self 同路径），pack/call/unpack 写回移除，`ref` self 禁令随之解除；
+  `isIndexedValueSemanticSelfType` 不再含 `GdPackedArrayType`。`IndexLoadInsnGen` 无需改动
+  （self 经共享 Variant 拷贝物化，元素读取语义不变）。`IndexStoreInsnGenTest`/
+  `IndexStoreInsnGenEngineTest` 断言已反转并保留真机行为锚定。
+- **运算符（§4.3.6）**：evaluator helper 声明保持原生 ABI（`renderOperatorEvaluatorHelperTypeInC`
+  packed → `const godot_Packed*Array*`），调用点按操作数逐个适配（标量按值、packed 取
+  internal_ptr）；packed 结果在 helper 内以原生 struct 承载（`renderOperatorEvaluatorResultCarrierTypeInC`），
+  调用点 wrap_temp 落入 Variant 槽；evaluator 不可用回退表达式对 packed 返回原生零值 struct
+  （新增 `renderOperatorEvaluatorHelperDefaultExpr`）。**未**将 `+`/`+=` 优化为 in-place
+  append（§4.3.6 禁令遵守，PLUS_EQUALS_REBIND 用例锁定重绑定语义）。混合类型
+  `int in PackedInt32Array` 单测锚定（`COperatorInsnGenTest`）。
+- **cast（§4.3.7）**：同 family `as` 经 `BuiltinCastInsnGen` 新增分支发 `new_copy`；
+  `ExplicitCastSupport` 同型 packed 分类由 IDENTITY 修订为 BUILTIN_RUNTIME_CAST（前端
+  lowering 随之路由到 `BuiltinCastInsn`）。**实测补充修订**：Phase A 探针仅覆盖 Variant 源；
+  本阶段对 Godot 4.5.2 补测确认静态同型 `as`（`var c := a as PackedInt32Array`，a 为静态
+  packed）同样是 COW 拷贝（新身份），AS_SAME_FAMILY 探针扩展为 `3,1,3,2`（a/v 共享、
+  b/c 各自独立），golden 已用解释器重锁。Variant 源 `as` 保持 variant_construct 路径
+  （引擎构造即产生新身份），unpack 三分支落入目标槽。
+- **unpack 三分支（§4.1 恒等修订落地）**：`InsnGenSupport.unpackVariantAssign` packed 分支=
+  精确 kind 检查（`gdcc_packed_ref_is`）→ 共享拷贝；Array payload → `new_from_array` 转换
+  （**实测锚定**：解释器对 `var p: PackedInt32Array = variantHoldingArray` 做转换且产独立
+  数组，非报错）；其余 payload → 运行时类型错误 + default-return（与解释器类型错误一致）。
+  正反锚定见 `CPackUnpackVariantInsnGenTest`。
+- **for-in 迭代器重写（§4.3.8）**：`intrinsic/for_packed_array_iter.h` 重写为活迭代——state 持
+  源数组 Variant 持有者拷贝 + index；`from` 收 `const godot_Variant*`；`next` 仅持有者拷贝
+  +index 递增；`should_continue` 每次求 live size；`get` 每次 live size 越界检查后经
+  `operator_index_const` 取元素，禁止跨迭代缓存基址。`GdccForPackedArrayIterType` 布局注释
+  已同步。Java 侧 intrinsic 发射无需改动（`from` 实参渲染自动匹配新签名）。
+- **wrapper 与 include 接线（§4.3.10-12）**：`entry.h.ftl` ptrcall wrapper——packed 参数经
+  白名单 (a) 入向物化（调后 destroy），packed 返回经 (a) 出向拷贝写出；call_func wrapper 经
+  既有 gate + unpack/pack 名映射自动切换为"类型检查 + Variant 拷贝"（身份保持）。
+  `engine_method_binds.h.ftl` ptrcall 路径——packed 参数物化原生 slot（调后 destroy），
+  packed 返回 raw slot + `wrap_temp`；vararg 路径经 pack/unpack 名映射自动正确。
+  `entry.c.ftl` `initialize()` 在 `gdcc_init()` 后调用 `gdcc_packed_ref_init()`；
+  `gdcc_helper.h` 接入 `gdcc_packed_ref.h`（先于 `gdcc_intrinsic.h`），`gdscript_builtins.h`
+  自带 include 且 `GDCC_LEN_PACKED_CASE` 改走 internal_ptr（消除禁令符号）。
+- **静态变量与默认参数核对（清单第 11 项）**：static backing 声明/初始化/析构均经
+  renderGdTypeInC/ConstructArrayInsn/renderDestroyFunctionName 自动切换；默认参数维持
+  caller-side 逐调用物化 + wrapper `defK(...)`（§2-17 不变，PARAM_DEFAULT_SHARED 通过）。
+- **生成代码禁令验收**：对双跑模块全量生成产物（entry.c/entry.h/engine_method_binds.h）
+  grep 验收 0 命中；`CCodegenTest` 新增永久回归锚定（逐文件扫描全部生成产物中的
+  `godot_new_Packed*Array_with_*`/`godot_new_Variant_with_Packed*Array`/裸
+  `godot_new_Packed*()`）。
+
+**双跑验收（Godot 4.5.2 + zig 实测）**：归属本阶段的 11 个用例（§2 第 1、2、10、12-16、
+21、21-hash、22 行）全部启用并通过，Phase A 基线 10 例保持通过。启用机制：
+`PackedRefSemanticsCase` 以**语义门控**登记每个用例——`ASSERTED`（当前必须对齐 golden）或
+按能力缺口暂缓（`DEFERRED_FRONTEND_WRITEBACK_ROUTES` / `DEFERRED_FULL_MATRIX_ACCEPTANCE`），
+另以 `baseline` 标记锁定引入 harness 起即对齐的回归下限集；阶段归属叙事只保留在本文档中，
+代码不出现执行阶段概念（AGENTS.md 语义自描述要求）。注册表测试锚定断言清单、回归下限集与
+暂缓分组不变式。
+
+**超范围自愈现象（保持原 phase 归属，未提前启用）**：CORO_AWAIT（23）、SIGNAL_MULTI（24）、
+DYNAMIC_VARIANT_MUTATION（dyn）在 gdcc 侧输出已与 golden 一致——协程 frame/信号回调的
+Variant 存储切换顺带修复（SIGNAL_MULTI 的 `variant_get_indexed failed` 崩溃随索引路径重写
+消失；动态 Variant receiver 在共享身份下现行冗余写回无害且正确）。7a
+（BUILTIN_PROPERTY_MUTATION）仍按预期分歧（gdcc=2 vs 解释器=1），STATIC_VAR/LAMBDA_CAPTURE
+仍编译期 fail-closed——三者均属 Phase D 范围。
+
+**专项验收**：append_array/duplicate/slice 参数与返回值 ABI 单测通过（`CallMethodInsnGenTest`）；
+混合类型运算符载体测试通过（`COperatorInsnGenTest`）；ptrcall 例外**运行测试**通过
+（`PackedRefStorageModelSmokeTest.ptrcallBoundaryShouldIsolateCallerIdentityInBothDirections`——
+fake 引擎按引擎身份合同建模，对生成的 wrapper 序列断言双向身份隔离、callee 侧共享可见、
+持有者计数平衡）；迭代器活迭代运行测试通过（`packedIteratorShouldIterateLiveAndStayBalanced`——
+正向：迭代中 append 被本轮访问且别名可见；负向：中途缩容 live-size 提前终止、OOB `get`
+返回 family 默认值、全生命周期持有者平衡无泄漏）。
+`./gradlew test --no-daemon --console=plain` 全量回归通过（4617 测试，0 失败）。
+
+**Phase C 实测对原计划的补充修订**（已反映在上文与 §4.3 对应节注）：
+
+1. **静态同型 `as` 的语义确认**：§4.3.7 的探针基线仅覆盖 Variant 源；本阶段补测确认静态
+   同型 `as` 同为 COW 拷贝，因此 `ExplicitCastSupport` 的同型 packed 分类显式改为
+   BUILTIN_RUNTIME_CAST（否则 IDENTITY → AssignInsn 会产生共享，违反 §2-22）。
+2. **unpack 的 Array 转换臂**：§4.1 的"类型检查 + Variant 拷贝"在 Array payload 下需为转换
+   （解释器实测），非报错；白名单 (d) `new_from_array` 承担该臂。
+3. **索引读保持 Variant API 路径**：§4.3.5 的"作用于内部指针"在读取侧经共享 Variant 拷贝
+   物化即可满足（语义等价），写侧直传存储 Variant；二者均不产生 struct 穿越。
+
+**审阅加固记录（review-expert-a / review-expert-c 并行审阅后修复，均经复核确认解决）**：
+
+1. **unpack 共享分支改 carrier-first 写序**：`emitPackedUnpackAssign` 精确 family 分支由
+   `callAssign` 改为 `moveOwnedCallIntoSlot`——holder 拷贝先于旧槽销毁，消除未来任何
+   源/目标同槽路由的 use-after-destroy 风险（当前调用点本就槽位相异，此为纪律对齐加固）；
+   测试新增"拷贝先于销毁"顺序锚定。
+2. **HRX lambda schema 同时编码语义类型名与 C 存储类型**：存储切换后 packed 各 family 与
+   Variant 的 C 名同为 `godot_Variant`，仅编码 C 名会使热重载指纹碰撞（跨 family 重绑定
+   会经错误 family 的 internal_ptr getter 解引用旧 holder，引擎侧 UB）。schema 字段现为
+   `<语义类型名>@<C存储类型>`；格式变化使旧连接 fail-closed（安全升级方向，符合 §7 第 6 条
+   预期）。测试锚定 packed family 两两碰撞消除与相同布局的 rebind 兼容。
+3. **迭代器运行探针升级为生成协议镜像**：探针复现前端真实双槽协议（`next` 临时槽覆盖 +
+   `AssignInsn` 经 copy helper 回写 state 槽），循环内锚定四持有者（src+alias+state+
+   next_temp）共享同一 backing 的计数不变式；另修复探针自身 shrink 段复用耗尽迭代器的 bug。
+4. **ptrcall wrapper 文本锚定补充顺序约束**：`assertOrdered` 锁定"入向物化 → 调用 → 出向
+   写出 → 逆序清理"的相对顺序（不仅是符号存在性）；编译出的真实 wrapper 的端到端驱动测试
+   留待 Phase F 混合调用自动回归统一承载（§6 Phase F 已列）。
+
+**后续微调（2026-09-25）**：为新增 C helper 标注分支预测提示——`gdcc_packed_ref.h` 全部
+fail-fast 分支（NULL self / 未初始化 / getter 返 NULL / init 接口与 family getter 缺失）与
+`for_packed_array_iter.h` `get` 的 OOB 分支标注 `unlikely(...)`（首次启用既有
+`gdcc_likely.h`，clang/gcc 下展开为 `__builtin_expect`，其余编译器退化为普通布尔判断，
+不改运行语义）。`GdccPackedRefRuntimeSmokeTest.headerShouldCompileStandalone` 的自包含合同
+注释同步放宽为允许 `gdcc_likely.h` 叶级依赖。
+
+#### Phase C 原始内容（保留备查）
+
+- 内容（文件清单为必改集合，实施时按 §4.3 各执行）：
   1. `CGenHelper.java`：packed 类型 storage/参数/返回 C 类型映射（`:344-402`）；
      copy/destroy helper 名映射（`:1297-1348`）；pack/unpack 渲染（`:1167-1284`）；
      `renderPtrcallNonObjectArgExpr`（`:1056-1062`）；`renderCallWrapperUnpackExpr` /
@@ -491,7 +633,21 @@ PARAM_DEFAULT_SHARED(17)、ELEMENT_REBIND(18)、STRING_ITER_ELEMENTS(19)、IN_ME
   --console=plain`；现有 Godot 集成测试套件全量通过；GDScript↔gdcc 混合调用（call_func
   身份保持、ptrcall 例外）纳入**自动回归**而非人工抽查；混合场景（属性 + 信号 + lambda +
   协程 + 循环组合）双跑比对。
-- 验收：构建全绿；无新增 known-limit 记录（或新增记录经人工确认属于 §1.3 例外）。
+- **双跑 harness 清理（全量验收通过后执行）**：全部用例转为断言态后，迁移期脚手架按下列
+  清单退役，行为合同的终身回归由保留项承担。
+  - 退役：`AssertionGate`/`baseline` 字段与暂缓跳过逻辑；STATIC_VAR、LAMBDA_CAPTURE 迁回主
+    探针库后，伴随库 `packed_ref_probes_blocked.gd`、`GDCC_COMPILE_BLOCKED_CASE_NAMES` 与
+    tripwire 断言一并删除；`PackedRefSemanticsCase` 注册表类与
+    `PackedRefSemanticsCaseRegistryTest` 删除（golden 行序即唯一事实源，
+    `ProbeGoldenComparison` 的未知用例/重复/顺序结构检查在全量比对下足以捕获漂移；
+    §2 行号归属由本文档与探针注释承担）。
+  - 保留：探针库 `packed_ref_probes.gd` 与 golden（§2 矩阵及 §1.3 例外的行为合同锚）；
+    简化后的 `PackedArrayReferenceSemanticsDualRunTest`（改为 golden 全量断言，解释器侧
+    基线校验不变）；`ProbeOutput`/`ProbeGoldenComparison` 及其单测（独立的解析/比对合同）；
+    `GdccPackedRefRuntimeSmokeTest` 与 `PackedRefStorageModelSmokeTest`（fake 引擎层
+    identity/fail-fast 锚定）。
+- 验收：构建全绿；无新增 known-limit 记录（或新增记录经人工确认属于 §1.3 例外）；harness
+  清理不减少任何用例的 golden 断言覆盖。
 
 ## 7. 风险与缓解
 

@@ -507,7 +507,7 @@ static inline ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnTyp
         );
         if (evaluator == NULL) {
             GDCC_PRINT_RUNTIME_ERROR("operator evaluator is unavailable: ${spec.functionName}", __func__, __FILE__, __LINE__);
-            return ${helper.renderDefaultValueExprInC(spec.returnType)};
+            return ${helper.renderOperatorEvaluatorHelperDefaultExpr(spec.returnType)};
         }
     }
     ${helper.renderOperatorEvaluatorObjectRawSlotDecl(spec.leftType, "left")}<#if !spec.unary>${helper.renderOperatorEvaluatorObjectRawSlotDecl(spec.rightType, "right")}</#if>
@@ -775,6 +775,9 @@ static void ptrcall${helper.renderFuncBindName(bindingData)}(
     void* method_userdata, GDExtensionClassInstancePtr p_instance,
     const GDExtensionConstTypePtr* p_args, GDExtensionTypePtr r_return) {
     // Object args/returns use raw Godot pointer slots; self is owner fat for instance methods.
+    // Packed args arrive as raw struct slots (plan §1.3 ptrcall exception): each is materialized
+    // into a wrapper-local Variant via whitelist (a) and destroyed on the way out, so callee
+    // mutation stays isolated from the caller's array across this boundary.
 <#-- The default flavor shares the same userdata layout as the call wrapper: ptrcall keeps the -->
 <#-- fixed full-argument ABI (no argc guard, no fill) but must still reach impl via ud->impl. -->
 <#if defaultFlavor>
@@ -783,6 +786,8 @@ static void ptrcall${helper.renderFuncBindName(bindingData)}(
 <#list bindingData.paramTypes as paramType>
 <#if helper.checkObjectType(paramType)>
     ${helper.renderPtrcallObjectArgDecl(paramType, paramType_index)}
+<#elseif helper.checkPackedType(paramType)>
+    ${helper.renderPtrcallPackedArgDecl(paramType, paramType_index)}
 </#if>
 </#list>
 <#if bindingData.staticMethod>
@@ -793,24 +798,41 @@ static void ptrcall${helper.renderFuncBindName(bindingData)}(
 </#if>
 <#if bindingData.returnType.typeName == "void">
     <#if bindingData.staticMethod>
-        (function(<#list bindingData.paramTypes as paramType><#if helper.checkObjectType(paramType)>arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if><#if paramType_has_next>, </#if></#list>));
+        (function(<#list bindingData.paramTypes as paramType><#if helper.checkObjectType(paramType)>arg${paramType_index}<#elseif helper.checkPackedType(paramType)>&arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if><#if paramType_has_next>, </#if></#list>));
     <#else>
-        (function(self_fat<#list bindingData.paramTypes as paramType>, <#if helper.checkObjectType(paramType)>arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if></#list>));
+        (function(self_fat<#list bindingData.paramTypes as paramType>, <#if helper.checkObjectType(paramType)>arg${paramType_index}<#elseif helper.checkPackedType(paramType)>&arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if></#list>));
     </#if>
 <#elseif helper.checkObjectType(bindingData.returnType)>
     <#if bindingData.staticMethod>
-        ${helper.renderGdTypeInC(bindingData.returnType)} r = function(<#list bindingData.paramTypes as paramType><#if helper.checkObjectType(paramType)>arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if><#if paramType_has_next>, </#if></#list>);
+        ${helper.renderGdTypeInC(bindingData.returnType)} r = function(<#list bindingData.paramTypes as paramType><#if helper.checkObjectType(paramType)>arg${paramType_index}<#elseif helper.checkPackedType(paramType)>&arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if><#if paramType_has_next>, </#if></#list>);
     <#else>
-        ${helper.renderGdTypeInC(bindingData.returnType)} r = function(self_fat<#list bindingData.paramTypes as paramType>, <#if helper.checkObjectType(paramType)>arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if></#list>);
+        ${helper.renderGdTypeInC(bindingData.returnType)} r = function(self_fat<#list bindingData.paramTypes as paramType>, <#if helper.checkObjectType(paramType)>arg${paramType_index}<#elseif helper.checkPackedType(paramType)>&arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if></#list>);
     </#if>
         ${helper.renderPtrcallObjectReturnWrite(bindingData.returnType, "r")}
+<#elseif helper.checkPackedType(bindingData.returnType)>
+    <#-- Packed return: the callee produced a Variant; whitelist (a) copies it into the raw -->
+    <#-- struct return slot (a fresh Vector-layer copy, intentionally not identity-shared). -->
+    <#if bindingData.staticMethod>
+        ${helper.renderGdTypeInC(bindingData.returnType)} r = function(<#list bindingData.paramTypes as paramType><#if helper.checkObjectType(paramType)>arg${paramType_index}<#elseif helper.checkPackedType(paramType)>&arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if><#if paramType_has_next>, </#if></#list>);
+    <#else>
+        ${helper.renderGdTypeInC(bindingData.returnType)} r = function(self_fat<#list bindingData.paramTypes as paramType>, <#if helper.checkObjectType(paramType)>arg${paramType_index}<#elseif helper.checkPackedType(paramType)>&arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if></#list>);
+    </#if>
+        ${helper.renderPtrcallPackedReturnWrite(bindingData.returnType, "r")}
 <#else>
     <#if bindingData.staticMethod>
-        *((${helper.renderGdTypeInC(bindingData.returnType)}*)r_return) = function(<#list bindingData.paramTypes as paramType><#if helper.checkObjectType(paramType)>arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if><#if paramType_has_next>, </#if></#list>);
+        *((${helper.renderGdTypeInC(bindingData.returnType)}*)r_return) = function(<#list bindingData.paramTypes as paramType><#if helper.checkObjectType(paramType)>arg${paramType_index}<#elseif helper.checkPackedType(paramType)>&arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if><#if paramType_has_next>, </#if></#list>);
     <#else>
-        *((${helper.renderGdTypeInC(bindingData.returnType)}*)r_return) = function(self_fat<#list bindingData.paramTypes as paramType>, <#if helper.checkObjectType(paramType)>arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if></#list>);
+        *((${helper.renderGdTypeInC(bindingData.returnType)}*)r_return) = function(self_fat<#list bindingData.paramTypes as paramType>, <#if helper.checkObjectType(paramType)>arg${paramType_index}<#elseif helper.checkPackedType(paramType)>&arg${paramType_index}<#else>${helper.renderPtrcallNonObjectArgExpr(paramType, paramType_index)}</#if></#list>);
     </#if>
 </#if>
+<#-- Materialized packed arg Variants are wrapper-owned; release them after the call. -->
+<#assign ptrcallArgCount = bindingData.paramTypes?size>
+<#list bindingData.paramTypes?reverse as paramType>
+<#assign ptrcallArgIndex = ptrcallArgCount - paramType_index - 1>
+<#if helper.checkPackedType(paramType)>
+    ${helper.renderPtrcallPackedArgDestroyStmt(paramType, ptrcallArgIndex)}
+</#if>
+</#list>
 }
 
 static void gdcc_bind_method${helper.renderFuncBindName(bindingData)}(

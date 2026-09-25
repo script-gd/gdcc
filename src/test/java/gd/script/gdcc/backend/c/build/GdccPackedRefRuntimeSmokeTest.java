@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Zig-gated tests for `gdcc/gdcc_packed_ref.h`, the Phase B runtime infrastructure of
+/// Zig-gated tests for `gdcc/gdcc_packed_ref.h`, the runtime infrastructure of
 /// `packed_array_reference_semantics_plan.md` (Variant-backed Packed*Array storage, plan §4.1).
 ///
 /// Test shapes:
@@ -51,9 +51,9 @@ class GdccPackedRefRuntimeSmokeTest {
 
     @Test
     void headerShouldCompileStandalone() throws IOException, InterruptedException {
-        // The header must be self-contained: only its own `#include <godot_binding.h>` is
-        // allowed to pull in dependencies, so no class_library global or sibling gdcc header
-        // may be required by the includer.
+        // The header must be self-contained: only `<godot_binding.h>` and the leaf-level
+        // `<gdcc_likely.h>` (branch-hint macros, no further dependencies) may be pulled in, so
+        // no class_library global or higher-level gdcc header may be required by the includer.
         var source = sharedDir.resolve("packed_ref_compile_probe.c");
         Files.writeString(source, """
                 #include <gdcc_packed_ref.h>
@@ -530,7 +530,7 @@ class GdccPackedRefRuntimeSmokeTest {
             }
             """;
 
-    /// Happy path: every Phase B helper exercised against the fake engine's identity contract,
+    /// Happy path: every packed-ref helper exercised against the fake engine's identity contract,
     /// with exact invocation accounting (which ctor/copy/pack ran how many times) so each helper
     /// is pinned to its whitelisted conversion shape.
     private static final String HAPPY_PROBE = """

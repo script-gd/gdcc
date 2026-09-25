@@ -24,6 +24,7 @@ import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdPackedNumericArrayType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -389,6 +390,73 @@ class COperatorInsnGenTest {
         );
 
         assertTrue(body.contains("$result = gdcc_eval_binary_in_int_int_to_bool($left, $right);"), body);
+    }
+
+    @Test
+    @DisplayName("int in PackedInt32Array keeps scalar left by value and passes packed right internal pointer")
+    void packedMixedInKeepsScalarByValueAndPassesPackedInternalPointer() {
+        // packed_array_reference_semantics_plan.md §4.3.6: per-operand ABI — the scalar left stays
+        // by-value while the packed right renders the Variant internal pointer.
+        var body = generateBody(
+                packedInApi(),
+                new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdIntType.INT, false),
+                        new VariableSpec("right", GdPackedNumericArrayType.PACKED_INT32_ARRAY, false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                )
+        );
+
+        assertTrue(body.contains(
+                "$result = gdcc_eval_binary_in_int_packedint32array_to_bool($left, gdcc_packed_int32_array_internal_ptr(&$right));"),
+                body);
+        assertFalse(body.contains("gdcc_eval_binary_in_int_packedint32array_to_bool($left, &"), body);
+    }
+
+    @Test
+    @DisplayName("Packed*Array == passes both operands as internal pointers (content equality)")
+    void packedEqualityPassesInternalPointersForBothOperands() {
+        // §2 row 21: `==` is content equality evaluated by the engine on the shared arrays.
+        var body = generateBody(
+                packedCompareApi(),
+                new BinaryOpInsn("result", GodotOperator.EQUAL, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdPackedNumericArrayType.PACKED_INT32_ARRAY, false),
+                        new VariableSpec("right", GdPackedNumericArrayType.PACKED_INT32_ARRAY, false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                )
+        );
+
+        assertTrue(body.contains(
+                "$result = gdcc_eval_binary_equal_packedint32array_packedint32array_to_bool("
+                        + "gdcc_packed_int32_array_internal_ptr(&$left), gdcc_packed_int32_array_internal_ptr(&$right));"),
+                body);
+    }
+
+    @Test
+    @DisplayName("Packed*Array + receives a fresh raw struct and wraps it into the Variant slot")
+    void packedAddReceivesRawStructAndWrapsThroughWrapTemp() {
+        // §4.3.6 + §2 row 8: `+` must produce a NEW array (rebind semantics for `+=`); in-place
+        // append on an internal pointer would leak the mutation to existing aliases. The evaluator
+        // returns a native struct that the call site wraps via whitelist (c) `wrap_temp`.
+        var body = generateBody(
+                packedAddApi(),
+                new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdPackedNumericArrayType.PACKED_INT32_ARRAY, false),
+                        new VariableSpec("right", GdPackedNumericArrayType.PACKED_INT32_ARRAY, false),
+                        new VariableSpec("result", GdPackedNumericArrayType.PACKED_INT32_ARRAY, false)
+                )
+        );
+
+        assertTrue(body.matches("(?s).*godot_PackedInt32Array __gdcc_tmp_packed_native_ret_\\d+ = "
+                + "gdcc_eval_binary_add_packedint32array_packedint32array_to_packedint32array\\("
+                + "gdcc_packed_int32_array_internal_ptr\\(&\\$left\\), "
+                + "gdcc_packed_int32_array_internal_ptr\\(&\\$right\\)\\);.*"), body);
+        assertTrue(body.matches("(?s).*gdcc_packed_int32_array_wrap_temp\\(&__gdcc_tmp_packed_native_ret_\\d+\\).*"), body);
+        assertTrue(body.matches("(?s).*\\$result = __gdcc_tmp_owned_move_\\d+;.*"), body);
+        assertFalse(body.contains("godot_new_PackedInt32Array"), body);
+        assertFalse(body.contains("godot_new_Variant_with_PackedInt32Array"), body);
     }
 
     @Test
@@ -1187,8 +1255,92 @@ class COperatorInsnGenTest {
         );
     }
 
-    private @NotNull ExtensionAPI evaluatorIntApi() {
+    private @NotNull ExtensionAPI packedInApi() {
         var intBuiltin = new ExtensionBuiltinClass(
+                "int",
+                false,
+                List.of(new ExtensionBuiltinClass.ClassOperator("in", "PackedInt32Array", "bool")),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var packedBuiltin = new ExtensionBuiltinClass(
+                "PackedInt32Array",
+                false,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(intBuiltin, packedBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull ExtensionAPI packedCompareApi() {
+        var packedBuiltin = new ExtensionBuiltinClass(
+                "PackedInt32Array",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("==", "PackedInt32Array", "bool"),
+                        new ExtensionBuiltinClass.ClassOperator("!=", "PackedInt32Array", "bool")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(packedBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull ExtensionAPI packedAddApi() {
+        var packedBuiltin = new ExtensionBuiltinClass(
+                "PackedInt32Array",
+                false,
+                List.of(new ExtensionBuiltinClass.ClassOperator("+", "PackedInt32Array", "PackedInt32Array")),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(packedBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull ExtensionAPI evaluatorIntApi() {        var intBuiltin = new ExtensionBuiltinClass(
                 "int",
                 false,
                 List.of(

@@ -2,85 +2,86 @@
 #define GDCC_INTRINSIC_FOR_PACKED_ARRAY_ITER_H
 
 #include <godot_binding.h>
+#include <gdcc_likely.h>
+#include <gdcc_packed_ref.h>
 
-/// Per-family Packed*Array for-in iterator helpers.
+/// Per-family Packed*Array for-in iterator helpers (LIVE iteration,
+/// packed_array_reference_semantics_plan.md §4.3.8, §2 row 12).
 ///
 /// Each Packed*Array has its own state struct and typed helpers so `get`/`copy`/`destroy`
-/// need no runtime kind switch. The state owns a COW snapshot plus a typed element base
-/// pointer cached once at init; `next`/`copy` only bump the COW handle.
+/// need no runtime kind switch. The state holds a Variant holder COPY of the source array
+/// (sharing its identity) plus the current index — deliberately no COW struct snapshot, no
+/// cached size and no cached element base pointer:
+/// - `should_continue` re-evaluates the LIVE size on every step, so elements appended during
+///   iteration are visited by the same loop (interpreter-locked live-iteration contract);
+/// - `get` re-checks the live size for bounds and resolves the element through
+///   `operator_index_const` on each access, so reallocation caused by mutation can never leave a
+///   dangling cached base pointer behind;
+/// - `next` only copies the holder + increments the index (it must NOT reuse any snapshot-based
+///   copy that would pin the iteration to a detached array).
+///
+/// Init contract: helpers here call `gdcc_packed_<slug>_internal_ptr`, so the translation unit
+/// must have run `gdcc_packed_ref_init()` (generated entry modules wire it into `initialize()`).
 
 #define GDCC_DEFINE_PACKED_ARRAY_ITER_FAMILY( \
     Slug, \
     TypeName, \
-    ElementCType, \
     OpIndexConst, \
     GetReturnType, \
     GetValueExpr, \
     GetOobExpr \
 ) \
 typedef struct gdcc_for_packed_##Slug##_iter { \
-    godot_Packed##TypeName source; \
-    const ElementCType *ptr; \
+    godot_Variant source; \
     godot_int index; \
-    godot_int size; \
 } gdcc_for_packed_##Slug##_iter; \
 \
 static inline gdcc_for_packed_##Slug##_iter gdcc_for_packed_##Slug##_iter_init(void) { \
+    /* A nil source is never iterated: `from` always produces the real loop state. Destroy of a \
+     * nil Variant is a no-op, so the zero-iteration path stays safe. */ \
     return (gdcc_for_packed_##Slug##_iter){ \
-        .source = godot_new_Packed##TypeName(), \
-        .ptr = NULL, \
+        .source = godot_new_Variant_nil(), \
         .index = 0, \
-        .size = 0, \
     }; \
 } \
 \
 static inline void gdcc_for_packed_##Slug##_iter_destroy(gdcc_for_packed_##Slug##_iter *state) { \
-    godot_Packed##TypeName##_destroy(&state->source); \
-    state->ptr = NULL; \
+    gdcc_packed_ref_destroy(&state->source); \
     state->index = 0; \
-    state->size = 0; \
 } \
 \
-/* COW copy shares the same data buffer and holds a refcount on it, so reusing src->ptr
- * remains valid after the previous state is destroyed. */ \
+/* Holder copy shares the underlying array identity; iteration position is per-state. */ \
 static inline gdcc_for_packed_##Slug##_iter gdcc_for_packed_##Slug##_iter_copy( \
     const gdcc_for_packed_##Slug##_iter *src \
 ) { \
     return (gdcc_for_packed_##Slug##_iter){ \
-        .source = godot_new_Packed##TypeName##_with_Packed##TypeName(&src->source), \
-        .ptr = src->ptr, \
+        .source = gdcc_packed_ref_copy(&src->source), \
         .index = src->index, \
-        .size = src->size, \
     }; \
 } \
 \
 static inline gdcc_for_packed_##Slug##_iter gdcc_for_packed_##Slug##_iter_from( \
-    const godot_Packed##TypeName *source \
+    const godot_Variant *source \
 ) { \
-    godot_Packed##TypeName owned = godot_new_Packed##TypeName##_with_Packed##TypeName(source); \
-    godot_int size = godot_Packed##TypeName##_size(&owned); \
-    const ElementCType *ptr = NULL; \
-    if (size > 0) { \
-        /* Snapshot is owned by this state and never resized; cached base stays valid. */ \
-        ptr = (const ElementCType *)OpIndexConst(&owned, 0); \
-    } \
     return (gdcc_for_packed_##Slug##_iter){ \
-        .source = owned, \
-        .ptr = ptr, \
+        .source = gdcc_packed_ref_copy(source), \
         .index = 0, \
-        .size = size, \
     }; \
 } \
 \
 static inline godot_bool gdcc_for_packed_##Slug##_iter_should_continue( \
     const gdcc_for_packed_##Slug##_iter *state \
 ) { \
-    return state->index < state->size; \
+    /* Live size on every step: elements appended during iteration ARE visited. */ \
+    godot_int live_size = godot_Packed##TypeName##_size( \
+            gdcc_packed_##Slug##_internal_ptr(&state->source)); \
+    return state->index < live_size; \
 } \
 \
 static inline gdcc_for_packed_##Slug##_iter gdcc_for_packed_##Slug##_iter_next( \
     const gdcc_for_packed_##Slug##_iter *state \
 ) { \
+    /* Holder copy + index increment only; no snapshot/pointer refresh of any kind. */ \
     gdcc_for_packed_##Slug##_iter next_state = gdcc_for_packed_##Slug##_iter_copy(state); \
     next_state.index = state->index + 1; \
     return next_state; \
@@ -89,100 +90,96 @@ static inline gdcc_for_packed_##Slug##_iter gdcc_for_packed_##Slug##_iter_next( 
 static inline GetReturnType gdcc_for_packed_##Slug##_iter_get( \
     const gdcc_for_packed_##Slug##_iter *state \
 ) { \
-    if (state->ptr == NULL || state->index < 0 || state->index >= state->size) { \
+    /* Re-resolve per access: mutation may realloc the backing buffer, and shrink below the \
+     * current index is clamped by the live-size bounds check (matching `should_continue`). */ \
+    godot_Packed##TypeName *live = gdcc_packed_##Slug##_internal_ptr(&state->source); \
+    if (unlikely(state->index < 0 || state->index >= godot_Packed##TypeName##_size(live))) { \
         return GetOobExpr; \
     } \
+    /* Typed by each family's OpIndexConst return; GetValueExpr consumes this pointer. \
+     * NOTE: keep macro-body comments as block comments — `//` would swallow the macro body. */ \
+    const void *gdcc_elem_ptr = OpIndexConst(live, state->index); \
     return GetValueExpr; \
 }
 
 GDCC_DEFINE_PACKED_ARRAY_ITER_FAMILY(
     byte_array,
     ByteArray,
-    uint8_t,
     godot_packed_byte_array_operator_index_const,
     godot_int,
-    (godot_int)state->ptr[state->index],
+    (godot_int)(*(const uint8_t *)gdcc_elem_ptr),
     0
 )
 GDCC_DEFINE_PACKED_ARRAY_ITER_FAMILY(
     int32_array,
     Int32Array,
-    int32_t,
     godot_packed_int32_array_operator_index_const,
     godot_int,
-    (godot_int)state->ptr[state->index],
+    (godot_int)(*(const int32_t *)gdcc_elem_ptr),
     0
 )
 GDCC_DEFINE_PACKED_ARRAY_ITER_FAMILY(
     int64_array,
     Int64Array,
-    int64_t,
     godot_packed_int64_array_operator_index_const,
     godot_int,
-    (godot_int)state->ptr[state->index],
+    (godot_int)(*(const int64_t *)gdcc_elem_ptr),
     0
 )
 GDCC_DEFINE_PACKED_ARRAY_ITER_FAMILY(
     float32_array,
     Float32Array,
-    float,
     godot_packed_float32_array_operator_index_const,
     godot_float,
-    (godot_float)state->ptr[state->index],
+    (godot_float)(*(const float *)gdcc_elem_ptr),
     (godot_float)0.0
 )
 GDCC_DEFINE_PACKED_ARRAY_ITER_FAMILY(
     float64_array,
     Float64Array,
-    double,
     godot_packed_float64_array_operator_index_const,
     godot_float,
-    (godot_float)state->ptr[state->index],
+    (godot_float)(*(const double *)gdcc_elem_ptr),
     (godot_float)0.0
 )
 GDCC_DEFINE_PACKED_ARRAY_ITER_FAMILY(
     string_array,
     StringArray,
-    godot_String,
     godot_packed_string_array_operator_index_const,
     godot_String,
-    godot_new_String_with_String(&state->ptr[state->index]),
+    godot_new_String_with_String((const godot_String *)gdcc_elem_ptr),
     godot_new_String()
 )
 GDCC_DEFINE_PACKED_ARRAY_ITER_FAMILY(
     vector2_array,
     Vector2Array,
-    godot_Vector2,
     godot_packed_vector2_array_operator_index_const,
     godot_Vector2,
-    state->ptr[state->index],
+    *(const godot_Vector2 *)gdcc_elem_ptr,
     ((godot_Vector2){0})
 )
 GDCC_DEFINE_PACKED_ARRAY_ITER_FAMILY(
     vector3_array,
     Vector3Array,
-    godot_Vector3,
     godot_packed_vector3_array_operator_index_const,
     godot_Vector3,
-    state->ptr[state->index],
+    *(const godot_Vector3 *)gdcc_elem_ptr,
     ((godot_Vector3){0})
 )
 GDCC_DEFINE_PACKED_ARRAY_ITER_FAMILY(
     vector4_array,
     Vector4Array,
-    godot_Vector4,
     godot_packed_vector4_array_operator_index_const,
     godot_Vector4,
-    state->ptr[state->index],
+    *(const godot_Vector4 *)gdcc_elem_ptr,
     ((godot_Vector4){0})
 )
 GDCC_DEFINE_PACKED_ARRAY_ITER_FAMILY(
     color_array,
     ColorArray,
-    godot_Color,
     godot_packed_color_array_operator_index_const,
     godot_Color,
-    state->ptr[state->index],
+    *(const godot_Color *)gdcc_elem_ptr,
     ((godot_Color){0})
 )
 

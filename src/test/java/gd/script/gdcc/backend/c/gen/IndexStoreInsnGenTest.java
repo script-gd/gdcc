@@ -557,8 +557,11 @@ class IndexStoreInsnGenTest {
     }
 
     @Test
-    @DisplayName("variant_set_indexed should write back PackedInt32Array self")
+    @DisplayName("variant_set_indexed passes Packed*Array self storage directly without pack/writeback")
     void variantSetIndexedPackedInt32ArraySelfWritesBack() {
+        // Variant-backed packed storage (packed_array_reference_semantics_plan.md §4.3.5): the
+        // setter mutates the shared array in place through the storage Variant, so no self temp,
+        // no pack and no unpack-writeback may be emitted.
         var body = generateBody(
                 new VariantSetIndexedInsn("self", "idx", "value"),
                 List.of(
@@ -568,27 +571,28 @@ class IndexStoreInsnGenTest {
                 )
         );
 
-        assertTrue(body.contains("godot_new_Variant_with_PackedInt32Array(&$self)"), body);
-        assertTrue(body.contains("$self = godot_new_PackedInt32Array_with_Variant(&__gdcc_tmp_idx_self_variant_"), body);
+        assertTrue(body.contains("godot_variant_set_indexed(&$self,"), body);
+        assertFalse(body.contains("idx_self_variant"), body);
+        assertFalse(body.contains("godot_new_Variant_with_PackedInt32Array"), body);
+        assertFalse(body.contains("godot_new_PackedInt32Array_with_Variant"), body);
     }
 
     @Test
-    @DisplayName("variant_set_indexed should fail-fast when ref PackedInt32Array self requires writeback")
+    @DisplayName("variant_set_indexed allows ref Packed*Array self (borrowed Variant* shared identity)")
     void variantSetIndexedRefPackedInt32ArraySelfFails() {
-        var ex = assertThrows(
-                InvalidInsnException.class,
-                () -> generateBody(
-                        new VariantSetIndexedInsn("self_ref", "idx", "value"),
-                        List.of(
-                                new VariableSpec("self_ref", GdPackedNumericArrayType.PACKED_INT32_ARRAY, true),
-                                new VariableSpec("idx", GdIntType.INT, false),
-                                new VariableSpec("value", GdIntType.INT, false)
-                        )
+        // The value-semantic ref-self ban is lifted (plan §4.3.5): a ref packed parameter is a
+        // borrowed Variant pointer whose shared array mutates in place, visible to the caller.
+        var body = generateBody(
+                new VariantSetIndexedInsn("self_ref", "idx", "value"),
+                List.of(
+                        new VariableSpec("self_ref", GdPackedNumericArrayType.PACKED_INT32_ARRAY, true),
+                        new VariableSpec("idx", GdIntType.INT, false),
+                        new VariableSpec("value", GdIntType.INT, false)
                 )
         );
 
-        assertInstanceOf(InvalidInsnException.class, ex);
-        assertTrue(ex.getMessage().contains("requires writeback"), ex.getMessage());
+        assertTrue(body.contains("godot_variant_set_indexed($self_ref,"), body);
+        assertFalse(body.contains("idx_self_variant"), body);
     }
 
     @Test

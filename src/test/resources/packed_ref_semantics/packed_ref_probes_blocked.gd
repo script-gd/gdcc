@@ -10,13 +10,13 @@ extends RefCounted
 ##   静态属性 leaf 自身即终态，但 packed 属值语义写回 family，
 ##   `FrontendCfgGraphBuilder.appendCallReceiverCommitSteps` 的静态分支仍追加 promotion
 ##   step，被 `FrontendCfgGraph` 的 static-terminal 合同拒绝（有意 fail-fast）。预计由
-##   Phase C（Variant 存储使静态 leaf 共享身份）+ Phase D（family 谓词改造）共同解锁。
+##   Variant 存储使静态 leaf 共享身份后，经 family 谓词/route 改造共同解锁。
 ## - LAMBDA_CAPTURE（§2-11）：对 CAPTURE binding 的 mutating 调用在 direct-slot alias 发布
 ##   处 fail-closed（"before lambda/capture semantics are implemented"，与 family 无关）。
-##   Variant 模型下捕获即共享身份、无需 alias 发布，预计由 Phase D 的 route 改造解锁。
+##   Variant 模型下捕获即共享身份、无需 alias 发布，预计由 route 改造解锁。
 ##
 ## 计划 §5/§8 原先假设这两个 route "现行可编译、运行时分歧"，与实际的 fail-closed 不符；
-## 两用例登记 Phase D。
+## 两用例登记为前端 writeback route 改造完成前暂缓断言。
 
 static var static_packed := PackedInt32Array([1])
 

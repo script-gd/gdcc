@@ -38,6 +38,61 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CPackUnpackVariantInsnGenTest {
     @Test
+    @DisplayName("pack_variant of Packed*Array is an identity-sharing Variant holder copy")
+    void packPackedArraySharesIdentityThroughVariantHolderCopy() {
+        // packed_array_reference_semantics_plan.md §4.1: pack never crosses the struct boundary;
+        // the Variant copy shares the underlying array (§2 row 16 three-way sharing).
+        var body = generatePackedBody(true);
+        assertTrue(body.contains("$variant = godot_new_Variant_with_Variant(&$packed);"), body);
+        assertFalse(body.contains("godot_new_Variant_with_PackedInt32Array"), body);
+    }
+
+    @Test
+    @DisplayName("unpack_variant to Packed*Array emits exact-kind share / Array conversion / error branches")
+    void unpackPackedArrayEmitsCheckedShareAndArrayConversion() {
+        // Plan §4.1 unpack contract: exact-kind payload shares identity; Array payload converts
+        // through whitelist (d) `new_from_array` (independent array, interpreter-anchored);
+        // anything else is a runtime type error. No struct unpack helper may appear.
+        var body = generatePackedBody(false);
+        assertTrue(body.contains(
+                "if (gdcc_packed_ref_is(&$variant, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY)) {"), body);
+        // Carrier-first overwrite: the identity-sharing copy is materialized BEFORE the old slot
+        // is destroyed, so the branch stays correct even under source/target aliasing.
+        assertTrue(body.contains(" = godot_new_Variant_with_Variant(&$variant);"), body);
+        var copyIndex = body.indexOf("godot_new_Variant_with_Variant(&$variant)");
+        var destroyIndex = body.indexOf("godot_Variant_destroy(&$packed);");
+        assertTrue(copyIndex >= 0 && destroyIndex >= 0 && copyIndex < destroyIndex,
+                "holder copy must be produced before the old slot is destroyed:\n" + body);
+        assertTrue(body.contains("godot_variant_get_type(&$variant) == GDEXTENSION_VARIANT_TYPE_ARRAY"), body);
+        assertTrue(body.contains("gdcc_packed_int32_array_new_from_array(&"), body);
+        assertTrue(body.contains("GDCC_PRINT_RUNTIME_ERROR"), body);
+        assertFalse(body.contains("godot_new_PackedInt32Array_with_Variant"), body);
+    }
+
+    /// Builds `entry` with one PackVariantInsn (packed -> variant) or UnpackVariantInsn
+    /// (variant -> packed) between a PackedInt32Array local and a Variant local.
+    private @org.jetbrains.annotations.NotNull String generatePackedBody(boolean packDirection) {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef(packDirection ? "pack_packed" : "unpack_packed");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("packed", gd.script.gdcc.type.GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        func.createAndAddVariable("variant", GdVariantType.VARIANT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(packDirection
+                ? new PackVariantInsn("variant", "packed")
+                : new UnpackVariantInsn("packed", "variant"));
+        entry.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+        return codegen.generateFuncBody(workerClass, func);
+    }
+
+    @Test
     @DisplayName("unpack_variant to String should use assignment semantics")
     void unpackVariantToStringShouldUseAssignmentSemantics() {
         var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());

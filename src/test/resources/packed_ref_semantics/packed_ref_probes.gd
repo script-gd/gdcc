@@ -261,12 +261,16 @@ func probe_dict_key_hash() -> void:
 
 ## §2-22：同 family `as` 产生 COW 拷贝（新身份）而非共享——探针实测锁定，
 ## 修正计划 §2 第 22 行原始预期。a.push_back(7) 后 a=2、b=1、v=2。
+## 补充探针：静态同型 `as`（c）同样是 COW 拷贝——第二次 push 后
+## a=3、v=3（共享）、b=1、c=2（两个 `as` 结果各自独立）。
 func probe_as_same_family() -> void:
 	var a := PackedInt32Array([1])
 	var v: Variant = a
 	var b := v as PackedInt32Array
 	a.push_back(7)
-	print("PROBE|AS_SAME_FAMILY|%d,%d,%d" % [a.size(), b.size(), v.size()])
+	var c := a as PackedInt32Array
+	a.push_back(8)
+	print("PROBE|AS_SAME_FAMILY|%d,%d,%d,%d" % [a.size(), b.size(), v.size(), c.size()])
 
 ## §2-23：协程形参/捕获在 await 挂起前后双向可见。恢复顺序依赖 process_frame
 ## 按连接先后分发：协程体先恢复（记录 during 并 push 4/44），主探针后恢复打印。
@@ -301,7 +305,7 @@ func probe_signal_multi() -> void:
 	print("PROBE|SIGNAL_MULTI|%d,%d,%d" % [values.size(), values[1], names.size()])
 	multi_signal.disconnect(_on_multi_signal)
 
-## 计划 §5 动态 Variant receiver route 用例（Phase D）：Variant 变量上的动态
+## 计划 §5 动态 Variant receiver route 用例：Variant 变量上的动态
 ## mutating 调用经共享身份对原变量可见。
 func probe_dynamic_variant_receiver() -> void:
 	var a := PackedInt32Array([1])

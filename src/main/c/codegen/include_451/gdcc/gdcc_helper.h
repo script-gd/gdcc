@@ -9,6 +9,7 @@
 #include <gdcc_callable.h>
 #include <gdcc_bind.h>
 #include <gdcc_operator.h>
+#include <gdcc_packed_ref.h>
 #include <gdcc_intrinsic.h>
 #include <stdio.h>
 #include <math.h>
