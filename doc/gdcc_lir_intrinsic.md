@@ -767,7 +767,7 @@ $<element_result> = call_intrinsic "gdcc.for_packed_<family>_iter.get" $<iter>;
 - `should_continue`：result `bool`；arg0 为对应 state。
 - `next`：result/arg0 均为对应 state。
 - `get`：result 为 **typed element**（`int` / `float` / `String` / `Vector*` / `Color`），不是 `Variant`；arg0 为对应 state。
-- state **不可**直接 struct 赋值；`copy` helper 为 `gdcc_for_packed_<family>_iter_copy`（COW 句柄 + 共享 typed base pointer）。
+- state **不可**直接 struct 赋值；`copy` helper 为 `gdcc_for_packed_<family>_iter_copy`（Variant 持有者拷贝 + index，共享源数组身份）。
 
 C backend 语义：
 
@@ -778,10 +778,17 @@ $target = gdcc_for_packed_<family>_iter_next(&$iter);
 $target = gdcc_for_packed_<family>_iter_get(&$iter);
 ```
 
-边界语义：
+边界语义（活迭代，对齐 Godot 4.5 解释器）：
 
-- `from` 深拷贝 typed Packed*Array（COW），缓存 size/index，并缓存 typed 元素基址指针；snapshot 只读，故缓存基址安全。
-- `get` 对 typed 基址做指针算术并返回 **typed element**（无 kind switch，无 per-element Variant 装箱）。
+- state 持有源数组的 **Variant 持有者拷贝**（共享引擎侧 `PackedArrayRef` 身份）+ 当前 index；**不**持有
+  COW struct 快照、不缓存 size、不缓存 typed 元素基址指针。
+- `from` 接收 `const godot_Variant*`（packed 源本身即 Variant-backed），做持有者拷贝并置 index=0。
+- `next` 仅做持有者拷贝并递增 index；禁止复用任何快照式 copy（会把迭代锚定到 detach 后的数组上）。
+- `should_continue` 每次经 `gdcc_packed_<slug>_internal_ptr` 求 **live size**：迭代期间 `push_back` 的新元素
+  会被本轮循环访问（解释器锁定的活迭代合同）。
+- `get` 每次先以 live size 做越界检查（越界返回 family 默认值），再经内部指针 + `operator_index_const`
+  取 **typed element**（无 kind switch，无 per-element Variant 装箱）；禁止跨迭代缓存元素基址——mutation
+  可能 realloc，缓存指针会悬垂。
 - lowering 的 `ForLoopGetItem` 在 element 与 `exposedIteratorType` 兼容时可直接赋值，通常无需 `UnpackVariant`。
 
 ### `gdcc.for_float_iter.init`

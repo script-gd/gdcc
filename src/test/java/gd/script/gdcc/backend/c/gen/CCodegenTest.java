@@ -2029,6 +2029,83 @@ public class CCodegenTest {
     }
 
     @Test
+    public void generatesEngineMethodHelperPackedArgMaterializationAndReturnWrap() throws Exception {
+        // packed_array_reference_semantics_plan.md §4.3.4 outbound engine-method boundary:
+        // a packed ARGUMENT must be materialized into a helper-owned native struct slot
+        // (whitelist (a) struct_from_variant) before ptrcall and destroyed after — the
+        // caller's internal pointer must never reach the engine args array, or the engine
+        // would share/mutate the caller's array identity; a packed RETURN must arrive in a
+        // raw slot and be wrapped into the Variant carrier via whitelist (c) wrap_temp.
+        var workerClass = new LirClassDef("EnginePackedBoundaryWorker", "RefCounted");
+
+        var callSet = newFunction("call_set_data", GdVoidType.VOID);
+        callSet.addParameter(new LirParameterDef("peer", new GdObjectType("StreamPeerBuffer"), null, callSet));
+        callSet.createAndAddVariable("bytes", GdPackedNumericArrayType.PACKED_BYTE_ARRAY);
+        entry(callSet).appendInstruction(new CallMethodInsn(null, "set_data_array", "peer", List.of(varOperand("bytes"))));
+        entry(callSet).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(callSet);
+
+        var callGet = newFunction("call_get_data", GdVoidType.VOID);
+        callGet.addParameter(new LirParameterDef("peer", new GdObjectType("StreamPeerBuffer"), null, callGet));
+        callGet.createAndAddVariable("read_back", GdPackedNumericArrayType.PACKED_BYTE_ARRAY);
+        entry(callGet).appendInstruction(new CallMethodInsn("read_back", "get_data_array", "peer", List.of()));
+        entry(callGet).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(callGet);
+
+        var module = new LirModule("engine_packed_boundary_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
+
+        // Outbound packed argument: helper-owned native slot materialization -> temp slot in
+        // the args array -> ptrcall -> destroy. The positional assertions are load-bearing:
+        // after the args-decl anchor, `&arg0_packed` can only be the array element (the
+        // destroy comes later), so the temp slot is proven to be passed INTO the call rather
+        // than merely existing in the helper body.
+        var setHelperBody = resolveFunctionBodyByPrefix(bindHeaderCode, "gdcc_engine_call_streampeerbuffer_set_data_array");
+        assertContainsAll(
+                setHelperBody,
+                "godot_PackedByteArray arg0_packed = gdcc_packed_byte_array_struct_from_variant(",
+                "godot_object_method_bind_ptrcall(",
+                "godot_PackedByteArray_destroy(&arg0_packed);"
+        );
+        assertOrdered(
+                setHelperBody,
+                "gdcc_packed_byte_array_struct_from_variant",
+                "const GDExtensionConstTypePtr args[]",
+                "&arg0_packed",
+                "godot_object_method_bind_ptrcall(",
+                "godot_PackedByteArray_destroy(&arg0_packed);"
+        );
+        assertFalse(setHelperBody.contains("internal_ptr"), setHelperBody);
+
+        // Packed return: the raw slot receives the ptrcall result and is then wrapped via
+        // wrap_temp into the Variant-backed carrier. After the ptrcall anchor, `&result_raw`
+        // can only be the return-slot argument, so the slot is proven to be passed INTO the
+        // call rather than only appearing at the wrap site.
+        var getHelperBody = resolveFunctionBodyByPrefix(bindHeaderCode, "gdcc_engine_call_streampeerbuffer_get_data_array");
+        assertContainsAll(
+                getHelperBody,
+                "godot_PackedByteArray result_raw = { 0 };",
+                "godot_object_method_bind_ptrcall(",
+                "gdcc_packed_byte_array_wrap_temp(&result_raw)"
+        );
+        assertOrdered(
+                getHelperBody,
+                "godot_PackedByteArray result_raw = { 0 };",
+                "godot_object_method_bind_ptrcall(",
+                "&result_raw",
+                "gdcc_packed_byte_array_wrap_temp(&result_raw)"
+        );
+        assertFalse(getHelperBody.contains("internal_ptr"), getHelperBody);
+    }
+
+    @Test
     public void generatesTypedArrayCallWrapperPreflightAndKeepsGenericArrayOnBaseGate() throws Exception {
         var workerClass = new LirClassDef("TypedArrayCallGuardWorker", "Node");
 

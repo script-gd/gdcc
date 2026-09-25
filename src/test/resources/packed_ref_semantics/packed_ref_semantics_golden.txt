@@ -3,8 +3,10 @@
 # 本文件由 Godot Engine v4.5.2.stable.official.6ce3de25a 解释器运行
 # `packed_ref_probes.gd`（经解释器侧 driver）锁定，是
 # packed_array_reference_semantics_plan.md §2 语义矩阵 24 行 + 动态 Variant
-# receiver 用例的可执行 golden。行顺序与 PackedRefProbes.run_all 的执行顺序
-# （即 PackedRefSemanticsCaseRegistry 登记顺序）一致。
+# receiver 用例 + Phase F 混合场景与 4 个补充用例（复杂控制流 / 返回值身份 /
+# 引擎方法边界 / PackedStringArray 专项）的可执行 golden。行顺序与
+# PackedRefProbes.run_all 的执行顺序一致；本文件承载 payload 事实，§2 矩阵
+# 用例清单（名称与顺序）由 PackedRefSemanticsGoldenInventoryTest 锚定。
 #
 # 解析规则（ProbeOutput）：仅 `PROBE|<CASE>|<payload>` 三段式行有效；注释与空行
 # 仅允许出现在 golden 资源中，运行时输出里的非 PROBE 行视为引擎噪声忽略。
@@ -44,3 +46,12 @@ PROBE|DYNAMIC_VARIANT_MUTATION|2,2
 # alias 的编译期 fail-closed）迁回主探针库，按序追加在主库输出末尾。
 PROBE|STATIC_VAR|2
 PROBE|LAMBDA_CAPTURE|2
+# MIXED_COMBINATION：Phase F 混合场景（属性 + 信号 + lambda + 协程 await + for 活迭代），
+# 由解释器运行锁定。
+PROBE|MIXED_COMBINATION|sum=12;visits=3;property=4;local=2
+# Phase F 补充用例（复杂控制流分支 mutation / 返回值身份 / 引擎方法 packed 参数与返回 /
+# PackedStringArray 专项），均由解释器运行锁定。
+PROBE|CONTROL_FLOW_BRANCHES|[1, 2, 3, 20, 30, 60];6,1
+PROBE|RETURN_VALUE_SHARING|built=3;src=3,8;branch=4;fresh=2;lambda=2,51;coro=4,4
+PROBE|ENGINE_METHOD_PACKED_ARG|a/b/c;4,4;[1, 2, 3, 9];[1, 2, 3]
+PROBE|STRING_ARRAY_MUTATION|ONE,mid,x;1,0,1;c,b,a

@@ -9,22 +9,19 @@ import org.junit.jupiter.api.TestFactory;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Dual-run golden comparison for the Packed*Array reference-semantics migration.
+/// Dual-run golden comparison for the Packed*Array reference-semantics behavior contract
+/// (packed_array_reference_semantics_plan.md §2 matrix + §1.3 exceptions).
 ///
 /// The same `packed_ref_probes.gd` source runs once under the Godot interpreter and once
-/// compiled by gdcc; both sides must reproduce the committed golden file for every case the
-/// registry currently asserts. The interpreter side is always validated against the full
-/// golden (it is the baseline the golden was locked with), so a wrong `GODOT_BIN` version or
-/// a broken probe library fails fast instead of silently re-baselining.
-///
-/// Cases deferred on a capability gap are registered in {@link PackedRefSemanticsCase} with
-/// their gate and reported as skipped per case, keeping the deferred inventory visible in
-/// test reports.
+/// compiled by gdcc; both sides must reproduce the committed golden file in full. Truth
+/// sources: the golden file owns case PAYLOADS and is always validated against the
+/// interpreter side first (it is the baseline the golden was locked with), while
+/// {@link PackedRefSemanticsGoldenInventoryTest} anchors the §2 matrix case inventory
+/// (names + order, Godot-independent) so coverage cannot silently shrink.
 ///
 /// Gating: skipped via JUnit assumptions when `GODOT_BIN` is missing; the gdcc side is
 /// additionally skipped when Zig is unavailable (the interpreter baseline still runs).
@@ -49,7 +46,7 @@ public class PackedArrayReferenceSemanticsDualRunTest {
     /// the machine surfaces here rather than corrupting comparisons against the gdcc side).
     @Test
     void interpreterRunMatchesGolden() {
-        var comparison = ProbeGoldenComparison.compare(dualRun.interpreterOutput(), golden, Set.copyOf(golden.caseNames()));
+        var comparison = ProbeGoldenComparison.compare(dualRun.interpreterOutput(), golden);
         assertTrue(
                 comparison.matches(),
                 () -> "Interpreter run diverges from golden.\n" + comparison.describe()
@@ -57,20 +54,16 @@ public class PackedArrayReferenceSemanticsDualRunTest {
         );
     }
 
-    /// Structural checks for the gdcc side (unknown cases, duplicates and emission order are
-    /// harness bugs regardless of per-case gating), plus payload equality for every currently
-    /// asserted case. Deferred cases run and appear in the transcript but are not asserted.
+    /// The gdcc side must reproduce the same full golden: every case present, every payload
+    /// equal, no unknown cases, golden relative order. This is the executable form of the §2
+    /// behavior matrix plus the §1.3 documented exceptions.
     @Test
-    void gdccRunMatchesGoldenStructureAndEnabledCases() {
+    void gdccRunMatchesGolden() {
         Assumptions.assumeTrue(
                 dualRun.gdccOutput() != null,
                 "Zig not found; gdcc side was not built (interpreter baseline still validated)"
         );
-        var comparison = ProbeGoldenComparison.compare(
-                dualRun.gdccOutput(),
-                golden,
-                PackedRefSemanticsCase.assertedCaseNames()
-        );
+        var comparison = ProbeGoldenComparison.compare(dualRun.gdccOutput(), golden);
         assertTrue(
                 comparison.matches(),
                 () -> "gdcc-compiled run diverges from golden.\n" + comparison.describe()
@@ -78,30 +71,25 @@ public class PackedArrayReferenceSemanticsDualRunTest {
         );
     }
 
-    /// Per-case granularity: every case re-checks its interpreter payload against the golden;
-    /// asserted cases additionally assert gdcc-side payload equality, while gated cases report
-    /// as skipped with their deferral reason.
+    /// Per-case granularity in golden order: every case re-checks its interpreter payload
+    /// against the golden and asserts gdcc-side payload equality.
     @TestFactory
     List<DynamicTest> perCaseGoldenAlignment() {
-        return PackedRefSemanticsCase.cases().stream()
-                .map(probeCase -> DynamicTest.dynamicTest(
-                        probeCase.probeName() + " [§2-" + probeCase.matrixRow() + ", " + probeCase.gate() + "]",
-                        () -> assertCaseAlignment(probeCase)
+        return golden.caseNames().stream()
+                .map(caseName -> DynamicTest.dynamicTest(
+                        caseName,
+                        () -> assertCaseAlignment(caseName)
                 ))
                 .toList();
     }
 
-    private static void assertCaseAlignment(PackedRefSemanticsCase probeCase) {
-        var caseName = probeCase.probeName();
+    private static void assertCaseAlignment(String caseName) {
         var expectedPayload = golden.requirePayload(caseName);
         assertEquals(
                 expectedPayload,
                 dualRun.interpreterOutput().requirePayload(caseName),
                 "Interpreter payload diverges from golden for case " + caseName
         );
-        if (!probeCase.isAsserted()) {
-            Assumptions.abort("gdcc-side golden alignment deferred: " + probeCase.gate());
-        }
         Assumptions.assumeTrue(
                 dualRun.gdccOutput() != null,
                 "Zig not found; gdcc side was not built (interpreter baseline still validated)"

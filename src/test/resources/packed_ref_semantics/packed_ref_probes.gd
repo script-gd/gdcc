@@ -7,8 +7,9 @@ extends RefCounted
 ## （或一行的子场景），打印一行 `PROBE|<CASE>|<payload>`；golden 文件
 ## `packed_ref_semantics_golden.txt` 由 Godot 4.5.2 解释器运行锁定。
 ##
-## 探针方法必须是确定性的、按固定顺序经 run_all 执行；新增场景时在
-## PackedRefSemanticsCaseRegistry 与 golden 文件中同步登记。
+## 探针方法必须是确定性的、按固定顺序经 run_all 执行；golden 文件的行序与 run_all
+## 执行顺序一一对应（golden 承载 payload 事实，§2 矩阵用例清单由
+## PackedRefSemanticsGoldenInventoryTest 锚定），新增场景时在 golden 文件中同步登记。
 ##
 ## 注意：供 gdcc 编译的源文件不要使用超出当前编译器能力面的语法；库内禁止
 ## preload/class_name 自引用，保持编译单元自包含。
@@ -28,7 +29,8 @@ class PropertyHolder extends RefCounted:
 	func size() -> int:
 		return payloads.size()
 
-## 全部探针的固定执行入口。除 CORO_AWAIT 外均为同步方法；本方法是协程（内部 await），
+## 全部探针的固定执行入口。CORO_AWAIT / MIXED_COMBINATION / RETURN_VALUE_SHARING
+## 为协程（内部 await），其余为同步方法；本方法是协程（内部 await），
 ## 执行到末尾时自行调用 tree.quit()。driver 以 fire-and-forget 方式调用（不得 await）：
 ## 解释器 await gdcc 编译的 void 协程会报 "Trying to get a return value of a method that
 ## returns void"，因此 quit 责任在库内而不在 driver。
@@ -61,6 +63,11 @@ func run_all(tree: SceneTree) -> void:
 	probe_dynamic_variant_receiver()
 	probe_static_var()
 	probe_lambda_capture()
+	await probe_mixed_combination(tree)
+	probe_control_flow_branches()
+	await probe_return_value_sharing(tree)
+	probe_engine_method_packed_arg()
+	probe_string_array_mutation()
 	tree.quit()
 
 ## §2-1：局部别名共享。
@@ -347,3 +354,170 @@ func probe_lambda_capture() -> void:
 	var callback := func() -> void: a.push_back(7)
 	callback.call()
 	print("PROBE|LAMBDA_CAPTURE|%d" % a.size())
+
+## 混合场景（计划 §6 Phase F 全量验收）：脚本属性 + lambda 捕获 + 信号 + 协程 await +
+## for 活迭代组合在同一条确定性链路中互相观测。流程：协程体先 push 2 后挂起；主探针对
+## 属性数组做 for 活迭代，迭代体发射信号使数组增长（新元素被本轮访问）；主探针 await
+## 后协程恢复（先恢复方），调用捕获 lambda 增长 local 并再 push 属性；主探针后恢复打印
+## 全部观测值。属性 / 捕获 / 信号参数 / 迭代源全部经共享身份互相可见。
+var mix_property := PackedInt32Array([1])
+var mix_lambda: Callable
+
+func _on_mix_signal(value: PackedInt32Array) -> void:
+	value.push_back(9)
+
+func _mix_coroutine(local: PackedInt32Array, tree: SceneTree) -> void:
+	mix_property.push_back(2)
+	await tree.process_frame
+	mix_lambda.call()
+	mix_property.push_back(4)
+
+func probe_mixed_combination(tree: SceneTree) -> void:
+	mix_property = PackedInt32Array([1])
+	var local := PackedInt32Array([10])
+	mix_lambda = func() -> void: local.push_back(20)
+	array_signal.connect(_on_mix_signal)
+	_mix_coroutine(local, tree)
+	var sum := 0
+	var visits := 0
+	for v in mix_property:
+		sum += v
+		visits += 1
+		if visits == 1:
+			array_signal.emit(mix_property)
+	array_signal.disconnect(_on_mix_signal)
+	await tree.process_frame
+	print("PROBE|MIXED_COMBINATION|sum=%d;visits=%d;property=%d;local=%d" % [
+		sum, visits, mix_property.size(), local.size()])
+
+## 复杂控制流（Phase F 补充）：if/elif/else 嵌套与 match（字面值 / 合并分支 / guard /
+## 通配 / 嵌套 match）的分支体内直接 mutation packed，分支选择与分支内 mutation 经
+## 共享身份对别名可见，最终内容取决于实际命中分支。
+func probe_control_flow_branches() -> void:
+	var a := PackedInt32Array([1])
+	var alias := a
+	if a[0] < 0:
+		a.push_back(-1)
+	elif a[0] == 1:
+		a.push_back(2)
+		if alias.size() == 2:
+			a.push_back(3)
+		else:
+			a.push_back(-3)
+	else:
+		a.push_back(99)
+	match a.size():
+		1:
+			a.push_back(10)
+		2, 3:
+			a.push_back(20)
+			match a[2]:
+				var bound when bound > 0:
+					a.push_back(bound * 10)
+				_:
+					a.push_back(-30)
+		_:
+			a.push_back(40)
+	var tag := 0
+	if alias.size() == 5:
+		match a[3]:
+			20:
+				tag = 1
+			_:
+				tag = -1
+	match a[0]:
+		2:
+			a.push_back(70)
+		_:
+			a.push_back(60)
+	print("PROBE|CONTROL_FLOW_BRANCHES|%s;%d,%d" % [str(a), alias.size(), tag])
+
+## 返回值身份合同（Phase F 补充）：局部构建返回（无第二持有者，可用可 mutation）、
+## 参数 mutation 后返回（原数组与返回别名共享）、多分支返回（字段返回共享 / 新建返回
+## 独立）、lambda 捕获返回（捕获槽共享）、协程 await 后返回（恢复后 mutation 与返回
+## 别名、字段三方共享）。
+var return_field := PackedInt32Array([100])
+
+func _ret_build_local() -> PackedInt32Array:
+	var local := PackedInt32Array([1])
+	local.push_back(2)
+	return local
+
+func _ret_mutate_param(a: PackedInt32Array) -> PackedInt32Array:
+	a.push_back(7)
+	return a
+
+func _ret_branch(flag: bool) -> PackedInt32Array:
+	if flag:
+		return return_field
+	return PackedInt32Array([9])
+
+func _ret_after_await(tree: SceneTree) -> PackedInt32Array:
+	return_field.push_back(101)
+	await tree.process_frame
+	return_field.push_back(102)
+	return return_field
+
+func probe_return_value_sharing(tree: SceneTree) -> void:
+	var built := _ret_build_local()
+	built.push_back(3)
+	var src := PackedInt32Array([1])
+	var out := _ret_mutate_param(src)
+	out.push_back(8)
+	return_field = PackedInt32Array([100])
+	var via_branch := _ret_branch(true)
+	var fresh := _ret_branch(false)
+	fresh.push_back(10)
+	var captured := PackedInt32Array([50])
+	var getter := func() -> PackedInt32Array: return captured
+	var via_lambda: PackedInt32Array = getter.call()
+	via_lambda.push_back(51)
+	var via_coro: PackedInt32Array = await _ret_after_await(tree)
+	via_coro.push_back(103)
+	print("PROBE|RETURN_VALUE_SHARING|built=%d;src=%d,%d;branch=%d;fresh=%d;lambda=%d,%d;coro=%d,%d" % [
+		built.size(), src.size(), src[2], via_branch.size(), fresh.size(),
+		captured.size(), captured[1], via_coro.size(), return_field.size()])
+
+## 引擎方法边界（Phase F 补充）：builtin 方法返回 packed（String.split，wrap_temp 路径）
+## 后原位 mutation 经别名可见；builtin 方法接收 packed 参数（String.join，internal_ptr
+## 路径）读出别名上 mutation 后内容；实例引擎方法
+## StreamPeerBuffer.set_data_array/get_data_array 的 packed 参数与返回（引擎拷贝语义
+## 两侧一致：set 后本地 mutation 不回流进首次 get；get 返回独立新数组——mutation 后
+## 再次 get 仍为引擎内部状态）。
+func probe_engine_method_packed_arg() -> void:
+	var parts := "a,b".split(",")
+	var parts_alias := parts
+	parts.push_back("c")
+	var joined := "/".join(parts_alias)
+	var peer: StreamPeerBuffer = StreamPeerBuffer.new()
+	var bytes := PackedByteArray([1, 2, 3])
+	peer.set_data_array(bytes)
+	bytes.push_back(4)
+	var read_back := peer.get_data_array()
+	read_back.push_back(9)
+	var reread := peer.get_data_array()
+	print("PROBE|ENGINE_METHOD_PACKED_ARG|%s;%d,%d;%s;%s" % [
+		joined, bytes.size(), read_back.size(), str(read_back), str(reread)])
+
+## PackedStringArray 专项（Phase F 补充）：别名 push_back / 索引写 / insert / remove_at
+## 经共享身份可见；内容 ==/!=（身份不同内容相同、共享别名 mutation 后两子场景）；
+## sort/reverse 作用于共享身份后的内容确认。
+func probe_string_array_mutation() -> void:
+	var a := PackedStringArray(["one"])
+	var alias := a
+	a.push_back("two")
+	alias[0] = "ONE"
+	a.insert(1, "mid")
+	alias.remove_at(2)
+	var b := PackedStringArray(["ONE", "mid"])
+	var eq_same := a == b
+	var c := a
+	c.push_back("x")
+	var eq_after := a == b
+	var neq_after := a != b
+	var d := PackedStringArray(["b", "a", "c"])
+	var d_alias := d
+	d.sort()
+	d_alias.reverse()
+	print("PROBE|STRING_ARRAY_MUTATION|%s;%d,%d,%d;%s" % [
+		",".join(a), int(eq_same), int(eq_after), int(neq_after), ",".join(d)])

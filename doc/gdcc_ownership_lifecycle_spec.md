@@ -89,6 +89,11 @@ Implementation note:
   - destroy old value when required,
   - then assign.
 - Such consolidation is a structural refactor and must not change copy/destroy semantics by itself.
+- `Packed*Array` slots are Variant-backed: the copy step is `godot_new_Variant_with_Variant(...)` (a holder copy
+  that SHARES the engine-side `PackedArrayRef` identity with the source), and the destroy step is
+  `godot_Variant_destroy(...)` (releases this holder). They must never be shallow-copied as plain structs and
+  never round-trip through packed struct pack/unpack outside the whitelisted `gdcc_packed_ref.h` helpers
+  (see `gdcc_c_backend.md` "Packed*Array Variant-backed Storage").
 
 ### 3.3 Overwrite vs First Write
 
@@ -123,6 +128,9 @@ Implementation note:
 - Discarding an `OWNED` object return value: must immediately `release` (or `try_release` variant).
 - Discarding a `BORROWED` object value: no cleanup required.
 - For non-object but `isDestroyable()==true` return values (String/Variant/Container, etc.), discarding must immediately `destroy`.
+  - `Packed*Array` temporaries are Variant carriers: discard destroys them via `godot_Variant_destroy(...)`
+    (builtin-method native return structs are already consumed by `gdcc_packed_<slug>_wrap_temp`, which
+    destroys the temp struct at the wrap site).
 
 ### 3.6 RefCounted Status Matrix
 
@@ -251,6 +259,10 @@ Parameters of a coroutine function:
   ones copied). Parameter fields are destroyed exactly once, by `free_instance` — the cancel
   path never touches them (after cancel-resume the coroutine is `MCO_DEAD` and flows into
   the same single `free_instance` cleanup).
+- Packed parameter/capture/return fields store `godot_Variant`: "copied" means a Variant holder copy
+  (`godot_new_Variant_with_Variant`) that shares the packed identity with the caller across `await`
+  suspension, and destruction is `godot_Variant_destroy(...)`. A struct copy-construct here would break
+  the interpreter-observable sharing.
 
 Captures of a coroutine lambda follow the same per-call frame discipline:
 
@@ -259,12 +271,15 @@ Captures of a coroutine lambda follow the same per-call frame discipline:
   them. Body capture operands map directly to frame fields.
 - The start thunk copies each field out of the Callable-owned capture block before
   `mco_create` (primitives assigned, objects retained from a BORROWED source, value types
-  copy-constructed); the capture block itself remains owned solely by the Callable userdata
+  copy-constructed, packed arrays Variant-holder-copied); the capture block itself remains owned solely by the Callable userdata
   and is freed independently by its `free_func` — releasing the Callable while suspended
   therefore never invalidates the frame.
 - Capture fields are destroyed exactly once, by `free_instance` after the parameter fields;
   the cancel path flows into the same single cleanup. Writes to a capture name inside the
-  lambda hit only that call's frame copy, matching copy-on-capture semantics.
+  lambda hit only that call's frame copy, matching copy-on-capture semantics. For packed captures,
+  copy-on-capture copies the Variant HOLDER, not the underlying packed data: the frame field and the
+  outer variable share the same packed identity, so mutations (not rebindings) are visible in both
+  directions — identical to interpreter lambda capture behavior.
 
 Return-value storage state machine (must not be violated):
 
@@ -321,6 +336,9 @@ Cancel-resume (abandonment path, e.g. emitter death dropping the last reference)
 - Keep `__prepare__` / `__finally__` framework unchanged.
 - `_return_val` is still generated and managed by `CBodyBuilder`, and must not be moved into variable-table auto-destruction.
 - Property initializer lowering may materialize helper-produced values, but constructor-time application of those values to backing fields remains a separate backend-owned route.
+  - Packed backing fields are Variant carriers: the initializer produces the packed value through the whitelisted
+    `gdcc_packed_ref.h` construction helpers (empty / same-family copy / from-`Array`), and the field write is an
+    ordinary Variant-holder slot write.
 - Coroutine body functions reuse the same `__prepare__` / `__finally__` framework unchanged;
   coroutine frame fields (typed parameter fields, typed return slot) are not ordinary C local
   slots and stay outside the variable-table auto-destruction scope, exactly like `_return_val`.
@@ -338,11 +356,18 @@ Cancel-resume (abandonment path, e.g. emitter death dropping the last reference)
   - local non-`void` return carrier `r`
 - Cleanup rule for those locals is value-wrapper specific:
   - destroyable non-object wrappers must be explicitly destroyed before the wrapper returns
+  - packed argument locals are Variant copies (`godot_new_Variant_with_Variant`) that share identity with the
+    caller, and are destroyed via `godot_Variant_destroy(...)`; no struct unpack/pack is involved, which is what
+    makes callee mutations visible to the GDScript caller
   - `OWNED` object return carrier `r` must be released after Variant packing
     (`release_object` / `try_release_object` per `RefCountedStatus`) so internal ownership
     transfers net-zero into `r_return`
   - object argument locals are BORROWED from Variant args and must not be released here
   - primitives never need wrapper cleanup
+- The ptrcall wrapper is the documented exception boundary: packed ptrcall arguments are materialized
+  struct->Variant (`gdcc_packed_<slug>_variant_from_struct`, destroyed after the call) and packed ptrcall
+  returns are copied Variant->struct (`gdcc_packed_<slug>_struct_from_variant`), so identity is NOT shared
+  across the ptrcall ABI (see `gdcc_c_backend.md` "Packed*Array Variant-backed Storage").
 - Required success-path order:
   1. publish `r_return`
   2. destroy local `ret`

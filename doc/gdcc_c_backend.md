@@ -113,7 +113,7 @@ Usage and lifecycle rules:
     - Primitive types are always by value.
     - Object types are always internal fat pointers (raw pointers only at ABI/layout/helper edges).
     - Only other built-in types change C type shape based on `ref`.
-- For `String`, `StringName`, `NodePath`, `Callable`, `Signal`, `Packed*Array`:
+- For `String`, `StringName`, `NodePath`, `Callable`, `Signal`:
   - They are value-semantic wrapper structs that hold opaque engine-side state.
   - Their C type shape follows the `ref` rule above:
     - `ref=true` variable is a pointer to the wrapper struct.
@@ -132,6 +132,15 @@ Usage and lifecycle rules:
       prematurely release the same engine-side state that the slot now refers to
     - once a stable carrier has been consumed by the slot, it must not enter the ordinary temp-destroy path again
   - When a value of these types are no longer used, call `godot_destroy_<TypeName>(TypeName* value)` to destroy them properly.
+- For `Packed*Array` (all 10 families), the canonical storage is Variant-backed, NOT a wrapper struct:
+  - Storage/parameter/return C types are `godot_Variant` / `godot_Variant*` (internal ABI); the shared engine-side
+    `PackedArrayRef` gives Godot4 reference semantics (aliases observe each other's mutations).
+  - Copy is always `godot_new_Variant_with_Variant(...)`; destroy is always `godot_Variant_destroy(...)`.
+  - Builtin method calls take the receiver/arguments through the cached per-family internal pointer getter
+    (`gdcc_packed_<slug>_internal_ptr`); packed return values arrive as a native temp struct that is immediately
+    wrapped into a Variant (`gdcc_packed_<slug>_wrap_temp`) and the temp is destroyed.
+  - The only legal struct boundaries are the whitelisted named helpers in `gdcc_packed_ref.h`
+    (see "Packed*Array Variant-backed Storage" below for the full contract).
 - For `Dictionary`, `Array` and `Variant`:
   - They are wrapper structs with shared/ref-counted internals (not raw C pointers).
   - Their C type shape also follows the `ref` rule above:
@@ -168,6 +177,48 @@ Usage and lifecycle rules:
 - When receiving `godot_Object*` from GDExtension API that is actually a GDCC object, convert the raw pointer with
   `gdcc_object_from_godot_object_ptr(...)` if a wrapper pointer is required, then capture ID into
   `gdcc_<Type>_fat_ptr` via `<Type>_fat_ptr_from_raw(...)` for internal use.
+
+### Packed*Array Variant-backed Storage
+
+- Canonical storage: every packed slot (locals, parameters, instance/static fields, coroutine frame fields,
+  lambda captures, signal arguments) is a `godot_Variant` holding a shared engine-side `PackedArrayRef`.
+  This matches the Godot 4.5 interpreter: `Packed*Array` has reference (shared) semantics at the language level.
+- Core invariant: gdcc-held packed values must never round-trip through struct pack/unpack
+  (`godot_new_Packed*Array_with_*` / `godot_new_Variant_with_Packed*Array`) outside the whitelisted boundaries
+  below. Identity-carrying operations (assignment, aliasing, parameter passing, signals, lambda/coroutine
+  captures, call_func wrapper transit) use only `godot_new_Variant_with_Variant(...)`. The single exception is
+  the same-family `as` cast, which deliberately produces an independent COW copy through whitelist (d)
+  (`new_copy`) instead of sharing identity (see below).
+- The whitelisted struct boundaries are centralized as named helpers in `include_451/gdcc/gdcc_packed_ref.h`:
+  - (a) ptrcall ABI boundary, both directions: inbound `gdcc_packed_<slug>_variant_from_struct` materializes the
+    raw struct argument slot into a Variant (destroyed after the call); outbound `gdcc_packed_<slug>_struct_from_variant`
+    copies the returned Variant back into the caller's raw struct slot.
+  - (b) empty construction: `gdcc_packed_<slug>_new_empty` builds the mandatory empty-array Variant default
+    (a nil Variant has no internal value pointer and would fail method calls).
+  - (c) builtin-method native return temps: `gdcc_packed_<slug>_wrap_temp` wraps the temp struct into a new
+    Variant and destroys the temp (e.g. `duplicate`, `slice` results).
+  - (d) explicit constructors: `gdcc_packed_<slug>_new_copy` (same-family, produces an independent new array,
+    also used by same-family `as` casts) and `gdcc_packed_<slug>_new_from_array` (cross-type from `Array`).
+- Generated code outside `gdcc_packed_ref.h` must not call `godot_new_Packed*Array_with_*`,
+  `godot_new_Variant_with_Packed*Array`, or bare `godot_new_Packed*()`; `CCodegenTest` enforces this ban by
+  scanning all generated artifacts.
+- Method receivers: the builtin wrapper signatures are unchanged; the call site passes the internal value pointer
+  obtained from the cached per-family `GDExtensionVariantGetInternalPtrFunc` getter (resolved once per
+  translation unit by `gdcc_packed_ref_init()`, fail-fast when unavailable).
+- Operators: packed operands take the internal pointer, non-packed operands keep the evaluator's native ABI shape;
+  packed results are produced in a native temp struct and wrapped into a new Variant. `+`/`+=` must NOT be
+  optimized into an in-place `append_array` on the internal pointer (that would leak the mutation to old aliases;
+  `+=` is new-array + rebind).
+- Documented exception (engine ABI limit, accepted): the **ptrcall ABI boundary** does not preserve identity.
+  Packed ptrcall parameters arrive as raw struct slots, so the callee materializes struct->Variant (a Vector-level
+  copy) and mutations stay isolated from the caller; packed ptrcall returns are copied Variant->struct on the way
+  out. Ordinary GDScript<->GDExtension calls go through `call_func` (Variant ABI) and DO preserve identity; only
+  ptrcall extension-to-extension paths are affected. Locked by runtime tests, see
+  `PackedRefStorageModelSmokeTest.ptrcallBoundaryShouldIsolateCallerIdentityInBothDirections` and the detailed
+  rationale in `module_impl/backend/packed_array_reference_semantics_plan.md` (section 1.3), which links back here.
+- Documented behavior change: mutating calls on builtin engine properties (e.g. `poly.polygon.push_back(x)`)
+  are no longer written back, matching the interpreter (the getter returns a copy). Assignment routes on the same
+  property (`poly.polygon = p`, `poly.polygon[0] = v`) still write back (read-modify-write persists).
 
 ### Object Value Representation (Mandatory)
 
@@ -327,6 +378,7 @@ Usage and lifecycle rules:
   - this helper only answers the receiver-side runtime writeback gate for runtime-open `Variant` carriers
   - it does not participate in callable resolution, receiver provenance, or owner-route reconstruction
   - its false/true family matrix is owned by `gdcc_type_system.md` and `gdcc_helper.h`; backend must not drift into a second independent classification table
+  - all 10 packed kinds are explicitly listed as `false` (Variant-backed shared identity needs no writeback); unlisted future kinds keep the frozen default-`true` answer
 
 ### Variant Outward ABI Contract
 
@@ -589,6 +641,10 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
   - Regular builtin constructors are selected by exact `ExtensionBuiltinClass` constructor metadata
     after frontend lowering has materialized any accepted argument boundary. The generated symbol is
     `godot_new_<Type>[_with_<argType>...]`.
+  - `Packed*Array` constructors do NOT use `godot_new_Packed*` symbols; they route to the whitelisted
+    `gdcc_packed_ref.h` helpers: zero-arg and default values -> `gdcc_packed_<slug>_new_empty`, same-family
+    argument -> `gdcc_packed_<slug>_new_copy` (independent new array), `Array` argument ->
+    `gdcc_packed_<slug>_new_from_array`. Other combinations fail closed on constructor metadata validation.
   - `Transform2D`, `Transform3D`, `Basis`, and `Projection` may use GDCC-owned helper-shim constructor
     signatures when Godot API metadata has no exact constructor surface but the binding
     naming contract already exposed the helper.

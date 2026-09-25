@@ -70,6 +70,9 @@
   - getter-self 直读必须按 `&self->field` 做 copy-by-address，不得先 shallow-copy 到 temp 再 destroy temp
   - 若当前 target overwrite 在 Builder 的 sealed provenance 模型下属于 `may-alias`，getter-self 允许先用 copy ctor 从 `&self->field` 生成 stable carrier，再 destroy target 并 consume 该 carrier
   - setter-self 直写同理：对 `ref=true` parameter 这类 alias-open source，Builder 会先生成 stable carrier，再 destroy backing field，并把 carrier consume 到 field；但仍不得走“copy temp -> field = temp -> destroy temp”
+- packed backing field 同属上述 stable-carrier 模型，但存储是 `godot_Variant`：copy/destroy 经 helper 名映射解析为
+  `godot_new_Variant_with_Variant` / `godot_Variant_destroy`（持有者拷贝共享身份），不会生成任何
+  `godot_new_Packed*Array_with_*` struct 转换符号。
 
 ### 2.5 可读写校验状态
 
@@ -161,6 +164,9 @@
   - `proven no-alias` 的 `BORROWED` source，继续生成 `slot = godot_new_<Type>_with_<Type>(source_ptr)`
   - `may-alias` 的 `BORROWED` source，必须先生成 stable carrier，再 destroy old slot，并把 carrier consume 到 slot
   - 不允许生成“copy temp -> plain `slot = temp` -> destroy temp”，因为 `slot = temp` 只做浅层 struct 赋值
+  - packed 槽位是 Variant-backed 存储：同一 overwrite 模型下 copy helper 为
+    `godot_new_Variant_with_Variant`（共享身份）、destroy 为 `godot_Variant_destroy`；上述 struct 形状约束
+    对 packed 的适用点在于“不得退化为浅层 Variant struct 赋值”，而非任何 packed struct 转换路径。
 - getter-self 读取 backing field 时，若后续 copy helper 需要地址，必须优先使用 `&self->field` 这类现有 storage 地址；
   不得通过 `tmp = self->field` 人工物化地址。
 

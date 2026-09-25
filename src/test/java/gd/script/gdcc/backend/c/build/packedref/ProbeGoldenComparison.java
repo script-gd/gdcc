@@ -6,55 +6,43 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 
 /// Result of comparing one dual-run side's {@link ProbeOutput} against the golden
-/// {@link ProbeOutput}. Payload equality is checked only for the given `checkedCases`
-/// (the Phase-A-enabled subset); structural checks apply unconditionally so that harness
-/// bugs surface even in phases where a case is still disabled:
+/// {@link ProbeOutput}. The comparison is a strict full-matrix contract — the golden file is
+/// the single source of truth for the case inventory, so EVERY golden case must be present in
+/// the actual output with an equal payload:
 ///
+/// - missing cases (present in golden, absent from actual) indicate a crashed/truncated run;
+/// - payload mismatches indicate a behavior divergence from the interpreter-locked baseline;
 /// - unknown cases in the actual output (present in actual, absent from golden) indicate a
-///   probe-library/registry/golden desync;
+///   probe-library/golden desync;
 /// - order violations indicate the actual run emitted known cases in a different relative
-///   order than the golden, which breaks the deterministic `run_all` contract;
-/// - checked cases missing from the golden indicate a registry/golden desync.
-///
-/// Unchecked (disabled) cases are deliberately ignored for payload and missing checks: they
-/// run on both sides but their gdcc-side values are scheduled for a later phase.
+///   order than the golden, which breaks the deterministic `run_all` contract.
 public record ProbeGoldenComparison(
-        @NotNull List<String> missingCheckedCases,
+        @NotNull List<String> missingCases,
         @NotNull List<String> payloadMismatches,
-        @NotNull List<String> checkedCasesMissingFromGolden,
         @NotNull List<String> unknownActualCases,
         @NotNull List<String> orderViolations
 ) {
     public ProbeGoldenComparison {
-        missingCheckedCases = List.copyOf(missingCheckedCases);
+        missingCases = List.copyOf(missingCases);
         payloadMismatches = List.copyOf(payloadMismatches);
-        checkedCasesMissingFromGolden = List.copyOf(checkedCasesMissingFromGolden);
         unknownActualCases = List.copyOf(unknownActualCases);
         orderViolations = List.copyOf(orderViolations);
     }
 
     public static @NotNull ProbeGoldenComparison compare(
             @NotNull ProbeOutput actual,
-            @NotNull ProbeOutput golden,
-            @NotNull Set<String> checkedCases
+            @NotNull ProbeOutput golden
     ) {
         Objects.requireNonNull(actual, "actual must not be null");
         Objects.requireNonNull(golden, "golden must not be null");
-        Objects.requireNonNull(checkedCases, "checkedCases must not be null");
 
-        var missingCheckedCases = new ArrayList<String>();
+        var missingCases = new ArrayList<String>();
         var payloadMismatches = new ArrayList<String>();
-        var checkedCasesMissingFromGolden = new ArrayList<String>();
-        for (var caseName : checkedCases) {
-            if (!golden.hasCase(caseName)) {
-                checkedCasesMissingFromGolden.add(caseName);
-                continue;
-            }
+        for (var caseName : golden.caseNames()) {
             if (!actual.hasCase(caseName)) {
-                missingCheckedCases.add(caseName);
+                missingCases.add(caseName);
                 continue;
             }
             var expectedPayload = golden.requirePayload(caseName);
@@ -79,19 +67,17 @@ public record ProbeGoldenComparison(
                 : List.of("expected relative order " + expectedRelativeOrder + " but was " + actualRelativeOrder);
 
         return new ProbeGoldenComparison(
-                missingCheckedCases,
+                missingCases,
                 payloadMismatches,
-                checkedCasesMissingFromGolden,
                 unknownActualCases,
                 orderViolations
         );
     }
 
-    /// Whether every check passed (all five categories empty).
+    /// Whether every check passed (all four categories empty).
     public boolean matches() {
-        return missingCheckedCases.isEmpty()
+        return missingCases.isEmpty()
                 && payloadMismatches.isEmpty()
-                && checkedCasesMissingFromGolden.isEmpty()
                 && unknownActualCases.isEmpty()
                 && orderViolations.isEmpty();
     }
@@ -102,9 +88,8 @@ public record ProbeGoldenComparison(
             return "probe output matches golden";
         }
         var description = new StringBuilder("probe output diverges from golden:");
-        appendSection(description, "missing checked cases", missingCheckedCases);
+        appendSection(description, "missing cases", missingCases);
         appendSection(description, "payload mismatches", payloadMismatches);
-        appendSection(description, "checked cases missing from golden", checkedCasesMissingFromGolden);
         appendSection(description, "unknown actual cases", unknownActualCases);
         appendSection(description, "order violations", orderViolations);
         return description.toString();

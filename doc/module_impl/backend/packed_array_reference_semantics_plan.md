@@ -244,7 +244,7 @@ reverse-commit，这是错误的。改造后按 route provenance 决策（谓词
 | method-result route（`get_baked_points().push_back`） | 不写回 | 不写回（不变） |
 
 动态 Variant receiver route：runtime gate helper `gdcc_variant_requires_writeback`
-（`gdcc_helper.h:577-625`）对 packed 各 kind 改为 `false`。**必须显式列出全部 10 个
+（`gdcc_helper.h:589-640`）对 packed 各 kind 改为 `false`。**必须显式列出全部 10 个
 packed kind**（现行 switch 漏列 `GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY`，落入
 `default: true`，本次一并修复）；`default` 分支保持 `true`（"未知 kind 保守 true" 的冻结
 合同不变，`gdcc_type_system.md` §130）。apply/skip 控制流骨架保留；静态 family 矩阵中
@@ -711,6 +711,64 @@ CORO_AWAIT / SIGNAL_MULTI（`DEFERRED_FULL_MATRIX_ACCEPTANCE`，Phase F）。
 
 ### Phase E：文档重写
 
+#### Phase E 状态（2026-09-25 完成）
+
+**已完成并验收。** 按上方"必改/核对"清单逐条落地，全部修改与 Phase A–D 的代码事实双向核对：
+
+- **核心规范**：
+  - `gdcc_type_system.md`：§Container Type Boundaries 补充"family 区分是逻辑分类而非 C 存储形状"说明；
+    §Mutating Receiver Writeback Families 整体重写——receiver family 按存储类别二分（struct 值语义 /
+    shared-reference，packed 全 10 family 归入后者），packed 写回答案改为 route-provenance 矩阵
+    （DIRECT_SLOT / STATIC_PROPERTY / ENGINE_PROPERTY_CALL -> `false`；SCRIPT_PROPERTY /
+    CONTAINER_ELEMENT / GENERIC -> `true` 及各自 rationale）；runtime helper 矩阵同步为 10 个 packed
+    kind 全 `false`（显式含 `PACKED_VECTOR4_ARRAY`）；§130 default-true 冻结合同原样保留并强化表述。
+  - `gdcc_c_backend.md`："Use GDCC Class Types" 将 packed 从 value-semantic wrapper struct 组拆出（该组
+    恢复为 `String`/`StringName`/`NodePath`/`Callable`/`Signal`）；新增 "### Packed*Array Variant-backed
+    Storage" 专节——核心不变式、白名单 (a)(b)(c)(d) 到具名 helper 的映射、生成代码禁令、receiver/
+    运算符规则、ptrcall ABI 例外（双向链接本文档 §1.3 与 `PackedRefStorageModelSmokeTest`）、7a 行为
+    变更记录；§Backend-owned Runtime Writeback Helper 补充 packed 显式 `false` 说明；§Default Argument
+    Values 构造路由补充 packed 三分支（new_empty/new_copy/new_from_array + hasConstructor fail-closed）。
+  - `gdcc_ownership_lifecycle_spec.md`：§3.2 补充 packed 槽位写入（copy=Variant 持有者拷贝共享身份、
+    destroy=`godot_Variant_destroy`、禁止浅层 struct 赋值与白名单外转换）；§3.5 packed 临时值丢弃经
+    Variant carrier 销毁；§3.10 协程参数/捕获/返回字段的 packed "拷贝"澄清为持有者拷贝（跨 await 共享
+    身份，copy-on-capture 复制持有者而非底层 Vector）；§4.2 packed backing field 初始化经白名单构造
+    helper；§4.4 call_func wrapper packed 参数局部为 Variant 拷贝（身份与调用方共享）+ ptrcall 例外
+    边界记录。
+  - `gdcc_low_ir.md`：`construct_builtin`/`construct_array` 补充 packed 白名单 helper 路由与
+    empty-Variant 默认初始化合同；`destruct` 类型清单注明 packed 经 `godot_Variant_destroy` 释放持有；
+    `builtin_cast` 记录同 family `as` 的 COW 拷贝新身份（`new_copy`）与 `is` 的 `get_type` 精确匹配。
+  - `gdcc_lir_intrinsic.md`：`gdcc.for_packed_<family>_iter.*` 合同重写为活迭代（state=Variant 持有者
+    拷贝+index、live size、禁止缓存基址、`from` 收 `const godot_Variant*`）。
+  - `gdcc_runtime_lib.md`：for_packed_array_iter.h 描述同步活迭代；新增 `gdcc_packed_ref.h` 条目（职责、
+    白名单 helper、生成代码禁令）；`gdcc_helper.h` 条目补充 writeback 矩阵归属；`gdcc_len` 描述更正为
+    packed 分支直取内部指针（与实现核对一致）。
+- **后端模块文档**：`construct_array_implementation.md`（专用 constructPackedArray 路由、三种实参形态、
+  维护约束/风险/回归基线/工程反思同步）；`cbodybuilder_implementation.md` §2.1/4.2/7.1（packed 槽位
+  写入与返回槽的 Variant 形态、setter-self 排除 packed struct 形状）；`load_store_property_implementation.md`
+  §2.4/4.5（packed backing field 的 stable-carrier 模型 + Variant copy/destroy 名映射）；
+  `index_insn_implementation.md` §4.3/5.1/5.2/6.3/7.2（packed self 直传存储 Variant、ref 禁令解除、
+  GET/SET 流程分流）；`hot_reload_implementation.md` §7.3（schema 类型字段 `<语义类型名>@<C存储类型>`
+  双段编码及 packed 碰撞消除 rationale、fail-closed 升级行为记录）；`variant_abi_contract.md` §3/§4
+  （call_func packed 参数 Variant 拷贝身份共享 + ptrcall 白名单 (a) 例外、wrapper cleanup 的
+  `godot_Variant_destroy` 解析）。
+- **前端模块文档**：`frontend_complex_writable_target_implementation.md`（§3.3/3.5/4.1/4.3/4.4/5.1/5.2/
+  7.1/7.2/8.3/8.4/9/10 共 12 节——route-provenance 分流、packed DIRECT_SLOT step 豁免与
+  `requiresDirectSlotSnapshotCommit` 发布门、CAPTURE alias root 放行、7a/7c 行为矩阵、10-kind runtime
+  gate、识别单向安全性、测试基线与非目标同步）；`frontend_lowering_cfg_pass_implementation.md` §4
+  （payload step 发布门控、CAPTURE 放行、STATIC_CONTEXT promotion 解除、DIRECT_SLOT step 仅服务
+  LOCAL_VAR）；`frontend_dynamic_call_lowering_implementation.md` §3.3/4.3/7（provenance 分流优先于
+  family gate、SCRIPT_PROPERTY 收窄、packed 实参共享身份、7a/7c 与 `FrontendWritableRouteSupportTest`
+  回归锚点）。
+- **核对文档**：`typed_array_abi_contract.md` / `typed_dictionary_abi_contract.md` /
+  `call_method_implementation.md` / `assign_insn_implementation.md` /
+  `backend_ownership_lifecycle_contract.md` / `lifecycle_instruction_restriction.md` 经逐份核查与新存储
+  模型无直接冲突（packed 在其中的提及均为 outward metadata leaf 或类型规范化，不涉及 C 存储/构造/写回
+  约定），未做改动。
+- **验收核对**：ptrcall 例外与 7a/7c 行为变更已在 `gdcc_c_backend.md`、
+  `gdcc_ownership_lifecycle_spec.md`、`variant_abi_contract.md`、
+  `frontend_complex_writable_target_implementation.md`、本文档 §1.3/§5 之间形成两处以上双向链接；
+  文档间 helper 名、谓词名、测试类名引用与代码逐一核对一致。
+
 - 必改：
   - `gdcc_type_system.md` §90-137：Packed*Array 移入 shared/reference family；静态矩阵改为
     route-provenance 三档描述；runtime helper 矩阵同步；§130 default-true 冻结合同保留。
@@ -740,10 +798,142 @@ CORO_AWAIT / SIGNAL_MULTI（`DEFERRED_FULL_MATRIX_ACCEPTANCE`，Phase F）。
 
 ### Phase F：全量验收
 
+#### Phase F 状态（2026-09-25 完成）
+
+**已完成并验收。** 产物清单（按上方内容/清理清单逐条对应）：
+
+- **全量启用（含 23、24）**：`ProbeGoldenComparison.compare` 改为全量合同（移除
+  `checkedCases` 参数——golden 即用例清单唯一事实源；缺失/payload 分歧/未知用例/相对
+  顺序四类差异逐一定名）；`PackedArrayReferenceSemanticsDualRunTest` 双跑两侧均对完整
+  golden 断言（解释器侧基线校验不变，gdcc 侧由启用集比对升级为全量比对），per-case
+  DynamicTest 按 golden 行序生成。CORO_AWAIT（§2-23）与 SIGNAL_MULTI（§2-24）实测通过
+  （Godot 4.5.2 + zig 双跑，gdcc 输出与 golden 逐行一致，31 测试 0 失败）。
+- **harness 清理（全部用例转断言态后执行完毕）**：
+  - 退役：`PackedRefSemanticsCase` 注册表类与 `PackedRefSemanticsCaseRegistryTest` 删除
+    （AssertionGate/baseline/暂缓跳过逻辑一并移除）；`ProbeGoldenComparisonTest` 重写为
+    全量合同正反锚定——任何用例的 payload 分歧与缺失都必须失败（原"禁用用例豁免"两例
+    已反转为全量锚定），未知用例/顺序/截断/空输出负例保留并补充。
+  - 保留：探针库 `packed_ref_probes.gd` 与 golden（§2 矩阵及 §1.3 例外的行为合同锚）；
+    简化后的双跑测试；`ProbeOutput`/`ProbeGoldenComparison` 及其单测；
+    `GdccPackedRefRuntimeSmokeTest` 与 `PackedRefStorageModelSmokeTest`。探针库与 golden
+    的头注释同步去除注册表表述（golden 行序即唯一事实源）。
+- **混合调用自动回归（call_func 身份保持、ptrcall 例外）**：
+  - call_func 身份保持：新增 test_suite 端到端资源对
+    `member/packed_call_func_identity.gd`——解释器 GDScript 经普通方法调用（call_func
+    Variant ABI，真机运行编译产物）把 packed 数组交给编译类，正反锚定 typed 形参
+    push_back/append_array、Variant 形参、编译类字段持有后的反向可见、返回边界身份保持
+    （retained 字段经 return 与调用方别名三方共享、双向 mutation 可见）、新建返回值可用性
+    六种形态（§2 第 2/13/16 行与 §4.3.12）。
+  - ptrcall 例外：既有 `PackedRefStorageModelSmokeTest.
+    ptrcallBoundaryShouldIsolateCallerIdentityInBothDirections` 运行测试继续承担自动化
+    锚定（fake 引擎按引擎身份合同建模，双向身份隔离 + callee 侧共享 + 持有者平衡）。
+    Godot 对 GDExtension 脚本方法的调用恒走 call_func（Variant ABI），ptrcall wrapper
+    无真机触发路径，故真机侧无可承载的端到端 ptrcall 用例；wrapper 序列与真实模板的一致性
+    由 `CCodegenTest.generatesPackedWrapperVariantCallBoundaryAndPtrcallMaterialization`
+    文本锚定（含顺序约束）双重锁定。
+- **混合场景双跑比对**：探针库新增 `MIXED_COMBINATION` 用例——脚本属性 + lambda 捕获 +
+  信号参数 + 协程 await 挂起/恢复 + for 活迭代在同一条确定性链路组合（协程先 push 挂起，
+  主探针活迭代属性数组并在迭代体发射信号使数组增长，恢复后捕获 lambda 增长 local）；
+  golden 行经 Godot 4.5.2 解释器运行锁定（`sum=12;visits=3;property=4;local=2`），gdcc
+  侧双跑一致。
+- **全用法端到端测试（参考 test_suite.md）**：新增 test_suite 资源对
+  `member/packed_ref_full_usage.gd`——函数调用 / while / for 活迭代 / if-elif-else /
+  match / 三元表达式 / 实例字段 / lambda 捕获 / 协程 await（自有信号挂起与恢复）/ 信号
+  connect-emit-disconnect 全组合共用 packed 共享身份，validation 逐段锚定聚合结果与
+  挂起前后字段可见性；两资源对已登记 `EXPECTED_SCRIPT_PATHS`，member 工厂 20 测试通过。
+- **验收**：`./gradlew clean build --no-daemon --console=plain` 全绿（含全部既有 Godot
+  集成测试套件）；无新增 known-limit 记录；harness 清理后全部用例的 golden 断言覆盖不减
+  （清理前启用集 28/28，清理后 29/29 全量，新增 MIXED_COMBINATION 经双侧实测）。
+
+**审阅加固记录（review-expert-a / review-expert-c 并行审阅后修复）**：
+
+1. **family shortcut 与 provenance 矩阵的矛盾表述（expert-a，高）**：`gdcc_type_system.md`
+   静态捷径段与 `frontend_complex_writable_target_implementation.md` §3.5/§8.4/§9 曾把
+   packed 并入"shared/reference family 一律 fast-skip"——按字面实现会丢掉 §5 明确保留的
+   SCRIPT_PROPERTY/CONTAINER_ELEMENT/GENERIC 写回。已改为：family 捷径只覆盖
+   `Object`/`Array`/`Dictionary`，packed 一律经 route-provenance 矩阵回答；§3.5 同步更正为
+   `requiresDirectSlotSnapshotCommit` 的真实合同（仅 packed 豁免，Array/Dictionary 历史
+   无条件发布冗余自赋值 step）。
+2. **核心不变式误列 casts（expert-a，高）**：`gdcc_c_backend.md` 专节的"仅允许
+   `godot_new_Variant_with_Variant`"清单曾包含 casts，与同 family `as` 经白名单 (d)
+   `new_copy` 产独立新身份矛盾；已从清单移除并显式标注该例外。
+3. **`ConstructBuiltinInsn` 旧合同残留（expert-a，高）**：`construct_array_implementation.md`
+   §1 长期约定与非目标仍写"ConstructBuiltinInsn 不做改动"，与 packed 经
+   `CBuiltinBuilder.constructBuiltin -> constructPackedArray` 的现状相反；已改为两条指令
+   入口共用专用路径的准确表述。
+4. **CAPTURE alias 同节自相矛盾（expert-a，高）**：
+   `frontend_dynamic_call_lowering_implementation.md` §3.3 一处旧句仍称 CAPTURE 不在
+   alias surface 内，与四行后的放行条款直接冲突；已统一为放行口径。
+5. **返回边界身份锚定过弱（expert-a/expert-c 共同指出，中）**：原 `produce()` 断言
+   （返回值 push 后 size==3）在深拷贝边界下同样通过，无法锚定身份合同。已新增
+   `produce_retained()`/`read_retained_size()` 用例——callee retained 字段经 return 与
+   调用方别名三方共享，双向 mutation 互相可见；`produce()` 注释收窄为"新建返回值可用性"，
+   本节形态描述同步更正。
+6. **§2 矩阵清单失去独立覆盖锚点（expert-c，高）**：注册表测试删除后，探针调用与
+   golden 行若被同步删除，golden-only 全量比对无法发现覆盖收缩。新增
+   `PackedRefSemanticsGoldenInventoryTest`（纯资源单测，**不依赖 Godot**——锚点置于双跑
+   测试类内会随 `GODOT_BIN` 缺失整类跳过而失效，复核后拆出）：`MATRIX_CASE_NAMES`
+   冻结清单（§2 逐行 + dyn + MIXED 共 29 例，注释标注行号）对 golden 名称与顺序精确
+   断言；golden 继续独占 payload 事实，双跑测试负责运行时比对。探针库/golden 头注释的
+   "唯一事实源"措辞同步收窄。
+
+以上 6 条经 review-expert-a 复核确认 1–5 全部 RESOLVED（APPROVE）；第 6 条首轮复核
+指出锚点位于双跑类内会随 Godot 缺失跳过，拆分为独立的
+`PackedRefSemanticsGoldenInventoryTest` 后复核确认 RESOLVED（APPROVE）。
+
+**Phase F 补充用例（2026-09-25，review-expert-a / review-expert-c 复核 APPROVE）**：
+
+端到端覆盖的四个补充方向，全部以双跑探针承载（解释器锁定 golden，gdcc 侧验证真实
+ABI 生成路径，探针+golden+`MATRIX_CASE_NAMES` 三处同步，双跑 35 测试全绿）：
+
+1. `CONTROL_FLOW_BRANCHES`（复杂控制流）：if/elif/else 嵌套与 match（字面值 / 合并
+   分支 / guard / 通配 / 嵌套 match）分支体内直接 mutation packed，分支选择与分支内
+   mutation 经共享身份对别名可见；payload `[1, 2, 3, 20, 30, 60];6,1` 锚定完整命中链
+   （elif → 内层 if → 合并臂 → guard 且 push 值绑定 `bound` → 字面 tag 臂 → 通配臂
+   命中 mutation）。
+2. `RETURN_VALUE_SHARING`（返回值身份）：局部构建返回（无第二持有者可用）、参数
+   mutation 后返回（原数组与返回别名共享）、多分支返回（字段返回共享 / 新建返回
+   独立）、lambda 捕获返回（捕获槽共享）、协程 await 后返回（恢复后 mutation 与返回
+   别名、字段三方共享）五种形态，payload `built=3;src=3,8;branch=4;fresh=2;
+   lambda=2,51;coro=4,4`。
+3. `ENGINE_METHOD_PACKED_ARG`（引擎方法边界）：builtin 返回 packed（`String.split`，
+   wrap_temp 路径）后原位 mutation **经别名**可见（值语义下别名滞留 `a/b`）；builtin
+   接收 packed 参数（`String.join`，internal_ptr 路径）读出别名 mutation 后内容；
+   实例引擎方法 `StreamPeerBuffer.set_data_array/get_data_array`——set 后本地
+   mutation 不回流进首次 get（捕获"引擎与调用方错误共享身份"），get 返回 mutation 后
+   再次 get 仍为引擎内部状态 `[1, 2, 3]`（锚定返回独立性）。payload
+   `a/b/c;4,4;[1, 2, 3, 9];[1, 2, 3]`。
+4. `STRING_ARRAY_MUTATION`（PackedStringArray 专项）：别名 push_back / 索引写 /
+   insert / remove_at 共享可见；内容 ==（异身份同内容）/ == 假值 / !=（共享别名
+   mutation 后）三断言；sort/reverse 作用于共享身份。payload `ONE,mid,x;1,0,1;c,b,a`。
+
+**补充用例审阅加固（review-expert-a / review-expert-c 并行，复核 APPROVE）**：
+
+1. ENGINE 用例初版在值语义下整例巧合通过（join 读原变量非别名、get 返回未二次观测）
+   ——改为别名 join + `reread` 双重锚定（expert-a 高 / expert-c 警告，同点收敛）。
+2. STRING 用例声称 ==/!= 但未执行 `!=`——补 `neq_after` 断言（expert-c）。
+3. CONTROL_FLOW 通配臂从未命中、guard 绑定值未进 payload——通配臂改为主动命中并
+   mutation、push 值绑定 `bound * 10`（expert-a 低，按"锚定完整命中链"处理）。
+4. run_all 头注释协程清单与 golden 头注释用例清单同步更新（expert-a 低）。
+5. expert-c 建议的"出向引擎方法 packed 参数 ABI 定向检查"经两轮复核落地为
+   `CCodegenTest.generatesEngineMethodHelperPackedArgMaterializationAndReturnWrap`
+   （真实 `StreamPeerBuffer` 元数据 + LIR 直驱生成）：出向 packed 实参以游标顺序断言
+   "struct_from_variant 物化 → args 数组声明 → 临时槽地址入 args → ptrcall → 调用后销毁"
+   （地址断言锚定在 args 声明之后，证明临时槽被传入调用而非仅存在于函数体）与
+   internal_ptr 零出现（防回归为直传内部指针导致引擎共享调用方身份）；packed 返回以
+   同样方式断言 "raw slot → ptrcall → 返回槽地址 → wrap_temp"。首轮答复中"已由既有
+   单测锚定"的表述不准确（既有锚点覆盖 builtin wrapper 与入向 wrapper，不覆盖出向
+   engine helper），已更正。
+
+实施踩坑记录（锁定为后续探针编写约束）：payload 不得含 `|`（`ProbeOutput` 三段式
+格式冲突，初版 join 分隔符 `"|"` 触发 malformed line）；gdcc 不做 bool→int 隐式
+转换（`var x: int = a == b` 编译期 type_check 错误，须 `int(...)` 显式转换打印）。
+
 - 内容：Phase A 测试全量启用（含 23、24）；`./gradlew clean build --no-daemon
   --console=plain`；现有 Godot 集成测试套件全量通过；GDScript↔gdcc 混合调用（call_func
   身份保持、ptrcall 例外）纳入**自动回归**而非人工抽查；混合场景（属性 + 信号 + lambda +
-  协程 + 循环组合）双跑比对。
+  协程 + 循环组合）双跑比对；参考 test_suite.md 添加全用法（函数调用、while、for、if、match、
+  三元表达式、字段、lambda、协程、信号等）覆盖的端到端测试。
 - **双跑 harness 清理（全量验收通过后执行）**：全部用例转为断言态后，迁移期脚手架按下列
   清单退役，行为合同的终身回归由保留项承担。
   - 退役：`AssertionGate`/`baseline` 字段与暂缓跳过逻辑；STATIC_VAR、LAMBDA_CAPTURE 迁回主
