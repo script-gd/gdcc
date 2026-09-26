@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（Godot 规则已梳理，`String <-> StringName` feature gate 已完成实现闭合；ordinary typed boundary 的 semantic / lowering / backend constructor 与 GDExtension `call_func` inbound wrapper 合同已同步）
-- 更新时间：2026-08-19
+- 更新时间：2026-09-27
 - 适用范围：
   - `doc/module_impl/frontend/**`
   - `src/main/java/gd/script/gdcc/frontend/**`
@@ -19,6 +19,7 @@
   - `frontend_type_check_analyzer_implementation.md`
   - `frontend_unary_binary_expr_semantic_implementation.md`
   - `frontend_lowering_cfg_pass_implementation.md`
+  - `frontend_call_argument_object_upcast_plan.md`
   - `doc/gdcc_type_system.md`
 - 主要事实来源：
   - Godot `GDScriptAnalyzer::check_type_compatibility(...)`
@@ -169,7 +170,7 @@ GDExtension `call_func` inbound wrapper 两条路径的完成度对齐；它不�
 | same type -> same type | Y | Y | 最基础兼容 |
 | 任意 stable type -> `Variant` | Y | Y | GDCC 通过 `pack_variant` materialize |
 | stable `Variant` -> concrete target | Y | Y | GDCC 当前已接通 ordinary `Variant` boundary，并通过 `unpack_variant` materialize |
-| 任意 object subclass -> object superclass | Y | Y | 例如 `Sprite2D -> Node -> Object` |
+| 任意 object subclass -> object superclass | Y | Y | 例如 `Sprite2D -> Node -> Object`；fixed call argument 边界的物化形态例外见 `frontend_lowering_(un)pack_implementation.md` §4.2/§4.3 |
 | `null` / `Nil` -> object target | Y | Y | Godot 接受；GDCC frontend 通过 boundary helper 显式物化 object-typed `LiteralNullInsn` |
 | `enum` value -> `int` | Y | N | GDCC 没有 enum 一等类型模型；脚本枚举不是一等 `GdType`，声明类型经 declared-type `instanceType` 直接擦除为 `int`（见 `frontend_enum_implementation.md`），本行 `N` 仅指一等 enum 转换模型 |
 | `int` -> enum target | Y | N | Godot 允许但通常伴随 warning/显式语义讨论；GDCC 未建模一等 enum target，脚本枚举标注即 `int`，无需转换 |
@@ -341,6 +342,7 @@ Godot strict implicit conversion 表里没有 `Dictionary` 到其他 builtin con
 - `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)`
   - ordinary `(un)pack` consumer/materialization 的长期合同以 `frontend_lowering_(un)pack_implementation.md` 为准
   - `String <-> StringName` 这类 constructor materialization 仍属于同一个 ordinary boundary materialization 入口；不得在 consumer 内维护局部分支
+  - fixed call argument 边界上严格 object 子类 -> 祖先的 upcast 物化（target-typed temp + `AssignInsn`）同样与该单一入口同层登记，不视为 consumer 私设局部分支；合同见 `frontend_lowering_(un)pack_implementation.md` §4.2/§4.3
 
 ### 9.2 当前明确拒绝 widened conversion 的文档锚点
 

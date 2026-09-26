@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：计划待实施（成因链路已闭环，最小复现测试已存在；方案与范围已拍板，评审修订第 1 轮完成，尚未改代码）
+- 状态：实施中（步骤 0 文档先行已完成——矩阵、`(un)pack`、`frontend_rules.md` 命名条款三处已同改；步骤 1 前端 helper 待实施）
 - 更新时间：2026-09-27
 - 适用范围：
   - `doc/module_impl/frontend/**`
@@ -180,7 +180,7 @@ try_release_object(gdcc_Object_fat_ptr_live_object($cfg_boundary_call_fixed_0_up
 
 每一步都保持可编译、可回归、可单独提交。测试命令统一使用 `script/run-gradle-targeted-tests.sh`。
 
-### 步骤 0：文档先行（单独提交，三处同改）
+### 步骤 0：文档先行（单独提交，三处同改）——已完成（2026-09-27）
 
 1. `frontend_implicit_conversion_matrix.md`
    - 全局规则"任意 object subclass -> object superclass"行备注：兼容性维持 Y，物化形态加引用说明"fixed call argument 边界的物化形态例外见 `frontend_lowering_(un)pack_implementation.md` §4.2/§4.3"。
@@ -278,7 +278,7 @@ try_release_object(gdcc_Object_fat_ptr_live_object($cfg_boundary_call_fixed_0_up
 
 ## 8. 总体验收清单（DoD）
 
-- [ ] 三处文档（矩阵、`(un)pack`、`frontend_rules.md` 命名条款）已先于代码更新
+- [x] 三处文档（矩阵、`(un)pack`、`frontend_rules.md` 命名条款）已先于代码更新
 - [ ] `Callable(token, &"bump")`、`Signal(token, &"s")` 等子类实参 builtin 构造调用全链路通过
 - [ ] 后端 `CBuiltinBuilder`、LIR 指令集、`Decision` 枚举零改动
 - [ ] 同类型 / 非对象 / `Variant` 目标的既有路径零行为变化（有测试锚点）
