@@ -259,12 +259,13 @@ plain assignment、compound assignment 与 constructor materialization 当前各
   - 若 `RESOLVED(void)` call 仍出现在 value-required path，CFG builder 必须立刻 fail-fast，而不是继续发布一个假想 result value id；这是 compile gate / type-check regression 的 guard rail，不是兼容路径
   - 若某个 call site 后续需要 mutating receiver writeback，则同一个 `CallItem` 还必须承载单个 writable receiver access-chain payload
   - 这条 chain payload 必须以“整条 route”的形式冻结；CFG 不得为同一个 call receiver 再发布一串额外 step item 让 body lowering 事后拼装
-  - 对 property/subscript receiver call，payload 的 `reverseCommitSteps` 还必须包含“当前 leaf 提升后的第一层 commit step”；否则 body lowering 只有 receiver provenance，却没有真正可执行的 post-call writeback plan
+  - 对 property/subscript receiver call，payload 的 `reverseCommitSteps` 还必须包含“当前 leaf 提升后的第一层 commit step”；否则 body lowering 只有 receiver provenance，却没有真正可执行的 post-call writeback plan。该 step 的发布受 route provenance 门控：packed 的内建引擎属性 mutating-call route（`ENGINE_PROPERTY_CALL`）不发布 step（引擎 getter 返回副本，写回会被错误持久化）；packed 的赋值 route（`GENERIC`）与脚本属性 / 容器元素 route 仍发布 step
   - call result runtime type 的真源是 call anchor 对应的 `expressionTypes()`；`resolvedCalls()` 只负责 route fact，不是 `DYNAMIC` call result type 的唯一来源
 
 当前 body lowering 侧已经把 writable-route 的 leaf read / leaf write / reverse commit 共用逻辑收敛到 package-private
 `FrontendWritableRouteSupport`。current-carrier family 的静态 writeback matrix 则收口到 public
-`FrontendWritableTypeWritebackSupport`，避免 assignment lowering、runtime gate 与后续测试各自复制一份 family
+`FrontendWritableTypeWritebackSupport`（含 `WritebackRouteProvenance` 分流与 packed-only 的
+`requiresDirectSlotSnapshotCommit` 门），避免 assignment lowering、runtime gate 与后续测试各自复制一份 family
 表。当前 CFG 已经能通过 `FrontendWritableRoutePayload` 在 `CallItem` / `AssignmentItem` 上冻结整条 writable route，graph
 publication 也会校验这类 payload 的本地 value-id 引用顺序，并额外拒绝 non-terminal static property commit step。
 assignment final-store lowering 已经切到 payload-only route；legacy `targetOperandValueIds` 只继续保留给 source-order
@@ -289,13 +290,13 @@ dynamic instance-call receiver 现也冻结为同一套 payload consumer：
 当前 direct-slot alias publication 合同已经冻结为：
 
 - direct-slot mutating receiver 已改为发布 alias-backed receiver value，而不是继续依赖 body lowering 额外解释“synthetic temp -> source slot”
-- 这条 direct-slot publication surface 只包含 explicit `SelfExpression`、`IdentifierExpression + LOCAL_VAR`、`IdentifierExpression + PARAMETER`
-- `IdentifierExpression + CAPTURE` 当前不在 alias publication surface 内。lambda/capture lowering 与 storage semantics 已落地（`construct_lambda` + capture block），但 capture-backed live-slot alias 仍未开放，不能提前把它视为 alias root
+- 这条 direct-slot publication surface 包含 explicit `SelfExpression`、`IdentifierExpression + LOCAL_VAR`、`IdentifierExpression + PARAMETER`、`IdentifierExpression + CAPTURE`（`DirectSlotAliasRootKind.CAPTURE`；alias 绑定 lambda 自身捕获槽，对 capture 名的赋值仍保持 copy-on-capture，不在 alias 范围内）
 - `IdentifierExpression + FrontendBindingKind.SELF` 在当前代码库中不是独立 source category：`FrontendTopBindingAnalyzer` 只会对 `SelfExpression` 发布 `SELF`，因此一旦这种 surface 泄漏到 builder 或 body lowering，二者都必须把它当作 contract violation 直接 fail-fast，而不是恢复成 `"self"`
 - `receiverValueIdOrNull == null` 时 fallback 到 `self` 的 implicit self receiver 不属于 payload-backed receiver publication，也不属于 direct-slot alias root
 - explicit `SelfExpression` 的 alias 安全性来自 `self` slot 不可被用户代码重绑定，因此不需要额外 argument no-rebinding 分类
-- `IdentifierExpression + LOCAL_VAR/PARAMETER` 只有在后续 arguments 全部落在 proven no-rebinding 子集时才允许 alias publication
-- `IdentifierExpression + CAPTURE` 在当前实现中必须 fail-fast；capture-backed live-slot alias eligibility 仍未开放
+- `IdentifierExpression + LOCAL_VAR/PARAMETER/CAPTURE` 只有在后续 arguments 全部落在 proven no-rebinding 子集时才允许 alias publication
+- `DIRECT_SLOT` snapshot commit step 仅服务 `LOCAL_VAR` root 且受 `requiresDirectSlotSnapshotCommit(carrier)` 门控（packed 豁免：snapshot 为 Variant 持有者拷贝，与源 slot 共享身份）；`PARAMETER` / `CAPTURE` root 不发布 step
+- `STATIC_CONTEXT` bare 静态属性 route 上，packed receiver 不再追加 promotion step（静态 leaf 保持终态，Variant-backed 存储使 mutation 经共享身份天然可见）；`validateStaticWritableRouteTerminalContract` 合同原样保留
 - 当前 CFG builder 已明确把 nested `CallExpression`、`AttributeCallStep` 和其它尚未证明 no-rebinding 的 effect-open expression kind 视为 snapshot fallback trigger：遇到这些参数时继续保留 ordinary `OpaqueExprValueItem(identifier)`，不再发布 live-slot alias
 
 其中 compound assignment 的 source-order 合同固定为：

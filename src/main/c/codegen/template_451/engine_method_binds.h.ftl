@@ -299,6 +299,11 @@ cleanup:
 <#if helper.checkEngineMethodHelperObjectParam(param)>
     ${helper.renderEngineMethodHelperObjectRawSlotDecl(param)}
 </#if>
+<#-- Packed params arrive as Variant storage pointers; materialize a raw struct copy for the -->
+<#-- ptrcall slot (whitelist (a)) so in-engine mutation never reaches the caller's shared array. -->
+<#if helper.checkEngineMethodHelperPackedParam(param)>
+    ${helper.renderEngineMethodHelperPackedSlotDecl(param)}
+</#if>
 </#list>
 <#if helperParams?size gt 0>
     const GDExtensionConstTypePtr args[] = {
@@ -307,6 +312,11 @@ cleanup:
 </#list>
     };
 </#if>
+<#assign packedSlotCleanup>
+<#list helperParams?reverse as param>
+<#if helper.checkEngineMethodHelperPackedParam(param)>    ${helper.renderEngineMethodHelperPackedSlotDestroyStmt(param)}
+</#if>
+</#list></#assign>
 <#if resolved.returnType.typeName == "void">
     godot_object_method_bind_ptrcall(
         bind,
@@ -322,7 +332,7 @@ cleanup:
 </#if>
         NULL
     );
-    return;
+${packedSlotCleanup}    return;
 <#elseif helper.checkEngineMethodHelperObjectReturn(resolved.returnType)>
     // Object return: raw ptrcall slot, then capture ID into fat pointer (never write fat storage as r_ret).
     GDExtensionObjectPtr result_raw = NULL;
@@ -340,7 +350,26 @@ cleanup:
 </#if>
         &result_raw
     );
-    return ${helper.renderEngineMethodHelperObjectFromRaw(resolved.returnType, "result_raw")};
+${packedSlotCleanup}    return ${helper.renderEngineMethodHelperObjectFromRaw(resolved.returnType, "result_raw")};
+<#elseif helper.checkPackedType(resolved.returnType)>
+    <#-- Packed return: receive into a raw struct slot, then wrap into the Variant surface -->
+    <#-- (whitelist (c)); the returned array is a fresh engine-produced identity either way. -->
+    ${helper.renderPackedRawStructCType(resolved.returnType)} result_raw = { 0 };
+    godot_object_method_bind_ptrcall(
+        bind,
+<#if resolved.isStatic()>
+        NULL,
+<#else>
+        self_raw,
+</#if>
+<#if helperParams?size gt 0>
+        args,
+<#else>
+        NULL,
+</#if>
+        &result_raw
+    );
+${packedSlotCleanup}    return ${helper.renderPackedWrapTempExpr(resolved.returnType, "&result_raw")};
 <#else>
     ${helper.renderGdTypeInC(resolved.returnType)} result = { 0 };
     godot_object_method_bind_ptrcall(
@@ -357,7 +386,7 @@ cleanup:
 </#if>
         &result
     );
-    return result;
+${packedSlotCleanup}    return result;
 </#if>
 </#if>
 }

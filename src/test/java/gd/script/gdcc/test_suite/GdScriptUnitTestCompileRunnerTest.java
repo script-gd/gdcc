@@ -156,6 +156,8 @@ public class GdScriptUnitTestCompileRunnerTest {
             "member/builtin_property_writeback_vector3.gd",
             "member/callable_value_refs.gd",
             "member/compound_assignment.gd",
+            "member/packed_call_func_identity.gd",
+            "member/packed_ref_full_usage.gd",
             "member/signal_connect_lambda.gd",
             "member/signal_emit_connect.gd",
             "member/signal_inherited_and_engine.gd",

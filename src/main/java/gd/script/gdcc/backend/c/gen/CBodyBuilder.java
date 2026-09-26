@@ -1173,7 +1173,10 @@ public final class CBodyBuilder {
             case GdContainerType containerType -> switch (containerType) {
                 case GdArrayType _ -> "godot_new_Array()";
                 case GdDictionaryType _ -> "godot_new_Dictionary()";
-                case GdPackedArrayType packedArrayType -> "godot_new_" + packedArrayType.getTypeName() + "()";
+                // Packed default initialization must produce an empty-array Variant, never a bare
+                // struct or a nil Variant (nil has no internal pointer; method calls would fail) —
+                // whitelist (b).
+                case GdPackedArrayType packedArrayType -> PackedRefCNames.newEmptyExpr(packedArrayType);
             };
             default -> "godot_new_" + type.getTypeName() + "()";
         };

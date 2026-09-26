@@ -38,6 +38,9 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
                 writeLeafPurpose(chain.leaf())
         );
         var carrierSlotId = FrontendWritableRouteSupport.writeLeaf(session, block, chain, materializedRhsSlotId);
+        // Assignment routes keep the legacy family writeback answer: the interpreter persists
+        // subscript assignment on engine properties (`poly.polygon[0] = v`) through
+        // read-modify-write, unlike mutating method calls on the getter copy.
         return FrontendWritableRouteSupport.reverseCommitWithRuntimeGate(
                 session,
                 block,
@@ -48,7 +51,8 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
                                 session,
                                 gateBlock,
                                 currentCarrierSlotId
-                        )
+                        ),
+                FrontendWritableRouteSupport.ReverseCommitRouteOrigin.ASSIGNMENT
         );
     }
 

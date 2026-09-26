@@ -145,6 +145,11 @@ $<result_id> = assign $<source_id>
 Constructs a builtin of a specific type with arguments. The type is the same as the type
 of the result variable.
 
+For `Packed*Array` result types the backend does not emit `godot_new_Packed*` symbols; construction
+routes to the whitelisted `gdcc_packed_ref.h` helpers (zero-arg -> `gdcc_packed_<slug>_new_empty`,
+same-family argument -> `gdcc_packed_<slug>_new_copy`, `Array` argument ->
+`gdcc_packed_<slug>_new_from_array`), and the result is a Variant-backed packed value.
+
 ```
 $<result_id> = construct_builtin $<arg1_id> $<arg2_id> ...
 ```
@@ -162,6 +167,9 @@ Rules:
 - If result variable type is `Packed*Array` (`GdPackedArrayType`):
   - Construction type is inferred only from the result variable type.
   - `class_name` must not be provided; providing it is invalid and should fail fast.
+  - The result is a Variant-backed packed value (empty-array `godot_Variant` via
+    `gdcc_packed_<slug>_new_empty`), never a bare packed struct; this is also the mandatory
+    default initialization for every packed slot.
 
 ```
 $<result_id> = construct_array "<class_name>"?
@@ -295,7 +303,8 @@ Types can be destruct:
 - Signal
 - Dictionary
 - Array
-- Packed*Array
+- Packed*Array (Variant-backed storage: destruction is `godot_Variant_destroy(...)`, releasing this
+  holder's share of the engine-side `PackedArrayRef`; there is no packed struct destructor)
 - Object
 - Variant
 - `compiler::GdccCoroState` (destruction releases the owned state object reference —
@@ -476,7 +485,12 @@ Runtime builtin conversion for GDScript `as` when the target is a non-Object, no
 non-Nil runtime builtin (including parameterized `Array[T]` / `Dictionary[K, V]`).
 The same as Godot `Variant::construct` / `can_convert` semantics at the backend.
 Parameterized containers keep full declared type text.
-Result is required. Exact same-type and `as Variant` use `assign` / `pack_variant` instead.
+Result is required. Exact same-type and `as Variant` use `assign` / `pack_variant` instead,
+with one exception: a same-family `Packed*Array` `as` cast (e.g. `v as PackedInt32Array` where the
+source is statically or dynamically `PackedInt32Array`) is NOT an identity-preserving assign — it
+produces a COW copy with a fresh identity (`gdcc_packed_<slug>_new_copy`), matching the Godot 4.5
+interpreter; the frontend therefore routes it here instead of `assign`. Packed `is` tests are exact
+`Variant.get_type()` family matches (`gdcc_packed_ref_is`).
 
 ```
 $<result_id:target_type> = builtin_cast "<target_type_name>" $<value_id>

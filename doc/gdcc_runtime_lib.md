@@ -75,14 +75,28 @@ extend the runtime-provided `godot_*` surface.
     deliberate safer divergence — mutations to the dictionary after the snapshot do not affect the
     iteration sequence.
   - `intrinsic/for_packed_array_iter.h`: per-family Packed*Array iterator structs (no kind union).
-    Each family owns a typed COW snapshot + typed element base pointer; `get` returns the typed
-    element without runtime family dispatch.
+    Each family state holds a Variant holder COPY of the source (shared identity) + current index —
+    live iteration: `should_continue` re-evaluates live size every step (appends during iteration are
+    visited), `get` bounds-checks against live size and resolves the element via `operator_index_const`
+    on each access (no cached size, no cached typed base pointer).
   - these helpers are GDCC-owned runtime support and must keep the `gdcc_*` namespace instead of
     pretending to be generated `godot_*` wrappers
+- `gdcc_packed_ref.h`: the Packed*Array Variant-backed storage helpers (included by `gdcc_helper.h`
+  before `gdcc_intrinsic.h`). It owns the per-family cached `GDExtensionVariantGetInternalPtrFunc`
+  getters (`gdcc_packed_ref_init()`, fail-fast when unavailable), the internal-pointer accessor
+  `gdcc_packed_<slug>_internal_ptr`, Variant holder copy/destroy aliases, the `gdcc_packed_ref_is`
+  exact family check, and the whitelisted struct<->Variant boundary helpers (`new_empty`, `wrap_temp`,
+  `variant_from_struct` / `struct_from_variant` for the ptrcall ABI boundary, `new_copy`,
+  `new_from_array`). Generated code must route every packed struct boundary through these named
+  helpers; direct `godot_new_Packed*Array_with_*` / `godot_new_Variant_with_Packed*Array` / bare
+  `godot_new_Packed*()` calls outside this header are banned (see `gdcc_c_backend.md`
+  "Packed*Array Variant-backed Storage").
 - `gdcc_helper.h`: the aggregate helper header included by generated entry code. It provides
   runtime error printing, Object property get/set helpers, RefCounted ownership helpers, GDCC
   wrapper pointer conversion helpers, compatibility constructors, UTF-8 formatting helpers,
-  Variant type guards, GDScript `is` type-test helpers, Variant writeback classification and
+  Variant type guards, GDScript `is` type-test helpers, Variant writeback classification
+  (`gdcc_variant_requires_writeback`: all 10 packed kinds explicitly `false`, unlisted future kinds
+  keep the frozen default-`true` answer — matrix owned by `gdcc_type_system.md`) and
   `godot_Variant_call(...)`. It also pulls in sibling headers such as `gdcc_callable.h` and,
   immediately after the `GDCC_PRINT_RUNTIME_ERROR` macro definition, `gdscript_builtins.h`.
 - `gdscript_builtins.h`: GDScript language-level builtins (header-only, `static inline`). These
@@ -92,8 +106,9 @@ extend the runtime-provided `godot_*` surface.
     through the shared `GDCC_PRINT_RUNTIME_ERROR` channel (`NULL` message falls back to a fixed
     "Assertion failed." text; otherwise the String message is converted to UTF-8 and prefixed).
     The caller owns the default-return edge; the helper only reports.
-  - `gdcc_len(value)`: Godot 4.5 `len()` semantics — dynamic Variant dispatch that unpacks a
-    temporary payload copy, forwards to the matching per-type helper, and destroys the copy. The
+  - `gdcc_len(value)`: Godot 4.5 `len()` semantics — dynamic Variant dispatch to the matching
+    per-type helper; packed kinds forward the internal value pointer directly (no payload copy),
+    other payload kinds unpack a temporary copy and destroy it. The
     per-type helpers `gdcc_len_string` / `gdcc_len_string_name` / `gdcc_len_array` /
     `gdcc_len_dictionary` / `gdcc_len_packed_*_array` take the concrete payload pointer and may be
     called directly by the intrinsic channel when the argument type is statically known. Any other

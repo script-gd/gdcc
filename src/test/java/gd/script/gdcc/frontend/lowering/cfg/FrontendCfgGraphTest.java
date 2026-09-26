@@ -765,6 +765,265 @@ class FrontendCfgGraphTest {
         assertTrue(rejected.getMessage().contains("ArrayExpression"), rejected.getMessage());
     }
 
+    @Test
+    void stepDescriptorRejectsDirectSlotStepPayloadFields() {
+        var withContainer = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendWritableRoutePayload.StepDescriptor(
+                        FrontendWritableRoutePayload.StepKind.DIRECT_SLOT,
+                        identifier("parr"),
+                        "container0",
+                        List.of(),
+                        null,
+                        null
+                )
+        );
+        var withOperands = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendWritableRoutePayload.StepDescriptor(
+                        FrontendWritableRoutePayload.StepKind.DIRECT_SLOT,
+                        identifier("parr"),
+                        null,
+                        List.of("key0"),
+                        null,
+                        null
+                )
+        );
+        var withMember = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendWritableRoutePayload.StepDescriptor(
+                        FrontendWritableRoutePayload.StepKind.DIRECT_SLOT,
+                        identifier("parr"),
+                        null,
+                        List.of(),
+                        "member",
+                        null
+                )
+        );
+        var withAccessKind = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendWritableRoutePayload.StepDescriptor(
+                        FrontendWritableRoutePayload.StepKind.DIRECT_SLOT,
+                        identifier("parr"),
+                        null,
+                        List.of(),
+                        null,
+                        FrontendSubscriptAccessSupport.AccessKind.INDEXED
+                )
+        );
+
+        assertAll(
+                () -> assertTrue(withContainer.getMessage().contains("containerValueIdOrNull")),
+                () -> assertTrue(withOperands.getMessage().contains("operandValueIds")),
+                () -> assertTrue(withMember.getMessage().contains("memberNameOrNull")),
+                () -> assertTrue(withAccessKind.getMessage().contains("subscriptAccessKindOrNull"))
+        );
+    }
+
+    @Test
+    void constructorAcceptsTerminalDirectSlotCommitStepOnCallPayload() {
+        var anchor = identifier("parr");
+        var payload = new FrontendWritableRoutePayload(
+                anchor,
+                new FrontendWritableRoutePayload.RootDescriptor(
+                        FrontendWritableRoutePayload.RootKind.DIRECT_SLOT,
+                        anchor,
+                        null
+                ),
+                new FrontendWritableRoutePayload.LeafDescriptor(
+                        FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT,
+                        anchor,
+                        null,
+                        List.of(),
+                        null,
+                        null
+                ),
+                List.of(new FrontendWritableRoutePayload.StepDescriptor(
+                        FrontendWritableRoutePayload.StepKind.DIRECT_SLOT,
+                        anchor,
+                        null,
+                        List.of(),
+                        null,
+                        null
+                ))
+        );
+        var nodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        nodes.put(
+                "entry",
+                new FrontendCfgGraph.SequenceNode(
+                        "entry",
+                        List.of(
+                                new OpaqueExprValueItem(anchor, "recv0"),
+                                new CallItem(anchor, "append", "recv0", List.of(), "v0", payload)
+                        ),
+                        "stop"
+                )
+        );
+        nodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, null));
+
+        var graph = new FrontendCfgGraph("entry", nodes);
+
+        assertEquals(2, graph.nodes().size());
+    }
+
+    @Test
+    void constructorRejectsDirectSlotCommitStepOnAssignmentPayload() {
+        var assignment = new AssignmentExpression("=", identifier("parr"), identifier("rhs"), SYNTHETIC_RANGE);
+        var payload = new FrontendWritableRoutePayload(
+                assignment,
+                new FrontendWritableRoutePayload.RootDescriptor(
+                        FrontendWritableRoutePayload.RootKind.DIRECT_SLOT,
+                        identifier("parr"),
+                        null
+                ),
+                new FrontendWritableRoutePayload.LeafDescriptor(
+                        FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT,
+                        identifier("parr"),
+                        null,
+                        List.of(),
+                        null,
+                        null
+                ),
+                List.of(new FrontendWritableRoutePayload.StepDescriptor(
+                        FrontendWritableRoutePayload.StepKind.DIRECT_SLOT,
+                        identifier("parr"),
+                        null,
+                        List.of(),
+                        null,
+                        null
+                ))
+        );
+        var nodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        nodes.put(
+                "entry",
+                new FrontendCfgGraph.SequenceNode(
+                        "entry",
+                        List.of(new AssignmentItem(assignment, List.of(), "v0", null, payload)),
+                        "stop"
+                )
+        );
+        nodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, null));
+
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("entry", nodes)
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("DIRECT_SLOT commit step")),
+                () -> assertTrue(exception.getMessage().contains("call payloads")),
+                () -> assertTrue(exception.getMessage().contains("entry"))
+        );
+    }
+
+    @Test
+    void constructorRejectsDirectSlotCommitStepForNonDirectSlotRoute() {
+        var anchor = identifier("call");
+        var payload = new FrontendWritableRoutePayload(
+                anchor,
+                new FrontendWritableRoutePayload.RootDescriptor(
+                        FrontendWritableRoutePayload.RootKind.SELF_CONTEXT,
+                        anchor,
+                        null
+                ),
+                new FrontendWritableRoutePayload.LeafDescriptor(
+                        FrontendWritableRoutePayload.LeafKind.PROPERTY,
+                        identifier("payload"),
+                        null,
+                        List.of(),
+                        "payload",
+                        null
+                ),
+                List.of(new FrontendWritableRoutePayload.StepDescriptor(
+                        FrontendWritableRoutePayload.StepKind.DIRECT_SLOT,
+                        identifier("payload"),
+                        null,
+                        List.of(),
+                        null,
+                        null
+                ))
+        );
+        var nodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        nodes.put(
+                "entry",
+                new FrontendCfgGraph.SequenceNode(
+                        "entry",
+                        List.of(new CallItem(anchor, "push_back", "recv0", List.of(), "v0", payload)),
+                        "stop"
+                )
+        );
+        nodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, null));
+
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("entry", nodes)
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("DIRECT_SLOT root/leaf")),
+                () -> assertTrue(exception.getMessage().contains("entry"))
+        );
+    }
+
+    @Test
+    void constructorRejectsNonTerminalDirectSlotCommitStep() {
+        var anchor = identifier("parr");
+        var payload = new FrontendWritableRoutePayload(
+                anchor,
+                new FrontendWritableRoutePayload.RootDescriptor(
+                        FrontendWritableRoutePayload.RootKind.DIRECT_SLOT,
+                        anchor,
+                        null
+                ),
+                new FrontendWritableRoutePayload.LeafDescriptor(
+                        FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT,
+                        anchor,
+                        null,
+                        List.of(),
+                        null,
+                        null
+                ),
+                List.of(
+                        new FrontendWritableRoutePayload.StepDescriptor(
+                                FrontendWritableRoutePayload.StepKind.PROPERTY,
+                                identifier("owner"),
+                                null,
+                                List.of(),
+                                "owner",
+                                null
+                        ),
+                        new FrontendWritableRoutePayload.StepDescriptor(
+                                FrontendWritableRoutePayload.StepKind.DIRECT_SLOT,
+                                anchor,
+                                null,
+                                List.of(),
+                                null,
+                                null
+                        )
+                )
+        );
+        var nodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        nodes.put(
+                "entry",
+                new FrontendCfgGraph.SequenceNode(
+                        "entry",
+                        List.of(new CallItem(anchor, "append", "recv0", List.of(), "v0", payload)),
+                        "stop"
+                )
+        );
+        nodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, null));
+
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("entry", nodes)
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("terminal")),
+                () -> assertTrue(exception.getMessage().contains("entry"))
+        );
+    }
+
     private static IdentifierExpression identifier(String name) {
         return new IdentifierExpression(name, SYNTHETIC_RANGE);
     }

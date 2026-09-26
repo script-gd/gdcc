@@ -1,10 +1,13 @@
 package gd.script.gdcc.backend.c.gen.insn;
 
 import gd.script.gdcc.backend.c.gen.CBodyBuilder;
+import gd.script.gdcc.backend.c.gen.PackedRefCNames;
 import gd.script.gdcc.lir.LirVariable;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdPackedArrayType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
@@ -64,6 +67,10 @@ final class InsnGenSupport {
                                     @NotNull CBodyBuilder.ValueRef variantValue,
                                     @NotNull String useSite) {
         rejectCompilerOnlyType(bodyBuilder, targetType, useSite);
+        if (targetType instanceof GdPackedArrayType packedTargetType) {
+            emitPackedUnpackAssign(bodyBuilder, target, packedTargetType, variantValue, useSite);
+            return;
+        }
         var unpackFunctionName = bodyBuilder.helper().renderUnpackFunctionName(targetType);
         if (targetType instanceof GdObjectType objectType) {
             // Object unpack materializes a BORROWED fat pointer; destination slot decides retain.
@@ -85,6 +92,53 @@ final class InsnGenSupport {
             return;
         }
         bodyBuilder.callAssign(target, unpackFunctionName, targetType, List.of(variantValue));
+    }
+
+    /// Variant -> packed unpack:
+    /// - exact family payload: identity-sharing Variant holder copy (three-way sharing is the
+    ///   contract — no struct detach at the boundary);
+    /// - Array payload: cross-type conversion through whitelist (d) `new_from_array`, producing an
+    ///   independent array (interpreter-probed behavior for `var p: Packed*Array = variantArray`);
+    /// - any other payload kind: runtime type error with default-return, matching the
+    ///   interpreter's failed typed assignment (the statement does not take effect).
+    private static void emitPackedUnpackAssign(@NotNull CBodyBuilder bodyBuilder,
+                                               @NotNull CBodyBuilder.TargetRef target,
+                                               @NotNull GdPackedArrayType packedTargetType,
+                                               @NotNull CBodyBuilder.ValueRef variantValue,
+                                               @NotNull String useSite) {
+        var variantArg = bodyBuilder.renderArgument(variantValue, false);
+        if (variantArg.preCode() != null && !variantArg.preCode().isBlank()) {
+            bodyBuilder.appendRaw(variantArg.preCode());
+        }
+        if (!variantArg.temps().isEmpty()) {
+            throw bodyBuilder.invalidInsn("packed Variant unpack must not require temporaries at " + useSite);
+        }
+        var variantAddrExpr = variantArg.code();
+
+        bodyBuilder.appendLine("if (" + PackedRefCNames.isExpr(packedTargetType, variantAddrExpr) + ") {");
+        // Carrier-first overwrite discipline: the identity-sharing holder copy is produced BEFORE
+        // the old slot value is destroyed, so this branch stays safe even if a future route ever
+        // aliases the source Variant and the target packed slot (same discipline as
+        // CBodyBuilder's stable-carrier slot writes).
+        bodyBuilder.moveOwnedCallIntoSlot(
+                target,
+                "godot_new_Variant_with_Variant(" + variantAddrExpr + ")",
+                packedTargetType
+        );
+        bodyBuilder.appendLine("} else if (godot_variant_get_type(" + variantAddrExpr
+                + ") == GDEXTENSION_VARIANT_TYPE_ARRAY) {");
+        var arrayTemp = bodyBuilder.newTempVariable("packed_unpack_array",
+                new GdArrayType(GdVariantType.VARIANT),
+                "godot_new_Array_with_Variant(" + variantAddrExpr + ")");
+        bodyBuilder.declareTempVar(arrayTemp);
+        bodyBuilder.callAssign(target, PackedRefCNames.helperName(packedTargetType, "new_from_array"),
+                packedTargetType, List.of(arrayTemp));
+        bodyBuilder.destroyTempVar(arrayTemp);
+        bodyBuilder.appendLine("} else {");
+        emitRuntimeFailureReturn(bodyBuilder,
+                "Cannot assign Variant of incompatible payload type to " + packedTargetType.getTypeName()
+                        + " (" + useSite + ")");
+        bodyBuilder.appendLine("}");
     }
 
     static @NotNull VariantOperand materializeVariantOperand(@NotNull CBodyBuilder bodyBuilder,

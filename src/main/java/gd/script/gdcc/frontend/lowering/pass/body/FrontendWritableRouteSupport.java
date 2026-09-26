@@ -60,14 +60,35 @@ final class FrontendWritableRouteSupport {
     /// Creates the static writeback gate from the current carrier slot type.
     ///
     /// The family matrix itself lives in the public `frontend.lowering` helper so assignment
-    /// lowering, call writeback, and tests cannot silently drift into separate copies.
+    /// lowering, call writeback, and tests cannot silently drift into separate copies. The gate is
+    /// step-aware: the same packed carrier can require writeback on one route (script property /
+    /// container element) yet skip it on another (engine property reached by a mutating call).
     static @NotNull ReverseCommitGateHook createStaticCarrierWritebackGate(
             @NotNull FrontendBodyLoweringSession session
     ) {
         Objects.requireNonNull(session, "session must not be null");
-        return (_, currentCarrierSlotId) -> FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(
-                session.requireFunctionVariableType(currentCarrierSlotId)
+        return (step, currentCarrierSlotId) -> FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(
+                session.requireFunctionVariableType(currentCarrierSlotId),
+                provenanceOfCommitStep(step)
         );
+    }
+
+    /// Maps a materialized commit step to the route provenance the family predicate consults.
+    /// `DynamicPropertyCommitStep` answers GENERIC because the owner is runtime-open; assignment
+    /// routes never consult this mapping (they keep the legacy family answer via GENERIC).
+    private static FrontendWritableTypeWritebackSupport.@NotNull WritebackRouteProvenance provenanceOfCommitStep(
+            @NotNull FrontendWritableCommitStep step
+    ) {
+        return switch (Objects.requireNonNull(step, "step must not be null")) {
+            case DirectSlotCommitStep _ -> FrontendWritableTypeWritebackSupport.WritebackRouteProvenance.DIRECT_SLOT;
+            case StaticPropertyCommitStep _ -> FrontendWritableTypeWritebackSupport.WritebackRouteProvenance.STATIC_PROPERTY;
+            case InstancePropertyCommitStep propertyStep -> propertyStep.engineProperty()
+                    ? FrontendWritableTypeWritebackSupport.WritebackRouteProvenance.ENGINE_PROPERTY_CALL
+                    : FrontendWritableTypeWritebackSupport.WritebackRouteProvenance.SCRIPT_PROPERTY;
+            case DynamicPropertyCommitStep _ -> FrontendWritableTypeWritebackSupport.WritebackRouteProvenance.GENERIC;
+            case SubscriptCommitStep _, InstanceContainerSubscriptCommitStep _, StaticContainerSubscriptCommitStep _ ->
+                    FrontendWritableTypeWritebackSupport.WritebackRouteProvenance.CONTAINER_ELEMENT;
+        };
     }
 
     static @NotNull String materializeLeafRead(
@@ -243,6 +264,11 @@ final class FrontendWritableRouteSupport {
     /// - statically known value-semantic carriers still apply inline in the current block
     /// - only `Variant` carriers ask the caller to emit a runtime bool condition
     ///
+    /// `routeOrigin` scopes the provenance split: mutating-call routes answer per-step provenance
+    /// (so an engine-owned property layer skips the packed writeback), while assignment routes keep
+    /// the legacy family answer (the interpreter persists `obj.prop[i] = v` through
+    /// read-modify-write even on engine properties, so that writeback must stay).
+    ///
     /// The returned block is the continuation block that outer lowering should keep appending to.
     /// It may be the original `block` when no runtime branch was needed, or the last synthetic
     /// post-gate block when one or more per-layer `GoIfInsn` regions were materialized.
@@ -251,7 +277,8 @@ final class FrontendWritableRouteSupport {
             @NotNull LirBasicBlock block,
             @NotNull FrontendWritableAccessChain chain,
             @NotNull String writtenBackValueSlotId,
-            @NotNull ReverseCommitRuntimeGateEmitter runtimeGateEmitter
+            @NotNull ReverseCommitRuntimeGateEmitter runtimeGateEmitter,
+            @NotNull ReverseCommitRouteOrigin routeOrigin
     ) {
         Objects.requireNonNull(session, "session must not be null");
         var currentBlock = Objects.requireNonNull(block, "block must not be null");
@@ -261,13 +288,17 @@ final class FrontendWritableRouteSupport {
                 runtimeGateEmitter,
                 "runtimeGateEmitter must not be null"
         );
+        Objects.requireNonNull(routeOrigin, "routeOrigin must not be null");
         var reverseCommitSteps = actualChain.reverseCommitSteps();
         for (var index = reverseCommitSteps.size() - 1; index >= 0; index--) {
             var step = reverseCommitSteps.get(index);
             var terminalStep = index == 0;
             var currentCarrierType = session.requireFunctionVariableType(currentCarrierSlotId);
             if (!requiresRuntimeWritebackGate(currentCarrierType)) {
-                if (!FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(currentCarrierType)) {
+                var provenance = routeOrigin == ReverseCommitRouteOrigin.ASSIGNMENT
+                        ? FrontendWritableTypeWritebackSupport.WritebackRouteProvenance.GENERIC
+                        : provenanceOfCommitStep(step);
+                if (!FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(currentCarrierType, provenance)) {
                     currentCarrierSlotId = nextOuterCarrierSlotId(step, currentCarrierSlotId, terminalStep);
                     continue;
                 }
@@ -447,6 +478,13 @@ final class FrontendWritableRouteSupport {
             boolean terminalStep
     ) {
         return switch (step) {
+            case DirectSlotCommitStep slotStep -> {
+                // The direct slot owns no outer owner, so the writeback is always terminal:
+                // `$local = mutated_temp` shares the already-detached value-semantic buffer
+                // (refcount churn only) and reference carriers are filtered out by the gate.
+                block.appendNonTerminatorInstruction(new AssignInsn(slotStep.slotId(), writtenBackValueSlotId));
+                yield nextOuterCarrierSlotId(slotStep, writtenBackValueSlotId, terminalStep);
+            }
             case InstancePropertyCommitStep propertyStep -> {
                 session.emitAssertObjectLiveIfNeeded(block, propertyStep.receiverSlotId());
                 block.appendNonTerminatorInstruction(new StorePropertyInsn(
@@ -678,6 +716,7 @@ final class FrontendWritableRouteSupport {
             boolean terminalStep
     ) {
         return switch (step) {
+            case DirectSlotCommitStep slotStep -> slotStep.slotId();
             case InstancePropertyCommitStep propertyStep -> propertyStep.receiverSlotId();
             case DynamicPropertyCommitStep propertyStep -> propertyStep.receiverSlotId();
             case StaticPropertyCommitStep _ -> {
@@ -851,6 +890,14 @@ final class FrontendWritableRouteSupport {
     /// policy.
     private static boolean requiresRuntimeWritebackGate(@NotNull GdType currentCarrierType) {
         return Objects.requireNonNull(currentCarrierType, "currentCarrierType must not be null") instanceof GdVariantType;
+    }
+
+    /// Why a reverse-commit walk is running. The packed engine-property writeback removal applies
+    /// only to mutating receiver calls; assignment routes on the same engine property must keep the
+    /// writeback because the interpreter persists subscript assignment through read-modify-write.
+    enum ReverseCommitRouteOrigin {
+        MUTATING_CALL,
+        ASSIGNMENT
     }
 
     @FunctionalInterface
@@ -1212,6 +1259,7 @@ final class FrontendWritableRouteSupport {
     /// It is not another "leaf" hierarchy. The leaf describes the innermost direct operation; commit
     /// steps describe the outer owners that must observe the already-mutated carrier value.
     sealed interface FrontendWritableCommitStep permits
+            DirectSlotCommitStep,
             InstanceContainerSubscriptCommitStep,
             InstancePropertyCommitStep,
             DynamicPropertyCommitStep,
@@ -1220,14 +1268,39 @@ final class FrontendWritableRouteSupport {
             SubscriptCommitStep {
     }
 
+    /// Writes the mutated carrier back into the route root's own local/parameter slot. This is the
+    /// terminal step for mutating calls whose bare direct-slot receiver stayed on the ordinary
+    /// temp snapshot surface: the call mutated one `cfg_tmp_*` copy, so the mutated value must be
+    /// assigned back into the source slot once the call returns. Alias-published receivers never
+    /// carry this step because they already mutate the source slot in place.
+    record DirectSlotCommitStep(
+            @NotNull String slotId
+    ) implements FrontendWritableCommitStep {
+        DirectSlotCommitStep {
+            slotId = StringUtil.requireNonBlank(slotId, "slotId");
+        }
+    }
+
     /// Writes the mutated carrier back into `receiver.property`.
+    ///
+    /// `engineProperty` records whether the frozen member resolution identified the property as
+    /// engine-owned (getter returns a detached copy). Only mutating-call routes consult it: there
+    /// the packed writeback must be skipped so the mutation stays non-persistent like the
+    /// interpreter; GDCC script properties and assignment routes keep the redundant same-identity
+    /// store either way.
     record InstancePropertyCommitStep(
             @NotNull String receiverSlotId,
-            @NotNull String propertyName
+            @NotNull String propertyName,
+            boolean engineProperty
     ) implements FrontendWritableCommitStep {
         InstancePropertyCommitStep {
             receiverSlotId = StringUtil.requireNonBlank(receiverSlotId, "receiverSlotId");
             propertyName = StringUtil.requireNonBlank(propertyName, "propertyName");
+        }
+
+        /// Script-owned default for test fixtures and routes that predate ownership tracking.
+        InstancePropertyCommitStep(@NotNull String receiverSlotId, @NotNull String propertyName) {
+            this(receiverSlotId, propertyName, false);
         }
     }
 

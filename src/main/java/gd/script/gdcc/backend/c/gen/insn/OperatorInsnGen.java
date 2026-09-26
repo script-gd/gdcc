@@ -242,6 +242,21 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                                            @NotNull LirVariable operandVar,
                                            @NotNull GdType semanticResultType) {
         var helperFunctionName = resolver.renderUnaryEvaluatorHelperName(op, operandVar.type(), semanticResultType);
+        // Evaluator helpers keep the native packed ABI (`const godot_Packed*Array*` operand /
+        // raw struct result); packed positions adapt through the internal pointer / wrap_temp
+        // boundary instead of the generic storage rendering.
+        var unaryParamTypes = List.of(operandVar.type());
+        if (PackedNativeAbiCallSupport.requiresPackedAdaptation(semanticResultType, unaryParamTypes)) {
+            PackedNativeAbiCallSupport.emitCall(
+                    bodyBuilder,
+                    bodyBuilder.targetOfVar(resultVar),
+                    helperFunctionName,
+                    semanticResultType,
+                    unaryParamTypes,
+                    List.of(bodyBuilder.valueOfVar(operandVar))
+            );
+            return;
+        }
         bodyBuilder.callAssign(
                 bodyBuilder.targetOfVar(resultVar),
                 helperFunctionName,
@@ -262,6 +277,20 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                 rightVar.type(),
                 semanticResultType
         );
+        // Same native-ABI adaptation as the unary route: e.g. `int in PackedInt32Array` keeps the
+        // scalar left operand by value while the packed right operand passes its internal pointer.
+        var binaryParamTypes = List.of(leftVar.type(), rightVar.type());
+        if (PackedNativeAbiCallSupport.requiresPackedAdaptation(semanticResultType, binaryParamTypes)) {
+            PackedNativeAbiCallSupport.emitCall(
+                    bodyBuilder,
+                    bodyBuilder.targetOfVar(resultVar),
+                    helperFunctionName,
+                    semanticResultType,
+                    binaryParamTypes,
+                    List.of(bodyBuilder.valueOfVar(leftVar), bodyBuilder.valueOfVar(rightVar))
+            );
+            return;
+        }
         bodyBuilder.callAssign(
                 bodyBuilder.targetOfVar(resultVar),
                 helperFunctionName,

@@ -262,8 +262,12 @@ hub: registry + intern table + sweeper + pending + 共享 thunk 页
 - `GDCC_HRX_HUB_MAGIC = 0x4744434348525855`
 - spec 布局 append-only；`callsite_context` 为 v2 尾部字段，偏移 136（静态断言）。读取或释放该字段必须先检查 `abi_version >= 2`。v1 spec 首次遇到 v2 runtime 时全部失效。
 - Java `CHrxIdentityCatalog.HRX_ABI_VERSION` 必须与 C 宏相等（契约测试锚定，非编译期共享定义）。schema 前缀 `gdcc-hrx:2;` 同源。
-- schema 文法由 `CHrxIdentityCatalog` 冻结；fingerprint 是 schema 字节的 MD5。类型字段使用 `CGenHelper.renderGdTypeInC` 的 C 存储类型（同时钉表示与 ownership）。改该渲染会让旧连接全部 fail-closed。
-  - lambda：`gdcc-hrx:2;caps=<C types>;params=<C types>;ret=<C type>;va=0|1;co=0|1`
+- schema 文法由 `CHrxIdentityCatalog` 冻结；fingerprint 是 schema 字节的 MD5。类型字段编码为
+  `<语义类型名>@<C存储类型>`（语义类型名 + `CGenHelper.renderGdTypeInC` 的 C 存储类型，同时钉语义、表示与
+  ownership）。仅编码 C 名会使各 packed family 与 `Variant` 碰撞（同为 `godot_Variant`），跨 family 重绑定会经
+  错误 family 的 internal_ptr getter 解引用旧 holder；双段编码消除该碰撞。存储模型变更（如 packed 改
+  Variant-backed）会同时改变两段之一，使旧连接 fail-closed——这是可接受的安全升级行为（拒绝重载而非错误重载）。
+  - lambda：`gdcc-hrx:2;caps=<type fields>;params=<type fields>;ret=<type field>;va=0|1;co=0|1`
   - standalone：`gdcc-hrx:2;sa;kind=<token>;argc=<n>;va=0|1;ret=0|1;uh=<hash>`
 - thunk 模板：x86_64 SysV（含 macOS Intel）、x86_64 Win64、aarch64（写后刷 icache）。运行时零补丁。POSIX 只用匿名 RW→RX 页（`mmap(MAP_PRIVATE|MAP_ANONYMOUS)` + `mprotect`），不使用 `MAP_JIT`。页大小运行时查询。
 

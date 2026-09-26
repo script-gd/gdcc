@@ -125,8 +125,9 @@ LIR 侧统一标记接口：`IndexingInstruction extends LirInstruction`。
 | self 类别 | 典型类型 | 处理策略 | ref 是否允许 |
 |---|---|---|---|
 | Variant | `GdVariantType` | 直接传入 | 允许 |
+| Packed*Array | `GdPackedArrayType` | 直接传入存储 Variant（存储本身即 Variant-backed，setter 经内部引用原位 mutation，无 pack/unpack 回写） | 允许 |
 | 引用语义 | `GdArrayType` / `GdDictionaryType` / `GdObjectType` | pack 后调用，无需回写 | 允许 |
-| 值语义且支持 set | 由 `resolveSelfStrategy` 判定（例如 `String` / `Vector*` / `Packed*Array` 等） | pack 后调用，必须 unpack 回写 | 仅 non-ref |
+| 值语义且支持 set | 由 `resolveSelfStrategy` 判定（例如 `String` / `Vector*` 等，**不再含** `Packed*Array`） | pack 后调用，必须 unpack 回写 | 仅 non-ref |
 | 不支持 set | 由 `isUnsupportedSetSelfType` 判定 | 编译期 fail-fast | 不适用 |
 
 补充约束（按指令模式）：
@@ -134,7 +135,7 @@ LIR 侧统一标记接口：`IndexingInstruction extends LirInstruction`。
 1. `variant_set_keyed`：非 Variant self 必须是 `Object`/`Dictionary`。
 2. `variant_set_named`：非 Variant self 必须命中 named 支持集。
 3. `variant_set_indexed`：非 Variant self 必须命中 indexed 支持集。
-4. `ref` 且需要 writeback 的 self（例如 `ref Packed*Array`）必须 fail-fast。
+4. `ref` 且需要 writeback 的值语义 self（例如 `ref String`）必须 fail-fast；packed self 不需回写，`ref` 形态同样放行。
 
 ### 4.4 key/value/index 的 ref 语义（当前实现）
 
@@ -149,23 +150,23 @@ LIR 侧统一标记接口：`IndexingInstruction extends LirInstruction`。
 ### 5.1 GET 通用流程
 
 1. 校验 result/self/operand。
-2. 对 non-Variant `self`、`key` 执行 pack（如需）。
+2. 对 non-Variant `self`、`key` 执行 pack（如需）；packed self 的存储本身即 Variant，直接传入（共享身份，无 pack）。
 3. 声明未初始化 `r_ret` 与 `r_valid`（indexed 额外 `r_oob`）。
 4. 发射 `godot_variant_get*`。
 5. 先检查 `r_valid`，indexed 再检查 `r_oob`。
 6. 成功路径将 `r_ret` 写回：
    - `Variant -> Variant`：`godot_new_Variant_with_Variant` 构造拷贝回写。
-   - `Variant -> 非 Variant`：调用对应 unpack 函数回写。
+   - `Variant -> 非 Variant`：调用对应 unpack 函数回写（packed 结果为精确 family 检查 + Variant 持有者拷贝）。
 7. 所有路径必须销毁 `r_ret` 及 pack 临时变量。
 
 ### 5.2 SET 通用流程
 
 1. 校验无 `resultId`。
-2. 校验并物化 self（含分类策略）。
+2. 校验并物化 self（含分类策略）；packed self 与 Variant self 同路径，直传存储槽。
 3. 处理 key/index/value（key/value 非 Variant 时 pack）。
 4. 发射 `godot_variant_set*`。
 5. 检查 `r_valid`（indexed 额外检查 `r_oob`）。
-6. 若 self 属于值语义写回路径，执行 unpack 回写。
+6. 若 self 属于值语义写回路径，执行 unpack 回写（packed self 不属于该路径，无回写步骤）。
 7. 所有路径销毁临时变量（value/key/self）。
 
 ### 5.3 错误分支与资源销毁约束
@@ -203,8 +204,9 @@ LIR 侧统一标记接口：`IndexingInstruction extends LirInstruction`。
 1. Godot `call` 路径会先把参数解包到调用栈局部对象。
 2. 对 ref 值语义对象做直接写回存在不安全风险。
 3. 因此当前策略固定为：
-   - 放行“无需回写”的 ref self（`Variant`/`Array`/`Dictionary`/`Object`）。
-   - 拒绝“需要回写”的 ref self（如 `ref Packed*Array` 等）。
+   - 放行“无需回写”的 ref self（`Variant`/`Array`/`Dictionary`/`Object`/`Packed*Array`——packed 存储即
+     Variant-backed 共享身份，setter 原位 mutation 天然可见）。
+   - 拒绝“需要回写”的 ref 值语义 self（如 `ref String` 等）。
 
 ---
 
@@ -221,7 +223,7 @@ LIR 侧统一标记接口：`IndexingInstruction extends LirInstruction`。
 `src/test/java/gd/script/gdcc/backend/c/gen/IndexStoreInsnGenEngineTest.java` 覆盖以下运行时锚点：
 
 1. ref self：`Array` / `Dictionary` set 后无需回写可读回。
-2. `PackedInt32Array`：局部写回路径正确读回。
+2. `PackedInt32Array`：直传存储 Variant 的原位索引写正确读回（含别名可见性锚定）。
 3. ref index/value：`variant_set_indexed` + `variant_get_indexed` 读写一致。
 4. ref key/value：`variant_set` + `variant_get` 读写一致。
 5. ref named：`variant_set_named` + `variant_get_named` 读写一致。

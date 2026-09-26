@@ -50,6 +50,7 @@ import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
+import gd.script.gdcc.type.GdPackedStringArrayType;
 import gd.script.gdcc.type.GdRect2Type;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdStringNameType;
@@ -1983,6 +1984,166 @@ public class CCodegenTest {
     }
 
     @Test
+    public void generatesPackedWrapperVariantCallBoundaryAndPtrcallMaterialization() throws Exception {
+        // The call_func boundary keeps identity (gate + Variant holder copy), while the
+        // ptrcall boundary materializes/copies through the whitelisted helpers (mutation
+        // isolation is intentional there).
+        var workerClass = new LirClassDef("PackedWrapperWorker", "Node");
+        var echo = new LirFunctionDef("echo");
+        echo.setReturnType(GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        echo.addParameter(new LirParameterDef("self", new GdObjectType("PackedWrapperWorker"), null, echo));
+        echo.addParameter(new LirParameterDef("payload", GdPackedNumericArrayType.PACKED_INT32_ARRAY, null, echo));
+        var entry = new LirBasicBlock("entry");
+        entry.setTerminator(new ReturnInsn("payload"));
+        echo.addBasicBlock(entry);
+        echo.setEntryBlockId("entry");
+        workerClass.addFunction(echo);
+
+        var module = new LirModule("packed_wrapper_module", List.of(workerClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var hCode = generatedFileText(files, "entry.h");
+        var bindName = "_1_arg_PackedInt32Array_ret_PackedInt32Array";
+
+        // call_func wrapper: exact type gate, then identity-sharing Variant holder copy in/out.
+        var callBody = resolveCallWrapperBody(hCode, bindName);
+        assertContainsAll(
+                callBody,
+                "arg0_type == GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY",
+                "godot_Variant arg0 = godot_new_Variant_with_Variant(",
+                "godot_Variant r = function(self_fat, &arg0);",
+                "godot_Variant ret = godot_new_Variant_with_Variant(&r);",
+                "godot_variant_new_copy(r_return, &ret);",
+                "godot_Variant_destroy(&r);",
+                "godot_Variant_destroy(&arg0);"
+        );
+
+        // ptrcall wrapper (identity-isolation exception): raw struct slot -> Variant materialization inbound,
+        // Variant -> raw struct copy outbound; both materialized values are wrapper-owned.
+        var ptrcallBody = resolveFunctionBodyByPrefix(hCode, resolveOwnedWrapperPrefix(hCode, "static void ptrcall", bindName));
+        assertContainsAll(
+                ptrcallBody,
+                "godot_Variant arg0 = gdcc_packed_int32_array_variant_from_struct((const godot_PackedInt32Array *)p_args[0]);",
+                "godot_Variant r = function(self_fat, &arg0);",
+                "*((godot_PackedInt32Array *)r_return) = gdcc_packed_int32_array_struct_from_variant(&r);",
+                "godot_Variant_destroy(&r);",
+                "godot_Variant_destroy(&arg0);"
+        );
+        // Order is load-bearing, not cosmetic: the arg must be materialized BEFORE the call, the
+        // return written out BEFORE the callee Variant is destroyed, and the arg destroyed LAST.
+        assertOrdered(
+                ptrcallBody,
+                "gdcc_packed_int32_array_variant_from_struct",
+                "godot_Variant r = function(self_fat, &arg0);",
+                "gdcc_packed_int32_array_struct_from_variant(&r)",
+                "godot_Variant_destroy(&r);",
+                "godot_Variant_destroy(&arg0);"
+        );
+
+        // Generated-code prohibition (the whitelist constraint): business emission artifacts may
+        // only cross the struct<->Variant boundary through whitelisted helpers; scan every
+        // generated file and treat any hit as a violation.
+        var bannedPatterns = List.of(
+                "godot_new_Packed\\w*Array_with_\\w+\\(",
+                "godot_new_Variant_with_Packed\\w*Array\\(",
+                "godot_new_Packed\\w*Array\\(\\)"
+        );
+        for (var file : files) {
+            var text = new String(file.contentWriter());
+            for (var banned : bannedPatterns) {
+                assertFalse(
+                        java.util.regex.Pattern.compile(banned).matcher(text).find(),
+                        () -> "Banned packed struct<->Variant symbol `" + banned + "` in generated " + file.filePath()
+                );
+            }
+        }
+    }
+
+    @Test
+    public void generatesEngineMethodHelperPackedArgMaterializationAndReturnWrap() throws Exception {
+        // Outbound engine-method boundary: a packed ARGUMENT must be materialized into a
+        // helper-owned native struct slot
+        // (whitelist (a) struct_from_variant) before ptrcall and destroyed after — the
+        // caller's internal pointer must never reach the engine args array, or the engine
+        // would share/mutate the caller's array identity; a packed RETURN must arrive in a
+        // raw slot and be wrapped into the Variant carrier via whitelist (c) wrap_temp.
+        var workerClass = new LirClassDef("EnginePackedBoundaryWorker", "RefCounted");
+
+        var callSet = newFunction("call_set_data", GdVoidType.VOID);
+        callSet.addParameter(new LirParameterDef("peer", new GdObjectType("StreamPeerBuffer"), null, callSet));
+        callSet.createAndAddVariable("bytes", GdPackedNumericArrayType.PACKED_BYTE_ARRAY);
+        entry(callSet).appendInstruction(new CallMethodInsn(null, "set_data_array", "peer", List.of(varOperand("bytes"))));
+        entry(callSet).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(callSet);
+
+        var callGet = newFunction("call_get_data", GdVoidType.VOID);
+        callGet.addParameter(new LirParameterDef("peer", new GdObjectType("StreamPeerBuffer"), null, callGet));
+        callGet.createAndAddVariable("read_back", GdPackedNumericArrayType.PACKED_BYTE_ARRAY);
+        entry(callGet).appendInstruction(new CallMethodInsn("read_back", "get_data_array", "peer", List.of()));
+        entry(callGet).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(callGet);
+
+        var module = new LirModule("engine_packed_boundary_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
+
+        // Outbound packed argument: helper-owned native slot materialization -> temp slot in
+        // the args array -> ptrcall -> destroy. The positional assertions are load-bearing:
+        // after the args-decl anchor, `&arg0_packed` can only be the array element (the
+        // destroy comes later), so the temp slot is proven to be passed INTO the call rather
+        // than merely existing in the helper body.
+        var setHelperBody = resolveFunctionBodyByPrefix(bindHeaderCode, "gdcc_engine_call_streampeerbuffer_set_data_array");
+        assertContainsAll(
+                setHelperBody,
+                "godot_PackedByteArray arg0_packed = gdcc_packed_byte_array_struct_from_variant(",
+                "godot_object_method_bind_ptrcall(",
+                "godot_PackedByteArray_destroy(&arg0_packed);"
+        );
+        assertOrdered(
+                setHelperBody,
+                "gdcc_packed_byte_array_struct_from_variant",
+                "const GDExtensionConstTypePtr args[]",
+                "&arg0_packed",
+                "godot_object_method_bind_ptrcall(",
+                "godot_PackedByteArray_destroy(&arg0_packed);"
+        );
+        assertFalse(setHelperBody.contains("internal_ptr"), setHelperBody);
+
+        // Packed return: the raw slot receives the ptrcall result and is then wrapped via
+        // wrap_temp into the Variant-backed carrier. After the ptrcall anchor, `&result_raw`
+        // can only be the return-slot argument, so the slot is proven to be passed INTO the
+        // call rather than only appearing at the wrap site.
+        var getHelperBody = resolveFunctionBodyByPrefix(bindHeaderCode, "gdcc_engine_call_streampeerbuffer_get_data_array");
+        assertContainsAll(
+                getHelperBody,
+                "godot_PackedByteArray result_raw = { 0 };",
+                "godot_object_method_bind_ptrcall(",
+                "gdcc_packed_byte_array_wrap_temp(&result_raw)"
+        );
+        assertOrdered(
+                getHelperBody,
+                "godot_PackedByteArray result_raw = { 0 };",
+                "godot_object_method_bind_ptrcall(",
+                "&result_raw",
+                "gdcc_packed_byte_array_wrap_temp(&result_raw)"
+        );
+        assertFalse(getHelperBody.contains("internal_ptr"), getHelperBody);
+    }
+
+    @Test
     public void generatesTypedArrayCallWrapperPreflightAndKeepsGenericArrayOnBaseGate() throws Exception {
         var workerClass = new LirClassDef("TypedArrayCallGuardWorker", "Node");
 
@@ -3364,6 +3525,40 @@ public class CCodegenTest {
                 intCapture.identities().getFirst().schemaBytes(),
                 differentReturn.identities().getFirst().schemaBytes(),
                 "the signature (return type) must feed the descriptor"
+        );
+    }
+
+    /// Variant-backed packed storage makes every packed family share the `godot_Variant` C
+    /// spelling; the schema must still
+    /// distinguish them (and Variant itself) via the semantic type name, or a hot reload would
+    /// rebind a stale holder into a different family's internal-pointer getter (engine-level UB).
+    @Test
+    public void lambdaSchemaDescriptorDistinguishesPackedFamiliesAndVariant() throws java.io.IOException {
+        var int32Capture = buildSchemaProbeLambda(GdPackedNumericArrayType.PACKED_INT32_ARRAY, GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        var stringCapture = buildSchemaProbeLambda(GdPackedStringArrayType.PACKED_STRING_ARRAY, GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        var variantCapture = buildSchemaProbeLambda(GdVariantType.VARIANT, GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        var variantReturn = buildSchemaProbeLambda(GdPackedNumericArrayType.PACKED_INT32_ARRAY, GdVariantType.VARIANT);
+        var int32CaptureAgain = buildSchemaProbeLambda(GdPackedNumericArrayType.PACKED_INT32_ARRAY, GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+
+        assertNotEquals(
+                int32Capture.identities().getFirst().schemaBytes(),
+                stringCapture.identities().getFirst().schemaBytes(),
+                "packed family swap in a capture must change the schema fingerprint"
+        );
+        assertNotEquals(
+                int32Capture.identities().getFirst().schemaBytes(),
+                variantCapture.identities().getFirst().schemaBytes(),
+                "packed -> Variant capture swap must change the schema fingerprint"
+        );
+        assertNotEquals(
+                int32Capture.identities().getFirst().schemaBytes(),
+                variantReturn.identities().getFirst().schemaBytes(),
+                "packed -> Variant return swap must change the schema fingerprint"
+        );
+        assertEquals(
+                int32Capture.identities().getFirst().schemaBytes(),
+                int32CaptureAgain.identities().getFirst().schemaBytes(),
+                "identical packed layouts must share the descriptor (rebind-compatible)"
         );
     }
 

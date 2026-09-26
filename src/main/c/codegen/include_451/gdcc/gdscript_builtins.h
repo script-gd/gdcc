@@ -2,6 +2,7 @@
 #define GDSCRIPT_BUILTINS_H
 
 #include <godot_binding.h>
+#include <gdcc_packed_ref.h>
 #include <stdio.h>
 
 /// GDScript language-level builtins.
@@ -118,24 +119,22 @@ static inline godot_int gdcc_len(const godot_Variant *value) {
             godot_Dictionary_destroy(&payload);
             return result;
         }
-// All ten Packed*Array branches share one shape: unpack, dispatch to helper, destroy, return.
-#define GDCC_LEN_PACKED_CASE(VARIANT_TYPE, TYPE_NAME, FUNC_SUFFIX)                        \
+// All ten Packed*Array branches share one shape: measure the live array through its
+// Variant-internal pointer (packed storage is Variant-backed; no struct unpack round-trip).
+#define GDCC_LEN_PACKED_CASE(VARIANT_TYPE, TYPE_NAME, FUNC_SUFFIX, PACKED_SLUG)             \
         case VARIANT_TYPE: {                                                              \
-            godot_##TYPE_NAME payload = godot_new_##TYPE_NAME##_with_Variant(value);      \
-            godot_int result = gdcc_len_##FUNC_SUFFIX(&payload);                          \
-            godot_##TYPE_NAME##_destroy(&payload);                                        \
-            return result;                                                                \
+            return gdcc_len_##FUNC_SUFFIX(gdcc_packed_##PACKED_SLUG##_internal_ptr(value)); \
         }
-        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, PackedByteArray, packed_byte_array)
-        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY, PackedInt32Array, packed_int32_array)
-        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY, PackedInt64Array, packed_int64_array)
-        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, PackedFloat32Array, packed_float32_array)
-        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY, PackedFloat64Array, packed_float64_array)
-        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY, PackedStringArray, packed_string_array)
-        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY, PackedVector2Array, packed_vector2_array)
-        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY, PackedVector3Array, packed_vector3_array)
-        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, PackedColorArray, packed_color_array)
-        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY, PackedVector4Array, packed_vector4_array)
+        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, PackedByteArray, packed_byte_array, byte_array)
+        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY, PackedInt32Array, packed_int32_array, int32_array)
+        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY, PackedInt64Array, packed_int64_array, int64_array)
+        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, PackedFloat32Array, packed_float32_array, float32_array)
+        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY, PackedFloat64Array, packed_float64_array, float64_array)
+        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY, PackedStringArray, packed_string_array, string_array)
+        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY, PackedVector2Array, packed_vector2_array, vector2_array)
+        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY, PackedVector3Array, packed_vector3_array, vector3_array)
+        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, PackedColorArray, packed_color_array, color_array)
+        GDCC_LEN_PACKED_CASE(GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY, PackedVector4Array, packed_vector4_array, vector4_array)
 #undef GDCC_LEN_PACKED_CASE
         default:
             GDCC_PRINT_RUNTIME_ERROR(

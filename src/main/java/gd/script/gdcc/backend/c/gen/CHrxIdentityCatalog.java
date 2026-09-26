@@ -5,6 +5,7 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
 import gd.script.gdcc.lir.insn.StandaloneCallableKind;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -225,8 +226,13 @@ public final class CHrxIdentityCatalog {
     }
 
     /// Lambda schema descriptor: canonical encoding of the capture layout + signature +
-    /// abi version (never the body). C storage types are used because they pin both the
-    /// representation and the ownership classification of every field.
+    /// abi version (never the body). Each field contributes its semantic type name AND its C
+    /// storage type: the storage type alone no longer pins the representation — since the
+    /// Variant-backed packed storage switch,
+    /// every Packed*Array family AND plain Variant share the `godot_Variant` C spelling, so a
+    /// capture/param/return swapped between packed families (or to/from Variant) would otherwise
+    /// keep the same fingerprint and hot-reload would rebind an old holder into an implementation
+    /// that dereferences it through a different family's internal-pointer getter (engine-level UB).
     private static @NotNull String buildLambdaSchemaDesc(
             @NotNull CGenHelper helper,
             @NotNull LirFunctionDef function
@@ -237,7 +243,7 @@ public final class CHrxIdentityCatalog {
             if (!first) {
                 sb.append(',');
             }
-            sb.append(helper.renderGdTypeInC(capture.getType()));
+            sb.append(renderSchemaFieldType(helper, capture.getType()));
             first = false;
         }
         sb.append(";params=");
@@ -246,13 +252,19 @@ public final class CHrxIdentityCatalog {
             if (!first) {
                 sb.append(',');
             }
-            sb.append(helper.renderGdTypeInC(Objects.requireNonNull(function.getParameter(i)).type()));
+            sb.append(renderSchemaFieldType(helper, Objects.requireNonNull(function.getParameter(i)).type()));
             first = false;
         }
-        sb.append(";ret=").append(helper.renderGdTypeInC(function.getReturnType()));
+        sb.append(";ret=").append(renderSchemaFieldType(helper, function.getReturnType()));
         sb.append(";va=").append(function.isVararg() ? '1' : '0');
         sb.append(";co=").append(function.isCoroutine() ? '1' : '0');
         return sb.toString();
+    }
+
+    /// One schema field: `<semantic type name>@<C storage type>` — semantic name distinguishes
+    /// families sharing a C storage spelling; C storage keeps typed-container element encodings.
+    private static @NotNull String renderSchemaFieldType(@NotNull CGenHelper helper, @NotNull GdType type) {
+        return type.getTypeName() + "@" + helper.renderGdTypeInC(type);
     }
 
     /// Standalone schema descriptor: the call metadata is the whole compatibility surface
