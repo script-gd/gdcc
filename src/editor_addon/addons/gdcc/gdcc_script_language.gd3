@@ -72,11 +72,62 @@ func _get_string_delimiters() -> PackedStringArray:
     return PackedStringArray(["\" \"", "' '", "\"\"\" \"\"\""])
 
 
-## Diagnostics are merged here in a later phase; the resource skeleton keeps every script
-## valid so the editor never blocks editing on an analyzer. Returning `valid: true` is also
-## the safe answer while the owning service is uninstalled (open tabs keep calling this).
+# Reentry guard: `_validate` runs on the editor UI thread and must stay single-flight —
+# its inline LSP wait pumps socket IO, which could otherwise interleave with a nested
+# editor validation triggered by signal handlers.
+var _in_validate: bool = false
+
+# Hard bound for the inline diagnostics wait (plan §4.2, ≤150ms). A var, not a const:
+# class-level const is outside gdcc's bootstrap MVP.
+var VALIDATE_LSP_TIMEOUT_MSEC: int = 150
+
+
+## Diagnostic merge entry (plan §4.2). Phase 2 wires the GDScript LSP channel: full-sync
+## the buffer, wait ≤ `VALIDATE_LSP_TIMEOUT_MSEC` for that generation's diagnostics, then
+## map severity 1 → errors / 2 → warnings (0-based → 1-based on both line and column).
+## `path` is mandatory on errors, otherwise the editor files them under "dependency
+## script errors" instead of the current tab. While the service is uninstalled or LSP is
+## not READY, the answer is the safe `{"valid": true}`; a timed-out wait instead falls
+## back to the URI's cached diagnostics, whose errors still count (stale beats none).
 func _validate(script: String, path: String, validate_functions: bool, validate_errors: bool, validate_warnings: bool, validate_safe_lines: bool) -> Dictionary:
-    return {"valid": true}
+    if _in_validate or _service == null or not _service.is_active():
+        return {"valid": true}
+    _in_validate = true
+    var errors: Array = []
+    var warnings: Array = []
+    if _service.is_lsp_ready():
+        # A timeout simply means the freshest generation did not arrive; the cache read
+        # below then yields the previous diagnostics (stale beats none).
+        _service.lsp_sync_and_wait(path, script, VALIDATE_LSP_TIMEOUT_MSEC)
+        var diagnostics: Array = _service.lsp_diagnostics_for(path)
+        for raw in diagnostics:
+            if not (raw is Dictionary):
+                continue
+            var severity: int = int(raw.get("severity", 0))
+            var range_value: Variant = raw.get("range", {})
+            if not (range_value is Dictionary):
+                continue
+            var start_value: Variant = range_value.get("start", {})
+            var end_value: Variant = range_value.get("end", {})
+            if not (start_value is Dictionary) or not (end_value is Dictionary):
+                continue
+            var line: int = int(start_value.get("line", 0)) + 1
+            var character: int = int(start_value.get("character", 0)) + 1
+            var end_line: int = int(end_value.get("line", 0)) + 1
+            var message: String = str(raw.get("message", ""))
+            if severity == 1:
+                errors.append({"line": line, "column": character, "message": message, "path": path})
+            elif severity == 2:
+                # All five keys are mandatory — the engine silently drops partial entries.
+                warnings.append({
+                    "start_line": line,
+                    "end_line": end_line,
+                    "code": 0,
+                    "string_code": "GDSCRIPT_LSP",
+                    "message": message,
+                })
+    _in_validate = false
+    return {"valid": errors.is_empty(), "errors": errors, "warnings": warnings}
 
 
 func _validate_path(path: String) -> String:

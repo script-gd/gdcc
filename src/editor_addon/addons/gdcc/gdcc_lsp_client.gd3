@@ -1,0 +1,658 @@
+@tool
+class_name GdccLspClient
+extends Node
+
+# Minimal LSP client for the editor's built-in GDScript language server
+# (`network/language_server/*`, default 127.0.0.1:6005).
+#
+# Transport is `StreamPeerTCP` carrying `Content-Length`-framed JSON-RPC (the LSP base
+# protocol). Like `GdccRpcClient`, progress is driven by a `SceneTree.process_frame` pump;
+# no `await`, coroutine, lambda, or `Callable.bind` appears anywhere. The synchronous
+# editor callbacks (`_validate`, later `_complete_code`) wait through the bounded inline
+# pump loops of `wait_diagnostics` / `request_blocking`; those are only legal while the
+# server runs in thread mode (`use_thread`, enforced by `plugin.gd`), because otherwise
+# the server only polls inside main-thread frames that a blocking loop would starve.
+#
+# State machine: DISCONNECTED → CONNECTING (TCP connect, then initialize handshake) →
+# READY. Handshake-level mismatches (unsupported sync capability, foreign workspace) land
+# in DEGRADED, which is recoverable: any disconnect returns to DISCONNECTED, where a
+# capped exponential backoff keeps retrying while started. There is no terminal state.
+#
+# Diagnostics attribution: Godot 4.5's server omits `version` from `publishDiagnostics`
+# but parses and publishes exactly once per `didOpen`/`didChange`, in FIFO order per
+# connection. The client therefore keeps a per-URI queue of the generations it sent and
+# binds each incoming notification to the queue head. A notification arriving with an
+# empty queue is server-initiated: it updates the cache but must not be consumed as the
+# answer to a generation we sent.
+
+# Fixed configuration values. Class-level `const` is outside gdcc's bootstrap MVP, so
+# these are plain fields that must never be reassigned at runtime.
+var STATE_DISCONNECTED: int = 0
+var STATE_CONNECTING: int = 1
+var STATE_READY: int = 2
+var STATE_DEGRADED: int = 3
+
+var CONNECT_TIMEOUT_MSEC: int = 2000
+var HANDSHAKE_TIMEOUT_MSEC: int = 2000
+var RETRY_INITIAL_MSEC: int = 200
+var RETRY_MAX_MSEC: int = 4000
+
+var _host: String = "127.0.0.1"
+var _port: int = 6005
+var _state: int = 0  # STATE_DISCONNECTED
+var _started: bool = false
+var _last_error: String = ""
+# Increments on every entry into READY, so callers/tests can prove a reconnect happened.
+var _ready_epoch: int = 0
+
+var _peer: StreamPeerTCP = null
+var _recv: PackedByteArray = PackedByteArray()
+var _next_retry_ticks: int = 0
+var _retry_delay_msec: int = 200
+var _connect_deadline_ticks: int = 0
+var _handshake_pending: bool = false
+var _handshake_deadline_ticks: int = 0
+var _handshake_id: int = -1
+var _workspace_mismatch: bool = false
+var _workspace_root: String = ""
+
+# Monotonic JSON-RPC id, protocol-internal like in `GdccRpcClient`.
+var _next_id: int = 1
+# Request id → {"method", "done", "response"}; a disconnect clears the map, which blocking
+# waiters observe as an abort signal.
+var _pending: Dictionary = {}
+var _next_generation: int = 1
+# URI → LSP document version. Server-side documents die with the connection, so this map
+# is cleared on disconnect and the next `sync_document` re-opens the document.
+var _open_docs: Dictionary = {}
+# URI → FIFO of generations sent via didOpen/didChange and not yet answered.
+var _pending_gens: Dictionary = {}
+# URI → latest raw LSP diagnostic array; survives disconnects as the stale fallback.
+var _diag_cache: Dictionary = {}
+# URI → watermark: the highest generation dequeued so far. Because generations pop in
+# increasing FIFO order, "generation G answered" ⟺ watermark ≥ G — equality would miss
+# back-to-back generations batched into a single read (the later pop overwrites the
+# earlier binding before a waiter can observe it).
+var _diag_gen: Dictionary = {}
+# URI → {generation: diagnostics} for recently bound generations, so callers can still
+# inspect a specific generation's answer after a newer one became the cache. Bounded to
+# the last few bindings per URI (see `_record_diagnostics`).
+var _diag_history: Dictionary = {}
+# Set while a blocking wait drives the connection inline; the frame pump must not reenter.
+var _in_blocking: bool = false
+
+
+func _ready() -> void:
+    var tree: SceneTree = get_tree()
+    # Persistent connect: the frame pump is the liveness guarantee of the whole client.
+    tree.process_frame.connect(_on_process_frame)
+
+
+## (Re)arms the client towards the given endpoint. Called on every service install; an
+## endpoint change drops the current connection, otherwise an established READY link is
+## kept. A stopped or disconnected client retries immediately on the next pump.
+func start(host: String, port: int) -> void:
+    var changed: bool = host != _host or port != _port
+    _host = host
+    _port = port
+    _started = true
+    if changed and _state != STATE_DISCONNECTED:
+        _disconnect("endpoint changed")
+    if _state == STATE_DISCONNECTED:
+        _retry_delay_msec = RETRY_INITIAL_MSEC
+        _next_retry_ticks = 0
+
+
+## Disconnects and stops retrying. Resident-node contract: the node itself is kept.
+func stop() -> void:
+    _started = false
+    _disconnect("stopped")
+
+
+## Converts an absolute filesystem path to the server's own URI dialect
+## (`gdscript_workspace.cpp::get_file_uri`): `file:///` with an empty authority and each
+## segment URI-encoded. Sending exactly this form makes the server's publishDiagnostics
+## echo byte-identical, so no decode/normalize compare is needed on the receive path.
+func path_to_uri(absolute: String) -> String:
+    var trimmed: String = absolute
+    while trimmed.begins_with("/"):
+        trimmed = trimmed.substr(1)
+    var parts: PackedStringArray = trimmed.split("/")
+    var encoded := PackedStringArray()
+    for part in parts:
+        encoded.append(part.uri_encode())
+    return "file:///" + "/".join(encoded)
+
+
+func get_state() -> int:
+    return _state
+
+
+func is_ready() -> bool:
+    return _state == STATE_READY
+
+
+func get_ready_epoch() -> int:
+    return _ready_epoch
+
+
+func get_last_error() -> String:
+    return _last_error
+
+
+## Opens or full-syncs a document and returns the generation that the resulting
+## publishDiagnostics will be bound to, or -1 when not READY (caller degrades to cache).
+func sync_document(uri: String, text: String) -> int:
+    if _open_docs.has(uri):
+        return change_document(uri, text)
+    return open_document(uri, text)
+
+
+func open_document(uri: String, text: String) -> int:
+    if _state != STATE_READY:
+        return -1
+    if _open_docs.has(uri):
+        return change_document(uri, text)
+    var generation: int = _next_generation
+    _next_generation += 1
+    # The queue invariant is "only generations actually sent are queued": a failed send
+    # rolls the bookkeeping back instead of letting a stray notification bind to it.
+    _open_docs[uri] = 1
+    _push_generation(uri, generation)
+    # The 4.5 server ignores languageId (fixed "gdscript" internally); the field is sent
+    # for base-protocol completeness.
+    if not _send_notification("textDocument/didOpen", {
+        "textDocument": {"uri": uri, "languageId": "gdscript", "version": 1, "text": text},
+    }):
+        _open_docs.erase(uri)
+        _pop_generation(uri, generation)
+        _disconnect("didOpen send failed")
+        return -1
+    return generation
+
+
+func change_document(uri: String, text: String) -> int:
+    if _state != STATE_READY:
+        return -1
+    if not _open_docs.has(uri):
+        return open_document(uri, text)
+    var version: int = int(_open_docs[uri]) + 1
+    var generation: int = _next_generation
+    _next_generation += 1
+    _open_docs[uri] = version
+    _push_generation(uri, generation)
+    if not _send_notification("textDocument/didChange", {
+        "textDocument": {"uri": uri, "version": version},
+        "contentChanges": [{"text": text}],
+    }):
+        _open_docs[uri] = version - 1
+        _pop_generation(uri, generation)
+        _disconnect("didChange send failed")
+        return -1
+    return generation
+
+
+func close_document(uri: String) -> void:
+    if _state == STATE_READY and _open_docs.has(uri):
+        _send_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
+    _open_docs.erase(uri)
+    _pending_gens.erase(uri)
+    _diag_cache.erase(uri)
+    _diag_gen.erase(uri)
+
+
+## Latest cached raw LSP diagnostics for the URI (possibly stale); empty when unknown.
+func get_diagnostics(uri: String) -> Array:
+    var value: Variant = _diag_cache.get(uri, [])
+    if value is Array:
+        return value
+    return []
+
+
+## Whether the given generation's notification was received and bound (still retained).
+func has_diagnostics_for_generation(uri: String, generation: int) -> bool:
+    if not _diag_history.has(uri):
+        return false
+    var history: Dictionary = _diag_history[uri]
+    return history.has(generation)
+
+
+## Diagnostics bound to a specific generation ([] when unknown or pruned — pair with
+## `has_diagnostics_for_generation` to distinguish from genuinely empty diagnostics).
+func get_diagnostics_for_generation(uri: String, generation: int) -> Array:
+    if not _diag_history.has(uri):
+        return []
+    var history: Dictionary = _diag_history[uri]
+    var value: Variant = history.get(generation, [])
+    if value is Array:
+        return value
+    return []
+
+
+
+
+## Drives the connection inline until the given generation's diagnostics are answered (its
+## notification dequeued — a newer generation may already have superseded the cache by
+## then, see `_diag_gen`) or the deadline passes. Main-thread-safe only in server thread
+## mode. A timeout KEEPS the pending queue intact: the server publishes exactly once per
+## didOpen/didChange on a live connection, so a late notification pops its own generation
+## and the FIFO self-realigns — clearing here would instead let a late answer bind to the
+## next generation sent after the clear (review finding; disconnect still clears all).
+func wait_diagnostics(uri: String, generation: int, timeout_msec: int) -> bool:
+    if generation < 0:
+        return false
+    var deadline: int = Time.get_ticks_msec() + timeout_msec
+    var found: bool = false
+    _in_blocking = true
+    while Time.get_ticks_msec() < deadline:
+        if _state != STATE_READY:
+            break
+        _drive_io()
+        if _diag_gen.has(uri) and int(_diag_gen[uri]) >= generation:
+            found = true
+            break
+    _in_blocking = false
+    return found
+
+
+## Sends a request and waits inline for its response, bounded by the deadline. Same
+## thread-mode precondition as `wait_diagnostics`. Per the blocking-form contract, a
+## timeout closes the connection so a late response can never hang the protocol state.
+func request_blocking(method: String, params: Dictionary, timeout_msec: int) -> Dictionary:
+    if _state != STATE_READY:
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "LSP client not ready"}}
+    var id: int = _send_request(method, params)
+    if id < 0:
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "LSP send failed: " + method}}
+    var deadline: int = Time.get_ticks_msec() + timeout_msec
+    var response: Dictionary = {}
+    var timed_out: bool = true
+    var aborted: bool = false
+    _in_blocking = true
+    while Time.get_ticks_msec() < deadline:
+        if _state == STATE_DISCONNECTED or not _pending.has(id):
+            # The connection died mid-wait; `_drive_io` already tore it down and armed the
+            # backoff retry. Tearing down AGAIN would double-escalate the backoff.
+            aborted = true
+            break
+        _drive_io()
+        if _state == STATE_DISCONNECTED or not _pending.has(id):
+            # The drive above tore the connection down (and armed the backoff) — report the
+            # loss even if the deadline also just passed; never double-disconnect.
+            aborted = true
+            break
+        if _pending.has(id):
+            var entry: Dictionary = _pending[id]
+            if entry.get("done", false) == true:
+                var value: Variant = entry.get("response", {})
+                if value is Dictionary:
+                    response = value
+                timed_out = false
+                break
+    _in_blocking = false
+    _pending.erase(id)
+    if not timed_out:
+        return response
+    if aborted:
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "LSP connection lost: " + method}}
+    _disconnect("request timeout: " + method)
+    return {"ok": false, "error": {"code": ERR_TIMEOUT, "message": "LSP request timeout: " + method}}
+
+
+# Single pump site, driven exclusively by `SceneTree.process_frame`; blocking waiters call
+# `_drive_io` directly while `_in_blocking` suppresses this callback.
+func _on_process_frame() -> void:
+    if _in_blocking:
+        return
+    _drive_io()
+
+
+func _drive_io() -> void:
+    if _state == STATE_DISCONNECTED:
+        if _started and Time.get_ticks_msec() >= _next_retry_ticks:
+            _connect_begin()
+        return
+    if _peer == null:
+        _disconnect("internal: missing peer")
+        return
+    _peer.poll()
+    # StreamPeerTCP.Status as raw ints (STATUS_NONE/CONNECTING/CONNECTED/ERROR = 0..3),
+    # matching the probe-verified comparison form.
+    var status: int = _peer.get_status()
+    if _state == STATE_CONNECTING:
+        if _handshake_pending:
+            if status != 2:
+                _disconnect("connection lost during handshake")
+                return
+            if Time.get_ticks_msec() > _handshake_deadline_ticks:
+                _disconnect("handshake timeout")
+                return
+            _read_available()
+            return
+        if status == 2:
+            _begin_handshake()
+            return
+        if status == 1:
+            if Time.get_ticks_msec() > _connect_deadline_ticks:
+                _disconnect("connect timeout")
+            return
+        _disconnect("connect failed")
+        return
+    # READY or DEGRADED.
+    if status != 2:
+        _disconnect("connection lost")
+        return
+    _read_available()
+
+
+func _connect_begin() -> void:
+    var peer: StreamPeerTCP = StreamPeerTCP.new()
+    var err: int = peer.connect_to_host(_host, _port)
+    if err != OK:
+        # connect_to_host only validates the arguments; refusal surfaces later via status.
+        _schedule_retry("connect_to_host rejected")
+        return
+    _peer = peer
+    _state = STATE_CONNECTING
+    _handshake_pending = false
+    _connect_deadline_ticks = Time.get_ticks_msec() + CONNECT_TIMEOUT_MSEC
+
+
+func _begin_handshake() -> void:
+    _workspace_root = _normalize_path(ProjectSettings.globalize_path("res://"))
+    var id: int = _send_request("initialize", {
+        "processId": OS.get_process_id(),
+        "rootPath": _workspace_root,
+        "rootUri": path_to_uri(_workspace_root),
+        "capabilities": {},
+    })
+    if id < 0:
+        _disconnect("initialize send failed")
+        return
+    _handshake_pending = true
+    _handshake_id = id
+    _handshake_deadline_ticks = Time.get_ticks_msec() + HANDSHAKE_TIMEOUT_MSEC
+
+
+## Tears the connection down and arms the backoff retry. Server-side document state dies
+## with the connection, so open documents and in-flight generations are dropped; the
+## diagnostic cache intentionally survives as the stale fallback for degraded validation.
+func _disconnect(reason: String) -> void:
+    if _peer != null:
+        _peer.disconnect_from_host()
+        _peer = null
+    _pending.clear()
+    _pending_gens.clear()
+    _open_docs.clear()
+    _diag_gen.clear()
+    _diag_history.clear()
+    _handshake_pending = false
+    _workspace_mismatch = false
+    _recv = PackedByteArray()
+    _schedule_retry(reason)
+
+
+func _schedule_retry(reason: String) -> void:
+    _last_error = reason
+    _state = STATE_DISCONNECTED
+    _next_retry_ticks = Time.get_ticks_msec() + _retry_delay_msec
+    _retry_delay_msec = _retry_delay_msec * 2
+    if _retry_delay_msec > RETRY_MAX_MSEC:
+        _retry_delay_msec = RETRY_MAX_MSEC
+
+
+func _push_generation(uri: String, generation: int) -> void:
+    if not _pending_gens.has(uri):
+        _pending_gens[uri] = []
+    var queue: Array = _pending_gens[uri]
+    queue.push_back(generation)
+
+
+## Rolls back a just-pushed generation after a send failure (must be the queue tail).
+func _pop_generation(uri: String, generation: int) -> void:
+    if not _pending_gens.has(uri):
+        return
+    var queue: Array = _pending_gens[uri]
+    if not queue.is_empty() and int(queue[queue.size() - 1]) == generation:
+        queue.remove_at(queue.size() - 1)
+
+
+func _read_available() -> void:
+    if _peer == null:
+        return
+    var available: int = _peer.get_available_bytes()
+    while available > 0:
+        var result: Array = _peer.get_partial_data(available)
+        if result.size() != 2:
+            return
+        var err: int = int(result[0])
+        if err != OK:
+            _disconnect("read error")
+            return
+        var chunk: PackedByteArray = result[1]
+        if chunk.is_empty():
+            break
+        _recv.append_array(chunk)
+        available = _peer.get_available_bytes()
+    _parse_frames()
+
+
+## Consumes every complete `Content-Length` frame in `_recv`, keeping any incomplete tail.
+func _parse_frames() -> void:
+    while true:
+        var header_end: int = _find_header_end()
+        if header_end < 0:
+            return
+        var header: String = _recv.slice(0, header_end - 4).get_string_from_utf8()
+        var length: int = _parse_content_length(header)
+        if length < 0:
+            _disconnect("malformed frame header")
+            return
+        if _recv.size() < header_end + length:
+            return
+        var body: String = _recv.slice(header_end, header_end + length).get_string_from_utf8()
+        _recv = _recv.slice(header_end + length)
+        var parsed: Variant = JSON.parse_string(body)
+        if parsed is Dictionary:
+            _handle_message(parsed)
+        if _peer == null:
+            # A handler tore the connection down (e.g. protocol-level abort); stop parsing.
+            return
+
+
+func _find_header_end() -> int:
+    var i: int = 0
+    while i + 4 <= _recv.size():
+        if _recv[i] == 13 and _recv[i + 1] == 10 and _recv[i + 2] == 13 and _recv[i + 3] == 10:
+            return i + 4
+        i += 1
+    return -1
+
+
+func _parse_content_length(header: String) -> int:
+    var lines: PackedStringArray = header.split("\r\n")
+    for line in lines:
+        if line.begins_with("Content-Length:"):
+            # Strict digits: `to_int` would silently coerce garbage ("12abc" → 12) and
+            # desynchronize the frame stream.
+            var raw: String = line.substr(15).strip_edges()
+            if raw.is_valid_int():
+                var length: int = raw.to_int()
+                if length >= 0:
+                    return length
+            return -1
+    return -1
+
+
+func _handle_message(message: Dictionary) -> void:
+    var method: String = ""
+    var method_value: Variant = message.get("method", "")
+    if method_value is String:
+        method = method_value
+    if method != "":
+        if message.has("id"):
+            # Server-initiated request; this client implements none of them. Answering with
+            # a protocol error keeps the server from waiting on us.
+            _send_message({
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "error": {"code": -32601, "message": "method not found"},
+            })
+            return
+        if method == "textDocument/publishDiagnostics":
+            _handle_diagnostics(message.get("params", {}))
+        elif method == "gdscript_client/changeWorkspace":
+            _handle_change_workspace(message.get("params", {}))
+        return
+    if not message.has("id"):
+        return
+    var id: int = int(message.get("id", -1))
+    if not _pending.has(id):
+        return
+    var entry: Dictionary = _pending[id]
+    entry["done"] = true
+    var error_value: Variant = message.get("error", null)
+    if error_value is Dictionary:
+        entry["response"] = {"ok": false, "error": error_value}
+    else:
+        entry["response"] = {"ok": true, "result": message.get("result")}
+    if _handshake_pending and id == _handshake_id:
+        _complete_handshake(entry["response"])
+
+
+func _complete_handshake(response: Variant) -> void:
+    _handshake_pending = false
+    var sync_ok: bool = false
+    if response is Dictionary and response.get("ok") == true:
+        var result: Variant = response.get("result")
+        if result is Dictionary:
+            var capabilities: Variant = result.get("capabilities")
+            if capabilities is Dictionary:
+                var sync: Variant = capabilities.get("textDocumentSync")
+                if typeof(sync) == TYPE_FLOAT or typeof(sync) == TYPE_INT:
+                    sync_ok = int(sync) == 1
+                elif sync is Dictionary:
+                    sync_ok = int(sync.get("change", 0)) == 1
+    if not sync_ok:
+        _state = STATE_DEGRADED
+        _last_error = "unsupported textDocumentSync capability"
+        return
+    _send_notification("initialized", {})
+    if _workspace_mismatch:
+        _state = STATE_DEGRADED
+        _last_error = "connected editor serves a different workspace"
+        return
+    _state = STATE_READY
+    _ready_epoch += 1
+    _retry_delay_msec = RETRY_INITIAL_MSEC
+    # Note: `_last_error` is deliberately NOT cleared here — it records the most recent
+    # failure for diagnostics; clearing on success would erase the evidence of the drop
+    # that preceded a reconnect.
+
+
+func _handle_diagnostics(params: Variant) -> void:
+    if not (params is Dictionary):
+        return
+    var uri_value: Variant = params.get("uri", "")
+    if not (uri_value is String):
+        return
+    var uri: String = _resolve_uri_key(uri_value)
+    var diagnostics: Array = []
+    var diagnostics_value: Variant = params.get("diagnostics", [])
+    if diagnostics_value is Array:
+        diagnostics = diagnostics_value
+    if not _pending_gens.has(uri):
+        # Server-initiated push (e.g. workspace rescan): cache it, but it must not be
+        # consumed as the answer to a generation we sent.
+        _diag_cache[uri] = diagnostics
+        return
+    var queue: Array = _pending_gens[uri]
+    if queue.is_empty():
+        _diag_cache[uri] = diagnostics
+        return
+    var generation: int = int(queue[0])
+    queue.remove_at(0)
+    _record_diagnostics(uri, generation, diagnostics)
+
+
+## Binds diagnostics to a dequeued generation: updates the latest cache, advances the
+## watermark, and keeps a bounded per-generation history (FIFO pops are increasing, so the
+## oldest key is the smallest — pruned once the map exceeds 8 entries).
+func _record_diagnostics(uri: String, generation: int, diagnostics: Array) -> void:
+    _diag_cache[uri] = diagnostics
+    _diag_gen[uri] = generation
+    if not _diag_history.has(uri):
+        _diag_history[uri] = {}
+    var history: Dictionary = _diag_history[uri]
+    history[generation] = diagnostics
+    while history.size() > 8:
+        var oldest: int = generation
+        for key in history.keys():
+            if int(key) < oldest:
+                oldest = int(key)
+        history.erase(oldest)
+
+
+## The server echoes document URIs verbatim; the normalized fallback only guards against
+## differently-shaped spellings (slash count, trailing slash) of a file we opened.
+func _resolve_uri_key(uri: String) -> String:
+    if _open_docs.has(uri) or _pending_gens.has(uri) or _diag_cache.has(uri):
+        return uri
+    var wanted: String = _normalize_path(uri)
+    for key in _open_docs.keys():
+        var candidate: String = str(key)
+        if _normalize_path(candidate) == wanted:
+            return candidate
+    return uri
+
+
+func _handle_change_workspace(params: Variant) -> void:
+    if not (params is Dictionary):
+        return
+    var path_value: Variant = params.get("path", "")
+    if not (path_value is String):
+        return
+    if _workspace_root == "" or _normalize_path(path_value) == _workspace_root:
+        return
+    _workspace_mismatch = true
+    if _state == STATE_READY:
+        _state = STATE_DEGRADED
+        _last_error = "connected editor serves a different workspace"
+
+
+func _normalize_path(path: String) -> String:
+    var normalized: String = path
+    if normalized.begins_with("file://"):
+        normalized = normalized.substr(7)
+    # The server always emits `file:///<path>` (empty authority), leaving a leading slash
+    # on both URI spellings after the scheme strip; absorb it before comparing.
+    while normalized.begins_with("/"):
+        normalized = normalized.substr(1)
+    while normalized.ends_with("/"):
+        normalized = normalized.substr(0, normalized.length() - 1)
+    return normalized
+
+
+func _send_request(method: String, params: Dictionary) -> int:
+    var message: Dictionary = {"jsonrpc": "2.0", "id": _next_id, "method": method, "params": params}
+    if not _send_message(message):
+        return -1
+    var id: int = _next_id
+    _next_id += 1
+    _pending[id] = {"method": method, "done": false, "response": null}
+    return id
+
+
+func _send_notification(method: String, params: Dictionary) -> bool:
+    return _send_message({"jsonrpc": "2.0", "method": method, "params": params})
+
+
+func _send_message(message: Dictionary) -> bool:
+    if _peer == null:
+        return false
+    var body: String = JSON.stringify(message)
+    # The header is pure ASCII, so a single UTF-8 conversion of header + body is exact
+    # while `Content-Length` still counts only the body bytes.
+    var body_bytes: PackedByteArray = body.to_utf8_buffer()
+    var frame: PackedByteArray = ("Content-Length: " + str(body_bytes.size()) + "\r\n\r\n" + body).to_utf8_buffer()
+    return _peer.put_data(frame) == OK

@@ -20,8 +20,26 @@ var _saver: GdccScriptFormatSaver = null
 # Dedicated RPC client (child node `GdccEditorRpcClient`): its HTTP queue is separate from the
 # dock's client, so background analysis traffic can never starve dock actions and vice versa.
 var _rpc_client: GdccRpcClient = null
+# LSP client (child node `GdccEditorLspClient`): same resident-child pattern as the RPC
+# client. Its connection lifecycle follows `_active` — started in install(), stopped in
+# uninstall() — while the node itself is never freed.
+var _lsp_client: GdccLspClient = null
 var _lsp_host: String = "127.0.0.1"
 var _lsp_port: int = 6005
+# Set by the plugin when it flipped `use_thread` on while the server was already
+# listening: that server keeps main-thread polling until the editor restarts (the
+# settings-changed notification that would restart it is emitted only by C++ UI flows,
+# §2.6), so inline bounded waits would starve it. Diagnostics still flow asynchronously
+# (sync sent, wait skipped). Sticky for the process: a scripted disable/restore does not
+# restart the server either, so a later enable must not clear it.
+var lsp_blocking_unsafe: bool = false
+# Set by the plugin when it flipped `use_thread` on BEFORE the server started listening:
+# that server reads the flipped value at start and is therefore threaded. Sticky so later
+# disable/enable cycles don't mislatch `lsp_blocking_unsafe` once the port is up; cleared
+# only when the priming install is rolled back (setting restored before the server saw it).
+var lsp_thread_primed: bool = false
+# Ready-epoch at the last thread-mode re-probe; the probe runs at most once per reconnect.
+var _last_thread_probe_epoch: int = -1
 # Whole-module analysis including the compile-only gate (`sema.compile_check`) — the editor
 # diagnostics goal is to surface real compile failures early, not just parse errors.
 var analyze_include_lowering: bool = true
@@ -42,6 +60,105 @@ func get_language_instance() -> GdccScriptLanguage:
     return _language
 
 
+## Test/introspection accessor for the resident LSP client (null before the first install).
+func get_lsp_client() -> GdccLspClient:
+    return _lsp_client
+
+
+## READY means the handshake succeeded against the editor's own GDScript language server
+## (capability + workspace both verified by the client).
+func is_lsp_ready() -> bool:
+    return _active and _lsp_client != null and _lsp_client.is_ready()
+
+
+## Inline bounded waiting starves a non-threaded server (it only polls inside main-thread
+## frames), so the synchronous LSP path is legal exclusively in thread mode (plan §2.6).
+## Read live from EditorSettings: runtime toggles restart the server and must take effect
+## immediately rather than after a plugin reload. A runtime-enable flip is honored via the
+## `lsp_blocking_unsafe` session flag — the setting reads true there while the server still
+## polls on the main thread until the next editor start.
+func _lsp_thread_mode() -> bool:
+    if lsp_blocking_unsafe:
+        return false
+    if _editor_interface == null:
+        return false
+    var settings: EditorSettings = _editor_interface.get_editor_settings()
+    if settings == null or not settings.has_setting("network/language_server/use_thread"):
+        return false
+    return settings.get_setting("network/language_server/use_thread") == true
+
+
+## res:// path → `file:///` absolute URI in the server's own dialect (see
+## `GdccLspClient.path_to_uri`). Non-project paths (unsaved buffers, user://) get "" and
+## skip the LSP channel entirely.
+func _path_to_uri(path: String) -> String:
+    if not path.begins_with("res://"):
+        return ""
+    var absolute: String = ProjectSettings.globalize_path(path)
+    if absolute == "":
+        return ""
+    return _lsp_client.path_to_uri(absolute)
+
+
+## Full-syncs the document to the GDScript language server and waits (bounded by
+## `timeout_msec`) for the diagnostics of exactly that sync generation. When the server is
+## reachable but not in thread mode (runtime-enable flag, plan §2.6), the sync is still
+## sent — its diagnostics land in the cache asynchronously and surface on the next
+## validation beat — but the inline wait is skipped and false is returned. Callers then
+## fall back to the cached diagnostics from `lsp_diagnostics_for` (plan §4.2 step 1).
+func lsp_sync_and_wait(path: String, text: String, timeout_msec: int) -> bool:
+    if not is_lsp_ready():
+        return false
+    var uri: String = _path_to_uri(path)
+    if uri == "":
+        return false
+    var generation: int = _lsp_client.sync_document(uri, text)
+    if generation < 0:
+        return false
+    if not _lsp_thread_mode():
+        _reprobe_thread_mode_once()
+        if not _lsp_thread_mode():
+            return false
+    return _lsp_client.wait_diagnostics(uri, generation, timeout_msec)
+
+
+## The blocking-unsafe flag outlives its cause in one recoverable case: the user changed
+## the language-server settings through the editor settings DIALOG (a C++ flow that emits
+## the settings-changed notification), the engine restarted the server, and the new server
+## read the flipped `use_thread = true`. A network reconnect alone says nothing about the
+## server's polling mode, so re-evaluate behaviorally once per handshake: a
+## main-thread-polled server gets no frames while we spin and therefore CANNOT answer an
+## inline wait — a successful bounded probe proves thread mode and clears the flag; a
+## timeout keeps it (safe direction). The budget is deliberately generous (400ms): the
+## server's worker polls at 20Hz and CI headless editors can be loaded; a false negative
+## just keeps the session degraded.
+func _reprobe_thread_mode_once() -> void:
+    if not lsp_blocking_unsafe:
+        return
+    if _lsp_client.get_ready_epoch() == _last_thread_probe_epoch:
+        return
+    _last_thread_probe_epoch = _lsp_client.get_ready_epoch()
+    var probe_uri: String = _path_to_uri("res://gdcc_thread_probe.gd3")
+    if probe_uri == "":
+        return
+    var generation: int = _lsp_client.sync_document(probe_uri, "extends Node\n")
+    if generation < 0:
+        return
+    if _lsp_client.wait_diagnostics(probe_uri, generation, 400):
+        lsp_blocking_unsafe = false
+    _lsp_client.close_document(probe_uri)
+
+
+## Latest raw LSP diagnostics for a res:// path (possibly stale); empty when none.
+func lsp_diagnostics_for(path: String) -> Array:
+    if not _active or _lsp_client == null:
+        return []
+    var uri: String = _path_to_uri(path)
+    if uri == "":
+        return []
+    return _lsp_client.get_diagnostics(uri)
+
+
 ## Registers the language, loader, and saver. Instances are created once (first call) and
 ## reused on every later call; endpoint parameters are written back on EVERY call so a
 ## re-enable can retarget the clients. Registration order is language → loader → saver with a
@@ -58,12 +175,17 @@ func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
         _rpc_client = GdccRpcClient.new()
         _rpc_client.name = &"GdccEditorRpcClient"
         add_child(_rpc_client)
+        _lsp_client = GdccLspClient.new()
+        _lsp_client.name = &"GdccEditorLspClient"
+        add_child(_lsp_client)
     _editor_interface = editor_interface
     _lsp_host = lsp_host
     _lsp_port = lsp_port
     _rpc_client.host = rpc_host
     _rpc_client.port = rpc_port
     if _active:
+        # Repeat install (e.g. test drivers injecting a free port): only endpoints move.
+        _lsp_client.start(_lsp_host, _lsp_port)
         return OK
     var err: int = Engine.register_script_language(_language)
     if err != OK:
@@ -81,6 +203,9 @@ func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
         Engine.unregister_script_language(_language)
         return FAILED
     _active = true
+    # LSP connects only in ACTIVE state; the server listens after editor-ready, so the
+    # client's backoff retry absorbs the startup window (plan §2.6/§4.1).
+    _lsp_client.start(_lsp_host, _lsp_port)
     return OK
 
 
@@ -90,6 +215,7 @@ func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
 func uninstall() -> void:
     if not _active:
         return
+    _lsp_client.stop()
     ResourceSaver.remove_resource_format_saver(_saver)
     ResourceLoader.remove_resource_format_loader(_loader)
     Engine.unregister_script_language(_language)

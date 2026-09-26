@@ -10,7 +10,7 @@
 ## 文档状态
 
 - 状态：实施计划（Phase 0 已实施并通过验收；**Phase 1 已实施并通过验收**；
-  Phase 2+ 尚未实施；已经过多轮并行评审并修订）
+  **Phase 2 已实施并通过自动化验收**；Phase 3+ 尚未实施；已经过多轮并行评审并修订）
 - 更新日期：2026-09-23
 - Phase 0 验收结果（2026-09-23）：P0-A/B/C 全绿（`EditorAddonIntegrationProbeTest`
   3/3 通过，无跳过）。`_init` 语义与 typed array 返回的探针结论已回填 §3.2/§2.3。
@@ -131,6 +131,70 @@
     CreateDialog→InspectorDock 序列：ClassDB 实例化 + 属性枚举 + 保存 +
     `edit_resource`，外加禁用态下同路径不崩溃且语言仍可解析）。注：创建脚本对话框
     不出现 GD3 是 R5 已知限制，不在本修复范围。
+- Phase 2 验收结果（2026-09-23，自动化项全绿，手动项待 §8.3）：
+  - `EditorAddonScriptLanguageEngineTest` 7/7 通过（无跳过），新增三用例：
+    `lsp_connect`（退避重连吸收"插件先加载、LSP 后监听"窗口；端点强制断开后重连 +
+    插件禁用/启用循环后重新握手，均以 READY epoch 递增为证）；`lsp_validate`（降级
+    路径 valid+空、错误样例 `valid==false` 且首错行号=3 且每条含 `path`、干净样例
+    `valid==true`、警告样例五键齐全且 start_line=4、含非 BMP emoji 样例行/列锚定、
+    禁用态 `_validate` 安全应答）；`lsp_fifo`（g1/g2 背靠背发送后按 FIFO 分别归属，
+    经 per-generation 绑定历史断言 g1=错误/g2=空；`request_blocking` 的
+    `documentSymbol` 往返应答）。全套既有用例与
+    `EditorAddonScriptLanguageAnalysisTest`（7 个 `.gd3` 源）无回归。
+  - 实现偏差与实施期引擎事实修正（相对下文设计，已按事实源口径回填 §2.6/§3.4）：
+    1. URI 方言：服务端 `get_file_uri` 产出 `file:///` + 逐段 `uri_encode` 形式
+       （空 authority 规避 `file://E:` 被 parse_url 误判 host 而报 "nonlocal files"）。
+       客户端统一以 `GdccLspClient.path_to_uri` 生成该方言，服务端回显字节一致。
+    2. generation 等待断言从"等于"改为水位线"≥"并新增有界 per-generation 绑定历史
+       （`_diag_history`，每 URI 留 8 条）：两条通知可在单次读批内先后出队，相等断言
+       会被后一条覆盖而永假。
+    3. 诊断位置：服务端 `update_diagnostics` 把所有诊断的 `character` 报为**错误行
+       首个非空白字符**（缩进的码点数），不携带 token 级精确列；UTF-16/码点分歧在该
+       路径不存在（全程码点计数），R11 锚定改为"多字节行不错位 + 缩进列正确"。
+    4. `use_thread` 运行期重启链路存在但不可脚本触发：服务端仅在
+       `NOTIFICATION_EDITOR_SETTINGS_CHANGED`（仅 C++ UI 路径发出，脚本不可达）时
+       重启监听。引擎验收改用"端点强制断开 + 插件禁用/启用"驱动重连；用户从编辑器
+       设置对话框改 `use_thread` 的引擎行为不变（§2.6）。
+- Phase 2 评审记录（2026-09-23，review-expert-a + review-expert-c 并行评审，修复后
+  全部自动化用例复测通过）：
+  - 采纳并修复：
+    1.（高）运行期启用翻转 `use_thread` 后 `_lsp_thread_mode` 误信设置值：引擎只在
+       C++ 通知路径重启监听，服务端仍主线程轮询，内联等待每次白等 150ms。修复：
+       plugin.gd 检测运行期翻转（`is_scanning()==false` 且发生翻转）置
+       `service.lsp_blocking_unsafe` 会话标记 + push_warning；`lsp_sync_and_wait`
+       在 READY 但线程不安全时仍发送同步、仅跳过等待（诊断经帧泵异步进缓存）。
+       新增 `lsp_runtime_enable` 引擎用例（gdcc 启动时禁用 → 运行期启用 → 阻塞被拒
+       且异步诊断浮现）锚定。
+    2.（中）`wait_diagnostics` 超时清空待确认队列 → 迟到通知会错绑到清空后发送的
+       下一代。修复：超时保留队列（服务端对每次同步恰好发布一次，FIFO 自对齐）；
+       断线仍全清。回归锚点 `fifo_timeout_realign`（零预算强制超时后 g3/g4 不交叉）。
+    3.（中）`request_blocking` 把断线误判为超时并二次 `_disconnect`，退避被翻倍
+       推后。修复：区分 aborted（连接已失，不再拆）与真超时（才拆连接）。
+    4.（中）`validate_clean` 在服务端尚未发布时因空缓存误过。修复：先
+       `lsp_sync_and_wait` 锚定本代已入账再断言；警告样例补 `code == 0` 断言。
+    5.（中）测试端口设置与服务端启动存在竞争（脚本改设置不重启服务）。修复：
+       harness 对携带 `lsp_port` 的用例注入 `--lsp-port` CLI 覆盖（引擎支持且优先于
+       EditorSettings），服务端端口在插件代码运行前钉死。
+    6.（低）didOpen/didChange 发送失败残留未发出的 generation：改为回滚队列项与
+       版本号并断连返回 -1。
+    7.（低）`Content-Length` 用 `to_int()` 会吞非法值：改 `is_valid_int()` 严格校验。
+    8.（低）`_validate` 文档注释与"超时用缓存"行为矛盾：注释已修正。
+    9.（低）`reconnect_drop` 只观测同步断开：补 `reconnect_attempts` 步骤断言对死
+       端点的失败重试有记录（`get_last_error` 非空）。
+  - 第二轮复核采纳并修复（复核确认第 1 轮修复方向，以下为新发现）：
+    1.（高）`is_scanning()` 不是服务端轮询模式的可靠代理：启动期翻转后禁用/再启用
+       会误闩 unsafe（服务端实为线程模式）；运行期启用但首扫未完会漏闩。改为翻转
+       瞬间的端口在听探测 + 常驻服务上的粘性 `lsp_blocking_unsafe`/`lsp_thread_primed`
+       记忆（§4.1 第 2 步）；`plugin.gd` 回滚仅在本次 primed 时清 primed；
+       `_exit_tree` 过时的"恢复会重启 LSP 服务"注释已修正。新增锚点：
+       `lsp_connect` 的 `blocking_safe_after_cycle`（循环后内联等待仍可用）、
+       `lsp_runtime_enable` 的 `blocking_refused` 改为断言标记为真且快速返回。
+    2.（中）`request_blocking` 截止边界竞态：`_drive_io()` 内断线恰跨 deadline 时仍
+       按超时二次拆连。修复：`_drive_io()` 后再判一次断线。
+    3.（中）`reconnect_attempts` 假阳性（"endpoint changed" 本身就非空）：改等
+       `connect*` 前缀的连接失败证据。
+    4.（低）`lsp_runtime_enable.editor_ready` 的 `_port_open` 只有 1.5s 余量：改为
+       30s 轮询。
 - 范围：
   - `src/editor_addon/addons/gdcc/**`（新增 `.gd3` 源文件 + `server_launcher.gd` +
     `plugin.gd`/`gdcc_dock.gd` 接线）
@@ -411,15 +475,27 @@ Godot 编辑器
   1. `EditorSettings.set_setting` 后**退出编辑器时引擎会自动持久化**该设置
      （`EditorSettings::destroy()` 调 `save()`）——不存在"会话级"设置。因此插件必须
      在卸载时恢复用户原值（§4.1），并在文档与 dock 状态中明示这一改动。
-  2. 服务端在运行期监听该设置变化并自动重启监听（`gdscript_language_server.cpp`），
-     因此运行期启用插件不需要重启编辑器，我们的重连逻辑会接管新监听（实现期验证，
-     列入 Phase 2 验收）。
+  2. 服务端在运行期监听该设置变化并自动重启监听（`gdscript_language_server.cpp`
+     `NOTIFICATION_EDITOR_SETTINGS_CHANGED` 分支比对 `network/language_server` 组后
+     `stop(); start()`），因此运行期启用插件不需要重启编辑器，我们的重连逻辑会接管
+     新监听。**实施期修正（Phase 2 实证）**：该通知只由 C++ UI 路径
+     （`EditorSettings::notify_changes()`，设置对话框等）发出，`set_setting` 不触发，
+     脚本无法驱动服务端运行期重启；引擎测试改用端点强制断开 + 插件禁用/启用覆盖
+     客户端重连路径（用户从设置对话框修改的引擎行为不变）。
 - 协议为标准 LSP（`Content-Length` 帧头 + JSON-RPC）。已实现方法含 `initialize`、
   `textDocument/didOpen|didChange|didClose|completion|hover|definition|references|
   rename|documentSymbol` 等；诊断由服务端经 `textDocument/publishDiagnostics` 推送，
   但默认只发给最近初始化的那个客户端（`LSP_MAX_CLIENTS=8`，`notify_client` 默认
   目标是 `latest_client_id`）：外部 LSP 客户端（如 VSCode）并存时诊断可能发给别人，
   此时按超时降级到缓存（§9 R14）。
+- **URI 方言（Phase 2 实证）**：服务端 `get_file_uri` 产出 `file:///` + 逐段
+  `uri_encode`（空 authority 形式；`file://E:/...` 会被 `get_file_path` 的
+  `parse_url` 把盘符误判为 host 而报 "nonlocal files"）。客户端必须按同一方言生成
+  URI（`GdccLspClient.path_to_uri`），服务端回显字节一致。
+- **诊断位置（Phase 2 实证）**：`update_diagnostics` 把每条诊断的 `character` 报为
+  错误行**首个非空白字符**位置（缩进的码点数，`range.end` 覆盖整行去空白内容），
+  不携带 token 级精确列；全程码点计数，无 UTF-16/码点分歧（§9 R11 在诊断路径不
+  显化；补全路径的 `character` 同样按码点索引行文本）。
 - `initialize` 结果中 `capabilities.textDocumentSync` 在 4.5 是**对象**
   `{openClose, change: 1, willSave, willSaveWaitUntil, save}`（`change == 1` 即全量
   同步），不是整数 `1`；握手校验必须两种形状都接受（§3.4）。
@@ -590,8 +666,14 @@ func _get_global_class_name(path: String) -> Dictionary # Phase 5
   据此维护**每 URI 待确认 generation 队列**：发送 `didOpen`/`didChange` 时把递增
   generation 追加到队尾；收到通知时弹出队首并与之绑定（"发送后首个通知属于当前
   generation"的简单规则在旧通知仍在途时是错的，必须用队列）；队列为空时收到的
-  通知属服务端主动产生，不得推进任何等待水位；断线或超时清空该连接全部待确认
-  generation。`_validate` 的同步等待即等待本次发送的 generation 出队。
+  通知属服务端主动产生，不得推进任何等待水位；**断线**清空该连接全部待确认
+  generation（Phase 2 评审修正：超时**不清空**——服务端在存活连接上对每次
+  didOpen/didChange 恰好发布一次（本段上文），迟到的通知会弹出自己的 generation，
+  FIFO 自行对齐；若超时清空，迟到通知反而会错绑到清空后发送的下一代）。
+  `_validate` 的同步等待即等待本次发送的 generation 出队——**水位线语义（Phase 2
+  实证修正）**：出队按 FIFO 递增，等待断言为"已出队水位 ≥ 目标 generation"（相等
+  断言会在两条通知同批读出时被后一条覆盖而永假）；另保留每 URI 最近 8 条
+  generation→诊断 绑定历史（`_diag_history`）供回溯断言与后续相位。
 - 请求/响应：`_send_request(method, params) -> int(id)` + `_pending: Dictionary`；
   `request_blocking(method, params, timeout_msec: int) -> Dictionary`：在调用线程内
   以非阻塞 `poll()` + `Time.get_ticks_msec()` 截止循环驱动读写分发，直到目标 id
@@ -599,7 +681,8 @@ func _get_global_class_name(path: String) -> Dictionary # Phase 5
   超时断连）。**仅当服务端为线程模式时合法**（安装时校验 EditorSettings，§4.1）。
   `_in_blocking` 置位期间帧泵直接返回，避免重入。
 - 文档同步：`open_document(uri, text)` / `change_document(uri, text)`（全量，
-  版本号递增）/ `close_document(uri)`；URI 为 `file://<绝对路径>`。
+  版本号递增）/ `close_document(uri)`；URI 为服务端方言 `file:///<逐段 uri_encode
+  的绝对路径>`（`path_to_uri`，§2.6）。
 
 ### 3.5 `gdcc_editor_service.gd3` — `GdccEditorService extends Node`
 
@@ -779,9 +862,16 @@ dock 在 gdcc 语言注册之前就依赖它（§1.1）。形态为 `Node`，由
 1. （plugin.gd）常驻节点就位：`get_tree().root.get_node_or_null("GdccEditorService")`，
    命中先 `is GdccEditorService` 验明身份，类型不符 `push_error` 并放弃安装
    （fail-closed、零副作用，**此步先于任何设置改动**）；不存在则创建并挂到根。
-2. （plugin.gd）暂存并设置 `network/language_server/use_thread = true`（LSP 线程模式
-   硬前提；正常启动路径下服务尚未启动故生效；运行期启用时服务端检测到设置变化自动
-   重启监听，§2.6）。
+ 2. （plugin.gd）暂存并设置 `network/language_server/use_thread = true`（LSP 线程模式
+    硬前提）。**运行期启用的修正（Phase 2 评审实证，两轮）**：`set_setting` 不发出重启
+    监听所需的 `NOTIFICATION_EDITOR_SETTINGS_CHANGED`（§2.6），因此门闩不看"是否在
+    扫描"而看**翻转瞬间端点是否已在听**（≤150ms 非阻塞探测，不发送数据故不抢占
+    `latest_client_id`）：已在听 → 本会话服务端必是主线程轮询，置常驻服务上
+    `lsp_blocking_unsafe = true`（进程内粘性，禁用/恢复同样不会重启服务端故不清除）
+    并 push_warning 提示重启；未在听 → 服务端启动时会读到翻转值（线程模式），置
+    `lsp_thread_primed = true`（粘性，避免禁用/再启用后端口已在听而误闩 unsafe；
+    仅当本次 primed 的安装被回滚、设置已还原时才清除）。该会话内 `_validate` 的
+    内联等待仅在未标记 unsafe 时进行（诊断仍异步流动，见 §4.2 第 1 步）。
 3. （plugin.gd）初始化低功耗 busy 协调器（计数 0，**不触碰** `OS.low_processor_usage_mode`，
    首个 busy 0→1 时才保存原值并置 `false`；dock 与 launcher 的 busy 上报指向它）。
    此步必须先于第 6 步的任何 `ensure_server_hook` 调用（§3.5/§3.7）。
@@ -804,8 +894,9 @@ dock 在 gdcc 语言注册之前就依赖它（§1.1）。形态为 `Node`，由
 注销（`_exit_tree`）：断开 `filesystem_changed` 连接、dock 残余 busy 归零 →
 `uninstall()`（停防抖调度与在途分析回调 → 断 LSP → 移除 loader/saver → 注销语言
 （**不释放**实例）→ 删除私有模块（需服务在线）→ UNINSTALLED）→ 恢复
-`use_thread` 原值（恢复会触发引擎 LSP 服务重启，必须发生在本客户端断开、语言
-注销之后）→ **最后** `launcher.shutdown_owned()`：对拉起的服务发 `server.shutdown`
+`use_thread` 原值（脚本 `set_setting` 不会重启引擎 LSP 服务（§2.6）；顺序仍须保持
+——先断开本客户端、注销语言，再把设置翻回，且离开前若服务端尚未开始监听需撤销
+`lsp_thread_primed`（§4.1 第 2 步））→ **最后** `launcher.shutdown_owned()`：对拉起的服务发 `server.shutdown`
 RPC，**收到响应即完成**（优雅收尾由 JVM hook 在后台完成，编辑器不等待）；仅当
 RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
 
@@ -817,10 +908,12 @@ RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
 入参 `script` 即编辑缓冲区当前文本（无 0xFFFF 哨兵）。全程单线程（主线程），
 `_in_validate` 守卫防重入；服务 UNINSTALLED 时直接返回 `{"valid": true}`。
 
-1. LSP READY：URI 为 `res://` → `file://` 绝对路径；`didOpen`（首次）或
+1. LSP READY：URI 为 `res://` → `file:///` 服务端方言（§2.6）；`didOpen`（首次）或
    `didChange`（全量文本，generation 递增，水位规则见 §3.4）；随后**有界同步等待
    ≤150ms** 收取该 URI 当前 generation 的 `publishDiagnostics`（仅线程模式下有效，
-   §2.6）；超时则用该 URI 的最近缓存诊断。
+   §2.6）；超时则用该 URI 的最近缓存诊断。**READY 但非线程模式**（运行期启用翻转，
+   §4.1 第 2 步）：同步仍发送（诊断异步进缓存、下一校验节拍浮现），仅跳过内联
+   等待——主线程轮询的服务端会被内联等待饿死。
 2. LSP 诊断映射（0-based → 1-based，行与列均 +1；验收时与同内容 `.gd` 文件逐条对比，
    §8.3）：
    - `severity == 1` → `errors[]`：`{line, column, message, path: <当前 res:// 路径>}`
@@ -997,16 +1090,18 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
   Compile，退出编辑器后该服务进程消失（外部手动启动的服务不受影响）；冷启动后
   **不再移动鼠标**（编辑器低功耗窗口），服务仍在 15s 内就绪（§3.7 低功耗活性）。
 
-### Phase 2：LSP 客户端与 GDScript 诊断
+### Phase 2：LSP 客户端与 GDScript 诊断 ✅（2026-09-23 自动化验收通过）
 
 实施：`GdccLspClient`（§3.4）、`_validate` 的 LSP 分支（§4.2 第 1–2 步）、降级路径。
-验收：
+验收（实际执行见文档状态节 Phase 2 条目）：
 - 引擎测试：LSP 连接在重试后 READY（全新编辑器启动路径，验证"插件先加载、LSP 后
-  监听"；另覆盖运行期改变 `use_thread` 后服务端自动重启、客户端重连的路径）；
+  监听"）；重连韧性以端点强制断开 + 插件禁用/启用循环覆盖（运行期 `use_thread`
+  切换触发服务端重启的链路不可脚本驱动，§2.6 修正）；
   对含语法错误的样例调用语言的 `_validate`，断言 `valid == false`、`errors` 非空、
   行号与预期一致且每条含 `path`；干净样例 `valid == true`；警告样例的 `warnings[]`
   五键齐全；发送 g1 后不读响应立即发送 g2，再依次接收两个 `publishDiagnostics`，
-  按 FIFO 队列分别归属 g1/g2（§3.4 队列规则，旧通知不得错标为新 generation）。
+  按 FIFO 队列分别归属 g1/g2（§3.4 队列规则，旧通知不得错标为新 generation——经
+  per-generation 绑定历史断言，水位线语义见 §3.4）。
 - 手动：同一段错误代码分别在 `.gd` 与 `.gd3` 中打开，错误行号/条数一致；编辑后错误
   随动更新；无错误文件无误报；含中文注释的样例补全/诊断列位置正确（§9 R11）。
 
@@ -1109,14 +1204,14 @@ EditorSettings `gdcc/server/launch_command` 与端口写好后触发连接，验
 | R8 | LSP 同步模式假设不成立 | 低 | 握手校验 `textDocumentSync`（int `1` 或 `{change: 1}` 两种形状），否则 DEGRADED |
 | R9 | 诊断行号 0/1-based 转换错误 | 中 | 与同内容 `.gd` 文件逐条对比验收（§8.3） |
 | R10 | Godot 版本漂移（master 已废弃 `_create_script`/`_get_recognized_extensions`） | 低 | 锁定 4.5 元数据；升级 Godot 时重跑 §2 核查 |
-| R11 | 非 ASCII 文本下 LSP `character` 与 Godot 列口径不一致（UTF-16 vs 码点） | 中 | Phase 2 用含中文注释的样例验收列位置；不一致时按 LSP 规范转 UTF-16 列 |
+| R11 | 非 ASCII 文本下 LSP `character` 与 Godot 列口径不一致（UTF-16 vs 码点） | 中 | Phase 2 实证（§2.6）：诊断路径的 `character` 是行首非空白字符的码点计数，全程码点、无 UTF-16 分歧；引擎测试以非 BMP emoji 样例锚定行/列不错位。残余关注点仅在 Phase 4 补全光标 `character`（同样按码点索引，验收时以含中文样例复核） |
 | R12 | 编辑器-only 类进入导出构建 | 低 | 本扩展仅 addon 内使用，文档声明不随项目导出 |
 | R13 | `analyze.run` 是整模块分析，大项目延迟高 | 中 | 异步 + 防抖 + 单飞；服务专用客户端与 dock 队列隔离（§4.4）；后续在 RPC 侧评估增量分析（不在本计划） |
 | R14 | 外部 LSP 客户端并存时 `publishDiagnostics` 只发最近客户端 | 中 | 等待超时即回落缓存并继续；dock 状态行提示；记录为已知限制 |
 | R15 | 禁用插件后已打开页签持有语言/服务引用 | 高 | 常驻单实例 + 注销不释放 + 复用再注册（§3.5）；Phase 1 验收含禁用/启用循环与实例同一性断言 |
 | R16 | `_load` 在 worker 线程执行时的数据竞争 | 高 | 纯加载约束（§2.4）；Phase 1 引擎测试含 `load_threaded_request` 路径 |
 | R17 | 无公开 API 主动触发编辑器 revalidate，异步 gdcc 诊断存在节拍级延迟 | 中 | 已知限制：随下一次校验节拍浮现（§2.5/§4.4）；若后续版本暴露 `validate_script` 类 API 再接入 |
-| R18 | `use_thread` 设置被引擎在退出时持久化，影响用户其他项目 | 中 | 卸载时恢复原值（§4.1）；dock 状态行与文档明示该改动 |
+| R18 | `use_thread` 设置被引擎在退出时持久化，影响用户其他项目 | 中 | 卸载时恢复原值（§4.1）；dock 状态行与文档明示该改动。另（Phase 2 评审实证）：运行期首次启用发生 false→true 翻转时服务端不会运行期重启（通知仅 C++ UI 可达），该会话置 `lsp_blocking_unsafe` 降级并提示重启编辑器（§4.1 第 2 步） |
 | R19 | 拉起进程的 PID 在会话内被系统复用，`shutdown_owned` 误杀无关进程 | 低 | 仅跟踪本会话 `create_process` 返回的 PID；`OS.kill` 仅在 `server.shutdown` 不可达**且**记录端点仍接受 TCP 连接时使用（双条件，§3.7）；会话级窗口内复用概率极低 |
 | R20 | 编辑器崩溃导致拉起的服务成为孤儿进程 | 低 | 崩溃路径本就无法执行插件代码；下次会话端口探测将其收养为外部服务（只连不关），不会泄漏累积（§3.7） |
 | R21 | `server.shutdown` 不可达（服务挂起/半死连接）时服务残留 | 低 | 2s 有界等待后按 R19 双条件决定是否 `OS.kill`；服务已死但 PID 被复用时宁可残留也不误杀；Windows 下硬切不执行 shutdown hook 的事实写入 §2.8 |
