@@ -1,5 +1,6 @@
 package gd.script.gdcc.backend.c.gen;
 
+import gd.script.gdcc.backend.c.gen.insn.PackedNativeAbiCallSupport;
 import gd.script.gdcc.scope.resolver.ScopeTypeParsers;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBasisType;
@@ -9,6 +10,7 @@ import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdPackedArrayType;
 import gd.script.gdcc.type.GdProjectionType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
@@ -126,8 +128,59 @@ public final class CBuiltinBuilder {
         switch (targetType) {
             case GdArrayType arrayType -> constructArray(bodyBuilder, target, arrayType, args);
             case GdDictionaryType dictionaryType -> constructDictionary(bodyBuilder, target, dictionaryType, args);
+            case GdPackedArrayType packedArrayType -> constructPackedArray(bodyBuilder, target, packedArrayType, args);
             default -> constructRegularBuiltin(bodyBuilder, target, targetType, args);
         }
+    }
+
+    /// Packed*Array construction never calls the native constructor wrappers directly: the
+    /// target is a Variant slot, so results are produced by the whitelisted `gdcc_packed_ref.h`
+    /// helpers instead.
+    /// - `Packed*Array()` -> `new_empty` (whitelist (b); empty-array Variant, never nil)
+    /// - `Packed*Array(other same family)` -> `new_copy` (whitelist (d); independent COW copy)
+    /// - `Packed*Array(array)` -> `new_from_array` (whitelist (d); cross-type conversion)
+    /// The extension metadata lists exactly these three constructors per family, so
+    /// `hasConstructor` remains the validity gate and the whitelist only owns the emission shape.
+    private void constructPackedArray(@NotNull CBodyBuilder bodyBuilder,
+                                      @NotNull CBodyBuilder.TargetRef target,
+                                      @NotNull GdPackedArrayType packedArrayType,
+                                      @NotNull List<CBodyBuilder.ValueRef> args) {
+        var ctorArgTypes = new ArrayList<GdType>(args.size());
+        for (var arg : args) {
+            ctorArgTypes.add(arg.type());
+        }
+        if (!hasConstructor(packedArrayType, ctorArgTypes)) {
+            var argTypeNames = new ArrayList<String>(ctorArgTypes.size());
+            for (var argType : ctorArgTypes) {
+                argTypeNames.add(helper.renderGdTypeName(argType));
+            }
+            throw new IllegalArgumentException("Builtin constructor validation failed: '" +
+                    helper.renderGdTypeName(packedArrayType) + "' with args [" +
+                    String.join(", ", argTypeNames) + "] is not defined in ExtensionBuiltinClass");
+        }
+        if (args.isEmpty()) {
+            bodyBuilder.callAssign(
+                    target,
+                    PackedRefCNames.helperName(packedArrayType, "new_empty"),
+                    packedArrayType,
+                    List.of()
+            );
+            return;
+        }
+        // Exact constructor metadata match guarantees the single argument's family.
+        var helperSuffix = switch (args.getFirst().type()) {
+            case GdPackedArrayType _ -> "new_copy";
+            case GdArrayType _ -> "new_from_array";
+            default -> throw new IllegalArgumentException(
+                    "Packed constructor argument type '" + args.getFirst().type().getTypeName()
+                            + "' has no whitelisted helper mapping");
+        };
+        bodyBuilder.callAssign(
+                target,
+                PackedRefCNames.helperName(packedArrayType, helperSuffix),
+                packedArrayType,
+                args
+        );
     }
 
     /// Materializes one utility default literal into the given writable target.
@@ -329,6 +382,12 @@ public final class CBuiltinBuilder {
         }
         if (hasConstructor(targetType, ctorArgTypes)) {
             var ctorFunc = renderConstructorFunctionNameByTypes(targetType, ctorArgTypes);
+            if (PackedNativeAbiCallSupport.requiresPackedAdaptation(targetType, ctorArgTypes)) {
+                // Constructor wrappers keep the native packed arg ABI (e.g. `Array(packed)` takes
+                // `const godot_Packed*Array*`); adapt the Variant storage at the call site.
+                PackedNativeAbiCallSupport.emitCall(bodyBuilder, target, ctorFunc, targetType, ctorArgTypes, args);
+                return;
+            }
             bodyBuilder.callAssign(target, ctorFunc, targetType, args);
             return;
         }
@@ -729,7 +788,8 @@ public final class CBuiltinBuilder {
         return switch (expectedType) {
             case GdBoolType _ -> "true".equals(argLiteral) || "false".equals(argLiteral);
             case GdIntType _ -> isIntegerLiteral(argLiteral);
-            case GdFloatType _ -> isNumericLiteral(argLiteral) || CFloatLiteralSupport.isNonFiniteFloatLiteral(argLiteral);
+            case GdFloatType _ ->
+                    isNumericLiteral(argLiteral) || CFloatLiteralSupport.isNonFiniteFloatLiteral(argLiteral);
             case GdStringType _ -> isQuotedStringLiteral(argLiteral);
             case GdStringNameType _ -> isQuotedStringNameLiteral(argLiteral);
             case GdArrayType _ -> "[]".equals(argLiteral);

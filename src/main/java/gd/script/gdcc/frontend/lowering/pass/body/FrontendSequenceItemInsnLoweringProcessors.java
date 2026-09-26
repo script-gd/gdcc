@@ -1087,7 +1087,8 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                             session,
                             gateBlock,
                             currentCarrierSlotId
-                    )
+                    ),
+                    FrontendWritableRouteSupport.ReverseCommitRouteOrigin.MUTATING_CALL
             );
         }
 

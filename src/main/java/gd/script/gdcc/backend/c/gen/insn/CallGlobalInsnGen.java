@@ -93,6 +93,39 @@ public final class CallGlobalInsnGen implements CInsnGen<CallGlobalInsn> {
 
         var returnType = signature.returnType();
         var callVarargs = signature.isVararg() ? varargs : null;
+
+        // Utility wrappers keep the native Packed*Array ABI (e.g. `godot_var_to_bytes` returns a
+        // raw struct, `godot_compress` takes one); adapt packed positions to the Variant-backed
+        // storage. Vararg tails are Variant-only and never combine with packed.
+        var fixedParamTypes = new ArrayList<GdType>(fixedArgs.size());
+        for (var i = 0; i < fixedArgs.size(); i++) {
+            fixedParamTypes.add(signature.parameters().get(i).type());
+        }
+        if (returnType != null
+                && PackedNativeAbiCallSupport.requiresPackedAdaptation(returnType, fixedParamTypes)) {
+            if (callVarargs != null) {
+                throw bodyBuilder.invalidInsn("Utility function '" + utility.lookupName() +
+                        "' is vararg with packed ABI positions; no packed-involving utility wrapper is vararg," +
+                        " so this indicates an LIR/metadata anomaly");
+            }
+            if (returnType instanceof GdVoidType) {
+                if (instruction.resultId() != null) {
+                    throw bodyBuilder.invalidInsn("Utility function '" + utility.lookupName() +
+                            "' has no return value but resultId is provided");
+                }
+                PackedNativeAbiCallSupport.emitCall(bodyBuilder, bodyBuilder.discardRef(),
+                        utility.cFunctionName(), returnType, fixedParamTypes, fixedArgs);
+            } else {
+                var packedTarget = resolveResultTarget(bodyBuilder, instruction, utility.lookupName(), returnType);
+                PackedNativeAbiCallSupport.emitCall(bodyBuilder, packedTarget,
+                        utility.cFunctionName(), returnType, fixedParamTypes, fixedArgs);
+            }
+            for (var i = defaultTemps.size() - 1; i >= 0; i--) {
+                bodyBuilder.destroyTempVar(defaultTemps.get(i));
+            }
+            return;
+        }
+
         if (returnType == null || returnType instanceof GdVoidType) {
             if (instruction.resultId() != null) {
                 throw bodyBuilder.invalidInsn("Utility function '" + utility.lookupName() +

@@ -6,6 +6,7 @@ import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdExtensionTypeEnum;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdPackedArrayType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -49,6 +50,13 @@ public final class ExplicitCastSupport {
         }
 
         if (sameStaticType(source, target)) {
+            // Packed*Array same-family `as` is NOT an identity op: the Godot interpreter produces
+            // a COW copy with a fresh identity (probe-locked on Godot 4.5.2 for both static and
+            // Variant sources). Route it through
+            // the runtime-cast surface so the backend emits the whitelisted copy.
+            if (source instanceof GdPackedArrayType) {
+                return ExplicitCastDecision.BUILTIN_RUNTIME_CAST;
+            }
             return ExplicitCastDecision.IDENTITY;
         }
 

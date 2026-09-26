@@ -4653,6 +4653,301 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runSkipsWritebackForPackedDirectSlotSnapshotReceiverAfterMutatingCall() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_direct_slot_snapshot_writeback.gd",
+                """
+                        class_name BodyInsnDirectSlotSnapshotWriteback
+                        extends RefCounted
+
+                        func helper(value: String) -> String:
+                            return value
+
+                        func ping(part: String) -> PackedStringArray:
+                            var parr := PackedStringArray()
+                            parr.append(helper(part))
+                            return parr
+                        """,
+                Map.of(
+                        "BodyInsnDirectSlotSnapshotWriteback",
+                        "RuntimeBodyInsnDirectSlotSnapshotWriteback"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDirectSlotSnapshotWriteback",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var appendCall = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("append"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing append CallMethodInsn"));
+        var writebackAssigns = instructions.stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.resultId().equals("parr") && insn.sourceId().equals(appendCall.objectId()))
+                .toList();
+
+        // The nested-call argument still forces the temp-snapshot receiver surface, but the packed
+        // snapshot is a Variant holder copy sharing identity with `parr`, so no writeback assign
+        // may follow the call.
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(appendCall.objectId().startsWith("cfg_tmp_")),
+                () -> assertEquals(0, writebackAssigns.size())
+        );
+    }
+
+    @Test
+    void runSkipsWritebackForPackedDirectSlotSnapshotReceiverInsideForLoop() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_direct_slot_snapshot_writeback_loop.gd",
+                """
+                        class_name BodyInsnDirectSlotSnapshotWritebackLoop
+                        extends RefCounted
+
+                        func ping(parts: PackedStringArray) -> PackedStringArray:
+                            var parr := PackedStringArray()
+                            for part in parts:
+                                parr.append(str(part))
+                            return parr
+                        """,
+                Map.of(
+                        "BodyInsnDirectSlotSnapshotWritebackLoop",
+                        "RuntimeBodyInsnDirectSlotSnapshotWritebackLoop"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDirectSlotSnapshotWritebackLoop",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var appendCall = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("append"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing append CallMethodInsn"));
+        var writebackAssigns = instructions.stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.resultId().equals("parr") && insn.sourceId().equals(appendCall.objectId()))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(appendCall.objectId().startsWith("cfg_tmp_")),
+                () -> assertEquals(0, writebackAssigns.size())
+        );
+    }
+
+    @Test
+    void runKeepsAliasPublishedDirectSlotReceiverWithoutWriteback() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_direct_slot_alias_no_writeback.gd",
+                """
+                        class_name BodyInsnDirectSlotAliasNoWriteback
+                        extends RefCounted
+
+                        func ping(values: PackedInt32Array, seed: int) -> void:
+                            values.push_back(seed)
+                        """,
+                Map.of(
+                        "BodyInsnDirectSlotAliasNoWriteback",
+                        "RuntimeBodyInsnDirectSlotAliasNoWriteback"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDirectSlotAliasNoWriteback",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var pushBackCall = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("push_back"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing push_back CallMethodInsn"));
+        var writebackAssigns = instructions.stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.resultId().equals("values"))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("values", pushBackCall.objectId()),
+                () -> assertEquals(0, writebackAssigns.size())
+        );
+    }
+
+    @Test
+    void runSkipsDirectSlotWritebackForSharedArrayReceiverCall() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_direct_slot_snapshot_shared_array.gd",
+                """
+                        class_name BodyInsnDirectSlotSnapshotSharedArray
+                        extends RefCounted
+
+                        func ping(seed: int) -> Array:
+                            var arr: Array = [1]
+                            arr.append(str(seed))
+                            return arr
+                        """,
+                Map.of(
+                        "BodyInsnDirectSlotSnapshotSharedArray",
+                        "RuntimeBodyInsnDirectSlotSnapshotSharedArray"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDirectSlotSnapshotSharedArray",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var appendCall = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("append"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing append CallMethodInsn"));
+        var writebackAssigns = instructions.stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.resultId().equals("arr") && insn.sourceId().equals(appendCall.objectId()))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // Shared/reference carriers mutate the snapshot's underlying data in place, so the
+                // static writeback gate must skip the direct-slot commit step entirely.
+                () -> assertTrue(appendCall.objectId().startsWith("cfg_tmp_")),
+                () -> assertEquals(0, writebackAssigns.size())
+        );
+    }
+
+    @Test
+    void runEmitsRuntimeGatedDirectSlotWritebackForDynamicVariantReceiver() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_variant_direct_slot_writeback.gd",
+                """
+                        class_name BodyInsnDynamicVariantDirectSlotWriteback
+                        extends RefCounted
+
+                        func helper(value: Variant) -> Variant:
+                            return value
+
+                        func ping(seed: Variant) -> Variant:
+                            var payload: Variant = PackedStringArray()
+                            payload.append(helper(seed))
+                            return payload
+                        """,
+                Map.of(
+                        "BodyInsnDynamicVariantDirectSlotWriteback",
+                        "RuntimeBodyInsnDynamicVariantDirectSlotWriteback"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicVariantDirectSlotWriteback",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var appendCall = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("append"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing append CallMethodInsn"));
+        var gateCalls = instructions.stream()
+                .filter(CallGlobalInsn.class::isInstance)
+                .map(CallGlobalInsn.class::cast)
+                .filter(insn -> insn.functionName().equals("gdcc_variant_requires_writeback"))
+                .toList();
+        var gateBranches = instructions.stream()
+                .filter(GoIfInsn.class::isInstance)
+                .map(GoIfInsn.class::cast)
+                .toList();
+        var writebackAssigns = instructions.stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.resultId().equals("payload") && insn.sourceId().equals(appendCall.objectId()))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(appendCall.objectId().startsWith("cfg_tmp_")),
+                () -> assertEquals(1, gateCalls.size()),
+                () -> assertEquals(appendCall.objectId(), onlyVariableOperandId(gateCalls.getFirst().args())),
+                () -> assertEquals(1, gateBranches.size()),
+                () -> assertEquals(gateCalls.getFirst().resultId(), gateBranches.getFirst().conditionVarId()),
+                () -> assertEquals(1, writebackAssigns.size())
+        );
+        var applyBlock = requireBlock(function, gateBranches.getFirst().trueBbId());
+        var applyAssign = assertInstanceOf(AssignInsn.class, applyBlock.getNonTerminatorInstructions().getFirst());
+        var applyGoto = assertInstanceOf(GotoInsn.class, applyBlock.getTerminator());
+        var skipBlock = requireBlock(function, gateBranches.getFirst().falseBbId());
+        var skipGoto = assertInstanceOf(GotoInsn.class, skipBlock.getTerminator());
+        var skipWritebackAssigns = skipBlock.getNonTerminatorInstructions().stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(insn -> insn.resultId().equals("payload"))
+                .toList();
+        var continuationBlock = requireBlock(function, applyGoto.targetBbId());
+        // The continuation must keep threading the rest of the sequence after the gate; follow
+        // the goto chain from the continuation until the block that owns the return terminator.
+        LirBasicBlock returnBlock = continuationBlock;
+        while (returnBlock.getTerminator() instanceof GotoInsn gotoInsn) {
+            returnBlock = requireBlock(function, gotoInsn.targetBbId());
+        }
+        assertInstanceOf(ReturnInsn.class, returnBlock.getTerminator());
+        assertAll(
+                () -> assertEquals("payload", applyAssign.resultId()),
+                () -> assertEquals(appendCall.objectId(), applyAssign.sourceId()),
+                // The runtime skip branch must stay writeback-free (shared carriers mutate the
+                // snapshot's underlying data in place), and both branches must rejoin on one
+                // continuation block that keeps lowering the rest of the sequence.
+                () -> assertEquals(0, skipWritebackAssigns.size()),
+                () -> assertEquals(applyGoto.targetBbId(), skipGoto.targetBbId())
+        );
+    }
+
+    @Test
     void runWritesBackPropertyBackedValueSemanticReceiverAfterResolvedMutatingCall() throws Exception {
         var prepared = prepareContext(
                 "body_insn_property_mutating_call.gd",
@@ -4699,6 +4994,119 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertTrue(instructionIndex(instructions, propertyLoad) < instructionIndex(instructions, unpackInsn)),
                 () -> assertTrue(instructionIndex(instructions, unpackInsn) < instructionIndex(instructions, callInsn)),
                 () -> assertTrue(instructionIndex(instructions, callInsn) < instructionIndex(instructions, propertyStore))
+        );
+    }
+
+    /// 7a: a mutating call on a builtin engine property must not write the packed carrier back
+    /// — the getter returns a detached copy and the interpreter does not persist the mutation. The
+    /// explicit reassignment store (7b) is a separate leaf write and must stay.
+    @Test
+    void runSkipsWritebackForBuiltinEnginePropertyPackedReceiverMutatingCall() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_builtin_property_mutating_call.gd",
+                """
+                        class_name BodyInsnBuiltinPropertyMutatingCall
+                        extends RefCounted
+
+                        func ping() -> void:
+                            var poly := Polygon2D.new()
+                            poly.polygon = PackedVector2Array([Vector2.ZERO])
+                            poly.polygon.push_back(Vector2(1, 1))
+                        """,
+                Map.of(
+                        "BodyInsnBuiltinPropertyMutatingCall",
+                        "RuntimeBodyInsnBuiltinPropertyMutatingCall"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnBuiltinPropertyMutatingCall",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var callInsn = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .filter(insn -> insn.methodName().equals("push_back"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing push_back CallMethodInsn"));
+        var polygonStores = instructions.stream()
+                .filter(StorePropertyInsn.class::isInstance)
+                .map(StorePropertyInsn.class::cast)
+                .filter(insn -> insn.propertyName().equals("polygon"))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(
+                        1,
+                        polygonStores.size(),
+                        "only the explicit reassignment may store `polygon`; the mutating call must not write back"
+                ),
+                () -> assertTrue(
+                        instructionIndex(instructions, polygonStores.getFirst()) < instructionIndex(instructions, callInsn),
+                        "the reassignment store belongs to the statement before the mutating call"
+                )
+        );
+    }
+
+    /// Counterpart of the 7a writeback removal: subscript assignment on the same builtin
+    /// engine property persists in the interpreter (read-modify-write), so the assignment route
+    /// must keep the named-base writeback even though the mutating-call route drops it.
+    @Test
+    void runKeepsBuiltinEnginePropertySubscriptWritebackOnAssignmentRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_builtin_property_subscript_write.gd",
+                """
+                        class_name BodyInsnBuiltinPropertySubscriptWrite
+                        extends RefCounted
+
+                        func ping() -> void:
+                            var poly := Polygon2D.new()
+                            poly.polygon = PackedVector2Array([Vector2.ZERO, Vector2(3, 3)])
+                            poly.polygon[0] = Vector2(9, 9)
+                        """,
+                Map.of(
+                        "BodyInsnBuiltinPropertySubscriptWrite",
+                        "RuntimeBodyInsnBuiltinPropertySubscriptWrite"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnBuiltinPropertySubscriptWrite",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        // The engine container is not GDCC instance storage, so the named base round-trips
+        // through the Variant named route; the writeback `VariantSetNamedInsn` is the persistence
+        // point and must survive the packed writeback removal.
+        var namedWritebacks = instructions.stream()
+                .filter(VariantSetNamedInsn.class::isInstance)
+                .map(VariantSetNamedInsn.class::cast)
+                .toList();
+        var indexedStores = instructions.stream()
+                .filter(VariantSetIndexedInsn.class::isInstance)
+                .map(VariantSetIndexedInsn.class::cast)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, indexedStores.size(), "the element store itself must be emitted"),
+                () -> assertEquals(1, namedWritebacks.size(), "the mutated named base must be written back to poly.polygon"),
+                () -> assertTrue(
+                        instructionIndex(instructions, indexedStores.getFirst()) < instructionIndex(instructions, namedWritebacks.getFirst()),
+                        "the named-base writeback must follow the element store"
+                )
         );
     }
 

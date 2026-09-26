@@ -86,17 +86,25 @@ class IndexStoreInsnGenEngineTest {
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(entrySource.contains("godot_new_Variant_with_Array($arr)"), entrySource);
         assertTrue(entrySource.contains("godot_new_Variant_with_Dictionary($dict)"), entrySource);
-        assertTrue(entrySource.contains("godot_new_Variant_with_PackedInt32Array($packed)"), entrySource);
+        // Packed pack/unpack are identity-sharing Variant holder copies, and the indexed store
+        // passes the packed storage Variant directly (no pack/unpack writeback).
+        // (`packed` is a ref parameter: an already-pointer `godot_Variant*`, hence no `&`.)
+        // The unpack share branch materializes the holder copy into a carrier BEFORE destroying
+        // the old slot value (carrier-first overwrite discipline).
+        assertTrue(entrySource.contains("$packed_variant = godot_new_Variant_with_Variant($packed);"), entrySource);
+        assertTrue(entrySource.contains(" = godot_new_Variant_with_Variant(&$packed_variant);"), entrySource);
+        assertTrue(entrySource.contains("$packed_local = __gdcc_tmp_owned_move_"), entrySource);
         assertTrue(entrySource.contains("(GDExtensionInt)$idx"), entrySource);
         assertTrue(entrySource.contains("godot_new_Variant_with_int($value)"), entrySource);
         assertTrue(entrySource.contains("godot_new_Variant_with_String($key)"), entrySource);
         assertTrue(entrySource.contains("godot_new_Variant_with_String($value)"), entrySource);
         assertTrue(entrySource.contains("godot_variant_set_named("), entrySource);
-        assertTrue(entrySource.contains("godot_variant_set_indexed("), entrySource);
+        assertTrue(entrySource.contains("godot_variant_set_indexed(&$packed_local,"), entrySource);
         assertTrue(entrySource.contains("godot_variant_set("), entrySource);
         assertFalse(entrySource.contains("$arr = godot_new_Array_with_Variant("), entrySource);
         assertFalse(entrySource.contains("$dict = godot_new_Dictionary_with_Variant("), entrySource);
-        assertTrue(entrySource.contains("$packed_local = godot_new_PackedInt32Array_with_Variant(&__gdcc_tmp_idx_self_variant_"), entrySource);
+        assertFalse(entrySource.contains("godot_new_Variant_with_PackedInt32Array"), entrySource);
+        assertFalse(entrySource.contains("godot_new_PackedInt32Array_with_Variant"), entrySource);
         assertFalse(entrySource.contains("*$packed ="), entrySource);
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));

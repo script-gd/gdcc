@@ -113,9 +113,14 @@
   - 不能执行 `actual_type == NIL` 的精确比较
   - 必须允许任意 Godot `Variant` payload 进入 wrapper
   - 之后按 `godot_new_Variant_with_Variant(...)` / `godot_new_<Type>_with_Variant(...)` 路径在 wrapper 内复制出本地值
+  - `Packed*Array` 参数的存储本身即 Variant：wrapper 内是精确 family 类型检查 + `godot_new_Variant_with_Variant`
+    持有者拷贝（与调用方共享身份，callee mutation 对 GDScript 调用方可见），**不**经过
+    `godot_new_Packed*Array_with_Variant` struct 中转
 - `ptrcall` ABI 不参与这条 runtime gate 合同：
   - 它继续保持当前的物理 C ABI 形状
   - 不因为 ordinary `Variant` outward ABI 调整而改变
+  - packed ptrcall 参数/返回经 `gdcc_packed_ref.h` 白名单 (a) helper 双向物化/拷贝，身份不与调用方共享
+    （已记录的 ABI 例外，见 `gdcc_c_backend.md` "Packed*Array Variant-backed Storage"）
 - wrapper-only inbound materialization helper 不是独立校验边界：
   - `gdcc_new_Vector2_from_call_arg_variant(...)`、`gdcc_new_Vector3_from_call_arg_variant(...)`、`gdcc_new_Vector4_from_call_arg_variant(...)` 只根据已经通过 gate 的 cached runtime type 选择 exact `Vector*` unpack 或同维 `Vector*i -> Vector*` constructor materialization
   - `gdcc_new_StringName_from_call_arg_variant(...)` 与 `gdcc_new_String_from_call_arg_variant(...)` 只根据已经通过 gate 的 cached runtime type 选择 exact unpack 或 cross-case constructor materialization，并负责销毁 cross-case 中间 `String` / `StringName`
@@ -138,7 +143,8 @@
   - `Variant`
   - `Array`
   - `Dictionary`
-  - `Packed*Array`
+  - `Packed*Array`（wrapper 局部是 Variant 持有者拷贝，`destroy(&slot)` 经 destroy helper 名映射解析为
+    `godot_Variant_destroy`，释放该持有者对共享数组的引用）
   - 其他 `isDestroyable()==true` 且非 object 的 value wrapper
 - object 指针和 primitive 不属于这条 cleanup 规则：
   - object 参数/返回值在 wrapper 里只是普通指针局部

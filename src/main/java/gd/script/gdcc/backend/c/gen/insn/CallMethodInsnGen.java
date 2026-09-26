@@ -11,6 +11,7 @@ import gd.script.gdcc.lir.insn.LineNumberInsn;
 import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.type.GdccCoroStateType;
@@ -299,6 +300,48 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                 indirect != null ? indirect.vtRecv() : null);
         var fixedCount = resolved.parameters().size();
         var fixedArgs = callArgs.fixedArgs();
+        var returnTypeForDispatch = resolved.returnType();
+
+        // Builtin-class wrapper calls keep the native Packed*Array ABI (receiver base, packed
+        // parameters, packed return); adapt those positions to the Variant-backed storage here.
+        // Engine/GDCC callees already take Variant storage pointers and need no adaptation.
+        if (resolved.mode() == BackendMethodCallResolver.DispatchMode.BUILTIN) {
+            var abiParamTypes = new ArrayList<GdType>(
+                    fixedCount + (resolved.isStatic() ? 0 : 1));
+            if (!resolved.isStatic()) {
+                abiParamTypes.add(resolved.ownerType());
+            }
+            for (var param : resolved.parameters()) {
+                abiParamTypes.add(param.type());
+            }
+            if (PackedNativeAbiCallSupport.requiresPackedAdaptation(returnTypeForDispatch, abiParamTypes)) {
+                if (resolved.isVararg()) {
+                    throw bodyBuilder.invalidInsn("Builtin method '" + resolved.ownerClassName() + "." +
+                            resolved.methodName() + "' is vararg with packed ABI positions; no packed-involving" +
+                            " builtin wrapper is vararg, so this indicates an LIR/metadata anomaly");
+                }
+                if (indirect != null) {
+                    // Unreachable: vtable dispatch only exists for GDCC object callees.
+                    throw bodyBuilder.invalidInsn("Builtin method '" + resolved.ownerClassName() + "." +
+                            resolved.methodName() + "' cannot dispatch through a vtable slot");
+                }
+                if (returnTypeForDispatch instanceof GdVoidType) {
+                    if (resultId != null) {
+                        throw bodyBuilder.invalidInsn("Method '" + resolved.ownerClassName() + "." + resolved.methodName() +
+                                "' has no return value but resultId is provided");
+                    }
+                    PackedNativeAbiCallSupport.emitCall(bodyBuilder, bodyBuilder.discardRef(),
+                            resolved.cFunctionName(), returnTypeForDispatch, abiParamTypes, fixedArgs);
+                } else {
+                    var target = resolveResultTarget(bodyBuilder, resultId, resolved);
+                    PackedNativeAbiCallSupport.emitCall(bodyBuilder, target,
+                            resolved.cFunctionName(), returnTypeForDispatch, abiParamTypes, fixedArgs);
+                }
+                destroyTemporaryArgs(bodyBuilder, callArgs.temporaryArgs());
+                bodyBuilder.recordUsedEngineMethodCall(resolved);
+                return;
+            }
+        }
 
         List<CBodyBuilder.ValueRef> varargs = null;
         if (resolved.isVararg()) {
@@ -459,13 +502,13 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
             }
             fixedArgs.add(receiverArgOverride != null ? receiverArgOverride
                     : BackendPropertyAccessResolver.renderReceiverValue(
-                            bodyBuilder,
-                            receiverVar,
-                            resolved.ownerType(),
-                            insnName,
-                            "method owner",
-                            ""
-                    ));
+                    bodyBuilder,
+                    receiverVar,
+                    resolved.ownerType(),
+                    insnName,
+                    "method owner",
+                    ""
+            ));
         }
         var temporaryArgs = new ArrayList<CBodyBuilder.TempVar>(Math.max(0, fixedCount - providedCount));
 

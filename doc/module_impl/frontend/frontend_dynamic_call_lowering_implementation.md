@@ -96,11 +96,11 @@ call result type 的正式真源是 call anchor 对应的 `analysisData.expressi
   - 同一个 payload 仅负责 exact route 的 post-call reverse commit
   - direct-slot mutating receiver 会直接发布 alias-backed receiver value，因此 exact route 继续只消费 dedicated `receiverValueIdOrNull`，而不是再由 call lowering 额外解释“synthetic CFG temp -> 真实源 slot”
   - 与之对应，non-mutating / runtime-open 的 direct-slot receiver 继续停留在 ordinary temp-backed value surface；frontend 不会把 alias publication 泛化到所有 identifier/self ordinary read
-  - 这里的 direct-slot publication surface 只包含 explicit `SelfExpression` 与 `IdentifierExpression + LOCAL_VAR/PARAMETER`；`CAPTURE` 虽已进入 lambda storage 合同，但仍不在 alias publication surface 内。`receiverValueIdOrNull == null` 时由 `resolveInstanceCallReceiver(...)` fallback 到 `self` 的 implicit self receiver 仍属于 call execution fallback，不属于 alias publication
+  - 这里的 direct-slot publication surface 包含 explicit `SelfExpression` 与 `IdentifierExpression + LOCAL_VAR/PARAMETER/CAPTURE`（capture alias 绑定 lambda 自身捕获槽，见下文）。`receiverValueIdOrNull == null` 时由 `resolveInstanceCallReceiver(...)` fallback 到 `self` 的 implicit self receiver 仍属于 call execution fallback，不属于 alias publication
   - `IdentifierExpression + SELF` 不是合法的 published receiver surface：当前 analyzer 只会对 explicit `SelfExpression` 发布 `SELF`，所以 builder 与 body lowering 遇到它都必须 fail-fast，而不是再把 identifier 静默恢复成 `"self"`
   - 对 identifier-backed direct-slot alias，builder 现在额外要求：后续 arguments 必须停留在 proven no-rebinding 子集；若参数包含 nested `CallExpression` / `AttributeCallStep` 或其它当前尚未证明安全的 effect-open surface，则回退 ordinary temp snapshot，而不是继续发布 live-slot alias
   - explicit `SelfExpression` 不受这条参数分类限制，因为它的稳定性来自 `self` slot 本身不可被用户代码重绑定
-  - `CAPTURE` 当前也不参与这条 identifier-backed alias 分类：lambda/capture storage 已落地，但 capture-backed live-slot alias 仍未开放；这类 binding 若意外进入 alias path 必须直接 fail-fast
+  - `CAPTURE` 已作为 `DirectSlotAliasRootKind.CAPTURE` 放行 direct-slot alias root（alias 绑定 lambda 自身捕获槽；对 capture 名的赋值仍保持 copy-on-capture，不在 alias 范围内）
 - mutating dynamic instance route 现在也正式纳入 receiver-side writeback 合同：
   - `FrontendCallMutabilitySupport` 对 `DYNAMIC_FALLBACK + INSTANCE` 保守返回 may-mutate
   - 这条保守策略不读取“方法名是否看起来 const-like”这类弱事实；例如 `size()`、`length()` 之类
@@ -108,12 +108,14 @@ call result type 的正式真源是 call anchor 对应的 `analysisData.expressi
   - 因此 direct-slot dynamic receiver 现在与 exact mutating route 一样，可以在满足当前 alias eligibility 合同时直接发布 alias-backed receiver value，而不是退回 dead temp snapshot
   - 对 direct-slot receiver，这意味着即使 dynamic fallback 最终调用的是 const-like method，当前可观测行为仍可能是
     `CallMethodInsn.objectId = source_slot`、而不是 ordinary `cfg_tmp_*` snapshot
-  - property/subscript receiver 继续通过同一个 payload 提供 leaf provenance 与 reverse-commit step
+  - property/subscript receiver 继续通过同一个 payload 提供 leaf provenance 与 reverse-commit step；step 的发布按 route provenance 分流——packed 的内建引擎属性 mutating-call route（`ENGINE_PROPERTY_CALL`）不发布 step（引擎 getter 返回副本，写回会被错误持久化），packed 的脚本属性（`SCRIPT_PROPERTY`）/ 容器元素（`CONTAINER_ELEMENT`）route 保留 step（同身份冗余存回，无害）
   - 对 property-backed `Variant` receiver，这意味着即使 dynamic fallback 最终调用的是 const-like method，
     body lowering 当前仍会保守地产生 `gdcc_variant_requires_writeback(...) + GoIfInsn + StorePropertyInsn`
     这套 writeback scaffold；是否真的执行 writeback 只由 runtime helper 与 carrier family 决定
-- 对“显式声明为 `Variant` 的实例属性/字段值继续链式调用 mutating method”这一条路线，
-  当前行为已经冻结为 property-backed dynamic receiver writeback，而不是 plain snapshot：
+- 对“显式声明为 `Variant` 的 GDCC **脚本**实例属性/字段值继续链式调用 mutating method”这一条路线，
+  当前行为已经冻结为 property-backed dynamic receiver writeback，而不是 plain snapshot
+  （`SCRIPT_PROPERTY` provenance；内建引擎属性的 mutating-call route 已移除写回，见 §7 回归锚点与
+  `frontend_complex_writable_target_implementation.md` §7.1）：
    - 示例：
      - `self.payloads.push_back(seed)`
      - `box.payloads.push_back(seed)`
@@ -145,8 +147,9 @@ call result type 的正式真源是 call anchor 对应的 `analysisData.expressi
 - 当前 dynamic mutating call 的 post-call commit 合同固定为：
   - 先发普通 `CallMethodInsn`
   - 若 receiver route 未发布 writable payload，lowering 到此结束
-  - 若 receiver route 已发布 writable payload，则 shared support 先对静态已知 family 走 fast-path/fast-skip
-  - 仅当 current carrier 是 runtime-open `Variant` 时，body lowering 才追加 `CallGlobalInsn("gdcc_variant_requires_writeback", ...) + GoIfInsn`
+  - 若 receiver route 已发布 writable payload，则 shared support 先按 route provenance 分流（packed 的
+    `ENGINE_PROPERTY_CALL` mutating-call route 不进入写回流程），再对静态已知 family 走 fast-path/fast-skip
+  - 仅当 current carrier 是 runtime-open `Variant` 时，body lowering 才追加 `CallGlobalInsn("gdcc_variant_requires_writeback", ...) + GoIfInsn`；全部 10 个 packed kind 在该 helper 中返回 `false`
   - 后续 sequence item 必须继续附着到 `reverseCommitWithRuntimeGate(...)` 返回的 continuation block，而不是原 lexical block
 - 为承接这条 continuation-block 合同，body lowering 的 processor / registry / sequence-item 调度面也必须显式 thread 当前 block；call lowering 不得再假设“所有后续 instruction 永远继续附着在原始 sequence block 上”
 
@@ -189,6 +192,7 @@ exact route 与 dynamic route 的参数物化边界必须继续分离：
   - body lowering 不读取 exact callable signature
   - body lowering 不为参数臆造 fixed parameter type
   - 已求值的 argument slot 直接透传给 `CallMethodInsn`
+  - packed 实参的存储本身即 Variant-backed：传参即共享身份，callee 的 mutation 对调用方天然可见，不需要也不允许追加任何 snapshot/commit step
   - receiver 侧若已被 CFG 发布为 writable access-chain payload，则由独立 writable-route logic 处理，不属于 ordinary argument boundary 合同
 
 dynamic call 的 published result slot 继续固定为 `Variant`。
@@ -247,7 +251,12 @@ frontend 重新介入的位置只有两个，而且都必须受已发布事实�
   - `runStillEmitsRuntimeGatedWritebackForDynamicConstLikePropertyReceiver`
   - `runEmitsRuntimeGatedWritebackForExplicitVariantPropertyOnObjectReceiver`
   - `runFailsFastWhenSyntheticDynamicFallbackDoesNotUseInstanceReceiverRoute`
+  - `runSkipsWritebackForBuiltinEnginePropertyPackedReceiverMutatingCall`（7a：内建引擎属性 packed mutating-call 不写回）
+  - `runKeepsBuiltinEnginePropertySubscriptWritebackOnAssignmentRoute`（7c：内建引擎属性下标赋值写回保留）
   - mutating dynamic receiver route 一旦发布 writable access-chain payload，body lowering 必须整体消费该 payload，而不是重新拆分 receiver chain
+- `FrontendWritableRouteSupportTest`
+  - route-provenance 分流锚定：mutating-call gate 对 packed engine 属性跳过 / 对 packed script 属性保留 /
+    runtime-gate 路径 mutating-call 跳过 / assignment route 对同一 engine 属性 step 保留
 - `FrontendLoweringToCProjectBuilderIntegrationTest`
   - `lowerFrontendDynamicInstanceCallRoutesBuildNativeLibraryAndRunInGodot`
   - `lowerFrontendDynamicVariantReceiverWritebackBuildNativeLibraryAndRunInGodot`

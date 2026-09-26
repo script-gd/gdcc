@@ -105,6 +105,7 @@ route payload”和当前 identifier/self 的 published binding。这个 carrier
   - `PROPERTY`
   - `SUBSCRIPT`
 - `StepDescriptor`
+  - `DIRECT_SLOT`
   - `PROPERTY`
   - `SUBSCRIPT`
 
@@ -117,6 +118,7 @@ route payload”和当前 identifier/self 的 published binding。这个 carrier
 - `AttributeSubscriptStep` 的 named base 默认属于 Variant named member route：body lowering 先用 frozen receiver slot 与原始 receiver type materialize `receiver.member`，`GdObjectType` receiver 必须先 pack 成 `Variant` carrier，然后才把该 named-base `Variant` 用作 subscript effective receiver。Reverse commit 重建同一 named-base 写回形状，不能直接把 object receiver slot 传给 `VariantSetNamedInsn`。两个已实现的 typed 例外（见 `frontend_static_var_implementation.md` §4.3 / §4.5）：static property 容器经 `LoadStaticInsn`/`StoreStaticInsn` 走共享静态存储；已解析的非 static GDCC 实例 property 容器（`containerSourceType` 非 Variant）经 `LoadPropertyInsn`/`StorePropertyInsn` 走 typed 路由，key 转换与 access-kind 与裸下标一致，写回不省略（typed 路由恒定 `StorePropertyInsn` 提交整个容器，不假设原位修改对属性存储可见）。engine property 容器与 dynamic 成员不属于例外，保持 Variant named route。
 - focused tests 必须分别覆盖 `SubscriptLeaf.memberNameOrNull != null` 的 leaf read 与 `SubscriptCommitStep.memberNameOrNull != null` 的 reverse-commit 分支，避免只通过 final write 或端到端 body lowering 间接覆盖 named-base route。
 - `StaticPropertyCommitStep` 只能作为 terminal step；non-terminal static step 必须 fail-fast。
+- `DIRECT_SLOT` commit step 只允许出现在 `CallItem` payload 上，且必须同时满足：root/leaf 都是 `DIRECT_SLOT`、step 位于最外层（terminal，即 `reverseCommitSteps` 下标 0）。descriptor 本身不得携带 container / operand / member / access-kind 字段。
 
 ## 2. Assignment 与 compound assignment 合同
 
@@ -201,7 +203,8 @@ complex writable target 不引入新的 call item 或新的 call instruction。�
 
 - 二者都使用同一个 payload consumer
 - 二者都必须先发普通 `CallMethodInsn`
-- 二者都在 call 之后接 shared writable-route reverse commit
+- 二者都在 call 之后按 route provenance 决定是否接 shared writable-route reverse commit
+  （`Packed*Array` 的 `DIRECT_SLOT` / `STATIC_PROPERTY` / `ENGINE_PROPERTY_CALL` route 不发布/不写回，见 §5.1）
 
 差异：
 
@@ -219,6 +222,22 @@ runtime-gated reverse commit 可能插入 `apply / skip / continue` block，因�
 - 后续 sequence item 必须继续附着到该 returned block
 - call lowering 不得假设“所有后续 lowering 永远挂在原 lexical block 上”
 
+### 3.5 direct-slot snapshot receiver 的写回合同
+
+direct-slot mutating receiver（裸 `LOCAL_VAR` / `PARAMETER`）存在两条执行路线：
+
+- **alias 路线**：alias publication 成功，receiver value 直接绑定源 slot（`&$local` 原位修改），`reverseCommitSteps` 保持为空，禁止再补任何写回（自赋值会制造 destroy-then-copy 风险）。
+- **snapshot 路线**：alias publication 被 §4.3 的 no-rebinding 分类拒绝后，receiver 保持 ordinary temp snapshot，call 实际作用在 `cfg_tmp_*` 副本上。对 struct 值语义 carrier（`String`、`Vector*` 等），副本上的 mutation 会经 copy-on-write detach 与源 slot 隔离，因此 payload 必须追加一个 terminal `DIRECT_SLOT` commit step，在 call 之后把已变更的 temp 写回 root slot。`Packed*Array` 的 snapshot 是 Variant 持有者拷贝，与源 slot 共享数组身份，mutation 天然可见，**不再追加** commit step（`FrontendWritableTypeWritebackSupport.requiresDirectSlotSnapshotCommit(...)` 是这条 packed-only 豁免的发布门）。
+
+当前冻结为：
+
+- 该 step 由 CFG builder 在 `appendCallReceiverCommitSteps(...)` 中按“alias 未发布 + may-mutate + root/leaf 均为 `DIRECT_SLOT` + receiver 绑定为 `LOCAL_VAR` + `requiresDirectSlotSnapshotCommit(carrier)`”条件追加；body lowering 不重新推导。
+- **`DIRECT_SLOT` step 仅服务 `LOCAL_VAR` root**；`PARAMETER` / `CAPTURE` root 不发布 step。`PARAMETER` root 保持旧 snapshot 行为（LIR parameter 恒为 `ref=true` 借用指针，parameter rebinding 整体尚未支持）；其中 packed 形参的后端存储为 `godot_Variant*`，与调用方共享数组身份，mutation 经共享身份天然可见，无需任何 step。`CAPTURE` root 的 alias 绑定 lambda 自身捕获槽，capture 名不发生 rebinding，故无需 step；packed 捕获与外部变量经 Variant 持有者拷贝共享身份，mutation 双向可见。
+- 写回指令是普通 `AssignInsn(rootSlot, tempCarrier)`，共享 detach 后的底层 buffer，只有引用计数开销，无深拷贝。
+- 该 step 的发布由 `requiresDirectSlotSnapshotCommit(carrier)` 门控：仅 packed 豁免（snapshot 为 Variant 持有者拷贝，与源 slot 共享身份）；其余 family 历史上无条件发布该 step——对 `Array`/`Dictionary` 等共享 carrier 是同身份冗余自赋值，冗余无害。
+- dynamic/`Variant` receiver 复用同一 step，经 `gdcc_variant_requires_writeback(...)` runtime gate 决定是否写回。
+- **成立前提**：当前合法 GdScript 的实参求值面无法重绑定 caller 的 local slot（实参位置的 `AssignmentExpression` 已被 sema 拒绝，capture 只写副本），因此写回可以无条件执行。未来若开放任何可在实参求值期重绑定该 slot 的语法形式，必须先改为条件写回或 slot 写追踪，不得直接沿用本合同。
+
 ## 4. Direct-slot alias publication 合同
 
 ### 4.1 允许的 alias root
@@ -228,10 +247,10 @@ runtime-gated reverse commit 可能插入 `apply / skip / continue` block，因�
 - `SelfExpression`
 - `IdentifierExpression + LOCAL_VAR`
 - `IdentifierExpression + PARAMETER`
+- `IdentifierExpression + CAPTURE`
 
 以下 surface 当前明确不在 alias root 支持面：
 
-- `IdentifierExpression + CAPTURE`
 - `IdentifierExpression + SELF`
 - `receiverValueIdOrNull == null` 时由 call execution fallback 提供的 implicit self receiver
 
@@ -289,30 +308,37 @@ runtime-gated reverse commit 可能插入 `apply / skip / continue` block，因�
 - 只有已经被 builder 明确证明不会重绑定同一 direct-slot root 的参数子树，才允许 live-slot alias 穿过参数求值阶段
 - 一旦未来新增 rebinding form，若它没有进入 safe 分类，就必须默认回退 snapshot，而不是静默穿透 alias
 
+回退 snapshot 不是语义终点：被回退的 `LOCAL_VAR` receiver 必须按 §3.5 的发布门（`requiresDirectSlotSnapshotCommit`）决定是否追加 terminal `DIRECT_SLOT` commit step，否则 struct 值语义 carrier 的 mutation 会随 copy-on-write detach 静默丢失；packed snapshot 与源 slot 共享身份，无需 step。`PARAMETER` receiver 不发布 step（§3.5）；packed 形参经共享身份对调用方可见。
+
 ### 4.4 CAPTURE 的当前结论
 
-`CAPTURE` 已进入 lambda storage 合同（`construct_lambda` + capture block 拷贝），但 **capture-backed live-slot alias surface 仍未开放**，因此：
+`CAPTURE` 已进入 lambda storage 合同（`construct_lambda` + capture block 拷贝），并作为
+`DirectSlotAliasRootKind.CAPTURE` 放行 direct-slot alias root：
 
-- `CAPTURE` 不参与 alias eligibility
-- 一旦 capture-backed identifier 进入 alias path，当前实现必须 fail-fast
-- 若未来要开放 capture alias，必须先建立独立的 storage / rebinding / alias-safety 证明链
+- capture-backed identifier 的 mutating receiver 可以发布 alias，alias 绑定 lambda 自身的捕获槽
+- 对 capture 名的**赋值**仍保持 copy-on-capture（不 rebound 外层槽），不在 alias 范围内
+- packed 捕获经 Variant 持有者拷贝与外部变量共享数组身份，mutating call 的变更双向可见（与解释器一致）
 
 ## 5. writeback family 与 runtime helper 合同
 
 ### 5.1 静态 family matrix
 
-`FrontendWritableTypeWritebackSupport` 是“哪些 statically known carrier family 需要 reverse commit”的 frontend 共享真源。
+`FrontendWritableTypeWritebackSupport` 是“哪些 statically known carrier family 需要 reverse commit”的 frontend 共享真源；对 `Packed*Array` 的回答按 route provenance（`WritebackRouteProvenance`）分流，不再只按 family 二值。
 
 当前固定为：
 
-- `false`
+- `false`（与 route 无关）
   - `Array`
   - `Dictionary`
   - `Object`
   - primitive family
-- `true`
-  - value-semantic builtin family
+- `true`（与 route 无关）
+  - struct value-semantic builtin family（`String`、`Vector*`、`Color` 等）
   - `Variant`
+- `Packed*Array`（按 provenance）
+  - `false`：`DIRECT_SLOT`（local-var snapshot 共享身份）、`STATIC_PROPERTY`（静态 leaf 自持共享身份，不追加 promotion step）、`ENGINE_PROPERTY_CALL`（内建引擎属性 mutating-call，如 `poly.polygon.push_back(...)`——引擎 getter 返回副本，解释器同样不持久，见 §7.1）
+  - `true`：`SCRIPT_PROPERTY`、`CONTAINER_ELEMENT`（保留：同身份冗余存回，无害）、`GENERIC`（赋值 route，如 `poly.polygon[0] = v` 的 read-modify-write 合同，语义必需）
+- direct-slot snapshot commit 另有 per-route 谓词 `requiresDirectSlotSnapshotCommit(...)`：仅 packed 豁免，其余 family 保持历史发布行为（历史上 `DIRECT_SLOT` step 发布不经过 family 谓词，对 `Array`/`Dictionary` 等共享 carrier 也会冗余自赋值；本次只切除 packed，避免计划外行为变更）。
 
 `Variant` 在静态 helper 中返回 `true` 的含义不是“必定写回”，而是“静态阶段还不能证明该 carrier 属于 shared/reference family，需要交给 runtime helper 继续细分”。
 
@@ -330,6 +356,7 @@ runtime-gated reverse commit 可能插入 `apply / skip / continue` block，因�
   - `ARRAY`
   - `DICTIONARY`
   - `OBJECT`
+  - 全部 10 个 packed kind（`PACKED_BYTE_ARRAY` / `PACKED_INT32_ARRAY` / `PACKED_INT64_ARRAY` / `PACKED_FLOAT32_ARRAY` / `PACKED_FLOAT64_ARRAY` / `PACKED_STRING_ARRAY` / `PACKED_VECTOR2_ARRAY` / `PACKED_VECTOR3_ARRAY` / `PACKED_COLOR_ARRAY` / `PACKED_VECTOR4_ARRAY`）——Variant-backed 共享身份无需写回；`PACKED_VECTOR4_ARRAY` 必须显式列出，不得落入 default
 - 返回 `true`
   - `String`
   - `StringName`
@@ -346,8 +373,7 @@ runtime-gated reverse commit 可能插入 `apply / skip / continue` block，因�
   - `RID`
   - `Callable`
   - `Signal`
-  - `Packed*Array`
-- 对未列举 future `Variant` kind 默认返回 `true`
+- 对未列举 future `Variant` kind 默认返回 `true`（冻结合同：未知 kind 保守 true，防止新增 value-semantic family silent false-negative）
 
 ### 5.3 helper 的边界
 
@@ -399,21 +425,31 @@ backend 对 destroyable non-object slot write 已集中收口到 `CBodyBuilderAl
 
 是否需要 writeback，不能只看“当前 carrier 是不是 `Packed*Array`”。当前必须继续区分：
 
-- property route
+- 内建引擎属性 mutating-call route（`ENGINE_PROPERTY_CALL`）
   - 例如 `poly.polygon.push_back(...)`
-  - 需要 property writeback
+  - **不写回**：引擎 getter 返回副本，解释器中该 mutation 同样不持久；gdcc 严格对齐（这是有意的行为变更，旧的 property writeback 已移除）
+- 内建引擎属性赋值 route（`GENERIC` / assignment）
+  - 例如 `poly.polygon = p`、`poly.polygon[0] = v`
+  - 写回保留：read-modify-write 语义，解释器中持久
+  - 实现经 `InstancePropertyCommitStep.engineProperty` 标记 + `reverseCommitWithRuntimeGate` 的 `ReverseCommitRouteOrigin`（`MUTATING_CALL` vs `ASSIGNMENT`）分流；engine 属性的正向识别必须单向安全——script 属性永不误标为 engine（否则保留的写回合同被错误跳过），engine 属性漏识别会把 getter 副本的 mutation 错误持久化（已知分歧风险，新锚点形态必须显式分类）
+- GDCC 脚本属性 route（`SCRIPT_PROPERTY`）
+  - 例如 `self.payloads.push_back(...)`
+  - 写回保留（存回同一身份，冗余无害）
+- Array/Dictionary 元素 route（`CONTAINER_ELEMENT`）
+  - 写回保留（同身份冗余存回，冗余无害）
 - method result route
   - 例如 `curve.get_baked_points().push_back(...)`
   - 不得写回到原 receiver
-- ordinary local route
+- ordinary local route（`DIRECT_SLOT`）
   - 例如 `var pts = poly.polygon; pts.push_back(...)`
   - 只修改 local，不反向写回 property
+  - 实现上对应 §3.5 的两条路线：alias 成功时原位修改 local；alias 被拒绝走 snapshot 时，packed 的 snapshot 与源 slot 共享身份，mutation 直接可见，无需 commit step；struct 值语义 carrier 仍需把变更后的 temp 写回 local slot。二者都不产生 property store
 
 同一个 runtime family 若 provenance 不同，Godot 语义就可能不同。runtime gate 只能判断当前层 carrier family，不能替代 provenance。
 
-### 7.2 property-backed dynamic `Variant` receiver
+### 7.2 property-backed dynamic `Variant` receiver（SCRIPT_PROPERTY route）
 
-对显式 `Variant` property / field 上的 mutating receiver call，当前已经冻结为 property-backed writeback，而不是 plain snapshot。
+对显式 `Variant` 的 GDCC **脚本** property / field 上的 mutating receiver call，当前已经冻结为 property-backed writeback，而不是 plain snapshot。
 
 示例：
 
@@ -432,7 +468,7 @@ backend 对 destroyable non-object slot write 已集中收口到 `CBodyBuilderAl
 - 但 payload root 仍保留 direct-slot owner `box`
 - 因而 runtime-gated property store 最终写回 `box`
 
-这不是偶发差异，而是当前 CFG / body-lowering 的刻意分层。
+这不是偶发差异，而是当前 CFG / body-lowering 的刻意分层。注意本 route 只覆盖脚本属性；内建引擎属性的 mutating-call route 已在 §7.1 移除写回，二者不得混淆。
 
 ## 8. 长期风险与后续工程提醒
 
@@ -456,16 +492,18 @@ payload 若重新承载求值解释，或 body lowering 恢复 AST replay，就�
 
 ### 8.3 runtime helper 覆盖面风险
 
-`gdcc_variant_requires_writeback(...)` 对未列举 future `Variant` kind 的默认策略必须保持保守 `true`。若改成保守 `false`，新增 value-semantic family 会 silent false-negative。
+`gdcc_variant_requires_writeback(...)` 对未列举 future `Variant` kind 的默认策略必须保持保守 `true`。若改成保守 `false`，新增 value-semantic family 会 silent false-negative。全部 10 个 packed kind 已显式列入 `false` 组（含 `PACKED_VECTOR4_ARRAY`）；新增 packed-like kind 时不得依赖 default 分支“顺带正确”，必须显式分类。
 
 ### 8.4 性能与 code size 风险
 
 dynamic / `Variant` route 的 runtime gate 会增加分支和 block 数量。当前的开销控制手段必须保持：
 
 - 只对 runtime-open `Variant` carrier 发 gate
-- statically shared/reference carrier 直接 fast-skip
-- statically value-semantic carrier 直接 inline writeback
+- statically shared/reference carrier（`Object`/`Array`/`Dictionary`）直接 fast-skip；packed 按 §5.1 的 provenance 静态答案走 fast-skip 或 inline writeback
+- statically 仍需 commit 的 carrier 直接 inline writeback
 - 不为 exact route、shared carrier 或 ordinary read-only call 平白增加 scaffold
+
+动态 Variant 调用在缺少 const 事实时保守按 `mayMutateReceiver == true` 发射 gate，因此 runtime helper 的 `true` 分支对合法的非 mutating 调用仍会执行冗余但无害的写回（写回未被修改的 carrier），这是已接受的保守行为。
 
 ## 9. 回归测试基线
 
@@ -475,20 +513,24 @@ dynamic / `Variant` route 的 runtime gate 会增加分支和 block 数量。当
   - frozen writable-route payload shape
   - assignment payload-only final store
   - carrier-threaded reverse commit
-  - static gate 只看 current carrier type
+  - static gate 只看 current carrier type + route provenance
   - dynamic receiver runtime gate + continuation block threading
-  - direct-slot alias publication 的 happy / negative path
+  - direct-slot alias publication 的 happy / negative path（含 `CAPTURE` root 放行）
+  - direct-slot snapshot receiver 的 `DIRECT_SLOT` commit step：struct 值语义 exact 静态写回、packed 豁免（无 step）、共享 carrier 冗余 step 保留、dynamic `Variant` runtime gate 分支，以及 descriptor shape / step 位置负例
+  - packed route-provenance 分流：内建引擎属性 mutating-call 无写回（7a）、赋值 route 写回保留（7c）、脚本属性 / 容器元素 route 写回保留
   - `IdentifierExpression + SELF` fail-fast
   - assignment / call 不得重复 getter / subscript get / pack / unpack
 - backend / codegen
   - `gdcc_variant_requires_writeback(...)` helper emission
-  - value-semantic / shared family matrix
+  - value-semantic / shared family matrix（10 个 packed kind 全 `false`，含 Vector4）
   - non-object slot write `PROVEN_NO_ALIAS` / `MAY_ALIAS`
   - getter-self / setter-self backing-field fast path
 - integration
   - typed property-backed mutating receiver
   - dynamic `Variant` property-backed mutating receiver
-  - `PackedInt32Array` 与 `Array` 两条 runtime helper 路线
+  - ordinary local/parameter direct-slot snapshot receiver（含 loop + nested-call argument 场景）
+  - `PackedInt32Array`（runtime gate `false`）与 `String`（runtime gate `true`）两条 runtime helper 路线
+  - 内建引擎属性：mutating-call 不持久 / 下标赋值持久的双跑锚定
   - key/index side effect route
 
 当前代码库中已被明确用作锚点的测试类包括：
@@ -511,7 +553,7 @@ dynamic / `Variant` route 的 runtime gate 会增加分支和 block 数量。当
 - 把 writable route 提升成公共 LIR place/reference model
 - 为 dynamic call 新增专用 LIR instruction
 - 让 backend 从 call/property/index instruction 反推 frontend owner route
-- 提前把 lambda/capture surface 并入 direct-slot alias publication
+- 把 capture 名的**赋值**提升为 rebound 外层槽（copy-on-capture 保持）
 - 用阶段性计划文档继续充当长期事实源
 
 ## 工程反思

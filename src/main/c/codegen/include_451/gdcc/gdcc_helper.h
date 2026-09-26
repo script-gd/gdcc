@@ -9,6 +9,7 @@
 #include <gdcc_callable.h>
 #include <gdcc_bind.h>
 #include <gdcc_operator.h>
+#include <gdcc_packed_ref.h>
 #include <gdcc_intrinsic.h>
 #include <stdio.h>
 #include <math.h>
@@ -572,8 +573,17 @@ static inline godot_bool gdcc_is_instance_of_typed_dictionary_variant(
 /// Positive polarity is intentional and must stay aligned with the frontend writable-target facts:
 /// - false for statically shared/reference families (`Array`, `Dictionary`, `Object`) and
 ///   primitive-like scalars that do not carry value-style owner writeback
+/// - false for all ten `Packed*Array` kinds: they are Variant-backed and share the engine-side
+///   array identity with their owner slot, so the mutation is already visible and a writeback
+///   would be a redundant same-identity store. This covers runtime-gated *owner-chain* writebacks
+///   only; on mutating-call routes the frontend provenance already drops the writeback for
+///   *correctly identified* engine-property getter copies (a missed identification keeps the
+///   legacy writeback and wrongly persists the mutation, so new anchor shapes must be classified
+///   explicitly there instead of relying on this helper)
+///   (all ten kinds are listed explicitly; relying on `default` would silently mis-answer future
+///   audits)
 /// - true for value-semantic builtin families such as `String`, `Vector*`, `Color`,
-///   `Transform*`, `Callable`, `Signal`, `RID`, and `Packed*Array`
+///   `Transform*`, `Callable`, `Signal`, and `RID`
 /// - default true for unlisted future Variant kinds so newly introduced value-semantic carriers do
 ///   not silently tunnel through runtime-gated writeback as a false negative
 static godot_bool gdcc_variant_requires_writeback(const godot_Variant *value) {
@@ -588,6 +598,16 @@ static godot_bool gdcc_variant_requires_writeback(const godot_Variant *value) {
     case GDEXTENSION_VARIANT_TYPE_ARRAY:
     case GDEXTENSION_VARIANT_TYPE_DICTIONARY:
     case GDEXTENSION_VARIANT_TYPE_OBJECT:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY:
+    case GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY:
         return false;
     case GDEXTENSION_VARIANT_TYPE_STRING:
     case GDEXTENSION_VARIANT_TYPE_VECTOR2:
@@ -611,15 +631,6 @@ static godot_bool gdcc_variant_requires_writeback(const godot_Variant *value) {
     case GDEXTENSION_VARIANT_TYPE_RID:
     case GDEXTENSION_VARIANT_TYPE_CALLABLE:
     case GDEXTENSION_VARIANT_TYPE_SIGNAL:
-    case GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY:
-    case GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY:
-    case GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY:
-    case GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY:
-    case GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY:
-    case GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY:
-    case GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY:
-    case GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY:
-    case GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY:
         return true;
     default:
         return true;

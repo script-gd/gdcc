@@ -357,6 +357,7 @@ public record FrontendCfgGraph(
                         }
                     }
                     validateStaticWritableRouteTerminalContract(payload, nodeId);
+                    validateDirectSlotCommitStepContract(item, payload, nodeId);
                 }
                 if (item instanceof ValueOpItem valueOpItem && valueOpItem.resultValueIdOrNull() != null) {
                     locallyPublishedValueIds.add(valueOpItem.resultValueIdOrNull());
@@ -406,6 +407,45 @@ public record FrontendCfgGraph(
                         "Frontend CFG writable route in sequence '"
                                 + nodeId
                                 + "' contains a non-terminal static property commit step"
+                );
+            }
+        }
+    }
+
+    /// A `DIRECT_SLOT` commit step only exists for mutating calls whose bare direct-slot receiver
+    /// stayed on the ordinary temp snapshot surface (alias publication rejected). It is therefore
+    /// legal only on `CallItem` payloads rooted at `DIRECT_SLOT` with a `DIRECT_SLOT` leaf, and it
+    /// must stay the outermost (terminal) step because a direct slot owns no outer owner chain.
+    private static void validateDirectSlotCommitStepContract(
+            @NotNull SequenceItem item,
+            @NotNull FrontendWritableRoutePayload payload,
+            @NotNull String nodeId
+    ) {
+        for (var index = 0; index < payload.reverseCommitSteps().size(); index++) {
+            var step = payload.reverseCommitSteps().get(index);
+            if (step.kind() != FrontendWritableRoutePayload.StepKind.DIRECT_SLOT) {
+                continue;
+            }
+            if (!(item instanceof CallItem)) {
+                throw new IllegalArgumentException(
+                        "Frontend CFG writable route in sequence '"
+                                + nodeId
+                                + "' must only carry a DIRECT_SLOT commit step on call payloads"
+                );
+            }
+            if (payload.root().kind() != FrontendWritableRoutePayload.RootKind.DIRECT_SLOT
+                    || payload.leaf().kind() != FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT) {
+                throw new IllegalArgumentException(
+                        "Frontend CFG writable route in sequence '"
+                                + nodeId
+                                + "' must root a DIRECT_SLOT commit step at a DIRECT_SLOT root/leaf pair"
+                );
+            }
+            if (index != 0) {
+                throw new IllegalArgumentException(
+                        "Frontend CFG writable route in sequence '"
+                                + nodeId
+                                + "' must keep a DIRECT_SLOT commit step terminal (outermost)"
                 );
             }
         }

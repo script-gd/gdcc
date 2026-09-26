@@ -96,6 +96,16 @@
   - "Can this type be used as the `self` operand of a particular `variant_set_*` codegen path?"
 - Therefore backend generators such as `IndexStoreInsnGen` are not the truth source of this rule. They may consume or mirror it locally, but they must not define it.
 
+Receiver families split into two storage categories:
+
+- value-semantic families (by-value struct storage):
+  - primitive family
+  - instance-call-capable builtin value families: `String`, `StringName`, `NodePath`, `Color`, `Vector*`, `Basis`, `Transform*`, `Quaternion`, `Rect*`, `Plane`, `AABB`, `Projection`, `Callable`, `Signal`, `RID`
+- shared/reference families (mutation travels through the shared identity of the carrier itself, so outer-owner writeback is not the semantic carrier):
+  - `Object` family
+  - `Array`, `Dictionary`
+  - all 10 `Packed*Array` families: they store as `godot_Variant` in generated C, sharing the engine-side `PackedArrayRef` with every alias (Variant-backed reference semantics, aligned with the Godot 4.5 interpreter)
+
 The current shared rule is:
 
 - does not require writeback:
@@ -103,7 +113,8 @@ The current shared rule is:
   - `Object` family
   - shared/reference container family (`Array`, `Dictionary`)
 - requires writeback:
-  - other instance-call-capable value-semantic builtin families, including packed arrays
+  - instance-call-capable value-semantic builtin families (`String`, `Vector*`, `Color`, etc.)
+- `Packed*Array`: decided per route provenance, not per family (see the matrix below)
 
 The intended interpretation is:
 
@@ -113,20 +124,38 @@ The intended interpretation is:
   - mutation happens through reference identity, so outer-owner writeback is not the semantic carrier
 - shared/reference container family:
   - `Array` / `Dictionary` ownership is not modeled as "mutate leaf then commit into owner" in the same way as value-semantic builtin structs
-- value-semantic builtin families such as `String`, `StringName`, `NodePath`, `Color`, `Vector*`, `Basis`, `Transform*`, `Quaternion`, `Rect*`, `Plane`, `AABB`, `Projection`, `Callable`, `Signal`, `RID`, `Packed*Array`:
+- value-semantic builtin families such as `String`, `StringName`, `NodePath`, `Color`, `Vector*`, `Basis`, `Transform*`, `Quaternion`, `Rect*`, `Plane`, `AABB`, `Projection`, `Callable`, `Signal`, `RID`:
   - if a mutating call targets a leaf reached through property/subscript/nested access, the leaf may need reverse writeback to preserve Godot-observable behavior
+- `Packed*Array` (Variant-backed shared identity):
+  - family membership alone does not decide writeback; the answer depends on the route provenance
+    (`FrontendWritableTypeWritebackSupport.WritebackRouteProvenance`):
+
+| route provenance | packed answer | rationale |
+|---|---|---|
+| `DIRECT_SLOT` (local-var snapshot) | `false` | the snapshot is a Variant holder copy sharing identity; mutation is visible without a commit step |
+| `STATIC_PROPERTY` (bare static leaf) | `false` | the static slot stores the shared Variant holder itself; no promotion step is appended |
+| `ENGINE_PROPERTY_CALL` (mutating call on a builtin engine property, e.g. `poly.polygon.push_back(...)`) | `false` | the engine getter returns a copy, so the Godot interpreter does not persist the mutation either; gdcc must match it |
+| `SCRIPT_PROPERTY` | `true` | kept: a redundant same-identity store-back, harmless |
+| `CONTAINER_ELEMENT` | `true` | kept: a redundant same-identity store-back, harmless |
+| `GENERIC` (assignment routes, e.g. `poly.polygon[0] = v`, `poly.polygon = p`) | `true` | read-modify-write assignment contract: the engine setter must receive the updated array |
+
+- Assignment (`=`) routes always consult the `GENERIC` provenance regardless of the call-route split above.
+- Direct-slot snapshot commit has a dedicated gate, `FrontendWritableTypeWritebackSupport.requiresDirectSlotSnapshotCommit(...)`,
+  which exempts only packed carriers; other families keep the historical publication behavior.
 
 For static typing:
 
 - frontend/shared semantic should answer this rule from `GdType` family information and published semantic facts
-- public code anchor: `FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(...)`
+- public code anchors: `FrontendWritableTypeWritebackSupport.requiresReverseCommitForCarrierType(...)` (route-provenance aware) and `requiresDirectSlotSnapshotCommit(...)`
 - frontend writable-route lowering should first use the static shortcut:
-  - statically known shared/reference families skip the current writeback layer directly
+  - statically known shared/reference families (`Object`, `Array`, `Dictionary`) skip the current writeback layer directly
+  - `Packed*Array` does NOT use the family shortcut: its answer always comes from the route-provenance matrix above (`false` for `DIRECT_SLOT`/`STATIC_PROPERTY`/`ENGINE_PROPERTY_CALL`, `true` for `SCRIPT_PROPERTY`/`CONTAINER_ELEMENT`/`GENERIC`)
   - statically known value-semantic families apply the current layer directly
 - dynamic/`Variant` receiver routes are the only remaining runtime-open branch, so they must defer to the runtime helper `gdcc_variant_requires_writeback(...)`
 - the helper contract is currently frozen as:
   - returns `false` for `NIL`, `BOOL`, `INT`, `FLOAT`, `ARRAY`, `DICTIONARY`, `OBJECT`
-  - returns `true` for `String`, `StringName`, `NodePath`, `Vector*`, `Rect*`, `Plane`, `Quaternion`, `AABB`, `Basis`, `Transform*`, `Projection`, `Color`, `RID`, `Callable`, `Signal`, `Packed*Array`
+  - returns `false` for all 10 packed kinds: `PACKED_BYTE_ARRAY`, `PACKED_INT32_ARRAY`, `PACKED_INT64_ARRAY`, `PACKED_FLOAT32_ARRAY`, `PACKED_FLOAT64_ARRAY`, `PACKED_STRING_ARRAY`, `PACKED_VECTOR2_ARRAY`, `PACKED_VECTOR3_ARRAY`, `PACKED_COLOR_ARRAY`, `PACKED_VECTOR4_ARRAY`
+  - returns `true` for `String`, `StringName`, `NodePath`, `Vector*`, `Rect*`, `Plane`, `Quaternion`, `AABB`, `Basis`, `Transform*`, `Projection`, `Color`, `RID`, `Callable`, `Signal`
   - returns `true` by default for unlisted future `Variant` kinds, so a newly introduced value-semantic carrier cannot silently tunnel through runtime-gated writeback as a false negative
 
 If this matrix changes, the following fact sources must be updated together:

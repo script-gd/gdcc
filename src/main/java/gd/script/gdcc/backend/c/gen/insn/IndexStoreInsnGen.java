@@ -277,6 +277,13 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
         if (selfVar.type() instanceof GdVariantType) {
             return new SelfOperand(bodyBuilder.valueOfVar(selfVar), null, false);
         }
+        // Packed*Array storage IS a Variant:
+        // pass the storage slot directly to the Variant indexed/named setter, which mutates the
+        // shared array in place through the Variant's internal reference. No pack/call/unpack
+        // writeback is emitted, and `ref` self (a borrowed Variant* parameter) is equally legal.
+        if (selfVar.type() instanceof GdPackedArrayType) {
+            return new SelfOperand(bodyBuilder.valueOfVar(selfVar), null, false);
+        }
         var selfStrategy = resolveSelfStrategy(bodyBuilder, selfVar, selfMode);
         // Coroutine frame parameters are writable owning storage (their `ref` flag only
         // describes the borrowed thunk boundary), so the writeback path below is legal there.
@@ -365,9 +372,10 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
     }
 
     private boolean isIndexedValueSemanticSelfType(@NotNull GdType type) {
+        // Packed*Array is intentionally absent: it left the value-semantic self family when its
+        // storage became Variant-backed; `materializeSelfOperand` passes it directly.
         return type instanceof GdStringType ||
-                type instanceof GdVectorType ||
-                type instanceof GdPackedArrayType;
+                type instanceof GdVectorType;
     }
 
     private void emitFailureReturn(@NotNull CBodyBuilder bodyBuilder,

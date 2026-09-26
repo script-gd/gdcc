@@ -48,6 +48,11 @@
     - 这个 carrier 被 slot consume 后不会再进入普通 temp destroy 路径
 - 这条约束的核心不是“总要造 temp”，而是“不允许生成 `copy temp -> 裸 = 写槽 -> destroy temp`”。
   后者只有浅层 struct 赋值，销毁 temp 会提前释放 slot 刚接管的底层状态。
+- `Packed*Array` 槽位是上述模型的 Variant-backed 形态：copy helper 解析为
+  `godot_new_Variant_with_Variant`（持有者拷贝，共享引擎侧 `PackedArrayRef` 身份），destroy 解析为
+  `godot_Variant_destroy`；stable-carrier 保守路径保留（Variant 拷贝 carrier 在持有者语义下依然正确，
+  且 String/Vector 等 struct 槽仍依赖该路径）。生成代码不得再出现白名单
+  `gdcc_packed_ref.h` helper 之外的 packed struct<->Variant 转换符号。
 - `markTargetInitialized(...)` 与 temp 生命周期仍由调用方控制（未内聚到槽位写入 helper）。
 - constructor-time property initializer apply 当前通过 `CCodegen#generatePropertyInitApplyBody(...)` 调用 direct backing-field helper：
   - `${Class}_class_apply_property_init_<property>(self)`
@@ -155,7 +160,9 @@
   - owned source -> `_return_val` consume
 - 当返回值来自普通本地 owning object slot 时，Builder 会把该 slot move 到 `_return_val` 并清空源槽，避免 `__finally__` auto-destruction 释放已发布的返回对象。
   parameter、`ref` alias、capture，以及 field/property 这类非 slot expression 不参与 move-return，而是继续走 `_return_val` retain。
-- 非对象返回槽目前保持 direct assignment（不走 `emitNonObjectSlotWrite`）。
+- 非对象返回槽目前保持 direct assignment（不走 `emitNonObjectSlotWrite`）；其中 packed 返回槽的写入经
+  Variant 持有者拷贝完成（copy helper 名映射为 `godot_new_Variant_with_Variant`），builtin 方法产生的
+  packed 原生临时 struct 先经 `wrap_temp` 落入 Variant 槽再参与返回流转。
 - `_return_val` 不属于变量表 auto-cleanup 集合；它是 return publish 边界，而不是普通 local slot。
 - `CCodegen` 的 `__finally__` auto-destruction 目前只覆盖：
   - value-semantic destroyable locals
@@ -196,9 +203,11 @@
 
 - 现状：setter-self 分支已收敛到 `assignVar(targetOfExpr(...), valueOfVar(...))`，
   通过 Builder 统一槽位写入语义处理生命周期和指针转换。
-- 对 value-semantic backing field，这条路径现在固定生成
+- 对 value-semantic backing field（不含 packed），这条路径现在固定生成
   `self->field = godot_new_<Type>_with_<Type>(source_ptr)`，
   不再残留“copy temp 写槽后再 destroy temp”的生命周期泄漏形状。
+- packed backing field 是 Variant 槽：写入解析为 `godot_new_Variant_with_Variant` 持有者拷贝 +
+  `godot_Variant_destroy`，不经过任何 packed struct 转换符号。
 - 收敛收益：
   - 不再需要在生成器里手工拼接 own/release。
   - 对象写槽顺序与 `assignVar` / `callAssign` / `_return_val` 保持一致。

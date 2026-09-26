@@ -80,6 +80,10 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
         return;
     }
     gdcc_init();
+    <#-- Resolve the per-family packed internal-pointer getters once for this module's TU before -->
+    <#-- any generated code can call them (gdcc_packed_ref.h init contract; fail-fast on engines -->
+    <#-- without variant_get_ptr_internal_getter). -->
+    gdcc_packed_ref_init();
     <#if helper.hasCoroutineFunctions()>
     gdcc_coro_set_hot_reload_active(gdcc_is_editor_hint());
     </#if>
