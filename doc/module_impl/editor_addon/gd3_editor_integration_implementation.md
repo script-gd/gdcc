@@ -15,6 +15,9 @@
   **Phase 6–8 已规划、尚未实施**（2026-09-27 手动测试驱动新增，含评审复核）；
   **Phase 9（原 Phase 5 打磨）尚未实施**；已经过多轮并行评审并修订）
 - 更新日期：2026-09-27
+- 2026-09-27 修订：`launch_bad` 引擎测试断言接受平台分叉的两种 launcher 失败报告
+  （Windows 同步 `OS.create_process failed` / Unix-like fork 成功后子进程 execvp
+  失败早退，见 §3.7），修复 Linux/macOS CI。
 - Phase 0 验收结果（2026-09-23）：P0-A/B/C 全绿（`EditorAddonIntegrationProbeTest`
   3/3 通过，无跳过）。`_init` 语义与 typed array 返回的探针结论已回填 §3.2/§2.3。
   探针暴露并已修复两个 gdcc 后端缺陷（阻塞级，修复侧已含回归测试）：
@@ -50,8 +53,10 @@
   - `EditorAddonScriptLanguageEngineTest` 4/4 通过（无跳过）：`language`（语言注册、
     加载/保存/重读/worker 线程加载往返、`_validate` valid、禁用/启用循环中语言实例
     同一性）；`launch`（冷启动自动拉起 `gdcc serve`、ping 通过、禁用插件后进程退出）；
-    `launch_bad`（不存在可执行文件：报错不崩溃）；`launch_none`（无命令无服务：
-    被动失败，不拉起）。
+    `launch_bad`（不存在可执行文件：报错不崩溃；报错行随平台分叉——Windows 同步
+    `OS.create_process failed`，Unix-like 为 fork 成功、子进程 execvp 失败（引擎输出
+    `Could not create child process`）后 launcher 报 `exited before accepting
+    connections`，见 §3.7）；`launch_none`（无命令无服务：被动失败，不拉起）。
   - 既有回归：`EditorAddonIntegrationProbeTest` 3/3、`EditorAddonBootstrapEngineTest`
     1/1（多源编译后仍绿）、`EditorAddonClientAnalysisTest` 与 RPC 全套无回归。
 - Phase 1 实现偏差（相对下文设计，均已按"事实源维护"口径回填）：
@@ -932,7 +937,12 @@ Godot 编辑器
   `OS.create_process(path: String, arguments: PackedStringArray, open_console: bool
   = false) -> int`（返回 PID，失败为负值）；`OS.kill(pid: int) -> Error`；
   `OS.is_process_running(pid: int) -> bool`；`OS.get_process_exit_code(pid) -> int`。
-  另有阻塞型 `OS.execute`，本功能禁用（主线程阻塞）。
+  另有阻塞型 `OS.execute`，本功能禁用（主线程阻塞）。注意 `OS.create_process` 的
+  失败时点随平台分叉（`os_windows.cpp` / `os_unix.cpp`）：Windows 的 CreateProcessW
+  同步拒绝不存在的可执行文件，返回负值；Unix-like 先 fork 成功返回正 PID，可执行
+  文件不存在要等子进程 execvp() 才暴露——引擎在子进程里打印 `Could not create
+  child process` 并 `raise(SIGKILL)`，父进程随后由 `OS.is_process_running` 的
+  waitpid 轮询观察到早退。
 - 服务端无 PID 文件/单实例锁/多实例发现协议；同端口重复绑定会失败，不同端口可并存。
   拉起前必须先探测目标端口，避免重复拉起或抢占外部实例（§3.7 所有权规则）。
 
@@ -1214,13 +1224,17 @@ dock 在 gdcc 语言注册之前就依赖它（§1.1）。形态为 `Node`，由
      回调 `OK, false`（**外部服务**，本会话绝不关闭它）。
   2. 拒绝连接且启动命令为空 → 回调 `ERR_CANT_CONNECT`（现状行为不变）。
   3. 本会话已为目标端点拉起过且 `OS.is_process_running(pid)` → 直接进入等待就绪。
-     否则按模板 `OS.create_process(exe, args)`：返回值 ≤ 0 → 回调 `ERR_CANT_FORK`；
-     成功则记录 `_spawned_pid` 与端点，回调排队期间的其他调用者共享同一单飞操作。
+     否则按模板 `OS.create_process(exe, args)`：返回值 ≤ 0 → 回调 `ERR_CANT_FORK`
+     （Windows 同步失败路径：CreateProcessW 直接拒绝不存在的可执行文件）；成功则把
+     `{pid, host, port}` 记录追加进 `_spawned` 列表（按端点追踪本会话拉起的每个进程），
+     回调排队期间的其他调用者共享同一单飞操作。
   4. 等待就绪：周期性重新探测端口，最长 15s；超时且进程仍存活 → `OS.kill` 回收
      本次拉起并回调 `ERR_TIMEOUT`；进程已早退 → 回调 `ERR_CANT_CONNECT` 并在日志
-     给出检查启动命令的提示。
-- `shutdown_owned() -> void`（plugin `_exit_tree` 最后一步，§4.1）：仅当
-  `_spawned_pid > 0` 且 `OS.is_process_running` 时执行。这是 §1.2 主线程阻塞禁令的
+     给出检查启动命令的提示（Unix-like 的不存在可执行文件路径落在这里：fork 已
+     成功，子进程 execvp() 失败，引擎打印 `Could not create child process` 并
+     SIGKILL 子进程，`is_process_running` 的下次轮询观察到早退）。
+- `shutdown_owned() -> void`（plugin `_exit_tree` 最后一步，§4.1）：逐条处理 `_spawned`
+  中的记录，仅当记录的 `pid > 0` 且 `OS.is_process_running` 时执行。这是 §1.2 主线程阻塞禁令的
   **唯一豁免**：`_exit_tree` 期间帧泵可能不再运行，必须用非阻塞 `poll()` +
   `Time.get_ticks_msec()` 截止的有界循环（≤2s），禁用 `_process` 等待与
   `OS.delay_msec`。流程：一次性发送 `server.shutdown` RPC——**收到响应即完成**
@@ -1497,8 +1511,11 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
   zig 启动器 `gdcc serve` 形式不同，见文档状态节偏差 3）——冷启动无服务时 dock
   连接经自动拉起最终成功（`ping` 通过）；
   随后禁用插件，断言被拉起的进程退出（端口关闭/`is_process_running == false`）。
-  负例：启动命令指向不存在的可执行文件 → 状态行报错且不崩溃；启动命令留空且无
-  服务 → 维持现状 fail-fast 报错（回归既有行为）。
+  负例：启动命令指向不存在的可执行文件 → 状态行报错且不崩溃（launcher 的具体报错行
+  随平台分叉，见 §3.7：Windows 同步报 `OS.create_process failed`；Unix-like 报
+  `exited before accepting connections`，引擎另输出 `Could not create child
+  process`；两种报告均被测试接受，且都必须保持端口未监听、编辑器存活）；启动命令
+  留空且无服务 → 维持现状 fail-fast 报错（回归既有行为）。
 - 禁用/启用循环（引擎测试或手动）：禁用插件（不关 `.gd3` 页签）→ 在页签中继续
   编辑触发校验，无崩溃无报错（UNINSTALLED 早退）→ 重新启用 → 断言旧页签的
   `script.get_language()` 与当前注册语言为**同一实例**，校验恢复工作。

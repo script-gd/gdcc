@@ -206,6 +206,9 @@ func _enter_ready_phase(head: Dictionary) -> void:
 
 func _poll_ready_phase(head: Dictionary, now: int) -> void:
     var pid := int(head["pid"])
+    # The Unix-like missing-executable path lands here: fork() already succeeded in `_spawn`,
+    # the child then failed execvp() (the engine printed "Could not create child process" and
+    # SIGKILLed it), and `is_process_running` reaps the dead child on a poll.
     if pid > 0 and not OS.is_process_running(pid):
         printerr("GDCC server launcher: spawned compile service (pid %d) exited before accepting connections; check the launch command." % pid)
         _remove_spawned(pid)
@@ -263,9 +266,13 @@ func _set_flight_busy(busy: bool) -> void:
 
 
 ## Returns `[err, pid]`: err == OK with the spawned pid, or the concrete failure (an empty
-## command text is a configuration error, not a fork failure). The ownership record is kept
-## per endpoint so a session that serves several endpoints still shuts every spawned process
-## down.
+## command text is a configuration error, not a fork failure). A nonexistent executable is
+## platform-dependent (Godot 4.5): Windows fails `OS.create_process` synchronously
+## (CreateProcessW → pid <= 0 → ERR_CANT_FORK here), while on Unix-likes fork() succeeds and
+## the child fails only at execvp() — the engine prints "Could not create child process" and
+## SIGKILLs it — so that case surfaces later in `_poll_ready_phase` as an early exit
+## (ERR_CANT_CONNECT). The ownership record is kept per endpoint so a session that serves
+## several endpoints still shuts every spawned process down.
 func _spawn(command_template: String, host: String, port: int) -> Array:
     var command := command_template.replace("{host}", host).replace("{port}", str(port))
     var tokens := _tokenize_command(command)

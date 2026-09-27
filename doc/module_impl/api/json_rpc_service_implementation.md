@@ -709,8 +709,6 @@ fixture，列入 §7 后续工作。
   `gdcc serve`——测试用 `java -cp <测试 classpath> gd.script.gdcc.Main serve` 而非
   预构建 jar 以保持自包含——dock 连接成功，禁用插件后被拉起的进程退出）；
   `launch_bad`（不存在的可执行文件：launcher 输出 `GDCC server launcher: ...`
-  错误行且编辑器不崩溃）；`launch_none`（无启动命令且无服务：维持被动失败，
-  不拉起任何进程）。
 - 引擎自举（zig + Godot 门控）：`EditorAddonBootstrapEngineTest` —— 端到端自举
   证明：
   1. 通过公开 `API`（`gdcc_rpc_client.gd3` 以 `.gd3` 虚拟路径写入模块 VFS +

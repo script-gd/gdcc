@@ -46,7 +46,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 ///   launch command (placeholders substituted by the launcher); disabling the plugin then
 ///   gracefully stops exactly that owned process (port closes).
 /// - `launch_bad`: a launch command pointing at a nonexistent executable reports the error
-///   and never crashes the editor (negative path).
+///   and never crashes the editor (negative path). The failure report is platform-dependent
+///   (Godot 4.5 `OS.create_process`): on Windows CreateProcessW rejects the executable
+///   synchronously, the binding returns -1 and the launcher prints "OS.create_process
+///   failed"; on Unix-likes fork() already succeeded, the child only fails at execvp()
+///   (the engine prints "Could not create child process" and SIGKILLs it), so the launcher
+///   instead reports the spawned process's early exit. Both paths are accepted; "no service
+///   listening" and "editor alive" stay mandatory via the driver's step sequence.
 /// - `launch_none`: no launch command and no service keeps the historical passive behavior —
 ///   connection fails, nothing is spawned (negative path).
 ///
@@ -487,7 +493,11 @@ class EditorAddonScriptLanguageEngineTest {
                 EditorInterface.set_plugin_enabled("gdcc", true)
                 _step("relaunched", true)
                 # Give the launcher a moment to attempt the spawn and report the failure; the
-                # launcher's own log line is asserted from the Java side.
+                # launcher's own log line is asserted from the Java side. Which line appears
+                # is platform-dependent: Windows refuses the spawn synchronously
+                # ("OS.create_process failed"), while on Unix-likes fork() succeeds and the
+                # child dies in execvp() (engine: "Could not create child process"), so the
+                # launcher reports the early exit ("exited before accepting connections").
                 await get_tree().create_timer(3.0).timeout
                 var open := await _port_open("127.0.0.1", port)
                 _step("no_server_started", not open)
@@ -1937,13 +1947,23 @@ class EditorAddonScriptLanguageEngineTest {
         runCase("launch", config);
     }
 
+    /// A nonexistent launch executable must be reported without crashing the editor. The
+    /// report is platform-dependent (Godot 4.5 `OS.create_process`): on Windows
+    /// CreateProcessW fails synchronously, the binding returns -1 and the launcher prints
+    /// "OS.create_process failed"; on Unix-likes fork() succeeds and the missing program
+    /// only fails at the child's execvp() (engine: "Could not create child process"), so the
+    /// launcher instead reports that the spawned process "exited before accepting
+    /// connections". Either launcher report satisfies the assertion; "no service listening"
+    /// and "editor alive" remain enforced by the driver's step sequence.
     @Test
     void launcherReportsMissingExecutableWithoutCrashing() throws Exception {
         var config = new JsonObject();
         config.addProperty("port", findFreePort());
         config.addProperty("launch_command", "gdcc-definitely-missing-binary-xyz serve --port {port}");
         var output = runCase("launch_bad", config);
-        assertTrue(output.contains("GDCC server launcher") && output.contains("OS.create_process failed"),
+        var spawnRefused = output.contains("OS.create_process failed");
+        var childExitedEarly = output.contains("exited before accepting connections");
+        assertTrue(output.contains("GDCC server launcher") && (spawnRefused || childExitedEarly),
                 () -> "expected the launcher's spawn-failure report in the editor output:\n" + output);
     }
 
