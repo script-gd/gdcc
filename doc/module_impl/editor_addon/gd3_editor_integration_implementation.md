@@ -11,9 +11,9 @@
 
 - 状态：实施计划（Phase 0 已实施并通过验收；**Phase 1 已实施并通过验收**；
   **Phase 2 已实施并通过自动化验收**；**Phase 3 已实施并通过自动化验收**；
-  **Phase 4 已实施并通过自动化验收**；**Phase 5–8 已规划、尚未实施**
-  （2026-09-27 手动测试驱动新增，含评审复核）；**Phase 9（原 Phase 5 打磨）尚未
-  实施**；已经过多轮并行评审并修订）
+  **Phase 4 已实施并通过自动化验收**；**Phase 5 已实施并通过自动化验收**；
+  **Phase 6–8 已规划、尚未实施**（2026-09-27 手动测试驱动新增，含评审复核）；
+  **Phase 9（原 Phase 5 打磨）尚未实施**；已经过多轮并行评审并修订）
 - 更新日期：2026-09-27
 - Phase 0 验收结果（2026-09-23）：P0-A/B/C 全绿（`EditorAddonIntegrationProbeTest`
   3/3 通过，无跳过）。`_init` 语义与 typed array 返回的探针结论已回填 §3.2/§2.3。
@@ -69,7 +69,8 @@
   2. dock 的 host/port 输入持久化到 EditorSettings `gdcc/server/host|port`（计划只
      写了启动命令一项）：拉起用例必须把端点导向测试空闲端口，否则会收养/碰撞开发机
      6099 上的真实服务；顺带修正"每次重启编辑器重输端口"的体验缺口。服务的诊断
-     RPC 端点仍固定 127.0.0.1:6099，不与 dock 联动（§3.6 不变）。
+     RPC 端点仍固定 127.0.0.1:6099，不与 dock 联动（~~§3.6 不变~~ **已由 Phase 5 取代**：
+     install 与 dock 同源读 `gdcc/server/host|port`，见 Phase 5 验收记录）。
   3. 引擎 harness 落地细节：headless 编辑器 + 注入 `addons/gdcc_test_driver` 驱动插件
      （`plugin.cfg` + `driver_plugin.gd`，不随插件发布）；子进程配置目录经
      `APPDATA`/`XDG_CONFIG_HOME`/`HOME` 重定向隔离，EditorSettings 写入不污染真实
@@ -278,8 +279,9 @@
         `rename_reconciles` 补服务端旧路径 `readFile` -32005；`recovered_after_hook`
         补恢复后的完整分析轮证据。
   - 保留（自愈/自限，修复需较大异步改造，已评估暂不做）：
-    1. 端点重定向会把已创建模块遗弃在旧服务器上：模块是纯内存态，随旧服务进程退出
-       消亡；修复需要在 install 内做跨端点异步拆除，收益/复杂度不划算。
+    1. ~~端点重定向遗弃旧服务器模块~~ **已由 Phase 5 覆盖**（`retarget_rpc_endpoint`
+       前经一次性旧端点客户端串行队列删除，见 Phase 5 验收记录）；残余：编辑器在
+       清理在途时退出会留下旧端点模块（纯内存态，随旧服务进程退出消亡）。
     2. 迟到的 ensure-hook 回调可影响替换会话的重试计时：影响仅为一次提前/推迟的
        ping，下一次心跳自愈。
     3. `busy_drained` 只观测服务侧信号而非协调器对 `OS.low_processor_usage_mode` 的
@@ -449,6 +451,106 @@
     （Stage C）——见 §7 Phase 9 前的"暂缓项与已否决方案"。
   - 已否决（评审复核，证据链见 §7 Phase 7 背景）：显示端过滤伪错误；全项目
     `class_name` 合成改名。
+- Phase 5 验收结果（2026-09-27，自动化项全绿，手动项待 §8.3）：
+  - 实施三项：① scheduler 合并点以"写入前缓存未服务该版本"记录 newly-readable（同
+    诊断但版本前进亦计入），service 帧泵 `_pump_revalidation` 按"当前页签 + registry
+    版本 + 缓冲区文本逐字一致"门禁后发射**自有**信号 `revalidation_requested(path)`，
+    由解释型 `plugin.gd` 经 `call_deferred` 跳出泵栈、再对当前页签 CodeTextEditor 发射
+    `validate_script`（弹窗期间暂缓、关闭后次帧补发——弹窗判定用
+    `CodeEdit.get_code_completion_options()` 非空，与 4.5 的绘制条件
+    `code_completion_active && !options.is_empty()` 逐字等价）；② dock 状态区
+    （配置端点 vs 生效端点 / READY / 上轮分析时间 / 最近失败原因，1s 轮询只读镜像；
+    失败原因由 lifecycle 在 hook/ping/create/delete 失败点、scheduler 在 put/analyze/
+    非 COMPLETED 失败点记录，成功轮次清除）；③ 端点同源：plugin install 改读
+    `gdcc/server/host|port`，dock 提交手势（Enter/失焦）经
+    `service.retarget_rpc_endpoint` 走 §3.5 channel-reset（不重装语言、不断 LSP）。
+  - 实施期引擎事实修正（相对 §7 Phase 5 设计，按事实源口径）：
+    1. 4.5 `ScriptTextEditor.get_base_editor()` 直接返回 **CodeEdit**
+       （`script_text_editor.cpp:2150`），`validate_script` 信号在其父级
+       CodeTextEditor 包装上；目标经祖先查找获得（解释型插件中继侧）。
+    2. 设计写"service 直接 `emit_signal("validate_script")`"；实证该路径从帧泵调用栈
+       发起时不送达（§2.5 末条），最终形态为 service 自有信号 + 解释型插件 deferred
+       中继（见上一条状态记录）。
+    3. 引擎测试的弹窗驱动：caret 落在空 base 上下文会触发
+       `_filter_code_completion_candidates_impl` 直接 cancel（code_edit.cpp:3613），
+       故测试把 caret 置于词尾、探测选项以该词为前缀（`RvTargetProbe`）。
+  - 引擎测试新用例 `diag_revalidate`（14 步全绿）：`editor_opened`（页签打开与
+    CodeEdit 解析）、`signal_revalidates`（合并后无任何驱动输入即重校验：锚定为
+    合并检出后 45 帧内语言 `_validate` 调用计数前进。idle 歧义按方向区分排除：
+    clean→error 的 idle 是 1.5s、**晚于** 0.8s 防抖（`set_error_count` 切到 0.5s 只在
+    错误已显示之后），该步先 `_settle_past_idle` 让 idle 落地（其校验顺带推送版本），
+    再读基线；已有错误的步骤 idle 为 0.5s、严格早于 ≥0.8s 的合并，基线取在合并检出
+    之后即可——外加缓存内容复核）、`same_version_remerge_quiet`（负例：
+    idle 沉降后同版本重并计数器不动）、`new_version_same_diag_fires`（正例：同诊断
+    新版本必刷）、`non_current_tab_dropped`（负例：非当前页签不重校验）、
+    `popup_deferral`（弹窗暂缓计数器持平、关闭补发且诊断可显示）、
+    `endpoint_retarget_closed`（dock 提交死端点 → 通道重置 + 失败原因 + 状态区同步）、
+    `endpoint_retarget_recover`（恢复 READY）、`endpoint_persists_after_toggle`
+    （插件禁用/启用后 install 读设置同源）、`status_area`（恢复后状态区正确）。
+  - 实施期引擎实证与最终形态修正（2026-09-27 bisect，证据矩阵见 §2.5 末条）：gdcc
+    编译代码的 `Object.emit_signal` method-bind 外来发射，从 service 帧泵调用栈发起
+    时不送达任何连接（C++ 与脚本连接均不触发；同对象同信号从非泵直发栈或解释型
+    代码发起则正常）。最终形态改为 service 泵发射自有信号、解释型 plugin 经
+    `call_deferred` 中继 `validate_script`；观测锚定随之从"信号次序对"改为"合并检出
+    后语言 `_validate` 计数窗口前进"（计划验收本来指定的锚）。缺陷边界结论（曾用
+    一次性运行时探针确认，探针已随结论落档后移除）：编译代码对普通 Node 的
+    method-bind 发射在 runtime 上下文可送达——缺陷仅限编辑器泵调用栈。
+  - 评审记录（2026-09-27，review-expert-a + review-expert-c 并行评审，共四轮：
+    两轮采纳修复 + 中继化重设计 + 两轮复核，最终双双 **APPROVE**）：
+    采纳并修复：
+    1.（高）发射门禁只比 registry 版本不比缓冲区文本：用户在合并后、发射前键入时
+       registry 尚未前进，会空发一次读到空缓存的校验。修复：发射前逐字比对
+       `code_edit.get_text()` 与 registry 分析文本，不符即丢弃（该版本由 idle 节拍
+       正常接力）。
+    2.（中）`new_version_same_diag_fires`/`popup_deferral` 原用裸信号计数，idle 节拍
+       的发射可单独放行；且 popup 步缓冲区与待发版本不一致，补发校验读不到缓存。
+       修复：popup 步先令缓冲区与待发版本一致再强制弹窗，并补显示内容断言。（后续
+       中继化后，观测锚定最终定为"合并检出后 45 帧内 `_validate` 计数前进"窗口，正例
+       先 `_settle_past_idle` 排除 idle 节拍混入。）
+    3.（中）retarget 遗弃旧服务器上的私有模块（所有权标记随 channel reset 清除，
+       uninstall 无法回收）。修复：retarget 前经一次性旧端点客户端 fire-and-forget
+       删除（一次性旧端点客户端 + 串行清理队列，queue_free 自清理；快速连切不会跳过
+       中间端点的清理；切回某端点时丢弃其未发出的清理项，由既有 -32001 重建路径接管）。
+    4.（中）reconciler 的 put/delete 失败路径只 outage 不记录原因，状态区会显示
+       "not ready 但 Last failure: none"。修复：`notify_outage(reason)` 带原因参数，
+       reconciler/scheduler 传输失败统一经 lifecycle 记录（scheduler 自留非 COMPLETED
+       的分析失败）。
+    5.（中）lifecycle 的 `service_shutdown` 未清 `_last_failure`：失败中禁用再启用会
+       短暂显示上一会话的失败原因。修复：shutdown 清除。
+    6.（中）dock 端口输入无校验，`int("abc")==0` 会被提交并写入设置。修复：全数字
+       1..65535 校验，非法输入不落盘、不 retarget、记录到 dock 日志。
+    文档修正（评审指出）：§2.5 末条与 Phase 5 第 1 项已按实现期事实改写（祖先查找 +
+    中继两段式门禁）。
+    评审后追加发现（2026-09-27，实现期 bisect）：编译代码泵内外来信号发射不送达
+    （§2.5 末条缺陷实证）→ 最终形态为中继；测试观测锚定相应改为计数器窗口。
+    第三轮复核采纳并修复：
+    1.（中）中继 deferred 段只复核页签：一帧间用户可能又键入或打开弹窗。修复：信号
+       携带 `(path, version)`，插件 deferred 段经 `should_still_revalidate` 复核全部门
+       禁（含 outage/retarget 后的缓存新鲜度/就绪度），弹窗刚开则重新入队。
+    2.（中）retarget 发生在旧端点 `module.create` 在途时，成功回调因会话过期被丢弃，
+       旧服务器留下无所有权记录的模块。修复：lifecycle 记录 create 的发送端点，过期
+       成功应答经 `enqueue_orphan_cleanup` 向**发送端点**补登记删除。
+    3.（中）状态区"最近失败"按来源优先级而非时间：scheduler 的分析失败可陈压过
+       outage 后的恢复。修复：scheduler 的 `on_module_outage` 清除陈旧分析失败原因
+       （outage 原因是更新的事实）。
+    4.（低）状态区"配置端点"读的是输入框草稿而非已存设置。修复：改读 EditorSettings。
+    第三轮复核保留（有界残余/待确认项）：
+    - retarget 时共享 RPC 客户端的**未发出**队列请求在发送时按当时地址拼 URL，可能
+      落到新服务器：不止 module-not-found——排队的 `module.create` 可能在新服务器上
+      真的建成同 id 模块，而过期回调按记录的**入队端点**登记清理（向无此模块的端点
+      发送，空操作）。边界：模块 id 按项目哈希+pid 作用域，错误端点上的残留模块随其
+      进程退出消亡，且下次回访该端点时由既有 -32001 重建路径自愈；不影响编辑器数据
+      正确性。彻底隔离（按端点/会话分客户端，或请求携带真实分发端点贯穿完成回调）
+      属较大改造，留待后续阶段评估（未阻塞本阶段）。
+    - 切回某端点时若其清理**在途**（已发出），迟到删除可能命中刚重建的模块：表现为
+      一次瞬时 outage，经既有 outage→重建路径自愈；队列项已在切回时丢弃（见上）。
+    - 文档口径修正：§3.6 第 3 步与 §3.5 install 步骤的端点描述、Phase 1 偏差第 2 条
+      标记取代、状态节 idle 时序表述（clean→error 1.5s 晚于防抖、有错误 0.5s 早于
+      合并）。
+  - 回归：`EditorAddonScriptLanguageAnalysisTest` 5/5、
+    `EditorAddonDiagnosticsFixtureTest` 4/4、`EditorAddonClientAnalysisTest`、
+    `EditorAddonIntegrationProbeTest`、`EditorAddonBootstrapEngineTest`、引擎测试
+    全部 13 用例（含新 `diag_revalidate`）无回归。
 - 范围：
   - `src/editor_addon/addons/gdcc/**`（新增 `.gd3` 源文件 + `server_launcher.gd` +
     `plugin.gd`/`gdcc_dock.gd` 接线）
@@ -702,18 +804,25 @@ Godot 编辑器
 - `_validate_script()` 的触发点（4.5 实测）：页签启用（`enable_editor`）、
   `reload_text()`（外部重载）、编辑器 idle 定时器超时
   （`CodeTextEditor._text_changed_idle_timeout`，one-shot，由文本变更或
-  `CodeTextEditor.validate_script()` 重启；`validate_script()` 未绑定到脚本层，
-  GDExtension/解释型脚本均**无法主动触发**重新校验——这决定 gdcc 诊断只能异步
-  合并、等下一次校验节拍，见 §4.4 与 §9 R17）。错误计数为 0 时 idle 间隔
-  `text_editor/completion/idle_parse_delay`（默认 1.5s），有错误时
-  `idle_parse_delay_with_errors_found`（默认 0.5s）。
-- 主动重校验通道（Phase 5 采用）：`CodeTextEditor` 注册了 `validate_script` 信号
-  （`code_editor.cpp` 的 `ADD_SIGNAL`），`ScriptTextEditor` 将其连接到
-  `_validate_script()`（`script_text_editor.cpp`）；GDScript 侧对该
-  `CodeTextEditor`（经 `ScriptEditorBase.get_base_editor()` 获得，已绑定）
-  `emit_signal("validate_script")` 即同步触发一次校验——无需伪造 `text_changed`
-  （那会惊动查找栏等无关监听）。该信号接线属编辑器内部契约而非公开 API 承诺，
-  Godot 升级时重验（§9 R17/R24）。
+  `CodeTextEditor.validate_script()` 重启）。没有**公开的**主动重校验 API：
+  `validate_script()` 方法未绑定到脚本层（当时据此判定 gdcc 诊断只能等校验节拍；
+  Phase 5 改为经下一条的 `validate_script` 信号通道主动触发，见 §4.4 与 §9 R17）。
+  错误计数为 0 时 idle 间隔 `text_editor/completion/idle_parse_delay`（默认 1.5s），
+  有错误时 `idle_parse_delay_with_errors_found`（默认 0.5s；`set_error_count` 在有
+  错误显示时切换过去，`code_editor.cpp:1733-1737`）。
+- 主动重校验通道（Phase 5 采用，4.5 源码核实 + 实施期缺陷实证）：`CodeTextEditor`
+  注册了 `validate_script` 信号（`code_editor.cpp:1857`），`ScriptTextEditor` 将其连到
+  `_validate_script()`（`script_text_editor.cpp:2672`）。发射目标注意两点：(1)
+  `get_base_editor()` 直接返回内层 **CodeEdit**（`script_text_editor.cpp:2150`），信号在
+  其**父级** CodeTextEditor 包装上，须从 base editor 向上找第一个
+  `has_signal("validate_script")` 的祖先再发射；(2) **缺陷实证（2026-09-27 引擎测试
+  bisect）**：gdcc 编译代码经 `Object.emit_signal` method-bind 对外来对象发射，从
+  service 的 `SceneTree.process_frame` 泵调用栈发起时**任何连接都收不到**（同对象
+  id、信号已注册、调用无错误返回但不触发；同一调用从非泵直发栈发起则正常，自有信号
+  `.emit()` 从泵发起也正常）。故最终形态：service 泵在门禁通过后发射**自有**信号
+  `revalidation_requested(path)`（泵上下文可达解释型监听，`busy_delta` 同款），解释型
+  `plugin.gd` 先 `call_deferred` 跳出泵栈、再在消息队列帧发射 `validate_script`。
+  该信号接线属编辑器内部契约而非公开 API 承诺，Godot 升级时重验（§9 R17/R24）。
 - 光标位置传递机制：请求补全/查找时，编辑器把光标位置以哨兵字符
   `String.chr(0xFFFF)` 插入源码（`scene/gui/code_edit.cpp`），语言实现需自行定位并
   剔除；GDScript 解析器以同一哨兵确定补全上下文
@@ -1051,8 +1160,8 @@ MVP 不含自定义基类 `extends`，功能协议（`bind_service`/`service_tic
 2. 读取并暂存 `network/language_server/use_thread` 原值；为 false 则置 true
    （持久化副作用与恢复义务见 §2.6/§4.1）。
 3. 读取 `network/language_server/remote_host` / `remote_port`（缺省 127.0.0.1/6005）；
-   gdcc RPC 端点取固定缺省 `127.0.0.1:6099`（与 `GdccRpcClient`/dock 缺省一致，不与
-   dock 输入框联动）。
+   gdcc RPC 端点读 `gdcc/server/host|port`（缺省 127.0.0.1:6099，与 dock 同一对
+   EditorSettings——Phase 5 起不再分叉；dock 提交经 `retarget_rpc_endpoint` 切换）。
 4. 初始化低功耗 busy 协调器（计数 0，此时**不触碰** `OS.low_processor_usage_mode`；
    仅登记保存/恢复逻辑，首个 busy 0→1 时才保存原值并置 `false`，§3.5）。协调器
    必须先于任何 `ensure_server_hook` 调用存在。
@@ -1156,7 +1265,7 @@ dock 在 gdcc 语言注册之前就依赖它（§1.1）。形态为 `Node`，由
 3. （plugin.gd）初始化低功耗 busy 协调器（计数 0，**不触碰** `OS.low_processor_usage_mode`，
    首个 busy 0→1 时才保存原值并置 `false`；dock 与 launcher 的 busy 上报指向它）。
    此步必须先于第 6 步的任何 `ensure_server_hook` 调用（§3.5/§3.7）。
-4. `install(...)`（RPC 端点缺省 127.0.0.1:6099）：首建时创建服务专用
+4. `install(...)`（RPC 端点来自 `gdcc/server/host|port`，缺省 127.0.0.1:6099）：首建时创建服务专用
    `GdccRpcClient` 子节点（与 dock 客户端队列隔离）；语言实例（首建或复用）
    `Engine.register_script_language(lang)`，返回值非 `OK` 即按 §3.5 回滚并向上报错
    （16 语言上限/重名属可预期失败，不得断言了事）；注册 loader/saver 并以探针资源
@@ -1464,10 +1573,16 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
 实施：
 1. **主动重校验信号**：scheduler 合并分析结果时记录本轮"哪些 (path, version)
    首次变为缓存可读"（注意：诊断内容不变但版本前进也必须计入——此前的校验可能
-   因版本不匹配而显示空结果）；当前编辑脚本命中时 `call_deferred` 对当前
-   `CodeTextEditor` 发 `validate_script` 信号（接线事实见 §2.5 末条）。触发时
-   复核当前页签与缓冲区版本，不符即丢弃；补全弹窗期间暂缓并排队、关闭后补发。
-   无反馈循环：相同文本的重校验不会重新标脏。
+   因版本不匹配而显示空结果）；当前编辑脚本命中时由 service 帧泵在门禁通过后发射
+   **自有**信号 `revalidation_requested(path)`，解释型 `plugin.gd` 将其
+   `call_deferred` 跳出泵栈后对当前页签的 `CodeTextEditor` 发射 `validate_script`
+   （接线事实与"编译代码泵内直发外来信号不送达"的缺陷实证见 §2.5 末条——中继是
+   针对该实证的必要形态，不是风格选择）。门禁两段式：service 帧泵内**初筛**（当前
+   页签路径 + registry 版本 + **缓冲区文本与分析文本逐字一致**——registry 版本只在
+   校验时前进，用户键入后合并前会有滞后，文本比对兜住这一拍——+ 补全弹窗未开，
+   弹窗期间暂缓并排队、关闭后补发）；插件 `call_deferred` 跳出泵栈后经
+   `should_still_revalidate` **复核**同一组门禁（一帧间用户可能又键入或打开弹窗；
+   弹窗刚开则重新入队而非丢弃）再发射。无反馈循环：相同文本的重校验不会重新标脏。
 2. **诊断通道可观测**：dock 增加状态区——配置端点 vs 实际生效端点、诊断模块
    READY、上次分析轮时间、最近一次失败原因（数据全部来自既有 lifecycle/
    scheduler 状态，只读展示）。

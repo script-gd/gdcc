@@ -146,7 +146,18 @@ class EditorAddonScriptLanguageEngineTest {
                     "lsp_ready", "kind_mapping", "insert_text_priority", "complete_keywords",
                     "complete_empty_context", "complete_member", "complete_cjk",
                     "complete_no_sentinel", "fifo_survives_completion",
-                    "complete_disabled_safe", "validate_still_healthy", "survived"))
+                    "complete_disabled_safe", "validate_still_healthy", "survived")),
+            // Phase 5: diagnostic visibility — the signal-triggered revalidation after a
+            // background merge (current-tab + version gated, popup-deferred, ordering-pinned
+            // against the idle beat), the version-advance and same-version-remerge
+            // positive/negative pair, the non-current-tab drop, the dock status area, and
+            // endpoint single-sourcing with live retarget across a plugin toggle.
+            Map.entry("diag_revalidate", List.of(
+                    "config", "service_ready", "fixtures_written", "analysis_ready",
+                    "editor_opened", "signal_revalidates", "same_version_remerge_quiet",
+                    "new_version_same_diag_fires", "non_current_tab_dropped",
+                    "popup_deferral", "endpoint_retarget_closed", "endpoint_retarget_recover",
+                    "endpoint_persists_after_toggle", "status_area", "survived"))
     );
 
     /// Interpreted driver plugin (gdcc feature limits do not apply to it). Every mode records
@@ -155,7 +166,8 @@ class EditorAddonScriptLanguageEngineTest {
     /// the 64KB class-file limit for one string literal, so it is assembled from method
     /// results — method calls are not compile-time constant expressions, so javac emits a
     /// runtime concat instead of folding the parts back into a single oversized constant.
-    private static final String DRIVER_PLUGIN = driverPluginCore() + driverPluginCompletion();
+    private static final String DRIVER_PLUGIN = driverPluginCore() + driverPluginCompletion()
+            + driverPluginRevalidate();
 
     private static String driverPluginCore() {
         return """
@@ -300,6 +312,8 @@ class EditorAddonScriptLanguageEngineTest {
                     await _run_gdcc_diag_mode()
                 elif mode == "lsp_completion":
                     await _run_lsp_completion_mode()
+                elif mode == "diag_revalidate":
+                    await _run_diag_revalidate_mode()
                 else:
                     _step("mode", false, "unknown mode " + mode)
                 _finish()
@@ -1559,6 +1573,335 @@ class EditorAddonScriptLanguageEngineTest {
             """;
     }
 
+    /// Phase 5 (diagnostic visibility) mode. Kept in a separate text block only because of
+    /// the 64KB literal limit — the concatenation must reproduce one continuous GDScript
+    /// source, so this block starts with the blank line that separated the sections.
+    private static String driverPluginRevalidate() {
+        return """
+
+            # ---------------- Phase 5: diagnostic visibility (plan §7 Phase 5) ----------------
+
+            # Observation anchor: the language's guard-passing `_validate` invocation count.
+            # The acceptance chain is "merge → pump → plugin relay → ScriptTextEditor
+            # ._validate_script → language._validate", so a post-merge counter advance with
+            # no driver-side validation call IS the revalidation. (Editor-signal-level
+            # observation via CodeTextEditor.validate_script connections proved unreliable
+            # for relay-originated emissions in this nested context; the counter reads the
+            # production effect directly and is what the plan's acceptance names.)
+            func _lang_validate_count() -> int:
+                var l := _find_gd3_language()
+                if l == null:
+                    return -1
+                return l.validate_call_count()
+
+            func _wait_validate_advance(baseline: int, max_frames: int) -> bool:
+                var frames := 0
+                while _lang_validate_count() <= baseline and frames < max_frames:
+                    await get_tree().process_frame
+                    frames += 1
+                return _lang_validate_count() > baseline
+
+            # The editor idle beat (one-shot per text change: 1.5s clean / 0.5s once errors
+            # are displayed — `set_error_count` switches the cadence, 4.5 code_editor.cpp)
+            # also advances the counter. The windows stay unambiguous per direction:
+            # errors-present changes have their idle (0.5s) strictly before the merge
+            # (≥0.8s debounce), so a detection-time baseline is post-idle; the clean→error
+            # step instead settles PAST the 1.5s idle first (its beat lands after the merge
+            # otherwise and would false-pass the window), letting that idle validation push
+            # the version itself.
+            var _last_text_change_msec: int = 0
+
+            func _settle_past_idle() -> void:
+                var deadline := Time.get_ticks_msec() + 15000
+                while Time.get_ticks_msec() - _last_text_change_msec < 1800 \\
+                        and Time.get_ticks_msec() < deadline:
+                    await get_tree().process_frame
+
+            # Locates the gdcc plugin's dock: editor plugins are siblings of this driver
+            # under the same parent, and the gdcc plugin keeps the dock in `_dock`.
+            func _find_gdcc_dock() -> Variant:
+                var parent := get_parent()
+                if parent == null:
+                    return null
+                for sib in parent.get_children():
+                    if sib == self or not (sib is EditorPlugin):
+                        continue
+                    var sib_script: Script = sib.get_script()
+                    if sib_script != null and str(sib_script.resource_path).ends_with("addons/gdcc/plugin.gd"):
+                        return sib.get("_dock")
+                return null
+
+            func _run_diag_revalidate_mode() -> void:
+                var service := _service()
+                var lang := _find_gd3_language()
+                if service == null or lang == null:
+                    _step("service_ready", false, "GdccEditorService or GD3 language missing")
+                    return
+                var lsp_port := int(_config["lsp_port"])
+                var rpc_port := int(_config["rpc_port"])
+                var closed_port := int(_config["closed_port"])
+                _step("service_ready", service.install(EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", rpc_port) == OK)
+
+                var base_path := "res://rv_base.gd"
+                var target_path := "res://rv_target.gd3"
+                var other_path := "res://rv_other.gd3"
+                var clean_src := "class_name RvTarget\\nextends Node\\n"
+                # Same gdcc-only diagnostic family as `gdcc_diag` (path-based extends of a
+                # .gd): legal GDScript (the LSP stays silent), rejected by gdcc.
+                var err_src := "class_name RvTarget\\nextends \\"res://rv_base.gd\\"\\n"
+                _write_text_file(base_path, "extends Node\\n")
+                _write_text_file(target_path, clean_src)
+                _write_text_file(other_path, "class_name RvOther\\nextends Node\\n")
+                service.notify_filesystem_changed()
+                _step("fixtures_written", true)
+
+                # Clean round: both fixtures analyzed at version 1 (clean rounds serve EMPTY
+                # diagnostics, so the merge is observed via the version-freshness probe).
+                var analysis_ok: bool = await _wait_diag_ready(service, 45.0)
+                analysis_ok = analysis_ok and await _wait_diag_current(service, target_path, 1, 60.0)
+                analysis_ok = analysis_ok and await _wait_diag_current(service, other_path, 1, 60.0)
+                _step("analysis_ready", analysis_ok)
+
+                # Open the target in the script editor — revalidation only ever fires on the
+                # CURRENT tab. The enable-validation on open sees the clean v1 buffer (== the
+                # reconciled registry text), so it creates no new version and no merge.
+                # 4.5: get_base_editor() IS the CodeEdit (the validate_script signal lives on
+                # its CodeTextEditor parent; the plugin's relay resolves that wrapper).
+                EditorInterface.set_main_screen_editor("Script")
+                var target_res: Resource = ResourceLoader.load(target_path)
+                if target_res != null:
+                    EditorInterface.edit_resource(target_res)
+                var code_edit: CodeEdit = null
+                var probe := "res=" + str(target_res != null)
+                var open_deadline := Time.get_ticks_msec() + 15000
+                while Time.get_ticks_msec() < open_deadline and code_edit == null:
+                    await get_tree().process_frame
+                    var se := EditorInterface.get_script_editor()
+                    var cur := se.get_current_editor()
+                    var cur_script := se.get_current_script()
+                    if cur != null and cur_script != null and cur_script.resource_path == target_path:
+                        var candidate: Control = cur.get_base_editor()
+                        probe = "cand=" + str(candidate != null)
+                        if candidate is CodeEdit:
+                            code_edit = candidate as CodeEdit
+                _step("editor_opened", code_edit != null, probe)
+
+                # set_text models the user's edit. The counter baseline must be read only
+                # AFTER the editor's own idle beat for that change has landed: in the
+                # clean→error direction the idle delay is 1.5s (set_error_count switches to
+                # the 0.5s with-errors cadence only once errors are displayed, 4.5
+                # code_editor.cpp:1733-1737) while the analysis debounce is 0.8s, so the
+                # merge can land BEFORE the idle — a post-merge counter window would then
+                # pass on the idle beat alone (review finding). Settling first also lets
+                # the idle validation itself push version 2 (no driver-side push needed).
+                if code_edit != null:
+                    code_edit.set_text(err_src)
+                    _last_text_change_msec = Time.get_ticks_msec()
+                await _settle_past_idle()
+                var pushed_v2: bool = service.registry().live_version(target_path) == 2
+                var merged: bool = pushed_v2 and await _wait_diag_current(service, target_path, 2, 60.0)
+                var fired := false
+                if merged:
+                    fired = await _wait_validate_advance(_lang_validate_count(), 45)
+                # Content anchor (driver-side, after the signal): the v2 cache serves the
+                # gdcc error that the signal-triggered validation displayed.
+                var shown_result: Dictionary = lang._validate(err_src, target_path, true, true, true, true)
+                var gdcc_shown := false
+                for e in shown_result.get("errors", []):
+                    if str(e.get("message", "")).begins_with("[gdcc sema.class_skeleton]"):
+                        gdcc_shown = true
+                _step("signal_revalidates", merged and fired and gdcc_shown,
+                        "merged=" + str(merged) + " fired=" + str(fired)
+                        + " shown=" + str(gdcc_shown))
+
+                # Same-version re-merge must NOT revalidate: nothing became newly readable.
+                # Settle past the previous change's idle beat first so only the relay could
+                # move the counter in this window.
+                await _settle_past_idle()
+                var round_before: int = service.scheduler().last_round_msec()
+                var quiet_baseline := _lang_validate_count()
+                service.scheduler().request_full_reanalysis()
+                var reround := false
+                var reround_deadline := Time.get_ticks_msec() + 30000
+                while Time.get_ticks_msec() < reround_deadline and not reround:
+                    reround = service.scheduler().last_round_msec() != round_before
+                    await get_tree().process_frame
+                var quiet_frames := 0
+                while quiet_frames < 30:
+                    await get_tree().process_frame
+                    quiet_frames += 1
+                _step("same_version_remerge_quiet", reround
+                        and _lang_validate_count() == quiet_baseline,
+                        "reround=" + str(reround))
+
+                # Version advance with an UNCHANGED diagnostic payload must revalidate
+                # (a pre-merge validation of v3 necessarily read an empty cache).
+                var err_src_v3 := err_src + "# same diagnostic, new version\\n"
+                if code_edit != null:
+                    code_edit.set_text(err_src_v3)
+                    _last_text_change_msec = Time.get_ticks_msec()
+                lang._validate(err_src_v3, target_path, true, true, true, true)
+                var merged_v3: bool = await _wait_diag_current(service, target_path, 3, 60.0)
+                var fired_v3 := false
+                if merged_v3:
+                    fired_v3 = await _wait_validate_advance(_lang_validate_count(), 45)
+                _step("new_version_same_diag_fires", merged_v3 and fired_v3,
+                        "merged=" + str(merged_v3) + " fired=" + str(fired_v3))
+
+                # A merge covering a NON-current path must not revalidate anything (only the
+                # current tab's script is revalidated): rv_target stays the current tab
+                # while rv_other gets a fresh background version. (Driving this through a
+                # tab switch would be self-defeating: leaving a dirty tab makes the editor
+                # re-validate its buffer, which bumps the registry and confuses versions.)
+                # No text change happens here, so no idle beat can interfere.
+                var baseline_vs := _lang_validate_count()
+                var v_other: int = service.notify_source_changed(other_path,
+                        "class_name RvOther\\nextends Node\\n# background round\\n")
+                var merged_other: bool = v_other > 0 \\
+                        and await _wait_diag_current(service, other_path, v_other, 60.0)
+                var drop_frames := 0
+                while drop_frames < 30:
+                    await get_tree().process_frame
+                    drop_frames += 1
+                _step("non_current_tab_dropped", merged_other
+                        and _lang_validate_count() == baseline_vs,
+                        "merged=" + str(merged_other))
+
+                # Popup deferral (rv_target is still the current tab). The buffer is set to
+                # the SAME text the new registry version records, so the re-sent validation
+                # displays the merged diagnostics instead of reading an empty cache (review
+                # finding). The caret must sit on a word base matching the probe option: the
+                # filter cancels the popup outright when the completion base is empty (4.5
+                # code_edit.cpp `_filter_code_completion_candidates_impl`) and drops options
+                # that are not subsequence matches of the base.
+                var popup_src := err_src + "# popup deferred\\n"
+                if code_edit != null:
+                    code_edit.set_text(popup_src)
+                    _last_text_change_msec = Time.get_ticks_msec()
+                lang._validate(popup_src, target_path, true, true, true, true)
+                var v_popup: int = service.registry().live_version(target_path)
+                var popup_ok := false
+                if code_edit != null:
+                    code_edit.set_caret_line(0)
+                    code_edit.set_caret_column("class_name RvTarget".length())
+                    code_edit.add_code_completion_option(9, "RvTargetProbe", "RvTargetProbe", Color(1, 1, 1))
+                    code_edit.update_code_completion_options(true)
+                    popup_ok = not code_edit.get_code_completion_options().is_empty()
+                var merged_popup := false
+                if popup_ok and v_popup > 0:
+                    merged_popup = await _wait_diag_current(service, target_path, v_popup, 60.0)
+                # The merge landed while the popup is open: the relay must defer, so the
+                # counter stays flat through this window.
+                var defer_baseline := _lang_validate_count()
+                var defer_frames := 0
+                while defer_frames < 30:
+                    await get_tree().process_frame
+                    defer_frames += 1
+                var deferred: bool = _lang_validate_count() == defer_baseline
+                var resent := false
+                if deferred and code_edit != null:
+                    code_edit.cancel_code_completion()
+                    resent = await _wait_validate_advance(defer_baseline, 60)
+                # Content anchor: the re-sent validation's cache version equals the buffer
+                # version, so the deferred diagnostics are actually displayable.
+                var popup_shown := false
+                if resent:
+                    var popup_result: Dictionary = lang._validate(popup_src, target_path, true, true, true, true)
+                    for e in popup_result.get("errors", []):
+                        if str(e.get("message", "")).begins_with("[gdcc sema.class_skeleton]"):
+                            popup_shown = true
+                _step("popup_deferral", popup_ok and merged_popup and deferred and resent
+                        and popup_shown,
+                        "popup=" + str(popup_ok) + " merged=" + str(merged_popup)
+                        + " deferred=" + str(deferred) + " resent=" + str(resent)
+                        + " shown=" + str(popup_shown))
+
+                # Endpoint retarget through the DOCK commit path (item 3): the settings
+                # write handler and the service commit handler are the real production
+                # entry points; a dead endpoint must reset the channel and surface a
+                # failure reason, a live one must recover READY.
+                var dock: Variant = _find_gdcc_dock()
+                var closed_ok := false
+                if dock != null:
+                    dock.get("_port_input").text = str(closed_port)
+                    dock.call("_on_port_changed", str(closed_port))
+                    dock.call("_on_endpoint_committed")
+                    closed_ok = service.rpc_port() == closed_port \\
+                            and int(EditorInterface.get_editor_settings() \\
+                            .get_setting("gdcc/server/port")) == closed_port
+                var failure_seen := false
+                var fail_deadline := Time.get_ticks_msec() + 20000
+                while closed_ok and Time.get_ticks_msec() < fail_deadline and not failure_seen:
+                    var st: Dictionary = service.diag_channel_status()
+                    if str(st.get("last_failure", "")) != "" and not service.is_diag_ready():
+                        failure_seen = true
+                    await get_tree().process_frame
+                var status_closed := false
+                var status_deadline := Time.get_ticks_msec() + 8000
+                while failure_seen and Time.get_ticks_msec() < status_deadline and not status_closed:
+                    var closed_text: String = dock.get("_status_label").text
+                    status_closed = closed_text.contains(str(closed_port)) \\
+                            and closed_text.contains("not ready") \\
+                            and not closed_text.contains("Last failure: none")
+                    await get_tree().process_frame
+                _step("endpoint_retarget_closed", closed_ok and failure_seen and status_closed,
+                        "retargeted=" + str(closed_ok) + " failure=" + str(failure_seen)
+                        + " status=" + str(status_closed))
+
+                var recovered := false
+                if dock != null:
+                    dock.get("_port_input").text = str(rpc_port)
+                    dock.call("_on_port_changed", str(rpc_port))
+                    dock.call("_on_endpoint_committed")
+                    recovered = service.rpc_port() == rpc_port and await _wait_diag_ready(service, 45.0)
+                var status_ready := false
+                var ready_text_deadline := Time.get_ticks_msec() + 8000
+                while recovered and Time.get_ticks_msec() < ready_text_deadline and not status_ready:
+                    var ready_text: String = dock.get("_status_label").text
+                    status_ready = ready_text.contains(str(rpc_port)) \\
+                            and ready_text.contains("ready") and not ready_text.contains("not ready")
+                    await get_tree().process_frame
+                _step("endpoint_retarget_recover", recovered and status_ready,
+                        "recovered=" + str(recovered) + " status=" + str(status_ready))
+
+                # Single-sourcing across a plugin cycle (item 3): install() must read the
+                # committed EditorSettings pair, so the re-enabled plugin lands on the same
+                # endpoint without any dock interaction.
+                EditorInterface.set_plugin_enabled("gdcc", false)
+                await get_tree().process_frame
+                await get_tree().process_frame
+                EditorInterface.set_plugin_enabled("gdcc", true)
+                await get_tree().process_frame
+                await get_tree().process_frame
+                var service2 := _service()
+                var persisted := false
+                if service2 != null:
+                    persisted = service2.rpc_port() == rpc_port
+                var ready_after: bool = persisted and await _wait_diag_ready(service2, 45.0)
+                _step("endpoint_persists_after_toggle", ready_after,
+                        "port=" + (str(service2.rpc_port()) if service2 != null else "n/a"))
+
+                # The dock is recreated by the re-enable: re-locate it and confirm the
+                # status area reflects the recovered channel (endpoint + ready + a
+                # completed analysis round).
+                var dock2: Variant = _find_gdcc_dock()
+                var status_final := false
+                var final_deadline := Time.get_ticks_msec() + 60000
+                while dock2 != null and Time.get_ticks_msec() < final_deadline and not status_final:
+                    var final_text: String = dock2.get("_status_label").text
+                    var st2: Dictionary = service2.diag_channel_status()
+                    status_final = final_text.contains(str(rpc_port)) \\
+                            and final_text.contains("ready") and not final_text.contains("not ready") \\
+                            and int(st2.get("last_round_msec", 0)) > 0
+                    await get_tree().process_frame
+                _step("status_area", dock2 != null and status_final)
+
+                for p in [base_path, target_path, other_path]:
+                    DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+                _step("survived", true)
+            """;
+    }
+
     private static final String DRIVER_MANIFEST = """
             [plugin]
 
@@ -1714,6 +2057,24 @@ class EditorAddonScriptLanguageEngineTest {
         config.addProperty("lsp_port", findFreePort());
         config.addProperty("closed_port", findFreePort());
         runCase("lsp_completion", config);
+    }
+
+    /// Phase 5 acceptance (plan §7 Phase 5): signal-triggered revalidation surfaces
+    /// background analysis results with no user input (ordering-pinned against the editor
+    /// idle beat, version-gated, popup-deferred, current-tab-gated), the dock status area
+    /// reflects the channel state, and the endpoint is single-sourced through
+    /// EditorSettings with live retarget. Runs against a real in-process gdcc RPC server;
+    /// `closed_port` is a guaranteed-dead endpoint for the retarget failure path.
+    @Test
+    void diagRevalidationSurfacesAfterAnalysis() throws Exception {
+        var config = new JsonObject();
+        config.addProperty("lsp_port", findFreePort());
+        config.addProperty("closed_port", findFreePort());
+        try (var server = JsonRpcServer.start(new JsonRpcDispatcher(new API()), "127.0.0.1", 0,
+                JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES)) {
+            config.addProperty("rpc_port", server.port());
+            runCase("diag_revalidate", config);
+        }
     }
 
     private static String runCase(String caseName, JsonObject config) throws Exception {

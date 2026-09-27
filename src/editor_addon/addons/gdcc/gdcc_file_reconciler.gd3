@@ -192,7 +192,8 @@ func _on_reconcile_put_done(response: Dictionary) -> void:
         _reconcile_active = false
         _reconcile_remaining = 0
         _reconcile_order.clear()
-        service.lifecycle().notify_outage()
+        service.lifecycle().notify_outage(
+                "reconcile put_file failed (code %d)" % service.response_error_code(response))
         return
     if request["kind"] == "put":
         service.scheduler().note_mirrored(request["path"], int(request["version"]))
@@ -214,7 +215,8 @@ func _on_reconcile_delete_done(response: Dictionary) -> void:
         _reconcile_active = false
         _reconcile_remaining = 0
         _reconcile_order.clear()
-        service.lifecycle().notify_outage()
+        service.lifecycle().notify_outage(
+                "reconcile delete failed (code %d)" % service.response_error_code(response))
         return
     _reconcile_remaining -= 1
     if _reconcile_remaining <= 0:

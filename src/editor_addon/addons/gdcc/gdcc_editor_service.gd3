@@ -91,7 +91,22 @@ var ensure_server_hook: Callable
 # aggregate of the features' `busy_wanted()`.
 signal busy_delta(delta: int)
 
+## Carries Phase 5 revalidation requests to the plugin, which relays them as the editor's
+## `validate_script` emission from INTERPRETED code. The indirection is load-bearing, not
+## stylistic: empirically (2026-09-27 bisect, engine test evidence), a gdcc-compiled
+## `Object.emit_signal` method-bind call on the editor's CodeTextEditor wrapper delivers to
+## nobody when initiated from this service's `SceneTree.process_frame` pump stack — the
+## same call works from a direct caller, and own-signal `.emit()` works from the pump —
+## while an interpreted emission reaches every connection. The service therefore reports
+## WHAT to revalidate and the plugin performs the emission itself.
+signal revalidation_requested(path: String, version: int)
+
 var _busy_held: bool = false
+# (path -> version) revalidation requests not yet emitted (plan §7 Phase 5 item 1):
+# filled from the scheduler's newly-readable merge report, dropped when the current tab
+# or the live buffer version no longer matches, deferred while the current editor's
+# completion popup is open.
+var _revalidate_pending: Dictionary = {}
 
 
 func is_active() -> bool:
@@ -328,19 +343,7 @@ func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
     _editor_interface = editor_interface
     _lsp_host = lsp_host
     _lsp_port = lsp_port
-    if _rpc_host != rpc_host or _rpc_port != rpc_port:
-        # Endpoint retarget: the diagnostics module may not exist on the new server, so the
-        # whole channel state is rebuilt there (outage path without hook — the target moved,
-        # the old server did not vanish).
-        _rpc_host = rpc_host
-        _rpc_port = rpc_port
-        _rpc_client.host = rpc_host
-        _rpc_client.port = rpc_port
-        _lifecycle.service_reset_channel()
-        _reconciler.service_reset_channel()
-        _scheduler.service_reset_channel()
-        _cache.service_reset_channel()
-        refresh_busy()
+    retarget_rpc_endpoint(rpc_host, rpc_port)
     if _active:
         # Repeat install (e.g. test drivers injecting a free port): only endpoints move.
         _lsp_client.start(_lsp_host, _lsp_port)
@@ -384,6 +387,7 @@ func uninstall() -> void:
     _reconciler.service_shutdown()
     _registry.service_shutdown()
     _cache.service_shutdown()
+    _revalidate_pending.clear()
     _lsp_client.stop()
     ResourceSaver.remove_resource_format_saver(_saver)
     ResourceLoader.remove_resource_format_loader(_loader)
@@ -440,7 +444,9 @@ func _probe_saver() -> bool:
 
 ## Frame pump. Tick order matters: the lifecycle gates the channel (reconcile/flight wait for
 ## a ready module and an idle setup stage), reconciliation updates the file set before the
-## flight snapshots it, and busy is re-evaluated last so it reflects the whole frame.
+## flight snapshots it, and busy is re-evaluated last so it reflects the whole frame. The
+## revalidation pump drains AFTER the scheduler tick so a merge completed this frame reaches
+## the editor immediately.
 func _on_diag_frame() -> void:
     if not _active:
         return
@@ -448,6 +454,7 @@ func _on_diag_frame() -> void:
     _lifecycle.service_tick(now)
     _reconciler.service_tick(now)
     _scheduler.service_tick(now)
+    _pump_revalidation()
     refresh_busy()
 
 
@@ -470,6 +477,221 @@ func broadcast_module_outage() -> void:
     _reconciler.on_module_outage()
     _scheduler.on_module_outage()
     _cache.on_module_outage()
+    # Revalidation requests keyed to the dead epoch's cache versions can no longer serve
+    # anything useful; the post-recovery re-analysis records fresh ones.
+    _revalidate_pending.clear()
+
+
+## Re-points the diagnostics channel at another gdcc server WITHOUT touching the language
+## registration or the LSP connection (plan §7 Phase 5 item 3): the module may not exist on
+## the new endpoint, so the channel state is rebuilt through the features'
+## `service_reset_channel` (outage-like, except the old server did not vanish). No-op when
+## the endpoint is unchanged; install() routes its endpoint writeback through here.
+func retarget_rpc_endpoint(host: String, port: int) -> void:
+    if _rpc_host == host and _rpc_port == port:
+        return
+    _abandon_owned_module()
+    # Returning to an endpoint whose owed cleanup is still QUEUED (not yet flying): drop the
+    # entry — the fresh setup there hits -32001 on the lingering module and the existing
+    # delete+recreate path rebuilds it, whereas a queued delete landing after the recreate
+    # would kill the fresh module. (An IN-FLIGHT delete to the revisited endpoint can still
+    # land late; the result is a transient outage that self-heals via the outage path —
+    # recorded as a known residual in the plan.)
+    var kept: Array = []
+    for item in _orphan_cleanup_queue:
+        var entry: Dictionary = item
+        if str(entry["host"]) != host or int(entry["port"]) != port:
+            kept.append(entry)
+    _orphan_cleanup_queue = kept
+    _rpc_host = host
+    _rpc_port = port
+    if _rpc_client != null:
+        _rpc_client.host = host
+        _rpc_client.port = port
+    _revalidate_pending.clear()
+    if not _active:
+        return
+    _lifecycle.service_reset_channel()
+    _reconciler.service_reset_channel()
+    _scheduler.service_reset_channel()
+    _cache.service_reset_channel()
+    refresh_busy()
+
+
+# Throwaway client state for old-endpoint module deletes: one serial worker plus a queue.
+# A rapid A→B→C retarget sequence must clean up BOTH A and B; the worker processes the
+# queue one endpoint at a time and frees itself when drained.
+var _orphan_client: GdccRpcClient = null
+var _orphan_cleanup_queue: Array = []
+
+
+## Deletes this session's private diagnostics module on the OLD endpoint before a retarget
+## abandons it (review finding): `service_reset_channel` drops the ownership bookkeeping, so
+## without this the module and its mirrored sources would linger on a server we no longer
+## talk to (uninstall could no longer reach it either). Each owed delete rides a dedicated
+## throwaway client bound to its own old endpoint — never the shared client, whose host/port
+## are being switched underneath it. Queued serially so a rapid double-retarget cannot drop
+## the intermediate endpoint's cleanup (review finding). Fire-and-forget: a failed delete
+## just leaves the remnant.
+func _abandon_owned_module() -> void:
+    if _lifecycle == null or not _lifecycle.has_created_module():
+        return
+    enqueue_orphan_cleanup(_rpc_host, _rpc_port, _lifecycle.module_id())
+
+
+## Enqueues an old-endpoint module delete owed by a retarget or by a stale create
+## completion (the create landed on the endpoint it was SENT to while the reset dropped its
+## ownership) and starts the serial worker. Each owed delete rides a dedicated throwaway
+## client bound to its own old endpoint — never the shared client, whose host/port are being
+## switched underneath it. Fire-and-forget: a failed delete just leaves the remnant.
+func enqueue_orphan_cleanup(host: String, port: int, module_id: String) -> void:
+    _orphan_cleanup_queue.append({"host": host, "port": port, "module_id": module_id})
+    _pump_orphan_cleanup()
+
+
+func _pump_orphan_cleanup() -> void:
+    if _orphan_client != null or _orphan_cleanup_queue.is_empty():
+        return
+    var item: Dictionary = _orphan_cleanup_queue[0]
+    _orphan_cleanup_queue.remove_at(0)
+    _orphan_client = GdccRpcClient.new()
+    _orphan_client.name = &"GdccOrphanCleanupClient"
+    add_child(_orphan_client)
+    _orphan_client.host = str(item["host"])
+    _orphan_client.port = int(item["port"])
+    _orphan_client.delete_module(str(item["module_id"])).completed \
+            .connect(_on_orphan_cleanup_done)
+
+
+func _on_orphan_cleanup_done(_response: Dictionary) -> void:
+    if _orphan_client != null:
+        # queue_free (deferred to frame end): the completion handler runs from this very
+        # client's pump, so immediate free() would delete the emitter mid-signal.
+        _orphan_client.queue_free()
+        _orphan_client = null
+    _pump_orphan_cleanup()
+
+
+## Read-only status snapshot for the dock's status area (plan §7 Phase 5 item 2): the
+## EFFECTIVE endpoint, diagnostics readiness, the last merged analysis round (ticks msec,
+## 0 = none yet) and the most recent failure text ("" = none). The configured endpoint is
+## deliberately NOT echoed — the dock owns the EditorSettings side and shows both.
+func diag_channel_status() -> Dictionary:
+    var failure: String = ""
+    var last_round: int = 0
+    if _lifecycle != null:
+        failure = _lifecycle.last_failure()
+    if failure == "" and _scheduler != null:
+        failure = _scheduler.last_failure()
+    if _scheduler != null:
+        last_round = _scheduler.last_round_msec()
+    return {
+        "effective_host": _rpc_host,
+        "effective_port": _rpc_port,
+        "ready": is_diag_ready(),
+        "last_round_msec": last_round,
+        "last_failure": failure,
+    }
+
+
+## Revalidation pump (plan §7 Phase 5 item 1): a background analysis round becomes visible
+## by re-running the editor's own validation on the CURRENT script tab. The editor has no
+## public revalidate API, but `CodeTextEditor` owns a `validate_script` signal that
+## `ScriptTextEditor` wires to `_validate_script()` (4.5: code_editor.cpp registers it,
+## script_text_editor.cpp connects it; §2.5). Emission happens synchronously from this
+## pump: the tab/version check and the emission are atomic within one frame, so the plan's
+## call_deferred window (tab switch between queue and fire) cannot occur — the check IS
+## the fire-time re-verification. No feedback loop: revalidating identical text neither
+## bumps the registry version nor re-marks dirty (registry equality rule), so an emission
+## can never re-arm itself.
+func _pump_revalidation() -> void:
+    if _scheduler.has_newly_readable():
+        var newly: Dictionary = _scheduler.take_newly_readable()
+        for path in newly.keys():
+            _revalidate_pending[str(path)] = int(newly[path])
+    if _revalidate_pending.is_empty():
+        return
+    # keys() snapshots the key set: entries may be erased (stale/tab-moved) mid-loop.
+    for path in _revalidate_pending.keys():
+        _drain_revalidation(str(path), int(_revalidate_pending[path]))
+
+
+func _drain_revalidation(path: String, version: int) -> void:
+    var context: Dictionary = _current_editor_context()
+    if str(context.get("path", "")) != path:
+        # Not the current tab (any more): the editor's own beats (tab switch, idle
+        # validation) cover that path — drop.
+        _revalidate_pending.erase(path)
+        return
+    var live: Variant = _registry.entry(path)
+    var code_edit: CodeEdit = context["code_edit"] as CodeEdit
+    # The registry version only advances when a validation runs, so a matching version can
+    # still hide a newer buffer (the user typed after the merge, or while a popup held this
+    # request). Compare the actual buffer text: an emission must validate exactly the text
+    # the round analyzed — otherwise it reads an empty cache and needlessly dirties a new
+    # version (the editor's idle beat will pick the new text up on its own).
+    if not (live is Dictionary) or int(live.get("version", -1)) != version \
+            or code_edit.get_text() != str(live.get("text", "")):
+        _revalidate_pending.erase(path)
+        return
+    if not code_edit.get_code_completion_options().is_empty():
+        # Completion popup open: defer to a later frame. `get_code_completion_options()`
+        # returns an empty array unless `code_completion_active` (4.5 code_edit.cpp), so
+        # it doubles as the popup visibility probe — no internal-state access needed.
+        return
+    _revalidate_pending.erase(path)
+    # The actual `validate_script` emission is relayed by the plugin (see the signal's doc
+    # comment for why a compiled foreign-signal emission must not be used here). The
+    # version rides along so the deferred half can re-run the gate (one frame has passed).
+    revalidation_requested.emit(path, version)
+
+
+## Read-only gate re-check for the plugin's deferred relay emission (plan §7 Phase 5 item
+## 1): the pump's gate-pass and the plugin's message-queue emission are one frame apart,
+## and the user may type or open the completion popup in between. Re-runs the full gate;
+## a popup that just opened RE-QUEUES the request into `_revalidate_pending` so the
+## defer-until-close contract survives the relay hop (the pump retries it next frame).
+func should_still_revalidate(path: String, version: int) -> bool:
+    # An outage/retarget between the pump's gate-pass and this deferred recheck cleared the
+    # cache while leaving the registry untouched — the version/text alone would still match
+    # and the emission would read an empty cache, wiping the displayed diagnostics (review
+    # finding). Readiness + cache freshness close that window.
+    if not _active or not _lifecycle.is_ready() \
+            or not _cache.is_version_current(path, version):
+        return false
+    var context: Dictionary = _current_editor_context()
+    if str(context.get("path", "")) != path:
+        return false
+    var live: Variant = _registry.entry(path)
+    var code_edit: CodeEdit = context["code_edit"] as CodeEdit
+    if not (live is Dictionary) or int(live.get("version", -1)) != version \
+            or code_edit.get_text() != str(live.get("text", "")):
+        return false
+    if not code_edit.get_code_completion_options().is_empty():
+        _revalidate_pending[path] = version
+        return false
+    return true
+
+
+## Current script-tab context for the revalidation pump: the tab's CodeEdit (buffer-text
+## and popup probe) and the current script's resource path. Empty when no text script is
+## current. (4.5 script_text_editor.cpp: `get_base_editor()` returns the bare CodeEdit; the
+## `validate_script` signal lives on its CodeTextEditor parent — resolving that wrapper is
+## the relaying plugin's job, not this pump's.)
+func _current_editor_context() -> Dictionary:
+    if _editor_interface == null:
+        return {}
+    var script_editor: ScriptEditor = _editor_interface.get_script_editor()
+    if script_editor == null:
+        return {}
+    var current: ScriptEditorBase = script_editor.get_current_editor()
+    var script: Script = script_editor.get_current_script()
+    if current == null or script == null:
+        return {}
+    var base: Control = current.get_base_editor()
+    if not (base is CodeEdit):
+        return {}
+    return {"code_edit": base as CodeEdit, "path": script.resource_path}
 
 
 ## Busy coordination (plan §3.5 编辑器空闲活性): holds the coordinator's count while any

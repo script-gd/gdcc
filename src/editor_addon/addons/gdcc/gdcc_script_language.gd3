@@ -81,6 +81,16 @@ var _in_validate: bool = false
 # class-level const is outside gdcc's bootstrap MVP.
 var VALIDATE_LSP_TIMEOUT_MSEC: int = 150
 
+# Total guard-passing `_validate` invocations (observability probe; the Phase 5
+# revalidation acceptance anchors "the editor revalidated with no driver-side call" on
+# this counter advancing — engine test `diag_revalidate`).
+var _validate_call_count: int = 0
+
+
+## Total `_validate` invocations that passed the entry guard (see `_validate_call_count`).
+func validate_call_count() -> int:
+    return _validate_call_count
+
 
 ## Diagnostic merge entry (plan §4.2). Two channels feed the result:
 ## 1. GDScript LSP: full-sync the buffer, wait ≤ `VALIDATE_LSP_TIMEOUT_MSEC` for that
@@ -98,6 +108,7 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
     if _in_validate or _service == null or not _service.is_active():
         return {"valid": true}
     _in_validate = true
+    _validate_call_count += 1
     var errors: Array = []
     var warnings: Array = []
     if _service.is_lsp_ready():

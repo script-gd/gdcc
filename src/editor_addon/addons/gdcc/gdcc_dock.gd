@@ -25,12 +25,17 @@ var _report_busy: Callable
 # Shared server launcher owned by the plugin; used to bring the service up before the first
 # connection attempt when the user configured a launch command.
 var _launcher: Node
+# Resident editor service (plan §7 Phase 5): the status area reads its diagnostics-channel
+# snapshot, and endpoint commits are forwarded to its `retarget_rpc_endpoint` so the
+# background channel follows the configured server without a language reinstall.
+var _service: GdccEditorService
 
 var _host_input: LineEdit
 var _port_input: LineEdit
 var _module_input: LineEdit
 var _launch_command_input: LineEdit
 var _log_output: TextEdit
+var _status_label: Label
 var _action_buttons: Array[Button] = []
 
 var _current_task_id: int = -1
@@ -43,11 +48,12 @@ var _busy_count: int = 0
 
 
 # Injected by plugin.gd before the dock enters the tree; `_ready` builds the UI afterwards.
-func setup(client: GdccRpcClient, editor_interface: EditorInterface, busy_reporter: Callable, launcher: Node) -> void:
+func setup(client: GdccRpcClient, editor_interface: EditorInterface, busy_reporter: Callable, launcher: Node, service: GdccEditorService) -> void:
     _client = client
     _editor_interface = editor_interface
     _report_busy = busy_reporter
     _launcher = launcher
+    _service = service
 
 
 func _ready() -> void:
@@ -64,6 +70,27 @@ func _ready() -> void:
     # survive an editor restart.
     _host_input.text_changed.connect(_on_host_changed)
     _port_input.text_changed.connect(_on_port_changed)
+    # Endpoint commits (Enter / focus loss) ALSO retarget the resident service's background
+    # diagnostics channel — the editor settings and the effective endpoint must never
+    # diverge (plan §7 Phase 5 item 3). Not bound to text_changed: a channel reset per
+    # keystroke would churn the module setup, and the service no-ops unchanged endpoints.
+    _host_input.text_submitted.connect(_on_endpoint_committed.unbind(1))
+    _host_input.focus_exited.connect(_on_endpoint_committed)
+    _port_input.text_submitted.connect(_on_endpoint_committed.unbind(1))
+    _port_input.focus_exited.connect(_on_endpoint_committed)
+
+    # Diagnostics channel status (plan §7 Phase 5 item 2): a read-only mirror of the
+    # service's channel snapshot, refreshed on a slow timer (the channel state is polled,
+    # not signaled).
+    _status_label = Label.new()
+    _status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    add_child(_status_label)
+    var status_timer := Timer.new()
+    status_timer.wait_time = 1.0
+    status_timer.autostart = true
+    status_timer.timeout.connect(_refresh_status)
+    add_child(status_timer)
+    _refresh_status()
 
     var module_row := HBoxContainer.new()
     module_row.add_child(_make_label("Module"))
@@ -181,7 +208,67 @@ func _on_host_changed(new_text: String) -> void:
 
 
 func _on_port_changed(new_text: String) -> void:
-    _editor_interface.get_editor_settings().set_setting(SETTING_SERVER_PORT, int(new_text.strip_edges()))
+    var port := _parsed_port(new_text)
+    if port < 0:
+        # Never persist an unparseable port: it would poison the next install's endpoint
+        # (int("abc") silently becomes 0) — keep the last valid setting instead.
+        _log("endpoint: ignored invalid port '" + new_text.strip_edges() + "'")
+        return
+    _editor_interface.get_editor_settings().set_setting(SETTING_SERVER_PORT, port)
+
+
+## All-digits port text in 1..65535, or -1 when invalid. The commit path and the settings
+## write both gate on this (review finding: bare int() converts garbage to 0 and would
+## reset a working diagnostics channel onto a dead endpoint).
+func _parsed_port(text: String) -> int:
+    var trimmed := text.strip_edges()
+    if trimmed.is_empty() or not trimmed.is_valid_int():
+        return -1
+    var port := int(trimmed)
+    if port < 1 or port > 65535:
+        return -1
+    return port
+
+
+## Commits the endpoint input fields to the resident service's diagnostics channel (plan
+## §7 Phase 5 item 3). Bound to text_submitted/focus_exited (the "commit" gestures); the
+## service-side retarget reuses the module lifecycle's channel reset — no language
+## reinstall, no LSP disconnect.
+func _on_endpoint_committed() -> void:
+    if _service == null:
+        return
+    var port := _parsed_port(_port_input.text)
+    if port < 0:
+        _log("endpoint commit skipped: invalid port '" + _port_input.text.strip_edges() + "'")
+        return
+    _service.retarget_rpc_endpoint(_host_input.text.strip_edges(), port)
+
+
+## Read-only status refresh (timer-driven): configured endpoint vs the service's effective
+## endpoint, module readiness, last analysis round and last failure reason.
+func _refresh_status() -> void:
+    if _status_label == null:
+        return
+    if _service == null:
+        _status_label.text = "Diagnostics: service unavailable"
+        return
+    var status: Dictionary = _service.diag_channel_status()
+    # The configured endpoint is what is actually persisted — the input fields may hold an
+    # uncommitted or invalid draft that was (correctly) never written to the settings.
+    var settings := _editor_interface.get_editor_settings()
+    var configured := _read_setting_text(settings, SETTING_SERVER_HOST, "127.0.0.1") + ":" \
+            + _read_setting_text(settings, SETTING_SERVER_PORT, "6099")
+    var effective := str(status.get("effective_host", "")) + ":" + str(status.get("effective_port", ""))
+    var ready_text := "ready" if status.get("ready", false) else "not ready"
+    var last_round := int(status.get("last_round_msec", 0))
+    var round_text := "never"
+    if last_round > 0:
+        round_text = str(maxi(0, (Time.get_ticks_msec() - last_round) / 1000)) + "s ago"
+    var failure := str(status.get("last_failure", ""))
+    if failure == "":
+        failure = "none"
+    _status_label.text = "Diagnostics: %s | effective %s (configured %s)\nLast analysis: %s | Last failure: %s" \
+            % [ready_text, effective, configured, round_text, failure]
 
 
 ## Reads a machine-local editor setting as text, falling back to the given default when the

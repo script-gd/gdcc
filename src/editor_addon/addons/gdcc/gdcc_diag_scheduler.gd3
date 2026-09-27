@@ -23,6 +23,16 @@ var _flight_backoff_until: int = 0
 var _flight_suspended: bool = false
 # res:// path -> version last uploaded to the diagnostics VFS (absent = not mirrored).
 var _mirrored_versions: Dictionary = {}
+# (path -> version) pairs that became cache-readable in recent merges and were not yet
+# drained by the service's revalidation pump (plan §7 Phase 5 item 1). Judged by cache
+# freshness BEFORE the write, so a version advance with unchanged diagnostics still
+# counts — an earlier `_validate` of that version necessarily read an empty cache.
+var _newly_readable: Dictionary = {}
+# Dock status area state (plan §7 Phase 5 item 2): ticks of the last merged analysis round
+# (0 = none since the last channel reset) and the most recent failure text ("" = none since
+# the last merged round; the channel-epoch clears live in reset/shutdown).
+var _last_round_msec: int = 0
+var _last_failure: String = ""
 # Vars, not consts: class-level const is outside gdcc's bootstrap MVP.
 var ANALYZE_DEBOUNCE_MSEC: int = 800
 
@@ -48,6 +58,30 @@ func note_mirrored(path: String, version: int) -> void:
 
 func unmirror(path: String) -> void:
     _mirrored_versions.erase(path)
+
+
+## True while newly cache-readable (path, version) pairs wait for the service's
+## revalidation pump (drain via `take_newly_readable`).
+func has_newly_readable() -> bool:
+    return not _newly_readable.is_empty()
+
+
+## Hands the newly-readable set to the revalidation pump; ownership moves to the caller
+## and the next merge starts a fresh set.
+func take_newly_readable() -> Dictionary:
+    var taken: Dictionary = _newly_readable
+    _newly_readable = {}
+    return taken
+
+
+## Ticks of the last successfully merged analysis round; 0 = none since the last reset.
+func last_round_msec() -> int:
+    return _last_round_msec
+
+
+## Most recent failure text of the analysis chain ("" = none since the last merged round).
+func last_failure() -> String:
+    return _last_failure
 
 
 ## A deletion-triggered whole-module round: analyze every file once the reconcile lands,
@@ -76,6 +110,11 @@ func on_module_outage() -> void:
     _flight_failures = 0
     _flight_suspended = false
     _flight_backoff_until = 0
+    # Pending revalidation reports belong to the dead channel epoch (the cache was
+    # cleared with it). The analysis-side failure text is likewise superseded: the
+    # lifecycle's outage reason is the newer truth (the status area prefers it).
+    _newly_readable.clear()
+    _last_failure = ""
 
 
 func service_reset_channel() -> void:
@@ -85,6 +124,9 @@ func service_reset_channel() -> void:
     _flight_failures = 0
     _flight_suspended = false
     _flight_backoff_until = 0
+    _newly_readable.clear()
+    _last_round_msec = 0
+    _last_failure = ""
 
 
 func service_shutdown() -> void:
@@ -94,6 +136,9 @@ func service_shutdown() -> void:
     _flight_failures = 0
     _flight_suspended = false
     _flight_backoff_until = 0
+    _newly_readable.clear()
+    _last_round_msec = 0
+    _last_failure = ""
 
 
 ## Flight tick: fires once the newest change is 800ms quiet (or immediately for a
@@ -165,7 +210,10 @@ func _on_flight_put_done(response: Dictionary) -> void:
     if not _flight_valid():
         return
     if not service.response_ok(response):
-        service.lifecycle().notify_outage()
+        # Transport failure = channel death: the reason is recorded on the lifecycle (the
+        # status area's channel-down source), not here.
+        service.lifecycle().notify_outage(
+                "put_file failed (code %d)" % service.response_error_code(response))
         return
     # Mirror the uploaded snapshot version only now (on success): the merge gate compares
     # mirrored versions against live content versions.
@@ -177,11 +225,12 @@ func _on_flight_analyze_done(response: Dictionary) -> void:
     if not _flight_valid():
         return
     if not service.response_ok(response):
-        service.lifecycle().notify_outage()
+        service.lifecycle().notify_outage(
+                "analyze.run failed (code %d)" % service.response_error_code(response))
         return
     var result: Variant = response.get("result")
     if not (result is Dictionary):
-        service.lifecycle().notify_outage()
+        service.lifecycle().notify_outage("analyze.run returned a malformed result")
         return
     # An RPC-OK envelope can still carry a failed analysis (e.g. INTERNAL_FAILED when the
     # server cannot load Godot metadata): merging it would falsely present every file as
@@ -189,6 +238,7 @@ func _on_flight_analyze_done(response: Dictionary) -> void:
     if result.get("outcome") != "COMPLETED":
         _flight = {}
         _flight_failures += 1
+        _last_failure = "analysis outcome: " + str(result.get("outcome"))
         if _flight_failures >= 5:
             _flight_suspended = true
             push_warning("GDCC: analysis keeps failing (outcome=%s); pausing until the next change."
@@ -210,6 +260,8 @@ func _on_flight_analyze_done(response: Dictionary) -> void:
     _merge_analysis_result(result)
     _analyze_all_pending = false
     _flight = {}
+    _last_round_msec = Time.get_ticks_msec()
+    _last_failure = ""
     service.lifecycle().note_heartbeat()
     service.refresh_busy()
 
@@ -255,7 +307,13 @@ func _merge_analysis_result(result: Dictionary) -> void:
             merged.append_array(mine)
         merged.append_array(unlocated)
         var live: Dictionary = registry.entry(path)
-        cache.set_items(path, int(live.get("version", -1)), merged)
+        var live_version: int = int(live.get("version", -1))
+        # Record BEFORE the write: a (path, version) not yet served by the cache is newly
+        # readable even when the diagnostic payload is unchanged — a `_validate` of that
+        # version before this merge necessarily read an empty cache (plan §7 Phase 5).
+        if not cache.is_version_current(path, live_version):
+            _newly_readable[path] = live_version
+        cache.set_items(path, live_version, merged)
     for path in snap.keys():
         var snap_entry: Dictionary = snap[path]
         var live_entry: Variant = registry.entry(path)

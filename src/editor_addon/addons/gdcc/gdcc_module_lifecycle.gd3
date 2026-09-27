@@ -68,6 +68,15 @@ var _hook_done: int = 0
 var _hook_inflight: bool = false
 # Frame timestamp when the outstanding hook was fired.
 var _hook_inflight_since: int = 0
+# Endpoint the in-flight module.create was SENT to (recorded at send time). A stale OK
+# completion after a retarget means the module exists on the OLD server while the reset
+# dropped its ownership — the cleanup must be owed explicitly via the retarget queue
+# (review finding).
+var _create_sent_host: String = ""
+var _create_sent_port: int = 0
+# Most recent setup/heartbeat failure text for the dock status area (plan §7 Phase 5
+# item 2); cleared on module-ready entry and on channel reset/shutdown.
+var _last_failure: String = ""
 # Vars, not consts: class-level const is outside gdcc's bootstrap MVP.
 var HEARTBEAT_MSEC: int = 3000
 var OUTAGE_RETRY_MSEC: int = 5000
@@ -94,6 +103,18 @@ func module_id() -> String:
 
 func is_ready() -> bool:
     return _module_ready
+
+
+## Most recent setup/heartbeat failure text ("" = none since the last ready entry).
+func last_failure() -> String:
+    return _last_failure
+
+
+## True while this session's module is believed to exist on the current endpoint: armed by
+## a successful create, cleared by its delete and by channel reset. The retarget path uses
+## it to decide whether an old-endpoint delete is owed before abandoning the server.
+func has_created_module() -> bool:
+    return _module_created
 
 
 ## True while no setup/heartbeat RPC is in flight — reconciler and scheduler gate on this so
@@ -150,6 +171,7 @@ func service_tick(now: int) -> void:
         _setup_fail_streak = 0
         _setup_concluded = true
         _ensure_attempted = false
+        _last_failure = "ensure-server hook timed out"
         _next_heartbeat_msec = now + OUTAGE_RETRY_MSEC
         service.refresh_busy()
         return
@@ -196,6 +218,8 @@ func _on_diag_ping_done(response: Dictionary) -> void:
         else:
             _setup_stage = 2
             _setup_session = _diag_session
+            _create_sent_host = service.rpc_host()
+            _create_sent_port = service.rpc_port()
             service.rpc_client().create_module(module_id(), "GDCC Editor Diagnostics") \
                     .completed.connect(_on_diag_create_done)
         service.refresh_busy()
@@ -206,7 +230,8 @@ func _on_diag_ping_done(response: Dictionary) -> void:
             # The endpoint keeps accepting TCP (hook keeps answering OK) but never answers
             # RPC: conclude so busy drains; retries keep running on activity frames.
             _setup_concluded = true
-    notify_outage()
+    _last_failure = "server ping failed (code %d)" % service.response_error_code(response)
+    notify_outage("")
 
 
 ## module.create answer. -32001 means a same-id remnant of THIS process (the id embeds the
@@ -221,6 +246,11 @@ func _on_diag_create_done(response: Dictionary) -> void:
             service.rpc_client().delete_module(module_id())
         return
     if _setup_stage != 2 or _setup_session != _diag_session:
+        # Stale answer: a retarget/outage bumped the session while the create was in flight.
+        # A SUCCESS means the module now exists on the endpoint the create was SENT to while
+        # the reset dropped its ownership — owe that endpoint a delete (review finding).
+        if service.response_ok(response) and _create_sent_port != 0:
+            service.enqueue_orphan_cleanup(_create_sent_host, _create_sent_port, module_id())
         return
     _setup_stage = 0
     if service.response_ok(response):
@@ -242,6 +272,7 @@ func _on_diag_create_done(response: Dictionary) -> void:
         _setup_session = _diag_session
         service.rpc_client().delete_module(module_id()).completed.connect(_on_diag_stale_delete_done)
         return
+    _last_failure = "module create failed (code %d)" % service.response_error_code(response)
     _defer_setup_retry()
 
 
@@ -255,6 +286,8 @@ func _on_diag_stale_delete_done(response: Dictionary) -> void:
         _stale_deleted = true
         _setup_stage = 2
         _setup_session = _diag_session
+        _create_sent_host = service.rpc_host()
+        _create_sent_port = service.rpc_port()
         service.rpc_client().create_module(module_id(), "GDCC Editor Diagnostics") \
                 .completed.connect(_on_diag_create_done)
         return
@@ -262,6 +295,7 @@ func _on_diag_stale_delete_done(response: Dictionary) -> void:
     # heartbeat tick restarts the create attempt from the ping stage. The guard flag stays
     # cleared so that retried -32001 answers still get their delete attempt.
     _stale_deleted = false
+    _last_failure = "stale module delete failed (code %d)" % service.response_error_code(response)
     push_warning("GDCC: deleting the stale diagnostics module failed (code %d); will retry." \
             % service.response_error_code(response))
     _defer_setup_retry()
@@ -272,6 +306,7 @@ func _enter_module_ready() -> void:
     _setup_concluded = true
     _setup_fail_streak = 0
     _stale_deleted = false
+    _last_failure = ""
     _next_heartbeat_msec = Time.get_ticks_msec() + HEARTBEAT_MSEC
     # Readiness starts the initial sync (reconciliation against the empty mirror) and re-arms
     # the siblings' session state.
@@ -296,8 +331,12 @@ func _defer_setup_retry() -> void:
 ## re-runs the ensure hook before pinging (hook-first). Recovery is self-cleaning: a
 ## surviving server still holds our module, so the recreate hits -32001 and the
 ## delete+recreate path wipes any zombie files left by interrupted reconciles. Sibling
-## cleanup (flight, mirror, reconcile state, cache) is broadcast by the root.
-func notify_outage() -> void:
+## cleanup (flight, mirror, reconcile state, cache) is broadcast by the root. `reason` (when
+## non-empty) becomes the channel's last-failure text shown by the dock status area; the
+## caller that already recorded the reason directly (ping path) passes "".
+func notify_outage(reason: String) -> void:
+    if reason != "":
+        _last_failure = reason
     _module_ready = false
     # `_module_created` deliberately survives an outage: a failed RPC does not mean the
     # server forgot the module, and uninstall() must still be allowed to delete it (only an
@@ -356,6 +395,7 @@ func _on_ensure_ready(err: int, _spawned_by_us: bool) -> void:
         _setup_fail_streak = 0
         _setup_concluded = true
         _ensure_attempted = false
+        _last_failure = "server not reachable (hook error %d)" % err
         _next_heartbeat_msec = now + OUTAGE_RETRY_MSEC
     service.refresh_busy()
 
@@ -375,6 +415,7 @@ func service_reset_channel() -> void:
     _ensure_attempted = false
     _setup_fail_streak = 0
     _stale_deleted = false
+    _last_failure = ""
     _next_heartbeat_msec = 0
 
 
@@ -392,6 +433,7 @@ func service_shutdown() -> void:
     _ensure_attempted = false
     _setup_fail_streak = 0
     _stale_deleted = false
+    _last_failure = ""
     # A same-port reinstall does not pass through `service_reset_channel`; without this the
     # first ping of the new session would wait out the previous heartbeat/backoff deadline.
     _next_heartbeat_msec = 0

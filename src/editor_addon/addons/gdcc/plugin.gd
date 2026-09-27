@@ -57,8 +57,10 @@ func _enter_tree() -> void:
 
     var editor_settings := get_editor_interface().get_editor_settings()
     # 2) Endpoints first (the thread-mode probe below needs them): LSP follows the user's
-    #    language-server settings; the gdcc RPC endpoint stays on its fixed default
-    #    (deliberately not coupled to the dock input fields).
+    #    language-server settings; the gdcc RPC endpoint reads the SAME EditorSettings pair
+    #    the dock edits (`gdcc/server/host|port`) so the background diagnostics channel and
+    #    the dock can never diverge (plan §7 Phase 5 item 3). Defaults are registered a few
+    #    lines below and therefore always exist by the time install() runs.
     var lsp_endpoint := _read_lsp_endpoint()
     var lsp_host: String = lsp_endpoint[0]
     var lsp_port: int = lsp_endpoint[1]
@@ -115,7 +117,7 @@ func _enter_tree() -> void:
     _client = GdccRpcClient.new()
     add_child(_client)
     _dock = DockScript.new()
-    _dock.setup(_client, get_editor_interface(), _report_busy, _launcher)
+    _dock.setup(_client, get_editor_interface(), _report_busy, _launcher, _service)
     add_control_to_bottom_panel(_dock, "GDCC")
 
     # 5) Install the language integration BEFORE any asynchronous flow (auto-setup may spawn
@@ -131,7 +133,15 @@ func _enter_tree() -> void:
     # plugin instance; the engine drops the connection when this plugin is freed.
     if not _service.busy_delta.is_connected(_report_busy):
         _service.busy_delta.connect(_report_busy)
-    var install_err: int = _service.install(get_editor_interface(), lsp_host, lsp_port, "127.0.0.1", 6099)
+    # Phase 5 relay: the service reports revalidation-worthy analysis merges through its
+    # own signal; the ACTUAL `validate_script` emission happens HERE in interpreted code.
+    # This indirection is load-bearing: a gdcc-compiled foreign-signal `Object.emit_signal`
+    # from the service's frame pump empirically delivers to no connection (2026-09-27
+    # engine-test bisect), while this interpreted emission reaches them all.
+    if not _service.revalidation_requested.is_connected(_on_gdcc_revalidation_requested):
+        _service.revalidation_requested.connect(_on_gdcc_revalidation_requested)
+    var server_endpoint := _read_server_endpoint()
+    var install_err: int = _service.install(get_editor_interface(), lsp_host, lsp_port, server_endpoint[0], server_endpoint[1])
     if install_err != OK:
         push_error("GDCC: script language install failed (error %d); editor settings restored." % install_err)
         _rollback_failed_enter_tree()
@@ -180,6 +190,21 @@ func _read_lsp_endpoint() -> Array:
         host = str(editor_settings.get_setting(SETTING_LSP_HOST))
     if editor_settings.has_setting(SETTING_LSP_PORT):
         port = int(editor_settings.get_setting(SETTING_LSP_PORT))
+    return [host, port]
+
+
+## Reads the gdcc server endpoint from the same EditorSettings pair the dock edits
+## (`gdcc/server/host|port`) — single-sourced so the background diagnostics channel can
+## never diverge from the configured endpoint (plan §7 Phase 5 item 3). The defaults are
+## registered earlier in `_enter_tree`, so this always resolves.
+func _read_server_endpoint() -> Array:
+    var editor_settings := get_editor_interface().get_editor_settings()
+    var host := "127.0.0.1"
+    var port := 6099
+    if editor_settings.has_setting(SETTING_SERVER_HOST):
+        host = str(editor_settings.get_setting(SETTING_SERVER_HOST)).strip_edges()
+    if editor_settings.has_setting(SETTING_SERVER_PORT):
+        port = int(editor_settings.get_setting(SETTING_SERVER_PORT))
     return [host, port]
 
 
@@ -268,3 +293,38 @@ func _restore_use_thread() -> void:
 func _on_filesystem_changed() -> void:
     if _service != null:
         _service.notify_filesystem_changed()
+
+
+## Relays the service's `revalidation_requested` into the editor's own revalidation
+## channel (plan §7 Phase 5 item 1), deferred OUT of the caller's stack first. The
+## deferral is load-bearing (2026-09-27 engine-test bisect): emissions initiated anywhere
+## inside the service's `SceneTree.process_frame` pump stack — even from this interpreted
+## handler nested under it — reach no `validate_script` connection, while the same
+## emission from a message-queue-deferred frame reaches them all. The deferred half
+## re-runs the service's gate (`should_still_revalidate`: one frame passed; the user may
+## have typed or opened the completion popup in between).
+func _on_gdcc_revalidation_requested(path: String, version: int) -> void:
+    call_deferred("_emit_revalidation_deferred", path, version)
+
+
+func _emit_revalidation_deferred(path: String, version: int) -> void:
+    if _service == null or not _service.should_still_revalidate(path, version):
+        return
+    var script_editor := get_editor_interface().get_script_editor()
+    if script_editor == null:
+        return
+    var current_script := script_editor.get_current_script()
+    if current_script == null or current_script.resource_path != path:
+        return
+    var current_editor := script_editor.get_current_editor()
+    if current_editor == null:
+        return
+    # 4.5: get_base_editor() returns the bare CodeEdit; the signal lives on its
+    # CodeTextEditor parent, so resolve by walking ancestors until the signal appears.
+    var wrapper: Node = current_editor.get_base_editor()
+    if wrapper != null:
+        wrapper = wrapper.get_parent()
+    while wrapper != null and not wrapper.has_signal(&"validate_script"):
+        wrapper = wrapper.get_parent()
+    if wrapper != null:
+        wrapper.emit_signal(&"validate_script")

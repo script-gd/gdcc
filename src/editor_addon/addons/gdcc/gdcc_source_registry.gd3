@@ -86,6 +86,16 @@ func entry(path: String) -> Variant:
     return _sources.get(path)
 
 
+## Live content version of `path`, or -1 when untracked. Read-only probe — unlike
+## `notify_source_changed` it never bumps versions or touches dirty marks (the Phase 5
+## revalidation pump uses it for the fire-time staleness check).
+func live_version(path: String) -> int:
+    var e: Variant = _sources.get(path)
+    if not (e is Dictionary):
+        return -1
+    return int(e.get("version", -1))
+
+
 func set_entry(path: String, text: String, version: int) -> void:
     _sources[path] = {"text": text, "version": version}
 
