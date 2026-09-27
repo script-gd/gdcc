@@ -2,6 +2,8 @@ package gd.script.gdcc.rpc;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.sun.net.httpserver.HttpServer;
+import gd.script.gdcc.api.API;
 import gd.script.gdcc.api.CompileResult;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
@@ -14,6 +16,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -59,21 +62,21 @@ class EditorAddonScriptLanguageEngineTest {
     private static final int QUIT_AFTER_FRAMES = 30000;
     private static final long PROCESS_TIMEOUT_MINUTES = 10;
 
-    private static final Map<String, List<String>> EXPECTED_STEPS = Map.of(
-            "language", List.of(
+    private static final Map<String, List<String>> EXPECTED_STEPS = Map.ofEntries(
+            Map.entry("language", List.of(
                     "config", "language_registered", "language_identity", "load_roundtrip",
                     "save_roundtrip", "save_bad_path", "reload_from_disk", "threaded_load",
                     "validate_valid_true", "create_script_valid", "header_scan_edges",
-                    "disabled_safe", "reenabled_same_instance"),
-            "launch", List.of(
-                    "config", "configure", "relaunched", "server_up", "server_stopped_on_disable"),
-            "launch_bad", List.of("config", "configure", "relaunched", "no_server_started", "editor_alive"),
-            "launch_none", List.of("config", "relaunched", "passive_no_server", "editor_alive"),
+                    "disabled_safe", "reenabled_same_instance")),
+            Map.entry("launch", List.of(
+                    "config", "configure", "relaunched", "server_up", "server_stopped_on_disable")),
+            Map.entry("launch_bad", List.of("config", "configure", "relaunched", "no_server_started", "editor_alive")),
+            Map.entry("launch_none", List.of("config", "relaunched", "passive_no_server", "editor_alive")),
             // Reproduction of the manual-testing crash: the Create Resource dialog instantiates
             // a ClassDB GdccScript (no language setup) and pushes it to the inspector/editor.
-            "create_resource", List.of(
+            Map.entry("create_resource", List.of(
                     "config", "classdb_instantiate", "property_list", "save", "edit_resource",
-                    "disabled_create_safe", "survived"),
+                    "disabled_create_safe", "survived")),
             // Phase 2: LSP connection lifecycle (backoff retry across the editor-boot window
             // where the GDScript language server does not listen yet, then drop/reconnect
             // cycles — endpoint steering forces a disconnect, and a plugin disable/enable
@@ -81,38 +84,54 @@ class EditorAddonScriptLanguageEngineTest {
             // `use_thread` changes is driven by NOTIFICATION_EDITOR_SETTINGS_CHANGED, which
             // is emitted only by C++ UI flows and is not reachable from script, so an actual
             // server-side restart cannot be triggered by the driver.
-            "lsp_connect", List.of(
+            Map.entry("lsp_connect", List.of(
                     "config", "lsp_endpoint", "lsp_ready", "reconnect_drop",
                     "reconnect_attempts", "reconnect_recover", "plugin_cycle_reconnect",
-                    "blocking_safe_after_cycle", "thread_reprobe_clears_flag", "survived"),
+                    "blocking_safe_after_cycle", "thread_reprobe_clears_flag", "survived")),
             // Phase 2: `_validate` diagnostic merge — degraded path, error/clean/warning
             // samples with exact line anchoring, non-BMP column accounting (R11), and the
             // uninstalled-service safe answer.
-            "lsp_validate", List.of(
+            Map.entry("lsp_validate", List.of(
                     "config", "lsp_endpoint_closed", "validate_degraded", "lsp_endpoint",
                     "lsp_ready", "validate_error", "validate_clean", "validate_warning",
-                    "validate_cjk_columns", "disabled_validate_safe", "survived"),
+                    "validate_cjk_columns", "disabled_validate_safe", "survived")),
             // Phase 2: publishDiagnostics carry no version, so attribution must follow the
             // per-URI generation FIFO (g1 sent, g2 sent, then g1's notification must still
             // bind to g1); plus a blocking request/response round-trip.
-            "lsp_fifo", List.of(
+            Map.entry("lsp_fifo", List.of(
                     "config", "lsp_endpoint", "lsp_ready", "fifo_open_change",
                     "fifo_g1_diagnostics", "fifo_g2_diagnostics", "fifo_timeout_realign",
-                    "blocking_request", "survived"),
+                    "blocking_request", "survived")),
             // Phase 2 (review finding): runtime enable flips `use_thread` too late — the
             // server already started main-thread-polled and a programmatic set_setting
             // cannot restart it (§2.6). The session must refuse inline waits (no 150ms
             // starvation per validate) while diagnostics still surface asynchronously.
-            "lsp_runtime_enable", List.of(
+            Map.entry("lsp_runtime_enable", List.of(
                     "config", "lsp_port_set", "editor_ready", "plugin_enabled", "lsp_ready",
-                    "blocking_refused", "async_diagnostics_surface", "survived"),
+                    "blocking_refused", "async_diagnostics_surface", "survived")),
             // Phase 2 (review round 3): boot-time prime followed by a disable BEFORE the
             // server listened must un-prime (the restored setting makes the server start
             // main-thread-polled); the next enable re-probes and degrades correctly.
-            "lsp_disable_before_prime", List.of(
+            Map.entry("lsp_disable_before_prime", List.of(
                     "config", "lsp_port_set", "disabled_before_listen", "editor_ready",
                     "plugin_reenabled", "lsp_ready", "blocking_refused",
-                    "async_diagnostics_surface", "survived")
+                    "async_diagnostics_surface", "survived")),
+            // Phase 3: gdcc diagnostics channel — version-gated merge into `_validate`
+            // (path-extends error + lowering warning/error pair), displayPath keying for
+            // same-basename files, stale-version and LSP-error suppression negatives,
+            // fix-then-clear round, busy coordination, -32001 stale-module rebuild,
+            // delete/rename reconciliation with server-side VFS proof, and the
+            // ensure_server_hook outage path with recovery.
+            Map.entry("gdcc_diag", List.of(
+                    "config", "service_ready", "busy_probe_connected", "fixtures_written",
+                    "analysis_ready", "validate_gdcc_error", "validate_lowering_pair",
+                    "display_path_keying", "stale_version_suppressed",
+                    "lsp_error_suppresses_gdcc", "fix_clears_after_round", "busy_drained",
+                    "stale_module_rebuild", "delete_reconciles", "rename_reconciles",
+                    "deletion_triggers_reanalysis", "delete_with_dirty_buffer",
+                    "hook_invoked_on_outage", "hook_ok_ping_fail_capped",
+                    "stale_hook_answer_dropped", "recovered_after_hook",
+                    "hook_pending_uninstall_recovers", "survived"))
     );
 
     /// Interpreted driver plugin (gdcc feature limits do not apply to it). Every mode records
@@ -256,6 +275,8 @@ class EditorAddonScriptLanguageEngineTest {
                     await _run_lsp_runtime_enable_mode()
                 elif mode == "lsp_disable_before_prime":
                     await _run_lsp_disable_before_prime_mode()
+                elif mode == "gdcc_diag":
+                    await _run_gdcc_diag_mode()
                 else:
                     _step("mode", false, "unknown mode " + mode)
                 _finish()
@@ -859,6 +880,463 @@ class EditorAddonScriptLanguageEngineTest {
                     result = lang._validate(source, path, true, true, true, true)
                     warnings = result.get("warnings", [])
                 return result
+
+            # ---------------- Phase 3: gdcc diagnostics channel ----------------
+            # The fixtures' exact frontend diagnostics are pinned Java-side by
+            # EditorAddonDiagnosticsFixtureTest; here we assert the addon's mapping,
+            # version gating, suppression rules, and module/reconcile lifecycle.
+
+            var _busy_log: Array = []
+            var _hook_calls: int = 0
+
+            func _on_diag_busy(delta: int) -> void:
+                _busy_log.append(delta)
+
+            # Stand-in for the launcher hook: records the invocation and reports failure so
+            # the service backs off instead of looping hot.
+            func _record_ensure_hook(_hook_host: String, _hook_port: int, on_ready: Callable) -> void:
+                _hook_calls += 1
+                on_ready.call(ERR_CANT_CONNECT, false)
+
+            # Hook variant whose probe always "succeeds" — used against the blackhole
+            # endpoint (TCP accepts, RPC always 500) to exercise the hook-OK/ping-fail cycle.
+            func _record_ensure_ok_hook(_hook_host: String, _hook_port: int, on_ready: Callable) -> void:
+                _hook_calls += 1
+                on_ready.call(OK, false)
+
+            # Hook variant that never answers on its own: the driver fires the recorded
+            # replies manually to control stale-answer timing across retargets (review
+            # finding: a superseded hook's late answer must not touch the new window).
+            var _deferred_replies: Array = []
+
+            func _record_ensure_defer_hook(_hook_host: String, _hook_port: int, on_ready: Callable) -> void:
+                _hook_calls += 1
+                _deferred_replies.append(on_ready)
+
+            func _wait_diag_items(service: Node, path: String, version: int, timeout_sec: float) -> bool:
+                var deadline := Time.get_ticks_msec() + int(timeout_sec * 1000.0)
+                while Time.get_ticks_msec() < deadline:
+                    if not service.gdcc_diagnostics_for(path, version).is_empty():
+                        return true
+                    await get_tree().process_frame
+                return false
+
+            func _wait_diag_current(service: Node, path: String, version: int, timeout_sec: float) -> bool:
+                var deadline := Time.get_ticks_msec() + int(timeout_sec * 1000.0)
+                while Time.get_ticks_msec() < deadline:
+                    if service.is_diag_version_current(path, version):
+                        return true
+                    await get_tree().process_frame
+                return false
+
+            func _wait_diag_ready(service: Node, timeout_sec: float) -> bool:
+                var deadline := Time.get_ticks_msec() + int(timeout_sec * 1000.0)
+                while Time.get_ticks_msec() < deadline:
+                    if service.is_diag_ready():
+                        return true
+                    await get_tree().process_frame
+                return false
+
+            func _run_gdcc_diag_mode() -> void:
+                var service := _service()
+                var lang := _find_gd3_language()
+                if service == null or lang == null:
+                    _step("service_ready", false, "GdccEditorService or GD3 language missing")
+                    return
+                var lsp_port := int(_config["lsp_port"])
+                var rpc_port := int(_config["rpc_port"])
+                # HTTP 500 blackhole (fails fast) for the hook-outage step.
+                var blackhole_port := int(_config["blackhole_port"])
+                # Repeat-install retargets both endpoints onto the test-owned servers.
+                _step("service_ready", service.install(EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", rpc_port) == OK)
+                service.busy_delta.connect(_on_diag_busy)
+                _step("busy_probe_connected", true)
+
+                var base_path := "res://diag_base.gd"
+                var child_path := "res://diag_path_child.gd3"
+                var child_src := "class_name DiagPathChild\\nextends \\"res://diag_base.gd\\"\\n"
+                var lowering_path := "res://diag_lowering.gd3"
+                var lowering_src := "class_name DiagLowering\\nextends Node\\n\\n@onready var camera = $Camera3D\\n"
+                var dup_a_path := "res://dup_a/same.gd3"
+                var dup_a_src := "class_name DupA\\nextends \\"res://diag_base.gd\\"\\n"
+                var dup_b_path := "res://dup_b/same.gd3"
+                var dup_b_src := "class_name DupB\\nextends \\"res://diag_base.gd\\"\\n"
+                var gone_path := "res://diag_gone.gd3"
+                var gone_src := "class_name DiagGone\\nextends \\"res://diag_base.gd\\"\\n"
+                DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://dup_a"))
+                DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://dup_b"))
+                _write_text_file(base_path, "extends Node\\n")
+                _write_text_file(child_path, child_src)
+                _write_text_file(lowering_path, lowering_src)
+                _write_text_file(dup_a_path, dup_a_src)
+                _write_text_file(dup_b_path, dup_b_src)
+                _write_text_file(gone_path, gone_src)
+                # Deterministic reconcile trigger (the editor's own filesystem signal may
+                # coalesce onto the same path; both entries are equivalent).
+                service.notify_filesystem_changed()
+                _step("fixtures_written", true)
+
+                # One initial round mirrors every fixture (each at content version 1) and
+                # analyzes the module: all five fixtures must carry diagnostics.
+                var ready_ok: bool = await _wait_diag_ready(service, 45.0)
+                ready_ok = ready_ok and await _wait_diag_items(service, child_path, 1, 60.0)
+                ready_ok = ready_ok and await _wait_diag_items(service, lowering_path, 1, 60.0)
+                ready_ok = ready_ok and await _wait_diag_items(service, dup_a_path, 1, 60.0)
+                ready_ok = ready_ok and await _wait_diag_items(service, dup_b_path, 1, 60.0)
+                ready_ok = ready_ok and await _wait_diag_items(service, gone_path, 1, 60.0)
+                _step("analysis_ready", ready_ok)
+
+                # gdcc-only error surfaces on the next validation beat. The retry absorbs the
+                # editor's async filesystem scan (the LSP may briefly miss diag_base.gd);
+                # only a state where EVERY error carries the gdcc prefix is accepted, which
+                # simultaneously proves the LSP stayed silent on legal path-extends.
+                var child_result := {}
+                var child_ok := false
+                var child_deadline := Time.get_ticks_msec() + 30000
+                while Time.get_ticks_msec() < child_deadline and not child_ok:
+                    child_result = lang._validate(child_src, child_path, true, true, true, true)
+                    var child_errors: Array = child_result.get("errors", [])
+                    child_ok = child_errors.size() == 1 and child_result.get("valid", true) == false
+                    if child_ok:
+                        var ce: Dictionary = child_errors[0]
+                        child_ok = str(ce.get("message", "")).begins_with("[gdcc sema.class_skeleton]") \
+                                and int(ce.get("line", -1)) == 1 \
+                                and str(ce.get("path", "")) == child_path \
+                                and str(ce.get("message", "")).contains("DiagPathChild")
+                    if not child_ok:
+                        await get_tree().process_frame
+                _step("validate_gdcc_error", child_ok, str(child_result))
+
+                # includeLowering=true surfaces the compile-only error AND the deferred
+                # warning as a pair on the same 1-based anchor (line 4, column 23).
+                var lower_result: Dictionary = lang._validate(lowering_src, lowering_path, true, true, true, true)
+                var lower_errors: Array = lower_result.get("errors", [])
+                var lower_warnings: Array = lower_result.get("warnings", [])
+                var lower_ok: bool = lower_result.get("valid", true) == false
+                var error_found := false
+                for e in lower_errors:
+                    if str(e.get("message", "")).begins_with("[gdcc sema.compile_check]") \
+                            and int(e.get("line", -1)) == 4 and int(e.get("column", -1)) == 23:
+                        error_found = true
+                lower_ok = lower_ok and error_found
+                var warning_found := false
+                for w in lower_warnings:
+                    var five_keys := true
+                    for key in ["start_line", "end_line", "code", "string_code", "message"]:
+                        if not w.has(key):
+                            five_keys = false
+                    if five_keys and str(w.get("string_code", "")) == "sema.deferred_expression_resolution" \
+                            and int(w.get("start_line", -1)) == 4 and int(w.get("end_line", -1)) == 4 \
+                            and int(w.get("code", -1)) == 0 \
+                            and str(w.get("message", "")).begins_with("[gdcc sema.deferred_expression_resolution]"):
+                        warning_found = true
+                _step("validate_lowering_pair", lower_ok and warning_found, str(lower_result))
+
+                # Same-basename files: diagnostics key by displayPath, never by basename.
+                var dup_a_items: Array = service.gdcc_diagnostics_for(dup_a_path, 1)
+                var dup_b_items: Array = service.gdcc_diagnostics_for(dup_b_path, 1)
+                var keying_ok: bool = dup_a_items.size() == 1 and dup_b_items.size() == 1
+                if keying_ok:
+                    var a_msg := str(dup_a_items[0].get("message", ""))
+                    var b_msg := str(dup_b_items[0].get("message", ""))
+                    keying_ok = a_msg.contains("DupA") and not a_msg.contains("DupB") \
+                            and b_msg.contains("DupB") and not b_msg.contains("DupA")
+                _step("display_path_keying", keying_ok,
+                        "a=" + str(dup_a_items.size()) + " b=" + str(dup_b_items.size()))
+
+                # Version gate: any edit invalidates the cached round instantly — the stale
+                # gdcc error must vanish from THIS beat even before re-analysis lands.
+                var edited_src := child_src + "# touched\\n"
+                var stale_result: Dictionary = lang._validate(edited_src, child_path, true, true, true, true)
+                var stale_errors: Array = stale_result.get("errors", [])
+                var stale_ok := true
+                for e in stale_errors:
+                    if str(e.get("message", "")).begins_with("[gdcc"):
+                        stale_ok = false
+                _step("stale_version_suppressed", stale_ok and stale_result.get("valid", false) == true,
+                        str(stale_result))
+
+                # LSP errors suppress gdcc diagnostics even with a fresh cache: the broken
+                # text is analyzed by gdcc too (parse error cached at v3), yet only the LSP
+                # entries may surface. The non-empty cache assertion pins that gdcc
+                # diagnostics DID exist at this version — a vacuously-clean cache would not
+                # prove suppression.
+                var broken_src := "class_name DiagPathChild\nextends Node\nfunc broken( -> void:\n    pass\n"
+                lang._validate(broken_src, child_path, true, true, true, true)
+                var broken_cached: bool = await _wait_diag_current(service, child_path, 3, 60.0)
+                var broken_fresh: Array = service.gdcc_diagnostics_for(child_path, 3)
+                var broken_result: Dictionary = lang._validate(broken_src, child_path, true, true, true, true)
+                var broken_errors: Array = broken_result.get("errors", [])
+                var suppress_ok: bool = broken_cached and not broken_fresh.is_empty() \
+                        and not broken_errors.is_empty()
+                for e in broken_errors:
+                    if str(e.get("message", "")).begins_with("[gdcc"):
+                        suppress_ok = false
+                _step("lsp_error_suppresses_gdcc", suppress_ok,
+                        "cached=" + str(broken_cached) + " fresh=" + str(broken_fresh.size())
+                        + " " + str(broken_result))
+
+                # Fixing the source clears the diagnostic after the next round (the cache is
+                # REPLACED per round, so a resolved error must not linger).
+                var fixed_src := "class_name DiagPathChild\\nextends Node\\n"
+                lang._validate(fixed_src, child_path, true, true, true, true)
+                var fixed_cached: bool = await _wait_diag_current(service, child_path, 4, 60.0)
+                var fixed_result: Dictionary = lang._validate(fixed_src, child_path, true, true, true, true)
+                var fixed_errors: Array = fixed_result.get("errors", [])
+                _step("fix_clears_after_round",
+                        fixed_cached and fixed_result.get("valid", false) == true and fixed_errors.is_empty(),
+                        "cached=" + str(fixed_cached) + " " + str(fixed_result))
+
+                # Low-power coordination: the recorder connected mid-hold (install already
+                # held busy), so the log may start with a dangling -1 — assert observed
+                # raises, observed drains, and an idle (drained) final state instead of
+                # exact balance.
+                var busy_ups := 0
+                var busy_downs := 0
+                for delta in _busy_log:
+                    if int(delta) > 0:
+                        busy_ups += 1
+                    else:
+                        busy_downs += 1
+                _step("busy_drained", busy_ups > 0 and busy_downs > 0
+                        and int(_busy_log[_busy_log.size() - 1]) == -1, str(_busy_log))
+
+                # -32001 stale-module rebuild: plant a same-id remnant while the service is
+                # uninstalled, then re-install — the create must delete+recreate and resume.
+                # The proof of a FRESH post-rebuild round is a version bump: the remnant
+                # carried no files, and the retained pre-uninstall cache (version 1) must not
+                # satisfy a version-2 wait.
+                service.uninstall()
+                var remnant: Dictionary = await service._rpc_client \
+                        .create_module(service.get_diag_module_id(), "Stale Remnant").completed
+                var remnant_ok: bool = remnant.get("ok", false) == true
+                var reinstall_ok: bool = service.install(
+                        EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", rpc_port) == OK
+                var rebuild_ok: bool = remnant_ok and reinstall_ok and await _wait_diag_ready(service, 45.0)
+                var lowering_v2 := lowering_src + "# rebuilt\n"
+                lang._validate(lowering_v2, lowering_path, true, true, true, true)
+                rebuild_ok = rebuild_ok and await _wait_diag_items(service, lowering_path, 2, 60.0)
+                _step("stale_module_rebuild", rebuild_ok,
+                        "remnant=" + str(remnant_ok) + " reinstall=" + str(reinstall_ok))
+
+                # Deletion: the mirror drops the path locally AND server-side.
+                DirAccess.remove_absolute(ProjectSettings.globalize_path(gone_path))
+                service.notify_filesystem_changed()
+                var delete_ok := false
+                var delete_deadline := Time.get_ticks_msec() + 60000
+                while Time.get_ticks_msec() < delete_deadline and not delete_ok:
+                    if not service.is_diag_version_current(gone_path, 1):
+                        var gone_read: Dictionary = await service._rpc_client \
+                                .read_file(service.get_diag_module_id(), "/src/diag_gone.gd3").completed
+                        if gone_read.get("ok", true) == false:
+                            var gone_err: Dictionary = gone_read.get("error", {})
+                            delete_ok = int(gone_err.get("code", 0)) == -32005
+                    if not delete_ok:
+                        await get_tree().process_frame
+                _step("delete_reconciles", delete_ok)
+
+                # Cross-directory rename: the old path's diagnostics vanish (locally AND
+                # server-side) and the new path acquires its own round (version 1) with the
+                # same compile-check error.
+                var renamed_path := "res://diag_lowering_renamed.gd3"
+                DirAccess.rename_absolute(ProjectSettings.globalize_path(lowering_path),
+                        ProjectSettings.globalize_path(renamed_path))
+                service.notify_filesystem_changed()
+                var renamed_read: Dictionary = await _read_text_file(renamed_path)
+                var rename_ok: bool = renamed_read.get("ok", false) == true
+                rename_ok = rename_ok and await _wait_diag_items(service, renamed_path, 1, 60.0)
+                rename_ok = rename_ok and not service.is_diag_version_current(lowering_path, 1)
+                var old_read: Dictionary = await service._rpc_client \
+                        .read_file(service.get_diag_module_id(), "/src/diag_lowering.gd3").completed
+                var old_gone: bool = old_read.get("ok", true) == false
+                if old_gone:
+                    old_gone = int((old_read.get("error", {}) as Dictionary).get("code", 0)) == -32005
+                _step("rename_reconciles", rename_ok and old_gone,
+                        "rename=" + str(rename_ok) + " old_vfs_gone=" + str(old_gone))
+
+                # Deletion triggers a whole-module re-round even with nothing dirty
+                # (review finding): the consumer is clean while the provider exists and must
+                # gain an error once the provider's class_name vanishes from the module.
+                var provider_path := "res://diag_provider.gd3"
+                var provider_src := "class_name DiagProvider\nextends Node\n"
+                var consumer_path := "res://diag_consumer.gd3"
+                var consumer_src := "class_name DiagConsumer\nextends DiagProvider\n"
+                _write_text_file(provider_path, provider_src)
+                _write_text_file(consumer_path, consumer_src)
+                service.notify_filesystem_changed()
+                var dep_ok: bool = await _wait_diag_current(service, consumer_path, 1, 60.0)
+                dep_ok = dep_ok and service.gdcc_diagnostics_for(consumer_path, 1).is_empty()
+                DirAccess.remove_absolute(ProjectSettings.globalize_path(provider_path))
+                service.notify_filesystem_changed()
+                var broke := false
+                var dep_deadline := Time.get_ticks_msec() + 60000
+                while Time.get_ticks_msec() < dep_deadline and not broke:
+                    var consumer_items: Array = service.gdcc_diagnostics_for(consumer_path, 1)
+                    for item in consumer_items:
+                        if str(item.get("message", "")).contains("DiagProvider"):
+                            broke = true
+                    if not broke:
+                        await get_tree().process_frame
+                _step("deletion_triggers_reanalysis", dep_ok and broke,
+                        "clean_before=" + str(dep_ok) + " broke_after=" + str(broke))
+
+                # Tombstone rule (review finding): deleting a file whose buffer is dirty must
+                # NOT let the still-open tab resurrect it — `notify_source_changed` refuses
+                # the path while it is absent from disk. The v1 wait first makes the file
+                # mirrored and disk-known, so the deletion is distinguishable from an
+                # unsaved buffer-only script (those stay analyzable).
+                var dirty_del_path := "res://diag_dirty_deleted.gd3"
+                _write_text_file(dirty_del_path, "class_name DiagDirtyDeleted\nextends Node\n")
+                service.notify_filesystem_changed()
+                var dirty_v1_ok: bool = await _wait_diag_current(service, dirty_del_path, 1, 60.0)
+                lang._validate("class_name DiagDirtyDeleted\nextends Node\n", dirty_del_path,
+                        true, true, true, true)
+                lang._validate("class_name DiagDirtyDeleted\nextends Node\n# unsaved\n",
+                        dirty_del_path, true, true, true, true)
+                # Prove the deletion really happened with a dirty buffer pending: the unsaved
+                # edit must have bumped the content version to 2 (same-text notify is a no-op
+                # that returns the existing version).
+                var dirty_probe: int = service.notify_source_changed(dirty_del_path,
+                        "class_name DiagDirtyDeleted\nextends Node\n# unsaved\n")
+                dirty_v1_ok = dirty_v1_ok and dirty_probe == 2
+                DirAccess.remove_absolute(ProjectSettings.globalize_path(dirty_del_path))
+                service.notify_filesystem_changed()
+                var tombstoned := false
+                var tomb_deadline := Time.get_ticks_msec() + 30000
+                while Time.get_ticks_msec() < tomb_deadline and not tombstoned:
+                    if service.notify_source_changed(dirty_del_path,
+                            "class_name DiagDirtyDeleted\nextends Node\n# unsaved\n") == -1:
+                        var ghost_read: Dictionary = await service._rpc_client \
+                                .read_file(service.get_diag_module_id(),
+                                        "/src/diag_dirty_deleted.gd3").completed
+                        var ghost_gone: bool = ghost_read.get("ok", true) == false
+                        if ghost_gone:
+                            ghost_gone = int((ghost_read.get("error", {}) as Dictionary)
+                                    .get("code", 0)) == -32005
+                        tombstoned = ghost_gone
+                    if not tombstoned:
+                        await get_tree().process_frame
+                _step("delete_with_dirty_buffer", dirty_v1_ok and tombstoned,
+                        "v1=" + str(dirty_v1_ok))
+
+                # Outage path: pointing the service at the blackhole endpoint (HTTP 500,
+                # fails fast) must route through ensure_server_hook (recorded here);
+                # restoring the real endpoint recovers.
+                var old_hook: Callable = service.ensure_server_hook
+                _hook_calls = 0
+                service.ensure_server_hook = _record_ensure_hook
+                var hook_probe := "readback_valid=" + str(service.ensure_server_hook.is_valid()) \
+                        + " readback_self=" + str(service.ensure_server_hook.get_object() == self) \
+                        + " inflight=" + str(service._lifecycle._hook_inflight)
+                service.install(EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", blackhole_port)
+                var hook_deadline := Time.get_ticks_msec() + 30000
+                while Time.get_ticks_msec() < hook_deadline and _hook_calls == 0:
+                    await get_tree().process_frame
+                _step("hook_invoked_on_outage", _hook_calls > 0,
+                        "calls=" + str(_hook_calls) + " " + hook_probe
+                        + " stage=" + str(service._lifecycle._setup_stage))
+                # Bounded degradation (review finding): an endpoint that accepts TCP (hook
+                # keeps answering OK) but always fails RPC must hit the setup-failure cap
+                # and release busy — the editor must not be pinned awake by a dead endpoint.
+                _hook_calls = 0
+                service.ensure_server_hook = _record_ensure_ok_hook
+                var busy_mark: int = _busy_log.size()
+                var cap_deadline := Time.get_ticks_msec() + 90000
+                var capped := false
+                while Time.get_ticks_msec() < cap_deadline and not capped:
+                    await get_tree().process_frame
+                    if service._lifecycle._setup_concluded:
+                        for i in range(busy_mark, _busy_log.size()):
+                            if int(_busy_log[i]) == -1:
+                                capped = true
+                _step("hook_ok_ping_fail_capped", capped,
+                        "concluded=" + str(service._lifecycle._setup_concluded)
+                        + " calls=" + str(_hook_calls))
+                # Stale hook answers must not be consumed as the newer window's answer
+                # (review finding): retarget while window 1's deferred hook is pending, then
+                # answer it late. The single-outstanding design holds window 2's hook until
+                # the stale answer lands; a wrongly-applied stale OK would set the heartbeat
+                # deadline (reset zeroed it) and suppress window 2's hook entirely.
+                _hook_calls = 0
+                _deferred_replies.clear()
+                service.ensure_server_hook = _record_ensure_defer_hook
+                # Window 1's endpoint must differ from BOTH the blackhole and the real RPC
+                # port (an unchanged endpoint skips the channel reset entirely).
+                var window1_port: int = blackhole_port + 1
+                if window1_port == rpc_port:
+                    window1_port = blackhole_port + 2
+                service.install(EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", window1_port)
+                var defer_deadline := Time.get_ticks_msec() + 30000
+                while Time.get_ticks_msec() < defer_deadline and _deferred_replies.size() < 1:
+                    await get_tree().process_frame
+                service.install(EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", rpc_port)
+                var stale_left_no_trace := false
+                if _deferred_replies.size() >= 1:
+                    var stale_reply: Callable = _deferred_replies[0]
+                    stale_reply.call(OK, false)
+                    # Same-frame check: a wrongly-applied stale OK would have set the
+                    # heartbeat deadline to now.
+                    stale_left_no_trace = service._lifecycle._next_heartbeat_msec == 0
+                defer_deadline = Time.get_ticks_msec() + 30000
+                while Time.get_ticks_msec() < defer_deadline and _deferred_replies.size() < 2:
+                    await get_tree().process_frame
+                var stale_recovered := false
+                if _deferred_replies.size() >= 2:
+                    var live_reply: Callable = _deferred_replies[1]
+                    live_reply.call(OK, false)
+                    stale_recovered = await _wait_diag_ready(service, 45.0)
+                _step("stale_hook_answer_dropped", stale_recovered and stale_left_no_trace,
+                        "replies=" + str(_deferred_replies.size())
+                        + " no_trace=" + str(stale_left_no_trace))
+                service.ensure_server_hook = old_hook
+                service.install(EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", rpc_port)
+                var recovered_ok: bool = await _wait_diag_ready(service, 45.0)
+                # Ready alone only proves module.create: require a full post-recovery
+                # analysis round on a mirrored path.
+                recovered_ok = recovered_ok and await _wait_diag_items(service, renamed_path, 1, 60.0)
+                _step("recovered_after_hook", recovered_ok)
+
+                # A hook left pending across uninstall must not poison the attribution
+                # counters (review finding): teardown synthesizes the missing completion, so
+                # the next session's hook answer applies instead of being dropped as stale.
+                _hook_calls = 0
+                _deferred_replies.clear()
+                service.ensure_server_hook = _record_ensure_defer_hook
+                var pending_port: int = blackhole_port + 1
+                if pending_port == rpc_port:
+                    pending_port = blackhole_port + 2
+                service.install(EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", pending_port)
+                var pending_deadline := Time.get_ticks_msec() + 30000
+                while Time.get_ticks_msec() < pending_deadline and _deferred_replies.size() < 1:
+                    await get_tree().process_frame
+                # Uninstall with the hook still pending; the deferred reply is NEVER fired
+                # (simulates a launcher teardown dropping its waiter without a callback).
+                service.uninstall()
+                service.install(EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", rpc_port)
+                # The new window's hook waits out the outstanding one's abandonment
+                # (HOOK_TIMEOUT_MSEC = 30s in the lifecycle) before firing.
+                pending_deadline = Time.get_ticks_msec() + 75000
+                while Time.get_ticks_msec() < pending_deadline and _deferred_replies.size() < 2:
+                    await get_tree().process_frame
+                var pending_recovered := false
+                if _deferred_replies.size() >= 2:
+                    var new_reply: Callable = _deferred_replies[1]
+                    new_reply.call(OK, false)
+                    pending_recovered = await _wait_diag_ready(service, 45.0)
+                service.ensure_server_hook = old_hook
+                _step("hook_pending_uninstall_recovers", pending_recovered,
+                        "replies=" + str(_deferred_replies.size()))
+
+                for p in [base_path, child_path, renamed_path, dup_a_path, dup_b_path]:
+                    DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+                DirAccess.remove_absolute(ProjectSettings.globalize_path("res://dup_a"))
+                DirAccess.remove_absolute(ProjectSettings.globalize_path("res://dup_b"))
+                _step("survived", true)
+
+            func _read_text_file(path: String) -> Dictionary:
+                if not FileAccess.file_exists(path):
+                    return {"ok": false}
+                return {"ok": true, "text": FileAccess.get_file_as_string(path)}
             """;
 
     private static final String DRIVER_MANIFEST = """
@@ -973,6 +1451,35 @@ class EditorAddonScriptLanguageEngineTest {
         var config = new JsonObject();
         config.addProperty("lsp_port", findFreePort());
         runCase("lsp_disable_before_prime", config);
+    }
+
+    /// Phase 3 acceptance: the gdcc diagnostics channel end-to-end — version-gated merge
+    /// into `_validate`, displayPath keying, suppression negatives, fix-then-clear, busy
+    /// coordination, stale-module (-32001) rebuild, delete/rename reconciliation, and the
+    /// ensure_server_hook outage path. Runs against a real in-process gdcc RPC server; the
+    /// GDScript LSP rides the CLI-pinned `--lsp-port`.
+    @Test
+    void gdccDiagnosticsMergeIntoValidate() throws Exception {
+        var config = new JsonObject();
+        config.addProperty("lsp_port", findFreePort());
+        // The hook-outage step needs an RPC endpoint that fails FAST: a closed port leaves
+        // Godot's HTTPRequest hanging for the full 30s request timeout, while an HTTP 500
+        // answer completes immediately as a transport failure. This blackhole server is not
+        // a gdcc RPC server — it just refuses deterministically.
+        var blackhole = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        blackhole.createContext("/rpc", exchange -> {
+            exchange.sendResponseHeaders(500, 0);
+            exchange.close();
+        });
+        blackhole.start();
+        try (var server = JsonRpcServer.start(new JsonRpcDispatcher(new API()), "127.0.0.1", 0,
+                JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES)) {
+            config.addProperty("rpc_port", server.port());
+            config.addProperty("blackhole_port", blackhole.getAddress().getPort());
+            runCase("gdcc_diag", config);
+        } finally {
+            blackhole.stop(0);
+        }
     }
 
     private static String runCase(String caseName, JsonObject config) throws Exception {

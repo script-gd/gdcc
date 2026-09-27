@@ -2,7 +2,7 @@
 class_name GdccEditorService
 extends Node
 
-## Registration hub and diagnostics scheduler for the `.gd3` editor integration
+## Registration hub and feature coordinator for the `.gd3` editor integration
 ## (implementation plan §3.5). PROCESS-RESIDENT SINGLETON: the plugin parks exactly one
 ## instance under the scene tree root (fixed node name `GdccEditorService`) and never frees it
 ## on disable — loaded GdccScript resources and open editor tabs keep calling
@@ -11,6 +11,30 @@ extends Node
 ##
 ## Two states only: UNINSTALLED (`_active == false`, every public entry point is a safe no-op)
 ## and ACTIVE.
+##
+## Architecture (hub-and-spoke): this root owns only lifecycle, scheduling and coordination —
+##   * infrastructure: the resident RPC/LSP client child nodes and the endpoint config;
+##   * the frame pump: `_on_diag_frame` ticks the features in a FIXED order (lifecycle →
+##     reconciler → scheduler) and re-evaluates busy last;
+##   * coordination broadcasts: `broadcast_module_ready` / `broadcast_module_outage` /
+##     `notify_content_changed` let features react to each other without direct coupling;
+##   * the single-writer `busy_delta` edge-triggered emission (`refresh_busy` polls each
+##     feature's `busy_wanted()`);
+##   * the LSP channel facade and the public API consumed by the plugin/script language.
+## Functional slices live in child Nodes (created once in install, never freed):
+##   * `GdccModuleLifecycle` — private module create/heartbeat/outage recovery;
+##   * `GdccFileReconciler` — disk ↔ VFS file-set reconciliation;
+##   * `GdccDiagScheduler` — single-flight upload+analyze chain and merge;
+##   * `GdccSourceRegistry` — content truth table and dirty tracking;
+##   * `GdccDiagCache` — version-gated diagnostics cache.
+## Adding a feature (e.g. code completion): create a child script implementing the feature
+## protocol (`bind_service`, optional `service_tick(now)`, `busy_wanted()`, and any of the
+## broadcast hooks `on_module_ready` / `on_module_outage` / `on_content_changed` /
+## `service_shutdown` / `service_reset_channel`), then wire it in the root: one construction
+## block in install(), one accessor, and — as needed — one tick line in `_on_diag_frame`, one
+## term in `refresh_busy`, and the relevant broadcast/shutdown/reset lines. Scripts extend
+## engine classes only (custom-base `extends` is outside the gdcc bootstrap MVP), so the
+## protocol is by convention, not inheritance.
 
 var _active: bool = false
 var _editor_interface: EditorInterface = null
@@ -24,8 +48,16 @@ var _rpc_client: GdccRpcClient = null
 # client. Its connection lifecycle follows `_active` — started in install(), stopped in
 # uninstall() — while the node itself is never freed.
 var _lsp_client: GdccLspClient = null
+# Feature children (never freed; created once on the first install).
+var _lifecycle: GdccModuleLifecycle = null
+var _reconciler: GdccFileReconciler = null
+var _scheduler: GdccDiagScheduler = null
+var _registry: GdccSourceRegistry = null
+var _cache: GdccDiagCache = null
 var _lsp_host: String = "127.0.0.1"
 var _lsp_port: int = 6005
+var _rpc_host: String = "127.0.0.1"
+var _rpc_port: int = 6099
 # Set by the plugin when it flipped `use_thread` on while the server was already
 # listening: that server keeps main-thread polling until the editor restarts (the
 # settings-changed notification that would restart it is emitted only by C++ UI flows,
@@ -47,6 +79,16 @@ var analyze_include_lowering: bool = true
 # `func(host: String, port: int, on_ready: Callable) -> void`. The hook has no return value —
 # its only success signal is the `on_ready` callback's error code.
 var ensure_server_hook: Callable
+
+# --- coordination ---
+# Reported to the plugin's single-writer low-power coordinator: the debounce pump and all
+# RPC flights are frame-driven, and the editor's low-power idle window starts exactly when
+# diagnostics work begins (the user just stopped typing), so pending work must hold the
+# coordinator busy or the scheduler starves. Emitted ONLY here, edge-triggered, from the
+# aggregate of the features' `busy_wanted()`.
+signal busy_delta(delta: int)
+
+var _busy_held: bool = false
 
 
 func is_active() -> bool:
@@ -159,6 +201,63 @@ func lsp_diagnostics_for(path: String) -> Array:
     return _lsp_client.get_diagnostics(uri)
 
 
+## gdcc diagnostics channel entry (plan §4.2 step 3): forwards to the source registry, which
+## tracks the content version of `path` and marks real changes dirty. Runs on every
+## `_validate` — including while LSP reports errors, because LSP errors suppress gdcc
+## diagnostics from the DISPLAY only, never the dirty tracking. Returns -1 for non-project
+## paths / while UNINSTALLED.
+func notify_source_changed(path: String, text: String) -> int:
+    if not _active:
+        return -1
+    return _registry.notify_source_changed(path, text)
+
+
+## Version-gated gdcc diagnostics for `_validate` (plan §4.2 step 3 / §4.4): serves the
+## cache only while it was built from exactly `version`; any newer edit (or no completed
+## round yet) yields an empty array and the scheduler refreshes the cache for the next
+## validation beat. While the diagnostics module is unavailable the channel reports NOTHING
+## — the offline degrade leaves `_validate` with the LSP channel alone instead of stale
+## entries.
+func gdcc_diagnostics_for(path: String, version: int) -> Array:
+    if not _active:
+        return []
+    return _cache.diagnostics_for(path, version)
+
+
+## True once the private diagnostics module exists on the gdcc server (ping + create done).
+func is_diag_ready() -> bool:
+    return _active and _lifecycle.is_ready()
+
+
+## Freshness probe for the diagnostics cache (see `GdccDiagCache.is_version_current`).
+func is_diag_version_current(path: String, version: int) -> bool:
+    if not _active:
+        return false
+    return _cache.is_version_current(path, version)
+
+
+## The private diagnostics module id (`gdcc_editor_diagnostics_<rootHash>_<pid>`). Exposed
+## for tests and dock introspection; the pid component scopes crash remnants to this process.
+func get_diag_module_id() -> String:
+    if _lifecycle == null:
+        return ""
+    return _lifecycle.module_id()
+
+
+## Forwarding target for the editor's `filesystem_changed` signal (connected by the plugin).
+func notify_filesystem_changed() -> void:
+    if not _active:
+        return
+    _reconciler.notify_filesystem_changed()
+
+
+func _ready() -> void:
+    var tree: SceneTree = get_tree()
+    # Persistent pump: drives the feature ticks. Ticks are no-ops outside ACTIVE state, so
+    # the resident node can keep this connection forever.
+    tree.process_frame.connect(_on_diag_frame)
+
+
 ## Registers the language, loader, and saver. Instances are created once (first call) and
 ## reused on every later call; endpoint parameters are written back on EVERY call so a
 ## re-enable can retarget the clients. Registration order is language → loader → saver with a
@@ -178,11 +277,44 @@ func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
         _lsp_client = GdccLspClient.new()
         _lsp_client.name = &"GdccEditorLspClient"
         add_child(_lsp_client)
+        # Feature children. Construction order pins the tick order in `_on_diag_frame`
+        # (lifecycle → reconciler → scheduler); the registry and cache are tickless.
+        _lifecycle = GdccModuleLifecycle.new()
+        _lifecycle.name = &"GdccModuleLifecycle"
+        _lifecycle.bind_service(self)
+        add_child(_lifecycle)
+        _reconciler = GdccFileReconciler.new()
+        _reconciler.name = &"GdccFileReconciler"
+        _reconciler.bind_service(self)
+        add_child(_reconciler)
+        _scheduler = GdccDiagScheduler.new()
+        _scheduler.name = &"GdccDiagScheduler"
+        _scheduler.bind_service(self)
+        add_child(_scheduler)
+        _registry = GdccSourceRegistry.new()
+        _registry.name = &"GdccSourceRegistry"
+        _registry.bind_service(self)
+        add_child(_registry)
+        _cache = GdccDiagCache.new()
+        _cache.name = &"GdccDiagCache"
+        _cache.bind_service(self)
+        add_child(_cache)
     _editor_interface = editor_interface
     _lsp_host = lsp_host
     _lsp_port = lsp_port
-    _rpc_client.host = rpc_host
-    _rpc_client.port = rpc_port
+    if _rpc_host != rpc_host or _rpc_port != rpc_port:
+        # Endpoint retarget: the diagnostics module may not exist on the new server, so the
+        # whole channel state is rebuilt there (outage path without hook — the target moved,
+        # the old server did not vanish).
+        _rpc_host = rpc_host
+        _rpc_port = rpc_port
+        _rpc_client.host = rpc_host
+        _rpc_client.port = rpc_port
+        _lifecycle.service_reset_channel()
+        _reconciler.service_reset_channel()
+        _scheduler.service_reset_channel()
+        _cache.service_reset_channel()
+        refresh_busy()
     if _active:
         # Repeat install (e.g. test drivers injecting a free port): only endpoints move.
         _lsp_client.start(_lsp_host, _lsp_port)
@@ -206,27 +338,35 @@ func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
     # LSP connects only in ACTIVE state; the server listens after editor-ready, so the
     # client's backoff retry absorbs the startup window (plan §2.6/§4.1).
     _lsp_client.start(_lsp_host, _lsp_port)
+    # Re-evaluate busy immediately: the unconcluded first setup holds the coordinator awake,
+    # and in low-power mode there may be no spare frame to notice it otherwise (review
+    # finding).
+    refresh_busy()
     return OK
 
 
 ## Reverse order of install(); unregisters only, never frees — the resident instances stay
 ## valid for resources and tabs still referencing them, and a later install() re-registers
-## the same instances.
+## the same instances. Plan §3.5 ordering: stop the diagnostics scheduler and drop dirty
+## work first (in-flight callbacks are invalidated via the lifecycle's session bump), then
+## LSP, loader/saver, language, and finally the private module (deleting it still needs the
+## server; the request is fire-and-forget on the resident client's queue).
 func uninstall() -> void:
     if not _active:
         return
+    _scheduler.service_shutdown()
+    _reconciler.service_shutdown()
+    _registry.service_shutdown()
+    _cache.service_shutdown()
     _lsp_client.stop()
     ResourceSaver.remove_resource_format_saver(_saver)
     ResourceLoader.remove_resource_format_loader(_loader)
     Engine.unregister_script_language(_language)
+    # Last: bumps the channel session (invalidating in-flight callbacks) and deletes the
+    # private module if this session created it.
+    _lifecycle.service_shutdown()
     _active = false
-
-
-## Forwarding target for the editor's `filesystem_changed` signal (connected by the plugin).
-## The .gd3 file-set mirror it maintains belongs to the diagnostics channel; with no channel
-## attached this is intentionally a no-op.
-func notify_filesystem_changed() -> void:
-    pass
+    refresh_busy()
 
 
 ## Loader registration postcondition probe: `add_resource_format_loader` returns void, so a
@@ -264,3 +404,122 @@ func _probe_saver() -> bool:
     var read_back: String = FileAccess.get_file_as_string(probe_path)
     DirAccess.remove_absolute(probe_path)
     return read_back == probe_source
+
+
+# ---------------------------------------------------------------------------
+# Feature coordination (plan §3.5/§4.4). Fully asynchronous: every stage advances from
+# `PendingRequest.completed` signals or the frame pump; no blocking RPC exists anywhere on
+# this path.
+# ---------------------------------------------------------------------------
+
+## Frame pump. Tick order matters: the lifecycle gates the channel (reconcile/flight wait for
+## a ready module and an idle setup stage), reconciliation updates the file set before the
+## flight snapshots it, and busy is re-evaluated last so it reflects the whole frame.
+func _on_diag_frame() -> void:
+    if not _active:
+        return
+    var now: int = Time.get_ticks_msec()
+    _lifecycle.service_tick(now)
+    _reconciler.service_tick(now)
+    _scheduler.service_tick(now)
+    refresh_busy()
+
+
+## A real content change (editor buffer, disk adoption, deletion, buffer-only recovery):
+## re-arms the scheduler's failure suspension. Broadcast hub so producers (registry,
+## reconciler) stay decoupled from the consumer (scheduler).
+func notify_content_changed() -> void:
+    _scheduler.on_content_changed()
+
+
+## The private module exists: kick the initial sync (reconciliation against the empty
+## mirror). Readiness-driven reactions of future features hook in HERE.
+func broadcast_module_ready() -> void:
+    _reconciler.on_module_ready()
+
+
+## The channel died: every sibling drops its server-side epoch state (flight, mirror,
+## reconcile work, cached diagnostics) so recovery restarts from a clean slate.
+func broadcast_module_outage() -> void:
+    _reconciler.on_module_outage()
+    _scheduler.on_module_outage()
+    _cache.on_module_outage()
+
+
+## Busy coordination (plan §3.5 编辑器空闲活性): holds the coordinator's count while any
+## frame-driven work is pending. The aggregate formula is the pre-refactor one, decomposed
+## per feature: the lifecycle counts the unconcluded first setup / in-flight setup stage /
+## active ensure hook; the reconciler counts pending or active reconcile work on a ready
+## module; the scheduler counts an active flight or (ready, unsuspended) dirty/analyze-all
+## work. A concluded-but-absent server deliberately holds nothing (silent degrade, plan §4.4).
+## Edge-triggered: safe to call at any mutation point and once per frame.
+func refresh_busy() -> void:
+    var want: bool = false
+    if _active:
+        want = _lifecycle.busy_wanted() or _reconciler.busy_wanted() \
+                or _scheduler.busy_wanted()
+    if want == _busy_held:
+        return
+    _busy_held = want
+    if want:
+        busy_delta.emit(1)
+    else:
+        busy_delta.emit(-1)
+
+
+# ---------------------------------------------------------------------------
+# Shared infrastructure accessors and helpers used by the feature children.
+# ---------------------------------------------------------------------------
+
+func rpc_client() -> GdccRpcClient:
+    return _rpc_client
+
+
+func rpc_host() -> String:
+    return _rpc_host
+
+
+func rpc_port() -> int:
+    return _rpc_port
+
+
+func lifecycle() -> GdccModuleLifecycle:
+    return _lifecycle
+
+
+func reconciler() -> GdccFileReconciler:
+    return _reconciler
+
+
+func scheduler() -> GdccDiagScheduler:
+    return _scheduler
+
+
+func registry() -> GdccSourceRegistry:
+    return _registry
+
+
+func cache() -> GdccDiagCache:
+    return _cache
+
+
+## res://a/b.gd3 → /src/a/b.gd3 (plan §3.5 VFS mapping contract; the displayPath travels
+## separately on every put_file).
+func vfs_path(path: String) -> String:
+    return "/src/" + path.substr("res://".length())
+
+
+func response_ok(response: Dictionary) -> bool:
+    return response.get("ok") == true and response.has("result")
+
+
+## JSON-RPC error code of a failed response, or 0 when there is none. Server application
+## codes (≤ -32000) can never collide with the client's local transport codes (-1..-4), so
+## callers branch on the raw value.
+func response_error_code(response: Dictionary) -> int:
+    if response.get("ok") == true:
+        return 0
+    var error_value: Variant = response.get("error")
+    if error_value is Dictionary:
+        return int(error_value.get("code", 0))
+    return 0

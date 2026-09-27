@@ -1,0 +1,78 @@
+@tool
+class_name GdccDiagCache
+extends Node
+
+## Version-gated diagnostics cache for the gdcc channel (plan §4.2 step 3 / §4.4). Child
+## feature of `GdccEditorService`: the scheduler's merge is the only writer; `_validate`
+## reads through `diagnostics_for`. Entries are served only while their content version
+## equals the version the analysis round was built from, and only while the diagnostics
+## module is READY — plan §4.4's offline degrade leaves `_validate` with the LSP channel
+## alone instead of stale entries.
+
+# res:// path -> {"version": int, "items": Array}. `items` are raw analyze.run diagnostic
+# Dictionaries.
+var _entries: Dictionary = {}
+
+var service: GdccEditorService = null
+
+
+func bind_service(owner: GdccEditorService) -> void:
+    service = owner
+
+
+## Cached analyze.run diagnostics for `path`, or empty when the cache is stale/missing or
+## the module is unavailable. The scheduler keeps refreshing in the background, so an empty
+## answer simply defers gdcc diagnostics to the next validation beat.
+func diagnostics_for(path: String, version: int) -> Array:
+    if not service.is_active() or not service.lifecycle().is_ready():
+        return []
+    return _current_items(path, version)
+
+
+## Freshness probe: true when an entry for `path` exists and was built from exactly
+## `version` — regardless of whether that round produced diagnostics (`diagnostics_for`
+## alone cannot distinguish "clean" from "stale/missing"). Intentionally NOT gated on module
+## readiness: tests use it to observe cache state directly.
+func is_version_current(path: String, version: int) -> bool:
+    if not service.is_active():
+        return false
+    var entry: Variant = _entries.get(path)
+    if not (entry is Dictionary):
+        return false
+    return int(entry.get("version", -1)) == version
+
+
+func set_items(path: String, version: int, items: Array) -> void:
+    _entries[path] = {"version": version, "items": items}
+
+
+func erase(path: String) -> void:
+    _entries.erase(path)
+
+
+func _current_items(path: String, version: int) -> Array:
+    var entry: Variant = _entries.get(path)
+    if not (entry is Dictionary):
+        return []
+    var cached: Dictionary = entry
+    if int(cached.get("version", -1)) != version:
+        return []
+    var items: Variant = cached.get("items", [])
+    if items is Array:
+        return items
+    return []
+
+
+## Cached diagnostics belong to the dead channel epoch: publishing them on re-ready before a
+## fresh analysis round would resurrect stale results (they are rebuilt by the re-mirror +
+## re-analysis that follows).
+func on_module_outage() -> void:
+    _entries.clear()
+
+
+func service_reset_channel() -> void:
+    _entries.clear()
+
+
+func service_shutdown() -> void:
+    _entries.clear()

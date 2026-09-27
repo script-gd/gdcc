@@ -1,0 +1,170 @@
+@tool
+class_name GdccSourceRegistry
+extends Node
+
+## Content truth table and dirty tracking for the diagnostics channel (plan §3.5/§4.4).
+## Child feature of `GdccEditorService`: owns `_sources`/`_dirty`/tombstones/`_disk_known`
+## and the `_validate`-driven `notify_source_changed` entry point. Pure state — it performs
+## no RPC and no ticking; the reconciler and scheduler consume it through the accessors
+## below. Any real content change is broadcast via `service.notify_content_changed()` so
+## the scheduler re-arms.
+
+# res:// path -> {"text": String, "version": int}. `version` only increments on actual text
+# changes; both `notify_source_changed` (editor buffer, always wins while dirty) and
+# reconciliation (disk) write here.
+var _sources: Dictionary = {}
+# res:// path -> version awaiting analysis. Empties only via a version-matched flight merge.
+var _dirty: Dictionary = {}
+# Tombstones: paths that were disk-known (mirrored or seen by a past reconciliation) and
+# then vanished from disk. While tombstoned, `notify_source_changed` refuses the path — a
+# still-open editor tab must not resurrect a deleted file into the VFS. The tombstone lifts
+# when the file reappears on disk (e.g. the tab is saved again). Buffer-only paths (never
+# seen on disk) are unsaved new scripts: reconciliation must not tombstone them, which is
+# what `_disk_known` tracks.
+var _deleted_paths: Dictionary = {}
+var _disk_known: Dictionary = {}
+var _last_change_msec: int = 0
+
+var service: GdccEditorService = null
+
+
+func bind_service(owner: GdccEditorService) -> void:
+    service = owner
+
+
+## Editor buffer entry point: tracks the content version of `path`. Unchanged text returns
+## the existing version WITHOUT bumping; changed text bumps the version and marks the path
+## dirty. Runs on every `_validate` — including while LSP reports errors, because LSP errors
+## suppress gdcc diagnostics from the DISPLAY only, never the dirty tracking. Returns -1 for
+## non-project paths / while UNINSTALLED.
+func notify_source_changed(path: String, text: String) -> int:
+    if not service.is_active() or not path.begins_with("res://"):
+        return -1
+    if _deleted_paths.has(path):
+        # Tombstoned (deleted on disk while mirrored): a still-open tab must not resurrect
+        # the file into the VFS. The tombstone lifts only when the file exists again — and
+        # lifting re-marks it disk-known so a second delete before the next scan still
+        # reconciles instead of being mistaken for a buffer-only script.
+        if not FileAccess.file_exists(path):
+            return -1
+        _deleted_paths.erase(path)
+        _disk_known[path] = true
+    var entry: Variant = _sources.get(path)
+    if entry is Dictionary:
+        var known: Dictionary = entry
+        if str(known.get("text", "")) == text:
+            return int(known.get("version", 0))
+        var bumped: int = int(known.get("version", 0)) + 1
+        _sources[path] = {"text": text, "version": bumped}
+        _dirty[path] = bumped
+        _last_change_msec = Time.get_ticks_msec()
+        # A real change re-arms a suspended scheduler.
+        service.notify_content_changed()
+        service.refresh_busy()
+        return bumped
+    _sources[path] = {"text": text, "version": 1}
+    _dirty[path] = 1
+    _last_change_msec = Time.get_ticks_msec()
+    service.notify_content_changed()
+    service.refresh_busy()
+    return 1
+
+
+## A path that must never be uploaded: tombstoned, or disk-known but vanished in the window
+## before reconciliation sees it. `_sources` keeps the entry so the reconcile pass can still
+## detect and server-side-delete the path.
+func vanished(path: String) -> bool:
+    return _deleted_paths.has(path) or (_disk_known.has(path) and not FileAccess.file_exists(path))
+
+
+func has(path: String) -> bool:
+    return _sources.has(path)
+
+
+## Raw entry {"text", "version"} for `path`, or a non-Dictionary Variant when absent.
+func entry(path: String) -> Variant:
+    return _sources.get(path)
+
+
+func set_entry(path: String, text: String, version: int) -> void:
+    _sources[path] = {"text": text, "version": version}
+
+
+func erase_source(path: String) -> void:
+    _sources.erase(path)
+
+
+func tracked_paths() -> Array:
+    return _sources.keys()
+
+
+func tracked_count() -> int:
+    return _sources.size()
+
+
+func mark_dirty(path: String, version: int) -> void:
+    _dirty[path] = version
+
+
+func clear_dirty(path: String) -> void:
+    _dirty.erase(path)
+
+
+func is_dirty(path: String) -> bool:
+    return _dirty.has(path)
+
+
+func dirty_version(path: String) -> int:
+    return int(_dirty.get(path, -1))
+
+
+func has_dirty() -> bool:
+    return not _dirty.is_empty()
+
+
+func dirty_paths() -> Array:
+    return _dirty.keys()
+
+
+func tombstone(path: String) -> void:
+    _deleted_paths[path] = true
+
+
+func lift_tombstone(path: String) -> void:
+    _deleted_paths.erase(path)
+
+
+func is_tombstoned(path: String) -> bool:
+    return _deleted_paths.has(path)
+
+
+func mark_disk_known(path: String) -> void:
+    _disk_known[path] = true
+
+
+func erase_disk_known(path: String) -> void:
+    _disk_known.erase(path)
+
+
+func is_disk_known(path: String) -> bool:
+    return _disk_known.has(path)
+
+
+func touch_change() -> void:
+    _last_change_msec = Time.get_ticks_msec()
+
+
+## Forces the next flight tick to ignore the debounce window (a stale round must re-fire
+## immediately instead of waiting out another quiet period).
+func expire_debounce() -> void:
+    _last_change_msec = 0
+
+
+func last_change_msec() -> int:
+    return _last_change_msec
+
+
+## Uninstall hook: pending work dies with the session; the content truth itself survives
+## (open tabs still hold the buffers and re-dirty on the next install).
+func service_shutdown() -> void:
+    _dirty.clear()

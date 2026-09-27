@@ -1,0 +1,251 @@
+@tool
+class_name GdccFileReconciler
+extends Node
+
+## File-set reconciliation (plan §3.5): diffs the on-disk project `.gd3` set against the
+## mirrored set. Child feature of `GdccEditorService`. Removals (and the old path of
+## renames) issue `vfs.deletePath` and erase every local trace under a tombstone, so a
+## still-open tab cannot resurrect the file. Additions and modifications upload immediately
+## with the `res://` displayPath so analysis diagnostics key back onto editor paths. A path
+## with pending buffer edits whose file still exists is never overwritten by disk content —
+## the editor buffer is newer by definition and the next flight uploads it. Buffer-only
+## paths (never mirrored, not on disk) are unsaved new scripts: they survive reconciliation
+## untouched.
+
+var _reconcile_pending: bool = false
+var _reconcile_active: bool = false
+var _reconcile_remaining: int = 0
+# FIFO of the reconcile requests currently on the wire (send order == completion order).
+var _reconcile_order: Array = []
+
+var service: GdccEditorService = null
+
+
+func bind_service(owner: GdccEditorService) -> void:
+    service = owner
+
+
+## Forwarding target for the editor's `filesystem_changed` signal: flags a reconciliation;
+## the actual disk scan and VFS diff run on the scheduling pump so bursts of editor
+## filesystem notifications coalesce into one pass (plan §3.5).
+func notify_filesystem_changed() -> void:
+    if not service.is_active():
+        return
+    _reconcile_pending = true
+    service.refresh_busy()
+
+
+func is_active() -> bool:
+    return _reconcile_active
+
+
+func mark_pending() -> void:
+    _reconcile_pending = true
+
+
+func busy_wanted() -> bool:
+    return service.lifecycle().is_ready() and (_reconcile_pending or _reconcile_active)
+
+
+## The module is (re)created empty: the initial sync is a reconciliation against the empty
+## mirror, so every project .gd3 uploads.
+func on_module_ready() -> void:
+    _reconcile_pending = true
+
+
+## The mirror died with the channel: forget in-flight reconcile work and rescan once the
+## module returns (recovery re-uploads everything).
+func on_module_outage() -> void:
+    _reconcile_active = false
+    _reconcile_remaining = 0
+    _reconcile_order.clear()
+    _reconcile_pending = true
+
+
+func service_reset_channel() -> void:
+    _reconcile_pending = true
+    _reconcile_active = false
+    _reconcile_remaining = 0
+    _reconcile_order.clear()
+
+
+func service_shutdown() -> void:
+    _reconcile_pending = false
+    _reconcile_active = false
+    _reconcile_remaining = 0
+    _reconcile_order.clear()
+
+
+func service_tick(_now: int) -> void:
+    if not _reconcile_pending or _reconcile_active:
+        return
+    if not service.lifecycle().is_ready() or not service.lifecycle().is_setup_idle() \
+            or service.scheduler().flight_active():
+        return
+    _reconcile_pending = false
+    var registry: GdccSourceRegistry = service.registry()
+    var scheduler: GdccDiagScheduler = service.scheduler()
+    var disk: Array = _scan_gd3_files("res://")
+    var disk_set: Dictionary = {}
+    for path in disk:
+        disk_set[path] = true
+        registry.mark_disk_known(path)
+        # A tombstoned path that exists again is alive (re-created or saved from its tab):
+        # lift the tombstone and let the normal add/modify flow below re-mirror it.
+        registry.lift_tombstone(path)
+    var requests: Array = []
+    for tracked in registry.tracked_paths():
+        if disk_set.has(tracked) or registry.is_tombstoned(tracked):
+            continue
+        if not registry.is_disk_known(tracked):
+            # Never seen on disk: an unsaved buffer-only script — not a deletion, even if a
+            # flight already uploaded it (mirroring is not disk evidence).
+            continue
+        # Deleted or renamed-away on disk: drop every local trace and tombstone the path so
+        # a still-open tab cannot resurrect it; a mirrored copy is deleted server-side too.
+        # This wins over a dirty buffer: the file is gone.
+        registry.erase_source(tracked)
+        registry.clear_dirty(tracked)
+        service.cache().erase(tracked)
+        registry.erase_disk_known(tracked)
+        registry.tombstone(tracked)
+        if scheduler.mirrored_version(tracked) >= 0:
+            scheduler.unmirror(tracked)
+            requests.append({"kind": "delete", "path": tracked})
+    for path in disk:
+        var text: String = _read_project_file(path)
+        var entry: Variant = registry.entry(path)
+        if entry is Dictionary and registry.is_dirty(path):
+            # The editor buffer holds newer unsaved content; the next flight uploads it.
+            continue
+        if entry is Dictionary:
+            var known: Dictionary = entry
+            var version: int = int(known.get("version", 0))
+            if str(known.get("text", "")) == text and scheduler.mirrored_version(path) == version:
+                continue
+            if str(known.get("text", "")) != text:
+                # External change (git checkout, another editor): adopt the disk truth.
+                version += 1
+                registry.set_entry(path, text, version)
+            # Reaching here means either the content changed or the mirror lost the path
+            # (fresh module after reinstall/outage): upload and re-analyze. When the text is
+            # unchanged the local `text` equals the stored buffer text.
+            registry.mark_dirty(path, version)
+            requests.append({"kind": "put", "path": path, "text": text, "version": version})
+        else:
+            registry.set_entry(path, text, 1)
+            registry.mark_dirty(path, 1)
+            requests.append({"kind": "put", "path": path, "text": text, "version": 1})
+    # Buffer-only sources (unsaved, never on disk) are invisible to the disk diff above —
+    # after an outage wiped the mirror they would never be re-uploaded. Re-mark them dirty so
+    # the next flight re-uploads and re-analyzes them (idempotent: mirrored ones skip).
+    for path in registry.tracked_paths():
+        if disk_set.has(path) or registry.is_disk_known(path) or registry.is_tombstoned(path):
+            continue
+        if scheduler.mirrored_version(path) >= 0 or registry.is_dirty(path):
+            continue
+        var buffer_entry: Variant = registry.entry(path)
+        if buffer_entry is Dictionary:
+            registry.mark_dirty(path, int(buffer_entry.get("version", 1)))
+            service.notify_content_changed()
+    # A deletion changes the whole module's semantics (a vanished `class_name` can break or
+    # fix OTHER files), so even a deletion-only reconcile must re-analyze once it lands.
+    # This is a real change: it also re-arms a suspended scheduler.
+    for request in requests:
+        if request["kind"] == "delete":
+            scheduler.request_full_reanalysis()
+            service.notify_content_changed()
+            break
+    if requests.is_empty():
+        return
+    _reconcile_active = true
+    _reconcile_remaining = requests.size()
+    # The RPC client guarantees strictly one in-flight request, so completions arrive in send
+    # order and `_reconcile_order` re-associates each answer with its path without Callable
+    # binding (unavailable in gdcc-compiled code).
+    _reconcile_order = requests.duplicate()
+    for request in requests:
+        _send_reconcile_request(request)
+    registry.touch_change()
+    service.notify_content_changed()
+
+
+func _send_reconcile_request(request: Dictionary) -> void:
+    var path: String = request["path"]
+    if request["kind"] == "delete":
+        service.rpc_client().call_rpc("vfs.deletePath", {
+            "moduleId": service.lifecycle().module_id(),
+            "path": service.vfs_path(path),
+            "recursive": false,
+        }).completed.connect(_on_reconcile_delete_done)
+        return
+    service.rpc_client().put_file(service.lifecycle().module_id(), service.vfs_path(path),
+            request["text"], path).completed.connect(_on_reconcile_put_done)
+
+
+func _on_reconcile_put_done(response: Dictionary) -> void:
+    if not service.is_active() or not _reconcile_active or _reconcile_order.is_empty():
+        return
+    var request: Dictionary = _reconcile_order[0]
+    _reconcile_order.remove_at(0)
+    if not service.response_ok(response):
+        _reconcile_active = false
+        _reconcile_remaining = 0
+        _reconcile_order.clear()
+        service.lifecycle().notify_outage()
+        return
+    if request["kind"] == "put":
+        service.scheduler().note_mirrored(request["path"], int(request["version"]))
+    _reconcile_remaining -= 1
+    if _reconcile_remaining <= 0:
+        _reconcile_active = false
+    service.refresh_busy()
+
+
+func _on_reconcile_delete_done(response: Dictionary) -> void:
+    if not service.is_active() or not _reconcile_active or _reconcile_order.is_empty():
+        return
+    _reconcile_order.remove_at(0)
+    # Only success and -32005 (already gone) complete a deletion; anything else means the
+    # server-side file may linger (module-busy, transport failure), so the whole channel
+    # resets through the outage path — recovery re-creates the module via the -32001
+    # delete+recreate dance, which wipes zombies the local mirror already forgot.
+    if not service.response_ok(response) and service.response_error_code(response) != -32005:
+        _reconcile_active = false
+        _reconcile_remaining = 0
+        _reconcile_order.clear()
+        service.lifecycle().notify_outage()
+        return
+    _reconcile_remaining -= 1
+    if _reconcile_remaining <= 0:
+        _reconcile_active = false
+    service.refresh_busy()
+
+
+## Recursive `.gd3` collection under a res:// directory; dot-directories (notably `.godot`)
+## are skipped. Returns res:// paths built without double slashes (the root is "res://").
+func _scan_gd3_files(dir_path: String) -> Array:
+    var found: Array = []
+    var dir: DirAccess = DirAccess.open(dir_path)
+    if dir == null:
+        return found
+    var prefix: String = dir_path
+    if prefix.ends_with("/"):
+        prefix = prefix.substr(0, prefix.length() - 1)
+    dir.list_dir_begin()
+    var name: String = dir.get_next()
+    while name != "":
+        if dir.current_is_dir():
+            if not name.begins_with("."):
+                found.append_array(_scan_gd3_files(prefix + "/" + name))
+        elif name.ends_with(".gd3"):
+            found.append(prefix + "/" + name)
+        name = dir.get_next()
+    dir.list_dir_end()
+    return found
+
+
+func _read_project_file(path: String) -> String:
+    if not FileAccess.file_exists(path):
+        return ""
+    return FileAccess.get_file_as_string(path)

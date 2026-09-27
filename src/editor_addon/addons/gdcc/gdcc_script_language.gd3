@@ -82,13 +82,18 @@ var _in_validate: bool = false
 var VALIDATE_LSP_TIMEOUT_MSEC: int = 150
 
 
-## Diagnostic merge entry (plan §4.2). Phase 2 wires the GDScript LSP channel: full-sync
-## the buffer, wait ≤ `VALIDATE_LSP_TIMEOUT_MSEC` for that generation's diagnostics, then
-## map severity 1 → errors / 2 → warnings (0-based → 1-based on both line and column).
+## Diagnostic merge entry (plan §4.2). Two channels feed the result:
+## 1. GDScript LSP: full-sync the buffer, wait ≤ `VALIDATE_LSP_TIMEOUT_MSEC` for that
+##    generation's diagnostics, then map severity 1 → errors / 2 → warnings (LSP positions
+##    are 0-based, so both line and column get +1).
+## 2. gdcc: `notify_source_changed` runs FIRST on every call (LSP errors never suppress dirty
+##    marking, only the display); cached analyze.run diagnostics merge only when their
+##    content version matches this exact text, and only while LSP reported no errors (cascade
+##    noise suppression, plan §4.2 step 3). gdcc positions are already 1-based — no shift.
 ## `path` is mandatory on errors, otherwise the editor files them under "dependency
-## script errors" instead of the current tab. While the service is uninstalled or LSP is
-## not READY, the answer is the safe `{"valid": true}`; a timed-out wait instead falls
-## back to the URI's cached diagnostics, whose errors still count (stale beats none).
+## script errors" instead of the current tab. While the service is uninstalled the answer is
+## the safe `{"valid": true}`; a timed-out LSP wait falls back to the URI's cached
+## diagnostics, whose errors still count (stale beats none).
 func _validate(script: String, path: String, validate_functions: bool, validate_errors: bool, validate_warnings: bool, validate_safe_lines: bool) -> Dictionary:
     if _in_validate or _service == null or not _service.is_active():
         return {"valid": true}
@@ -125,6 +130,37 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
                     "code": 0,
                     "string_code": "GDSCRIPT_LSP",
                     "message": message,
+                })
+    var content_version: int = _service.notify_source_changed(path, script)
+    if errors.is_empty() and content_version >= 0:
+        for item in _service.gdcc_diagnostics_for(path, content_version):
+            if not (item is Dictionary):
+                continue
+            var category: String = str(item.get("category", ""))
+            var gdcc_message: String = "[gdcc " + category + "] " + str(item.get("message", ""))
+            # File-level fallback for diagnostics without a range (plan §4.2 step 3).
+            var gdcc_line: int = 1
+            var gdcc_column: int = 1
+            var gdcc_end_line: int = 1
+            var gdcc_range: Variant = item.get("range")
+            if gdcc_range is Dictionary:
+                var gdcc_start: Variant = gdcc_range.get("start")
+                var gdcc_end: Variant = gdcc_range.get("end")
+                if gdcc_start is Dictionary:
+                    gdcc_line = int(gdcc_start.get("line", 1))
+                    gdcc_column = int(gdcc_start.get("column", 1))
+                if gdcc_end is Dictionary:
+                    gdcc_end_line = int(gdcc_end.get("line", gdcc_line))
+            var severity_text: String = str(item.get("severity", ""))
+            if severity_text == "ERROR":
+                errors.append({"line": gdcc_line, "column": gdcc_column, "message": gdcc_message, "path": path})
+            elif severity_text == "WARNING":
+                warnings.append({
+                    "start_line": gdcc_line,
+                    "end_line": gdcc_end_line,
+                    "code": 0,
+                    "string_code": category,
+                    "message": gdcc_message,
                 })
     _in_validate = false
     return {"valid": errors.is_empty(), "errors": errors, "warnings": warnings}

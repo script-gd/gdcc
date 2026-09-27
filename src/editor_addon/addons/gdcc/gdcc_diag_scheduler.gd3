@@ -1,0 +1,286 @@
+@tool
+class_name GdccDiagScheduler
+extends Node
+
+## Analysis scheduler for the gdcc diagnostics channel (plan §3.5/§4.4). Child feature of
+## `GdccEditorService`: owns the single-flight upload+analyze chain, the mirror of
+## server-side content versions, failure backoff/suspension, and the version-checked merge
+## of analyze.run results into `GdccDiagCache`. Single-flight: `_flight` non-empty pins the
+## chain, and all requests ride the service-dedicated RPC client queue, so dock compile
+## polling is never starved by whole-module analysis.
+
+# Active analysis flight: {"session": int, "snap": path -> {"text", "version"},
+# "uploads": Array of paths still to put_file}. Empty Dictionary = no flight.
+var _flight: Dictionary = {}
+# A deletion removes a file from the module, so surviving files' diagnostics can change even
+# with no dirty content (e.g. a vanished `class_name`): the next flight must analyze the
+# whole module even when the registry has no dirty path.
+var _analyze_all_pending: bool = false
+# Consecutive non-COMPLETED analysis rounds; backs off retries and eventually suspends them
+# until the next real change (a persistently failing server must not hot-loop).
+var _flight_failures: int = 0
+var _flight_backoff_until: int = 0
+var _flight_suspended: bool = false
+# res:// path -> version last uploaded to the diagnostics VFS (absent = not mirrored).
+var _mirrored_versions: Dictionary = {}
+# Vars, not consts: class-level const is outside gdcc's bootstrap MVP.
+var ANALYZE_DEBOUNCE_MSEC: int = 800
+
+var service: GdccEditorService = null
+
+
+func bind_service(owner: GdccEditorService) -> void:
+    service = owner
+
+
+func flight_active() -> bool:
+    return not _flight.is_empty()
+
+
+## Version last uploaded to the diagnostics VFS for `path`, or -1 when not mirrored.
+func mirrored_version(path: String) -> int:
+    return int(_mirrored_versions.get(path, -1))
+
+
+func note_mirrored(path: String, version: int) -> void:
+    _mirrored_versions[path] = version
+
+
+func unmirror(path: String) -> void:
+    _mirrored_versions.erase(path)
+
+
+## A deletion-triggered whole-module round: analyze every file once the reconcile lands,
+## even with no dirty content.
+func request_full_reanalysis() -> void:
+    _analyze_all_pending = true
+
+
+## A real content change re-arms a suspended/failing scheduler (broadcast by the root from
+## the registry and reconciler).
+func on_content_changed() -> void:
+    _flight_suspended = false
+    _flight_failures = 0
+
+
+func busy_wanted() -> bool:
+    if not _flight.is_empty():
+        return true
+    return service.lifecycle().is_ready() and not _flight_suspended \
+            and (service.registry().has_dirty() or _analyze_all_pending)
+
+
+func on_module_outage() -> void:
+    _flight = {}
+    _mirrored_versions.clear()
+    _flight_failures = 0
+    _flight_suspended = false
+    _flight_backoff_until = 0
+
+
+func service_reset_channel() -> void:
+    _flight = {}
+    _analyze_all_pending = false
+    _mirrored_versions.clear()
+    _flight_failures = 0
+    _flight_suspended = false
+    _flight_backoff_until = 0
+
+
+func service_shutdown() -> void:
+    _flight = {}
+    _analyze_all_pending = false
+    _mirrored_versions.clear()
+    _flight_failures = 0
+    _flight_suspended = false
+    _flight_backoff_until = 0
+
+
+## Flight tick: fires once the newest change is 800ms quiet (or immediately for a
+## deletion-triggered whole-module round), uploads every dirty path whose version is not yet
+## mirrored, and runs one analyze. Edits landing mid-flight only update the registry's dirty
+## marks; the completion handler's version check discards stale results and reschedules
+## immediately (plan §4.4). Persistent non-COMPLETED outcomes back off and eventually
+## suspend until the next real change — a broken server must not hot-loop.
+func service_tick(now: int) -> void:
+    var registry: GdccSourceRegistry = service.registry()
+    if not registry.has_dirty() and not _analyze_all_pending:
+        return
+    if not _flight.is_empty() or _flight_suspended:
+        return
+    if not service.lifecycle().is_ready() or not service.lifecycle().is_setup_idle() \
+            or service.reconciler().is_active():
+        return
+    if now < _flight_backoff_until:
+        return
+    if not _analyze_all_pending and now - registry.last_change_msec() < ANALYZE_DEBOUNCE_MSEC:
+        return
+    var snap: Dictionary = {}
+    var uploads: Array = []
+    for path in registry.dirty_paths():
+        if registry.vanished(path):
+            # Tombstoned, or disk-known but gone (deleted in the window before reconciliation
+            # sees it): never upload. Keep the source entry so the reconcile pass can still
+            # detect and server-side-delete the path; drop only the dirty mark and any cache.
+            registry.clear_dirty(path)
+            service.cache().erase(path)
+            service.reconciler().mark_pending()
+            continue
+        var entry: Variant = registry.entry(path)
+        if not (entry is Dictionary):
+            # Source vanished (reconciled deletion) while still dirty — drop it.
+            registry.clear_dirty(path)
+            continue
+        var version: int = registry.dirty_version(path)
+        var source_entry: Dictionary = entry
+        snap[path] = {"text": str(source_entry.get("text", "")), "version": version}
+        if mirrored_version(path) != version:
+            uploads.append(path)
+    if snap.is_empty() and not _analyze_all_pending:
+        # Every dirty entry lost its source mid-flight (reconciled deletions) — nothing to do.
+        return
+    _flight = {"session": service.lifecycle().session(), "snap": snap, "uploads": uploads,
+            "stamp": _module_version_stamp()}
+    _pump_flight_upload()
+    service.refresh_busy()
+
+
+func _pump_flight_upload() -> void:
+    var uploads: Array = _flight["uploads"]
+    if uploads.is_empty():
+        service.rpc_client().analyze(service.lifecycle().module_id(), service.analyze_include_lowering) \
+                .completed.connect(_on_flight_analyze_done)
+        return
+    var path: String = uploads[0]
+    uploads.remove_at(0)
+    var snap: Dictionary = _flight["snap"]
+    var entry: Dictionary = snap[path]
+    _flight["upload_path"] = path
+    _flight["upload_version"] = int(entry["version"])
+    service.rpc_client().put_file(service.lifecycle().module_id(), service.vfs_path(path),
+            str(entry["text"]), path).completed.connect(_on_flight_put_done)
+
+
+func _on_flight_put_done(response: Dictionary) -> void:
+    if not _flight_valid():
+        return
+    if not service.response_ok(response):
+        service.lifecycle().notify_outage()
+        return
+    # Mirror the uploaded snapshot version only now (on success): the merge gate compares
+    # mirrored versions against live content versions.
+    _mirrored_versions[_flight["upload_path"]] = int(_flight["upload_version"])
+    _pump_flight_upload()
+
+
+func _on_flight_analyze_done(response: Dictionary) -> void:
+    if not _flight_valid():
+        return
+    if not service.response_ok(response):
+        service.lifecycle().notify_outage()
+        return
+    var result: Variant = response.get("result")
+    if not (result is Dictionary):
+        service.lifecycle().notify_outage()
+        return
+    # An RPC-OK envelope can still carry a failed analysis (e.g. INTERNAL_FAILED when the
+    # server cannot load Godot metadata): merging it would falsely present every file as
+    # analyzed-and-clean, so only COMPLETED rounds merge and clear dirty state.
+    if result.get("outcome") != "COMPLETED":
+        _flight = {}
+        _flight_failures += 1
+        if _flight_failures >= 5:
+            _flight_suspended = true
+            push_warning("GDCC: analysis keeps failing (outcome=%s); pausing until the next change."
+                    % str(result.get("outcome")))
+        else:
+            _flight_backoff_until = Time.get_ticks_msec() \
+                    + service.lifecycle().OUTAGE_RETRY_MSEC * _flight_failures
+        service.refresh_busy()
+        return
+    _flight_failures = 0
+    if int(_flight.get("stamp", -1)) != _module_version_stamp():
+        # Any source changed mid-flight (an edit outside the snapshot, or a reconcile):
+        # analyze.run is whole-module, so even version-matched paths were computed against a
+        # superseded module state. Discard the round entirely and re-fly at once.
+        _flight = {}
+        service.registry().expire_debounce()
+        service.refresh_busy()
+        return
+    _merge_analysis_result(result)
+    _analyze_all_pending = false
+    _flight = {}
+    service.lifecycle().note_heartbeat()
+    service.refresh_busy()
+
+
+## Version-checked merge (plan §4.4): a flight's diagnostics refresh exactly the paths whose
+## mirrored content version still equals the live version (`covered`); paths edited
+## mid-flight keep their stale cache and stay dirty for an immediate re-round. Diagnostics
+## group by `sourcePath` (the displayPath); items without one are module-level and land on
+## every covered path at file level (1:1 mapping happens in `_validate`).
+func _merge_analysis_result(result: Dictionary) -> void:
+    var registry: GdccSourceRegistry = service.registry()
+    var cache: GdccDiagCache = service.cache()
+    var snap: Dictionary = _flight["snap"]
+    var diagnostics_root: Variant = result.get("diagnostics")
+    var grouped: Dictionary = {}
+    var unlocated: Array = []
+    if diagnostics_root is Dictionary:
+        var items: Variant = diagnostics_root.get("diagnostics")
+        if items is Array:
+            for item in items:
+                if not (item is Dictionary):
+                    continue
+                var source_path: Variant = item.get("sourcePath")
+                if source_path is String and source_path != "":
+                    if not grouped.has(source_path):
+                        grouped[source_path] = []
+                    var bucket: Array = grouped[source_path]
+                    bucket.append(item)
+                else:
+                    unlocated.append(item)
+    var covered: Array = []
+    for path in _mirrored_versions.keys():
+        var entry: Variant = registry.entry(path)
+        if not (entry is Dictionary):
+            continue
+        var live_version: int = int(entry.get("version", -1))
+        if live_version == int(_mirrored_versions[path]):
+            covered.append(path)
+    for path in covered:
+        var merged: Array = []
+        var mine: Variant = grouped.get(path)
+        if mine is Array:
+            merged.append_array(mine)
+        merged.append_array(unlocated)
+        var live: Dictionary = registry.entry(path)
+        cache.set_items(path, int(live.get("version", -1)), merged)
+    for path in snap.keys():
+        var snap_entry: Dictionary = snap[path]
+        var live_entry: Variant = registry.entry(path)
+        if live_entry is Dictionary and int(live_entry.get("version", -1)) == int(snap_entry["version"]):
+            registry.clear_dirty(path)
+        else:
+            # Edited mid-flight: the merged content is stale for this path — re-run at once
+            # instead of waiting out another debounce window.
+            registry.expire_debounce()
+
+
+func _flight_valid() -> bool:
+    if not service.is_active() or _flight.is_empty():
+        return false
+    return int(_flight.get("session", -1)) == service.lifecycle().session()
+
+
+## Whole-module content stamp: sum of all tracked content versions plus the tracked-path
+## count (any add/remove/edit moves it). analyze.run is whole-module, so a flight's result
+## is only mergeable when the module state at completion equals the state at dispatch.
+func _module_version_stamp() -> int:
+    var registry: GdccSourceRegistry = service.registry()
+    var stamp: int = registry.tracked_count()
+    for key in registry.tracked_paths():
+        var entry: Variant = registry.entry(key)
+        if entry is Dictionary:
+            stamp += int(entry.get("version", 0))
+    return stamp

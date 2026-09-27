@@ -10,8 +10,9 @@
 ## 文档状态
 
 - 状态：实施计划（Phase 0 已实施并通过验收；**Phase 1 已实施并通过验收**；
-  **Phase 2 已实施并通过自动化验收**；Phase 3+ 尚未实施；已经过多轮并行评审并修订）
-- 更新日期：2026-09-23
+  **Phase 2 已实施并通过自动化验收**；**Phase 3 已实施并通过自动化验收**；
+  Phase 4+ 尚未实施；已经过多轮并行评审并修订）
+- 更新日期：2026-09-26
 - Phase 0 验收结果（2026-09-23）：P0-A/B/C 全绿（`EditorAddonIntegrationProbeTest`
   3/3 通过，无跳过）。`_init` 语义与 typed array 返回的探针结论已回填 §3.2/§2.3。
   探针暴露并已修复两个 gdcc 后端缺陷（阻塞级，修复侧已含回归测试）：
@@ -195,6 +196,179 @@
        `connect*` 前缀的连接失败证据。
     4.（低）`lsp_runtime_enable.editor_ready` 的 `_port_open` 只有 1.5s 余量：改为
        30s 轮询。
+- Phase 3 验收结果（2026-09-26，自动化项全绿，手动项待 §8.3）：
+  - `EditorAddonDiagnosticsFixtureTest`（新增，4/4）：Java 侧钉死引擎测试所用 fixture
+    的前端诊断事实——路径式 `extends` 报 `sema.class_skeleton`（ERROR，锚定
+    `class_name` 行）；`@onready var camera = $Camera3D` 报
+    `sema.deferred_expression_resolution`（WARNING）+ `sema.compile_check`（ERROR）
+    配对（4 行 23 列）且 `includeLowering=false` 时后者不出现；两 fixture 同模块单轮
+    齐报；同名文件经 displayPath 独立键控。
+  - `EditorAddonScriptLanguageEngineTest` 新增 `gdcc_diag` 用例（18 步全绿）：
+    路径式 extends 在 LSP 静默下经 `_validate` 浮现 `[gdcc sema.class_skeleton]`
+    前缀错误；lowering fixture 的错误/警告配对按五键/行列映射；同名不同目录文件
+    诊断各自键控；编辑后旧版本缓存立即失效（版本门禁负例）；LSP 有错误时 gdcc
+    诊断不叠加（含 gdcc 缓存新鲜时仍抑制）；修复后下一轮缓存被替换、诊断消失；
+    busy ±1 在分析期间上报并排空（经 `busy_delta` 信号接入 Phase 1 协调器）；
+    预置同 ID 残留模块后重建恢复分析（-32001 路径）；删除/重命名后旧路径缓存与
+    服务端 VFS 条目均移除（`vfs.readFile` 返 -32005 为证）、新路径独立成轮；
+    端点指向快速失败的 HTTP 500 黑洞后经 `ensure_server_hook` 拉起重试并恢复。
+  - 回归：`EditorAddonScriptLanguageAnalysisTest`（含新调度器代码 analyze+lowering
+    干净）、`EditorAddonClientAnalysisTest`、`EditorAddonBootstrapEngineTest`、
+    `EditorAddonIntegrationProbeTest`、引擎测试全部既有用例无回归。
+- Phase 3 实现偏差与实施期实证（相对下文设计，按事实源口径记录）：
+  1. 引擎测试的停机坪端点改用**永远应答 HTTP 500 的黑洞服务器**：实证 Godot
+     `HTTPRequest` 对连接被拒端口会挂起至 30s 请求超时，快速失败使钩子路径可被
+     确定性断言。
+  2. lowering fixture 选型经实证调整：裸 `$Camera3D` 属性初始化会被 GDScript LSP
+     自身升级为错误（破坏"LSP 无错误"前提）；lambda、裸工具函数值读、`match`、
+     字典 for-in 在当前前端均已可 lowering（不再产生 compile_check）；最终采用
+     LSP 推荐写法 `@onready var camera = $Camera3D`——LSP 静默而 gdcc 仍阻断，
+     且天然携带 WARNING+ERROR 配对。
+  3. setup 阶段机增加 `_setup_session` 守卫：端点重定向瞬间可能存在旧在途 ping，
+     其应答不得被误消费为新一次 setup 的应答（阶段整数无法区分）。
+  4. 对账不采用磁盘内容覆盖 dirty 缓冲区路径（缓冲区权威，由下一 flight 上传）；
+     对账 put/delete 的完成归属依赖 RPC 客户端严格单飞串行（`_reconcile_order`
+     FIFO，无需 Callable.bind）。
+  5. busy 协调经 `busy_delta(delta)` **信号**接入 plugin.gd 协调器（信号是已探针的
+     编译→解释方向互操作形式）；模块未就绪且首次 setup 已有结论（服务缺席且无启动
+     命令）后不持有 busy，静默降级不打扰编辑器低功耗模式。
+  6. `gdcc_diagnostics_for` 仅按版本门禁返回原始诊断条目；行列映射、`[gdcc
+     <category>]` 前缀与五键警告形状在 `_validate` 侧完成（前端点位本来就是
+     1-based，与 LSP 分支的 +1 平移相反）。
+- Phase 3 评审记录（2026-09-26，review-expert-a + review-expert-c 并行评审，修复后
+  `gdcc_diag` 20 步与全部门禁复测通过）：
+  - 采纳并修复：
+    1.（高）删除已镜像文件只清本地态不防"页签复活"：仍打开页签的下一次 `_validate`
+       会把已删路径当新文件重新上传。修复：删除一律落墓碑（`_deleted_paths`），
+       `notify_source_changed` 对墓碑路径且磁盘不存在时返回 -1，墓碑在文件重新出现
+       时解除；flight 上传前再查一次墓碑关闭"删除与对账之间"的窗口。新增锚点步骤
+       `delete_with_dirty_buffer`（含服务端 `readFile` -32005 证据）。
+    2.（高）删除单独发生时不触发重分析，幸存文件的诊断（如消失的被继承
+       `class_name`）永不刷新。修复：对账中出现删除即置 `_analyze_all_pending`，
+       下一 flight 即使无脏路径也整模块分析。新增锚点步骤
+       `deletion_triggers_reanalysis`（provider/consumer 依赖断裂浮现错误）。
+    3.（高）`vfs.deletePath` 失败被乐观吞掉且不可重试，服务端残留僵尸文件污染后续
+       整模块分析。修复：仅 ok/-32005 视为删除成功，其余失败走 `_on_server_outage`
+       ——恢复时 `module.create` 命中 -32001 重建路径自然清空僵尸。
+    4.（高）服务离线期间旧缓存诊断仍可显示，违反 §4.4"离线仅剩 LSP 通道"。修复：
+       `gdcc_diagnostics_for` 增加 `_module_ready` 门。
+    5.（中）从未镜像的脏路径在删除后会被 flight 补传（对账只按镜像集合检测删除）。
+       修复：引入 `_disk_known` 区分"曾在盘"与"纯缓冲区未保存新文件"，前者消失即
+       删除+墓碑，后者不受影响。
+    6.（中）重定向瞬间旧在途 ping 的应答可能被误消费为新 setup 的应答（共享会话戳
+       无法区分先后两条 ping）。修复：ping 发送/完成单调计数对，先到的旧完成直接
+       丢弃。
+    7.（中）卸载瞬间在途 `module.create` 成功会造成孤儿模块。修复：create 完成时
+       若已非 ACTIVE 立即补发删除（同端点、队列仍在泵帧）。
+    8.（中）`analyze.run` 返回 RPC 成功但 `outcome != COMPLETED`（如元数据加载失败）
+       会被当作干净轮合并。修复：仅 COMPLETED 合并并清脏；失败轮按次数退避，连续
+       5 次后挂起调度直至下一次真实变更（push_warning 告知）。
+    9.（中）`module.create` 失败（ping 已成功）的重试不持有 busy，低功耗窗口会饿死
+       重试。修复：`_defer_setup_retry` 不再置 `_setup_concluded`。
+    10.（中）`ensure_server_hook` 原先在首次 ping 失败后才调用，而实证显示
+        `HTTPRequest` 对拒连端口会挂满 30s 请求超时。修复：模块未就绪时每个断供
+        窗口先走钩子（launcher 自带 ≤200ms TCP 快探）再 ping——同时落实 §3.5
+        "install 后首个 ping 之前先经钩子"的字面要求。
+    11.（低）-32002 删除失败缺少规格要求的日志：补 `push_warning`。
+    12.（低）测试加固：`lsp_error_suppresses_gdcc` 要求 gdcc 缓存新鲜且**非空**
+        （空缓存无法证明抑制）；警告断言补齐 `code == 0` 与 `end_line`；
+        `stale_module_rebuild` 改为版本升版后等新一轮（排除残留缓存假通过）；
+        `rename_reconciles` 补服务端旧路径 `readFile` -32005；`recovered_after_hook`
+        补恢复后的完整分析轮证据。
+  - 保留（自愈/自限，修复需较大异步改造，已评估暂不做）：
+    1. 端点重定向会把已创建模块遗弃在旧服务器上：模块是纯内存态，随旧服务进程退出
+       消亡；修复需要在 install 内做跨端点异步拆除，收益/复杂度不划算。
+    2. 迟到的 ensure-hook 回调可影响替换会话的重试计时：影响仅为一次提前/推迟的
+       ping，下一次心跳自愈。
+    3. `busy_drained` 只观测服务侧信号而非协调器对 `OS.low_processor_usage_mode` 的
+       实际效果：协调器本身由 Phase 1 用例覆盖，此处仅锚定服务上报职责。
+  - 第二轮复核采纳并修复（复核确认第一轮修复方向，以下为新发现）：
+    1.（高）已被 flight 上传的纯缓冲区文件（从未落盘）会被下一次对账误判为"已删除"
+       而墓碑化——"已镜像"不是"曾在盘"的证据。修复：删除判定只认 `_disk_known`。
+    2.（高）`notify_source_changed` 解除墓碑时不恢复 `_disk_known`，导致同一文件在
+       下一次扫描前再删会被误认作纯缓冲区路径而被 flight 重新上传；flight 的墓碑守卫
+       原先还会先擦 `_sources`，反过来破坏对账的删除检测。修复：解除墓碑即恢复
+       `_disk_known`；flight 守卫只清脏标记与缓存、保留 `_sources` 并触发对账。
+    3.（中）hook 失败后下一 tick 仍会先 ping——对拒连端口白挂 30s 超时且占 busy。
+       修复：hook 失败即重置 `_ensure_attempted`，重试周期始终先走 launcher 的快探
+       （其自身 busy 上报保证低功耗窗口内帧泵不断），只有 hook 成功才发 ping。
+    4.（中）hook 无效（未注入）时首次 ping 失败永不置 `_setup_concluded`，busy
+       永久持有。修复：无钩子时 outage 直接结论化、静默降级。
+    5.（中）outage 保留诊断缓存，模块一就绪旧结果立即复活（可能已过时）。修复：
+       outage/重定向/卸载一律清空 `_gdcc_diagnostics`，恢复后由重镜像+重分析重建。
+    6.（低）挂起状态下删除仍可能无法触发重分析：置 `_analyze_all_pending` 时同步
+       解除挂起并清零失败计数。
+    7.（低）`delete_with_dirty_buffer` 未证明删除时确有脏工作：补
+       `notify_source_changed` 版本探针断言（同文本返回现有版本 2）。
+  - 第二轮复核未采纳项（附理由）：
+    1. "hook 失败后应保持未结论化以占住 busy"——驳回：无启动命令时服务长期缺席是
+       正常态，永久占 busy 会破坏 §4.4 静默降级；退避到期的重试在下一帧（用户活动
+       时）执行即可（第三轮复核确认 launcher 的 busy 只覆盖探测本身，不覆盖退避
+       窗口——该边界见第三轮保留项 1）。
+    2. "墓碑解除依赖 DirAccess 枚举未导入文件可能不可靠"——引擎测试实证反驳：
+       `rename_reconciles` 中运行时新写、从未导入的 `.gd3` 被对账正常发现；同时仍
+       采纳其加固建议（解除墓碑即恢复 `_disk_known`，见第 2 条）。
+  - 第三轮复核采纳并修复：
+    1.（高）hook 成功后 launcher 释放 busy 与服务发 ping 之间存在帧空窗：低功耗窗口
+       下 ping/create 链可能等不到下一帧。修复：hook 成功时 `_setup_concluded` 置回
+       false——launcher 的 busy 与服务的 busy 在回调内重叠交接，ping→create→首轮
+       对账全程有帧；失败后 outage 的 5s 退避最多再持有一个周期（hook 再失败即结论化
+        释放），不会永久占用。
+  - 第三轮复核保留项（已确认设计边界，写入注释）：
+    1. 服务缺席期间两次快速探测之间的退避不占 busy：完全空闲（无任何输入）的编辑器
+       里，到期的重试在下一帧（用户活动时）执行。这符合 §4.4 静默降级；"杀进程后
+       无任何输入也能自动拉起"不作为承诺——心跳检测本身也依赖帧，该边界已写入
+       `_on_ensure_ready` 注释。
+    2. 心跳在纯空闲时暂停：killed 服务的发现延迟到下一次编辑器活动；期间
+       `_validate` 可能短暂提供 kill 前的缓存（与 R17 的节拍级延迟同类）。不以
+       心跳新鲜度门控缓存读取——健康服务下空闲数秒就隐藏既有诊断更差。
+  - 第四轮复核采纳并修复：
+    1.（高）hook-first 存在漏洞：hook 启动当帧返回后，下一帧 `_ensure_attempted` 已为
+       true，会在 hook 仍在途时就发出 ping（对拒连端口挂满 30s 请求超时，架空
+       hook-first 且推迟 create）。修复：`_tick_setup` 在 `_hook_inflight` 期间直接
+       返回。
+    2.（中）hook 持续成功（端口可 TCP 连通）而 ping/create 持续失败时 busy 永不释放。
+       修复：setup 失败计数（setup ping/create/残留删除共用），达到 5 次上限即结论化
+       释放 busy，后续重试随活动帧进行。
+    3.（中）逐文件版本门禁不足：flight 中途任一源变化（含快照外文件）时，未变文件
+       仍会并入按旧模块状态算出的诊断。修复：flight 记录整模块版本戳（版本和 +
+       路径数），完成时不匹配即整轮丢弃并立即重飞（`_analyze_all_pending` 保留）。
+  - 第四轮复核后状态：待两名评审最终确认；全套（分析门禁 + fixture 锚定 + 引擎 8
+    用例含 `gdcc_diag` 21 步）已复测通过。
+  - 第五轮复核采纳并修复：
+    1.（高）hook 成功即清失败计数并强制未结论化，"TCP 可连但 RPC 永失败"循环永远
+       触不到上限。修复：hook 成功不再清零，且计数达上限后保持结论化。
+    2.（中）-32001 → 删除成功 → 立即重建无退避上限（矛盾服务器可致紧密循环）。
+       修复：同窗口第二次 -32001 改走 `_defer_setup_retry` 共享上限。
+    3.（中）outage 恢复丢失纯缓冲区（未落盘）文件：镜像清空后它们不再被重新上传。
+       修复：对账把"不在盘、非已知、非墓碑、未镜像、未脏"的 `_sources` 条目补标脏，
+       由下一 flight 重传。
+  - 第六轮复核采纳并修复：`_on_server_outage` 误清 setup 失败计数（上轮修复引入），
+    上限仍不可达。修复：outage 不清计数（清零只在 hook 失败/进入就绪/通道重置）。
+    新增引擎步骤 `hook_ok_ping_fail_capped`（hook 恒成功 + RPC 恒 500 的黑洞端点，
+    断言计数达上限后结论化且 busy 在本步骤内排空）。
+  - 第七轮复核采纳并修复：outage 无条件清 `_module_created`，瞬时故障后卸载会跳过
+    模块删除造成孤儿。修复：outage 保留创建标记（仅重定向/实际删除才清除）。
+  - 第七轮复核结论：review-expert-a 与 review-expert-c 均 **APPROVE**；最终全套（分析
+    门禁 + `EditorAddonDiagnosticsFixtureTest` 4/4 + 引擎 8 用例含 `gdcc_diag` 21 步）
+    复测通过。
+  - Phase 3 后重构（hub-and-spoke 拆分，见 §3.5 架构段）评审采纳并修复：
+    1.（中）`_stale_deleted` 原在发出删除前置位：删除失败（-32002）后下一次 -32001
+       会被误判为"矛盾二次冲突"而跳过删除。修复：仅在删除**成功**后置位，失败路径
+       显式清零。
+    2.（高）ensure-hook 应答无归属判断：重定向后旧 hook 的迟到应答会改写新窗口状态
+       并清掉新 hook 的 `_hook_inflight`；而纯计数器方案在 teardown 补全后无法区分
+       迟到的真实应答。修复：tick 强制**全局单飞** hook（`_hook_sent == _hook_done`
+       才允许新 hook），使 `_setup_session` 窗口标记在在途期间不被覆写；teardown
+       （outage/重定向/卸载）只清 `_hook_inflight`，迟到应答由 session 守卫丢弃。
+    3.（中）hook 可能永不应答（插件停用时旧 launcher 丢弃待答队列不回呼），单飞设计
+       会因此死锁。修复：30s hook 超时（launcher 自身预算约 20s）按 hook 失败语义
+       放弃窗口并合成缺失的完成计数（`_hook_done = _hook_sent` + session 递增）。
+    4.（低）`service_shutdown` 未清心跳截止时间，同端口重装最多空等 5s。修复：置 0。
+    新增引擎步骤 `stale_hook_answer_dropped`（延迟 hook + 两次重定向，断言旧窗口迟到
+    应答不清新窗口的 in-flight 标志）与 `hook_pending_uninstall_recovers`（hook 待答
+    时卸载→重装→仅新 hook 回答→必须恢复就绪）。重构后 `gdcc_diag` 共 23 步，全套
+    复测通过。
 - 范围：
   - `src/editor_addon/addons/gdcc/**`（新增 `.gd3` 源文件 + `server_launcher.gd` +
     `plugin.gd`/`gdcc_dock.gd` 接线）
@@ -695,6 +869,26 @@ func _get_global_class_name(path: String) -> Dictionary # Phase 5
 UNINSTALLED 下所有对外入口早退（`_validate` 返回 `{"valid": true}`，补全返回降级
 字典）。
 
+**内部架构（hub-and-spoke，Phase 3 后重构落地）**：根节点只负责生命周期、调度与
+子节点协作——基础设施（常驻 RPC/LSP 客户端子节点、端点配置）、帧泵
+（`_on_diag_frame` 以固定顺序 tick 各功能子节点：lifecycle → reconciler →
+scheduler，最后统一 `refresh_busy`）、协调广播（`broadcast_module_ready` /
+`broadcast_module_outage` / `notify_content_changed`，生产者与消费者解耦）、
+`busy_delta` 的唯一边沿发射（轮询各子节点 `busy_wanted()` 聚合）、LSP 通道门面与
+对外公共 API 门面。功能切片拆为常驻子节点（`install` 首调创建、永不释放）：
+`GdccModuleLifecycle`（私有模块建删/心跳/outage 恢复/setup 失败上限）、
+`GdccFileReconciler`（磁盘↔VFS 文件集合对账）、`GdccDiagScheduler`（单飞
+upload+analyze 链、镜像版本、失败退避、结果合并）、`GdccSourceRegistry`（内容真值表
+/脏跟踪/墓碑）、`GdccDiagCache`（版本门禁诊断缓存）。子节点经根访问器
+（`rpc_client()`/`lifecycle()`/`registry()`/`cache()`/`reconciler()`/`scheduler()`）
+与共享工具（`response_ok`/`response_error_code`/`vfs_path`）协作；因 gdcc bootstrap
+MVP 不含自定义基类 `extends`，功能协议（`bind_service`/`service_tick(now)`/
+`busy_wanted()`/`on_module_ready`/`on_module_outage`/`on_content_changed`/
+`service_shutdown`/`service_reset_channel`）按约定实现而非继承。新增功能（如代码
+补全）= 新子节点脚本 + install 中一个构造块 + 一个访问器 + 视需要的 tick 行、
+`refresh_busy` 聚合项与广播/关停/重置挂接，
+不改动既有子节点逻辑。
+
 - `install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
   rpc_host: String, rpc_port: int) -> int(Error)` —— ACTIVE 状态下重复调用幂等早退
   （但仍把 host/port 写回客户端，见下）。首次调用时创建语言/加载器/保存器/LSP 客户
@@ -980,6 +1174,28 @@ RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
 结果显式守卫、公开 API 不返回协程（异步 RPC 沿用 `PendingRequest` 挂起对象；
 LSP 的同步等待是紧凑 `poll` 循环，不是协程）。
 
+拆分重构期间新增的实证边界（分析门禁 + 原生编译双重验证）：
+
+- 自定义类**带参构造**不可用：`class X ...; X.new(args)` 被前端
+  `sema.call_resolution`/`sema.type_check` 拒绝（仅支持零参构造），用零参
+  `new()` + `setup(...)` 方法替代。
+- **方法引用 Callable 不保留接收者（与官方语义一致）**：`obj.method` 前端零诊断、
+  同作用域调用正常，跨作用域（接收者仅靠 Callable）调用报 `null::method`。对照实证
+  （4.5.1 官方解释器隔离探针，见 `tmp/callable_retention_probe`；注意同一持有者里的
+  lambda 会保活共享 token，探针必须隔离）：官方的标准 Callable（糖式**和**显式构造
+  `Callable(obj, method)`）同样只存 `(ObjectID, StringName)`、**不保活任何接收者**
+  （`callable.cpp` 构造函数实证），报错措辞与我们完全一致；唯一保活的是 lambda
+  捕获（`GDScriptLambdaSelfCallable` 持 `Ref<RefCounted>`），而 lambda 恰在 .gd3
+  禁用清单内。故糖式路径我们与官方**逐行为对齐**，非缺陷。
+- **显式构造已由 PR #83 修复**：`Callable(obj, &"method")` 对自定义类接收者曾经在前端
+  放行、C 后端报 `ExtensionBuiltinClass` 无此构造；PR #83（固定调用参数的对象向上
+  转换物化）解除此拒绝，且明确**不保留**接收者（与官方语义一致）。最小复现/锚定：
+  `CustomReceiverCallableGapTest`（糖式+显式的同作用域对照、跨作用域不保活特征化、
+  codegen 接受锚定）。
+  方法引用 Callable 目前仅对 `self`（Node）可靠——但即使后端补齐保留/构造，标准
+  Callable 按官方语义也**不应**保活接收者，令牌式 hook 归属依旧不可行；共享字段/
+  计数器 + 单飞不变量是与引擎语义一致的正确设计。
+
 Phase 0 探针分三级（任一级失败即阻塞后续阶段，先补 gdcc 能力，独立任务不在此展开）：
 
 **P0-A 编译探针**（`src/test/resources/editor_addon_probe/*.gd3`，不进插件目录；
@@ -1105,7 +1321,7 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
 - 手动：同一段错误代码分别在 `.gd` 与 `.gd3` 中打开，错误行号/条数一致；编辑后错误
   随动更新；无错误文件无误报；含中文注释的样例补全/诊断列位置正确（§9 R11）。
 
-### Phase 3：gdcc 诊断合并
+### Phase 3：gdcc 诊断合并 ✅（2026-09-26 自动化验收通过）
 
 实施：私有模块生命周期、标脏/防抖/单飞/版本校验、缓存合并（§4.2 第 3 步、§4.4）、
 文件集合对账（§3.5）、诊断调度接入低功耗 busy 协调（协调器已在 Phase 1 落地，

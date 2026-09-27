@@ -1,0 +1,406 @@
+@tool
+class_name GdccModuleLifecycle
+extends Node
+
+## Private diagnostics module lifecycle (plan §3.5): setup state machine (ping →
+## module.create, with -32001 stale-remnant rebuild), heartbeat, ensure-hook-first outage
+## recovery, bounded setup-failure cap, and channel teardown. Child feature of
+## `GdccEditorService`: the root ticks it first every frame and broadcasts its transitions
+## (`_broadcast_module_ready` / `_broadcast_module_outage`) to the sibling features.
+## Fully asynchronous — every stage advances from `PendingRequest.completed` signals or the
+## frame pump; no blocking RPC exists anywhere on this path.
+
+# `gdcc_editor_diagnostics_<project-root-hash>_<pid>`; computed once. The pid component makes
+# a same-id module provably this process's own crash remnant, so the -32001 rebuild path can
+# never delete another editor's module (plan §3.5).
+var _diag_module_id: String = ""
+var _module_ready: bool = false
+# True from this session's successful module.create until uninstall deletes it or an
+# endpoint retarget (`service_reset_channel`) drops ownership; deliberately survives outages
+# (a failed RPC does not prove the server forgot the module).
+var _module_created: bool = false
+# Bumped on every uninstall, outage and channel reset; in-flight RPC completions compare
+# against it and stale callbacks are dropped.
+var _diag_session: int = 0
+# Session captured when a setup ping/create/delete was sent; completions arriving after a
+# session bump (outage/retarget/uninstall) are stale and must be ignored — the stage int
+# alone cannot tell an old in-flight ping apart from a new one.
+var _setup_session: int = -1
+# Setup state machine: 0 idle, 1 ping in flight, 2 module.create in flight, 3 delete of a
+# stale same-id module in flight (a successful create follows), 4 heartbeat ping in flight.
+var _setup_stage: int = 0
+# First setup conclusion (module ready, or the first failed ensure cycle) keeps the editor
+# awake; afterwards an absent server degrades silently without holding busy.
+var _setup_concluded: bool = false
+# Consecutive setup failures (setup ping / create / stale-delete) since the last hook
+# FAILURE, module-ready, or channel reset (a hook SUCCESS deliberately does not reset it —
+# that would defeat the cap). Beyond the cap the attempt concludes (busy released) and
+# further retries ride activity frames — an endpoint that accepts TCP but never answers RPC
+# must not pin the editor awake forever (review finding).
+var _setup_fail_streak: int = 0
+# Set after this window's stale-module (-32001) delete succeeded; a second -32001 from the
+# very next create means a contradictory server — defer with backoff instead of looping.
+var _stale_deleted: bool = false
+# One ensure-hook invocation per outage window: the launcher's own TCP probe fails fast, so
+# asking the hook BEFORE the first ping avoids sitting out the 30s HTTPRequest timeout that
+# a refused connection would otherwise incur (empirically verified in engine tests).
+var _ensure_attempted: bool = false
+var _next_heartbeat_msec: int = 0
+# Ping completion attribution: the client serializes requests, so completions arrive in send
+# order — a completion is stale exactly when another ping was sent after it (retarget/outage
+# can queue a replacement while the old one is in flight).
+var _ping_sent: int = 0
+var _ping_done: int = 0
+# Hook completion attribution (review findings): scalar counters suffice ONLY because the
+# tick enforces a single outstanding hook globally (`_hook_sent == _hook_done` gates firing)
+# — a teardown cannot free the old window's hook for a new one to overwrite `_setup_session`
+# underneath it. The launcher guarantees a callback within its own probe/spawn budgets
+# (~20s); the timeout below covers a hook whose waiter was dropped without a callback
+# (launcher teardown), synthesizing the missing completion so attribution never deadlocks.
+# A per-window reply-token object would be cleaner, but the gdcc bootstrap can construct
+# Callables neither from custom-class instances nor with bound arguments (probed; see the
+# implementation doc), so shared-field attribution + single-outstanding is the strongest
+# available design. Accepted residual: after a TIMEOUT-abandon, a wedged hook's very late
+# answer can be misattributed to the next hook — bounded to one early ping (worst case one
+# 30s refused-hang) and self-healing.
+var _hook_sent: int = 0
+var _hook_done: int = 0
+var _hook_inflight: bool = false
+# Frame timestamp when the outstanding hook was fired.
+var _hook_inflight_since: int = 0
+# Vars, not consts: class-level const is outside gdcc's bootstrap MVP.
+var HEARTBEAT_MSEC: int = 3000
+var OUTAGE_RETRY_MSEC: int = 5000
+var SETUP_FAIL_CAP: int = 5
+# Bound on one ensure-hook flight: the launcher answers within ~20s (probe 200ms / spawn
+# 15s budgets); a hook pending longer than this is treated as never-answering.
+var HOOK_TIMEOUT_MSEC: int = 30000
+
+var service: GdccEditorService = null
+
+
+func bind_service(owner: GdccEditorService) -> void:
+    service = owner
+
+
+## The private diagnostics module id (`gdcc_editor_diagnostics_<rootHash>_<pid>`). The pid
+## component scopes crash remnants to this process.
+func module_id() -> String:
+    if _diag_module_id == "":
+        var root: String = ProjectSettings.globalize_path("res://")
+        _diag_module_id = "gdcc_editor_diagnostics_%d_%d" % [_stable_hash(root), OS.get_process_id()]
+    return _diag_module_id
+
+
+func is_ready() -> bool:
+    return _module_ready
+
+
+## True while no setup/heartbeat RPC is in flight — reconciler and scheduler gate on this so
+## their requests never interleave with the module dance on the serialized client queue.
+func is_setup_idle() -> bool:
+    return _setup_stage == 0
+
+
+## Current channel epoch; flights and setup completions captured against an older epoch are
+## stale and must be dropped.
+func session() -> int:
+    return _diag_session
+
+
+## Polynomial rolling hash over code points. Deliberately NOT `String.hash()`: the module id
+## only needs stable project-root discrimination within one machine/session, and this avoids
+## depending on a global-scope builtin the gdcc bootstrap surface has not probed.
+func _stable_hash(text: String) -> int:
+    var hash: int = 0
+    for i in range(text.length()):
+        hash = (hash * 31 + text.unicode_at(i)) % 1000000007
+    return hash
+
+
+func busy_wanted() -> bool:
+    return not _setup_concluded or _setup_stage != 0 or _hook_inflight
+
+
+## Setup/heartbeat tick. While the module is missing, the ensure hook runs BEFORE the first
+## ping of each outage window (plan §3.5: connection-refused goes through the hook first) —
+## the launcher's TCP probe fails in ≤200ms while a refused HTTPRequest hangs for the full
+## 30s request timeout, so hook-first is also the fast path. Once ready, the same ping
+## cadence doubles as the heartbeat whose failure detects a killed or restarted server.
+## Heartbeats pause while a flight/reconcile is active — an in-flight request is itself the
+## liveness proof and fails into the same outage path.
+func service_tick(now: int) -> void:
+    if _setup_stage != 0:
+        return
+    if _hook_sent != _hook_done:
+        # A hook answer is outstanding (current window's, or an abandoned one whose teardown
+        # released `_hook_inflight` already). Hook-first means NO ping until it lands: a
+        # refused HTTPRequest would hang for the full request timeout behind the launcher's
+        # fast probe. And single-outstanding means no NEW hook either — that is what keeps
+        # `_setup_session` attributable (review finding).
+        if now - _hook_inflight_since < HOOK_TIMEOUT_MSEC:
+            return
+        # The hook never answered (e.g. the launcher was torn down with the waiter still
+        # pending and no callback): account the missing completion, stale the late answer
+        # via the session bump (pre-ready — no flights or setup RPCs exist to invalidate),
+        # and degrade with hook-FAILURE semantics.
+        _hook_done = _hook_sent
+        _hook_inflight = false
+        _diag_session += 1
+        _setup_fail_streak = 0
+        _setup_concluded = true
+        _ensure_attempted = false
+        _next_heartbeat_msec = now + OUTAGE_RETRY_MSEC
+        service.refresh_busy()
+        return
+    if now < _next_heartbeat_msec:
+        return
+    if _module_ready and (service.scheduler().flight_active() or service.reconciler().is_active()):
+        return
+    if not _module_ready and not _ensure_attempted and service.ensure_server_hook.is_valid():
+        _ensure_attempted = true
+        _hook_inflight = true
+        _hook_inflight_since = now
+        # `_setup_session` tags this hook's window: a teardown bumps `_diag_session`, so the
+        # old hook's late answer is dropped instead of rewriting the new window's state —
+        # and it can never be overwritten by a newer hook while outstanding (see the
+        # single-outstanding gate above).
+        _setup_session = _diag_session
+        _hook_sent += 1
+        service.ensure_server_hook.call(service.rpc_host(), service.rpc_port(), _on_ensure_ready)
+        service.refresh_busy()
+        return
+    if _module_ready:
+        _setup_stage = 4
+    else:
+        _setup_stage = 1
+    _ping_sent += 1
+    _setup_session = _diag_session
+    service.rpc_client().ping().completed.connect(_on_diag_ping_done)
+
+
+func _on_diag_ping_done(response: Dictionary) -> void:
+    _ping_done += 1
+    if _ping_done < _ping_sent:
+        # Stale completion of a superseded ping (queued before a retarget/outage): the newer
+        # ping owns the setup stage; drop this answer entirely.
+        return
+    if not service.is_active() or (_setup_stage != 1 and _setup_stage != 4) \
+            or _setup_session != _diag_session:
+        return
+    var was_heartbeat: bool = _setup_stage == 4
+    _setup_stage = 0
+    if service.response_ok(response):
+        if was_heartbeat:
+            _next_heartbeat_msec = Time.get_ticks_msec() + HEARTBEAT_MSEC
+        else:
+            _setup_stage = 2
+            _setup_session = _diag_session
+            service.rpc_client().create_module(module_id(), "GDCC Editor Diagnostics") \
+                    .completed.connect(_on_diag_create_done)
+        service.refresh_busy()
+        return
+    if not was_heartbeat:
+        _setup_fail_streak += 1
+        if _setup_fail_streak >= SETUP_FAIL_CAP:
+            # The endpoint keeps accepting TCP (hook keeps answering OK) but never answers
+            # RPC: conclude so busy drains; retries keep running on activity frames.
+            _setup_concluded = true
+    notify_outage()
+
+
+## module.create answer. -32001 means a same-id remnant of THIS process (the id embeds the
+## pid), i.e. a previous run died without uninstall — delete and recreate it. Any other error
+## backs off and retries through the normal heartbeat cadence.
+func _on_diag_create_done(response: Dictionary) -> void:
+    if not service.is_active():
+        # Uninstalled while the create was in flight: the module now exists but uninstall's
+        # bookkeeping never saw it — delete the orphan on the spot (same endpoint, the
+        # client queue is still pumping frames).
+        if service.response_ok(response):
+            service.rpc_client().delete_module(module_id())
+        return
+    if _setup_stage != 2 or _setup_session != _diag_session:
+        return
+    _setup_stage = 0
+    if service.response_ok(response):
+        _module_created = true
+        _enter_module_ready()
+        return
+    if service.response_error_code(response) == -32001:
+        if _stale_deleted:
+            # The server answered -32001 right after we deleted that same id — a
+            # contradictory server must not spin the delete/create pair in a tight loop;
+            # share the bounded backoff path instead (review finding).
+            _stale_deleted = false
+            _defer_setup_retry()
+            return
+        # The flag is armed only once the delete SUCCEEDS (see `_on_diag_stale_delete_done`):
+        # a failed delete (-32002 module-busy) must leave it false, or the next -32001 would
+        # be misread as a contradictory second conflict and skip the delete entirely.
+        _setup_stage = 3
+        _setup_session = _diag_session
+        service.rpc_client().delete_module(module_id()).completed.connect(_on_diag_stale_delete_done)
+        return
+    _defer_setup_retry()
+
+
+func _on_diag_stale_delete_done(response: Dictionary) -> void:
+    if not service.is_active() or _setup_stage != 3 or _setup_session != _diag_session:
+        return
+    _setup_stage = 0
+    if service.response_ok(response):
+        # Arm the double--32001 guard only now: a create conflict AFTER this successful
+        # delete is the real "contradictory server" case.
+        _stale_deleted = true
+        _setup_stage = 2
+        _setup_session = _diag_session
+        service.rpc_client().create_module(module_id(), "GDCC Editor Diagnostics") \
+                .completed.connect(_on_diag_create_done)
+        return
+    # -32002 (module busy, e.g. a compile holds the gate): defer per plan §3.5; the next
+    # heartbeat tick restarts the create attempt from the ping stage. The guard flag stays
+    # cleared so that retried -32001 answers still get their delete attempt.
+    _stale_deleted = false
+    push_warning("GDCC: deleting the stale diagnostics module failed (code %d); will retry." \
+            % service.response_error_code(response))
+    _defer_setup_retry()
+
+
+func _enter_module_ready() -> void:
+    _module_ready = true
+    _setup_concluded = true
+    _setup_fail_streak = 0
+    _stale_deleted = false
+    _next_heartbeat_msec = Time.get_ticks_msec() + HEARTBEAT_MSEC
+    # Readiness starts the initial sync (reconciliation against the empty mirror) and re-arms
+    # the siblings' session state.
+    service.broadcast_module_ready()
+    service.refresh_busy()
+
+
+## Ping already succeeded here, so the server is reachable and only the module dance failed:
+## this is NOT the concluded-degraded state — keep `_setup_concluded` false so the retry
+## keeps holding busy (a low-power idle window must not starve it, review finding).
+func _defer_setup_retry() -> void:
+    _setup_fail_streak += 1
+    if _setup_fail_streak >= SETUP_FAIL_CAP:
+        _setup_concluded = true
+    _next_heartbeat_msec = Time.get_ticks_msec() + OUTAGE_RETRY_MSEC
+    service.refresh_busy()
+
+
+## Every transport/RPC failure on the diagnostics path lands here (called by the scheduler
+## and reconciler as well as locally): the module is dropped (a restarted server loses it
+## anyway), in-flight work is invalidated by bumping `_diag_session`, and the next setup tick
+## re-runs the ensure hook before pinging (hook-first). Recovery is self-cleaning: a
+## surviving server still holds our module, so the recreate hits -32001 and the
+## delete+recreate path wipes any zombie files left by interrupted reconciles. Sibling
+## cleanup (flight, mirror, reconcile state, cache) is broadcast by the root.
+func notify_outage() -> void:
+    _module_ready = false
+    # `_module_created` deliberately survives an outage: a failed RPC does not mean the
+    # server forgot the module, and uninstall() must still be allowed to delete it (only an
+    # endpoint retarget — `service_reset_channel` — or the actual deletion may clear it).
+    _setup_stage = 0
+    _diag_session += 1
+    _ensure_attempted = false
+    # The in-flight hook belongs to the dead window: its answer is dropped by the epoch check
+    # in `_on_hook_reply` (the session bump above stales its token), so the flag must be
+    # released HERE or the next setup tick would wait forever for a callback that can no
+    # longer clear it.
+    _hook_inflight = false
+    # `_setup_fail_streak` deliberately survives the outage: it must accumulate across the
+    # whole hook-OK/ping-fail cycle so SETUP_FAIL_CAP can conclude a permanently-answering-
+    # but-never-RPCing endpoint (resets live in `_on_hook_reply` failure, channel resets,
+    # and `_enter_module_ready`).
+    _stale_deleted = false
+    if not service.ensure_server_hook.is_valid():
+        # No launcher to recover through: conclude the first setup so the absent server
+        # degrades silently without holding busy; heartbeat pings keep retrying passively.
+        _setup_concluded = true
+    _next_heartbeat_msec = Time.get_ticks_msec() + OUTAGE_RETRY_MSEC
+    service.broadcast_module_outage()
+    service.refresh_busy()
+
+
+func _on_ensure_ready(err: int, _spawned_by_us: bool) -> void:
+    _hook_done += 1
+    if not service.is_active() or _setup_session != _diag_session:
+        # Answer from a dead window (outage/retarget/uninstall/timeout bumped the session):
+        # drop it WITHOUT touching `_hook_inflight` — that flag was already released at
+        # teardown and may belong to a newer hook now.
+        return
+    _hook_inflight = false
+    var now: int = Time.get_ticks_msec()
+    if err == OK:
+        # The launcher still holds its own busy until this callback returns, and un-concluding
+        # makes the SERVICE hold busy from here until `_enter_module_ready` — the two holds
+        # overlap, so the ping/create/initial-sync chain gets frames even if the editor drops
+        # into the low-power window right after. The fail streak is NOT reset here: an
+        # endpoint that keeps accepting TCP while never answering RPC must still hit
+        # SETUP_FAIL_CAP, and a capped window must stay concluded (review finding).
+        if _setup_fail_streak < SETUP_FAIL_CAP:
+            _setup_concluded = false
+            _next_heartbeat_msec = now
+        else:
+            _setup_concluded = true
+            _next_heartbeat_msec = now + OUTAGE_RETRY_MSEC
+    else:
+        # Server still absent: the launcher's fast TCP probe is the retry, NOT an HTTP ping
+        # (a refused HTTPRequest hangs for the full 30s request timeout while setup holds
+        # busy). Re-arm the hook for the next backoff cycle. Honest contract: between cycles
+        # nothing keeps the editor awake — a retry whose backoff expires while the editor is
+        # fully idle runs on the NEXT frame (user activity); only the active
+        # spawn/probe/analysis windows hold busy. That is the §4.4 silent degrade.
+        _setup_fail_streak = 0
+        _setup_concluded = true
+        _ensure_attempted = false
+        _next_heartbeat_msec = now + OUTAGE_RETRY_MSEC
+    service.refresh_busy()
+
+
+## Endpoint retarget: the diagnostics module may not exist on the new server, so the whole
+## channel state is rebuilt there (outage-like, but the old server did not vanish — the
+## ownership flag and the concluded window reset with it). Sibling state resets through
+## `service_reset_channel` on each feature.
+func service_reset_channel() -> void:
+    _diag_session += 1
+    _module_ready = false
+    _module_created = false
+    _setup_stage = 0
+    # The pending hook's reply token is staled by the session bump; just release the flag.
+    _hook_inflight = false
+    _setup_concluded = false
+    _ensure_attempted = false
+    _setup_fail_streak = 0
+    _stale_deleted = false
+    _next_heartbeat_msec = 0
+
+
+## Uninstall hook: bumps the session first so in-flight completions are stale, then deletes
+## the private module if this session created it (fire-and-forget on the resident client's
+## queue — the request still needs the server, and the client keeps pumping frames).
+func service_shutdown() -> void:
+    _diag_session += 1
+    _module_ready = false
+    _setup_stage = 0
+    # Uninstalling with a hook pending (e.g. plugin disabled mid-probe): the old launcher's
+    # teardown may never call back — the session bump stales its token either way.
+    _hook_inflight = false
+    _setup_concluded = false
+    _ensure_attempted = false
+    _setup_fail_streak = 0
+    _stale_deleted = false
+    # A same-port reinstall does not pass through `service_reset_channel`; without this the
+    # first ping of the new session would wait out the previous heartbeat/backoff deadline.
+    _next_heartbeat_msec = 0
+    if _module_created:
+        _module_created = false
+        service.rpc_client().delete_module(module_id())
+
+
+## A completed analysis round doubles as a liveness proof: restart the heartbeat cadence
+## from now.
+func note_heartbeat() -> void:
+    _next_heartbeat_msec = Time.get_ticks_msec() + HEARTBEAT_MSEC

@@ -124,6 +124,13 @@ func _enter_tree() -> void:
     #    launcher immediately. On failure everything created above is rolled back and the
     #    plugin stays inert (fail-closed, no half-installed state).
     _service.ensure_server_hook = Callable(_launcher, "ensure_running")
+    # The service's diagnostics scheduler is frame-driven (debounce pump + RPC flights) and
+    # therefore reports busy through the single-writer coordinator like the dock and the
+    # launcher — otherwise the low-power idle window right after the user stops typing would
+    # starve exactly the frames the debounce needs (plan §3.5/§4.4). Connected once per
+    # plugin instance; the engine drops the connection when this plugin is freed.
+    if not _service.busy_delta.is_connected(_report_busy):
+        _service.busy_delta.connect(_report_busy)
     var install_err: int = _service.install(get_editor_interface(), lsp_host, lsp_port, "127.0.0.1", 6099)
     if install_err != OK:
         push_error("GDCC: script language install failed (error %d); editor settings restored." % install_err)
