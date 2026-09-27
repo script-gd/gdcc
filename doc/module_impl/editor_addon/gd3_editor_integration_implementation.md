@@ -11,8 +11,8 @@
 
 - 状态：实施计划（Phase 0 已实施并通过验收；**Phase 1 已实施并通过验收**；
   **Phase 2 已实施并通过自动化验收**；**Phase 3 已实施并通过自动化验收**；
-  Phase 4+ 尚未实施；已经过多轮并行评审并修订）
-- 更新日期：2026-09-26
+  **Phase 4 已实施并通过自动化验收**；Phase 5+ 尚未实施；已经过多轮并行评审并修订）
+- 更新日期：2026-09-27
 - Phase 0 验收结果（2026-09-23）：P0-A/B/C 全绿（`EditorAddonIntegrationProbeTest`
   3/3 通过，无跳过）。`_init` 语义与 typed array 返回的探针结论已回填 §3.2/§2.3。
   探针暴露并已修复两个 gdcc 后端缺陷（阻塞级，修复侧已含回归测试）：
@@ -352,6 +352,70 @@
   - 第七轮复核结论：review-expert-a 与 review-expert-c 均 **APPROVE**；最终全套（分析
     门禁 + `EditorAddonDiagnosticsFixtureTest` 4/4 + 引擎 8 用例含 `gdcc_diag` 21 步）
     复测通过。
+- Phase 4 验收结果（2026-09-27，自动化项全绿，手动项待 §8.3）：
+  - 实现按 §3.5 hub-and-spoke 配方落地：新增无状态子节点 `GdccCompletionService`
+    （`gdcc_completion_service.gd3`，文档同步/有界阻塞请求/响应透传；无 tick、无 busy
+    项、无关停钩子——整个流程是 `_complete_code` 内的一次内联有界泵，不占帧驱动
+    资源）；服务根新增 `request_completion(path, text, line, col)` 门面（前置守卫：
+    ACTIVE + LSP READY + `_lsp_thread_mode()`，失败一律 `{"ok": false}` 形状）与公开
+    共享助手 `lsp_uri_for(path)`（包装既有 `_path_to_uri`，与 `vfs_path` 同级）；
+    语言侧 `_complete_code` 负责哨兵定位/剔除、0-based 码点 (line, character) 计算与
+    LSP → 引擎选项映射（与 `_validate` 的"服务给裸数据、语言做映射"分工一致）。
+  - `EditorAddonScriptLanguageEngineTest` 新增 `lsp_completion` 用例（16 步全绿）：
+    `complete_degraded`（客户端未 READY → 降级字典）；`kind_mapping` /
+    `insert_text_priority`（映射表与 insert 文本优先级的白盒锚定——服务端发出哪些
+    kind 不可控，故映射合同直接钉死）；`complete_keywords`（类体内标识符前缀 `f` 后
+    触发，`options` 非空且含 `func`，每项七键齐全（§2.2 必填键；
+    `matches` 为可选项，4.5 `script_language_extension.h` 以 `op.has("matches")`
+    守卫读取）且 `font_color`/`location` 类型值钉死、kind ∈ [0,9]）；
+    `complete_empty_context`（空行 → OK + 空选项的合法空结果，与降级形状区分）；
+    `complete_member`（`v.` 成员补全含 `x`）；`complete_cjk`（R11 残余锚定：emoji 在
+    光标同行之前且光标后有文本，码点误算会丢掉 `v.` 成员上下文而不再含 `y`）；
+    `complete_no_sentinel`（无哨兵 → 降级字典）；`fifo_survives_completion`（补全
+    重试在同一 URI 上积压的 generation 不破坏后续同步的按代绑定：新错误同步的
+    generation 水位等待迫使滞留代先出队，per-generation 历史恰绑定本代错误）；
+    `complete_disabled_safe`（禁用后常驻语言实例安全应答）；`validate_still_healthy`
+    （禁用/启用循环后 `_validate` 在新 URI 上照常浮现 LSP 错误）。
+  - 回归：`EditorAddonScriptLanguageAnalysisTest` 5/5（新 `.gd3` 经目录扫描自动纳入
+    整模块 analyze+lowering）、`EditorAddonClientAnalysisTest`、
+    `EditorAddonIntegrationProbeTest`、`EditorAddonBootstrapEngineTest`、
+    `EditorAddonDiagnosticsFixtureTest`、引擎测试全部 12 用例无回归。
+- Phase 4 实现偏差与实施期引擎事实修正（相对下文设计，按事实源口径回填 §4.3）：
+  1. **类体内纯空行不产生任何补全选项**（引擎事实，修正 §7 Phase 4 验收样例假设）：
+     `GDScriptParser.make_completion_context` 仅在光标落在某个 token 上时才赋上下文
+     （`gdscript_parser.cpp` 的 cursor_place 门禁），纯空行保持 `COMPLETION_NONE`，
+     `complete_code` 直接 break 返回空列表（`gdscript_editor.cpp`）——与 `.gd` 行为
+     逐字一致。关键字补全需要标识符前缀上下文（`COMPLETION_IDENTIFIER` →
+     `_find_identifiers` 注入关键字表），验收样例改为 `f<哨兵>`；空行行为保留为
+     "OK + 空 options"的边界锚点步骤 `complete_empty_context`。
+  2. kind 映射增补 `Snippet(15) → KIND_NODE_PATH(7)`：4.5 服务端实际发出的 kind 集合
+     经 `gdscript_text_document.cpp` 核实为 Text=1 / Method=2 / Variable=6 / Class=7 /
+     Property=10 / Enum=13 / Snippet=15（节点路径）/ File=17 / Constant=21 /
+     Event=23；§4.3 的 Function/Constructor/Field/EnumMember/Value 分支为规格容忍
+     兜底（该服务器不发出），原"其余→9"兜底会把节点路径错标为纯文本。
+  3. 引擎测试驱动 `DRIVER_PLUGIN` 文本超过 Java 单一字符串字面量 64KB class 文件
+     上限：拆为 `driverPluginCore()` + `driverPluginCompletion()` 两个方法返回的
+     文本块运行时拼接（方法调用非常量表达式，避免编译期折叠回原限制）。
+  - Phase 4 评审记录（2026-09-27，review-expert-a + review-expert-c 并行评审，修复后
+    复核双双 APPROVE）：
+    - 驳回（附 4.5 源码反证，评审已接受）："option 缺 `matches` 键会被引擎整条丢弃"
+      为误读——4.5 `script_language_extension.h` 的 `complete_code` 对 `matches` 的
+      读取由 `if (op.has("matches"))` 守卫（可选键），`ERR_CONTINUE` 强制键恰为七个，
+      与 §2.2 合同一致；实现与测试均不发 `matches`，行为正确。
+    - 采纳并修复：
+      1.（中）`fifo_survives_completion` 初版只断言"错误存在"且在禁用/启用循环之后
+         运行，无法观测补全流量对 generation FIFO 的污染。修复：步骤前移到循环之前，
+         在补全反复同步过的同一 URI 上用 LSP 客户端直接发错误同步，水位等待迫使滞留
+         代先出队，再断言 per-generation 历史恰绑定本代；第二轮复核进一步把本代错误
+         锚定到独占行（0-based 第 5 行）并同断 severity 与 `range.start.line`，排除
+         补全样例孤立 `f` 错误的冒充窗口。
+      2.（低）注释/测试把选项必填键误写为"八键"：§2.2 必填键实为七个（`matches`
+         可选）。修复：全部措辞改为七键并注明 `matches` 的引擎守卫出处；形状断言
+         增补 `font_color is Color` 与 `location == 1024` 类型钉死。
+      3.（低）补全子节点注释未覆盖请求超时路径：超时按客户端阻塞契约断连，滞留
+         generation 随死连接丢弃（服务端文档亦随之消亡，下一同步在新连接重开，无跨
+         连接错绑）。修复：注释如实补记该路径；不断连合同本身不变（既有设计，
+         `lsp_fifo` 的 `fifo_timeout_realign` 覆盖等待超时不清队列的对照路径）。
   - Phase 3 后重构（hub-and-spoke 拆分，见 §3.5 架构段）评审采纳并修复：
     1.（中）`_stale_deleted` 原在发出删除前置位：删除失败（-32002）后下一次 -32001
        会被误判为"矛盾二次冲突"而跳过删除。修复：仅在删除**成功**后置位，失败路径
@@ -1140,11 +1204,14 @@ RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
      `insert_text := item.textEdit.newText ?? item.insertText ?? label`。
    - `kind` 映射：Class→0，Method/Function/Constructor→1，Event→2(SIGNAL)，
      Variable/Field→3，Property→4(MEMBER)，Enum→5，Constant/EnumMember/Value→6，
-     File/Folder→8(FILE_PATH)，其余→9(PLAIN_TEXT)。（4.5 无 KEYWORD kind。）
+     File/Folder→8(FILE_PATH)，Snippet→7(NODE_PATH)（**Phase 4 实施期修正**：4.5
+     服务端把节点路径选项发为 Snippet=15，见 `gdscript_text_document.cpp` 的 kind
+     映射；其余→9(PLAIN_TEXT)。（4.5 无 KEYWORD kind。）
    - `font_color := Color(1, 1, 1)`，`icon := null`，`default_value := null`，
      `location := 1024`（`LOCATION_OTHER`）。
 4. 返回 `{"result": OK, "force": false, "call_hint": "", "options": options}`；
-   任何失败返回第 1 步的降级字典。
+   任何失败返回第 1 步的降级字典。注意空选项列表是合法的成功应答（引擎对无上下文
+   位置如实返回空，见 §7 Phase 4 偏差 1），不得坍缩为降级形状。
 
 ### 4.4 gdcc 诊断调度（全异步）
 
@@ -1342,13 +1409,19 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
   客户端队列隔离）；分析会话中手工杀掉 gdcc 服务进程，下一次心跳失败经
   `ensure_server_hook` 自动重新拉起并恢复分析（已配置启动命令时）。
 
-### Phase 4：代码补全
+### Phase 4：代码补全 ✅（2026-09-27 自动化验收通过，手动项待 §8.3）
 
-实施：`_complete_code`（§4.3）。
+实施：`_complete_code`（§4.3）——哨兵定位/剔除与码点位置计算在语言侧，同步+有界
+阻塞请求封装为无状态子节点 `GdccCompletionService`（§3.5 配方），服务根以
+`request_completion` 门面做前置守卫（ACTIVE + LSP READY + 线程模式）。
 验收：
-- 引擎测试：对固定样例（类体内空行，含 0xFFFF 哨兵）调用 `_complete_code`，断言
-  `result == OK` 且 `options` 非空（至少含 `func`），每项八键齐全；无哨兵输入返回
-  降级字典。
+- 引擎测试：~~对固定样例（类体内空行，含 0xFFFF 哨兵）~~ **实施期修正**：类体内纯
+  空行在引擎侧得到 `COMPLETION_NONE` 上下文而合法返回零选项（与 `.gd` 一致），
+  关键字样例改为标识符前缀触发（`f` + 哨兵），断言 `result == OK`、`options` 非空
+  且含 `func`、每项七键齐全（§2.2 必填键；`matches` 可选）；空行行为保留为
+  "OK + 空选项"边界锚点；无哨兵输入返回降级字典；另含成员补全、CJK 码点锚定、
+  补全流量的 FIFO 按代绑定锚定、禁用态安全应答与循环后 `_validate` 健康检查
+  （见文档状态节 Phase 4 条目）。
 - 手动：真实编辑器中 `.gd3` 内触发补全，成员/关键字弹窗与 `.gd` 行为相当；输入无
   可感知卡顿（上限 400ms）。
 
@@ -1420,7 +1493,7 @@ EditorSettings `gdcc/server/launch_command` 与端口写好后触发连接，验
 | R8 | LSP 同步模式假设不成立 | 低 | 握手校验 `textDocumentSync`（int `1` 或 `{change: 1}` 两种形状），否则 DEGRADED |
 | R9 | 诊断行号 0/1-based 转换错误 | 中 | 与同内容 `.gd` 文件逐条对比验收（§8.3） |
 | R10 | Godot 版本漂移（master 已废弃 `_create_script`/`_get_recognized_extensions`） | 低 | 锁定 4.5 元数据；升级 Godot 时重跑 §2 核查 |
-| R11 | 非 ASCII 文本下 LSP `character` 与 Godot 列口径不一致（UTF-16 vs 码点） | 中 | Phase 2 实证（§2.6）：诊断路径的 `character` 是行首非空白字符的码点计数，全程码点、无 UTF-16 分歧；引擎测试以非 BMP emoji 样例锚定行/列不错位。残余关注点仅在 Phase 4 补全光标 `character`（同样按码点索引，验收时以含中文样例复核） |
+| R11 | 非 ASCII 文本下 LSP `character` 与 Godot 列口径不一致（UTF-16 vs 码点） | 中 | Phase 2 实证（§2.6）：诊断路径的 `character` 是行首非空白字符的码点计数，全程码点、无 UTF-16 分歧；引擎测试以非 BMP emoji 样例锚定行/列不错位。**Phase 4 已锚定残余关注点**：补全光标 `character` 按码点索引，引擎用例 `complete_cjk` 以"emoji 在光标同行之前且光标后有文本"的样例钉死（误算会丢失成员补全上下文） |
 | R12 | 编辑器-only 类进入导出构建 | 低 | 本扩展仅 addon 内使用，文档声明不随项目导出 |
 | R13 | `analyze.run` 是整模块分析，大项目延迟高 | 中 | 异步 + 防抖 + 单飞；服务专用客户端与 dock 队列隔离（§4.4）；后续在 RPC 侧评估增量分析（不在本计划） |
 | R14 | 外部 LSP 客户端并存时 `publishDiagnostics` 只发最近客户端 | 中 | 等待超时即回落缓存并继续；dock 状态行提示；记录为已知限制 |

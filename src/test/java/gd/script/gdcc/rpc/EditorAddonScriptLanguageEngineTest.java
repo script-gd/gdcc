@@ -131,13 +131,34 @@ class EditorAddonScriptLanguageEngineTest {
                     "deletion_triggers_reanalysis", "delete_with_dirty_buffer",
                     "hook_invoked_on_outage", "hook_ok_ping_fail_capped",
                     "stale_hook_answer_dropped", "recovered_after_hook",
-                    "hook_pending_uninstall_recovers", "survived"))
+                    "hook_pending_uninstall_recovers", "survived")),
+            // Phase 4: `_complete_code` — degraded answers (client not READY / no sentinel /
+            // disabled service), white-box pins of the kind table and the insert-text
+            // precedence (the server's emitted kind set is not controllable, so the mapping
+            // contract is anchored directly), keyword + member completion through the real
+            // GDScript LSP with the seven mandatory option keys, the CJK caret anchor (R11
+            // residual: text follows the caret, so a UTF-16/byte miscount loses the member
+            // context), a per-generation FIFO attribution check on a completion-synced URI
+            // (the completion traffic's queued generations must not desync the diagnostic
+            // binding), and a post-disable/enable `_validate` sanity check.
+            Map.entry("lsp_completion", List.of(
+                    "config", "lsp_endpoint_closed", "complete_degraded", "lsp_endpoint",
+                    "lsp_ready", "kind_mapping", "insert_text_priority", "complete_keywords",
+                    "complete_empty_context", "complete_member", "complete_cjk",
+                    "complete_no_sentinel", "fifo_survives_completion",
+                    "complete_disabled_safe", "validate_still_healthy", "survived"))
     );
 
     /// Interpreted driver plugin (gdcc feature limits do not apply to it). Every mode records
     /// ordered steps; the Java side requires the exact expected sequence, all `ok`, so an
-    /// early bail-out fails loudly instead of silently skipping assertions.
-    private static final String DRIVER_PLUGIN = """
+    /// early bail-out fails loudly instead of silently skipping assertions. The source exceeds
+    /// the 64KB class-file limit for one string literal, so it is assembled from method
+    /// results — method calls are not compile-time constant expressions, so javac emits a
+    /// runtime concat instead of folding the parts back into a single oversized constant.
+    private static final String DRIVER_PLUGIN = driverPluginCore() + driverPluginCompletion();
+
+    private static String driverPluginCore() {
+        return """
             @tool
             extends EditorPlugin
 
@@ -277,6 +298,8 @@ class EditorAddonScriptLanguageEngineTest {
                     await _run_lsp_disable_before_prime_mode()
                 elif mode == "gdcc_diag":
                     await _run_gdcc_diag_mode()
+                elif mode == "lsp_completion":
+                    await _run_lsp_completion_mode()
                 else:
                     _step("mode", false, "unknown mode " + mode)
                 _finish()
@@ -1338,6 +1361,203 @@ class EditorAddonScriptLanguageEngineTest {
                     return {"ok": false}
                 return {"ok": true, "text": FileAccess.get_file_as_string(path)}
             """;
+    }
+
+    /// Phase 4 (completion) modes. Kept in a separate text block only because of the 64KB
+    /// literal limit — the concatenation must reproduce one continuous GDScript source, so
+    /// this block starts with the blank line that separated the sections pre-split.
+    private static String driverPluginCompletion() {
+        return """
+
+            # ---------------- Phase 4: code completion (plan §4.3) ----------------
+
+            # The exact safe shape of every `_complete_code` failure path: all four
+            # mandatory keys present, result ERR_UNAVAILABLE, empty options.
+            func _is_degraded_completion(result: Dictionary) -> bool:
+                var options: Variant = result.get("options", null)
+                return result.get("result", -1) == ERR_UNAVAILABLE \
+                        and result.get("force", true) == false \
+                        and str(result.get("call_hint", "x")) == "" \
+                        and options is Array and (options as Array).is_empty()
+
+            # Retries absorb the server's first parse of a freshly synced document and an
+            # occasional 400ms budget timeout (which disconnects + re-handshakes per the
+            # blocking contract); assertions always run on the final answer.
+            func _complete_until_options(lang: ScriptLanguage, code: String, path: String) -> Dictionary:
+                var deadline := Time.get_ticks_msec() + 30000
+                var result: Dictionary = lang._complete_code(code, path, null)
+                var options: Array = result.get("options", [])
+                while options.is_empty() and Time.get_ticks_msec() < deadline:
+                    await get_tree().process_frame
+                    result = lang._complete_code(code, path, null)
+                    options = result.get("options", [])
+                return result
+
+            func _options_include(options: Array, display: String) -> bool:
+                for opt in options:
+                    if opt is Dictionary and str(opt.get("display", "")) == display:
+                        return true
+                return false
+
+            func _run_lsp_completion_mode() -> void:
+                var lang := _find_gd3_language()
+                if lang == null:
+                    _step("lsp_endpoint_closed", false, "GD3 language not registered")
+                    return
+                var port := int(_config["lsp_port"])
+                var closed_port := int(_config["closed_port"])
+                var sentinel := String.chr(0xFFFF)
+                _step("lsp_endpoint_closed", _configure_lsp_port(port) and _steer_lsp_client(closed_port))
+                await get_tree().create_timer(0.5).timeout
+                # Client not READY: the facade must refuse synchronously with the degraded
+                # shape (no blocking spin against a dead endpoint).
+                var deg: Dictionary = lang._complete_code("extends Node\\n\\n" + sentinel, "res://gd3_complete.gd3", null)
+                _step("complete_degraded", _is_degraded_completion(deg), str(deg))
+
+                _step("lsp_endpoint", _steer_lsp_client(port))
+                _step("lsp_ready", await _wait_lsp_ready(45.0))
+
+                # White-box pins: the server decides WHICH kinds it emits, so the mapping
+                # table itself is anchored directly (plan §4.3; Snippet→KIND_NODE_PATH is
+                # the recorded deviation for the server's node-path options).
+                _step("kind_mapping", lang._completion_kind(7) == 0 and lang._completion_kind(2) == 1 \\
+                        and lang._completion_kind(3) == 1 and lang._completion_kind(4) == 1 \\
+                        and lang._completion_kind(23) == 2 and lang._completion_kind(6) == 3 \\
+                        and lang._completion_kind(5) == 3 and lang._completion_kind(10) == 4 \\
+                        and lang._completion_kind(13) == 5 and lang._completion_kind(21) == 6 \\
+                        and lang._completion_kind(20) == 6 and lang._completion_kind(12) == 6 \\
+                        and lang._completion_kind(15) == 7 and lang._completion_kind(17) == 8 \\
+                        and lang._completion_kind(19) == 8 and lang._completion_kind(1) == 9 \\
+                        and lang._completion_kind(0) == 9 and lang._completion_kind(99) == 9)
+                var it_ok: bool = lang._completion_insert_text({"label": "lab", "textEdit": {"newText": "te"}}, "lab") == "te"
+                it_ok = it_ok and lang._completion_insert_text({"label": "lab", "insertText": "it"}, "lab") == "it"
+                it_ok = it_ok and lang._completion_insert_text({"label": "lab"}, "lab") == "lab"
+                it_ok = it_ok and lang._completion_insert_text({"label": "lab", "insertText": ""}, "lab") == "lab"
+                _step("insert_text_priority", it_ok)
+
+                # Class-body keyword completion behind an identifier prefix: an empty line
+                # yields COMPLETION_NONE (no token sits at the cursor, so the parser never
+                # assigns a context) and legitimately zero options — keywords are offered
+                # only in an identifier context (engine fact, see the plan's Phase 4
+                # deviation note). Every option must carry the seven mandatory keys (a
+                # missing key makes the engine drop the option silently, §2.2; `matches`
+                # stays optional per `op.has("matches")` in script_language_extension.h)
+                # with contract-relevant types pinned (`font_color` Color, location 1024).
+                var body_path := "res://gd3_complete_body.gd3"
+                var body_code := "extends Node\\n\\nf" + sentinel + "\\n"
+                var body_result := await _complete_until_options(lang, body_code, body_path)
+                var body_options: Array = body_result.get("options", [])
+                var shape_ok := not body_options.is_empty()
+                for opt in body_options:
+                    if not (opt is Dictionary):
+                        shape_ok = false
+                        continue
+                    for key in ["kind", "display", "insert_text", "font_color", "icon", "default_value", "location"]:
+                        if not opt.has(key):
+                            shape_ok = false
+                    var opt_kind: int = int(opt.get("kind", -1))
+                    if opt_kind < 0 or opt_kind > 9:
+                        shape_ok = false
+                    if not (opt.get("font_color") is Color):
+                        shape_ok = false
+                    if int(opt.get("location", -1)) != 1024:
+                        shape_ok = false
+                _step("complete_keywords",
+                        body_result.get("result", -1) == OK and shape_ok \\
+                                and _options_include(body_options, "func"),
+                        "options=" + str(body_options.size()) + " shape=" + str(shape_ok))
+
+                # Boundary pair to the degraded negatives: a context-free position (bare
+                # empty line) answers OK with an EMPTY option list — a legitimate empty
+                # result must not collapse into the degraded ERR_UNAVAILABLE shape.
+                var empty_result: Dictionary = lang._complete_code("extends Node\\n\\n" + sentinel + "\\n", body_path, null)
+                var empty_options: Array = empty_result.get("options", [])
+                _step("complete_empty_context",
+                        empty_result.get("result", -1) == OK and empty_options.is_empty(), str(empty_result))
+
+                # Member completion after `v.` on an inferred Vector2 local.
+                var member_path := "res://gd3_complete_member.gd3"
+                var member_code := "extends Node\\n\\nfunc f() -> void:\\n    var v := Vector2()\\n    v." + sentinel + "\\n"
+                var member_result := await _complete_until_options(lang, member_code, member_path)
+                var member_options: Array = member_result.get("options", [])
+                _step("complete_member",
+                        member_result.get("result", -1) == OK and _options_include(member_options, "x"),
+                        "options=" + str(member_options.size()))
+
+                # R11 residual anchor: an emoji sits BEFORE the caret on the same line and
+                # `x` follows it — a UTF-16/byte miscount would push the server-side
+                # sentinel past the `v.` member context and `y` would vanish from the
+                # options (code points are the only correct unit end to end).
+                var cjk_path := "res://gd3_complete_cjk.gd3"
+                var cjk_code := "extends Node\\n\\nfunc f() -> void:\\n    var v := Vector2()\\n    var s := \\"🙂\\" + v." + sentinel + "x\\n"
+                var cjk_result := await _complete_until_options(lang, cjk_code, cjk_path)
+                var cjk_options: Array = cjk_result.get("options", [])
+                _step("complete_cjk",
+                        cjk_result.get("result", -1) == OK and _options_include(cjk_options, "y"),
+                        "options=" + str(cjk_options.size()))
+
+                # No sentinel in the text: the editor contract is violated, answer degraded.
+                var no_sentinel: Dictionary = lang._complete_code("extends Node\\n", body_path, null)
+                _step("complete_no_sentinel", _is_degraded_completion(no_sentinel), str(no_sentinel))
+
+                # FIFO health on the URI the completion path synced repeatedly (retries
+                # left generations queued, some possibly unanswered): a fresh ERROR sync
+                # must bind to its OWN generation — the watermark wait pops the queued
+                # completion generations first, and the per-generation history must hold
+                # the error diagnostics for exactly this generation. The error sits at
+                # 0-based line 5, a line no earlier document version of this URI used:
+                # severity alone could collide with the stray-`f` error of the completion
+                # sample, so the line is asserted too (review finding).
+                var lsp = _service().get_lsp_client()
+                var fifo_uri: String = lsp.path_to_uri(ProjectSettings.globalize_path(body_path))
+                var fifo_source := "extends Node\\n\\n\\n\\n\\nfunc broken( -> void:\\n    pass\\n"
+                var fg: int = lsp.sync_document(fifo_uri, fifo_source)
+                var fifo_ok := fg > 0
+                if fifo_ok:
+                    fifo_ok = lsp.wait_diagnostics(fifo_uri, fg, 15000)
+                if fifo_ok:
+                    var bound: Array = lsp.get_diagnostics_for_generation(fifo_uri, fg)
+                    var saw_error := false
+                    for d in bound:
+                        if d is Dictionary and int(d.get("severity", 0)) == 1:
+                            var d_range: Dictionary = d.get("range", {})
+                            var d_start: Dictionary = d_range.get("start", {})
+                            if int(d_start.get("line", -1)) == 5:
+                                saw_error = true
+                    fifo_ok = saw_error
+                _step("fifo_survives_completion", fifo_ok, "gen=" + str(fg))
+
+                # Disabled plugin: the resident language instance must keep answering the
+                # safe degraded shape (UNINSTALLED entry-point contract, §3.5).
+                EditorInterface.set_plugin_enabled("gdcc", false)
+                await get_tree().process_frame
+                await get_tree().process_frame
+                var resident: ScriptLanguage = _service().get_language_instance()
+                var dis: Dictionary = resident._complete_code("extends Node\\n" + sentinel, body_path, null)
+                EditorInterface.set_plugin_enabled("gdcc", true)
+                await get_tree().process_frame
+                await get_tree().process_frame
+                _step("complete_disabled_safe", _is_degraded_completion(dis), str(dis))
+
+                # Post-cycle sanity: the language-level `_validate` still surfaces LSP
+                # errors on a fresh URI after a disable/enable that followed completion
+                # traffic (the cycle itself disconnects and re-handshakes the client; the
+                # retry window absorbs the reconnect).
+                var health_path := "res://gd3_complete_health.gd3"
+                var health_source := "extends Node\\n\\nfunc broken( -> void:\\n    pass\\n"
+                _write_text_file(health_path, health_source)
+                var health_lang := _find_gd3_language()
+                var health_ok := false
+                if health_lang != null:
+                    var health_result := await _validate_until_errors(health_lang, health_source, health_path)
+                    health_ok = not (health_result.get("errors", []) as Array).is_empty()
+                _step("validate_still_healthy", health_ok)
+
+                for p in [body_path, member_path, cjk_path, health_path]:
+                    DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+                _step("survived", true)
+            """;
+    }
 
     private static final String DRIVER_MANIFEST = """
             [plugin]
@@ -1480,6 +1700,20 @@ class EditorAddonScriptLanguageEngineTest {
         } finally {
             blackhole.stop(0);
         }
+    }
+
+    /// Phase 4 acceptance (plan §4.3): `_complete_code` end-to-end — degraded answers for
+    /// the negative paths (client not READY, no sentinel, disabled service), white-box pins
+    /// of the kind mapping and insert-text precedence, keyword/member completion through
+    /// the real GDScript LSP with the seven mandatory option keys, the code-point caret
+    /// anchor (CJK before the caret, text after it), a per-generation FIFO attribution check
+    /// on a completion-synced URI, and a post-cycle `_validate` sanity check.
+    @Test
+    void lspCompletionMapsOptionsAndDegradesSafely() throws Exception {
+        var config = new JsonObject();
+        config.addProperty("lsp_port", findFreePort());
+        config.addProperty("closed_port", findFreePort());
+        runCase("lsp_completion", config);
     }
 
     private static String runCase(String caseName, JsonObject config) throws Exception {

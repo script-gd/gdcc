@@ -217,9 +217,117 @@ func _overrides_external_editor() -> bool:
     return false
 
 
+## Completion entry (plan §4.3). The editor hands over the buffer text with a 0xFFFF
+## sentinel inserted at the caret (`CodeEdit.get_text_for_code_completion`); the GDScript
+## LSP server completes from the SYNCED document plus the request position, so the sentinel
+## is located, translated into a 0-based code-point (line, character) pair, and stripped
+## before the sync. Positions count code points end to end — Godot Strings index code
+## points and the server's completion path does the same (§2.6/R11) — so multibyte text on
+## the caret line cannot shift the request. Any failure answers the degraded dictionary.
+## No reentry guard is needed (unlike `_validate`): the bounded pump inside
+## `request_blocking` drives only socket IO, which can never call back into this virtual.
 func _complete_code(code: String, path: String, owner: Object) -> Dictionary:
-    # Degraded answer; the LSP-backed implementation lands with the completion phase.
+    if _service == null or not _service.is_active():
+        return _completion_degraded()
+    var caret: int = code.find(String.chr(0xFFFF))
+    if caret < 0:
+        return _completion_degraded()
+    var before: String = code.substr(0, caret)
+    var line: int = before.count("\n")
+    var last_break: int = before.rfind("\n")
+    # `last_break == -1` (caret on the first line) folds to `before.length()` naturally.
+    var character: int = before.length() - last_break - 1
+    var clean: String = before + code.substr(caret + 1)
+    var response: Dictionary = _service.request_completion(path, clean, line, character)
+    if response.get("ok") != true:
+        return _completion_degraded()
+    return {"result": OK, "force": false, "call_hint": "", "options": _completion_options(response.get("result"))}
+
+
+## The safe failure answer. All four keys are mandatory: a missing `result` is treated as
+## ERR_UNAVAILABLE by the engine anyway, but the explicit shape keeps every failure path
+## indistinguishable and complete.
+func _completion_degraded() -> Dictionary:
     return {"result": ERR_UNAVAILABLE, "force": false, "call_hint": "", "options": []}
+
+
+## LSP completion result → engine option list. The 4.5 GDScript server answers with a bare
+## CompletionItem array; the spec's CompletionList wrapper (`{"items": [...]}`) is accepted
+## defensively. Items without a usable label are dropped — the engine would show an empty
+## row. Every option carries the seven mandatory keys verbatim (a missing key makes
+## `ScriptLanguageExtension.complete_code` skip the option silently); the optional `matches`
+## key is omitted — the engine guards its read with `op.has("matches")` (4.5
+## `script_language_extension.h`) and CodeEdit computes highlighting itself.
+func _completion_options(result: Variant) -> Array:
+    var items: Array = []
+    if result is Array:
+        items = result
+    elif result is Dictionary:
+        var listed: Variant = result.get("items", [])
+        if listed is Array:
+            items = listed
+    var options: Array = []
+    for item in items:
+        if not (item is Dictionary):
+            continue
+        var label: String = str(item.get("label", ""))
+        if label.is_empty():
+            continue
+        options.append({
+            "kind": _completion_kind(int(item.get("kind", 0))),
+            "display": label,
+            "insert_text": _completion_insert_text(item, label),
+            "font_color": Color(1, 1, 1),
+            "icon": null,
+            "default_value": null,
+            # LOCATION_OTHER: no local/parent-scope ranking evidence exists for LSP items.
+            "location": 1024,
+        })
+    return options
+
+
+## Insert-text precedence (plan §4.3): `textEdit.newText`, then `insertText`, then the
+## label. The 4.5 GDScript server only ever sends `insertText`; the textEdit branch keeps
+## the mapping spec-tolerant. An empty string counts as absent (LSP treats omitted
+## insertText as "insert the label").
+func _completion_insert_text(item: Dictionary, label: String) -> String:
+    var text_edit: Variant = item.get("textEdit")
+    if text_edit is Dictionary:
+        var new_text: String = str(text_edit.get("newText", ""))
+        if not new_text.is_empty():
+            return new_text
+    var insert_text: String = str(item.get("insertText", ""))
+    if not insert_text.is_empty():
+        return insert_text
+    return label
+
+
+## LSP CompletionItemKind → CodeEdit CodeCompletionKind (plan §4.3). Kind values verified
+## against the 4.5 server's own mapping (`gdscript_text_document.cpp`): it actually emits
+## Text=1, Method=2, Variable=6, Class=7, Property=10, Enum=13, Snippet=15 (node paths),
+## File=17, Constant=21, Event=23; the other arms are spec-tolerant fallbacks. Snippet maps
+## to KIND_NODE_PATH (7) rather than the plan's generic fall-through because the server
+## emits it exclusively for node-path options.
+func _completion_kind(lsp_kind: int) -> int:
+    if lsp_kind == 7:  # Class
+        return 0  # KIND_CLASS
+    if lsp_kind == 2 or lsp_kind == 3 or lsp_kind == 4:  # Method/Function/Constructor
+        return 1  # KIND_FUNCTION
+    if lsp_kind == 23:  # Event
+        return 2  # KIND_SIGNAL
+    if lsp_kind == 6 or lsp_kind == 5:  # Variable/Field
+        return 3  # KIND_VARIABLE
+    if lsp_kind == 10:  # Property
+        return 4  # KIND_MEMBER
+    if lsp_kind == 13:  # Enum
+        return 5  # KIND_ENUM
+    if lsp_kind == 21 or lsp_kind == 20 or lsp_kind == 12:  # Constant/EnumMember/Value
+        return 6  # KIND_CONSTANT
+    if lsp_kind == 15:  # Snippet (node paths on the GDScript server)
+        return 7  # KIND_NODE_PATH
+    if lsp_kind == 17 or lsp_kind == 19:  # File/Folder
+        return 8  # KIND_FILE_PATH
+    return 9  # KIND_PLAIN_TEXT (4.5 has no KEYWORD kind)
 
 
 func _lookup_code(code: String, symbol: String, path: String, owner: Object) -> Dictionary:

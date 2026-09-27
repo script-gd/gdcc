@@ -26,7 +26,9 @@ extends Node
 ##   * `GdccFileReconciler` — disk ↔ VFS file-set reconciliation;
 ##   * `GdccDiagScheduler` — single-flight upload+analyze chain and merge;
 ##   * `GdccSourceRegistry` — content truth table and dirty tracking;
-##   * `GdccDiagCache` — version-gated diagnostics cache.
+##   * `GdccDiagCache` — version-gated diagnostics cache;
+##   * `GdccCompletionService` — stateless synchronous LSP completion slice (plan §4.3);
+##     no tick/busy/hook wiring because its whole flow is one inline bounded pump.
 ## Adding a feature (e.g. code completion): create a child script implementing the feature
 ## protocol (`bind_service`, optional `service_tick(now)`, `busy_wanted()`, and any of the
 ## broadcast hooks `on_module_ready` / `on_module_outage` / `on_content_changed` /
@@ -54,6 +56,7 @@ var _reconciler: GdccFileReconciler = null
 var _scheduler: GdccDiagScheduler = null
 var _registry: GdccSourceRegistry = null
 var _cache: GdccDiagCache = null
+var _completion: GdccCompletionService = null
 var _lsp_host: String = "127.0.0.1"
 var _lsp_port: int = 6005
 var _rpc_host: String = "127.0.0.1"
@@ -201,7 +204,24 @@ func lsp_diagnostics_for(path: String) -> Array:
     return _lsp_client.get_diagnostics(uri)
 
 
-## gdcc diagnostics channel entry (plan §4.2 step 3): forwards to the source registry, which
+## Code-completion entry (plan §4.3). The synchronous LSP path is legal exclusively while
+## ACTIVE with a handshake-verified READY client AND a thread-mode server — inline bounded
+## waiting starves a main-thread-polled server (§2.6), so the session degrades instead.
+## Failure answers share the client's `{"ok": false, "error": ...}` shape, so the language
+## only ever branches on `ok`. The raw LSP result is returned unmapped; option mapping is
+## the language's engine-contract job (same split as `_validate` mapping raw diagnostics).
+func request_completion(path: String, text: String, line: int, col: int) -> Dictionary:
+    if not _active or _completion == null:
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "completion unavailable"}}
+    if not is_lsp_ready() or not _lsp_thread_mode():
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "LSP not ready or not threaded"}}
+    return _completion.request_completion(path, text, line, col)
+
+
+## Shared res:// → server-dialect URI helper for feature children (wraps `_path_to_uri`;
+## "" for non-project paths). Public sibling of `vfs_path`.
+func lsp_uri_for(path: String) -> String:
+    return _path_to_uri(path)## gdcc diagnostics channel entry (plan §4.2 step 3): forwards to the source registry, which
 ## tracks the content version of `path` and marks real changes dirty. Runs on every
 ## `_validate` — including while LSP reports errors, because LSP errors suppress gdcc
 ## diagnostics from the DISPLAY only, never the dirty tracking. Returns -1 for non-project
@@ -299,6 +319,12 @@ func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
         _cache.name = &"GdccDiagCache"
         _cache.bind_service(self)
         add_child(_cache)
+        # Stateless completion slice: no tick line, busy term, or teardown hook is wired
+        # because there is nothing frame-driven or stateful to coordinate (plan §4.3).
+        _completion = GdccCompletionService.new()
+        _completion.name = &"GdccCompletionService"
+        _completion.bind_service(self)
+        add_child(_completion)
     _editor_interface = editor_interface
     _lsp_host = lsp_host
     _lsp_port = lsp_port
@@ -501,6 +527,10 @@ func registry() -> GdccSourceRegistry:
 
 func cache() -> GdccDiagCache:
     return _cache
+
+
+func completion() -> GdccCompletionService:
+    return _completion
 
 
 ## res://a/b.gd3 → /src/a/b.gd3 (plan §3.5 VFS mapping contract; the displayPath travels

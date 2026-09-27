@@ -1,0 +1,53 @@
+@tool
+class_name GdccCompletionService
+extends Node
+
+## LSP-backed code completion slice (plan §4.3), child feature of `GdccEditorService`.
+## Stateless by design: the whole flow runs INLINE inside the language's `_complete_code`
+## on the editor UI thread — the document full-sync lands on the shared connection first
+## (FIFO, so the completion request always sees the text that produced the request
+## position) and `GdccLspClient.request_blocking` then pumps the socket inline with a hard
+## deadline. No tick line, no busy term, no outage hooks: there is no frame-driven work to
+## coordinate and no state to invalidate (the busy coordinator exists for frame-pumped
+## work; an inline pump needs no frames). The 400ms budget is the UI-stall bound pinned by
+## plan §4.3 (`_validate` uses 150ms; completion gets more because the answer is directly
+## user-requested).
+
+# A var, not a const: class-level const is outside gdcc's bootstrap MVP.
+var COMPLETION_TIMEOUT_MSEC: int = 400
+
+var service: GdccEditorService = null
+
+
+func bind_service(owner: GdccEditorService) -> void:
+    service = owner
+
+
+## Syncs `text` for `path` and issues one bounded `textDocument/completion` request at the
+## 0-based code-point position (`line`, `col`). Returns the LSP client's own response shape
+## (`{"ok": true, "result": ...}` / `{"ok": false, "error": ...}`) — the language maps `ok`
+## results into engine options and degrades everything else. Preconditions (service ACTIVE,
+## LSP handshake-verified READY, server in thread mode) are enforced by the service facade
+## BEFORE delegation; a failed sync is reported here so a stale document is never completed.
+func request_completion(path: String, text: String, line: int, col: int) -> Dictionary:
+    var client: GdccLspClient = service.get_lsp_client()
+    if client == null:
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "LSP client missing"}}
+    var uri: String = service.lsp_uri_for(path)
+    if uri == "":
+        # Non-project buffers (unsaved, user://) have no server-side URI dialect mapping.
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "non-project path: " + path}}
+    var generation: int = client.sync_document(uri, text)
+    if generation < 0:
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "LSP sync failed: " + path}}
+    # The sync's diagnostics generation stays queued and binds normally when the server
+    # publishes — it feeds the validate channel for free; completion itself never waits
+    # for diagnostics, only for its own request id. Exception: a request TIMEOUT closes
+    # the connection per the client's blocking contract (a late response must never hang
+    # the protocol state), which drops the queued generation with the dead connection —
+    # server-side documents die with it too, so the next sync re-opens on the fresh
+    # connection and no cross-connection misattribution is possible.
+    return client.request_blocking("textDocument/completion", {
+        "textDocument": {"uri": uri},
+        "position": {"line": line, "character": col},
+    }, COMPLETION_TIMEOUT_MSEC)
