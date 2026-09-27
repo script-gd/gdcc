@@ -1463,8 +1463,6 @@ public final class FrontendBodyLoweringSession {
     /// method routes share the same argument-type invariant even though their backend could
     /// upcast on its own. Only the fixed loop above routes here: vararg tails always target
     /// `Variant` and `DYNAMIC` calls forward slots unchanged, so neither can trigger this shape.
-    /// The shape is re-derived at lowering time today; once call-argument plans publish frozen
-    /// boundary decisions, this helper must consume them instead of re-querying the registry.
     private @NotNull String materializeCallArgumentBoundaryValue(
             @NotNull LirBasicBlock block,
             @NotNull String sourceSlotId,

@@ -19,7 +19,7 @@
   - `frontend_type_check_analyzer_implementation.md`
   - `frontend_unary_binary_expr_semantic_implementation.md`
   - `frontend_lowering_cfg_pass_implementation.md`
-  - `frontend_call_argument_object_upcast_plan.md`
+  - `frontend_call_argument_object_upcast_implementation.md`
   - `doc/gdcc_type_system.md`
 - 主要事实来源：
   - Godot `GDScriptAnalyzer::check_type_compatibility(...)`
