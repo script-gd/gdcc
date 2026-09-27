@@ -73,6 +73,7 @@ inherited GDCC 同名 signal 允许 nearest-child shadow；GDCC 不得覆盖 inh
 
 - `Signal` 是 builtin variant，承载 `(ObjectID, StringName)`。读取 `obj.foo` 产生**新的** Signal 值，不是已存储字段。
 - `Signal` / `Callable` 只保存 **ObjectID（非 owning）**，不保活 receiver。`godot_Signal_destroy` / `godot_Callable_destroy` 只销毁 value storage。构造后 receiver 被释放，value 仍在但失效；`.emit` / `.connect` 的失效行为由 Godot ObjectDB 决定。
+  - 实证与锚点：显式 `Callable(token, &"bump")` 子类实参构造的 codegen 通路由 `CallArgumentObjectUpcastCodegenTest` 锚定；构造本身不 retain receiver（`CConstructInsnGenTest.constructCallableShouldEmitCallableFromReceiverAndDestroyResult` 断言构造体无 `own_object` / `try_own_object`）；`token.bump` sugar 的 `construct_callable` lowering 形态由 `FrontendLoweringBodyInsnPassTest.runLowersBareAndReceiverMethodReferencesIntoConstructCallableInsn` 锚定。
 - `Signal.emit` 是真正 vararg（`extension_api_451.json` 中 `is_vararg=true` 且无固定参数）。声明参数只作 ClassDB / 编辑器元数据。frontend 不得在调用点按声明签名拒绝多余或异型实参。
 - `connect` 返回 `int`（错误码），`disconnect` 返回 void。`flags` 支持 `Object.CONNECT_DEFERRED` / `Object.CONNECT_ONE_SHOT`，可省略（默认 0）。
 - 只注册当前类**新声明** signal；继承 signal 不重复注册。engine / native signal 只读、不由 GDCC 注册。

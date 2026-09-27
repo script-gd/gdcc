@@ -30,6 +30,7 @@ import gd.script.gdcc.lir.insn.ConstructStandaloneCallableInsn;
 import gd.script.gdcc.lir.insn.StandaloneCallableKind;
 import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.lir.insn.GetClassNameInsn;
+import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
@@ -63,6 +64,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -1551,6 +1553,63 @@ class CConstructInsnGenTest {
         assertFalse(arrayCtorCall.contains("NULL"), arrayCtorCall);
     }
 
+    @Test
+    @DisplayName("construct_builtin should emit Callable(Object, StringName) with live object pointer")
+    void constructBuiltinShouldEmitCallableFromExactObjectArgument() {
+        // Hand-written LIR anchor (not an end-to-end statement): the frontend call-argument
+        // upcast contract guarantees the builtin constructor always sees an exact-Object slot.
+        var clazz = newTestClass();
+        var func = newFunction("construct_callable_from_object");
+        func.createAndAddVariable("receiver", GdObjectType.OBJECT);
+        func.createAndAddVariable("method", GdStringNameType.STRING_NAME);
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new LiteralStringNameInsn("method", "bump"));
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
+                "cb",
+                List.of(new LirInstruction.VariableOperand("receiver"), new LirInstruction.VariableOperand("method"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithCallableObjectConstructor());
+        var call = extractCall(body, "godot_new_Callable_with_Object_StringName");
+        assertAll(
+                () -> assertEquals(
+                        "godot_new_Callable_with_Object_StringName(gdcc_Object_fat_ptr_live_object($receiver), &$method);",
+                        call
+                ),
+                () -> assertTrue(body.contains("godot_new_StringName_with_utf8_chars(u8\"bump\")"), body)
+        );
+    }
+
+    @Test
+    @DisplayName("construct_builtin should keep rejecting a subclass-typed Callable argument")
+    void constructBuiltinShouldKeepRejectingSubclassTypedCallableArgument() {
+        // Negative anchor: a custom-class fat pointer still does not satisfy the exact-match
+        // metadata contract; the frontend upcast temp is what makes the real pipeline exact.
+        var clazz = newTestClass();
+        var tokenClass = new LirClassDef("MyToken", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = newFunction("construct_callable_from_subclass");
+        func.createAndAddVariable("token", new GdObjectType("MyToken"));
+        func.createAndAddVariable("method", GdStringNameType.STRING_NAME);
+        func.createAndAddVariable("cb", new GdCallableType());
+
+        entry(func).appendInstruction(new LiteralStringNameInsn("method", "bump"));
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
+                "cb",
+                List.of(new LirInstruction.VariableOperand("token"), new LirInstruction.VariableOperand("method"))
+        ));
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz, tokenClass));
+        var codegen = newCodegen(module, List.of(clazz, tokenClass), apiWithCallableObjectConstructor());
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(clazz, func));
+        assertAll(
+                () -> assertTrue(ex.getMessage().contains("'Callable' with args [MyToken, StringName]"), ex.getMessage()),
+                () -> assertTrue(ex.getMessage().contains("is not defined in ExtensionBuiltinClass"), ex.getMessage())
+        );
+    }
+
     private LirClassDef newTestClass() {
         return new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
     }
@@ -1825,6 +1884,33 @@ class CConstructInsnGenTest {
                 List.of(),
                 builtins,
                 List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionAPI apiWithCallableObjectConstructor() {
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(newBuiltinClass(
+                        "Callable",
+                        List.of(new ExtensionBuiltinClass.ConstructorInfo(
+                                "Callable",
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("object", "Object", null, null),
+                                        new ExtensionFunctionArgument("method", "StringName", null, null)
+                                )
+                        ))
+                )),
+                List.of(
+                        new ExtensionGdClass("Object", false, true, "", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
+                        new ExtensionGdClass("RefCounted", true, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of())
+                ),
                 List.of(),
                 List.of()
         );
