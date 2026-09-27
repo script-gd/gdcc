@@ -1433,7 +1433,7 @@ public final class FrontendBodyLoweringSession {
         var fixedPrefixCount = Math.min(argumentValueIds.size(), boundaryPlan.fixedParameterTypes().size());
         for (var index = 0; index < fixedPrefixCount; index++) {
             var argumentValueId = argumentValueIds.get(index);
-            var materializedSlotId = materializeFrontendBoundaryValue(
+            var materializedSlotId = materializeCallArgumentBoundaryValue(
                     block,
                     slotIdForValue(argumentValueId),
                     requireValueType(argumentValueId),
@@ -1454,6 +1454,42 @@ public final class FrontendBodyLoweringSession {
             operands.add(new LirInstruction.VariableOperand(materializedSlotId));
         }
         return List.copyOf(operands);
+    }
+
+    /// Fixed call arguments carry one extra materialization shape on top of the shared
+    /// `(un)pack` entry: a strict object subclass passed to an ancestor-typed parameter is
+    /// copied into a target-typed temp via `AssignInsn`. The backend builtin constructor path
+    /// matches argument type names exactly (a subclass slot is rejected), and engine/builtin
+    /// method routes share the same argument-type invariant even though their backend could
+    /// upcast on its own. Only the fixed loop above routes here: vararg tails always target
+    /// `Variant` and `DYNAMIC` calls forward slots unchanged, so neither can trigger this shape.
+    /// The shape is re-derived at lowering time today; once call-argument plans publish frozen
+    /// boundary decisions, this helper must consume them instead of re-querying the registry.
+    private @NotNull String materializeCallArgumentBoundaryValue(
+            @NotNull LirBasicBlock block,
+            @NotNull String sourceSlotId,
+            @NotNull GdType sourceType,
+            @NotNull GdType targetType,
+            @NotNull String boundaryUse
+    ) {
+        if (!isStrictObjectSubclassArgument(sourceType, targetType)) {
+            return materializeFrontendBoundaryValue(block, sourceSlotId, sourceType, targetType, boundaryUse);
+        }
+        var upcastSlotId = nextBoundaryMaterializationSlotId(boundaryUse, "upcast");
+        ensureVariable(upcastSlotId, targetType);
+        block.appendNonTerminatorInstruction(new AssignInsn(upcastSlotId, sourceSlotId));
+        return upcastSlotId;
+    }
+
+    /// Pure peek for the fixed-argument upcast shape: both sides must be engine object types
+    /// with different names (same-name pairs stay `ALLOW_DIRECT` on the shared path), and the
+    /// source must reach the target through the superclass chain. Unrelated object types return
+    /// false and keep the shared entry's existing rejection behavior.
+    private boolean isStrictObjectSubclassArgument(@NotNull GdType sourceType, @NotNull GdType targetType) {
+        return sourceType instanceof GdObjectType
+                && targetType instanceof GdObjectType
+                && !sourceType.getTypeName().equals(targetType.getTypeName())
+                && classRegistry.checkAssignable(sourceType, targetType);
     }
 
     /// Property bindings always carry the skeleton-produced `PropertyDef` as declaration site

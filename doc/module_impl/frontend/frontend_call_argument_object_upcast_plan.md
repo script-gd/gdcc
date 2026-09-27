@@ -4,7 +4,8 @@
 
 ## 文档状态
 
-- 状态：实施中（步骤 0 文档先行已完成——矩阵、`(un)pack`、`frontend_rules.md` 命名条款三处已同改；步骤 1 前端 helper 待实施）
+- 状态：已完成（2026-09-27，步骤 0-5 全部实施并通过验收；全量 clean build 绿）
+- 评审后续处置（2026-09-27）：评审提出的"upcast temp 对 RefCounted 实参持有至函数 `__finally__`、超过单次调用"现象经核实为本计划 §4.5 的既定设计（且实参求值 temp 在所有调用路径上本就同粒度持有，未证实可观察的 Godot 分歧），决定**保持现状**并记录于 `doc/gdcc_ownership_lifecycle_spec.md` §3.6 的 boundary temp 条款与 `(un)pack` §4.2。临时复现测试 `CustomReceiverCallableGapTest` 在覆盖闭合后删除：显式构造通路由 `CallArgumentObjectUpcastCodegenTest` 承接，sugar 非保活锚点由 `CConstructInsnGenTest.constructCallableShouldEmitCallableFromReceiverAndDestroyResult`（构造体无 retain）与 `FrontendLoweringBodyInsnPassTest.runLowersBareAndReceiverMethodReferencesIntoConstructCallableInsn`（`construct_callable` 形态）承接。
 - 更新时间：2026-09-27
 - 适用范围：
   - `doc/module_impl/frontend/**`
@@ -25,7 +26,7 @@
 
 ## 1. 背景与成因链路
 
-最小复现为 `src/test/java/gd/script/gdcc/backend/c/build/CustomReceiverCallableGapTest.java`，覆盖两种写法。
+最小复现为 `src/test/java/gd/script/gdcc/backend/c/build/CustomReceiverCallableGapTest.java`，覆盖两种写法。（该临时复现测试已在覆盖闭合后删除，承接锚点见文档状态注记。）
 
 ### 1.1 显式构造 `Callable(token, &"bump")` —— 本计划要修的缺陷
 
@@ -194,7 +195,7 @@ try_release_object(gdcc_Object_fat_ptr_live_object($cfg_boundary_call_fixed_0_up
 
 验收：文档 diff 只涉及上述说明；无代码改动。
 
-### 步骤 1：前端 helper 实现
+### 步骤 1：前端 helper 实现——已完成（2026-09-27）
 
 改动：`FrontendBodyLoweringSession.java`
 
@@ -203,7 +204,7 @@ try_release_object(gdcc_Object_fat_ptr_live_object($cfg_boundary_call_fixed_0_up
 
 验收：`./gradlew classes --no-daemon --info --console=plain` 编译通过。
 
-### 步骤 2：前端 lowering 单测
+### 步骤 2：前端 lowering 单测——已完成（2026-09-27）
 
 改动：`FrontendLoweringBodyInsnPassTest`（或同包合适的测试类，实现时确认）。用例必须构造真实的自定义类 hierarchy（如 `Token extends RefCounted`），不能只喂两个孤立 `GdType`。
 
@@ -215,7 +216,7 @@ try_release_object(gdcc_Object_fat_ptr_live_object($cfg_boundary_call_fixed_0_up
 
 验收：`script/run-gradle-targeted-tests.sh --tests 'FrontendLoweringBodyInsnPassTest'` 全绿。
 
-### 步骤 3：后端 codegen 单测（只加测试，不改后端代码）
+### 步骤 3：后端 codegen 单测（只加测试，不改后端代码）——已完成（2026-09-27）
 
 改动：`CConstructInsnGenTest`，以及一个"前端实际 lowering 产物 -> codegen"的链路测试（可挂在现有 lowering-codegen 混合测试类上，实现时确认位置）。
 
@@ -228,7 +229,7 @@ try_release_object(gdcc_Object_fat_ptr_live_object($cfg_boundary_call_fixed_0_up
 
 验收：`script/run-gradle-targeted-tests.sh --tests 'CConstructInsnGenTest'` 及所加链路测试类全绿。
 
-### 步骤 4：翻转 `CustomReceiverCallableGapTest` 并按 B1 重定性 sugar 用例
+### 步骤 4：翻转 `CustomReceiverCallableGapTest` 并按 B1 重定性 sugar 用例——已完成（2026-09-27）
 
 改动：`CustomReceiverCallableGapTest.java`、`frontend_signal_support.md`
 
@@ -239,7 +240,7 @@ try_release_object(gdcc_Object_fat_ptr_live_object($cfg_boundary_call_fixed_0_up
 
 验收：`script/run-gradle-targeted-tests.sh --tests 'CustomReceiverCallableGapTest'` 全绿。
 
-### 步骤 5：受影响面回归
+### 步骤 5：受影响面回归——已完成（2026-09-27）
 
 - 先以文本搜索定位可能受精确 LIR 序列断言影响的测试（搜索 `ConstructBuiltinInsn`、`construct_builtin`、call 实参槽同一性断言、`materializeCallArguments` 相关断言），逐一运行核对；不要默认某个测试类会变红。
 - 若 characterization 测试因调用参数新增 upcast temp 而失败：逐一核对失败点是否确为预期形态变化，禁止为通过测试而回退实现；确属预期的按新形态更新测试并在提交说明中列出清单。
@@ -279,9 +280,9 @@ try_release_object(gdcc_Object_fat_ptr_live_object($cfg_boundary_call_fixed_0_up
 ## 8. 总体验收清单（DoD）
 
 - [x] 三处文档（矩阵、`(un)pack`、`frontend_rules.md` 命名条款）已先于代码更新
-- [ ] `Callable(token, &"bump")`、`Signal(token, &"s")` 等子类实参 builtin 构造调用全链路通过
-- [ ] 后端 `CBuiltinBuilder`、LIR 指令集、`Decision` 枚举零改动
-- [ ] 同类型 / 非对象 / `Variant` 目标的既有路径零行为变化（有测试锚点）
-- [ ] ownership 三态（UNKNOWN/NO/YES）均有 codegen 锚点
-- [ ] sugar 用例按 B1 重新定性，`frontend_signal_support.md` 补充实证说明
-- [ ] 步骤 0-5 的验收命令全部通过
+- [x] `Callable(token, &"bump")`、`Signal(token, &"s")` 等子类实参 builtin 构造调用全链路通过
+- [x] 后端 `CBuiltinBuilder`、LIR 指令集、`Decision` 枚举零改动
+- [x] 同类型 / 非对象 / `Variant` 目标的既有路径零行为变化（有测试锚点）
+- [x] ownership 三态（UNKNOWN/NO/YES）均有 codegen 锚点
+- [x] sugar 用例按 B1 重新定性，`frontend_signal_support.md` 补充实证说明
+- [x] 步骤 0-5 的验收命令全部通过

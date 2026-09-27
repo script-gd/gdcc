@@ -167,6 +167,20 @@ Automatic local cleanup rule:
   the auto-cleanup set by contract.
 - This matches Godot's contract where non-`RefCounted` objects stay under explicit user-managed lifetime (`free`, `queue_free`, etc.) even when stored in local variables.
 
+Boundary materialization temps (`cfg_boundary_*`: pack / unpack / null-object / intrinsic cast /
+builtin constructor / fixed-call-argument object upcast) are ordinary managed locals:
+
+- They are owned per the standard slot-write rules (§3.2) at their single materialization write and
+  released by the `__finally__` auto cleanup above, so their lifetime spans the enclosing function,
+  not the consuming call. A reference-managed argument may consequently stay alive past the call that
+  consumes the temp until function exit.
+- This is by design and not new in kind: argument-evaluation temps (`cfg_tmp_*`) already hold
+  reference-managed arguments until function exit on every call route, so adding one more such owning
+  slot demonstrates no Godot-observable divergence (any same-function early-release scenario is
+  already masked by the evaluation temps).
+- Narrowing boundary temps to call-scoped lifetimes would require an explicit post-call release
+  mechanism and is intentionally not part of this contract.
+
 ### 3.7 Constraints
 
 - Do not infer ownership from function name prefixes (e.g. `godot_`).

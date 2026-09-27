@@ -182,7 +182,7 @@ local / assignment / call / return / subscript key/index consumer 都必须走�
 
 该 helper 当前只做六类结果：
 
-- direct：直接返回原 slot id；唯一例外是 fixed call argument 边界上的严格 object 子类 -> 祖先——此时分配 target-typed 新 temp 并追加 `AssignInsn`，对构造器与方法调用的 fixed 参数统一生效（builtin 构造器后端按 metadata 精确匹配实参类型名，必须消费精确类型实参；方法调用后端虽已能自行 upcast，仍共用同一实参类型不变量），适用条件见 §4.3
+- direct：直接返回原 slot id；唯一例外是 fixed call argument 边界上的严格 object 子类 -> 祖先——此时分配 target-typed 新 temp 并追加 `AssignInsn`，对构造器与方法调用的 fixed 参数统一生效（builtin 构造器后端按 metadata 精确匹配实参类型名，必须消费精确类型实参；方法调用后端虽已能自行 upcast，仍共用同一实参类型不变量），适用条件见 §4.3；该 temp 按标准槽写入规则在物化写入处 own、由函数 `__finally__` 自动清理释放，持有期覆盖整个函数而非单次调用（见 `doc/gdcc_ownership_lifecycle_spec.md` §3.6 的 boundary temp 条款）
 - pack：分配新 temp，并追加 `PackVariantInsn`
 - unpack：分配新 temp，并追加 `UnpackVariantInsn`
 - null-object：分配新 temp，并追加 object-typed `LiteralNullInsn`
