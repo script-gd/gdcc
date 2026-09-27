@@ -4089,6 +4089,240 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runMaterializesObjectSubclassCallArgumentsThroughUpcastTemp() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_call_object_upcast.gd",
+                """
+                        class_name BodyInsnCallObjectUpcast
+                        extends Node
+                        
+                        class Token extends RefCounted:
+                            var count: int = 0
+                        
+                            func bump() -> int:
+                                count += 1
+                                return count
+                        
+                        class SpecialToken extends Token:
+                            pass
+                        
+                        func take_token(value: Token) -> void:
+                            pass
+                        
+                        func make_callable_from_subclass(token: Token) -> Callable:
+                            return Callable(token, &"bump")
+                        
+                        func add_sprite(sprite: Sprite2D) -> void:
+                            add_child(sprite)
+                        
+                        func pass_special(special: SpecialToken) -> void:
+                            take_token(special)
+                        """,
+                Map.of("BodyInsnCallObjectUpcast", "RuntimeBodyInsnCallObjectUpcast"),
+                true
+        );
+        var callableContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCallObjectUpcast",
+                "make_callable_from_subclass"
+        );
+        var methodContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCallObjectUpcast",
+                "add_sprite"
+        );
+        var customAncestorContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCallObjectUpcast",
+                "pass_special"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var callableFunction = callableContext.targetFunction();
+        var methodFunction = methodContext.targetFunction();
+        var customAncestorFunction = customAncestorContext.targetFunction();
+        var callableUpcastTemps = boundaryUpcastTempIds(callableFunction);
+        var methodUpcastTemps = boundaryUpcastTempIds(methodFunction);
+        var customAncestorUpcastTemps = boundaryUpcastTempIds(customAncestorFunction);
+        var callableAssignSources = assignSourcesByTarget(allInstructions(callableFunction));
+        var methodAssignSources = assignSourcesByTarget(allInstructions(methodFunction));
+        var customAncestorAssignSources = assignSourcesByTarget(allInstructions(customAncestorFunction));
+        var constructInsn = requireOnlyInstruction(callableFunction, ConstructBuiltinInsn.class);
+        var addChildInsn = requireOnlyInstruction(methodFunction, CallMethodInsn.class);
+        var takeTokenInsn = requireOnlyInstruction(customAncestorFunction, CallMethodInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // builtin constructor route: Callable(token, &"bump") with custom Token extends RefCounted.
+                () -> assertEquals(1, callableUpcastTemps.size()),
+                () -> assertTrue(callableUpcastTemps.getFirst().startsWith("cfg_boundary_call_fixed_0_upcast_")),
+                () -> assertTrue(
+                        requireVariableType(callableFunction, callableAssignSources.get(callableUpcastTemps.getFirst()))
+                                .getTypeName()
+                                .endsWith("__sub__Token")
+                ),
+                () -> assertEquals(GdObjectType.OBJECT, requireVariableType(callableFunction, callableUpcastTemps.getFirst())),
+                () -> assertEquals(2, constructInsn.args().size()),
+                () -> assertEquals(
+                        callableUpcastTemps.getFirst(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, constructInsn.args().getFirst()).id()
+                ),
+                // engine method route: add_child(sprite) upcasts Sprite2D to the Node parameter.
+                () -> assertEquals(1, methodUpcastTemps.size()),
+                () -> assertTrue(methodUpcastTemps.getFirst().startsWith("cfg_boundary_call_fixed_0_upcast_")),
+                () -> assertEquals(
+                        new GdObjectType("Sprite2D"),
+                        requireVariableType(methodFunction, methodAssignSources.get(methodUpcastTemps.getFirst()))
+                ),
+                () -> assertEquals(new GdObjectType("Node"), requireVariableType(methodFunction, methodUpcastTemps.getFirst())),
+                () -> assertEquals(
+                        methodUpcastTemps.getFirst(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, addChildInsn.args().getFirst()).id()
+                ),
+                // GDCC custom ancestor route: take_token(special) upcasts SpecialToken to the
+                // custom Token parameter.
+                () -> assertEquals(1, customAncestorUpcastTemps.size()),
+                () -> assertTrue(
+                        requireVariableType(
+                                customAncestorFunction,
+                                customAncestorAssignSources.get(customAncestorUpcastTemps.getFirst())
+                        ).getTypeName().endsWith("__sub__SpecialToken")
+                ),
+                () -> assertTrue(
+                        requireVariableType(customAncestorFunction, customAncestorUpcastTemps.getFirst())
+                                .getTypeName()
+                                .endsWith("__sub__Token")
+                ),
+                () -> assertEquals(
+                        customAncestorUpcastTemps.getFirst(),
+                        assertInstanceOf(LirInstruction.VariableOperand.class, takeTokenInsn.args().getFirst()).id()
+                )
+        );
+    }
+
+    @Test
+    void runKeepsExactObjectCallArgumentsOnDirectSlots() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_call_object_exact.gd",
+                """
+                        class_name BodyInsnCallObjectExact
+                        extends RefCounted
+                        
+                        func make_callable_from_exact(obj: Object) -> Callable:
+                            return Callable(obj, &"ping")
+                        """,
+                Map.of("BodyInsnCallObjectExact", "RuntimeBodyInsnCallObjectExact"),
+                true
+        );
+        var callableContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCallObjectExact",
+                "make_callable_from_exact"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = callableContext.targetFunction();
+        var constructInsn = requireOnlyInstruction(function, ConstructBuiltinInsn.class);
+
+        // Same-type Object argument stays ALLOW_DIRECT: no boundary temp of any kind, and the
+        // constructor consumes the argument's already-materialized slot (zero-overhead anchor).
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(boundaryUpcastTempIds(function).isEmpty()),
+                () -> assertTrue(
+                        function.getVariables().keySet().stream().noneMatch(id -> id.startsWith("cfg_boundary_"))
+                ),
+                () -> assertEquals(2, constructInsn.args().size()),
+                () -> assertEquals(
+                        GdObjectType.OBJECT,
+                        requireVariableType(
+                                function,
+                                assertInstanceOf(LirInstruction.VariableOperand.class, constructInsn.args().getFirst()).id()
+                        )
+                )
+        );
+    }
+
+    @Test
+    void runKeepsNonObjectCallArgumentBoundariesOnExistingPaths() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_call_non_object_boundary.gd",
+                """
+                        class_name BodyInsnCallNonObjectBoundary
+                        extends RefCounted
+                        
+                        func take_name(value: StringName) -> StringName:
+                            return value
+                        
+                        func take_ratio(value: float) -> float:
+                            return value
+                        
+                        func take_any(value: Variant) -> Variant:
+                            return value
+                        
+                        func take_obj(value: Object) -> void:
+                            pass
+                        
+                        func regression_boundaries(text: String, seed: int, sprite: Sprite2D, box: Variant) -> float:
+                            take_name(text)
+                            take_any(sprite)
+                            take_obj(box)
+                            take_obj(null)
+                            return take_ratio(seed)
+                        """,
+                Map.of("BodyInsnCallNonObjectBoundary", "RuntimeBodyInsnCallNonObjectBoundary"),
+                true
+        );
+        var regressionContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCallNonObjectBoundary",
+                "regression_boundaries"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = regressionContext.targetFunction();
+        var instructions = allInstructions(function);
+        var constructorInsn = requireOnlyInstruction(function, ConstructBuiltinInsn.class);
+        var intrinsicInsn = requireOnlyInstruction(function, CallIntrinsicInsn.class);
+        var packInsn = requireOnlyInstruction(function, PackVariantInsn.class);
+        var unpackInsn = requireOnlyInstruction(function, UnpackVariantInsn.class);
+        var nullObjectInsn = requireOnlyInstruction(function, LiteralNullInsn.class);
+        var callArgumentIds = instructions.stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .flatMap(insn -> insn.args().stream())
+                .map(operand -> assertInstanceOf(LirInstruction.VariableOperand.class, operand).id())
+                .toList();
+
+        // Regression sampling: String -> StringName constructor, int -> float intrinsic cast,
+        // object -> Variant pack, Variant -> Object unpack and null -> Object literal must all
+        // stay on their existing decisions, untouched by the upcast shape.
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(boundaryUpcastTempIds(function).isEmpty()),
+                () -> assertEquals(GdStringType.STRING, requireVariableType(function, onlyVariableOperandId(constructorInsn.args()))),
+                () -> assertEquals(GdStringNameType.STRING_NAME, requireVariableType(function, constructorInsn.resultId())),
+                () -> assertTrue(callArgumentIds.contains(constructorInsn.resultId())),
+                () -> assertTrue(callArgumentIds.contains(intrinsicInsn.resultId())),
+                () -> assertTrue(callArgumentIds.contains(packInsn.resultId())),
+                () -> assertTrue(callArgumentIds.contains(unpackInsn.resultId())),
+                () -> assertEquals(GdObjectType.OBJECT, requireVariableType(function, unpackInsn.resultId())),
+                () -> assertTrue(callArgumentIds.contains(nullObjectInsn.resultId())),
+                () -> assertEquals(GdObjectType.OBJECT, requireVariableType(function, nullObjectInsn.resultId())),
+                () -> assertEquals(1, countInstructions(instructions, UnpackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, LiteralNullInsn.class))
+        );
+    }
+
+    @Test
     void runLowersStringFamilyReturnSlotsThroughConstructBuiltinInsn() throws Exception {
         var prepared = prepareContext(
                 "body_insn_string_family_return.gd",
@@ -13159,6 +13393,13 @@ class FrontendLoweringBodyInsnPassTest {
             }
         }
         return Map.copyOf(assignSources);
+    }
+
+    private static @NotNull List<String> boundaryUpcastTempIds(@NotNull LirFunctionDef function) {
+        return function.getVariables().keySet().stream()
+                .filter(id -> id.startsWith("cfg_boundary_") && id.contains("_upcast_"))
+                .sorted()
+                .toList();
     }
 
     private static void replaceParameterType(
