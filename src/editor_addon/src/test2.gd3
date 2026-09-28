@@ -7,3 +7,4 @@ func _process(delta: float) -> void:
 
 func _init(a: String) -> void:
     print(a)
+    print()

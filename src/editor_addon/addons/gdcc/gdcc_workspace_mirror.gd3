@@ -1,0 +1,325 @@
+@tool
+class_name GdccWorkspaceMirror
+extends Node
+
+## LSP workspace mirror (plan §7 Phase 8), child feature of `GdccEditorService`.
+##
+## The GDScript language server's workspace disk scan indexes only `.gd`
+## (`gdscript_workspace.cpp::list_script_files`), so project `.gd3` files enter the
+## server's parse cache — the data plane behind cross-file hover/definition
+## (`resolve_symbol`) — exclusively through client `didOpen`. This node mirrors the whole
+## project `.gd3` set onto the LSP connection: after every READY handshake it re-opens
+## every project `.gd3` in per-frame-budgeted batches (text through the Phase 7
+## `lsp_safe_text` view), follows later content changes with full-text `didChange`, and
+## closes documents whose file vanished. didOpen/didChange/didClose are notifications:
+## they never consume `_validate`'s 150ms blocking budget (plan §7 Phase 8 item 1).
+##
+## Text source rule (plan §7 Phase 8 item 2): a path the editor touched (present in the
+## source registry) syncs the REGISTRY text — the editor buffer is newer by definition —
+## while a disk-only path syncs the file content read at scan time. The mirror is
+## deliberately independent of the gdcc diagnostics module: registry adoption through the
+## reconciler is gated on module readiness, but cross-file LSP resolution must work with
+## no gdcc server at all, so this node runs its own event-driven scan cadence (LSP
+## reconnect replay + `notify_filesystem_changed`) and never marks anything dirty.
+##
+## State:
+##   * `_mirrored` (path -> {"version", "text", "uri"}) records the exact RAW text last
+##     sent (the erasure view is recomputed at send time), its provenance version
+##     (registry content version for registry-backed paths, 0 for disk reads), and the
+##     cached URI so per-tick checks need no path re-encoding.
+##   * `_disk_seen` / `_disk_texts` track which paths the mirror's OWN scans saw on disk
+##     and the last disk content read for them. The registry's disk-known set is
+##     module-gated and its dirty flag means "awaiting analysis", NOT "unsaved edits" —
+##     so deletion detection and the unsaved-edits decision must come from these
+##     mirror-owned records: unsaved edits ⟺ registry text != last known disk text.
+##   * pending work is a path FIFO (consumed via a head index with amortized
+##     compaction, so neither enqueue nor dequeue is ever O(N)) plus a path -> kind map
+##     for O(1) latest-wins dedupe. Intents carry NO text and NO stale decisions: at
+##     send time a sync re-resolves the truth (`_resolve_current_text`) and a close
+##     re-runs `_should_close`, so a queue that outlives an editor update, a deletion,
+##     a recreation, or a tab opening can never ship stale content, resurrect a
+##     vanished file, or close a file that came back.
+##
+## Drift detection is split by cost: registry-backed paths compare versions every tick
+## (no syscalls); disk-backed paths compare text at scan time only (scans are
+## event-driven, never per-frame). Drains are capped at MAX_SYNC_OPS_PER_TICK per tick
+## so bulk sends cannot starve other frame work (R27). The directory walk and the
+## scan-time reads themselves run in one frame per event — acceptable for typical
+## projects; a resumable walk for very large trees is a recorded, deferred concern.
+
+# Per-frame send budget (plan §7 Phase 8 item 1: 每帧限额避免启动卡顿). A var, not a
+# const: class-level const is outside gdcc's bootstrap MVP.
+var MAX_SYNC_OPS_PER_TICK: int = 8
+
+var _ready_epoch: int = 0
+var _mirrored: Dictionary = {}
+var _op_fifo: Array = []
+var _op_head: int = 0
+var _op_map: Dictionary = {}
+var _scan_pending: bool = false
+var _disk_seen: Dictionary = {}
+var _disk_texts: Dictionary = {}
+
+var service: GdccEditorService = null
+
+
+func bind_service(owner: GdccEditorService) -> void:
+    service = owner
+
+
+## Forwarding target for the editor's `filesystem_changed` signal (relayed by the
+## service): flags a re-scan; the actual disk walk runs on the frame pump so notification
+## bursts coalesce into one pass (same coalescing pattern as the reconciler).
+func notify_filesystem_changed() -> void:
+    if not service.is_active():
+        return
+    _scan_pending = true
+    service.refresh_busy()
+
+
+## Busy term: only while replay/batch work can actually advance — a disconnected client
+## holds nothing (its own backoff keeps retrying regardless) and an idle mirrored set
+## holds nothing either (a permanent busy would defeat the editor's low-power mode). An
+## unprocessed READY epoch counts as pending work: the replay it implies must not wait
+## for a capped low-power frame to be discovered by the next tick (review finding); the
+## client's `ready_advanced` signal provides the matching wake edge.
+func busy_wanted() -> bool:
+    var client: GdccLspClient = service.get_lsp_client()
+    if not service.is_active() or client == null or not client.is_ready():
+        return false
+    return _scan_pending or _op_head < _op_fifo.size() \
+            or client.get_ready_epoch() != _ready_epoch
+
+
+## Uninstall hook: the LSP stop that follows kills the connection and every server-side
+## document with it, so no didClose sweep is needed — just forget the bookkeeping.
+func service_shutdown() -> void:
+    _ready_epoch = 0
+    _mirrored.clear()
+    _op_fifo.clear()
+    _op_head = 0
+    _op_map.clear()
+    _scan_pending = false
+    _disk_seen.clear()
+    _disk_texts.clear()
+
+
+func service_tick(_now: int) -> void:
+    if not service.is_active():
+        return
+    var client: GdccLspClient = service.get_lsp_client()
+    if client == null or not client.is_ready():
+        return
+    var epoch: int = client.get_ready_epoch()
+    if epoch != _ready_epoch:
+        # (Re)connect: server-side documents died with the old connection and the client
+        # dropped its open-document bookkeeping, so the whole set re-opens from scratch
+        # (plan §7 Phase 8 item 2: full replay — the client does not auto-restore).
+        # `_disk_seen`/`_disk_texts` survive: provenance is re-validated by the coming
+        # scan anyway.
+        _ready_epoch = epoch
+        _mirrored.clear()
+        _op_fifo.clear()
+        _op_head = 0
+        _op_map.clear()
+        _scan_pending = true
+    _refresh_mirrored_entries()
+    if _scan_pending:
+        _scan_pending = false
+        _collect_disk_diff()
+    _drain_ops()
+
+
+## Per-tick cheap checks over the mirrored set (no syscalls): close tombstoned paths
+## (subject to the shared close decision), re-open documents some OTHER feature dropped
+## from the shared client (external-close heal), and re-sync registry-backed paths whose
+## content version moved (editor buffer typed, disk adoption, buffer-only recovery).
+## Disk-backed text drift is left to the event-driven scan.
+func _refresh_mirrored_entries() -> void:
+    var registry: GdccSourceRegistry = service.registry()
+    var client: GdccLspClient = service.get_lsp_client()
+    for path in _mirrored.keys():
+        if registry.is_tombstoned(path) and not FileAccess.file_exists(path):
+            if _should_close(path):
+                _enqueue_op("close", path)
+            continue
+        # A tombstoned path that EXISTS on disk again is a recreation: the reconciler
+        # that would lift the tombstone is module-gated and may never run, so the
+        # tombstone must not be honored here — treating it as a close candidate would
+        # ping-pong with the drain's send-time re-check into a full-text didChange
+        # EVERY frame (review finding). Fall through to the normal heal/drift checks;
+        # the registry lifts its own tombstone on the next reconcile or `_validate`.
+        var info: Dictionary = _mirrored[path]
+        # External-close heal: a sibling sharing the client (e.g. the thread-mode
+        # re-probe closing its probe document) can drop a mirrored document without this
+        # node knowing; re-open it instead of waiting for a content change that may
+        # never come (review finding). No false positive against a pending close: with a
+        # close still queued the client-side document is still open.
+        if client.document_version_for(str(info.get("uri", ""))) < 0:
+            _enqueue_op("sync", path)
+            continue
+        if not registry.has(path):
+            continue
+        var version: int = registry.live_version(path)
+        if version > 0 and version != int(info.get("version", -1)):
+            _enqueue_op("sync", path)
+
+
+## Event-driven disk pass: refresh the disk-provenance records for every mirrored path
+## (the unsaved-edits comparison base), close mirrored paths that vanished (subject to
+## the shared close decision), open newly discovered files, and refresh disk-backed
+## paths whose content changed. Registry-backed paths are left to the per-tick version
+## check. Reads cover only already-mirrored files — new paths are read at drain time.
+func _collect_disk_diff() -> void:
+    var registry: GdccSourceRegistry = service.registry()
+    # The reconciler owns the project's `.gd3` walk (plan §7 Phase 8: 镜像直接复用其
+    # 磁盘扫描); it is a pure directory listing with no module-readiness gate.
+    var disk: Array = service.reconciler().project_gd3_files()
+    var disk_set: Dictionary = {}
+    for path in disk:
+        disk_set[path] = true
+        _disk_seen[path] = true
+    for path in _mirrored.keys():
+        if not disk_set.has(path):
+            if _should_close(path):
+                _enqueue_op("close", path)
+            continue
+        var disk_text: String = _read_project_file(path)
+        _disk_texts[path] = disk_text
+        if registry.has(path) and not registry.is_tombstoned(path):
+            continue
+        if str((_mirrored[path] as Dictionary).get("text", "")) != disk_text:
+            _enqueue_op("sync", path)
+    for path in disk:
+        if not _mirrored.has(path):
+            _enqueue_op("sync", path)
+
+
+## Shared close decision, re-run at ENQUEUE time and at SEND time (review findings):
+## keep the document while ANY open editor tab holds the path (the tab's own `_validate`
+## beats keep the LSP copy fresh — closing would drop its diagnostics cache and
+## generation FIFO mid-flight), while the registry holds GENUINE unsaved edits (registry
+## text != the last disk content this mirror read — the registry's dirty flag means
+## "awaiting analysis" and would preserve even never-edited files forever), or while the
+## path was never seen on disk by this mirror (a buffer-only new script, not a
+## deletion). A disk-seen path whose disk text was never captured falls through to
+## close: the tab guard covers the real editing case, and a server-side copy loses no
+## user data.
+func _should_close(path: String) -> bool:
+    if service.is_path_open_in_editor(path):
+        return false
+    var registry: GdccSourceRegistry = service.registry()
+    if registry.has(path) and not registry.is_tombstoned(path):
+        if not _disk_seen.has(path):
+            return false
+        var entry: Variant = registry.entry(path)
+        if entry is Dictionary and _disk_texts.has(path) \
+                and str(entry.get("text", "")) != str(_disk_texts[path]):
+            return false
+    return true
+
+
+## Latest intent wins for the path's slot; the FIFO position stays at first enqueue,
+## which is semantically safe because only the latest intent is ever sent for a path.
+func _enqueue_op(kind: String, path: String) -> void:
+    if not _op_map.has(path):
+        _op_fifo.append(path)
+    _op_map[path] = {"kind": kind, "path": path}
+
+
+## Sends queued work within the per-tick budget, consuming the FIFO through a head index
+## (removing from the front of an Array would make a bulk replay O(N²) — review
+## finding). BOTH intents are re-evaluated at send time: a close is cancelled into a
+## sync when the file exists again or the keep-rules now apply; a sync re-resolves the
+## current truth. The erasure view is computed at send time so a Phase 7 decision flip
+## in between cannot ship a stale view. A send failure disconnects the client per its
+## own contract; the epoch change on re-READY replays the whole set, so the remaining
+## queue is dropped, not requeued.
+func _drain_ops() -> void:
+    var client: GdccLspClient = service.get_lsp_client()
+    var budget: int = MAX_SYNC_OPS_PER_TICK
+    while budget > 0 and _op_head < _op_fifo.size():
+        var path: String = str(_op_fifo[_op_head])
+        _op_head += 1
+        var op: Dictionary = _op_map[path]
+        _op_map.erase(path)
+        var uri: String = service.lsp_uri_for(path)
+        if uri == "":
+            continue
+        if str(op["kind"]) == "close":
+            # Re-run the keep rules at send time: a file recreated (with identical
+            # content — a differing one would already have replaced this op with a sync)
+            # or a tab opened since enqueue must cancel the close, not execute it.
+            if FileAccess.file_exists(path) or not _should_close(path):
+                _enqueue_op("sync", path)
+                continue
+            client.close_document(uri)
+            _mirrored.erase(path)
+            _disk_seen.erase(path)
+            _disk_texts.erase(path)
+            budget -= 1
+            continue
+        var resolved: Dictionary = _resolve_current_text(path)
+        if not resolved["found"]:
+            if _mirrored.has(path) and _should_close(path):
+                _enqueue_op("close", path)
+            continue
+        var view: Dictionary = service.lsp_safe_text(path, str(resolved["text"]))
+        if client.sync_document(uri, str(view["text"])) < 0:
+            _op_fifo.clear()
+            _op_head = 0
+            _op_map.clear()
+            return
+        if str(resolved["source"]) == "disk":
+            _disk_texts[path] = str(resolved["text"])
+        _mirrored[path] = {
+            "version": int(resolved["version"]), "text": str(resolved["text"]), "uri": uri,
+        }
+        budget -= 1
+    _compact_op_fifo()
+
+
+## Amortized FIFO compaction: reset when fully consumed; slice only once the consumed
+## prefix dominates, so the copy cost stays amortized O(1) per consumed entry.
+func _compact_op_fifo() -> void:
+    if _op_head == 0:
+        return
+    if _op_head >= _op_fifo.size():
+        _op_fifo.clear()
+        _op_head = 0
+        return
+    if _op_head >= 64 and _op_head * 2 >= _op_fifo.size():
+        _op_fifo = _op_fifo.slice(_op_head)
+        _op_head = 0
+
+
+## The current truth for a sync intent at send time: the registry entry when the editor
+## owns the path (buffer wins), else the live disk content. A `_disk_seen` path that has
+## VANISHED from disk is a deletion, not a sync candidate — unless the keep rules
+## (`_should_close` false: open tab or genuine unsaved edits) still apply to its
+## registry buffer (review finding: a registry entry alone must never resurrect a
+## deleted file onto the server).
+func _resolve_current_text(path: String) -> Dictionary:
+    var registry: GdccSourceRegistry = service.registry()
+    if _disk_seen.has(path) and not FileAccess.file_exists(path) and _should_close(path):
+        return {"found": false}
+    if registry.has(path) and not registry.is_tombstoned(path):
+        var entry: Variant = registry.entry(path)
+        if entry is Dictionary:
+            return {
+                "found": true, "text": str(entry.get("text", "")),
+                "version": int(entry.get("version", 0)), "source": "registry",
+            }
+    if FileAccess.file_exists(path):
+        return {
+            "found": true, "text": FileAccess.get_file_as_string(path),
+            "version": 0, "source": "disk",
+        }
+    return {"found": false}
+
+
+## Disk-backed read with a vanished-file guard (a delete can race the scan).
+func _read_project_file(path: String) -> String:
+    if not FileAccess.file_exists(path):
+        return ""
+    return FileAccess.get_file_as_string(path)

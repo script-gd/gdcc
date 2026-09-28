@@ -29,10 +29,16 @@ extends Node
 ##   * `GdccDiagCache` — version-gated diagnostics cache;
 ##   * `GdccCompletionService` — stateless synchronous LSP completion slice (plan §4.3);
 ##     no tick/busy/hook wiring because its whole flow is one inline bounded pump.
+##   * `GdccLookupService` — Phase 9 symbol-lookup slice (`_lookup_code`): the same
+##     stateless inline shape as completion (sync + bounded hover/definition requests).
 ##   * `GdccClassNameEraser` — Phase 7 conditional `class_name` erasure for the LSP sync view:
 ##     view transform + position mapping + admission memo + GDExtensionManager flip listeners;
 ##     the service keeps the flip's editor-side mechanics (`resync_current_document_lsp`) and
 ##     the language-facing facades (`lsp_safe_text` & co. delegate to the child).
+##   * `GdccWorkspaceMirror` — Phase 8 LSP workspace mirror: keeps the whole project `.gd3`
+##     set didOpen'd on the GDScript language server (the server's own disk scan indexes only
+##     `.gd`), so cross-file hover/definition has a data plane; frame-budgeted replay after
+##     every LSP (re)connect, version/text-driven re-sync, didClose on deletion.
 ## Adding a feature (e.g. code completion): create a child script implementing the feature
 ## protocol (`bind_service`, optional `service_tick(now)`, `busy_wanted()`, and any of the
 ## broadcast hooks `on_module_ready` / `on_module_outage` / `on_content_changed` /
@@ -61,7 +67,9 @@ var _scheduler: GdccDiagScheduler = null
 var _registry: GdccSourceRegistry = null
 var _cache: GdccDiagCache = null
 var _completion: GdccCompletionService = null
+var _lookup: GdccLookupService = null
 var _eraser: GdccClassNameEraser = null
+var _mirror: GdccWorkspaceMirror = null
 var _lsp_host: String = "127.0.0.1"
 var _lsp_port: int = 6005
 var _rpc_host: String = "127.0.0.1"
@@ -203,7 +211,10 @@ func _reprobe_thread_mode_once() -> void:
     if _lsp_client.get_ready_epoch() == _last_thread_probe_epoch:
         return
     _last_thread_probe_epoch = _lsp_client.get_ready_epoch()
-    var probe_uri: String = _path_to_uri("res://gdcc_thread_probe.gd3")
+    # The probe document lives under `.godot/`: dot-directories are excluded from both
+    # the reconciler's and the workspace mirror's project scans, so the probe can never
+    # collide with (or be didClose'd over) a real project file sharing its path.
+    var probe_uri: String = _path_to_uri("res://.godot/gdcc_thread_probe.gd3")
     if probe_uri == "":
         return
     var generation: int = _lsp_client.sync_document(probe_uri, "extends Node\n")
@@ -236,6 +247,68 @@ func request_completion(path: String, text: String, line: int, col: int) -> Dict
     if not is_lsp_ready() or not _lsp_thread_mode():
         return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "LSP not ready or not threaded"}}
     return _completion.request_completion(path, text, line, col)
+
+
+## Symbol-lookup entry (plan §7 Phase 9 `_lookup_code`): same legality rule as
+## completion — the synchronous LSP path is legal exclusively while ACTIVE with a
+## handshake-verified READY client AND a thread-mode server; the session degrades
+## otherwise. The raw hover/definition payloads are returned unmapped; building the
+## engine LookupResult dictionary is the language's engine-contract job.
+func request_lookup(path: String, text: String, line: int, col: int) -> Dictionary:
+    if not _active or _lookup == null:
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "lookup unavailable"}}
+    if not is_lsp_ready() or not _lsp_thread_mode():
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "LSP not ready or not threaded"}}
+    return _lookup.request_lookup(path, text, line, col)
+
+
+## Server-dialect URI → res:// path ("" for foreign/non-project URIs): the inverse of
+## `lsp_uri_for`, used to report LSP definition targets back to the engine.
+func lsp_path_from_uri(uri: String) -> String:
+    if _lsp_client == null:
+        return ""
+    var absolute: String = _lsp_client.path_from_uri(uri)
+    if absolute == "":
+        return ""
+    var localized: String = ProjectSettings.localize_path(absolute)
+    if not localized.begins_with("res://"):
+        return ""
+    return localized
+
+
+## The configured editor indent unit for `_auto_indent_code` (mirrors## `GDScriptLanguage::_get_indentation`): a `text_editor/behavior/indent/size` space run
+## when `text_editor/behavior/indent/type` selects Spaces, a single tab otherwise — and
+## always a tab before the first install (the engine's non-editor branch).
+func editor_indent_unit() -> String:
+    if _editor_interface == null:
+        return "\t"
+    var settings: EditorSettings = _editor_interface.get_editor_settings()
+    if settings == null:
+        return "\t"
+    var use_spaces: bool = settings.has_setting("text_editor/behavior/indent/type") \
+            and int(settings.get_setting("text_editor/behavior/indent/type")) != 0
+    if not use_spaces:
+        return "\t"
+    var size: int = 4
+    if settings.has_setting("text_editor/behavior/indent/size"):
+        size = int(settings.get_setting("text_editor/behavior/indent/size"))
+    return " ".repeat(size)
+
+
+## True while any open script-editor tab holds `path` (4.5 `ScriptEditor.get_open_scripts`).
+## The workspace mirror uses it to avoid didClose-ing a document the user is still
+## editing: the tab's own `_validate` beats keep the LSP copy alive and fresh.
+func is_path_open_in_editor(path: String) -> bool:
+    if _editor_interface == null:
+        return false
+    var script_editor: ScriptEditor = _editor_interface.get_script_editor()
+    if script_editor == null:
+        return false
+    for open_script in script_editor.get_open_scripts():
+        var script: Script = open_script as Script
+        if script != null and script.resource_path == path:
+            return true
+    return false
 
 
 ## Shared res:// → server-dialect URI helper for feature children (wraps `_path_to_uri`;
@@ -330,6 +403,7 @@ func notify_filesystem_changed() -> void:
     if not _active:
         return
     _reconciler.notify_filesystem_changed()
+    _mirror.notify_filesystem_changed()
 
 
 func _ready() -> void:
@@ -360,6 +434,9 @@ func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
         _lsp_client = GdccLspClient.new()
         _lsp_client.name = &"GdccEditorLspClient"
         add_child(_lsp_client)
+        # Busy wake edge: a READY transition completing after this frame's refresh must
+        # re-evaluate busy immediately (the workspace mirror's replay rides on it).
+        _lsp_client.ready_advanced.connect(_on_lsp_ready_advanced)
         # Feature children. Construction order pins the tick order in `_on_diag_frame`
         # (lifecycle → reconciler → scheduler); the registry and cache are tickless.
         _lifecycle = GdccModuleLifecycle.new()
@@ -388,6 +465,12 @@ func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
         _completion.name = &"GdccCompletionService"
         _completion.bind_service(self)
         add_child(_completion)
+        # Phase 9 lookup slice (`_lookup_code`): same stateless inline shape as
+        # completion — no tick line, busy term, or teardown hook.
+        _lookup = GdccLookupService.new()
+        _lookup.name = &"GdccLookupService"
+        _lookup.bind_service(self)
+        add_child(_lookup)
         # Phase 7 class_name-erasure slice (`lsp_safe_text` + decision flips): the only frame
         # wiring is its deferred post-unload resync in `_on_diag_frame`; no busy term (a flip
         # is one LSP notification + one revalidation enqueue, never frame-driven work).
@@ -395,6 +478,15 @@ func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
         _eraser.name = &"GdccClassNameEraser"
         _eraser.bind_service(self)
         add_child(_eraser)
+        # Phase 8 LSP workspace mirror: keeps the project `.gd3` set didOpen'd on the
+        # GDScript server (cross-file hover/definition data plane). Tick line after the
+        # scheduler; one busy term while replay/batch work is pending; filesystem-change
+        # forwarding shares the reconciler's hook; no module broadcast hooks (the LSP
+        # channel is independent of the gdcc diagnostics module).
+        _mirror = GdccWorkspaceMirror.new()
+        _mirror.name = &"GdccWorkspaceMirror"
+        _mirror.bind_service(self)
+        add_child(_mirror)
     _editor_interface = editor_interface
     _lsp_host = lsp_host
     _lsp_port = lsp_port
@@ -442,6 +534,7 @@ func uninstall() -> void:
     _reconciler.service_shutdown()
     _registry.service_shutdown()
     _cache.service_shutdown()
+    _mirror.service_shutdown()
     _revalidate_pending.clear()
     _lsp_client.stop()
     ResourceSaver.remove_resource_format_saver(_saver)
@@ -509,11 +602,20 @@ func _on_diag_frame() -> void:
     _lifecycle.service_tick(now)
     _reconciler.service_tick(now)
     _scheduler.service_tick(now)
+    _mirror.service_tick(now)
     # The eraser's deferred post-unload view restoration runs BEFORE the revalidation drain so
     # its revalidation request can fire in the same frame.
     if _eraser != null:
         _eraser.process_deferred_resync()
     _pump_revalidation()
+    refresh_busy()
+
+
+## LSP client's READY-transition edge: re-evaluate busy immediately so a handshake
+## completing after this frame's refresh cannot leave the workspace mirror's replay
+## unaccounted for a (possibly low-power-capped) frame. The mirror's own epoch comparison
+## remains the state-level fallback; this is only the wake edge.
+func _on_lsp_ready_advanced() -> void:
     refresh_busy()
 
 
@@ -789,7 +891,7 @@ func refresh_busy() -> void:
     var want: bool = false
     if _active:
         want = _lifecycle.busy_wanted() or _reconciler.busy_wanted() \
-                or _scheduler.busy_wanted()
+                or _scheduler.busy_wanted() or _mirror.busy_wanted()
     if want == _busy_held:
         return
     _busy_held = want
@@ -837,6 +939,14 @@ func cache() -> GdccDiagCache:
 
 func completion() -> GdccCompletionService:
     return _completion
+
+
+func lookup() -> GdccLookupService:
+    return _lookup
+
+
+func workspace_mirror() -> GdccWorkspaceMirror:
+    return _mirror
 
 
 ## res://a/b.gd3 → /src/a/b.gd3 (plan §3.5 VFS mapping contract; the displayPath travels

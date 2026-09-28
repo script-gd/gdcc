@@ -224,6 +224,13 @@ func _on_reconcile_delete_done(response: Dictionary) -> void:
     service.refresh_busy()
 
 
+## Public sibling-facing wrapper around `_scan_gd3_files` (hub-and-spoke protocol): the
+## Phase 8 LSP workspace mirror reuses this exact walk for its own event-driven scan so
+## both features always agree on what the project `.gd3` set is.
+func project_gd3_files() -> Array:
+    return _scan_gd3_files("res://")
+
+
 ## Recursive `.gd3` collection under a res:// directory; dot-directories (notably `.godot`)
 ## are skipped. Returns res:// paths built without double slashes (the root is "res://").
 func _scan_gd3_files(dir_path: String) -> Array:

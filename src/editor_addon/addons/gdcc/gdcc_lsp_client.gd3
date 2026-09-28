@@ -85,6 +85,13 @@ var _diag_history: Dictionary = {}
 # Set while a blocking wait drives the connection inline; the frame pump must not reenter.
 var _in_blocking: bool = false
 
+## Emitted immediately after every READY transition (own-signal `.emit()` from the frame
+## pump is delivery-safe — the Phase 5 emission investigation). The service refreshes its
+## busy aggregate on this edge: a handshake completing after the service's own pump would
+## otherwise wait one (possibly low-power-capped) frame before pending replay work — the
+## workspace mirror's full re-open — is accounted (review finding).
+signal ready_advanced
+
 
 func _ready() -> void:
     var tree: SceneTree = get_tree()
@@ -126,6 +133,26 @@ func path_to_uri(absolute: String) -> String:
     for part in parts:
         encoded.append(part.uri_encode())
     return "file:///" + "/".join(encoded)
+
+
+## Inverse of `path_to_uri`: decodes the `file:///` dialect back to an absolute
+## filesystem path ("" for foreign URIs). `path_to_uri` strips leading slashes, so the
+## leading "/" is restored for anything that is not a Windows drive path (`E:/...` keeps
+## no leading slash; `/home/...` gets it back). Only the EMPTY-AUTHORITY dialect is
+## accepted: that is the only form this client emits and the only form the 4.5 GDScript
+## server returns (`gdscript_workspace.cpp::get_file_uri` hardcodes `file:///`), so a
+## `file://host/...` URI can never arrive from either peer.
+func path_from_uri(uri: String) -> String:
+    if not uri.begins_with("file:///"):
+        return ""
+    var rest: String = uri.substr("file:///".length())
+    var decoded := PackedStringArray()
+    for part in rest.split("/"):
+        decoded.append(part.uri_decode())
+    var joined: String = "/".join(decoded)
+    if joined.length() > 1 and joined.unicode_at(1) == 58:  # 'X:' drive letter
+        return joined
+    return "/" + joined
 
 
 func get_state() -> int:
@@ -198,9 +225,21 @@ func change_document(uri: String, text: String) -> int:
     return generation
 
 
+## Closes a document (didClose when it is open on a live connection) and clears every
+## piece of per-URI state. A FAILED didClose send tears the connection down — the same
+## contract as didOpen/didChange: a broken protocol stream must be rebuilt through a
+## fresh handshake (and a full document-set replay) instead of silently diverging from
+## the server's open set (review finding).
 func close_document(uri: String) -> void:
     if _state == STATE_READY and _open_docs.has(uri):
-        _send_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
+        if not _send_notification("textDocument/didClose", {"textDocument": {"uri": uri}}):
+            _open_docs.erase(uri)
+            _sent_texts.erase(uri)
+            _pending_gens.erase(uri)
+            _diag_cache.erase(uri)
+            _diag_gen.erase(uri)
+            _disconnect("didClose send failed")
+            return
     _open_docs.erase(uri)
     _sent_texts.erase(uri)
     _pending_gens.erase(uri)
@@ -564,6 +603,7 @@ func _complete_handshake(response: Variant) -> void:
         return
     _state = STATE_READY
     _ready_epoch += 1
+    ready_advanced.emit()
     _retry_delay_msec = RETRY_INITIAL_MSEC
     # Note: `_last_error` is deliberately NOT cleared here — it records the most recent
     # failure for diagnostics; clearing on success would erase the evidence of the drop

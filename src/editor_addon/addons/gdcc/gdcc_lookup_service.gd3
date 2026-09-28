@@ -1,0 +1,75 @@
+@tool
+class_name GdccLookupService
+extends Node
+
+## LSP-backed symbol lookup slice (plan §7 Phase 9 `_lookup_code`), child feature of
+## `GdccEditorService`. Stateless like the completion slice: the whole flow runs INLINE
+## inside the language's `_lookup_code` on the editor UI thread — the document full-sync
+## lands on the shared connection first (FIFO, so hover/definition see the text that
+## produced the request position) and `GdccLspClient.request_blocking` then pumps the
+## socket inline with hard deadlines. No tick line, no busy term, no outage hooks: there
+## is no frame-driven work to coordinate and no state to invalidate.
+##
+## Hover is requested first (it feeds the tooltip, the more frequent path); definition
+## follows on the same position. A hover failure fails the whole answer (nothing useful
+## remains), while a definition failure after a successful hover degrades to hover-only:
+## the blocking contract may have torn the connection down, but the hover payload stays
+## valid and is still worth a tooltip. The 200ms per-request budget keeps the worst-case
+## UI stall in the same league as completion's 400ms (plan §4.3) — hover is
+## pointer-driven and fires repeatedly.
+
+# A var, not a const: class-level const is outside gdcc's bootstrap MVP.
+var LOOKUP_TIMEOUT_MSEC: int = 200
+
+var service: GdccEditorService = null
+
+
+func bind_service(owner: GdccEditorService) -> void:
+    service = owner
+
+
+## Syncs `text` for `path` and issues bounded `textDocument/hover` +
+## `textDocument/definition` requests at the 0-based code-point position (`line`, `col`).
+## Returns `{"ok": true, "hover": Variant, "definition": Variant, "definition_ok": bool}`
+## with the raw LSP payloads unmapped (definition is null when that leg failed or
+## answered nothing; `definition_ok` distinguishes the two) — the language maps results
+## into the engine LookupResult dictionary and degrades everything else. Preconditions
+## (service ACTIVE, LSP handshake-verified READY, server in thread mode) are enforced by
+## the service facade BEFORE delegation.
+func request_lookup(path: String, text: String, line: int, col: int) -> Dictionary:
+    var client: GdccLspClient = service.get_lsp_client()
+    if client == null:
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "LSP client missing"}}
+    var uri: String = service.lsp_uri_for(path)
+    if uri == "":
+        # Non-project buffers (unsaved, user://) have no server-side URI dialect mapping.
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "non-project path: " + path}}
+    var generation: int = client.sync_document(uri, text)
+    if generation < 0:
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "LSP sync failed: " + path}}
+    # The sync's diagnostics generation stays queued and binds normally when the server
+    # publishes — it feeds the validate channel for free; lookup itself never waits for
+    # diagnostics, only for its own request ids.
+    var params: Dictionary = {
+        "textDocument": {"uri": uri},
+        "position": {"line": line, "character": col},
+    }
+    var hover_response: Dictionary = client.request_blocking("textDocument/hover", params, LOOKUP_TIMEOUT_MSEC)
+    if hover_response.get("ok") != true:
+        return {"ok": false, "error": hover_response.get("error")}
+    var definition: Variant = null
+    var definition_ok: bool = false
+    if client.is_ready():
+        var definition_response: Dictionary = client.request_blocking(
+                "textDocument/definition", params, LOOKUP_TIMEOUT_MSEC)
+        definition_ok = definition_response.get("ok") == true
+        if definition_ok:
+            definition = definition_response.get("result")
+    # `definition_ok` rides along for observability: a null definition with
+    # `definition_ok == true` is the server's "no definition found", while
+    # `definition_ok == false` is a leg failure — callers asserting "unknown symbol"
+    # must not confuse the two (review finding).
+    return {
+        "ok": true, "hover": hover_response.get("result"),
+        "definition": definition, "definition_ok": definition_ok,
+    }

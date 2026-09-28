@@ -13,8 +13,12 @@
   **Phase 2 已实施并通过自动化验收**；**Phase 3 已实施并通过自动化验收**；
   **Phase 4 已实施并通过自动化验收**；**Phase 5 已实施并通过自动化验收**；
   **Phase 6–7 已实施并通过自动化验收**（2026-09-28，含引擎端到端用例
-  `class_name_erasure` 13 步全绿）；**Phase 8 已规划、尚未实施**；
-  **Phase 9（原 Phase 5 打磨）尚未实施**；已经过多轮并行评审并修订）
+  `class_name_erasure` 13 步全绿）；**Phase 8 已实施并通过自动化验收**（2026-09-28，
+  引擎用例 `lsp_workspace` 14 步全绿）；**Phase 9（原 Phase 5 打磨）部分实施**：
+  `_lookup_code` 与 `_auto_indent_code` 已实施并通过自动化验收（2026-09-28，引擎
+  用例 `lsp_lookup` 15 步 / `auto_indent` 8 步全绿），`_get_global_class_name`
+  （Stage C 暂缓）、模板、`--lsp-port` 设置项尚未实施；**Phase 10（编译工作流：
+  `module.copy` + 编译副本）已规划、尚未实施**；已经过多轮并行评审并修订）
 - 更新日期：2026-09-28
 - 2026-09-27 修订：`launch_bad` 引擎测试断言接受平台分叉的两种 launcher 失败报告
   （Windows 同步 `OS.create_process failed` / Unix-like fork 成功后子进程 execvp
@@ -743,6 +747,182 @@
       `doc/module_impl/backend/godot_binding_implementation.md` 中"error path 不得
       destroy"的旧契约表述已改写为与引擎一致（总是构造、每路恰销毁一次）。
     - **最终结论：review-expert-a 与 review-expert-c 双双 APPROVE。**
+- Phase 8 验收结果（2026-09-28，自动化项全绿，手动项待 §8.3）：
+  - 实施按 §7 Phase 8 落地：新增常驻子节点 `GdccWorkspaceMirror`
+    （`gdcc_workspace_mirror.gd3`），服务根接线（install 构建块、`service_tick` 于
+    scheduler 之后、`busy_wanted` 聚合项、`notify_filesystem_changed` 同源转发、
+    `service_shutdown`、访问器与页头清单）；reconciler 新增公共包装
+    `project_gd3_files()` 供镜像复用同一磁盘遍历（"镜像直接复用"的设计意图）。
+  - 镜像语义：LSP READY epoch 变化即全量重放（清 `_mirrored` 与发送队列并重扫）；
+    文本经 Phase 7 `lsp_safe_text` 在发送时求值（决策翻转不会带出陈旧视图）；
+    registry 路径按内容版本逐帧比对（无 syscall），纯磁盘路径仅在事件驱动扫描时
+    比对文本；每帧 8 条发送预算；发送失败清空队列由 epoch 重放接管（不重复入队）。
+    评审后加固：待发送队列为 FIFO(队头索引+摊销压缩)+字典结构且 sync 意图不携带
+    文本——出队时经 `_resolve_current_text` 重解析（`_disk_seen` 已消失且通过关闭
+    决策的路径直接判失、registry 优先、磁盘兜底、双双缺失即丢弃），close 意图
+    发送时同样重判（文件已复现或保留规则成立则改排 sync），排队期间的新编辑/
+    删除/复建/页签开合永远不会带出陈旧内容、复活已删文件或误关已恢复文件；
+    镜像自维护 `_disk_seen` 磁盘来源与 `_disk_texts` 末次磁盘文本（registry 的
+    disk-known 被模块门控、dirty 语义是"待分析"而非"未保存编辑"，均不可用作
+    判据），关闭决策统一走 `_should_close`：**任一已打开页签持有该路径**（服务
+    新门面 `is_path_open_in_editor`，页签自己的 `_validate` 会持续刷新 LSP 副
+    本）、registry 文本与末次磁盘文本**确实不一致**（真正的未保存编辑）、或镜像
+    从未在磁盘见过该路径（纯缓冲区新文件）时保留，其余删除一律 didClose；共享
+    客户端被其他功能外部关闭的镜像文档经逐帧 `document_version_for` 核对自愈重开；
+    `busy_wanted` 计入未处理的 READY epoch，且客户端新增 `ready_advanced` 信号在
+    READY 跃迁沿即时触发 `refresh_busy`（低功耗窗口内重放不被饿死）。
+  - 共享客户端契约修订（评审后）：`close_document` 的 didClose 发送失败与
+    didOpen/didChange 同款——断连重建（原先无条件擦除本地态会让客户端/服务端
+    打开集静默分叉）；线程模式复探测的探针文档改到 `res://.godot/` 下（点目录不
+    入双方扫描，根除与真实项目文件撞路径的类别）。
+  - 实现偏差（相对 §7 Phase 8 设计，按事实源口径记录）：镜像不依赖 reconciler 的
+    磁盘采用结果——reconciler 的采用被模块就绪门控，无 gdcc 服务时 registry 永远
+    学不到未打开文件，而跨文件 hover/定义必须在无 gdcc 服务时可用；故镜像自行做
+    事件驱动磁盘扫描（复用 reconciler 的遍历函数），纯磁盘路径直接读盘且永不标脏。
+  - `EditorAddonScriptLanguageEngineTest` 新增 `lsp_workspace` 用例（14 步全绿）：
+    `mirror_waits_for_ready`（负例：客户端指向死端口时无任何 didOpen）；
+    `mirror_initial_sync`（未打开的 `.gd3` 进入服务端文档集——`documentSymbol` 返回
+    其方法名，另有客户端发送文本探针钉住所发内容）；`mirror_buffer_wins`
+    （未保存缓冲区经 `notify_source_changed` 覆盖磁盘文本）；`mirror_disk_refresh`
+    （磁盘变更经 filesystem_changed 扫描刷新，新符号服务端可见）；
+    `mirror_delete_close`（删除后 didClose，客户端打开态归零）；
+    `mirror_tombstone_recreated`（模拟 tombstone 残留 + 文件复建：30 帧静默窗口内
+    LSP 文档版本不得前进，钉死每帧 close→sync 转换循环）；
+    `validate_budget_during_bulk`（40 文件批量同步期间持续计时 `_validate` 直至镜像
+    队列排空——逐次 < 400ms（客户端 150ms 内联等待水位线 + 调度/解析余量），
+    `budget_overlap` 证明测量横跨 drain，末尾逐个确认 40 个 URI 全部镜像——错误
+    仍锚定第 3 行，通知洪峰不破坏 generation 绑定）；`mirror_reconnect_replay`
+    （强制断连重连后 epoch 递增，全量重放且缓冲区文本仍为准）。
+  - 回归：`EditorAddonScriptLanguageAnalysisTest` 全绿（新 `.gd3` 经目录扫描自动
+    纳入整模块 analyze+lowering）。
+- Phase 9 `_lookup_code` 验收结果（2026-09-28，自动化项全绿）：
+  - 实施：新增无状态子节点 `GdccLookupService`（`gdcc_lookup_service.gd3`：全量同步
+    + hover/definition 各 200ms 有界阻塞；hover 先答——悬浮是更高频路径，
+    definition 腿失败降级为 hover-only，hover 腿失败整体降级）；服务根
+    `request_lookup` 门面（ACTIVE + READY + thread-mode 守卫，与 completion 同款）
+    与 `lsp_path_from_uri`（客户端 `path_from_uri` 方言逆映射 + `localize_path`）；
+    语言侧 `_lookup_code` 负责哨兵定位（4.5 全部编辑器调用路径均经
+    `get_text_with_cursor_char`/`get_text_for_symbol_lookup` 携带 0xFFFF 哨兵）、
+    无哨兵整词回退（跳过注释尾）、0 基码点行列计算、Phase 7 视图前向映射与
+    LSP → 引擎 LookupResult 字典映射（"服务给裸数据、语言做映射"分工不变）。
+  - 关键引擎事实（4.5 源码核实）：适配器强制 `result` 与 `type` 两键（缺一即
+    ERR_UNAVAILABLE）；`LookupResultType` 枚举 SCRIPT_LOCATION=0…LOCAL_VARIABLE=10；
+    LSP 线路无结构化符号 kind，LOCAL_VARIABLE 是唯一同时喂饱悬浮 tooltip
+    （`description` 进入 tooltip 负载）与位置导航（`_lookup_symbol` 在
+    `class_name` 为空时对任何 `location >= 0` 导航）的类型；`location` 为 1 基
+    （引擎以 `location - 1` 跳转）；跨文件目标必须附 `script` 资源，否则引擎会在
+    当前页签内跳行。评审后收紧 OK 判定：description 为空**且** definition 不可
+    导航（目标不出项目、无有效起始行、或跨文件 Script 加载失败）时一律降级——
+    不允许"无提示也不可跳转"的假成功；返回范围的列不做 Phase 7 反向映射（契约
+    只消费行号，擦除两形态均不改变行数，已钉入 `_lookup_result` 注释）。
+  - 实现偏差与实证（按事实源口径记录）：跨文件解析**只**经 path-based extends
+    工作——4.5 服务器的全局类名解析读引擎 ScriptServer 表，`.gd3` 类不入表（该
+    注册属暂缓的 Stage C `_get_global_class_name`）；extends 路径经解析器依赖
+    加载解析，由 Phase 8 镜像的 didOpen 供数。负例步骤 `lookup_class_name_gap`
+    把 class_name 跨文件降级钉为该边界的文档化锚点。
+  - `EditorAddonScriptLanguageEngineTest` 新增 `lsp_lookup` 用例（15 步全绿）：
+    `lookup_degraded`（客户端未 READY 的同步拒绝）；`lookup_whitebox`（hover
+    文本抽取覆盖 MarkupContent/旧 MarkedString 各形、首个可用 Location 覆盖
+    bare/array/LocationLink 各形、URI 方言往返、整词回退的边界/注释尾/后缀碰撞）；
+    `lookup_local_method`（同文件：OK、type 10、description 非空、location 3、
+    无 `script` 键）；`lookup_cross_file`（path-extends 继承方法：provider Script
+    资源 + 路径 + location 3）；`lookup_class_name_gap`（负例，见上）；
+    `lookup_cjk`（emoji 在哨兵前仍解析，R11 码点锚）；`lookup_unknown_symbol` 与
+    `lookup_class_name_gap`（两个负例均为三段式：服务端分析器报出的"标识符未
+    声明"错误证明文档已解析且符号未解析（documentSymbol 对含错误文档不返符号，
+    实施期实证）、raw 响应双腿 ok（`definition_ok`）+空结果、对已核实 raw 响应
+    白盒断言 `_lookup_result` 降级 + 端到端降级补充）；`lookup_no_sentinel_fallback`
+    （无哨兵整词回退仍 OK）；`lookup_disabled_safe`（禁用后常驻语言安全应答）。
+  - 回归：`EditorAddonScriptLanguageAnalysisTest` 全绿（期间暴露并修复一处
+    前端限制：`String.join` 仅支持 `PackedStringArray` 重载，普通 Array 报
+    NO_APPLICABLE_OVERLOAD）。
+- Phase 9 `_auto_indent_code` 验收结果（2026-09-28，自动化项全绿，手动对照待 §8.3）：
+  - 实施：**逐字镜像** 4.5 GDScript 参考算法
+    （`GDScriptLanguage::auto_indent_code`，gdscript_editor.cpp）于语言类内：嵌套
+    完全由前行非空非注释行的前导空白宽度栈推导（不看冒号/括号——计划条文"冒号
+    后增缩进等最小规则"是松描述，参考实现即最小规则本身）；`from_line` 起各行
+    重写为 缩进单元×栈深 + 去空白内容；空行与 `#` 注释行逐字节透传且不入栈；
+    退阶落在两个栈宽度之间时按引擎"not right but gets the job done"怪癖压为新
+    一级；`from_line > to_line` 病态区间触发引擎提前 break 怪癖（输出恒等）。
+    缩进单元经服务门面 `editor_indent_unit()` 镜像
+    `GDScriptLanguage::_get_indentation`（`indent/type` 选 Spaces 时按
+    `indent/size` 重复空格，否则单个制表符；未安装时恒为制表符——引擎非编辑器
+    分支）。契约级约束已钉入注释：适配器把虚函数返回**无条件**写回缓冲区，实现
+    缺失/失败会清空用户代码，故实现必须是全函数。
+  - `EditorAddonScriptLanguageEngineTest` 新增 `auto_indent` 用例（8 步全绿，无需
+    LSP）：`indent_tabs_basic`（空白栈嵌套→制表符精确输出）；
+    `indent_blank_comment_preserved`（注释行自带缩进不加深后续行、空栈退阶落
+    0）；`indent_dedent_stack_quirk`（6 空格落在 [4,8] 之间→深度 2 的怪癖锚）；
+    `indent_from_line_gate`（from_line 前原文保留但仍喂栈）；`indent_spaces_setting`
+    （`indent/type`/`size` 切换为空格单元并复原）；`indent_inverted_range`
+    （from>to 恒等负例）。
+- Phase 8+9 评审记录（2026-09-28，review-expert-a + review-expert-c 并行评审，修复后
+  全套 6 类 34 项复测通过）：
+  - 采纳并修复：
+    1.（高，a/c 共识）镜像 didClose 与共享文档冲突及删除检测不可靠：打开页签未
+       登记、脏缓冲区、模块离线时的保留规则缺失；待发送队列可携带陈旧文本或复活
+       已删文件；共享客户端被外部 close 不可感知。修复：`_should_close` 统一关闭
+       决策（任一打开页签持有/脏缓冲区/纯缓冲区均保留，服务新门面
+       `is_path_open_in_editor`）；镜像自维护 `_disk_seen` 磁盘来源（registry 的
+       disk-known 被模块门控不可靠）；sync 意图出队时经 `_resolve_current_text`
+       重解析（registry 优先、磁盘兜底、双缺失即丢弃并转关闭决策）；外部 close
+       经逐帧 `document_version_for` 核对自愈重开。
+    2.（中，c）无效 definition 产出"无提示也不可导航"的假 OK。修复：先判可用性
+       再定 OK（详见 `_lookup_code` 验收记录的收紧条目）。
+    3.（中，c）READY epoch 未处理期间 busy 空窗（低功耗窗口内重放可被饿死）。
+       修复：`busy_wanted` 计入未处理 epoch。
+    4.（中，c）批量建队线性去重 O(N²)。修复：FIFO+字典 O(1) 结构；扫描对新路径
+       不再预读文本（统一出队时解析）。
+    5.（中，a）`close_document` 不检查 didClose 发送失败，客户端/服务端打开集可
+       静默分叉。修复：与 didOpen/didChange 同款断连重建契约；线程复探测探针
+       文档改到 `res://.godot/` 下（点目录不入双方扫描，根除撞路径类别）。
+    6.（中，a/c 共识）两个 lookup 负例与批量预算步断言空泛（基础设施失败也能
+       通过）。修复：负例改两段式（服务门面直连请求证明 ok+空结果 + 语言降级
+       形状）；预算步收紧到逐次 < 400ms（150ms 水位线 + 余量）并补批量镜像
+       完成证据。
+  - 驳回（附证据，评审复核时已接受）："擦除 `class_name X extends Y` 行的
+    definition 列未反向映射"不构成缺陷——LookupResult 契约只消费行号
+    （`_lookup_symbol`/`goto_line_centered` 以 `location - 1` 跳行，无任何列
+    消费路径），而擦除两种形态（等长空白/同行前缀移除）均不改变行数，列偏移无
+    观测效应；已在 `_lookup_result` 注释钉明。
+  - 保留（较大架构改造，待确认后另行安排）：超大项目下的可续跑目录遍历与分帧
+    漂移读盘——当前每次扫描事件在单帧内完成目录遍历与已镜像纯磁盘文件的文本
+    比对，典型项目可接受。
+  - 第二轮复核采纳并修复（两名评审独立复核上述修复后提出，全套 6 类 34 项复测
+    通过）：
+    1.（高，a/c 共识）已入队的 close 发送时不再重判：同内容复建或页签后开会
+       被误关且自愈接不上（`_mirrored` 已擦除）。修复：close 意图出队时重判
+       （文件复现或保留规则成立→改排 sync）。
+    2.（中，c）`registry.is_dirty` 语义是"待分析"而非"未保存编辑"，离线时
+       未编辑文件会永久保留。修复：镜像维护 `_disk_texts` 末次磁盘文本，未保存
+       编辑判据改为 registry 文本 ≠ 末次磁盘文本。
+    3.（中，c）`_resolve_current_text` 仅凭 registry 项可复活已删文件。修复：
+       `_disk_seen` 已消失且通过关闭决策的路径先行判失。
+    4.（中，c）`remove_at(0)` 出队使批量重放 O(N²)。修复：队头索引消费 + 摊销
+       压缩。
+    5.（中，a/c 共识）负例仍无法区分 definition 腿失败与服务端未解析；批量步
+       未覆盖完整 drain。修复：lookup 服务响应新增 `definition_ok` 观测键；两个
+       负例改三段式（文档已解析且符号未解析——以服务端分析器报出的"标识符未
+       声明"错误为证（documentSymbol 对含错误文档不返符号，此为实施期实证）、
+       双腿 ok+空结果、语言降级）；批量步持续计时 `_validate` 直至镜像队列排
+       空（`budget_overlap` 证明测量横跨 drain），并逐个确认 40 个 URI 全部镜像。
+    6.（中，c）READY 跃迁沿无 busy 重算（低功耗下多等一帧）。修复：客户端新增
+       `ready_advanced` 信号，服务接入 `refresh_busy`；epoch 比较保留为状态兜底。
+  - 第三轮复核（2026-09-28）：review-expert-a **APPROVE**（无遗留）；review-expert-c
+    提出两项中危，修复后复核 **APPROVE**：
+    1.（中）tombstone 残留与文件复建交错：reconciler 的 tombstone 解除被模块门控，
+       离线期间复建文件会让逐帧 tombstone 分支与出队重判互相打架——close 入队、
+       发送时改 sync、下一帧再入队，每帧一次全量 didChange。修复：逐帧 tombstone
+       分支先查磁盘存在性，存在即落入正常 heal/漂移流程。行为锚点：
+       `lsp_workspace` 新增 `mirror_tombstone_recreated` 步骤（模拟 tombstone 后
+       30 帧静默窗口内 LSP 文档版本不得前进），`lsp_workspace` 现为 14 步。
+    2.（中）负例的语言层降级可能来自第二次请求的基础设施失败而非映射结果。修复：
+       对已核实的 raw 响应直接白盒断言 `_lookup_result` 产出双键降级形状，端到端
+       调用保留为补充。
+  - 第三轮复核附随修正（c 最终确认时指出）：状态区与 Phase 8 记录的 `lsp_workspace`
+    步数与批量步口径已按实际断言更正（14 步、逐个确认 40 个 URI）。
+  - **最终结论：review-expert-a 与 review-expert-c 双双 APPROVE；全套 6 类 34 项
+    （含引擎 17 用例）复测通过、零跳过。**
 - 范围：
   - `src/editor_addon/addons/gdcc/**`（新增 `.gd3` 源文件 + `server_launcher.gd` +
     `plugin.gd`/`gdcc_dock.gd` 接线）
@@ -1907,7 +2087,7 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
   正则陷阱（注释/多行字符串内的 `class_name` 文本不误命中）。
 - 手动：编译→安装→继续编辑全流程中编辑器无伪错误、gdcc 错误正常显示、补全可用。
 
-### Phase 8：LSP workspace 镜像
+### Phase 8：LSP workspace 镜像 ✅（2026-09-28 自动化验收通过，手动项待 §8.3）
 
 背景：GDScript LSP 的 workspace 磁盘扫描只收 `.gd`（`gdscript_workspace.cpp` 的
 `list_script_files`），`.gd3` 仅经客户端 didOpen 进入解析缓存；该缓存服务于
@@ -1940,9 +2120,13 @@ hover/定义跳转的数据面。reconciler 已有全项目 `.gd3` 磁盘扫描�
 
 ### Phase 9：打磨（可并行子项，各自独立验收）
 
-- `_lookup_code`：LSP `hover`/`definition` → 悬浮文档与跳转；验收：引擎测试断言对
-  已知符号返回 `result == OK`、`type` 合理。
-- `_auto_indent_code`：冒号后增缩进等最小规则；验收：编辑器内手动对照。
+- `_lookup_code` ✅（2026-09-28 自动化验收通过）：LSP `hover`/`definition` → 悬浮
+  文档与跳转；验收：引擎测试断言对已知符号返回 `result == OK`、`type` 合理
+  （`lsp_lookup` 15 步，含跨文件/降级/回退正反锚点；跨文件 `class_name` 解析为
+  Stage C 边界，见该用例 `lookup_class_name_gap` 负例）。
+- `_auto_indent_code` ✅（2026-09-28 自动化验收通过）：逐字镜像 4.5 GDScript 参考
+  算法（空白宽度栈嵌套；计划条文的"冒号后增缩进等最小规则"即该参考实现）；验收：
+  `auto_indent` 8 步精确输出锚点全绿 + 编辑器内手动对照（待 §8.3）。
 - `_get_global_class_name`（**Stage C，暂缓**）：行扫描解析 `class_name`/`extends`
   返回字典。已核实的实施约束：(a) **必须同批**实现 `GdccScript` 成员内省虚函数
   （`_get_script_method_list`/`_get_script_property_list`/`_get_script_signal_list`/
@@ -1963,6 +2147,59 @@ hover/定义跳转的数据面。reconciler 已有全项目 `.gd3` 磁盘扫描�
   "创建脚本"对话框的语言下拉不会列出 GD3（§2.1 已知限制），`.gd3` 新建入口改为
   dock 按钮或在文件面板外创建。
 - `--lsp-port`/host 手动覆盖设置项（dock 状态行已前移至 Phase 5 第 2 项）。
+
+### Phase 10：编译工作流（`module.copy` + 编译副本）
+
+背景：dock 的 Upload 按钮只上传当前页签单文件且 VFS 路径为 `/src/<basename>`
+（同名互相覆盖、丢失完整 `source_path` 映射），"忘记先上传"是常态错误；而
+reconciler 自 Phase 3 起已把全项目自动同步进私有诊断模块。2026-09-28 三方案
+调研（含服务端代码实证）：A（第二模块持续同步）双份流量 + 双套生命周期；B
+（直编诊断模块）编译持门冻结诊断（≤120s）且打破所有权隔离；**D（服务端模块
+复制 + 编译副本）零额外同步流量、诊断不冻结、所有权隔离不破、编译输入为显式
+一致快照**——采纳 D。服务端可行性实证：`ModuleState` 无分析缓存
+（analyze/compile 每次自冻结源码快照重建），模块 = VFS 树 + CompileOptions +
+顶层类名映射 + 运行态（lastCompileResult/输出发布/任务槽）；VFS 目录节点可
+变、叶子节点不可变（内存 String），复制 = 新根 + 递归新目录节点 + 共享叶子，
+纯内存操作。
+实施：
+1. 服务端 `module.copy` RPC：`API.copyModule(sourceModuleId, newModuleId)` 持有
+   **源模块门**完成整份快照（VFS + options + 类名映射一次性一致；经
+   `runExclusive` 排在在途操作之后——禁止多次 RPC 读拼快照的混合时间态）；
+   复制 VFS（新目录节点、共享不可变叶子并保留
+   displayPath/absolutePath/updatedAt）、CompileOptions、顶层类名映射、
+   moduleName；**不复制运行态**（lastCompileResult = null、输出发布清零、任
+   务槽空闲）；`freezeCompileRequest` 按 moduleId 派生逻辑路径，副本必须是全
+   新 `ModuleState`。错误：目标已存在 -32001、源缺失 -32000、源忙按既有门语
+   义等待（不新增忙失败）。注册面：`JsonRpcMethodRegistry` + `RpcParams`
+   record + 错误映射（路由 26→27）；事实源同步：
+   `json_rpc_service_implementation.md` §2.2 方法表与计数/§5 测试锚点/状态与
+   变更记录，`rpc_api_implementation.md` §3.1/§4.1/§8。
+2. dock 改造（Compile 流程）：从服务取诊断模块 id 并就绪校验 → 经 dock 自有
+   RPC 客户端（与诊断流量分队列的既有设计）`module.copy(诊断id, 副本id)` →
+   `options.set` 重写 `projectPath`（`res://.godot/gdcc/<副本id>`，与诊断模块
+   的宿主目录隔离）→ `compile.start` → 现有轮询；再次编译命中 -32001 → 删除
+   旧副本后重新复制（永远编译最新快照）。副本 id 约定
+   `gdcc_editor_compile_<projectRootHash>_<pid>`（pid 作用域与诊断模块同款，
+   崩溃残留随服务进程消亡、启动期 -32001 重建自愈）；插件卸载时删除本进程创
+   建的副本。删除 Upload 按钮与 `_on_upload_script_pressed`；
+   `auto_setup_module` 简化为仅确保服务可达（launcher），其模块创建/options
+   写入逻辑移除（Compile 路径自给自足）；Analyze 保留为检查口（作用于副本或
+   诊断模块，实施时定）；旧服务端无此方法（-32601）时报错提示升级服务端，
+   不回退有损的手动上传路径。
+3. 服务端测试：API 层（复制保真——内容/displayPath/absolutePath/updatedAt/
+   options/类名映射逐项相等；运行态重置逐项为初始；目标存在 -32001；源缺失
+   -32000；复制后源继续写不污染副本（目录节点独立）；副本经 RecordingCompiler
+   编译成功）；RPC 层（dispatcher 错误码与路由数 27、codec wire 形状、HTTP
+   工作流 create→put→copy→options.set→analyze→delete 且双模块操作互不阻塞）。
+4. 引擎测试：dock Compile 全流程（真实 gdcc RPC 服务：诊断模块自动同步后触发
+   Compile → 副本编译成功并产出扩展；编译期间 `_validate` 诊断照常浮现——不
+   冻结锚点；再次编译走 -32001 删除重复制路径）。
+验收：
+- 自动化：上述服务端单测/RPC 测试 + 引擎用例全绿；编辑器既有全套回归无回归。
+- 手动：dock 无 Upload 按钮；编译期间编辑器诊断/补全/hover 照常；编译产物与
+  诊断模块互不影响。
+非目标：不引入第二个持续同步模块；编译仍为显式手动动作（不自动触发）；副本
+  的安装/热重载流程不在本阶段。
 
 ---
 
