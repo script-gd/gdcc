@@ -173,23 +173,62 @@ public final class EditorAddonProjectInstaller {
                 // VFS layout contract: every addon source sits at /src/<file name>.gd3.
                 api.putFile(MODULE_ID, "/src/" + source.getFileName().toString(), Files.readString(source));
             }
-            var taskId = api.compile(MODULE_ID);
-            var deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(COMPILE_TIMEOUT_MINUTES);
-            while (System.nanoTime() < deadline) {
-                var snapshot = api.getCompileTask(taskId);
-                if (snapshot.completed()) {
-                    return Objects.requireNonNull(snapshot.result());
-                }
-                try {
-                    //noinspection BusyWait
-                    Thread.sleep(250);
-                } catch (InterruptedException exception) {
-                    Thread.currentThread().interrupt();
-                    throw new AssertionError("Interrupted while waiting for the client library build");
-                }
-            }
-            throw new AssertionError("Client library build did not complete within the deadline");
+            return awaitCompile(api, api.compile(MODULE_ID));
         }
+    }
+
+    /// One fixture source for `compileFixtureLibrary`: VFS placement plus the caller-facing
+    /// labels that Phase 6 class metadata is built from.
+    record FixtureSource(
+            String virtualPath,
+            String displayPath,
+            String absolutePath,
+            String source
+    ) {
+    }
+
+    /// Compiles an arbitrary fixture source set into a native GDExtension library — the
+    /// per-case counterpart of `compileClientLibrary` (engine tests that need a compiled class
+    /// with a source path pointing INTO their case project copy, e.g. the Phase 7 erasure
+    /// fixture, cannot reuse the once-per-suite addon build).
+    static CompileResult compileFixtureLibrary(
+            Path projectPath,
+            TargetPlatform targetPlatform,
+            String moduleId,
+            String moduleName,
+            List<FixtureSource> sources
+    ) {
+        try (var api = new API()) {
+            api.createModule(moduleId, moduleName);
+            api.setCompileOptions(moduleId, new CompileOptions(
+                    GodotVersion.V451, projectPath.toAbsolutePath(),
+                    COptimizationLevel.DEBUG, targetPlatform,
+                    false, CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT));
+            for (var fixture : sources) {
+                api.putFile(
+                        moduleId, fixture.virtualPath(), fixture.source(),
+                        fixture.displayPath(), fixture.absolutePath());
+            }
+            return awaitCompile(api, api.compile(moduleId));
+        }
+    }
+
+    private static CompileResult awaitCompile(API api, long taskId) {
+        var deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(COMPILE_TIMEOUT_MINUTES);
+        while (System.nanoTime() < deadline) {
+            var snapshot = api.getCompileTask(taskId);
+            if (snapshot.completed()) {
+                return Objects.requireNonNull(snapshot.result());
+            }
+            try {
+                //noinspection BusyWait
+                Thread.sleep(250);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("Interrupted while waiting for the client library build");
+            }
+        }
+        throw new AssertionError("Client library build did not complete within the deadline");
     }
 
     /// Every `.gd3` source file of the addon (sorted by file name for a stable VFS layout).

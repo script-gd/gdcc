@@ -65,6 +65,10 @@ var _next_generation: int = 1
 # URI → LSP document version. Server-side documents die with the connection, so this map
 # is cleared on disconnect and the next `sync_document` re-opens the document.
 var _open_docs: Dictionary = {}
+# URI → text of the last didOpen/didChange actually sent (test/diagnostic observability —
+# e.g. the Phase 7 flip steps assert the re-synced VIEW content, not just that a sync
+# happened). Same lifetime as `_open_docs`.
+var _sent_texts: Dictionary = {}
 # URI → FIFO of generations sent via didOpen/didChange and not yet answered.
 var _pending_gens: Dictionary = {}
 # URI → latest raw LSP diagnostic array; survives disconnects as the stale fallback.
@@ -168,6 +172,7 @@ func open_document(uri: String, text: String) -> int:
         _pop_generation(uri, generation)
         _disconnect("didOpen send failed")
         return -1
+    _sent_texts[uri] = text
     return generation
 
 
@@ -189,6 +194,7 @@ func change_document(uri: String, text: String) -> int:
         _pop_generation(uri, generation)
         _disconnect("didChange send failed")
         return -1
+    _sent_texts[uri] = text
     return generation
 
 
@@ -196,9 +202,22 @@ func close_document(uri: String) -> void:
     if _state == STATE_READY and _open_docs.has(uri):
         _send_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
     _open_docs.erase(uri)
+    _sent_texts.erase(uri)
     _pending_gens.erase(uri)
     _diag_cache.erase(uri)
     _diag_gen.erase(uri)
+
+
+## The LSP document version currently held for `uri` (-1 when not open). Test/diagnostic
+## observability: a re-sync bumps the version, so callers can prove a document was re-sent
+## (e.g. the Phase 7 decision-flip re-sync) without intercepting the wire.
+func document_version_for(uri: String) -> int:
+    return int(_open_docs.get(uri, -1))
+
+
+## The exact text of the last didOpen/didChange sent for `uri` ("" when never synced).
+func debug_sent_text(uri: String) -> String:
+    return str(_sent_texts.get(uri, ""))
 
 
 ## Latest cached raw LSP diagnostics for the URI (possibly stale); empty when unknown.
@@ -384,6 +403,7 @@ func _disconnect(reason: String) -> void:
     _pending.clear()
     _pending_gens.clear()
     _open_docs.clear()
+    _sent_texts.clear()
     _diag_gen.clear()
     _diag_history.clear()
     _handshake_pending = false

@@ -275,7 +275,13 @@ class CCodegenEngineMethodBindHeaderTest {
                 "(GDExtensionInt)1721LL"
         );
         assertFalse(newHeader.contains("(GDExtensionInt)72LL"), newHeader);
-        assertEquals(oldEntry, newEntry);
+        // The Phase 6 `_gdcc_get_metadata` payload embeds a wall-clock `compiled_at`, so the
+        // stability contract is asserted modulo that single known-varying field.
+        assertEquals(normalizeCompiledAt(oldEntry), normalizeCompiledAt(newEntry));
+    }
+
+    private static String normalizeCompiledAt(String entryC) {
+        return entryC.replaceAll("compiled_at\\\\\":\\\\\"[^\\\\\"]+", "compiled_at\\\\\":\\\\\"<ts>");
     }
 
     @Test
@@ -617,13 +623,17 @@ class CCodegenEngineMethodBindHeaderTest {
                 "const godot_int fixed_argc = (godot_int)2;",
                 "GDExtensionConstVariantPtr final_args[2 + argc];",
                 "final_args[fixed_argc + i] = argv[i];",
-                "// object_method_bind_call constructs into raw Variant storage; error paths must not destroy it.",
+                // The engine ALWAYS placement-constructs the call's return Variant (4.5
+                // gdextension_interface.cpp), even on call errors — so the generated helper
+                // must flag it initialized right after the call and destroy it at cleanup.
+                "// object_method_bind_call ALWAYS placement-constructs the return Variant",
                 "godot_bool ret_initialized = false;",
                 "godot_Variant ret;",
                 "godot_object_method_bind_call(",
                 "self_raw,",
                 "(GDExtensionUninitializedVariantPtr)&ret,",
                 "&error",
+                "ret_initialized = true;",
                 "char call_error_desc[512];",
                 "gdcc_variant_type_to_utf8(error.expected, expected_type_name, sizeof(expected_type_name));",
                 "engine method call failed: Probe.mix: invalid argument #%lld, expected '%s', got '%s'",

@@ -348,7 +348,11 @@ Usage and lifecycle rules:
   `godot_object_method_bind_call(...)` paths keep raw destination storage semantics.
 - `godot_object_method_bind_call(...)` is the exact-engine vararg exception to remember: its return slot must be a raw
   `godot_Variant` storage location cast to `GDExtensionUninitializedVariantPtr`. Do not prebuild a nil `Variant` before
-  the call, and do not destroy that storage on error paths where Godot did not construct a return value.
+  the call. Godot ALWAYS placement-constructs the return `Variant` — including on call errors (4.5
+  `gdextension_interface.cpp` wraps `mb->call` in `memnew_placement` unconditionally) — so every exit path must destroy
+  it exactly once: the error path destroys it before substituting the nil fallback, and the success path destroys it
+  after the value has been unpacked/consumed. (The previous "do not destroy on error paths" wording was wrong; fixed in
+  the 2026-09-28 Phase 6/7 review round.)
 
 ### Global Helper Raw Pointer Contract
 

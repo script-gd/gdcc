@@ -1203,6 +1203,61 @@ class FrontendClassSkeletonTest {
         assertTrue(skeletonDiagnostics.getFirst().message().contains("_default_"));
     }
 
+    /// The `_gdcc_` member namespace is compiler-owned for backend-synthesized accessors
+    /// (`_gdcc_get_metadata`, Phase 6): a source function with that exact name would collide
+    /// with the synthesized C symbol and its ClassDB registration. Boundary names that lack the
+    /// trailing separator (`_gdcc`, `_gdccx`) stay alive.
+    @Test
+    void buildRejectsReservedGdccInternalPrefixButKeepsBoundaryNamesAlive() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "reserved_gdcc_internal_names.gd"), """
+                class_name ReservedGdccInternalNames
+                extends RefCounted
+
+                signal _gdcc_changed()
+
+                var _gdcc_state: int = 1
+
+                func _gdcc_get_metadata():
+                    pass
+
+                func _gdcc_helper():
+                    pass
+
+                func _gdcc():
+                    pass
+
+                func _gdccx():
+                    pass
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "ReservedGdccInternalNames");
+        var skeletonDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton"))
+                .toList();
+
+        assertNull(findSignalByNameOrNull(classDef, "_gdcc_changed"));
+        assertNull(findPropertyByNameOrNull(classDef, "_gdcc_state"));
+        assertNull(findFunctionByNameOrNull(classDef, "_gdcc_get_metadata"));
+        assertNull(findFunctionByNameOrNull(classDef, "_gdcc_helper"));
+        assertNotNull(findFunctionByNameOrNull(classDef, "_gdcc"));
+        assertNotNull(findFunctionByNameOrNull(classDef, "_gdccx"));
+        assertEquals(4, skeletonDiagnostics.size());
+        assertTrue(skeletonDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.message().contains("reserved gdcc-internal prefix '_gdcc_'")
+        ));
+    }
+
     @Test
     void buildRejectsGdccSignalThatShadowsInheritedEngineSignalButKeepsOtherMembersAlive() throws IOException {
         var parserService = new GdScriptParserService();

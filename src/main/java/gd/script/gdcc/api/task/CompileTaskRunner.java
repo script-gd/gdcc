@@ -6,6 +6,7 @@ import gd.script.gdcc.api.CompileTaskSnapshot;
 import gd.script.gdcc.api.DiagnosticSourcePathRemapper;
 import gd.script.gdcc.api.VfsEntrySnapshot;
 import gd.script.gdcc.backend.CodegenContext;
+import gd.script.gdcc.backend.SourceFileFacts;
 import gd.script.gdcc.backend.c.build.CProjectBuilder;
 import gd.script.gdcc.backend.c.build.CProjectInfo;
 import gd.script.gdcc.backend.c.gen.CCodegen;
@@ -303,7 +304,12 @@ public final class CompileTaskRunner implements Runnable {
                     null
             );
             codegen.prepare(
-                    new CodegenContext(projectInfo, classRegistry, request.compileOptions().strictMode()),
+                    new CodegenContext(
+                            projectInfo,
+                            classRegistry,
+                            request.compileOptions().strictMode(),
+                            sourceFileFacts(request)
+                    ),
                     lowered
             );
             var outputMountError = validateAndPrepareOutputPublication(request, sourcePaths, frontendDiagnostics);
@@ -443,6 +449,22 @@ public final class CompileTaskRunner implements Runnable {
         return DiagnosticSourcePathRemapper.remap(displayPathsByLogicalPath, diagnostics);
     }
 
+    /// Per-file caller-facing facts handed to backend codegen (Phase 6 class metadata). Keyed by
+    /// the same normalized logical-path text the diagnostics remapper uses
+    /// (`DiagnosticSourcePathRemapper.logicalPathKey` — trimmed, `/` separators), which is also
+    /// what the frontend stamps onto `LirClassDef.sourceFile`.
+    private @NotNull Map<String, SourceFileFacts> sourceFileFacts(@NotNull Request request) {
+        var factsByLogicalPath = new LinkedHashMap<String, SourceFileFacts>();
+        for (var sourceSnapshot : request.sourceSnapshots()) {
+            var key = DiagnosticSourcePathRemapper.logicalPathKey(sourceSnapshot.logicalPath());
+            factsByLogicalPath.putIfAbsent(
+                    key,
+                    new SourceFileFacts(sourceSnapshot.displayPath(), sourceSnapshot.absolutePath())
+            );
+        }
+        return Map.copyOf(factsByLogicalPath);
+    }
+
     private @NotNull CompileResult unexpectedTaskFailure(
             @Nullable Request request,
             @NotNull Throwable throwable
@@ -541,7 +563,10 @@ public final class CompileTaskRunner implements Runnable {
     public record SourceSnapshot(
             @NotNull String displayPath,
             @NotNull Path logicalPath,
-            @NotNull String source
+            @NotNull String source,
+            /// Optional host-absolute source path forwarded to compile-time class metadata
+            /// (Phase 6 `source_path`); null when the caller never provided one.
+            @Nullable String absolutePath
     ) {
         public SourceSnapshot {
             Objects.requireNonNull(displayPath, "displayPath must not be null");

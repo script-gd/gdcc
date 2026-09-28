@@ -84,6 +84,20 @@ class ApiVirtualFileSystemTest {
     }
 
     @Test
+    void putFileRejectsBlankAbsolutePath() {
+        var api = new API(FIXED_CLOCK);
+        api.createModule("demo", "Demo");
+
+        // A present-but-blank absolutePath is a caller bug (it would poison the Phase 6
+        // metadata `source_path`), unlike an omitted one which simply stays absent.
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> api.putFile("demo", "/src/main.gd", "extends Node\n", "/display/main.gd", "  ")
+        );
+        assertEquals("absolutePath must not be blank", exception.getMessage());
+    }
+
+    @Test
     void deletePathHonorsRecursiveFlagAndUpdatesModuleSnapshot() {
         var api = new API(FIXED_CLOCK);
         api.createModule("demo", "Demo");

@@ -21,6 +21,10 @@ public final class LirClassDef implements ClassDef {
     private final List<LirFunctionDef> functions;
     private final List<GdScriptClassConstant> scriptConstants;
     private @Nullable String sourceFile;
+    /// Dotted source-level class name (`Outer.Inner` for nested classes) recorded by the frontend
+    /// skeleton builder; null for classes that never passed through it (e.g. LIR XML fixtures).
+    /// Distinct from `name`, which is the canonical registration identity and may be remapped.
+    private @Nullable String sourceClassName;
 
     public LirClassDef(
             @NotNull String name,
@@ -182,5 +186,15 @@ public final class LirClassDef implements ClassDef {
 
     public void setSourceFile(@Nullable String sourceFile) {
         this.sourceFile = sourceFile;
+    }
+
+    /// Dotted source-level class name; falls back to the canonical name when unset, which is
+    /// correct for unrenamed top-level classes and intentionally degraded for XML-loaded LIR.
+    public @NotNull String getSourceClassName() {
+        return sourceClassName != null ? sourceClassName : name;
+    }
+
+    public void setSourceClassName(@Nullable String sourceClassName) {
+        this.sourceClassName = sourceClassName;
     }
 }

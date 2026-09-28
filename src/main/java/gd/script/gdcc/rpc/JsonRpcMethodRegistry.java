@@ -102,9 +102,19 @@ public final class JsonRpcMethodRegistry {
         handlers.put("vfs.putFile", (api, codec, params) -> {
             var bound = codec.bindParams(params, RpcParams.VfsPutFileParams.class);
             // A missing displayPath must reach the API as "not provided", not as an explicit null.
-            return bound.displayPath() == null
-                    ? api.putFile(bound.moduleId(), bound.path(), bound.content())
-                    : api.putFile(bound.moduleId(), bound.path(), bound.content(), bound.displayPath());
+            // absolutePath must never be dropped by that shortcut: a caller providing ONLY
+            // absolutePath still goes through the full overload (displayPath stays absent and
+            // the VFS falls back to the virtual path, same as the 3-arg form).
+            if (bound.displayPath() == null && bound.absolutePath() == null) {
+                return api.putFile(bound.moduleId(), bound.path(), bound.content());
+            }
+            return api.putFile(
+                    bound.moduleId(),
+                    bound.path(),
+                    bound.content(),
+                    bound.displayPath(),
+                    bound.absolutePath()
+            );
         });
         handlers.put("vfs.readFile", (api, codec, params) -> {
             var bound = codec.bindParams(params, RpcParams.VfsReadFileParams.class);

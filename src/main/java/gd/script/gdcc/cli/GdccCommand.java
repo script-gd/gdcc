@@ -169,7 +169,15 @@ public final class GdccCommand implements Callable<Integer> {
             api.setCompileOptions(outputTarget.moduleId(), compileOptions);
             api.setTopLevelCanonicalNameMap(outputTarget.moduleId(), topLevelCanonicalNameMap);
             for (var sourceInput : sourceInputs) {
-                api.putFile(outputTarget.moduleId(), sourceInput.virtualPath(), sourceInput.source(), sourceInput.displayPath());
+                // hostPath is the normalized absolute input path (sourceInput() computes it before
+                // reading); it lands in the compile-time class metadata as `source_path`.
+                api.putFile(
+                        outputTarget.moduleId(),
+                        sourceInput.virtualPath(),
+                        sourceInput.source(),
+                        sourceInput.displayPath(),
+                        sourceInput.hostPath().toString()
+                );
             }
 
             var taskId = api.compile(outputTarget.moduleId());

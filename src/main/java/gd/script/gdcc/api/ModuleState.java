@@ -95,6 +95,18 @@ final class ModuleState {
             @NotNull String content,
             @Nullable String displayPath
     ) {
+        return putFile(path, content, displayPath, null);
+    }
+
+    /// `absolutePath` is an optional host-absolute source path (Phase 6 compile-time class
+    /// metadata `source_path`); like `displayPath`, a re-put without it preserves the value the
+    /// file already has, and it stays absent entirely for callers that never provide one.
+    synchronized @NotNull VfsEntrySnapshot.FileEntrySnapshot putFile(
+            @NotNull VirtualPath path,
+            @NotNull String content,
+            @Nullable String displayPath,
+            @Nullable String absolutePath
+    ) {
         if (path.isRoot()) {
             throw new IllegalArgumentException("path '/' cannot be used as a file path");
         }
@@ -104,7 +116,12 @@ final class ModuleState {
         if (existing instanceof DirectoryNode) {
             throw typeMismatch(path.text(), "directory", VfsEntrySnapshot.Kind.FILE);
         }
-        var fileNode = FileNode.fromContent(content, resolveDisplayPath(path, displayPath, existing), clock);
+        var fileNode = FileNode.fromContent(
+                content,
+                resolveDisplayPath(path, displayPath, existing),
+                resolveAbsolutePath(absolutePath, existing),
+                clock
+        );
         parent.putChild(path.name(), fileNode);
         return fileNode.snapshot(path);
     }
@@ -530,7 +547,8 @@ final class ModuleState {
                 surfacePath.text(),
                 fileNode.displayPath(),
                 logicalPathFor(surfacePath),
-                fileNode.content()
+                fileNode.content(),
+                fileNode.absolutePath()
         );
         var existing = sourcesByFile.get(fileNode);
         if (existing == null || candidate.virtualPath().compareTo(existing.virtualPath()) < 0) {
@@ -554,6 +572,18 @@ final class ModuleState {
             return normalizeDisplayPath(displayPath);
         }
         return existingNode instanceof FileNode fileNode ? fileNode.displayPath() : surfacePath.text();
+    }
+
+    /// Mirrors the displayPath retention rule: a re-put without `absolutePath` keeps the stored
+    /// value instead of dropping provenance the earlier upload established.
+    private @Nullable String resolveAbsolutePath(
+            @Nullable String absolutePath,
+            @Nullable VfsNode existingNode
+    ) {
+        if (absolutePath != null) {
+            return StringUtil.requireTrimmedNonBlank(absolutePath, "absolutePath");
+        }
+        return existingNode instanceof FileNode fileNode ? fileNode.absolutePath() : null;
     }
 
     /// Compiler-facing paths are internal anchors only. They stay detached from caller-facing
@@ -736,7 +766,8 @@ final class ModuleState {
             @NotNull String virtualPath,
             @NotNull String displayPath,
             @NotNull Path logicalPath,
-            @NotNull String source
+            @NotNull String source,
+            @Nullable String absolutePath
     ) {
         SourceSnapshot {
             virtualPath = VirtualPath.parse(virtualPath).text();

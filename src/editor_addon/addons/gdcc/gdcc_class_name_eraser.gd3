@@ -1,0 +1,428 @@
+@tool
+class_name GdccClassNameEraser
+extends Node
+
+## Conditional `class_name` erasure for the LSP sync view (plan §7 Phase 7), child feature of
+## `GdccEditorService`.
+##
+## A `.gd3` that declares `class_name X` collides with the compiled extension class X once the
+## extension is installed: the GDScript analyzer reports `Class "X" hides a native class.` as an
+## unsuppressible ERROR (4.5 gdscript_analyzer.cpp), which would also trip the `_validate`
+## LSP-error suppression gate and hide gdcc's own diagnostics. The fix is applied ONLY to the
+## text synced to the LSP (the "view"): the disk content and the gdcc analysis input always keep
+## the raw text. Erasure requires ALL admission conditions to hold; anything unknown or
+## mismatched leaves the text untouched (safe default).
+##
+## Owns: the text view transform + position mapping, the header scanner, the ClassDB/metadata
+## admission probe with its memo, and the GDExtensionManager decision-flip listeners. The
+## editor-side mechanics of the flip (re-syncing the CURRENT document and queueing the Phase 5
+## revalidation) stay on the service — they need its editor context, registry, LSP client and
+## revalidation queue (`resync_current_document_lsp()`), so this node only decides WHAT the new
+## view is and WHEN the flip happens.
+##
+## No busy term and no frame-driven work except the one-frame-deferred post-unload resync
+## (`process_deferred_resync`, driven from the service pump before the revalidation drain).
+
+# Memo of admission decisions, keyed by `name + "\n" + base + "\n" + path`. Every input of the
+# admission probe is in the key, so entries stay valid until the compiled-class set may change
+# — which is exactly what the GDExtensionManager signals report (handlers clear the whole map).
+var _erasure_memo: Dictionary = {}
+# Deferred view restoration after an extension unload (see `_on_extension_unloading`): the
+# signal fires before the class set changes, so the raw-view re-sync waits one frame.
+var _resync_after_unload_pending: bool = false
+
+var service: GdccEditorService = null
+
+
+func bind_service(owner: GdccEditorService) -> void:
+    service = owner
+
+
+func _ready() -> void:
+    # Decision-flip hooks (plan §7 Phase 7 item 4): extension (un)loads and reloads can add,
+    # remove, or replace the compiled classes the erasure admission probes, so memoized
+    # decisions must be re-evaluated and the current document re-synced. Batch editor flows
+    # report through `extensions_reloaded`; single `load_extension`/`unload_extension` calls use
+    # their own signals — all three are wired (review finding). The handlers re-check the
+    # service state on every fire, so the resident node keeps these connections forever.
+    GDExtensionManager.extensions_reloaded.connect(_on_extension_settled)
+    GDExtensionManager.extension_loaded.connect(_on_extension_loaded)
+    GDExtensionManager.extension_unloading.connect(_on_extension_unloading)
+
+
+## Identity view shape: `{"text", "erased", "erase_line", "removed_prefix"}`. `erase_line` is
+## the 0-based affected line (-1 when identity); `removed_prefix` is the number of code points
+## removed from that line's start (same-line `class_name X extends Y` form; 0 for the
+## whole-line blank form, which never drifts columns).
+func lsp_safe_text(path: String, text: String) -> Dictionary:
+    var identity: Dictionary = {"text": text, "erased": false, "erase_line": -1, "removed_prefix": 0}
+    if service == null or not service.is_active() or not path.begins_with("res://"):
+        return identity
+    var scan: Dictionary = _scan_class_name_header(text)
+    if not scan["found"]:
+        return identity
+    if not _class_name_erasure_allowed(path, str(scan["name"]), str(scan["base"]), scan["base_resolvable"]):
+        return identity
+    var lines: PackedStringArray = text.split("\n")
+    var erase_line: int = scan["line"]
+    var original_line: String = lines[erase_line]
+    var removed_prefix: int = 0
+    if scan["same_line_extends"]:
+        # `class_name X extends Y` → `extends Y`: drop the prefix up to the extends keyword so
+        # the header stays syntactically valid at column 0. Only this line's tail drifts.
+        removed_prefix = int(scan["extends_index"])
+        lines[erase_line] = original_line.substr(removed_prefix)
+    else:
+        # Standalone `class_name X` line → equal-length whitespace: zero line/column drift.
+        lines[erase_line] = " ".repeat(original_line.length())
+    return {"text": "\n".join(lines), "erased": true, "erase_line": erase_line, "removed_prefix": removed_prefix}
+
+
+## Forward map for LSP-bound positions (completion request): a position on the erased line
+## shifts left by `removed_prefix`; a position inside the removed prefix clamps to column 0.
+func lsp_safe_forward_position(view: Dictionary, line: int, character: int) -> Dictionary:
+    var removed: int = int(view.get("removed_prefix", 0))
+    if removed > 0 and line == int(view.get("erase_line", -1)):
+        var mapped: int = character - removed
+        if mapped < 0:
+            mapped = 0
+        return {"line": line, "character": mapped}
+    return {"line": line, "character": character}
+
+
+## Reverse map for LSP-returned columns (diagnostics): mirror of the forward map.
+func lsp_safe_reverse_column(view: Dictionary, line: int, character: int) -> int:
+    var removed: int = int(view.get("removed_prefix", 0))
+    if removed > 0 and line == int(view.get("erase_line", -1)):
+        return character + removed
+    return character
+
+
+## Test observability for the memo (same role as `validate_call_count` on the language): the
+## engine driver asserts the decision flip actually clears entries.
+func erasure_memo_size() -> int:
+    return _erasure_memo.size()
+
+
+## Header scan for the erasure (R25 trap guard): only column-0 lines are considered and the
+## FIRST match wins. Lexical state is a small line walker (`_line_string_state` /
+## `_string_remainder_state`) that understands backslash escapes, `#` comments, BOTH triple
+## delimiters (`"""` / `'''`) — and the fact that even REGULAR quoted strings may span
+## physical lines (the 4.5 tokenizer never terminates a string at a newline; see
+## `r_strings.gd`). Closing a triple requires an UNESCAPED triple of the same quote, so an
+## escaped-first-quote content line never closes early (review findings, rounds 1–3).
+## Returns found/name/line/base/base_resolvable/same_line_extends/extends_index.
+func _scan_class_name_header(text: String) -> Dictionary:
+    var result: Dictionary = {
+        "found": false, "name": "", "line": -1, "base": "", "base_resolvable": true,
+        "same_line_extends": false, "extends_index": -1,
+    }
+    var lines: PackedStringArray = text.split("\n")
+    # Open-string state: str_quote == 0 means code; otherwise the delimiter code point
+    # (34/39), with str_triple marking the triple-quoted form.
+    var str_quote: int = 0
+    var str_triple: bool = false
+    var i: int = 0
+    while i < lines.size():
+        var raw: String = lines[i]
+        i = i + 1
+        # String content: skip the line and track only the string's end. A line that CLOSES a
+        # string holds code only after the delimiter — never at column 0 — so keyword
+        # detection stays skipped for the whole line.
+        if str_quote != 0:
+            var rem: Dictionary = _string_remainder_state(raw, str_quote, str_triple)
+            str_quote = int(rem["quote"])
+            str_triple = rem["triple"]
+            continue
+        if raw.length() > 0:
+            var first: int = raw.unicode_at(0)
+            if first != 32 and first != 9:
+                if _lsp_keyword_matches(raw, "class_name") and not result["found"]:
+                    _parse_class_name_line(raw, i - 1, result)
+                elif _lsp_keyword_matches(raw, "extends"):
+                    # Fill-once guard inside: the class_name line's own extends (or the first
+                    # standalone extends line) wins; later ones belong to invalid source anyway.
+                    _parse_extends_line(raw, result)
+        var opened: Dictionary = _line_string_state(raw)
+        str_quote = int(opened["quote"])
+        str_triple = opened["triple"]
+    return result
+
+
+## Parses one matched `class_name` line into the scan result: the declared name, then a
+## SEQUENTIAL tail — optional icon string (`, "res://icon.svg"`, skipped with escape handling)
+## and an optional same-line `extends`. Free keyword search is deliberately not used: a comment
+## (`class_name X # extends Y`) or the icon string could otherwise inject a fake base (review
+## finding).
+func _parse_class_name_line(raw: String, line_index: int, result: Dictionary) -> void:
+    var idx: int = _skip_ws(raw, 10)
+    var name_start: int = idx
+    while idx < raw.length() and _is_identifier_char(raw.unicode_at(idx)):
+        idx = idx + 1
+    var found_name: String = raw.substr(name_start, idx - name_start)
+    if found_name == "":
+        # Bare `class_name` is invalid source; never erase what we cannot identify.
+        return
+    result["found"] = true
+    result["name"] = found_name
+    result["line"] = line_index
+    idx = _skip_ws(raw, idx)
+    if idx < raw.length() and raw.unicode_at(idx) == 44:
+        # `, "icon"`: skip the quoted icon path wholesale.
+        idx = _skip_ws(raw, idx + 1)
+        if idx < raw.length() and (raw.unicode_at(idx) == 34 or raw.unicode_at(idx) == 39):
+            idx = _skip_quoted(raw, idx)
+        idx = _skip_ws(raw, idx)
+    if _keyword_at(raw, idx, "extends"):
+        var base_rest: String = raw.substr(idx + 7).strip_edges()
+        if base_rest == "" or base_rest.begins_with("\"") or base_rest.begins_with("'") \
+                or base_rest.begins_with("#"):
+            # A quoted path base, a dangling `extends`, or a comment-only tail cannot be
+            # resolved to a class name here — fail admission instead of guessing.
+            result["base_resolvable"] = false
+            return
+        result["same_line_extends"] = true
+        result["extends_index"] = idx
+        _parse_base_token_into(base_rest, result)
+
+
+## Parses a standalone column-0 `extends` line into the scan result (only when the class_name
+## line did not already provide a base). An explicit `extends` with NO resolvable base token
+## (empty tail, comment-only tail, or quoted path) marks the base unresolvable rather than
+## falling back to the implicit `RefCounted`: the declaration is visibly in flux, and a
+## mid-edit line must not admit erasure on a stale default (review finding).
+func _parse_extends_line(raw: String, result: Dictionary) -> void:
+    var rest: String = raw.substr(7).strip_edges()
+    if rest == "" or rest.begins_with("\"") or rest.begins_with("'") or rest.begins_with("#"):
+        result["base_resolvable"] = false
+        return
+    _parse_base_token_into(rest, result)
+
+
+## Fills base from the token after `extends`, once. A missing extends leaves "" and the
+## admission check compares against the GDScript default `RefCounted`. The token ends at
+## whitespace, `,` or `#`, so trailing comments never leak into the base.
+func _parse_base_token_into(rest: String, result: Dictionary) -> void:
+    if str(result["base"]) != "" or not result["base_resolvable"]:
+        return
+    var end: int = 0
+    while end < rest.length():
+        var ch: int = rest.unicode_at(end)
+        if ch == 32 or ch == 9 or ch == 44 or ch == 35:
+            break
+        end = end + 1
+    var token: String = rest.substr(0, end)
+    if token == "":
+        # An explicit `extends` whose tail yields no token (e.g. `extends ,` mid-edit) must not
+        # fall back to the implicit `RefCounted` admission — unresolvable means unresolvable.
+        result["base_resolvable"] = false
+        return
+    result["base"] = token
+
+
+## Admission decision (plan §7 Phase 7 item 2), memoized per (name, base, path). All four
+## conditions must hold: the class exists in ClassDB; it is an EXTENSION class (core/editor
+## collisions like `class_name Node` keep their error to push a rename); the compiled class
+## carries gdcc metadata whose source path proves it was compiled from THIS file (the
+## `_gdcc_get_metadata` accessor of Phase 6, read through ClassDB); and the registered parent
+## matches the declared base. Any missing fact answers false — never erase on uncertainty.
+func _class_name_erasure_allowed(path: String, class_name_text: String, base: String, base_resolvable: bool) -> bool:
+    if not base_resolvable:
+        return false
+    var memo_key: String = class_name_text + "\n" + base + "\n" + path
+    var memoized: Variant = _erasure_memo.get(memo_key)
+    if memoized is bool:
+        return memoized
+    var allowed: bool = _class_name_erasure_probe(path, class_name_text, base)
+    _erasure_memo[memo_key] = allowed
+    return allowed
+
+
+func _class_name_erasure_probe(path: String, class_name_text: String, base: String) -> bool:
+    if not ClassDB.class_exists(class_name_text):
+        return false
+    # ClassDB.APIType: API_EXTENSION=2 / API_EDITOR_EXTENSION=3 (extension_api 4.5.1); core and
+    # editor native classes (0/1) keep the pseudo-error on purpose.
+    var api_type: int = ClassDB.class_get_api_type(class_name_text)
+    if api_type != 2 and api_type != 3:
+        return false
+    var expected_base: String = base
+    if expected_base == "":
+        # No explicit extends anywhere: GDScript's implicit base is RefCounted.
+        expected_base = "RefCounted"
+    if ClassDB.get_parent_class(class_name_text) != expected_base:
+        return false
+    var metadata: Variant = ClassDB.class_call_static(class_name_text, "_gdcc_get_metadata")
+    if not (metadata is Dictionary):
+        return false
+    var gdcc_section: Variant = metadata.get("gdcc")
+    if not (gdcc_section is Dictionary):
+        return false
+    var source_path: String = str(gdcc_section.get("source_path", ""))
+    if source_path == "":
+        # Only the compile-time ABSOLUTE source path proves the class was compiled from THIS
+        # file: a bare res:// label could collide with an extension compiled from ANOTHER
+        # project whose layout happens to match (review finding — the globalize fallback
+        # planned in §7 Phase 6 item 3 was removed for this reason).
+        return false
+    # Godot paths always use `/`; a compiler running on Windows may have baked `\` into the
+    # metadata, so both sides compare in `/` form.
+    return source_path.replace("\\", "/") == ProjectSettings.globalize_path(path).replace("\\", "/")
+
+
+## True when `text` at `idx` starts with `keyword` followed by a space/tab or the line end.
+func _keyword_at(text: String, idx: int, keyword: String) -> bool:
+    if idx + keyword.length() > text.length():
+        return false
+    if text.substr(idx, keyword.length()) != keyword:
+        return false
+    var after: int = idx + keyword.length()
+    return after >= text.length() or text.unicode_at(after) == 32 or text.unicode_at(after) == 9
+
+
+## First index ≥ `from` not on a space/tab.
+func _skip_ws(text: String, from: int) -> int:
+    var idx: int = from
+    while idx < text.length() and (text.unicode_at(idx) == 32 or text.unicode_at(idx) == 9):
+        idx = idx + 1
+    return idx
+
+
+## Index just past the closing quote of the single-line string starting at `from` (the opening
+## quote); backslash escapes are honored. An unterminated string consumes the rest of the line
+## (a cross-line continuation is handled by the scanner's string state, not by this helper).
+func _skip_quoted(text: String, from: int) -> int:
+    var close: int = _find_unescaped_char(text, from + 1, text.unicode_at(from))
+    if close < 0:
+        return text.length()
+    return close + 1
+
+
+## Open-string state at end of line for a line OUTSIDE any string: walks code and skips
+## quoted strings (escape-aware) and `#` comments. Returns `{"quote", "triple"}`: quote is the
+## delimiter code point left open (0 = none); triple distinguishes the triple-quoted form.
+## Regular strings count too — they may continue onto the next physical line (the 4.5
+## tokenizer never terminates a string at a newline; `r_strings.gd`).
+func _line_string_state(text: String) -> Dictionary:
+    var i: int = 0
+    while i < text.length():
+        var ch: int = text.unicode_at(i)
+        if ch == 35:
+            # `#`: a comment — nothing past it can open a string.
+            return {"quote": 0, "triple": false}
+        if ch == 34 or ch == 39:
+            if _is_triple_at(text, i, ch):
+                var close3: int = _find_unescaped_triple(text, i + 3, ch)
+                if close3 < 0:
+                    return {"quote": ch, "triple": true}
+                i = close3 + 3
+                continue
+            var close1: int = _find_unescaped_char(text, i + 1, ch)
+            if close1 < 0:
+                return {"quote": ch, "triple": false}
+            i = close1 + 1
+            continue
+        i = i + 1
+    return {"quote": 0, "triple": false}
+
+
+## Three consecutive `quote` characters starting at `idx` (the caller has read text[idx]).
+func _is_triple_at(text: String, idx: int, quote: int) -> bool:
+    return idx + 2 < text.length() and text.unicode_at(idx + 1) == quote \
+            and text.unicode_at(idx + 2) == quote
+
+
+## First UNESCAPED triple of `quote` at or after `from`, or -1. Backslash pairs are skipped —
+## the GDScript tokenizer consumes the escape char wholesale, so an escaped first quote never
+## closes a triple (gdscript_tokenizer.cpp string read loop).
+func _find_unescaped_triple(text: String, from: int, quote: int) -> int:
+    var i: int = from
+    while i + 2 < text.length():
+        var ch: int = text.unicode_at(i)
+        if ch == 92:
+            i = i + 2
+            continue
+        if ch == quote and text.unicode_at(i + 1) == quote and text.unicode_at(i + 2) == quote:
+            return i
+        i = i + 1
+    return -1
+
+
+## First unescaped occurrence of `quote` at or after `from`, or -1.
+func _find_unescaped_char(text: String, from: int, quote: int) -> int:
+    var i: int = from
+    while i < text.length():
+        var ch: int = text.unicode_at(i)
+        if ch == 92:
+            i = i + 2
+            continue
+        if ch == quote:
+            return i
+        i = i + 1
+    return -1
+
+
+## State tracker for a line that STARTS inside an open string: returns the still-open state
+## (`{"quote", "triple"}`). The text after a closing delimiter is code again and could itself
+## open another string, so the remainder goes through the code walker.
+func _string_remainder_state(text: String, quote: int, triple: bool) -> Dictionary:
+    if triple:
+        var close3: int = _find_unescaped_triple(text, 0, quote)
+        if close3 < 0:
+            return {"quote": quote, "triple": true}
+        return _line_string_state(text.substr(close3 + 3))
+    var close1: int = _find_unescaped_char(text, 0, quote)
+    if close1 < 0:
+        return {"quote": quote, "triple": false}
+    return _line_string_state(text.substr(close1 + 1))
+
+
+## True when `text` starts with `keyword` followed by a space or tab (the column-0 anchor is
+## the caller's job). Mirrors `GdccScript._keyword_matches`.
+func _lsp_keyword_matches(text: String, keyword: String) -> bool:
+    if not text.begins_with(keyword) or text.length() <= keyword.length():
+        return false
+    var boundary: int = text.unicode_at(keyword.length())
+    return boundary == 32 or boundary == 9
+
+
+func _is_identifier_char(code_point: int) -> bool:
+    return (code_point >= 65 and code_point <= 90) or (code_point >= 97 and code_point <= 122) \
+            or (code_point >= 48 and code_point <= 57) or code_point == 95
+
+
+## Decision-flip handler for class-settling signals (plan §7 Phase 7 item 4):
+## `extensions_reloaded` (editor batch flows) and `extension_loaded` (single API loads) both
+## mean the compiled-class set changed underneath the memoized admissions. Forget every memo,
+## then let the service re-sync the CURRENT document and queue its Phase 5 revalidation.
+func _on_extension_settled() -> void:
+    _erasure_memo.clear()
+    if service != null:
+        service.resync_current_document_lsp()
+
+
+## Single-`load_extension` path: the class set has settled when this fires, so it shares the
+## batch flow's full clear + re-sync + revalidate handling.
+func _on_extension_loaded(_ext: GDExtension) -> void:
+    _on_extension_settled()
+
+
+## `extension_unloading` fires BEFORE the class set changes, so a re-probe there would still
+## see the old class. The memo is invalidated immediately; the view restoration is deferred to
+## the next service frame (the unload completes synchronously inside GDExtensionManager), when
+## the re-probe observes the post-unload state and the LSP document returns to the raw text —
+## without it, the current tab would keep the erased view (missing `class_name` degrades
+## completion/symbol context) until the next edit (review finding).
+func _on_extension_unloading(_ext: GDExtension) -> void:
+    _erasure_memo.clear()
+    _resync_after_unload_pending = true
+
+
+## One-frame-deferred post-unload resync, driven from the service's frame pump BEFORE its
+## revalidation drain so the queued revalidation fires in the same frame.
+func process_deferred_resync() -> void:
+    if not _resync_after_unload_pending:
+        return
+    _resync_after_unload_pending = false
+    if service != null:
+        service.resync_current_document_lsp()

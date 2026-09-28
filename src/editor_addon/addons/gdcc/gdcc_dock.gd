@@ -327,10 +327,13 @@ func _on_upload_script_pressed() -> void:
         _log("upload skipped: no saved script is current in the script editor")
         return
     # The VFS path mirrors the res:// file name under /src; the display path keeps res://.
+    # The absolute path feeds the Phase 6 class metadata (`source_path`) so the compiled
+    # extension can later prove which source file produced each class.
     var virtual_path: String = "/src/" + script.resource_path.get_file()
     _begin_busy()
     var rpc: Dictionary = await _client.put_file(
-            module_id, virtual_path, script.source_code, script.resource_path).completed
+            module_id, virtual_path, script.source_code, script.resource_path,
+            ProjectSettings.globalize_path(script.resource_path)).completed
     _end_busy()
     if rpc["ok"]:
         _log("uploaded " + script.resource_path + " -> " + virtual_path)

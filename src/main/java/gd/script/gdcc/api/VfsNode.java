@@ -49,12 +49,17 @@ final class DirectoryNode implements VfsNode {
 final class FileNode implements VfsNode {
     private final @NotNull String content;
     private final @NotNull String displayPath;
+    /// Host-absolute path of the source file when the caller supplied one (compile-time class
+    /// metadata `source_path`); stays null for callers that only work with display labels.
+    private final @Nullable String absolutePath;
     private final long byteCount;
     private final @NotNull Instant updatedAt;
 
-    FileNode(@NotNull String content, @NotNull String displayPath, long byteCount, @NotNull Instant updatedAt) {
+    FileNode(@NotNull String content, @NotNull String displayPath, @Nullable String absolutePath,
+             long byteCount, @NotNull Instant updatedAt) {
         this.content = Objects.requireNonNull(content, "content must not be null");
         this.displayPath = Objects.requireNonNull(displayPath, "displayPath must not be null");
+        this.absolutePath = absolutePath;
         if (byteCount < 0) {
             throw new IllegalArgumentException("byteCount must not be negative");
         }
@@ -65,12 +70,14 @@ final class FileNode implements VfsNode {
     static @NotNull FileNode fromContent(
             @NotNull String content,
             @NotNull String displayPath,
+            @Nullable String absolutePath,
             @NotNull Clock clock
     ) {
         var text = Objects.requireNonNull(content, "content must not be null");
         return new FileNode(
                 text,
                 displayPath,
+                absolutePath,
                 text.getBytes(StandardCharsets.UTF_8).length,
                 Instant.now(Objects.requireNonNull(clock, "clock must not be null"))
         );
@@ -82,6 +89,10 @@ final class FileNode implements VfsNode {
 
     @NotNull String displayPath() {
         return displayPath;
+    }
+
+    @Nullable String absolutePath() {
+        return absolutePath;
     }
 
     public @NotNull VfsEntrySnapshot.FileEntrySnapshot snapshot(@NotNull VirtualPath path) {

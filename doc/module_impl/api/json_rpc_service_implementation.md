@@ -106,7 +106,7 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 | `module.list` | `{}` | `ModuleSnapshot[]` |
 | `module.delete` | `{moduleId}` | `ModuleSnapshot` |
 | `vfs.createDirectory` | `{moduleId, path}` | `DirectoryEntrySnapshot` |
-| `vfs.putFile` | `{moduleId, path, content, displayPath?}` | `FileEntrySnapshot` |
+| `vfs.putFile` | `{moduleId, path, content, displayPath?, absolutePath?}` | `FileEntrySnapshot` |
 | `vfs.readFile` | `{moduleId, path}` | 文件内容字符串 |
 | `vfs.deletePath` | `{moduleId, path, recursive}` | `VfsEntrySnapshot` |
 | `vfs.listDirectory` | `{moduleId, path}` | `VfsEntrySnapshot[]` |
@@ -206,7 +206,10 @@ DTO codec 规则：
 3. 可选组件在 param record 上使用装箱类型以便检测缺失：`Long startIndex`
    （默认 `0`）、`Integer maxCount`（默认 `API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE`）、
    `Boolean includeLowering`（默认 `false`）、`String displayPath` /
-   `String category`（默认 `null`）。
+   `String absolutePath` / `String category`（默认 `null`）。`absolutePath`
+   （2026-09-28 新增）是可选的宿主绝对源路径，仅被编译期类元数据
+   （`gd3_editor_integration_implementation.md` Phase 6 的 `source_path`）消费；
+   与 `displayPath` 同规则——重传缺省时保留既有值，空白串报 -32602。
 4. 类型错误的组件（Gson `JsonSyntaxException`/`JsonParseException`）以 `-32602` 失败。
 5. param record 在紧凑构造器中执行 blank/格式校验，覆盖那些 API 层更晚才会失败的
    情况；API 层抛出的 `IllegalArgumentException` **和** `NullPointerException`

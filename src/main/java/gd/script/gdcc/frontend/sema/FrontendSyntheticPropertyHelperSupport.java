@@ -23,12 +23,19 @@ public final class FrontendSyntheticPropertyHelperSupport {
     /// ones — the static variant sits under the same prefix). Source members reusing it collide
     /// with the hidden `LirFunctionDef` materialized per defaulted `Parameter`.
     public static final @NotNull String PARAMETER_DEFAULT_PREFIX = "_default_";
+    /// Compiler-owned namespace for backend-synthesized class metadata accessors
+    /// (`_gdcc_get_metadata`, Phase 6) and any future `_gdcc_*` member the compiler injects.
+    /// Member-level sibling of the class-level `_gdcc_coro_state_` reservation
+    /// (`FrontendClassNameContract`): a source member under this prefix would collide with the
+    /// synthesized symbol at C codegen and at ClassDB method registration.
+    public static final @NotNull String GDCC_INTERNAL_PREFIX = "_gdcc_";
     public static final @NotNull List<String> RESERVED_PREFIXES = List.of(
             PROPERTY_INIT_PREFIX,
             PROPERTY_GETTER_PREFIX,
             PROPERTY_SETTER_PREFIX,
             LAMBDA_FUNCTION_PREFIX,
-            PARAMETER_DEFAULT_PREFIX
+            PARAMETER_DEFAULT_PREFIX,
+            GDCC_INTERNAL_PREFIX
     );
 
     private FrontendSyntheticPropertyHelperSupport() {
@@ -51,8 +58,8 @@ public final class FrontendSyntheticPropertyHelperSupport {
     ) {
         var trimmedName = Objects.requireNonNull(memberName, "memberName must not be null").trim();
         var prefix = Objects.requireNonNull(matchedPrefix, "matchedPrefix must not be null");
-        if (prefix.equals(LAMBDA_FUNCTION_PREFIX)) {
-            return Objects.requireNonNull(memberKind, "memberKind must not be null")
+        return switch (prefix) {
+            case LAMBDA_FUNCTION_PREFIX -> Objects.requireNonNull(memberKind, "memberKind must not be null")
                     + " '"
                     + trimmedName
                     + "' uses reserved synthetic lambda-function prefix '"
@@ -60,9 +67,7 @@ public final class FrontendSyntheticPropertyHelperSupport {
                     + "' and will be skipped; the '"
                     + LAMBDA_FUNCTION_PREFIX
                     + "' prefix is compiler-owned for synthesized lambda functions";
-        }
-        if (prefix.equals(PARAMETER_DEFAULT_PREFIX)) {
-            return Objects.requireNonNull(memberKind, "memberKind must not be null")
+            case PARAMETER_DEFAULT_PREFIX -> Objects.requireNonNull(memberKind, "memberKind must not be null")
                     + " '"
                     + trimmedName
                     + "' uses reserved synthetic parameter-default prefix '"
@@ -70,14 +75,22 @@ public final class FrontendSyntheticPropertyHelperSupport {
                     + "' and will be skipped; the '"
                     + PARAMETER_DEFAULT_PREFIX
                     + "' prefix is compiler-owned for synthesized parameter-default functions";
-        }
-        return Objects.requireNonNull(memberKind, "memberKind must not be null")
-                + " '"
-                + trimmedName
-                + "' uses reserved synthetic property-helper prefix '"
-                + prefix
-                + "' and will be skipped; prefixes "
-                + String.join(", ", List.of(PROPERTY_INIT_PREFIX, PROPERTY_GETTER_PREFIX, PROPERTY_SETTER_PREFIX))
-                + " are compiler-owned for synthetic property init/getter/setter helpers";
+            case GDCC_INTERNAL_PREFIX -> Objects.requireNonNull(memberKind, "memberKind must not be null")
+                    + " '"
+                    + trimmedName
+                    + "' uses reserved gdcc-internal prefix '"
+                    + prefix
+                    + "' and will be skipped; the '"
+                    + GDCC_INTERNAL_PREFIX
+                    + "' prefix is compiler-owned for synthesized members such as '_gdcc_get_metadata'";
+            default -> Objects.requireNonNull(memberKind, "memberKind must not be null")
+                    + " '"
+                    + trimmedName
+                    + "' uses reserved synthetic property-helper prefix '"
+                    + prefix
+                    + "' and will be skipped; prefixes "
+                    + String.join(", ", List.of(PROPERTY_INIT_PREFIX, PROPERTY_GETTER_PREFIX, PROPERTY_SETTER_PREFIX))
+                    + " are compiler-owned for synthetic property init/getter/setter helpers";
+        };
     }
 }

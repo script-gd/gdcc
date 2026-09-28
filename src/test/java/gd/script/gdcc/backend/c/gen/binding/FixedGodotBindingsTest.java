@@ -109,7 +109,7 @@ class FixedGodotBindingsTest {
         );
         assertFixedPtrcallReturnCarrierInitialized(source, "godot_Variant godot_Object_get(", "godot_Variant");
         assertFixedPtrcallReturnCarrierInitialized(source, "godot_int godot_Object_get_instance_id(", "uint64_t");
-        assertObjectCallDoesNotDestroyUninitializedReturnOnError(source);
+        assertObjectCallDestroysConstructedReturnOnError(source);
     }
 
     @Test
@@ -333,7 +333,17 @@ class FixedGodotBindingsTest {
         assertTrue(failure.getMessage().contains("Duplicate Godot binding symbol for 'godot_Object_call'"));
     }
 
-    private static void assertObjectCallDoesNotDestroyUninitializedReturnOnError(@NotNull String source) {
+    private static int countOccurrences(String haystack, String needle) {
+        var count = 0;
+        var index = 0;
+        while ((index = haystack.indexOf(needle, index)) >= 0) {
+            count++;
+            index += needle.length();
+        }
+        return count;
+    }
+
+    private static void assertObjectCallDestroysConstructedReturnOnError(@NotNull String source) {
         var body = functionBody(source, "godot_Variant godot_Object_call(");
         var call = body.indexOf("godot_object_method_bind_call(");
         var errorCheck = body.indexOf("if (error.error != GDEXTENSION_CALL_OK)", call);
@@ -349,10 +359,18 @@ class FixedGodotBindingsTest {
                 () -> assertFalse(body.contains("godot_Variant result = godot_new_Variant_nil();"), body)
         );
 
+        // gdextension_object_method_bind_call placement-constructs `result` even on call errors
+        // (4.5 gdextension_interface.cpp), so the error branch must destroy it exactly once and
+        // the success branch must not destroy it at all.
         var errorPath = body.substring(errorCheck, nilReturn);
+        assertEquals(
+                1,
+                countOccurrences(errorPath, "godot_Variant_destroy(&result)"),
+                "failed Object.call must destroy the engine-constructed return Variant exactly once"
+        );
         assertFalse(
-                errorPath.contains("godot_Variant_destroy(&result)"),
-                "failed Object.call must not destroy possibly uninitialized return storage"
+                body.substring(nilReturn).contains("godot_Variant_destroy(&result)"),
+                "successful Object.call must hand the return Variant to the caller untouched"
         );
     }
 

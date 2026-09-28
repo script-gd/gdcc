@@ -180,7 +180,7 @@ func _send_reconcile_request(request: Dictionary) -> void:
         }).completed.connect(_on_reconcile_delete_done)
         return
     service.rpc_client().put_file(service.lifecycle().module_id(), service.vfs_path(path),
-            request["text"], path).completed.connect(_on_reconcile_put_done)
+            request["text"], path, ProjectSettings.globalize_path(path)).completed.connect(_on_reconcile_put_done)
 
 
 func _on_reconcile_put_done(response: Dictionary) -> void:

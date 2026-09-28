@@ -693,6 +693,10 @@ static godot_Variant godot_Variant_call(
             break;
         }
         godot_print_error(desc, "godot_Variant_call", src_file, line_number, true);
+        // gdextension_variant_call placement-constructs `ret` even on call errors (4.5
+        // gdextension_interface.cpp), so it must be destroyed before returning the nil
+        // fallback — same contract as gdcc_classdb_class_call_static / godot_Object_call.
+        godot_Variant_destroy(&ret);
         return godot_new_Variant_nil();
     }
     return ret;

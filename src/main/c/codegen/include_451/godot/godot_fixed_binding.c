@@ -258,6 +258,10 @@ godot_Variant godot_Object_call(
     godot_object_method_bind_call(gdcc_fixed_method_Object_call, self, args, 1 + argc, (GDExtensionUninitializedVariantPtr)&result, &error);
     godot_Variant_destroy(&method_variant);
     if (error.error != GDEXTENSION_CALL_OK) {
+        // gdextension_object_method_bind_call placement-constructs `result` even on call
+        // errors (4.5 gdextension_interface.cpp), so it must be destroyed before returning
+        // the nil fallback.
+        godot_Variant_destroy(&result);
         return godot_new_Variant_nil();
     }
     return result;

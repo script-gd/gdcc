@@ -114,7 +114,11 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
     if _service.is_lsp_ready():
         # A timeout simply means the freshest generation did not arrive; the cache read
         # below then yields the previous diagnostics (stale beats none).
-        _service.lsp_sync_and_wait(path, script, VALIDATE_LSP_TIMEOUT_MSEC)
+        # Phase 7: the LSP view may have the `class_name` line erased (pseudo-error
+        # suppression); returned diagnostics on the erased line map their column back to
+        # the raw text here. The gdcc analysis channel below always sees the raw text.
+        var view: Dictionary = _service.lsp_safe_text(path, script)
+        _service.lsp_sync_and_wait(path, str(view["text"]), VALIDATE_LSP_TIMEOUT_MSEC)
         var diagnostics: Array = _service.lsp_diagnostics_for(path)
         for raw in diagnostics:
             if not (raw is Dictionary):
@@ -128,7 +132,8 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
             if not (start_value is Dictionary) or not (end_value is Dictionary):
                 continue
             var line: int = int(start_value.get("line", 0)) + 1
-            var character: int = int(start_value.get("character", 0)) + 1
+            var character: int = _service.lsp_safe_reverse_column(
+                    view, int(start_value.get("line", 0)), int(start_value.get("character", 0))) + 1
             var end_line: int = int(end_value.get("line", 0)) + 1
             var message: String = str(raw.get("message", ""))
             if severity == 1:
@@ -249,7 +254,12 @@ func _complete_code(code: String, path: String, owner: Object) -> Dictionary:
     # `last_break == -1` (caret on the first line) folds to `before.length()` naturally.
     var character: int = before.length() - last_break - 1
     var clean: String = before + code.substr(caret + 1)
-    var response: Dictionary = _service.request_completion(path, clean, line, character)
+    # Phase 7: sync the erased view (same text `_validate` would send) and forward-map the
+    # request position — a caret past the erased prefix on that line shifts left with it.
+    var view: Dictionary = _service.lsp_safe_text(path, clean)
+    var mapped: Dictionary = _service.lsp_safe_forward_position(view, line, character)
+    var response: Dictionary = _service.request_completion(
+            path, str(view["text"]), int(mapped["line"]), int(mapped["character"]))
     if response.get("ok") != true:
         return _completion_degraded()
     return {"result": OK, "force": false, "call_hint": "", "options": _completion_options(response.get("result"))}

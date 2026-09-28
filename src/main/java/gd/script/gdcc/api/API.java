@@ -203,6 +203,24 @@ public final class API implements AutoCloseable {
         );
     }
 
+    /// Full-shape upload: `absolutePath` is the optional host-absolute source path consumed by
+    /// compile-time class metadata (Phase 6 `source_path`); it never affects VFS placement.
+    /// `displayPath` may be null when only the absolute path is known — the VFS then keeps its
+    /// usual fallback (existing label or virtual path).
+    public @NotNull VfsEntrySnapshot.FileEntrySnapshot putFile(
+            @NotNull String moduleId,
+            @NotNull String path,
+            @NotNull String content,
+            @Nullable String displayPath,
+            @Nullable String absolutePath
+    ) {
+        checkOpen();
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(normalizedModuleId, state ->
+                state.putFile(VirtualPath.parse(path), content, displayPath, absolutePath)
+        );
+    }
+
     public @NotNull String readFile(@NotNull String moduleId, @NotNull String path) {
         var normalizedModuleId = normalizeModuleId(moduleId);
         return requireManagedModule(normalizedModuleId).runExclusive(
@@ -531,7 +549,8 @@ public final class API implements AutoCloseable {
                         .map(sourceSnapshot -> new CompileTaskRunner.SourceSnapshot(
                                 sourceSnapshot.displayPath(),
                                 sourceSnapshot.logicalPath(),
-                                sourceSnapshot.source()
+                                sourceSnapshot.source(),
+                                sourceSnapshot.absolutePath()
                         ))
                         .toList(),
                 request.failure() == null

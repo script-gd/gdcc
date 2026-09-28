@@ -83,10 +83,14 @@ func delete_module(moduleId: String) -> PendingRequest:
     return call_rpc("module.delete", {"moduleId": moduleId})
 
 
-func put_file(moduleId: String, path: String, content: String, displayPath: String = "") -> PendingRequest:
+func put_file(moduleId: String, path: String, content: String, displayPath: String = "", absolutePath: String = "") -> PendingRequest:
     var params: Dictionary = {"moduleId": moduleId, "path": path, "content": content}
     if displayPath != "":
         params["displayPath"] = displayPath
+    # Optional host-absolute source path (Phase 6 class metadata `source_path`); omitted
+    # entirely when empty so pre-existing callers keep their old wire shape.
+    if absolutePath != "":
+        params["absolutePath"] = absolutePath
     return call_rpc("vfs.putFile", params)
 
 

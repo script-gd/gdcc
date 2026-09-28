@@ -29,6 +29,10 @@ extends Node
 ##   * `GdccDiagCache` — version-gated diagnostics cache;
 ##   * `GdccCompletionService` — stateless synchronous LSP completion slice (plan §4.3);
 ##     no tick/busy/hook wiring because its whole flow is one inline bounded pump.
+##   * `GdccClassNameEraser` — Phase 7 conditional `class_name` erasure for the LSP sync view:
+##     view transform + position mapping + admission memo + GDExtensionManager flip listeners;
+##     the service keeps the flip's editor-side mechanics (`resync_current_document_lsp`) and
+##     the language-facing facades (`lsp_safe_text` & co. delegate to the child).
 ## Adding a feature (e.g. code completion): create a child script implementing the feature
 ## protocol (`bind_service`, optional `service_tick(now)`, `busy_wanted()`, and any of the
 ## broadcast hooks `on_module_ready` / `on_module_outage` / `on_content_changed` /
@@ -57,6 +61,7 @@ var _scheduler: GdccDiagScheduler = null
 var _registry: GdccSourceRegistry = null
 var _cache: GdccDiagCache = null
 var _completion: GdccCompletionService = null
+var _eraser: GdccClassNameEraser = null
 var _lsp_host: String = "127.0.0.1"
 var _lsp_port: int = 6005
 var _rpc_host: String = "127.0.0.1"
@@ -236,7 +241,48 @@ func request_completion(path: String, text: String, line: int, col: int) -> Dict
 ## Shared res:// → server-dialect URI helper for feature children (wraps `_path_to_uri`;
 ## "" for non-project paths). Public sibling of `vfs_path`.
 func lsp_uri_for(path: String) -> String:
-    return _path_to_uri(path)## gdcc diagnostics channel entry (plan §4.2 step 3): forwards to the source registry, which
+    return _path_to_uri(path)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 facades (plan §7 Phase 7): the `class_name` conditional-erasure feature lives in the
+# `GdccClassNameEraser` child (hub-and-spoke); these delegates keep the language-facing entry
+# points on the service. Before the first install the child is null and every facade answers
+# identity/empty. After uninstall the child still exists: `lsp_safe_text` then answers identity
+# via its `is_active()` guard (same as before the split), the mappers stay pure functions, and
+# `erasure_memo_size` keeps reflecting the memo (the observability contract is unchanged).
+# ---------------------------------------------------------------------------
+
+## The LSP sync view for `text` (possibly with the `class_name` line erased); see
+## `GdccClassNameEraser.lsp_safe_text` for the contract.
+func lsp_safe_text(path: String, text: String) -> Dictionary:
+    if _eraser == null:
+        return {"text": text, "erased": false, "erase_line": -1, "removed_prefix": 0}
+    return _eraser.lsp_safe_text(path, text)
+
+
+## Forward map for LSP-bound positions (completion request position).
+func lsp_safe_forward_position(view: Dictionary, line: int, character: int) -> Dictionary:
+    if _eraser == null:
+        return {"line": line, "character": character}
+    return _eraser.lsp_safe_forward_position(view, line, character)
+
+
+## Reverse map for LSP-returned columns (diagnostics).
+func lsp_safe_reverse_column(view: Dictionary, line: int, character: int) -> int:
+    if _eraser == null:
+        return character
+    return _eraser.lsp_safe_reverse_column(view, line, character)
+
+
+## Test observability for the eraser's admission memo (engine driver asserts flips clear it).
+func erasure_memo_size() -> int:
+    if _eraser == null:
+        return 0
+    return _eraser.erasure_memo_size()
+
+
+## gdcc diagnostics channel entry (plan §4.2 step 3): forwards to the source registry, which
 ## tracks the content version of `path` and marks real changes dirty. Runs on every
 ## `_validate` — including while LSP reports errors, because LSP errors suppress gdcc
 ## diagnostics from the DISPLAY only, never the dirty tracking. Returns -1 for non-project
@@ -291,6 +337,8 @@ func _ready() -> void:
     # Persistent pump: drives the feature ticks. Ticks are no-ops outside ACTIVE state, so
     # the resident node can keep this connection forever.
     tree.process_frame.connect(_on_diag_frame)
+    # The Phase 7 decision-flip hooks (GDExtensionManager extension (un)load/reload) are
+    # connected by the `GdccClassNameEraser` child itself at `_ready` (plan §7 Phase 7 item 4).
 
 
 ## Registers the language, loader, and saver. Instances are created once (first call) and
@@ -340,6 +388,13 @@ func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
         _completion.name = &"GdccCompletionService"
         _completion.bind_service(self)
         add_child(_completion)
+        # Phase 7 class_name-erasure slice (`lsp_safe_text` + decision flips): the only frame
+        # wiring is its deferred post-unload resync in `_on_diag_frame`; no busy term (a flip
+        # is one LSP notification + one revalidation enqueue, never frame-driven work).
+        _eraser = GdccClassNameEraser.new()
+        _eraser.name = &"GdccClassNameEraser"
+        _eraser.bind_service(self)
+        add_child(_eraser)
     _editor_interface = editor_interface
     _lsp_host = lsp_host
     _lsp_port = lsp_port
@@ -454,6 +509,10 @@ func _on_diag_frame() -> void:
     _lifecycle.service_tick(now)
     _reconciler.service_tick(now)
     _scheduler.service_tick(now)
+    # The eraser's deferred post-unload view restoration runs BEFORE the revalidation drain so
+    # its revalidation request can fire in the same frame.
+    if _eraser != null:
+        _eraser.process_deferred_resync()
     _pump_revalidation()
     refresh_busy()
 
@@ -592,6 +651,31 @@ func diag_channel_status() -> Dictionary:
         "last_round_msec": last_round,
         "last_failure": failure,
     }
+
+
+## Re-sync the CURRENT editor document's LSP view with the re-evaluated erasure decision and
+## queue a Phase 5 revalidation. Called by the `GdccClassNameEraser` child on decision flips
+## (extension load/reload immediately, unload deferred one frame); the text transform itself is
+## the eraser's `lsp_safe_text`, while the editor/registry/LSP/revalidation plumbing stays here.
+func resync_current_document_lsp() -> void:
+    if not _active or _lsp_client == null or not _lsp_client.is_ready():
+        return
+    var context: Dictionary = _current_editor_context()
+    var path: String = str(context.get("path", ""))
+    if not path.begins_with("res://"):
+        return
+    var live: Variant = _registry.entry(path)
+    if not (live is Dictionary):
+        return
+    var uri: String = _path_to_uri(path)
+    if uri == "":
+        return
+    var view: Dictionary = lsp_safe_text(path, str(live.get("text", "")))
+    if _lsp_client.sync_document(uri, str(view["text"])) < 0:
+        return
+    var version: int = int(live.get("version", -1))
+    if version >= 0:
+        _revalidate_pending[path] = version
 
 
 ## Revalidation pump (plan §7 Phase 5 item 1): a background analysis round becomes visible

@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpServer;
 import gd.script.gdcc.api.API;
 import gd.script.gdcc.api.CompileResult;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
+import gd.script.gdcc.backend.c.build.GdextensionMetadataFile;
 import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.backend.c.build.ZigUtil;
@@ -21,6 +22,7 @@ import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -28,6 +30,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Phase 1 engine acceptance of the .gd3 editor integration (plan §7/§8.2), gated on zig +
@@ -163,7 +166,19 @@ class EditorAddonScriptLanguageEngineTest {
                     "editor_opened", "signal_revalidates", "same_version_remerge_quiet",
                     "new_version_same_diag_fires", "non_current_tab_dropped",
                     "popup_deferral", "endpoint_retarget_closed", "endpoint_retarget_recover",
-                    "endpoint_persists_after_toggle", "status_area", "survived"))
+                    "endpoint_persists_after_toggle", "status_area", "survived")),
+            // Phase 6+7 (plan §7): compile-time `_gdcc_get_metadata` readback through ClassDB
+            // (incl. the nested class and the cache-isolation rule), the class_name erasure
+            // admission matrix and rewrite/mapping shapes (whitebox), then end-to-end on a
+            // per-case compiled fixture: no `hides a native class` pseudo-error, gdcc
+            // diagnostics still flow after an edit, and an extension-reload decision flip
+            // re-syncs + revalidates the current document.
+            Map.entry("class_name_erasure", List.of(
+                    "config", "service_ready", "lsp_ready", "metadata_readback",
+                    "metadata_inner_and_cache", "admission_matrix", "rewrite_forms",
+                    "analysis_ready", "validate_no_hides_error", "editor_opened",
+                    "decision_flip", "edit_shows_gdcc_not_hides",
+                    "flip_to_no_erasure", "flip_back_to_erasure", "survived"))
     );
 
     /// Interpreted driver plugin (gdcc feature limits do not apply to it). Every mode records
@@ -173,7 +188,7 @@ class EditorAddonScriptLanguageEngineTest {
     /// results — method calls are not compile-time constant expressions, so javac emits a
     /// runtime concat instead of folding the parts back into a single oversized constant.
     private static final String DRIVER_PLUGIN = driverPluginCore() + driverPluginCompletion()
-            + driverPluginRevalidate();
+            + driverPluginRevalidate() + driverPluginClassMetadata();
 
     private static String driverPluginCore() {
         return """
@@ -320,6 +335,8 @@ class EditorAddonScriptLanguageEngineTest {
                     await _run_lsp_completion_mode()
                 elif mode == "diag_revalidate":
                     await _run_diag_revalidate_mode()
+                elif mode == "class_name_erasure":
+                    await _run_class_name_erasure_mode()
                 else:
                     _step("mode", false, "unknown mode " + mode)
                 _finish()
@@ -1912,6 +1929,308 @@ class EditorAddonScriptLanguageEngineTest {
             """;
     }
 
+    /// Phase 6+7 (class metadata + class_name erasure) mode. Separate text block for the
+    /// 64KB literal limit, same as the completion/revalidate chunks.
+    private static String driverPluginClassMetadata() {
+        return """
+
+            # ---------------- Phase 6+7: class metadata + class_name erasure (plan §7) ----------------
+
+            func _run_class_name_erasure_mode() -> void:
+                var service := _service()
+                var lang := _find_gd3_language()
+                if service == null or lang == null:
+                    _step("service_ready", false, "GdccEditorService or GD3 language missing")
+                    return
+                var lsp_port := int(_config["lsp_port"])
+                var rpc_port := int(_config["rpc_port"])
+                _step("service_ready", service.install(EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", rpc_port) == OK)
+                _step("lsp_ready", await _wait_lsp_ready(30.0))
+
+                var subject_path := "res://src/phase7_subject.gd3"
+                var subject_src := "class_name Gd3Phase7Subject\\nextends Node\\n\\nclass Inner extends RefCounted:\\n    pass\\n"
+                var subject_abs := ProjectSettings.globalize_path(subject_path)
+
+                # --- Phase 6: metadata readback through ClassDB (the runtime consumption
+                # contract): the compiled fixture class answers `_gdcc_get_metadata` with the
+                # exact source facts the compile was fed. ---
+                var meta_ok: bool = ClassDB.class_exists("Gd3Phase7Subject") \\
+                        and ClassDB.class_get_api_type("Gd3Phase7Subject") == 2 \\
+                        and ClassDB.class_has_method("Gd3Phase7Subject", "_gdcc_get_metadata")
+                var meta: Variant = null
+                if meta_ok:
+                    meta = ClassDB.class_call_static("Gd3Phase7Subject", "_gdcc_get_metadata")
+                var gdcc: Dictionary = {}
+                if meta is Dictionary:
+                    gdcc = meta.get("gdcc", {})
+                if meta is Dictionary and not gdcc.is_empty():
+                    meta_ok = meta_ok and int(gdcc.get("format", -1)) == 1 \\
+                            and str(gdcc.get("source_res_path", "")) == subject_path \\
+                            and str(gdcc.get("source_path", "")) == subject_abs \\
+                            and str(gdcc.get("source_name", "")) == "Gd3Phase7Subject" \\
+                            and str(gdcc.get("module", "")) == "Gd3 Phase7 Fixture" \\
+                            and str(gdcc.get("compiled_at", "")) != "" \\
+                            and str(gdcc.get("version", "")) != ""
+                else:
+                    meta_ok = false
+                _step("metadata_readback", meta_ok, str(gdcc))
+
+                # Nested class metadata (canonical registration name, dotted source name) and
+                # cache isolation: mutating one returned Dictionary must not leak into the
+                # next call's answer (the C side returns a deep copy of its parse cache).
+                var inner_meta: Variant = ClassDB.class_call_static("Gd3Phase7Subject__sub__Inner", "_gdcc_get_metadata")
+                var inner_ok: bool = inner_meta is Dictionary \\
+                        and str(inner_meta.get("gdcc", {}).get("source_name", "")) == "Gd3Phase7Subject.Inner" \\
+                        and str(inner_meta.get("gdcc", {}).get("source_res_path", "")) == subject_path
+                if meta is Dictionary:
+                    meta["gdcc"]["injected"] = true
+                    var again: Variant = ClassDB.class_call_static("Gd3Phase7Subject", "_gdcc_get_metadata")
+                    inner_ok = inner_ok and again is Dictionary and not again.get("gdcc", {}).has("injected")
+                _step("metadata_inner_and_cache", inner_ok)
+
+                # --- Phase 7 admission matrix (whitebox on lsp_safe_text): only the exact
+                # provenance match erases; every other shape stays identical text. ---
+                var matrix_ok := true
+                var v_positive: Dictionary = service.lsp_safe_text(subject_path, subject_src)
+                matrix_ok = matrix_ok and v_positive.get("erased", false) == true \\
+                        and not str(v_positive["text"]).contains("class_name")
+                var v_wrong_path: Dictionary = service.lsp_safe_text("res://src/elsewhere.gd3", subject_src)
+                matrix_ok = matrix_ok and v_wrong_path.get("erased", true) == false \\
+                        and str(v_wrong_path["text"]) == subject_src
+                var v_core: Dictionary = service.lsp_safe_text(subject_path, "class_name Node\\nextends RefCounted\\n")
+                matrix_ok = matrix_ok and v_core.get("erased", true) == false
+                var v_uncompiled: Dictionary = service.lsp_safe_text(subject_path, "class_name Gd3NoSuchClass9001\\nextends Node\\n")
+                matrix_ok = matrix_ok and v_uncompiled.get("erased", true) == false
+                var v_bad_base: Dictionary = service.lsp_safe_text(subject_path, "class_name Gd3Phase7Subject\\nextends RefCounted\\n")
+                matrix_ok = matrix_ok and v_bad_base.get("erased", true) == false
+                var v_no_provenance: Dictionary = service.lsp_safe_text(subject_path, "class_name GdccScriptLanguage\\nextends ScriptLanguageExtension\\n")
+                matrix_ok = matrix_ok and v_no_provenance.get("erased", true) == false
+                var v_no_header: Dictionary = service.lsp_safe_text(subject_path, "extends Node\\n")
+                matrix_ok = matrix_ok and v_no_header.get("erased", true) == false \\
+                        and str(v_no_header["text"]) == "extends Node\\n"
+                _step("admission_matrix", matrix_ok)
+
+                # --- Rewrite forms, bidirectional mapping (code points), and scanner traps. ---
+                var forms_ok := true
+                var f_blank_lines: PackedStringArray = str(v_positive["text"]).split("\\n")
+                forms_ok = forms_ok and f_blank_lines.size() == subject_src.split("\\n").size() \\
+                        and f_blank_lines[0] == " ".repeat("class_name Gd3Phase7Subject".length()) \\
+                        and int(v_positive["erase_line"]) == 0 and int(v_positive["removed_prefix"]) == 0
+                var same_src := "class_name Gd3Phase7Subject extends Node\\npass\\n"
+                var f_same: Dictionary = service.lsp_safe_text(subject_path, same_src)
+                var f_same_lines: PackedStringArray = str(f_same["text"]).split("\\n")
+                forms_ok = forms_ok and f_same.get("erased", false) == true \\
+                        and f_same_lines[0] == "extends Node" and f_same_lines[1] == "pass" \\
+                        and int(f_same["erase_line"]) == 0 and int(f_same["removed_prefix"]) == 28
+                var fwd: Dictionary = service.lsp_safe_forward_position(f_same, 0, 30)
+                forms_ok = forms_ok and int(fwd["line"]) == 0 and int(fwd["character"]) == 2
+                forms_ok = forms_ok and service.lsp_safe_reverse_column(f_same, 0, 2) == 30
+                forms_ok = forms_ok and service.lsp_safe_reverse_column(f_same, 1, 3) == 3
+                var fwd_other: Dictionary = service.lsp_safe_forward_position(f_same, 1, 4)
+                forms_ok = forms_ok and int(fwd_other["line"]) == 1 and int(fwd_other["character"]) == 4
+                # CJK text before the header: the scan and the rewrite count code points, so the
+                # erased line index and content must be unaffected by multibyte characters.
+                var cjk_src := "var a = \\"中文\\"\\nclass_name Gd3Phase7Subject extends Node\\n"
+                var f_cjk: Dictionary = service.lsp_safe_text(subject_path, cjk_src)
+                forms_ok = forms_ok and f_cjk.get("erased", false) == true \\
+                        and int(f_cjk["erase_line"]) == 1 \\
+                        and str(f_cjk["text"]).split("\\n")[1] == "extends Node"
+                # Traps (R25): comment lines, multiline-string content, and indented headers
+                # must never match.
+                var t_comment: Dictionary = service.lsp_safe_text(subject_path, "# class_name Gd3Phase7Subject\\nextends Node\\n")
+                forms_ok = forms_ok and t_comment.get("erased", true) == false
+                var dq := String.chr(34)
+                var dq3 := dq + dq + dq
+                var t_string: Dictionary = service.lsp_safe_text(subject_path,
+                        "var s = " + dq3 + "\\nclass_name Gd3Phase7Subject\\n" + dq3 + "\\nextends Node\\n")
+                forms_ok = forms_ok and t_string.get("erased", true) == false
+                var t_indent: Dictionary = service.lsp_safe_text(subject_path, "  class_name Gd3Phase7Subject\\nextends Node\\n")
+                forms_ok = forms_ok and t_indent.get("erased", true) == false
+                # Comment tail must not inject a same-line base (review finding): the real base
+                # comes from the next line, and the erase uses the zero-drift blank form.
+                var t_tail: Dictionary = service.lsp_safe_text(subject_path,
+                        "class_name Gd3Phase7Subject # extends RefCounted\\nextends Node\\n")
+                var t_tail_lines: PackedStringArray = str(t_tail["text"]).split("\\n")
+                forms_ok = forms_ok and t_tail.get("erased", false) == true \\
+                        and t_tail_lines[0] == " ".repeat("class_name Gd3Phase7Subject # extends RefCounted".length()) \\
+                        and t_tail_lines[1] == "extends Node" \\
+                        and int(t_tail["removed_prefix"]) == 0
+                # The icon string must not inject a base either (`extends` inside the quoted
+                # path is string content, never the header clause).
+                var t_icon: Dictionary = service.lsp_safe_text(subject_path,
+                        "class_name Gd3Phase7Subject, \\"res://extends_x.png\\"\\nextends Node\\n")
+                forms_ok = forms_ok and t_icon.get("erased", false) == true \\
+                        and int(t_icon["removed_prefix"]) == 0
+                # Adversarial multiline sequence (review finding): a triple-quote run held in a
+                # comment must not arm the string state; the class_name INSIDE the real string
+                # is not a declaration.
+                var t_adv: Dictionary = service.lsp_safe_text(subject_path,
+                        "var a = \\"x\\" # " + dq3 + "\\nvar s = " + dq3 + "\\nclass_name Gd3Phase7Subject\\n" + dq3 + "\\nextends Node\\n")
+                forms_ok = forms_ok and t_adv.get("erased", true) == false
+                # Triple-SINGLE-quote multiline strings (the 4.5 tokenizer accepts both quote
+                # chars) must protect content the same way.
+                var sq3 := String.chr(39) + String.chr(39) + String.chr(39)
+                var t_single3: Dictionary = service.lsp_safe_text(subject_path,
+                        "var s = " + sq3 + "\\nclass_name Gd3Phase7Subject\\n" + sq3 + "\\nextends Node\\n")
+                forms_ok = forms_ok and t_single3.get("erased", true) == false
+                # An escaped first quote must not close the multiline string early: the
+                # class_name below stays string content.
+                var t_esc: Dictionary = service.lsp_safe_text(subject_path,
+                        "var s = " + dq3 + "\\n" + "\\\\" + dq3 + "\\nclass_name Gd3Phase7Subject\\n" + dq3 + "\\nextends Node\\n")
+                forms_ok = forms_ok and t_esc.get("erased", true) == false
+                # An explicit but base-less `extends` (mid-edit / comment-only tail) must fail
+                # admission rather than fall back to the implicit RefCounted default — anchored
+                # on the fixture's RefCounted inner class (where the default WOULD match).
+                var t_empty_base: Dictionary = service.lsp_safe_text(subject_path,
+                        "class_name Gd3Phase7Subject__sub__Inner\\nextends # mid-edit\\n")
+                forms_ok = forms_ok and t_empty_base.get("erased", true) == false
+                var t_inner_ok: Dictionary = service.lsp_safe_text(subject_path,
+                        "class_name Gd3Phase7Subject__sub__Inner\\nextends RefCounted\\n")
+                forms_ok = forms_ok and t_inner_ok.get("erased", false) == true
+                # `extends ,` (no resolvable token) must fail admission too — never fall back to
+                # the implicit RefCounted default on an explicit-but-empty clause.
+                var t_empty_token: Dictionary = service.lsp_safe_text(subject_path,
+                        "class_name Gd3Phase7Subject__sub__Inner\\nextends ,\\n")
+                forms_ok = forms_ok and t_empty_token.get("erased", true) == false
+                # Regular (non-triple) strings may also span physical lines (4.5 tokenizer has
+                # no newline terminator; r_strings.gd) — raw and plain forms alike keep string
+                # content protected.
+                var t_raw_span: Dictionary = service.lsp_safe_text(subject_path,
+                        "extends Node\\nvar s = r" + dq + "hello\\nclass_name Gd3Phase7Subject\\n" + dq + "\\n")
+                forms_ok = forms_ok and t_raw_span.get("erased", true) == false
+                var t_plain_span: Dictionary = service.lsp_safe_text(subject_path,
+                        "extends Node\\nvar s = " + dq + "hello\\nclass_name Gd3Phase7Subject\\n" + dq + "\\n")
+                forms_ok = forms_ok and t_plain_span.get("erased", true) == false
+                _step("rewrite_forms", forms_ok)
+
+                # --- E2E: with the extension loaded, editing the source must no longer raise
+                # the `hides a native class` pseudo-error, while gdcc diagnostics still flow. ---
+                service.notify_filesystem_changed()
+                var diag_ok: bool = await _wait_diag_ready(service, 45.0)
+                diag_ok = diag_ok and await _wait_diag_current(service, subject_path, 1, 60.0)
+                _step("analysis_ready", diag_ok)
+
+                var clean_result: Dictionary = lang._validate(subject_src, subject_path, true, true, true, true)
+                var clean_ok: bool = clean_result.get("valid", false) == true
+                for e in clean_result.get("errors", []):
+                    if str(e.get("message", "")).contains("hides a native class"):
+                        clean_ok = false
+                _step("validate_no_hides_error", clean_ok, str(clean_result))
+
+                # Open the subject tab: the decision flip only re-syncs the CURRENT document.
+                EditorInterface.set_main_screen_editor("Script")
+                var subject_res: Resource = ResourceLoader.load(subject_path)
+                if subject_res != null:
+                    EditorInterface.edit_resource(subject_res)
+                var code_edit: CodeEdit = null
+                var open_deadline := Time.get_ticks_msec() + 15000
+                while Time.get_ticks_msec() < open_deadline and code_edit == null:
+                    await get_tree().process_frame
+                    var se := EditorInterface.get_script_editor()
+                    var cur := se.get_current_editor()
+                    var cur_script := se.get_current_script()
+                    if cur != null and cur_script != null and cur_script.resource_path == subject_path:
+                        var candidate: Control = cur.get_base_editor()
+                        if candidate is CodeEdit:
+                            code_edit = candidate as CodeEdit
+                _step("editor_opened", code_edit != null)
+
+                # Decision flip: the signal must clear the memoized admissions, RE-SYNC the
+                # current document (anchored by the LSP document version advancing), and fire a
+                # Phase 5 revalidation (validate counter advances with no driver-side edit).
+                var frames := 0
+                while frames < 5:
+                    await get_tree().process_frame
+                    frames += 1
+                var memo_before: int = service.erasure_memo_size()
+                var count_before := _lang_validate_count()
+                var lsp_client: GdccLspClient = service.get_lsp_client()
+                var subject_uri: String = lsp_client.path_to_uri(ProjectSettings.globalize_path(subject_path))
+                var doc_version_before: int = lsp_client.document_version_for(subject_uri)
+                GDExtensionManager.emit_signal("extensions_reloaded")
+                var memo_after: int = service.erasure_memo_size()
+                var doc_version_after: int = lsp_client.document_version_for(subject_uri)
+                var flip_fired: bool = await _wait_validate_advance(count_before, 45)
+                _step("decision_flip",
+                        memo_after < memo_before and doc_version_after > doc_version_before and flip_fired,
+                        "memo %d -> %d, doc v%d -> v%d, fired=%s" % [
+                                memo_before, memo_after, doc_version_before, doc_version_after,
+                                str(flip_fired)])
+
+                # Edit the source: the erased view keeps the LSP silent, and the gdcc-only
+                # diagnostic pair (same family as the gdcc_diag lowering fixture) surfaces.
+                # The edit MUST go through the real editor buffer: an open tab is re-validated
+                # by the editor itself with the BUFFER text, so a driver-side `_validate` with
+                # divergent text would be rolled back by the next editor-driven validation
+                # (version churn starves the merge — the Phase 5 mode drives set_text too).
+                var edited_src := "class_name Gd3Phase7Subject\\nextends Node\\n\\n@onready var camera = $Camera3D\\n"
+                if code_edit != null:
+                    code_edit.set_text(edited_src)
+                    _last_text_change_msec = Time.get_ticks_msec()
+                # The editor's own idle validation of the open tab pushes the registry version.
+                await _settle_past_idle()
+                var edit_version: int = service.registry().live_version(subject_path)
+                var edit_merged: bool = edit_version == 2 \\
+                        and await _wait_diag_current(service, subject_path, edit_version, 60.0)
+                var edit_result: Dictionary = lang._validate(edited_src, subject_path, true, true, true, true)
+                var pair_ok: bool = edit_merged and edit_result.get("valid", true) == false
+                var saw_compile_error := false
+                for e in edit_result.get("errors", []):
+                    var msg := str(e.get("message", ""))
+                    if msg.begins_with("[gdcc sema.compile_check]") \\
+                            and int(e.get("line", -1)) == 4 and int(e.get("column", -1)) == 23:
+                        saw_compile_error = true
+                    if msg.contains("hides a native class"):
+                        pair_ok = false
+                _step("edit_shows_gdcc_not_hides", pair_ok and saw_compile_error,
+                        str(edit_result) + " v=" + str(edit_version) + " merged=" + str(edit_merged))
+
+                # Real admission flip in BOTH directions (review finding: memo clearing alone
+                # proves nothing): unloading the fixture extension removes the compiled class,
+                # so erasure must switch OFF; loading it back switches erasure ON again. The
+                # fixture carries `reloadable = true` exactly to allow this (it registers no
+                # ScriptLanguage, so the anti-reload rule does not apply). Both directions also
+                # assert the CURRENT document's re-sync via its LSP document version.
+                var fixture_ext := "res://addons/gdcc_phase7_fixture/gdcc_phase7_fixture.gdextension"
+                var v_before_unload: int = lsp_client.document_version_for(subject_uri)
+                var unload_err: int = GDExtensionManager.unload_extension(fixture_ext)
+                # The post-unload re-sync is deferred to the next frame (the unloading signal
+                # fires before the class set changes).
+                var resynced_off := false
+                var off_frames := 0
+                while off_frames < 30 and not resynced_off:
+                    await get_tree().process_frame
+                    off_frames += 1
+                    resynced_off = lsp_client.document_version_for(subject_uri) > v_before_unload
+                var flip_off: Dictionary = service.lsp_safe_text(subject_path, subject_src)
+                # Content anchor (review finding): the version advance alone could hide a wrong
+                # re-sent text — the post-unload resync must have delivered the RAW buffer text
+                # (erasure off), the post-load resync the erased view of it.
+                var raw_sent_ok: bool = lsp_client.debug_sent_text(subject_uri) == edited_src
+                _step("flip_to_no_erasure",
+                        unload_err == OK and resynced_off and raw_sent_ok
+                        and flip_off.get("erased", true) == false
+                        and not ClassDB.class_exists("Gd3Phase7Subject"),
+                        "unload err=" + str(unload_err) + " resynced=" + str(resynced_off)
+                        + " raw_sent=" + str(raw_sent_ok))
+                var v_before_load: int = lsp_client.document_version_for(subject_uri)
+                var load_err: int = GDExtensionManager.load_extension(fixture_ext)
+                # The settled hook re-syncs synchronously inside the load call.
+                var v_after_load: int = lsp_client.document_version_for(subject_uri)
+                var expected_erased: String = " ".repeat("class_name Gd3Phase7Subject".length()) \\
+                        + edited_src.substr("class_name Gd3Phase7Subject".length())
+                var erased_sent_ok: bool = lsp_client.debug_sent_text(subject_uri) == expected_erased
+                var flip_on: Dictionary = service.lsp_safe_text(subject_path, subject_src)
+                _step("flip_back_to_erasure",
+                        load_err == OK and v_after_load > v_before_load and erased_sent_ok
+                        and flip_on.get("erased", false) == true
+                        and ClassDB.class_exists("Gd3Phase7Subject"),
+                        "load err=" + str(load_err) + " resynced=" + str(v_after_load > v_before_load)
+                        + " erased_sent=" + str(erased_sent_ok))
+                _step("survived", true)
+            """;
+    }
+
     private static final String DRIVER_MANIFEST = """
             [plugin]
 
@@ -2097,6 +2416,25 @@ class EditorAddonScriptLanguageEngineTest {
         }
     }
 
+    /// Phase 6+7 acceptance (plan §7): every compiled class answers `_gdcc_get_metadata`
+    /// through ClassDB with its provenance (source paths, dotted source name, module, version),
+    /// and the LSP sync view erases `class_name` exactly when the ClassDB class proves to be
+    /// compiled from the file being edited — killing the unsuppressible `hides a native class`
+    /// pseudo-error without touching the disk text or the gdcc analysis input. The case runs
+    /// against a real in-process gdcc RPC server and a per-case compiled fixture extension
+    /// (whose `source_path` must point into the case project copy, so the once-per-suite addon
+    /// build cannot provide it).
+    @Test
+    void classNameErasureSuppressesHidesNativeClass() throws Exception {
+        var config = new JsonObject();
+        config.addProperty("lsp_port", findFreePort());
+        try (var server = JsonRpcServer.start(new JsonRpcDispatcher(new API()), "127.0.0.1", 0,
+                JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES)) {
+            config.addProperty("rpc_port", server.port());
+            runCase("class_name_erasure", config);
+        }
+    }
+
     private static String runCase(String caseName, JsonObject config) throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping script language engine test");
@@ -2126,6 +2464,9 @@ class EditorAddonScriptLanguageEngineTest {
                 projectDir, EditorAddonProjectInstaller.EXTENSION_SUB_DIR, compileResult.artifacts(),
                 EditorAddonProjectInstaller.EXTENSION_FILE_NAME,
                 COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform(), true);
+        if (caseName.equals("class_name_erasure")) {
+            installPhase7Fixture(projectDir, caseDir);
+        }
 
         // Test-only driver plugin (never part of the shipped addon).
         var driverDir = projectDir.resolve("addons/gdcc_test_driver");
@@ -2153,6 +2494,61 @@ class EditorAddonScriptLanguageEngineTest {
                     CASE_ROOT.resolve("addon-build"), TargetPlatform.getNativePlatform());
         }
         return compiledAddon;
+    }
+
+    /// Phase 6/7 fixture: compiles `Gd3Phase7Subject` (plus a nested class) into a second
+    /// GDExtension whose metadata `source_path` points at the subject file INSIDE this case's
+    /// project copy — the provenance match the erasure admission requires can never come from
+    /// the once-per-suite addon build (that one compiles from the original `src/`). The
+    /// subject source lands on disk before the editor boots so the reconciler mirrors it like
+    /// any project file.
+    private static void installPhase7Fixture(Path projectDir, Path caseDir) throws IOException {
+        var subjectSource = "class_name Gd3Phase7Subject\nextends Node\n\nclass Inner extends RefCounted:\n    pass\n";
+        var subjectFile = projectDir.resolve("src/phase7_subject.gd3");
+        Files.writeString(subjectFile, subjectSource);
+        // Godot paths use '/' on every platform; the admission comparison normalizes both
+        // sides, but baking the '/' form here keeps the metadata byte-identical to what
+        // `ProjectSettings.globalize_path` reports.
+        var subjectAbsolute = subjectFile.toAbsolutePath().normalize().toString().replace('\\', '/');
+        var result = EditorAddonProjectInstaller.compileFixtureLibrary(
+                caseDir.resolve("fixture-build"), TargetPlatform.getNativePlatform(),
+                "gd3_phase7_fixture", "Gd3 Phase7 Fixture",
+                List.of(new EditorAddonProjectInstaller.FixtureSource(
+                        "/src/phase7_subject.gd3", "res://src/phase7_subject.gd3",
+                        subjectAbsolute, subjectSource)));
+        assertEquals(CompileResult.Outcome.SUCCESS, result.outcome(),
+                () -> "phase7 fixture build failed: " + result.failureMessage()
+                        + "\nbuild log:\n" + result.buildLog());
+        // Installed MANUALLY (not via installExtension): the fixture keeps `reloadable = true`
+        // because the decision-flip steps exercise real `unload_extension`/`load_extension`
+        // cycles. The forced `reloadable = false` rewrite exists to protect the addon's
+        // ScriptLanguageExtension instance (the ScriptServer raw-pointer hazard); the fixture
+        // registers plain data classes only, so the rule does not apply to it.
+        var extensionDir = projectDir.resolve("addons/gdcc_phase7_fixture");
+        var binDir = extensionDir.resolve("bin");
+        Files.createDirectories(binDir);
+        Path fixtureLibrary = null;
+        for (var artifact : result.artifacts()) {
+            var target = binDir.resolve(artifact.getFileName().toString());
+            Files.copy(artifact, target, StandardCopyOption.REPLACE_EXISTING);
+            if (EditorAddonProjectInstaller.isDynamicLibrary(target.getFileName().toString())) {
+                fixtureLibrary = target;
+            }
+        }
+        assertNotNull(fixtureLibrary, "fixture build produced no loadable library");
+        Files.writeString(
+                extensionDir.resolve("gdcc_phase7_fixture.gdextension"),
+                GdextensionMetadataFile.render(
+                        "res://addons/gdcc_phase7_fixture/bin/" + fixtureLibrary.getFileName(),
+                        COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform()),
+                StandardCharsets.UTF_8);
+        // The addon install already wrote `.godot/extension_list.cfg` with only its own entry;
+        // rewrite it to load BOTH extensions.
+        var extensionList = projectDir.resolve(".godot").resolve("extension_list.cfg");
+        Files.writeString(extensionList,
+                "res://addons/gdcc/gdcc_for_editor.gdextension\n"
+                        + "res://addons/gdcc_phase7_fixture/gdcc_phase7_fixture.gdextension\n",
+                StandardCharsets.UTF_8);
     }
 
     /// Adds the driver plugin to the enabled list (gdcc stays first so load order matches real

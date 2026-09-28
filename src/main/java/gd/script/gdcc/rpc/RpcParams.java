@@ -57,14 +57,18 @@ public final class RpcParams {
         }
     }
 
+    /// @param absolutePath Optional host-absolute source path for class metadata;
+    ///                     stays null for callers that predate the field.
     public record VfsPutFileParams(@NotNull String moduleId, @NotNull String path,
-                                   @NotNull String content, @Nullable String displayPath) {
+                                   @NotNull String content, @Nullable String displayPath,
+                                   @Nullable String absolutePath) {
         public VfsPutFileParams {
             moduleId = StringUtil.requireTrimmedNonBlank(moduleId, "moduleId");
             path = StringUtil.requireNonBlank(path, "path");
             // File content may legitimately be empty; only a missing/`null` component is invalid.
             Objects.requireNonNull(content, "content must not be null");
             displayPath = StringUtil.requireNullableNonBlank(displayPath, "displayPath");
+            absolutePath = StringUtil.requireNullableNonBlank(absolutePath, "absolutePath");
         }
     }
 

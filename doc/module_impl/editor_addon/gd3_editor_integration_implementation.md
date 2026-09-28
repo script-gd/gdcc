@@ -12,9 +12,10 @@
 - 状态：实施计划（Phase 0 已实施并通过验收；**Phase 1 已实施并通过验收**；
   **Phase 2 已实施并通过自动化验收**；**Phase 3 已实施并通过自动化验收**；
   **Phase 4 已实施并通过自动化验收**；**Phase 5 已实施并通过自动化验收**；
-  **Phase 6–8 已规划、尚未实施**（2026-09-27 手动测试驱动新增，含评审复核）；
+  **Phase 6–7 已实施并通过自动化验收**（2026-09-28，含引擎端到端用例
+  `class_name_erasure` 13 步全绿）；**Phase 8 已规划、尚未实施**；
   **Phase 9（原 Phase 5 打磨）尚未实施**；已经过多轮并行评审并修订）
-- 更新日期：2026-09-27
+- 更新日期：2026-09-28
 - 2026-09-27 修订：`launch_bad` 引擎测试断言接受平台分叉的两种 launcher 失败报告
   （Windows 同步 `OS.create_process failed` / Unix-like fork 成功后子进程 execvp
   失败早退，见 §3.7），修复 Linux/macOS CI。
@@ -556,6 +557,192 @@
     `EditorAddonDiagnosticsFixtureTest` 4/4、`EditorAddonClientAnalysisTest`、
     `EditorAddonIntegrationProbeTest`、`EditorAddonBootstrapEngineTest`、引擎测试
     全部 13 用例（含新 `diag_revalidate`）无回归。
+- Phase 6 验收结果（2026-09-28，自动化项全绿，手动项无——计划定为引擎覆盖）：
+  - 新增 `CClassMetadataSupportTest`（4/4）：元数据 JSON 全键形状（format/
+    source_res_path/source_path/source_name/module/compiled_at/version）、
+    `source_res_path` 仅 `res://` 形态产出、`source_path` 缺省省略、嵌套类
+    `source_name` 点号路径、转义矩阵（引号/反斜杠/换行/制表符/CJK/非 BMP emoji/
+    Windows 路径 JSON→C 双层）经"渲染→C 反转义→JSON 解析"逐字往返；C 体的惰性
+    解析+缓存+深拷贝返回锚点。
+  - 新增 `ApiCompileClassMetadataTest`（2/2，RecordingCompiler 管线级）：entry.c 逐类
+    （含嵌套 `MetaOuter__sub__Inner`）恰一个访问器、JSON 内容与 putFile 事实一致、
+    entry.h 静态绑定形状 `0_arg_ret_Dictionary_static` 携带
+    `GDEXTENSION_METHOD_FLAG_STATIC`；无 absolutePath 的重传保留既有 provenance
+    （与 displayPath 同规则）。
+  - `RpcJsonCodecTest`/`ApiVirtualFileSystemTest` 增补：`absolutePath` 可选绑定、缺省
+    null、空白串 -32602 路径负例。
+  - 前端 `_gdcc_` 成员级保留前缀落入既有
+    `FrontendSyntheticPropertyHelperSupport.RESERVED_PREFIXES`（与类级
+    `_gdcc_coro_state_` 同族），`FrontendClassSkeletonTest` 新增
+    `buildRejectsReservedGdccInternalPrefixButKeepsBoundaryNamesAlive`：signal/var/func
+    全灭（含精确的 `_gdcc_get_metadata` 冲突名），边界名 `_gdcc`/`_gdccx` 保留，诊断
+    文案 `reserved gdcc-internal prefix`；合成函数经既有
+    `validateFileScopeSymbolsDisjoint` 函数循环自动纳入（prepare 期合成先于该校验）。
+  - 引擎侧读回在 `class_name_erasure` 用例（见 Phase 7）的 `metadata_readback`/
+    `metadata_inner_and_cache` 步覆盖：`ClassDB.class_call_static` 读回与编译期事实
+    逐字一致（含 source_path 指向 case 项目副本）、嵌套类自描述、返回字典深拷贝
+    隔离（注入污染不渗透缓存）。
+- Phase 6 实现偏差与实施期事实修正（相对上文设计，按事实源口径记录）：
+  1. `source_name` 不经 canonical 反推（`__sub__` 虽为保留序列可逆，但实现选择了更显式
+     的通道）：前端骨架构建期把点号源级名直接写入 `LirClassDef.sourceClassName`
+     （顶层 = relation `sourceName`，嵌套沿 inner 链拼点号），codegen 只读该字段；LIR
+     XML 装载的类无此字段，回退 canonical 名（仅测试夹具路径，生产不经 XML）。
+  2. C 体返回**深拷贝**而非计划未言明的浅拷贝：载荷自身含嵌套 `gdcc` 子字典，浅拷贝
+     共享子表会让调用方污染共享缓存（引擎测试 `metadata_inner_and_cache` 锚定）。
+  3. 合成时机在 `CCodegen.prepare`（`CGenHelper` 收集绑定形状之前），并幂等：管线夹具
+     会对同一 module 二次 prepare，重复合成会触发 `validateFileScopeSymbolsDisjoint`
+     冲突（实施期 `ApiCompilePipelineTest` 暴露，已加 `hasFunction` 守卫）。
+  4. `compiled_at` 使同一模块两次编译的 entry.c 不再逐字节相等——
+     `CCodegenEngineMethodBindHeaderTest` 的名称稳定性全等断言改为归一化该字段后比较
+     （该断言的本意是符号名稳定，时间戳是唯一已知变动字段）。
+  5.  plumbing 落点：`vfs.putFile` 加可选 `absolutePath`（`RpcParams`/`API`/`ModuleState`/
+     `VfsNode`/`SourceSnapshot`/`CompileTaskRunner.SourceSnapshot`），codegen 经
+     `CodegenContext.sourceFileFacts`（键 = 与 `LirClassDef.sourceFile` 同规约的 logical
+     路径文本）取回；CLI 填规范化绝对输入路径（`GdccCommand` 复用既有 `hostPath`），
+     addon 三处上传（scheduler flight / reconciler / dock）填
+     `ProjectSettings.globalize_path(path)`。
+- Phase 7 验收结果（2026-09-28，自动化项全绿，手动项待 §8.3；经 review-expert-a +
+  review-expert-c 四轮并行评审/复核，最终双双 APPROVE）：
+  - 引擎测试新用例 `class_name_erasure`（15 步全绿，Zig+GODOT_BIN 门控）：每 case 独立
+    编译 fixture 扩展（`Gd3Phase7Subject` + 嵌套类，source_path 指向 case 项目副本——
+    每套件一次的 addon 编译产出无法提供该 provenance 匹配；fixture 手动写
+    `reloadable = true` 的 .gdextension 以支持真实装卸——它不注册 ScriptLanguage，
+    反重载规则不适用），双双写入 `extension_list.cfg`。步骤：`metadata_readback`/
+    `metadata_inner_and_cache`（Phase 6 引擎验收）、`admission_matrix`（白盒七项）、
+    `rewrite_forms`（两种行形式 + 双向映射 + CJK + 陷阱组）、`analysis_ready`、
+    `validate_no_hides_error`、`editor_opened`、`decision_flip`（备忘清空 + **LSP 文档
+    版本前进的重同步锚定** + 重校验计数前进）、`edit_shows_gdcc_not_hides`、
+    `flip_to_no_erasure`/`flip_back_to_erasure`（`GDExtensionManager.unload_extension`/
+    `load_extension` 驱动的**真实双向准入翻转**）。
+  - 回归：`EditorAddonScriptLanguageAnalysisTest`、`EditorAddonClientAnalysisTest`、
+    `EditorAddonBootstrapEngineTest`（rpc_driver 的 put_file 改 5 参）、
+    `EditorAddonIntegrationProbeTest`、`EditorAddonDiagnosticsFixtureTest`、
+    `RpcCompileHttpIntegrationTest`（新增 absolutePath-only 上传的 RPC 级锚定）、引擎
+    测试全部用例无回归。
+- Phase 7 实现偏差与实施期事实修正（相对上文设计，按事实源口径记录；评审轮修订见下方
+  评审记录）：
+  1. 编辑驱动必须经真实编辑器缓冲区（`code_edit.set_text`）：打开页签会被编辑器自身
+     以缓冲区文本重校验，驱动侧直接 `_validate` 的异文本会被下一次编辑器校验覆盖回
+     磁盘文本——版本震荡饿死合并（与 Phase 5 用例同惯例）。实施期
+     `edit_shows_gdcc_not_hides` 首轮失败（mirrored=3、live=2）即此，改为缓冲区内编辑
+     + idle 沉降推版本。
+  2. `lsp_safe_text` 返回视图字典（text/erased/erase_line/removed_prefix）+ 两个映射
+     helper（`lsp_safe_forward_position`/`lsp_safe_reverse_column`）；映射只影响同行
+     extends 形式的该行尾部列（独立行形式等长空白零漂移）。
+  3. 决策翻转的信号面从单一 `extensions_reloaded` 扩为三个（评审修复第 4 条）；白盒
+     可观察性经 `erasure_memo_size()` 与 `GdccLspClient.document_version_for`。
+  4. 准入的路径比较双侧归一化为 `/` 形态（Windows 下 globalize 与编译期绝对路径的
+     反斜杠分歧）。
+  5. 扫描器为行级迷你词法器（无 RegEx 依赖）：字符串状态携带（分隔符, 是否三引号），
+     理解转义对、`#` 注释、`"""`/`'''` 两种三引号、**普通字符串跨物理行**（评审第三轮
+     阻塞项，4.5 tokenizer + `r_strings.gd` 实证）。R25 残余收窄为词法近似的极端角落；
+     根治仍待编译器引用区间输出。
+  6. `should_still_revalidate` 的 gdcc 缓存新鲜门禁对"纯 LSP 重同步"场景保持不变：gdcc
+     通道离线时翻转后的显示刷新依赖编辑器自身节拍（诊断数据面已在重同步后更新），
+     该边界与第三轮复核保留项 2（心跳节拍）同类。
+  7. 验收后结构重构（2026-09-28）：Phase 7 全部逻辑从 `gdcc_editor_service.gd3` 抽出为
+     子节点 `gdcc_class_name_eraser.gd3`（hub-and-spoke 同构）：视图变换/双向映射/扫描
+     器/准入探测/备忘/三个 GDExtensionManager 信号监听全在子节点；service 保留
+     `lsp_safe_text`/`lsp_safe_forward_position`/`lsp_safe_reverse_column`/
+     `erasure_memo_size` 四个 facade 委托（语言与既有测试的调用面不变）与翻转的编辑器
+     侧重同步 `resync_current_document_lsp()`（依赖编辑器上下文/registry/LSP/重校验
+     队列）；卸载延迟重同步经 `_on_diag_frame` 在 `_pump_revalidation` 前调用子节点
+     `process_deferred_resync()`。
+- Phase 7 评审记录（2026-09-28，review-expert-a + review-expert-c 并行评审，修复后复核）：
+  - 采纳并修复：
+    1.（中，c）注释/图标字符串内的 `extends` 会被自由搜索误当基类（如
+       `class_name X # extends Node`）。修复：class_name 行尾部改为**顺序解析**
+       （名称 → 可选图标字符串（转义感知跳过）→ 位置锚定的 extends），不再全文搜索；
+       新增注释尾（正例：整行空白擦除 + 基类取下一行）与图标字符串陷阱锚点。
+    2.（中，c）`"""` 奇偶翻转可被注释内的标记骗入**不安全方向**（注释翻转→真字符串
+       提前"闭合"→字符串内容里的列 0 class_name 被当声明而擦改字符串）。修复：行级
+       迷你词法器（`_line_leaves_multiline_open`/`_multiline_remainder_open`）理解
+       单双引号转义、`#` 注释与 `"""`，逐行推进状态；新增对抗序列锚点（t_adv 不擦除）。
+       文档原"只抑制"表述已随实现修正。
+    3.（中，c）`source_res_path` 经当前项目 globalize 的回退无法证明同项目来源（同
+       类名+同 res 相对路径的第三方扩展会误判）。修复：**删除回退**，准入要求编译期绝对
+       `source_path`（§7 Phase 6 item 3 的兜底句由此作废——Phase 6/7 同批发版，不存在
+       只有 res 标签的存量产物）。
+    4.（中，c）备忘失效只挂 `extensions_reloaded`，漏掉单独 `load_extension`/
+       `unload_extension`（走 `extension_loaded`/`extension_unloading`）。修复：三信号
+       全接；unloading（类集合变化**前**触发）只清备忘不重同步（类消失后伪错误不可能
+       存在），loaded/reloaded 清备忘+重同步+重校验。
+    5.（中，a）`JsonRpcMethodRegistry` 的"无 displayPath 走三参"捷径会丢弃只传
+       `absolutePath` 的请求。修复：两字段均缺才走三参；API 5 参的 displayPath 放宽为
+       可空（VFS 回退规则不变）。锚点：`ApiCompileClassMetadataTest`
+       （absolutePath-only 元数据）+ `RpcCompileHttpIntegrationTest`（RPC 级）。
+    6.（中，a）`sourceFileFacts` 键与 `LirClassDef.sourceFile` 的归一化比诊断重映射少
+       一层 trim。修复：两侧统一走 `FrontendDiagnostic.sourcePathText` /
+       `DiagnosticSourcePathRemapper.logicalPathKey`。
+    7.（低，a）`gdcc_classdb_class_call_static` 失败分支丢弃已构造的 `result` Variant
+       （引擎 `gdextension_object_method_bind_call` 对 r_return 总是 placement 构造，
+       4.5 gdextension_interface.cpp 已核实）——共享 helper 的真实（ albeit 廉价：失败
+       时为 nil）契约违背，已补 `godot_Variant_destroy(&result)`。
+  - 驳回/保留（附理由）：
+    1.（a 建议）intrinsic 体的静态缓存加 call_once、失败不闩锁——编辑器消费路径在主
+       线程（脚本发起的 ClassDB 静态调用），竞争代价最多一次重复解析；闩锁永久化是
+       有意选择：字面量由编译器生成且经测试验证可解析，失败重试无收益。已写入
+       `CClassMetadataSupport.renderAccessorBody` 注释。
+    2.（a 建议）const/enum 也纳入 `_gdcc_` 拒绝——既有 `RESERVED_PREFIXES` 机制对
+       const/enum 本就同样不覆盖（与 `_field_*` 同边界）；const/enum 不产生 ClassDB
+       方法或 C 文件级符号，与合成访问器无碰撞面。保持边界一致。
+    3.（c 中）超时回退的旧代诊断按**当前**视图反映射，擦除形态在两代间变化时擦除行
+       的列可能瞬偏一拍——成立条件是（LSP 等待超时）∧（同/异行形式变化）∧（该行有
+       诊断）三者同时命中，属一拍级、自愈的显示偏移；且"陈旧诊断位置引用旧文本"是
+       `_validate` 既有合同（stale beats none）的同类边界。根治需按代绑定视图
+       （客户端已有 `_diag_history`，但 `_validate` 读缓存处不暴露代）——记入 R25 同类
+       残余，不在本阶段做结构性改造。
+  - 第二轮复核（复核一：c 仍要求修复；复核二：a **APPROVE**）采纳并修复：
+    1.（阻塞，c）`'''` 三单引号多行串与转义闭合（`\"""`）仍会让扫描器过早离开字符串而
+       擦改字符串内容（4.5 `gdscript_tokenizer.cpp` 已核实：两种引号皆可成三引号多行串，
+       闭合需未转义三连）。修复：多行状态携带分隔符（34/39），闭合扫描
+       `_find_unescaped_triple` 逐字符跳过反斜杠转义对；新增 `t_single3`/`t_esc` 陷阱锚点。
+    2.（中，c）独立 `extends` 行空基类/纯注释尾会回退为隐式 `RefCounted` 默认（中途编辑
+       的未完成声明可能误准入）。修复：`_parse_extends_line` 对该形态标
+       `base_resolvable = false`（同行形式本已如此）；锚点
+       `t_empty_base`（fixture 的 RefCounted 嵌套类，默认本可匹配）+ 正例对照
+       `t_inner_ok`。
+    3.（中，c）单独卸载只清备忘不恢复视图：当前页签的 LSP 文档保持擦除态直到下次编辑
+       （class_name 缺失降低补全/符号上下文）。修复：`extension_unloading` 置延迟标志，
+       次帧（卸载已在 GDExtensionManager 内同步完成）经 `_resync_current_document_lsp`
+       恢复原始视图并重校验；翻转两步均断言 LSP 文档版本前进。
+    4.（中，a 复核新发现）同一 GDExtension 契约下兄弟路径的同类问题：
+       `godot_fixed_binding.c` 的 `godot_Object_call` 失败路径与
+       `engine_method_binds.h.ftl` 的 call helper 错误路径都不销毁已被引擎 placement
+       构造的返回 Variant（模板注释"must not destroy"与 4.5 源相反）。修复：错误分支
+       先 `godot_Variant_destroy`；模板在调用后立即置 `ret_initialized = true`（cleanup
+       统一销毁），注释改写；`CCodegenEngineMethodBindHeaderTest` 的注释锚点同步更新。
+  - 第二轮复核保留项（c 确认可接受）：超时旧代诊断的反映射列偏移非严格"一拍自愈"——
+    持续超时下偏移可持续到新诊断到达；维持不改（成立需超时∧形态变化∧擦除行有诊断），
+    记入 R25。
+  - 第三轮复核（c 仍要求修复；a 对兄弟路径修复 PARTIAL→本轮新发现）采纳并修复：
+    1.（阻塞，c）**普通（非三引号）字符串也可跨物理行**（4.5 tokenizer 的字符串读取循环
+       从不把换行当终止符，`r_strings.gd` 的 r-string 跨行样例实证）——此前"未闭合即到
+       行尾"会让下一行被当代码。修复：字符串状态携带（分隔符, 是否三引号）二元组，
+       行外走查 `_line_string_state`、行内续扫 `_string_remainder_state`、单引号闭合
+       `_find_unescaped_char`；新增 `t_raw_span`/`t_plain_span` 跨行陷阱锚点。
+    2.（阻塞，a）`godot_fixed_binding.c` 是 `FixedGodotBindings` 的**生成产物**——手改会
+       被 `generate-fixed` 覆盖，且 `FixedGodotBindingsTest` 原断言锁定"错误路径不得销毁"
+       的旧契约。修复：改生成器（错误分支补 `godot_Variant_destroy(&result)`）+ 翻转测试
+       断言（错误路径恰销毁一次、成功路径不销毁），并以 `GodotBindingTool generate-fixed`
+       重新生成检入产物（与手改 diff 归零）。
+    3.（中，a）`gdcc_helper.h` 的 `godot_Variant_call` 失败路径同类遗漏（
+       `gdextension_variant_call` 同样总是先构造 r_return）——补销毁。
+    4.（中，c）翻转步骤只断言文档版本前进，重发错误文本也能假通过。修复：LSP 客户端
+       记录每 URI 最近发送文本（`_sent_texts`，随 didOpen/didChange/关闭/断连维护）+
+       `debug_sent_text` 观察口；卸载后断言发送的是**原文**、加载后是**擦除视图**。
+  - 第三轮复核后状态：待两名评审最终确认；`class_name_erasure` 15 步、门禁与回归全套
+    复测通过。
+  - 第四轮复核（2026-09-28，两名评审对第三轮修复的最终确认）：
+    - c 补充修复（第三轮唯一 WARNING）：`extends ,` 空 token 未标 unresolvable——
+      `_parse_base_token_into` 现对空 token 置 `base_resolvable = false`；锚点
+      `t_empty_token`（对照 `t_inner_ok`）。
+    - a 补充收紧（第三轮唯一 SUGGESTION）：`FixedGodotBindingsTest` 的"恰销毁一次"由
+      contains 改为计数断言。
+    - a 附随文档修正：`doc/gdcc_c_backend.md` 与
+      `doc/module_impl/backend/godot_binding_implementation.md` 中"error path 不得
+      destroy"的旧契约表述已改写为与引擎一致（总是构造、每路恰销毁一次）。
+    - **最终结论：review-expert-a 与 review-expert-c 双双 APPROVE。**
 - 范围：
   - `src/editor_addon/addons/gdcc/**`（新增 `.gd3` 源文件 + `server_launcher.gd` +
     `plugin.gd`/`gdcc_dock.gd` 接线）
@@ -1085,7 +1272,10 @@ scheduler，最后统一 `refresh_busy`）、协调广播（`broadcast_module_re
 `GdccModuleLifecycle`（私有模块建删/心跳/outage 恢复/setup 失败上限）、
 `GdccFileReconciler`（磁盘↔VFS 文件集合对账）、`GdccDiagScheduler`（单飞
 upload+analyze 链、镜像版本、失败退避、结果合并）、`GdccSourceRegistry`（内容真值表
-/脏跟踪/墓碑）、`GdccDiagCache`（版本门禁诊断缓存）。子节点经根访问器
+/脏跟踪/墓碑）、`GdccDiagCache`（版本门禁诊断缓存）、`GdccCompletionService`（无状态
+补全切片，无 tick/busy/关停挂接）、`GdccClassNameEraser`（Phase 7 擦除：视图变换 +
+准入备忘 + GDExtensionManager 翻转监听；翻转的编辑器侧重同步/重校验机制留在根上，
+`lsp_safe_text` 等语言门面为根到子节点的委托）。子节点经根访问器
 （`rpc_client()`/`lifecycle()`/`registry()`/`cache()`/`reconciler()`/`scheduler()`）
 与共享工具（`response_ok`/`response_error_code`/`vfs_path`）协作；因 gdcc bootstrap
 MVP 不含自定义基类 `extends`，功能协议（`bind_service`/`service_tick(now)`/
@@ -1644,10 +1834,12 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
 3. 编译期事实来源（全部自动，无调用方输入）：
    - `source_res_path` ← 源快照 `displayPath`（复用诊断的 logical→display 重映射
      通道，`DiagnosticSourcePathRemapper` 同款；仅当形如 `res://` 时产出该键）；
-   - `source_path` ← 源快照新增可选 `absolutePath` 字段：`vfs.putFile` 参数加
-     可选项（向后兼容，旧调用方行为不变）；addon 上传时填
-     `ProjectSettings.globalize_path(path)`，CLI 填规范化绝对输入路径；缺省时
-     省略该键，消费方自行 globalize `source_res_path` 兜底；
+    - `source_path` ← 源快照新增可选 `absolutePath` 字段：`vfs.putFile` 参数加
+      可选项（向后兼容，旧调用方行为不变）；addon 上传时填
+      `ProjectSettings.globalize_path(path)`，CLI 填规范化绝对输入路径；缺省时
+      省略该键，~~消费方自行 globalize `source_res_path` 兜底~~ **该兜底已由
+      Phase 7 评审删除**（res 标签无法证明同项目来源，见 Phase 7 评审记录第 3 条）
+      ——缺省即不擦除；
    - `source_name` ← 骨架 relation（顶层 `sourceName`；嵌套类沿 inner 链拼点号
      路径）；
    - `module` / `compiled_at` / `version` ← 编译上下文。
@@ -1689,7 +1881,9 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
 且合成名经 `_get_global_class_name` 注册会污染创建对话框且无干净隐藏手段）。
 实施：
 1. 统一入口 `GdccEditorService.lsp_safe_text(path, text)`：`_validate` 同步与补全
-   同步共用；只改 LSP 视图，磁盘内容与 gdcc 分析输入不变。
+   同步共用；只改 LSP 视图，磁盘内容与 gdcc 分析输入不变。（实现后重构：逻辑落在
+   子节点 `GdccClassNameEraser`（hub-and-spoke），service 保留同名 facade 委托 +
+   翻转的编辑器侧重同步 `resync_current_document_lsp()`——调用合同不变。）
 2. 准入四条件（全部满足才擦除）：本文件声明 `class_name X`（行首无缩进正则、
    首个匹配）；`ClassDB.class_exists(X)`；`ClassDB.class_get_api_type(X)` ∈
    {API_EXTENSION, API_EDITOR_EXTENSION}；`ClassDB.class_call_static(X,
@@ -1838,7 +2032,7 @@ EditorSettings `gdcc/server/launch_command` 与端口写好后触发连接，验
 | R21 | `server.shutdown` 不可达（服务挂起/半死连接）时服务残留 | 低 | 2s 有界等待后按 R19 双条件决定是否 `OS.kill`；服务已死但 PID 被复用时宁可残留也不误杀；Windows 下硬切不执行 shutdown hook 的事实写入 §2.8 |
 | R22 | 启动命令以编辑器权限执行任意本地命令 | 低 | 命令仅来自用户显式配置（EditorSettings），插件不自动生成命令文本；文档明示信任边界（§3.7） |
 | R24 | `validate_script` 信号触发重校验依赖编辑器内部信号接线（非公开 API 承诺） | 中 | 4.5 已核实接线（§2.5 末条）；Godot 升级时重跑 §2.5 核查；引擎测试以"无输入后 `_validate` 调用计数前进"锚定该路径（§7 Phase 5） |
-| R25 | `class_name` 擦除的行首正则可能误命中字符串/注释内的同名文本 | 低 | 行首无缩进锚定 + 首个匹配 + 陷阱样例测试（§7 Phase 7）；根治待编译器引用区间输出（评估项，不阻塞） |
+| R25 | `class_name` 擦除的行扫描可能误命中字符串/注释内的同名文本 | 低 | 行级迷你词法器（字符串转义/注释/`"""` 状态机）+ 行首无缩进锚定 + 首个匹配 + 顺序尾部解析（图标串/注释尾不注入基类）+ 陷阱样例测试（§7 Phase 7）；已知残余：多行字符串内转义引号的闭合歧义（词法近似，方向安全）、超时旧代诊断按当前视图反映射的一拍级列偏移（§7 Phase 7 评审保留项 3）；根治待编译器引用区间输出（评估项，不阻塞） |
 | R26 | 元数据 JSON→C 双层转义缺陷，或 `_gdcc_` 合成方法与用户代码冲突 | 中 | 复用 `StringUtil.escapeStringLiteral` + 转义矩阵测试；前端 `_gdcc_` 前缀保留规则（用户声明冲突即报错）；合成符号纳入 `validateFileScopeSymbolsDisjoint`（§7 Phase 6） |
 | R27 | workspace 镜像批量同步造成启动卡顿，或重连后服务端文档集漂移 | 中 | 分帧限额 + notification 不占 `_validate` 阻塞预算；删除 didClose + 重连全量重放；引擎测试断言文档集（§7 Phase 8） |
 | R23 | 运行期注销脚本语言与编辑器子系统迭代 `ScriptServer` 语言表的引擎侧竞态 | 中 | Phase 1 引擎测试曾观测到一次（批量跑、高负载）：禁用窗口内引擎报 `ScriptServer::get_language(1)` 越界（`_language_count = 1`）后空指针崩溃（0xC0000005）。此后 13 次手动复现 + 6 次强制重跑 + 多轮批量均未再出现。引擎 4.5 的

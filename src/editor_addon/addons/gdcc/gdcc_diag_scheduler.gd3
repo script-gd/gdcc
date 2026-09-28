@@ -203,7 +203,7 @@ func _pump_flight_upload() -> void:
     _flight["upload_path"] = path
     _flight["upload_version"] = int(entry["version"])
     service.rpc_client().put_file(service.lifecycle().module_id(), service.vfs_path(path),
-            str(entry["text"]), path).completed.connect(_on_flight_put_done)
+            str(entry["text"]), path, ProjectSettings.globalize_path(path)).completed.connect(_on_flight_put_done)
 
 
 func _on_flight_put_done(response: Dictionary) -> void:

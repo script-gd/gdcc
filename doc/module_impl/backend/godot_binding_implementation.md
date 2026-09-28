@@ -294,8 +294,11 @@ symbol identity。
 - helper-owned fixed prefix temps 在 success / error 两条路径都必须清理。
 - `godot_object_method_bind_call(...)` 的 return slot 是
   `GDExtensionUninitializedVariantPtr`，helper 传入 raw `godot_Variant` storage。
-- 只有 `_error.error == GDEXTENSION_CALL_OK` 后才允许 unpack 和 destroy 本地 return
-  `Variant`；error path 不得 destroy 未构造 return storage。
+- 引擎**总是**先 placement 构造返回 `Variant`（含调用失败；4.5
+  `gdextension_interface.cpp` 中 `memnew_placement(r_return, Variant(mb->call(...)))`
+  无条件执行），因此 cleanup 必须恰好 destroy 一次：error path 在替换 nil 兜底前销毁，
+  success path 在 unpack/consume 之后销毁。（旧文"error path 不得 destroy"系误写，
+  2026-09-28 Phase 6/7 评审轮修正。）
 - `void` helper 不允许把 `NULL r_ret` 传给 `godot_object_method_bind_call(...)`。
 
 ## Engine Constructor Wrapper

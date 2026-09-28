@@ -620,13 +620,31 @@ class RpcJsonCodecTest {
         );
 
         assertNull(putFileWithoutDisplayPath.displayPath());
+        // Phase 6: the optional absolutePath stays null for pre-existing callers.
+        assertNull(putFileWithoutDisplayPath.absolutePath());
+    }
+
+    @Test
+    void bindParamsRejectsBlankPutFileAbsolutePath() {
+        // Blank-but-present absolutePath is a caller bug, not "absent": fail with the same
+        // -32602-contract exception shape as the other trimmed string fields.
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> codec.bindParams(
+                        parse("{\"moduleId\": \"demo\", \"path\": \"/src/main.gd\", "
+                                + "\"content\": \"extends Node\\n\", \"absolutePath\": \"  \"}"),
+                        RpcParams.VfsPutFileParams.class
+                )
+        );
+        assertEquals("absolutePath must not be blank", exception.getMessage());
     }
 
     @Test
     void bindParamsBindsCompleteObjects() {
         var putFile = codec.bindParams(
                 parse("{\"moduleId\": \"demo\", \"path\": \"/src/main.gd\", "
-                        + "\"content\": \"extends Node\\n\", \"displayPath\": \"res://main.gd\"}"),
+                        + "\"content\": \"extends Node\\n\", \"displayPath\": \"res://main.gd\", "
+                        + "\"absolutePath\": \"E:/work/demo/src/main.gd\"}"),
                 RpcParams.VfsPutFileParams.class
         );
 
@@ -634,6 +652,7 @@ class RpcJsonCodecTest {
         assertEquals("/src/main.gd", putFile.path());
         assertEquals("extends Node\n", putFile.content());
         assertEquals("res://main.gd", putFile.displayPath());
+        assertEquals("E:/work/demo/src/main.gd", putFile.absolutePath());
 
         var classMap = codec.bindParams(
                 parse("{\"moduleId\": \"demo\", \"topLevelCanonicalNameMap\": {\"Player\": \"game.Player\"}}"),
