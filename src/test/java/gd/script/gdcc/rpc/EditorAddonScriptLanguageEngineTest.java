@@ -11,6 +11,7 @@ import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.backend.c.build.ZigUtil;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
@@ -204,6 +205,9 @@ class EditorAddonScriptLanguageEngineTest {
                     "lookup_cross_file", "lookup_class_name_gap", "lookup_cjk",
                     "lookup_unknown_symbol", "lookup_no_sentinel_fallback",
                     "lookup_disabled_safe", "survived")),
+            Map.entry("lookup_suspended", List.of(
+                    "config", "service_ready", "lsp_ready", "lookup_helpers", "editor_opened",
+                    "lookup_unavailable", "lookup_keeps_path", "save_on_original_path", "survived")),
             // Phase 9: `_auto_indent_code` — verbatim mirror of the 4.5 GDScript reference
             // algorithm (whitespace-stack nesting, blank/comment passthrough, the dedent
             // quirk, the from_line gate, the spaces-indent setting, and the pathological
@@ -376,6 +380,8 @@ class EditorAddonScriptLanguageEngineTest {
                         await _run_lsp_workspace_mode()
                     elif mode == "lsp_lookup":
                         await _run_lsp_lookup_mode()
+                    elif mode == "lookup_suspended":
+                        await _run_lookup_suspended_mode()
                     elif mode == "auto_indent":
                         _run_auto_indent_mode()
                     else:
@@ -2532,6 +2538,7 @@ class EditorAddonScriptLanguageEngineTest {
                     if lang == null or service == null:
                         _step("fixtures_written", false, "language or service missing")
                         return
+                    var lookup = service.lookup()
                     var sentinel := String.chr(0xFFFF)
                     var provider_path := "res://gd3_lookup_provider.gd3"
                     var consumer_path := "res://gd3_lookup_consumer.gd3"
@@ -2574,30 +2581,30 @@ class EditorAddonScriptLanguageEngineTest {
                     # mapping contracts are anchored directly (hover text extraction across
                     # MarkupContent / legacy MarkedString forms; first-usable-Location across
                     # bare / array / LocationLink forms; the URI dialect round-trip).
-                    var wb_ok: bool = lang._lookup_hover_text(
+                    var wb_ok: bool = lookup._lookup_hover_text(
                             {"contents": {"kind": "markdown", "value": "doc text"}}) == "doc text"
-                    wb_ok = wb_ok and lang._lookup_hover_text({"contents": "legacy"}) == "legacy"
-                    wb_ok = wb_ok and lang._lookup_hover_text({"contents": [{"value": "a"}, "b"]}) == "a\\nb"
-                    wb_ok = wb_ok and lang._lookup_hover_text(null) == "" and lang._lookup_hover_text({}) == ""
-                    wb_ok = wb_ok and str(lang._lookup_definition_location(
+                    wb_ok = wb_ok and lookup._lookup_hover_text({"contents": "legacy"}) == "legacy"
+                    wb_ok = wb_ok and lookup._lookup_hover_text({"contents": [{"value": "a"}, "b"]}) == "a\\nb"
+                    wb_ok = wb_ok and lookup._lookup_hover_text(null) == "" and lookup._lookup_hover_text({}) == ""
+                    wb_ok = wb_ok and str(lookup._lookup_definition_location(
                             [{"uri": "file:///x.gd3", "range": {"start": {"line": 1}}}]).get("uri", "")) == "file:///x.gd3"
-                    wb_ok = wb_ok and str(lang._lookup_definition_location(
+                    wb_ok = wb_ok and str(lookup._lookup_definition_location(
                             {"uri": "file:///y.gd3", "range": {}}).get("uri", "")) == "file:///y.gd3"
-                    wb_ok = wb_ok and str(lang._lookup_definition_location(
+                    wb_ok = wb_ok and str(lookup._lookup_definition_location(
                             [{"targetUri": "file:///z.gd3", "targetSelectionRange": {}}]).get("uri", "")) == "file:///z.gd3"
-                    wb_ok = wb_ok and lang._lookup_definition_location(null).is_empty() \\
-                            and lang._lookup_definition_location([]).is_empty() \\
-                            and lang._lookup_definition_location([{"uri": "", "range": {}}]).is_empty()
+                    wb_ok = wb_ok and lookup._lookup_definition_location(null).is_empty() \\
+                            and lookup._lookup_definition_location([]).is_empty() \\
+                            and lookup._lookup_definition_location([{"uri": "", "range": {}}]).is_empty()
                     wb_ok = wb_ok and service.lsp_path_from_uri(
                             client.path_to_uri(ProjectSettings.globalize_path(provider_path))) == provider_path
                     wb_ok = wb_ok and service.lsp_path_from_uri("https://example.com/x") == ""
                     # Sentinel-less fallback finder: whole-word boundary, comment-tail skip,
                     # and the suffix-collision negative.
-                    wb_ok = wb_ok and lang._find_word_position(
+                    wb_ok = wb_ok and lookup._find_word_position(
                             "func probe_local_method() -> int:\\n", "probe_local_method") == 5
-                    wb_ok = wb_ok and lang._find_word_position(
+                    wb_ok = wb_ok and lookup._find_word_position(
                             "# probe_local_method\\nprobe_local_method", "probe_local_method") == 21
-                    wb_ok = wb_ok and lang._find_word_position("probe_local_methodx", "probe_local_method") == -1
+                    wb_ok = wb_ok and lookup._find_word_position("probe_local_methodx", "probe_local_method") == -1
                     _step("lookup_whitebox", wb_ok)
                 
                     # Same-file lookup: the sentinel sits at the CALL site of a local method;
@@ -2654,8 +2661,8 @@ class EditorAddonScriptLanguageEngineTest {
                     var gap_use_flagged: bool = await _wait_diag_naming(gap_use_uri, "Gd3LookupClassy", 15.0)
                     var gap_server_empty: bool = gap_response.get("ok") == true \\
                             and gap_response.get("definition_ok") == true \\
-                            and lang._lookup_hover_text(gap_response.get("hover")) == "" \\
-                            and lang._lookup_definition_location(gap_response.get("definition")).is_empty()
+                            and lookup._lookup_hover_text(gap_response.get("hover")) == "" \\
+                            and lookup._lookup_definition_location(gap_response.get("definition")).is_empty()
                     var classy_use_code := "extends Node\\n\\nfunc f() -> void:\\n    var c := " \\
                             + sentinel + "Gd3LookupClassy.new()\\n"
                     var gap_result: Dictionary = lang._lookup_code(
@@ -2665,7 +2672,7 @@ class EditorAddonScriptLanguageEngineTest {
                     # degrading for infra reasons could pass with a broken `_lookup_result`.
                     _step("lookup_class_name_gap",
                             classy_parsed and gap_use_flagged and gap_server_empty \\
-                                    and _is_degraded_lookup(lang._lookup_result(classy_use_path, gap_response)) \\
+                                    and _is_degraded_lookup(lookup._lookup_result(classy_use_path, gap_response)) \\
                                     and _is_degraded_lookup(gap_result),
                             "provider=" + str(classy_parsed) + " flagged=" + str(gap_use_flagged) \\
                                     + " server_empty=" + str(gap_server_empty))
@@ -2693,8 +2700,8 @@ class EditorAddonScriptLanguageEngineTest {
                     var unknown_flagged: bool = await _wait_diag_naming(unknown_uri, "zz_no_such_symbol_zz", 15.0)
                     var unknown_server_empty: bool = unknown_response.get("ok") == true \\
                             and unknown_response.get("definition_ok") == true \\
-                            and lang._lookup_hover_text(unknown_response.get("hover")) == "" \\
-                            and lang._lookup_definition_location(unknown_response.get("definition")).is_empty()
+                            and lookup._lookup_hover_text(unknown_response.get("hover")) == "" \\
+                            and lookup._lookup_definition_location(unknown_response.get("definition")).is_empty()
                     var unknown_code := "extends Node\\n\\nfunc f() -> void:\\n    " \\
                             + sentinel + "zz_no_such_symbol_zz()\\n"
                     var unknown_result: Dictionary = lang._lookup_code(
@@ -2704,7 +2711,7 @@ class EditorAddonScriptLanguageEngineTest {
                     # for infra reasons could otherwise pass with a broken `_lookup_result`.
                     _step("lookup_unknown_symbol",
                             unknown_flagged and unknown_server_empty \\
-                                    and _is_degraded_lookup(lang._lookup_result(unknown_path, unknown_response)) \\
+                                    and _is_degraded_lookup(lookup._lookup_result(unknown_path, unknown_response)) \\
                                     and _is_degraded_lookup(unknown_result),
                             "flagged=" + str(unknown_flagged) + " server_empty=" + str(unknown_server_empty))
                 
@@ -2732,6 +2739,90 @@ class EditorAddonScriptLanguageEngineTest {
                         DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
                     _step("survived", true)
                 
+                # Temporary safety gate: exercise the actual editor symbol signals, not only
+                # a direct call to the language virtual, while the in-process LSP is READY.
+                func _run_lookup_suspended_mode() -> void:
+                    var lang := _find_gd3_language()
+                    var service := _service()
+                    if lang == null or service == null:
+                        _step("service_ready", false, "language or service missing")
+                        return
+                    var port := int(_config["lsp_port"])
+                    _step("service_ready", _configure_lsp_port(port))
+                    var ready: bool = await _wait_lsp_ready(45.0)
+                    _step("lsp_ready", ready)
+                    if not ready:
+                        return
+
+                    var lookup = service.lookup()
+                    var hover_only: Dictionary = lookup._lookup_result("res://src/gd3_lookup_suspended.gd3",
+                            {"hover": {"contents": {"kind": "markdown", "value": "doc text"}}})
+                    _step("lookup_helpers", lookup._lookup_hover_text({"contents": ["a", {"value": "b"}]}) == "a\\nb" \\
+                            and str(lookup._lookup_definition_location(
+                                    [{"targetUri": "file:///x.gd3", "targetSelectionRange": {}}]).get("uri", "")) \\
+                                    == "file:///x.gd3" \\
+                            and lookup._find_word_position("# probe\\nprobe", "probe") == 8 \\
+                            and int(hover_only.get("result", -1)) == OK \\
+                            and str(hover_only.get("description", "")) == "doc text" \\
+                            and _is_degraded_lookup(lookup._lookup_result("res://src/gd3_lookup_suspended.gd3", {})))
+
+                    var path := "res://src/gd3_lookup_suspended.gd3"
+                    EditorInterface.set_main_screen_editor("Script")
+                    var script: Resource = ResourceLoader.load(path)
+                    if script != null:
+                        EditorInterface.edit_resource(script)
+                    var editor := EditorInterface.get_script_editor()
+                    var code_edit: CodeEdit = null
+                    var deadline := Time.get_ticks_msec() + 15000
+                    while Time.get_ticks_msec() < deadline and code_edit == null:
+                        await get_tree().process_frame
+                        var current := editor.get_current_editor()
+                        if current != null and editor.get_current_script() == script:
+                            var candidate: Control = current.get_base_editor()
+                            if candidate is CodeEdit:
+                                code_edit = candidate as CodeEdit
+                    _step("editor_opened", code_edit != null and script != null \\
+                            and script.resource_path == path)
+                    if code_edit == null or script == null:
+                        return
+
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    var client = service.get_lsp_client()
+                    var uri: String = service.lsp_uri_for(path)
+                    var version_before: int = client.document_version_for(uri)
+                    var result: Dictionary = lang._lookup_code(code_edit.get_text(), "rotating_speed", path, null)
+                    _step("lookup_unavailable", _is_degraded_lookup(result) \\
+                            and version_before > 0 and client.document_version_for(uri) == version_before,
+                            str(result) + " version=" + str(version_before))
+
+                    var line: int = 5
+                    var column: int = code_edit.get_line(line).find("rotating_speed") + 2
+                    code_edit.emit_signal("symbol_validate", "rotating_speed")
+                    code_edit.emit_signal("symbol_hovered", "rotating_speed", line, column)
+                    code_edit.emit_signal("symbol_lookup", "rotating_speed", line, column)
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    var cached: Resource = ResourceLoader.get_cached_ref(path)
+                    _step("lookup_keeps_path", column > 1 and script.resource_path == path \\
+                            and cached == script and editor.get_current_script() == script \\
+                            and client.document_version_for(uri) == version_before,
+                            "path=" + script.resource_path + " cached=" + str(cached == script) \\
+                            + " current=" + str(editor.get_current_script() == script) \\
+                            + " column=" + str(column) + " version=" + str(version_before) \\
+                            + "/" + str(client.document_version_for(uri)))
+
+                    var edited: String = code_edit.get_text() + "# edited after lookup\\n"
+                    code_edit.set_text(edited)
+                    script.set_source_code(edited)
+                    var path_before_save: String = script.resource_path
+                    var save_error: int = ResourceSaver.save(script, path, 0)
+                    _step("save_on_original_path", save_error == OK \\
+                            and FileAccess.get_file_as_string(path) == edited \\
+                            and path_before_save == path and script.resource_path == path,
+                            "err=" + str(save_error) + " path_before=" + path_before_save)
+                    _step("survived", true)
+
                 # ---------------- Phase 9: auto indent (plan §7 Phase 9) ----------------
                 
                 # Exact-output anchors for the verbatim mirror of the 4.5
@@ -3020,11 +3111,21 @@ class EditorAddonScriptLanguageEngineTest {
     /// LOCAL_VARIABLE type / 1-based location / Script-resource navigation contract, the
     /// code-point caret anchor, and the sentinel-less fallback.
     @Test
+    @Disabled("GDScript LSP lookup steals the open .gd3 resource path; restore after fixing the lookup channel")
     void lspLookupProxiesHoverAndDefinition() throws Exception {
         var config = new JsonObject();
         config.addProperty("lsp_port", findFreePort());
         config.addProperty("closed_port", findFreePort());
         runCase("lsp_lookup", config);
+    }
+
+    /// Lookup stays unavailable while the LSP is ready, and real editor symbol signals
+    /// must not detach an open .gd3 script from its path or prevent saving it.
+    @Test
+    void disabledLookupKeepsScriptPathAndSaveWorking() throws Exception {
+        var config = new JsonObject();
+        config.addProperty("lsp_port", findFreePort());
+        runCase("lookup_suspended", config);
     }
 
     /// Phase 9 acceptance (plan §7 Phase 9 `_auto_indent_code`): exact-output anchors for
@@ -3068,6 +3169,16 @@ class EditorAddonScriptLanguageEngineTest {
                 COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform(), true);
         if (caseName.equals("class_name_erasure")) {
             installPhase7Fixture(projectDir, caseDir);
+        }
+        if (caseName.equals("lookup_suspended")) {
+            Files.writeString(projectDir.resolve("src/gd3_lookup_suspended.gd3"), """
+                    extends Node
+
+                    @export var rotating_speed: float = 30.0
+
+                    func _process(delta: float) -> void:
+                        rotation_degrees.y += rotating_speed * delta
+                    """);
         }
 
         // Test-only driver plugin (never part of the shipped addon).

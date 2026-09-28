@@ -252,8 +252,8 @@ func request_completion(path: String, text: String, line: int, col: int) -> Dict
 ## Symbol-lookup entry (plan §7 Phase 9 `_lookup_code`): same legality rule as
 ## completion — the synchronous LSP path is legal exclusively while ACTIVE with a
 ## handshake-verified READY client AND a thread-mode server; the session degrades
-## otherwise. The raw hover/definition payloads are returned unmapped; building the
-## engine LookupResult dictionary is the language's engine-contract job.
+## otherwise. The raw hover/definition payloads are returned unmapped; the lookup child
+## owns the engine LookupResult mapping. The language entry currently bypasses this path.
 func request_lookup(path: String, text: String, line: int, col: int) -> Dictionary:
     if not _active or _lookup == null:
         return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "lookup unavailable"}}

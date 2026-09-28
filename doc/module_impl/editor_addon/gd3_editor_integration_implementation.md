@@ -15,8 +15,10 @@
   **Phase 6–7 已实施并通过自动化验收**（2026-09-28，含引擎端到端用例
   `class_name_erasure` 13 步全绿）；**Phase 8 已实施并通过自动化验收**（2026-09-28，
   引擎用例 `lsp_workspace` 14 步全绿）；**Phase 9（原 Phase 5 打磨）部分实施**：
-  `_lookup_code` 与 `_auto_indent_code` 已实施并通过自动化验收（2026-09-28，引擎
-  用例 `lsp_lookup` 15 步 / `auto_indent` 8 步全绿），`_get_global_class_name`
+  `_lookup_code` 与 `_auto_indent_code` 曾通过自动化验收（2026-09-28，引擎
+  用例 `lsp_lookup` 15 步 / `auto_indent` 8 步全绿）；`_lookup_code` 现已临时禁用：
+  内置 GDScript LSP 的符号查询会接管 `.gd3` 资源路径，导致打开的脚本无法保存；
+  原 `lsp_lookup` 用例保留但暂停，待安全实现后恢复。`_get_global_class_name`
   （Stage C 暂缓）、模板、`--lsp-port` 设置项尚未实施；**Phase 10（编译工作流：
   `module.copy` + 编译副本）已规划、尚未实施**；已经过多轮并行评审并修订）
 - 更新日期：2026-09-28
@@ -795,7 +797,7 @@
     （强制断连重连后 epoch 递增，全量重放且缓冲区文本仍为准）。
   - 回归：`EditorAddonScriptLanguageAnalysisTest` 全绿（新 `.gd3` 经目录扫描自动
     纳入整模块 analyze+lowering）。
-- Phase 9 `_lookup_code` 验收结果（2026-09-28，自动化项全绿）：
+- Phase 9 `_lookup_code` 历史验收结果（2026-09-28；当前因资源路径接管问题临时禁用）：
   - 实施：新增无状态子节点 `GdccLookupService`（`gdcc_lookup_service.gd3`：全量同步
     + hover/definition 各 200ms 有界阻塞；hover 先答——悬浮是更高频路径，
     definition 腿失败降级为 hover-only，hover 腿失败整体降级）；服务根
@@ -804,7 +806,11 @@
     语言侧 `_lookup_code` 负责哨兵定位（4.5 全部编辑器调用路径均经
     `get_text_with_cursor_char`/`get_text_for_symbol_lookup` 携带 0xFFFF 哨兵）、
     无哨兵整词回退（跳过注释尾）、0 基码点行列计算、Phase 7 视图前向映射与
-    LSP → 引擎 LookupResult 字典映射（"服务给裸数据、语言做映射"分工不变）。
+    LSP → 引擎 LookupResult 字典映射（当时为"服务给裸数据、语言做映射"分工）；
+    临时禁用后，映射与无哨兵词定位等 lookup 专用辅助函数已迁至
+    `GdccLookupService`，语言只保留直接返回降级结果的 `_lookup_code` 入口。原
+    `_lookup_code` 内联的哨兵定位、行列计算及 Phase 7 前向映射已随禁用移除，
+    恢复查询时应在 lookup 专用类中重建，不应放回语言入口。
   - 关键引擎事实（4.5 源码核实）：适配器强制 `result` 与 `type` 两键（缺一即
     ERR_UNAVAILABLE）；`LookupResultType` 枚举 SCRIPT_LOCATION=0…LOCAL_VARIABLE=10；
     LSP 线路无结构化符号 kind，LOCAL_VARIABLE 是唯一同时喂饱悬浮 tooltip
@@ -957,7 +963,8 @@
 2. 脚本编辑器对 `.gd3` 提供错误/警告标注：优先采用引擎 GDScript 解析结果（经编辑器内建
    LSP 服务），GDScript 侧无错误时叠加 gdcc 前端 `analyze.run` 的诊断（合并显示）。
 3. 代码补全代理到 GDScript LSP（承担大部分补全能力）。
-4. 悬浮/符号查找（`_lookup_code`）、自动缩进、全局类名、脚本模板为后续打磨项。
+4. 自动缩进已实施；悬浮/符号查找（`_lookup_code`）因资源路径接管临时禁用，
+   全局类名与脚本模板仍为后续打磨项。
 5. gdcc 编译服务未在目标端口侦听时，可按**用户配置的启动命令**自动拉起
    `gdcc serve`；插件卸载/编辑器退出时正确关闭**由本插件拉起**的服务进程
    （外部启动的服务绝不触碰）。未配置启动命令时保持现有"被动连接、失败即报错"
@@ -991,7 +998,7 @@ Godot 编辑器
 │     │     ├── _validate       → LSP 诊断（线程模式下有界同步等待 ≤150ms）
 │     │     │                     + 缓存的 gdcc 诊断合并（异步产生，§4.4）
 │     │     ├── _complete_code  → 0xFFFF 哨兵定位光标 → LSP completion（≤400ms）
-│     │     └── _lookup_code    → LSP hover/definition（Phase 9）
+│     │     └── _lookup_code    → 暂时返回 ERR_UNAVAILABLE（Phase 9 LSP 查询禁用）
 │     ├── GdccScript (ScriptExtension, _can_instantiate() == false)
 │     ├── GdccScriptFormatLoader (ResourceFormatLoader，_load 纯加载、线程安全)
 │     ├── GdccScriptFormatSaver  (ResourceFormatSaver)
@@ -2120,10 +2127,9 @@ hover/定义跳转的数据面。reconciler 已有全项目 `.gd3` 磁盘扫描�
 
 ### Phase 9：打磨（可并行子项，各自独立验收）
 
-- `_lookup_code` ✅（2026-09-28 自动化验收通过）：LSP `hover`/`definition` → 悬浮
-  文档与跳转；验收：引擎测试断言对已知符号返回 `result == OK`、`type` 合理
-  （`lsp_lookup` 15 步，含跨文件/降级/回退正反锚点；跨文件 `class_name` 解析为
-  Stage C 边界，见该用例 `lookup_class_name_gap` 负例）。
+- `_lookup_code` **临时禁用**：当前返回 `ERR_UNAVAILABLE`，避免内置 GDScript LSP
+  符号查询接管 `.gd3` 资源路径；此前 `hover`/`definition` 的 15 步验收结果仅为
+  历史记录，`lsp_lookup` 用例暂停，待路径问题修复后恢复。
 - `_auto_indent_code` ✅（2026-09-28 自动化验收通过）：逐字镜像 4.5 GDScript 参考
   算法（空白宽度栈嵌套；计划条文的"冒号后增缩进等最小规则"即该参考实现）；验收：
   `auto_indent` 8 步精确输出锚点全绿 + 编辑器内手动对照（待 §8.3）。
@@ -2246,7 +2252,7 @@ EditorSettings `gdcc/server/launch_command` 与端口写好后触发连接，验
 
 | # | 风险 | 等级 | 缓解 |
 |---|---|---|---|
-| R1 | `.gd3` 不在 GDScript LSP 的 workspace 索引内，跨文件符号/类缓存解析受限 | 中 | didOpen/didChange 不做扩展名过滤，单文件解析与诊断可用；**Phase 8 workspace 镜像**将全部项目 `.gd3` 主动 didOpen，跨文件 hover/定义跳转可用；补全成员枚举不经过 workspace（引擎事实，§7 Phase 8），不受镜像影响 |
+| R1 | `.gd3` 不在 GDScript LSP 的 workspace 索引内，跨文件符号/类缓存解析受限 | 中 | didOpen/didChange 不做扩展名过滤，单文件解析与诊断可用；**Phase 8 workspace 镜像**将全部项目 `.gd3` 主动 didOpen，提供跨文件查询的数据面，但 `_lookup_code` 当前临时禁用，hover/定义跳转不可用；补全成员枚举不经过 workspace（引擎事实，§7 Phase 8），不受镜像影响 |
 | R2 | 多编辑器实例/端口占用导致连错实例 | 中 | 握手后监听 `gdscript_client/changeWorkspace` 并与 `ProjectSettings.globalize_path("res://")` 比对，不符即 DEGRADED；host/port 可配；运行期改 `use_thread` 服务端自动重启、客户端重连接管（§2.6） |
 | R3 | `_complete_code`/`_validate` 同步等待卡顿编辑器 | 中 | 硬超时（LSP 150ms / 补全 400ms）+ 超时降级；阻塞形态约束写入 §1.2；线程模式硬前提 |
 | R4 | 热重载导致 ScriptServer 悬空指针 | 高 | `reloadable = false`（§6），安装器全出口断言钉死 |
