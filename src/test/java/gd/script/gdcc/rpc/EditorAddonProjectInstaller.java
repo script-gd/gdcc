@@ -170,8 +170,13 @@ public final class EditorAddonProjectInstaller {
                     COptimizationLevel.DEBUG, targetPlatform,
                     false, CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT));
             for (var source : listAddonSources()) {
-                // VFS layout contract: every addon source sits at /src/<file name>.gd3.
-                api.putFile(MODULE_ID, "/src/" + source.getFileName().toString(), Files.readString(source));
+                // VFS layout contract: every addon source sits at /src/<file name>.gd3. The
+                // res:// display label and the host-absolute path feed Phase 6 class metadata
+                // (`source_res_path`/`source_path`); the Phase 7 class-name erasure admission
+                // probe requires `source_path` and fails closed without it.
+                api.putFile(MODULE_ID, "/src/" + source.getFileName().toString(), Files.readString(source),
+                        "res://addons/gdcc/" + source.getFileName().toString(),
+                        source.toAbsolutePath().toString().replace('\\', '/'));
             }
             return awaitCompile(api, api.compile(MODULE_ID));
         }
