@@ -485,8 +485,10 @@ public final class FrontendClassSkeletonBuilder {
             markSkippedSubtreeRoots(List.of(enumDeclaration), context.analysisData());
             return;
         }
-        // gdparser error recovery maps an empty enum body to one phantom member with an empty
-        // name while keeping parse diagnostics empty, so both shapes collapse into the same
+        // gdparser recovery maps an empty enum body to one phantom member with an empty name.
+        // Current parser versions also report the missing enumerator/identifier themselves, in
+        // which case the hasParserDiagnosticInside guard above already skipped this enum; the
+        // blank-member check stays as a defensive fallback so both shapes collapse into the same
         // "at least one member" rule here.
         if (members.isEmpty() || members.stream().anyMatch(member -> member.name().isBlank())) {
             rejectEnumDeclaration(

@@ -43,6 +43,7 @@ import dev.superice.gdparser.frontend.ast.AttributeStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.MissingAttributeStep;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.UnknownAttributeStep;
 import org.jetbrains.annotations.NotNull;
@@ -579,6 +580,7 @@ public final class FrontendChainReductionHelper {
                         "'super' only supports method calls; subscript access is not allowed"
                 );
                 case UnknownAttributeStep unknownStep -> unsupportedUnknownStep(stepIndex, unknownStep, incomingReceiver);
+                case MissingAttributeStep missingStep -> missingFinalStep(stepIndex, missingStep, incomingReceiver);
             };
         }
         return switch (step) {
@@ -588,6 +590,7 @@ public final class FrontendChainReductionHelper {
             case AttributeSubscriptStep subscriptStep ->
                     reduceSubscriptStep(stepIndex, subscriptStep, incomingReceiver, request, notes);
             case UnknownAttributeStep unknownStep -> unsupportedUnknownStep(stepIndex, unknownStep, incomingReceiver);
+            case MissingAttributeStep missingStep -> missingFinalStep(stepIndex, missingStep, incomingReceiver);
         };
     }
 
@@ -2348,8 +2351,33 @@ public final class FrontendChainReductionHelper {
         );
     }
 
-    private static @NotNull StepTrace propagateStep(
+    /// A `MissingAttributeStep` only appears where the parser already reported the absent member
+    /// name (`parse.lowering`), so the chain can never resolve a member here. Fail closed with a
+    /// plain FAILED trace: the parse diagnostic stays the single owner of the root cause, and no
+    /// member-resolution detail is invented for a name that does not exist.
+    private static @NotNull StepTrace missingFinalStep(
             int stepIndex,
+            @NotNull MissingAttributeStep step,
+            @NotNull ReceiverState incomingReceiver
+    ) {
+        var detailReason = "Attribute chain ends with a missing member name already reported by the parser";
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.UNKNOWN,
+                RouteKind.SUBSCRIPT,
+                incomingReceiver,
+                Status.FAILED,
+                ReceiverState.failedFrom(incomingReceiver, detailReason),
+                null,
+                null,
+                null,
+                false,
+                detailReason
+        );
+    }
+
+    private static @NotNull StepTrace propagateStep(            int stepIndex,
             @NotNull AttributeStep step,
             @NotNull ReceiverState incomingReceiver,
             @NotNull UpstreamCause upstreamCause
@@ -2896,6 +2924,7 @@ public final class FrontendChainReductionHelper {
             case AttributeCallStep _ -> StepKind.CALL;
             case AttributeSubscriptStep _ -> StepKind.SUBSCRIPT;
             case UnknownAttributeStep _ -> StepKind.UNKNOWN;
+            case MissingAttributeStep _ -> StepKind.UNKNOWN;
         };
     }
 
