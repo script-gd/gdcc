@@ -4,7 +4,4 @@ class_name Test2 extends MeshInstance3D
 
 func _process(delta: float) -> void:
     self.rotation_degrees.y += rotating_speed * delta;
-
-func _init(a: String) -> void:
-    print(a)
-    print("ok")
+    print();

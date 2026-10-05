@@ -36,7 +36,11 @@ func bind_service(owner: GdccEditorService) -> void:
 ## the existing version WITHOUT bumping; changed text bumps the version and marks the path
 ## dirty. Runs on every `_validate` — including while LSP reports errors, because LSP errors
 ## suppress gdcc diagnostics from the DISPLAY only, never the dirty tracking. Returns -1 for
-## non-project paths / while UNINSTALLED.
+## non-project paths / while UNINSTALLED. EXCLUDED paths (`gdcc/sync/excluded_globs`) are NOT
+## refused here: a `_validate` implies an open editor tab, and an open excluded file is
+## TEMPORARILY INCLUDED in the module (its buffer is the content truth) — the reconciler
+## owns the other half of that contract (keeps excluded tracked paths while their tab is
+## open, evicts them once it closes).
 func notify_source_changed(path: String, text: String) -> int:
     if not service.is_active() or not path.begins_with("res://"):
         return -1

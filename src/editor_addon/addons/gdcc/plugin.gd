@@ -35,6 +35,7 @@ var _primed_this_enter: bool = false
 var _busy_count: int = 0
 var _saved_low_processor_mode: bool = true
 var _filesystem_connected: bool = false
+var _settings_signal_connected: bool = false
 
 
 func _enter_tree() -> void:
@@ -106,6 +107,15 @@ func _enter_tree() -> void:
         "name": SETTING_SERVER_PORT, "type": TYPE_INT, "hint": PROPERTY_HINT_RANGE,
         "hint_string": "0,65535",
     })
+    # Project-level sync exclusion globs (per-PROJECT by design, unlike the machine-local
+    # endpoint pair above): `String.match` patterns against res://-relative paths. Name and
+    # default are single-sourced from the resident service (it owns the matching predicate).
+    if not ProjectSettings.has_setting(_service.EXCLUDED_GLOBS_SETTING):
+        ProjectSettings.set_setting(_service.EXCLUDED_GLOBS_SETTING, _service.default_excluded_globs())
+    ProjectSettings.set_initial_value(_service.EXCLUDED_GLOBS_SETTING, _service.default_excluded_globs())
+    ProjectSettings.add_property_info({
+        "name": _service.EXCLUDED_GLOBS_SETTING, "type": TYPE_PACKED_STRING_ARRAY,
+    })
 
     # 4) Server launcher (single-flight spawn/shutdown coordinator shared by dock and service;
     #    its busy reports point at this plugin's coordinator — see `_report_busy`).
@@ -153,6 +163,12 @@ func _enter_tree() -> void:
     if not filesystem.filesystem_changed.is_connected(_on_filesystem_changed):
         filesystem.filesystem_changed.connect(_on_filesystem_changed)
         _filesystem_connected = true
+    # Exclusion-glob edits are project settings, not filesystem events: forward the
+    # (deferred, per-frame coalesced) settings_changed emission so a newly excluded path is
+    # reconciled out of the module without waiting for an unrelated file operation.
+    if not _settings_signal_connected:
+        ProjectSettings.settings_changed.connect(_on_project_settings_changed)
+        _settings_signal_connected = true
     # 7) A synchronous scan during the editor's first scan would re-enter it; only a plugin
     #    enabled at runtime (filesystem idle) triggers one deferred scan.
     if not filesystem.is_scanning():
@@ -242,6 +258,10 @@ func _exit_tree() -> void:
         if filesystem.filesystem_changed.is_connected(_on_filesystem_changed):
             filesystem.filesystem_changed.disconnect(_on_filesystem_changed)
     _filesystem_connected = false
+    if _settings_signal_connected:
+        if ProjectSettings.settings_changed.is_connected(_on_project_settings_changed):
+            ProjectSettings.settings_changed.disconnect(_on_project_settings_changed)
+    _settings_signal_connected = false
     if _dock != null:
         remove_control_from_bottom_panel(_dock)
         # The dock's own `_exit_tree` zeroes its residual busy reports through the coordinator.
@@ -291,6 +311,15 @@ func _restore_use_thread() -> void:
 
 
 func _on_filesystem_changed() -> void:
+    if _service != null:
+        _service.notify_filesystem_changed()
+
+
+## ProjectSettings emits `settings_changed` deferred (per-frame coalesced) for ANY project
+## setting write, and 4.5 has no `get_changed_settings()` to filter by key — forward every
+## emission: the reconciler coalesces bursts and a no-diff pass sends no RPCs, so an
+## unrelated settings edit costs one coalesced scan at most.
+func _on_project_settings_changed() -> void:
     if _service != null:
         _service.notify_filesystem_changed()
 

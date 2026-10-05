@@ -97,9 +97,13 @@ func validate_call_count() -> int:
 ##    generation's diagnostics, then map severity 1 → errors / 2 → warnings (LSP positions
 ##    are 0-based, so both line and column get +1).
 ## 2. gdcc: `notify_source_changed` runs FIRST on every call (LSP errors never suppress dirty
-##    marking, only the display); cached analyze.run diagnostics merge only when their
-##    content version matches this exact text, and only while LSP reported no errors (cascade
-##    noise suppression, plan §4.2 step 3). gdcc positions are already 1-based — no shift.
+##    marking, only the display); cached analyze.run diagnostics merge whenever the cache
+##    holds an entry for the path — possibly STALE relative to this exact text (an edit bumps
+##    the version instantly, but the previous round's diagnostics stay visible until the
+##    fresh round merges over them; the editor would otherwise blank the markers for the
+##    whole debounce window) — and only while LSP reported no errors (cascade noise
+##    suppression, plan §4.2 step 3). gdcc positions are already 1-based — no shift; a stale
+##    entry's line numbers refer to the pre-edit text until the fresh round lands.
 ## `path` is mandatory on errors, otherwise the editor files them under "dependency
 ## script errors" instead of the current tab. While the service is uninstalled the answer is
 ## the safe `{"valid": true}`; a timed-out LSP wait falls back to the URI's cached

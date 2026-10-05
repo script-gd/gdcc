@@ -17,12 +17,31 @@ var _reconcile_active: bool = false
 var _reconcile_remaining: int = 0
 # FIFO of the reconcile requests currently on the wire (send order == completion order).
 var _reconcile_order: Array = []
+# Throttle for the closed-tab check below (msec of the last pass).
+var _last_open_drop_check_msec: int = 0
 
 var service: GdccEditorService = null
 
 
 func bind_service(owner: GdccEditorService) -> void:
     service = owner
+
+
+## Throttled drop check for temporary inclusions (excluded-but-open files): such a path is
+## tracked only because a `_validate` ran while its tab is open, so once NO tab holds it any
+## more it must leave the module — flag a reconciliation whose removal branch evicts it.
+## Neither the disk scan (excluded paths are filtered out) nor the registry (entry points
+## are all editor-driven) can observe "was open, now closed" on their own. 500ms throttle:
+## the check walks every tracked path and asks the editor for its open tabs.
+func _flag_closed_temporary_inclusions(now: int) -> void:
+    if now - _last_open_drop_check_msec < 500:
+        return
+    _last_open_drop_check_msec = now
+    var registry: GdccSourceRegistry = service.registry()
+    for path in registry.tracked_paths():
+        if service.is_path_excluded(path) and not service.is_path_open_in_editor(path):
+            _reconcile_pending = true
+            return
 
 
 ## Forwarding target for the editor's `filesystem_changed` signal: flags a reconciliation;
@@ -76,7 +95,8 @@ func service_shutdown() -> void:
     _reconcile_order.clear()
 
 
-func service_tick(_now: int) -> void:
+func service_tick(now: int) -> void:
+    _flag_closed_temporary_inclusions(now)
     if not _reconcile_pending or _reconcile_active:
         return
     if not service.lifecycle().is_ready() or not service.lifecycle().is_setup_idle() \
@@ -97,18 +117,33 @@ func service_tick(_now: int) -> void:
     for tracked in registry.tracked_paths():
         if disk_set.has(tracked) or registry.is_tombstoned(tracked):
             continue
-        if not registry.is_disk_known(tracked):
-            # Never seen on disk: an unsaved buffer-only script — not a deletion, even if a
-            # flight already uploaded it (mirroring is not disk evidence).
+        var disk_known: bool = registry.is_disk_known(tracked)
+        var excluded: bool = service.is_path_excluded(tracked)
+        if not disk_known and not excluded:
+            # Never seen on disk AND not excluded: an unsaved buffer-only script — not a
+            # deletion, even if a flight already uploaded it (mirroring is not disk
+            # evidence).
             continue
-        # Deleted or renamed-away on disk: drop every local trace and tombstone the path so
-        # a still-open tab cannot resurrect it; a mirrored copy is deleted server-side too.
-        # This wins over a dirty buffer: the file is gone.
+        if excluded and service.is_path_open_in_editor(tracked) \
+                and (not disk_known or FileAccess.file_exists(tracked)):
+            # Temporary inclusion: an EXCLUDED file with an open editor tab stays in the
+            # module (its buffer is the content truth) until the tab closes. A disk-known
+            # excluded path whose file vanished still falls through — disk deletion wins
+            # over the open tab, same as for included files.
+            continue
+        # Deleted or renamed-away on disk, OR excluded without an open tab: drop every
+        # local trace and delete the mirrored copy server-side. This wins over a dirty
+        # buffer: the file is gone (or no longer part of the module).
         registry.erase_source(tracked)
         registry.clear_dirty(tracked)
         service.cache().erase(tracked)
         registry.erase_disk_known(tracked)
-        registry.tombstone(tracked)
+        if disk_known:
+            # Tombstone only genuine disk deletions: a still-open tab must not resurrect
+            # them. An excluded buffer-only path must NOT be tombstoned — its tombstone
+            # could never lift (lifting requires the file to appear on disk), which would
+            # permanently refuse the path even after the exclusion is removed.
+            registry.tombstone(tracked)
         if scheduler.mirrored_version(tracked) >= 0:
             scheduler.unmirror(tracked)
             requests.append({"kind": "delete", "path": tracked})
@@ -136,11 +171,14 @@ func service_tick(_now: int) -> void:
             registry.set_entry(path, text, 1)
             registry.mark_dirty(path, 1)
             requests.append({"kind": "put", "path": path, "text": text, "version": 1})
-    # Buffer-only sources (unsaved, never on disk) are invisible to the disk diff above —
-    # after an outage wiped the mirror they would never be re-uploaded. Re-mark them dirty so
-    # the next flight re-uploads and re-analyzes them (idempotent: mirrored ones skip).
+    # Sources invisible to the disk diff above (buffer-only unsaved scripts AND temporarily
+    # included excluded files — the scan filters those even though they exist on disk) would
+    # never be re-uploaded after an outage wiped the mirror. Re-mark them dirty so the next
+    # flight re-uploads and re-analyzes them (idempotent: mirrored ones skip). The guard is
+    # `vanished`, not `is_disk_known`: a disk-known excluded file still on disk MUST recover
+    # here, while a genuinely vanished/tombstoned path belongs to the deletion branch above.
     for path in registry.tracked_paths():
-        if disk_set.has(path) or registry.is_disk_known(path) or registry.is_tombstoned(path):
+        if disk_set.has(path) or registry.vanished(path):
             continue
         if scheduler.mirrored_version(path) >= 0 or registry.is_dirty(path):
             continue
@@ -232,7 +270,13 @@ func project_gd3_files() -> Array:
 
 
 ## Recursive `.gd3` collection under a res:// directory; dot-directories (notably `.godot`)
-## are skipped. Returns res:// paths built without double slashes (the root is "res://").
+## are skipped, and paths matched by the `gdcc/sync/excluded_globs` project setting are
+## filtered OUT (they are not part of the project module — an excluded-but-tracked path then
+## diffs as a deletion and is removed server-side, which is exactly how a settings change
+## takes effect). The filter applies per FILE only: pruning directories via a probe path
+## would over-prune on file-exact globs (e.g. `addons/gdcc/x` must not hide
+## `addons/gdcc/other.gd3`).
+## Returns res:// paths built without double slashes (the root is "res://").
 func _scan_gd3_files(dir_path: String) -> Array:
     var found: Array = []
     var dir: DirAccess = DirAccess.open(dir_path)
@@ -248,7 +292,9 @@ func _scan_gd3_files(dir_path: String) -> Array:
             if not name.begins_with("."):
                 found.append_array(_scan_gd3_files(prefix + "/" + name))
         elif name.ends_with(".gd3"):
-            found.append(prefix + "/" + name)
+            var file_path: String = prefix + "/" + name
+            if not service.is_path_excluded(file_path):
+                found.append(file_path)
         name = dir.get_next()
     dir.list_dir_end()
     return found

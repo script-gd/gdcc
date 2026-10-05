@@ -24,7 +24,12 @@
   `ApiModuleCopyTest` 7 项 + RPC 三层测试 + 引擎用例 `dock_compile` 12 步全绿，
   api+rpc 全量回归无回归，双评审终审 APPROVE；手动验收项见 Phase 10 验收节）；
   已经过多轮并行评审并修订）
-- 更新日期：2026-09-28
+- 更新日期：2026-10-05
+- 2026-10-05 修订：Phase 10 后修复落地——(1) gdcc 诊断缓存读路径改为**过期可见**
+  （编辑期间旧诊断保持显示直至新鲜轮合并替换，§3.5/§4.2/§4.4 合同已同步）；
+  (2) 新增项目设置 `gdcc/sync/excluded_globs`（PackedStringArray glob，默认
+  `addons/gdcc/*`），诊断模块同步与 LSP 镜像三处入口统一排除，设置变更经
+  `settings_changed` 即时对账生效（§7 Phase 10 后修复节）。
 - 2026-09-27 修订：`launch_bad` 引擎测试断言接受平台分叉的两种 launcher 失败报告
   （Windows 同步 `OS.create_process failed` / Unix-like fork 成功后子进程 execvp
   失败早退，见 §3.7），修复 Linux/macOS CI。
@@ -224,7 +229,8 @@
   - `EditorAddonScriptLanguageEngineTest` 新增 `gdcc_diag` 用例（18 步全绿）：
     路径式 extends 在 LSP 静默下经 `_validate` 浮现 `[gdcc sema.class_skeleton]`
     前缀错误；lowering fixture 的错误/警告配对按五键/行列映射；同名不同目录文件
-    诊断各自键控；编辑后旧版本缓存立即失效（版本门禁负例）；LSP 有错误时 gdcc
+    诊断各自键控；编辑后旧版本缓存立即失效（版本门禁负例；**该语义已在 Phase 10 后
+    修复 1 中反转为"过期可见"**，此句仅为历史事实记录）；LSP 有错误时 gdcc
     诊断不叠加（含 gdcc 缓存新鲜时仍抑制）；修复后下一轮缓存被替换、诊断消失；
     busy ±1 在分析期间上报并排空（经 `busy_delta` 信号接入 Phase 1 协调器）；
     预置同 ID 残留模块后重建恢复分析（-32001 路径）；删除/重命名后旧路径缓存与
@@ -1495,7 +1501,10 @@ MVP 不含自定义基类 `extends`，功能协议（`bind_service`/`service_tic
   （解释型）连接 `EditorInterface.get_resource_filesystem().filesystem_changed`
   信号转发给服务；服务维护已镜像路径集合，对账时计算新增/修改/删除差异：删除与
   重命名旧路径先 `vfs.deletePath`，新增/修改走 `put_file`，然后才安排分析。
-  对账与防抖共用同一调度泵。
+  对账与防抖共用同一调度泵。**纳入范围受 `gdcc/sync/excluded_globs` 项目设置约束**
+  （Phase 10 后修复 2，见 §7 Phase 10 后修复节）：命中排除 glob 的路径视同"不在
+  项目集合内"——扫描不返回它，已镜像的它按删除路径对账出模块；**例外：打开页签
+  中的排除文件临时纳入**（缓冲区即内容真源），页签关闭后由节流检查触发对账移出。
 - `uninstall()`：停防抖调度并丢弃 `_dirty` 与在途分析回调 → 断 LSP → 移除
   loader/saver → `unregister_script_language` → 删除私有诊断模块 → 状态置
   UNINSTALLED。**不释放任何常驻对象**；UNINSTALLED 下所有对外入口与内部调度器、
@@ -1534,11 +1543,14 @@ MVP 不含自定义基类 `extends`，功能协议（`bind_service`/`service_tic
 - 供 `GdccScriptLanguage` 查询的接口（签名为合同，§4.2 依赖之）：
   `lsp_diagnostics_for(path) -> Array`；
   `notify_source_changed(path, text) -> int`（内容未变：返回现有版本、**不升版**；
-  内容变化：版本 +1 并标脏）；
-  `gdcc_diagnostics_for(path, version) -> Array`（仅当缓存版本与 version 一致才返回
-  条目，否则返回空数组）；
-  `request_completion(path, text, line, col) -> Dictionary`。
-
+  内容变化：版本 +1 并标脏；非项目路径返回 -1 不跟踪。**排除路径不拒绝**——notify
+  只在文件有打开页签时发生，构成临时纳入（排除规则与临时纳入的完整语义见
+  §7 Phase 10 后修复 2））；
+  `gdcc_diagnostics_for(path, version) -> Array`（**Phase 10 后修复 1 起改为
+  "过期可见"**：缓存中有该路径的条目即返回（可能是编辑前旧版本的分析结果），直到
+  新一轮分析合并将其替换；version 不再门控读取，新鲜度由 `is_version_current`
+  探针单独观测。旧合同"仅版本一致才返回"会让编辑器在防抖+分析窗口内把既有错误
+  整体清空，见 §7 Phase 10 后修复 1）；
 ### 3.6 `plugin.gd` 接线变更
 
 `_enter_tree` 增加（解释型 GDScript，可直接用编辑器 API）：
@@ -1671,8 +1683,9 @@ dock 在 gdcc 语言注册之前就依赖它（§1.1）。形态为 `Node`，由
    断开）。
 6. 经 `ensure_server_hook`（§3.7）确保 RPC 服务可用（未配置启动命令且服务缺席时
    静默降级，后续心跳失败仍会再经钩子重试）；首个 `ping` 成功后创建私有诊断模块，
-   随后初始同步：`DirAccess` 递归遍历项目 `.gd3` 上传 VFS 并做一次 `analyze.run`
-   预热缓存。
+   随后初始同步：`DirAccess` 递归遍历项目 `.gd3`（**排除
+   `gdcc/sync/excluded_globs` 命中的路径**，Phase 10 后修复 2）上传 VFS 并做一次
+   `analyze.run` 预热缓存。
 7. （plugin.gd）仅运行期启用场景：`call_deferred` 触发 `EditorFileSystem.scan()`。
 
 注销（`_exit_tree`）：断开 `filesystem_changed` 连接、dock 残余 busy 归零 →
@@ -1708,11 +1721,11 @@ RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
    - 其余 severity 丢弃。
 3. gdcc 通道：**先** `version := notify_source_changed(path, script)`（每次校验都执行，
    包括 LSP 有错误时——LSP 错误只抑制 gdcc 诊断的**显示**，不抑制标脏与缓存失效），
-   再读 `gdcc_diagnostics_for(path, version)`：缓存内容版本与本次不一致时视为无缓存
-   （本轮不合并，后台分析会刷新），一致则按 `severity` 拆入 `errors`/`warnings`
-   （`string_code: <category>`，`message` 前缀 `[gdcc <category>]`；`sourcePath`/
-   `range` 为空的条目按文件级诊断处理：行 1 列 1）。若 LSP 有错误，即使缓存新鲜也
-   不叠加（避免级联噪音）。
+   再读 `gdcc_diagnostics_for(path, version)`：**Phase 10 后修复 1 起为过期可见**
+   ——缓存中有条目即合并（编辑已升版时其行列指向旧文本，直到新一轮合并替换），
+   按 `severity` 拆入 `errors`/`warnings`（`string_code: <category>`，`message` 前缀
+   `[gdcc <category>]`；`sourcePath`/`range` 为空的条目按文件级诊断处理：行 1 列 1）。
+   若 LSP 有错误，即使缓存新鲜也不叠加（避免级联噪音）。
 4. 返回 `{"valid": errors.is_empty(), "errors": ..., "warnings": ...}`。
 5. LSP 不可用（DEGRADED）：跳过第 1–2 步，仅 gdcc 通道（gdcc 前端本身覆盖 GDScript
    语法解析，降级仍有意义）。
@@ -1751,7 +1764,8 @@ RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
   `analyze.run(analyze_include_lowering)`。
 - **单飞以服务端完成为准**：在途期间不发射新请求（新变更只更新 `_dirty`）；
   响应到达后按内容版本号比对——落后则丢弃并立即安排新一轮，匹配则回填
-  `_gdcc_diagnostics`。
+  `_gdcc_diagnostics`。**读取侧自 Phase 10 后修复 1 起过期可见**（§3.5/§4.2）：
+  合并写回仍是唯一清除/替换途径，防抖窗口内旧诊断保持显示。
 - ~~**无主动 revalidation 通道**~~（§2.5）：**Phase 5 起**经 `validate_script`
   注册信号主动触发重校验（§2.5 末条；触发条件与排队规则见 §7 Phase 5 第 1 项）。
   在此之前新诊断随编辑器下一次校验节拍（再编辑的 idle 超时、页签切换、外部
@@ -2236,6 +2250,128 @@ REQUEST_CHANGES —— 卸载时经帧泵客户端的副本删除实际发不出
 Cancel 改道）——Cancel 改用钉住任务端点的临时客户端，重试加端点一致条件。修复
 中还发现并修正引擎测试驱动缺陷：`module.get`/`read_file` 走模块门，副本编译期间
 会阻塞，改由 `module.list` 观察注册、内容校验移到编译结束后。终审双双 APPROVE。
+
+### Phase 10 后修复（编辑器体验，2026-10-05 自动化验收通过）
+
+Phase 10 完成后暴露的两个编辑器体验问题及其修复。均为局部合同修订，不改变模块
+结构；评审与引擎回归见本节末。
+
+#### 修复 1：编辑期间诊断保持可见（过期可见合同）
+
+**现象**：在编辑器中键入时既有报错立即消失，停键约 800ms 防抖 + 一轮异步分析后才
+重新出现——无法对照报错改代码。
+
+**根因链**：编辑器每次校验节拍用 `_validate` 的返回值**整体替换**该页签的错误显示
+（Godot `ScriptTextEditor._validate_script`：`errors.clear()` 后按新结果重建）；而
+gdcc 通道的缓存读路径按内容版本门控——`notify_source_changed` 先升版，同一次
+`_validate` 再读缓存时版本必然不匹配 → 返回空 → 编辑器把旧诊断清空。新版分析要等
+防抖与飞行结束才回填。LSP 通道本就"stale beats none"（读 URI 最新缓存），故仅
+gdcc 通道有此问题。
+
+**修复**：`GdccDiagCache` 读路径改为**过期可见**——条目在新鲜轮合并前持续返回（行
+列指向编辑前文本，属刻意取舍，与 Godot 自身"新结果到达才替换"的行为一致）；写侧
+合同不变（仅调度器合并可写、仅匹配版本可合并、outage/重定向/卸载仍清空）。
+`is_version_current` 保持严格新鲜度语义，供 Phase 5 重校验门与测试观测。
+**不破坏的合同**：LSP 错误仍抑制 gdcc 显示；合并仍按版本匹配写回；修复后的新一轮
+（空结果）合并 + 主动重校验仍是诊断消失的唯一途径。
+
+#### 修复 2：同步排除 glob（`gdcc/sync/excluded_globs`）
+
+**现象**：`res://addons/gdcc/` 下 addon 自身的 `.gd3` 被扫入诊断模块参与整模块分析，
+浪费分析轮次且其报错污染问题列表。
+
+**修复**：新增**项目设置** `gdcc/sync/excluded_globs`（`PackedStringArray`，默认
+`["addons/gdcc/*"]`；plugin.gd 注册属性与初始值）。匹配语义：对 `res://` 相对路径
+做 `String.match`；`*` 跨 `/`（Godot 语义），故默认 glob 覆盖 addon 全部嵌套文件；
+**无通配符的目录名同时排除其子树**（判词额外尝试 `<glob>/*`）。服务端 4.5 实证：
+`ProjectSettings.set_setting` 经 `_set` 延迟合帧发射 `settings_changed`（4.5 无
+`get_changed_settings`，插件无法按 key 过滤，故全量转发、由对账合并吸收）。
+作用于三处入口，保持"诊断模块 VFS 与 LSP 镜像对项目 `.gd3` 集合认知一致"的既有
+不变式：
+
+1. `GdccFileReconciler._scan_gd3_files`（诊断对账与 LSP 镜像共用的唯一递归扫描）逐
+   文件过滤；**不做目录剪枝**——按探针路径剪枝会被精确文件 glob 误伤（如
+   `addons/gdcc/x` 会连带隐藏 `addons/gdcc/other.gd3`）。
+2. `GdccSourceRegistry.notify_source_changed` **不拒绝**排除路径——`_validate` 只在
+   文件被编辑器打开（存在页签）时被调用，故 notify 即"已打开"信号：**打开的排除
+   文件被临时纳入模块**（其缓冲区即内容真源，正常走 标脏→上传→分析→诊断 链路）。
+3. `GdccFileReconciler` 对账删除分支增加**临时纳入保留规则**：排除路径在页签打开
+   期间保留（disk-known 路径磁盘删除仍优先，与既有"删除胜缓冲区"一致）；另设
+   500ms 节流的关闭检查（遍历已跟踪路径中"排除且无页签"者）标记对账，页签关闭后
+   下一趟对账自动将其移出模块（本地除名 + 服务端删除；未落盘路径不置墓碑——墓碑
+   只随真实磁盘删除，否则取消排除后永不复纳）。**恢复回路**（镜像重建后的重传）
+   的门卫由 `is_disk_known` 改为 `vanished`：排除的 disk-known 临时纳入文件不在磁盘
+   扫描集合内，旧门卫会让它在模块重建后永远不再上传（评审发现）。
+4. `GdccWorkspaceMirror` 维持排除（不随临时纳入改变）：`_should_close` 对排除路径恒
+   true（已镜像的排除路径 didClose，即使页签打开——该页签自身的 `_validate` 同步
+   会独立维持其单文件 LSP 文档）；`_resolve_current_text` 对排除路径返回
+   not-found（发送时重估原则：设置变更前入队的旧 sync 意图不得把刚排除的内容发
+   出去）；drain 的 close→sync 复活分支以排除优先于"文件仍存在"（否则排除路径
+   的 sync 解析为 not-found 会重新入队 close，两个转换分支均不耗预算，主线程
+   死循环——评审阻塞项）。
+
+**生效与时效**：判词每次调用现读设置（无缓存）；plugin.gd 将
+`ProjectSettings.settings_changed` 转发为对账触发，设置变更即刻生效——新排除的已
+同步**且已关闭**的路径按"删除"对账出模块（本地除名 + 服务端 `vfs.deletePath`；
+disk-known 路径置墓碑防复活），页签仍打开的排除路径保留（临时纳入），移出排除后
+下一趟对账经墓碑复活重新上传。两功能共享的是**磁盘扫描集合**；诊断模块额外持有
+临时纳入的打开缓冲区，LSP 镜像不随临时纳入改变。
+
+**边界**：排除路径的磁盘内容永不入模块；打开页签临时纳入（gdcc 通道诊断可用），
+关闭即移出。LSP 通道：打开页签的 `_validate` 每页签同步与排除无关，诊断始终可用；
+镜像层面排除停止的是**自动镜像**，不构成跨文件索引隔离：Godot 4.5 的 GDScript LSP
+服务端 `didClose` 为空实现，此前已解析的内容在服务端缓存中可能残留。镜像侧
+didClose 的意义是停止客户端后续的 didChange 维护流量并释放客户端簿记。
+
+**已知限制（待修，前端范围，见
+`FrontendLoweringUnresolvedTypeFallbackTest` @Disabled）**：临时纳入的文件若引用了
+模块外的类型（例如 addon 文件引用其他 addon 类），`includeLowering=true` 的分析会在
+CFG lowering 的 `requireLoweringReadyCall` 不变式上抛异常（该调用的发布状态既非
+RESOLVED 也非 DYNAMIC），RPC 层呈 -32603，编辑器诊断通道按 outage 处理并可能循环
+重建。sema 路径（includeLowering=false）对此正常降级（`sema.type_resolution` 警告 +
+Variant 回退）。该缺陷与本功能无关、可由任何引用了缺失类型的工程文件触发；修复
+方向是 lowering 将此类成员调用降级为 DYNAMIC。
+
+#### 验收（2026-10-05）
+
+- 引擎用例 `gdcc_diag`：`stale_version_suppressed`（旧合同负例）翻转为
+  `stale_version_still_visible`——编辑后 gdcc 错误**仍显示**且新鲜轮落地替换；
+  `_wait_diag_items` 收紧为"新鲜且非空"防过期条目假绿。
+- 新引擎用例 `sync_exclusions`（21 步全绿）：默认排除使 `addons/gdcc/*.gd3` 不进模块
+  且不被 LSP 镜像（以 `src/test2.gd3` 双通道同步为正对照）；**临时纳入**——真实
+  页签打开排除文件后由编辑器自身 `_validate` 自然接纳并上传真实内容，跨一次完整对账
+  （以 canary 上传为对账已完成之证）仍保留于 registry 与 VFS（`excluded_open_*`）；
+  模拟准入（无页签 notify）随后**在无任何手动/设置触发的情况下**被节流关闭检查逐出
+  （registry 与 VFS 双消失——`excluded_simulated_*`；该窗口内唯一可能的对账触发源即
+  该检查。**上传与逐出的先后顺序刻意不作断言**：从未被页签持有的排除路径在上传前
+  被逐出是合法行为，"已上传内容的服务端删除"由 `settings_change_excludes` 与
+  `buffer_only_excluded` 确定性覆盖）；自定义目录形式 glob
+  （`excl_probe`，无通配符）先同步并经 LSP 镜像（`probe_mirrored_lsp`，兼作
+  close→sync 死循环守卫）、改设置后**不经手动 filesystem 通知**即被对账删除且镜像
+  didClose（实证 settings_changed 接线）；纯缓冲区（未落盘）源验证"上传→排除删除→
+  取消排除后无需落盘即可重新接纳"全链（排除不得对其置墓碑）；恢复默认后重新同步。
+  恢复路径回归（`recovery_*`）：已同步文件在页签打开期间被排除时于对账中保留
+  （以同批被排除的无页签 victim 删除为对账已运行之证），模块卸载重建后**无需编辑
+  缓冲区**即恢复上传并完成新一轮分析（缓存 v1 重新新鲜）。
+- 静态门禁（addon 全量 .gd3 analyze+lowering、无协程、解释脚本解析）、
+  `gd.script.gdcc.api.*` + `gd.script.gdcc.rpc.*` 全量回归（含全部引擎用例，
+  20 测 1 跳过）无回归。
+
+评审记录（2026-10-05，review-expert-c，两轮）：第一轮 REQUEST_CHANGES ——(1)（阻塞，
+已修）已镜像文件被排除时镜像 drain 在 close→sync→close 间死循环（两个转换分支均不
+耗预算，主线程冻结），修为排除优先于"文件仍存在"的复活判断；(2)（中，已修）未落盘
+的纯缓冲区已跟踪源在排除后残留模块，修为显式排除绕过缓冲区保留规则、且仅
+disk-known 路径置墓碑（否则取消排除后永不复纳）；(3)（低，已修）文档对 LSP 索引
+隔离的承诺超出 4.5 能力（服务端 didClose 为空实现），收窄为"停止自动镜像与模块
+同步"。评审同时指出首版 `sync_exclusions` 未让 LSP 就绪、镜像路径从未被覆盖——用例
+已按真实 LSP 双通道重构。临时纳入语义（同日后续需求）评审两轮：第一轮命中"disk-known
+临时纳入文件在模块重建后永不恢复"（恢复回路门卫改 `vanished`）、驱逐锚点可假绿、
+文档表述矛盾三项，修复并将用例扩至 21 步（真实页签保留/模拟路径节流逐出/重建恢复
+全链）；第二轮命中"上传先于逐出"的强制排序与生产语义冲突（间歇性 put 失败经 outage
+自愈后逐出合法抢先），改为不断言顺序 + 以 channel session 钉住窗口排除恢复路径假
+绿，并以**变异运行**（临时摘除节流检查）实证锚点致死、恢复后转绿；终审 APPROVE。
+测试期另暴露一项**与本功能无关的前端既有缺陷**（见上"已知限制"），按架构级变更
+流程保留待确认。
 
 ---
 

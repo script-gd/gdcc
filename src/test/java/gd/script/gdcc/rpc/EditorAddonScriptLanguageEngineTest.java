@@ -126,16 +126,16 @@ class EditorAddonScriptLanguageEngineTest {
                     "config", "lsp_port_set", "disabled_before_listen", "editor_ready",
                     "plugin_reenabled", "lsp_ready", "blocking_refused",
                     "async_diagnostics_surface", "survived")),
-            // Phase 3: gdcc diagnostics channel — version-gated merge into `_validate`
-            // (path-extends error + lowering warning/error pair), displayPath keying for
-            // same-basename files, stale-version and LSP-error suppression negatives,
-            // fix-then-clear round, busy coordination, -32001 stale-module rebuild,
-            // delete/rename reconciliation with server-side VFS proof, and the
+            // Phase 3: gdcc diagnostics channel — merge into `_validate` (path-extends
+            // error + lowering warning/error pair), displayPath keying for same-basename
+            // files, stale-visible retention across an edit and LSP-error suppression
+            // negatives, fix-then-clear round, busy coordination, -32001 stale-module
+            // rebuild, delete/rename reconciliation with server-side VFS proof, and the
             // ensure_server_hook outage path with recovery.
             Map.entry("gdcc_diag", List.of(
                     "config", "service_ready", "busy_probe_connected", "fixtures_written",
                     "analysis_ready", "validate_gdcc_error", "validate_lowering_pair",
-                    "display_path_keying", "stale_version_suppressed",
+                    "display_path_keying", "stale_version_still_visible",
                     "lsp_error_suppresses_gdcc", "fix_clears_after_round", "busy_drained",
                     "stale_module_rebuild", "delete_reconciles", "rename_reconciles",
                     "deletion_triggers_reanalysis", "delete_with_dirty_buffer",
@@ -213,6 +213,25 @@ class EditorAddonScriptLanguageEngineTest {
                     "lookup_cross_file", "lookup_class_name_gap", "lookup_cjk",
                     "lookup_unknown_symbol", "lookup_no_sentinel_fallback",
                     "lookup_disabled_safe", "survived")),
+            // Post-Phase-10 fixes: `gdcc/sync/excluded_globs` — the default set keeps the
+            // addon's own .gd3 files out of the diagnostics module AND the LSP workspace
+            // mirror, an excluded file OPEN in an editor tab is temporarily included
+            // (admitted via notify, evicted after the tab closes), and a settings edit
+            // reconciles live in BOTH directions (through the plugin's
+            // ProjectSettings.settings_changed wiring — the driver never sends a manual
+            // filesystem notify for those steps). The probe is mirrored on the LSP before
+            // exclusion, so the exclude step also proves the mirror close path cannot
+            // bounce close→sync forever (that loop would freeze the frame pump and starve
+            // every poll below).
+            Map.entry("sync_exclusions", List.of(
+                    "config", "service_ready", "default_excludes_addon",
+                    "excluded_open_tab_admitted", "excluded_open_kept_across_reconcile",
+                    "excluded_simulated_admitted", "excluded_simulated_dropped",
+                    "custom_file_synced", "probe_mirrored_lsp",
+                    "settings_change_excludes", "mirror_closes_excluded",
+                    "buffer_only_uploaded", "buffer_only_excluded", "buffer_only_reincluded",
+                    "reinclude_resyncs", "recovery_setup", "recovery_excluded_kept",
+                    "recovery_module_rebuilt", "recovery_reuploaded", "survived")),
             Map.entry("lookup_suspended", List.of(
                     "config", "service_ready", "lsp_ready", "lookup_helpers", "editor_opened",
                     "lookup_unavailable", "lookup_keeps_path", "save_on_original_path", "survived")),
@@ -235,7 +254,7 @@ class EditorAddonScriptLanguageEngineTest {
     /// runtime concat instead of folding the parts back into a single oversized constant.
     private static final String DRIVER_PLUGIN = driverPluginCore() + driverPluginCompletion()
             + driverPluginRevalidate() + driverPluginClassMetadata() + driverPluginWorkspace()
-            + driverPluginLookup();
+            + driverPluginLookup() + driverPluginExclusions();
 
     private static String driverPluginCore() {
         return """
@@ -392,6 +411,8 @@ class EditorAddonScriptLanguageEngineTest {
                         await _run_lsp_lookup_mode()
                     elif mode == "lookup_suspended":
                         await _run_lookup_suspended_mode()
+                    elif mode == "sync_exclusions":
+                        await _run_sync_exclusions_mode()
                     elif mode == "auto_indent":
                         _run_auto_indent_mode()
                     else:
@@ -1034,10 +1055,14 @@ class EditorAddonScriptLanguageEngineTest {
                     _hook_calls += 1
                     _deferred_replies.append(on_ready)
                 
+                # Fresh-round wait: the cache serves STALE entries by design now (they stay
+                # visible until the fresh round replaces them), so a non-empty read alone
+                # cannot prove the requested version landed — require freshness AND items.
                 func _wait_diag_items(service: Node, path: String, version: int, timeout_sec: float) -> bool:
                     var deadline := Time.get_ticks_msec() + int(timeout_sec * 1000.0)
                     while Time.get_ticks_msec() < deadline:
-                        if not service.gdcc_diagnostics_for(path, version).is_empty():
+                        if service.is_diag_version_current(path, version) \
+                                and not service.gdcc_diagnostics_for(path, version).is_empty():
                             return true
                         await get_tree().process_frame
                     return false
@@ -1165,17 +1190,23 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("display_path_keying", keying_ok,
                             "a=" + str(dup_a_items.size()) + " b=" + str(dup_b_items.size()))
                 
-                    # Version gate: any edit invalidates the cached round instantly — the stale
-                    # gdcc error must vanish from THIS beat even before re-analysis lands.
+                    # Stale-visible contract (post-Phase-10 fix): the edit bumps the version
+                    # instantly, but the previous round's gdcc error must STAY visible — the
+                    # editor replaces displayed markers wholesale on every validation beat, so
+                    # a version-gated empty read would blank the gutter for the whole
+                    # debounce+analysis window and leave the user fixing code blind. The
+                    # fresh v2 round then replaces the entry (same diagnostic: comment edit).
                     var edited_src := child_src + "# touched\\n"
                     var stale_result: Dictionary = lang._validate(edited_src, child_path, true, true, true, true)
                     var stale_errors: Array = stale_result.get("errors", [])
-                    var stale_ok := true
+                    var stale_visible := false
                     for e in stale_errors:
-                        if str(e.get("message", "")).begins_with("[gdcc"):
-                            stale_ok = false
-                    _step("stale_version_suppressed", stale_ok and stale_result.get("valid", false) == true,
-                            str(stale_result))
+                        if str(e.get("message", "")).begins_with("[gdcc sema.class_skeleton]"):
+                            stale_visible = true
+                    var v2_fresh: bool = await _wait_diag_current(service, child_path, 2, 60.0)
+                    _step("stale_version_still_visible",
+                            stale_visible and stale_result.get("valid", true) == false and v2_fresh,
+                            str(stale_result) + " v2_fresh=" + str(v2_fresh))
                 
                     # LSP errors suppress gdcc diagnostics even with a fresh cache: the broken
                     # text is analyzed by gdcc too (parse error cached at v3), yet only the LSP
@@ -3099,6 +3130,411 @@ class EditorAddonScriptLanguageEngineTest {
                 """;
     }
 
+    /// Post-Phase-10 fixes: sync exclusion globs. Separate block only for the 64KB literal
+    /// limit — the concatenation must keep one continuous GDScript source.
+    private static String driverPluginExclusions() {
+        return """
+                
+                # ---------------- Post-Phase-10: sync exclusion globs ----------------
+                
+                func _run_sync_exclusions_mode() -> void:
+                    var service := _service()
+                    if service == null:
+                        _step("service_ready", false, "GdccEditorService missing")
+                        return
+                    var lsp_port := int(_config["lsp_port"])
+                    var rpc_port := int(_config["rpc_port"])
+                    # Point the editor's GDScript language server at the test port BEFORE it
+                    # starts listening (same ordering as the lsp_* cases), then repeat-install
+                    # retargets both client endpoints. The LSP side must be LIVE in this mode:
+                    # the exclusion anchors include workspace-mirror behavior.
+                    var settings := EditorInterface.get_editor_settings()
+                    settings.set_setting("network/language_server/remote_host", "127.0.0.1")
+                    settings.set_setting("network/language_server/remote_port", lsp_port)
+                    var install_ok: bool = service.install(
+                            EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", rpc_port) == OK
+                    var lsp_ok: bool = await _wait_lsp_ready(45.0)
+                    _step("service_ready", install_ok and lsp_ok,
+                            "install=" + str(install_ok) + " lsp=" + str(lsp_ok))
+                    if not (install_ok and lsp_ok):
+                        return
+                
+                    # Driver-owned RPC client: observes the module VFS straight from the server.
+                    var client := GdccRpcClient.new()
+                    add_child(client)
+                    client.host = "127.0.0.1"
+                    client.port = rpc_port
+                    var lsp_client = service.get_lsp_client()
+                
+                    var ready_ok: bool = await _wait_diag_ready(service, 45.0)
+                    var module_id: String = service.get_diag_module_id()
+                    var control_path := "res://src/test2.gd3"
+                    var addon_path := "res://addons/gdcc/gdcc_diag_cache.gd3"
+                    var control_uri: String = service.lsp_uri_for(control_path)
+                    var addon_uri: String = service.lsp_uri_for(addon_path)
+                
+                    # Positive controls FIRST — every absence anchor below is vacuous until the
+                    # initial reconciliation AND the mirror's initial replay demonstrably ran:
+                    # the project's own (non-excluded) src/test2.gd3 must appear in the module
+                    # VFS and on the LSP server. Then the addon's own scripts (default glob
+                    # `addons/gdcc/*`) must be absent from BOTH channels.
+                    var control := false
+                    var control_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < control_deadline and not control:
+                        var control_read: Dictionary = await client.read_file(
+                                module_id, "/src/src/test2.gd3").completed
+                        control = control_read["ok"] \\
+                                and int(lsp_client.document_version_for(control_uri)) >= 0
+                        if not control:
+                            await get_tree().create_timer(0.2).timeout
+                    var addon_read: Dictionary = await client.read_file(
+                            module_id, "/src/addons/gdcc/gdcc_diag_cache.gd3").completed
+                    var addon_absent: bool = not addon_read["ok"] \\
+                            and int((addon_read.get("error", {}) as Dictionary).get("code", 0)) == -32005 \\
+                            and int(lsp_client.document_version_for(addon_uri)) < 0
+                    _step("default_excludes_addon", ready_ok and control and addon_absent,
+                            "control=" + str(control) + " addon_absent=" + str(addon_absent))
+                    if not (ready_ok and control and addon_absent):
+                        return
+                
+                    # The open-tab anchors use a SELF-CONTAINED excluded fixture: admitting a
+                    # file that references types absent from the module trips a known frontend
+                    # lowering limitation (see UnresolvedTypeLoweringReproTest) that is out of
+                    # this feature's scope, so the fixture must not reference foreign types.
+                    ProjectSettings.set_setting(service.EXCLUDED_GLOBS_SETTING,
+                            PackedStringArray(["addons/gdcc/*", "excluded_ui"]))
+                    var ui_path := "res://excluded_ui/open_me.gd3"
+                    var ui_src := "class_name ExcludedOpenMe\\nextends Node\\n\\nfunc ping() -> int:\\n    return 1\\n"
+                    DirAccess.make_dir_recursive_absolute(
+                            ProjectSettings.globalize_path("res://excluded_ui"))
+                    _write_text_file(ui_path, ui_src)
+                    service.notify_filesystem_changed()
+                
+                    # Temporary inclusion with a REAL open tab: opening the excluded file lets
+                    # the editor's own `_validate` admit it (no driver notify) — the registry
+                    # tracks it and the next flight uploads the real content.
+                    EditorInterface.set_main_screen_editor("Script")
+                    var ui_res: Resource = ResourceLoader.load(ui_path)
+                    if ui_res != null:
+                        EditorInterface.edit_resource(ui_res)
+                    var tab_open := false
+                    var tab_deadline := Time.get_ticks_msec() + 15000
+                    while Time.get_ticks_msec() < tab_deadline and not tab_open:
+                        tab_open = service.is_path_open_in_editor(ui_path)
+                        if not tab_open:
+                            await get_tree().process_frame
+                    # The editor's idle validation beat admits the path into the registry.
+                    var admitted := false
+                    var admit_deadline := Time.get_ticks_msec() + 30000
+                    while Time.get_ticks_msec() < admit_deadline and not admitted:
+                        admitted = service.registry().has(ui_path)
+                        if not admitted:
+                            await get_tree().process_frame
+                    # Hurry the flight past the 800ms debounce so the upload lands well
+                    # before any later reconcile could evict.
+                    service.registry().expire_debounce()
+                    var ui_uploaded := false
+                    var ui_up_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < ui_up_deadline and not ui_uploaded:
+                        var ui_up_read: Dictionary = await client.read_file(
+                                module_id, "/src/excluded_ui/open_me.gd3").completed
+                        ui_uploaded = ui_up_read["ok"] and str(ui_up_read["result"]) == ui_src
+                        if not ui_uploaded:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("excluded_open_tab_admitted", tab_open and admitted and ui_uploaded,
+                            "tab=" + str(tab_open) + " admitted=" + str(admitted)
+                            + " uploaded=" + str(ui_uploaded))
+                    if not (tab_open and admitted and ui_uploaded):
+                        return
+                
+                    # Keep-while-open: a full reconcile runs (proven by the canary's upload)
+                    # and the excluded file with an open tab must survive it in BOTH the
+                    # registry and the server VFS.
+                    _write_text_file("res://excl_canary.gd3",
+                            "class_name ExclCanary\\nextends Node\\n")
+                    service.notify_filesystem_changed()
+                    var canary := false
+                    var canary_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < canary_deadline and not canary:
+                        var canary_read: Dictionary = await client.read_file(
+                                module_id, "/src/excl_canary.gd3").completed
+                        canary = canary_read["ok"]
+                        if not canary:
+                            await get_tree().create_timer(0.2).timeout
+                    var kept := false
+                    if canary:
+                        var kept_read: Dictionary = await client.read_file(
+                                module_id, "/src/excluded_ui/open_me.gd3").completed
+                        kept = kept_read["ok"] and service.registry().has(ui_path)
+                    _step("excluded_open_kept_across_reconcile", canary and kept,
+                            "canary=" + str(canary) + " kept=" + str(kept))
+                    if not (canary and kept):
+                        return
+                
+                    # Simulated admission WITHOUT a tab (driver notify only): the throttled
+                    # closed-tab check is the ONLY possible reconcile trigger in this window
+                    # (no manual filesystem/settings notify), so the eviction can only come
+                    # from it. The channel session is pinned across the window (review
+                    # finding): an outage+recovery would ALSO evict the path (recovery
+                    # reconcile) while clearing the failure text — a session bump is the only
+                    # trace that survives recovery, so without the pin the anchor could pass
+                    # with the throttled check removed. NOTE on ordering (review finding): an
+                    # excluded path that no tab ever held may legitimately be evicted BEFORE
+                    # its first upload — upload-vs-evict ordering is intentionally NOT
+                    # asserted (the server-side delete of PREVIOUSLY uploaded content is
+                    # pinned deterministically by `settings_change_excludes`/
+                    # `buffer_only_excluded` instead). The content is self-contained for the
+                    # same known-limitation reason as above.
+                    var sim_path := "res://excluded_ui/simulated.gd3"
+                    var sim_src := "class_name ExcludedSimulated\\nextends Node\\n"
+                    var sim_session: int = service.lifecycle().session()
+                    var sim_version: int = service.notify_source_changed(sim_path, sim_src)
+                    var sim_admitted: bool = sim_version == 1 and service.registry().has(sim_path)
+                    _step("excluded_simulated_admitted", sim_admitted,
+                            "version=" + str(sim_version))
+                    if not sim_admitted:
+                        return
+                    var sim_dropped := false
+                    var sim_drop_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < sim_drop_deadline and not sim_dropped:
+                        sim_dropped = not service.registry().has(sim_path)
+                        if sim_dropped:
+                            var sim_gone: Dictionary = await client.read_file(
+                                    module_id, "/src/excluded_ui/simulated.gd3").completed
+                            sim_dropped = not sim_gone["ok"] \\
+                                    and int((sim_gone.get("error", {}) as Dictionary).get("code", 0)) == -32005
+                        if not sim_dropped:
+                            await get_tree().create_timer(0.2).timeout
+                    var sim_same_session: bool = service.lifecycle().session() == sim_session
+                    _step("excluded_simulated_dropped", sim_dropped and sim_same_session,
+                            "dropped=" + str(sim_dropped) + " same_session=" + str(sim_same_session))
+                    if not (sim_dropped and sim_same_session):
+                        return
+                
+                    # Custom folder exclusion via the wildcard-free directory form: the file
+                    # syncs under the default set first...
+                    DirAccess.make_dir_recursive_absolute(
+                            ProjectSettings.globalize_path("res://excl_probe"))
+                    var probe_path := "res://excl_probe/visible.gd3"
+                    var probe_src := "class_name ExclProbe\\nextends Node\\n"
+                    _write_text_file(probe_path, probe_src)
+                    service.notify_filesystem_changed()
+                    var synced := false
+                    var sync_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < sync_deadline and not synced:
+                        var probe_read: Dictionary = await client.read_file(
+                                module_id, "/src/excl_probe/visible.gd3").completed
+                        synced = probe_read["ok"]
+                        if not synced:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("custom_file_synced", synced)
+                    if not synced:
+                        return
+                
+                    # ...and reaches the LSP workspace mirror (didOpen). This anchor doubles
+                    # as the loop guard for the exclusion below: with the close→sync bounce
+                    # bug the drain never returns, the frame pump freezes, and every poll
+                    # after the settings edit would starve.
+                    var probe_uri: String = service.lsp_uri_for(probe_path)
+                    var mirrored := false
+                    var mirror_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < mirror_deadline and not mirrored:
+                        mirrored = int(lsp_client.document_version_for(probe_uri)) >= 0
+                        if not mirrored:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("probe_mirrored_lsp", mirrored)
+                    if not mirrored:
+                        return
+                
+                    # A settings edit alone (NO manual filesystem notify — the plugin's
+                    # ProjectSettings.settings_changed wiring must trigger the reconcile)
+                    # removes the file server-side.
+                    ProjectSettings.set_setting(service.EXCLUDED_GLOBS_SETTING,
+                            PackedStringArray(["addons/gdcc/*", "excl_probe"]))
+                    var excluded := false
+                    var exclude_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < exclude_deadline and not excluded:
+                        var gone_read: Dictionary = await client.read_file(
+                                module_id, "/src/excl_probe/visible.gd3").completed
+                        excluded = not gone_read["ok"] \\
+                                and int((gone_read.get("error", {}) as Dictionary).get("code", 0)) == -32005
+                        if not excluded:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("settings_change_excludes", excluded)
+                    if not excluded:
+                        return
+                
+                    # The mirror closes the excluded document (client-side bookkeeping; the
+                    # 4.5 server's didClose is intentionally a no-op server-side).
+                    var lsp_closed := false
+                    var close_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < close_deadline and not lsp_closed:
+                        lsp_closed = int(lsp_client.document_version_for(probe_uri)) < 0
+                        if not lsp_closed:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("mirror_closes_excluded", lsp_closed)
+                    if not lsp_closed:
+                        return
+                
+                    # Buffer-only source (never on disk): accepted and uploaded under the
+                    # current set...
+                    var buf_path := "res://excl_buf/unsaved.gd3"
+                    var buf_src := "class_name ExclBuf\\nextends Node\\n"
+                    var buf_version: int = service.notify_source_changed(buf_path, buf_src)
+                    var buf_uploaded := false
+                    var buf_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < buf_deadline and not buf_uploaded:
+                        var buf_read: Dictionary = await client.read_file(
+                                module_id, "/src/excl_buf/unsaved.gd3").completed
+                        buf_uploaded = buf_read["ok"]
+                        if not buf_uploaded:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("buffer_only_uploaded", buf_version == 1 and buf_uploaded,
+                            "version=" + str(buf_version) + " uploaded=" + str(buf_uploaded))
+                    if not (buf_version == 1 and buf_uploaded):
+                        return
+                
+                    # ...excluded: explicit exclusion must bypass the buffer-preservation rule
+                    # and remove it server-side (still no manual filesystem notify)...
+                    ProjectSettings.set_setting(service.EXCLUDED_GLOBS_SETTING,
+                            PackedStringArray(["addons/gdcc/*", "excl_probe", "excl_buf"]))
+                    var buf_gone := false
+                    var buf_gone_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < buf_gone_deadline and not buf_gone:
+                        var buf_gone_read: Dictionary = await client.read_file(
+                                module_id, "/src/excl_buf/unsaved.gd3").completed
+                        buf_gone = not buf_gone_read["ok"] \\
+                                and int((buf_gone_read.get("error", {}) as Dictionary).get("code", 0)) == -32005
+                        if not buf_gone:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("buffer_only_excluded", buf_gone)
+                    if not buf_gone:
+                        return
+                
+                    # ...and re-includable WITHOUT hitting disk: the exclusion removal must not
+                    # have tombstoned the buffer-only path (a tombstone lifts only via a disk
+                    # file, which would permanently refuse this never-saved buffer).
+                    ProjectSettings.set_setting(service.EXCLUDED_GLOBS_SETTING,
+                            PackedStringArray(["addons/gdcc/*", "excl_probe"]))
+                    var buf_re_version: int = service.notify_source_changed(buf_path, buf_src)
+                    var buf_back := false
+                    var buf_back_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < buf_back_deadline and not buf_back:
+                        var buf_back_read: Dictionary = await client.read_file(
+                                module_id, "/src/excl_buf/unsaved.gd3").completed
+                        buf_back = buf_back_read["ok"]
+                        if not buf_back:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("buffer_only_reincluded", buf_re_version == 1 and buf_back,
+                            "version=" + str(buf_re_version) + " back=" + str(buf_back))
+                    if not (buf_re_version == 1 and buf_back):
+                        return
+                
+                    # Back to the default set: the on-disk probe is re-scanned, its tombstone
+                    # lifted, and the file re-uploaded.
+                    ProjectSettings.set_setting(service.EXCLUDED_GLOBS_SETTING,
+                            service.default_excluded_globs())
+                    var restored := false
+                    var restore_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < restore_deadline and not restored:
+                        var back_read: Dictionary = await client.read_file(
+                                module_id, "/src/excl_probe/visible.gd3").completed
+                        restored = back_read["ok"]
+                        if not restored:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("reinclude_resyncs", restored)
+                    if not restored:
+                        return
+                
+                    # Recovery regression (disk-known temporary inclusion): a synced file
+                    # that becomes excluded while a tab holds it must survive the exclusion
+                    # reconcile AND be re-uploaded + re-analyzed after a module rebuild —
+                    # WITHOUT any further edit (the recovery loop guards on `vanished`, not
+                    # `is_disk_known`, or this path would be skipped forever).
+                    DirAccess.make_dir_recursive_absolute(
+                            ProjectSettings.globalize_path("res://excl_recovery"))
+                    DirAccess.make_dir_recursive_absolute(
+                            ProjectSettings.globalize_path("res://excl_recovery2"))
+                    var rec_path := "res://excl_recovery/on_disk.gd3"
+                    var rec_src := "class_name ExclRecovery\\nextends Node\\n"
+                    _write_text_file(rec_path, rec_src)
+                    _write_text_file("res://excl_recovery2/victim.gd3",
+                            "class_name ExclVictim\\nextends Node\\n")
+                    service.notify_filesystem_changed()
+                    var rec_synced := false
+                    var rec_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < rec_deadline and not rec_synced:
+                        var rec_read: Dictionary = await client.read_file(
+                                module_id, "/src/excl_recovery/on_disk.gd3").completed
+                        var victim_read: Dictionary = await client.read_file(
+                                module_id, "/src/excl_recovery2/victim.gd3").completed
+                        rec_synced = rec_read["ok"] and victim_read["ok"]
+                        if not rec_synced:
+                            await get_tree().create_timer(0.2).timeout
+                    var rec_res: Resource = ResourceLoader.load(rec_path)
+                    if rec_res != null:
+                        EditorInterface.edit_resource(rec_res)
+                    var rec_tab := false
+                    var rec_tab_deadline := Time.get_ticks_msec() + 15000
+                    while Time.get_ticks_msec() < rec_tab_deadline and not rec_tab:
+                        rec_tab = service.is_path_open_in_editor(rec_path)
+                        if not rec_tab:
+                            await get_tree().process_frame
+                    _step("recovery_setup", rec_synced and rec_tab,
+                            "synced=" + str(rec_synced) + " tab=" + str(rec_tab))
+                    if not (rec_synced and rec_tab):
+                        return
+                
+                    # Excluding both dirs: the victim (no tab) is evicted — proving the
+                    # reconcile ran — while the open-tab file is KEPT.
+                    ProjectSettings.set_setting(service.EXCLUDED_GLOBS_SETTING,
+                            PackedStringArray(["addons/gdcc/*", "excl_recovery", "excl_recovery2"]))
+                    var victim_gone := false
+                    var victim_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < victim_deadline and not victim_gone:
+                        var victim_gone_read: Dictionary = await client.read_file(
+                                module_id, "/src/excl_recovery2/victim.gd3").completed
+                        victim_gone = not victim_gone_read["ok"] \\
+                                and int((victim_gone_read.get("error", {}) as Dictionary).get("code", 0)) == -32005
+                        if not victim_gone:
+                            await get_tree().create_timer(0.2).timeout
+                    var rec_kept := false
+                    if victim_gone:
+                        var kept_read: Dictionary = await client.read_file(
+                                module_id, "/src/excl_recovery/on_disk.gd3").completed
+                        rec_kept = kept_read["ok"] and service.registry().has(rec_path)
+                    _step("recovery_excluded_kept", victim_gone and rec_kept,
+                            "victim_gone=" + str(victim_gone) + " kept=" + str(rec_kept))
+                    if not (victim_gone and rec_kept):
+                        return
+                
+                    # Module rebuild (same pattern as gdcc_diag's stale_module_rebuild): the
+                    # kept file is disk-known, so ONLY the `vanished`-guarded recovery loop
+                    # re-marks it dirty; without that guard it never comes back.
+                    service.uninstall()
+                    var reinstall2_ok: bool = service.install(
+                            EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", rpc_port) == OK
+                    var rebuilt: bool = reinstall2_ok and await _wait_diag_ready(service, 45.0)
+                    _step("recovery_module_rebuilt", rebuilt, "reinstall=" + str(reinstall2_ok))
+                    if not rebuilt:
+                        return
+                    var rec_back := false
+                    var rec_back_deadline := Time.get_ticks_msec() + 60000
+                    while Time.get_ticks_msec() < rec_back_deadline and not rec_back:
+                        var rec_back_read: Dictionary = await client.read_file(
+                                module_id, "/src/excl_recovery/on_disk.gd3").completed
+                        # The cache was cleared by the rebuild, so a CURRENT version-1 read
+                        # proves a fresh upload+analysis round landed — no edit happened.
+                        rec_back = rec_back_read["ok"] \\
+                                and str(rec_back_read["result"]) == rec_src \\
+                                and service.is_diag_version_current(rec_path, 1)
+                        if not rec_back:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("recovery_reuploaded", rec_back)
+                    _step("survived", true)
+                """;
+    }
+
     private static final String DRIVER_MANIFEST = """
             [plugin]
             
@@ -3268,6 +3704,22 @@ class EditorAddonScriptLanguageEngineTest {
                 JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES)) {
             config.addProperty("rpc_port", server.port());
             runCase("dock_compile", config);
+        }
+    }
+
+    /// Post-Phase-10 acceptance: the `gdcc/sync/excluded_globs` project setting keeps the
+    /// addon's own `.gd3` files out of the diagnostics module by default, refuses to track
+    /// excluded open buffers, and reconciles live in both directions when the setting
+    /// changes (through the plugin's ProjectSettings.settings_changed wiring). Runs against
+    /// a real in-process gdcc RPC server.
+    @Test
+    void syncExclusionsKeepAddonFilesOutOfModule() throws Exception {
+        var config = new JsonObject();
+        config.addProperty("lsp_port", findFreePort());
+        try (var server = JsonRpcServer.start(new JsonRpcDispatcher(new API()), "127.0.0.1", 0,
+                JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES)) {
+            config.addProperty("rpc_port", server.port());
+            runCase("sync_exclusions", config);
         }
     }
 

@@ -359,19 +359,83 @@ func erasure_memo_size() -> int:
 ## tracks the content version of `path` and marks real changes dirty. Runs on every
 ## `_validate` — including while LSP reports errors, because LSP errors suppress gdcc
 ## diagnostics from the DISPLAY only, never the dirty tracking. Returns -1 for non-project
-## paths / while UNINSTALLED.
+## paths / excluded paths / while UNINSTALLED.
 func notify_source_changed(path: String, text: String) -> int:
     if not _active:
         return -1
     return _registry.notify_source_changed(path, text)
 
 
-## Version-gated gdcc diagnostics for `_validate` (plan §4.2 step 3 / §4.4): serves the
-## cache only while it was built from exactly `version`; any newer edit (or no completed
-## round yet) yields an empty array and the scheduler refreshes the cache for the next
-## validation beat. While the diagnostics module is unavailable the channel reports NOTHING
-## — the offline degrade leaves `_validate` with the LSP channel alone instead of stale
-## entries.
+# ---------------------------------------------------------------------------
+# Sync exclusion globs (post-Phase-10 fix): the project setting below holds a
+# PackedStringArray of `String.match` patterns evaluated against the PROJECT-RELATIVE path
+# (no `res://` prefix). `*` crosses `/` in Godot's matcher, so `addons/gdcc/*` covers every
+# nested file; a wildcard-free glob naming a directory additionally excludes everything
+# below it (the predicate also tries `<glob>/*`). The predicate is evaluated live at every
+# scan/entry point (no caching), so a settings edit applies on the next reconciliation —
+# the plugin relays `ProjectSettings.settings_changed` into `notify_filesystem_changed` to
+# make that immediate. Scope: the diagnostics module VFS (reconciler scan) AND the LSP
+# workspace mirror (shared scan + close decision) both honor it, keeping the two features'
+# agreed project `.gd3` set identical. TEMPORARY INCLUSION overrides exclusion while an
+# editor tab holds the file: a `_validate` on an excluded path tracks it (its buffer is the
+# content truth), the reconciler keeps excluded tracked paths while open and evicts them
+# after the tab closes (throttled poll) — the mirror is unaffected (the open tab's own
+# `_validate` sync feeds the LSP document directly).
+# ---------------------------------------------------------------------------
+
+# Setting name as a var, not a const: class-level const is outside gdcc's bootstrap MVP.
+# The interpreted plugin registers the property under this exact name.
+var EXCLUDED_GLOBS_SETTING: String = "gdcc/sync/excluded_globs"
+
+
+## Default exclusion set, applied while the project setting is absent: the addon's own
+## scripts are never part of the user's project module (their analysis would burn rounds
+## and pollute the problem list).
+func default_excluded_globs() -> PackedStringArray:
+    return PackedStringArray(["addons/gdcc/*"])
+
+
+## The configured exclusion globs (live read; absent/mistyped values fall back to the
+## default). A plain Array is coerced defensively — a hand-edited project.godot line or a
+## scripted set_setting can produce one.
+func excluded_globs() -> PackedStringArray:
+    if ProjectSettings.has_setting(EXCLUDED_GLOBS_SETTING):
+        var value: Variant = ProjectSettings.get_setting(EXCLUDED_GLOBS_SETTING)
+        if value is PackedStringArray:
+            return value
+        if value is Array:
+            var coerced := PackedStringArray()
+            for item in value:
+                coerced.append(str(item))
+            return coerced
+    return default_excluded_globs()
+
+
+## True when `path` (a res:// project path) matches any exclusion glob. Empty globs and
+## trailing slashes are normalized away; a wildcard-free directory name excludes its whole
+## subtree via the `<glob>/*` probe.
+func is_path_excluded(path: String) -> bool:
+    if not path.begins_with("res://"):
+        return false
+    var rel: String = path.substr("res://".length())
+    for raw in excluded_globs():
+        var glob: String = str(raw)
+        while glob.ends_with("/"):
+            glob = glob.substr(0, glob.length() - 1)
+        if glob.is_empty():
+            continue
+        if rel.match(glob) or rel.match(glob + "/*"):
+            return true
+    return false
+
+
+## gdcc diagnostics for `_validate` (plan §4.2 step 3 / §4.4): serves the cache's latest
+## entry for `path` — possibly built from an older text than `version` (the user typed
+## since). Stale diagnostics stay visible until the fresh analysis round merges over them
+## (the editor replaces displayed markers wholesale on every `_validate`, so a version-gated
+## empty read would blank the gutter for the whole debounce+analysis window). While the
+## diagnostics module is unavailable the channel reports NOTHING — the offline degrade
+## leaves `_validate` with the LSP channel alone instead of stale entries.
 func gdcc_diagnostics_for(path: String, version: int) -> Array:
     if not _active:
         return []

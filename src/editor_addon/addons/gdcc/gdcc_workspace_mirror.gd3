@@ -196,16 +196,23 @@ func _collect_disk_diff() -> void:
 
 
 ## Shared close decision, re-run at ENQUEUE time and at SEND time (review findings):
-## keep the document while ANY open editor tab holds the path (the tab's own `_validate`
-## beats keep the LSP copy fresh — closing would drop its diagnostics cache and
-## generation FIFO mid-flight), while the registry holds GENUINE unsaved edits (registry
-## text != the last disk content this mirror read — the registry's dirty flag means
-## "awaiting analysis" and would preserve even never-edited files forever), or while the
-## path was never seen on disk by this mirror (a buffer-only new script, not a
-## deletion). A disk-seen path whose disk text was never captured falls through to
-## close: the tab guard covers the real editing case, and a server-side copy loses no
-## user data.
+## close unconditionally when the path is EXCLUDED from the project module
+## (`gdcc/sync/excluded_globs` — the mirror's disk scan never proposes excluded paths, and a
+## previously mirrored one must didClose even while a tab holds it; the open tab's own
+## `_validate` sync keeps its per-file LSP document alive independently, and the
+## temporary-inclusion rule that admits excluded open files into the diagnostics module does
+## NOT extend to mirroring); otherwise keep the document while ANY open editor tab holds
+## the path (the tab's own `_validate` beats keep the LSP copy fresh — closing would drop
+## its diagnostics cache and generation FIFO mid-flight), while the registry holds GENUINE
+## unsaved edits (registry text != the last disk content this mirror read — the registry's
+## dirty flag means "awaiting analysis" and would preserve even never-edited files
+## forever), or while the path was never seen on disk by this mirror (a buffer-only new
+## script, not a deletion). A disk-seen path whose disk text was never captured falls
+## through to close: the tab guard covers the real editing case, and a server-side copy
+## loses no user data.
 func _should_close(path: String) -> bool:
+    if service.is_path_excluded(path):
+        return true
     if service.is_path_open_in_editor(path):
         return false
     var registry: GdccSourceRegistry = service.registry()
@@ -250,7 +257,12 @@ func _drain_ops() -> void:
             # Re-run the keep rules at send time: a file recreated (with identical
             # content — a differing one would already have replaced this op with a sync)
             # or a tab opened since enqueue must cancel the close, not execute it.
-            if FileAccess.file_exists(path) or not _should_close(path):
+            # EXCLUSION WINS over disk existence: an excluded path's sync resolves to
+            # not-found (see `_resolve_current_text`), so resurrecting the close into a
+            # sync here would bounce close→sync→close forever — and both conversion
+            # branches skip the budget, so the loop would never leave this drain.
+            if not service.is_path_excluded(path) \
+                    and (FileAccess.file_exists(path) or not _should_close(path)):
                 _enqueue_op("sync", path)
                 continue
             client.close_document(uri)
@@ -294,13 +306,17 @@ func _compact_op_fifo() -> void:
 
 
 ## The current truth for a sync intent at send time: the registry entry when the editor
-## owns the path (buffer wins), else the live disk content. A `_disk_seen` path that has
-## VANISHED from disk is a deletion, not a sync candidate — unless the keep rules
-## (`_should_close` false: open tab or genuine unsaved edits) still apply to its
-## registry buffer (review finding: a registry entry alone must never resurrect a
-## deleted file onto the server).
+## owns the path (buffer wins), else the live disk content. Excluded paths
+## (`gdcc/sync/excluded_globs`) resolve to not-found — a sync intent enqueued BEFORE a
+## settings change must not ship content for a path the project just excluded (the drain
+## converts it into a close instead). A `_disk_seen` path that has VANISHED from disk is a
+## deletion, not a sync candidate — unless the keep rules (`_should_close` false: open tab
+## or genuine unsaved edits) still apply to its registry buffer (review finding: a registry
+## entry alone must never resurrect a deleted file onto the server).
 func _resolve_current_text(path: String) -> Dictionary:
     var registry: GdccSourceRegistry = service.registry()
+    if service.is_path_excluded(path):
+        return {"found": false}
     if _disk_seen.has(path) and not FileAccess.file_exists(path) and _should_close(path):
         return {"found": false}
     if registry.has(path) and not registry.is_tombstoned(path):

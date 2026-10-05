@@ -2,12 +2,19 @@
 class_name GdccDiagCache
 extends Node
 
-## Version-gated diagnostics cache for the gdcc channel (plan §4.2 step 3 / §4.4). Child
-## feature of `GdccEditorService`: the scheduler's merge is the only writer; `_validate`
-## reads through `diagnostics_for`. Entries are served only while their content version
-## equals the version the analysis round was built from, and only while the diagnostics
-## module is READY — plan §4.4's offline degrade leaves `_validate` with the LSP channel
-## alone instead of stale entries.
+## Diagnostics cache for the gdcc channel (plan §4.2 step 3 / §4.4). Child feature of
+## `GdccEditorService`: the scheduler's merge is the only writer; `_validate` reads through
+## `diagnostics_for`. Entries are served only while the diagnostics module is READY — plan
+## §4.4's offline degrade leaves `_validate` with the LSP channel alone instead of stale
+## entries.
+##
+## Stale-visible read contract (post-Phase-10 fix): an edit advances the registry version
+## instantly, but the previous round's diagnostics KEEP being served until the fresh round
+## merges over them. The editor replaces a tab's displayed markers wholesale with every
+## `_validate` result, so dropping the entry on version mismatch would blank the gutter for
+## the whole debounce+analysis window and leave the user fixing code blind. Version
+## freshness remains observable through `is_version_current` (the revalidation gate and
+## tests key on it); only the read path relaxed.
 
 # res:// path -> {"version": int, "items": Array}. `items` are raw analyze.run diagnostic
 # Dictionaries.
@@ -20,13 +27,15 @@ func bind_service(owner: GdccEditorService) -> void:
     service = owner
 
 
-## Cached analyze.run diagnostics for `path`, or empty when the cache is stale/missing or
-## the module is unavailable. The scheduler keeps refreshing in the background, so an empty
-## answer simply defers gdcc diagnostics to the next validation beat.
-func diagnostics_for(path: String, version: int) -> Array:
+## Cached analyze.run diagnostics for `path`, or empty when none was ever merged or the
+## module is unavailable. The entry may have been built from an OLDER text than `_version`
+## (the user typed since): it stays visible until the scheduler's fresh round replaces it,
+## because the editor would otherwise clear the displayed markers for the whole analysis
+## window. `_version` identifies the text being validated; it no longer gates the read.
+func diagnostics_for(path: String, _version: int) -> Array:
     if not service.is_active() or not service.lifecycle().is_ready():
         return []
-    return _current_items(path, version)
+    return _latest_items(path)
 
 
 ## Freshness probe: true when an entry for `path` exists and was built from exactly
@@ -50,14 +59,11 @@ func erase(path: String) -> void:
     _entries.erase(path)
 
 
-func _current_items(path: String, version: int) -> Array:
+func _latest_items(path: String) -> Array:
     var entry: Variant = _entries.get(path)
     if not (entry is Dictionary):
         return []
-    var cached: Dictionary = entry
-    if int(cached.get("version", -1)) != version:
-        return []
-    var items: Variant = cached.get("items", [])
+    var items: Variant = (entry as Dictionary).get("items", [])
     if items is Array:
         return items
     return []
