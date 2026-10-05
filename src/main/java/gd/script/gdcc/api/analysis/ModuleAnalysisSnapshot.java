@@ -30,9 +30,11 @@ import java.util.concurrent.ConcurrentHashMap;
 ///   (all mutation channels, including views obtained before the freeze), and
 ///   `ClassRegistry.freeze()` closes class membership changes — any post-publication mutation
 ///   attempt throws (plan §2.1's enumerated `update*`/`applyPatch`/registry surface);
-/// - model objects reachable INSIDE those containers (`Scope`, `ClassDef` and other semantic
-///   models with their own mutators) are covered by convention only until Phase 4 introduces
-///   read-only query views; query services must not call their mutators;
+/// - model objects reachable INSIDE those containers are read by `FrontendSnapshotQueryService`
+///   only through mutator-free views: `Scope` is wrapped by `ReadOnlyScope` (its
+///   `setParentScope` throws), `ClassDef` is narrowed to its read-only interface, and query
+///   results are DTO-only (no model object escapes the package); the structural freeze stays
+///   as the second line of defense underneath (Phase 4 方案 C landing);
 /// - query-time lazy indexes (e.g. the usages reverse index) live in the snapshot-owned
 ///   thread-safe memo and are never written back into the analysis data.
 public final class ModuleAnalysisSnapshot {
@@ -46,6 +48,9 @@ public final class ModuleAnalysisSnapshot {
     private final @NotNull FrontendModule module;
     private final @NotNull FrontendAnalysisData analysisData;
     private final @NotNull ClassRegistry classRegistry;
+    /// Publish-time query indexes (parent / range / line per unit), built once in the
+    /// constructor so queries never rebuild tree walks (plan §2.4 "快照构建期索引").
+    private final @NotNull SnapshotAstIndex astIndex;
     /// Snapshot-owned memo for lazily built query indexes (`ConcurrentHashMap` + single-compute),
     /// consumed by `FrontendSnapshotQueryService`. Never leaks into `FrontendAnalysisData`.
     private final @NotNull ConcurrentHashMap<String, Object> queryMemo = new ConcurrentHashMap<>();
@@ -86,6 +91,7 @@ public final class ModuleAnalysisSnapshot {
         // service from mutating live side tables or the registry.
         this.analysisData.freeze();
         this.classRegistry.freeze();
+        this.astIndex = SnapshotAstIndex.build(this.sourceViews, this.module);
     }
 
     /// Module generation: distinguishes same-id modules across delete/recreate. Always compare
@@ -122,8 +128,10 @@ public final class ModuleAnalysisSnapshot {
         return diagnostics;
     }
 
-    /// Same-package query-service access to this generation's AST. Never exposed publicly because
-    /// side-table identity keys are only meaningful inside this generation closure.
+    /// Same-package query-service access to this generation's AST. Individual nodes are exposed
+    /// read-only to the public through `FrontendSnapshotQueryService.nodeAt` (the AST graph is
+    /// deeply immutable); the module itself stays package-private so the side tables — the only
+    /// place where node identity keys resolve — can never be queried across generations.
     @NotNull FrontendModule module() {
         return module;
     }
@@ -143,6 +151,12 @@ public final class ModuleAnalysisSnapshot {
     /// Snapshot-owned memo for lazily built query indexes; package-visible to the query service.
     @NotNull ConcurrentHashMap<String, Object> queryMemo() {
         return queryMemo;
+    }
+
+    /// Same-package query-service access to the publish-time AST indexes. Raw AST nodes never
+    /// leave this package: the public query surface projects everything into DTOs.
+    @NotNull SnapshotAstIndex astIndex() {
+        return astIndex;
     }
 
     /// One unit's source view inside a snapshot.

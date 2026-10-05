@@ -255,17 +255,22 @@ parser 异常路径返回空 `SourceFile`（`GdScriptParserService.java:60-76`�
   （可为 `PropertyDef`、`List<? extends FunctionDef>` 重载集合、合成构造器等模型对象，
   可无源码位置）。因此 skeleton 期新增**声明溯源索引**（同代内"声明模型对象身份 →
   源 AST 声明节点 + displayPath"），随快照发布。归一化规则：AST 节点直接用；
-  单个模型对象查溯源索引；集合型 provenance 逐元素归一化：返回全部可归一化
-  元素的源码位置（**"多个候选声明"结果种类**），无法归一化的元素在结果中显式
-  标记为无源码位置——不得擅自挑选其一，也不得因部分元素失败丢弃其余元素；
-  仅当全部元素都无法归一化时才返回"外部声明/无源码位置"结果种类
-  （engine/builtin metadata 等外部声明同为此类）。
+  单个模型对象查溯源索引；集合型 provenance 逐元素归一化：**按元素序**返回全部可归一化
+  元素的源码位置（**"多个候选声明"结果种类**），无法归一化的元素在结果中**按原元素位
+  置**显式标记为无源码位置——不得擅自挑选其一，也不得因部分元素失败丢弃其余元素或
+  把失败标记挪到列表尾部；仅当全部元素都无法归一化时才返回"外部声明/无源码位置"
+  结果种类（engine/builtin metadata 等外部声明同为此类）。单元素集合且可归一化
+  （如方法引用恒为 `List[1]`）归并为"单一源码声明"种类——多候选种类保留给真正
+  有歧义的 provenance（多元素集合或存在不可归一化元素）。
 - `usagesAt(...)`：反向索引**先归一化再分组**——三张表的每个站点先按上述规则
   归一化到稳定源码声明身份，再按该身份（`IdentityHashMap`）分组；
-  集合型 provenance 的站点计入每个可归一化元素的 usages。仅当归一化失败
-  （null provenance、外部声明、集合元素全部失败）时站点才缺席，缺席集合
-  （含未绑定标识符、`DEFERRED`/`UNSUPPORTED` 站点、类型位置引用）写入文档。
-  索引惰性构建、线程安全 memo（见 §2.1）。
+  集合型 provenance 的站点计入每个可归一化元素的 usages。member/call 站点**按状态
+  过滤**：仅 `RESOLVED`/`BLOCKED` 入索引（BLOCKED 保留 blocked-winner provenance 作
+  为真实使用意图）；`DEFERRED`/`UNSUPPORTED`/`FAILED`/`DYNAMIC` 按状态缺席——它们
+  携带的声明载荷（如失败 `ClassName.member` 为诊断记录的 receiver 类）不是使用意图。
+  绑定站点仅当归一化失败（null provenance、外部声明、集合元素全部失败）时缺席；
+  缺席集合（含未绑定标识符、`DEFERRED`/`UNSUPPORTED` 站点、类型位置引用
+  ——TYPE_META 按 kind 过滤）写入文档。索引惰性构建、线程安全 memo（见 §2.1）。
 - `typeAt(...)`：按节点查 `expressionTypes()` / `slotTypes()`，返回类型显示名文本；
   无事实节点返回空结果。注意 `expressionTypes` 键空间含 attribute step
   （`FrontendAnalysisData.java:47-51`），查询要覆盖 step 键。
@@ -273,9 +278,11 @@ parser 异常路径返回空 `SourceFile`（`GdScriptParserService.java:60-76`�
   `SymbolDocDescriptor`（符号种类 / 文档归属命名空间 / 属主名 / 成员名），供编辑器拼接
   官方文档 URL 或展示归属。归一化规则：
   - `GDCC` 用户符号：复用 `definitionAt` 的完整声明归一化规则（AST 声明直接定位、
-    模型对象查声明溯源索引、集合型 provenance 逐元素归一化）；描述符承载**全部**候选
-    源码位置与不可定位项，不擅自挑选其一。描述符身份**不替代** `usagesAt` 的源码声明
-    身份分组键。
+    模型对象查声明溯源索引、集合型 provenance 逐元素归一化）；描述符的候选列表
+    **按元素序**承载全部候选源码位置，不可定位项以 null-location 候选**按原位置**
+    显式保留，不擅自挑选其一。多候选 provenance 的 `ownerName` 取**首个可定位候选**的
+    声明类（provenance 序即解析序，最近声明优先）。描述符身份**不替代** `usagesAt`
+    的源码声明身份分组键。
   - `ENGINE`/`BUILTIN` 类成员：属主取**实际声明类**。已发布事实的 `declarationSite`
     只保留成员级元数据（`PropertyDef`/`SignalDef`/成员 `PropertyInfo` 等），**不保留**
     共享 resolver 中间结果的 `ownerClass`；查询期按成员类别用 registry 既有层次查找
@@ -303,7 +310,8 @@ parser 异常路径返回空 `SourceFile`（`GdScriptParserService.java:60-76`�
   - `definitionAt` 的"外部声明"只表示无源码位置，不表示无文档归属：外部符号照常产出
     描述符，但不进入 `usagesAt` 的源码身份分组。
   - 未绑定标识符、`FAILED`/`DEFERRED`/`UNSUPPORTED`/`DYNAMIC`/`BLOCKED` 站点返回空结果，
-    不抛异常。
+    不抛异常；绑定侧的 BLOCKED 形态是 `FOUND_BLOCKED` 值绑定（声明前使用、参数默认值
+    island），同样返回空。
 - 坐标约定：入参接受字节偏移或（0 基行, 0 基列）；内部规范形式为字节偏移。
   返回位置统一 displayPath + 1 基行列 range（与诊断一致）+ 字节偏移；
   UTF-16 列换算属未来 LSP 适配层职责。
@@ -595,6 +603,81 @@ parser 异常路径返回空 `SourceFile`（`GdScriptParserService.java:60-76`�
    `RpcJsonCodecTest` 与 `RpcApiRoundTripHttpTest` 更新后全绿。
 
 ### Phase 4：光标查询服务
+
+> **状态：已完成实施（2026-10-05），评审修复已合入。** 实施事实：
+> - `api.analysis` 新增：`QuerySourceRange`（displayPath + 1 基行列 + 字节区间）、
+>   `AstUnitIndex`（单单元 parent/range/line 三索引；line 索引按 UTF-8 字节累计换算
+>   （0 基行, 0 基字节列）入参）、`SnapshotAstIndex`（按 normalized logicalPath 键配对
+>   SourceView 与 unit；`parseFailed` 单元建空索引，查询恒空）、`DeclarationLookupResult`、
+>   `DeclarationNormalizer`、`UsagesReverseIndex`、`DocNamespace`/`DocSymbolKind`/
+>   `SymbolDocDescriptor`、`FrontendSnapshotQueryService`。
+> - 索引在 `ModuleAnalysisSnapshot` 构造时一次性构建（紧随 freeze）；`nodeAt` 公开——AST
+>   图深度不可变故节点只读暴露给外部包，而 side table 与 registry 保持包级私有，节点身份
+>   键无法在外部跨代解析；definitionAt/usagesAt/typeAt/documentationAt 为公开 DTO 投影。
+>   （初版 nodeAt 曾为包级私有，因后续外部包需要光标→节点定位原语而放开。）
+> - 方案 C 落地形态：查询服务对容器内可达模型对象只做**接口窄化只读访问**（不调用任何
+>   修改器）+ 结果 DTO-only（模型对象不出包），冻结闸作为其下第二道防线；未新建包装类
+>   层级。已写入 `ModuleAnalysisSnapshot` javadoc。
+> - definitionAt：单元素集合（方法引用恒为 `List[1]`）归并为 SINGLE_SOURCE；
+>   MULTIPLE_CANDIDATES 逐元素列出可归一化位置并对不可归一化元素给 null-location 显式
+>   标记；全失败归 EXTERNAL；null provenance 归 NONE。
+> - usagesAt：反向索引惰性构建于 `queryMemo.computeIfAbsent`（单次计算线程安全）；
+>   先归一化再按声明 AST 节点身份分组，集合型 provenance 站点计入每个可归一化元素；
+>   TYPE_META 过滤落地"类型位置缺席"（构造调用步骤如 `QueryBase.new()` 的 `.new()` 仍
+>   合法归组——类型位置头站点本身绝不出现）。
+> - typeAt：先 `expressionTypes()`（含 attribute step 键）后 `slotTypes()`；
+>   publishedType 为 null 的状态（DEFERRED/FAILED/UNSUPPORTED）返回空。
+> - documentationAt：GDCC 溯源优先（含 `GdScriptClassConstant` 包装解包到枚举声明）；
+>   工具函数集合解包后经 `isGdScriptLanguageFunction` 分类（print→@GlobalScope、
+>   len→@GDScript）；engine/builtin 属主经 registry 层次查找（常量/枚举值/信号/属性）与
+>   已选中 FunctionDef 身份链走查（方法）；全局枚举值经 `findGlobalEnumValueByBareName`
+>   身份比对区分 @GlobalScope 与类枚举；builtin 属性属主直接取 receiver builtin 类。
+> - 实测形态锚点：`extends` 目标为标量（`ExtendsStatement.target`，无标识符节点、无
+>   绑定事实），跨文件类引用经表达式位置（`QueryBase.new()`）锚定；4.5.1 dump
+>   `global_constants` 为空——全局常量无 @GlobalScope 真实用例，`PI` 锚定合成语言常量
+>   的 @GDSCRIPT 路径；未标注类型的局部变量槽为 Variant（builtin 成员正例需显式
+>   `: Vector2` 标注，未标注的 `vu.x` 锚定 DYNAMIC 空结果反例）。
+> - 测试：`FrontendSnapshotQueryServiceTest`(17) / `DocumentationAtTest`(6) /
+>   `SnapshotQueryEdgeTest`(9，手工快照锚定集合归一化、混合集合、全失败、parseFailed
+>   单元、FOUND_BLOCKED 绑定、GdScriptClassConstant 解包) 共 32 项全绿；回归
+>   ModuleAnalysisSnapshotImmutabilityTest / ApiAnalysisSnapshotConcurrencyTest /
+>   ApiAnalyzeTest / ApiContentVersionTest 全绿。
+>
+> 评审修复（review-expert-a/c 并行复核后合入）：
+> - **集合归一化元素序**（WARNING）：`DeclarationNormalizer.Result` 改为元素序 nullable
+>   列表，失败元素原位显式标记，不再挪到尾部；单元素集合（`List[1]`）且可归一化归并
+>   SINGLE_SOURCE 的规则从状态块上升为 §2.4 正文合同（多候选种类保留给真正歧义）。
+> - **documentationAt 候选完整性**（WARNING，双审）：描述符 `sourceLocations` 改为
+>   `sourceCandidates`（元素序、null-location 显式槽），GDCC 属主规则明确为首个可定位
+>   候选的声明类（provenance 序=解析序）。
+> - **BLOCKED 绑定过滤**（WARNING）：`FOUND_BLOCKED` 值绑定（参数默认值 island、静态
+>   上下文）不再产出描述符（验收 7 的 BLOCKED 空结果）；usages 侧 BLOCKED 站点保留
+>   （真实使用意图）——双向行为均有手工快照锚定（语句级 declaration-before-use 实测
+>   为 UNKNOWN/null-site，FOUND_BLOCKED 形态由种子事实锚定）。
+> - **usages 按状态缺席**（WARNING）：member/call 站点仅 RESOLVED/BLOCKED 入索引——
+>   失败 `ClassName.member` 为诊断记录的 receiver 类 provenance 不再污染类 usages；
+>   §2.4 usages 条目同步改写（原"仅归一化失败才缺席"主句与验收 2 的矛盾按验收 2
+>   口径统一）。
+> - **并发测试真实首次竞态**（WARNING，双审）：改用未做过 usages 查询的新快照，
+>   工作线程首次调用即竞态 memo 单算；Future 全部 get() 传播线程异常。
+> - **行列换算整数溢出**（WARNING）：`byteOffsetAt` 先比行内长度再相加；新增
+>   `Integer.MAX_VALUE` 列、多字节字符、CRLF 往返用例。
+> - **unitOf 快照级索引**（WARNING）：发布期遍历时同步填充
+>   `IdentityHashMap<Node, AstUnitIndex>`，反向索引构建从 O(站点×单元) 降为 O(站点)。
+> - **方案 C 闭合**（WARNING）：新增 `ReadOnlyScope` 门面（`setParentScope` 抛 UOE，
+>   返回值递归包装），查询服务对 Scope 的访问全部经门面；快照 javadoc 与 §2.1 同步。
+> - usages 排序补 endByte/行/列 tiebreak 成全序；`classifyKind` 对
+>   `GdScriptClassConstant` 按所携枚举声明分类（ENUM_VALUE/ENUM_GROUP 而非 CONSTANT）；
+>   新增裸 `print` 引用（集合解包路径）锚定。
+>
+> 评审修复（终审轮，review-expert-a/c 并行复核后合入，终审均 APPROVE）：
+> - **ReadOnlyScope 沿链查找语义**：`resolveValue`/`resolveFunctions`/`resolveTypeMeta`
+>   改为在原始 scope 上直接委托——接口默认协议会走包装后的父链，把 `ClassScope`
+>   跳过连续外层类 scope 的规则吃掉；`valuesHere()` 改 `List.copyOf` 快照。
+>   `ReadOnlyScopeTest` 锚定内类门面下外类成员 NOT_FOUND、内类成员 FOUND、父链递归
+>   包装且各层 `setParentScope` 均关闭。
+> - **并发测试期望值预热**：改为先逐 `Future.get()` 收集全部工作线程结果（传播
+>   异常），主线程最后才计算期望值比对，彻底排除主线程抢先构建 memo 的路径。
 
 内容：§2.4（parent/range 索引、声明溯源索引、definitionAt/usagesAt/typeAt/documentationAt）。
 
