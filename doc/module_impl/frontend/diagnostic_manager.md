@@ -219,6 +219,10 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - annotation-usage analyzer 对已支持注解的挂载位置 / owner class / staticness / 参数结构 / 类型兼容发出的 error
   - `@onready` / `@tool` / `@export*` 家族的用法校验均走此 category，不混入 `sema.unsupported_annotation` 或 `sema.type_check`
 - `sema.compile_check`
+- `sema.lowering`
+  - `AnalysisRunner` 在共享语义分析成功后、lowering 验证（隔离代际）抛 `IOException`/`RuntimeException` 时发出的单条 error，消息携带异常原因；该诊断只影响 `loweringStatus=FAILED` 与 lowering 侧结果诊断，不作废共享快照
+
+parser 错误节点（`ErrorStatement`/`ErrorExpression`/`UnknownStatement`/`UnknownExpression`）的诊断 owner 恒为 parser（`parse.lowering`；parser 运行时失败为 `parse.internal`）：这些节点在 skeleton 后被标注进 `FrontendAnalysisData.skippedSubtreeRoots()`，scope/body/type-check 各消费点只跳过、绝不补发同级诊断（单一 owner 原则的延伸，对齐 frontend_rules.md 恢复约定）。带 `parseFailed` 标记的源单元只携带其 `parse.internal` 诊断，不产生任何 sema 侧合成类诊断。
 
 其中 body/binding phase 新增 category 的语义固定为：
 

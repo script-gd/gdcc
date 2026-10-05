@@ -12,6 +12,12 @@
 - parser 必须保持 tolerant：`gdparser` lowering diagnostics 映射为 `parse.lowering`，parser/runtime 失败映射为 `parse.internal`，不要把运行时异常直接抛给调用方。
 - skeleton / 当前 analyzers / 后续新增 frontend phase 对可恢复错误都必须采用“diagnostic + skip subtree”策略；不要因为单个坏节点打断整条 frontend pipeline。
 - 若 skeleton phase 已判定某个 member subtree 必须跳过，必须把该 root 显式发布到 `FrontendAnalysisData.skippedSubtreeRoots()`，并由 scope phase 停止为该 subtree 发布 scope；后续 analyzer 只能沿用既有 skipped-subtree 合同恢复，不得再假设这些节点仍拥有完整 skeleton metadata。
+- parser 错误节点（`ErrorStatement`/`ErrorExpression`，以及 `UnknownStatement`/`UnknownExpression`）统一走同一 skipped-subtree 合同：
+  - skeleton 发布后、scope 之前的独立标注步骤（`FrontendErrorSubtreeAnnotator`）把错误节点提升到**最小 enclosing statement/declaration 根**写入 `skippedSubtreeRoots()`；参数默认值 island 的恢复根是默认值表达式自身，绝不是整个 callable；属性初始化器的恢复根是该 `VariableDeclaration`。
+  - 标注步骤不发任何诊断：parser 已用 `parse.lowering` 持有同一根源错误，body 各消费点保持沉默（单一 owner）。
+  - 例外：确缺成员名的成员访问部分链（`obj.` → `MissingAttributeStep`）**不是**错误节点、**不**标注 skipped——receiver 前缀必须保持可定型，供补全读取（见 `frontend_lsp_foundation_plan.md` §2.2.1）。
+- `skippedSubtreeRoots()` 的消费者包括：scope phase（不为 skipped 根及后代发布 `scopesByAst()`，所有专用 handler 入口先检查）、body phase（`FrontendSuiteResolver` 逐 statement 循环与 `FrontendStatementResolver` 防御入口逐句消费；参数默认值 sweep 与属性初始化器 island 在进入表达式前各自消费；`FrontendVariableAnalyzer` 不为无 scope 声明建立 locals）、type-check 等 diagnostics-only phase（逐 statement 遍历时同样跳过）。
+- 带 `parseFailed` 标记的源单元（parser `parse.internal` 恢复路径）不进入 skeleton：不合成顶层类头、不收集 annotation；其他文件引用其类名时走正常未解析诊断（如 `sema.type_resolution`）。
 - 新增 frontend 诊断或恢复路径时，必须同步更新 `diagnostic_manager.md`、相关实现注释和受影响的模块文档，避免代码与文档冲突。
 - 当前合同中“已识别但明确不支持”的 feature boundary 统一发 error；只有真正的 deferred/暂缓恢复路径才保留 warning。
 - body phase 的 diagnostic owner 必须保持单一：

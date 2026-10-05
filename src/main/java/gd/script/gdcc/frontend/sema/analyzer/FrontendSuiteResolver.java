@@ -141,6 +141,13 @@ public class FrontendSuiteResolver {
                 blockScope
         );
         for (var statement : block.statements()) {
+            // The body phase is a formal consumer of `skippedSubtreeRoots()`: parser error
+            // subtrees (annotated before scope analysis) are skipped wholesale here instead of
+            // reaching structural fail-fast points with damaged AST. The parser already owns the
+            // diagnostic for each skipped root (single-owner recovery rule).
+            if (context.analysisData().skippedSubtreeRoots().containsKey(statement)) {
+                continue;
+            }
             statementResolver.resolveStatement(context, statement, this::resolveChildSuite);
         }
         var transaction = context.typedEnvironment().exportPatchTransaction();
@@ -530,6 +537,12 @@ public class FrontendSuiteResolver {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager
     ) {
+        // Property-initializer islands do not pass through the suite statement loop, so they
+        // consume the skipped-subtree contract on their own: a parser-damaged initializer skips
+        // only this property declaration, never sibling members (plan §2.2.3).
+        if (analysisData.skippedSubtreeRoots().containsKey(propertyInitializer)) {
+            return;
+        }
         var propertyContext = FrontendPropertyInitializerSupport.contextOrNull(
                 analysisData.scopesByAst(),
                 propertyInitializer

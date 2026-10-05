@@ -1,16 +1,17 @@
 package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.Node;
+import gd.script.gdcc.util.FreezableIdentityMap;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.AbstractMap;
 import java.util.Collection;
-import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
 
 /// Identity-based side table keyed by AST node identity instead of structural equality.
 ///
@@ -20,9 +21,22 @@ import java.util.function.BiConsumer;
 ///
 /// The table now also implements `Map` so semantic phases can use ordinary map-style helpers
 /// such as `containsKey`, `entrySet`, `keySet`, and bulk `putAll` operations while still
-/// preserving identity-key semantics through the underlying `IdentityHashMap`.
+/// preserving identity-key semantics through the underlying identity map.
+///
+/// `freeze()` permanently closes every mutation channel — including the collection views and any
+/// view obtained before the freeze (LSP foundation plan §2.1: a published snapshot generation is
+/// physically unwritable). Reads stay open for concurrent snapshot queries.
 public final class FrontendAstSideTable<V> extends AbstractMap<Node, V> {
-    private final IdentityHashMap<Node, V> values = new IdentityHashMap<>();
+    private final FreezableIdentityMap<Node, V> values = new FreezableIdentityMap<>();
+
+    /// Permanently closes every mutation channel of this table. Idempotent.
+    public void freeze() {
+        values.freeze();
+    }
+
+    public boolean isFrozen() {
+        return values.isFrozen();
+    }
 
     @Override
     public @Nullable V put(@NotNull Node astNode, @NotNull V value) {
@@ -38,7 +52,7 @@ public final class FrontendAstSideTable<V> extends AbstractMap<Node, V> {
     }
 
     public boolean contains(@NotNull Node astNode) {
-        return containsKey(astNode);
+        return values.containsKey(requireAstNode(astNode));
     }
 
     @Override
@@ -49,6 +63,14 @@ public final class FrontendAstSideTable<V> extends AbstractMap<Node, V> {
     @Override
     public boolean containsValue(Object value) {
         return values.containsValue(requireValue(value));
+    }
+
+    /// `Map.replaceAll`'s default implementation wraps `Entry.setValue` failures into
+    /// `ConcurrentModificationException`; delegating to the guarded map keeps rejection semantics
+    /// uniform (`IllegalStateException` from the freeze guard).
+    @Override
+    public void replaceAll(@NotNull BiFunction<? super Node, ? super V, ? extends V> function) {
+        values.replaceAll(function);
     }
 
     public void putAll(@NotNull FrontendAstSideTable<? extends V> other) {
@@ -88,6 +110,8 @@ public final class FrontendAstSideTable<V> extends AbstractMap<Node, V> {
         return values.isEmpty();
     }
 
+    /// The views are freeze-aware: they reject mutations at operation time once frozen, even when
+    /// obtained while the table was still writable.
     @Override
     public @NotNull Set<Node> keySet() {
         return values.keySet();

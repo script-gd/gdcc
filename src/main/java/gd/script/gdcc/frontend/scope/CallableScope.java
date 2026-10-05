@@ -13,6 +13,8 @@ import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -87,6 +89,16 @@ public final class CallableScope extends AbstractFrontendScope {
     /// `<captures>` list and the published `FrontendLambdaPlan` both iterate this view.
     public @NotNull List<ScopeValue> captures() {
         return List.copyOf(capturesByName.values());
+    }
+
+    /// Visible-name enumeration view of this callable layer: parameters first, then captures,
+    /// mirroring the lookup priority of `resolveValueHere(...)`. The two name sets are disjoint by
+    /// construction (`ensureCallableValueSlotAvailable`), so no shadowing merge is needed here.
+    @Override
+    public @NotNull Collection<ScopeValue> valuesHere() {
+        var values = new ArrayList<ScopeValue>(parametersByName.values());
+        values.addAll(capturesByName.values());
+        return List.copyOf(values);
     }
 
     /// Rewrites the type of an already-published capture binding.

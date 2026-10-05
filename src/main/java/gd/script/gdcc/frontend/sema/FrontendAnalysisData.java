@@ -10,6 +10,7 @@ import gd.script.gdcc.exception.FrontendAnalysisPatchException;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendPublishedFactTypeGuard;
+import gd.script.gdcc.util.FreezableIdentityMap;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.Scope;
@@ -25,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -96,6 +98,17 @@ public final class FrontendAnalysisData {
     /// non-coroutine Signal-call results, preserves Variant dynamic results, and marks only other
     /// hard returns as redundant. Never itself a published fact for lowering.
     private final @NotNull List<FrontendAwaitCallPending> awaitCallPendings;
+    /// Declaration provenance index keyed by declaration MODEL object identity (`ClassDef`,
+    /// `LirPropertyDef`, `LirFunctionDef`, signal and enum constant/group models). Written only by
+    /// the class skeleton when it creates each model from its source declaration; consumed by
+    /// snapshot query services to normalize `declarationSite()` model objects back to source
+    /// positions. Identity-keyed like the AST side tables, but not Node-keyed, so it uses the
+    /// same freezable identity map.
+    private final @NotNull FreezableIdentityMap<Object, FrontendDeclarationOrigin> declarationOrigins =
+            new FreezableIdentityMap<>();
+    /// Set once the owning analysis generation is published inside a snapshot. Volatile because snapshots
+    /// are read concurrently off-latch.
+    private volatile boolean frozen;
 
     private FrontendAnalysisData(
             @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst,
@@ -174,22 +187,63 @@ public final class FrontendAnalysisData {
     }
 
     public void updateModuleSkeleton(@NotNull FrontendModuleSkeleton moduleSkeleton) {
+        requireWritable();
         this.moduleSkeleton = Objects.requireNonNull(moduleSkeleton, "moduleSkeleton must not be null");
     }
 
     public void updateDiagnostics(@NotNull DiagnosticSnapshot diagnostics) {
+        requireWritable();
         this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics must not be null");
     }
 
+    /// Permanently closes every mutation channel of this carrier (all side tables, the provenance
+    /// index, and every `update*`/`applyPatch`/`mark*`/pending-list method). Invoked when the
+    /// generation is published inside a `ModuleAnalysisSnapshot`; afterwards any mutation attempt
+    /// throws `IllegalStateException` so a leaked writer fails loudly instead of corrupting
+    /// concurrent snapshot readers. Idempotent.
+    public void freeze() {
+        frozen = true;
+        annotationsByAst.freeze();
+        skippedSubtreeRoots.freeze();
+        scopesByAst.freeze();
+        symbolBindings.freeze();
+        expressionTypes.freeze();
+        resolvedMembers.freeze();
+        resolvedCalls.freeze();
+        slotTypes.freeze();
+        forIterationPlans.freeze();
+        matchPlans.freeze();
+        typeTestTargets.freeze();
+        containerLiteralPlans.freeze();
+        lambdaPlans.freeze();
+        lambdaIdentities.freeze();
+        declarationOrigins.freeze();
+    }
+
+    public boolean isFrozen() {
+        return frozen;
+    }
+
+    private void requireWritable() {
+        if (frozen) {
+            throw new IllegalStateException(
+                    "This analysis data belongs to a published snapshot generation and is frozen"
+            );
+        }
+    }
+
     public void updateAnnotationsByAst(@NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst) {
+        requireWritable();
         replaceSideTableContents(this.annotationsByAst, annotationsByAst, "annotationsByAst");
     }
 
     public void updateScopesByAst(@NotNull FrontendAstSideTable<Scope> scopesByAst) {
+        requireWritable();
         replaceSideTableContents(this.scopesByAst, scopesByAst, "scopesByAst");
     }
 
     public void updateSymbolBindings(@NotNull FrontendAstSideTable<FrontendBinding> symbolBindings) {
+        requireWritable();
         FrontendPublishedFactTypeGuard.checkSymbolBindings(symbolBindings);
         replaceSideTableContents(this.symbolBindings, symbolBindings, "symbolBindings");
     }
@@ -197,21 +251,25 @@ public final class FrontendAnalysisData {
     /// Replaces the published expression-fact snapshot in place while preserving the stable table
     /// reference. Callers may publish both expression-root facts and attribute-step facts here.
     public void updateExpressionTypes(@NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes) {
+        requireWritable();
         FrontendPublishedFactTypeGuard.checkExpressionTypes(expressionTypes);
         replaceSideTableContents(this.expressionTypes, expressionTypes, "expressionTypes");
     }
 
     public void updateResolvedMembers(@NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers) {
+        requireWritable();
         FrontendPublishedFactTypeGuard.checkResolvedMembers(resolvedMembers);
         replaceSideTableContents(this.resolvedMembers, resolvedMembers, "resolvedMembers");
     }
 
     public void updateResolvedCalls(@NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls) {
+        requireWritable();
         FrontendPublishedFactTypeGuard.checkResolvedCalls(resolvedCalls);
         replaceSideTableContents(this.resolvedCalls, resolvedCalls, "resolvedCalls");
     }
 
     public void updateSlotTypes(@NotNull FrontendAstSideTable<GdType> slotTypes) {
+        requireWritable();
         FrontendPublishedFactTypeGuard.checkSlotTypes(slotTypes);
         replaceSideTableContents(
                 this.slotTypes,
@@ -221,16 +279,19 @@ public final class FrontendAnalysisData {
     }
 
     public void updateForIterationPlans(@NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans) {
+        requireWritable();
         FrontendPublishedFactTypeGuard.checkForIterationPlans(forIterationPlans);
         replaceSideTableContents(this.forIterationPlans, forIterationPlans, "forIterationPlans");
     }
 
     public void updateMatchPlans(@NotNull FrontendAstSideTable<FrontendMatchPlan> matchPlans) {
+        requireWritable();
         FrontendPublishedFactTypeGuard.checkMatchPlans(matchPlans);
         replaceSideTableContents(this.matchPlans, matchPlans, "matchPlans");
     }
 
     public void updateTypeTestTargets(@NotNull FrontendAstSideTable<FrontendTypeTestTarget> typeTestTargets) {
+        requireWritable();
         FrontendPublishedFactTypeGuard.checkTypeTestTargets(typeTestTargets);
         replaceSideTableContents(this.typeTestTargets, typeTestTargets, "typeTestTargets");
     }
@@ -238,11 +299,13 @@ public final class FrontendAnalysisData {
     public void updateContainerLiteralPlans(
             @NotNull FrontendAstSideTable<FrontendContainerLiteralPlan> containerLiteralPlans
     ) {
+        requireWritable();
         FrontendPublishedFactTypeGuard.checkContainerLiteralPlans(containerLiteralPlans);
         replaceSideTableContents(this.containerLiteralPlans, containerLiteralPlans, "containerLiteralPlans");
     }
 
     public void updateLambdaPlans(@NotNull FrontendAstSideTable<FrontendLambdaPlan> lambdaPlans) {
+        requireWritable();
         FrontendPublishedFactTypeGuard.checkLambdaPlans(lambdaPlans);
         replaceSideTableContents(this.lambdaPlans, lambdaPlans, "lambdaPlans");
     }
@@ -250,6 +313,7 @@ public final class FrontendAnalysisData {
     public void updateLambdaIdentities(
             @NotNull FrontendAstSideTable<FrontendLambdaIdentity> lambdaIdentities
     ) {
+        requireWritable();
         replaceSideTableContents(this.lambdaIdentities, lambdaIdentities, "lambdaIdentities");
     }
 
@@ -258,6 +322,7 @@ public final class FrontendAnalysisData {
     /// Conflict checks and local-slot validation are scoped to this patch. Repeated calls, including
     /// calls from `FrontendPatchTransaction`, do not form an atomic unit and do not roll back earlier patches.
     public void applyPatch(@NotNull FrontendOwnerPatch patch) {
+        requireWritable();
         var checkedPatch = Objects.requireNonNull(patch, "patch must not be null");
         FrontendPublishedFactTypeGuard.checkOwnerPatch(checkedPatch);
         applyPatchFields(
@@ -424,6 +489,13 @@ public final class FrontendAnalysisData {
         return lambdaIdentities;
     }
 
+    /// Returns the skeleton-owned declaration provenance index (model object identity → source
+    /// declaration position). Model objects without an entry have no source position. Frozen
+    /// together with the owning generation — every mutation channel closes on `freeze()`.
+    public @NotNull Map<Object, FrontendDeclarationOrigin> declarationOrigins() {
+        return declarationOrigins;
+    }
+
     /// Read-only view of the coroutine callable set; mutation goes through `markCoroutineFunction`.
     public @NotNull Set<LirFunctionDef> coroutineFunctions() {
         return Collections.unmodifiableSet(coroutineFunctions);
@@ -432,6 +504,7 @@ public final class FrontendAnalysisData {
     /// Marks a callable as a coroutine. Idempotent and monotonic; returns true when the marking was
     /// newly added so the await fixed-point pass can detect progress.
     public boolean markCoroutineFunction(@NotNull LirFunctionDef functionDef) {
+        requireWritable();
         return coroutineFunctions.add(Objects.requireNonNull(functionDef, "functionDef must not be null"));
     }
 
@@ -445,6 +518,7 @@ public final class FrontendAnalysisData {
     /// Marks a lambda owner as a coroutine by AST identity. Idempotent and monotonic; returns
     /// true when the marking was newly added so the await fixed-point pass can detect progress.
     public boolean markCoroutineLambdaOwner(@NotNull LambdaExpression lambdaExpression) {
+        requireWritable();
         return coroutineLambdaOwners.add(
                 Objects.requireNonNull(lambdaExpression, "lambdaExpression must not be null")
         );
@@ -467,6 +541,7 @@ public final class FrontendAnalysisData {
             @NotNull AwaitExpression awaitExpression,
             @NotNull GdType refinedType
     ) {
+        requireWritable();
         var checkedAwait = Objects.requireNonNull(awaitExpression, "awaitExpression must not be null");
         var checkedType = Objects.requireNonNull(refinedType, "refinedType must not be null");
         var current = expressionTypes.get(checkedAwait);
@@ -487,12 +562,14 @@ public final class FrontendAnalysisData {
     /// Returns a snapshot of all recorded await-call pendings and clears the working list; used by
     /// the post-suite fixed-point pass as the single consumer.
     public @NotNull List<FrontendAwaitCallPending> drainAwaitCallPendings() {
+        requireWritable();
         var drained = List.copyOf(awaitCallPendings);
         awaitCallPendings.clear();
         return drained;
     }
 
     public void addAwaitCallPending(@NotNull FrontendAwaitCallPending pending) {
+        requireWritable();
         awaitCallPendings.add(Objects.requireNonNull(pending, "pending must not be null"));
     }
 
@@ -516,6 +593,7 @@ public final class FrontendAnalysisData {
             @NotNull FrontendLocalSlotTypeUpdate slotTypeUpdate,
             @NotNull ScopeValue updatedValue
     ) {
+        requireWritable();
         var checkedUpdate = Objects.requireNonNull(slotTypeUpdate, "slotTypeUpdate must not be null");
         var checkedUpdatedValue = Objects.requireNonNull(updatedValue, "updatedValue must not be null");
         if (checkedUpdatedValue.declaration() != checkedUpdate.declaration()) {

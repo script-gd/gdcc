@@ -2087,6 +2087,10 @@ class FrontendBodyOwnerProceduresChainBindingTest {
 
     @Test
     void analyzeKeepsValueRequiredNestedAssignmentFailClosedForDynamicTargets() throws Exception {
+        // gdparser maps the nested assignment in call-argument position to an `ErrorExpression`
+        // (assignment is not an expression in GDScript), so this scenario no longer reaches chain
+        // binding: the parser owns the single `parse.lowering` error and the enclosing statement is
+        // skipped wholesale through the skipped-subtree recovery contract.
         var analyzed = analyze(
                 "dynamic_assignment_argument_route.gd",
                 """
@@ -2105,17 +2109,13 @@ class FrontendBodyOwnerProceduresChainBindingTest {
         var callStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
         var consumeStep = findNode(callStatement, AttributeCallStep.class, step -> step.name().equals("consume"));
 
-        var deferredCall = analyzed.analysisData().resolvedCalls().get(consumeStep);
-        assertNotNull(deferredCall);
-        assertEquals(FrontendCallResolutionStatus.UNSUPPORTED, deferredCall.status());
-        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, deferredCall.callKind());
-        assertNotNull(deferredCall.detailReason());
-        assertTrue(!deferredCall.detailReason().isBlank());
+        assertTrue(analyzed.analysisData().skippedSubtreeRoots().containsKey(callStatement));
+        assertNull(analyzed.analysisData().resolvedCalls().get(consumeStep));
 
-        var unsupportedDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route");
-        assertEquals(1, unsupportedDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.ERROR, unsupportedDiagnostics.getFirst().severity());
-        assertTrue(!unsupportedDiagnostics.getFirst().message().isBlank());
+        var parseDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "parse.lowering");
+        assertEquals(1, parseDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, parseDiagnostics.getFirst().severity());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution").isEmpty());
     }

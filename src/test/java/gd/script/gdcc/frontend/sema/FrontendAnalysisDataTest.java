@@ -60,7 +60,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -69,6 +71,85 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendAnalysisDataTest {
     private static final Range RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
+    @Test
+    void frozenAnalysisDataRejectsEveryMutationChannelButKeepsReadsOpen() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        analysisData.freeze();
+
+        assertAll(
+                () -> assertTrue(analysisData.isFrozen()),
+                () -> assertThrows(IllegalStateException.class, () -> analysisData.updateModuleSkeleton(null)),
+                () -> assertThrows(IllegalStateException.class, () -> analysisData.updateDiagnostics(null)),
+                () -> assertThrows(IllegalStateException.class, () -> analysisData.updateSymbolBindings(null)),
+                () -> assertThrows(IllegalStateException.class, () -> analysisData.applyPatch(null)),
+                () -> assertThrows(IllegalStateException.class, () -> analysisData.addAwaitCallPending(null)),
+                () -> assertThrows(IllegalStateException.class, analysisData::drainAwaitCallPendings),
+                // The cascaded side tables and the provenance index reject direct writes too.
+                () -> assertThrows(IllegalStateException.class, () -> analysisData.annotationsByAst().clear()),
+                () -> assertThrows(IllegalStateException.class,
+                        () -> analysisData.lambdaIdentities().putAll(new FrontendAstSideTable<>())),
+                () -> assertThrows(IllegalStateException.class,
+                        () -> analysisData.declarationOrigins().put(new Object(), null)),
+                () -> assertThrows(IllegalStateException.class,
+                        () -> analysisData.declarationOrigins().remove(new Object()))
+        );
+        // Reads and read views stay open for concurrent snapshot queries.
+        assertAll(
+                () -> assertTrue(analysisData.scopesByAst().isEmpty()),
+                () -> assertTrue(analysisData.awaitCallPendings().isEmpty()),
+                () -> assertTrue(analysisData.coroutineFunctions().isEmpty())
+        );
+    }
+
+    @Test
+    void viewsObtainedBeforeFreezeCloseAtFreezeTime() {
+        // A view captured while the table was still writable must not become a mutation
+        // back-channel after the freeze — guards are consulted at operation time.
+        var table = new FrontendAstSideTable<String>();
+        var keySet = table.keySet();
+        var values = table.values();
+        var entrySet = table.entrySet();
+        var node = passNode();
+        table.put(node, "v");
+        table.freeze();
+
+        assertAll(
+                () -> assertThrows(IllegalStateException.class, () -> keySet.remove(node)),
+                () -> assertThrows(IllegalStateException.class, keySet::clear),
+                () -> assertThrows(IllegalStateException.class, values::clear),
+                () -> assertThrows(IllegalStateException.class, () -> entrySet.iterator().next().setValue("x")),
+                () -> assertThrows(IllegalStateException.class, () -> table.replaceAll((_, _) -> "x")),
+                () -> {
+                    var iterator = table.keySet().iterator();
+                    iterator.next();
+                    assertThrows(IllegalStateException.class, iterator::remove);
+                },
+                // Read iteration through the same pre-freeze views stays open.
+                () -> assertEquals(1, keySet.size()),
+                () -> assertTrue(entrySet.iterator().hasNext())
+        );
+    }
+
+    @Test
+    void valuesViewKeepsIdentityComparisonSemantics() {
+        // IdentityHashMap values compare by reference; the freeze-aware view must not fall back to
+        // equals-based matching, or `containsValue` and `values().contains` would disagree.
+        var table = new FrontendAstSideTable<String>();
+        var stored = new String("shared");
+        var equalButDistinct = new String("shared");
+        table.put(passNode(), stored);
+
+        assertAll(
+                () -> assertFalse(table.containsValue(equalButDistinct)),
+                () -> assertFalse(table.values().contains(equalButDistinct)),
+                () -> assertFalse(table.values().remove(equalButDistinct)),
+                () -> assertEquals(1, table.size(), "an equal-but-distinct value must not remove the mapping"),
+                () -> assertTrue(table.values().contains(stored)),
+                () -> assertTrue(table.values().remove(stored)),
+                () -> assertTrue(table.isEmpty())
+        );
+    }
 
     @Test
     void bootstrapCreatesAllSideTablesBeforeAnyPhaseBoundaryIsPublished() {
@@ -111,7 +192,7 @@ class FrontendAnalysisDataTest {
         var originalSideTable = analysisData.annotationsByAst();
         var replacement = new FrontendAstSideTable<List<FrontendGdAnnotation>>();
         var astNode = passNode();
-        var annotation = new FrontendGdAnnotation("tool", List.of(), null);
+        var annotation = new FrontendGdAnnotation("tool", List.of(), null, null);
         replacement.put(astNode, List.of(annotation));
 
         analysisData.updateAnnotationsByAst(replacement);

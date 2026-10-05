@@ -1,6 +1,7 @@
 package gd.script.gdcc.api;
 
 import gd.script.gdcc.api.cleaner.CompileTaskCleaner;
+import gd.script.gdcc.api.analysis.ModuleAnalysisSnapshot;
 import gd.script.gdcc.api.task.CompileTaskHooks;
 import gd.script.gdcc.api.task.CompileTaskRunner;
 import gd.script.gdcc.api.task.CompileTaskState;
@@ -20,6 +21,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -27,6 +29,8 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 
 /// In-memory module registry facade intended for RPC adapters.
@@ -62,6 +66,10 @@ public final class API implements AutoCloseable {
     private final @NotNull ConcurrentHashMap<Long, CompileTaskState> compileTasks = new ConcurrentHashMap<>();
     private final @NotNull CompileTaskCleaner compileTaskCleaner;
     private final @NotNull AtomicLong nextCompileTaskId = new AtomicLong(1);
+    /// Global monotonic module-generation allocator: deleted generations are never reused, so a
+    /// same-id module recreated after deletion always carries a higher generation.
+    private final @NotNull AtomicLong nextModuleGeneration = new AtomicLong(1);
+    private final @NotNull AnalysisRunSeam analysisRunSeam;
     private final @NotNull AtomicBoolean closed = new AtomicBoolean();
     /// Serializes `compile(...)` admission against the close sweep so a task can never slip
     /// between "close scanned the task table" and "close requested cancellation".
@@ -97,11 +105,35 @@ public final class API implements AutoCloseable {
             @NotNull Duration completedCompileTaskTtl,
             @NotNull Duration compileTaskSweepInterval
     ) {
+        this(
+                clock,
+                parserService,
+                projectBuilder,
+                compileTaskHooks,
+                completedCompileTaskTtl,
+                compileTaskSweepInterval,
+                null
+        );
+    }
+
+    /// Package-private seam constructor: `analysisRunSeam` wraps the off-latch analysis execution
+    /// so concurrency tests can deterministically block or reorder analysis runs. `null` selects
+    /// the production runner; there is intentionally no production toggle for this seam.
+    API(
+            @NotNull Clock clock,
+            @NotNull GdScriptParserService parserService,
+            @NotNull CProjectBuilder projectBuilder,
+            @NotNull CompileTaskHooks compileTaskHooks,
+            @NotNull Duration completedCompileTaskTtl,
+            @NotNull Duration compileTaskSweepInterval,
+            @Nullable AnalysisRunSeam analysisRunSeam
+    ) {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.parserService = Objects.requireNonNull(parserService, "parserService must not be null");
         this.projectBuilder = Objects.requireNonNull(projectBuilder, "projectBuilder must not be null");
         this.compileTaskHooks = Objects.requireNonNull(compileTaskHooks, "compileTaskHooks must not be null");
         analysisRunner = new AnalysisRunner(parserService);
+        this.analysisRunSeam = analysisRunSeam != null ? analysisRunSeam : analysisRunner::analyzeRich;
         compileTaskCleaner = new CompileTaskCleaner(
                 clock,
                 compileTasks,
@@ -122,7 +154,8 @@ public final class API implements AutoCloseable {
         var createdState = new ModuleState(
                 normalizedModuleId,
                 StringUtil.requireTrimmedNonBlank(moduleName, "moduleName"),
-                clock
+                clock,
+                nextModuleGeneration.getAndIncrement()
         );
         var existingState = modules.putIfAbsent(normalizedModuleId, new ManagedModule(createdState));
         if (existingState != null) {
@@ -293,24 +326,112 @@ public final class API implements AutoCloseable {
     /// Runs one synchronous analyze-only pass over the module's current sources and returns the
     /// collected frontend diagnostics without producing artifacts. Editor-style callers use this to
     /// surface warnings and errors without configuring a build directory or polling an asynchronous
-    /// compile task.
+    /// compile task. `close()` does not wait for in-flight analyses; a result completed after close
+    /// stays valid and immutable, and conditional publish still refuses deleted or superseded
+    /// module generations.
     public @NotNull AnalysisResult analyze(@NotNull String moduleId) {
         return analyze(moduleId, AnalyzeOptions.defaults());
     }
 
     /// When `AnalyzeOptions.includeLowering()` is set, the analysis pass continues into frontend
     /// lowering to verify whether the module can currently lower to LIR; the C backend still never
-    /// runs. The call serializes through the module gate like any other operation, so it waits for
-    /// a queued or active compile of the same module to finish first, and it never touches the
-    /// module's last compile result.
+    /// runs.
+    ///
+    /// Analyze is a three-phase operation that never enters the module gate (plan §2.3.2):
+    /// 1. freeze the current inputs inside the `ModuleState` monitor — a queued or active compile
+    ///    of the same module does not block analysis, and VFS writes only contend briefly with the
+    ///    freeze itself;
+    /// 2. run the analysis pipeline off-latch on the frozen request (concurrent with same-module
+    ///    writes, other analyses of the same module, and any queued/active compile);
+    /// 3. conditionally publish the resulting `ModuleAnalysisSnapshot` only when this module
+    ///    instance is still the registered live one and the frozen version is strictly newer than
+    ///    the published one.
     public @NotNull AnalysisResult analyze(@NotNull String moduleId, @NotNull AnalyzeOptions analyzeOptions) {
         checkOpen();
         var normalizedModuleId = normalizeModuleId(moduleId);
         var managedModule = requireManagedModule(normalizedModuleId);
         var options = Objects.requireNonNull(analyzeOptions, "analyzeOptions must not be null");
-        return managedModule.runExclusive(normalizedModuleId, state ->
-                analysisRunner.analyze(state.freezeCompileRequest(), options)
+        var request = managedModule.state().freezeCompileRequest();
+        var runResult = analysisRunSeam.run(request, options);
+        publishAnalysisSnapshot(normalizedModuleId, managedModule, request, runResult);
+        return runResult.result();
+    }
+
+    /// Conditional snapshot publication (three-phase analyze, phase 3). Publishing into a deleted
+    /// or superseded module instance is a silent no-op by design: the caller still receives its own
+    /// `AnalysisResult`, and the stale snapshot is simply never exposed.
+    private void publishAnalysisSnapshot(
+            @NotNull String moduleId,
+            @NotNull ManagedModule managedModule,
+            @NotNull ModuleState.CompileRequest request,
+            @NotNull AnalysisRunResult runResult
+    ) {
+        var payload = runResult.payload();
+        if (payload == null) {
+            // Non-COMPLETED outcomes carry no semantic payload and publish nothing; the previously
+            // published snapshot (if any) stays authoritative.
+            return;
+        }
+        var sourceViews = new ArrayList<ModuleAnalysisSnapshot.SourceView>(request.sourceSnapshots().size());
+        for (var i = 0; i < request.sourceSnapshots().size(); i++) {
+            var sourceSnapshot = request.sourceSnapshots().get(i);
+            sourceViews.add(new ModuleAnalysisSnapshot.SourceView(
+                    sourceSnapshot.logicalPath().toString().replace('\\', '/'),
+                    sourceSnapshot.displayPath(),
+                    sourceSnapshot.source(),
+                    payload.module().units().get(i).parseFailed()
+            ));
+        }
+        managedModule.publishAnalysisSnapshot(
+                () -> modules.get(moduleId) == managedModule,
+                new ModuleAnalysisSnapshot(
+                        request.moduleGeneration(),
+                        request.contentVersion(),
+                        request.moduleId(),
+                        request.compileOptions().godotVersion(),
+                        request.topLevelCanonicalNameMap(),
+                        sourceViews,
+                        payload.snapshotDiagnostics(),
+                        payload.module(),
+                        payload.analysisData(),
+                        payload.classRegistry()
+                )
         );
+    }
+
+    /// Returns the current (generation, contentVersion) identity of the module's frozen content.
+    /// Compare against `AnalysisResult`/`ModuleAnalysisSnapshot` versions to detect staleness.
+    public @NotNull ModuleContentVersion getModuleContentVersion(@NotNull String moduleId) {
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        while (true) {
+            var managedModule = requireManagedModule(normalizedModuleId);
+            // Re-validate under the module monitor: between the map lookup above and this read the
+            // instance could lose a delete/recreate race, which would report the previous
+            // generation's version pair. On a lost race, re-resolve and read the live instance.
+            synchronized (managedModule) {
+                if (!managedModule.deleted && modules.get(normalizedModuleId) == managedModule) {
+                    var state = managedModule.state();
+                    return new ModuleContentVersion(state.moduleGeneration(), state.contentVersion());
+                }
+            }
+        }
+    }
+
+    /// Returns the latest published semantic snapshot, or `null` when no analysis has completed for
+    /// the current module generation yet. Reading is gate-free; the snapshot itself is immutable.
+    /// A delete/recreate race between lookup and read resolves to `null`, never to the previous
+    /// generation's payload.
+    public @Nullable ModuleAnalysisSnapshot getLatestAnalysisSnapshot(@NotNull String moduleId) {
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        var managedModule = requireManagedModule(normalizedModuleId);
+        // Same re-validation as getModuleContentVersion: publish/delete run under this monitor, so
+        // the identity check and the snapshot read are atomic against them.
+        synchronized (managedModule) {
+            if (managedModule.deleted || modules.get(normalizedModuleId) != managedModule) {
+                return null;
+            }
+            return managedModule.analysisSnapshot();
+        }
     }
 
     /// Publishes one queued compile task immediately, then lets a fresh virtual thread wait for the
@@ -562,14 +683,19 @@ public final class API implements AutoCloseable {
         );
     }
 
-    /// First implementation favors correctness over read/write concurrency: all same-module API
-    /// operations serialize through one gate, while different modules remain independent.
+    /// The module gate serializes state-mutating operations and the exclusive compile run, while
+    /// analysis is exempt: `analyze(...)` freezes inputs under `ModuleState`'s own monitor and then
+    /// runs off-latch, so it neither waits for nor blocks compile, and concurrent VFS writes only
+    /// contend with the brief freeze (plan §2.3).
     private static final class ManagedModule {
         private final @NotNull ModuleState state;
         private boolean busy;
         private boolean deleted;
         private long queuedCompileTaskId;
         private long activeCompileTaskId;
+        /// Latest published analysis snapshot. Writes go through the conditional publish below
+        /// (under this module's monitor); reads are gate-free because the snapshot is immutable.
+        private final @NotNull AtomicReference<ModuleAnalysisSnapshot> analysisSnapshot = new AtomicReference<>();
 
         private ManagedModule(@NotNull ModuleState state) {
             this.state = Objects.requireNonNull(state, "state must not be null");
@@ -668,6 +794,33 @@ public final class API implements AutoCloseable {
         private synchronized void cancelDelete() {
             busy = false;
             notifyAll();
+        }
+
+        private @Nullable ModuleAnalysisSnapshot analysisSnapshot() {
+            return analysisSnapshot.get();
+        }
+
+        /// Conditional publish for three-phase analyze. The whole check runs under this module's
+        /// monitor so it is atomic against delete/recreate and concurrent publishes:
+        /// (a) the registry guard proves this instance is still the live registered one (a deleted
+        ///     then recreated same-id module has a different `ManagedModule` and never receives the
+        ///     old run's snapshot);
+        /// (b) a deleted module accepts nothing;
+        /// (c) only a strictly newer frozen content version replaces the published snapshot — equal
+        ///     versions are content-equivalent races won by the first publisher, and older versions
+        ///     finishing late are dropped.
+        private synchronized void publishAnalysisSnapshot(
+                @NotNull BooleanSupplier registryInstanceGuard,
+                @NotNull ModuleAnalysisSnapshot snapshot
+        ) {
+            if (deleted || !registryInstanceGuard.getAsBoolean()) {
+                return;
+            }
+            var current = analysisSnapshot.get();
+            if (current != null && current.snapshotVersion() >= snapshot.snapshotVersion()) {
+                return;
+            }
+            analysisSnapshot.set(snapshot);
         }
 
         private synchronized void finishCompile(long taskId) {

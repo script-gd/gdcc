@@ -207,7 +207,9 @@ class RpcJsonCodecTest {
                 List.of("/src/main.gd"),
                 new DiagnosticSnapshot(List.of()),
                 null,
-                AnalysisResult.LoweringStatus.NOT_REQUESTED
+                AnalysisResult.LoweringStatus.NOT_REQUESTED,
+                7L,
+                3L
         );
 
         var json = codec.toJsonTree(result).getAsJsonObject();
@@ -221,7 +223,9 @@ class RpcJsonCodecTest {
                   "sourcePaths": ["/src/main.gd"],
                   "diagnostics": {"diagnostics": []},
                   "failureMessage": null,
-                  "loweringStatus": "NOT_REQUESTED"
+                  "loweringStatus": "NOT_REQUESTED",
+                  "moduleGeneration": 7,
+                  "snapshotVersion": 3
                 }
                 """, json);
         assertFalse(json.has("completed"));

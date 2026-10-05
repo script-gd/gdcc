@@ -279,6 +279,12 @@ public class FrontendVariableAnalyzer {
             if (supportedExecutableBlockDepth <= 0) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            // Parser-damaged declarations carry no published scope (skipped-subtree contract), so
+            // they must not enter block inventory; binding them would drift from the Interface-phase
+            // declaration index and trip body structural completeness.
+            if (isNotPublished(variableDeclaration)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             if (variableDeclaration.kind() == DeclarationKind.CONST) {
                 reportUnsupportedBlockLocalConst(variableDeclaration);
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;

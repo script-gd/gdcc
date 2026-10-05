@@ -213,7 +213,7 @@ class FrontendExportAnnotationSupportTest {
     }
 
     private static @NotNull FrontendGdAnnotation annotate(@NotNull String name, @NotNull Expression... arguments) {
-        return new FrontendGdAnnotation(name, List.of(arguments), null);
+        return new FrontendGdAnnotation(name, List.of(arguments), null, null);
     }
 
     private static @NotNull LiteralExpression stringLit(@NotNull String lexeme) {

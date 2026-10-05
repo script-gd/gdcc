@@ -117,6 +117,40 @@ class ApiCompileArtifactLinkTest {
         assertEquals(CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT, occupiedEntry.virtualPath());
     }
 
+    @Test
+    void sourceInsideManagedOutputDirectoryFailsCompileLoudly(@TempDir Path tempDir) {
+        // Managed output directories are compiler-owned: cleanup before republication deletes them
+        // without advancing contentVersion, which is only sound while they cannot host sources.
+        // A `.gd` entry inside must therefore fail the compile loudly instead of being silently
+        // deleted at an unchanged version.
+        var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
+        var api = ApiCompileTestSupport.newApi(compiler);
+        var projectPath = tempDir.resolve("guarded-project");
+        var outputMountRoot = "/rpc-build";
+
+        api.createModule("demo", "Guarded Demo");
+        api.setCompileOptions(
+                "demo",
+                ApiCompileTestSupport.compileOptions(
+                        projectPath,
+                        COptimizationLevel.DEBUG,
+                        TargetPlatform.getNativePlatform(),
+                        false,
+                        outputMountRoot
+                )
+        );
+        api.putFile("demo", "/src/main.gd", validSource("GuardedDemo"));
+        api.putFile("demo", outputMountRoot + "/generated/Evil.gd", validSource("Evil"));
+
+        var result = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+
+        assertEquals(CompileResult.Outcome.CONFIGURATION_FAILED, result.outcome());
+        assertTrue(
+                result.failureMessage() != null && result.failureMessage().contains("compiler-owned"),
+                () -> "expected a compiler-owned output contract failure, got: " + result.failureMessage()
+        );
+    }
+
     private static String validSource(String className) {
         return """
                 class_name %s

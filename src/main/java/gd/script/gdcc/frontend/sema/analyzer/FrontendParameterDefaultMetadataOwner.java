@@ -4,6 +4,7 @@ import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Parameter;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.scope.CallableScope;
@@ -202,7 +203,20 @@ public final class FrontendParameterDefaultMetadataOwner {
     ) {
         var violatingParameters = Collections.newSetFromMap(new IdentityHashMap<Parameter, Boolean>());
         var seenDefault = false;
+        // The shared diagnostic manager pools all units of the module, so parse diagnostics must be
+        // matched by source path AND range — byte ranges are file-local, and another file's damaged
+        // region must never suppress a genuine order violation in this file.
+        var functionSourcePath = FrontendDiagnostic.sourcePathText(
+                sourcePathFor(interfaceSurface, functionDeclaration, analysisData)
+        );
         for (var parameter : parameters) {
+            // Parser-damaged parameter lists (gdparser recovers `x = 1 +` into a defaulted `x` plus
+            // a phantom parameter whose name comes from the ERROR text) already own their
+            // `parse.lowering` diagnostic: suppress the order violation anchored inside the damaged
+            // region so the parser stays the single diagnostic owner for this root cause.
+            if (functionSourcePath != null && coveredByParseDiagnostic(diagnosticManager, functionSourcePath, parameter)) {
+                continue;
+            }
             if (parameter.variadic()) {
                 if (parameter.defaultValue() != null) {
                     violatingParameters.add(parameter);
@@ -235,6 +249,30 @@ public final class FrontendParameterDefaultMetadataOwner {
             }
         }
         return violatingParameters;
+    }
+
+    /// Returns whether a parse-phase diagnostic of the same source file has a range overlapping the
+    /// anchor parameter, meaning the parser already owns the diagnostic for the damaged structure
+    /// the parameter was recovered from.
+    private static boolean coveredByParseDiagnostic(
+            @NotNull DiagnosticManager diagnosticManager,
+            @NotNull String sourcePath,
+            @NotNull Parameter parameter
+    ) {
+        var anchor = FrontendRange.fromAstRange(parameter.range());
+        for (var diagnostic : diagnosticManager.snapshot().asList()) {
+            if (!diagnostic.category().startsWith("parse.")) {
+                continue;
+            }
+            if (!sourcePath.equals(diagnostic.sourcePath())) {
+                continue;
+            }
+            var range = diagnostic.range();
+            if (range != null && range.startByte() < anchor.endByte() && anchor.startByte() < range.endByte()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void reportInvalidOrder(
@@ -270,6 +308,14 @@ public final class FrontendParameterDefaultMetadataOwner {
                 parameter.defaultValue(),
                 "parameter-default island requires a default expression"
         );
+        // Parameter-default islands do not pass through the suite statement loop, so they consume
+        // the skipped-subtree contract on their own: a parser-damaged default expression skips only
+        // this default (placeholder metadata is reclaimed, leaving the parameter required), never
+        // the whole callable (plan §2.2.3). No diagnostic is emitted — the parser already owns one.
+        if (analysisData.skippedSubtreeRoots().containsKey(defaultValue)) {
+            reclaimDefaultMetadata(island);
+            return;
+        }
         var callableScope = island.callableScope();
         var environment = new FrontendTypedLexicalEnvironment(
                 callableScope,

@@ -269,6 +269,41 @@ parser 异常路径返回空 `SourceFile`（`GdScriptParserService.java:60-76`�
 - `typeAt(...)`：按节点查 `expressionTypes()` / `slotTypes()`，返回类型显示名文本；
   无事实节点返回空结果。注意 `expressionTypes` 键空间含 attribute step
   （`FrontendAnalysisData.java:47-51`），查询要覆盖 step 键。
+- `documentationAt(...)`：符号文档描述符投影——把光标处符号的解析事实归一成一条
+  `SymbolDocDescriptor`（符号种类 / 文档归属命名空间 / 属主名 / 成员名），供编辑器拼接
+  官方文档 URL 或展示归属。归一化规则：
+  - `GDCC` 用户符号：复用 `definitionAt` 的完整声明归一化规则（AST 声明直接定位、
+    模型对象查声明溯源索引、集合型 provenance 逐元素归一化）；描述符承载**全部**候选
+    源码位置与不可定位项，不擅自挑选其一。描述符身份**不替代** `usagesAt` 的源码声明
+    身份分组键。
+  - `ENGINE`/`BUILTIN` 类成员：属主取**实际声明类**。已发布事实的 `declarationSite`
+    只保留成员级元数据（`PropertyDef`/`SignalDef`/成员 `PropertyInfo` 等），**不保留**
+    共享 resolver 中间结果的 `ownerClass`；查询期按成员类别用 registry 既有层次查找
+    补齐属主（`findEngineClassConstantInHierarchy`/`findEngineClassEnumValueInHierarchy`/
+    `findBuiltinClassConstantInHierarchy`/`findBuiltinClassEnumValueInHierarchy`/
+    `findPropertyInHierarchy`/`findEngineSignalInHierarchy`，入口接收类名，由
+    `receiverType` 取名）。对已解析的方法调用/引用：沿 receiver 类链按**已选中
+    `FunctionDef` 的对象身份**定位声明类——不得重新执行重载选择，也不得按最近同名
+    方法推断属主。builtin 属性的 `PropertyInfo` 是逐次合成的（无跨次对象身份），属主
+    直接取 receiver 的 builtin 类。
+  - 全局元数据（全局常量、全局枚举组/枚举值、GDScript 语言常量）**没有实际声明类**，
+    适用独立的文档归属命名空间规则，按 registry provenance 判定归属，不得用其值类型
+    （如全局枚举值是 `int`）推断属主；`@GlobalScope`/`@GDScript` 是文档归属命名空间
+    名称，不是 `ClassDef` 类名。    engine/builtin 类枚举值当前经类域静态成员路径解析（如 `Node.PROCESS_MODE_INHERIT`）；
+    GDCC 当前前端不解析这两类的枚举组名，不发布对应的组级解析事实。本阶段枚举组
+    描述符只覆盖 GDCC 枚举组与全局枚举组。
+  - 工具函数按 registry 来源分类：`ExtensionUtilityFunction` 中 dump 来源的归
+    `@GlobalScope`；registry 合成的 GDScript 语言函数（`len`/`range`/`load` 等）归
+    `@GDScript`——经 `isGdScriptLanguageFunction`/`findGdScriptLanguageFunction` 判定，
+    不得按 `ownerKind`（两类同为 ENGINE）或函数名名单区分。
+  - `FrontendResolvedCall` 的分类字段是 `callKind` 而非 `bindingKind`，描述符需规定
+    映射（如 utility 调用发布为 `STATIC_METHOD` route，裸绑定才是 `UTILITY_FUNCTION`）。
+  - 引擎元数据不含文档文本（GDExtension dump 无描述字段）；描述符只产出
+    分类 + 归属命名空间 + 属主名 + 成员名，文档 URL 锚点规则由编辑器/适配层负责。
+  - `definitionAt` 的"外部声明"只表示无源码位置，不表示无文档归属：外部符号照常产出
+    描述符，但不进入 `usagesAt` 的源码身份分组。
+  - 未绑定标识符、`FAILED`/`DEFERRED`/`UNSUPPORTED`/`DYNAMIC`/`BLOCKED` 站点返回空结果，
+    不抛异常。
 - 坐标约定：入参接受字节偏移或（0 基行, 0 基列）；内部规范形式为字节偏移。
   返回位置统一 displayPath + 1 基行列 range（与诊断一致）+ 字节偏移；
   UTF-16 列换算属未来 LSP 适配层职责。
@@ -408,7 +443,53 @@ parser 异常路径返回空 `SourceFile`（`GdScriptParserService.java:60-76`�
 
 ### Phase 2：GDCC 容错语义分析
 
-内容：§4.1/§4.2 与 §2.2 全部（含 `AnalysisRunner` 短路移除），以及 runner 的
+> **状态：已完成实施（2026-10-01），评审修复已合入。** 实施事实：
+> - 错误子树标注为 `FrontendErrorSubtreeAnnotator`（静态工具，skeleton 发布后、scope 前运行）；
+>   scope 全部专用 handler 入口补 skipped 根检查；body 消费点=`FrontendSuiteResolver` 逐句循环
+>   +`FrontendStatementResolver` 防御入口 + 参数默认值 island（`analyzeIsland` 命中即回收元数据并
+>   静默返回）+ 属性初始化器 island；`FrontendVariableAnalyzer` 不为无 scope 声明建 locals；
+>   `FrontendTypeCheckAnalyzer.walkStatements` 消费 skipped 根。
+> - `FrontendSourceUnit.parseFailed` 显式标记 `parse.internal` 单元；skeleton 整体排除
+>   （不合成顶层类头、不收集 annotation），其他文件引用走 `sema.type_resolution` 未解析诊断。
+> - 声明溯源索引=`FrontendAnalysisData.declarationOrigins()`（`IdentityHashMap<Object,
+>   FrontendDeclarationOrigin>`，skeleton 在建 class/property/function/signal/enum 常量与 group
+>   时按对象身份记录 AST 声明节点 + 单元 logicalPath；displayPath 由快照层 remap）。
+> - `AnalysisRunner.analyzeRich` 返回包级 `AnalysisRunResult`（公开结果 + COMPLETED 时的语义
+>   载荷）；删除 parse 错误短路；lowering 验证用独立新建 `ClassRegistry`/`DiagnosticManager`
+>   （仅导入 parse 阶段诊断一次）；共享 analyze 成功后 lower 抛异常只记 `loweringStatus=FAILED`；
+>   parse/sema 未预期异常 → `INTERNAL_FAILED` 且无载荷。包级 `SemanticRun`/`LoweringRun` seam
+>   供失败注入测试。
+> - gdparser 0.6.0 实测形态锚点：`if :`/`for i in :`/`match :`/`return = 3` → 错误表达式在
+>   条件/迭代/值位置；`var x = true if  else false`（函数尾）与 `var hp = (1`（类尾）→
+>   `ErrorStatement`；`func f(x = 1 +)` → 幻影 Parameter（无错误节点，参数默认值 island 的
+>   skipped 消费为纯防御路径，由手写 AST 单测锚定）；`var x = self.`（函数尾）→
+>   `MissingAttributeStep` 部分链 + `Missing identifier` 诊断、不标 skipped。0.6.0 无法从真实
+>   源码产生产生"仅 WARNING 无 ERROR"的 parse 诊断形态，验收 5 的警告保留由 lowering 诊断
+>   无重复锚点 + 代码审查覆盖。
+> - `Scope` 新增 `valuesHere()`/`collectVisibleValues()`/`enumerationParentScope()`（§2.5 的
+>   Scope 枚举 API）；declaration-after-use 字节序过滤在
+>   `FrontendVisibleValueEnumerator.enumerateVisibleValues`（先过滤再遮蔽）。全局常量枚举留待
+>   Phase 5 经 `ClassRegistry` 直连。
+>
+> 评审修复（review-expert 复核后合入）：
+> - 部分成员链（`obj.`）链归约 FAILED 事实保留，但根表达式诊断被抑制（parser 的
+>   `Missing identifier` 保持单一 owner）；幻影参数（`func f(x = 1 +)`）覆盖在 parse 诊断
+>   范围内时抑制 `sema.invalid_parameter_default_order`。
+> - lowering 验证抛异常时补发单条 `sema.lowering` error 携带异常原因（可观测性）。
+>
+> 评审修复（终审轮，review-expert-a/c 并行复核后合入）：
+> - **缺名 match 绑定**（阻断级）：gdparser 把 `var :` 映射为 `name=""` 的
+>   `PatternBindingExpression` 而非错误节点，未经标注直达变量 inventory 抛
+>   `IllegalArgumentException` 拖垮整模块分析。修复：标注器把空名绑定视为损坏（标记所属
+>   statement 根），`FrontendMatchSupport.collectPatternBindingsInto` 再防御性跳过空名；
+>   直接绑定与字典嵌套绑定均有 runner 级回归。
+> - **annotation usage 消费 skipped 合同**：visitor 不再进入 skipped 根（损坏属性的
+>   `@onready` 不再误报 placement）；`FrontendGdAnnotation` 新增 `sourceStatement` 身份，
+>   源 statement 被标注的投影（如 `@export_range(1, = 3)`）不再追加参数校验诊断。
+> - 枚举器字节序过滤与 resolver 对齐：`Parameter` 节点豁免，其余所有
+>   `VariableDeclaration`（含 CAPTURE）按声明顺序过滤。
+>
+> 内容：§4.1/§4.2 与 §2.2 全部（含 `AnalysisRunner` 短路移除），以及 runner 的
 **包级私有富结果入口**（返回 `FrontendAnalysisData` 等语义载荷；Phase 3 才包装为
 公开快照）。本阶段断言直接打在包内可得的 `FrontendAnalysisData` 上（frontend 级测试 +
 该包级入口），**不依赖** Phase 3 的快照 API。
@@ -440,7 +521,59 @@ parser 异常路径返回空 `SourceFile`（`GdScriptParserService.java:60-76`�
 
 ### Phase 3：API 语义快照与并发
 
-内容：§2.1/§2.3 全部，§4.3/§4.4。
+> **状态：已完成实施（2026-10-01），评审修复已合入。** 实施事实：
+> - `ModuleState` 新增 `moduleGeneration`（`API.createModule` 从全局单调计数器分配）与
+>   `contentVersion`（`putFile`/`deletePath`/`createDirectory`/`createLink`/`options.set`/
+>   `classMap.set` 递增；编译产物挂载走内部非递增变体，不计入）；`freezeCompileRequest()` 把
+>   （代际, 版本）捕获进 `CompileRequest`。
+> - `AnalysisResult` 追加 `moduleGeneration`/`snapshotVersion`（所有 outcome 必填，紧凑构造器
+>   校验代际为正、版本非负）。
+> - `API.analyze` 三段式：`ModuleState` monitor 内冻结（不进 `ManagedModule.busy`、不等
+>   `queuedCompileTaskId`）→ 闩外经包级私有 `AnalysisRunSeam`（构造器注入，默认委托
+>   `AnalysisRunner.analyzeRich`）执行 → `ManagedModule` monitor 内条件发布（注册表实例身份
+>   guard + 未删除 + 版本严格更大）。新增 `getModuleContentVersion`（返回
+>   `ModuleContentVersion` 对）与 `getLatestAnalysisSnapshot`。
+> - 新子包 `api.analysis`：`ModuleAnalysisSnapshot`（公开元数据/源视图/诊断；`FrontendModule`/
+>   `FrontendAnalysisData`/`ClassRegistry` 仅包级私有暴露给查询服务；`queryMemo`
+>   `ConcurrentHashMap` 留给 Phase 4 惰性索引）。gdparser 0.6.0 线程安全（每 parse 新建
+>   `TSParser`、mapper 无状态），故 `GdScriptParserService` 保持共享实例，不新建 facade。
+> - `analyzeWaitsForModuleGateBehindOtherOperations` 按新合同重写为
+>   `analyzeDoesNotWaitForModuleGateBehindOtherOperations`。
+>
+> 评审修复与裁决（review-expert 复核后）：
+> - 已修复：编译产物清理改走非递增内部删除路径（§2.3.1 的"不计入"合同此前被
+>   `clearManagedOutputDirectories` 经公开 `deletePath` 破坏）。
+> - 裁决保留：同版本"先发布者胜出"不变——仅当 parser 对同一内容非确定性崩溃
+>   （`parse.internal`）时才存在内容不等价的同版本重试，tree-sitter 解析对同一输入是确定性的，
+>   该场景不可达。
+> - ~~保留待确认（架构级）~~ **已解决（方案 B，freeze-on-publish）**：快照构造时对
+>   `FrontendAnalysisData`（14 张 side table + provenance 索引级联 `freeze()`，全部
+>   `update*`/`applyPatch`/`mark*`/pending 方法闸门）与 `ClassRegistry`
+>   （`addGdccClass`/`removeGdccClass` 闸门）做结构性冻结。冻结闭合覆盖全部写通道：直接
+>   方法、`Map.Entry.setValue`、`replaceAll`（side table 覆写以避免被默认实现包装成
+>   CME）、iterator/view 移除，以及**冻结前获取的视图**（`FreezableIdentityMap` 组合式
+>   容器在操作时查验冻结位）；registry 惰性 virtual-method 缓存迁移 `ConcurrentHashMap`
+>   （发布后查询线程并发读安全）。合同收窄声明：冻结覆盖 §2.1 枚举的容器拓扑面
+>   （side table/provenance/registry 成员）；容器内可达模型对象（`Scope`/`ClassDef` 自有
+>   修改器）在 Phase 4 只读视图（方案 C）落地前仍按约定冻结，已在
+>   `ModuleAnalysisSnapshot` javadoc 写明。方案 C 保留为 Phase 4 开工首项，B 的冻结闸
+>   届时作为视图之下的第二道防线。
+>
+> 评审修复（终审轮，review-expert-a/c 并行复核后合入）：
+> - `contentVersion` 只在变更实际落地后递增：幂等 `createDirectory`（目录已存在）、失败的
+>   `createLink`/`deletePath`（根路径、类型冲突、路径不存在、非空目录）不再推进版本
+>   （新增 `ApiContentVersionTest` 锚定）。写路径采用"试探性放置 + 完整回滚"：target 语法与
+>   `displayPath` 校验在创建父目录之前，链接放置后在拟提交树上 `inspectLink`，失败即回滚
+>   被替换的叶节点与本次自动创建的全部祖先目录——因此覆盖文件形成的合法自引用（CYCLE broken
+>   link）行为不变，而不可解析目标干净失败。
+> - `getModuleContentVersion`/`getLatestAnalysisSnapshot` 在 `ManagedModule` monitor 内复核
+>   注册表实例身份与删除标记，消除删除/重建窗口读到上一代快照或版本对的读侧竞态。
+> - managed 输出目录排他性落实为强制守卫：清理前发现 `.gd`/`.gd3` 源码条目即让编译以
+>   `CONFIGURATION_FAILED` 响亮失败，不再静默删除同版本源码；指向输出目录的外部
+>   `VIRTUAL` 别名在清理-重挂载窗口的瞬时 broken 已记录为已知瞬态（冻结失败但版本对不变，
+>   调用方可检测重试）。`close()` 不等待在途分析，已在 `analyze` javadoc 写明。
+>
+> 内容：§2.1/§2.3 全部，§4.3/§4.4。
 
 验收：
 
@@ -463,7 +596,7 @@ parser 异常路径返回空 `SourceFile`（`GdScriptParserService.java:60-76`�
 
 ### Phase 4：光标查询服务
 
-内容：§2.4（parent/range 索引、声明溯源索引、definitionAt/usagesAt/typeAt）。
+内容：§2.4（parent/range 索引、声明溯源索引、definitionAt/usagesAt/typeAt/documentationAt）。
 
 验收：
 
@@ -478,6 +611,14 @@ parser 异常路径返回空 `SourceFile`（`GdScriptParserService.java:60-76`�
 5. nodeAt 半开区间与最深节点规则用例；零宽节点不被选中用例；
    offset 与 line/col 两种入参结果一致。
 6. 过期快照查询仍自洽（快照内闭合）；并发 `usagesAt` 首次构建无竞态。
+7. documentationAt：engine 方法/属性/常量/枚举值/信号返回 ENGINE 域 + **实际声明类**名 +
+   成员名（继承成员不归调用点静态类型；方法用例断言**已选中 FunctionDef** 的声明类，
+   含最近声明遮蔽）；builtin 类型成员返回 BUILTIN 域与属主名；`print` 归
+   `@GlobalScope`、`len` 归 `@GDScript`；全局常量与全局枚举按 registry provenance 归
+   `@GlobalScope`（裸枚举值与限定访问各一例）；枚举组描述符只覆盖 GDCC 枚举组与全局
+   枚举组（GDCC 当前前端不解析 engine/builtin 类枚举组名，不发布对应的组级解析事实）；GDCC 用户
+   符号按 definitionAt 归一化返回全部候选源码位置（局部变量、参数、未调用的重载方法
+   引用各一例）；未绑定/FAILED/DEFERRED/UNSUPPORTED/DYNAMIC/BLOCKED 站点返回空结果。
 
 ### Phase 5：补全候选枚举
 
