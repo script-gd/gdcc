@@ -121,4 +121,75 @@ class RpcApiRoundTripHttpTest {
             assertEquals(-32000, gone.getAsJsonObject("error").get("code").getAsInt());
         }
     }
+
+    /// The editor compile flow over the wire: copy the auto-synced module, retarget the copy's
+    /// options, analyze/compile against the copy, and delete it afterwards — all without
+    /// disturbing the source module.
+    @Test
+    void moduleCopyWorkflowRoundTripsOverHttp() throws Exception {
+        try (var server = JsonRpcServer.start(new JsonRpcDispatcher(new API()), "127.0.0.1", 0,
+                JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES)) {
+            var rpc = new RpcHttpTestClient(server);
+
+            rpc.callForResult("module.create", params("moduleId", "diag", "moduleName", "Diagnostics"));
+            rpc.callForResult("vfs.putFile", params(
+                    "moduleId", "diag", "path", "/src/main.gd",
+                    "content", "extends Node\n", "displayPath", "res://main.gd"
+            ));
+            var options = rpc.callForResult("options.get", params("moduleId", "diag")).getAsJsonObject();
+            options.addProperty("strictMode", true);
+            rpc.callForResult("options.set", params("moduleId", "diag", "compileOptions", options));
+
+            // module.copy returns the new module's snapshot with carried-over options and VFS.
+            var copy = rpc.callForResult("module.copy", params(
+                    "sourceModuleId", "diag", "newModuleId", "compile-copy"
+            )).getAsJsonObject();
+            assertEquals("compile-copy", copy.get("moduleId").getAsString());
+            assertEquals("Diagnostics", copy.get("moduleName").getAsString());
+            assertEquals(1, copy.get("rootEntryCount").getAsInt());
+            assertFalse(copy.get("hasLastCompileResult").getAsBoolean());
+            assertTrue(copy.getAsJsonObject("compileOptions").get("strictMode").getAsBoolean());
+
+            // The editor flow retargets the COPY's options after copying; the source's
+            // options stay untouched. (projectPath is a Path on the server and round-trips
+            // in its platform-normalized form.)
+            var copyBuildDir = java.nio.file.Path.of("E:/tmp/compile-copy-build").toString();
+            var copyOptions = rpc.callForResult("options.get", params("moduleId", "compile-copy")).getAsJsonObject();
+            copyOptions.addProperty("projectPath", copyBuildDir);
+            rpc.callForResult("options.set", params("moduleId", "compile-copy", "compileOptions", copyOptions));
+            assertEquals(copyBuildDir, rpc.callForResult("options.get", params("moduleId", "compile-copy"))
+                    .getAsJsonObject().get("projectPath").getAsString());
+            assertTrue(rpc.callForResult("options.get", params("moduleId", "diag"))
+                    .getAsJsonObject().get("projectPath").isJsonNull());
+
+            // An occupied target id fails fast without touching either module.
+            var duplicate = rpc.call("module.copy", params(
+                    "sourceModuleId", "diag", "newModuleId", "compile-copy"
+            ));
+            assertEquals(-32001, duplicate.getAsJsonObject("error").get("code").getAsInt());
+
+            // File metadata (here: the display path) survives the copy verbatim.
+            var entry = rpc.callForResult("vfs.readEntry", params(
+                    "moduleId", "compile-copy", "path", "/src/main.gd"
+            )).getAsJsonObject();
+            assertEquals("res://main.gd", entry.get("path").getAsString());
+
+            // The copy analyzes independently; later source writes do not leak into it.
+            var analysis = rpc.callForResult("analyze.run", params("moduleId", "compile-copy")).getAsJsonObject();
+            assertEquals("COMPLETED", analysis.get("outcome").getAsString());
+            rpc.callForResult("vfs.putFile", params(
+                    "moduleId", "diag", "path", "/src/extra.gd", "content", "extends Node\n"
+            ));
+            assertEquals(1, rpc.callForResult("vfs.listDirectory", params(
+                    "moduleId", "compile-copy", "path", "/src"
+            )).getAsJsonArray().size());
+
+            // Deleting the copy leaves the source module fully operational.
+            rpc.callForResult("module.delete", params("moduleId", "compile-copy"));
+            var copyGone = rpc.call("module.get", params("moduleId", "compile-copy"));
+            assertEquals(-32000, copyGone.getAsJsonObject("error").get("code").getAsInt());
+            assertEquals("diag", rpc.callForResult("module.get", params("moduleId", "diag"))
+                    .getAsJsonObject().get("moduleId").getAsString());
+        }
+    }
 }

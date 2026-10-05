@@ -526,6 +526,33 @@ class RpcJsonCodecTest {
     }
 
     @Test
+    void moduleCopyParamsRoundTripAndValidate() {
+        // The compact constructor trims both ids; the wire shape uses the record component names.
+        var params = new RpcParams.ModuleCopyParams(" src ", " copy ");
+        assertEquals("src", params.sourceModuleId());
+        assertEquals("copy", params.newModuleId());
+        var json = codec.toJsonTree(params).getAsJsonObject();
+        assertEquals("src", json.get("sourceModuleId").getAsString());
+        assertEquals("copy", json.get("newModuleId").getAsString());
+
+        var bound = codec.bindParams(
+                parse("{\"sourceModuleId\": \"a\", \"newModuleId\": \"b\"}"),
+                RpcParams.ModuleCopyParams.class
+        );
+        assertEquals(new RpcParams.ModuleCopyParams("a", "b"), bound);
+
+        var missingTarget = assertThrows(NullPointerException.class, () ->
+                codec.bindParams(parse("{\"sourceModuleId\": \"a\"}"), RpcParams.ModuleCopyParams.class));
+        assertEquals("newModuleId must not be null", missingTarget.getMessage());
+        var blankSource = assertThrows(IllegalArgumentException.class, () ->
+                codec.bindParams(
+                        parse("{\"sourceModuleId\": \"\", \"newModuleId\": \"b\"}"),
+                        RpcParams.ModuleCopyParams.class
+                ));
+        assertEquals("sourceModuleId must not be blank", blankSource.getMessage());
+    }
+
+    @Test
     void bindParamsRejectsTypeMismatchedComponents() {
         assertThrows(JsonSyntaxException.class, () ->
                 codec.bindParams(parse("{\"taskId\": \"abc\"}"), RpcParams.CompileGetTaskParams.class));

@@ -59,6 +59,45 @@ final class ModuleState {
         );
     }
 
+    /// Creates an independent copy of this module under a new id. The VFS is deep-copied with
+    /// fresh directory nodes while immutable file/link leaves are shared by reference (their
+    /// content and metadata, including `updatedAt`, can never change, and later writes replace
+    /// nodes instead of mutating them, so neither module can observe the other's edits).
+    /// Compile options and the frozen class-name map are immutable values carried over as-is;
+    /// compile runtime state deliberately starts fresh on the copy: no last result, no
+    /// publication tracking, and the compiler-managed output links (`generated`/`artifacts`
+    /// under the published mount root) are stripped — they would dangle onto the source's
+    /// build directory, and the copy's first compile re-creates them anyway.
+    synchronized @NotNull ModuleState copyFor(@NotNull String newModuleId) {
+        var copy = new ModuleState(newModuleId, moduleName, clock);
+        copyChildrenInto(root, copy.root, ROOT_PATH);
+        copy.compileOptions = compileOptions;
+        copy.topLevelCanonicalNameMap = topLevelCanonicalNameMap;
+        return copy;
+    }
+
+    private void copyChildrenInto(
+            @NotNull DirectoryNode source,
+            @NotNull DirectoryNode target,
+            @NotNull VirtualPath currentPath
+    ) {
+        for (var entry : source.children()) {
+            if (currentPath.equals(publishedOutputMountRoot)
+                    && (GENERATED_OUTPUT_DIR.equals(entry.getKey()) || ARTIFACT_OUTPUT_DIR.equals(entry.getKey()))) {
+                continue;
+            }
+            target.putChild(entry.getKey(), switch (entry.getValue()) {
+                case DirectoryNode directory -> {
+                    var directoryCopy = new DirectoryNode();
+                    copyChildrenInto(directory, directoryCopy, currentPath.child(entry.getKey()));
+                    yield directoryCopy;
+                }
+                case FileNode file -> file;
+                case LinkNode link -> link;
+            });
+        }
+    }
+
     /// `createDirectory(...)` is idempotent for existing directories and creates missing ancestors.
     synchronized @NotNull VfsEntrySnapshot.DirectoryEntrySnapshot createDirectory(@NotNull VirtualPath path) {
         if (path.isRoot()) {

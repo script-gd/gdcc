@@ -83,6 +83,10 @@ func delete_module(moduleId: String) -> PendingRequest:
     return call_rpc("module.delete", {"moduleId": moduleId})
 
 
+func copy_module(sourceModuleId: String, newModuleId: String) -> PendingRequest:
+    return call_rpc("module.copy", {"sourceModuleId": sourceModuleId, "newModuleId": newModuleId})
+
+
 func put_file(moduleId: String, path: String, content: String, displayPath: String = "", absolutePath: String = "") -> PendingRequest:
     var params: Dictionary = {"moduleId": moduleId, "path": path, "content": content}
     if displayPath != "":

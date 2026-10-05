@@ -50,6 +50,13 @@ public final class RpcParams {
         }
     }
 
+    public record ModuleCopyParams(@NotNull String sourceModuleId, @NotNull String newModuleId) {
+        public ModuleCopyParams {
+            sourceModuleId = StringUtil.requireTrimmedNonBlank(sourceModuleId, "sourceModuleId");
+            newModuleId = StringUtil.requireTrimmedNonBlank(newModuleId, "newModuleId");
+        }
+    }
+
     public record VfsCreateDirectoryParams(@NotNull String moduleId, @NotNull String path) {
         public VfsCreateDirectoryParams {
             moduleId = StringUtil.requireTrimmedNonBlank(moduleId, "moduleId");

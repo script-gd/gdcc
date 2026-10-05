@@ -7,7 +7,7 @@
 ## Document Status
 
 - Status: fact source maintained
-- Updated: 2026-09-13
+- Updated: 2026-09-28
 - Scope:
   - `src/main/java/gd/script/gdcc/api/**`
   - `src/test/java/gd/script/gdcc/api/**`
@@ -110,6 +110,7 @@ Current public operations are grouped below by responsibility.
 - `getModule(moduleId)`
 - `listModules()`
 - `deleteModule(moduleId)`
+- `copyModule(sourceModuleId, newModuleId)`
 
 Module IDs are caller-provided, trimmed, non-blank strings. Duplicate IDs fail. Deleting a module
 removes its in-memory state completely, except retained compile task snapshots that already exist in
@@ -117,6 +118,19 @@ the task table until their TTL expires.
 
 Deleting a module with a queued or active compile task is rejected. The API does not silently cancel
 or interrupt compilation during deletion.
+
+`copyModule` produces an independent module from one consistent point-in-time snapshot of the
+source, taken while the source module gate is held (so the copy never observes a mid-mutation
+tree). The copy shares immutable VFS file/link leaves with the source but owns its directory
+tree, compile options value, and class-name map; compile runtime state (last compile result,
+published output mount root, compile task slots) is not carried over, and compiler-managed
+output links (`generated`/`artifacts` under the source's published mount root) are stripped
+from the copied VFS so the copy starts with a clean publication slate. A missing source fails
+with `ApiModuleNotFoundException`; an occupied target id fails with
+`ApiModuleAlreadyExistsException` — on the common path before the source gate is waited on,
+with the registry's atomic insertion as the race guard. Callers that compile the copy must
+assign it its own `projectPath` first — copying preserves the source's options verbatim, and
+two modules must not share a physical build directory (§8).
 
 ### 3.2 Virtual Filesystem
 
@@ -550,6 +564,8 @@ Per module:
   publication are complete.
 - A second compile request for the same module fails while a queued or active compile exists.
 - Deleting a module fails while a compile task is queued or active.
+- `copyModule` reads its source module through the source's gate (waiting for any queued or active
+  same-source compile like any other operation); the new module gets its own fresh gate.
 - `compile(...)` admission is serialized against `close()`: a compile call either registers its
   task before the close sweep (and gets canceled by it) or fails on the closed instance; no runner
   thread can leak between the sweep and the cancellation requests.

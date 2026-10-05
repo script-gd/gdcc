@@ -252,6 +252,33 @@ class JsonRpcDispatcherTest {
     }
 
     @Test
+    void mapsModuleCopyFailuresToErrorCodes() {
+        var missingSource = dispatcher.dispatch(request(
+                "module.copy", params("sourceModuleId", "missing", "newModuleId", "copy"), new JsonPrimitive(1)
+        ));
+        var missingError = missingSource.getAsJsonObject("error");
+        assertEquals(-32000, missingError.get("code").getAsInt());
+        assertEquals("ApiModuleNotFoundException", missingError.getAsJsonObject("data").get("exception").getAsString());
+
+        api.createModule("demo", "Demo");
+        var existingTarget = dispatcher.dispatch(request(
+                "module.copy", params("sourceModuleId", "demo", "newModuleId", "demo"), new JsonPrimitive(2)
+        ));
+        assertEquals(-32001, existingTarget.getAsJsonObject("error").get("code").getAsInt());
+
+        // Record-level blank rejection surfaces as invalid params, never as a domain error.
+        var blankTarget = dispatcher.dispatch(request(
+                "module.copy", params("sourceModuleId", "demo", "newModuleId", "  "), new JsonPrimitive(3)
+        ));
+        assertEquals(JsonRpcDispatcher.INVALID_PARAMS, blankTarget.getAsJsonObject("error").get("code").getAsInt());
+
+        var copied = dispatcher.dispatch(request(
+                "module.copy", params("sourceModuleId", "demo", "newModuleId", "copy"), new JsonPrimitive(4)
+        ));
+        assertEquals("copy", copied.getAsJsonObject("result").get("moduleId").getAsString());
+    }
+
+    @Test
     void mapsModuleBusyAndCompileAlreadyRunningToErrors(@TempDir Path tempDir) {
         api.createModule("demo", "Demo");
         api.setCompileOptions("demo", compileOptions(tempDir.resolve("busy-project")));
@@ -483,7 +510,7 @@ class JsonRpcDispatcherTest {
 
     @Test
     void allDocumentedMethodsAreRouted() {
-        assertEquals(26, JsonRpcMethodRegistry.create(RpcServerShutdown.forTesting(() -> {
+        assertEquals(27, JsonRpcMethodRegistry.create(RpcServerShutdown.forTesting(() -> {
         })).methodCount());
 
         api.createModule("demo", "Demo");
@@ -503,6 +530,7 @@ class JsonRpcDispatcherTest {
                 Map.entry("module.get", params("moduleId", "demo")),
                 Map.entry("module.list", new JsonObject()),
                 Map.entry("module.delete", params("moduleId", "second")),
+                Map.entry("module.copy", params("sourceModuleId", "demo", "newModuleId", "demoCopy")),
                 Map.entry("vfs.createDirectory", params("moduleId", "demo", "path", "/docs2")),
                 Map.entry("vfs.putFile", params("moduleId", "demo", "path", "/src/b.gd", "content", "extends Node\n")),
                 Map.entry("vfs.readFile", params("moduleId", "demo", "path", "/src/main.gd")),
@@ -523,7 +551,7 @@ class JsonRpcDispatcherTest {
                 Map.entry("compile.clearEvents", params("taskId", taskId)),
                 Map.entry("analyze.run", params("moduleId", "demo"))
         );
-        assertEquals(26, calls.size());
+        assertEquals(27, calls.size());
 
         long startedTask = 0;
         for (var entry : calls.entrySet()) {

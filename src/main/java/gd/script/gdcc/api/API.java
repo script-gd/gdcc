@@ -165,6 +165,32 @@ public final class API implements AutoCloseable {
         }
     }
 
+    /// Copies a module into a new, independent module. The source gate is held for the whole
+    /// snapshot so the copy can never observe a mid-mutation tree; `putIfAbsent` is the atomic
+    /// guard against a racing creator of the new id. A missing source fails with
+    /// `ApiModuleNotFoundException`, an occupied target id with `ApiModuleAlreadyExistsException`.
+    public @NotNull ModuleSnapshot copyModule(@NotNull String sourceModuleId, @NotNull String newModuleId) {
+        checkOpen();
+        var normalizedSourceId = StringUtil.requireTrimmedNonBlank(sourceModuleId, "sourceModuleId");
+        var normalizedNewId = StringUtil.requireTrimmedNonBlank(newModuleId, "newModuleId");
+        var source = requireManagedModule(normalizedSourceId);
+        // Fast-fail before waiting on the source gate: recompile flows hit the already-exists
+        // path routinely (delete the stale copy, then re-copy), so they should not queue behind
+        // a busy source first. `putIfAbsent` below remains the atomic guard.
+        if (modules.containsKey(normalizedNewId)) {
+            throw new ApiModuleAlreadyExistsException("Module '" + normalizedNewId + "' already exists");
+        }
+        var copiedState = source.runExclusive(
+                normalizedSourceId,
+                sourceState -> sourceState.copyFor(normalizedNewId)
+        );
+        var existing = modules.putIfAbsent(normalizedNewId, new ManagedModule(copiedState));
+        if (existing != null) {
+            throw new ApiModuleAlreadyExistsException("Module '" + normalizedNewId + "' already exists");
+        }
+        return copiedState.snapshot();
+    }
+
     public @NotNull VfsEntrySnapshot.DirectoryEntrySnapshot createDirectory(
             @NotNull String moduleId,
             @NotNull String path

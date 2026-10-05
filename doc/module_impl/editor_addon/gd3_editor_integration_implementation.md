@@ -20,7 +20,10 @@
   内置 GDScript LSP 的符号查询会接管 `.gd3` 资源路径，导致打开的脚本无法保存；
   原 `lsp_lookup` 用例保留但暂停，待安全实现后恢复。`_get_global_class_name`
   （Stage C 暂缓）、模板、`--lsp-port` 设置项尚未实施；**Phase 10（编译工作流：
-  `module.copy` + 编译副本）已规划、尚未实施**；已经过多轮并行评审并修订）
+  `module.copy` + 编译副本）已实施并通过自动化验收**（2026-09-28：服务端
+  `ApiModuleCopyTest` 7 项 + RPC 三层测试 + 引擎用例 `dock_compile` 12 步全绿，
+  api+rpc 全量回归无回归，双评审终审 APPROVE；手动验收项见 Phase 10 验收节）；
+  已经过多轮并行评审并修订）
 - 更新日期：2026-09-28
 - 2026-09-27 修订：`launch_bad` 引擎测试断言接受平台分叉的两种 launcher 失败报告
   （Windows 同步 `OS.create_process failed` / Unix-like fork 成功后子进程 execvp
@@ -2168,44 +2171,71 @@ reconciler 自 Phase 3 起已把全项目自动同步进私有诊断模块。202
 变、叶子节点不可变（内存 String），复制 = 新根 + 递归新目录节点 + 共享叶子，
 纯内存操作。
 实施：
-1. 服务端 `module.copy` RPC：`API.copyModule(sourceModuleId, newModuleId)` 持有
-   **源模块门**完成整份快照（VFS + options + 类名映射一次性一致；经
+1. 服务端 `module.copy` RPC ✅（2026-09-28）：`API.copyModule(sourceModuleId, newModuleId)`
+   持有**源模块门**完成整份快照（VFS + options + 类名映射一次性一致；经
    `runExclusive` 排在在途操作之后——禁止多次 RPC 读拼快照的混合时间态）；
    复制 VFS（新目录节点、共享不可变叶子并保留
    displayPath/absolutePath/updatedAt）、CompileOptions、顶层类名映射、
    moduleName；**不复制运行态**（lastCompileResult = null、输出发布清零、任
-   务槽空闲）；`freezeCompileRequest` 按 moduleId 派生逻辑路径，副本必须是全
-   新 `ModuleState`。错误：目标已存在 -32001、源缺失 -32000、源忙按既有门语
-   义等待（不新增忙失败）。注册面：`JsonRpcMethodRegistry` + `RpcParams`
-   record + 错误映射（路由 26→27）；事实源同步：
+   务槽空闲）；`freezeCompileRequest` 按 moduleId 派生逻辑路径，副本是全新
+   `ModuleState`。错误：目标已存在 -32001（先快速失败再等待源门）、源缺失
+   -32000、源忙按既有门语义等待（不新增忙失败）。注册面：`JsonRpcMethodRegistry`
+   + `RpcParams.ModuleCopyParams` + 错误映射（路由 26→27）；事实源同步：
    `json_rpc_service_implementation.md` §2.2 方法表与计数/§5 测试锚点/状态与
-   变更记录，`rpc_api_implementation.md` §3.1/§4.1/§8。
-2. dock 改造（Compile 流程）：从服务取诊断模块 id 并就绪校验 → 经 dock 自有
-   RPC 客户端（与诊断流量分队列的既有设计）`module.copy(诊断id, 副本id)` →
-   `options.set` 重写 `projectPath`（`res://.godot/gdcc/<副本id>`，与诊断模块
-   的宿主目录隔离）→ `compile.start` → 现有轮询；再次编译命中 -32001 → 删除
-   旧副本后重新复制（永远编译最新快照）。副本 id 约定
-   `gdcc_editor_compile_<projectRootHash>_<pid>`（pid 作用域与诊断模块同款，
-   崩溃残留随服务进程消亡、启动期 -32001 重建自愈）；插件卸载时删除本进程创
-   建的副本。删除 Upload 按钮与 `_on_upload_script_pressed`；
-   `auto_setup_module` 简化为仅确保服务可达（launcher），其模块创建/options
-   写入逻辑移除（Compile 路径自给自足）；Analyze 保留为检查口（作用于副本或
-   诊断模块，实施时定）；旧服务端无此方法（-32601）时报错提示升级服务端，
-   不回退有损的手动上传路径。
-3. 服务端测试：API 层（复制保真——内容/displayPath/absolutePath/updatedAt/
-   options/类名映射逐项相等；运行态重置逐项为初始；目标存在 -32001；源缺失
-   -32000；复制后源继续写不污染副本（目录节点独立）；副本经 RecordingCompiler
-   编译成功）；RPC 层（dispatcher 错误码与路由数 27、codec wire 形状、HTTP
-   工作流 create→put→copy→options.set→analyze→delete 且双模块操作互不阻塞）。
-4. 引擎测试：dock Compile 全流程（真实 gdcc RPC 服务：诊断模块自动同步后触发
-   Compile → 副本编译成功并产出扩展；编译期间 `_validate` 诊断照常浮现——不
-   冻结锚点；再次编译走 -32001 删除重复制路径）。
+   变更记录，`rpc_api_implementation.md` §3.1/§8。
+2. dock 改造（Compile 流程）✅（2026-09-28）：Compile 前先校验 dock 端点字段与服务
+   `diag_channel_status()` 的有效端点一致（防止对错误服务器按 id 复制/删除）→ 从服
+   务取诊断模块 id 并就绪校验 → 经 dock 自有 RPC 客户端（与诊断流量分队列的既有设
+   计）`module.copy(诊断id, 副本id)` → `options.set` 重写 `projectPath`
+   （`res://.godot/gdcc/<副本id>`，与诊断模块的宿主目录隔离）→ `compile.start` →
+   现有轮询；再次编译命中 -32001 → 删除旧副本后重新复制（永远编译最新快照）；
+   -32002（旧副本编译仍在进行，如上次轮询超时）→ 取消本 dock 发起的旧任务并等待
+   终态后重试删除一次。副本 id 由诊断 id 换前缀派生
+   （`gdcc_editor_compile_<projectRootHash>_<pid>`，pid 作用域与诊断模块同款，崩溃
+   残留随服务进程消亡、下次编译 -32001 重建自愈）；副本按 `{host, port, id}` 逐条
+   记录（端点可在两次编译间重定向），插件卸载时对每条记录用**阻塞 HTTPClient**
+   （绕过已离树的帧泵客户端）做有界删除。已删除 Upload 按钮与
+   `_on_upload_script_pressed`；`auto_setup_module` 简化为仅确保服务可达并把检查用
+   模块字段指向诊断模块；Analyze 保留为检查口；旧服务端无此方法（-32601）时报错
+   提示升级服务端，不回退有损的手动上传路径。`gdcc_rpc_client.gd3` 增补类型化
+   `copy_module` 包装（dock 为兼容旧扩展仍走 `call_rpc`）。
+3. 服务端测试 ✅（2026-09-28）：API 层（`ApiModuleCopyTest`——复制保真（内容/
+   displayPath/absolutePath/updatedAt/options/类名映射逐项相等）；运行态重置逐项为
+   初始；目标存在 -32001；源缺失 -32000；复制后源继续写不污染副本（目录节点独
+   立）；副本经 RecordingCompiler 编译成功；源忙时复制按门等待）；RPC 层
+   （dispatcher 错误码与路由数 27、codec wire 形状、HTTP 工作流
+   create→put→copy→options.set→analyze→delete 且双模块操作互不阻塞）。
+4. 引擎测试 ✅（2026-09-28 自动化验收通过）：`dock_compile` 用例（真实 gdcc RPC 服
+   务 + 真实 zig 构建）：诊断模块自动同步后驱动 dock Compile 按钮 → 副本经
+   `module.list` 观察注册（**不能用 `module.get`/`read_file`——它们走模块门，副本
+   编译期间会阻塞**）（`copy_created`）→ 编译期间诊断模块 analyze 在任务非终态时返
+   回（`diag_alive_during_compile`，任务状态锚点替代耗时门限——不冻结证明）→ 副
+   本编译成功且产物落入独立 `.godot/gdcc/<副本id>` 目录（`compile_succeeded`）→ 修
+   改 fixture 并等待再同步（`fixture_resynced`）→ 再次编译走 -32001 删除重复制路
+   径、任务 id 严格递增且新副本内容为新源（`recompile_replaces_copy`）→ 全程后诊
+   断模块仍可 analyze（`diag_still_responsive`）。配套修正：`--quit-after` 帧数上限
+   按用例可配置（真实原生构建耗时远超交互用例）；用例副本中删除工程自带的故意错
+   误样例 `src/test2.gd3`（其前端错误会阻断整工作区编译），删除需先等初始同步波把
+   它传上去再等删除落库（竞态防护）。
 验收：
-- 自动化：上述服务端单测/RPC 测试 + 引擎用例全绿；编辑器既有全套回归无回归。
+- 自动化 ✅（2026-09-28）：`ApiModuleCopyTest`（7 项，含已发布输出链接剥离与用户
+  内容保留）、`JsonRpcDispatcherTest`（路由 27 + copy 错误码）、
+  `RpcJsonCodecTest`（ModuleCopyParams wire 形状）、`RpcApiRoundTripHttpTest`
+  （copy 工作流，含副本 options.set 而源不变）全绿；`gd.script.gdcc.api.*` +
+  `gd.script.gdcc.rpc.*` 全量回归无回归（含全部既有引擎用例）。
 - 手动：dock 无 Upload 按钮；编译期间编辑器诊断/补全/hover 照常；编译产物与
   诊断模块互不影响。
 非目标：不引入第二个持续同步模块；编译仍为显式手动动作（不自动触发）；副本
   的安装/热重载流程不在本阶段。
+评审记录（2026-09-28，review-expert-a + review-expert-c 并行，两轮）：第一轮
+REQUEST_CHANGES —— 卸载时经帧泵客户端的副本删除实际发不出去（子节点先离树）；端点
+分叉时可对错误服务器按 id 复制/删除；副本继承已发布输出链接但丢失清理指针；跨端
+点副本无清理记录；120s 轮询超时后旧任务使重编译卡 -32002；三处测试锚点可假绿
+（5s 耗时门限、二次编译未换源、HTTP 测试未对副本 options.set）。第二轮各剩一处、
+同根因：Cancel 改写共享客户端端点（-32002 取消重试端点错绑 / 编译流程中途被
+Cancel 改道）——Cancel 改用钉住任务端点的临时客户端，重试加端点一致条件。修复
+中还发现并修正引擎测试驱动缺陷：`module.get`/`read_file` 走模块门，副本编译期间
+会阻塞，改由 `module.list` 观察注册、内容校验移到编译结束后。终审双双 APPROVE。
 
 ---
 

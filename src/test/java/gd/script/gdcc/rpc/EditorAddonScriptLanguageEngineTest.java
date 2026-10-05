@@ -142,6 +142,14 @@ class EditorAddonScriptLanguageEngineTest {
                     "hook_invoked_on_outage", "hook_ok_ping_fail_capped",
                     "stale_hook_answer_dropped", "recovered_after_hook",
                     "hook_pending_uninstall_recovers", "survived")),
+            // Phase 10: dock Compile copies the auto-synced diagnostics module server-side,
+            // compiles the copy with a real native build, and never blocks the diagnostics
+            // module gate; the second compile replaces the stale copy (-32001 path).
+                    Map.entry("dock_compile", List.of(
+                    "config", "service_ready", "fixture_written", "broken_fixture_removed",
+                    "fixture_synced", "copy_created", "diag_alive_during_compile",
+                    "compile_succeeded", "fixture_resynced", "recompile_replaces_copy",
+                    "diag_still_responsive", "survived")),
             // Phase 4: `_complete_code` — degraded answers (client not READY / no sentinel /
             // disabled service), white-box pins of the kind table and the insert-text
             // precedence (the server's emitted kind set is not controllable, so the mapping
@@ -370,6 +378,8 @@ class EditorAddonScriptLanguageEngineTest {
                         await _run_lsp_disable_before_prime_mode()
                     elif mode == "gdcc_diag":
                         await _run_gdcc_diag_mode()
+                    elif mode == "dock_compile":
+                        await _run_dock_compile_mode()
                     elif mode == "lsp_completion":
                         await _run_lsp_completion_mode()
                     elif mode == "diag_revalidate":
@@ -1704,7 +1714,210 @@ class EditorAddonScriptLanguageEngineTest {
                         if sib_script != null and str(sib_script.resource_path).ends_with("addons/gdcc/plugin.gd"):
                             return sib.get("_dock")
                     return null
-                
+
+                # Phase 10: dock Compile copies the auto-synced diagnostics module server-side
+                # and compiles the copy; the diagnostics module gate stays free mid-compile.
+                func _run_dock_compile_mode() -> void:
+                    var service := _service()
+                    var dock: Variant = _find_gdcc_dock()
+                    if service == null or dock == null:
+                        _step("service_ready", false, "GdccEditorService or dock missing")
+                        return
+                    var lsp_port := int(_config["lsp_port"])
+                    var rpc_port := int(_config["rpc_port"])
+                    _step("service_ready", service.install(EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", rpc_port) == OK)
+
+                    var fixture_path := "res://compile_probe.gd3"
+                    var fixture_src := "class_name DockCompileProbe\\nextends Node\\n"
+                    _write_text_file(fixture_path, fixture_src)
+                    service.notify_filesystem_changed()
+                    _step("fixture_written", true)
+
+                    # Driver-owned client: observes sync/copy/compile state straight from the
+                    # server, independent of the dock's own client.
+                    var client := GdccRpcClient.new()
+                    add_child(client)
+                    client.host = "127.0.0.1"
+                    client.port = rpc_port
+
+                    var ready_ok: bool = await _wait_diag_ready(service, 45.0)
+                    var diag_module_id: String = service.get_diag_module_id()
+
+                    # The addon project ships res://src/test2.gd3 — a deliberately broken
+                    # sample (parameterized _init, bare print()) whose frontend errors would
+                    # block any whole-workspace compile. Remove it from this case's copy and
+                    # wait for the delete to reconcile into the server VFS. The delete can
+                    # race the INITIAL sync wave (the file may be uploaded only after we
+                    # removed it from disk), so first wait for the file to appear, then for
+                    # the delete to land.
+                    var present := false
+                    var present_deadline := Time.get_ticks_msec() + 30000
+                    while Time.get_ticks_msec() < present_deadline and not present:
+                        var before: Dictionary = await client.read_file(diag_module_id, "/src/src/test2.gd3").completed
+                        present = before["ok"]
+                        if not present:
+                            await get_tree().create_timer(0.2).timeout
+                    DirAccess.remove_absolute(ProjectSettings.globalize_path("res://src/test2.gd3"))
+                    service.notify_filesystem_changed()
+                    var removed := false
+                    var remove_deadline := Time.get_ticks_msec() + 30000
+                    while Time.get_ticks_msec() < remove_deadline and not removed:
+                        var stale: Dictionary = await client.read_file(diag_module_id, "/src/src/test2.gd3").completed
+                        removed = not stale["ok"]
+                        if not removed:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("broken_fixture_removed", present and removed)
+                    if not (present and removed):
+                        return
+
+                    # res://compile_probe.gd3 mirrors to /src/compile_probe.gd3 (service VFS
+                    # mapping contract); poll until the content round-trips verbatim.
+                    var synced := false
+                    var sync_deadline := Time.get_ticks_msec() + 30000
+                    while Time.get_ticks_msec() < sync_deadline and not synced:
+                        var read: Dictionary = await client.read_file(diag_module_id, "/src/compile_probe.gd3").completed
+                        synced = read["ok"] and str(read["result"]) == fixture_src
+                        if not synced:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("fixture_synced", ready_ok and synced)
+                    if not (ready_ok and synced):
+                        return
+
+                    # Point the dock at the test server and press its real Compile button.
+                    dock._host_input.text = "127.0.0.1"
+                    dock._port_input.text = str(rpc_port)
+                    var compile_button: Button = null
+                    for button in dock._action_buttons:
+                        if button.text == "Compile":
+                            compile_button = button
+                    if compile_button == null:
+                        _step("copy_created", false, "Compile button not found in the dock")
+                        return
+                    compile_button.pressed.emit()
+                    # Same id derivation as the dock: diagnostics prefix swapped for the
+                    # compile prefix (pid-scoped per editor process).
+                    var copy_module_id: String = diag_module_id.replace(
+                            "gdcc_editor_diagnostics_", "gdcc_editor_compile_")
+                    # module.get would block server-side behind the copy's compile (the
+                    # module gate is held for the whole native build); module.list is the
+                    # gate-free channel for observing the registration.
+                    var copy_seen := false
+                    var copy_deadline := Time.get_ticks_msec() + 30000
+                    while Time.get_ticks_msec() < copy_deadline and not copy_seen:
+                        var listed: Dictionary = await client.call_rpc("module.list", {}).completed
+                        if listed["ok"]:
+                            for entry in listed["result"]:
+                                if str(entry["moduleId"]) == copy_module_id:
+                                    copy_seen = true
+                        if not copy_seen:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("copy_created", copy_seen)
+                    if not copy_seen:
+                        print("DOCK LOG:\n" + dock._log_output.text)
+                        return
+
+                    # While the dock knows an active compile task on the copy, an analyze on
+                    # the DIAGNOSTICS module must still answer fast: a compile holding the
+                    # diag gate would delay it by the remaining native build (seconds even
+                    # when warm), while a healthy loopback round-trip is subsecond.
+                    var task_deadline := Time.get_ticks_msec() + 30000
+                    while int(dock._current_task_id) <= 0 and Time.get_ticks_msec() < task_deadline:
+                        await get_tree().process_frame
+                    var first_task: int = int(dock._current_task_id)
+                    var analyze_start := Time.get_ticks_msec()
+                    var analyzed: Dictionary = await client.analyze(diag_module_id, false).completed
+                    var analyze_elapsed := Time.get_ticks_msec() - analyze_start
+                    # Strong anchor: the analyze answered while the copy's compile was still in
+                    # flight. A regression that made compile hold the DIAGNOSTICS module gate
+                    # would let analyze return only after the compile finished (terminal here).
+                    var task_view: Dictionary = await client.get_compile_task(first_task).completed
+                    var task_state := str(task_view["result"]["state"]) if task_view["ok"] else "?"
+                    var diag_alive: bool = first_task > 0 and analyzed["ok"] \
+                            and str(analyzed["result"]["outcome"]) == "COMPLETED" \
+                            and (task_state == "QUEUED" or task_state == "RUNNING")
+                    _step("diag_alive_during_compile", diag_alive,
+                            "task_state=" + task_state + " elapsed_ms=" + str(analyze_elapsed))
+
+                    var last_result := {}
+                    var succeeded := false
+                    var result_deadline := Time.get_ticks_msec() + 240000
+                    while Time.get_ticks_msec() < result_deadline and not succeeded:
+                        var polled: Dictionary = await client.get_last_compile_result(copy_module_id).completed
+                        if polled["ok"] and polled["result"] != null:
+                            last_result = polled["result"]
+                            succeeded = str(last_result.get("outcome", "")) == "SUCCESS"
+                        if not succeeded:
+                            await get_tree().create_timer(0.5).timeout
+                    # The copy built into its own .godot/gdcc/<copy> host dir.
+                    var build_dir: String = ProjectSettings.globalize_path("res://.godot/gdcc/" + copy_module_id)
+                    succeeded = succeeded and DirAccess.dir_exists_absolute(build_dir) \
+                            and (DirAccess.get_directories_at(build_dir).size() \
+                            + DirAccess.get_files_at(build_dir).size()) > 0
+                    _step("compile_succeeded", succeeded, str(last_result))
+                    if not succeeded:
+                        print("DOCK LOG:\n" + dock._log_output.text)
+                        return
+
+                    # Second compile through the real UI path: wait until the dock drained the
+                    # first task (button re-enabled), CHANGE the fixture, and wait for the
+                    # re-sync — the re-created copy must carry the new content, proving the
+                    # -32001 delete+recopy path rather than a stale-copy reuse.
+                    var idle_deadline := Time.get_ticks_msec() + 30000
+                    while compile_button.disabled and Time.get_ticks_msec() < idle_deadline:
+                        await get_tree().process_frame
+                    var updated_src := "class_name DockCompileProbe\\nextends Node\\n\\n# recompiled\\n"
+                    _write_text_file(fixture_path, updated_src)
+                    service.notify_filesystem_changed()
+                    var resynced := false
+                    var resync_deadline := Time.get_ticks_msec() + 30000
+                    while Time.get_ticks_msec() < resync_deadline and not resynced:
+                        var reread: Dictionary = await client.read_file(diag_module_id, "/src/compile_probe.gd3").completed
+                        resynced = reread["ok"] and str(reread["result"]) == updated_src
+                        if not resynced:
+                            await get_tree().create_timer(0.2).timeout
+                    _step("fixture_resynced", not compile_button.disabled and resynced)
+                    if not resynced:
+                        return
+                    compile_button.pressed.emit()
+                    # Waiting for the new task id first pins the ordering: anything observed
+                    # afterwards belongs to the re-copied module, never to the pre-delete one.
+                    var second_task: int = -1
+                    var second_start_deadline := Time.get_ticks_msec() + 30000
+                    while Time.get_ticks_msec() < second_start_deadline and second_task < 0:
+                        var current: int = int(dock._current_task_id)
+                        if current > first_task:
+                            second_task = current
+                        await get_tree().process_frame
+                    var second_ok: bool = second_task > 0
+                    var second_deadline := Time.get_ticks_msec() + 240000
+                    var second_success := false
+                    while Time.get_ticks_msec() < second_deadline and not second_success:
+                        var polled2: Dictionary = await client.get_last_compile_result(copy_module_id).completed
+                        if polled2["ok"] and polled2["result"] != null:
+                            second_success = str(polled2["result"].get("outcome", "")) == "SUCCESS"
+                        if not second_success:
+                            await get_tree().create_timer(0.5).timeout
+                    # Post-success content check (read_file blocks behind the copy's module
+                    # gate while the compile runs, so it only answers afterwards): the
+                    # re-created copy must carry the UPDATED source. With a stale-copy reuse
+                    # bug the old content would survive; with a skipped recopy the id would
+                    # still hold the pre-edit bytes.
+                    var fresh_copy := false
+                    if second_success:
+                        var copy_read: Dictionary = await client.read_file(copy_module_id, "/src/compile_probe.gd3").completed
+                        fresh_copy = copy_read["ok"] and str(copy_read["result"]) == updated_src
+                    _step("recompile_replaces_copy", second_ok and fresh_copy and second_success,
+                            "first_task=" + str(first_task) + " second_task=" + str(second_task)
+                            + " fresh_copy=" + str(fresh_copy))
+                    if not (second_ok and fresh_copy and second_success):
+                        print("DOCK LOG:\n" + dock._log_output.text)
+                        return
+
+                    var final_analyze: Dictionary = await client.analyze(diag_module_id, false).completed
+                    _step("diag_still_responsive", final_analyze["ok"]
+                            and str(final_analyze["result"]["outcome"]) == "COMPLETED")
+                    _step("survived", true)
+
                 func _run_diag_revalidate_mode() -> void:
                     var service := _service()
                     var lang := _find_gd3_language()
@@ -3039,6 +3252,25 @@ class EditorAddonScriptLanguageEngineTest {
         }
     }
 
+    /// Phase 10 acceptance: the dock Compile button copies the auto-synced diagnostics module
+    /// via `module.copy`, compiles the copy with a real native build into its own
+    /// `.godot/gdcc/<copy>` directory, keeps the diagnostics module gate responsive
+    /// mid-compile, and replaces the stale copy on the second press. Runs against a real
+    /// in-process gdcc RPC server (zig-gated through `runCase`).
+    @Test
+    void dockCompileCopiesDiagnosticsModule() throws Exception {
+        var config = new JsonObject();
+        config.addProperty("lsp_port", findFreePort());
+        // Two real native builds run inside the editor; the default frame budget would cut the
+        // editor off mid-compile (the wall-clock process timeout remains the backstop).
+        config.addProperty("quit_after", 500000);
+        try (var server = JsonRpcServer.start(new JsonRpcDispatcher(new API()), "127.0.0.1", 0,
+                JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES)) {
+            config.addProperty("rpc_port", server.port());
+            runCase("dock_compile", config);
+        }
+    }
+
     /// Phase 4 acceptance (plan §4.3): `_complete_code` end-to-end — degraded answers for
     /// the negative paths (client not READY, no sentinel, disabled service), white-box pins
     /// of the kind mapping and insert-text precedence, keyword/member completion through
@@ -3195,7 +3427,11 @@ class EditorAddonScriptLanguageEngineTest {
         patchEnabledPlugins(projectDir, enableGdccAtBoot);
 
         var lspPort = config.has("lsp_port") ? config.get("lsp_port").getAsInt() : -1;
-        var output = runEditor(godotBinary, projectDir, caseDir, lspPort);
+        // Cases driving real native builds inside the editor (Phase 10 dock compile) need a
+        // much larger quit-after frame budget than interactive-speed cases; the 10-minute
+        // process timeout stays the actual backstop.
+        var quitAfter = config.has("quit_after") ? config.get("quit_after").getAsInt() : QUIT_AFTER_FRAMES;
+        var output = runEditor(godotBinary, projectDir, caseDir, lspPort, quitAfter);
         var summary = extractSummary(output);
         assertDriverStepsOk(caseName, summary, output);
         return output;
@@ -3287,7 +3523,8 @@ class EditorAddonScriptLanguageEngineTest {
     /// `remote_port` from the driver would race the server's post-editor-ready start.
     /// Config directories are redirected into the case dir so the editor's settings writes
     /// (use_thread, the launch command, layout state) never touch the real user profile.
-    private static String runEditor(Path godotBinary, Path projectDir, Path caseDir, int lspPort)
+    private static String runEditor(Path godotBinary, Path projectDir, Path caseDir, int lspPort,
+                                    int quitAfterFrames)
             throws IOException, InterruptedException {
         var isolatedConfig = Files.createDirectories(caseDir.resolve("config-home"));
         var command = new ArrayList<>(List.of(
@@ -3300,7 +3537,7 @@ class EditorAddonScriptLanguageEngineTest {
             command.add(String.valueOf(lspPort));
         }
         command.add("--quit-after");
-        command.add(String.valueOf(QUIT_AFTER_FRAMES));
+        command.add(String.valueOf(quitAfterFrames));
         var processBuilder = new ProcessBuilder(command).directory(projectDir.toFile());
         var environment = processBuilder.environment();
         environment.put("APPDATA", isolatedConfig.toAbsolutePath().toString());

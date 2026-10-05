@@ -10,9 +10,16 @@ extends VBoxContainer
 # or redraws the idle main loop would starve the client's frame pump and HTTPRequest. The
 # previous mode is restored once the last in-flight action finishes.
 
-# Server error code for ApiModuleAlreadyExistsException (the RPC exception mapping), used to
-# turn module creation into delete-and-recreate during plugin-load auto setup.
+# Server error codes (the RPC exception mapping): -32001 turns compile-copy creation into
+# delete-and-recopy; -32002 means the stale copy still has a live compile; -32601 detects a
+# server too old to know module.copy.
 const ERR_MODULE_ALREADY_EXISTS := -32001
+const ERR_MODULE_BUSY := -32002
+const ERR_METHOD_NOT_FOUND := -32601
+# Diagnostics module id convention (gdcc_module_lifecycle.gd3); the compile copy id swaps the
+# prefix so it stays scoped to the same project root hash and editor process.
+const DIAG_MODULE_PREFIX := "gdcc_editor_diagnostics_"
+const COMPILE_MODULE_PREFIX := "gdcc_editor_compile_"
 const SETTING_LAUNCH_COMMAND := "gdcc/server/launch_command"
 const SETTING_SERVER_HOST := "gdcc/server/host"
 const SETTING_SERVER_PORT := "gdcc/server/port"
@@ -44,6 +51,10 @@ var _current_task_id: int = -1
 # input fields happen to show now.
 var _current_task_host: String = ""
 var _current_task_port: int = 0
+# Compile copies created by this dock, as {"host", "port", "module_id"} entries. The endpoint
+# is recorded per copy because the dock's endpoint can be retargeted between compiles; the
+# unload cleanup must talk to the server that actually owns each copy.
+var _owned_copies: Array = []
 var _busy_count: int = 0
 
 
@@ -115,7 +126,6 @@ func _ready() -> void:
     var session_row := HBoxContainer.new()
     _add_button(session_row, "Ping", _on_ping_pressed)
     _add_button(session_row, "Create", _on_create_module_pressed)
-    _add_button(session_row, "Upload", _on_upload_script_pressed)
     add_child(session_row)
 
     var compile_row := HBoxContainer.new()
@@ -168,6 +178,15 @@ func _exit_tree() -> void:
     if _busy_count > 0:
         _report_busy.call(-_busy_count)
         _busy_count = 0
+    # Best-effort cleanup of this process's compile copies. The frame-pumped RPC client cannot
+    # deliver here: by the time the dock exits, the plugin's client child has already left the
+    # tree and HTTPRequest refuses to send outside it (ERR_UNCONFIGURED). A bounded blocking
+    # HTTPClient POST works without the scene tree; a missed delete self-heals on the next
+    # compile via the already-exists replace path, and pid-scoped ids die with any
+    # editor-launched server process anyway.
+    for entry in _owned_copies:
+        _delete_module_blocking(str(entry["host"]), int(entry["port"]), str(entry["module_id"]))
+    _owned_copies.clear()
 
 
 func _log(message: String) -> void:
@@ -197,6 +216,33 @@ func _end_busy() -> void:
     _report_busy.call(-1)
     if _busy_count == 0:
         _set_action_buttons_enabled(true)
+
+
+# Blocking module.delete for teardown, where the frame-pumped client can no longer send.
+# Bounded polling keeps a dead server from stalling editor shutdown; the response is
+# deliberately not read.
+func _delete_module_blocking(host: String, port: int, module_id: String) -> void:
+    var http := HTTPClient.new()
+    if http.connect_to_host(host, port) != OK:
+        return
+    var deadline := Time.get_ticks_msec() + 2000
+    while http.get_status() == HTTPClient.STATUS_CONNECTING or http.get_status() == HTTPClient.STATUS_RESOLVING:
+        http.poll()
+        if Time.get_ticks_msec() >= deadline:
+            return
+        OS.delay_msec(10)
+    if http.get_status() != HTTPClient.STATUS_CONNECTED:
+        return
+    var body := JSON.stringify({
+        "jsonrpc": "2.0", "id": 1, "method": "module.delete", "params": {"moduleId": module_id},
+    })
+    if http.request(HTTPClient.METHOD_POST, "/rpc", ["Content-Type: application/json"], body) != OK:
+        return
+    while http.get_status() == HTTPClient.STATUS_REQUESTING:
+        http.poll()
+        if Time.get_ticks_msec() >= deadline:
+            return
+        OS.delay_msec(10)
 
 
 func _on_launch_command_changed(new_text: String) -> void:
@@ -317,30 +363,6 @@ func _on_create_module_pressed() -> void:
         _log_error("create module", rpc)
 
 
-func _on_upload_script_pressed() -> void:
-    _apply_endpoint()
-    var module_id: String = _require_module_id("upload")
-    if module_id == "":
-        return
-    var script: Script = _editor_interface.get_script_editor().get_current_script()
-    if script == null or script.resource_path == "":
-        _log("upload skipped: no saved script is current in the script editor")
-        return
-    # The VFS path mirrors the res:// file name under /src; the display path keeps res://.
-    # The absolute path feeds the Phase 6 class metadata (`source_path`) so the compiled
-    # extension can later prove which source file produced each class.
-    var virtual_path: String = "/src/" + script.resource_path.get_file()
-    _begin_busy()
-    var rpc: Dictionary = await _client.put_file(
-            module_id, virtual_path, script.source_code, script.resource_path,
-            ProjectSettings.globalize_path(script.resource_path)).completed
-    _end_busy()
-    if rpc["ok"]:
-        _log("uploaded " + script.resource_path + " -> " + virtual_path)
-    else:
-        _log_error("upload", rpc)
-
-
 func _on_analyze_pressed() -> void:
     _apply_endpoint()
     var module_id: String = _require_module_id("analyze")
@@ -368,12 +390,113 @@ func _on_analyze_pressed() -> void:
         _log("  no diagnostics")
 
 
+# Creates (or refreshes) the compile copy of the diagnostics module and points the copy's
+# build directory at its own `.godot/gdcc/<copy>` host dir. Returns the copy's module id, or
+# "" after logging why the compile cannot proceed. `call_rpc` is used instead of typed
+# wrappers because the installed compiled extension may predate them (the same reason the old
+# auto setup avoided `get_compile_options`).
+func _prepare_compile_copy(source_module_id: String) -> String:
+    var copy_module_id: String = source_module_id.replace(DIAG_MODULE_PREFIX, COMPILE_MODULE_PREFIX)
+    if copy_module_id == source_module_id:
+        # Defensive fallback if the diagnostics id convention ever changes: the copy must
+        # never alias its source.
+        copy_module_id = source_module_id + "_compile"
+    var copied: Dictionary = await _client.call_rpc(
+            "module.copy", {"sourceModuleId": source_module_id, "newModuleId": copy_module_id}).completed
+    if not copied["ok"]:
+        var code: int = int(copied["error"]["code"])
+        if code == ERR_METHOD_NOT_FOUND:
+            _log("compile failed: this gdcc server predates module.copy; upgrade the server")
+            return ""
+        if code == ERR_MODULE_ALREADY_EXISTS:
+            # Stale copy from the previous compile (or a crashed session): replace it so every
+            # compile runs the latest synced sources.
+            var deleted: Dictionary = await _client.delete_module(copy_module_id).completed
+            if not deleted["ok"] and int(deleted["error"]["code"]) == ERR_MODULE_BUSY \
+                    and _current_task_id > 0 \
+                    and _current_task_host == _client.host and _current_task_port == _client.port:
+                # The previous compile (started by this dock on THIS endpoint, e.g. its poll
+                # timed out) still holds the copy's gate: cancel it, wait for a terminal
+                # state, retry once. A task recorded for a different endpoint is not ours to
+                # cancel here — fall through to the plain failure log.
+                await _client.cancel_compile_task(_current_task_id).completed
+                var cancel_deadline := Time.get_ticks_msec() + 15000
+                var terminal := false
+                while Time.get_ticks_msec() < cancel_deadline and not terminal:
+                    var task_view: Dictionary = await _client.get_compile_task(_current_task_id).completed
+                    terminal = task_view["ok"] and str(task_view["result"]["state"]) in ["SUCCEEDED", "FAILED", "CANCELED"]
+                    if not terminal:
+                        await get_tree().create_timer(0.25).timeout
+                if terminal:
+                    _current_task_id = -1
+                    deleted = await _client.delete_module(copy_module_id).completed
+            if not deleted["ok"]:
+                _log_error("delete stale compile copy", deleted)
+                return ""
+            copied = await _client.call_rpc(
+                    "module.copy", {"sourceModuleId": source_module_id, "newModuleId": copy_module_id}).completed
+        if not copied["ok"]:
+            _log_error("copy diagnostics module", copied)
+            return ""
+    # `_client.host/port` are stable for the whole flow: `_apply_endpoint` only runs from
+    # busy-gated button handlers (disabled while this flow is in flight) and Cancel now uses
+    # its own pinned client instead of mutating the shared one.
+    var already_tracked := false
+    for entry in _owned_copies:
+        if entry["module_id"] == copy_module_id and entry["host"] == _client.host and entry["port"] == _client.port:
+            already_tracked = true
+    if not already_tracked:
+        _owned_copies.append({"host": _client.host, "port": _client.port, "module_id": copy_module_id})
+    # options.set replaces the whole snapshot, so fetch the full options.get shape and edit
+    # only projectPath. The copy inherits the diagnostics module's options verbatim; its
+    # projectPath must be exclusive (server concurrency contract: no shared build dirs).
+    var fetched: Dictionary = await _client.call_rpc("options.get", {"moduleId": copy_module_id}).completed
+    if not fetched["ok"]:
+        _log_error("get options", fetched)
+        return ""
+    var compile_options: Dictionary = fetched["result"]
+    # Build under the project's own .godot dir: host-side generated C and native artifacts
+    # stay out of res:// so Godot never tries to import them.
+    var project_path: String = ProjectSettings.globalize_path("res://.godot/gdcc/" + copy_module_id)
+    compile_options["projectPath"] = project_path
+    var applied: Dictionary = await _client.call_rpc(
+            "options.set", {"moduleId": copy_module_id, "compileOptions": compile_options}).completed
+    if not applied["ok"]:
+        _log_error("set options", applied)
+        return ""
+    _log("compile copy ready: " + copy_module_id + " (projectPath: " + project_path + ")")
+    return copy_module_id
+
+
+# Compile flow (plan §7 Phase 10): snapshot the service's private diagnostics module — kept
+# continuously in sync by the reconciler — into a per-process compile copy, then compile the
+# copy. The diagnostics module never hosts a compile, so its module gate stays free for
+# editor analysis traffic while the native build runs.
 func _on_compile_pressed() -> void:
     _apply_endpoint()
-    var module_id: String = _require_module_id("compile")
-    if module_id == "":
+    if _service == null or not _service.is_diag_ready():
+        _log("compile skipped: diagnostics channel is not ready yet")
+        return
+    # The diagnostics module lives on the service's effective endpoint; refuse to copy by id
+    # on a different server (uncommitted field edits), where the -32001 replace path could
+    # delete a stranger's module.
+    var channel: Dictionary = _service.diag_channel_status()
+    var service_host := str(channel.get("effective_host", ""))
+    var service_port := int(channel.get("effective_port", 0))
+    if service_host != _client.host or service_port != _client.port:
+        _log("compile skipped: endpoint fields (" + _client.host + ":" + str(_client.port)
+                + ") differ from the diagnostics channel (" + service_host + ":" + str(service_port)
+                + "); commit the endpoint first (Enter in the Host/Port fields)")
+        return
+    var source_module_id: String = _service.get_diag_module_id()
+    if source_module_id == "":
+        _log("compile skipped: diagnostics module id is not available yet")
         return
     _begin_busy()
+    var module_id: String = await _prepare_compile_copy(source_module_id)
+    if module_id == "":
+        _end_busy()
+        return
     var started: Dictionary = await _client.start_compile(module_id).completed
     if not started["ok"]:
         _end_busy()
@@ -418,7 +541,9 @@ func _on_compile_pressed() -> void:
             return
         await get_tree().create_timer(0.25).timeout
     _end_busy()
-    _log("compile poll timed out (task " + str(task_id) + " still running)")
+    # The task keeps running server-side and `_current_task_id` is deliberately kept: pressing
+    # Compile again cancels it through the stale-copy busy path.
+    _log("compile poll timed out (task " + str(task_id) + " still running; press Cancel, or Compile again to cancel and replace it)")
 
 
 func _on_cancel_pressed() -> void:
@@ -428,10 +553,16 @@ func _on_cancel_pressed() -> void:
     # Snapshot the identity locally: the compile poll may clear the shared field while this
     # coroutine is suspended, so the request and the log line must use the local copy.
     var task_id: int = _current_task_id
-    _client.host = _current_task_host
-    _client.port = _current_task_port
+    # Cancel must reach the server that owns the task WITHOUT mutating the shared client: the
+    # client reads host/port when the queue sends (not when calls enqueue), so rewriting it
+    # here could reroute an in-flight compile flow's later RPCs.
+    var cancel_client := GdccRpcClient.new()
+    add_child(cancel_client)
+    cancel_client.host = _current_task_host
+    cancel_client.port = _current_task_port
     _begin_busy()
-    var rpc: Dictionary = await _client.cancel_compile_task(task_id).completed
+    var rpc: Dictionary = await cancel_client.cancel_compile_task(task_id).completed
+    cancel_client.queue_free()
     _end_busy()
     if rpc["ok"]:
         var state: String = str(rpc["result"]["state"])
@@ -443,15 +574,12 @@ func _on_cancel_pressed() -> void:
         _log_error("cancel", rpc)
 
 
-# Plugin-load entry point (called once by plugin.gd after the dock enters the tree): derives
-# the module id from the Godot project name, creates the module — deleting any stale copy
-# left by a previous editor session first — then points projectPath at a per-module host
-# build dir so Compile works without manual setup. Failures are only logged: the server may
-# simply not be running yet, and the manual buttons stay usable.
-#
-# When a launch command is configured the launcher brings the service up first; without one
-# (or when spawning fails) the flow falls through to the same passive connection attempts as
-# before, which simply log their failure.
+# Plugin-load entry point (called once by plugin.gd after the dock enters the tree): ensures
+# the compile service is reachable (launching it first when a launch command is configured),
+# then points the module field at the service's private diagnostics module once announced —
+# Compile copies that module on demand (Phase 10), so no dock-owned module is created here.
+# Failures are only logged: the server may simply not be running yet, and the manual buttons
+# stay usable.
 func auto_setup_module() -> void:
     _apply_endpoint()
     if _launcher != null:
@@ -461,47 +589,15 @@ func auto_setup_module() -> void:
         if int(ensure_result[0]) != OK:
             _log("compile service not reachable and could not be launched (error "
                     + str(ensure_result[0]) + "); continuing with passive connection")
-    var module_id: String = str(ProjectSettings.get_setting("application/config/name", "")).strip_edges()
-    # The module id doubles as a host directory name below; replace characters that are
-    # illegal in file names instead of letting the compile fail later in createDirectories.
-    module_id = module_id.validate_filename()
-    if module_id == "":
-        module_id = "gdcc-module"
-    _module_input.text = module_id
-    _begin_busy()
-    var created: Dictionary = await _client.create_module(module_id, module_id).completed
-    if not created["ok"] and int(created["error"]["code"]) == ERR_MODULE_ALREADY_EXISTS:
-        _log("module '" + module_id + "' already exists: deleting and recreating")
-        var deleted: Dictionary = await _client.delete_module(module_id).completed
-        if deleted["ok"]:
-            created = await _client.create_module(module_id, module_id).completed
-        else:
-            # A live compile holds the module gate; leave the stale module untouched.
-            _log_error("delete module", deleted)
-            _end_busy()
-            return
-    if not created["ok"]:
-        _log_error("create module", created)
-        _end_busy()
-        return
-    _log("module created: " + module_id)
-    # options.set replaces the whole snapshot, so fetch the full options.get shape and edit
-    # only projectPath. The generic call_rpc route is used because the installed compiled
-    # extension predates the typed get_compile_options wrapper in the .gd3 source.
-    var fetched: Dictionary = await _client.call_rpc("options.get", {"moduleId": module_id}).completed
-    if not fetched["ok"]:
-        _log_error("get options", fetched)
-        _end_busy()
-        return
-    var compile_options: Dictionary = fetched["result"]
-    # Build under the project's own .godot dir: host-side generated C and native artifacts
-    # stay out of res:// so Godot never tries to import them.
-    var project_path: String = ProjectSettings.globalize_path("res://.godot/gdcc/" + module_id)
-    compile_options["projectPath"] = project_path
-    var applied: Dictionary = await _client.call_rpc(
-            "options.set", {"moduleId": module_id, "compileOptions": compile_options}).completed
-    _end_busy()
-    if applied["ok"]:
-        _log("module '" + module_id + "' ready (projectPath: " + project_path + ")")
-    else:
-        _log_error("set options", applied)
+    # The diagnostics module is created asynchronously by the service lifecycle; wait briefly
+    # so the inspection field lands on a real module instead of the placeholder default.
+    var deadline_msec: int = Time.get_ticks_msec() + 10000
+    while Time.get_ticks_msec() < deadline_msec:
+        if _service != null:
+            var diag_module_id: String = _service.get_diag_module_id()
+            if diag_module_id != "":
+                _module_input.text = diag_module_id
+                _log("inspecting diagnostics module: " + diag_module_id)
+                return
+        await get_tree().create_timer(0.5).timeout
+    _log("diagnostics module not announced yet; the module field keeps its current value")

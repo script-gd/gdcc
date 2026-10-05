@@ -9,12 +9,11 @@
 ## 文档状态
 
 - 状态：事实源维护中
-- 更新日期：2026-09-23
-- 近期变更（2026-09-23）：新增第 26 个方法 `server.shutdown`（进程控制，见 §2.2 表末
-  时序合同与 §5 的三级测试锚点）；编辑器插件侧落地 gd3 语言集成 Phase 1（常驻
-  `GdccEditorService`、`server_launcher.gd`、dock 启动命令/端点持久化、低功耗 busy
-  协调器改由 `plugin.gd` 单一写入，详见
-  `doc/module_impl/editor_addon/gd3_editor_integration_implementation.md`）。
+- 更新日期：2026-09-28
+- 近期变更（2026-09-28）：新增第 27 个方法 `module.copy`（模块快照复制，见 §2.2 表末
+  语义说明与 §5 测试锚点），编辑器插件 dock 编译流改为"复制私有诊断模块 → 副本
+  options.set → 编译副本"，详见
+  `doc/module_impl/editor_addon/gd3_editor_integration_implementation.md` Phase 10。
 - 范围：
   - `src/main/java/gd/script/gdcc/rpc/**`
   - `src/main/java/gd/script/gdcc/api/ModuleState.java`（`.gd`/`.gd3` 源码收集过滤）
@@ -86,7 +85,7 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 
 ### 2.2 方法面
 
-方法名采用点分命名空间，与公开 `API` 面一一对应，共 26 个方法（唯一的例外是进程控制
+方法名采用点分命名空间，与公开 `API` 面一一对应，共 27 个方法（唯一的例外是进程控制
 方法 `server.shutdown`，它不映射 `API` 门面，见本节表末说明）。
 `API.recordCurrentCompileTaskEvent(...)` 被排除，因为它绑定进程内编译线程，远程调用
 没有意义；未分页的 `listCompileTaskEvents(taskId)` 重载也被排除，因为 RPC 面始终使用
@@ -105,6 +104,7 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 | `module.get` | `{moduleId}` | `ModuleSnapshot` |
 | `module.list` | `{}` | `ModuleSnapshot[]` |
 | `module.delete` | `{moduleId}` | `ModuleSnapshot` |
+| `module.copy` | `{sourceModuleId, newModuleId}` | `ModuleSnapshot` |
 | `vfs.createDirectory` | `{moduleId, path}` | `DirectoryEntrySnapshot` |
 | `vfs.putFile` | `{moduleId, path, content, displayPath?, absolutePath?}` | `FileEntrySnapshot` |
 | `vfs.readFile` | `{moduleId, path}` | 文件内容字符串 |
@@ -129,6 +129,12 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 
 - `compile.listEvents` 始终使用分页、带索引的 API 变体，以保证 wire shape 稳定；
   `maxCount` 受 `API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE`（1000）上限约束。
+- `module.copy` 在源模块门上一次性取一致快照（VFS + options + 类名映射），目录节点
+  深拷贝、不可变文件/链接叶子按引用共享；副本的编译运行态清零（lastResult、发布跟
+  踪、任务槽），且源模块已发布根下的托管输出链接（`generated`/`artifacts`）不随快
+  照带入副本。目标 id 已占用返回 `-32001`（常见路径在源门等待前快速失败；并发竞争
+  由注册表 `putIfAbsent` 原子判定），源不存在返回 `-32000`；两个 id 都会被 trim，
+  空白值按 `-32602` 处理。返回副本的 `ModuleSnapshot`。
 - `server.shutdown` 请求进程级优雅退出，幂等：重复调用返回相同的 `{}`。时序合同（由
   `RpcServerShutdown` 与 `JsonRpcHttpHandler` 实现，`RpcServerShutdownTest` 钉死）：
   方法 handler **只**登记退出意图（`AtomicBoolean` + 请求线程上的 ThreadLocal 服务标记）
@@ -652,7 +658,8 @@ fixture，列入 §7 后续工作。
   `maxCount` 按 `1000` 而非 `0` 处理；缺 `moduleId` → `-32602`，即使 API 抛出的
   是 `NullPointerException`）、§2.4 的每个错误码（通过真实 `API` 实例触发）、
   notification 执行后不产生响应对象、批量拒绝、空事件日志使
-  `compile.getLatestEvent` 返回 `null`，以及全部 26 个方法的路由。
+  `compile.getLatestEvent` 返回 `null`、`module.copy` 的源缺失/目标占用/空白参数
+  错误码，以及全部 27 个方法的路由。
 - 进程关闭：`RpcServerShutdownTest` —— `server.shutdown` 的三级合同：dispatcher 层
   （`{}` 结果 + 意图登记幂等）；进程内 HTTP 层（注入非退出测试 latch：200 + `{}` 到达
   客户端**之后**退出动作恰好触发一次、运行在 `gdcc-rpc-exit` 平台线程而非请求
@@ -668,8 +675,12 @@ fixture，列入 §7 后续工作。
 - API 往返：`RpcApiRoundTripHttpTest` —— 真实 `API` 上的完整 HTTP 工作流：
   `module.create` → `vfs.putFile`（两个源文件）→ `options.get`/`options.set` →
   `classMap.set`/`classMap.get` → `analyze.run`（合法源码预期 `COMPLETED` 且无
-  diagnostics；非法源码预期带 diagnostics）→ `module.delete`。该路径绝不启动原生
-  构建。
+  diagnostics；非法源码预期带 diagnostics）→ `module.delete`；以及编辑器编译流
+  使用的 `module.copy` 工作流（复制保真、目标占用 `-32001`、副本独立 analyze、
+  源后续写入不泄漏进副本、删除副本不影响源）。该路径绝不启动原生构建。
+- API 层模块复制：`ApiModuleCopyTest`（api 包内）—— `copyModule` 的
+  VFS/元数据/options/类名映射逐项保真、编译运行态重置、缺源/目标占用/空参数错误、
+  复制后双向隔离、副本经 `RecordingCompiler` 独立编译成功、源忙时按模块门等待。
 - HTTP 上的编译（zig 门控）：`RpcCompileHttpIntegrationTest` —— 同上 HTTP 工作流，
   外加用 `@TempDir` `projectPath` 的 `options.set`、`compile.start`、带 deadline
   轮询 `compile.getTask` 直至完成、断言 `SUCCESS`、断言 `compile.getLastResult` 与
