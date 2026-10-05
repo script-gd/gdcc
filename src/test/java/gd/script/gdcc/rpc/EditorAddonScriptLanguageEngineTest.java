@@ -533,14 +533,13 @@ class EditorAddonScriptLanguageEngineTest {
                 
                 func _run_launch_mode() -> void:
                     var port := int(_config["port"])
-                    # The dock's endpoint drives which port the launcher targets; steering it to
-                    # the test's free port keeps the case hermetic (a real service on the default
-                    # port would otherwise be adopted as an external server and break the spawn
-                    # assertions).
-                    var settings := EditorInterface.get_editor_settings()
-                    settings.set_setting("gdcc/server/host", "127.0.0.1")
-                    settings.set_setting("gdcc/server/port", port)
-                    settings.set_setting("gdcc/server/launch_command", str(_config["launch_command"]))
+                    # The project settings drive which port the launcher targets; steering them
+                    # to the test's free port keeps the case hermetic (a real service on the
+                    # default port would otherwise be adopted as an external server and break
+                    # the spawn assertions).
+                    ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
+                    ProjectSettings.set_setting("gdcc/server/port", port)
+                    ProjectSettings.set_setting("gdcc/server/launch_command", str(_config["launch_command"]))
                     _step("configure", true)
                     # Re-enable so the plugin startup path runs with the command configured; the
                     # dock's auto-setup consults the launcher, which spawns the service.
@@ -577,10 +576,9 @@ class EditorAddonScriptLanguageEngineTest {
                 
                 func _run_launch_bad_mode() -> void:
                     var port := int(_config["port"])
-                    var bad_settings := EditorInterface.get_editor_settings()
-                    bad_settings.set_setting("gdcc/server/host", "127.0.0.1")
-                    bad_settings.set_setting("gdcc/server/port", port)
-                    bad_settings.set_setting("gdcc/server/launch_command", str(_config["launch_command"]))
+                    ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
+                    ProjectSettings.set_setting("gdcc/server/port", port)
+                    ProjectSettings.set_setting("gdcc/server/launch_command", str(_config["launch_command"]))
                     _step("configure", true)
                     EditorInterface.set_plugin_enabled("gdcc", false)
                     await get_tree().process_frame
@@ -600,10 +598,9 @@ class EditorAddonScriptLanguageEngineTest {
                 
                 func _run_launch_none_mode() -> void:
                     var port := int(_config["port"])
-                    var none_settings := EditorInterface.get_editor_settings()
-                    none_settings.set_setting("gdcc/server/host", "127.0.0.1")
-                    none_settings.set_setting("gdcc/server/port", port)
-                    none_settings.set_setting("gdcc/server/launch_command", "")
+                    ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
+                    ProjectSettings.set_setting("gdcc/server/port", port)
+                    ProjectSettings.set_setting("gdcc/server/launch_command", "")
                     EditorInterface.set_plugin_enabled("gdcc", false)
                     await get_tree().process_frame
                     await get_tree().process_frame
@@ -1814,9 +1811,8 @@ class EditorAddonScriptLanguageEngineTest {
                     if not (ready_ok and synced):
                         return
 
-                    # Point the dock at the test server and press its real Compile button.
-                    dock._host_input.text = "127.0.0.1"
-                    dock._port_input.text = str(rpc_port)
+                    # Press the dock's real Compile button: its RPC endpoint is sourced from
+                    # the service (installed on the test ports above), so no pointing is needed.
                     var compile_button: Button = null
                     for button in dock._action_buttons:
                         if button.text == "Compile":
@@ -2134,19 +2130,29 @@ class EditorAddonScriptLanguageEngineTest {
                             + " deferred=" + str(deferred) + " resent=" + str(resent)
                             + " shown=" + str(popup_shown))
                 
-                    # Endpoint retarget through the DOCK commit path (item 3): the settings
-                    # write handler and the service commit handler are the real production
-                    # entry points; a dead endpoint must reset the channel and surface a
-                    # failure reason, a live one must recover READY.
+                    # Endpoint retarget through the PROJECT-SETTINGS path (item 3): the
+                    # settings-changed relay in plugin.gd is the real production entry point;
+                    # a dead endpoint must reset the channel and surface a failure reason, a
+                    # live one must recover READY.
                     var dock: Variant = _find_gdcc_dock()
+                    # Baseline: pin the configured endpoint to the live test server first — the
+                    # explicit install above bypassed the settings, and production never lets
+                    # configured/effective diverge. The relay no-ops an unchanged retarget.
+                    ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
+                    ProjectSettings.set_setting("gdcc/server/port", rpc_port)
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    # The settings-changed emission is deferred (per-frame coalesced): poll a
+                    # few frames for the relay to land the retarget on the dead endpoint.
+                    ProjectSettings.set_setting("gdcc/server/port", closed_port)
                     var closed_ok := false
-                    if dock != null:
-                        dock.get("_port_input").text = str(closed_port)
-                        dock.call("_on_port_changed", str(closed_port))
-                        dock.call("_on_endpoint_committed")
-                        closed_ok = service.rpc_port() == closed_port \\
-                                and int(EditorInterface.get_editor_settings() \\
-                                .get_setting("gdcc/server/port")) == closed_port
+                    var retarget_deadline := Time.get_ticks_msec() + 10000
+                    while Time.get_ticks_msec() < retarget_deadline and not closed_ok:
+                        closed_ok = service.rpc_port() == closed_port
+                        if not closed_ok:
+                            await get_tree().process_frame
+                    closed_ok = closed_ok \\
+                            and int(ProjectSettings.get_setting("gdcc/server/port")) == closed_port
                     var failure_seen := false
                     var fail_deadline := Time.get_ticks_msec() + 20000
                     while closed_ok and Time.get_ticks_msec() < fail_deadline and not failure_seen:
@@ -2156,7 +2162,7 @@ class EditorAddonScriptLanguageEngineTest {
                         await get_tree().process_frame
                     var status_closed := false
                     var status_deadline := Time.get_ticks_msec() + 8000
-                    while failure_seen and Time.get_ticks_msec() < status_deadline and not status_closed:
+                    while failure_seen and dock != null and Time.get_ticks_msec() < status_deadline and not status_closed:
                         var closed_text: String = dock.get("_status_label").text
                         status_closed = closed_text.contains(str(closed_port)) \\
                                 and closed_text.contains("not ready") \\
@@ -2165,26 +2171,25 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("endpoint_retarget_closed", closed_ok and failure_seen and status_closed,
                             "retargeted=" + str(closed_ok) + " failure=" + str(failure_seen)
                             + " status=" + str(status_closed))
-                
-                    var recovered := false
-                    if dock != null:
-                        dock.get("_port_input").text = str(rpc_port)
-                        dock.call("_on_port_changed", str(rpc_port))
-                        dock.call("_on_endpoint_committed")
-                        recovered = service.rpc_port() == rpc_port and await _wait_diag_ready(service, 45.0)
+
+                    ProjectSettings.set_setting("gdcc/server/port", rpc_port)
+                    var recover_deadline := Time.get_ticks_msec() + 10000
+                    while Time.get_ticks_msec() < recover_deadline and service.rpc_port() != rpc_port:
+                        await get_tree().process_frame
+                    var recovered: bool = service.rpc_port() == rpc_port and await _wait_diag_ready(service, 45.0)
                     var status_ready := false
                     var ready_text_deadline := Time.get_ticks_msec() + 8000
-                    while recovered and Time.get_ticks_msec() < ready_text_deadline and not status_ready:
+                    while recovered and dock != null and Time.get_ticks_msec() < ready_text_deadline and not status_ready:
                         var ready_text: String = dock.get("_status_label").text
                         status_ready = ready_text.contains(str(rpc_port)) \\
                                 and ready_text.contains("ready") and not ready_text.contains("not ready")
                         await get_tree().process_frame
                     _step("endpoint_retarget_recover", recovered and status_ready,
                             "recovered=" + str(recovered) + " status=" + str(status_ready))
-                
+
                     # Single-sourcing across a plugin cycle (item 3): install() must read the
-                    # committed EditorSettings pair, so the re-enabled plugin lands on the same
-                    # endpoint without any dock interaction.
+                    # configured ProjectSettings pair, so the re-enabled plugin lands on the same
+                    # endpoint without any settings rewrite.
                     EditorInterface.set_plugin_enabled("gdcc", false)
                     await get_tree().process_frame
                     await get_tree().process_frame
@@ -3741,7 +3746,7 @@ class EditorAddonScriptLanguageEngineTest {
     /// background analysis results with no user input (ordering-pinned against the editor
     /// idle beat, version-gated, popup-deferred, current-tab-gated), the dock status area
     /// reflects the channel state, and the endpoint is single-sourced through
-    /// EditorSettings with live retarget. Runs against a real in-process gdcc RPC server;
+    /// ProjectSettings with live retarget. Runs against a real in-process gdcc RPC server;
     /// `closed_port` is a guaranteed-dead endpoint for the retarget failure path.
     @Test
     void diagRevalidationSurfacesAfterAnalysis() throws Exception {
@@ -3974,7 +3979,7 @@ class EditorAddonScriptLanguageEngineTest {
     /// over EditorSettings) pins the server's listen port before any plugin code runs — setting
     /// `remote_port` from the driver would race the server's post-editor-ready start.
     /// Config directories are redirected into the case dir so the editor's settings writes
-    /// (use_thread, the launch command, layout state) never touch the real user profile.
+    /// (use_thread, layout state) never touch the real user profile.
     private static String runEditor(Path godotBinary, Path projectDir, Path caseDir, int lspPort,
                                     int quitAfterFrames)
             throws IOException, InterruptedException {

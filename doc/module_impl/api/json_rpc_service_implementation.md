@@ -352,10 +352,11 @@ DTO codec 规则：
   常驻节点的就位与 `install(...)`/`uninstall()` 调用（含
   `network/language_server/use_thread` 的暂存/恢复）。在编辑器中解释执行（不是自举
   目标）。
-- `gdcc_dock.gd` — `@tool extends VBoxContainer`；用代码构建的最小 UI：host/port/
-  启动命令输入（持久化到 EditorSettings `gdcc/server/*`）、连接检查（`server.ping`）、
-  module id 输入、按钮（创建 module、上传当前脚本、analyze、compile、cancel），以及
-  只读日志 `TextEdit`。解释执行。
+- `gdcc_dock.gd` — `@tool extends VBoxContainer`；用代码构建的最小 UI：诊断通道状态区
+  （只读显示 configured/effective 端点与 auto-launch 指示；host/port/启动命令自
+  2026-10 起为项目级设置 `gdcc/server/*`，dock 不再提供编辑框，详见 §4.4）、连接检查
+  （`server.ping`）、module id 输入、按钮（创建 module、上传当前脚本、analyze、
+  compile、cancel），以及只读日志 `TextEdit`。解释执行。
 - `server_launcher.gd` — `@tool extends Node`；按需拉起/所有权内关闭 `gdcc serve`
   （解释执行；dock 在 gdcc 语言注册前就依赖它）。合同见集成计划 §3.7。
 - `gdcc_editor_service.gd3`、`gdcc_script_language.gd3`、`gdcc_script.gd3`、
@@ -621,13 +622,14 @@ fixture，列入 §7 后续工作。
   （`state`/`stage`/`completedUnits`/`totalUnits`；没有单独的 `progress` 字段，
   `createdAt`/`completedAt` 是 ISO-8601 字符串），以及最终的
   `CompileResult.outcome`。
-- dock 的 host/port/启动命令三个输入框持久化到 EditorSettings
-  （`gdcc/server/host`、`gdcc/server/port`、`gdcc/server/launch_command`；
-  机器级开发机配置，不进 project.godot）。`auto_setup_module` 在任何连接尝试前先经
-  `server_launcher.gd` 的 `ensure_running_async`（见集成计划 §3.7）：已侦听则直连
-  （外部服务，绝不关闭）；未配置命令则保持被动失败行为；配置了命令则按
-  `{host}`/`{port}` 占位符拉起并等待就绪（≤15s）。`server_launcher.gd` 还持有
-  `shutdown_owned()`（插件 `_exit_tree` 最后一步）：对本会话拉起的进程发
+- dock 的 host/port/启动命令是**项目级设置**（ProjectSettings `gdcc/server/host`、
+  `gdcc/server/port`、`gdcc/server/launch_command`，2026-10 起；见集成计划 §3.7 的
+  配置来源修订与一次性 EditorSettings 迁移说明），dock 自身不再提供编辑框，只在状态
+  区只读显示 configured/effective 端点与 auto-launch 是否已配置；`auto_setup_module`
+  在任何连接尝试前先经 `server_launcher.gd` 的 `ensure_running_async`（见集成计划
+  §3.7）：已侦听则直连（外部服务，绝不关闭）；未配置命令则保持被动失败行为；配置了
+  命令则按 `{host}`/`{port}` 占位符拉起并等待就绪（≤15s）。`server_launcher.gd` 还
+  持有 `shutdown_owned()`（插件 `_exit_tree` 最后一步）：对本会话拉起的进程发
   `server.shutdown` RPC，收到 200 响应即完成；不可达且端口仍在侦听时才 `OS.kill`
   兜底（PID 复用防护，见集成计划 §9 R19）。
 - dock 绝不阻塞编辑器主线程；所有网络等待都是信号 await。编辑器空闲活性的已实现
@@ -716,7 +718,8 @@ fixture，列入 §7 后续工作。
   （`--headless --editor --path <副本> --quit-after <兜底帧数>`），驱动插件
   `addons/gdcc_test_driver`（仅测试用，不随插件发布）逐行输出 `GD3_TEST_RESULT: `。
   子进程的配置目录被重定向进用例目录（`APPDATA`/`XDG_CONFIG_HOME`/`HOME`），
-  EditorSettings 写入（`use_thread`、启动命令等）绝不污染真实用户配置。用例：
+  EditorSettings 写入（`use_thread` 等）绝不污染真实用户配置；`gdcc/server/*` 自
+  2026-10 起是 harness 项目内的项目级设置，天然随用例目录隔离。用例：
   `language`（语言注册 GD3、`ResourceLoader.load` 往返、`ResourceSaver.save` 往返、
   `_reload` 重读、worker 线程 `load_threaded_*` 路径、`_validate` 返回 valid、
   禁用/启用循环中语言实例同一性）；`launch`（冷启动无服务时经配置的启动命令自动拉起

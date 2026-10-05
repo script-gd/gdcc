@@ -694,6 +694,39 @@ class FrontendBodyOwnerProceduresChainBindingTest {
     }
 
     @Test
+    void analyzePublishesDynamicCallFactForCallSuffixOnDynamicChain() throws Exception {
+        var analyzed = analyze(
+                "dynamic_chain_call_suffix.gd",
+                """
+                        class_name DynamicChainCallSuffix
+                        extends RefCounted
+                        
+                        func ping(dynamic_host):
+                            return dynamic_host.next().ready()
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var nextStep = findNode(pingFunction.body(), AttributeCallStep.class, step -> step.name().equals("next"));
+        var readyStep = findNode(pingFunction.body(), AttributeCallStep.class, step -> step.name().equals("ready"));
+
+        var nextCall = analyzed.analysisData().resolvedCalls().get(nextStep);
+        var readyCall = analyzed.analysisData().resolvedCalls().get(readyStep);
+
+        // A call suffix chained on an already-dynamic receiver must publish the same DYNAMIC
+        // call fact the property suffix gets: lowering requires a RESOLVED/DYNAMIC call fact
+        // for every call step, and a DYNAMIC upstream produces no error that would stop the
+        // pipeline earlier (regression: `requireLoweringReadyCall` used to throw here).
+        assertAll(
+                () -> assertNotNull(nextCall),
+                () -> assertEquals(FrontendCallResolutionStatus.DYNAMIC, nextCall.status()),
+                () -> assertNotNull(readyCall),
+                () -> assertEquals(FrontendCallResolutionStatus.DYNAMIC, readyCall.status()),
+                () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
+        );
+    }
+
+    @Test
     void analyzeSuppressesDuplicateChainDiagnosticWhenPropertyInitializerHeadIsSealedUpstream() throws Exception {
         var analyzed = analyze(
                 "property_initializer_head_owned_by_top_binding.gd",

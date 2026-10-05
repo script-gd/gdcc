@@ -25,7 +25,6 @@ const SETTING_SERVER_HOST := "gdcc/server/host"
 const SETTING_SERVER_PORT := "gdcc/server/port"
 
 var _client: GdccRpcClient
-var _editor_interface: EditorInterface
 # Low-power busy reporting goes to the plugin's coordinator (the single writer of
 # `OS.low_processor_usage_mode`); the dock never touches the global flag itself.
 var _report_busy: Callable
@@ -33,22 +32,19 @@ var _report_busy: Callable
 # connection attempt when the user configured a launch command.
 var _launcher: Node
 # Resident editor service (plan §7 Phase 5): the status area reads its diagnostics-channel
-# snapshot, and endpoint commits are forwarded to its `retarget_rpc_endpoint` so the
-# background channel follows the configured server without a language reinstall.
+# snapshot, and the dock's RPC endpoint is sourced from it (the service follows the
+# per-project `gdcc/server/*` settings — the single configuration source).
 var _service: GdccEditorService
 
-var _host_input: LineEdit
-var _port_input: LineEdit
 var _module_input: LineEdit
-var _launch_command_input: LineEdit
 var _log_output: TextEdit
 var _status_label: Label
 var _action_buttons: Array[Button] = []
 
 var _current_task_id: int = -1
 # Endpoint captured at compile start: task ids are scoped to one server instance, so the
-# Cancel button must talk to the server that owns the task, not to whatever host/port the
-# input fields happen to show now.
+# Cancel button must talk to the server that owns the task, not to whatever endpoint the
+# service has since been retargeted to.
 var _current_task_host: String = ""
 var _current_task_port: int = 0
 # Compile copies created by this dock, as {"host", "port", "module_id"} entries. The endpoint
@@ -59,40 +55,20 @@ var _busy_count: int = 0
 
 
 # Injected by plugin.gd before the dock enters the tree; `_ready` builds the UI afterwards.
-func setup(client: GdccRpcClient, editor_interface: EditorInterface, busy_reporter: Callable, launcher: Node, service: GdccEditorService) -> void:
+# The editor interface is no longer needed: settings live in ProjectSettings (global).
+func setup(client: GdccRpcClient, _editor_interface: EditorInterface, busy_reporter: Callable, launcher: Node, service: GdccEditorService) -> void:
     _client = client
-    _editor_interface = editor_interface
     _report_busy = busy_reporter
     _launcher = launcher
     _service = service
 
 
 func _ready() -> void:
-    var editor_settings := _editor_interface.get_editor_settings()
-    var endpoint_row := HBoxContainer.new()
-    endpoint_row.add_child(_make_label("Host"))
-    _host_input = _make_line_edit(_read_setting_text(editor_settings, SETTING_SERVER_HOST, "127.0.0.1"), 110)
-    endpoint_row.add_child(_host_input)
-    endpoint_row.add_child(_make_label("Port"))
-    _port_input = _make_line_edit(_read_setting_text(editor_settings, SETTING_SERVER_PORT, "6099"), 60)
-    endpoint_row.add_child(_port_input)
-    add_child(endpoint_row)
-    # Persist endpoint edits like the launch command: machine-local server addressing should
-    # survive an editor restart.
-    _host_input.text_changed.connect(_on_host_changed)
-    _port_input.text_changed.connect(_on_port_changed)
-    # Endpoint commits (Enter / focus loss) ALSO retarget the resident service's background
-    # diagnostics channel — the editor settings and the effective endpoint must never
-    # diverge (plan §7 Phase 5 item 3). Not bound to text_changed: a channel reset per
-    # keystroke would churn the module setup, and the service no-ops unchanged endpoints.
-    _host_input.text_submitted.connect(_on_endpoint_committed.unbind(1))
-    _host_input.focus_exited.connect(_on_endpoint_committed)
-    _port_input.text_submitted.connect(_on_endpoint_committed.unbind(1))
-    _port_input.focus_exited.connect(_on_endpoint_committed)
-
     # Diagnostics channel status (plan §7 Phase 5 item 2): a read-only mirror of the
     # service's channel snapshot, refreshed on a slow timer (the channel state is polled,
-    # not signaled).
+    # not signaled). The server endpoint and launch command are per-project settings edited
+    # in the Project Settings dialog (gdcc/server/*) — the dock deliberately has no editing
+    # fields so the configured endpoint stays single-sourced.
     _status_label = Label.new()
     _status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     add_child(_status_label)
@@ -103,25 +79,17 @@ func _ready() -> void:
     add_child(status_timer)
     _refresh_status()
 
+    var config_hint := Label.new()
+    config_hint.text = "Server endpoint and launch command are configured in Project Settings (gdcc/server/*)."
+    config_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    add_child(config_hint)
+
     var module_row := HBoxContainer.new()
     module_row.add_child(_make_label("Module"))
     _module_input = _make_line_edit("demo", 0)
     _module_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     module_row.add_child(_module_input)
     add_child(module_row)
-
-    # Launch-command row: empty means "never auto-launch" (pure passive connect). Reads and
-    # writes the machine-local EditorSettings entry directly; the launcher re-reads it before
-    # every spawn, so no cached copy is kept here.
-    var launch_row := HBoxContainer.new()
-    launch_row.add_child(_make_label("Launch"))
-    _launch_command_input = _make_line_edit("", 0)
-    _launch_command_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _launch_command_input.placeholder_text = "gdcc serve --host {host} --port {port}"
-    _launch_command_input.text = _read_setting_text(editor_settings, SETTING_LAUNCH_COMMAND, "")
-    _launch_command_input.text_changed.connect(_on_launch_command_changed)
-    launch_row.add_child(_launch_command_input)
-    add_child(launch_row)
 
     var session_row := HBoxContainer.new()
     _add_button(session_row, "Ping", _on_ping_pressed)
@@ -245,53 +213,9 @@ func _delete_module_blocking(host: String, port: int, module_id: String) -> void
         OS.delay_msec(10)
 
 
-func _on_launch_command_changed(new_text: String) -> void:
-    _editor_interface.get_editor_settings().set_setting(SETTING_LAUNCH_COMMAND, new_text.strip_edges())
-
-
-func _on_host_changed(new_text: String) -> void:
-    _editor_interface.get_editor_settings().set_setting(SETTING_SERVER_HOST, new_text.strip_edges())
-
-
-func _on_port_changed(new_text: String) -> void:
-    var port := _parsed_port(new_text)
-    if port < 0:
-        # Never persist an unparseable port: it would poison the next install's endpoint
-        # (int("abc") silently becomes 0) — keep the last valid setting instead.
-        _log("endpoint: ignored invalid port '" + new_text.strip_edges() + "'")
-        return
-    _editor_interface.get_editor_settings().set_setting(SETTING_SERVER_PORT, port)
-
-
-## All-digits port text in 1..65535, or -1 when invalid. The commit path and the settings
-## write both gate on this (review finding: bare int() converts garbage to 0 and would
-## reset a working diagnostics channel onto a dead endpoint).
-func _parsed_port(text: String) -> int:
-    var trimmed := text.strip_edges()
-    if trimmed.is_empty() or not trimmed.is_valid_int():
-        return -1
-    var port := int(trimmed)
-    if port < 1 or port > 65535:
-        return -1
-    return port
-
-
-## Commits the endpoint input fields to the resident service's diagnostics channel (plan
-## §7 Phase 5 item 3). Bound to text_submitted/focus_exited (the "commit" gestures); the
-## service-side retarget reuses the module lifecycle's channel reset — no language
-## reinstall, no LSP disconnect.
-func _on_endpoint_committed() -> void:
-    if _service == null:
-        return
-    var port := _parsed_port(_port_input.text)
-    if port < 0:
-        _log("endpoint commit skipped: invalid port '" + _port_input.text.strip_edges() + "'")
-        return
-    _service.retarget_rpc_endpoint(_host_input.text.strip_edges(), port)
-
-
-## Read-only status refresh (timer-driven): configured endpoint vs the service's effective
-## endpoint, module readiness, last analysis round and last failure reason.
+## Read-only status refresh (timer-driven): configured endpoint (per-project settings) vs
+## the service's effective endpoint, module readiness, last analysis round and last failure
+## reason, plus whether an auto-launch command is configured.
 func _refresh_status() -> void:
     if _status_label == null:
         return
@@ -299,11 +223,8 @@ func _refresh_status() -> void:
         _status_label.text = "Diagnostics: service unavailable"
         return
     var status: Dictionary = _service.diag_channel_status()
-    # The configured endpoint is what is actually persisted — the input fields may hold an
-    # uncommitted or invalid draft that was (correctly) never written to the settings.
-    var settings := _editor_interface.get_editor_settings()
-    var configured := _read_setting_text(settings, SETTING_SERVER_HOST, "127.0.0.1") + ":" \
-            + _read_setting_text(settings, SETTING_SERVER_PORT, "6099")
+    var configured := str(ProjectSettings.get_setting(SETTING_SERVER_HOST, "127.0.0.1")).strip_edges() + ":" \
+            + str(int(ProjectSettings.get_setting(SETTING_SERVER_PORT, 6099)))
     var effective := str(status.get("effective_host", "")) + ":" + str(status.get("effective_port", ""))
     var ready_text := "ready" if status.get("ready", false) else "not ready"
     var last_round := int(status.get("last_round_msec", 0))
@@ -313,21 +234,23 @@ func _refresh_status() -> void:
     var failure := str(status.get("last_failure", ""))
     if failure == "":
         failure = "none"
-    _status_label.text = "Diagnostics: %s | effective %s (configured %s)\nLast analysis: %s | Last failure: %s" \
-            % [ready_text, effective, configured, round_text, failure]
+    var launch := str(ProjectSettings.get_setting(SETTING_LAUNCH_COMMAND, "")).strip_edges()
+    var launch_text := "auto-launch: configured" if launch != "" else "auto-launch: not configured"
+    _status_label.text = "Diagnostics: %s | effective %s (configured %s) | %s\nLast analysis: %s | Last failure: %s" \
+            % [ready_text, effective, configured, launch_text, round_text, failure]
 
 
-## Reads a machine-local editor setting as text, falling back to the given default when the
-## setting was never registered (e.g. a stripped-down editor build).
-func _read_setting_text(settings: EditorSettings, key: String, fallback: String) -> String:
-    if settings.has_setting(key):
-        return str(settings.get_setting(key))
-    return fallback
-
-
+## Points the dock's RPC client at the service's effective endpoint — the single source the
+## diagnostics channel follows (the per-project `gdcc/server/*` settings reach it through
+## the plugin's settings-changed relay). Falls back to the raw configured pair only when the
+## service is unavailable.
 func _apply_endpoint() -> void:
-    _client.host = _host_input.text.strip_edges()
-    _client.port = int(_port_input.text)
+    if _service != null:
+        _client.host = _service.rpc_host()
+        _client.port = _service.rpc_port()
+    else:
+        _client.host = str(ProjectSettings.get_setting(SETTING_SERVER_HOST, "127.0.0.1")).strip_edges()
+        _client.port = int(ProjectSettings.get_setting(SETTING_SERVER_PORT, 6099))
 
 
 # Returns the trimmed module id, or an empty string after logging why the action was skipped.
@@ -477,17 +400,9 @@ func _on_compile_pressed() -> void:
     if _service == null or not _service.is_diag_ready():
         _log("compile skipped: diagnostics channel is not ready yet")
         return
-    # The diagnostics module lives on the service's effective endpoint; refuse to copy by id
-    # on a different server (uncommitted field edits), where the -32001 replace path could
-    # delete a stranger's module.
-    var channel: Dictionary = _service.diag_channel_status()
-    var service_host := str(channel.get("effective_host", ""))
-    var service_port := int(channel.get("effective_port", 0))
-    if service_host != _client.host or service_port != _client.port:
-        _log("compile skipped: endpoint fields (" + _client.host + ":" + str(_client.port)
-                + ") differ from the diagnostics channel (" + service_host + ":" + str(service_port)
-                + "); commit the endpoint first (Enter in the Host/Port fields)")
-        return
+    # `_apply_endpoint` sources the client endpoint from the service itself, so the compile
+    # copy always targets the server that owns the diagnostics module — no stranger's module
+    # can be hit by the -32001 replace path.
     var source_module_id: String = _service.get_diag_module_id()
     if source_module_id == "":
         _log("compile skipped: diagnostics module id is not available yet")

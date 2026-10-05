@@ -17,3 +17,7 @@ config/icon="res://icon.svg"
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/gdcc/plugin.cfg")
+
+[gdcc]
+
+server/launch_command="java -jar \"../../build/libs/gdcc-0.0.2.jar\" serve"

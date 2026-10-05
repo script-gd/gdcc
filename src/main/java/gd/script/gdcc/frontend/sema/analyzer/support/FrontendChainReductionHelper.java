@@ -2372,22 +2372,38 @@ public final class FrontendChainReductionHelper {
             case RESOLVED -> throw new IllegalStateException("upstream cause cannot be resolved");
         };
         FrontendResolvedMember suggestedMember = null;
+        FrontendResolvedCall suggestedCall = null;
         if (upstreamCause.status() == Status.FAILED && upstreamCause.sourceStepIndex().isEmpty()) {
             suggestedMember = headFailureSuggestedMember(step, incomingReceiver, detailReason);
-        } else if (upstreamCause.status() == Status.DYNAMIC && step instanceof AttributePropertyStep propertyStep) {
-            suggestedMember = FrontendResolvedMember.dynamic(
-                    propertyStep.name(),
-                    FrontendBindingKind.UNKNOWN,
-                    FrontendReceiverKind.INSTANCE,
-                    null,
-                    GdVariantType.VARIANT,
-                    null,
-                    detailReason
-            );
+            suggestedCall = headFailureSuggestedCall(step, incomingReceiver, detailReason);
+        } else if (upstreamCause.status() == Status.DYNAMIC) {
+            if (step instanceof AttributePropertyStep propertyStep) {
+                suggestedMember = FrontendResolvedMember.dynamic(
+                        propertyStep.name(),
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.INSTANCE,
+                        null,
+                        GdVariantType.VARIANT,
+                        null,
+                        detailReason
+                );
+            } else if (step instanceof AttributeCallStep callStep) {
+                // A call suffix on an already-dynamic chain needs the same published fact as
+                // a property suffix: lowering requires a RESOLVED/DYNAMIC call fact for every
+                // call step, and a DYNAMIC upstream produces no error that would stop the
+                // pipeline before CFG building (FrontendLoweringAnalysisPass stops only on
+                // errors), so a missing fact crashes `requireLoweringReadyCall`.
+                suggestedCall = FrontendResolvedCall.dynamic(
+                        callStep.name(),
+                        FrontendReceiverKind.INSTANCE,
+                        null,
+                        GdVariantType.VARIANT,
+                        List.copyOf(Collections.nCopies(callStep.arguments().size(), GdVariantType.VARIANT)),
+                        null,
+                        detailReason
+                );
+            }
         }
-        var suggestedCall = upstreamCause.status() == Status.FAILED && upstreamCause.sourceStepIndex().isEmpty()
-                ? headFailureSuggestedCall(step, incomingReceiver, detailReason)
-                : null;
         return new StepTrace(
                 stepIndex,
                 step,

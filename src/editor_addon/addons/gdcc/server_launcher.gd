@@ -11,10 +11,11 @@ extends Node
 ## "adopted" by the next session's probe as an external service, so nothing leaks or
 ## accumulates.
 ##
-## The launch command comes from EditorSettings `gdcc/server/launch_command` (machine-local
-## developer configuration; empty = never auto-launch, pure passive-connect behavior). It is a
-## user-supplied local command executed with editor privileges — the trust boundary is the
-## user's own configuration, the plugin never generates command text by itself.
+## The launch command comes from the per-project setting `gdcc/server/launch_command`
+## (project.godot, edited via the Project Settings dialog; empty = never auto-launch, pure
+## passive-connect behavior). It is a user-supplied local command executed with editor
+## privileges — the trust boundary is the project owner's configuration, the plugin never
+## generates command text by itself.
 
 const SETTING_LAUNCH_COMMAND := "gdcc/server/launch_command"
 const PROBE_BUDGET_MSEC := 200
@@ -28,9 +29,9 @@ const PHASE_WAIT_READY := 1
 
 var _report_busy: Callable
 # Ownership records for every process spawned this session, one per endpoint
-# ({pid: int, host: String, port: int}). A session can serve more than one endpoint (the dock
-# endpoint is user-editable), and EVERY spawned process is shut down on teardown — tracking
-# only the latest would orphan the earlier ones.
+# ({pid: int, host: String, port: int}). A session can serve more than one endpoint (the
+# configured endpoint can be retargeted at runtime), and EVERY spawned process is shut down
+# on teardown — tracking only the latest would orphan the earlier ones.
 var _spawned: Array = []
 # Single-flight queue of ensure requests; only the head runs. Entry shape:
 # {host: String, port: int, waiters: Array[Callable], phase: int, deadline: int,
@@ -326,11 +327,13 @@ func _tokenize_command(command: String) -> PackedStringArray:
     return tokens
 
 
+## The launch command is a per-project setting (`project.godot`, edited via the Project
+## Settings dialog): a project's server setup is versioned and shared with its contributors.
+## Read on demand before every spawn — edits apply to the next launch without a restart.
 func _read_launch_command() -> String:
-    var settings := EditorInterface.get_editor_settings()
-    if settings == null or not settings.has_setting(SETTING_LAUNCH_COMMAND):
+    if not ProjectSettings.has_setting(SETTING_LAUNCH_COMMAND):
         return ""
-    return str(settings.get_setting(SETTING_LAUNCH_COMMAND)).strip_edges()
+    return str(ProjectSettings.get_setting(SETTING_LAUNCH_COMMAND)).strip_edges()
 
 
 ## One-shot `server.shutdown` over a raw HTTPClient (the frame-pumped HTTPRequest of the RPC

@@ -8,7 +8,16 @@
 ## 文档状态
 
 - 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、SuiteResolver statement-local owner procedures、for header/body dispatch、typed overlay-aware expression semantics、property initializer support island与 expr-owned diagnostics 已落地）
-- 更新时间：2026-07-20
+- 更新时间：2026-10-05
+- 2026-10-05 修订：修复动态链调用后缀的 fact 发布缺口——`propagateStep` 此前只为
+  upstream `DYNAMIC` 的 `AttributePropertyStep` 发布 dynamic member fact，调用后缀
+  （`AttributeCallStep`）无 `resolvedCalls` fact，`includeLowering=true` 时在 CFG
+  lowering 的 `requireLoweringReadyCall` 上 fail-fast（编辑器诊断通道表现为分析
+  -32603/outage 循环）。现对称补齐 dynamic call fact（DYNAMIC_FALLBACK、Variant
+  receiver、参数位全 Variant）。回归锚点：
+  `FrontendBodyOwnerProceduresChainBindingTest.analyzePublishesDynamicCallFactForCallSuffixOnDynamicChain`
+  + `FrontendLoweringUnresolvedTypeFallbackTest`（API 级端到端，未知类型注解 + 链式
+  调用，COMPLETED 且仅余 `sema.type_resolution` 警告）。
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`

@@ -25,6 +25,17 @@
   api+rpc 全量回归无回归，双评审终审 APPROVE；手动验收项见 Phase 10 验收节）；
   已经过多轮并行评审并修订）
 - 更新日期：2026-10-05
+- 2026-10-05 修订（二）：编译服务配置从 gdcc 面板迁入**项目设置**——
+  `gdcc/server/host|port|launch_command` 三键由机器级 EditorSettings 改为项目级
+  ProjectSettings（project.godot，经 Project Settings 对话框编辑，随项目版本化共享）。
+  dock 的 host/port/启动命令输入框随之移除，状态区只读显示 configured/effective 端点
+  与 auto-launch 指示；插件 `_enter_tree` 注册 schema 并对旧 EditorSettings 值做一次性
+  就地迁移（push_warning 提示保存项目，遗留键不删）；`settings_changed` 继电器只对
+  **配置值相对上次中继的变化** retarget 诊断通道（显式 `service.install` 不被无关设置
+  写入拽回）；配置非法 fail-closed（安装回退默认值、retarget 保持现有通道）。
+  受影响章节：§3.6/§3.7/§4.1/§9 R22；`json_rpc_service_implementation.md` §4.4 已同步。
+  引擎锚点：`launcherSpawnsAndStopsOwnedServer` 等拉起三用例 + `diag_revalidate` 的
+  endpoint_retarget_* 步骤改写为项目设置驱动，6 个受影响用例全绿。
 - 2026-10-05 修订：Phase 10 后修复落地——(1) gdcc 诊断缓存读路径改为**过期可见**
   （编辑期间旧诊断保持显示直至新鲜轮合并替换，§3.5/§4.2/§4.4 合同已同步）；
   (2) 新增项目设置 `gdcc/sync/excluded_globs`（PackedStringArray glob，默认
@@ -86,11 +97,13 @@
   `-> Array[StringName]`）通过 analyze+lowering 与 native compile；P0-C 运行时经
   `found._get_public_functions()`/`script._get_documentation()`/`script._get_members()`
   实调验证虚分发与空 typed array 往返（`typed_array_virtuals` 步骤）。
-  2. dock 的 host/port 输入持久化到 EditorSettings `gdcc/server/host|port`（计划只
-     写了启动命令一项）：拉起用例必须把端点导向测试空闲端口，否则会收养/碰撞开发机
-     6099 上的真实服务；顺带修正"每次重启编辑器重输端口"的体验缺口。服务的诊断
-     RPC 端点仍固定 127.0.0.1:6099，不与 dock 联动（~~§3.6 不变~~ **已由 Phase 5 取代**：
-     install 与 dock 同源读 `gdcc/server/host|port`，见 Phase 5 验收记录）。
+   2. dock 的 host/port 输入持久化到 EditorSettings `gdcc/server/host|port`（计划只
+      写了启动命令一项）：拉起用例必须把端点导向测试空闲端口，否则会收养/碰撞开发机
+      6099 上的真实服务；顺带修正"每次重启编辑器重输端口"的体验缺口。服务的诊断
+      RPC 端点仍固定 127.0.0.1:6099，不与 dock 联动（~~§3.6 不变~~ **已由 Phase 5 取代**：
+      install 与 dock 同源读 `gdcc/server/host|port`，见 Phase 5 验收记录）。
+      **2026-10 更新**：三个 `gdcc/server/*` 键已迁入项目级 ProjectSettings，dock 输入框
+      随之移除，引擎测试改写项目设置驱动（拉起用例的端口转向语义不变），详见 §3.7。
   3. 引擎 harness 落地细节：headless 编辑器 + 注入 `addons/gdcc_test_driver` 驱动插件
      （`plugin.cfg` + `driver_plugin.gd`，不随插件发布）；子进程配置目录经
      `APPDATA`/`XDG_CONFIG_HOME`/`HOME` 重定向隔离，EditorSettings 写入不污染真实
@@ -1562,14 +1575,16 @@ MVP 不含自定义基类 `extends`，功能协议（`bind_service`/`service_tic
 2. 读取并暂存 `network/language_server/use_thread` 原值；为 false 则置 true
    （持久化副作用与恢复义务见 §2.6/§4.1）。
 3. 读取 `network/language_server/remote_host` / `remote_port`（缺省 127.0.0.1/6005）；
-   gdcc RPC 端点读 `gdcc/server/host|port`（缺省 127.0.0.1:6099，与 dock 同一对
-   EditorSettings——Phase 5 起不再分叉；dock 提交经 `retarget_rpc_endpoint` 切换）。
+   gdcc RPC 端点读 `gdcc/server/host|port`（缺省 127.0.0.1:6099，2026-10 起为
+   **项目级设置** project.godot，经 Project Settings 对话框编辑；插件的
+   `settings_changed` 继电器把 host/port 编辑经 `retarget_rpc_endpoint` 切换——只对
+   **配置值相对上次中继的变化**触发，显式 `service.install` 不会被无关设置写入拽回）。
 4. 初始化低功耗 busy 协调器（计数 0，此时**不触碰** `OS.low_processor_usage_mode`；
    仅登记保存/恢复逻辑，首个 busy 0→1 时才保存原值并置 `false`，§3.5）。协调器
    必须先于任何 `ensure_server_hook` 调用存在。
 5. 创建 `server_launcher.gd` 实例并挂为子节点（§3.7），其 busy 上报指向协调器；
-   把引用传给 dock；dock 增加一个"启动命令"输入框（留空 = 不自动拉起），读写
-   EditorSettings `gdcc/server/launch_command`，风格沿用现有 host/port 输入框；
+   把引用传给 dock；dock **不再**提供 host/port/启动命令编辑框（2026-10 起配置全部
+   移入项目设置，dock 只读显示 configured/effective 端点与 auto-launch 是否已配置）；
    dock 的 busy 同步改为上报协调器（不再直写 `OS.*`）。
 6. 调用 `install(...)` 并检查返回的 Error，失败时恢复 `use_thread` 原值并向用户报告。
    同时把 `server_launcher.ensure_running` 作为 `ensure_server_hook` 注入服务（§3.5）。
@@ -1584,8 +1599,9 @@ MVP 不含自定义基类 `extends`，功能协议（`bind_service`/`service_tic
 原值（恢复会触发引擎 LSP 服务重启，必须发生在本客户端已断开、语言已注销之后，
 顺序不可颠倒，§2.6、§4.1）→ **最后** `launcher.shutdown_owned()` 关闭本插件拉起的
 服务（§3.7，须在 uninstall 之后，否则模块删除失去服务端）。`gdcc_dock.gd` 的改动含
-busy 上报改造（**Phase 1**，与协调器同时落地，§3.5）、启动命令输入框（§3.7）与
-LSP/gdcc 连接状态指示（Phase 5 的诊断通道可观测，§7 Phase 5 第 2 项）。
+busy 上报改造（**Phase 1**，与协调器同时落地，§3.5）与 LSP/gdcc 连接状态指示
+（Phase 5 的诊断通道可观测，§7 Phase 5 第 2 项；2026-10 起状态区同时承载只读
+configured/effective 端点与 auto-launch 指示，原启动命令输入框随配置迁移移除）。
 
 ### 3.7 `server_launcher.gd` — 编译服务拉起与关闭（解释型 GDScript）
 
@@ -1593,11 +1609,16 @@ LSP/gdcc 连接状态指示（Phase 5 的诊断通道可观测，§7 Phase 5 第
 dock 在 gdcc 语言注册之前就依赖它（§1.1）。形态为 `Node`，由 plugin.gd 创建并挂为
 子节点，dock 与 `GdccEditorService` 共用同一实例（拉起是单飞操作，天然需要单点协调）。
 
-- 配置：EditorSettings `gdcc/server/launch_command`（String，默认 `""` = 不自动拉起，
-  保持纯被动连接行为）。放 EditorSettings 而非 ProjectSettings：服务二进制路径是
-  机器相关的开发机配置，不应随 `project.godot` 提交（与 `text_editor/external/exec_path`
-  等工具路径先例一致）。plugin.gd 在 `_enter_tree` 用 `add_property_info` 注册该条目；
-  dock 的"启动命令"输入框直接读写它，每次拉起前重新读取（不缓存）。
+- 配置：**项目级设置** `gdcc/server/launch_command`（String，默认 `""` = 不自动拉起，
+  保持纯被动连接行为）。2026-10 起由 EditorSettings 迁入 ProjectSettings
+  （project.godot）：端点与启动命令属于"项目使用哪台编译服务"的配置，应随项目
+  版本化并共享给协作者（与排除 glob `gdcc/sync/excluded_globs` 同一先例）。plugin.gd
+  在 `_enter_tree` 用 `set_initial_value` + `add_property_info` 注册 schema（端口
+  RANGE 提示 1..65535），并对 2026-10 前的机器级 EditorSettings 值做**一次性就地
+  迁移**（仅当项目从未自定义该键且 EditorSettings 值非默认时播种到内存，push_warning
+  提示保存项目；遗留 EditorSettings 键保留不删，便于降级回退）。launcher 每次拉起前
+  重新读取（不缓存），项目设置对话框的编辑对下次拉起即生效。机器相关的可执行文件
+  路径若不便提交，可把命令留空、改用外部启动的服务（被动连接行为不变）。
 - 命令模板：支持 `{host}` / `{port}` 占位符，拉起前替换为目标端点；典型值使用 zig
   启动器 `gdcc serve --host {host} --port {port}`（zig 启动器原样转发参数给 jar，
   `json_rpc_service_implementation.md` §2.5；非 PATH 安装时写启动器的完整路径，如
@@ -1671,7 +1692,8 @@ dock 在 gdcc 语言注册之前就依赖它（§1.1）。形态为 `Node`，由
 3. （plugin.gd）初始化低功耗 busy 协调器（计数 0，**不触碰** `OS.low_processor_usage_mode`，
    首个 busy 0→1 时才保存原值并置 `false`；dock 与 launcher 的 busy 上报指向它）。
    此步必须先于第 6 步的任何 `ensure_server_hook` 调用（§3.5/§3.7）。
-4. `install(...)`（RPC 端点来自 `gdcc/server/host|port`，缺省 127.0.0.1:6099）：首建时创建服务专用
+4. `install(...)`（RPC 端点来自**项目级设置** `gdcc/server/host|port`，缺省
+   127.0.0.1:6099；配置非法时 fail-closed 回退默认值并 push_error，§3.6 第 3 项）：首建时创建服务专用
    `GdccRpcClient` 子节点（与 dock 客户端队列隔离）；语言实例（首建或复用）
    `Engine.register_script_language(lang)`，返回值非 `OK` 即按 §3.5 回滚并向上报错
    （16 语言上限/重名属可预期失败，不得断言了事）；注册 loader/saver 并以探针资源
@@ -1880,7 +1902,9 @@ close 之后，由**不属于请求 executor** 的平台线程调 `System.exit(0
 handler 内启动退出线程、禁止用 sleep 赌写回完成，否则与 hook 里的
 `executor.close()`/`stop(0)` 死锁，§2.8；同步更新
 `json_rpc_service_implementation.md` 方法表与编解码测试）、`server_launcher.gd`、
-dock"启动命令"输入框与 EditorSettings 读写、`ensure_server_hook` 注入、低功耗
+dock"启动命令"输入框与 EditorSettings 读写（**2026-10 配置迁移**：host/port/启动
+命令改入项目级 ProjectSettings，dock 输入框随之移除，见 §3.7 配置项与文档状态节
+修订记录）、`ensure_server_hook` 注入、低功耗
 busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造与 launcher busy
 首批接入，§3.5/§3.6）。
 验收：
@@ -1899,10 +1923,11 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
   + `load_threaded_get` 的 worker 线程加载路径同样成功（覆盖 §2.4 约束）；
   直接调用语言的 `_validate` 返回 `valid == true`。
 - 拉起功能引擎测试（同 harness）：Java 侧先找一个空闲端口但不侦听，驱动插件把
-  EditorSettings `gdcc/server/launch_command` 设为
+  项目设置 `gdcc/server/launch_command` 设为
   `java -cp <测试 classpath> gd.script.gdcc.Main serve --host {host} --port {port}`
   （占位符由 launcher 替换为该端口；测试自包含，不依赖预构建 jar——与生产推荐的
-  zig 启动器 `gdcc serve` 形式不同，见文档状态节偏差 3）——冷启动无服务时 dock
+  zig 启动器 `gdcc serve` 形式不同，见文档状态节偏差 3；2026-10 前写入
+  EditorSettings，迁移后写入 ProjectSettings，harness 项目天然隔离）——冷启动无服务时 dock
   连接经自动拉起最终成功（`ping` 通过）；
   随后禁用插件，断言被拉起的进程退出（端口关闭/`is_process_running == false`）。
   负例：启动命令指向不存在的可执行文件 → 状态行报错且不崩溃（launcher 的具体报错行
@@ -1997,9 +2022,12 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
 2. **诊断通道可观测**：dock 增加状态区——配置端点 vs 实际生效端点、诊断模块
    READY、上次分析轮时间、最近一次失败原因（数据全部来自既有 lifecycle/
    scheduler 状态，只读展示）。
-3. **端点同源**：service install 改读 `gdcc/server/host|port`（与 dock 同一对
-   EditorSettings）；dock 提交新端点时经 service 专用 retarget 入口同步切换
-   （复用 §3.5 模块生命周期的 channel-reset，不重装语言、不断开 LSP 连接）。
+3. **端点同源**：service install 读 `gdcc/server/host|port`（2026-10 起为项目级
+   ProjectSettings；此前为与 dock 同一对 EditorSettings）。Project Settings 对话框的
+   host/port 编辑经插件 `settings_changed` 继电器调 service 专用 retarget 入口同步
+   切换（复用 §3.5 模块生命周期的 channel-reset，不重装语言、不断开 LSP 连接）；
+   继电器只对**配置值相对上次中继的变化**触发，配置非法时 fail-closed 保持现有通道
+   （§3.6 第 3 项）。dock 自 2026-10 起不再有端点提交入口。
 验收：
 - 引擎测试：分析完成后无任何输入，gdcc 诊断经信号触发的重校验浮现（语言侧
   `_validate` 调用计数器锚定）；同诊断新版本必刷；弹窗暂缓后补发；运行中改
@@ -2323,14 +2351,15 @@ disk-known 路径置墓碑防复活），页签仍打开的排除路径保留（
 服务端 `didClose` 为空实现，此前已解析的内容在服务端缓存中可能残留。镜像侧
 didClose 的意义是停止客户端后续的 didChange 维护流量并释放客户端簿记。
 
-**已知限制（待修，前端范围，见
-`FrontendLoweringUnresolvedTypeFallbackTest` @Disabled）**：临时纳入的文件若引用了
-模块外的类型（例如 addon 文件引用其他 addon 类），`includeLowering=true` 的分析会在
-CFG lowering 的 `requireLoweringReadyCall` 不变式上抛异常（该调用的发布状态既非
-RESOLVED 也非 DYNAMIC），RPC 层呈 -32603，编辑器诊断通道按 outage 处理并可能循环
-重建。sema 路径（includeLowering=false）对此正常降级（`sema.type_resolution` 警告 +
-Variant 回退）。该缺陷与本功能无关、可由任何引用了缺失类型的工程文件触发；修复
-方向是 lowering 将此类成员调用降级为 DYNAMIC。
+**已知限制的解除（2026-10-05 已修）**：临时纳入的文件若引用了模块外的类型（例如
+addon 文件引用其他 addon 类），此前 `includeLowering=true` 的分析会在 CFG lowering
+的 `requireLoweringReadyCall` 不变式上抛异常——根因是 `propagateStep` 只为动态链的
+**属性**后缀发布 fact，**调用**后缀无 fact（前端 chain-reduction 合同的对称性缺口，
+任何 `x.foo().bar()` 动态链式调用都可触发，与排除功能无关）。已在前端补齐动态调用
+后缀的 DYNAMIC fact 发布（详见
+`frontend_chain_binding_expr_type_implementation.md` 2026-10-05 修订），回归锚点
+`FrontendLoweringUnresolvedTypeFallbackTest` + 链绑定焦点测试。此类文件现在正常分析
+并给出 `sema.type_resolution` 警告，诊断通道不再因此进入 outage。
 
 #### 验收（2026-10-05）
 
@@ -2401,8 +2430,9 @@ Java 侧逐行匹配 `GD3_TEST_RESULT: `；RPC 服务端 `127.0.0.1:0` 起停沿
 `install(..., rpc_host, rpc_port)`，或直接写服务下固定名 `GdccEditorRpcClient`
 子节点的 `host`/`port` 字段；§3.5 已要求每次 `install` 写回端点，两条路径等价）。
 拉起功能用例（Phase 1）反向操作：Java 侧只选定空闲端口而不启动服务，由驱动插件把
-EditorSettings `gdcc/server/launch_command` 与端口写好后触发连接，验证自动拉起与
-退出关闭路径（§7 Phase 1 验收）。
+项目设置 `gdcc/server/host|port|launch_command` 写好后触发连接（2026-10 前写
+EditorSettings；迁移后写 harness 项目的 ProjectSettings，随用例目录天然隔离），
+验证自动拉起与退出关闭路径（§7 Phase 1 验收）。
 若 headless editor 路径在实现期证实不稳定，降级为：(a) 现有非编辑器 bootstrap 断言
 （编译产物可加载、类可实例化、P0-C 冒烟）保持全量；(b) §8.3 手动清单逐项执行并记录。
 
@@ -2439,7 +2469,7 @@ EditorSettings `gdcc/server/launch_command` 与端口写好后触发连接，验
 | R19 | 拉起进程的 PID 在会话内被系统复用，`shutdown_owned` 误杀无关进程 | 低 | 仅跟踪本会话 `create_process` 返回的 PID；`OS.kill` 仅在 `server.shutdown` 不可达**且**记录端点仍接受 TCP 连接时使用（双条件，§3.7）；会话级窗口内复用概率极低 |
 | R20 | 编辑器崩溃导致拉起的服务成为孤儿进程 | 低 | 崩溃路径本就无法执行插件代码；下次会话端口探测将其收养为外部服务（只连不关），不会泄漏累积（§3.7） |
 | R21 | `server.shutdown` 不可达（服务挂起/半死连接）时服务残留 | 低 | 2s 有界等待后按 R19 双条件决定是否 `OS.kill`；服务已死但 PID 被复用时宁可残留也不误杀；Windows 下硬切不执行 shutdown hook 的事实写入 §2.8 |
-| R22 | 启动命令以编辑器权限执行任意本地命令 | 低 | 命令仅来自用户显式配置（EditorSettings），插件不自动生成命令文本；文档明示信任边界（§3.7） |
+| R22 | 启动命令以编辑器权限执行任意本地命令 | 低 | 命令仅来自项目所有者显式配置（2026-10 起为项目级设置 `gdcc/server/launch_command`，此前为机器级 EditorSettings），插件不自动生成命令文本；文档明示信任边界（§3.7）。项目级意味着 clone 他人项目即带入命令——与打开含 tool 脚本/编辑器插件的项目同属一类既有信任面（Godot 打开项目本就会执行其工具代码），评审陌生项目时应一并检查该键 |
 | R24 | `validate_script` 信号触发重校验依赖编辑器内部信号接线（非公开 API 承诺） | 中 | 4.5 已核实接线（§2.5 末条）；Godot 升级时重跑 §2.5 核查；引擎测试以"无输入后 `_validate` 调用计数前进"锚定该路径（§7 Phase 5） |
 | R25 | `class_name` 擦除的行扫描可能误命中字符串/注释内的同名文本 | 低 | 行级迷你词法器（字符串转义/注释/`"""` 状态机）+ 行首无缩进锚定 + 首个匹配 + 顺序尾部解析（图标串/注释尾不注入基类）+ 陷阱样例测试（§7 Phase 7）；已知残余：多行字符串内转义引号的闭合歧义（词法近似，方向安全）、超时旧代诊断按当前视图反映射的一拍级列偏移（§7 Phase 7 评审保留项 3）；根治待编译器引用区间输出（评估项，不阻塞） |
 | R26 | 元数据 JSON→C 双层转义缺陷，或 `_gdcc_` 合成方法与用户代码冲突 | 中 | 复用 `StringUtil.escapeStringLiteral` + 转义矩阵测试；前端 `_gdcc_` 前缀保留规则（用户声明冲突即报错）；合成符号纳入 `validateFileScopeSymbolsDisjoint`（§7 Phase 6） |

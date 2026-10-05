@@ -36,6 +36,16 @@ var _busy_count: int = 0
 var _saved_low_processor_mode: bool = true
 var _filesystem_connected: bool = false
 var _settings_signal_connected: bool = false
+# The endpoint pair this plugin instance last relayed into the resident service (via install
+# or a settings-changed retarget). The settings-changed relay compares the CONFIGURED pair
+# against this — never against the service's live endpoint — so it fires exactly on
+# configuration edits and an out-of-band `service.install` (engine tests pin their own
+# endpoints) is never yanked back by an unrelated project-settings write.
+var _relayed_endpoint: Array = []
+# Dedupe for invalid configured pairs: `settings_changed` fires for ANY project-settings
+# write, so an unlogged-once invalid pair would spam one push_error per unrelated edit.
+# Tracks the last REJECTED pair; a valid read clears it so re-breaking the config re-logs.
+var _last_invalid_endpoint: Array = []
 
 
 func _enter_tree() -> void:
@@ -58,10 +68,11 @@ func _enter_tree() -> void:
 
     var editor_settings := get_editor_interface().get_editor_settings()
     # 2) Endpoints first (the thread-mode probe below needs them): LSP follows the user's
-    #    language-server settings; the gdcc RPC endpoint reads the SAME EditorSettings pair
-    #    the dock edits (`gdcc/server/host|port`) so the background diagnostics channel and
-    #    the dock can never diverge (plan §7 Phase 5 item 3). Defaults are registered a few
-    #    lines below and therefore always exist by the time install() runs.
+    #    language-server settings; the gdcc RPC endpoint reads the SAME ProjectSettings pair
+    #    the Project Settings dialog edits (`gdcc/server/host|port`) so the background
+    #    diagnostics channel and the configured endpoint can never diverge (plan §7 Phase 5
+    #    item 3). Defaults are registered a few lines below and therefore always exist by the
+    #    time install() runs.
     var lsp_endpoint := _read_lsp_endpoint()
     var lsp_host: String = lsp_endpoint[0]
     var lsp_port: int = lsp_endpoint[1]
@@ -87,29 +98,56 @@ func _enter_tree() -> void:
                 else:
                     _service.lsp_thread_primed = true
                     _primed_this_enter = true
-    # Launch-command setting (empty = never auto-launch) plus the dock's persisted server
-    # endpoint. Registered so they show in the editor settings; machine-local by design, not
-    # project settings.
-    if not editor_settings.has_setting(SETTING_LAUNCH_COMMAND):
-        editor_settings.set_setting(SETTING_LAUNCH_COMMAND, "")
-    editor_settings.add_property_info({
+    # Launch command (empty = never auto-launch) plus the server endpoint. These are
+    # PER-PROJECT settings (project.godot) so a project's server setup is versioned and
+    # shared with its contributors; register the schema with defaults, seeding from the
+    # pre-2026-10 machine-local EditorSettings values when this project never customized the
+    # key (one-time migration; the legacy keys are left untouched for downgrade safety, and
+    # the seeded values stay in-memory until the user saves the project).
+    var migrated := false
+    if not ProjectSettings.has_setting(SETTING_SERVER_HOST):
+        var host := "127.0.0.1"
+        if editor_settings.has_setting(SETTING_SERVER_HOST):
+            var legacy_host := str(editor_settings.get_setting(SETTING_SERVER_HOST)).strip_edges()
+            if legacy_host != "" and legacy_host != "127.0.0.1":
+                host = legacy_host
+                migrated = true
+        ProjectSettings.set_setting(SETTING_SERVER_HOST, host)
+    ProjectSettings.set_initial_value(SETTING_SERVER_HOST, "127.0.0.1")
+    ProjectSettings.add_property_info({"name": SETTING_SERVER_HOST, "type": TYPE_STRING})
+    if not ProjectSettings.has_setting(SETTING_SERVER_PORT):
+        var port := 6099
+        if editor_settings.has_setting(SETTING_SERVER_PORT):
+            var legacy_port := int(editor_settings.get_setting(SETTING_SERVER_PORT))
+            if legacy_port != 6099 and legacy_port >= 1 and legacy_port <= 65535:
+                port = legacy_port
+                migrated = true
+        ProjectSettings.set_setting(SETTING_SERVER_PORT, port)
+    ProjectSettings.set_initial_value(SETTING_SERVER_PORT, 6099)
+    ProjectSettings.add_property_info({
+        "name": SETTING_SERVER_PORT, "type": TYPE_INT, "hint": PROPERTY_HINT_RANGE,
+        "hint_string": "1,65535",
+    })
+    if not ProjectSettings.has_setting(SETTING_LAUNCH_COMMAND):
+        var command := ""
+        if editor_settings.has_setting(SETTING_LAUNCH_COMMAND):
+            var legacy_command := str(editor_settings.get_setting(SETTING_LAUNCH_COMMAND)).strip_edges()
+            if legacy_command != "":
+                command = legacy_command
+                migrated = true
+        ProjectSettings.set_setting(SETTING_LAUNCH_COMMAND, command)
+    ProjectSettings.set_initial_value(SETTING_LAUNCH_COMMAND, "")
+    ProjectSettings.add_property_info({
         "name": SETTING_LAUNCH_COMMAND,
         "type": TYPE_STRING,
         "hint": PROPERTY_HINT_PLACEHOLDER_TEXT,
         "hint_string": "gdcc serve --host {host} --port {port}",
     })
-    if not editor_settings.has_setting(SETTING_SERVER_HOST):
-        editor_settings.set_setting(SETTING_SERVER_HOST, "127.0.0.1")
-    editor_settings.add_property_info({"name": SETTING_SERVER_HOST, "type": TYPE_STRING})
-    if not editor_settings.has_setting(SETTING_SERVER_PORT):
-        editor_settings.set_setting(SETTING_SERVER_PORT, 6099)
-    editor_settings.add_property_info({
-        "name": SETTING_SERVER_PORT, "type": TYPE_INT, "hint": PROPERTY_HINT_RANGE,
-        "hint_string": "0,65535",
-    })
-    # Project-level sync exclusion globs (per-PROJECT by design, unlike the machine-local
-    # endpoint pair above): `String.match` patterns against res://-relative paths. Name and
-    # default are single-sourced from the resident service (it owns the matching predicate).
+    if migrated:
+        push_warning("GDCC: server settings migrated from machine-local editor settings into this project's settings (gdcc/server/*); save the project to persist them.")
+    # Project-level sync exclusion globs: `String.match` patterns against res://-relative
+    # paths. Name and default are single-sourced from the resident service (it owns the
+    # matching predicate).
     if not ProjectSettings.has_setting(_service.EXCLUDED_GLOBS_SETTING):
         ProjectSettings.set_setting(_service.EXCLUDED_GLOBS_SETTING, _service.default_excluded_globs())
     ProjectSettings.set_initial_value(_service.EXCLUDED_GLOBS_SETTING, _service.default_excluded_globs())
@@ -151,7 +189,16 @@ func _enter_tree() -> void:
     if not _service.revalidation_requested.is_connected(_on_gdcc_revalidation_requested):
         _service.revalidation_requested.connect(_on_gdcc_revalidation_requested)
     var server_endpoint := _read_server_endpoint()
-    var install_err: int = _service.install(get_editor_interface(), lsp_host, lsp_port, server_endpoint[0], server_endpoint[1])
+    # Fail-closed on an unusable configured pair: install on the defaults rather than
+    # halfway onto a dead endpoint (the settings-changed path instead keeps the current
+    # channel — see `_on_project_settings_changed`).
+    var server_host := "127.0.0.1"
+    var server_port := 6099
+    if not server_endpoint.is_empty():
+        server_host = server_endpoint[0]
+        server_port = server_endpoint[1]
+    _relayed_endpoint = [server_host, server_port]
+    var install_err: int = _service.install(get_editor_interface(), lsp_host, lsp_port, server_host, server_port)
     if install_err != OK:
         push_error("GDCC: script language install failed (error %d); editor settings restored." % install_err)
         _rollback_failed_enter_tree()
@@ -163,9 +210,10 @@ func _enter_tree() -> void:
     if not filesystem.filesystem_changed.is_connected(_on_filesystem_changed):
         filesystem.filesystem_changed.connect(_on_filesystem_changed)
         _filesystem_connected = true
-    # Exclusion-glob edits are project settings, not filesystem events: forward the
-    # (deferred, per-frame coalesced) settings_changed emission so a newly excluded path is
-    # reconciled out of the module without waiting for an unrelated file operation.
+    # Project-settings edits (exclusion globs, server endpoint) are not filesystem events:
+    # forward the (deferred, per-frame coalesced) settings_changed emission so a newly
+    # excluded path is reconciled out of the module and a host/port edit retargets the
+    # diagnostics channel without waiting for an unrelated file operation.
     if not _settings_signal_connected:
         ProjectSettings.settings_changed.connect(_on_project_settings_changed)
         _settings_signal_connected = true
@@ -209,18 +257,22 @@ func _read_lsp_endpoint() -> Array:
     return [host, port]
 
 
-## Reads the gdcc server endpoint from the same EditorSettings pair the dock edits
-## (`gdcc/server/host|port`) — single-sourced so the background diagnostics channel can
+## Reads the gdcc server endpoint from the per-project settings (`gdcc/server/host|port`) —
+## single-sourced with the Project Settings dialog so the background diagnostics channel can
 ## never diverge from the configured endpoint (plan §7 Phase 5 item 3). The defaults are
-## registered earlier in `_enter_tree`, so this always resolves.
+## registered earlier in `_enter_tree`, so this always resolves. Returns [] when the
+## configured pair is unusable (a hand-edited project.godot can bypass the dialog's range
+## hint), letting each caller fail closed its own way; the rejection is logged once per
+## distinct invalid pair (deduped via `_last_invalid_endpoint`).
 func _read_server_endpoint() -> Array:
-    var editor_settings := get_editor_interface().get_editor_settings()
-    var host := "127.0.0.1"
-    var port := 6099
-    if editor_settings.has_setting(SETTING_SERVER_HOST):
-        host = str(editor_settings.get_setting(SETTING_SERVER_HOST)).strip_edges()
-    if editor_settings.has_setting(SETTING_SERVER_PORT):
-        port = int(editor_settings.get_setting(SETTING_SERVER_PORT))
+    var host := str(ProjectSettings.get_setting(SETTING_SERVER_HOST, "127.0.0.1")).strip_edges()
+    var port := int(ProjectSettings.get_setting(SETTING_SERVER_PORT, 6099))
+    if host.is_empty() or port < 1 or port > 65535:
+        if [host, port] != _last_invalid_endpoint:
+            _last_invalid_endpoint = [host, port]
+            push_error("GDCC: invalid gdcc/server project settings (host='%s', port=%d); expected a non-empty host and a port in 1..65535." % [host, port])
+        return []
+    _last_invalid_endpoint = []
     return [host, port]
 
 
@@ -316,12 +368,23 @@ func _on_filesystem_changed() -> void:
 
 
 ## ProjectSettings emits `settings_changed` deferred (per-frame coalesced) for ANY project
-## setting write, and 4.5 has no `get_changed_settings()` to filter by key — forward every
-## emission: the reconciler coalesces bursts and a no-diff pass sends no RPCs, so an
-## unrelated settings edit costs one coalesced scan at most.
+## setting write, and 4.5 has no `get_changed_settings()` to filter by key. Two relays share
+## the emission: (a) the exclusion-glob filesystem notification (the reconciler coalesces
+## bursts and a no-diff pass sends no RPCs), and (b) the server-endpoint retarget. The
+## retarget compares the configured pair against the last pair THIS plugin relayed (not the
+## service's live endpoint): it fires exactly on host/port edits in the Project Settings
+## dialog, an invalid pair is rejected (logged by `_read_server_endpoint`) leaving the
+## current channel untouched, and an endpoint the service reached out-of-band (explicit
+## install) is never dragged back by an unrelated settings write.
 func _on_project_settings_changed() -> void:
-    if _service != null:
-        _service.notify_filesystem_changed()
+    if _service == null:
+        return
+    _service.notify_filesystem_changed()
+    var endpoint := _read_server_endpoint()
+    if endpoint.is_empty() or endpoint == _relayed_endpoint:
+        return
+    _service.retarget_rpc_endpoint(endpoint[0], endpoint[1])
+    _relayed_endpoint = endpoint
 
 
 ## Relays the service's `revalidation_requested` into the editor's own revalidation
