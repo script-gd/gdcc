@@ -33,13 +33,20 @@ public final class FrontendVisibleValueEnumerator {
     /// Enumerates the values visible at `useSite` from `scope`, applying the
     /// declaration-after-use byte-order filter per layer before nearest-layer shadowing.
     public static @NotNull List<ScopeValue> enumerateVisibleValues(@NotNull Scope scope, @NotNull Node useSite) {
-        Objects.requireNonNull(scope, "scope must not be null");
         Objects.requireNonNull(useSite, "useSite must not be null");
+        return enumerateVisibleValues(scope, useSite.range().startByte());
+    }
+
+    /// Byte-offset variant for use sites that do not map onto a single AST node (e.g. a
+    /// zero-width completion cursor): a local declaration is visible exactly when its range
+    /// ends at or before `useSiteByteOffset`.
+    public static @NotNull List<ScopeValue> enumerateVisibleValues(@NotNull Scope scope, int useSiteByteOffset) {
+        Objects.requireNonNull(scope, "scope must not be null");
         var visibleByName = new LinkedHashMap<String, ScopeValue>();
         Scope current = scope;
         while (current != null) {
             for (var value : current.valuesHere()) {
-                if (isNotYetDeclared(value, useSite)) {
+                if (isNotYetDeclared(value, useSiteByteOffset)) {
                     continue;
                 }
                 visibleByName.putIfAbsent(value.name(), value);
@@ -53,9 +60,9 @@ public final class FrontendVisibleValueEnumerator {
     /// `FrontendVisibleValueResolver.isVisibleLocal`): `Parameter`-backed values are exempt, and
     /// every `VariableDeclaration`-backed value — locals and lambda captures alike — is
     /// order-sensitive because capture legality follows the outer declaration order.
-    private static boolean isNotYetDeclared(@NotNull ScopeValue value, @NotNull Node useSite) {
+    private static boolean isNotYetDeclared(@NotNull ScopeValue value, int useSiteByteOffset) {
         return !(value.declaration() instanceof Parameter)
                 && value.declaration() instanceof VariableDeclaration declaration
-                && declaration.range().endByte() > useSite.range().startByte();
+                && declaration.range().endByte() > useSiteByteOffset;
     }
 }

@@ -1023,6 +1023,30 @@ public final class ClassRegistry implements Scope {
         return gdScriptLanguageConstantByName.get(name);
     }
 
+    /// All registered top-level global constants (API dump plus compiler-synthesized extreme
+    /// values), in no guaranteed order. Read-only enumeration view for IDE-style consumers
+    /// (e.g. completion); the registry remains the single owner of the underlying maps.
+    public @NotNull @UnmodifiableView List<ExtensionGlobalConstant> getGlobalConstantList() {
+        return globalConstantByName.values().stream().toList();
+    }
+
+    /// All registered global enums (group metadata including member values), in no guaranteed
+    /// order. Bare member names are separately enumerable per group via `values()`.
+    public @NotNull @UnmodifiableView List<ExtensionGlobalEnum> getGlobalEnumList() {
+        return globalEnumByName.values().stream().toList();
+    }
+
+    /// All compiler-synthesized GDScript language constants (`PI`/`TAU`/`INF`/`NAN`).
+    public @NotNull @UnmodifiableView List<GdScriptLanguageConstant> getGdScriptLanguageConstantList() {
+        return gdScriptLanguageConstantByName.values().stream().toList();
+    }
+
+    /// All compiler-synthesized GDScript language functions (`len`/`range`/`load` and friends);
+    /// dump-provided utility functions are listed by [getExtensionUtilityFunctionList] instead.
+    public @NotNull @UnmodifiableView List<ExtensionUtilityFunction> getGdScriptLanguageFunctionList() {
+        return gdScriptLanguageFunctionByName.values().stream().toList();
+    }
+
     /// Return the singleton's object type for a singleton name.
     public @Nullable GdObjectType findSingletonType(@NotNull String name) {
         return singletonTypeByName.get(name);

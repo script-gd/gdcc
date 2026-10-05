@@ -89,6 +89,12 @@ final class AstUnitIndex {
         return sourceView.displayPath();
     }
 
+    /// Total UTF-8 byte length of the unit source; offsets in `[0, totalBytes]` are valid
+    /// cursor positions (the upper bound is the EOF position).
+    int totalBytes() {
+        return totalBytes;
+    }
+
     @NotNull String logicalPath() {
         return sourceView.logicalPath();
     }
@@ -152,6 +158,34 @@ final class AstUnitIndex {
                 range.endPoint().row() + 1,
                 range.endPoint().column() + 1
         );
+    }
+
+    /// Projects an ARBITRARY byte span (not necessarily an AST range) into the caller-facing
+    /// form via the line index, clamped into `[0, sourceLength]`. Used when a completion
+    /// context reports a range that does not map onto any AST node.
+    @NotNull QuerySourceRange queryRangeAt(int startByte, int endByte) {
+        var start = Math.clamp(startByte, 0, totalBytes);
+        var end = Math.clamp(endByte, start, totalBytes);
+        return new QuerySourceRange(
+                displayPath(),
+                start,
+                end,
+                lineOf(start) + 1,
+                columnOf(start) + 1,
+                lineOf(end) + 1,
+                columnOf(end) + 1
+        );
+    }
+
+    private int lineOf(int byteOffset) {
+        var found = java.util.Arrays.binarySearch(lineStartBytes, byteOffset);
+        // Without an exact match binarySearch returns -(insertionPoint) - 1; the line is the
+        // greatest start not exceeding the offset.
+        return found >= 0 ? found : Math.max(0, -found - 2);
+    }
+
+    private int columnOf(int byteOffset) {
+        return byteOffset - lineStartBytes[lineOf(byteOffset)];
     }
 
     @Nullable Node parentOf(@NotNull Node node) {

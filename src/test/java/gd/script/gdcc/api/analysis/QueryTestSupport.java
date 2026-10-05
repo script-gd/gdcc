@@ -27,7 +27,19 @@ final class QueryTestSupport {
             @NotNull String moduleId,
             @NotNull LinkedHashMap<String, String> files
     ) {
+        return analyze(api, moduleId, files, Map.of());
+    }
+
+    /// `analyze` variant that also installs the project global class-name mapping (an external
+    /// input the module state defaults to empty) before running analysis.
+    static @NotNull ModuleAnalysisSnapshot analyze(
+            @NotNull API api,
+            @NotNull String moduleId,
+            @NotNull LinkedHashMap<String, String> files,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) {
         api.createModule(moduleId, "QueryTestModule");
+        api.setTopLevelCanonicalNameMap(moduleId, topLevelCanonicalNameMap);
         files.forEach((path, source) -> api.putFile(moduleId, path, source));
         var result = api.analyze(moduleId);
         assertEquals(

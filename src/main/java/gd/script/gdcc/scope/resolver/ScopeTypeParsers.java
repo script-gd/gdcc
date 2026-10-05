@@ -10,6 +10,11 @@ import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
+
 /// Shared type-text helpers used by metadata-driven scope resolvers.
 ///
 /// Godot's extension metadata does not only expose canonical type names such as `String` or `Node`.
@@ -29,6 +34,37 @@ import org.jetbrains.annotations.Nullable;
 /// same rules without depending on backend-only helpers.
 public final class ScopeTypeParsers {
     private ScopeTypeParsers() {
+    }
+
+    /// Comma-joined union property type metadata mappings (raw union string -> resolving
+    /// class name), computed from the loaded `ExtensionAPI` at load time by
+    /// `ExtensionUnionTypeMappings` and registered through
+    /// [registerUnionTypeMetadataMappings]. Godot declares some engine properties with editor
+    /// resource-picker hint strings (e.g. `CanvasItemMaterial,ShaderMaterial`); the runtime
+    /// type is the nearest common ancestor, which the loader computes from the dump's own
+    /// `inherits` chains. Looked up before every generic parsing rule.
+    private static volatile @NotNull Map<String, String> unionTypeMetadataMappings = Map.of();
+
+    /// Merges union-type mappings computed from a newly loaded `ExtensionAPI`. Idempotent for
+    /// equal entries; a SAME union string resolving to a DIFFERENT class than a previously
+    /// registered mapping indicates disagreeing API versions and fails the load
+    /// (`IllegalStateException`) before any table state is mutated.
+    public static synchronized void registerUnionTypeMetadataMappings(
+            @NotNull Map<String, String> mappings
+    ) {
+        Objects.requireNonNull(mappings, "mappings must not be null");
+        var merged = new LinkedHashMap<>(unionTypeMetadataMappings);
+        for (var entry : mappings.entrySet()) {
+            var existing = merged.putIfAbsent(entry.getKey(), entry.getValue());
+            if (existing != null && !existing.equals(entry.getValue())) {
+                throw new IllegalStateException(
+                        "conflicting union type metadata mapping for '" + entry.getKey()
+                                + "': previously resolved as '" + existing + "' but the newly loaded"
+                                + " ExtensionAPI resolves it as '" + entry.getValue() + "'"
+                );
+            }
+        }
+        unionTypeMetadataMappings = Collections.unmodifiableMap(merged);
     }
 
     /// Parse a type string as it appears in extension metadata.
@@ -55,6 +91,9 @@ public final class ScopeTypeParsers {
             return GdVoidType.VOID;
         }
         var normalized = rawTypeName.trim();
+        // Comma-joined union property metadata (e.g. `CanvasItemMaterial,ShaderMaterial`)
+        // resolves through the load-time NCA mapping before any generic rule applies.
+        normalized = unionTypeMetadataMappings.getOrDefault(normalized, normalized);
         if (normalized.startsWith("enum::") || normalized.startsWith("bitfield::")) {
             return GdIntType.INT;
         }

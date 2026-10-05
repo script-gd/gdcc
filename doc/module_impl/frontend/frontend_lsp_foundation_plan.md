@@ -6,7 +6,7 @@
 
 ## 文档状态
 
-- 状态：计划（待实施，已经两轮评审修订）
+- 状态：实施中（Phase 1-5 已实施并经评审修复；Phase 6 收尾待办；计划本身已经两轮评审修订）
 - 创建时间：2026-09-28
 - 适用范围：
     - `src/main/java/gd/script/gdcc/frontend/**`
@@ -704,6 +704,72 @@ parser 异常路径返回空 `SourceFile`（`GdScriptParserService.java:60-76`�
    引用各一例）；未绑定/FAILED/DEFERRED/UNSUPPORTED/DYNAMIC/BLOCKED 站点返回空结果。
 
 ### Phase 5：补全候选枚举
+
+> **状态：已完成实施（2026-10-05），评审修复已合入。** 实施事实：
+> - 入口 `FrontendSnapshotCompletionService.completionCandidatesAt`（api.analysis，字节偏移与
+>   行/列两个重载），结果 DTO `CompletionLookupResult`（`CompletionContextKind` +
+>   可空 `QuerySourceRange` replaceableRange + `List<CompletionCandidate>`）；候选 DTO
+>   `CompletionCandidate(name, CompletionCandidateKind(PROPERTY/METHOD/VALUE/TYPE), typeText,
+>   signatureText)`，不携带任何内部对象。参数策略：负偏移抛 `IllegalArgumentException`
+>   （编程错误），越过源尾的偏移返回空 `UNKNOWN`（与行/列越界一致）。
+> - 上下文解析用单个共享 `GdParserFacade`（gdparser 每次解析新建 TSParser、实例无状态，
+>   线程安全）；解析对象是**快照自身保存的源文本**（陈旧快照自洽，验收 6）；补全 CST 只
+>   消费 kind/replaceableRange/receiverRange，节点身份绝不接触快照 side table。
+> - **成员访问**：receiverRange 在快照 AST 中定位"末端恰好对齐 receiver 末尾且最深"的已
+>   发布事实节点（含 attribute step 键）；`TYPE_META` 绑定走静态面（static 属性/方法 +
+>   脚本常量/engine/builtin 类常量与枚举组及值），`SINGLETON` 绑定按实例面枚举其类，
+>   `super` receiver（SUPER 绑定或裸 `super` 标识符形态）按 super 合同只枚举**词法超类
+>   层次的方法**（其发布类型按合同指向当前类、不得用于枚举）；枚举组 declaration 经两条
+>   通道识别——裸引用（`GdScriptClassConstant` 包装或 `CONSTANT`/`GLOBAL_ENUM` 值绑定）
+>   与限定链（`CompStaticUser.State`，`AttributePropertyStep` 的 RESOLVED member 事实；
+>   subscript 步骤的组 declaration 仅为容器溯源，不触发枚举值路径）；发布类型
+>   `GdObjectType` 经 registry 沿超类链枚举实例面（非 static 属性/方法 + 信号；builtin
+>   无层次；`Array`/`Dictionary` 参数化类型归一族名）；括号/cast receiver 按"**逐层**
+>   剥离一个行尾 `)` 并重试精确末端匹配"处理（UTF-8 字节扫描；调用括号因调用节点先精确
+>   命中而保留，嵌套包裹逐层解析；已命中但无可用类型事实的调用节点——`CallExpression`/
+>   `AttributeCallStep`——为**终态**返回空，不会继续剥入调用参数）；无事实 receiver
+>   返回空（验收 2）。
+> - **遮蔽语义**：static 面层次枚举按 static resolver 的终态遮蔽——子类成员（不分
+>   static）先认领名字，祖先同名 static 不泄漏；标识符路径按命名空间认领——可见值
+>   （含属性）认领值命名空间、外围类方法认领函数命名空间，同名全局常量/全局函数不再
+>   作为重复候选或"回退重载"出现；裸方法与 `super` 方法枚举按"**最近声明层**"逐层认领
+>   方法名（ClassScope.resolveFunctionsHere/ScopeMethodResolver 对齐），祖先同名重载不
+>   混入，重载仅在胜出层内按签名键共存（键含 vararg 标记）。
+> - **标识符前缀**：复用 `FrontendVisibleValueEnumerator`（先字节序过滤再遮蔽；新增
+>   **字节偏移重载**，declaration-after-use 的 use-site 枢轴即光标字节本身——非零宽
+>   且包含光标的 replaceable 取其起点，其余（零宽或被错误恢复粘到下一 token）取原始
+>   光标偏移）+ 沿 parent 索引回退的最近 scope（`nearestScope` 放开为包级私有共享）+
+>   外围类层次方法（V1 不做 static 上下文过滤）+ 全局命名空间。零宽 IDENTIFIER 上下文
+>   实测只出现在错误子树内（被 skipped 门拦截）。
+> - **类型位置**：builtin/engine 类名 + 全局类名映射（外部输入，快照
+>   `topLevelCanonicalNameMap`）+ 文件直接 inner class 与光标词法外围 inner class 的直接
+>   嵌套 inner（经 `ClassDeclaration` 语句扫描）。
+> - **全局命名空间枚举**：`ClassRegistry` 新增只读列表 accessor
+>   `getGlobalConstantList`/`getGlobalEnumList`/`getGdScriptLanguageConstantList`/
+>   `getGdScriptLanguageFunctionList`（既有只有按名查询）。
+> - **skipped/error 子树门**：光标节点（含祖先）命中 `skippedSubtreeRoots` 即返回空
+>   （部分链不标 skipped，成员路径不受影响）；`CALL_ARGUMENT` 分类但 V1 不产候选。
+> - **扩展元数据联合类型**：`ExtensionGdClass` 属性惰性类型解析曾会对联合元数据（如
+>   `CanvasItem.material`）抛 `IllegalArgumentException`。该问题已由**联合类型 NCA 映射
+>   特性**根治（加载期按 dump 继承链预计算映射，见
+>   `scope_type_resolver_implementation.md` §3.1），补全层曾设置的 Variant 降级保底
+>   已随之移除——未进表的未知元数据在补全路径同样保持原有严格失败行为。
+> - **gdparser 0.6.0 实测限制与对策**：① 行尾 `receiver.` 的补全 replaceableRange 可能
+>   覆盖**下一语句**的首 token——服务统一做"replaceable 必须包含光标"净化，否则钳制为
+>   光标处零宽（`AstUnitIndex.queryRangeAt` 按行索引投影任意字节区间）；② 部分链后接同
+>   函数下一条语句时 receiver 事实保留（补全可用），位于函数尾且后接下一 `func` 时
+>   receiver 事实静默丢失（补全返回空，验收 2 形态）；③ 行尾 `call().`（如
+>   `v.normalized().`）映射为 ErrorStatement 且补全上下文分类可能退化为
+>   UNKNOWN/IDENTIFIER——该形态不承诺成员候选。
+> - 验收 1-6 由 `CompletionServiceTest`（29 例）锚定：self./v./make()./链式/括号/cast/
+>   super receiver、成员前缀 replaceable 覆盖（含光标在 token 内部与末尾两形态）、
+>   嵌套调用 receiver 止于调用节点（含 FAILED 调用终态空）、static 面排除非 static 成
+>   员与终态遮蔽、裸/限定枚举组值、枚举组 subscript 走结果类型、无类型/无事实 receiver
+>   空、可见值+全局命名空间+declaration-after-use 排除+按名遮蔽（PI/len）、裸方法与
+>   super 方法的最近声明层遮蔽（hide(x)/act 重载）、scope 回退、类型位置四类来源、
+>   skipped 子树空（光标节点祖先命中 skipped root 且 IDENTIFIER 上下文仍空）、陈旧快照
+>   自洽（含旧文本 replaceable 区间断言）、未知路径/越界偏移 UNKNOWN、负偏移抛异常、
+>   行/列重载一致；BUILTIN 夹具以 CJK 注释锚定 UTF-8 字节正确性。
 
 内容：§2.5（接入 gdparser 补全上下文 + 三类候选枚举）。
 

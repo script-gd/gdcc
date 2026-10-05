@@ -693,7 +693,9 @@ public final class FrontendSnapshotQueryService {
         return owner == null ? null : owner.getName();
     }
 
-    private static @Nullable Scope nearestScope(
+    /// Innermost scope recorded at or above `node` (parent-index fallback for scope-less
+    /// leaves). Package-private: shared with the completion service inside this package.
+    static @Nullable Scope nearestScope(
             @NotNull ModuleAnalysisSnapshot snapshot,
             @Nullable AstUnitIndex unitIndex,
             @NotNull Node node
