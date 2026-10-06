@@ -243,7 +243,17 @@ class EditorAddonScriptLanguageEngineTest {
             Map.entry("auto_indent", List.of(
                     "config", "indent_tabs_basic", "indent_blank_comment_preserved",
                     "indent_dedent_stack_quirk", "indent_from_line_gate",
-                    "indent_spaces_setting", "indent_inverted_range", "survived"))
+                    "indent_spaces_setting", "indent_inverted_range", "survived")),
+            // Post-Phase-10: `.gd3` syntax highlighting — the registered GDScript-parity
+            // highlighter is auto-selected for a newly opened .gd3 tab (the ScriptEditor
+            // language-name match), per-column colors track the editor theme settings across
+            // annotations/type hints/members/strings/regions (incl. a cross-line string and
+            // a comment marker), a settings rewrite re-colors live, and a plain .gd tab keeps
+            // the native GDScript highlighter.
+            Map.entry("syntax_highlighter", List.of(
+                    "config", "fixture_written", "editor_opened", "highlighter_selected",
+                    "member_scan", "colors_match", "settings_recolor",
+                    "relay_keeps_settled_tab", "gd_untouched", "survived"))
     );
 
     /// Interpreted driver plugin (gdcc feature limits do not apply to it). Every mode records
@@ -254,7 +264,7 @@ class EditorAddonScriptLanguageEngineTest {
     /// runtime concat instead of folding the parts back into a single oversized constant.
     private static final String DRIVER_PLUGIN = driverPluginCore() + driverPluginCompletion()
             + driverPluginRevalidate() + driverPluginClassMetadata() + driverPluginWorkspace()
-            + driverPluginLookup() + driverPluginExclusions();
+            + driverPluginLookup() + driverPluginExclusions() + driverPluginSyntaxHighlighter();
 
     private static String driverPluginCore() {
         return """
@@ -415,6 +425,8 @@ class EditorAddonScriptLanguageEngineTest {
                         await _run_sync_exclusions_mode()
                     elif mode == "auto_indent":
                         _run_auto_indent_mode()
+                    elif mode == "syntax_highlighter":
+                        await _run_syntax_highlighter_mode()
                     else:
                         _step("mode", false, "unknown mode " + mode)
                     _finish()
@@ -3540,6 +3552,190 @@ class EditorAddonScriptLanguageEngineTest {
                 """;
     }
 
+    private static String driverPluginSyntaxHighlighter() {
+        return """
+                
+                # ---------------- Post-Phase-10: .gd3 syntax highlighter ----------------
+                
+                # Last color change at or before `col` in the highlighter's per-line map; the
+                # invalid-color sentinel makes a missing entry fail the comparison loudly.
+                func _hl_color_at(hl: Object, line: int, col: int) -> Color:
+                    var line_map: Dictionary = hl.get_line_syntax_highlighting(line)
+                    var best := -1
+                    var found := Color(-1.0, -1.0, -1.0, -1.0)
+                    for key in line_map.keys():
+                        var k := int(key)
+                        if k <= col and k > best:
+                            best = k
+                            var entry: Variant = line_map[key]
+                            if entry is Dictionary:
+                                var c: Variant = entry.get("color", found)
+                                if c is Color:
+                                    found = c
+                    return found
+                
+                func _open_in_script_editor(path: String) -> CodeEdit:
+                    EditorInterface.set_main_screen_editor("Script")
+                    var res: Resource = ResourceLoader.load(path)
+                    if res != null:
+                        EditorInterface.edit_resource(res)
+                    var code_edit: CodeEdit = null
+                    var deadline := Time.get_ticks_msec() + 15000
+                    while Time.get_ticks_msec() < deadline and code_edit == null:
+                        await get_tree().process_frame
+                        var se := EditorInterface.get_script_editor()
+                        var cur := se.get_current_editor()
+                        var cur_script := se.get_current_script()
+                        if cur != null and cur_script != null and cur_script.resource_path == path:
+                            var candidate: Control = cur.get_base_editor()
+                            if candidate is CodeEdit:
+                                code_edit = candidate as CodeEdit
+                    return code_edit
+                
+                func _run_syntax_highlighter_mode() -> void:
+                    var es := EditorInterface.get_editor_settings()
+                    # The marker word comes from the live settings list so the case does not
+                    # depend on the default marker set.
+                    var marker := "TODO"
+                    var marker_list := str(es.get_setting(
+                            "text_editor/theme/highlighting/comment_markers/critical_list")).split(",", false)
+                    if marker_list.size() > 0 and marker_list[0] != "":
+                        marker = marker_list[0]
+                    var src := "@tool\\n"
+                    src += "extends Node2D\\n"
+                    src += "enum State {IDLE, RUN}\\n"
+                    src += "const SPEED: int = 10\\n"
+                    src += "var hp: float = 0.5\\n"
+                    src += "# " + marker + ": sample\\n"
+                    src += "func _ready() -> void:\\n"
+                    src += "    print(\\"hp=\\", hp)\\n"
+                    src += "    position = Vector2.ZERO\\n"
+                    src += "    var doc := \\"\\"\\"\\n"
+                    src += "    multi\\n"
+                    src += "    line\\"\\"\\"\\n"
+                    src += "    var raw := r\\"raw\\\\n\\"\\n"
+                    # Raw-string anchor for the member scanner: even in raw strings the
+                    # tokenizer consumes `\"` as content (gdscript_tokenizer.cpp string()), so
+                    # `r"foo\""` contains `foo\"` and closes at the LAST quote — the
+                    # declarations below must reach the member map (and line 16 keeps normal
+                    # coloring, since the region closes on line 13).
+                    src += "const RAW_PATH := r\\"foo\\\\\\"\\"\\n"
+                    src += "var tail_anchor := 1\\n"
+                    src += "func tail_use() -> int:\\n"
+                    src += "    return tail_anchor\\n"
+                    var target_path := "res://hl_sample.gd3"
+                    _write_text_file(target_path, src)
+                    _step("fixture_written", true)
+                    var code_edit := await _open_in_script_editor(target_path)
+                    _step("editor_opened", code_edit != null)
+                    if code_edit == null:
+                        return
+                    # The tab opened AFTER plugin enable, so this is the native auto-selection
+                    # path (template `_create()` + language-name match), not the plugin's
+                    # manual assignment for pre-opened tabs. The highlighter is an interpreted
+                    # script (no global class name), so identity is the script resource.
+                    var hl: Object = code_edit.syntax_highlighter
+                    var hl_script: Resource = load("res://addons/gdcc/gdcc_syntax_highlighter.gd")
+                    var selected: bool = hl is EditorSyntaxHighlighter \\
+                            and hl.get_script() == hl_script \\
+                            and hl._get_supported_languages().has("GD3")
+                    _step("highlighter_selected", selected,
+                            "class=" + (hl.get_class() if hl != null else "null"))
+                    if not selected:
+                        return
+                    # Rebuild against the live buffer (the member-scan source) before probing.
+                    # `tail_anchor` membership anchors the raw-string scanner regression: a
+                    # scanner that treats the raw backslash as an escape never reaches the
+                    # declaration (white-box, unaffected by the line highlighter's native
+                    # open-region quirk).
+                    hl.update_cache()
+                    var members_ok: bool = hl.member_keyword_count() > 0 \\
+                            and hl.debug_has_member("tail_anchor")
+                    _step("member_scan", members_ok,
+                            "members=" + str(hl.member_keyword_count())
+                            + " tail=" + str(hl.debug_has_member("tail_anchor")))
+                    var color_checks: Array = [
+                        [0, 0, "text_editor/theme/highlighting/gdscript/annotation_color"],
+                        [1, 0, "text_editor/theme/highlighting/keyword_color"],
+                        [1, 8, "text_editor/theme/highlighting/engine_type_color"],
+                        [2, 5, "text_editor/theme/highlighting/member_variable_color"],
+                        [2, 12, "text_editor/theme/highlighting/member_variable_color"],
+                        [3, 0, "text_editor/theme/highlighting/keyword_color"],
+                        [3, 6, "text_editor/theme/highlighting/member_variable_color"],
+                        [3, 13, "text_editor/theme/highlighting/base_type_color"],
+                        [3, 19, "text_editor/theme/highlighting/number_color"],
+                        [4, 8, "text_editor/theme/highlighting/base_type_color"],
+                        [5, 0, "text_editor/theme/highlighting/comment_color"],
+                        [5, 2, "text_editor/theme/highlighting/comment_markers/critical_color"],
+                        [6, 5, "text_editor/theme/highlighting/gdscript/function_definition_color"],
+                        [6, 17, "text_editor/theme/highlighting/base_type_color"],
+                        [7, 4, "text_editor/theme/highlighting/gdscript/global_function_color"],
+                        [7, 10, "text_editor/theme/highlighting/string_color"],
+                        [7, 17, "text_editor/theme/highlighting/member_variable_color"],
+                        [8, 4, "text_editor/theme/highlighting/member_variable_color"],
+                        [8, 15, "text_editor/theme/highlighting/base_type_color"],
+                        [8, 23, "text_editor/theme/highlighting/member_variable_color"],
+                        [9, 15, "text_editor/theme/highlighting/string_color"],
+                        [10, 0, "text_editor/theme/highlighting/string_color"],
+                        [12, 15, "text_editor/theme/highlighting/string_color"],
+                        [12, 20, "text_editor/theme/highlighting/string_color"],
+                        # Raw-string anchor: the region closes on line 13 (tokenizer consumes
+                        # `\"` as raw content), so the member usage on line 16 colors normally.
+                        [16, 11, "text_editor/theme/highlighting/member_variable_color"],
+                    ]
+                    var mismatches := ""
+                    for check in color_checks:
+                        var expected: Color = es.get_setting(str(check[2]))
+                        var got := _hl_color_at(hl, int(check[0]), int(check[1]))
+                        if got != expected:
+                            mismatches += "L%d:%d got=%s want=%s " % [
+                                int(check[0]), int(check[1]), str(got), str(expected)]
+                    _step("colors_match", mismatches == "", mismatches)
+                    # Live re-color: a theme-settings rewrite + update_cache must move the
+                    # annotation color of line 0.
+                    var probe_color := Color(0.123, 0.456, 0.789)
+                    es.set_setting("text_editor/theme/highlighting/gdscript/annotation_color", probe_color)
+                    hl.update_cache()
+                    _step("settings_recolor", _hl_color_at(hl, 0, 0) == probe_color)
+                    # Settle-once protection: after the tab is settled (ours assigned and the
+                    # CodeEdit recorded), a later `editor_script_changed` relay must NOT
+                    # re-assign over a deliberate user pick — simulated by swapping in the
+                    # native GDScript highlighter (registered, script-instantiable). NOTE the
+                    # coverage boundary: the settle record exists by the time the driver can
+                    # act, and BOTH the settle-once short-circuit and the fallback-class gate
+                    # would leave the pick in place, so this step anchors the user-visible
+                    # outcome (a deliberate pick survives the relay) without distinguishing
+                    # the two mechanisms; the fallback-class gate itself and the state-restore
+                    # correction are anchored by GUI verification, because the built-in
+                    # Standard/Plain Text instances are not constructible from script.
+                    code_edit.syntax_highlighter = GDScriptSyntaxHighlighter.new()
+                    var script_editor := EditorInterface.get_script_editor()
+                    script_editor.emit_signal("editor_script_changed", load(target_path))
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    var kept: bool = code_edit.syntax_highlighter != null \\
+                            and code_edit.syntax_highlighter.get_script() != hl_script \\
+                            and code_edit.syntax_highlighter.get_class() == "GDScriptSyntaxHighlighter"
+                    _step("relay_keeps_settled_tab", kept)
+                    # A plain .gd tab must keep the native GDScript highlighter. Let the
+                    # previous `edit_resource` settle first: re-entering the script-editor tab
+                    # creation in the same frame hits "Parent node is busy setting up
+                    # children" inside the editor's open flow.
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    var gd_path := "res://hl_sample_plain.gd"
+                    _write_text_file(gd_path, "extends Node\\n")
+                    var gd_edit := await _open_in_script_editor(gd_path)
+                    var gd_hl: Object = null
+                    if gd_edit != null:
+                        gd_hl = gd_edit.syntax_highlighter
+                    var untouched: bool = gd_hl != null and gd_hl.get_script() != hl_script \\
+                            and gd_hl.get_class() == "GDScriptSyntaxHighlighter"
+                    _step("gd_untouched", untouched)
+                    _step("survived", true)
+                """;
+    }
+
     private static final String DRIVER_MANIFEST = """
             [plugin]
             
@@ -3825,6 +4021,18 @@ class EditorAddonScriptLanguageEngineTest {
     @Test
     void autoIndentMirrorsGdScriptReferenceAlgorithm() throws Exception {
         runCase("auto_indent", new JsonObject());
+    }
+
+    /// Post-Phase-10 acceptance: `.gd3` syntax highlighting. The plugin registers a
+    /// GDScript-parity `EditorSyntaxHighlighter` template whose supported language is "GD3";
+    /// a newly opened `.gd3` tab auto-selects it (language-name match), per-column colors for
+    /// annotations, type hints, members (base-class ClassDB entries AND the script's own
+    /// buffer-scanned declarations), strings (incl. cross-line and raw forms), comment
+    /// markers and numbers track the editor theme settings, a settings rewrite re-colors
+    /// live, and a `.gd` tab keeps the native GDScript highlighter. No LSP involved.
+    @Test
+    void syntaxHighlighterAppliesToGd3Editors() throws Exception {
+        runCase("syntax_highlighter", new JsonObject());
     }
 
     private static String runCase(String caseName, JsonObject config) throws Exception {

@@ -25,6 +25,12 @@
   api+rpc 全量回归无回归，双评审终审 APPROVE；手动验收项见 Phase 10 验收节）；
   已经过多轮并行评审并修订）
 - 更新日期：2026-10-05
+- 2026-10-05 修订（三）：`.gd3` 语法高亮落地——新增解释型 `gdcc_syntax_highlighter.gd`
+  （`EditorSyntaxHighlighter` 子类，逐块移植 4.5 `GDScriptSyntaxHighlighter` 状态机），
+  `plugin.gd` 注册模板并为已开页签接力应用；修复注解/类型提示/成员等着色缺口。同步
+  实证一条新自举约束并记入 §5：编译 `.gd3` 类无法继承编辑器专有基类（GDExtension
+  SCENE 级注册 vs `register_editor_types` 的 EDITOR 级），高亮器因此不用编译形态。
+  合同见 §3.9；引擎锚点 `syntax_highlighter` 用例 9 步全绿。
 - 2026-10-05 修订（二）：编译服务配置从 gdcc 面板迁入**项目设置**——
   `gdcc/server/host|port|launch_command` 三键由机器级 EditorSettings 改为项目级
   ProjectSettings（project.godot，经 Project Settings 对话框编辑，随项目版本化共享）。
@@ -1200,8 +1206,10 @@ Godot 编辑器
   `Script` 资源按其 `get_language()` 分发：`_validate_script()` 调用语言的
   `validate(...)`（传入**编辑缓冲区当前文本**而非磁盘文本），并显示错误/警告/安全行；
   `_code_complete_script()` 调用 `complete_code(...)`；符号跳转/悬浮调用
-  `lookup_code(...)`。语法高亮所需的分隔符/关键字来自语言的分隔符接口。
-  无需自研编辑器 UI。
+  `lookup_code(...)`。语法高亮**不**来自语言的分隔符接口：脚本编辑器按脚本语言名匹配
+  已注册 `EditorSyntaxHighlighter` 的 `_get_supported_languages()`（仅当资源不是 Script
+  时才退回扩展名匹配），因此 `.gd3` 需要自带高亮器实现（2026-10-05 起为
+  `gdcc_syntax_highlighter.gd`，见 §3.9）。
 - `_validate_script()` 的触发点（4.5 实测）：页签启用（`enable_editor`）、
   `reload_text()`（外部重载）、编辑器 idle 定时器超时
   （`CodeTextEditor._text_changed_idle_timeout`，one-shot，由文本变更或
@@ -1666,7 +1674,53 @@ dock 在 gdcc 语言注册之前就依赖它（§1.1）。形态为 `Node`，由
   （替换当前单文件常量，探针文件不进插件目录、不纳入收集）；**所有**安装出口
   （`buildNative`/`buildAllPlatform`/测试安装）统一后处理
   `gdcc_for_editor.gdextension`，把 `reloadable = true` 改写为 `false`（§6）。
+- 解释型 `.gd`（`plugin.gd`、`gdcc_dock.gd`、`server_launcher.gd`、
+  `gdcc_syntax_highlighter.gd`）不进编译模块、不上面向世界清单，由 `plugin.gd`
+  `preload` 直接引用。
 - `buildAddonNative` / `buildAddonAllPlatform` Gradle 任务不变。
+
+### 3.9 `gdcc_syntax_highlighter.gd` — `.gd3` 语法高亮（解释型 GDScript）
+
+**成因**：脚本编辑器按脚本语言名匹配已注册 `EditorSyntaxHighlighter` 的
+`_get_supported_languages()`（4.5 `script_editor_plugin.cpp`；仅非 Script 文本才退回扩展名
+匹配），原生 `GDScriptSyntaxHighlighter` 只认领 `"GDScript"`，`.gd3`（语言名 `"GD3"`）
+此前静默回落到 `EditorStandardSyntaxHighlighter`——关键字/引擎类型有颜色而注解、类型
+提示、脚本成员、节点路径等 GDScript 专属词法着色全缺。**形态**：必须用解释型 `.gd`——
+编译类注册在 GDExtension SCENE 级，编辑器专有基类在 EDITOR 级才存在（§5 末条实证）。
+
+**实现**：逐块移植 4.5 `gdscript_highlighter.cpp` 的行内状态机（区域、数字、关键字/类名/
+成员/全局函数查表、函数/信号/声明名检测、点后成员、`expect_type`、`&^$%@` 前缀、颜色
+优先级链与 `prev_text` 转移器），跨行区域经 `_color_region_cache` + 基类行缓存回填；
+色值全部读 EditorSettings 同名主题键（含 `gdscript/*` 专属键与注释标记三色三表），主题
+变更经编辑器既有 `update_cache()` 节拍生效。与原生仅有的方向安全差异（只可能错色、
+不可能崩溃）写进类头注释（无 `is_class_exposed` 过滤、非 ASCII 一律按标识符字符、空白
+仅空格/Tab、自有成员与基类来自缓冲区扫描）。**局部变量无语义着色**——原生也没有，
+不属缺口。
+
+**注册/应用**（plugin.gd）：install 成功后注册单个模板实例；编辑器只对新页签自动选择
+（注册不触发既有页签重选），已开页签由 `_apply_highlighter_to_current_editor` 在启用时
+（当前页签）与 `editor_script_changed`（后续焦点）接力应用。门控：资源路径扩展名须为
+`gd3`（`Script.get_language()` 4.5 未绑定，GDScript 页签会把处理器打挂）；仅替换两个内置
+回落高亮器（Standard/Plain Text——`get_class()` 对未注册 GDCLASS 类也上报**自身**派生名
+（`object.cpp::_get_class_namev`），据此精确识别；用户下拉选的
+`GDScriptSyntaxHighlighter` 等语言高亮器绝不替换）；每个 CodeEdit 实例只 settle 一次
+（`_handled_highlighter_editors` 按实例 ID 记忆，ID 会话内单调不重用），用户之后手动切换
+的选择在页签往返间不被覆盖。`_exit_tree` 反注册模板并断开信号；已装实例留在页签里
+继续工作（类是解释型的，卸载扩展不影响）。
+
+**页签状态踩点（2026-10-05 实证，引擎用例无法覆盖的真实会话路径）**：`ScriptTextEditor`
+打开页签时会按项目 `.godot/editor/script_editor_cache.cfg` 里保存的 `syntax_highlighter`
+状态恢复用户上次的高亮器选择——在本功能落地前打开过 `.gd3` 的项目把 `"Standard"` 钉在
+缓存里，恢复动作发生在原生自动选择**之后**，把选好的实例换回 Standard。脚本侧无法阻止
+恢复，但接力在焦点信号时按上述门控换回我们的高亮器（踩点页签此前从未 settle，不会
+被 settle-once 挡住）；我们赋值后，页签的编辑状态在下一次布局保存/关页签时经
+`get_edit_state()` 记为 `"GD3"`（非赋值的同步副作用），之后打开直接恢复我们的。
+该缺陷由 GUI 输出测试点（`[GDCC-HL]`）定位：日志同时显示 `_create()`/`_update_cache`
+已成功（自动选择生效）与当前高亮器为 Standard（恢复踩点）。
+
+**验收**：引擎用例 `syntax_highlighter`（§8.2）——新页签自动选中、成员扫描计数、24 组
+逐列颜色断言（注解/类型提示/基类与自有成员/字符串含跨行与 raw/注释标记/数字/关键字）、
+主题改写即时生效、`.gd` 页签仍用原生高亮器。
 
 ---
 
@@ -1823,6 +1877,15 @@ LSP 的同步等待是紧凑 `poll` 循环，不是协程）。
   转换物化）解除此拒绝，且明确**不保留**接收者（与官方语义一致）。最小复现/锚定：
   `CustomReceiverCallableGapTest`（糖式+显式的同作用域对照、跨作用域不保活特征化、
   codegen 接受锚定）。
+- **编译类不能继承编辑器专有基类**（2026-10-05 实证，`syntax_highlighter` 用例）：
+  GDExtension 类注册发生在 `GDEXTENSION_INITIALIZATION_SCENE` 级（后端
+  `entry.c.ftl` 固定），而 `EditorSyntaxHighlighter` 等编辑器类要等
+  `register_editor_types()`（EDITOR 级）才进 ClassDB——编译产物注册
+  `extends EditorSyntaxHighlighter` 的类时引擎报
+  `non-existing parent class`（gdextension.cpp `_register_extension_class_internal`），
+  属失败但其余类照常注册，运行时表现为该类不存在。结论：需要编辑器专有基类的功能
+  （如高亮器）只能用解释型 `.gd` 实现（与 `plugin.gd`/`gdcc_dock.gd` 同类）；
+  后端若今后支持按模块选择 EDITOR 级注册，可再迁回编译目标。
   方法引用 Callable 目前仅对 `self`（Node）可靠——但即使后端补齐保留/构造，标准
   Callable 按官方语义也**不应**保活接收者，令牌式 hook 归属依旧不可行；共享字段/
   计数器 + 单飞不变量是与引擎语义一致的正确设计。

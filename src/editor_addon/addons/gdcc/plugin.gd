@@ -13,6 +13,10 @@ extends EditorPlugin
 
 const DockScript := preload("res://addons/gdcc/gdcc_dock.gd")
 const LauncherScript := preload("res://addons/gdcc/server_launcher.gd")
+# Interpreted like the dock: a compiled `.gd3` class can never extend EditorSyntaxHighlighter
+# (extension classes register at the GDExtension SCENE level, editor-only base classes only
+# exist after `register_editor_types()`), so the highlighter lives outside the module.
+const HighlighterScript := preload("res://addons/gdcc/gdcc_syntax_highlighter.gd")
 
 const SERVICE_NODE_NAME := "GdccEditorService"
 const SETTING_LSP_USE_THREAD := "network/language_server/use_thread"
@@ -46,6 +50,14 @@ var _relayed_endpoint: Array = []
 # write, so an unlogged-once invalid pair would spam one push_error per unrelated edit.
 # Tracks the last REJECTED pair; a valid read clears it so re-breaking the config re-logs.
 var _last_invalid_endpoint: Array = []
+# The registered syntax-highlighter template (per-tab instances come from its `_create()`).
+var _syntax_highlighter: EditorSyntaxHighlighter = null
+# CodeEdit instance IDs whose highlighter this plugin has already settled (manual assignment
+# or an observed native selection). The set is what stops the `editor_script_changed` relay
+# from re-assigning ours over a user's deliberate dropdown pick on a later focus: a pick
+# survives because the tab was recorded the first time we saw it with any highlighter state.
+# Instance IDs are session-unique, so closed-tab entries can never match a future editor.
+var _handled_highlighter_editors: Dictionary = {}
 
 
 func _enter_tree() -> void:
@@ -205,6 +217,11 @@ func _enter_tree() -> void:
         return
     # Fire-and-forget: the coroutine awaits RPC responses off this synchronous stack.
     _dock.auto_setup_module()
+    # 5.5) Syntax highlighter: registration covers only NEW tabs (ScriptEditor never re-runs
+    #    selection for existing ones), so the method also applies to the tab that is current
+    #    right now and relays future tab focuses. Best-effort: highlighting must never gate
+    #    the language install, so nothing here feeds the failure path.
+    _register_syntax_highlighter()
     # 6) Feed file-set changes to the service (connected exactly once across re-enables).
     var filesystem := get_editor_interface().get_resource_filesystem()
     if not filesystem.filesystem_changed.is_connected(_on_filesystem_changed):
@@ -314,6 +331,18 @@ func _exit_tree() -> void:
         if ProjectSettings.settings_changed.is_connected(_on_project_settings_changed):
             ProjectSettings.settings_changed.disconnect(_on_project_settings_changed)
     _settings_signal_connected = false
+    # Highlighter teardown BEFORE the language uninstall: unregistration only removes the
+    # template from future tab selection; already-assigned per-tab instances keep working
+    # (the interpreted script resource stays alive while a tab references it, and the
+    # GDExtension unload does not affect it) and simply stop being re-applied.
+    var script_editor := get_editor_interface().get_script_editor()
+    if script_editor != null:
+        if script_editor.editor_script_changed.is_connected(_on_editor_script_changed):
+            script_editor.editor_script_changed.disconnect(_on_editor_script_changed)
+        if _syntax_highlighter != null:
+            script_editor.unregister_syntax_highlighter(_syntax_highlighter)
+    _syntax_highlighter = null
+    _handled_highlighter_editors.clear()
     if _dock != null:
         remove_control_from_bottom_panel(_dock)
         # The dock's own `_exit_tree` zeroes its residual busy reports through the coordinator.
@@ -385,6 +414,83 @@ func _on_project_settings_changed() -> void:
         return
     _service.retarget_rpc_endpoint(endpoint[0], endpoint[1])
     _relayed_endpoint = endpoint
+
+
+## Registers the `.gd3` syntax highlighter template (auto-selected for every NEW `.gd3` tab by
+## language-name match) and covers already-open tabs: `register_syntax_highlighter` only
+## appends to the editor's template list and never re-runs selection for existing tabs (4.5
+## script_editor_plugin.cpp), so the current tab is handled immediately and later tab focuses
+## come through `editor_script_changed`.
+func _register_syntax_highlighter() -> void:
+    var script_editor := get_editor_interface().get_script_editor()
+    if script_editor == null:
+        return
+    _syntax_highlighter = HighlighterScript.new()
+    script_editor.register_syntax_highlighter(_syntax_highlighter)
+    if not script_editor.editor_script_changed.is_connected(_on_editor_script_changed):
+        script_editor.editor_script_changed.connect(_on_editor_script_changed)
+    _handled_highlighter_editors.clear()
+    _apply_highlighter_to_current_editor()
+
+
+func _on_editor_script_changed(_script: Script) -> void:
+    _apply_highlighter_to_current_editor()
+
+
+## Assigns the `.gd3` highlighter to the CURRENT script-editor tab when it shows one of our
+## scripts and still carries a fallback highlighter. Two gates: the resource path (Script has
+## no bound `get_language()` in 4.5), and the CURRENT highlighter's native class name —
+## `get_class()` reports the most-derived native name even for unregistered classes
+## (`_get_class_namev`), so only the two built-in fallbacks (Standard / Plain Text) are
+## replaced while a deliberate dropdown pick (e.g. GDScriptSyntaxHighlighter) is never
+## touched. This relay is also what corrects the tab-state restore: `script_editor_cache`
+## pins the pre-feature "Standard" choice and re-applies it AFTER the native auto-selection
+## on every open; the tab's saved state records "GD3" at the next layout save / tab close
+## (`get_edit_state()`), so later opens restore ours. Each CodeEdit is settled at
+## most once (`_handled_highlighter_editors`), so a user pick is never stomped on a later
+## focus.
+func _apply_highlighter_to_current_editor() -> void:
+    if _syntax_highlighter == null or _service == null or not _service.is_active():
+        return
+    var script_editor := get_editor_interface().get_script_editor()
+    if script_editor == null:
+        return
+    var script := script_editor.get_current_script()
+    # Extension gate, not `script.get_language()`: Script.get_language() is unbound in 4.5,
+    # so a GDScript tab would error the whole handler out of the signal relay.
+    if script == null or script.resource_path.get_extension() != "gd3":
+        return
+    var current_editor := script_editor.get_current_editor()
+    if current_editor == null:
+        return
+    var base: Control = current_editor.get_base_editor()
+    if not (base is CodeEdit):
+        return
+    var code_edit := base as CodeEdit
+    var edit_id := code_edit.get_instance_id()
+    if _handled_highlighter_editors.has(edit_id):
+        return
+    var current := code_edit.syntax_highlighter
+    if current is EditorSyntaxHighlighter and current.get_script() == HighlighterScript:
+        _handled_highlighter_editors[edit_id] = true
+        return
+    if current != null:
+        # Replacement gate: only the two built-in fallbacks are replaced. `get_class()`
+        # reports the most-derived NATIVE name even for unregistered GDCLASS classes
+        # (`_get_class_namev`), so Standard/Plain Text identify by their own names; a
+        # deliberate language-highlighter pick keeps its registered name and is never
+        # replaced. (`_get_supported_languages()` is a GDVIRTUAL and cannot be called on
+        # native instances, which is why this keys on the class name.)
+        if not (current is EditorSyntaxHighlighter):
+            return
+        var is_fallback := current.get_class() == "EditorStandardSyntaxHighlighter" \
+                or current.get_class() == "EditorPlainTextSyntaxHighlighter"
+        if not is_fallback:
+            return
+    var inst: EditorSyntaxHighlighter = HighlighterScript.new()
+    current_editor.add_syntax_highlighter(inst)
+    code_edit.syntax_highlighter = inst
+    _handled_highlighter_editors[edit_id] = true
 
 
 ## Relays the service's `revalidation_requested` into the editor's own revalidation

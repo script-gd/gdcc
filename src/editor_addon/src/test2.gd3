@@ -1,3 +1,4 @@
+@tool
 class_name Test2 extends MeshInstance3D
 
 @export var rotating_speed: float = 30;

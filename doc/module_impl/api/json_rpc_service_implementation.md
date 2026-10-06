@@ -359,6 +359,9 @@ DTO codec 规则：
   compile、cancel），以及只读日志 `TextEdit`。解释执行。
 - `server_launcher.gd` — `@tool extends Node`；按需拉起/所有权内关闭 `gdcc serve`
   （解释执行；dock 在 gdcc 语言注册前就依赖它）。合同见集成计划 §3.7。
+- `gdcc_syntax_highlighter.gd` — `@tool extends EditorSyntaxHighlighter`；`.gd3` 的
+  GDScript 对等语法高亮（解释执行——编译类在 GDExtension SCENE 级注册，够不到
+  EDITOR 级的 EditorSyntaxHighlighter 基类）。合同见集成计划 §3.9。
 - `gdcc_editor_service.gd3`、`gdcc_script_language.gd3`、`gdcc_script.gd3`、
   `gdcc_script_format_loader.gd3`、`gdcc_script_format_saver.gd3` — `.gd3` 语言集成
   （编译目标；与客户端同模块 `gdcc_for_editor`）。合同见集成计划 §3。

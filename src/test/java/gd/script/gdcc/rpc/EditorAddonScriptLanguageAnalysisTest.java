@@ -39,7 +39,7 @@ class EditorAddonScriptLanguageAnalysisTest {
     private static final Path ADDON_DIR = Path.of("src/editor_addon/addons/gdcc");
     private static final String MODULE_ID = "editor-addon-language";
     private static final List<String> INTERPRETED_SCRIPTS = List.of(
-            "plugin.gd", "gdcc_dock.gd", "server_launcher.gd");
+            "plugin.gd", "gdcc_dock.gd", "server_launcher.gd", "gdcc_syntax_highlighter.gd");
     private static final Pattern AWAIT_PATTERN = Pattern.compile("\\bawait\\b");
 
     @TempDir
