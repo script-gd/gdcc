@@ -17,6 +17,7 @@ const LauncherScript := preload("res://addons/gdcc/server_launcher.gd")
 # (extension classes register at the GDExtension SCENE level, editor-only base classes only
 # exist after `register_editor_types()`), so the highlighter lives outside the module.
 const HighlighterScript := preload("res://addons/gdcc/gdcc_syntax_highlighter.gd")
+const SCRIPT_ICON_PATH := "res://addons/gdcc/gdcc_script.svg"
 
 const SERVICE_NODE_NAME := "GdccEditorService"
 const SETTING_LSP_USE_THREAD := "network/language_server/use_thread"
@@ -52,6 +53,7 @@ var _relayed_endpoint: Array = []
 var _last_invalid_endpoint: Array = []
 # The registered syntax-highlighter template (per-tab instances come from its `_create()`).
 var _syntax_highlighter: EditorSyntaxHighlighter = null
+var _script_icon: Texture2D = null
 # CodeEdit instance IDs whose highlighter this plugin has already settled (manual assignment
 # or an observed native selection). The set is what stops the `editor_script_changed` relay
 # from re-assigning ours over a user's deliberate dropdown pick on a later focus: a pick
@@ -215,6 +217,8 @@ func _enter_tree() -> void:
         push_error("GDCC: script language install failed (error %d); editor settings restored." % install_err)
         _rollback_failed_enter_tree()
         return
+    get_editor_interface().get_base_control().theme_changed.connect(_apply_script_icon)
+    _apply_script_icon()
     # Fire-and-forget: the coroutine awaits RPC responses off this synchronous stack.
     _dock.auto_setup_module()
     # 5.5) Syntax highlighter: registration covers only NEW tabs (ScriptEditor never re-runs
@@ -322,6 +326,13 @@ func _exit_tree() -> void:
     # scripted restore does NOT restart the engine's LSP server (settings-changed
     # notification is C++-only, plan §2.6); ordering still matters so our own client is
     # disconnected and the language unregistered before the setting flips back.
+    var base_control := get_editor_interface().get_base_control()
+    if base_control.theme_changed.is_connected(_apply_script_icon):
+        base_control.theme_changed.disconnect(_apply_script_icon)
+    var theme := get_editor_interface().get_editor_theme()
+    if theme.has_icon("GdccScript", "EditorIcons") and theme.get_icon("GdccScript", "EditorIcons") == _script_icon:
+        theme.clear_icon("GdccScript", "EditorIcons")
+    _script_icon = null
     var filesystem := get_editor_interface().get_resource_filesystem()
     if _filesystem_connected and filesystem != null:
         if filesystem.filesystem_changed.is_connected(_on_filesystem_changed):
@@ -366,6 +377,23 @@ func _exit_tree() -> void:
     if _launcher != null:
         _launcher.shutdown_owned()
         _launcher = null
+
+
+## FileSystemDock and script tabs look up the resource type in EditorIcons, not the script's
+## class icon path. Reapply after editor theme regeneration; the identity guard avoids reentry.
+func _apply_script_icon() -> void:
+    if _script_icon == null:
+        # Plugins load before the first SVG import, so do not depend on ResourceLoader here.
+        var image := Image.new()
+        var error := image.load_svg_from_string(FileAccess.get_file_as_string(SCRIPT_ICON_PATH))
+        if error != OK:
+            push_error("GDCC: script icon SVG could not be loaded (error %d)." % error)
+            return
+        _script_icon = ImageTexture.create_from_image(image)
+    var theme := get_editor_interface().get_editor_theme()
+    if theme.has_icon("GdccScript", "EditorIcons") and theme.get_icon("GdccScript", "EditorIcons") == _script_icon:
+        return
+    theme.set_icon("GdccScript", "EditorIcons", _script_icon)
 
 
 ## Single-writer low-power coordinator: `OS.low_processor_usage_mode` is toggled ONLY here.

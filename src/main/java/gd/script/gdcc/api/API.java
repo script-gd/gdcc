@@ -170,9 +170,19 @@ public final class API implements AutoCloseable {
     /// guard against a racing creator of the new id. A missing source fails with
     /// `ApiModuleNotFoundException`, an occupied target id with `ApiModuleAlreadyExistsException`.
     public @NotNull ModuleSnapshot copyModule(@NotNull String sourceModuleId, @NotNull String newModuleId) {
+        return copyModule(sourceModuleId, newModuleId, null);
+    }
+
+    /// Overrides the copy's display name without changing its isolated module id. A null name
+    /// preserves the source name, as in the two-argument API used by existing clients.
+    public @NotNull ModuleSnapshot copyModule(
+            @NotNull String sourceModuleId, @NotNull String newModuleId, @Nullable String newModuleName
+    ) {
         checkOpen();
         var normalizedSourceId = StringUtil.requireTrimmedNonBlank(sourceModuleId, "sourceModuleId");
         var normalizedNewId = StringUtil.requireTrimmedNonBlank(newModuleId, "newModuleId");
+        var normalizedNewName = newModuleName == null
+                ? null : StringUtil.requireTrimmedNonBlank(newModuleName, "newModuleName");
         var source = requireManagedModule(normalizedSourceId);
         // Fast-fail before waiting on the source gate: recompile flows hit the already-exists
         // path routinely (delete the stale copy, then re-copy), so they should not queue behind
@@ -182,7 +192,7 @@ public final class API implements AutoCloseable {
         }
         var copiedState = source.runExclusive(
                 normalizedSourceId,
-                sourceState -> sourceState.copyFor(normalizedNewId)
+                sourceState -> sourceState.copyFor(normalizedNewId, normalizedNewName)
         );
         var existing = modules.putIfAbsent(normalizedNewId, new ManagedModule(copiedState));
         if (existing != null) {

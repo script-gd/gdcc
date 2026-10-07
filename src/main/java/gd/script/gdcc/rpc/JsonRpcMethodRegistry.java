@@ -97,7 +97,7 @@ public final class JsonRpcMethodRegistry {
         });
         handlers.put("module.copy", (api, codec, params) -> {
             var bound = codec.bindParams(params, RpcParams.ModuleCopyParams.class);
-            return api.copyModule(bound.sourceModuleId(), bound.newModuleId());
+            return api.copyModule(bound.sourceModuleId(), bound.newModuleId(), bound.newModuleName());
         });
         handlers.put("vfs.createDirectory", (api, codec, params) -> {
             var bound = codec.bindParams(params, RpcParams.VfsCreateDirectoryParams.class);

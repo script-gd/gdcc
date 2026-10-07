@@ -26,6 +26,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// the error surface and post-copy isolation in both directions.
 class ApiModuleCopyTest {
     @Test
+    void copyModuleOverridesNameWithoutChangingSource() {
+        try (var api = new API()) {
+            api.createModule("diag", "Diagnostics");
+            api.putFile("diag", "/src/main.gd", "extends Node\n");
+
+            var copy = api.copyModule("diag", "private-build", "  My Game  ");
+
+            assertEquals("private-build", copy.moduleId());
+            assertEquals("My Game", copy.moduleName());
+            assertEquals("Diagnostics", api.getModule("diag").moduleName());
+            assertEquals("extends Node\n", api.readFile("private-build", "/src/main.gd"));
+            assertEquals("Diagnostics", api.copyModule("diag", "inherited", null).moduleName());
+            assertThrows(IllegalArgumentException.class, () -> api.copyModule("diag", "bad", "  "));
+            assertEquals(List.of("diag", "inherited", "private-build"),
+                    api.listModules().stream().map(ModuleSnapshot::moduleId).toList());
+        }
+    }
+
+    @Test
     void copyModuleCopiesVfsOptionsAndClassMapVerbatim() {
         // The fixed clock makes `updatedAt` deterministic so entry-snapshot equality covers the
         // full file metadata (content, display/absolute paths, byte count, timestamp).

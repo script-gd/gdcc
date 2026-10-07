@@ -68,8 +68,8 @@ final class ModuleState {
     /// publication tracking, and the compiler-managed output links (`generated`/`artifacts`
     /// under the published mount root) are stripped — they would dangle onto the source's
     /// build directory, and the copy's first compile re-creates them anyway.
-    synchronized @NotNull ModuleState copyFor(@NotNull String newModuleId) {
-        var copy = new ModuleState(newModuleId, moduleName, clock);
+    synchronized @NotNull ModuleState copyFor(@NotNull String newModuleId, @Nullable String newModuleName) {
+        var copy = new ModuleState(newModuleId, newModuleName == null ? moduleName : newModuleName, clock);
         copyChildrenInto(root, copy.root, ROOT_PATH);
         copy.compileOptions = compileOptions;
         copy.topLevelCanonicalNameMap = topLevelCanonicalNameMap;

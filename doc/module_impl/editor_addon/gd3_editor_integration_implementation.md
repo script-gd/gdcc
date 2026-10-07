@@ -24,7 +24,10 @@
   `ApiModuleCopyTest` 7 项 + RPC 三层测试 + 引擎用例 `dock_compile` 12 步全绿，
   api+rpc 全量回归无回归，双评审终审 APPROVE；手动验收项见 Phase 10 验收节）；
   已经过多轮并行评审并修订）
-- 更新日期：2026-10-05
+- 更新日期：2026-10-06
+- 2026-10-06 修订：Compile 按钮改为 **Build**；编译副本使用当前项目名称，成功后部署
+  动态库到项目 `bin` 并生成 `gdcc.gdextension`，通过引擎扫描持久化扩展清单并加载，
+  重建时显式重载。合同、失败边界与测试锚点见下方“Build 部署与启用”节。
 - 2026-10-05 修订（三）：`.gd3` 语法高亮落地——新增解释型 `gdcc_syntax_highlighter.gd`
   （`EditorSyntaxHighlighter` 子类，逐块移植 4.5 `GDScriptSyntaxHighlighter` 状态机），
   `plugin.gd` 注册模板并为已开页签接力应用；修复注解/类型提示/成员等着色缺口。同步
@@ -2311,7 +2314,7 @@ reconciler 自 Phase 3 起已把全项目自动同步进私有诊断模块。202
    （dispatcher 错误码与路由数 27、codec wire 形状、HTTP 工作流
    create→put→copy→options.set→analyze→delete 且双模块操作互不阻塞）。
 4. 引擎测试 ✅（2026-09-28 自动化验收通过）：`dock_compile` 用例（真实 gdcc RPC 服
-   务 + 真实 zig 构建）：诊断模块自动同步后驱动 dock Compile 按钮 → 副本经
+   务 + 真实 zig 构建）：诊断模块自动同步后驱动 dock 构建按钮（当前名为 Build）→ 副本经
    `module.list` 观察注册（**不能用 `module.get`/`read_file`——它们走模块门，副本
    编译期间会阻塞**）（`copy_created`）→ 编译期间诊断模块 analyze 在任务非终态时返
    回（`diag_alive_during_compile`，任务状态锚点替代耗时门限——不冻结证明）→ 副
@@ -2330,8 +2333,8 @@ reconciler 自 Phase 3 起已把全项目自动同步进私有诊断模块。202
   `gd.script.gdcc.rpc.*` 全量回归无回归（含全部既有引擎用例）。
 - 手动：dock 无 Upload 按钮；编译期间编辑器诊断/补全/hover 照常；编译产物与
   诊断模块互不影响。
-非目标：不引入第二个持续同步模块；编译仍为显式手动动作（不自动触发）；副本
-  的安装/热重载流程不在本阶段。
+非目标：不引入第二个持续同步模块；编译仍为显式手动动作（不自动触发）。初始阶段
+不包含安装/热重载；当前 Build 的部署与启用合同见下节。
 评审记录（2026-09-28，review-expert-a + review-expert-c 并行，两轮）：第一轮
 REQUEST_CHANGES —— 卸载时经帧泵客户端的副本删除实际发不出去（子节点先离树）；端点
 分叉时可对错误服务器按 id 复制/删除；副本继承已发布输出链接但丢失清理指针；跨端
@@ -2341,6 +2344,85 @@ REQUEST_CHANGES —— 卸载时经帧泵客户端的副本删除实际发不出
 Cancel 改道）——Cancel 改用钉住任务端点的临时客户端，重试加端点一致条件。修复
 中还发现并修正引擎测试驱动缺陷：`module.get`/`read_file` 走模块门，副本编译期间
 会阻塞，改由 `module.list` 观察注册、内容校验移到编译结束后。终审双双 APPROVE。
+
+### Build 部署与启用（2026-10-06）
+
+**根因**：旧 Compile 只启动编译并打印成功结果，产物留在 Godot 不扫描的
+`.godot/gdcc/<副本id>`；没有项目可见的库或 `.gdextension`，因此原生类不生效。
+副本还继承了固定的诊断模块名称，而不是项目名称。
+
+**当前合同**：
+
+- 按钮为 **Build**，每次从 `application/config/name` 读取、trim 项目名称，空白时
+  提示设置名称而不启动构建。`module.copy` 的可选 `newModuleName` 只覆盖副本的
+  `moduleName`，保留 pid 作用域 id 和诊断隔离；旧调用缺省时仍继承源名称。即使在
+  诊断 setup 后修改项目名，新构建仍使用当前名称。服务端忽略覆盖字段、回显名称不符
+  时中止并提示升级。
+- C 和内部编译产物仍在独立 `.godot/gdcc/<副本id>`。只从**当前终态任务的**
+  `CompileResult.artifacts` 选择目标平台对应的唯一动态库，不查询后续 lastResult，
+  不扫描旧构建目录猜产物；缺库、多个库、库在编辑器机器上不可访问时部署失败。
+  RPC 服务必须能提供编辑器可读的本地/共享文件路径，尚无跨机器二进制下载协议。
+- 已打开的被排除插件脚本仍会临时进入诊断快照；若成功结果的 `sourcePaths` 包含
+  `res://addons/gdcc/`，拒绝部署并提示关闭这些页签或恢复同步排除规则，避免项目库
+  重复注册驻留编辑器扩展的类。诊断本身仍允许检查这些打开的脚本。
+- 库部署到 `res://bin/[lib]<安全化项目名>_<平台>_<debug|release>_<架构>-<hash>.<后缀>`，
+  hash 是库内容 SHA-256 的前 16 个十六进制字符。不同内容发布到新路径，避免 macOS
+  dyld 的同路径映像缓存，以及覆盖被编辑器/游戏进程映射的库；相同内容复用已校验的
+  路径，不重复换库。此规则沿用后端 hot_reload 文档 §10 的换库合同。
+  平台和架构来自结果冻结的 CompileOptions，而非当前 OS 猜测；Godot 标签转换为
+  `AARCH64 → arm64`、`RISCV64 → rv64`。只有动态库进入 `bin`，生成 C、对象文件
+  及辅助调试文件保留在内部构建目录。
+- 描述文件固定为 `res://bin/gdcc.gdextension`，避免项目改名留下多个启用同组类的
+  描述文件。`entry_symbol = "gdextension_entry"`、`compatibility_minimum = "4.5"`、
+  `reloadable = true`；`gdcc_managed = true` 标记插件管理的文件，拒绝覆盖未标记或
+  无法解析的已有文件。用 ConfigFile 正确转义路径并保留其他目标条目。
+  `[libraries]` 使用架构限定键，缺少另一优化级别时提供同库兼容别名；独立构建的
+  debug/release 条目保留，不被另一种构建覆盖；`gdcc_library_aliases` 显式记录兼容
+  别名（不能仅凭路径相同推断别名），`gdcc_libraries` 记录插件拥有的库文件。
+  两个记录必须是 PackedStringArray；非法类型在文件发布前拒绝，避免脚本类型错误
+  中断构建收尾。
+- 等待现有编辑器扫描结束，再暂存库并通过 rename 发布到内容哈希路径，不直接截断
+  可能被映射的库文件；描述文件使用 ConfigFile.save，不使用 Windows 会先删除旧
+  目标的 rename。成功启用后仅清理 `res://bin` 直接目录中、不再被任何目标条目引用
+  的插件库，不通过目录穿越路径删除项目文件；删除被游戏进程
+  锁定的旧库失败只记日志，留待后续构建重试。所有文件操作检查错误，失败不报告启用成功。编译失败/取消不部署，
+  无效结果或缺产物不改动上次安装。文件发布不是跨两个文件的事务；发布或引擎重载
+  失败会明确记日志，不能把“编译 SUCCESS”当作“已启用”。
+- 编译协程结束后延迟发起 `EditorFileSystem.scan()`，由 `filesystem_changed` 回调
+  确认主线程扫描动作已完成，让 Godot
+  `ensure_extensions_loaded()` 发现描述文件、加载并写入 `.godot/extension_list.cfg`。
+  **不能先手动 load 再 scan**：manager 已有此扩展时扫描可能看不到成员变化，从而
+  不写加载清单，下一次运行又失效。插件不直接改写此引擎维护文件。
+- `is_scanning() == false` 不足以确认扫描完成：Godot worker 会在主线程 join 和
+  扩展对账前清除此标志。定时器重试被在途 worker 拒绝的 scan，只在完成信号后检查
+  描述文件已被资源树识别。首次扩展成员变化还会触发引擎全脚本软重载，取消解释型
+  脚本的悬挂协程，因此构建收尾不能 await 此扫描；按钮在回调结束/超时前保持禁用。
+- 首次扫描后检查 manager 已加载；重建时调用 `reload_extension` 并检查 LoadStatus。
+  引擎加载/重载失败或扫描超时提示检查引擎错误、重启编辑器；非本机目标只报告已安装，
+  不把它当成本机已启用。Godot 单扩展 reload 的 `extension_loaded` 信号由既有类名
+  擦除服务处理；无需伪造 batch `extensions_reloaded` 信号。项目库的 reloadable
+  合同不改变 `gdcc_for_editor` 必须 `reloadable = false` 的 ScriptServer 安全规则。
+
+**引擎实现依据（Godot 4.5）**：
+
+- `core/extension/gdextension_library_loader.cpp`：配置解析、feature tags 最具体匹配、
+  相对库路径与修改时间检测。
+- `core/extension/gdextension_manager.cpp`：`ensure_extensions_loaded` 的清单更新条件、
+  `reload_extension` 状态与单扩展信号。
+- `editor/file_system/editor_file_system.cpp`：`scan` / `_scan_extensions`，扫描完成信号
+  在扩展成员对账之后；scan 本身不等于二进制重载。
+
+**测试锚点**：`ApiModuleCopyTest`、`RpcJsonCodecTest`、`JsonRpcDispatcherTest`、
+`RpcApiRoundTripHttpTest` 覆盖副本名称覆盖、旧请求继承和非法空白；
+`CCodegenTest.moduleDisplayNameIsEscapedInEntryMessages` 覆盖 C 字符串边界。
+`EditorAddonScriptLanguageEngineTest.dockCompileCopiesDiagnosticsModule` 驱动真实 Build：
+构建期间诊断仍响应、setup 后更改含引号的项目名、库字节一致、描述文件配置与实际加载、
+清单持久化、无效结果不覆盖安装，以及二次构建后存活实例的方法返回值从 1 变为 2。
+还覆盖显式 debug/release 条目互不覆盖、相同内容路径复用与别名升级；非法配置类型、
+未托管描述文件、误包含编辑器插件源码以及 bin 外/目录穿越路径不删除项目文件也有
+失败路径锚点。引擎测试驱动在
+此模式将自身脚本资源置为无路径，避免被 Godot 按资源路径收集的全脚本软重载取消；
+被测插件与 dock 保留正常资源路径，仍经过真实引擎扫描/重载。
 
 ### Phase 10 后修复（编辑器体验，2026-10-05 自动化验收通过）
 
@@ -2478,6 +2560,9 @@ disk-known 路径置墓碑（否则取消排除后永不复纳）；(3)（低，
 ### 8.2 引擎集成测试（`GODOT_BIN` + Zig 门控，Assumptions 跳过）
 
 harness：复制 `src/editor_addon` 到 `tmp/test/editor_addon_script_language/<case>/`
+时排除 `.godot/` 和项目根 `bin/`，避免手动 Build 的游戏扩展在首次扫描中触发额外
+脚本重载。启动前清空副本的 `gdcc/server/launch_command`，由用例配置自己的端点
+和拉起命令，不能继承源工程的相对 jar 路径。
 并安装编译产物（复用 `EditorAddonBootstrapEngineTest` 模式），**额外注入一个仅测试
 用的解释型驱动插件** `addons/gdcc_test_driver/`（`plugin.cfg` + `driver_plugin.gd`，
 GDScript，不属于发布物）：编辑器就绪后驱动等待 `GdccEditorService` 就绪与 LSP 监听，

@@ -208,6 +208,7 @@ class ZigCcCompilerCommandTest {
         assertTrue(ZigCcCompiler.isGodotBindingPchTu(Path.of("entry.c")));
         assertTrue(ZigCcCompiler.isGodotBindingPchTu(Path.of("godot_binding.c")));
         assertTrue(ZigCcCompiler.isGodotBindingPchTu(Path.of("gdcc_coroutine.c")));
+        assertTrue(ZigCcCompiler.isGodotBindingPchTu(Path.of("gdcc_hrx.c")));
         // The isolated assembly-backend TU must never force-include the Godot ABI headers.
         assertFalse(ZigCcCompiler.isGodotBindingPchTu(Path.of("minicoro.c")));
         assertFalse(ZigCcCompiler.isGodotBindingPchTu(Path.of("anything_else.c")));

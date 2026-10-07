@@ -177,6 +177,17 @@ public class GodotGdextensionTestRunnerTest {
     }
 
     @Test
+    public void closeWaitsForTheOwnedProcessAndIsIdempotent() throws Exception {
+        var process = new FakeProcess(0, "", true);
+        try (var runner = new GodotGdextensionTestRunner(tempDir, process)) {
+            assertTrue(process.isAlive());
+            runner.close();
+            assertFalse(process.isAlive(), "temporary project cleanup must not race a live Godot process");
+            runner.close();
+        }
+    }
+
+    @Test
     public void defaultRunOptionsShouldAllowPerRunFrameBudgetOverride() {
         var runOptions = GodotGdextensionTestRunner.defaultRunOptions(true);
         var customRunOptions = runOptions.withQuitAfterFrames(60);

@@ -1,4 +1,5 @@
 <#-- @ftlvariable name="module" type="gd.script.gdcc.lir.LirModule" -->
+<#-- @ftlvariable name="StringUtil" type="gd.script.gdcc.util.StringUtil" -->
 <#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
 <#-- @ftlvariable name="bodyRender" type="gd.script.gdcc.backend.c.gen.binding.GenerateRenderFacade" -->
 <#-- @ftlvariable name="staticInitClassDefs" type="java.util.List<gd.script.gdcc.lir.LirClassDef>" -->
@@ -95,7 +96,7 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
                         <#if hrxRebindEntries?size gt 0>gdcc_hrx_rebind_table, ${hrxRebindEntries?size}<#else>NULL, 0</#if>);
     <#--  Print start loading  -->
     {
-        godot_Variant msg_variant = godot_new_Variant_with_String(GD_STATIC_S(u8"Loading ${module.moduleName}..."));
+        godot_Variant msg_variant = godot_new_Variant_with_String(GD_STATIC_S(u8"Loading ${StringUtil.escapeStringLiteral(module.moduleName)}..."));
         godot_print(&msg_variant, NULL, 0);
         godot_Variant_destroy(&msg_variant);
     }
@@ -177,7 +178,7 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
     }
     <#--  Print start unloading  -->
     {
-        godot_Variant msg_variant = godot_new_Variant_with_String(GD_STATIC_S(u8"Unloading ${module.moduleName}..."));
+        godot_Variant msg_variant = godot_new_Variant_with_String(GD_STATIC_S(u8"Unloading ${StringUtil.escapeStringLiteral(module.moduleName)}..."));
         godot_print(&msg_variant, NULL, 0);
         godot_Variant_destroy(&msg_variant);
     }

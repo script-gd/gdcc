@@ -531,7 +531,8 @@ public class ZigCcCompiler implements CCompiler {
     /// force-include it; otherwise `logPrefix` carries the fixed one-line fallback note that
     /// leads the build log. `startedCommands`/`outputs` hold the PCH-phase processes that
     /// actually started (build, probe, rebuild), ahead of the TU slots in the merged log.
-    private record PchOutcome(@Nullable Path pchPath, @Nullable String logPrefix, @NotNull List<List<String>> startedCommands, @NotNull List<String> outputs) {
+    private record PchOutcome(@Nullable Path pchPath, @Nullable String logPrefix,
+                              @NotNull List<List<String>> startedCommands, @NotNull List<String> outputs) {
     }
 
     /// Resolves the PCH to force-include this round, or degrades to a no-PCH round. Failure
@@ -922,7 +923,7 @@ public class ZigCcCompiler implements CCompiler {
     /// the round (TU compiles, PCH build/probe, link, version probe) identically.
     private static @NotNull Map<String, String> zigCacheEnvironment(@NotNull Path cachePath) {
         return Map.of(
-                "ZIG_CACHE_DIR", cachePath.resolve("local").toString(),
+                "ZIG_LOCAL_CACHE_DIR", cachePath.resolve("local").toString(),
                 "ZIG_GLOBAL_CACHE_DIR", cachePath.resolve("global").toString()
         );
     }

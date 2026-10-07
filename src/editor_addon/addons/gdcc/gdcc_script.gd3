@@ -135,7 +135,7 @@ func _get_documentation() -> Array[Dictionary]:
 
 
 func _get_class_icon_path() -> String:
-    return ""
+    return "res://addons/gdcc/gdcc_script.svg"
 
 
 func _has_method(method: StringName) -> bool:

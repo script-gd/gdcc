@@ -528,18 +528,26 @@ class RpcJsonCodecTest {
     @Test
     void moduleCopyParamsRoundTripAndValidate() {
         // The compact constructor trims both ids; the wire shape uses the record component names.
-        var params = new RpcParams.ModuleCopyParams(" src ", " copy ");
+        var params = new RpcParams.ModuleCopyParams(" src ", " copy ", " My Game ");
         assertEquals("src", params.sourceModuleId());
         assertEquals("copy", params.newModuleId());
         var json = codec.toJsonTree(params).getAsJsonObject();
         assertEquals("src", json.get("sourceModuleId").getAsString());
         assertEquals("copy", json.get("newModuleId").getAsString());
+        assertEquals("My Game", json.get("newModuleName").getAsString());
 
         var bound = codec.bindParams(
                 parse("{\"sourceModuleId\": \"a\", \"newModuleId\": \"b\"}"),
                 RpcParams.ModuleCopyParams.class
         );
-        assertEquals(new RpcParams.ModuleCopyParams("a", "b"), bound);
+        assertEquals(new RpcParams.ModuleCopyParams("a", "b", null), bound);
+        assertEquals(bound, codec.bindParams(
+                parse("{\"sourceModuleId\": \"a\", \"newModuleId\": \"b\", \"newModuleName\": null}"),
+                RpcParams.ModuleCopyParams.class));
+        assertEquals(params, codec.bindParams(json, RpcParams.ModuleCopyParams.class));
+        assertThrows(IllegalArgumentException.class, () -> codec.bindParams(
+                parse("{\"sourceModuleId\": \"a\", \"newModuleId\": \"b\", \"newModuleName\": \"  \"}"),
+                RpcParams.ModuleCopyParams.class));
 
         var missingTarget = assertThrows(NullPointerException.class, () ->
                 codec.bindParams(parse("{\"sourceModuleId\": \"a\"}"), RpcParams.ModuleCopyParams.class));

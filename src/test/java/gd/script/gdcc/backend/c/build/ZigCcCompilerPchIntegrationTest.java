@@ -59,12 +59,17 @@ public class ZigCcCompilerPchIntegrationTest {
         var first = buildProject(projectInfo, cacheRoot);
         assertTrue(first.success(), () -> "first build failed:\n" + first.buildLog());
         assertFalse(first.buildLog().contains("PCH unavailable"), () -> "PCH must engage on the first build:\n" + first.buildLog());
+        assertFalse(first.buildLog().contains("retried without -include-pch"), first::buildLog);
+        try (var files = Files.walk(cacheRoot.resolve("local"))) {
+            assertTrue(files.anyMatch(Files::isRegularFile), "Zig must populate the configured local cache");
+        }
 
         var firstKeyDir = singleKeyDir(cacheRoot);
         var pchFile = firstKeyDir.resolve("gdcc_godot_prefix.pch");
         assertTrue(Files.isRegularFile(firstKeyDir.resolve(".ready")), "marker must be published: " + firstKeyDir);
         assertTrue(Files.isRegularFile(firstKeyDir.resolve("gdcc_godot_prefix.h")));
         var pchContent = Files.readAllBytes(pchFile);
+        var pchMtime = Files.getLastModifiedTime(pchFile);
         assertTrue(pchContent.length > 0, "a real pch was installed");
 
         // Entry-TU-only rebuild (the incremental user-code shape): same key, same pch file.
@@ -72,8 +77,10 @@ public class ZigCcCompilerPchIntegrationTest {
         var second = compileProject(projectDir, projectInfo, cacheRoot);
         assertTrue(second.success(), () -> "incremental build failed:\n" + second.buildLog());
         assertFalse(second.buildLog().contains("PCH unavailable"), () -> "an entry-only change must keep PCH:\n" + second.buildLog());
+        assertFalse(second.buildLog().contains("retried without -include-pch"), second::buildLog);
         assertEquals(firstKeyDir, singleKeyDir(cacheRoot), "an entry-only change must reuse the same key");
         assertArrayEquals(pchContent, Files.readAllBytes(pchFile), "the installed pch is reused, not rebuilt");
+        assertEquals(pchMtime, Files.getLastModifiedTime(pchFile), "an entry-only edit must not rewrite the PCH");
 
         // Tampering with one include-tree header changes the key and rebuilds the pch into a
         // new key directory (the stale entry is left alone; capacity management is backlog).
@@ -209,20 +216,21 @@ public class ZigCcCompilerPchIntegrationTest {
         }
         var projectDir = projectBaseDir.resolve("godot_project");
         copyTestProjectFixture(projectDir);
-        var runner = new GodotGdextensionTestRunner(projectDir);
-        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
-                artifacts,
-                List.of(),
-                new GodotGdextensionTestRunner.TestScriptSpec("""
-                        extends Node
+        try (var runner = new GodotGdextensionTestRunner(projectDir)) {
+            runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                    artifacts,
+                    List.of(),
+                    new GodotGdextensionTestRunner.TestScriptSpec("""
+                            extends Node
 
-                        func _ready() -> void:
-                            print("Test stop.")
-                        """)));
-        var runResult = runner.run(true);
-        var output = runResult.combinedOutput();
-        assertFalse(output.contains("Can't open dynamic library"), () -> "the PCH-built library failed to load:\n" + output);
-        assertTrue(runResult.stopSignalSeen(), () -> "the Godot run did not complete:\n" + output);
+                            func _ready() -> void:
+                                print("Test stop.")
+                            """)));
+            var runResult = runner.run(true);
+            var output = runResult.combinedOutput();
+            assertFalse(output.contains("Can't open dynamic library"), () -> "the PCH-built library failed to load:\n" + output);
+            assertTrue(runResult.stopSignalSeen(), () -> "the Godot run did not complete:\n" + output);
+        }
     }
 
     /// Copies the checked-in `test_project` fixture except the generated parts (`bin/`

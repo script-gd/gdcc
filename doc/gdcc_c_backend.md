@@ -7,7 +7,9 @@ registration rules are maintained in [gdcc_runtime_lib.md](gdcc_runtime_lib.md).
 
 `ZigCcCompiler` stores Zig local and global compiler caches under a shared cache root when one is
 available. If `GDCC_SHARED_C_COMPILER_CACHE` is set to a usable directory path, the compiler creates
-that directory when necessary and uses it as the root for `ZIG_CACHE_DIR` and `ZIG_GLOBAL_CACHE_DIR`.
+that directory when necessary and sets `ZIG_LOCAL_CACHE_DIR` to its `local` subdirectory and
+`ZIG_GLOBAL_CACHE_DIR` to its `global` subdirectory for every Zig subprocess. `ZIG_CACHE_DIR` is
+not a supported Zig local-cache override.
 Blank values, invalid paths, files, or paths that cannot be created fall back to the existing
 project-location behavior: use the project parent's `shared-compiler-cache` directory when it
 already exists, otherwise use the project's own `compiler-cache` directory.
@@ -43,7 +45,7 @@ The `<key>` is a truncated SHA-256 over:
 Usage and lifecycle rules:
 
 - `-include-pch` is force-included only into the whitelisted TUs that actually include
-  `godot_binding.h` (`entry.c`, `godot_binding.c`, `gdcc_coroutine.c`); `minicoro.c` never gets it,
+  `godot_binding.h` (`entry.c`, `godot_binding.c`, `gdcc_coroutine.c`, `gdcc_hrx.c`); `minicoro.c` never gets it,
   keeping the Godot ABI headers out of the isolated assembly-backend TU.
 - Before any TU of a round sees the PCH, a trivial probe TU is compiled with the exact TU flag
   surface. The probe source embeds a round-unique token so zig's content cache cannot replay a
@@ -268,6 +270,12 @@ Usage and lifecycle rules:
   - `r_initialization->initialize = &initialize;`
   - `r_initialization->deinitialize = &deinitialize;`
 - `initialize(...)` must return without side effects for levels other than `GDEXTENSION_INITIALIZATION_SCENE`.
+- Loading/unloading messages treat the module display name as string data, not template code:
+  `CCodegen` exposes the `StringUtil` static methods to the entry template, which calls
+  `StringUtil.escapeStringLiteral` when interpolating the name into UTF-8 C literals.
+  Project names containing quotes, backslashes or non-ASCII
+  characters must not break generated C. `CCodegenTest.moduleDisplayNameIsEscapedInEntryMessages`
+  covers this boundary.
 - `initialize(...)` freezes the HRX Callable dispatch mode BEFORE any class registration or
   static initialization can construct a custom Callable (runtime contract:
   `gdcc_runtime_lib.md` §HRX Hot-Reload Thunk Runtime; source of truth:

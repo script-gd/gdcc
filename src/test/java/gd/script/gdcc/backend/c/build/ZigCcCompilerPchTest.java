@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -41,7 +42,14 @@ class ZigCcCompilerPchTest {
         var sources = writeTuSources(projectDir);
         var cacheRoot = tempDir.resolve("cache");
         var launcher = new FakeProcessLauncher();
-        var compiler = launcher.newCompilerWithPch(VERSION, cacheRoot);
+        var expectedEnvironment = Map.of(
+                "ZIG_LOCAL_CACHE_DIR", cacheRoot.resolve("local").toString(),
+                "ZIG_GLOBAL_CACHE_DIR", cacheRoot.resolve("global").toString()
+        );
+        var compiler = new ZigCcCompiler((command, workingDir, environment) -> {
+            assertEquals(expectedEnvironment, environment, "every PCH/TU/link process must use the configured caches");
+            return launcher.start(command, workingDir, environment);
+        }, () -> Path.of("zig"), (_, _, _, _) -> VERSION, _ -> cacheRoot);
 
         var first = compiler.compile(projectDir, includeDirs, sources, "probe", COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
 

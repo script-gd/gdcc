@@ -104,7 +104,7 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 | `module.get` | `{moduleId}` | `ModuleSnapshot` |
 | `module.list` | `{}` | `ModuleSnapshot[]` |
 | `module.delete` | `{moduleId}` | `ModuleSnapshot` |
-| `module.copy` | `{sourceModuleId, newModuleId}` | `ModuleSnapshot` |
+| `module.copy` | `{sourceModuleId, newModuleId, newModuleName?}` | `ModuleSnapshot` |
 | `vfs.createDirectory` | `{moduleId, path}` | `DirectoryEntrySnapshot` |
 | `vfs.putFile` | `{moduleId, path, content, displayPath?, absolutePath?}` | `FileEntrySnapshot` |
 | `vfs.readFile` | `{moduleId, path}` | 文件内容字符串 |
@@ -134,7 +134,8 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
   踪、任务槽），且源模块已发布根下的托管输出链接（`generated`/`artifacts`）不随快
   照带入副本。目标 id 已占用返回 `-32001`（常见路径在源门等待前快速失败；并发竞争
   由注册表 `putIfAbsent` 原子判定），源不存在返回 `-32000`；两个 id 都会被 trim，
-  空白值按 `-32602` 处理。返回副本的 `ModuleSnapshot`。
+  空白值按 `-32602` 处理。可选 `newModuleName` 缺省或 `null` 时继承源名称；提供时 trim
+  并拒绝空白，仅改变副本名称，不改变源模块或副本 id。返回副本的 `ModuleSnapshot`。
 - `server.shutdown` 请求进程级优雅退出，幂等：重复调用返回相同的 `{}`。时序合同（由
   `RpcServerShutdown` 与 `JsonRpcHttpHandler` 实现，`RpcServerShutdownTest` 钉死）：
   方法 handler **只**登记退出意图（`AtomicBoolean` + 请求线程上的 ThreadLocal 服务标记）
@@ -606,15 +607,19 @@ fixture，列入 §7 后续工作。
   创建底部面板，在 `_exit_tree()` 中用 `remove_control_from_bottom_panel(dock)` 加
   `dock.free()` 移除，并把一个 `GdccRpcClient` 节点加为自己的子节点（使客户端位于
   编辑器 `SceneTree` 内）。dock 入树后 `plugin.gd` 以 fire-and-forget 方式调用
-  `_dock.auto_setup_module()`：从 `application/config/name` 推导 module id（经
-  `validate_filename()` 消毒，因为它同时充当主机目录名）并 `module.create`；若服务端
-  返回 `-32001`（模块已存在）则先 `module.delete` 再重建——注意这会丢弃旧模块的
-  整个内存 VFS 与已上传源码，编辑器重开或重载插件后必须重新 Upload；
-  随后 `options.get` 取完整快照，仅把 `projectPath` 改为
-  `res://.godot/gdcc/<moduleId>` 的 globalize 结果后 `options.set` 回传，使 Compile
-  开箱可用。options 调用走通用 `call_rpc` 路由，因为已安装的编译产物 GDExtension
-  可能早于 `.gd3` 源码中的 typed options wrapper。失败只记日志（服务端可能尚未
-  启动），手动按钮不受影响。
+  `_dock.auto_setup_module()`：确保服务可达并等待驻留服务宣布诊断模块 id，将 Module
+  检查字段指向它。诊断模块由服务独立创建并自动同步，无需 Upload。
+  **Build** 按钮复制诊断模块到 pid 作用域的编译副本，传入当前
+  `application/config/name` 作为 `newModuleName`（空白项目名拒绝构建）；随后
+  `options.get` 取完整快照，仅把 `projectPath` 改为
+  `res://.godot/gdcc/<副本id>` 的 globalize 结果后 `options.set` 回传，再启动异步编译。
+  options/copy 调用走通用 `call_rpc`，无需依赖已安装扩展中的新 typed wrapper；副本
+  名称回显不匹配时明确提示升级服务端，不继续用诊断名称构建。
+  成功任务的 `CompileResult.artifacts` 中的动态库部署到项目 `bin`，库名使用
+  `validate_filename()` 处理后的项目名称、平台、优化级别和 Godot 架构标签；写入
+  `res://bin/gdcc.gdextension` 后通过 EditorFileSystem 扫描让引擎维护扩展清单并首次
+  加载，已加载时显式重载。详细文件发布、失败和跨目标合同见编辑器集成文档的
+  “Build 部署与启用”节；API/RPC 本身不生成描述文件。
   注意：`.gd3` 源码不被引擎加载，编辑器中的 `GdccRpcClient` 只能来自**已安装的
   编译产物 GDExtension**（§5 的安装器与 gradle 任务负责就地安装）。
 - dock 直接以 `var res: Dictionary = await client.create_module(...).completed` 的
@@ -635,8 +640,8 @@ fixture，列入 §7 后续工作。
   持有 `shutdown_owned()`（插件 `_exit_tree` 最后一步）：对本会话拉起的进程发
   `server.shutdown` RPC，收到 200 响应即完成；不可达且端口仍在侦听时才 `OS.kill`
   兜底（PID 复用防护，见集成计划 §9 R19）。
-- dock 绝不阻塞编辑器主线程；所有网络等待都是信号 await。编辑器空闲活性的已实现
-  缓解见 §6.3。
+- dock 的正常操作不阻塞网络等待；所有网络等待都是信号 await。卸载时清理副本使用
+  有界阻塞 HTTPClient，因为帧泵客户端已离树。编辑器空闲活性的缓解见 §6.3。
 
 ---
 

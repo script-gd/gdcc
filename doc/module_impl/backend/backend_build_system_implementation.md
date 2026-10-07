@@ -57,7 +57,7 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
        -o <outputPath> <objPath...>
 ```
 
-- `-I`/`-std`/`-fPIC`/`-c` 只出现在编译类命令；`-shared` 只出现在链接命令；两者共享同一 `-target`、同一 `ZIG_CACHE_DIR`/`ZIG_GLOBAL_CACHE_DIR`（同一 cache root）与同一工作目录（`CProcessLauncher` 对每个子进程设置 `directory(projectDir)`）。
+- `-I`/`-std`/`-fPIC`/`-c` 只出现在编译类命令；`-shared` 只出现在链接命令；两者共享同一 `-target`、同一 `ZIG_LOCAL_CACHE_DIR`/`ZIG_GLOBAL_CACHE_DIR`（分别为同一 cache root 下的 `local`/`global`）与同一工作目录（`CProcessLauncher` 对每个子进程设置 `directory(projectDir)`）。`ZIG_CACHE_DIR` 不是 Zig 支持的本地缓存覆盖变量。
 - `languageFlags(ltoMode, opt)` 是 TU 编译、PCH 构建、PCH probe、PCH key 的统一 flag 来源；PCH 构建命令使用同一 `languageFlags` 但不带 `-c`，形态为 `zig cc -target <zigTarget> <languageFlags> -I<includeDir>... -x c-header <prefix.h> -o <pchPath>`。
 - object 路径固定为 `<projectDir>/obj/<debug|release>/<zigTarget>/<index>_<fileName>.o`，`<index>` 为 `cFiles` 下标，用于同名 `.c` 消歧。
 - 链接输入只使用本轮按 `cFiles` 顺序生成的 object 绝对路径列表：禁止 glob `obj/`、禁止以"object 已存在"跳过编译；每个 TU 每轮都执行 `zig cc -c`，缓存复用完全交给 zig 内容缓存。stale object 永远不进入链接。
@@ -83,7 +83,7 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
 PCH 的完整合同（key 组成、布局、自愈协议）以 `doc/gdcc_c_backend.md` 的 PCH Cache 章节为准；本节只列构建管线侧的实现要点：
 
 - 布局：`<cacheRoot>/pch/<key>/{gdcc_godot_prefix.h, gdcc_godot_prefix.pch, .ready}` 三者齐全才可消费；key 为 SHA-256 截断前 16 字节（32 个 hex 字符），输入含 zig 版本、resolved zig target、完整语言 flags（含 `-O` 与实际 LTO token）、保序 include 目录列表及每个目录的归一化绝对路径与目录树内容哈希（length-prefixed 拼接防歧义）。`GodotVersion`/`REAL_T_IS_DOUBLE` 不进 key，由头文件内容哈希覆盖。
-- 前缀头内容固定为 `#include <godot_binding.h>\n`；`-include-pch` 白名单仅 `entry.c`、`godot_binding.c`、`gdcc_coroutine.c`，`minicoro.c` 明确排除（它不包含 `godot_binding.h`）。
+- 前缀头内容固定为 `#include <godot_binding.h>\n`；`-include-pch` 白名单仅 `entry.c`、`godot_binding.c`、`gdcc_coroutine.c`、`gdcc_hrx.c`，`minicoro.c` 明确排除（它不包含 `godot_binding.h`）。
 - 前缀头安装到最终路径后 mtime 归一为 `Instant.EPOCH`，避免 zig 缓存回放旧 PCH 时触发 clang 的 mtime 校验。
 - 消费前 probe：在并行 TU 启动前以完整 TU flags、同一 registry/工作目录/`ZIG_*_CACHE_DIR` 执行；probe 源内容与文件名带轮次唯一后缀，防止 zig 内容缓存回放陈旧 probe 结果。
 - 自愈：已安装 PCH probe/校验失败时删除该 key 条目并最多重建一次；构建、安装、probe、版本探测或 include 树哈希失败一律只回退本轮无 PCH，不使构建失败。

@@ -38,7 +38,7 @@ import java.util.concurrent.TimeUnit;
 /// Deliberately separate from `GodotGdextensionTestRunner`: that runner rewrites `main.tscn`
 /// and binds the `test_project`/`root.gd` stop-signal contract, while the bootstrap flow drives
 /// a copied `src/editor_addon` project through `-s` script mode. The generic responsibilities
-/// live here: project copying (excluding `.godot/` caches), client-library compilation, and
+/// live here: project copying (excluding `.godot/` caches and project `bin/` outputs), client-library compilation, and
 /// GDExtension installation (`bin/` artifacts + `.gdextension` metadata, with
 /// `.godot/extension_list.cfg` only where a plain runtime launch needs it).
 public final class EditorAddonProjectInstaller {
@@ -250,8 +250,9 @@ public final class EditorAddonProjectInstaller {
 
     /// Recursively clears `targetDir` (when it already exists) and copies `sourceDir` into it.
     /// Every `.godot/` directory is skipped so a stale editor cache (imported textures, old
-    /// extension lists) can never leak into the copy — the test installs its own fresh
-    /// `extension_list.cfg` afterwards.
+    /// extension lists) can never leak into the copy. Root `bin/` outputs are also excluded so
+    /// a manual project Build cannot introduce an extra extension during the test's initial scan.
+    /// The test installs its own fresh library and `extension_list.cfg` afterwards.
     static void copyProject(Path sourceDir, Path targetDir) throws IOException {
         if (Files.exists(targetDir)) {
             clearDirectory(targetDir);
@@ -260,7 +261,8 @@ public final class EditorAddonProjectInstaller {
         try (var walk = Files.walk(sourceDir)) {
             for (var source : walk.toList()) {
                 var relative = sourceDir.relativize(source);
-                if (isInsideGodotCache(relative)) {
+                if (isInsideGodotCache(relative)
+                        || relative.getNameCount() > 0 && relative.getName(0).toString().equals("bin")) {
                     continue;
                 }
                 var target = targetDir.resolve(relative);

@@ -276,6 +276,17 @@ class JsonRpcDispatcherTest {
                 "module.copy", params("sourceModuleId", "demo", "newModuleId", "copy"), new JsonPrimitive(4)
         ));
         assertEquals("copy", copied.getAsJsonObject("result").get("moduleId").getAsString());
+        assertEquals("Demo", copied.getAsJsonObject("result").get("moduleName").getAsString());
+        var namedCopy = dispatcher.dispatch(request(
+                "module.copy", params("sourceModuleId", "demo", "newModuleId", "named-copy",
+                        "newModuleName", " My Game "), new JsonPrimitive(5)
+        ));
+        assertEquals("My Game", namedCopy.getAsJsonObject("result").get("moduleName").getAsString());
+        var blankName = dispatcher.dispatch(request(
+                "module.copy", params("sourceModuleId", "demo", "newModuleId", "bad-copy",
+                        "newModuleName", "  "), new JsonPrimitive(6)
+        ));
+        assertEquals(JsonRpcDispatcher.INVALID_PARAMS, blankName.getAsJsonObject("error").get("code").getAsInt());
     }
 
     @Test

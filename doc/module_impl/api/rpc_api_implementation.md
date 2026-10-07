@@ -111,6 +111,7 @@ Current public operations are grouped below by responsibility.
 - `listModules()`
 - `deleteModule(moduleId)`
 - `copyModule(sourceModuleId, newModuleId)`
+- `copyModule(sourceModuleId, newModuleId, newModuleName)`
 
 Module IDs are caller-provided, trimmed, non-blank strings. Duplicate IDs fail. Deleting a module
 removes its in-memory state completely, except retained compile task snapshots that already exist in
@@ -131,6 +132,12 @@ with `ApiModuleNotFoundException`; an occupied target id fails with
 with the registry's atomic insertion as the race guard. Callers that compile the copy must
 assign it its own `projectPath` first — copying preserves the source's options verbatim, and
 two modules must not share a physical build directory (§8).
+
+The optional `newModuleName` overrides only the copy's display name; null preserves the source
+name. A supplied name is trimmed and must be non-blank, just like `createModule`'s name. This
+lets editor Build copies use the current Godot project name while retaining private, process-scoped
+module IDs. The source module is not renamed. Backend build basenames still derive from module IDs;
+the editor adapter gives deployed libraries project-derived filenames.
 
 ### 3.2 Virtual Filesystem
 

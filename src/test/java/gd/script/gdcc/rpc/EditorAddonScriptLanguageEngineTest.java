@@ -75,6 +75,7 @@ class EditorAddonScriptLanguageEngineTest {
     private static final Map<String, List<String>> EXPECTED_STEPS = Map.ofEntries(
             Map.entry("language", List.of(
                     "config", "language_registered", "language_identity", "load_roundtrip",
+                    "script_icon", "script_icon_refresh",
                     "save_roundtrip", "save_bad_path", "reload_from_disk", "threaded_load",
                     "validate_valid_true", "create_script_valid", "header_scan_edges",
                     "disabled_safe", "reenabled_same_instance")),
@@ -142,13 +143,15 @@ class EditorAddonScriptLanguageEngineTest {
                     "hook_invoked_on_outage", "hook_ok_ping_fail_capped",
                     "stale_hook_answer_dropped", "recovered_after_hook",
                     "hook_pending_uninstall_recovers", "survived")),
-            // Phase 10: dock Compile copies the auto-synced diagnostics module server-side,
-            // compiles the copy with a real native build, and never blocks the diagnostics
-            // module gate; the second compile replaces the stale copy (-32001 path).
-                    Map.entry("dock_compile", List.of(
+            // Build compiles an isolated snapshot, deploys it and enables the extension;
+            // rebuilding replaces both the snapshot and live native behavior.
+            Map.entry("dock_compile", List.of(
                     "config", "service_ready", "fixture_written", "broken_fixture_removed",
                     "fixture_synced", "copy_created", "diag_alive_during_compile",
-                    "compile_succeeded", "fixture_resynced", "recompile_replaces_copy",
+                    "compile_succeeded", "project_module_name", "library_deployed",
+                    "extension_enabled", "extension_list_persisted", "invalid_deployment_preserves_build",
+                    "invalid_metadata_preserves_build", "optimization_variants_preserved",
+                    "fixture_resynced", "recompile_replaces_copy", "rebuilt_extension_enabled",
                     "diag_still_responsive", "survived")),
             // Phase 4: `_complete_code` — degraded answers (client not READY / no sentinel /
             // disabled service), white-box pins of the kind table and the insert-text
@@ -262,7 +265,7 @@ class EditorAddonScriptLanguageEngineTest {
     /// the 64KB class-file limit for one string literal, so it is assembled from method
     /// results — method calls are not compile-time constant expressions, so javac emits a
     /// runtime concat instead of folding the parts back into a single oversized constant.
-    private static final String DRIVER_PLUGIN = driverPluginCore() + driverPluginCompletion()
+    private static final String DRIVER_PLUGIN = driverPluginCore() + driverPluginLifecycle() + driverPluginCompletion()
             + driverPluginRevalidate() + driverPluginClassMetadata() + driverPluginWorkspace()
             + driverPluginLookup() + driverPluginExclusions() + driverPluginSyntaxHighlighter();
 
@@ -385,6 +388,10 @@ class EditorAddonScriptLanguageEngineTest {
                     _config = parsed
                     _step("config", true)
                     var mode := str(_config.get("mode", ""))
+                    if mode == "dock_compile":
+                        # The harness is pathless so Godot's normal extension-membership script
+                        # reload does not cancel it. All shipped addon scripts retain their paths.
+                        get_script().resource_path = ""
                     if mode == "language":
                         await _run_language_mode()
                     elif mode == "launch":
@@ -453,9 +460,26 @@ class EditorAddonScriptLanguageEngineTest {
                         load_ok = load_ok and res._get_global_name() == &"Gd3Phase1Sample"
                         load_ok = load_ok and res._get_instance_base_type() == &"RefCounted"
                         load_ok = load_ok and not res._can_instantiate()
+                        load_ok = load_ok and res._get_class_icon_path() == "res://addons/gdcc/gdcc_script.svg"
                     _step("load_roundtrip", load_ok)
                     if not load_ok:
                         return
+                    var icon_theme := EditorInterface.get_editor_theme()
+                    var icon_ok := icon_theme.has_icon("GdccScript", "EditorIcons")
+                    var script_icon := icon_theme.get_icon("GdccScript", "EditorIcons")
+                    icon_ok = icon_ok and script_icon.get_size() == Vector2(16, 16)
+                    var icon_image := script_icon.get_image()
+                    var has_visible_pixel := false
+                    for y in range(icon_image.get_height()):
+                        for x in range(icon_image.get_width()):
+                            var pixel := icon_image.get_pixel(x, y)
+                            has_visible_pixel = has_visible_pixel or pixel.a > 0.0
+                            icon_ok = icon_ok and is_equal_approx(pixel.r, pixel.g) and is_equal_approx(pixel.g, pixel.b)
+                    _step("script_icon", icon_ok and has_visible_pixel)
+                    icon_theme.clear_icon("GdccScript", "EditorIcons")
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    _step("script_icon_refresh", EditorInterface.get_editor_theme().get_icon("GdccScript", "EditorIcons") == script_icon)
                 
                     var updated := source + "\\n# edited in memory\\n"
                     res._set_source_code(updated)
@@ -533,15 +557,22 @@ class EditorAddonScriptLanguageEngineTest {
                     var gone := _find_gd3_language() == null
                     var still_valid: bool = res._get_language() == lang \\
                             and lang._validate("extends RefCounted\\n", sample_path, true, true, true, true).get("valid", false) == true
-                    _step("disabled_safe", gone and still_valid)
+                    _step("disabled_safe", gone and still_valid and not EditorInterface.get_editor_theme().has_icon("GdccScript", "EditorIcons"))
                     EditorInterface.set_plugin_enabled("gdcc", true)
                     await get_tree().process_frame
                     await get_tree().process_frame
                     var relang := _find_gd3_language()
-                    _step("reenabled_same_instance", relang != null and relang == lang)
+                    _step("reenabled_same_instance", relang != null and relang == lang
+                            and EditorInterface.get_editor_theme().has_icon("GdccScript", "EditorIcons")
+                            and EditorInterface.get_editor_theme().get_icon("GdccScript", "EditorIcons").get_size() == Vector2(16, 16))
                 
                     DirAccess.remove_absolute(ProjectSettings.globalize_path(sample_path))
                     DirAccess.remove_absolute(ProjectSettings.globalize_path(threaded_path))
+                """;
+    }
+
+    private static String driverPluginLifecycle() {
+        return """
                 
                 func _run_launch_mode() -> void:
                     var port := int(_config["port"])
@@ -1755,8 +1786,8 @@ class EditorAddonScriptLanguageEngineTest {
                             return sib.get("_dock")
                     return null
 
-                # Phase 10: dock Compile copies the auto-synced diagnostics module server-side
-                # and compiles the copy; the diagnostics module gate stays free mid-compile.
+                # Build snapshots diagnostics without holding its gate during native compilation,
+                # then deploys and loads the resulting extension through the real editor APIs.
                 func _run_dock_compile_mode() -> void:
                     var service := _service()
                     var dock: Variant = _find_gdcc_dock()
@@ -1768,7 +1799,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("service_ready", service.install(EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", rpc_port) == OK)
 
                     var fixture_path := "res://compile_probe.gd3"
-                    var fixture_src := "class_name DockCompileProbe\\nextends Node\\n"
+                    var fixture_src := "class_name DockCompileProbe\\nextends Node\\nfunc build_value() -> int:\\n    return 1\\n"
                     _write_text_file(fixture_path, fixture_src)
                     service.notify_filesystem_changed()
                     _step("fixture_written", true)
@@ -1823,14 +1854,18 @@ class EditorAddonScriptLanguageEngineTest {
                     if not (ready_ok and synced):
                         return
 
-                    # Press the dock's real Compile button: its RPC endpoint is sourced from
+                    # Change the name AFTER diagnostics setup: Build must name the new copy,
+                    # not inherit the diagnostics module's display name.
+                    var project_name := 'Dock "Game"'
+                    ProjectSettings.set_setting("application/config/name", project_name)
+                    # Press the dock's real Build button: its RPC endpoint is sourced from
                     # the service (installed on the test ports above), so no pointing is needed.
                     var compile_button: Button = null
                     for button in dock._action_buttons:
-                        if button.text == "Compile":
+                        if button.text == "Build":
                             compile_button = button
                     if compile_button == null:
-                        _step("copy_created", false, "Compile button not found in the dock")
+                        _step("copy_created", false, "Build button not found in the dock")
                         return
                     compile_button.pressed.emit()
                     # Same id derivation as the dock: diagnostics prefix swapped for the
@@ -1852,7 +1887,7 @@ class EditorAddonScriptLanguageEngineTest {
                             await get_tree().create_timer(0.2).timeout
                     _step("copy_created", copy_seen)
                     if not copy_seen:
-                        print("DOCK LOG:\n" + dock._log_output.text)
+                        print("DOCK LOG:\\n" + dock._log_output.text)
                         return
 
                     # While the dock knows an active compile task on the copy, an analyze on
@@ -1894,17 +1929,111 @@ class EditorAddonScriptLanguageEngineTest {
                             + DirAccess.get_files_at(build_dir).size()) > 0
                     _step("compile_succeeded", succeeded, str(last_result))
                     if not succeeded:
-                        print("DOCK LOG:\n" + dock._log_output.text)
+                        print("DOCK LOG:\\n" + dock._log_output.text)
                         return
 
-                    # Second compile through the real UI path: wait until the dock drained the
-                    # first task (button re-enabled), CHANGE the fixture, and wait for the
-                    # re-sync — the re-created copy must carry the new content, proving the
-                    # -32001 delete+recopy path rather than a stale-copy reuse.
                     var idle_deadline := Time.get_ticks_msec() + 30000
                     while compile_button.disabled and Time.get_ticks_msec() < idle_deadline:
                         await get_tree().process_frame
-                    var updated_src := "class_name DockCompileProbe\\nextends Node\\n\\n# recompiled\\n"
+                    var copy_snapshot: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id}).completed
+                    _step("project_module_name", copy_snapshot["ok"] and str(copy_snapshot["result"]["moduleName"]) == project_name)
+                    var extension_path := "res://bin/gdcc.gdextension"
+                    var metadata := ConfigFile.new()
+                    var metadata_ok := metadata.load(extension_path) == OK
+                    var library_path := ""
+                    if metadata_ok:
+                        var feature_key := OS.get_name().to_lower() + ".debug." + Engine.get_architecture_name()
+                        library_path = str(metadata.get_value("libraries", feature_key, ""))
+                        metadata_ok = metadata.get_value("configuration", "entry_symbol", "") == "gdextension_entry" \\
+                                and metadata.get_value("configuration", "compatibility_minimum", "") == "4.5" \\
+                                and metadata.get_value("configuration", "reloadable", false) == true
+                    var source_library := ""
+                    for artifact in last_result["artifacts"]:
+                        if str(artifact).get_extension() in ["dll", "so", "dylib"]:
+                            source_library = str(artifact)
+                    var deployed_ok := metadata_ok and library_path.begins_with("res://bin/") \\
+                            and library_path.get_file().contains(project_name.validate_filename()) \\
+                            and library_path.get_basename().ends_with("-" + FileAccess.get_sha256(source_library).left(16)) \\
+                            and FileAccess.file_exists(library_path) and source_library != "" \\
+                            and FileAccess.get_md5(library_path) == FileAccess.get_md5(source_library)
+                    _step("library_deployed", deployed_ok, dock._log_output.text)
+                    if not deployed_ok:
+                        return
+                    var enabled := GDExtensionManager.is_extension_loaded(extension_path) and ClassDB.class_exists("DockCompileProbe")
+                    var probe: Variant = ClassDB.instantiate("DockCompileProbe") if enabled else null
+                    _step("extension_enabled", enabled and probe != null and int(probe.build_value()) == 1)
+                    if not enabled or probe == null:
+                        return
+                    _step("extension_list_persisted", FileAccess.get_file_as_string("res://.godot/extension_list.cfg").split("\\n").has(extension_path))
+                    var metadata_md5 := FileAccess.get_md5(extension_path)
+                    var library_md5 := FileAccess.get_md5(library_path)
+                    var invalid_result: Dictionary = last_result.duplicate(true)
+                    invalid_result["artifacts"] = []
+                    var empty_rejected: bool = not await dock._deploy_build_result(invalid_result, project_name)
+                    invalid_result["artifacts"] = [source_library + ".missing." + source_library.get_extension()]
+                    var missing_rejected: bool = not await dock._deploy_build_result(invalid_result, project_name)
+                    invalid_result["outcome"] = "FAILURE"
+                    var failed_rejected: bool = not await dock._deploy_build_result(invalid_result, project_name)
+                    invalid_result = last_result.duplicate(true)
+                    invalid_result["sourcePaths"] = ["res://addons/gdcc/gdcc_script.gd3"]
+                    var addon_rejected: bool = not await dock._deploy_build_result(invalid_result, project_name)
+                    _step("invalid_deployment_preserves_build", empty_rejected and missing_rejected and failed_rejected and addon_rejected \\
+                            and FileAccess.get_md5(extension_path) == metadata_md5 \\
+                            and FileAccess.get_md5(library_path) == library_md5 and int(probe.build_value()) == 1)
+
+                    var invalid_metadata_ok := true
+                    for key in ["gdcc_library_aliases", "gdcc_libraries", "gdcc_managed"]:
+                        var malformed := ConfigFile.new()
+                        invalid_metadata_ok = invalid_metadata_ok and malformed.load(extension_path) == OK
+                        malformed.set_value("configuration", key, "invalid")
+                        invalid_metadata_ok = invalid_metadata_ok and malformed.save(extension_path) == OK
+                        var malformed_md5 := FileAccess.get_md5(extension_path)
+                        var before_files := DirAccess.get_files_at("res://bin")
+                        before_files.sort()
+                        var rejected: bool = not await dock._deploy_build_result(last_result, project_name)
+                        var after_files := DirAccess.get_files_at("res://bin")
+                        after_files.sort()
+                        invalid_metadata_ok = invalid_metadata_ok and rejected and before_files == after_files \\
+                                and FileAccess.get_md5(extension_path) == malformed_md5 \\
+                                and FileAccess.get_md5(library_path) == library_md5
+                        invalid_metadata_ok = invalid_metadata_ok and metadata.save(extension_path) == OK
+                    _step("invalid_metadata_preserves_build", invalid_metadata_ok, dock._log_output.text)
+
+                    # Ownership records cannot authorize deletion outside the direct bin directory.
+                    var external_path := "res://foreign_build.keep"
+                    _write_text_file(external_path, "project-owned file")
+                    var recorded_libraries: PackedStringArray = metadata.get_value("configuration", "gdcc_libraries")
+                    recorded_libraries.append(external_path)
+                    recorded_libraries.append("res://bin/../foreign_build.keep")
+                    metadata.set_value("configuration", "gdcc_libraries", recorded_libraries)
+                    metadata.save(extension_path)
+
+                    # Distinct explicit optimization variants must not be mistaken for aliases.
+                    var release_result: Dictionary = last_result.duplicate(true)
+                    release_result["compileOptions"]["optimizationLevel"] = "RELEASE"
+                    var release_installed: bool = await dock._deploy_build_result(release_result, project_name)
+                    var activation_deadline := Time.get_ticks_msec() + 30000
+                    while not dock._pending_activation.is_empty() and Time.get_ticks_msec() < activation_deadline:
+                        await get_tree().process_frame
+                    var variants := ConfigFile.new()
+                    var variants_ok := release_installed and variants.load(extension_path) == OK
+                    var debug_key := OS.get_name().to_lower() + ".debug." + Engine.get_architecture_name()
+                    var release_key := OS.get_name().to_lower() + ".release." + Engine.get_architecture_name()
+                    var release_library := str(variants.get_value("libraries", release_key, ""))
+                    variants_ok = variants_ok and str(variants.get_value("libraries", debug_key, "")) == library_path \\
+                            and release_library != library_path and FileAccess.file_exists(release_library)
+                    var debug_installed: bool = await dock._deploy_build_result(last_result, project_name)
+                    activation_deadline = Time.get_ticks_msec() + 30000
+                    while not dock._pending_activation.is_empty() and Time.get_ticks_msec() < activation_deadline:
+                        await get_tree().process_frame
+                    variants_ok = variants_ok and debug_installed and variants.load(extension_path) == OK \\
+                            and str(variants.get_value("libraries", release_key, "")) == release_library \\
+                            and FileAccess.get_file_as_string(external_path) == "project-owned file"
+                    _step("optimization_variants_preserved", variants_ok, dock._log_output.text)
+
+                    # Rebuild through the real UI after a sync: both the new copy's source and
+                    # a live instance's behavior must change, not just a comment or file timestamp.
+                    var updated_src := fixture_src.replace("return 1", "return 2")
                     _write_text_file(fixture_path, updated_src)
                     service.notify_filesystem_changed()
                     var resynced := false
@@ -1949,8 +2078,19 @@ class EditorAddonScriptLanguageEngineTest {
                             "first_task=" + str(first_task) + " second_task=" + str(second_task)
                             + " fresh_copy=" + str(fresh_copy))
                     if not (second_ok and fresh_copy and second_success):
-                        print("DOCK LOG:\n" + dock._log_output.text)
+                        print("DOCK LOG:\\n" + dock._log_output.text)
                         return
+
+                    idle_deadline = Time.get_ticks_msec() + 30000
+                    while compile_button.disabled and Time.get_ticks_msec() < idle_deadline:
+                        await get_tree().process_frame
+                    variants_ok = variants.load(extension_path) == OK \\
+                            and str(variants.get_value("libraries", release_key, "")) == release_library
+                    _step("rebuilt_extension_enabled", not compile_button.disabled \\
+                            and GDExtensionManager.is_extension_loaded(extension_path) \\
+                            and int(probe.build_value()) == 2 and variants_ok, dock._log_output.text)
+                    if probe != null:
+                        probe.free()
 
                     var final_analyze: Dictionary = await client.analyze(diag_module_id, false).completed
                     _step("diag_still_responsive", final_analyze["ok"]
@@ -3889,10 +4029,11 @@ class EditorAddonScriptLanguageEngineTest {
         }
     }
 
-    /// Phase 10 acceptance: the dock Compile button copies the auto-synced diagnostics module
+    /// The dock Build button copies the auto-synced diagnostics module using the project name,
     /// via `module.copy`, compiles the copy with a real native build into its own
     /// `.godot/gdcc/<copy>` directory, keeps the diagnostics module gate responsive
-    /// mid-compile, and replaces the stale copy on the second press. Runs against a real
+    /// mid-compile, deploys into `bin`, persists the extension list and replaces live native
+    /// behavior on the second press. Invalid results leave the installed build intact. Uses a real
     /// in-process gdcc RPC server (zig-gated through `runCase`).
     @Test
     void dockCompileCopiesDiagnosticsModule() throws Exception {
@@ -4175,6 +4316,9 @@ class EditorAddonScriptLanguageEngineTest {
         if (!content.contains(anchor)) {
             throw new IllegalStateException("project.godot enabled-plugins anchor not found:\n" + content);
         }
+        // Each case owns its endpoint and launch hook; never bootstrap the source project's
+        // relative jar command before the driver installs those settings.
+        content = content.replaceAll("(?m)^server/launch_command=.*$", "server/launch_command=\"\"");
         Files.writeString(projectFile, content.replace(anchor,
                 enableGdcc
                         ? "enabled=PackedStringArray(\"res://addons/gdcc/plugin.cfg\", "

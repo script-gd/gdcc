@@ -142,10 +142,12 @@ class RpcApiRoundTripHttpTest {
 
             // module.copy returns the new module's snapshot with carried-over options and VFS.
             var copy = rpc.callForResult("module.copy", params(
-                    "sourceModuleId", "diag", "newModuleId", "compile-copy"
+                    "sourceModuleId", "diag", "newModuleId", "compile-copy", "newModuleName", "My Game"
             )).getAsJsonObject();
             assertEquals("compile-copy", copy.get("moduleId").getAsString());
-            assertEquals("Diagnostics", copy.get("moduleName").getAsString());
+            assertEquals("My Game", copy.get("moduleName").getAsString());
+            assertEquals("Diagnostics", rpc.callForResult("module.get", params("moduleId", "diag"))
+                    .getAsJsonObject().get("moduleName").getAsString());
             assertEquals(1, copy.get("rootEntryCount").getAsInt());
             assertFalse(copy.get("hasLastCompileResult").getAsBoolean());
             assertTrue(copy.getAsJsonObject("compileOptions").get("strictMode").getAsBoolean());

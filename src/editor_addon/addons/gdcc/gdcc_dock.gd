@@ -20,6 +20,7 @@ const ERR_METHOD_NOT_FOUND := -32601
 # prefix so it stays scoped to the same project root hash and editor process.
 const DIAG_MODULE_PREFIX := "gdcc_editor_diagnostics_"
 const COMPILE_MODULE_PREFIX := "gdcc_editor_compile_"
+const BUILD_EXTENSION_PATH := "res://bin/gdcc.gdextension"
 const SETTING_LAUNCH_COMMAND := "gdcc/server/launch_command"
 const SETTING_SERVER_HOST := "gdcc/server/host"
 const SETTING_SERVER_PORT := "gdcc/server/port"
@@ -31,7 +32,7 @@ var _report_busy: Callable
 # Shared server launcher owned by the plugin; used to bring the service up before the first
 # connection attempt when the user configured a launch command.
 var _launcher: Node
-# Resident editor service (plan §7 Phase 5): the status area reads its diagnostics-channel
+# Resident editor service: the status area reads its diagnostics-channel
 # snapshot, and the dock's RPC endpoint is sourced from it (the service follows the
 # per-project `gdcc/server/*` settings — the single configuration source).
 var _service: GdccEditorService
@@ -52,6 +53,8 @@ var _current_task_port: int = 0
 # unload cleanup must talk to the server that actually owns each copy.
 var _owned_copies: Array = []
 var _busy_count: int = 0
+var _pending_activation: Dictionary = {}
+var _filesystem_generation: int = 0
 
 
 # Injected by plugin.gd before the dock enters the tree; `_ready` builds the UI afterwards.
@@ -64,7 +67,7 @@ func setup(client: GdccRpcClient, _editor_interface: EditorInterface, busy_repor
 
 
 func _ready() -> void:
-    # Diagnostics channel status (plan §7 Phase 5 item 2): a read-only mirror of the
+    # Diagnostics channel status: a read-only mirror of the
     # service's channel snapshot, refreshed on a slow timer (the channel state is polled,
     # not signaled). The server endpoint and launch command are per-project settings edited
     # in the Project Settings dialog (gdcc/server/*) — the dock deliberately has no editing
@@ -76,7 +79,9 @@ func _ready() -> void:
     status_timer.wait_time = 1.0
     status_timer.autostart = true
     status_timer.timeout.connect(_refresh_status)
+    status_timer.timeout.connect(_poll_build_activation)
     add_child(status_timer)
+    EditorInterface.get_resource_filesystem().filesystem_changed.connect(_on_build_filesystem_changed)
     _refresh_status()
 
     var config_hint := Label.new()
@@ -98,7 +103,7 @@ func _ready() -> void:
 
     var compile_row := HBoxContainer.new()
     _add_button(compile_row, "Analyze", _on_analyze_pressed)
-    _add_button(compile_row, "Compile", _on_compile_pressed)
+    _add_button(compile_row, "Build", _on_build_pressed)
     # Cancel is not tracked: it must stay enabled while busy so an in-flight compile can
     # always be cancelled.
     _add_button(compile_row, "Cancel", _on_cancel_pressed, false)
@@ -170,7 +175,7 @@ func _log_error(action: String, rpc: Dictionary) -> void:
 
 # Busy bookkeeping for the editor-idle liveness mitigation; nesting-safe via a counter. The
 # actual global flag write happens in the plugin's coordinator; the dock only reports deltas
-# and manages its own buttons. Action buttons are disabled while busy so re-entrant Compile
+# and manages its own buttons. Action buttons are disabled while busy so re-entrant Build
 # presses cannot race `_current_task_id`.
 func _begin_busy() -> void:
     if _busy_count == 0:
@@ -182,7 +187,7 @@ func _begin_busy() -> void:
 func _end_busy() -> void:
     _busy_count = maxi(_busy_count - 1, 0)
     _report_busy.call(-1)
-    if _busy_count == 0:
+    if _busy_count == 0 and _pending_activation.is_empty():
         _set_action_buttons_enabled(true)
 
 
@@ -315,17 +320,18 @@ func _on_analyze_pressed() -> void:
 
 # Creates (or refreshes) the compile copy of the diagnostics module and points the copy's
 # build directory at its own `.godot/gdcc/<copy>` host dir. Returns the copy's module id, or
-# "" after logging why the compile cannot proceed. `call_rpc` is used instead of typed
+# "" after logging why the build cannot proceed. `call_rpc` is used instead of typed
 # wrappers because the installed compiled extension may predate them (the same reason the old
 # auto setup avoided `get_compile_options`).
-func _prepare_compile_copy(source_module_id: String) -> String:
+func _prepare_compile_copy(source_module_id: String, project_name: String) -> String:
     var copy_module_id: String = source_module_id.replace(DIAG_MODULE_PREFIX, COMPILE_MODULE_PREFIX)
     if copy_module_id == source_module_id:
         # Defensive fallback if the diagnostics id convention ever changes: the copy must
         # never alias its source.
         copy_module_id = source_module_id + "_compile"
-    var copied: Dictionary = await _client.call_rpc(
-            "module.copy", {"sourceModuleId": source_module_id, "newModuleId": copy_module_id}).completed
+    var copy_params := {"sourceModuleId": source_module_id, "newModuleId": copy_module_id,
+            "newModuleName": project_name}
+    var copied: Dictionary = await _client.call_rpc("module.copy", copy_params).completed
     if not copied["ok"]:
         var code: int = int(copied["error"]["code"])
         if code == ERR_METHOD_NOT_FOUND:
@@ -356,8 +362,7 @@ func _prepare_compile_copy(source_module_id: String) -> String:
             if not deleted["ok"]:
                 _log_error("delete stale compile copy", deleted)
                 return ""
-            copied = await _client.call_rpc(
-                    "module.copy", {"sourceModuleId": source_module_id, "newModuleId": copy_module_id}).completed
+            copied = await _client.call_rpc("module.copy", copy_params).completed
         if not copied["ok"]:
             _log_error("copy diagnostics module", copied)
             return ""
@@ -370,6 +375,9 @@ func _prepare_compile_copy(source_module_id: String) -> String:
             already_tracked = true
     if not already_tracked:
         _owned_copies.append({"host": _client.host, "port": _client.port, "module_id": copy_module_id})
+    if str(copied["result"]["moduleName"]) != project_name:
+        _log("build failed: the gdcc server does not support named module copies; upgrade the server")
+        return ""
     # options.set replaces the whole snapshot, so fetch the full options.get shape and edit
     # only projectPath. The copy inherits the diagnostics module's options verbatim; its
     # projectPath must be exclusive (server concurrency contract: no shared build dirs).
@@ -391,24 +399,28 @@ func _prepare_compile_copy(source_module_id: String) -> String:
     return copy_module_id
 
 
-# Compile flow (plan §7 Phase 10): snapshot the service's private diagnostics module — kept
+# Build snapshots the service's private diagnostics module, kept
 # continuously in sync by the reconciler — into a per-process compile copy, then compile the
 # copy. The diagnostics module never hosts a compile, so its module gate stays free for
 # editor analysis traffic while the native build runs.
-func _on_compile_pressed() -> void:
+func _on_build_pressed() -> void:
     _apply_endpoint()
     if _service == null or not _service.is_diag_ready():
-        _log("compile skipped: diagnostics channel is not ready yet")
+        _log("build skipped: diagnostics channel is not ready yet")
         return
     # `_apply_endpoint` sources the client endpoint from the service itself, so the compile
     # copy always targets the server that owns the diagnostics module — no stranger's module
     # can be hit by the -32001 replace path.
     var source_module_id: String = _service.get_diag_module_id()
     if source_module_id == "":
-        _log("compile skipped: diagnostics module id is not available yet")
+        _log("build skipped: diagnostics module id is not available yet")
+        return
+    var project_name := str(ProjectSettings.get_setting("application/config/name", "")).strip_edges()
+    if project_name == "":
+        _log("build skipped: set the project name in Project Settings (application/config/name)")
         return
     _begin_busy()
-    var module_id: String = await _prepare_compile_copy(source_module_id)
+    var module_id: String = await _prepare_compile_copy(source_module_id, project_name)
     if module_id == "":
         _end_busy()
         return
@@ -446,10 +458,9 @@ func _on_compile_pressed() -> void:
                     + " completedAt=" + str(task["completedAt"]))
             if task["result"] != null:
                 _log("compile outcome: " + str(task["result"]["outcome"]))
-            if state == "SUCCEEDED":
-                var last_result: Dictionary = await _client.get_last_compile_result(module_id).completed
-                if last_result["ok"] and last_result["result"] != null:
-                    _log("last result outcome: " + str(last_result["result"]["outcome"]))
+            if state == "SUCCEEDED" and task["result"] != null:
+                # Deploy this task's frozen result, never a later module result or stale files.
+                await _deploy_build_result(task["result"], project_name)
             if _current_task_id == task_id:
                 _current_task_id = -1
             _end_busy()
@@ -457,8 +468,182 @@ func _on_compile_pressed() -> void:
         await get_tree().create_timer(0.25).timeout
     _end_busy()
     # The task keeps running server-side and `_current_task_id` is deliberately kept: pressing
-    # Compile again cancels it through the stale-copy busy path.
-    _log("compile poll timed out (task " + str(task_id) + " still running; press Cancel, or Compile again to cancel and replace it)")
+    # Build again cancels it through the stale-copy busy path.
+    _log("build poll timed out (task " + str(task_id) + " still running; press Cancel, or Build again to cancel and replace it)")
+
+
+func _deploy_build_result(result: Dictionary, project_name: String) -> bool:
+    if str(result.get("outcome", "")) != "SUCCESS":
+        _log("build deployment failed: compile result is not successful")
+        return false
+    # Open excluded addon tabs are admitted for diagnostics, but their native classes already
+    # belong to the resident editor extension and must never be registered by a project build.
+    for source_path in result["sourcePaths"]:
+        if str(source_path).begins_with("res://addons/gdcc/"):
+            _log("build deployment failed: editor addon sources are included; close those tabs or restore sync exclusions")
+            return false
+    var options: Dictionary = result["compileOptions"]
+    var target_parts := str(options["targetPlatform"]).split("_", true, 1)
+    var platform_features := {"WINDOWS": "windows", "LINUX": "linux", "MACOS": "macos",
+            "ANDROID": "android", "WEB": "web"}
+    var architecture_features := {"X86_64": "x86_64", "AARCH64": "arm64",
+            "RISCV64": "rv64", "WASM32": "wasm32"}
+    var library_extensions := {"windows": "dll", "linux": "so", "macos": "dylib",
+            "android": "so", "web": "wasm"}
+    if target_parts.size() != 2 or not platform_features.has(target_parts[0]) \
+            or not architecture_features.has(target_parts[1]):
+        _log("build deployment failed: unsupported target " + str(options["targetPlatform"]))
+        return false
+    var platform: String = platform_features[target_parts[0]]
+    var architecture: String = architecture_features[target_parts[1]]
+    var level := str(options["optimizationLevel"]).to_lower()
+    if level not in ["debug", "release"]:
+        _log("build deployment failed: unsupported optimization level " + level)
+        return false
+    var library_source := ""
+    for artifact in result["artifacts"]:
+        var path := str(artifact).replace("\\", "/")
+        if path.get_extension().to_lower() == library_extensions[platform]:
+            if library_source != "":
+                _log("build deployment failed: compile result contains multiple libraries")
+                return false
+            library_source = path
+    if library_source == "" or not FileAccess.file_exists(library_source):
+        _log("build deployment failed: compiled library is not accessible on this editor's filesystem")
+        return false
+    var library_hash := FileAccess.get_sha256(library_source)
+    if library_hash == "":
+        _log("build deployment failed: cannot read compiled library")
+        return false
+    # A fresh path defeats dyld's same-path image cache and never overwrites a mapped library.
+    var basename := project_name.validate_filename() + "_" + platform + "_" + level + "_" + architecture \
+            + "-" + library_hash.left(16)
+    var library_path := "res://bin/" + ("" if platform == "windows" or platform == "web" else "lib") \
+            + basename + "." + str(library_extensions[platform])
+    var config := ConfigFile.new()
+    if FileAccess.file_exists(BUILD_EXTENSION_PATH):
+        var loaded := config.load(BUILD_EXTENSION_PATH)
+        if loaded != OK or config.get_value("configuration", "gdcc_managed", false) != true:
+            _log("build deployment failed: refusing to overwrite an unmanaged or invalid " + BUILD_EXTENSION_PATH)
+            return false
+    var aliases_value: Variant = config.get_value("configuration", "gdcc_library_aliases", PackedStringArray())
+    var owned_value: Variant = config.get_value("configuration", "gdcc_libraries", PackedStringArray())
+    if not aliases_value is PackedStringArray or not owned_value is PackedStringArray:
+        _log("build deployment failed: invalid library ownership/alias metadata in " + BUILD_EXTENSION_PATH)
+        return false
+    config.set_value("configuration", "entry_symbol", "gdextension_entry")
+    config.set_value("configuration", "compatibility_minimum", "4.5")
+    config.set_value("configuration", "reloadable", true)
+    config.set_value("configuration", "gdcc_managed", true)
+    var library_key := platform + "." + level + "." + architecture
+    var alias_key := platform + "." + ("release" if level == "debug" else "debug") + "." + architecture
+    var active_key := platform + "." + ("debug" if OS.has_feature("debug") else "release") + "." + architecture
+    var previous_active_library := str(config.get_value("libraries", active_key, ""))
+    var aliases: PackedStringArray = aliases_value
+    aliases.erase(library_key)
+    config.set_value("libraries", library_key, library_path)
+    # Track aliases explicitly: equal paths alone cannot distinguish an alias from a real build.
+    if not config.has_section_key("libraries", alias_key) or aliases.has(alias_key):
+        config.set_value("libraries", alias_key, library_path)
+        if not aliases.has(alias_key):
+            aliases.append(alias_key)
+    config.set_value("configuration", "gdcc_library_aliases", aliases)
+    var owned_libraries: PackedStringArray = owned_value
+    var retained_libraries := PackedStringArray()
+    var obsolete_libraries := PackedStringArray()
+    for owned_path in owned_libraries:
+        if FileAccess.file_exists(owned_path):
+            retained_libraries.append(owned_path)
+            var referenced := false
+            for key in config.get_section_keys("libraries"):
+                referenced = referenced or str(config.get_value("libraries", key)) == owned_path
+            if not referenced:
+                obsolete_libraries.append(owned_path)
+    if not retained_libraries.has(library_path):
+        retained_libraries.append(library_path)
+    config.set_value("configuration", "gdcc_libraries", retained_libraries)
+    var filesystem := EditorInterface.get_resource_filesystem()
+    var scan_deadline := Time.get_ticks_msec() + 30000
+    while filesystem.is_scanning() and Time.get_ticks_msec() < scan_deadline:
+        await get_tree().process_frame
+    if filesystem.is_scanning():
+        _log("build deployment failed: editor filesystem scan did not finish")
+        return false
+    var error := DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://bin"))
+    if error != OK:
+        _log("build deployment failed: cannot create bin (error " + str(error) + ")")
+        return false
+    var library_temp := ProjectSettings.globalize_path(library_path + ".tmp")
+    if not FileAccess.file_exists(library_path):
+        error = DirAccess.copy_absolute(library_source, library_temp)
+        if error == OK:
+            error = DirAccess.rename_absolute(library_temp, ProjectSettings.globalize_path(library_path))
+    elif FileAccess.get_sha256(library_path) != library_hash:
+        _log("build deployment failed: hash-named library has unexpected contents: " + library_path)
+        return false
+    if error == OK:
+        # Windows rename deletes an existing destination first; do not use it for the descriptor.
+        error = config.save(BUILD_EXTENSION_PATH)
+    if error != OK:
+        DirAccess.remove_absolute(library_temp)
+        _log("build deployment failed: cannot publish library/metadata (error " + str(error) + ")")
+        return false
+    _log("build deployed: " + library_path + " (" + BUILD_EXTENSION_PATH + ")")
+    _pending_activation = {"project_name": project_name, "target": platform + "." + architecture,
+            "native": OS.has_feature(platform) and OS.has_feature(architecture),
+            "reload": GDExtensionManager.is_extension_loaded(BUILD_EXTENSION_PATH) \
+                    and previous_active_library != str(config.get_value("libraries", active_key, "")),
+            "obsolete": obsolete_libraries, "generation": _filesystem_generation,
+            "deadline": Time.get_ticks_msec() + 30000}
+    _set_action_buttons_enabled(false)
+    # Finish the compile coroutine before scanning: membership changes reload all GDScripts
+    # and cancel their suspended executions. Godot, not the plugin, persists extension_list.cfg.
+    _poll_build_activation.call_deferred()
+    return true
+
+
+func _poll_build_activation() -> void:
+    if _pending_activation.is_empty():
+        return
+    if Time.get_ticks_msec() >= int(_pending_activation["deadline"]):
+        _pending_activation.clear()
+        _set_action_buttons_enabled(_busy_count == 0)
+        _log("build activation pending: filesystem scan timed out; restart the editor to load the deployed extension")
+        return
+    # is_scanning() can turn false before the worker is joined. A rejected scan is retried
+    # on the timer; only filesystem_changed confirms main-thread extension reconciliation.
+    var filesystem := EditorInterface.get_resource_filesystem()
+    if not filesystem.is_scanning():
+        filesystem.scan()
+
+
+func _on_build_filesystem_changed() -> void:
+    _filesystem_generation += 1
+    if _pending_activation.is_empty() or _filesystem_generation <= int(_pending_activation["generation"]):
+        return
+    var filesystem := EditorInterface.get_resource_filesystem()
+    if filesystem.get_file_type(BUILD_EXTENSION_PATH) != "GDExtension":
+        return
+    var activation := _pending_activation
+    _pending_activation = {}
+    _set_action_buttons_enabled(_busy_count == 0)
+    if not activation["native"]:
+        _log("build installed for " + str(activation["target"]) + "; not the current editor target")
+    elif not GDExtensionManager.is_extension_loaded(BUILD_EXTENSION_PATH):
+        _log("build activation failed: Godot did not load the extension; check engine errors and restart the editor")
+        return
+    else:
+        if activation["reload"]:
+            var status := GDExtensionManager.reload_extension(BUILD_EXTENSION_PATH)
+            if status != GDExtensionManager.LOAD_STATUS_OK:
+                _log("build activation failed: extension reload status " + str(status) + "; restart the editor")
+                return
+        _log("build enabled: " + str(activation["project_name"]))
+    for obsolete in activation["obsolete"]:
+        if str(obsolete).get_base_dir() == "res://bin":
+            var error := DirAccess.remove_absolute(ProjectSettings.globalize_path(str(obsolete)))
+            if error != OK:
+                _log("build cleanup deferred: " + str(obsolete) + " (error " + str(error) + ")")
 
 
 func _on_cancel_pressed() -> void:
@@ -492,7 +677,7 @@ func _on_cancel_pressed() -> void:
 # Plugin-load entry point (called once by plugin.gd after the dock enters the tree): ensures
 # the compile service is reachable (launching it first when a launch command is configured),
 # then points the module field at the service's private diagnostics module once announced —
-# Compile copies that module on demand (Phase 10), so no dock-owned module is created here.
+# Build copies that module on demand, so no dock-owned module is created here.
 # Failures are only logged: the server may simply not be running yet, and the manual buttons
 # stay usable.
 func auto_setup_module() -> void:

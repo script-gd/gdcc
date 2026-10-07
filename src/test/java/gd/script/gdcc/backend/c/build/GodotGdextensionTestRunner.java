@@ -47,7 +47,8 @@ import static java.time.Duration.ofNanos;
 /// appears, a background virtual thread gives Godot a short grace period to exit naturally and
 /// then force-kills it if needed. This keeps the test suite fast while still preventing stuck
 /// Godot processes from outliving the test run indefinitely.
-public final class GodotGdextensionTestRunner {
+/// Call [close] before removing a temporary project to await process and stream termination.
+public final class GodotGdextensionTestRunner implements AutoCloseable {
     /// Output marker printed by `test_project/root.gd` during Godot tree shutdown.
     ///
     /// Runtime tests treat this as the Java-side completion signal. Validation scripts still
@@ -69,14 +70,22 @@ public final class GodotGdextensionTestRunner {
 
     private final @NotNull Path testProjectDir;
     private final @NotNull Path mainScenePath;
+    private @Nullable Process activeProcess;
+    private @Nullable Thread stdoutReader;
+    private @Nullable Thread stderrReader;
 
     /// Creates a runner bound to one Godot project directory.
     ///
     /// The path is normalized eagerly because generated scene and resource paths are resolved
     /// relative to this directory throughout project preparation and launch.
     public GodotGdextensionTestRunner(@NotNull Path testProjectDir) {
+        this(testProjectDir, null);
+    }
+
+    GodotGdextensionTestRunner(@NotNull Path testProjectDir, @Nullable Process activeProcess) {
         this.testProjectDir = Objects.requireNonNull(testProjectDir).toAbsolutePath();
         this.mainScenePath = this.testProjectDir.resolve("main.tscn").toAbsolutePath();
+        this.activeProcess = activeProcess;
     }
 
     /// Resolves `GODOT_BIN` to an existing local executable path.
@@ -165,6 +174,7 @@ public final class GodotGdextensionTestRunner {
         processBuilder.directory(testProjectDir.toFile());
         var processStart = System.nanoTime();
         var process = startProcess(processBuilder, options.processTimeout());
+        activeProcess = process;
         var processStartDuration = elapsedSince(processStart);
         var processStartedAt = System.nanoTime();
 
@@ -195,7 +205,9 @@ public final class GodotGdextensionTestRunner {
             };
 
             var stdoutReader = startStreamReader("stdout", process.getInputStream(), stdoutBuffer, onLine, runCompletion);
+            this.stdoutReader = stdoutReader;
             var stderrReader = startStreamReader("stderr", process.getErrorStream(), stderrBuffer, onLine, runCompletion);
+            this.stderrReader = stderrReader;
             startProcessWaiter(process, exitCode, runCompletion);
 
             var processWaitStart = System.nanoTime();
@@ -244,6 +256,29 @@ public final class GodotGdextensionTestRunner {
                 command,
                 timing
         );
+    }
+
+    /// Explicit teardown for callers whose project directory must be immediately disposable.
+    /// Ordinary [run] calls keep their fast stop-signal completion behavior.
+    @Override
+    public void close() throws IOException, InterruptedException {
+        var process = activeProcess;
+        if (process == null) {
+            return;
+        }
+        if (process.isAlive()) {
+            process.destroyForcibly();
+        }
+        if (!process.waitFor(5, TimeUnit.SECONDS)) {
+            throw new IOException("Godot process did not terminate during teardown");
+        }
+        if (stdoutReader != null) {
+            joinStreamReader(stdoutReader, "stdout");
+        }
+        if (stderrReader != null) {
+            joinStreamReader(stderrReader, "stderr");
+        }
+        activeProcess = null;
     }
 
     private static @NotNull Path requireGodotBinaryOrAbort() {

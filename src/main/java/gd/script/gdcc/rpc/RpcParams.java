@@ -50,10 +50,16 @@ public final class RpcParams {
         }
     }
 
-    public record ModuleCopyParams(@NotNull String sourceModuleId, @NotNull String newModuleId) {
+    /// @param newModuleName Optional display name; absent or null inherits the source name.
+    public record ModuleCopyParams(
+            @NotNull String sourceModuleId, @NotNull String newModuleId, @Nullable String newModuleName
+    ) {
         public ModuleCopyParams {
             sourceModuleId = StringUtil.requireTrimmedNonBlank(sourceModuleId, "sourceModuleId");
             newModuleId = StringUtil.requireTrimmedNonBlank(newModuleId, "newModuleId");
+            if (newModuleName != null) {
+                newModuleName = StringUtil.requireTrimmedNonBlank(newModuleName, "newModuleName");
+            }
         }
     }
 

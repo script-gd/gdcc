@@ -21,6 +21,9 @@ import gd.script.gdcc.scope.ParameterDef;
 import gd.script.gdcc.scope.RefCountedStatus;
 import gd.script.gdcc.type.*;
 import gd.script.gdcc.util.CCodeFormatter;
+import gd.script.gdcc.util.StringUtil;
+import freemarker.template.Configuration;
+import freemarker.template.DefaultObjectWrapperBuilder;
 import freemarker.template.TemplateException;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -960,6 +963,8 @@ public class CCodegen implements Codegen {
             var hrxCatalog = CHrxIdentityCatalog.collect(module, ctx, helper);
             var cTplCtx = Map.of(
                     "module", module,
+                    "StringUtil", new DefaultObjectWrapperBuilder(Configuration.VERSION_2_3_34)
+                            .build().getStaticModels().get(StringUtil.class.getName()),
                     "helper", helper,
                     "bodyRender", bodyRender,
                     "staticInitClassDefs", staticInitClassDefs,

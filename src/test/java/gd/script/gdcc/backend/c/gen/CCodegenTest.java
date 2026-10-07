@@ -77,6 +77,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CCodegenTest {
     @Test
+    void moduleDisplayNameIsEscapedInEntryMessages() throws Exception {
+        var module = new LirModule("My \"Game\" \\ \u6E38\u620F\n", List.of());
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, registry), module);
+
+        var entrySource = generatedFileText(codegen.generate(), "entry.c");
+
+        assertTrue(entrySource.contains("u8\"Loading My \\\"Game\\\" \\\\ \\u6E38\\u620F\\n...\""), entrySource);
+        assertTrue(entrySource.contains("u8\"Unloading My \\\"Game\\\" \\\\ \\u6E38\\u620F\\n...\""), entrySource);
+    }
+
+    @Test
     public void variantGetOpcodeIsRegisteredAndGeneratesBody() {
         var workerClass = new LirClassDef("Worker", "RefCounted");
         var func = new LirFunctionDef("index_load_codegen");
