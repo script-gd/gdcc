@@ -11,7 +11,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/// `contentVersion` advances only when a mutation actually lands (plan §2.3.1): idempotent
+/// `contentVersion` advances only when a mutation actually lands
+/// (`frontend_lsp_foundation_implementation.md` §2.3.1): idempotent
 /// re-creation and failed mutations must not invalidate in-flight analyses, while every real
 /// change must be visible to the freeze/publish version pair.
 class ApiContentVersionTest {

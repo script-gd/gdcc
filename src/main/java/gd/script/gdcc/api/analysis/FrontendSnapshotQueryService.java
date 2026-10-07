@@ -35,15 +35,17 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-/// In-process cursor query service over a published `ModuleAnalysisSnapshot` (LSP foundation
-/// plan §2.4). All methods are static, take the snapshot as first parameter, and are pure reads.
+/// In-process cursor query service over a published `ModuleAnalysisSnapshot`
+/// (`frontend_lsp_foundation_implementation.md` §2.4). All methods are static, take the snapshot
+/// as first parameter, and are pure reads.
 /// Fact-projection queries (`definitionAt`/`usagesAt`/`typeAt`/`documentationAt`) return DTOs
 /// (ranges, names, enums); `nodeAt` exposes the underlying AST node READ-ONLY — gdparser AST
 /// graphs are deeply immutable (child collections frozen at construction), and the side tables
 /// that would make node identity keys queryable stay package-private, so external callers can
 /// inspect the node but cannot resolve it against any snapshot generation.
 ///
-/// Read-only model access (plan §2.1 方案 C landing): model objects reachable inside the frozen
+/// Read-only model access (`frontend_lsp_foundation_implementation.md` §2.1): model objects
+/// reachable inside the frozen
 /// containers (`Scope`, `ClassDef` and friends) are only touched through mutator-free views
 /// here — no mutator is ever called; the structural freeze installed at snapshot construction
 /// stays as the second line of defense underneath.
@@ -258,7 +260,7 @@ public final class FrontendSnapshotQueryService {
 
     /// Projects the symbol at the cursor into a `SymbolDocDescriptor`. Only `RESOLVED`
     /// member/call facts classify — `FAILED`/`DEFERRED`/`UNSUPPORTED`/`DYNAMIC`/`BLOCKED` sites
-    /// and unbound identifiers return empty (plan §2.4). External classification is driven by
+    /// and unbound identifiers return empty. External classification is driven by
     /// the declaration model type and registry provenance, never by a value's runtime type.
     public static @NotNull Optional<SymbolDocDescriptor> documentationAt(
             @NotNull ModuleAnalysisSnapshot snapshot,
@@ -482,7 +484,7 @@ public final class FrontendSnapshotQueryService {
     ) {
         var registry = snapshot.classRegistry();
         // Builtin member PropertyInfo objects are synthesized per lookup (no cross-call
-        // identity): the receiver's builtin class is the owner directly (plan §2.4).
+        // identity): the receiver's builtin class is the owner directly.
         if (fact.ownerKind() == ScopeOwnerKind.BUILTIN) {
             var receiverName = receiverTypeName(fact);
             return receiverName == null
@@ -513,7 +515,7 @@ public final class FrontendSnapshotQueryService {
     ) {
         // The owner is the class whose function table holds the ALREADY-SELECTED FunctionDef by
         // identity — overload selection must not be re-run and nearest-name heuristics are
-        // forbidden (plan §2.4).
+        // forbidden.
         var startClassName = receiverTypeName(fact);
         if (startClassName == null) {
             var enclosing = enclosingClass(snapshot, fact);
@@ -704,7 +706,7 @@ public final class FrontendSnapshotQueryService {
         while (current != null) {
             var scope = snapshot.analysisData().scopesByAst().get(current);
             if (scope != null) {
-                // 方案 C: container-held models are only reachable through mutator-free views.
+                // Container-held models are only reachable through mutator-free views.
                 return ReadOnlyScope.wrap(scope);
             }
             current = unitIndex == null ? null : unitIndex.parentOf(current);

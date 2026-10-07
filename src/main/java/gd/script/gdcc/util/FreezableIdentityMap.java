@@ -12,9 +12,9 @@ import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
-/// Identity-keyed map whose EVERY mutation channel closes permanently on `freeze()` (LSP
-/// foundation plan §2.1: a published analysis generation must be physically unwritable, not
-/// read-only by convention).
+/// Identity-keyed map whose EVERY mutation channel closes permanently on `freeze()`
+/// (`frontend_lsp_foundation_implementation.md` §2.1: a published analysis generation must be
+/// physically unwritable, not read-only by convention).
 ///
 /// Composition over `IdentityHashMap` rather than inheritance: JDK map views and default methods
 /// (`replaceAll`, `Map.Entry.setValue`, iterator `remove`, `keySet().remove`, ...) do not funnel

@@ -1,6 +1,6 @@
 package gd.script.gdcc.api.analysis;
 
-/// Category of one completion candidate (LSP foundation plan §2.5 candidate DTO contract).
+/// Category of one completion candidate (`frontend_lsp_foundation_implementation.md` §2.5).
 /// The LSP layer maps these onto wire-level completion item kinds; no internal model object
 /// is serialized into candidates.
 public enum CompletionCandidateKind {

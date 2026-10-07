@@ -25,10 +25,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Runner-level coverage for the fault-tolerance contract (LSP foundation plan Phase 2 acceptance
-/// 4-6): parse errors no longer starve semantic facts, lowering verification runs isolated from the
-/// shared generation, and unexpected exceptions collapse into `INTERNAL_FAILED` without publishing
-/// half-committed payloads (R14).
+/// Runner-level coverage for the fault-tolerance contract
+/// (`frontend_lsp_foundation_implementation.md` §2.2): parse errors no longer starve semantic
+/// facts, lowering verification runs isolated from the shared generation, and unexpected
+/// exceptions collapse into `INTERNAL_FAILED` without publishing half-committed payloads (R14).
 class AnalysisRunnerRecoveryTest {
     private static final @NotNull String HEADER = """
             class_name RunnerRecover
@@ -107,7 +107,7 @@ class AnalysisRunnerRecoveryTest {
         );
         // The lowering verification reruns the skeleton on its own registry; the shared registry
         // must still hold the exact class object the shared run created (identity anchor for the
-        // generation-isolation rule of plan §2.2.6).
+        // generation-isolation rule, `frontend_lsp_foundation_implementation.md` §2.2.6).
         var sharedClassDef = payload.analysisData()
                 .moduleSkeleton()
                 .sourceClassRelations()
@@ -121,7 +121,8 @@ class AnalysisRunnerRecoveryTest {
                 ),
                 () -> assertTrue(payload.analysisData().declarationOrigins().containsKey(sharedClassDef))
         );
-        // Declaration provenance identity anchors (plan §2.4): every source-created declaration
+        // Declaration provenance identity anchors
+        // (`frontend_lsp_foundation_implementation.md` §2.4): every source-created declaration
         // model resolves back to its AST declaration node in the same unit.
         var origins = payload.analysisData().declarationOrigins();
         var propertyDef = sharedClassDef.getProperties().stream()

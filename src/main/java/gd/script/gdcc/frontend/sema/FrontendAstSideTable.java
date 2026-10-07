@@ -24,8 +24,8 @@ import java.util.function.BiFunction;
 /// preserving identity-key semantics through the underlying identity map.
 ///
 /// `freeze()` permanently closes every mutation channel — including the collection views and any
-/// view obtained before the freeze (LSP foundation plan §2.1: a published snapshot generation is
-/// physically unwritable). Reads stay open for concurrent snapshot queries.
+/// view obtained before the freeze (`frontend_lsp_foundation_implementation.md` §2.1: a published
+/// snapshot generation is physically unwritable). Reads stay open for concurrent snapshot queries.
 public final class FrontendAstSideTable<V> extends AbstractMap<Node, V> {
     private final FreezableIdentityMap<Node, V> values = new FreezableIdentityMap<>();
 

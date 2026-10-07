@@ -337,7 +337,8 @@ public final class API implements AutoCloseable {
     /// lowering to verify whether the module can currently lower to LIR; the C backend still never
     /// runs.
     ///
-    /// Analyze is a three-phase operation that never enters the module gate (plan §2.3.2):
+    /// Analyze is a three-phase operation that never enters the module gate
+    /// (`frontend_lsp_foundation_implementation.md` §2.3.2):
     /// 1. freeze the current inputs inside the `ModuleState` monitor — a queued or active compile
     ///    of the same module does not block analysis, and VFS writes only contend briefly with the
     ///    freeze itself;
@@ -686,7 +687,7 @@ public final class API implements AutoCloseable {
     /// The module gate serializes state-mutating operations and the exclusive compile run, while
     /// analysis is exempt: `analyze(...)` freezes inputs under `ModuleState`'s own monitor and then
     /// runs off-latch, so it neither waits for nor blocks compile, and concurrent VFS writes only
-    /// contend with the brief freeze (plan §2.3).
+    /// contend with the brief freeze (`frontend_lsp_foundation_implementation.md` §2.3).
     private static final class ManagedModule {
         private final @NotNull ModuleState state;
         private boolean busy;

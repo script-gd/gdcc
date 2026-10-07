@@ -21,10 +21,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Concurrency and snapshot-publication contract of the three-phase `API.analyze(...)` (LSP
-/// foundation plan §2.3 and Phase 3 acceptance): version identity on every outcome, gate-free
-/// analysis, conditional publish, and delete/recreate isolation. Determinism comes from the
-/// package-private `AnalysisRunSeam` instead of sleep-based timing.
+/// Concurrency and snapshot-publication contract of the three-phase `API.analyze(...)`
+/// (`frontend_lsp_foundation_implementation.md` §2.3): version identity on every outcome,
+/// gate-free analysis, conditional publish, and delete/recreate isolation. Determinism comes from
+/// the package-private `AnalysisRunSeam` instead of sleep-based timing.
 class ApiAnalysisSnapshotConcurrencyTest {
     private static final long TASK_TIMEOUT_MILLIS = 30_000;
 
@@ -131,7 +131,8 @@ class ApiAnalysisSnapshotConcurrencyTest {
             var taskId = api.compile("demo");
             assertEquals(CompileTaskSnapshot.State.QUEUED, api.getCompileTask(taskId).state());
 
-            // A queued compile must not block analysis anymore (plan §2.3.3).
+            // A queued compile must not block analysis anymore
+            // (`frontend_lsp_foundation_implementation.md` §2.3.3).
             var whileQueued = api.analyze("demo");
             assertEquals(AnalysisResult.Outcome.COMPLETED, whileQueued.outcome());
             assertEquals(CompileTaskSnapshot.State.QUEUED, api.getCompileTask(taskId).state());

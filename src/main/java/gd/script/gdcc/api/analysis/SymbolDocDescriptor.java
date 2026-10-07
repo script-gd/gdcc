@@ -6,7 +6,8 @@ import org.jetbrains.annotations.Nullable;
 import java.util.List;
 import java.util.Objects;
 
-/// Symbol documentation descriptor produced by `documentationAt` (plan §2.4). It is a pure
+/// Symbol documentation descriptor produced by `documentationAt`
+/// (`frontend_lsp_foundation_implementation.md` §2.4). It is a pure
 /// projection — symbol kind + documentation namespace + declaring owner + member name + (for
 /// GDCC symbols) every normalized source candidate — because engine metadata carries no
 /// documentation text. The editor adapter layer turns it into official documentation URLs or

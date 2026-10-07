@@ -311,7 +311,7 @@ public final class FrontendParameterDefaultMetadataOwner {
         // Parameter-default islands do not pass through the suite statement loop, so they consume
         // the skipped-subtree contract on their own: a parser-damaged default expression skips only
         // this default (placeholder metadata is reclaimed, leaving the parameter required), never
-        // the whole callable (plan §2.2.3). No diagnostic is emitted — the parser already owns one.
+        // the whole callable. No diagnostic is emitted — the parser already owns one.
         if (analysisData.skippedSubtreeRoots().containsKey(defaultValue)) {
             reclaimDefaultMetadata(island);
             return;

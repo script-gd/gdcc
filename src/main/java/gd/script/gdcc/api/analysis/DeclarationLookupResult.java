@@ -6,7 +6,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.List;
 import java.util.Objects;
 
-/// Result of a `definitionAt` lookup (plan §2.4 declaration-source normalization).
+/// Result of a `definitionAt` lookup (`frontend_lsp_foundation_implementation.md` §2.4).
 ///
 /// Published `declarationSite` payloads are not guaranteed to be ranged AST nodes — they can be
 /// declaration model objects (`PropertyDef`, overload `List<? extends FunctionDef>`, synthetic

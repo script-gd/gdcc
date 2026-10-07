@@ -529,7 +529,7 @@ One analysis request performs:
 5. Run `FrontendSemanticAnalyzer.analyze(...)`, the shared semantic pipeline without the
    compile-only gate. Parse errors no longer stop this step: error subtrees are annotated into
    `skippedSubtreeRoots()` and skipped, while healthy subtrees keep publishing facts (see
-   `frontend_rules.md` 恢复约定 and `frontend_lsp_foundation_plan.md` §2.2).
+   `frontend_rules.md` 恢复约定 and `frontend_lsp_foundation_implementation.md` §2.2).
 6. When `AnalyzeOptions.includeLowering()` is `true`:
    - with parse errors, lowering verification is skipped entirely (`loweringStatus=FAILED`, no
      `sema.compile_check` diagnostics);

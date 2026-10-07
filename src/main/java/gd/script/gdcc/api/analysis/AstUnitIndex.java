@@ -12,8 +12,9 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 
-/// Per-source-unit query index built exactly once when a snapshot is published (plan §2.4
-/// "快照构建期索引"). Holds three derived views over one immutable AST generation:
+/// Per-source-unit query index built exactly once when a snapshot is published
+/// (`frontend_lsp_foundation_implementation.md` §2.4). Holds three derived views over one
+/// immutable AST generation:
 ///
 /// - **parent index**: identity-keyed child → parent map, because gdparser AST nodes have no
 ///   parent pointers and ancestor walk-back is required by queries and (later) completion;
@@ -25,7 +26,7 @@ import java.util.Objects;
 ///   source text accumulating UTF-8 lengths rather than Java char counts.
 ///
 /// Units flagged `parseFailed` carry a synthetic empty AST that queries must not expose; their
-/// index answers every lookup with empty results (plan §2.2.5).
+/// index answers every lookup with empty results.
 final class AstUnitIndex {
     private final @NotNull ModuleAnalysisSnapshot.SourceView sourceView;
     private final @Nullable SourceFile ast;

@@ -43,9 +43,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Integration coverage for the fault-tolerant semantic pipeline (LSP foundation plan §2.2 and
-/// Phase 2 acceptance 1-3): parser-damaged subtrees are skipped through `skippedSubtreeRoots()`
-/// while healthy sibling subtrees of the same file and clean sibling files keep publishing facts.
+/// Integration coverage for the fault-tolerant semantic pipeline
+/// (`frontend_lsp_foundation_implementation.md` §2.2): parser-damaged subtrees are skipped
+/// through `skippedSubtreeRoots()` while healthy sibling subtrees of the same file and clean
+/// sibling files keep publishing facts.
 ///
 /// The damaged source shapes below were probed against gdparser 0.6.0 to guarantee they produce
 /// real `ErrorStatement`/`ErrorExpression` nodes (not silently dropped structures), so every
@@ -244,7 +245,7 @@ class FrontendErrorRecoveryIntegrationTest {
         assertAll(
                 () -> assertTrue(fixture.hasParseError(), "Missing identifier diagnostic expected"),
                 () -> assertFalse(fixture.isSkipped(xDeclaration),
-                        "partial member chains must not be skipped (plan §2.2.1)"),
+                        "partial member chains must not be skipped (frontend_lsp_foundation_implementation.md §2.2.1)"),
                 () -> assertFalse(chain.steps().isEmpty(), "the chain keeps its steps"),
                 () -> assertHealthyLocalBinding(fixture, function, "x"),
                 // Single-owner rule: the parser's `Missing identifier` diagnostic is the only
@@ -338,7 +339,8 @@ class FrontendErrorRecoveryIntegrationTest {
     @Test
     void parseFailedUnitRegistersNoClassAndReferencesStayUnresolved() throws IOException {
         // Simulate the `parse.internal` recovery path: an explicit failed unit with an empty
-        // synthetic AST plus its already-reported parse.internal diagnostic (plan §2.2.5).
+        // synthetic AST plus its already-reported parse.internal diagnostic
+        // (`frontend_lsp_foundation_implementation.md` §2.2.5).
         var diagnostics = new DiagnosticManager();
         var failedUnit = new FrontendSourceUnit(
                 Path.of("tmp", "broken.gd"),

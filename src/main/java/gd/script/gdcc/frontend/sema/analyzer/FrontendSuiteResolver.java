@@ -539,7 +539,7 @@ public class FrontendSuiteResolver {
     ) {
         // Property-initializer islands do not pass through the suite statement loop, so they
         // consume the skipped-subtree contract on their own: a parser-damaged initializer skips
-        // only this property declaration, never sibling members (plan §2.2.3).
+        // only this property declaration, never sibling members.
         if (analysisData.skippedSubtreeRoots().containsKey(propertyInitializer)) {
             return;
         }

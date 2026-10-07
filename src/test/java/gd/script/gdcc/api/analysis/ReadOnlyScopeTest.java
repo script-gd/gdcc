@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/// Regression anchors for the `ReadOnlyScope` facade (方案 C): the wrapper must preserve the
+/// Regression anchors for the `ReadOnlyScope` facade: the wrapper must preserve the
 /// delegate's OWN chain-walking semantics — in particular `ClassScope` skipping consecutive
 /// outer class scopes — instead of falling back to the interface default protocol, and it must
 /// close the parent-chain mutator.
@@ -21,15 +21,15 @@ class ReadOnlyScopeTest {
     private static final String SOURCE = """
             class_name ScopeOuter
             extends RefCounted
-
+            
             var outer_var: int = 1
-
+            
             func outer_func() -> void:
                 pass
-
+            
             class Inner:
                 var inner_var: int = 2
-
+            
                 func use() -> void:
                     pass
             """;

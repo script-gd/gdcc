@@ -19,9 +19,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Acceptance-anchored tests for `FrontendSnapshotCompletionService` (LSP foundation plan
-/// Phase 5 acceptance 1-6): member access enumerates the instance surface for typed receivers
-/// and the static surface for class-name receivers, identifier prefixes enumerate visible
+/// Tests for `FrontendSnapshotCompletionService`
+/// (`frontend_lsp_foundation_implementation.md` §2.5): member access enumerates the instance
+/// surface for typed receivers and the static surface for class-name receivers, identifier
+/// prefixes enumerate visible
 /// values with declaration-after-use filtering plus the global namespace, type positions
 /// enumerate type names and file inner classes, skipped/error subtrees and fact-free receivers
 /// yield empty results without exceptions, and a stale snapshot answers from its own text.
@@ -82,16 +83,16 @@ class CompletionServiceTest {
             
             func use_paren() -> void:
                 var pc = (v).no
-
+            
             func foo(vv: Vector2) -> String:
                 return ""
-
+            
             func bar() -> String:
                 return ""
-
+            
             func use_nested_call() -> void:
                 var ok = (foo((v))).le
-
+            
             func use_failed_call() -> void:
                 var bad = (bar((v))).le
             """;
@@ -132,7 +133,7 @@ class CompletionServiceTest {
             func use_b() -> void:
                 var b = Base.
                 var t5 = 1
-
+            
             func use_sub() -> void:
                 var e = CompStaticUser.State["IDLE"].
                 var t6 = 1
@@ -152,29 +153,29 @@ class CompletionServiceTest {
             
             func len(x):
                 return x
-
+            
             func hide(x):
                 pass
-
+            
             func compute(seed: int) -> void:
                 var before = 1
                 var mid = se
                 var after = 3
                 var total = seed + se
                 var y = compute()
-
+            
             func use_super() -> void:
                 super.
                 var t = 1
-
+            
             class RootBase:
                 func act(x) -> void:
                     pass
-
+            
             class MidBase extends RootBase:
                 func act() -> void:
                     pass
-
+            
             class LeafClass extends MidBase:
                 func probe() -> void:
                     super.
@@ -566,7 +567,7 @@ class CompletionServiceTest {
 
     @Test
     void cursorInsideSkippedErrorSubtreeReturnsEmpty() {
-        // The fixture's last statement is an anchored ErrorStatement form (Phase 2): the whole
+        // The fixture's last statement is an anchored ErrorStatement form: the whole
         // subtree is recorded as skipped. The cursor sits on the declaration name `x`, which the
         // completion classifier reports as IDENTIFIER — a context that WOULD produce scope-value
         // candidates without the gate, so the empty answer proves the gate fired.

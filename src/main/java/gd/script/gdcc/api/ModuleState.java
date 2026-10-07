@@ -37,7 +37,8 @@ final class ModuleState {
     private final long moduleGeneration;
     /// Monotonic count of content-changing writes (`putFile`/`deletePath`/`createDirectory`/
     /// `createLink`/options/classMap). Compile-output mounts do NOT count: they only publish
-    /// non-`.gd` links that never enter the analysis source set (plan §2.3.1).
+    /// non-`.gd` links that never enter the analysis source set
+    /// (`frontend_lsp_foundation_implementation.md` §2.3.1).
     private long contentVersion;
     private final @NotNull DirectoryNode root;
     private @NotNull CompileOptions compileOptions;
@@ -102,7 +103,7 @@ final class ModuleState {
     }
 
     /// Mount-side/internal directory creation that must not bump `contentVersion` (compile outputs
-    /// only publish non-source links, plan §2.3.1).
+    /// only publish non-source links).
     private @NotNull VfsEntrySnapshot.DirectoryEntrySnapshot createDirectoryInternal(@NotNull VirtualPath path) {
         if (path.isRoot()) {
             return root.snapshot(path);
@@ -183,7 +184,7 @@ final class ModuleState {
     }
 
     /// Mount-side link creation that must not bump `contentVersion` (compile outputs only publish
-    /// non-source links, plan §2.3.1).
+    /// non-source links).
     private @NotNull VfsEntrySnapshot.LinkEntrySnapshot createLinkInternal(
             @NotNull VirtualPath path,
             @NotNull VfsEntrySnapshot.LinkKind linkKind,
@@ -236,8 +237,8 @@ final class ModuleState {
     }
 
     /// Compiler-owned output cleanup must not bump `contentVersion`: managed output directories only
-    /// ever contain non-source `LOCAL` links, so deleting them cannot change the analysis source set
-    /// (plan §2.3.1).
+    /// ever contain non-source `LOCAL` links, so deleting them cannot change the analysis source
+    /// set.
     private @NotNull VfsEntrySnapshot deletePathInternal(@NotNull VirtualPath path, boolean recursive) {
         if (path.isRoot()) {
             throw new IllegalArgumentException("path '/' cannot be deleted; delete the module instead");

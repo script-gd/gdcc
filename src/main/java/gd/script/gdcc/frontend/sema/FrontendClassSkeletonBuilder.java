@@ -999,7 +999,7 @@ public final class FrontendClassSkeletonBuilder {
     /// Records the source provenance of one freshly created declaration model object, keyed by
     /// model object identity. Snapshot query services normalize `declarationSite()` model objects
     /// back to source positions through this index; models without an entry (engine/builtin
-    /// metadata, synthetic constructors) simply have no source position (plan §2.4).
+    /// metadata, synthetic constructors) simply have no source position.
     private void recordDeclarationOrigin(
             @NotNull Object declarationModel,
             @NotNull Node declarationNode,
@@ -1203,7 +1203,8 @@ public final class FrontendClassSkeletonBuilder {
                 // A parse-failed unit contributes no class header at all: synthesizing a fictional
                 // empty top-level script class would pollute cross-file references, so references
                 // to its names surface as ordinary unresolved-symbol diagnostics instead
-                // (plan §2.2.5). Its `parse.internal` diagnostic stays in the shared manager.
+                // (`frontend_lsp_foundation_implementation.md` §2.2.5). Its `parse.internal`
+                // diagnostic stays in the shared manager.
                 continue;
             }
             var topLevelHeader = discoverTopLevelHeader(

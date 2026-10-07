@@ -89,7 +89,7 @@ final class AnalysisRunner {
     /// snapshot publication. The payload is present exactly when the shared semantic pipeline
     /// completed, including when parse errors were tolerated into partial semantic facts.
     ///
-    /// Fault-tolerance contract (plan §2.2):
+    /// Fault-tolerance contract (`frontend_lsp_foundation_implementation.md` §2.2):
     /// - parse errors no longer short-circuit the pipeline; the shared semantic analysis runs on
     ///   the surviving AST and its facts become the snapshot content;
     /// - unexpected exceptions from parsing or the shared semantic run collapse the whole run into

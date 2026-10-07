@@ -14,7 +14,8 @@ import java.util.Objects;
 /// Enumerates the value names visible at a use site along the lexical scope chain.
 ///
 /// This is the enumeration counterpart of `FrontendVisibleValueResolver`'s single-name lookup,
-/// built for completion-style tooling (LSP foundation plan §2.5). The declaration-after-use
+/// built for completion-style tooling (`frontend_lsp_foundation_implementation.md` §2.5). The
+/// declaration-after-use
 /// byte-order filter runs per layer before nearest-layer shadowing, so an invisible inner local
 /// never shadows a visible outer binding of the same name: a local `VariableDeclaration` is
 /// visible only when its declaration range ends at or before the use-site start

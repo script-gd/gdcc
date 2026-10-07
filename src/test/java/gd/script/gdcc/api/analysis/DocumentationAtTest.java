@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Acceptance-anchored tests for `documentationAt` (LSP foundation plan Phase 4 acceptance 7):
+/// Tests for `documentationAt` (`frontend_lsp_foundation_implementation.md` §2.4):
 /// ENGINE/BUILTIN members resolve the ACTUAL declaring class (never the receiver's static
 /// type), utility functions split by registry provenance, globals classify by registry
 /// provenance (not value type), GDCC symbols carry every normalized source position, and
@@ -24,14 +24,14 @@ class DocumentationAtTest {
     private static final String DERIVED_SOURCE = """
             class_name DocDerived
             extends DocBase
-
+            
             enum State { IDLE, RUN }
-
+            
             var count: int = 1
-
+            
             func greet() -> String:
                 return "derived"
-
+            
             func use(param: int) -> void:
                 var local_x = param
                 var c2 = self.count
@@ -56,7 +56,7 @@ class DocumentationAtTest {
     private static final String BASE_SOURCE = """
             class_name DocBase
             extends RefCounted
-
+            
             func greet() -> String:
                 return "base"
             """;
@@ -64,10 +64,10 @@ class DocumentationAtTest {
     private static final String NODE_USER_SOURCE = """
             class_name DocNodeUser
             extends Node2D
-
+            
             var mode = Node2D.PROCESS_MODE_INHERIT
             var notif = Node2D.NOTIFICATION_READY
-
+            
             func ready() -> void:
                 var n = self.name
                 self.hide()

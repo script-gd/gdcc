@@ -66,7 +66,8 @@ public final class GdScriptParserService {
             ));
             diagnosticManager.reportAll(parseDiagnostics);
             // The unit carries an explicit parse-failed flag so the class skeleton excludes it
-            // instead of synthesizing a fictional empty top-level script class (plan §2.2.5).
+            // instead of synthesizing a fictional empty top-level script class
+            // (`frontend_lsp_foundation_implementation.md` §2.2.5).
             return new FrontendSourceUnit(sourcePath, source, emptySourceFile(), true);
         }
     }

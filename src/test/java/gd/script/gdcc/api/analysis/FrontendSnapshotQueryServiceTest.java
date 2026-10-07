@@ -25,8 +25,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Acceptance-anchored integration tests for `FrontendSnapshotQueryService` nodeAt /
-/// definitionAt / usagesAt / typeAt (LSP foundation plan Phase 4 acceptance 1-6). All queries
+/// Integration tests for `FrontendSnapshotQueryService` nodeAt / definitionAt / usagesAt /
+/// typeAt (`frontend_lsp_foundation_implementation.md` §2.4). All queries
 /// run against one shared playground module; every positive case is paired with the negative
 /// shapes the plan documents (absent sets, half-open edges, stale snapshots).
 class FrontendSnapshotQueryServiceTest {
@@ -34,9 +34,9 @@ class FrontendSnapshotQueryServiceTest {
     private static final String BASE_SOURCE = """
             class_name QueryBase
             extends RefCounted
-
+            
             var base_count: int = 0
-
+            
             func greet() -> String:
                 return "base"
             """;
@@ -44,14 +44,14 @@ class FrontendSnapshotQueryServiceTest {
     private static final String DERIVED_SOURCE = """
             class_name QueryDerived
             extends QueryBase
-
+            
             enum State { IDLE, RUN }
-
+            
             var count: int = 1
-
+            
             func greet() -> String:
                 return "derived"
-
+            
             func use(param: int) -> void:
                 var local_x = param
                 var y = local_x + local_x
@@ -84,10 +84,10 @@ class FrontendSnapshotQueryServiceTest {
     private static final String NODE_USER_SOURCE = """
             class_name QueryNodeUser
             extends Node2D
-
+            
             var mode = Node2D.PROCESS_MODE_INHERIT
             var notif = Node2D.NOTIFICATION_READY
-
+            
             func ready() -> void:
                 var n = self.name
                 self.hide()
@@ -97,7 +97,7 @@ class FrontendSnapshotQueryServiceTest {
     private static final String DAMAGED_SOURCE = """
             class_name QueryDamaged
             extends QueryBase
-
+            
             func hurt() -> void:
                 if :
                     pass

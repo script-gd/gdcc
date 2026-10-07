@@ -35,14 +35,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Edge-shape tests for the snapshot query service built on HAND-CONSTRUCTED snapshots: real
 /// GDScript sources cannot reliably produce collection-shaped provenance with mixed
 /// normalizability or a `parse.internal` unit, so these cases assemble `FrontendAnalysisData`
-/// directly and anchor the normalization contract element by element (plan Phase 4 acceptance
-/// 1/2/4).
+/// directly and anchor the normalization contract element by element
+/// (`frontend_lsp_foundation_implementation.md` §2.4).
 class SnapshotQueryEdgeTest {
     private static final Path UNIT_PATH = Path.of("tmp", "edge.gd");
     private static final String DISPLAY_PATH = "/disp/edge.gd";
     private static final String SOURCE = """
             extends RefCounted
-
+            
             func target() -> void:
                 var marker = probe
             """;
@@ -272,7 +272,8 @@ class SnapshotQueryEdgeTest {
     @Test
     void parseFailedUnitsAnswerEveryQueryWithEmptyResults() throws Exception {
         // The fixture parses cleanly; the parseFailed flag simulates a parse.internal unit,
-        // whose synthetic AST must never leak into query results (plan §2.2.5).
+        // whose synthetic AST must never leak into query results
+        // (`frontend_lsp_foundation_implementation.md` §2.2.5).
         var harness = harness(true, (data, unit) -> bindProbe(data, unit, new Object()));
 
         assertNull(FrontendSnapshotQueryService.nodeAt(harness.snapshot(), DISPLAY_PATH, 0));

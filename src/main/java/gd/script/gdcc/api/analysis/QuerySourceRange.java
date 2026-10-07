@@ -4,8 +4,9 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;
 
-/// Caller-facing source location returned by snapshot queries (LSP foundation plan §2.4
-/// coordinate contract): the display path plus a 1-based line/column span (matching diagnostic
+/// Caller-facing source location returned by snapshot queries
+/// (`frontend_lsp_foundation_implementation.md` §2.4 coordinate contract): the display path plus
+/// a 1-based line/column span (matching diagnostic
 /// conventions) plus the raw byte span of the underlying AST range.
 ///
 /// Byte offsets follow gdparser semantics (UTF-8 bytes into the source); the line/column fields

@@ -418,8 +418,9 @@ public final class ClassRegistry implements Scope {
         addGdccClass(classDef, null);
     }
 
-    /// Permanently closes the registry's mutation channels (LSP foundation plan §2.1: the
-    /// registry of a published snapshot generation must be physically unwritable — skeleton-time
+    /// Permanently closes the registry's mutation channels
+    /// (`frontend_lsp_foundation_implementation.md` §2.1: the registry of a published snapshot
+    /// generation must be physically unwritable — skeleton-time
     /// `addGdccClass`/`removeGdccClass` calls are illegal after publication). Idempotent.
     public void freeze() {
         frozen = true;

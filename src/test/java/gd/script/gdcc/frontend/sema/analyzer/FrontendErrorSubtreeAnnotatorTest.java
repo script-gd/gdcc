@@ -29,8 +29,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Unit tests for the error-subtree promotion rules of `FrontendErrorSubtreeAnnotator`
-/// (LSP foundation plan §2.2.2), driven with hand-built ASTs because some shapes (notably a
-/// broken parameter default island) are not producible from real gdparser 0.6.0 source parses.
+/// (`frontend_lsp_foundation_implementation.md` §2.2.2), driven with hand-built ASTs because
+/// some shapes (notably a broken parameter default island) are not producible from real gdparser
+/// 0.6.0 source parses.
 class FrontendErrorSubtreeAnnotatorTest {
     private static final Range RANGE = new Range(0, 0, new Point(0, 0), new Point(0, 0));
 
@@ -103,9 +104,9 @@ class FrontendErrorSubtreeAnnotatorTest {
         var function = function(List.of(parameter), new Block(List.of(bodyStatement), RANGE));
         var analysisData = annotate(function);
 
-        // The island rule (plan §2.2.3): only the default expression root is marked. Marking the
-        // function instead would strip its body scope and drag the whole run into structural
-        // failure.
+        // The island rule (`frontend_lsp_foundation_implementation.md` §2.2.3): only the default
+        // expression root is marked. Marking the function instead would strip its body scope and
+        // drag the whole run into structural failure.
         assertTrue(analysisData.skippedSubtreeRoots().containsKey(defaultValue));
         assertFalse(analysisData.skippedSubtreeRoots().containsKey(function));
         assertFalse(analysisData.skippedSubtreeRoots().containsKey(parameter));

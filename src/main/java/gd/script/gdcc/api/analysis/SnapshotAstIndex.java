@@ -12,7 +12,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/// Snapshot-level registry of per-unit query indexes (plan §2.4). Built once at snapshot
+/// Snapshot-level registry of per-unit query indexes
+/// (`frontend_lsp_foundation_implementation.md` §2.4). Built once at snapshot
 /// construction by pairing each `SourceView` with the same-generation `FrontendSourceUnit`
 /// through the normalized logical-path key (the same key shape diagnostics remap with), so a
 /// display-path query always lands on the AST generation it was computed from.

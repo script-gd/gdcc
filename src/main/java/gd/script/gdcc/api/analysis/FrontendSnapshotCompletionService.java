@@ -40,8 +40,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-/// In-process completion candidate service over a published `ModuleAnalysisSnapshot` (LSP
-/// foundation plan §2.5, Phase 5). Static, pure-read counterpart of
+/// In-process completion candidate service over a published `ModuleAnalysisSnapshot`
+/// (`frontend_lsp_foundation_implementation.md` §2.5). Static, pure-read counterpart of
 /// `FrontendSnapshotQueryService`: same snapshot-first entry rule, same absent-result contract
 /// (unknown paths, `parse.internal` units, skipped/error subtrees and fact-free receivers all
 /// yield empty candidate lists — never throw, never resolve against another generation).
@@ -51,7 +51,7 @@ import java.util.Set;
 /// and produces a NEW CST generation. Only the context `kind`, `replaceableRange` and
 /// `receiverRange` are consumed; no completion-CST node ever touches snapshot side tables.
 ///
-/// Minimal V1 ruleset (per plan): member access after `.` (instance surface for typed
+/// Minimal V1 ruleset: member access after `.` (instance surface for typed
 /// receivers, static surface + constants/enums for class-name receivers), bare-identifier
 /// prefix (scope-chain values with declaration-after-use filtering, enclosing-class methods,
 /// global constants/enums, utility and language functions) and type positions (builtin/engine
@@ -96,7 +96,7 @@ public final class FrontendSnapshotCompletionService {
         var cursorNode = locateCursorNode(unitIndex, byteOffset, context);
         if (cursorNode != null && isInsideSkippedSubtree(snapshot, unitIndex, cursorNode)) {
             // Skipped/error subtrees carry no facts. Unfinished member-access partial chains
-            // are deliberately never marked skipped (plan §2.2.1), so the dot path is unaffected.
+            // are deliberately never marked skipped, so the dot path is unaffected.
             return new CompletionLookupResult(contextKind, replaceableRange, List.of());
         }
         var candidates = switch (contextKind) {
@@ -367,7 +367,7 @@ public final class FrontendSnapshotCompletionService {
     }
 
     /// Static surface of a class-name receiver: static properties/functions only (members
-    /// without the static modifier are never listed, per plan §2.5) plus the constant surface
+    /// without the static modifier are never listed) plus the constant surface
     /// (script constants, engine/builtin class constants and enum groups with their values).
     /// Enum-group receivers (global enums, GDCC named enums) list their values.
     private static @NotNull List<CompletionCandidate> staticReceiverCandidates(

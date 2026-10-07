@@ -11,9 +11,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Locks the immutability contract of a published `ModuleAnalysisSnapshot` (LSP foundation plan
-/// §2.1 and Phase 3 acceptance 8): every collection reachable through the public surface is frozen,
-/// and the AST object graph is deeply immutable, so attempted external mutation is rejected instead
+/// Locks the immutability contract of a published `ModuleAnalysisSnapshot`
+/// (`frontend_lsp_foundation_implementation.md` §2.1): every collection reachable through the
+/// public surface is frozen, and the AST object graph is deeply immutable, so attempted external
+/// mutation is rejected instead
 /// of corrupting concurrent readers.
 class ModuleAnalysisSnapshotImmutabilityTest {
     @Test
@@ -74,7 +75,7 @@ class ModuleAnalysisSnapshotImmutabilityTest {
 
     @Test
     void publishedSnapshotPayloadIsStructurallyFrozen() {
-        // Plan §2.1 as implemented by freeze-on-publish: the whole analysis generation is
+        // Freeze-on-publish: the whole analysis generation is
         // physically unwritable the moment it becomes a snapshot — mutation attempts from any
         // channel throw instead of corrupting concurrent readers.
         var snapshot = publishSnapshot();

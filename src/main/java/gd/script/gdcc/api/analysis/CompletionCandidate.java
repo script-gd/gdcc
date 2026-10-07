@@ -5,13 +5,14 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.Objects;
 
-/// One completion candidate projected from published analysis facts (LSP foundation plan §2.5).
-/// Candidates carry display data only; filtering by the already-typed prefix and presentation
+/// One completion candidate projected from published analysis facts
+/// (`frontend_lsp_foundation_implementation.md` §2.5). Candidates carry display data only;
+/// filtering by the already-typed prefix and presentation
 /// ordering are pushed down to the LSP layer, so this record makes no ordering promise.
 ///
-/// @param name candidate identifier text inserted at the replaceable range
-/// @param kind candidate category
-/// @param typeText display type name for `PROPERTY`/`VALUE` candidates (e.g. `Vector2`); `null`
+/// @param name          candidate identifier text inserted at the replaceable range
+/// @param kind          candidate category
+/// @param typeText      display type name for `PROPERTY`/`VALUE` candidates (e.g. `Vector2`); `null`
 ///                 when the candidate has no meaningful type text (methods, types)
 /// @param signatureText rendered `name(param: Type) -> Return` text for `METHOD` candidates;
 ///                      `null` for non-callable candidates

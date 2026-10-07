@@ -12,7 +12,8 @@ import java.util.List;
 import java.util.Objects;
 
 /// Declaration-source normalization shared by `definitionAt`, `usagesAt` and the GDCC branch of
-/// `documentationAt` (plan §2.4). Published `declarationSite` payloads arrive in three shapes:
+/// `documentationAt` (`frontend_lsp_foundation_implementation.md` §2.4). Published
+/// `declarationSite` payloads arrive in three shapes:
 ///
 /// - AST nodes — used directly (already a stable source identity);
 /// - single declaration model objects (`PropertyDef`, `LirFunctionDef`, ...) — resolved through
@@ -39,7 +40,7 @@ final class DeclarationNormalizer {
         ALL_EXTERNAL
     }
 
-    /// @param elements normalized AST declaration nodes in provenance order (identity-stable);
+    /// @param elements             normalized AST declaration nodes in provenance order (identity-stable);
     /// a `null` entry explicitly marks an element that could not be normalized — its position
     /// in the sequence is preserved so callers never silently drop or reorder candidates
     /// @param collectionProvenance whether the site was collection-shaped

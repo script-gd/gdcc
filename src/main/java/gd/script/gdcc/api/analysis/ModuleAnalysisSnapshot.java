@@ -12,8 +12,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
-/// Immutable per-module semantic snapshot published by `API.analyze(...)` (LSP foundation plan
-/// §2.1). One module holds at most one latest snapshot; older snapshots are kept alive only by
+/// Immutable per-module semantic snapshot published by `API.analyze(...)`
+/// (`frontend_lsp_foundation_implementation.md` §2.1). One module holds at most one latest
+/// snapshot; older snapshots are kept alive only by
 /// caller references and stay self-consistent because everything reachable from here belongs to one
 /// analysis generation.
 ///
@@ -29,12 +30,12 @@ import java.util.concurrent.ConcurrentHashMap;
 ///   `FrontendAnalysisData.freeze()` cascades over every side table and the provenance index
 ///   (all mutation channels, including views obtained before the freeze), and
 ///   `ClassRegistry.freeze()` closes class membership changes — any post-publication mutation
-///   attempt throws (plan §2.1's enumerated `update*`/`applyPatch`/registry surface);
+///   attempt throws (the enumerated `update*`/`applyPatch`/registry surface);
 /// - model objects reachable INSIDE those containers are read by `FrontendSnapshotQueryService`
 ///   only through mutator-free views: `Scope` is wrapped by `ReadOnlyScope` (its
 ///   `setParentScope` throws), `ClassDef` is narrowed to its read-only interface, and query
 ///   results are DTO-only (no model object escapes the package); the structural freeze stays
-///   as the second line of defense underneath (Phase 4 方案 C landing);
+///   as the second line of defense underneath;
 /// - query-time lazy indexes (e.g. the usages reverse index) live in the snapshot-owned
 ///   thread-safe memo and are never written back into the analysis data.
 public final class ModuleAnalysisSnapshot {
@@ -49,7 +50,7 @@ public final class ModuleAnalysisSnapshot {
     private final @NotNull FrontendAnalysisData analysisData;
     private final @NotNull ClassRegistry classRegistry;
     /// Publish-time query indexes (parent / range / line per unit), built once in the
-    /// constructor so queries never rebuild tree walks (plan §2.4 "快照构建期索引").
+    /// constructor so queries never rebuild tree walks.
     private final @NotNull SnapshotAstIndex astIndex;
     /// Snapshot-owned memo for lazily built query indexes (`ConcurrentHashMap` + single-compute),
     /// consumed by `FrontendSnapshotQueryService`. Never leaks into `FrontendAnalysisData`.
@@ -86,7 +87,7 @@ public final class ModuleAnalysisSnapshot {
         this.module = Objects.requireNonNull(module, "module must not be null");
         this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
         this.classRegistry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
-        // Structural freeze (plan §2.1): the moment this payload becomes a snapshot, its whole
+        // Structural freeze: the moment this payload becomes a snapshot, its whole
         // generation must be physically unwritable — package boundaries alone cannot stop a query
         // service from mutating live side tables or the registry.
         this.analysisData.freeze();

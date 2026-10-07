@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Contract tests for `Scope.valuesHere()` / `Scope.collectVisibleValues()` and the
 /// declaration-after-use byte-order filtering of `FrontendVisibleValueEnumerator`
-/// (LSP foundation plan §2.5 identifier-prefix enumeration).
+/// (`frontend_lsp_foundation_implementation.md` §2.5 identifier-prefix enumeration).
 class FrontendVisibleValueEnumeratorTest {
     @Test
     void blockScopeEnumeratesLocalsInDeclarationOrder() {

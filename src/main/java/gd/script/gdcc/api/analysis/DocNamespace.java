@@ -1,6 +1,7 @@
 package gd.script.gdcc.api.analysis;
 
-/// Documentation namespace a symbol belongs to (plan §2.4 `documentationAt`). These are
+/// Documentation namespace a symbol belongs to (`frontend_lsp_foundation_implementation.md`
+/// §2.4 `documentationAt`). These are
 /// documentation-facing names, not `ClassDef` names — `@GlobalScope` and `@GDScript` denote the
 /// corresponding Godot documentation pages, and the namespace decides URL routing in the editor
 /// adapter layer.

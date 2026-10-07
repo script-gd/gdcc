@@ -14,8 +14,9 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 
-/// Read-only view over a published `Scope` (plan §2.1 方案 C: query services must reach
-/// container-held model objects only through views that expose no mutator).
+/// Read-only view over a published `Scope` (`frontend_lsp_foundation_implementation.md` §2.1:
+/// query services must reach container-held model objects only through views that expose no
+/// mutator).
 ///
 /// The `Scope` interface itself carries one mutator — `setParentScope` — whose implementations
 /// rewire the lexical chain without any freeze gate. Every scope the query service reads is

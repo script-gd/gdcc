@@ -253,7 +253,7 @@ class ApiAnalyzeTest {
         assertNull(api.getLastCompileResult("demo"));
         assertTrue(api.listDirectory("demo", "/").isEmpty()
                 || api.listDirectory("demo", "/").stream()
-                        .noneMatch(entry -> entry.name().equals("__build__")));
+                .noneMatch(entry -> entry.name().equals("__build__")));
     }
 
     @Test
@@ -418,7 +418,8 @@ class ApiAnalyzeTest {
 
     @Test
     void analyzeDoesNotWaitForModuleGateBehindOtherOperations() throws InterruptedException {
-        // New concurrency contract (plan §2.3.3): analyze freezes inputs under the ModuleState
+        // Concurrency contract (`frontend_lsp_foundation_implementation.md` §2.3.3): analyze
+        // freezes inputs under the ModuleState
         // monitor and runs off-latch, so another operation holding the module gate must not block
         // it. If analyze still entered the gate, the join below would time out with no result.
         var api = ApiCompileTestSupport.newApi(ApiCompileTestSupport.RecordingCompiler.succeeding());

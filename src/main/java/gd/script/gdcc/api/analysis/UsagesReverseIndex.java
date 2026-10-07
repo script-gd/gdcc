@@ -5,13 +5,15 @@ import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import org.jetbrains.annotations.NotNull;
+
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 
-/// Lazily built usages reverse index (plan §2.4 `usagesAt`). Every site recorded in the three
+/// Lazily built usages reverse index (`frontend_lsp_foundation_implementation.md` §2.4
+/// `usagesAt`). Every site recorded in the three
 /// fact tables (`symbolBindings` / `resolvedMembers` / `resolvedCalls`) is FIRST normalized to
 /// its stable source declaration identity and only then grouped — so a bare identifier binding
 /// and a `self.x` member access to the same property land in one group.
