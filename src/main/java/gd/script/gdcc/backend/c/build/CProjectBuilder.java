@@ -44,7 +44,6 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
         this(new ZigCcCompiler(), System.getenv());
     }
 
-    // For tests - allow injecting a fake/compiler wrapper
     public CProjectBuilder(@NotNull CCompiler cCompiler) {
         this(cCompiler, System.getenv());
     }
