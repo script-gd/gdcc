@@ -2,6 +2,7 @@ package gd.script.gdcc.gdextension;
 
 import com.google.gson.*;
 import gd.script.gdcc.enums.GodotVersion;
+import gd.script.gdcc.scope.resolver.ScopeTypeParsers;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.InputStreamReader;
@@ -79,7 +80,12 @@ public final class ExtensionApiLoader {
             List<ExtensionSingleton> singletons = root.has("singletons") ? parseSingletons(root.getAsJsonArray("singletons")) : Collections.emptyList();
             List<ExtensionNativeStructure> nativeStructures = root.has("native_structures") ? parseNativeStructures(root.getAsJsonArray("native_structures")) : Collections.emptyList();
 
-            return new ExtensionAPI(header, builtinClassSizes, builtinClassMemberOffsets, globalConstants, globalEnums, utilityFunctions, builtinClasses, classes, singletons, nativeStructures);
+            var extensionApi = new ExtensionAPI(header, builtinClassSizes, builtinClassMemberOffsets, globalConstants, globalEnums, utilityFunctions, builtinClasses, classes, singletons, nativeStructures);
+            // Union property type metadata (e.g. `CanvasItemMaterial,ShaderMaterial`) resolves
+            // through the NCA mapping computed from this dump's own inherits chains; a mapping
+            // conflict with a previously loaded version fails the load here.
+            ScopeTypeParsers.registerUnionTypeMetadataMappings(ExtensionUnionTypeMappings.compute(extensionApi));
+            return extensionApi;
         }
     }
 

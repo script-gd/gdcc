@@ -65,7 +65,10 @@ public final class GdScriptParserService {
                     null
             ));
             diagnosticManager.reportAll(parseDiagnostics);
-            return new FrontendSourceUnit(sourcePath, source, emptySourceFile());
+            // The unit carries an explicit parse-failed flag so the class skeleton excludes it
+            // instead of synthesizing a fictional empty top-level script class
+            // (`frontend_lsp_foundation_implementation.md` §2.2.5).
+            return new FrontendSourceUnit(sourcePath, source, emptySourceFile(), true);
         }
     }
 

@@ -6,10 +6,13 @@ import gd.script.gdcc.frontend.lowering.FrontendLoweringPassManager;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.scope.ClassRegistry;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -31,12 +34,71 @@ final class AnalysisRunner {
     private static final @NotNull DiagnosticSnapshot EMPTY_DIAGNOSTICS = new DiagnosticSnapshot(List.of());
 
     private final @NotNull GdScriptParserService parserService;
+    private final @NotNull SemanticRun semanticRun;
+    private final @NotNull LoweringRun loweringRun;
 
     AnalysisRunner(@NotNull GdScriptParserService parserService) {
+        this(
+                parserService,
+                (module, registry, manager) -> new FrontendSemanticAnalyzer().analyze(module, registry, manager),
+                (module, registry, manager) -> new FrontendLoweringPassManager().lower(module, registry, manager)
+        );
+    }
+
+    /// Package-private seam constructor: tests inject failing pipeline stages to pin the
+    /// unexpected-exception containment contract (R14) without touching production behavior.
+    /// Both stages still construct fresh pipeline instances per call in production.
+    AnalysisRunner(
+            @NotNull GdScriptParserService parserService,
+            @NotNull SemanticRun semanticRun,
+            @NotNull LoweringRun loweringRun
+    ) {
         this.parserService = Objects.requireNonNull(parserService, "parserService must not be null");
+        this.semanticRun = Objects.requireNonNull(semanticRun, "semanticRun must not be null");
+        this.loweringRun = Objects.requireNonNull(loweringRun, "loweringRun must not be null");
+    }
+
+    /// One shared semantic pipeline run. Per-run state stays inside the constructed analyzer.
+    @FunctionalInterface
+    interface SemanticRun {
+        @NotNull FrontendAnalysisData run(
+                @NotNull FrontendModule module,
+                @NotNull ClassRegistry registry,
+                @NotNull DiagnosticManager diagnostics
+        );
+    }
+
+    /// One lowering-verification run against an isolated registry/diagnostic generation.
+    @FunctionalInterface
+    interface LoweringRun {
+        @Nullable LirModule run(
+                @NotNull FrontendModule module,
+                @NotNull ClassRegistry registry,
+                @NotNull DiagnosticManager diagnostics
+        );
     }
 
     @NotNull AnalysisResult analyze(
+            @NotNull ModuleState.CompileRequest request,
+            @NotNull AnalyzeOptions analyzeOptions
+    ) {
+        return analyzeRich(request, analyzeOptions).result();
+    }
+
+    /// Runs the analysis pipeline and returns the public result plus the semantic payload used for
+    /// snapshot publication. The payload is present exactly when the shared semantic pipeline
+    /// completed, including when parse errors were tolerated into partial semantic facts.
+    ///
+    /// Fault-tolerance contract (`frontend_lsp_foundation_implementation.md` §2.2):
+    /// - parse errors no longer short-circuit the pipeline; the shared semantic analysis runs on
+    ///   the surviving AST and its facts become the snapshot content;
+    /// - unexpected exceptions from parsing or the shared semantic run collapse the whole run into
+    ///   `INTERNAL_FAILED` with no half-committed payload (patch transactions are not atomic, R14);
+    /// - with `includeLowering`, parse errors skip lowering entirely (`FAILED`, no
+    ///   `sema.compile_check`), while a clean parse runs lowering verification on an isolated fresh
+    ///   `ClassRegistry`/`DiagnosticManager` generation so it can never rewrite shared-run facts;
+    ///   lowering failures or exceptions only degrade `loweringStatus`, never the shared payload.
+    @NotNull AnalysisRunResult analyzeRich(
             @NotNull ModuleState.CompileRequest request,
             @NotNull AnalyzeOptions analyzeOptions
     ) {
@@ -47,62 +109,79 @@ final class AnalysisRunner {
                 .toList();
         if (request.failure() != null) {
             // Frozen source collection only fails on broken or cyclic virtual links.
-            return failureResult(
-                    AnalysisResult.Outcome.SOURCE_COLLECTION_FAILED,
-                    request,
-                    analyzeOptions,
-                    sourcePaths,
-                    EMPTY_DIAGNOSTICS,
-                    request.failure().message()
+            return new AnalysisRunResult(
+                    failureResult(
+                            AnalysisResult.Outcome.SOURCE_COLLECTION_FAILED,
+                            request,
+                            analyzeOptions,
+                            sourcePaths,
+                            EMPTY_DIAGNOSTICS,
+                            request.failure().message()
+                    ),
+                    null
             );
         }
         if (request.sourceSnapshots().isEmpty()) {
-            return failureResult(
-                    AnalysisResult.Outcome.SOURCE_COLLECTION_FAILED,
-                    request,
-                    analyzeOptions,
-                    sourcePaths,
-                    EMPTY_DIAGNOSTICS,
-                    "Module '" + request.moduleId() + "' has no .gd/.gd3 source files to analyze"
+            return new AnalysisRunResult(
+                    failureResult(
+                            AnalysisResult.Outcome.SOURCE_COLLECTION_FAILED,
+                            request,
+                            analyzeOptions,
+                            sourcePaths,
+                            EMPTY_DIAGNOSTICS,
+                            "Module '" + request.moduleId() + "' has no .gd/.gd3 source files to analyze"
+                    ),
+                    null
             );
         }
 
         var diagnostics = new DiagnosticManager();
         var units = new ArrayList<FrontendSourceUnit>(request.sourceSnapshots().size());
-        for (var sourceSnapshot : request.sourceSnapshots()) {
-            units.add(parserService.parseUnit(
-                    sourceSnapshot.logicalPath(),
-                    sourceSnapshot.source(),
-                    diagnostics
-            ));
-        }
-        var parseDiagnostics = remapDiagnosticSourcePaths(request, diagnostics.snapshot());
-        if (parseDiagnostics.hasErrors()) {
-            // Semantic phases require a well-formed AST, so parse errors end the pipeline with the
-            // diagnostics collected so far instead of failing the whole request.
-            return completedResult(
-                    request,
-                    analyzeOptions,
-                    sourcePaths,
-                    parseDiagnostics,
-                    unverifiedLoweringStatus(analyzeOptions)
+        try {
+            for (var sourceSnapshot : request.sourceSnapshots()) {
+                units.add(parserService.parseUnit(
+                        sourceSnapshot.logicalPath(),
+                        sourceSnapshot.source(),
+                        diagnostics
+                ));
+            }
+        } catch (RuntimeException exception) {
+            // Per-unit parser failures are recovered inside parseUnit as `parse.internal`; an
+            // escaped exception means the parser service contract itself broke.
+            return new AnalysisRunResult(
+                    failureResult(
+                            AnalysisResult.Outcome.INTERNAL_FAILED,
+                            request,
+                            analyzeOptions,
+                            sourcePaths,
+                            remapDiagnosticSourcePaths(request, diagnostics.snapshot()),
+                            "Source parsing failed unexpectedly: " + exception.getMessage()
+                    ),
+                    null
             );
         }
+        // Parse-phase diagnostics captured once, before semantic phases append into the same
+        // manager; the lowering verification run imports exactly this prefix (see below).
+        var parsePhaseDiagnostics = diagnostics.snapshot();
+        var remappedParseDiagnostics = remapDiagnosticSourcePaths(request, parsePhaseDiagnostics);
 
         final ClassRegistry classRegistry;
         try {
             classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(request.compileOptions().godotVersion()));
         } catch (IOException exception) {
-            return failureResult(
-                    AnalysisResult.Outcome.INTERNAL_FAILED,
-                    request,
-                    analyzeOptions,
-                    sourcePaths,
-                    parseDiagnostics,
-                    "Godot extension metadata for "
-                            + request.compileOptions().godotVersion()
-                            + " could not be loaded: "
-                            + exception.getMessage()
+            return new AnalysisRunResult(
+                    failureResult(
+                            AnalysisResult.Outcome.INTERNAL_FAILED,
+                            request,
+                            analyzeOptions,
+                            sourcePaths,
+                            remappedParseDiagnostics,
+                            "Godot extension metadata for "
+                                    + request.compileOptions().godotVersion()
+                                    + " could not be loaded: "
+                                    + exception.getMessage()
+                    ),
+                    null
             );
         }
         var frontendModule = new FrontendModule(
@@ -110,28 +189,95 @@ final class AnalysisRunner {
                 units,
                 request.topLevelCanonicalNameMap()
         );
+
+        // The shared semantic entrypoint tolerates parser-damaged subtrees (they are skipped, not
+        // fatal) and reports warnings/errors without the compile-only gate, so editor callers never
+        // see `sema.compile_check` diagnostics from this path. Its result feeds the snapshot.
+        final FrontendAnalysisData analysisData;
+        try {
+            analysisData = semanticRun.run(frontendModule, classRegistry, diagnostics);
+        } catch (RuntimeException exception) {
+            return new AnalysisRunResult(
+                    failureResult(
+                            AnalysisResult.Outcome.INTERNAL_FAILED,
+                            request,
+                            analyzeOptions,
+                            sourcePaths,
+                            remapDiagnosticSourcePaths(request, diagnostics.snapshot()),
+                            "Semantic analysis failed unexpectedly: " + exception.getMessage()
+                    ),
+                    null
+            );
+        }
+        var sharedDiagnostics = remapDiagnosticSourcePaths(request, diagnostics.snapshot());
+
         if (!analyzeOptions.includeLowering()) {
-            // The shared semantic entrypoint reports warnings and errors without the compile-only
-            // gate, so editor callers never see `sema.compile_check` diagnostics from this path.
-            new FrontendSemanticAnalyzer().analyze(frontendModule, classRegistry, diagnostics);
-            return completedResult(
-                    request,
-                    analyzeOptions,
-                    sourcePaths,
-                    remapDiagnosticSourcePaths(request, diagnostics.snapshot()),
-                    AnalysisResult.LoweringStatus.NOT_REQUESTED
+            return new AnalysisRunResult(
+                    completedResult(
+                            request,
+                            analyzeOptions,
+                            sourcePaths,
+                            sharedDiagnostics,
+                            AnalysisResult.LoweringStatus.NOT_REQUESTED
+                    ),
+                    new AnalysisRunResult.Payload(frontendModule, analysisData, classRegistry, sharedDiagnostics)
+            );
+        }
+        if (remappedParseDiagnostics.hasErrors()) {
+            // Lowering requires a well-formed AST; with parse errors the tolerated semantic facts
+            // still publish, but lowering verification is meaningless and must not run.
+            return new AnalysisRunResult(
+                    completedResult(
+                            request,
+                            analyzeOptions,
+                            sourcePaths,
+                            sharedDiagnostics,
+                            AnalysisResult.LoweringStatus.FAILED
+                    ),
+                    new AnalysisRunResult.Payload(frontendModule, analysisData, classRegistry, sharedDiagnostics)
             );
         }
 
-        // Lowering reruns semantic analysis through the compile-ready gate and stops on the first
-        // error, so a published LirModule plus clean diagnostics proves the module can lower. A
-        // fresh pass manager keeps its per-run analyzer state isolated from concurrent compile tasks.
-        var lowered = new FrontendLoweringPassManager().lower(frontendModule, classRegistry, diagnostics);
-        var loweringDiagnostics = remapDiagnosticSourcePaths(request, diagnostics.snapshot());
-        var loweringStatus = lowered != null && !loweringDiagnostics.hasErrors()
-                ? AnalysisResult.LoweringStatus.SUCCEEDED
-                : AnalysisResult.LoweringStatus.FAILED;
-        return completedResult(request, analyzeOptions, sourcePaths, loweringDiagnostics, loweringStatus);
+        // Lowering verification reruns semantic analysis through the compile-ready gate, which
+        // would mutate the shared registry via `ClassRegistry.addGdccClass` replacement semantics.
+        // It therefore runs on an isolated fresh registry/diagnostic manager generation: the shared
+        // run's object identities stay intact, and the lowering manager imports only the parse-phase
+        // diagnostics once (no parse errors here, but warnings must not be lost) before rerunning
+        // semantic analysis itself.
+        var loweringStatus = AnalysisResult.LoweringStatus.FAILED;
+        var loweringDiagnostics = new DiagnosticManager();
+        try {
+            var loweringRegistry = new ClassRegistry(
+                    ExtensionApiLoader.loadVersion(request.compileOptions().godotVersion())
+            );
+            loweringDiagnostics.reportAll(parsePhaseDiagnostics.asList());
+            var lowered = loweringRun.run(frontendModule, loweringRegistry, loweringDiagnostics);
+            if (lowered != null && !remapDiagnosticSourcePaths(request, loweringDiagnostics.snapshot()).hasErrors()) {
+                loweringStatus = AnalysisResult.LoweringStatus.SUCCEEDED;
+            }
+        } catch (IOException | RuntimeException exception) {
+            // A failed or crashed lowering verification only degrades `loweringStatus`; the shared
+            // analysis payload above stays valid and publishes normally. Keep the crash observable:
+            // without this diagnostic a crashed verification would surface as `FAILED` with empty
+            // lowering-side diagnostics, indistinguishable from an ordinary validation failure.
+            loweringDiagnostics.error(
+                    "sema.lowering",
+                    "Lowering verification failed unexpectedly: " + exception.getMessage(),
+                    null,
+                    null
+            );
+            loweringStatus = AnalysisResult.LoweringStatus.FAILED;
+        }
+        return new AnalysisRunResult(
+                completedResult(
+                        request,
+                        analyzeOptions,
+                        sourcePaths,
+                        remapDiagnosticSourcePaths(request, loweringDiagnostics.snapshot()),
+                        loweringStatus
+                ),
+                new AnalysisRunResult.Payload(frontendModule, analysisData, classRegistry, sharedDiagnostics)
+        );
     }
 
     private static @NotNull AnalysisResult.LoweringStatus unverifiedLoweringStatus(@NotNull AnalyzeOptions analyzeOptions) {
@@ -155,7 +301,9 @@ final class AnalysisRunner {
                 sourcePaths,
                 diagnostics,
                 null,
-                loweringStatus
+                loweringStatus,
+                request.moduleGeneration(),
+                request.contentVersion()
         );
     }
 
@@ -175,7 +323,9 @@ final class AnalysisRunner {
                 sourcePaths,
                 diagnostics,
                 failureMessage,
-                unverifiedLoweringStatus(analyzeOptions)
+                unverifiedLoweringStatus(analyzeOptions),
+                request.moduleGeneration(),
+                request.contentVersion()
         );
     }
 

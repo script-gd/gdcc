@@ -31,20 +31,38 @@ final class ModuleState {
     private final @NotNull String moduleId;
     private final @NotNull String moduleName;
     private final @NotNull Clock clock;
+    /// Allocated once by `API.createModule` from a global monotonic counter. Same-id module
+    /// recreation after delete gets a fresh generation, so staleness checks must compare
+    /// (generation, contentVersion) pairs rather than the version alone.
+    private final long moduleGeneration;
+    /// Monotonic count of content-changing writes (`putFile`/`deletePath`/`createDirectory`/
+    /// `createLink`/options/classMap). Compile-output mounts do NOT count: they only publish
+    /// non-`.gd` links that never enter the analysis source set
+    /// (`frontend_lsp_foundation_implementation.md` §2.3.1).
+    private long contentVersion;
     private final @NotNull DirectoryNode root;
     private @NotNull CompileOptions compileOptions;
     private @NotNull Map<String, String> topLevelCanonicalNameMap;
     private @Nullable CompileResult lastCompileResult;
     private @Nullable VirtualPath publishedOutputMountRoot;
 
-    ModuleState(@NotNull String moduleId, @NotNull String moduleName, @NotNull Clock clock) {
+    ModuleState(@NotNull String moduleId, @NotNull String moduleName, @NotNull Clock clock, long moduleGeneration) {
         this.moduleId = Objects.requireNonNull(moduleId, "moduleId must not be null");
         this.moduleName = Objects.requireNonNull(moduleName, "moduleName must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.moduleGeneration = moduleGeneration;
         root = new DirectoryNode();
         compileOptions = CompileOptions.defaults();
         topLevelCanonicalNameMap = Map.of();
         lastCompileResult = null;
+    }
+
+    long moduleGeneration() {
+        return moduleGeneration;
+    }
+
+    synchronized long contentVersion() {
+        return contentVersion;
     }
 
     @NotNull
@@ -60,7 +78,33 @@ final class ModuleState {
     }
 
     /// `createDirectory(...)` is idempotent for existing directories and creates missing ancestors.
+    /// `contentVersion` advances only when the tree actually changes: an idempotent mkdir and a
+    /// type-conflict failure both leave the version untouched.
     synchronized @NotNull VfsEntrySnapshot.DirectoryEntrySnapshot createDirectory(@NotNull VirtualPath path) {
+        if (path.isRoot()) {
+            return root.snapshot(path);
+        }
+        DirectoryNode parent;
+        try {
+            parent = requireParentDirectory(path, false);
+        } catch (ApiPathNotFoundException _) {
+            parent = null; // missing ancestors will be created below — a real change
+        }
+        var existing = parent == null ? null : parent.child(path.name());
+        if (existing instanceof DirectoryNode directoryNode) {
+            return directoryNode.snapshot(path);
+        }
+        if (existing != null) {
+            // File/link conflict: let the internal path raise without touching the version.
+            return createDirectoryInternal(path);
+        }
+        contentVersion++;
+        return createDirectoryInternal(path);
+    }
+
+    /// Mount-side/internal directory creation that must not bump `contentVersion` (compile outputs
+    /// only publish non-source links).
+    private @NotNull VfsEntrySnapshot.DirectoryEntrySnapshot createDirectoryInternal(@NotNull VirtualPath path) {
         if (path.isRoot()) {
             return root.snapshot(path);
         }
@@ -99,12 +143,16 @@ final class ModuleState {
             throw new IllegalArgumentException("path '/' cannot be used as a file path");
         }
         Objects.requireNonNull(content, "content must not be null");
+        // Validate the caller-facing label before creating missing parents: a failed write must
+        // not leave mutated parent directories behind at an unchanged content version.
+        var normalizedDisplayPath = displayPath == null ? null : normalizeDisplayPath(displayPath);
         var parent = requireParentDirectory(path, true);
         var existing = parent.child(path.name());
         if (existing instanceof DirectoryNode) {
             throw typeMismatch(path.text(), "directory", VfsEntrySnapshot.Kind.FILE);
         }
-        var fileNode = FileNode.fromContent(content, resolveDisplayPath(path, displayPath, existing), clock);
+        var fileNode = FileNode.fromContent(content, resolveDisplayPath(path, normalizedDisplayPath, existing), clock);
+        contentVersion++;
         parent.putChild(path.name(), fileNode);
         return fileNode.snapshot(path);
     }
@@ -123,7 +171,21 @@ final class ModuleState {
         };
     }
 
+    /// `contentVersion` advances only after the link was actually created; a validation failure
+    /// (root path, directory conflict, blank target) leaves the version untouched.
     synchronized @NotNull VfsEntrySnapshot.LinkEntrySnapshot createLink(
+            @NotNull VirtualPath path,
+            @NotNull VfsEntrySnapshot.LinkKind linkKind,
+            @NotNull String target
+    ) {
+        var snapshot = createLinkInternal(path, linkKind, target);
+        contentVersion++;
+        return snapshot;
+    }
+
+    /// Mount-side link creation that must not bump `contentVersion` (compile outputs only publish
+    /// non-source links).
+    private @NotNull VfsEntrySnapshot.LinkEntrySnapshot createLinkInternal(
             @NotNull VirtualPath path,
             @NotNull VfsEntrySnapshot.LinkKind linkKind,
             @NotNull String target
@@ -133,20 +195,51 @@ final class ModuleState {
         }
         var normalizedKind = Objects.requireNonNull(linkKind, "linkKind must not be null");
         var normalizedTarget = Objects.requireNonNull(target, "target must not be null");
-        var parent = requireParentDirectory(path, true);
-        var existing = parent.child(path.name());
-        if (existing instanceof DirectoryNode) {
-            throw typeMismatch(path.text(), "directory", VfsEntrySnapshot.Kind.LINK);
-        }
+        // Validate the target syntax before creating missing parents; a failed creation must not
+        // leave mutated parent directories behind at an unchanged content version.
         var linkNode = switch (normalizedKind) {
             case VIRTUAL -> LinkNode.virtual(VirtualPath.parse(normalizedTarget));
             case LOCAL -> LinkNode.local(StringUtil.requireTrimmedNonBlank(normalizedTarget, "target"));
         };
-        parent.putChild(path.name(), linkNode);
-        return linkNode.snapshot(path, inspectLink(path, linkNode).brokenReason());
+        // Place tentatively and inspect on the prospective tree: self-referencing links resolve to
+        // a CYCLE broken link exactly as before, while a target that can never resolve fails the
+        // whole creation and rolls back every trace (replaced leaf included).
+        var lookup = requireParentDirectoryTracked(path, true);
+        var parent = lookup.parent();
+        var existing = parent.child(path.name());
+        try {
+            if (existing instanceof DirectoryNode) {
+                throw typeMismatch(path.text(), "directory", VfsEntrySnapshot.Kind.LINK);
+            }
+            parent.putChild(path.name(), linkNode);
+            try {
+                return linkNode.snapshot(path, inspectLink(path, linkNode).brokenReason());
+            } catch (RuntimeException exception) {
+                if (existing == null) {
+                    parent.removeChild(path.name());
+                } else {
+                    parent.putChild(path.name(), existing);
+                }
+                throw exception;
+            }
+        } catch (RuntimeException exception) {
+            rollbackCreatedDirectories(lookup.created());
+            throw exception;
+        }
     }
 
+    /// `contentVersion` advances only after the entry was actually removed; a failed delete (root
+    /// path, missing path, non-empty directory) leaves the version untouched.
     synchronized @NotNull VfsEntrySnapshot deletePath(@NotNull VirtualPath path, boolean recursive) {
+        var snapshot = deletePathInternal(path, recursive);
+        contentVersion++;
+        return snapshot;
+    }
+
+    /// Compiler-owned output cleanup must not bump `contentVersion`: managed output directories only
+    /// ever contain non-source `LOCAL` links, so deleting them cannot change the analysis source
+    /// set.
+    private @NotNull VfsEntrySnapshot deletePathInternal(@NotNull VirtualPath path, boolean recursive) {
         if (path.isRoot()) {
             throw new IllegalArgumentException("path '/' cannot be deleted; delete the module instead");
         }
@@ -192,6 +285,7 @@ final class ModuleState {
     /// freeze exactly one coherent configuration per module.
     synchronized @NotNull CompileOptions setCompileOptions(@NotNull CompileOptions compileOptions) {
         this.compileOptions = Objects.requireNonNull(compileOptions, "compileOptions must not be null");
+        contentVersion++;
         return this.compileOptions;
     }
 
@@ -206,11 +300,13 @@ final class ModuleState {
                 topLevelCanonicalNameMap,
                 "topLevelCanonicalNameMap must not be null"
         ));
+        contentVersion++;
         return this.topLevelCanonicalNameMap;
     }
 
-    /// Compile orchestration runs outside the module lock, so this method freezes all compile-facing
-    /// inputs up front and resolves virtual source aliases while the tree is still stable.
+    /// Compile orchestration and analysis both freeze against this snapshot, so this method captures
+    /// the current (moduleGeneration, contentVersion) pair alongside all compile-facing inputs while
+    /// the tree is still stable. Callers compare the pair to detect staleness across delete/recreate.
     synchronized @NotNull CompileRequest freezeCompileRequest() {
         var sourcesByFile = new IdentityHashMap<FileNode, SourceSnapshot>();
         CompileRequestFailure failure = null;
@@ -222,7 +318,16 @@ final class ModuleState {
         var sources = sourcesByFile.values().stream()
                 .sorted(Comparator.comparing(SourceSnapshot::virtualPath))
                 .toList();
-        return new CompileRequest(moduleId, moduleName, compileOptions, topLevelCanonicalNameMap, sources, failure);
+        return new CompileRequest(
+                moduleId,
+                moduleName,
+                moduleGeneration,
+                contentVersion,
+                compileOptions,
+                topLevelCanonicalNameMap,
+                sources,
+                failure
+        );
     }
 
     synchronized @Nullable CompileResult getLastCompileResult() {
@@ -242,6 +347,11 @@ final class ModuleState {
 
     /// Once the compile has passed source collection, configuration, and frontend validation, the
     /// API can replace any previously published outputs before native build begins.
+    ///
+    /// Note: external `VIRTUAL` aliases pointing into the managed output directories observe a
+    /// transient broken window between this cleanup and the later remount — an off-latch analysis
+    /// freezing in between fails source collection at an unchanged `contentVersion`, which callers
+    /// can detect via the version pair and retry.
     synchronized void prepareOutputPublication(@NotNull String outputMountRoot) {
         var currentRoot = VirtualPath.parse(outputMountRoot);
         clearManagedOutputDirectories(currentRoot, true);
@@ -259,13 +369,13 @@ final class ModuleState {
             @NotNull List<Path> artifacts
     ) {
         var mountRoot = VirtualPath.parse(outputMountRoot);
-        createDirectory(mountRoot);
+        createDirectoryInternal(mountRoot);
         var mountedLinks = new ArrayList<VfsEntrySnapshot.LinkEntrySnapshot>(generatedFiles.size() + artifacts.size());
 
         var generatedDir = mountRoot.child(GENERATED_OUTPUT_DIR);
-        createDirectory(generatedDir);
+        createDirectoryInternal(generatedDir);
         for (var generatedFile : generatedFiles) {
-            mountedLinks.add(createLink(
+            mountedLinks.add(createLinkInternal(
                     generatedDir.child(generatedFile.getFileName().toString()),
                     VfsEntrySnapshot.LinkKind.LOCAL,
                     generatedFile.toString()
@@ -273,11 +383,11 @@ final class ModuleState {
         }
 
         var artifactsDir = mountRoot.child(ARTIFACT_OUTPUT_DIR);
-        createDirectory(artifactsDir);
+        createDirectoryInternal(artifactsDir);
         for (var artifact : artifacts.stream()
                 .sorted(Comparator.comparing((Path path) -> path.getFileName().toString()).thenComparing(Path::toString))
                 .toList()) {
-            mountedLinks.add(createLink(
+            mountedLinks.add(createLinkInternal(
                     artifactsDir.child(artifact.getFileName().toString()),
                     VfsEntrySnapshot.LinkKind.LOCAL,
                     artifact.toString()
@@ -288,8 +398,16 @@ final class ModuleState {
     }
 
     private @NotNull DirectoryNode requireParentDirectory(@NotNull VirtualPath path, boolean createMissing) {
+        return requireParentDirectoryTracked(path, createMissing).parent();
+    }
+
+    /// Tracked variant that additionally reports every directory this call auto-created, so a
+    /// failing write can roll the tree back to its exact prior shape (no mutation at an unchanged
+    /// `contentVersion`).
+    private @NotNull ParentLookup requireParentDirectoryTracked(@NotNull VirtualPath path, boolean createMissing) {
         var linkStack = new ArrayDeque<String>();
         var activeLinks = new LinkedHashSet<String>();
+        var created = new ArrayList<CreatedChild>();
         var current = root;
         for (var i = 0; i < path.segments().size() - 1; i++) {
             var segment = path.segments().get(i);
@@ -298,9 +416,10 @@ final class ModuleState {
                 if (!createMissing) {
                     throw pathNotFound(path.text());
                 }
-                var created = new DirectoryNode();
-                current.putChild(segment, created);
-                current = created;
+                var createdDirectory = new DirectoryNode();
+                current.putChild(segment, createdDirectory);
+                created.add(new CreatedChild(current, segment));
+                current = createdDirectory;
                 continue;
             }
             var currentPath = path.prefixText(i + 1);
@@ -315,7 +434,22 @@ final class ModuleState {
                 }
             };
         }
-        return current;
+        return new ParentLookup(current, List.copyOf(created));
+    }
+
+    /// One directory auto-created while materializing missing parents, recorded for rollback.
+    private record CreatedChild(@NotNull DirectoryNode parent, @NotNull String name) {
+    }
+
+    private record ParentLookup(@NotNull DirectoryNode parent, @NotNull List<CreatedChild> created) {
+    }
+
+    /// Removes auto-created parent directories deepest-first; each holds only the next created
+    /// entry (the leaf write is rolled back first), so this restores the exact prior tree.
+    private static void rollbackCreatedDirectories(@NotNull List<CreatedChild> created) {
+        for (var i = created.size() - 1; i >= 0; i--) {
+            created.get(i).parent().removeChild(created.get(i).name());
+        }
     }
 
     private @NotNull ResolvedNode resolvePath(
@@ -581,7 +715,7 @@ final class ModuleState {
         deleteManagedOutputDirectory(mountRoot.child(GENERATED_OUTPUT_DIR), strict);
         deleteManagedOutputDirectory(mountRoot.child(ARTIFACT_OUTPUT_DIR), strict);
         if (!mountRoot.isRoot() && !rootDirectory.hasChildren()) {
-            deletePath(mountRoot, false);
+            deletePathInternal(mountRoot, false);
         }
     }
 
@@ -591,11 +725,33 @@ final class ModuleState {
             return;
         }
         switch (existing) {
-            case DirectoryNode _ -> deletePath(directoryPath, true);
+            case DirectoryNode directoryNode -> {
+                requireNoSourcesUnderManagedOutput(directoryPath, directoryNode);
+                deletePathInternal(directoryPath, true);
+            }
             case FileNode _, LinkNode _ -> {
                 if (strict) {
                     throw typeMismatch(directoryPath.text(), nodeLabel(existing), VfsEntrySnapshot.Kind.DIRECTORY);
                 }
+            }
+        }
+    }
+
+    /// Managed output cleanup deliberately skips the `contentVersion` bump, which is only sound
+    /// while those directories cannot contribute to the analysis source set. A `.gd`/`.gd3` entry
+    /// underneath means a caller mounted sources into the compiler-owned output area; fail loudly
+    /// instead of silently deleting sources at an unchanged version.
+    private void requireNoSourcesUnderManagedOutput(@NotNull VirtualPath directoryPath, @NotNull DirectoryNode directoryNode) {
+        for (var childEntry : directoryNode.children()) {
+            var childNode = childEntry.getValue();
+            if (childNode instanceof DirectoryNode childDirectory) {
+                requireNoSourcesUnderManagedOutput(directoryPath.child(childEntry.getKey()), childDirectory);
+            } else if (isSourceFileName(childEntry.getKey())) {
+                throw new IllegalArgumentException(
+                        "Managed output directory '" + directoryPath.text() + "' in module '" + moduleId
+                                + "' contains source entry '" + childEntry.getKey()
+                                + "'; managed output directories are compiler-owned and must not host sources"
+                );
             }
         }
     }
@@ -715,6 +871,8 @@ final class ModuleState {
     record CompileRequest(
             @NotNull String moduleId,
             @NotNull String moduleName,
+            long moduleGeneration,
+            long contentVersion,
             @NotNull CompileOptions compileOptions,
             @NotNull Map<String, String> topLevelCanonicalNameMap,
             @NotNull List<SourceSnapshot> sourceSnapshots,

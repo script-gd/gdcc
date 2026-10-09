@@ -383,15 +383,25 @@ only.
 - diagnostics snapshot
 - failure message
 - `loweringStatus`
+- `moduleGeneration`：冻结输入的模块代际（`createModule` 时从全局单调计数器分配；同 id 删除重建
+  得到新代际，代际只增不回收）
+- `snapshotVersion`：冻结输入的模块内容版本（`ModuleState.contentVersion` 在冻结时刻的值）
+
+`moduleGeneration` 与 `snapshotVersion` 对**所有** outcome（含 `SOURCE_COLLECTION_FAILED` /
+`INTERNAL_FAILED`）都填冻结时捕获的（代际, 版本）对，调用方只持有单次结果也能可靠判断陈旧度：
+与 `module.getContentVersion`（进程内 `API.getModuleContentVersion`）或最新语义快照比较时
+必须同时比较代际 + 版本，只比版本会在删除重建后误判。
 
 Current outcomes:
 
 - `COMPLETED`: the parse/analyze pipeline (and lowering, when requested) ran to completion.
   Diagnostics may still contain errors; `COMPLETED` describes the pipeline, not code health.
+  Since the fault-tolerant pipeline change, parse errors also stay `COMPLETED` and the result may
+  carry `sema.*` diagnostics collected from the surviving healthy subtrees.
 - `SOURCE_COLLECTION_FAILED`: module VFS source collection failed before parsing, for example on
   broken or cyclic virtual links, or the module has no `.gd`/`.gd3` sources.
 - `INTERNAL_FAILED`: required compiler metadata such as the Godot extension API could not be
-  loaded.
+  loaded, or parsing/shared semantic analysis crashed unexpectedly (no partial data is exposed).
 
 Lowering status:
 
@@ -508,19 +518,26 @@ The result boundary is intentional:
 
 One analysis request performs:
 
-1. Freeze compile options, class-name map, and VFS source snapshots through the same module-state
-   freeze used by compile tasks.
+1. Freeze compile options, class-name map, VFS source snapshots, and the current
+   (`moduleGeneration`, `contentVersion`) pair through the same module-state freeze used by compile
+   tasks.
 2. Collect `.gd`/`.gd3` files from the whole module VFS, with identical link and dedup rules.
-3. Parse each source with `GdScriptParserService.parseUnit(...)`.
-4. Stop after parsing when parse diagnostics contain errors, because semantic phases require a
-   well-formed AST.
-5. Load extension metadata for the module's `CompileOptions.godotVersion` and create
+3. Parse each source with `GdScriptParserService.parseUnit(...)`. Parser runtime failures recover
+   per unit into a `parse.internal` diagnostic plus an explicit parse-failed unit marker.
+4. Load extension metadata for the module's `CompileOptions.godotVersion` and create
    `ClassRegistry`.
-6. Run `FrontendSemanticAnalyzer.analyze(...)`, the shared semantic pipeline without the
-   compile-only gate, unless lowering was requested.
-7. When `AnalyzeOptions.includeLowering()` is `true`, run
-   `FrontendLoweringPassManager.lower(...)` instead, which reruns analysis through
-   `analyzeForCompile(...)` and emits a `LirModule` when no errors exist.
+5. Run `FrontendSemanticAnalyzer.analyze(...)`, the shared semantic pipeline without the
+   compile-only gate. Parse errors no longer stop this step: error subtrees are annotated into
+   `skippedSubtreeRoots()` and skipped, while healthy subtrees keep publishing facts (see
+   `frontend_rules.md` 恢复约定 and `frontend_lsp_foundation_implementation.md` §2.2).
+6. When `AnalyzeOptions.includeLowering()` is `true`:
+   - with parse errors, lowering verification is skipped entirely (`loweringStatus=FAILED`, no
+     `sema.compile_check` diagnostics);
+   - on a clean parse, `FrontendLoweringPassManager.lower(...)` reruns analysis through
+     `analyzeForCompile(...)` on an isolated fresh `ClassRegistry`/`DiagnosticManager` (importing
+     the parse-phase diagnostics exactly once), so the shared run's registry and facts are never
+     rewritten. Its failures or unexpected exceptions only degrade `loweringStatus` to `FAILED`;
+     the shared-run snapshot still publishes.
 
 The analysis boundary ends before `CCodegen.prepare(...)`: analysis never instantiates C codegen,
 never writes generated files, never invokes a native compiler, and never publishes output links.
@@ -536,14 +553,16 @@ tasks; both paths construct a fresh instance per request or task.
 
 ## 8. Concurrency Contract
 
-The implementation favors correctness over same-module read/write concurrency.
-
 Per module:
 
 - VFS reads and writes, link operations, compile options, class-name mapping, snapshots, and
   last-result queries serialize through one module gate.
-- `analyze(moduleId, ...)` is synchronous and also serializes through the module gate, so it waits
-  for a queued or active compile of the same module to finish before its inputs are frozen.
+- `analyze(moduleId, ...)` is synchronous but does **not** enter the module gate (three-phase
+  contract): it freezes inputs under the module-state monitor, runs the pipeline off-latch, then
+  conditionally publishes the immutable `ModuleAnalysisSnapshot`. It neither waits for a queued or
+  active compile nor blocks same-module VFS writes; concurrent same-module analyses run in parallel
+  and publish monotonically by frozen content version (first publisher wins on equal versions,
+  late-finishing older versions are dropped, deleted or replaced module instances accept nothing).
 - `compile(moduleId)` reserves the module's compile slot before returning a task ID.
 - A queued compile prevents later same-module operations from overtaking it before input freeze.
 - Once a compile task becomes active, it holds the module gate until result writeback and output

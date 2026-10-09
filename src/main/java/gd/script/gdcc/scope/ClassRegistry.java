@@ -14,6 +14,7 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /// Global metadata registry shared by type parsing, scope lookup, and backend/frontend semantic helpers.
 ///
@@ -111,12 +112,17 @@ public final class ClassRegistry implements Scope {
     /// This is not a second global lookup namespace. It only preserves source-facing names for
     /// registry callers that already resolved a gdcc class by canonical identity.
     private final Map<String, String> gdccClassSourceNameByCanonicalName = new HashMap<>();
+    /// Set once the owning analysis generation is published inside a snapshot; volatile because
+    /// snapshots are read concurrently off-latch.
+    private volatile boolean frozen;
     /// Shared virtual metadata surface keyed by the queried class name and then virtual name.
-    /// The visible map keeps local gdcc abstract methods and inherited engine virtuals in one place,
-    /// while the engine-only map ignores gdcc-only shadow declarations so frontend/backend can still
-    /// reach the underlying engine contract for strict override checks.
-    private final Map<String, Map<String, VirtualMethodInfo>> virtualMethodsByClassName = new HashMap<>();
-    private final Map<String, Map<String, VirtualMethodInfo>> engineVirtualMethodsByClassName = new HashMap<>();
+    /// Lazy virtual-method caches are written on read paths (`getVirtualMethods` and friends).
+    /// They must stay thread-safe after the registry is frozen and published inside a snapshot,
+    /// where concurrent RPC query threads can miss the same cache entry at once — hence
+    /// `ConcurrentHashMap` rather than a plain `HashMap`. Pre-freeze `addGdccClass` invalidation
+    /// via `clear()` is unaffected.
+    private final Map<String, Map<String, VirtualMethodInfo>> virtualMethodsByClassName = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, VirtualMethodInfo>> engineVirtualMethodsByClassName = new ConcurrentHashMap<>();
 
     public ClassRegistry(@NotNull ExtensionAPI api) {
         for (var bc : api.builtinClasses()) {
@@ -412,10 +418,31 @@ public final class ClassRegistry implements Scope {
         addGdccClass(classDef, null);
     }
 
+    /// Permanently closes the registry's mutation channels
+    /// (`frontend_lsp_foundation_implementation.md` §2.1: the registry of a published snapshot
+    /// generation must be physically unwritable — skeleton-time
+    /// `addGdccClass`/`removeGdccClass` calls are illegal after publication). Idempotent.
+    public void freeze() {
+        frozen = true;
+    }
+
+    public boolean isFrozen() {
+        return frozen;
+    }
+
+    private void requireWritable() {
+        if (frozen) {
+            throw new IllegalStateException(
+                    "This class registry belongs to a published snapshot generation and is frozen"
+            );
+        }
+    }
+
     /// Add or replace a user-defined class and optionally remember a distinct source-facing name.
     ///
     /// @param sourceNameOverride Passing `null` or the same text as the canonical class name keeps the side table empty for that class.
     public void addGdccClass(@NotNull ClassDef classDef, @Nullable String sourceNameOverride) {
+        requireWritable();
         Objects.requireNonNull(classDef, "classDef");
         var canonicalName = classDef.getName();
         gdccClassByName.put(canonicalName, classDef);
@@ -429,6 +456,7 @@ public final class ClassRegistry implements Scope {
 
     /// Remove a user-defined class by canonical name.
     public @Nullable ClassDef removeGdccClass(@NotNull String name) {
+        requireWritable();
         gdccClassSourceNameByCanonicalName.remove(name);
         virtualMethodsByClassName.clear();
         engineVirtualMethodsByClassName.clear();
@@ -994,6 +1022,30 @@ public final class ClassRegistry implements Scope {
     /// name is not one of the language-level globals.
     public @Nullable GdScriptLanguageConstant findGdScriptLanguageConstant(@NotNull String name) {
         return gdScriptLanguageConstantByName.get(name);
+    }
+
+    /// All registered top-level global constants (API dump plus compiler-synthesized extreme
+    /// values), in no guaranteed order. Read-only enumeration view for IDE-style consumers
+    /// (e.g. completion); the registry remains the single owner of the underlying maps.
+    public @NotNull @UnmodifiableView List<ExtensionGlobalConstant> getGlobalConstantList() {
+        return globalConstantByName.values().stream().toList();
+    }
+
+    /// All registered global enums (group metadata including member values), in no guaranteed
+    /// order. Bare member names are separately enumerable per group via `values()`.
+    public @NotNull @UnmodifiableView List<ExtensionGlobalEnum> getGlobalEnumList() {
+        return globalEnumByName.values().stream().toList();
+    }
+
+    /// All compiler-synthesized GDScript language constants (`PI`/`TAU`/`INF`/`NAN`).
+    public @NotNull @UnmodifiableView List<GdScriptLanguageConstant> getGdScriptLanguageConstantList() {
+        return gdScriptLanguageConstantByName.values().stream().toList();
+    }
+
+    /// All compiler-synthesized GDScript language functions (`len`/`range`/`load` and friends);
+    /// dump-provided utility functions are listed by [getExtensionUtilityFunctionList] instead.
+    public @NotNull @UnmodifiableView List<ExtensionUtilityFunction> getGdScriptLanguageFunctionList() {
+        return gdScriptLanguageFunctionByName.values().stream().toList();
     }
 
     /// Return the singleton's object type for a singleton name.

@@ -573,8 +573,9 @@ class FrontendEnumSkeletonTest {
 
     @Test
     void emptyEnumIsRejectedForBothNamingForms() throws IOException {
-        // gdparser maps an empty enum body to one phantom blank-named member (parse diagnostics
-        // stay empty), so the pre-pass owns the "at least one member" error for both forms.
+        // gdparser still maps an empty enum body to one phantom blank-named member, but now
+        // reports the missing enumerator/identifier itself (`parse.lowering`), so the pre-pass
+        // skips both enums without a second sema diagnostic (single-owner recovery rule).
         var fixture = build("enum_empty_reject.gd", """
                 class_name EnumEmptyReject
                 extends RefCounted
@@ -584,11 +585,16 @@ class FrontendEnumSkeletonTest {
                 var hp: int
                 """);
 
-        var skeletonDiagnostics = skeletonDiagnostics(fixture);
+        var parseErrors = fixture.diagnostics().snapshot().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("parse.lowering"))
+                .toList();
         assertAll(
-                () -> assertEquals(2, skeletonDiagnostics.size()),
-                () -> assertTrue(skeletonDiagnostics.stream().allMatch(diagnostic ->
-                        diagnostic.message().contains("at least one member"))),
+                () -> assertTrue(skeletonDiagnostics(fixture).isEmpty()),
+                () -> assertEquals(4, parseErrors.size()),
+                () -> assertTrue(parseErrors.stream().allMatch(diagnostic ->
+                        diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)),
+                () -> assertTrue(fixture.analysisData().skippedSubtreeRoots().containsKey(enumStatement(fixture, 0))),
+                () -> assertTrue(fixture.analysisData().skippedSubtreeRoots().containsKey(enumStatement(fixture, 1))),
                 () -> assertTrue(findClass(fixture, "EnumEmptyReject").getScriptConstants().isEmpty()),
                 () -> assertNotNull(findProperty(findClass(fixture, "EnumEmptyReject"), "hp"))
         );

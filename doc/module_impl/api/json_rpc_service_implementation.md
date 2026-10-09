@@ -245,9 +245,11 @@ DTO codec 规则：
   状态。
 - `compile.start` 立即返回 task id。在某 module 有排队或进行中的编译期间，该 module
   的所有 module 门控调用（`module.*`、`vfs.*`、`options.*`、`classMap.*`、
-  `analyze.run`、`compile.getLastResult`）都会在 module gate 上阻塞直到编译结束，
-  且 `analyze.run` 本身就是同步的。虚拟线程保证服务端整体仍可响应，但发起调用的
-  客户端仍会等待。因此进度轮询只能使用任务表读取 `compile.getTask`、
+  `compile.getLastResult`）都会在 module gate 上阻塞直到编译结束。`analyze.run` 自
+  三段式改造（`rpc_api_implementation.md` §8）起**不再进入 module gate**：它在
+  module-state monitor 内冻结输入后闩外执行，编译期间照常返回（同步语义不变，响应
+  额外携带 `moduleGeneration` 与 `snapshotVersion`）。虚拟线程保证服务端整体仍可响应，
+  但发起门控调用的客户端仍会等待。因此进度轮询只能使用任务表读取 `compile.getTask`、
   `compile.listEvents`、`compile.getLatestEvent`——它们不进入 module gate；GDScript
   客户端的轮询循环只建立在 `compile.getTask` 之上。适配层不在 API gate 已有行为之外
   额外 join 整个编译。

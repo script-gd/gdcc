@@ -268,9 +268,11 @@ mapped top-level gdcc class 当前已同时满足：
 
 当前行为已经冻结为：
 
-- 如果 top-level source unit 在 header/skeleton phase 就未进入 `moduleSkeleton.sourceClassRelations()`，scope phase 不会再为该 `SourceFile` 物化顶层 `ClassScope`
+- 如果 top-level source unit 在 header/skeleton phase 就未进入 `moduleSkeleton.sourceClassRelations()`，scope phase 不会再为该 `SourceFile` 物化顶层 `ClassScope`；带 `parseFailed` 标记的源单元（parser `parse.internal` 恢复路径）天然落入此规则——skeleton 已将其整体排除
 - 如果某个 inner class subtree 没有已发布 relation/classDef，scope analyzer 只跳过该 subtree，不扩大成整条 source 的失败
 - 如果 skeleton phase 明确把某个 member subtree 标记进 `FrontendAnalysisData.skippedSubtreeRoots()`，scope phase 同样必须跳过该 root，并且不为其任意后代发布 `scopesByAst()` 条目
+- skeleton 发布后由 `FrontendErrorSubtreeAnnotator` 补标的 parser 错误子树根（错误节点提升到最小 enclosing statement/declaration 根；参数默认值 island 的根是默认值表达式自身）走同一份 `skippedSubtreeRoots()` 表，scope phase 一视同仁
+- skipped 根检查覆盖**所有**专用 handler 入口（`SourceFile`/`Block`/`If`/`ElifClause`/`While`/`For`/`MatchStatement`/`MatchSection` 等与通用 `handleNode` 一样先查表），而不仅是 callable/class 边界；`EnumDeclaration` handler 恒 `SKIP_CHILDREN` 且不发布任何 scope，无需查表
 - 已接受的 sibling subtree 仍应继续分析
 
 ### 5.4 outer class 可见性

@@ -1554,6 +1554,11 @@ public class FrontendTypeCheckAnalyzer {
 
         private void walkStatements(@NotNull List<Statement> statements) {
             for (var statement : statements) {
+                // Skipped-subtree contract: parser-damaged statements carry no published facts, so
+                // this diagnostics-only walk must skip them instead of failing on missing types.
+                if (analysisData.skippedSubtreeRoots().containsKey(statement)) {
+                    continue;
+                }
                 astWalker.walk(statement);
             }
         }

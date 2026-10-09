@@ -77,11 +77,14 @@ class RpcApiRoundTripHttpTest {
             var fetched = rpc.callForResult("classMap.get", params("moduleId", "demo")).getAsJsonObject();
             assertEquals("game.roundtrip.RoundTripMain", fetched.get("RoundTripMain").getAsString());
 
-            // analyze.run on valid sources completes with empty diagnostics.
+            // analyze.run on valid sources completes with empty diagnostics and carries the frozen
+            // (moduleGeneration, snapshotVersion) identity of the analyzed content.
             var analysis = rpc.callForResult("analyze.run", params("moduleId", "demo")).getAsJsonObject();
             assertEquals("COMPLETED", analysis.get("outcome").getAsString());
             assertEquals(0, analysis.getAsJsonObject("diagnostics").getAsJsonArray("diagnostics").size());
             assertEquals("NOT_REQUESTED", analysis.get("loweringStatus").getAsString());
+            assertTrue(analysis.get("moduleGeneration").getAsLong() > 0);
+            assertTrue(analysis.get("snapshotVersion").getAsLong() > 0);
             // sourcePaths carry display paths: helper.gd falls back to its virtual path, main.gd
             // uses the explicit res:// display path set above.
             var sourcePaths = analysis.getAsJsonArray("sourcePaths");
@@ -94,6 +97,8 @@ class RpcApiRoundTripHttpTest {
                     "moduleId", "demo", "includeLowering", true
             )).getAsJsonObject();
             assertEquals("SUCCEEDED", lowered.get("loweringStatus").getAsString());
+            assertEquals(analysis.get("snapshotVersion").getAsLong(), lowered.get("snapshotVersion").getAsLong(),
+                    "unchanged content keeps the same frozen snapshot version");
 
             // A broken source still completes the pipeline but reports ERROR diagnostics —
             // ordinary analysis failures are payload, not JSON-RPC errors.
@@ -103,6 +108,8 @@ class RpcApiRoundTripHttpTest {
             ));
             var broken = rpc.callForResult("analyze.run", params("moduleId", "demo")).getAsJsonObject();
             assertEquals("COMPLETED", broken.get("outcome").getAsString());
+            assertTrue(broken.get("snapshotVersion").getAsLong() > analysis.get("snapshotVersion").getAsLong(),
+                    "the content write must advance the frozen snapshot version");
             var diagnostics = broken.getAsJsonObject("diagnostics").getAsJsonArray("diagnostics");
             assertTrue(diagnostics.size() > 0);
             var sawError = false;
@@ -119,6 +126,17 @@ class RpcApiRoundTripHttpTest {
             assertEquals("demo", deleted.get("moduleId").getAsString());
             var gone = rpc.call("module.get", params("moduleId", "demo"));
             assertEquals(-32000, gone.getAsJsonObject("error").get("code").getAsInt());
+
+            // Same-id recreation allocates a fresh, higher module generation, so (generation,
+            // version) pairs from before the delete can never be mistaken for current content.
+            var previousGeneration = broken.get("moduleGeneration").getAsLong();
+            rpc.callForResult("module.create", params("moduleId", "demo", "moduleName", "Demo 2"));
+            rpc.callForResult("vfs.putFile", params(
+                    "moduleId", "demo", "path", "/src/main.gd", "content", "class_name Recreated\n"
+            ));
+            var recreated = rpc.callForResult("analyze.run", params("moduleId", "demo")).getAsJsonObject();
+            assertTrue(recreated.get("moduleGeneration").getAsLong() > previousGeneration,
+                    "recreated module must carry a higher generation");
         }
     }
 }
