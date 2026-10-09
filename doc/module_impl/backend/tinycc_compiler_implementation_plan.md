@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：实施计划（未开工，已经两轮独立审阅修订）。本文档是 `TinyCcCompiler` 特性的唯一计划文档，完成后按归档约定转化为事实源文档或归档。
+- 状态：实施中（阶段 1 已开工）。本文档是 `TinyCcCompiler` 特性的唯一计划文档，完成后按归档约定转化为事实源文档或归档。
 - 适用范围：`gd.script.gdcc.backend.c.build` 包、`src/main/c/codegen/{include_451,template_451}`、`src/main/c/tinycc`（新增）、API/CLI/RPC 编译选项接线、zig launcher（行为变更，见 §8）。
 - 依据文档（结论来源，本文档不重复其论证）：
   - `doc/analysis/tinycc_analysis_windows_handoff.md`：Windows x86_64 上 tinycc mob `43c7708` + Java 25 FFM 的完整验证（构建命令、FFM 契约、11 文件兼容清单、资源包结构）。
@@ -94,14 +94,15 @@ FFM 生命周期不变量（写入实现类注释与测试）：
 
 ```text
 tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x86_64
-  VERSION                               # mob commit + gdcc bundle 格式版本
+  VERSION                               # properties：bundleFormat（=1）+ tinyccCommit（pin）+ platform
+  MANIFEST                              # 全部其他文件的 sha256sum 清单（安装完整性校验用）
   bin/libtcc.so | bin/libtcc.dll        # FFM 加载对象
   include/                              # tcc 自有头（tccdefs.h、stdarg.h、stdbool.h…）
   libtcc1.a 或 lib/libtcc1.a            # 位置按平台路径合同（见下）
   COPYING、RELICENSING                  # 上游 license 随包
   # windows 追加（对齐上游 install-win：win32/include 递归合并进 include/，winapi 落在 include/winapi/）：
-  include/                              # 合并 include/*.h、tcclib.h 与 win32/include/**（含 _mingw.h 等 CRT 头）
-    winapi/**                           # Windows 兼容头
+  include/                              # 合并 include/*.h、tcclib.h 与 win32/include/**（_mingw.h 在顶层）
+    winapi/**                           # Windows 兼容头（windows.h 在 include/winapi/ 下）
   lib/libtcc1.a                         # 由交叉目标产出的 x86_64-win32-libtcc1.a 改名安装
   lib/{msvcrt,kernel32,user32,gdi32,ws2_32,...}.def
 ```
@@ -115,8 +116,9 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 
 安装协议（独立定义，不引用 `ResourceExtractor` 语义——后者只做单文件内容比较，无目录锁与自愈）：
 
-- 目标目录：用户缓存目录（Linux `~/.cache/gdcc/tinycc/<key>/`，Windows `%LOCALAPPDATA%/gdcc/tinycc/<key>/`），key = gdcc 版本 + mob commit + platformKey。
-- 安装：按 key 的安装锁文件（`FileLock`，跨进程互斥）→ 锁内建唯一 staging 临时目录（同父目录、随机名）→ 全量写入 → 清单与哈希校验 → 最后写 `.ready` → 原子 rename 发布；rename 冲突（并发实例已发布）时校验胜出目录完整性后使用之；`.ready` 缺失或校验失败的目录整体删除重来。
+- 目标目录：用户缓存目录（Linux `~/.cache/gdcc/tinycc/<key>/`，Windows `%LOCALAPPDATA%/gdcc/tinycc/<key>/`），key = gdcc 版本 + mob commit + platformKey（实现形态：`<sanitized-gdccVersion>-tinycc-<fullCommit>-<platformKey>`）。
+- 安装：按 key 的安装锁是**两层**互斥——先取 JVM 内 per-key `ReentrantLock`（按规范化锁文件路径；必须在打开 channel 之前获取、在 FileLock 与 channel 关闭之后释放，因为 Linux/macOS 上 `FileLock` 底层是经典 POSIX fcntl 锁，进程关闭同一文件的任意 fd 会释放该进程在此文件上的全部锁），再对兄弟锁文件 `<key>.lock` 以非阻塞 `tryLock` + 可中断退避循环获取跨进程互斥（**不得用阻塞式 `channel.lock()`**：JDK 25 虚拟线程的中断语义下 `interrupt()` 会等待 native 锁调用返回，等于不可取消）。两处等待均可中断并恢复 interrupt 状态。锁内：建唯一 staging 临时目录（同父目录、`.staging-<key>-<random>` 随机名）→ 全量写入 → 按 MANIFEST 逐文件 SHA-256 校验 → 布局/VERSION 校验 → 最后写 `.ready` → 原子 rename 发布；rename 冲突（并发实例已发布）时校验胜出目录完整性后使用之，校验失败则替换；`.ready` 缺失或校验失败的目录（含普通文件/符号链接占位）整体删除重来。
+- 完整性：`MANIFEST` 是必需布局条目；缓存复用、胜出者采用与 `GDCC_TINYCC_HOME` 覆盖路径均按 MANIFEST 重验全部文件哈希（损坏/缺失即触发自愈），且 fail-closed——空清单、行边界截断清单均不通过，树内每个普通文件（除 `MANIFEST`/`.ready` 元数据）都必须被清单覆盖，清单路径经穿越/盘符/非法字符校验。
 - staging 清理：只清理安装锁未被持有且满足保留期（如 mtime 超过 24h）的 staging 目录；持锁安装中的目录不得被其他实例清理（含"安装者暂停 vs 崩溃"用例：B 不得清理 A 持锁中的 staging，A 崩溃且锁释放后方可回收）。
 - 已加载 libtcc 的 bundle 目录视为不可变版本：进程内一经加载即固定，自愈不替换正在使用的版本目录。
 - 旧版本清理政策：本期不自动清理，记录为已知限制。
@@ -139,7 +141,7 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 ### 阶段 0：权限确认与前置探针
 
 改动：
-- 向用户申请 §8 权限清单（构建脚本、script/ 新文件、.gitignore、launcher 行为变更）。
+- 向用户申请 §8 权限清单（构建脚本、`build-script/` 新文件、launcher 行为变更）。
 - 探针 P0-1（tmp 下，用 `/tmp/opencode/tinycc` 的 mob tcc）：plain `"..."` 中 `\uXXXX`/`\UXXXXXXXX` 的 tcc 执行编码；原始 UTF-8 字节直通在 zig/tcc 两侧的等价性。结论写入 tmp 证据文件，决定 D2 中字面量方案（首选：非 ASCII/控制字符按字节三位八进制 `\ooo` 转义，ASCII 可打印字符保持原样；该方案不依赖任何执行字符集映射）。
 - 探针 P0-2：以真实 FFM 加载分别核对 `java -jar`（unnamed）与 IDE 模块路径（`--enable-native-access=gdcc`）两种启动方式所需参数。
 - 探针 P0-3：进程内 libtcc 在 Linux 下对 `stdio.h`/`sys/mman.h`/crt/libc 的解析链路（`configure` 产物 vs `tcc_add_sysinclude_path` 补充），结论决定 §3.4 Linux 布局落点。
@@ -156,6 +158,14 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
   - Windows x86_64（从 Linux 交叉或 Windows 主机）：干净树先经 `./configure --cc="zig cc" --config-predefs=no` 生成 `config.h`——`tcc.h` 无条件包含 `config.h`，直接 zig cc 编译前必须先生成；`--config-predefs=no` 使预定义宏改为运行时从 bundle `include/tccdefs.h` 包含，**规避** `tccdefs_.h` 生成步骤（该头由 Makefile 模式规则经宿主 `c2str.exe` 转换产生，非 configure 产物；若选择启用 predefs 则必须先 `make tccdefs_.h`）；libtcc.dll 按 handoff 命令（`zig cc -target x86_64-windows-gnu -fno-sanitize=undefined -shared -DTCC_TARGET_PE -DTCC_TARGET_X86_64 -DLIBTCC_AS_DLL libtcc.c`）；win32 运行时归档经上游交叉目标 `make cross-x86_64-win32`（其 `x86_64-win32-tcc` 是 Linux 宿主、PE 目标的交叉编译器，可运行并构建 win32 归档），产物 `x86_64-win32-libtcc1.a` **改名安装为 bundle 的 `lib/libtcc1.a`**；或在 Windows 主机用 `win32/build-tcc.bat`（由该脚本负责配置生成，且默认不启用 predefs）；按上游 `install-win` 语义组装：`win32/include/**` 递归合并进 bundle `include/`（winapi 落在 `include/winapi/`），`win32/lib/*.def` 入 `lib/`。
   - 组装 bundle 目录并写 `VERSION`。
 - `TinyCcBundle`：定位/安装/校验实现（§3.4 安装协议）+ `GDCC_TINYCC_HOME` 覆盖。
+
+进度（实施中逐项同步）：
+
+- [x] 权限决议（§8.2/§8.3）：构建脚本目录定为 `build-script/`；产物输出到 `build/`；`.gitignore` 无需改动。
+- [x] vendored 源码树 + `GDCC_PIN.md`（`git archive 43c7708` 导出，已验证无 `.git`/生成物，`COPYING`/`RELICENSING` 随树；仅保留构建必需内容：上游 `tests/`、`examples/`、`win32/examples/`、`.github/`、文档生成文件 `tcc-doc.texi`/`texi2pod.pl` 均未 vendor）
+- [x] bundle 构建脚本（`build-script/build-tinycc-bundle-linux-x86_64.sh` 本机构建+验证通过；`build-script/build-tinycc-bundle-windows-x86_64.sh` Linux 交叉构建+结构校验通过，PE 运行验证归 G6）
+- [x] `TinyCcBundle` 实现（`TinyCcBundle.java` + `TinyCcBundleTest` 39 项测试全绿：布局/VERSION/MANIFEST 完整性正反校验（含空/截断清单 fail-closed、不可读子树的受控失败）、classpath/目录源安装、确定性锁竞争、跨 JVM POSIX 锁回归探针与跨进程持锁即时中断（`TinyCcBundleLockProbe`）、rename 冲突采用/替换胜出者、`.ready`/内容/清单自愈、普通文件与符号链接占位自愈、staging 保留期与持锁保护、中断恢复、路径穿越/盘符/NUL 防护）
+- [x] 验收：Linux bundle 产物 + `nm -D` 导出检查（78 个 `tcc_*` 导出）+ 移位 smoke（真实 `-shared` 链接含 stdio/sys/mman 调用；`ldd` 记录 `libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6`；证据 `tmp/tinycc-bundle-g1/EVIDENCE.md`）+ `TinyCcBundleTest` 全绿
 
 验收：
 - 脚本在本机（Linux x86_64）产出 bundle；`nm -D libtcc.so` 可见 `tcc_new` 等导出。
@@ -265,8 +275,8 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 ## 8. 权限与确认清单（超出 src/doc/tmp 范围或改变既有合同，需用户逐条批准）
 
 1. `build.gradle.kts`：`tasks.test` 增加 `jvmArgs("--enable-native-access=ALL-UNNAMED")`；`sourceSets.main.resources` 增加 bundle srcDir（或在 `processResources` 接入构建产物目录）；`EditorAddonProjectInstaller` 相关 `JavaExec` 任务的 `jvmArgs` 同参数核对。
-2. `script/` 新增 bundle 构建脚本（Linux/Windows 各一）。
-3. `.gitignore`：忽略 bundle 构建产物与本机提取缓存。
+2. `build-script/` 新增 bundle 构建脚本（Linux/Windows 各一）。（用户决议：目录由 `script/` 改为 `build-script/`；`script/` 被 `.gitignore` 整体忽略，而 `build-script/` 可正常纳入版本管理。）
+3. ~~`.gitignore`：忽略 bundle 构建产物与本机提取缓存~~（已消解：构建产物默认输出到已被忽略的 `build/`；用户缓存目录在仓库之外；`build-script/` 未被忽略，无需改动 `.gitignore`）。
 4. launcher 行为变更确认：`main.zig` 的 zig 发现从硬前置降级为可选（找不到 zig 不再 `exit(1)`，仅不设置 `ZIG_HOME`）；这是既有启动合同的变更，实施前需明确批准。
 5. per-project 构建锁从 `ZigCcCompiler` 提取为编译器中立持有器（`ZigCcCompiler` 相应改造）：改动既有 zig 实现的锁持有方式，需确认。
 6. 移除 `CProjectBuilder.setCCompiler`（当前无生产调用方，测试改用构造器注入）——公共 API 面缩减，需确认。
