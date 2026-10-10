@@ -609,14 +609,22 @@ fixture，列入 §7 后续工作。
   编辑器 `SceneTree` 内）。dock 入树后 `plugin.gd` 以 fire-and-forget 方式调用
   `_dock.auto_setup_module()`：确保服务可达并等待驻留服务宣布诊断模块 id，将 Module
   检查字段指向它。诊断模块由服务独立创建并自动同步，无需 Upload。
-  **Build** 按钮复制诊断模块到 pid 作用域的编译副本，传入当前
+  **Build** 按钮复制诊断模块到基于项目名称和根路径的固定编译副本，传入当前
   `application/config/name` 作为 `newModuleName`（空白项目名拒绝构建）；随后
   `options.get` 取完整快照，仅把 `projectPath` 改为
-  `res://.godot/gdcc/<副本id>` 的 globalize 结果后 `options.set` 回传，再启动异步编译。
+  `res://.godot/gdcc/<副本id>/<端点hash>` 的 globalize 结果后 `options.set` 回传，再启动异步编译。
+  固定 id 为 `gdcc_editor_compile_<安全化项目名前32字符>_<hash>`，hash 为
+  `globalize_path("res://") + "\n" + trim 后项目名` 的 SHA-256 前16字符，不含 PID。
+  文件名安全化在 `validate_filename()` 基础上将 U+0000–U+001F 和 U+007F 替换为 `_`。
+  端点 hash 为 `host + "\n" + port` 的 SHA-256 前16字符；相同端点跨会话复用目录，
+  不同服务器使用独立目录，避免各服务的内存占用无法协调跨进程磁盘写入。
+  以 `<副本id>_owner` 内存模块和 dock 随机 token 原子占用，其他编辑器占用时拒绝
+  构建，不删除/取消其任务；正常空闲卸载释放副本及占用，异常退出或在途请求卸载
+  保留占用，提示重启服务，不自动接管。诊断模块仍保持进程隔离。
   options/copy 调用走通用 `call_rpc`，无需依赖已安装扩展中的新 typed wrapper；副本
   名称回显不匹配时明确提示升级服务端，不继续用诊断名称构建。
   成功任务的 `CompileResult.artifacts` 中的动态库部署到项目 `bin`，库名使用
-  `validate_filename()` 处理后的项目名称、平台、优化级别和 Godot 架构标签；写入
+  安全化项目名称、平台、优化级别、Godot 架构标签及库内容 SHA-256 前16字符；写入
   `res://bin/gdcc.gdextension` 后通过 EditorFileSystem 扫描让引擎维护扩展清单并首次
   加载，已加载时显式重载。详细文件发布、失败和跨目标合同见编辑器集成文档的
   “Build 部署与启用”节；API/RPC 本身不生成描述文件。

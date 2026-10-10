@@ -135,9 +135,13 @@ two modules must not share a physical build directory (§8).
 
 The optional `newModuleName` overrides only the copy's display name; null preserves the source
 name. A supplied name is trimmed and must be non-blank, just like `createModule`'s name. This
-lets editor Build copies use the current Godot project name while retaining private, process-scoped
-module IDs. The source module is not renamed. Backend build basenames still derive from module IDs;
-the editor adapter gives deployed libraries project-derived filenames.
+lets editor Build copies use the current Godot project name without renaming the source module.
+Editor compile IDs are stable for a project root and name; a separate, never-compiled reservation
+module admits one editor owner at a time using the existing atomic `createModule` contract.
+Diagnostics keep their private, process-scoped IDs. Backend build basenames still derive from
+module IDs; the editor adapter gives deployed libraries project-derived filenames. Editor build
+directories also contain a stable endpoint hash: independent servers cannot coordinate ownership
+reservations or safely write generated C and objects into one physical directory.
 
 ### 3.2 Virtual Filesystem
 

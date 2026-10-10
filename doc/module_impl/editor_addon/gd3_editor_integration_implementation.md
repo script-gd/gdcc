@@ -21,10 +21,13 @@
   原 `lsp_lookup` 用例保留但暂停，待安全实现后恢复。`_get_global_class_name`
   （Stage C 暂缓）、模板、`--lsp-port` 设置项尚未实施；**Phase 10（编译工作流：
   `module.copy` + 编译副本）已实施并通过自动化验收**（2026-09-28：服务端
-  `ApiModuleCopyTest` 7 项 + RPC 三层测试 + 引擎用例 `dock_compile` 12 步全绿，
+  `ApiModuleCopyTest` 7 项 + RPC 三层测试 + 引擎用例 `dock_compile` 当时12步全绿，
   api+rpc 全量回归无回归，双评审终审 APPROVE；手动验收项见 Phase 10 验收节）；
   已经过多轮并行评审并修订）
-- 更新日期：2026-10-06
+- 更新日期：2026-10-10
+- 2026-10-10 修订：构建副本 ID、内部目录及产物名基于项目名称和根路径固定；
+  同一项目身份只允许一个 dock 所有者，诊断模块继续进程隔离。当前回归步骤以
+  `EditorAddonScriptLanguageEngineTest.EXPECTED_STEPS` 的 `dock_compile` 为准。
 - 2026-10-06 修订：Compile 按钮改为 **Build**；编译副本使用当前项目名称，成功后部署
   动态库到项目 `bin` 并生成 `gdcc.gdextension`，通过引擎扫描持久化扩展清单并加载，
   重建时显式重载。合同、失败边界与测试锚点见下方“Build 部署与启用”节。
@@ -2295,14 +2298,15 @@ reconciler 自 Phase 3 起已把全项目自动同步进私有诊断模块。202
    `diag_channel_status()` 的有效端点一致（防止对错误服务器按 id 复制/删除）→ 从服
    务取诊断模块 id 并就绪校验 → 经 dock 自有 RPC 客户端（与诊断流量分队列的既有设
    计）`module.copy(诊断id, 副本id)` → `options.set` 重写 `projectPath`
-   （`res://.godot/gdcc/<副本id>`，与诊断模块的宿主目录隔离）→ `compile.start` →
-   现有轮询；再次编译命中 -32001 → 删除旧副本后重新复制（永远编译最新快照）；
+   （`res://.godot/gdcc/<副本id>/<端点hash>`，与诊断模块的宿主目录隔离）→ `compile.start` →
+   现有轮询；再次编译命中 -32001 → 仅当服务端 owner token 属于本 dock，且本地
+   记录证明副本由本 dock 创建时，删除旧副本后重新复制（永远编译最新快照）；
    -32002（旧副本编译仍在进行，如上次轮询超时）→ 取消本 dock 发起的旧任务并等待
-   终态后重试删除一次。副本 id 由诊断 id 换前缀派生
-   （`gdcc_editor_compile_<projectRootHash>_<pid>`，pid 作用域与诊断模块同款，崩溃
-   残留随服务进程消亡、下次编译 -32001 重建自愈）；副本按 `{host, port, id}` 逐条
-   记录（端点可在两次编译间重定向），插件卸载时对每条记录用**阻塞 HTTPClient**
-   （绕过已离树的帧泵客户端）做有界删除。已删除 Upload 按钮与
+   终态后重试删除一次。副本 id 和构建目录现已固定为基于项目名称和根路径的身份
+   （2026-10-10 修订，见下节），不再从诊断 id 的 PID 派生。副本按端点逐条记录
+   （端点可在两次编译间重定向），插件空闲卸载时对每条记录用**阻塞 HTTPClient**
+   （绕过已离树的帧泵客户端）核对服务器上的所有权后做有界删除；未知响应或忙副本
+   不释放占用，在途请求卸载保留占用，避免卸载后的 RPC 写入新所有者的模块。已删除 Upload 按钮与
    `_on_upload_script_pressed`；`auto_setup_module` 简化为仅确保服务可达并把检查用
    模块字段指向诊断模块；Analyze 保留为检查口；旧服务端无此方法（-32601）时报错
    提示升级服务端，不回退有损的手动上传路径。`gdcc_rpc_client.gd3` 增补类型化
@@ -2318,9 +2322,10 @@ reconciler 自 Phase 3 起已把全项目自动同步进私有诊断模块。202
    `module.list` 观察注册（**不能用 `module.get`/`read_file`——它们走模块门，副本
    编译期间会阻塞**）（`copy_created`）→ 编译期间诊断模块 analyze 在任务非终态时返
    回（`diag_alive_during_compile`，任务状态锚点替代耗时门限——不冻结证明）→ 副
-   本编译成功且产物落入独立 `.godot/gdcc/<副本id>` 目录（`compile_succeeded`）→ 修
-   改 fixture 并等待再同步（`fixture_resynced`）→ 再次编译走 -32001 删除重复制路
-   径、任务 id 严格递增且新副本内容为新源（`recompile_replaces_copy`）→ 全程后诊
+    本编译成功且产物落入独立 `.godot/gdcc/<副本id>/<端点hash>` 目录（`compile_succeeded`）→ 修
+    改 fixture 并等待再同步（`fixture_resynced`）→ 再次编译走 -32001，在服务端 token
+    和本地创建记录均确认属于本 dock 后删除重复制，任务 id 严格递增且新副本内容为
+    新源（`recompile_replaces_copy`）→ 全程后诊
    断模块仍可 analyze（`diag_still_responsive`）。配套修正：`--quit-after` 帧数上限
    按用例可配置（真实原生构建耗时远超交互用例）；用例副本中删除工程自带的故意错
    误样例 `src/test2.gd3`（其前端错误会阻断整工作区编译），删除需先等初始同步波把
@@ -2355,10 +2360,30 @@ Cancel 改道）——Cancel 改用钉住任务端点的临时客户端，重试
 
 - 按钮为 **Build**，每次从 `application/config/name` 读取、trim 项目名称，空白时
   提示设置名称而不启动构建。`module.copy` 的可选 `newModuleName` 只覆盖副本的
-  `moduleName`，保留 pid 作用域 id 和诊断隔离；旧调用缺省时仍继承源名称。即使在
+  `moduleName`，诊断模块仍保持 PID 作用域隔离；旧调用缺省时仍继承源名称。即使在
   诊断 setup 后修改项目名，新构建仍使用当前名称。服务端忽略覆盖字段、回显名称不符
   时中止并提示升级。
-- C 和内部编译产物仍在独立 `.godot/gdcc/<副本id>`。只从**当前终态任务的**
+- 编译副本 id 固定为 `gdcc_editor_compile_<安全化项目名前32字符>_<hash>`。
+  安全化使用 Godot `String.validate_filename()`，再将 U+0000–U+001F 和 U+007F 控制
+  字符替换为 `_`（引擎的 filename 校验本身不处理这些字符）；hash 为
+  `ProjectSettings.globalize_path("res://") + "\n" + trim 后项目名` 的 SHA-256 前16个
+  十六进制字符，区分同名不同路径、非法字符替换碰撞及长名称截断碰撞。不含 PID，
+  相同项目路径和名称在重启编辑器后仍复用 `.godot/gdcc/<副本id>` 身份目录和后端产物名。
+  项目改名或移动路径会产生新的身份；不自动删除旧 PID 目录或其他身份的历史产物。
+- 实际构建路径为 `.godot/gdcc/<副本id>/<端点hash>`，端点 hash 为
+  `host + "\n" + port` 的 SHA-256 前16字符，不含 PID 或任务 id。相同服务端点跨会话
+  复用子目录；切换端点或其他编辑器使用不同服务器时分开生成 C、对象和原始库，
+  不自动删除旧端点目录。原因是占用模块仅在单个服务内互斥，后端构建锁也仅限同一
+  JVM，且生成 C 发生在原生编译锁之前；上一次轮询超时的旧服务可能仍在写入。
+- 同一服务上同一项目身份只允许一个 dock 拥有构建模块：先用既有 `module.create`
+  原子创建 `<副本id>_owner`，其 `moduleName` 为每个 dock 随机生成的 token，该占用
+  模块不编译、无磁盘产物。重复构建先核对服务端 token，再替换自己已创建的快照；
+  其他 token、无占用但已存在的未知副本均拒绝接管，不删除/取消他人的模块或任务。
+  正常空闲卸载核对 token 后先删副本，确认成功/不存在后再删占用；服务器重启后
+  本地记录不能证明所有权。异常退出、忙副本、网络清理失败或在途请求卸载保留占用，
+  提示关闭占用编辑器或重启 gdcc 服务恢复。这替代旧的多编辑器独立构建目录约定，
+  诊断/补全仍为每个编辑器独立通道，不修改 API/RPC 协议。
+- C 和内部编译产物仍在独立 `.godot/gdcc/<副本id>/<端点hash>`。只从**当前终态任务的**
   `CompileResult.artifacts` 选择目标平台对应的唯一动态库，不查询后续 lastResult，
   不扫描旧构建目录猜产物；缺库、多个库、库在编辑器机器上不可访问时部署失败。
   RPC 服务必须能提供编辑器可读的本地/共享文件路径，尚无跨机器二进制下载协议。
@@ -2411,11 +2436,20 @@ Cancel 改道）——Cancel 改用钉住任务端点的临时客户端，重试
   `reload_extension` 状态与单扩展信号。
 - `editor/file_system/editor_file_system.cpp`：`scan` / `_scan_extensions`，扫描完成信号
   在扩展成员对账之后；scan 本身不等于二进制重载。
+- [Godot 4.5.1 Windows 库加载](https://github.com/godotengine/godot/blob/4.5.1-stable/platform/windows/os_windows.cpp)：
+  编辑器通过 `~<库名>` 临时副本加载 DLL；
+  [macOS](https://github.com/godotengine/godot/blob/4.5.1-stable/platform/macos/os_macos.mm) 和
+  [Unix](https://github.com/godotengine/godot/blob/4.5.1-stable/drivers/unix/os_unix.cpp)
+  直接 `dlopen` 原库，因此固定内部构建身份不等于取消 `bin` 的内容哈希路径。
+  Godot 不扫描或加载 `.godot/gdcc` 中的库，仅发布到 `bin` 后经引擎启用。
 
 **测试锚点**：`ApiModuleCopyTest`、`RpcJsonCodecTest`、`JsonRpcDispatcherTest`、
 `RpcApiRoundTripHttpTest` 覆盖副本名称覆盖、旧请求继承和非法空白；
 `CCodegenTest.moduleDisplayNameIsEscapedInEntryMessages` 覆盖 C 字符串边界。
 `EditorAddonScriptLanguageEngineTest.dockCompileCopiesDiagnosticsModule` 驱动真实 Build：
+固定模块身份与非法字符替换碰撞隔离、未知副本/其他所有者不被删除、卸载释放占用、
+新诊断会话和新 dock 复用同一身份及目录、两次真实构建产物路径一致、控制字符
+安全化（实际项目名含换行仍能构建及部署）、两个真实 RPC 服务的构建目录隔离，
 构建期间诊断仍响应、setup 后更改含引号的项目名、库字节一致、描述文件配置与实际加载、
 清单持久化、无效结果不覆盖安装，以及二次构建后存活实例的方法返回值从 1 变为 2。
 还覆盖显式 debug/release 条目互不覆盖、相同内容路径复用与别名升级；非法配置类型、

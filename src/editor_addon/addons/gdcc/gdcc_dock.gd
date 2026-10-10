@@ -16,10 +16,9 @@ extends VBoxContainer
 const ERR_MODULE_ALREADY_EXISTS := -32001
 const ERR_MODULE_BUSY := -32002
 const ERR_METHOD_NOT_FOUND := -32601
-# Diagnostics module id convention (gdcc_module_lifecycle.gd3); the compile copy id swaps the
-# prefix so it stays scoped to the same project root hash and editor process.
-const DIAG_MODULE_PREFIX := "gdcc_editor_diagnostics_"
+# Build identities are project-scoped; diagnostics remain private to each editor process.
 const COMPILE_MODULE_PREFIX := "gdcc_editor_compile_"
+const ERR_MODULE_NOT_FOUND := -32000
 const BUILD_EXTENSION_PATH := "res://bin/gdcc.gdextension"
 const SETTING_LAUNCH_COMMAND := "gdcc/server/launch_command"
 const SETTING_SERVER_HOST := "gdcc/server/host"
@@ -52,6 +51,7 @@ var _current_task_port: int = 0
 # is recorded per copy because the dock's endpoint can be retargeted between compiles; the
 # unload cleanup must talk to the server that actually owns each copy.
 var _owned_copies: Array = []
+var _compile_owner_token: String = Crypto.new().generate_random_bytes(16).hex_encode()
 var _busy_count: int = 0
 var _pending_activation: Dictionary = {}
 var _filesystem_generation: int = 0
@@ -145,20 +145,31 @@ func _set_action_buttons_enabled(enabled: bool) -> void:
 
 
 func _exit_tree() -> void:
+    var requests_in_flight := _busy_count > 0
     # GDScript has no try/finally: if the plugin is disabled mid-request, the pending
     # coroutines are dropped with the dock and `_end_busy` never runs — drain the residual
     # count through the coordinator here or the editor would stay in full-speed mode.
     if _busy_count > 0:
         _report_busy.call(-_busy_count)
         _busy_count = 0
-    # Best-effort cleanup of this process's compile copies. The frame-pumped RPC client cannot
-    # deliver here: by the time the dock exits, the plugin's client child has already left the
-    # tree and HTTPRequest refuses to send outside it (ERR_UNCONFIGURED). A bounded blocking
-    # HTTPClient POST works without the scene tree; a missed delete self-heals on the next
-    # compile via the already-exists replace path, and pid-scoped ids die with any
-    # editor-launched server process anyway.
+    # A pending request can still mutate the copy after teardown. Keep its reservation until
+    # the server stops rather than letting another editor acquire the same build directory.
+    if requests_in_flight:
+        return
+    # The frame-pumped client has left the tree. Verify the server-side reservation before
+    # bounded blocking cleanup: this endpoint may now belong to a restarted server.
     for entry in _owned_copies:
-        _delete_module_blocking(str(entry["host"]), int(entry["port"]), str(entry["module_id"]))
+        var host := str(entry["host"])
+        var port := int(entry["port"])
+        var owner_id := str(entry["module_id"]) + "_owner"
+        var owner := _call_rpc_blocking(host, port, "module.get", {"moduleId": owner_id})
+        if not owner.has("result") or str(owner["result"]["moduleName"]) != _compile_owner_token:
+            continue
+        if entry["copy_created"]:
+            var deleted := _call_rpc_blocking(host, port, "module.delete", {"moduleId": entry["module_id"]})
+            if not deleted.has("result") and int(deleted.get("error", {}).get("code", 0)) != ERR_MODULE_NOT_FOUND:
+                continue
+        _call_rpc_blocking(host, port, "module.delete", {"moduleId": owner_id})
     _owned_copies.clear()
 
 
@@ -191,31 +202,41 @@ func _end_busy() -> void:
         _set_action_buttons_enabled(true)
 
 
-# Blocking module.delete for teardown, where the frame-pumped client can no longer send.
-# Bounded polling keeps a dead server from stalling editor shutdown; the response is
-# deliberately not read.
-func _delete_module_blocking(host: String, port: int, module_id: String) -> void:
+# Bounded RPC for teardown, where the frame-pumped client can no longer send. Failure keeps
+# the reservation intact; an unknown response must never authorize deletion of another owner.
+func _call_rpc_blocking(host: String, port: int, method: String, params: Dictionary) -> Dictionary:
     var http := HTTPClient.new()
     if http.connect_to_host(host, port) != OK:
-        return
+        return {}
     var deadline := Time.get_ticks_msec() + 2000
     while http.get_status() == HTTPClient.STATUS_CONNECTING or http.get_status() == HTTPClient.STATUS_RESOLVING:
         http.poll()
         if Time.get_ticks_msec() >= deadline:
-            return
+            return {}
         OS.delay_msec(10)
     if http.get_status() != HTTPClient.STATUS_CONNECTED:
-        return
+        return {}
     var body := JSON.stringify({
-        "jsonrpc": "2.0", "id": 1, "method": "module.delete", "params": {"moduleId": module_id},
+        "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
     })
     if http.request(HTTPClient.METHOD_POST, "/rpc", ["Content-Type: application/json"], body) != OK:
-        return
+        return {}
     while http.get_status() == HTTPClient.STATUS_REQUESTING:
         http.poll()
         if Time.get_ticks_msec() >= deadline:
-            return
+            return {}
         OS.delay_msec(10)
+    if not http.has_response() or http.get_response_code() != 200:
+        return {}
+    var response := PackedByteArray()
+    while http.get_status() == HTTPClient.STATUS_BODY:
+        http.poll()
+        response.append_array(http.read_response_body_chunk())
+        if Time.get_ticks_msec() >= deadline:
+            return {}
+        OS.delay_msec(10)
+    var parsed: Variant = JSON.parse_string(response.get_string_from_utf8())
+    return parsed if parsed is Dictionary else {}
 
 
 ## Read-only status refresh (timer-driven): configured endpoint (per-project settings) vs
@@ -318,17 +339,51 @@ func _on_analyze_pressed() -> void:
         _log("  no diagnostics")
 
 
+# Godot's filename validation does not remove control characters, which Windows rejects.
+func _project_filename(project_name: String) -> String:
+    var validated := project_name.validate_filename()
+    var safe := ""
+    for index in range(validated.length()):
+        var code := validated.unicode_at(index)
+        safe += "_" if code < 32 or code == 127 else validated[index]
+    return safe
+
+
+# Stable across editor restarts, distinct for projects with equal or filename-colliding names.
+func _compile_module_id(project_name: String) -> String:
+    var identity := ProjectSettings.globalize_path("res://") + "\n" + project_name
+    return COMPILE_MODULE_PREFIX + _project_filename(project_name).left(32) + "_" + identity.sha256_text().left(16)
+
+
 # Creates (or refreshes) the compile copy of the diagnostics module and points the copy's
-# build directory at its own `.godot/gdcc/<copy>` host dir. Returns the copy's module id, or
+# build directory at its own `.godot/gdcc/<copy>/<endpoint>` host dir. Returns the copy's module id, or
 # "" after logging why the build cannot proceed. `call_rpc` is used instead of typed
 # wrappers because the installed compiled extension may predate them (the same reason the old
 # auto setup avoided `get_compile_options`).
 func _prepare_compile_copy(source_module_id: String, project_name: String) -> String:
-    var copy_module_id: String = source_module_id.replace(DIAG_MODULE_PREFIX, COMPILE_MODULE_PREFIX)
-    if copy_module_id == source_module_id:
-        # Defensive fallback if the diagnostics id convention ever changes: the copy must
-        # never alias its source.
-        copy_module_id = source_module_id + "_compile"
+    var copy_module_id := _compile_module_id(project_name)
+    var owner_id := copy_module_id + "_owner"
+    # A separate, never-compiled module reserves this id without waiting on the copy's gate.
+    # Atomic module.create admits one editor; a server restart invalidates old local ownership.
+    var claimed: Dictionary = await _client.create_module(owner_id, _compile_owner_token).completed
+    var new_claim: bool = claimed["ok"]
+    if not new_claim:
+        if int(claimed["error"]["code"]) != ERR_MODULE_ALREADY_EXISTS:
+            _log_error("reserve compile module", claimed)
+            return ""
+        var owner: Dictionary = await _client.call_rpc("module.get", {"moduleId": owner_id}).completed
+        if not owner["ok"] or str(owner["result"]["moduleName"]) != _compile_owner_token:
+            _log("build skipped: this project's compile module is owned by another editor; close that editor or restart the gdcc server after an abnormal exit")
+            return ""
+    var owned_entry: Dictionary = {}
+    for entry in _owned_copies:
+        if entry["module_id"] == copy_module_id and entry["host"] == _client.host and entry["port"] == _client.port:
+            owned_entry = entry
+    if owned_entry.is_empty():
+        owned_entry = {"host": _client.host, "port": _client.port, "module_id": copy_module_id, "copy_created": false}
+        _owned_copies.append(owned_entry)
+    if new_claim:
+        owned_entry["copy_created"] = false
     var copy_params := {"sourceModuleId": source_module_id, "newModuleId": copy_module_id,
             "newModuleName": project_name}
     var copied: Dictionary = await _client.call_rpc("module.copy", copy_params).completed
@@ -338,8 +393,10 @@ func _prepare_compile_copy(source_module_id: String, project_name: String) -> St
             _log("compile failed: this gdcc server predates module.copy; upgrade the server")
             return ""
         if code == ERR_MODULE_ALREADY_EXISTS:
-            # Stale copy from the previous compile (or a crashed session): replace it so every
-            # compile runs the latest synced sources.
+            if not owned_entry["copy_created"]:
+                _log("build skipped: an unowned compile module already exists; restart the gdcc server to clear it")
+                return ""
+            # Replace only this owner's previous snapshot; never adopt a foreign crash remnant.
             var deleted: Dictionary = await _client.delete_module(copy_module_id).completed
             if not deleted["ok"] and int(deleted["error"]["code"]) == ERR_MODULE_BUSY \
                     and _current_task_id > 0 \
@@ -362,6 +419,7 @@ func _prepare_compile_copy(source_module_id: String, project_name: String) -> St
             if not deleted["ok"]:
                 _log_error("delete stale compile copy", deleted)
                 return ""
+            owned_entry["copy_created"] = false
             copied = await _client.call_rpc("module.copy", copy_params).completed
         if not copied["ok"]:
             _log_error("copy diagnostics module", copied)
@@ -369,12 +427,7 @@ func _prepare_compile_copy(source_module_id: String, project_name: String) -> St
     # `_client.host/port` are stable for the whole flow: `_apply_endpoint` only runs from
     # busy-gated button handlers (disabled while this flow is in flight) and Cancel now uses
     # its own pinned client instead of mutating the shared one.
-    var already_tracked := false
-    for entry in _owned_copies:
-        if entry["module_id"] == copy_module_id and entry["host"] == _client.host and entry["port"] == _client.port:
-            already_tracked = true
-    if not already_tracked:
-        _owned_copies.append({"host": _client.host, "port": _client.port, "module_id": copy_module_id})
+    owned_entry["copy_created"] = true
     if str(copied["result"]["moduleName"]) != project_name:
         _log("build failed: the gdcc server does not support named module copies; upgrade the server")
         return ""
@@ -386,9 +439,11 @@ func _prepare_compile_copy(source_module_id: String, project_name: String) -> St
         _log_error("get options", fetched)
         return ""
     var compile_options: Dictionary = fetched["result"]
-    # Build under the project's own .godot dir: host-side generated C and native artifacts
-    # stay out of res:// so Godot never tries to import them.
-    var project_path: String = ProjectSettings.globalize_path("res://.godot/gdcc/" + copy_module_id)
+    # Different servers have independent reservations and no cross-process build lock. Give
+    # each endpoint a stable subdirectory, including when an old endpoint's task still runs.
+    var endpoint := _client.host + "\n" + str(_client.port)
+    var project_path: String = ProjectSettings.globalize_path(
+            "res://.godot/gdcc/" + copy_module_id + "/" + endpoint.sha256_text().left(16))
     compile_options["projectPath"] = project_path
     var applied: Dictionary = await _client.call_rpc(
             "options.set", {"moduleId": copy_module_id, "compileOptions": compile_options}).completed
@@ -400,7 +455,7 @@ func _prepare_compile_copy(source_module_id: String, project_name: String) -> St
 
 
 # Build snapshots the service's private diagnostics module, kept
-# continuously in sync by the reconciler — into a per-process compile copy, then compile the
+# continuously in sync by the reconciler into a reserved, project-scoped copy, then compiles the
 # copy. The diagnostics module never hosts a compile, so its module gate stays free for
 # editor analysis traffic while the native build runs.
 func _on_build_pressed() -> void:
@@ -409,8 +464,8 @@ func _on_build_pressed() -> void:
         _log("build skipped: diagnostics channel is not ready yet")
         return
     # `_apply_endpoint` sources the client endpoint from the service itself, so the compile
-    # copy always targets the server that owns the diagnostics module — no stranger's module
-    # can be hit by the -32001 replace path.
+    # copy always targets the server that owns the diagnostics module. Its separate reservation
+    # prevents the -32001 replace path from touching another editor's build.
     var source_module_id: String = _service.get_diag_module_id()
     if source_module_id == "":
         _log("build skipped: diagnostics module id is not available yet")
@@ -516,14 +571,15 @@ func _deploy_build_result(result: Dictionary, project_name: String) -> bool:
         _log("build deployment failed: cannot read compiled library")
         return false
     # A fresh path defeats dyld's same-path image cache and never overwrites a mapped library.
-    var basename := project_name.validate_filename() + "_" + platform + "_" + level + "_" + architecture \
+    var basename := _project_filename(project_name) + "_" + platform + "_" + level + "_" + architecture \
             + "-" + library_hash.left(16)
     var library_path := "res://bin/" + ("" if platform == "windows" or platform == "web" else "lib") \
             + basename + "." + str(library_extensions[platform])
     var config := ConfigFile.new()
     if FileAccess.file_exists(BUILD_EXTENSION_PATH):
         var loaded := config.load(BUILD_EXTENSION_PATH)
-        if loaded != OK or config.get_value("configuration", "gdcc_managed", false) != true:
+        var managed: Variant = config.get_value("configuration", "gdcc_managed", false)
+        if loaded != OK or not managed is bool or not managed:
             _log("build deployment failed: refusing to overwrite an unmanaged or invalid " + BUILD_EXTENSION_PATH)
             return false
     var aliases_value: Variant = config.get_value("configuration", "gdcc_library_aliases", PackedStringArray())

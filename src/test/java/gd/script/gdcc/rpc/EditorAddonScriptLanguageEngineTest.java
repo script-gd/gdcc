@@ -147,12 +147,14 @@ class EditorAddonScriptLanguageEngineTest {
             // rebuilding replaces both the snapshot and live native behavior.
             Map.entry("dock_compile", List.of(
                     "config", "service_ready", "fixture_written", "broken_fixture_removed",
-                    "fixture_synced", "copy_created", "diag_alive_during_compile",
+                    "fixture_synced", "fixed_compile_identity", "unowned_copy_preserved",
+                    "foreign_owner_preserved", "copy_created", "diag_alive_during_compile",
                     "compile_succeeded", "project_module_name", "library_deployed",
                     "extension_enabled", "extension_list_persisted", "invalid_deployment_preserves_build",
                     "invalid_metadata_preserves_build", "optimization_variants_preserved",
-                    "fixture_resynced", "recompile_replaces_copy", "rebuilt_extension_enabled",
-                    "diag_still_responsive", "survived")),
+                    "fixture_resynced", "recompile_replaces_copy", "fixed_build_paths", "rebuilt_extension_enabled",
+                    "diag_still_responsive", "server_build_paths_isolated", "compile_owner_released",
+                    "new_session_reuses_identity", "survived")),
             // Phase 4: `_complete_code` — degraded answers (client not READY / no sentinel /
             // disabled service), white-box pins of the kind table and the insert-text
             // precedence (the server's emitted kind set is not controllable, so the mapping
@@ -1856,8 +1858,47 @@ class EditorAddonScriptLanguageEngineTest {
 
                     # Change the name AFTER diagnostics setup: Build must name the new copy,
                     # not inherit the diagnostics module's display name.
-                    var project_name := 'Dock "Game"'
+                    var project_name := 'Dock "Game"' + String.chr(10) + "Project"
                     ProjectSettings.set_setting("application/config/name", project_name)
+                    dock._apply_endpoint()
+                    var copy_module_id: String = dock._compile_module_id(project_name)
+                    var identity := ProjectSettings.globalize_path("res://") + "\\n" + project_name
+                    _step("fixed_compile_identity", copy_module_id == "gdcc_editor_compile_" \\
+                            + project_name.replace("\\n", "_").validate_filename().left(32) + "_" + identity.sha256_text().left(16) \\
+                            and dock._compile_module_id("Dock/Game") != dock._compile_module_id("Dock:Game") \\
+                            and dock._project_filename("Dock" + String.chr(1) + String.chr(31) + String.chr(127)) == "Dock___")
+
+                    # An existing copy with no reservation is not evidence of our ownership.
+                    await client.create_module(copy_module_id, "foreign copy").completed
+                    await client.put_file(copy_module_id, "/keep.txt", "foreign source", "keep.txt", "").completed
+                    var unowned_id: String = await dock._prepare_compile_copy(diag_module_id, project_name)
+                    var kept: Dictionary = await client.read_file(copy_module_id, "/keep.txt").completed
+                    var unowned_owner: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id + "_owner"}).completed
+                    dock._exit_tree()
+                    var unowned_released: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id + "_owner"}).completed
+                    var kept_after_cleanup: Dictionary = await client.read_file(copy_module_id, "/keep.txt").completed
+                    _step("unowned_copy_preserved", unowned_id == "" and kept["ok"] and str(kept["result"]) == "foreign source" \\
+                            and unowned_owner["ok"] and str(unowned_owner["result"]["moduleName"]) == dock._compile_owner_token \\
+                            and not unowned_released["ok"] and int(unowned_released["error"]["code"]) == -32000 \\
+                            and kept_after_cleanup["ok"] and str(kept_after_cleanup["result"]) == "foreign source" \\
+                            and dock._log_output.text.contains("an unowned compile module already exists"))
+                    await client.delete_module(copy_module_id).completed
+
+                    # A reused endpoint/local record must not authorize touching a new owner.
+                    await client.create_module(copy_module_id + "_owner", "foreign owner").completed
+                    await client.create_module(copy_module_id, "foreign copy").completed
+                    dock._owned_copies.append({"host": client.host, "port": client.port,
+                            "module_id": copy_module_id, "copy_created": true})
+                    var foreign_id: String = await dock._prepare_compile_copy(diag_module_id, project_name)
+                    dock._exit_tree()
+                    var foreign_owner: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id + "_owner"}).completed
+                    var foreign_copy: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id}).completed
+                    _step("foreign_owner_preserved", foreign_id == "" and foreign_owner["ok"] \\
+                            and str(foreign_owner["result"]["moduleName"]) == "foreign owner" \\
+                            and foreign_copy["ok"] and str(foreign_copy["result"]["moduleName"]) == "foreign copy" \\
+                            and dock._log_output.text.contains("owned by another editor"))
+                    await client.delete_module(copy_module_id).completed
+                    await client.delete_module(copy_module_id + "_owner").completed
                     # Press the dock's real Build button: its RPC endpoint is sourced from
                     # the service (installed on the test ports above), so no pointing is needed.
                     var compile_button: Button = null
@@ -1868,10 +1909,6 @@ class EditorAddonScriptLanguageEngineTest {
                         _step("copy_created", false, "Build button not found in the dock")
                         return
                     compile_button.pressed.emit()
-                    # Same id derivation as the dock: diagnostics prefix swapped for the
-                    # compile prefix (pid-scoped per editor process).
-                    var copy_module_id: String = diag_module_id.replace(
-                            "gdcc_editor_diagnostics_", "gdcc_editor_compile_")
                     # module.get would block server-side behind the copy's compile (the
                     # module gate is held for the whole native build); module.list is the
                     # gate-free channel for observing the registration.
@@ -1922,8 +1959,10 @@ class EditorAddonScriptLanguageEngineTest {
                             succeeded = str(last_result.get("outcome", "")) == "SUCCESS"
                         if not succeeded:
                             await get_tree().create_timer(0.5).timeout
-                    # The copy built into its own .godot/gdcc/<copy> host dir.
-                    var build_dir: String = ProjectSettings.globalize_path("res://.godot/gdcc/" + copy_module_id)
+                    # The same project identity gets one reusable directory per server endpoint.
+                    var endpoint := client.host + "\\n" + str(client.port)
+                    var build_dir: String = ProjectSettings.globalize_path(
+                            "res://.godot/gdcc/" + copy_module_id + "/" + endpoint.sha256_text().left(16))
                     succeeded = succeeded and DirAccess.dir_exists_absolute(build_dir) \
                             and (DirAccess.get_directories_at(build_dir).size() \
                             + DirAccess.get_files_at(build_dir).size()) > 0
@@ -1952,7 +1991,7 @@ class EditorAddonScriptLanguageEngineTest {
                         if str(artifact).get_extension() in ["dll", "so", "dylib"]:
                             source_library = str(artifact)
                     var deployed_ok := metadata_ok and library_path.begins_with("res://bin/") \\
-                            and library_path.get_file().contains(project_name.validate_filename()) \\
+                            and library_path.get_file().contains(project_name.replace("\\n", "_").validate_filename()) \\
                             and library_path.get_basename().ends_with("-" + FileAccess.get_sha256(source_library).left(16)) \\
                             and FileAccess.file_exists(library_path) and source_library != "" \\
                             and FileAccess.get_md5(library_path) == FileAccess.get_md5(source_library)
@@ -2059,9 +2098,11 @@ class EditorAddonScriptLanguageEngineTest {
                     var second_ok: bool = second_task > 0
                     var second_deadline := Time.get_ticks_msec() + 240000
                     var second_success := false
+                    var second_result := {}
                     while Time.get_ticks_msec() < second_deadline and not second_success:
                         var polled2: Dictionary = await client.get_last_compile_result(copy_module_id).completed
                         if polled2["ok"] and polled2["result"] != null:
+                            second_result = polled2["result"]
                             second_success = str(polled2["result"].get("outcome", "")) == "SUCCESS"
                         if not second_success:
                             await get_tree().create_timer(0.5).timeout
@@ -2081,6 +2122,9 @@ class EditorAddonScriptLanguageEngineTest {
                         print("DOCK LOG:\\n" + dock._log_output.text)
                         return
 
+                    _step("fixed_build_paths", str(second_result["compileOptions"]["projectPath"]).replace("\\\\", "/") == build_dir \\
+                            and second_result["artifacts"] == last_result["artifacts"])
+
                     idle_deadline = Time.get_ticks_msec() + 30000
                     while compile_button.disabled and Time.get_ticks_msec() < idle_deadline:
                         await get_tree().process_frame
@@ -2095,6 +2139,51 @@ class EditorAddonScriptLanguageEngineTest {
                     var final_analyze: Dictionary = await client.analyze(diag_module_id, false).completed
                     _step("diag_still_responsive", final_analyze["ok"]
                             and str(final_analyze["result"]["outcome"]) == "COMPLETED")
+
+                    # Independent server reservations must not let two builders share C/objects.
+                    var other_client := GdccRpcClient.new()
+                    add_child(other_client)
+                    other_client.host = client.host
+                    other_client.port = int(_config["other_rpc_port"])
+                    await other_client.create_module(diag_module_id, "other diagnostics").completed
+                    var other_dock: Variant = dock.get_script().new()
+                    other_dock._client = other_client
+                    other_dock._log_output = TextEdit.new()
+                    var other_id: String = await other_dock._prepare_compile_copy(diag_module_id, project_name)
+                    var other_options: Dictionary = await other_client.call_rpc("options.get", {"moduleId": other_id}).completed
+                    var original_owner: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id + "_owner"}).completed
+                    var other_endpoint := other_client.host + "\\n" + str(other_client.port)
+                    var other_dir: String = ProjectSettings.globalize_path(
+                            "res://.godot/gdcc/" + copy_module_id + "/" + other_endpoint.sha256_text().left(16))
+                    _step("server_build_paths_isolated", other_id == copy_module_id and other_options["ok"] \\
+                            and str(other_options["result"]["projectPath"]).replace("\\\\", "/") == other_dir \\
+                            and other_dir != build_dir and original_owner["ok"] \\
+                            and str(original_owner["result"]["moduleName"]) == dock._compile_owner_token)
+                    other_dock._exit_tree()
+                    other_dock._log_output.free()
+                    other_dock.free()
+                    await other_client.delete_module(diag_module_id).completed
+                    other_client.queue_free()
+                    dock._exit_tree()
+                    var released: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id + "_owner"}).completed
+                    var deleted_copy: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id}).completed
+                    _step("compile_owner_released", not released["ok"] and int(released["error"]["code"]) == -32000 \\
+                            and not deleted_copy["ok"] and int(deleted_copy["error"]["code"]) == -32000)
+
+                    # A different diagnostics session and dock still resolve to the same disk identity.
+                    var next_diag_id := diag_module_id + "_next_session"
+                    await client.call_rpc("module.copy", {"sourceModuleId": diag_module_id, "newModuleId": next_diag_id}).completed
+                    var next_dock: Variant = dock.get_script().new()
+                    next_dock._client = client
+                    next_dock._log_output = TextEdit.new()
+                    var reused_id: String = await next_dock._prepare_compile_copy(next_diag_id, project_name)
+                    var reused_options: Dictionary = await client.call_rpc("options.get", {"moduleId": reused_id}).completed
+                    _step("new_session_reuses_identity", reused_id == copy_module_id and reused_options["ok"] \\
+                            and str(reused_options["result"]["projectPath"]).replace("\\\\", "/") == build_dir)
+                    next_dock._exit_tree()
+                    next_dock._log_output.free()
+                    next_dock.free()
+                    await client.delete_module(next_diag_id).completed
                     _step("survived", true)
 
                 func _run_diag_revalidate_mode() -> void:
@@ -4031,10 +4120,11 @@ class EditorAddonScriptLanguageEngineTest {
 
     /// The dock Build button copies the auto-synced diagnostics module using the project name,
     /// via `module.copy`, compiles the copy with a real native build into its own
-    /// `.godot/gdcc/<copy>` directory, keeps the diagnostics module gate responsive
+    /// `.godot/gdcc/<copy>/<endpoint>` directory, keeps the diagnostics module gate responsive
     /// mid-compile, deploys into `bin`, persists the extension list and replaces live native
     /// behavior on the second press. Invalid results leave the installed build intact. Uses a real
-    /// in-process gdcc RPC server (zig-gated through `runCase`).
+    /// pair of in-process gdcc RPC servers to verify directory isolation across endpoints
+    /// (zig-gated through `runCase`).
     @Test
     void dockCompileCopiesDiagnosticsModule() throws Exception {
         var config = new JsonObject();
@@ -4043,8 +4133,11 @@ class EditorAddonScriptLanguageEngineTest {
         // editor off mid-compile (the wall-clock process timeout remains the backstop).
         config.addProperty("quit_after", 500000);
         try (var server = JsonRpcServer.start(new JsonRpcDispatcher(new API()), "127.0.0.1", 0,
-                JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES)) {
+                JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES);
+             var otherServer = JsonRpcServer.start(new JsonRpcDispatcher(new API()), "127.0.0.1", 0,
+                     JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES)) {
             config.addProperty("rpc_port", server.port());
+            config.addProperty("other_rpc_port", otherServer.port());
             runCase("dock_compile", config);
         }
     }
