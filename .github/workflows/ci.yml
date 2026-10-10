@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env:
-  ZIG_VERSION: 0.16.0
+  ZIG_VERSION: 0.15.2
   GODOT_VERSION: 4.5.1
   GODOT_STATUS: stable
 

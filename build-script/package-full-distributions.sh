@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ZIG_VERSION="0.16.0"
+ZIG_VERSION="0.15.2"
 TEMURIN_FEATURE_VERSION="25"
 ZIG_MIRROR_URL="${ZIG_MIRROR_URL:-https://zigmirror.com}"
 ADOPTIUM_API_URL="${ADOPTIUM_API_URL:-https://api.adoptium.net/v3/binary/latest}"

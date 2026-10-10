@@ -145,7 +145,7 @@ build/libs/lib/
 
 `jar` task 依赖 `syncRuntimeLibs`，因此直接运行 `jar` 也会刷新同级 `lib` 文件夹。
 
-`buildZigLauncher` task 使用 Zig 构建默认 native launcher 矩阵：
+`buildZigLauncher` task 使用 Zig 0.15.2 构建默认 native launcher 矩阵：
 
 ```text
 windows-x86_64/gdcc.exe

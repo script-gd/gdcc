@@ -6,7 +6,7 @@ const windows_support = if (builtin.os.tag == .windows) @import("windows_support
 pub const Text = translation_text.Text;
 
 /// Selects launcher text from environment overrides, platform locale, then English fallback.
-pub fn fromEnvironment(arena: std.mem.Allocator, env: *const std.process.Environ.Map) Text {
+pub fn fromEnvironment(arena: std.mem.Allocator, env: *const std.process.EnvMap) Text {
     return translation_text.get(detectLanguage(arena, env));
 }
 
@@ -25,14 +25,14 @@ pub fn printStderr(arena: std.mem.Allocator, comptime format: []const u8, args: 
 }
 
 /// Detects the launcher language from explicit environment settings and platform defaults.
-fn detectLanguage(arena: std.mem.Allocator, env: *const std.process.Environ.Map) translation_text.Language {
+fn detectLanguage(arena: std.mem.Allocator, env: *const std.process.EnvMap) translation_text.Language {
     if (detectEnvironmentLanguage(env)) |language| return language;
     if (detectPlatformLanguage(arena)) |language| return language;
     return .english;
 }
 
 /// Reads POSIX-style language environment variables as explicit launcher overrides.
-fn detectEnvironmentLanguage(env: *const std.process.Environ.Map) ?translation_text.Language {
+fn detectEnvironmentLanguage(env: *const std.process.EnvMap) ?translation_text.Language {
     const keys = [_][]const u8{ "LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE" };
     for (keys) |key| {
         const value = env.get(key) orelse continue;

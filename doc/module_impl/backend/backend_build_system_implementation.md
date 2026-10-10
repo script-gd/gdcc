@@ -73,7 +73,7 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
 ### 3.3 target 已知限制
 
 - Windows 声明 target 统一为 `x86_64-windows-gnu` / `aarch64-windows-gnu`，不依赖 MSVC SDK。GDExtension C 边界与 Godot Windows 加载器依据见 `doc/gdcc_c_backend.md` 的 Windows ABI。
-- Zig 0.16.0 存在 Windows GNU/LTO `zigc` weak-symbol 链接 bug（`frexpf`/`frexpl`/`modfl` 等 undefined；[Zig #31958](https://codeberg.org/ziglang/zig/issues/31958)），不应概括为 GNU ABI 不支持 LTO。该工具链限制不改变公共 LTO 策略。
+- CI 与完整分发固定使用 Zig 0.15.2。Zig 0.16.0 存在 Windows GNU/LTO `zigc` weak-symbol 链接 bug（`frexpf`/`frexpl`/`modfl` 等 undefined；[Zig #31958](https://codeberg.org/ziglang/zig/issues/31958)），不应概括为 GNU ABI 不支持 LTO。该工具链限制不改变公共 LTO 策略。
 - android/web-wasm32 的失败是 sysroot/runtime 限制（android 需 NDK/Bionic；wasm 上 minicoro 锁定 `MCO_USE_ASM` 按设计 fail loudly），与 LTO 无关：二者的 LTO 决策保持默认（RELEASE 取 `-flto=thin`），真实构建显式跳过或仅做 `-c` 编译。web 的 Emscripten 后端是独立 post-MVP 项目，不属于 zig 后端职责。
 - `macos-x86-64` / `macos-aarch64` 在 macOS 本机产出 `lib<name>.dylib`；从非 Darwin 主机交叉链接需要 Darwin sysroot，不进入 `ZigCcCompilerCrossTargetSmokeTest` 的 zig-bundled-libc 矩阵。
 - zig cc 拒绝透传 `-Wl,--thinlto-cache-dir`/`-fthinlto-cache-dir`，因此 ThinLTO 链接后端无法跨构建缓存；不直接驱动 `zig ld.lld`（见 §9 后续方向）。
