@@ -2171,6 +2171,8 @@ static void parse_string(const char *s, int len)
 
     if ((is_long = *s == 'L'))
         ++s, --len;
+    else if (s[0] == 'u' && s[1] == '8')
+        s += 2, len -= 2;
     sep = *s++;
     len -= 2;
     if (len >= sizeof buf)
@@ -2542,6 +2544,7 @@ static void parse_number(const char *p)
 static void next_nomacro(void)
 {
     int t, c, is_long, len;
+    int is_u8 = 0;
     TokenSym *ts;
     uint8_t *p, *p1;
     unsigned int h;
@@ -2705,6 +2708,12 @@ maybe_newline:
             }
             ts = tok_alloc(tokcstr.data, tokcstr.size);
         }
+        /* Keep the u8 spelling for preprocessing; decode it as a narrow string. */
+        if (c == '"' && ts->len == 2 && ts->str[0] == 'u' && ts->str[1] == '8') {
+            is_long = 0;
+            is_u8 = 1;
+            goto str_const;
+        }
         tok = ts->tok;
         break;
     case 'L':
@@ -2780,6 +2789,8 @@ maybe_newline:
         cstr_reset(&tokcstr);
         if (is_long)
             cstr_ccat(&tokcstr, 'L');
+        else if (is_u8)
+            cstr_cat(&tokcstr, "u8", 2);
         cstr_ccat(&tokcstr, c);
         p = parse_pp_string(p, c, &tokcstr);
         cstr_ccat(&tokcstr, c);

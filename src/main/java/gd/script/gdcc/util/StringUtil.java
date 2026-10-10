@@ -370,6 +370,34 @@ public final class StringUtil {
         return sb.toString();
     }
 
+    /// Escapes a file name for a C `#line "..."` operand. Unlike [escapeStringLiteral], non-ASCII
+    /// characters are emitted raw: tcc's `#line` parser copies the operand bytes verbatim without
+    /// decoding escapes, so octal/UCN spellings would become the literal file name there, while
+    /// raw UTF-8 bytes pass through identically on every supported compiler (generated sources are
+    /// UTF-8). `"` and `\` are still escaped for clang/zig; tcc keeps those backslashes verbatim,
+    /// so file names containing them are not faithfully representable across both. A raw tab is
+    /// legal inside the quoted operand on both, so it passes through as well. ASCII control
+    /// characters other than tab are deliberately rejected by this helper (a newline would
+    /// physically split the directive).
+    public static @NotNull String escapeLineDirectiveFileName(@NotNull String value) {
+        var sb = new StringBuilder();
+        for (var i = 0; i < value.length(); i++) {
+            var c = value.charAt(i);
+            switch (c) {
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                default -> {
+                    if ((c < 0x20 && c != '\t') || c == 0x7F) {
+                        throw new IllegalArgumentException(
+                                "control character cannot appear in a #line file name: 0x" + Integer.toHexString(c));
+                    }
+                    sb.append(c);
+                }
+            }
+        }
+        return sb.toString();
+    }
+
     /// Decodes a full GDScript source lexeme into the runtime payload stored by LIR.
     ///
     /// Covers the complete Godot string literal form set: `"..."` / `'...'`, triple-quoted

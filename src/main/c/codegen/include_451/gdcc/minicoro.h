@@ -438,13 +438,23 @@ extern "C" {
       #define MCO_THREAD_LOCAL _Thread_local
     #elif defined(_WIN32) && (defined(_MSC_VER) || defined(__ICL) ||  defined(__DMC__) ||  defined(__BORLANDC__))
       #define MCO_THREAD_LOCAL __declspec(thread)
-    #elif defined(__GNUC__) || defined(__SUNPRO_C) || defined(__xlC__)
+    #elif defined(__GNUC__) || defined(__SUNPRO_C) || defined(__xlC__) || defined(__TINYC__)
+      /* gdcc patch: tcc implements __thread but defines neither __GNUC__ nor, under -std=c11, a
+         usable _Thread_local path (its tccdefs.h sets __STDC_NO_THREADS__). Without __TINYC__ in
+         this condition the chain silently degrades to MCO_NO_MULTITHREAD below, making
+         mco_running thread-unsafe. */
       #define MCO_THREAD_LOCAL __thread
     #else /* No thread local support, `mco_running` will be thread unsafe. */
       #define MCO_THREAD_LOCAL
       #define MCO_NO_MULTITHREAD
     #endif
   #endif
+#endif
+
+/* gdcc patch guard: under tcc the __thread branch above must win; degrading to
+   MCO_NO_MULTITHREAD is a silent thread-safety regression, so fail the compile instead. */
+#if defined(__TINYC__) && defined(MCO_NO_MULTITHREAD)
+  #error "minicoro requires __thread TLS under tcc; MCO_NO_MULTITHREAD fallback is not supported"
 #endif
 
 #ifndef MCO_FORCE_INLINE
@@ -671,7 +681,9 @@ typedef struct _mco_ctxbuf {
   void* stack_base;
 } _mco_ctxbuf;
 
-#if defined(__GNUC__)
+/* gdcc patch: tcc defines neither __GNUC__ nor _MSC_VER on its Windows target, but it accepts
+   __attribute__((section(".text"))), which these executable machine-code blobs require. */
+#if defined(__GNUC__) || defined(__TINYC__)
 #define _MCO_ASM_BLOB __attribute__((section(".text")))
 #elif defined(_MSC_VER)
 #define _MCO_ASM_BLOB __declspec(allocate(".text"))
@@ -776,6 +788,8 @@ typedef struct _mco_ctxbuf {
 void _mco_wrap_main(void);
 int _mco_switch(_mco_ctxbuf* from, _mco_ctxbuf* to);
 
+/* gdcc patch: tcc's inline assembler requires the comma form `.type name, @function` and does
+   not know the `jmpq` mnemonic; both forms used below are accepted identically by gcc/clang. */
 __asm__(
   ".text\n"
 #ifdef __MACH__ /* Mac OS X assembler */
@@ -783,12 +797,12 @@ __asm__(
   "__mco_wrap_main:\n"
 #else /* Linux assembler */
   ".globl _mco_wrap_main\n"
-  ".type _mco_wrap_main @function\n"
+  ".type _mco_wrap_main, @function\n"
   ".hidden _mco_wrap_main\n"
   "_mco_wrap_main:\n"
 #endif
   "  movq %r13, %rdi\n"
-  "  jmpq *%r12\n"
+  "  jmp *%r12\n"
 #ifndef __MACH__
   ".size _mco_wrap_main, .-_mco_wrap_main\n"
 #endif
@@ -801,11 +815,14 @@ __asm__(
   "__mco_switch:\n"
 #else /* Linux assembler */
   ".globl _mco_switch\n"
-  ".type _mco_switch @function\n"
+  ".type _mco_switch, @function\n"
   ".hidden _mco_switch\n"
   "_mco_switch:\n"
 #endif
-  "  leaq 0x3d(%rip), %rax\n"
+  /* gdcc patch: the resume address must reference a local label instead of a hard-coded
+     displacement — tcc's inline assembler mis-encodes constant RIP-relative displacements.
+     The label sits on the `ret` immediately after the jump below. */
+  "  leaq .Lmco_switch_resume(%rip), %rax\n"
   "  movq %rax, (%rdi)\n"
   "  movq %rsp, 8(%rdi)\n"
   "  movq %rbp, 16(%rdi)\n"
@@ -821,7 +838,8 @@ __asm__(
   "  movq 24(%rsi), %rbx\n"
   "  movq 16(%rsi), %rbp\n"
   "  movq 8(%rsi), %rsp\n"
-  "  jmpq *(%rsi)\n"
+  "  jmp *(%rsi)\n"
+  ".Lmco_switch_resume:\n"
   "  ret\n"
 #ifndef __MACH__
   ".size _mco_switch, .-_mco_switch\n"
@@ -863,7 +881,8 @@ int _mco_switch(_mco_ctxbuf* from, _mco_ctxbuf* to);
 __asm__(
   ".text\n"
   ".globl _mco_wrap_main\n"
-  ".type _mco_wrap_main @function\n"
+  /* gdcc patch: comma form, see the x86_64 block. */
+  ".type _mco_wrap_main, @function\n"
   ".hidden _mco_wrap_main\n"
   "_mco_wrap_main:\n"
   "  mv a0, s0\n"
@@ -874,7 +893,8 @@ __asm__(
 __asm__(
   ".text\n"
   ".globl _mco_switch\n"
-  ".type _mco_switch @function\n"
+  /* gdcc patch: comma form, see the x86_64 block. */
+  ".type _mco_switch, @function\n"
   ".hidden _mco_switch\n"
   "_mco_switch:\n"
   #if __riscv_xlen == 64
@@ -1059,7 +1079,8 @@ __asm__(
 #else
   ".text\n"
   ".globl _mco_switch\n"
-  ".type _mco_switch @function\n"
+  /* gdcc patch: comma form, see the x86_64 block. */
+  ".type _mco_switch, @function\n"
   ".hidden _mco_switch\n"
   "_mco_switch:\n"
 #endif

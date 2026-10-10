@@ -81,7 +81,9 @@ static godot_Variant gdcc_callv_variants(
     return godot_Object_call(obj, method, argv_variants, argc);
 }
 
-#if defined(__GNUC__) || defined(__clang__)
+// tcc accepts statement expressions and _Generic but defines neither __GNUC__ nor __clang__;
+// without __TINYC__ here it would take the fallback branch and mis-pass the Variant array.
+#if defined(__GNUC__) || defined(__clang__) || defined(__TINYC__)
 
 #define GD_CALLV0_EXPR(obj, method_sn) \
     (gdcc_callv_variants((obj), (method_sn), 0, NULL))

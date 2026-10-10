@@ -249,10 +249,14 @@ public final class GodotBindingTool {
                 """.strip());
     }
 
+    /// godot_macros.h is the one header every generated/runtime TU reaches transitively (via
+    /// godot_abi.h), so <stdbool.h> is injected here: the shared C layer uses bare true/false,
+    /// which are keywords only since C23 and otherwise require <stdbool.h> (e.g. tcc -std=c11).
     private static @NotNull String renderMacrosHeader() {
         return generatedHeaderPreamble("GDCC_GODOT_MACROS_H") + """
                 
                 #include <stddef.h>
+                #include <stdbool.h>
                 
                 #if !defined(GDE_EXPORT)
                 #if defined(_WIN32)

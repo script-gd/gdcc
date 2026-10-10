@@ -30,7 +30,7 @@
 ## 2. 前置调研结论（已确认事实）
 
 1. **CCompiler 抽象已就绪**：`CCompiler.compile(...)` 与 zig 无关；`CCompileResult(success, buildLog, artifacts)` 契约（artifacts 首位为共享库、失败为空）可直接复用。`CProjectBuilder` 已有构造器注入缝。
-2. **生成 C 事实为 C23**：zig 管线用 `-std=c23`，含 `nullptr`、裸 `true`/`false`、`u8"..."`、`__int128`；tcc（含 mob dev）全部拒绝（tmp 证据）。mob dev 支持 `_Generic`、`_Static_assert`、`_Noreturn`、`_Thread_local`/`__thread`、语句表达式、`typeof`、空初始化器、大枚举值（静默正确）。
+2. **生成 C 事实为 C23**：zig 管线用 `-std=c23`，含 `nullptr`、裸 `true`/`false`、`u8"..."`、`__int128`；上游 tcc（含 mob dev）全部拒绝（tmp 证据）。**vendored 树已打本地补丁**（`src/main/c/tinycc/tccpp.c`，GDCC_PIN.md 记录）：`u8"..."` 作为透明前缀走既有窄字符串解析路径，`u8` 不再是可移植化对象。mob dev 支持 `_Generic`、`_Static_assert`、`_Noreturn`、`_Thread_local`/`__thread`、语句表达式、`typeof`、空初始化器、大枚举值（静默正确）。
 3. **FFM 契约已验证**（Windows）：`tcc_set_lib_path` 必须先于 `tcc_set_output_type`（后者经 `{B}` 展开 include/lib 路径，实现见 `libtcc.c` 的 `tcc_split_path`）；`TCC_OUTPUT_DLL=4`；每轮新建 state；诊断 upcall 须拷贝瞬时字符串且异常不得穿过 native 帧；`tcc_output_file` 会重置错误计数（其实现首行 `s->nb_errors = 0`），不能仅凭其返回值判定成功；失败后不得继续后续操作。
 4. **int 返回值语义**：`tcc_add_file` 出错不止返回 -1（`FILE_NOT_FOUND=-2`、`FILE_NOT_RECOGNIZED=-3`），`tcc_set_output_type`/`tcc_set_options`/`tcc_add_include_path`/`tcc_output_file` 同样以非 0 表失败。所有 int API 必须按 `!= 0` 判定。
 5. **minicoro asm 适配路径已探明**：`.type name @function` → `.type name, @function`；`jmpq *%r12`/`*({rsi})` → `jmp ...`（gcc/tcc 均接受逗号形式与 `jmp`）。
@@ -38,8 +38,8 @@
 7. **运行时 TU 依赖 libc 头文件与启动文件**：`godot_interface.c`（`stdio.h`/`stdarg.h`）、`gdcc_hrx.c`（`string.h`/`sys/mman.h` 或 `windows.h`）、`minicoro.c`（vmem 分配器）。Linux 上 `TCC_OUTPUT_DLL` 链接路径会链接宿主 glibc（`tcc_add_library(s,"c")`）并查找 `crti.o`/`crtn.o` 等启动文件；Windows 上必须随 bundle 分发完整 `win32/include`（含 CRT 头，`windows.h` 依赖 `_mingw.h`，不能只取 `winapi/` 子目录）与 `win32/lib/*.def`。
 8. **产物 libc 合同差异**：zig 用其 bundled sysroot 编译链接（不依赖宿主开发头/CRT），tcc 依赖宿主开发头、CRT 与库；两者产物在 Linux 上均为动态链接 glibc 的共享库，部署兼容性以实际动态依赖与符号需求验证为准，不存在"zig 产物静态链 libc"的前提。
 9. **FFM 启动参数**：launcher 已带 `--enable-native-access=ALL-UNNAMED`（`src/launcher/zig/src/main.zig:94`）；`java -jar` 为 unnamed 部署，该参数匹配。named-module 启动（IDE 模块路径）需 `--enable-native-access=gdcc`，须在阶段 0 用真实加载核对各启动方式。
-10. **逃逸生产者**：`StringUtil.escapeStringLiteral` 对非 ASCII 输出 `\uXXXX`/`\UXXXXXXXX`。tcc 对 plain 字面量中 UCN 的执行编码行为**未验证**，是 Unicode 正确性缺口的根源（handoff §5.1）。
-11. **金字面量测试面小**：`src/test` 中 `u8"` 断言 11 处（3 个测试类）、`nullptr` 1 处，改造可控。
+10. **逃逸生产者**：`StringUtil.escapeStringLiteral` 对非 ASCII 输出 `\uXXXX`/`\UXXXXXXXX`。UCN 在 plain 与 `u8"..."` 字面量中的执行编码已在 Linux x86_64 的 zig `-std=c23` 与 vendored tcc `-std=c11` 双侧验证（P0-1 字节矩阵 + `TinyCcU8StringTest`）；Windows 侧执行字符集仍未验证（handoff §5.1）。
+11. **金字面量测试面**：`src/test` 中 `u8"` 断言保持原样（vendored 补丁后 u8 前缀保留，无需清扫）；`nullptr` 断言 1 处，随可移植化同步。
 
 ## 3. 总体架构
 
@@ -142,7 +142,7 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 
 改动：
 - 向用户申请 §8 权限清单（构建脚本、`build-script/` 新文件、launcher 行为变更）。
-- 探针 P0-1（tmp 下，用 `/tmp/opencode/tinycc` 的 mob tcc）：plain `"..."` 中 `\uXXXX`/`\UXXXXXXXX` 的 tcc 执行编码；原始 UTF-8 字节直通在 zig/tcc 两侧的等价性。结论写入 tmp 证据文件，决定 D2 中字面量方案（首选：非 ASCII/控制字符按字节三位八进制 `\ooo` 转义，ASCII 可打印字符保持原样；该方案不依赖任何执行字符集映射）。
+- 探针 P0-1（tmp 下，用 `/tmp/opencode/tinycc` 的 mob tcc）：plain `"..."` 中 `\uXXXX`/`\UXXXXXXXX` 的 tcc 执行编码；原始 UTF-8 字节直通在 zig/tcc 两侧的等价性。结论写入 tmp 证据文件。~~决定 D2 中字面量方案~~（后续 vendored u8 补丁使字面量方案维持原状：UCN 转义 + `u8` 前缀，见阶段 2 进度）。
 - 探针 P0-2：以真实 FFM 加载分别核对 `java -jar`（unnamed）与 IDE 模块路径（`--enable-native-access=gdcc`）两种启动方式所需参数。
 - 探针 P0-3：进程内 libtcc 在 Linux 下对 `stdio.h`/`sys/mman.h`/crt/libc 的解析链路（`configure` 产物 vs `tcc_add_sysinclude_path` 补充），结论决定 §3.4 Linux 布局落点。
 
@@ -166,6 +166,7 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 - [x] bundle 构建脚本（`build-script/build-tinycc-bundle-linux-x86_64.sh` 本机构建+验证通过；`build-script/build-tinycc-bundle-windows-x86_64.sh` Linux 交叉构建+结构校验通过，PE 运行验证归 G6）
 - [x] `TinyCcBundle` 实现（`TinyCcBundle.java` + `TinyCcBundleTest` 39 项测试全绿：布局/VERSION/MANIFEST 完整性正反校验（含空/截断清单 fail-closed、不可读子树的受控失败）、classpath/目录源安装、确定性锁竞争、跨 JVM POSIX 锁回归探针与跨进程持锁即时中断（`TinyCcBundleLockProbe`）、rename 冲突采用/替换胜出者、`.ready`/内容/清单自愈、普通文件与符号链接占位自愈、staging 保留期与持锁保护、中断恢复、路径穿越/盘符/NUL 防护）
 - [x] 验收：Linux bundle 产物 + `nm -D` 导出检查（78 个 `tcc_*` 导出）+ 移位 smoke（真实 `-shared` 链接含 stdio/sys/mman 调用；`ldd` 记录 `libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6`；证据 `tmp/tinycc-bundle-g1/EVIDENCE.md`）+ `TinyCcBundleTest` 全绿
+- [x] vendored 本地补丁：`tccpp.c` 透明 `u8"..."` 前缀支持——`u8"..."` 作为单个预处理字符串 token 保留拼写（stringify/粘贴/预处理输出），转 C token 时跳过前缀走既有窄字符串解析路径（非 C23 `char8_t` 语义）；`GDCC_PIN.md` 记录补丁，`TinyCcU8StringTest` 回归覆盖（前缀透明性、UCN/八进制/十六进制转义、混合前缀拼接、stringify、`u8 ## x` 粘贴、行拼接、8192 缓冲边界、`u8'a'` 拒绝）
 
 验收：
 - 脚本在本机（Linux x86_64）产出 bundle；`nm -D libtcc.so` 可见 `tcc_new` 等导出。
@@ -175,18 +176,37 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 ### 阶段 2：共享 C 层可移植化（zig 不回退为前提）
 
 改动（按生产者分组）：
-1. 模板 `template_451/`：移除全部 `u8` 前缀（`entry.c.ftl` 27 次/22 行、`entry.h.ftl`、`engine_method_binds.h.ftl`，按"全部"执行而非按计数打勾）；`entry.c.ftl:110/135` 空初始化器实测后决定保留或改 `{ 0 }`。
-2. Java 生产者：`CBodyBuilder.java:1848`、`ConstructInsnGen.java:322-324`、`CGenHelper`、`CBuiltinBuilder` 的字面量前缀移除；`StringUtil.escapeStringLiteral` 按 P0-1 结论改造（新增 C 字面量专用路径时按 `common_rules.md` 命名约定命名）。
-3. include 树：`gdcc_string.h:23`、`gdcc_string_name.h:30`、`gdcc_callable.h:29` 的 `{nullptr}` → `{NULL}`；`gdcc_bind.h:90,138` 的 3 个 `u8""` 前缀移除；`gdcc_operator.h:39-40` `__int128` → `uint64_t`（保留平方求幂与负指数分支，禁止换用有符号 `int64_t` 中间量）。
+1. 模板 `template_451/`：`u8` 前缀**保留**（vendored u8 补丁后不再是可移植化对象，见阶段 1 进度）；`entry.c.ftl:110/135` 空初始化器实测后决定保留或改 `{ 0 }`。
+2. Java 生产者：`u8` 前缀与 `StringUtil.escapeStringLiteral`（UCN 形式）**均维持原状**（vendored u8 补丁后无需改造）。
+3. include 树：`gdcc_string.h:23`、`gdcc_string_name.h:30`、`gdcc_callable.h:29` 的 `{nullptr}` → `{NULL}`；`gdcc_operator.h:39-40` `__int128` → `uint64_t`（保留平方求幂与负指数分支，禁止换用有符号 `int64_t` 中间量）。
 4. `<stdbool.h>` 集中引入：**改生成器**（`godot_macros.h` 是 GodotBinding 工具链的生成物，头注禁止手改——在生成器模板中注入 include），并验证所有裸 `true`/`false` 使用点的包含链。
 5. minicoro（vendored 第三方，补丁须就地注释说明原因，升级需重放）：asm 串 `.type name, @function`、`jmp` 化；**恢复地址硬编码位移必须标签化**：`leaq 0x3d(%rip), %rax` → `leaq .Lmco_switch_resume(%rip), %rax` 并在 `jmp *(%rsi)` 后补 `.Lmco_switch_resume:` 标签——tcc 内联汇编器把 RIP 相对的硬编码常量位移误编码为原值减 4（实测：`0x3d`→`0x39`，gcc 正确；误编码的保存地址落在 `mov 0x8(%rsi),%rsp` 指令中间，当前纯属字节对齐侥幸解码为无害指令序列才测试通过，任何指令长度变化都会变成内存破坏或死循环）；TLS 宏链在 `__TINYC__` 下强制 `__thread` 且**禁止落到 `MCO_NO_MULTITHREAD`**（行为变化，非编译错误）；`_MCO_ASM_BLOB` 分支识别 `__TINYC__`（Windows blob 入 `.text`）。证据：`tmp/minicoro-patch-verify/EVIDENCE.md`。
 6. `gdcc_call.h:84` GNU 分支条件追加 `|| defined(__TINYC__)`；`gdcc_hrx.c:476` aarch64 分支在 `__TINYC__` 下改用 `__arm64_clear_cache`。
+
+进度（实施中逐项同步）：
+
+- [x] 探针 P0-1（阶段 0 遗留缺口，本阶段补做）：plain 字面量中 UCN/原始 UTF-8 直通/逐字节三位八进制/三连符在 zig `-std=c23` 与 tcc `-std=c11` 下的双编译器行为矩阵，输出逐字节一致；证据 `tmp/tcc-p0-1-probes/EVIDENCE.md`（初版结论的八进制方案后被 vendored u8 补丁取代，字面量路径维持原状）
+- [x] ~~`StringUtil.escapeStringLiteral` 改造~~：**已回退**，维持原 UCN `\uXXXX`/`\UXXXXXXXX` 形式（vendored u8 补丁后 UCN 在 `u8"..."` 中与 plain 字面量同路径解析，`TinyCcU8StringTest` 锚定）；本阶段仅新增独立的 `escapeLineDirectiveFileName`（见 review 收口条目）
+- [x] ~~Java 生产者 `u8` 前缀移除~~：**已回退**，`u8"..."` 前缀保留（vendored u8 补丁）
+- [x] 模板：`u8` 前缀**保留**（vendored u8 补丁）；`entry.c.ftl` 两处 `= {}` 改为 `= { 0 }`——实测 tcc 接受空初始化器（`tmp/tcc-c11-probes/EVIDENCE.md` 矩阵），但 `{ 0 }` 是严格 C11 且此处语义相同（`GDExtensionClassCreationInfo5` 首成员为标量 `is_virtual`、变量为块局部），不依赖 tcc 扩展
+- [x] include 树：三处 `{nullptr}` → `{NULL}`；`pow_int` 中间量 `__int128` → `uint64_t`（平方求幂与负指数分支保留，无符号取模乘法等价性注释就地说明）；`gdcc_call.h` GNU 分支追加 `|| defined(__TINYC__)`；`gdcc_hrx.c` aarch64 分支在 `__TINYC__` 下改用 `__arm64_clear_cache`（tcc 内建，`tcctok.h` 实证）
+- [x] `<stdbool.h>` 经 `GodotBindingTool.renderMacrosHeader` 注入并用 `generate-abi-support` 重新生成 `godot_macros.h`（其余 7 个生成头与跟踪副本字节一致）；裸 `true`/`false` 使用点包含链全部经 `godot_binding.h → godot_abi.h → godot_macros.h` 覆盖（`minicoro.h` 无 bool 代码使用）
+- [x] minicoro 补丁五件套（均就地注释为 gdcc patch）：`.type name, @function` 逗号化、`jmpq`→`jmp`、`leaq 0x3d(%rip)` 恢复地址标签化（`.Lmco_switch_resume`）、TLS 链识别 `__TINYC__` 并新增编译期护栏禁止落回 `MCO_NO_MULTITHREAD`、`_MCO_ASM_BLOB` 识别 `__TINYC__`；双编译器编译通过 + zig 产物反汇编确认 `lea` 目标 == `jmp *(%rsi)` 之后的 `ret`；`GdccCoroutineRuntimeSmokeTest` 通过
+- [x] ~~金字面量断言清扫~~：**已回退**（u8 前缀保留后金字面量恢复 HEAD 原状，含 `\uXXXX` UCN 形式断言）
+- [x] `CPortabilitySurfaceTest`（纯 Java）：tokenizer 剥离注释/字面量内容后断言 `nullptr`/`__int128` 代码 token 不存在（include_451 + template_451 + 真实 fixture 模块生成的全部 C 产物；`u8` 前缀经 vendored 补丁获支持，不在检查集内，类注释明示）；minicoro 内联汇编字符串内容断言无 `jmpq`/无逗号 `.type`（覆盖 riscv/i386 块的同形态清扫，补丁随之补全）且逗号形态与 `.Lmco_switch_resume` 标签在场锚定；scanner 自身正反合成用例（注释/字符串中的违规不报、代码中的违规必报、行连接单次拼接与混合 CRLF/LF 回归锚点、汇编形态正则双向区分）
+- [x] `GdccOperatorPowSmokeTest`（zig 门控）：`pow_int` 边界语义锁定——2^63、2^64、2^1000、INT64_MIN/MAX 底数与指数、负底数奇偶、负指数坍缩、0^0，期望值由 Java `long` 环绕语义的同算法 oracle 计算，与 C 产物逐位一致
+- [x] `MinicoroAsmEncodingTest`（zig/tcc/objdump 各自门控）：双编译器链接产物反汇编，`_mco_switch` 的 `lea` 解析目标 == `jmp *(%rsi)` 之后的 `ret`（R5 回归锁定；tcc 可执行文件无 symtab，按指令序列特征锚定）
+- [x] `TinyCcCliGateTest`（tcc CLI 门控）：记录型 fake `CCompiler` 捕获 `CProjectBuilder` 的真实生产输入集（生成的 entry TU + 4 个提取的运行时 TU），tcc CLI `-std=c11 -shared`（真实链接，含 crt/libc 链路，非 `-c`）0 错误 0 诊断，`nm -D` 确认导出 `gdextension_entry`；fixture 含非 ASCII 字符串字面量，`u8"..."` + UCN 转义路径随生成代码一并过门（vendored 补丁构建的 CLI）
+- [x] 验收：zig 全回归 `./gradlew clean build --no-daemon --console=plain` 全绿（4800+ 测试，含 Godot 集成）；重点定向 `CBodyBuilderLiteralValueTest`、`GdccStaticStringRuntimeSmokeTest`、`GodotAbiHeaderCompileTest`、`GdccCoroutineRuntimeSmokeTest` 均通过；上述 4 个新测试类全部实际运行（0 跳过）
+- [x] review-expert-c 三轮复核收口（5+1+1 项，全部修复并复验）：`#line` 文件名改用独立的 `StringUtil.escapeLineDirectiveFileName`（tcc 的 `#line` 不做转义解码，`tccpp.c:1929` 实证；非 ASCII 与 tab 原始字节直通，`"`/`\` 转义，其余控制字符拒绝——P0-1 证据 §结论 5 附双编译器 tab 探针）；`CPortabilitySurfaceTest` scanner 修复注释 token 分隔与行连接单次拼接（含混合 CRLF/LF 二次拼接回归锚点）；`MinicoroAsmEncodingTest` 增加 `LINUX_X86_64` 平台门控；`TinyCcCliGateTest` 落实零诊断断言（输出全空白）；`TinyCcCliTestSupport` 的 `-B` runtime root 按 `GDCC_TINYCC_HOME` → 仓库 bundle → 可用二进制父目录优先级解析并校验布局（不可用时省略 `-B` 保留编译器内建路径）
+- [x] u8 路线反转：vendored `tccpp.c` 透明前缀补丁落地后，u8 相关的全部可移植化改动（模板/Java 生产者/gdcc_bind.h 前缀移除、`escapeStringLiteral` 八进制改造、26 文件金字清扫、`CPortabilitySurfaceTest` 的 u8 检查）整体回退至 HEAD 原状；非 u8 改动（`{nullptr}`→`{NULL}`、`pow_int`、`__TINYC__` 分支、stdbool 注入、minicoro 补丁、`{ 0 }`、`escapeLineDirectiveFileName`）保留
+- [x] 测试用 CLI 构建链：`buildTinyccCli` Gradle 任务（`gradle/tinycc.gradle.kts` 封装平台探测/路径/脚本定位函数）在 `test` 前按需构建 CLI——输入为整个 vendored 源码树与构建脚本（内容哈希），输出为 CLI 二进制 + `libtcc1.a` + `cli-verified` 标记（脚本仅在 u8 探针通过后写标记，被 kill 的半成品构建永远触发重建），不支持的平台 `onlyIf` 跳过；`build-script/build-tinycc-cli-linux-x86_64.sh`（configure + `make tcc libtcc1.a`，已本机验证）与 `build-tinycc-cli-windows-x86_64.bat`（zig cc 单文件构建 + 先合并 win32 头文件再按上游 `build-tcc.bat:make_lib` 步骤自举 win32 运行时，Windows 主机首验归 G6）为任务执行体；`TinyCcCliTestSupport` 纯查找（`GDCC_TINYCC_TCC` 覆盖 → 工作树二进制 + `cli-verified` 标记 → null 跳过），Java 侧不再启动任何构建/探测子进程，`/tmp/opencode` 与 PATH 回退已移除；运行时根布局校验按平台区分（Linux `{B}/libtcc1.a`、Windows `{B}/lib/libtcc1.a`）
 
 注释纪律：上述改动点的注释只解释 C 语义与编译器兼容性事实（如 "tcc accepts statement expressions but does not define `__GNUC__`"），**不得引用本计划文档或任务编号**（AGENTS.md 约定）。
 
 验收：
 - zig 全回归：`./gradlew clean build --no-daemon --info --console=plain` 全绿；重点定向：`script/run-gradle-targeted-tests.sh --tests CBodyBuilderLiteralValueTest,GdccStaticStringRuntimeSmokeTest,GodotAbiHeaderCompileTest`（金字面量断言同步更新）。
-- 新增 `CPortabilitySurfaceTest`（纯 Java）：扫描 `include_451`（含 `gdcc_bind.h`）/`template_451`/生成的 `entry.c`，**忽略注释与字符串内容上下文**：`u8"`/`nullptr`/`__int128` 按代码 token 断言不存在（`gdcc_string.h:58`、`gdcc_string_name.h:65` 注释中的示例与 `decode_u8`/`encode_u8` 标识符不算命中）；`jmpq` 与 `.type name @function`（无逗号）只在内联汇编字符串字面量中断言不存在（`minicoro.h:683,746` 的机器码数组注释不算命中）。
+- 新增 `CPortabilitySurfaceTest`（纯 Java）：扫描 `include_451`/`template_451`/生成的 `entry.c`，**忽略注释与字符串内容上下文**：`nullptr`/`__int128` 按代码 token 断言不存在（`gdcc_string.h:58`、`gdcc_string_name.h:65` 注释中的示例不算命中）；`jmpq` 与 `.type name @function`（无逗号）只在内联汇编字符串字面量中断言不存在（`minicoro.h:683,746` 的机器码数组注释不算命中）。
 - tcc CLI 门（本机 mob tcc）：对从 classpath 提取的正式 include 树 + 一份生成的 `entry.c` 全量 5 TU 以 `TCC_OUTPUT_DLL` 真实链接通过（含 crt/libc 链路），0 error；禁止用 `-c` 代替。
 - minicoro 反汇编断言（双编译器产物）：`_mco_switch` 中 `lea` 的目标地址 == `jmp *(%rsi)` 之后的第一条指令（`ret`），即标签化恢复地址编码正确（tcc 与 zig 两侧都验；防 R5 回归）。
 - `pow_int` 语义：新增/更新针对 `pow` 边界的测试（`2^63`、`2^64`、`INT64_MIN/MAX`、负指数），zig 产物行为不变（等价性论证限定为二进制补码乘法低 64 位，最终截断到 `godot_int` 不变）。
@@ -234,7 +254,7 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 ### 阶段 7：文档收口
 
 - `backend_build_system_implementation.md`：新增 TinyCcCompiler 职责段、日志/取消差异合同、§8 测试锚点清单与并行约定更新。
-- `doc/gdcc_c_backend.md`：编译器后端章节补 tcc 路径；字面量合同（`u8` 要求）随阶段 2 落地同步修订。
+- `doc/gdcc_c_backend.md`：编译器后端章节补 tcc 路径；可移植化落地的实际差异（`{nullptr}`→`{NULL}`、`pow_int` 中间量、`__TINYC__` 分支、minicoro 补丁、stdbool 注入）随阶段 2 同步修订（`u8"..."` 合同不变）。
 - `doc/gdcc_runtime_lib.md`：minicoro tcc 适配补丁登记（`__TINYC__` 分支清单）。
 - `doc/module_impl/api/rpc_api_implementation.md`、`json_rpc_service_implementation.md`：`cCompilerKind` 字段表与取消延迟预期修订。
 - 分发说明：两后端的 libc/构建环境合同（D8）与 launcher 行为变更。
@@ -246,7 +266,7 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 | # | 等级 | 风险 | 成因链路 | 缓解 |
 |---|---|---|---|---|
 | R1 | 高 | FFM 无故障隔离，native 崩溃终止 JVM | D1 取舍，tcc 内部状态机复杂 | 文档明示；worker 进程隔离列后续方向；失败状态即弃（D3） |
-| R2 | 高 | Unicode/转义正确性未证明 | `escapeStringLiteral` 的 `\u`/`\U` 依赖执行字符集映射，tcc 行为未验证 | P0-1 探针前置；首选八进制逐字节方案规避映射依赖；test_suite 增加非 ASCII 字符串用例双编译器对比 |
+| R2 | 低 | Windows 侧 Unicode/转义正确性未证明 | `escapeStringLiteral` 的 `\u`/`\U` 在 Linux x86_64 已双编译器验证（P0-1 字节矩阵 + `TinyCcU8StringTest`），Windows 执行字符集映射未验证 | G6 Windows 验收时补非 ASCII 字符串用例双编译器对比 |
 | R3 | 中 | Linux 系统头/CRT/libc 链路在进程内 tcc 下未验证 | handoff 只验证 Windows（自带 winapi 头）；Linux 依赖 `configure` 产物的内建路径 | P0-3 探针 + G1 移位 smoke（真实 DLL 链接）+ `ldd` 记录；不足则 `tcc_add_sysinclude_path` 显式补充 |
 | R4 | 中 | tcc 产物依赖宿主开发头/CRT/库构建，构建环境要求高于 zig（zig 用 bundled sysroot） | 两后端产物均动态链接 glibc；差异在构建时自给程度与可复现性 | D8 文档分述；分发指南按编译器注明构建环境要求；产物兼容性以实测动态依赖为准 |
 | R5 | 高 | tcc 内联汇编器对 RIP 相对硬编码常量位移误编码（少 4 字节） | `leaq 0x3d(%rip)` → tcc 编码 `0x39`；`tmp/minicoro-patch-verify/EVIDENCE.md` 实测 | minicoro 恢复地址改标签形式（阶段 2 必做项）；验收含反汇编断言 |

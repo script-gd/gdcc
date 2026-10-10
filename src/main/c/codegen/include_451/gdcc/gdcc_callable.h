@@ -26,7 +26,7 @@ typedef struct gdcc_standalone_callable_registry {
     uint32_t capacity;
 } gdcc_standalone_callable_registry;
 
-static gdcc_standalone_callable_registry g_standalone_callable_registry = {nullptr};
+static gdcc_standalone_callable_registry g_standalone_callable_registry = {NULL};
 
 static godot_bool gdcc_standalone_callable_registry_add(gdcc_standalone_callable_spec *spec) {
     if (g_standalone_callable_registry.count == g_standalone_callable_registry.capacity) {

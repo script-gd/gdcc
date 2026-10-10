@@ -107,7 +107,7 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
     <#-- not registered yet, and binds the parent/child extension pair at registration time. -->
     <#list inheritanceOrderedClassDefs as classDef>
     {
-        GDExtensionClassCreationInfo5 creation_info = {};
+        GDExtensionClassCreationInfo5 creation_info = { 0 };
         creation_info.is_abstract = ${classDef.abstract?c};
         creation_info.is_runtime = false;
         creation_info.is_virtual = false;
@@ -132,7 +132,7 @@ void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
             <#if func.coroutine>
                 <#assign stateName = helper.renderCoroStateClassName(classDef, func)>
     {
-        GDExtensionClassCreationInfo5 creation_info = {};
+        GDExtensionClassCreationInfo5 creation_info = { 0 };
         creation_info.is_abstract = false;
         creation_info.is_runtime = true;
         creation_info.is_virtual = false;

@@ -3,6 +3,9 @@ plugins {
     id("org.gradlex.extra-java-module-info") version "1.9"
 }
 
+// TinyCC CLI detection/build helpers and the `buildTinyccCli` task (wired into `test`).
+apply(from = "gradle/tinycc.gradle.kts")
+
 group = "gd.script"
 version = "0.0.2"
 

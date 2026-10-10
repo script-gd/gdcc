@@ -36,8 +36,12 @@ static godot_int pow_int(godot_int base, godot_int exp) {
         return 0;
     }
 
-    __int128 result = 1;
-    __int128 factor = (__int128)base;
+    // Accumulate in unsigned 64-bit: multiplication is defined modulo 2^64 (no signed-overflow
+    // UB), and converting back to godot_int keeps the low 64 bits, so power results wrap exactly
+    // like GDScript int arithmetic. tcc does not support __int128, so wider intermediates are
+    // not portable here.
+    uint64_t result = 1;
+    uint64_t factor = (uint64_t)base;
     godot_int positive_exp = exp;
     while (positive_exp > 0) {
         if ((positive_exp & 1) != 0) {

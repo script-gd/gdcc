@@ -27,7 +27,7 @@ typedef struct gdcc_StringNameWithHash {
     godot_int hash;
 } gdcc_StringNameWithHash;
 
-static StringNameDestroyRegistry g_sn_registry = {nullptr};
+static StringNameDestroyRegistry g_sn_registry = {NULL};
 
 static void gdcc_sn_registry_add(godot_StringName* p_sn) {
     // No deduplication: each expansion site registers once per generation.
