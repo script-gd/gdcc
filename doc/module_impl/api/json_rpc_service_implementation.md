@@ -778,10 +778,10 @@ fixture，列入 §7 后续工作。
 `buildAddonNative`（本机平台）与 `buildAddonAllPlatform`（Windows x86_64 + Linux
 x86_64/AArch64），供真实编辑器手工验收（启用插件 + dock ping + §6.3 的空闲活性
 检查）。编译产物库名为 `gdcc_for_editor`（module id；插件后续将扩展到 RPC 之外的
-编辑器功能，源码的 `class_name GdccRpcClient` 不受库名影响）。注：在非 Windows
-主机上构建 Windows 平台时，`ZigCcCompiler` 会把声明的 `x86_64-windows-msvc` 替换为
-`x86_64-windows-gnu` 并发出警告（zig 无法为 msvc 目标提供 libc；该替换同时关闭
-LTO，产物仍为可正常加载的自包含 GDExtension DLL，与 zig launcher 的 ABI 选择一致）。
+编辑器功能，源码的 `class_name GdccRpcClient` 不受库名影响）。Windows 目标统一声明
+`x86_64-windows-gnu` / `aarch64-windows-gnu`，不依赖 MSVC SDK，使用与其他平台一致的
+PCH、逐 TU 编译与单次链接策略。GDExtension 的边界为 C ABI，具体构建合同见
+`backend_build_system_implementation.md`。
 
 ---
 

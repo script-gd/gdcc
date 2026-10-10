@@ -67,7 +67,7 @@ import java.util.function.Supplier;
 /// - PCH: a `godot_binding.h` precompiled header is cached under `<cacheRoot>/pch/<key>/`
 ///   (key = zig version + target + full language flags + ordered include-tree hashes) and
 ///   force-included only into the whitelisted TUs that actually include `godot_binding.h`
-///   (`entry.c`, `godot_binding.c`, `gdcc_coroutine.c`; `minicoro.c` is excluded so the ABI
+///   (`entry.c`, `godot_binding.c`, `gdcc_coroutine.c`, `gdcc_hrx.c`; `minicoro.c` is excluded so the ABI
 ///   headers never leak into the isolated assembly-backend TU). Every PCH problem — version
 ///   probe failure, build/probe/rename failure, a poisoned installed entry that still fails
 ///   after one self-heal rebuild, or zig rejecting `-include-pch` mid-round — degrades to a

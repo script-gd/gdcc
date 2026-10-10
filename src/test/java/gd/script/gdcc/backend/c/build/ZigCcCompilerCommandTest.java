@@ -67,7 +67,6 @@ class ZigCcCompilerCommandTest {
 
     @Test
     void compileAndLinkCommandsShareTheSameResolvedTarget() {
-        // The substituted msvc→gnu triple must reach both command kinds.
         var resolution = ZigCcCompiler.resolveZigTarget(TargetPlatform.WINDOWS_X86_64, false);
         var ltoMode = ZigCcCompiler.resolveLtoMode(resolution.zigTarget(), resolution.abiSubstituted(), COptimizationLevel.RELEASE);
         var tuCmd = ZigCcCompiler.buildTuCompileCommand(ZIG, resolution.zigTarget(), ltoMode, COptimizationLevel.RELEASE, INCLUDE_DIRS, objPath(COptimizationLevel.RELEASE, resolution.zigTarget(), 0, "entry.c"), Path.of("entry.c"));
@@ -101,20 +100,38 @@ class ZigCcCompilerCommandTest {
 
     @Test
     void abiSubstitutedBuildsNeverUseLtoAndNeverEnterThinLtoFallback() {
-        var resolution = ZigCcCompiler.resolveZigTarget(TargetPlatform.WINDOWS_X86_64, false);
-        assertTrue(resolution.abiSubstituted());
-        // Even when the substituted target were listed as ThinLTO-unsupported, the ABI
-        // substitution short-circuits the LTO decision before any fallback check.
-        var ltoMode = ZigCcCompiler.resolveLtoMode(resolution.zigTarget(), true, COptimizationLevel.RELEASE, Set.of(resolution.zigTarget()));
+        var zigTarget = TargetPlatform.WINDOWS_X86_64.zigTarget;
+        var ltoMode = ZigCcCompiler.resolveLtoMode(zigTarget, true, COptimizationLevel.RELEASE, Set.of(zigTarget));
         assertEquals(CLtoMode.NONE, ltoMode);
-        var tuCmd = ZigCcCompiler.buildTuCompileCommand(ZIG, resolution.zigTarget(), ltoMode, COptimizationLevel.RELEASE, INCLUDE_DIRS, objPath(COptimizationLevel.RELEASE, resolution.zigTarget(), 0, "entry.c"), Path.of("entry.c"));
-        var linkCmd = ZigCcCompiler.buildLinkCommand(ZIG, resolution.zigTarget(), ltoMode, COptimizationLevel.RELEASE, PROJECT_DIR.resolve("demo.dll"), List.of(objPath(COptimizationLevel.RELEASE, resolution.zigTarget(), 0, "entry.c")));
+        var tuCmd = ZigCcCompiler.buildTuCompileCommand(ZIG, zigTarget, ltoMode, COptimizationLevel.RELEASE, INCLUDE_DIRS, objPath(COptimizationLevel.RELEASE, zigTarget, 0, "entry.c"), Path.of("entry.c"));
+        var linkCmd = ZigCcCompiler.buildLinkCommand(ZIG, zigTarget, ltoMode, COptimizationLevel.RELEASE, PROJECT_DIR.resolve("demo.dll"), List.of(objPath(COptimizationLevel.RELEASE, zigTarget, 0, "entry.c")));
         assertNoLtoToken(tuCmd);
         assertNoLtoToken(linkCmd);
         assertTrue(tuCmd.contains("-O2"), "the TU still compiles optimized: " + tuCmd);
-        // Without LTO the objects are already final machine code, so the link gets no -O flag.
         assertFalse(linkCmd.stream().anyMatch(arg -> arg.startsWith("-O")), "substituted link must not carry -O flags: " + linkCmd);
-        // zig's LTO link for windows-gnu cannot pull in libmingwex/compiler-rt symbols.
+    }
+
+    @Test
+    void windowsGnuBuildsUseTheCommonLtoPolicyOnEveryHost() {
+        for (var target : List.of(TargetPlatform.WINDOWS_X86_64, TargetPlatform.WINDOWS_AARCH64)) {
+            for (var windowsHost : List.of(false, true)) {
+                var resolution = ZigCcCompiler.resolveZigTarget(target, windowsHost);
+                assertFalse(resolution.abiSubstituted());
+                var releaseLto = ZigCcCompiler.resolveLtoMode(resolution.zigTarget(), resolution.abiSubstituted(), COptimizationLevel.RELEASE);
+                assertEquals(CLtoMode.THIN, releaseLto);
+                var objPath = objPath(COptimizationLevel.RELEASE, resolution.zigTarget(), 0, "entry.c");
+                var compile = ZigCcCompiler.buildTuCompileCommand(ZIG, resolution.zigTarget(), releaseLto,
+                        COptimizationLevel.RELEASE, INCLUDE_DIRS, objPath, Path.of("entry.c"));
+                var link = ZigCcCompiler.buildLinkCommand(ZIG, resolution.zigTarget(), releaseLto,
+                        COptimizationLevel.RELEASE, PROJECT_DIR.resolve("demo.dll"), List.of(objPath));
+                for (var cmd : List.of(compile, link)) {
+                    assertEquals(target.zigTarget, targetOf(cmd));
+                    assertTrue(cmd.contains("-flto=thin"));
+                    assertTrue(cmd.contains("-O2"));
+                }
+                assertEquals(CLtoMode.NONE, ZigCcCompiler.resolveLtoMode(resolution.zigTarget(), resolution.abiSubstituted(), COptimizationLevel.DEBUG));
+            }
+        }
     }
 
     @Test

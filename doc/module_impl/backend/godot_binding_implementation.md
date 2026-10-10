@@ -404,6 +404,7 @@ constant 这类模块变化 symbol 才进入 module-local。
 - `<includeRoot>/godot/godot_binding.c`
 - `<includeRoot>/gdcc/minicoro.c`
 - `<includeRoot>/gdcc/gdcc_coroutine.c`
+- `<includeRoot>/gdcc/gdcc_hrx.c`
 
 不允许根据旧文件存在性把 `<includeRoot>/gdextension-lite/gdextension-lite-one.c` 加回
 `cFiles`。`ResourceExtractor` 的覆盖/新增语义不承担旧目录清理；旧工作区残留只作为构建

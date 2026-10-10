@@ -64,16 +64,16 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
 
 ### 3.2 LTO 决策（优先级从高到低）
 
-1. ABI 替换（非 Windows 宿主上 `*-windows-msvc` 被替换为 `*-windows-gnu`）：编译与链接均不追加任何 `-flto*`；
-2. DEBUG：无 LTO（`-O0`）；
-3. target 命中 `THIN_LTO_UNSUPPORTED_ZIG_TARGETS`：RELEASE 回退 `-flto`（full LTO）；当前该集合为空；
-4. 其余 RELEASE：`-flto=thin`（编译与链接同带，链接随 LTO 带 `-O2`）。
+1. DEBUG：无 LTO（`-O0`）；
+2. target 命中 `THIN_LTO_UNSUPPORTED_ZIG_TARGETS`：RELEASE 回退 `-flto`（full LTO）；当前该集合为空；
+3. 其余 RELEASE：`-flto=thin`（编译与链接同带，链接随 LTO 带 `-O2`）。
 
 决策由 package-private 静态方法 `resolveLtoMode(...)` 给出，ThinLTO 不兼容 target 必须由命令级测试（`ZigCcCompilerCommandTest`）锁定，不得通过链接失败反推。
 
 ### 3.3 target 已知限制
 
-- `windows-gnu` 的 LTO 链接失败（`frexpf`/`frexpl`/`modfl` undefined），但该 target 只能经 msvc→gnu 替换路径到达、该路径本就禁 LTO，故不进入回退判定集。
+- Windows 声明 target 统一为 `x86_64-windows-gnu` / `aarch64-windows-gnu`，不依赖 MSVC SDK。GDExtension C 边界与 Godot Windows 加载器依据见 `doc/gdcc_c_backend.md` 的 Windows ABI。
+- Zig 0.16.0 存在 Windows GNU/LTO `zigc` weak-symbol 链接 bug（`frexpf`/`frexpl`/`modfl` 等 undefined；[Zig #31958](https://codeberg.org/ziglang/zig/issues/31958)），不应概括为 GNU ABI 不支持 LTO。该工具链限制不改变公共 LTO 策略。
 - android/web-wasm32 的失败是 sysroot/runtime 限制（android 需 NDK/Bionic；wasm 上 minicoro 锁定 `MCO_USE_ASM` 按设计 fail loudly），与 LTO 无关：二者的 LTO 决策保持默认（RELEASE 取 `-flto=thin`），真实构建显式跳过或仅做 `-c` 编译。web 的 Emscripten 后端是独立 post-MVP 项目，不属于 zig 后端职责。
 - `macos-x86-64` / `macos-aarch64` 在 macOS 本机产出 `lib<name>.dylib`；从非 Darwin 主机交叉链接需要 Darwin sysroot，不进入 `ZigCcCompilerCrossTargetSmokeTest` 的 zig-bundled-libc 矩阵。
 - zig cc 拒绝透传 `-Wl,--thinlto-cache-dir`/`-fthinlto-cache-dir`，因此 ThinLTO 链接后端无法跨构建缓存；不直接驱动 `zig ld.lld`（见 §9 后续方向）。
@@ -133,7 +133,7 @@ PCH 的完整合同（key 组成、布局、自愈协议）以 `doc/gdcc_c_backe
 
 ## 8. 测试约定
 
-- 真 zig/Godot 依赖一律 `ZigUtil.findZig()` + `Assumptions` 门控；迭代期只跑定向测试：`script/run-gradle-targeted-tests.sh --tests <类名>`。
+- 真 zig/Godot 依赖一律 `ZigUtil.findZig()` + `Assumptions` 门控；迭代期只跑定向测试，Windows 使用 `pwsh -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests <类名>`，Gradle 必须带 `--no-daemon --info --console=plain`。
 - negative path 直调公开 `ZigCcCompiler.compile(...)`（精心构造的 `.c` 与独立 include 树），不得通过破坏 shared include/共享 cache 构造失败。
 - 性能数字是手工参考值（注明机器与 zig 版本），写入 PR 描述，不进入 CI 断言。
 - 类级并行（`src/test/resources/junit-platform.properties`）：全局默认 `same_thread`，仅 `@Execution(ExecutionMode.CONCURRENT)` 标注类进入 fork-join 池，fixed parallelism=4（可经 `-Djunit.jupiter.execution.parallel.config.fixed.parallelism=N` 覆盖）。当前标注类：`ZigCcCompilerCrossTargetSmokeTest`（多 target 以 `@ParameterizedTest` 逐 target 拆分）、`ZigCcCompilerFailureTest`、`ZigCcCompilerIncrementalIntegrationTest`、`ZigCcCompilerPchIntegrationTest`。明确不并行：`ZigCcCompilerParallelTest` 与 `ApiZigCcCompilerCancellationTest`（时序/取消语义敏感）及全部 fake/纯 Java 测试。
