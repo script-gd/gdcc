@@ -209,6 +209,7 @@ final class TinyCcBundle {
                 // unreachable; retrying is still the safe response.
             }
             try {
+                //noinspection BusyWait
                 Thread.sleep(LOCK_RETRY_MILLIS);
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
@@ -233,6 +234,16 @@ final class TinyCcBundle {
             default -> throw new IllegalStateException(
                     "No tinycc bundle is available for " + platform + "; use the zig backend for this target");
         };
+    }
+
+    /// The libtcc shared library inside a resolved bundle root — the FFM loading target. Only
+    /// the `SymbolLookup.libraryLookup` call uses this path; everything tcc itself needs at
+    /// compile time (its own headers, the runtime archive, CRT prefixes) resolves through
+    /// `tcc_set_lib_path(root)` instead.
+    static @NotNull Path libraryPath(@NotNull Path bundleRoot, @NotNull TargetPlatform platform) {
+        // bundlePlatformKey is the single gate for "no bundle layout exists for this platform".
+        bundlePlatformKey(platform);
+        return bundleRoot.resolve("bin").resolve(platform == TargetPlatform.WINDOWS_X86_64 ? "libtcc.dll" : "libtcc.so");
     }
 
     /// Cache directory key: gdcc version + pinned tinycc commit + platform, sanitized so the
@@ -485,7 +496,7 @@ final class TinyCcBundle {
             );
             default -> throw new IllegalStateException("No tinycc bundle layout is defined for platform key '" + platformKey + "'");
         };
-        var entries = new ArrayList<String>(common);
+        var entries = new ArrayList<>(common);
         entries.addAll(platformSpecific);
         return entries;
     }

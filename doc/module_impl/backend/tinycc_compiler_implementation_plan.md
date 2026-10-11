@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：实施中（阶段 1 已开工）。本文档是 `TinyCcCompiler` 特性的唯一计划文档，完成后按归档约定转化为事实源文档或归档。
+- 状态：实施中（阶段 1-3 已完成）。本文档是 `TinyCcCompiler` 特性的唯一计划文档，完成后按归档约定转化为事实源文档或归档。
 - 适用范围：`gd.script.gdcc.backend.c.build` 包、`src/main/c/codegen/{include_451,template_451}`、`src/main/c/tinycc`（新增）、API/CLI/RPC 编译选项接线、zig launcher（行为变更，见 §8）。
 - 依据文档（结论来源，本文档不重复其论证）：
   - `doc/analysis/tinycc_analysis_windows_handoff.md`：Windows x86_64 上 tinycc mob `43c7708` + Java 25 FFM 的完整验证（构建命令、FFM 契约、11 文件兼容清单、资源包结构）。
@@ -219,6 +219,18 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 - `TinyCcCompiler`：实现 §3.2 流程与 FFM 不变量；支持集校验；全局锁；中断点（锁等待、TU 边界、output 前）；旧产物删除；`finally` 释放顺序。
 - 测试缝：注入 `TinyCcNative` fake 与 bundle 根解析器，纯 Java 驱动失败路径。
 
+进度（实施中逐项同步）：
+
+- [x] 权限决议（§8.1/§8.5，用户已逐条批准）：`tasks.test` 与 `EditorAddonProjectInstaller` 两个 JavaExec 任务加入 `--enable-native-access=ALL-UNNAMED`（探针实证 Gradle 测试运行于 unnamed module，FFM 默认 warn 模式下功能可用但警告刷屏；参数与 launcher 的正式运行合同对齐）；per-project 锁提取获批
+- [x] `CProjectBuildLock`：per-project 构建锁提取为编译器中立 package-private 持有器（归一化绝对路径键、进程生命周期持有，语义不变）；`ZigCcCompiler` 改用之；`ZigCcCompilerProjectLockTest` 改经新持有器取锁（3 项全绿）
+- [x] `TinyCcLibrary`：FFM 绑定层，10 个 downcall 签名按 handoff §7 表与 pinned `libtcc.h` 逐行核对；`Arena.ofShared` 进程级承载、不卸载；惰性加载失败不缓存（半途失败关闭临时 arena），仅在完整绑定成功后发布单例（对齐 `ZigUtil.findZigVersion` 语义）；`clearCachedLibraryForTesting` 测试钩子
+- [x] `TinyCcNative` + `TinyCcFfmNative`：可替换窄接口 + 生产实现（字符串经本轮 confined arena marshal；upcall 经 `newErrorFuncStub` 注册；`callbackFailure()` 回调失败标记）
+- [x] `TinyCcCompiler`：§3.2 全流程落地——bundle 解析 → 支持集/host==target 校验（不触碰 native 库）→ 空输入 → 锁序 per-project→tcc 全局（均 `lockInterruptibly`）→ confined arena → newState（NULL 拒绝）→ error handler → set_lib_path → `-std=c11` → TCC_OUTPUT_DLL → include 保序 → 逐 TU add_file（TU 边界中断检查）→ 每次 downcall 后回调失败检查 → output 前中断检查 → 删旧产物 → output_file → 普通文件校验；`finally` 顺序 delete → arena close → 解锁；固定通道 `Failed to run tcc: interrupted` / `Failed to run tcc: <msg>`；诊断逐行并入 buildLog；D7 注释明示 optimizationLevel 不影响编译参数
+- [x] 探针驱动的两处实证修复：① upcall 的 ADDRESS 参数是零长 segment，必须 `reinterpret(Long.MAX_VALUE)` 后再 `getString`，否则 getString 抛越界异常、诊断静默丢失（该故障形态被"回调失败整轮失败"锚点覆盖）；② libtcc 仅在 `tcc_set_output_type` 内分配 sections/symtab，未设 output type 直接编译会在 `tccelf_begin_file` 解引用空 symtab 崩溃（libtcc 使用契约；编译器主路径本就先设 output type，库测试探针补设 `TCC_OUTPUT_MEMORY`）
+- [x] 验收（G3 命令 + zig 侧回归共 156 项，0 跳过 0 失败）：`TinyCcCompilerNativeFakeTest`（20 项，纯 Java 不门控：五个 setup 步任一非零即中止且调用序列精确截断（含 add_file -3 锚点）、native 全 0 且产物已生成但回调失败 → 整轮失败 artifacts 为空、清理顺序 delete→arena close、TU 间/最终 TU 后/双锁等待中断且 interrupt 状态恢复、轮内双锁持有锚定、空输入/非 host 目标/bundle 缺失快速失败且不触碰 native、旧产物不误报成功）；`TinyCcCompilerTest`（6 项，真 bundle：手写 fixture 多 TU 合并编译 + `nm -D` 导出 `gdextension_entry`、语法错误诊断透传 + 失败通道、失败后新一轮成功（fresh state）、空输入、旧产物成功替换、全局锁等待中断）；`TinyCcLibraryTest`（6 项，真 bundle：符号绑定与基本调用、诊断拷贝语义（4k 长消息/逐 state 触发）、handler 异常入失败槽且不穿透 native 帧、失败不缓存/成功仅加载一次）；`TinyCcCompilerParallelTest`（2 项：fake 驱动确定性证明全局锁串行（第一轮阻塞期间第二轮确在全局锁排队）+ 真 bundle 双项目并发各编译成功且 nm 符号隔离）；`TinyCcBundleTest` 与 zig 侧 `ZigCcCompiler*`/`CProjectBuilder*`/`TinyCcCliGateTest` 等回归全绿
+- [x] review-expert-c 复核收口（4 项：修复 2、拒绝 2）：①修复——bundle 安装锁等待中断经 resolver IOException 通道漏出，现按 resolver 已恢复的中断位改走固定通道 `Failed to run tcc: interrupted`（`TinyCcCompilerNativeFakeTest.interruptDuringBundleResolutionSurfacesTheFixedChannel` 锚定）；②修复——`TinyCcCompilerParallelTest.globalLockSerializesConcurrentRounds` 由 sleep 统计探针改为确定性证明：第一轮阻塞在 fake addFile 内（持全局锁），`hasQueuedThread(threadB)` 锚定第二轮确在全局锁排队、`secondInsideAddFile` 锚定其未提前进入，并经变异测试验证（移除全局锁后该测试确定性失败）；③拒绝——"output/delete 期间收到中断仍报成功"：D4 与阶段 3 改动清单将合作式取消点穷举为锁等待/TU 边界/output 前，晚到中断不在取消面内属设计取舍（zig 在链接等待/输出收集结束后的最终返回前存在同类窗口），且中断位不被清除、API 层取消映射不受影响（review 复核对 zig 窗口位置的措辞已按其证据收窄）；④拒绝——"中断丢弃已收集诊断"：D4 明确 buildLog 为固定通道且与 zig 通道形态对齐（zig 取消同样不合并任何输出），API 层 CANCELED 映射本就丢弃 buildLog
+- [x] review-expert-c 第二轮复核：两项修复判定已解决、两项拒绝判定成立；其新增指出的并发测试失败路径不等待工作线程退出的清理缺口（可能把全局锁泄漏进后续测试类）已修复——`finally` 无条件释放 latch、中断并等待两个工作线程（best-effort，不掩盖主断言）；复测 89 项（G3 五类 + zig 锁/并行/失败回归 + TinyCcCliGateTest）0 跳过 0 失败
+
 验收（真 bundle 用 `Assumptions` 门控，模式对齐 zig 测试约定；fake 驱动的不门控）：
 - `TinyCcCompilerTest`：多 TU 成功编译（**手写 fixture C 输入**，不依赖阶段 2 的生成代码移植，含一个导出 `gdextension_entry` 的 fixture）、产物存在且导出该符号（Linux 用 `nm -D`，Windows 用 PE 适用工具如 `dumpbin`/zig 自带工具，不机械照搬）、语法错误输入的诊断文本透传与失败通道、失败后新一轮成功（fresh state）、中断通道（锁等待取消、TU 间取消、最终 TU 后取消且恢复 interrupt）、空 `cFiles` 失败、旧产物存在但 output 失败不误报成功。
 - `TinyCcCompilerNativeFakeTest`（纯 Java）：setup 各步（options/output_type/include/add_file/output）任一失败即中止且不继续后续调用、**native 全部返回 0 且产物存在但回调失败时令整轮失败且 artifacts 为空**、清理顺序（delete → arena close）。
@@ -294,11 +306,11 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 
 ## 8. 权限与确认清单（超出 src/doc/tmp 范围或改变既有合同，需用户逐条批准）
 
-1. `build.gradle.kts`：`tasks.test` 增加 `jvmArgs("--enable-native-access=ALL-UNNAMED")`；`sourceSets.main.resources` 增加 bundle srcDir（或在 `processResources` 接入构建产物目录）；`EditorAddonProjectInstaller` 相关 `JavaExec` 任务的 `jvmArgs` 同参数核对。
+1. `build.gradle.kts`：`tasks.test` 增加 `jvmArgs("--enable-native-access=ALL-UNNAMED")`；`sourceSets.main.resources` 增加 bundle srcDir（或在 `processResources` 接入构建产物目录）；`EditorAddonProjectInstaller` 相关 `JavaExec` 任务的 `jvmArgs` 同参数核对。（**已批准并落地（阶段 3）**：`tasks.test` 与两个 `EditorAddonProjectInstaller` JavaExec 任务均已加入该参数；bundle srcDir 接入属分发打包范畴，随阶段 4/7 另行处理。）
 2. `build-script/` 新增 bundle 构建脚本（Linux/Windows 各一）。（用户决议：目录由 `script/` 改为 `build-script/`；`script/` 被 `.gitignore` 整体忽略，而 `build-script/` 可正常纳入版本管理。）
 3. ~~`.gitignore`：忽略 bundle 构建产物与本机提取缓存~~（已消解：构建产物默认输出到已被忽略的 `build/`；用户缓存目录在仓库之外；`build-script/` 未被忽略，无需改动 `.gitignore`）。
 4. launcher 行为变更确认：`main.zig` 的 zig 发现从硬前置降级为可选（找不到 zig 不再 `exit(1)`，仅不设置 `ZIG_HOME`）；这是既有启动合同的变更，实施前需明确批准。
-5. per-project 构建锁从 `ZigCcCompiler` 提取为编译器中立持有器（`ZigCcCompiler` 相应改造）：改动既有 zig 实现的锁持有方式，需确认。
+5. per-project 构建锁从 `ZigCcCompiler` 提取为编译器中立持有器（`ZigCcCompiler` 相应改造）：改动既有 zig 实现的锁持有方式，需确认。（**已批准并落地（阶段 3）**：`CProjectBuildLock` 提取完成，`ZigCcCompiler` 与其锁测试均已迁移。）
 6. 移除 `CProjectBuilder.setCCompiler`（当前无生产调用方，测试改用构造器注入）——公共 API 面缩减，需确认。
 
 ## 9. 已知限制与后续方向

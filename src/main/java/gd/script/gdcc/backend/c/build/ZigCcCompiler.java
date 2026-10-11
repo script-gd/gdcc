@@ -29,14 +29,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -125,14 +123,6 @@ public class ZigCcCompiler implements CCompiler {
     /// `MCO_USE_ASM`, android linking needs the NDK/Bionic), not ThinLTO problems.
     private static final Set<String> THIN_LTO_UNSUPPORTED_ZIG_TARGETS = Set.of();
 
-    /// In-process serialization of native build rounds per project directory. Concurrent rounds
-    /// on the same directory would overwrite each other's objects under `obj/` (even for
-    /// different output names, objects share the `<opt>/<target>/<index>_<file>.o` shape) and
-    /// the final artifact. External gdcc instances are out of scope: cross-process coordination
-    /// on a shared directory is the caller's own responsibility. Entries are kept for the
-    /// process lifetime — one small lock per project directory ever built.
-    private static final ConcurrentHashMap<Path, ReentrantLock> PROJECT_BUILD_LOCKS = new ConcurrentHashMap<>();
-
     private final CProcessLauncher processLauncher;
     private final @NotNull Supplier<@Nullable Path> zigDiscovery;
     private final @NotNull ZigVersionProbe zigVersionProbe;
@@ -184,7 +174,7 @@ public class ZigCcCompiler implements CCompiler {
             return new CCompileResult(false, "No C files to compile", List.of());
         }
 
-        var projectLock = requireProjectBuildLock(projectDir);
+        var projectLock = CProjectBuildLock.require(projectDir);
         try {
             // The lock covers the whole round (all TU compiles + link + artifact probing);
             // waiting is interruptible so a cancelled round never starts compiling late.
@@ -395,13 +385,6 @@ public class ZigCcCompiler implements CCompiler {
         for (var process : registry.cancelAndSnapshot()) {
             process.destroyForcibly();
         }
-    }
-
-    /// Resolves the lock serializing native build rounds of one project directory within this
-    /// process. Keys are normalized absolute paths, so textual variants of the same directory
-    /// share one lock.
-    static @NotNull ReentrantLock requireProjectBuildLock(@NotNull Path projectDir) {
-        return PROJECT_BUILD_LOCKS.computeIfAbsent(projectDir.toAbsolutePath().normalize(), key -> new ReentrantLock());
     }
 
     /// LTO token decision with a fixed priority: an ABI-substituted build (msvc→gnu on a
