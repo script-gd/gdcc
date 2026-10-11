@@ -57,7 +57,7 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
        -o <outputPath> <objPath...>
 ```
 
-- `-I`/`-std`/`-fPIC`/`-c` 只出现在编译类命令；`-shared` 只出现在链接命令；两者共享同一 `-target`、同一 `ZIG_CACHE_DIR`/`ZIG_GLOBAL_CACHE_DIR`（同一 cache root）与同一工作目录（`CProcessLauncher` 对每个子进程设置 `directory(projectDir)`）。
+- `-I`/`-std`/`-fPIC`/`-c` 只出现在编译类命令；`-shared` 只出现在链接命令；两者共享同一 `-target`、同一 `ZIG_LOCAL_CACHE_DIR`/`ZIG_GLOBAL_CACHE_DIR`（同一 cache root）与同一工作目录（`CProcessLauncher` 对每个子进程设置 `directory(projectDir)`）。
 - `languageFlags(ltoMode, opt)` 是 TU 编译、PCH 构建、PCH probe、PCH key 的统一 flag 来源；PCH 构建命令使用同一 `languageFlags` 但不带 `-c`，形态为 `zig cc -target <zigTarget> <languageFlags> -I<includeDir>... -x c-header <prefix.h> -o <pchPath>`。
 - object 路径固定为 `<projectDir>/obj/<debug|release>/<zigTarget>/<index>_<fileName>.o`，`<index>` 为 `cFiles` 下标，用于同名 `.c` 消歧。
 - 链接输入只使用本轮按 `cFiles` 顺序生成的 object 绝对路径列表：禁止 glob `obj/`、禁止以"object 已存在"跳过编译；每个 TU 每轮都执行 `zig cc -c`，缓存复用完全交给 zig 内容缓存。stale object 永远不进入链接。

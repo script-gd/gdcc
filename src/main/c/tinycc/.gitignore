@@ -15,7 +15,9 @@
 .gdb_history
 a.out
 tcc_g
-tcc
+# Anchored: the rule must only match the built compiler binary at the tree root;
+# win32/include/tcc/ (tcc_libm.h) is vendored content and must stay tracked.
+/tcc
 tcc_c
 tcc_p
 *-tcc
@@ -26,6 +28,9 @@ config*.h
 config*.mak
 config.texi
 conftest*
+# Upstream tracks conftest.c (configure's compiler probe source); the rule above only means
+# to ignore the conftest binaries that a build produces.
+!conftest.c
 c2str
 tags
 TAGS

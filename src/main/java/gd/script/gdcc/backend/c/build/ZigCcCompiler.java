@@ -922,7 +922,7 @@ public class ZigCcCompiler implements CCompiler {
     /// the round (TU compiles, PCH build/probe, link, version probe) identically.
     private static @NotNull Map<String, String> zigCacheEnvironment(@NotNull Path cachePath) {
         return Map.of(
-                "ZIG_CACHE_DIR", cachePath.resolve("local").toString(),
+                "ZIG_LOCAL_CACHE_DIR", cachePath.resolve("local").toString(),
                 "ZIG_GLOBAL_CACHE_DIR", cachePath.resolve("global").toString()
         );
     }
