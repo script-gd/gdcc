@@ -1,5 +1,6 @@
 package gd.script.gdcc.backend.c.build;
 
+import gd.script.gdcc.util.ZigTestUtil;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -681,6 +682,7 @@ class GodotAbiHeaderCompileTest {
         command.add("-o");
         command.add(output.toString());
 
+        ZigTestUtil.addMacosNativeTarget(command);
         var process = new ProcessBuilder(command)
                 .redirectErrorStream(true)
                 .start();
@@ -704,6 +706,7 @@ class GodotAbiHeaderCompileTest {
         command.add("-o");
         command.add(output.toString());
 
+        ZigTestUtil.addMacosNativeTarget(command);
         var process = new ProcessBuilder(command)
                 .redirectErrorStream(true)
                 .start();
