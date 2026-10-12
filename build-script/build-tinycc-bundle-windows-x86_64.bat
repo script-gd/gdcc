@@ -86,7 +86,7 @@ powershell -NoProfile -Command "Set-Location -LiteralPath '%BUNDLE_DIR%'; $root 
 rem ---- verify: structural ----------------------------------------------------------
 rem PE artifacts are exercised by the test suite on this host; here we pin the magic and every
 rem layout entry the runtime contract requires.
-powershell -NoProfile -Command "if ((Get-Content -Encoding Byte -TotalCount 2 '%BUNDLE_DIR%\bin\libtcc.dll') -join ',') -ne '77,90' { exit 1 }" || (
+powershell -NoProfile -Command "if (((Get-Content -Encoding Byte -TotalCount 2 '%BUNDLE_DIR%\bin\libtcc.dll') -join ',') -ne '77,90') { exit 1 }" || (
     echo error: %BUNDLE_DIR%\bin\libtcc.dll is not a PE image >&2
     exit /B 1
 )
