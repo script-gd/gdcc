@@ -16,8 +16,18 @@ import java.util.Locale;
 /// never picked up. No system/PATH compiler is consulted (an unpatched tcc would fail the u8
 /// contract). Overrides: `GDCC_TINYCC_TCC` points at a specific binary; `GDCC_TINYCC_HOME`
 /// supplies the `-B` runtime root. All consumers stay assumption-gated: no tcc, no test.
-final class TinyCcCliTestSupport {
+///
+/// Public so the test-suite package (`gd.script.gdcc.test_suite`) can drive tcc-backed runs.
+public final class TinyCcCliTestSupport {
     private TinyCcCliTestSupport() {
+    }
+
+    /// A [CCompiler] bound to the discovered bundle, or null when no usable bundle exists.
+    /// Callers gate on the null result; the compiler uses the in-process FFM backend exactly as
+    /// production does, with the bundle root pinned to this machine's test discovery.
+    public static @Nullable CCompiler newBundleCompiler() {
+        var bundleRoot = findTinyCcBundleRoot();
+        return bundleRoot == null ? null : new TinyCcCompiler(() -> bundleRoot, TinyCcFfmNative::create);
     }
 
     /// Locates the patched tcc CLI binary: explicit env override, then the platform work tree
@@ -61,7 +71,7 @@ final class TinyCcCliTestSupport {
     /// then the built bundle `build/tinycc-bundle/<platformKey>/`. Unlike [resolveRuntimeRoot]
     /// the root must additionally carry the libtcc shared library under `bin/` — that is the
     /// object the FFM binding loads. Returns null when no such bundle is available.
-    static @Nullable Path findTinyCcBundleRoot() {
+    public static @Nullable Path findTinyCcBundleRoot() {
         var homeOverride = System.getenv("GDCC_TINYCC_HOME");
         if (homeOverride != null && !homeOverride.isBlank()) {
             var root = Path.of(homeOverride);

@@ -82,7 +82,8 @@ static godot_Variant gdcc_callv_variants(
 }
 
 // tcc accepts statement expressions and _Generic but defines neither __GNUC__ nor __clang__;
-// without __TINYC__ here it would take the fallback branch and mis-pass the Variant array.
+// without __TINYC__ here it would take the variadic fallback branch, which heap-allocates the
+// argument array instead of marshalling it on the stack.
 #if defined(__GNUC__) || defined(__clang__) || defined(__TINYC__)
 
 #define GD_CALLV0_EXPR(obj, method_sn) \
@@ -103,7 +104,7 @@ static godot_Variant gdcc_callv_variants(
     })
 
 #define GD_OBJECT_CALL0(obj, method_sn) \
-    GD_CALLV0_EXPR((obj), (method_sn), 0)
+    GD_CALLV0_EXPR((obj), (method_sn))
 
 #define GD_OBJECT_CALL1(obj, method_sn, a0) \
     GD_CALLV_EXPR((obj), (method_sn), 1, _GDV(a0))
@@ -166,21 +167,25 @@ static godot_Variant gd_call_variadic(
     }
 
     godot_Variant* args = godot_mem_alloc(sizeof(godot_Variant) * (size_t)argc);
+    // gdcc_callv_variants consumes an array of POINTERS, so the values need an indirection table.
+    godot_Variant** arg_ptrs = godot_mem_alloc(sizeof(godot_Variant*) * (size_t)argc);
 
     va_list ap;
     va_start(ap, argc);
 
     for (int i = 0; i < argc; ++i) {
         args[i] = va_arg(ap, godot_Variant);
+        arg_ptrs[i] = &args[i];
     }
 
     va_end(ap);
 
-    godot_Variant ret = gdcc_callv_variants(obj, method, argc, args);
+    godot_Variant ret = gdcc_callv_variants(obj, method, argc, (const godot_Variant**)arg_ptrs);
 
     for (int i = 0; i < argc; ++i) {
         godot_Variant_destroy(&args[i]);
     }
+    godot_mem_free(arg_ptrs);
     godot_mem_free(args);
 
     return ret;

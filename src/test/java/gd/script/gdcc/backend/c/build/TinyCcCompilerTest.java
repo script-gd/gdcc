@@ -8,12 +8,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -71,8 +69,8 @@ class TinyCcCompilerTest {
         var artifact = tempDir.resolve(host.sharedLibraryFileName("probe")).toAbsolutePath();
         assertEquals(List.of(artifact), result.artifacts());
         assertTrue(Files.isRegularFile(artifact) && Files.size(artifact) > 0);
-        assertSharedLibraryShape(artifact);
-        assertExportsSymbol(artifact, "gdextension_entry");
+        NativeArtifactInspector.assertSharedLibraryShape(artifact);
+        NativeArtifactInspector.assertExportsSymbol(artifact, "gdextension_entry");
     }
 
     @Test
@@ -129,7 +127,7 @@ class TinyCcCompilerTest {
         var result = newCompiler().compile(tempDir, List.of(), List.of(good), "probe", COptimizationLevel.DEBUG, host);
 
         assertTrue(result.success(), () -> "compilation failed:\n" + result.buildLog());
-        assertSharedLibraryShape(artifact);
+        NativeArtifactInspector.assertSharedLibraryShape(artifact);
     }
 
     @Test
@@ -174,39 +172,5 @@ class TinyCcCompilerTest {
         // The lock survives the cancelled round: a later round compiles normally.
         var followUp = compiler.compile(tempDir, List.of(), List.of(good), "probe", COptimizationLevel.DEBUG, host);
         assertTrue(followUp.success(), () -> "round after lock release failed:\n" + followUp.buildLog());
-    }
-
-    /// A real shared library starts with the ELF magic on Linux and the MZ header on Windows —
-    /// the minimal proof that the artifact is a freshly written image, not leftover content.
-    private static void assertSharedLibraryShape(@NotNull Path artifact) throws IOException {
-        var bytes = Files.readAllBytes(artifact);
-        assertTrue(bytes.length > 4, "artifact is suspiciously small: " + bytes.length + " bytes");
-        if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("linux")) {
-            assertTrue(bytes[0] == 0x7F && bytes[1] == 'E' && bytes[2] == 'L' && bytes[3] == 'F',
-                    "the artifact must be an ELF shared library");
-        } else {
-            assertTrue(bytes[0] == 'M' && bytes[1] == 'Z', "the artifact must be a PE image");
-        }
-    }
-
-    /// `nm -D` export assertion; skipped off ELF hosts (the PE-side equivalent tooling is
-    /// validated separately instead of being mechanically mirrored here).
-    private static void assertExportsSymbol(@NotNull Path artifact, @NotNull String symbol) throws IOException {
-        if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("linux")) {
-            return;
-        }
-        var nm = TinyCcCliTestSupport.findOnPath("nm");
-        Assumptions.assumeTrue(nm != null, "nm is required to assert exported symbols");
-        try {
-            var process = new ProcessBuilder(nm.toString(), "-D", "--defined-only", artifact.toString())
-                    .redirectErrorStream(true).start();
-            var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            assertEquals(0, process.waitFor(), () -> "nm failed:\n" + output);
-            assertTrue(output.lines().anyMatch(line -> line.endsWith(" T " + symbol)),
-                    () -> symbol + " missing from the dynamic exports:\n" + output);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            fail("interrupted while dumping symbols of " + artifact);
-        }
     }
 }

@@ -8,12 +8,10 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -23,7 +21,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -143,8 +140,8 @@ class TinyCcCompilerParallelTest {
         assertTrue(resultB.success(), () -> "round B failed:\n" + resultB.buildLog());
         assertTrue(Files.isRegularFile(resultA.artifacts().getFirst()));
         assertTrue(Files.isRegularFile(resultB.artifacts().getFirst()));
-        assertSymbolIsolation(resultA.artifacts().getFirst(), "gdcc_parallel_a", "gdcc_parallel_b");
-        assertSymbolIsolation(resultB.artifacts().getFirst(), "gdcc_parallel_b", "gdcc_parallel_a");
+        NativeArtifactInspector.assertExportsOnlyOwnSymbol(resultA.artifacts().getFirst(), "gdcc_parallel_a", "gdcc_parallel_b");
+        NativeArtifactInspector.assertExportsOnlyOwnSymbol(resultB.artifacts().getFirst(), "gdcc_parallel_b", "gdcc_parallel_a");
     }
 
     private static @NotNull TargetPlatform assumeSupportedHost() {
@@ -158,27 +155,6 @@ class TinyCcCompilerParallelTest {
         var file = dir.resolve(name);
         Files.writeString(file, "int " + name.replace('.', '_') + "(void) { return 0; }\n");
         return file;
-    }
-
-    private static void assertSymbolIsolation(@NotNull Path artifact, @NotNull String ownSymbol, @NotNull String foreignSymbol) throws IOException {
-        if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("linux")) {
-            return;
-        }
-        var nm = TinyCcCliTestSupport.findOnPath("nm");
-        Assumptions.assumeTrue(nm != null, "nm is required to assert per-artifact symbol isolation");
-        try {
-            var process = new ProcessBuilder(nm.toString(), "-D", "--defined-only", artifact.toString())
-                    .redirectErrorStream(true).start();
-            var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            assertEquals(0, process.waitFor(), () -> "nm failed:\n" + output);
-            assertTrue(output.lines().anyMatch(line -> line.endsWith(" T " + ownSymbol)),
-                    () -> ownSymbol + " missing from the exports:\n" + output);
-            assertFalse(output.contains(foreignSymbol),
-                    () -> "the artifact must not carry the other round's symbol:\n" + output);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("interrupted while dumping symbols of " + artifact);
-        }
     }
 
     /// Shared observation state for the serialization gate: `active` spans each round's native

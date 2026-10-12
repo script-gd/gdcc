@@ -6,6 +6,7 @@ on:
     paths:
       - "src/main/**"
       - "src/test/**"
+      - "build-script/**"
       - ".github/workflows/ci.yml"
 
 permissions:
@@ -202,6 +203,21 @@ jobs:
           else
             echo "GODOT_BIN=${godot_bin}" >> "${GITHUB_ENV}"
           fi
+
+      # The in-process (FFM) tinycc tests need the libtcc bundle, which the Gradle
+      # `buildTinyccCli` task deliberately does not produce (it builds the CLI only). Build the
+      # bundle on both tcc-supported hosts so the whole TinyCc* gate set actually runs instead of
+      # skipping on its assumptions; other platforms keep skipping by design.
+      - name: Build tinycc bundle (Linux x64)
+        if: matrix.id == 'linux-x64'
+        run: |
+          set -euo pipefail
+          bash build-script/build-tinycc-bundle-linux-x86_64.sh
+
+      - name: Build tinycc bundle (Windows x64)
+        if: matrix.id == 'windows-x64'
+        shell: cmd
+        run: build-script\build-tinycc-bundle-windows-x86_64.bat
 
       - name: Run unit tests
         env:

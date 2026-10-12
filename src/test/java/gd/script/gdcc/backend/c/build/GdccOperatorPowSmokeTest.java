@@ -1,12 +1,11 @@
 package gd.script.gdcc.backend.c.build;
 
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -14,24 +13,42 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Zig-gated boundary lock for `pow_int` (`gdcc/gdcc_operator.h`): the accumulator intermediates
-/// are `uint64_t`, so multiplication wraps modulo 2^64 and the final conversion to `godot_int`
-/// keeps the low 64 bits — exactly Java `long` overflow semantics. Expected values are computed
-/// here with a Java reference port of the same square-and-multiply algorithm, so the C probe and
-/// this oracle must agree bit-for-bit on wrap-around cases (2^63, 2^64, INT64_MIN/MAX bases,
-/// negative bases/exponents). Skipped via assumption when no zig is on the machine.
+/// Boundary lock for `pow_int` (`gdcc/gdcc_operator.h`): the accumulator intermediates are
+/// `uint64_t`, so multiplication wraps modulo 2^64 and the final conversion to `godot_int` keeps
+/// the low 64 bits — exactly Java `long` overflow semantics. Expected values are computed here
+/// with a Java reference port of the same square-and-multiply algorithm, so the C probe and this
+/// oracle must agree bit-for-bit on wrap-around cases (2^63, 2^64, INT64_MIN/MAX bases, negative
+/// bases/exponents). The same probe runs through both compiler legs (zig baseline and tcc) via
+/// [RuntimeProbeToolchain]; each leg is assumption-gated on its own toolchain, and oracle-based
+/// assertions make the two artifacts behaviorally interchangeable by construction.
 class GdccOperatorPowSmokeTest {
-    private static final Path GODOT_INCLUDE_DIR = Path.of("src/main/c/codegen/include_451/godot").toAbsolutePath().normalize();
-    private static final Path GDCC_INCLUDE_DIR = Path.of("src/main/c/codegen/include_451/gdcc").toAbsolutePath().normalize();
-
     @TempDir
     private static Path sharedDir;
 
     @Test
     void powIntShouldMatchTwoComplementWrapSemanticsOnBoundaries() throws IOException, InterruptedException {
-        var zig = ZigUtil.findZig();
-        Assumptions.assumeTrue(zig != null, "Zig executable is required for the pow_int boundary smoke test");
+        var toolchain = RuntimeProbeToolchain.zig();
+        Assumptions.assumeTrue(toolchain != null, "Zig executable is required for the pow_int boundary smoke test");
+        assertPowBoundaries(toolchain);
+    }
 
+    /// tcc leg of the same boundary lock: identical probe source, identical oracle expectations —
+    /// the uint64_t wrap semantics must not depend on the compiler.
+    @Test
+    void powIntBoundariesMatchTheOracleOnTccArtifact() throws IOException, InterruptedException {
+        var toolchain = RuntimeProbeToolchain.tcc();
+        Assumptions.assumeTrue(toolchain != null, "tinycc CLI is required for the tcc pow boundary leg");
+        assertPowBoundaries(toolchain);
+    }
+
+    private static void assertPowBoundaries(@NotNull RuntimeProbeToolchain toolchain) throws IOException, InterruptedException {
+        var probeSource = renderProbe(boundaryCases());
+        var run = toolchain.compileLinkAndRun(sharedDir, "pow_int_boundary_probe", probeSource, List.of(), List.of());
+        assertEquals(0, run.exitCode(), () -> "pow_int boundary mismatches:\n" + run.diagnostic());
+        assertTrue(run.output().contains("POW_INT_OK"), () -> "probe did not complete:\n" + run.diagnostic());
+    }
+
+    private static @NotNull List<long[]> boundaryCases() {
         var cases = new ArrayList<long[]>();
         // Overflow/wrap boundary: results must wrap at 64 bits, never UB or clamp.
         cases.add(new long[]{2, 63});
@@ -56,25 +73,7 @@ class GdccOperatorPowSmokeTest {
         cases.add(new long[]{0, 5});
         cases.add(new long[]{0, -2});
         cases.add(new long[]{-1, 0});
-
-        var probeSource = renderProbe(cases);
-        var sourceFile = sharedDir.resolve("pow_int_boundary_probe.c");
-        Files.writeString(sourceFile, probeSource, StandardCharsets.UTF_8);
-        var executable = sharedDir.resolve("pow_int_boundary_probe");
-
-        var command = List.of(
-                zig.toString(), "cc", "-std=c23", "-D_DEFAULT_SOURCE",
-                "-I" + GODOT_INCLUDE_DIR, "-I" + GDCC_INCLUDE_DIR,
-                sourceFile.toString(), "-o", executable.toString());
-        var process = new ProcessBuilder(command).redirectErrorStream(true).start();
-        var buildOutput = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        assertEquals(0, process.waitFor(), () -> String.join(" ", command) + "\n" + buildOutput);
-
-        var run = new ProcessBuilder(executable.toString()).redirectErrorStream(true).start();
-        var runOutput = new String(run.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        var exitCode = run.waitFor();
-        assertEquals(0, exitCode, () -> "pow_int boundary mismatches:\n" + runOutput);
-        assertTrue(runOutput.contains("POW_INT_OK"), () -> "probe did not complete:\n" + runOutput);
+        return cases;
     }
 
     /// Java oracle mirroring the C algorithm; `long` multiplication wraps mod 2^64 exactly like
@@ -107,27 +106,12 @@ class GdccOperatorPowSmokeTest {
         return result;
     }
 
+    /// The probe skeleton lives in `src/test/resources/c/pow_int_boundary_probe.c`; only the
+    /// per-case check lines are generated (expected values come from the Java oracle).
     private static String renderProbe(List<long[]> cases) {
-        var sb = new StringBuilder();
-        sb.append("""
-                #include <godot_binding.h>
-                #include "gdcc_operator.h"
-                #include <stdio.h>
-                #include <stdint.h>
-
-                static int failures = 0;
-                static void check(const char *label, godot_int actual, godot_int expected) {
-                    if (actual != expected) {
-                        printf("FAIL %s: actual=%lld expected=%lld\\n",
-                               label, (long long)actual, (long long)expected);
-                        failures++;
-                    }
-                }
-
-                int main(void) {
-                """);
+        var checks = new StringBuilder();
         for (var c : cases) {
-            sb.append("    check(\"")
+            checks.append("    check(\"")
                     .append(c[0]).append('^').append(c[1])
                     .append("\", pow_int(")
                     .append(cLiteral(c[0])).append(", ")
@@ -135,14 +119,7 @@ class GdccOperatorPowSmokeTest {
                     .append(cLiteral(referencePowInt(c[0], c[1])))
                     .append(");\n");
         }
-        sb.append("""
-                    if (failures == 0) {
-                        puts("POW_INT_OK");
-                    }
-                    return failures;
-                }
-                """);
-        return sb.toString();
+        return CProbeSources.load("pow_int_boundary_probe.c").replace("// @@POW_CASES@@", checks.toString().stripTrailing());
     }
 
     /// int64 extremes are not expressible as decimal C literals, so they go through the macros.
