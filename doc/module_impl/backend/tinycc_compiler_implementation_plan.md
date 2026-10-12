@@ -52,10 +52,10 @@
 | `TinyCcNative` | `backend/c/build/`（新增，package-private） | 可替换的 native 调用窄接口（state 创建/删除、options、output type、include、add_file、output_file、错误回调注册），生产实现委托 `TinyCcLibrary`；测试可用纯 Java fake 驱动失败路径 |
 | `TinyCcBundle` | `backend/c/build/`（新增，package-private） | bundle 定位：`GDCC_TINYCC_HOME` 环境变量优先；否则从 classpath 按版本键安装到用户缓存目录；校验布局与 `VERSION` 标记 |
 | `CCompilerKind` | `backend/c/build/`（新增） | 枚举 `ZIG_CC` / `TINY_CC` |
-| `CompileOptions` | `api/`（改动） | 新增 `cCompilerKind` 组件，默认 `ZIG_CC`；保留六参兼容构造器（委托新构造器，先例：`CBuildResult` 辅助构造器） |
+| `CompileOptions` | `api/`（改动） | 新增 `cCompilerKind` 组件（`@Nullable`，null=按级别自动分派：debug→tcc、release→zig，见阶段 4 用户决议）；保留六参兼容构造器（委托新构造器，先例：`CBuildResult` 辅助构造器） |
 | `CProjectInfo` | `backend/c/build/`（改动） | 新增 `cCompilerKind` 访问器，随 `CompileOptions` 透传 |
 | `CProjectBuilder` | `backend/c/build/`（改动） | 无参构造：持有 `EnumMap<CCompilerKind, CCompiler>` 双实现，按 `projectInfo.cCompilerKind()` 逐轮选择；单参构造：安装强制编译器并**忽略 kind**（现有测试语义）；移除运行期 `setCCompiler`（共享可变槽有数据竞争且当前无生产调用方） |
-| `GdccCommand` | `cli/`（改动） | 新增 `--compiler zig|tcc` 选项 |
+| `GdccCommand` | `cli/`（改动） | 新增 `--backend zig|tcc` 选项 |
 | launcher | `src/launcher/zig/src/main.zig`（行为变更，§8） | zig 发现从启动硬前置降级为可选：找不到 zig 时不再 `exit(1)`，仅不设置 `ZIG_HOME`；zig 缺失由 `ZigCcCompiler` 在编译时报告 |
 | tinycc vendored 源码 | `src/main/c/tinycc/`（新增） | mob `43c7708` 干净源码树（去除 `.git` 与全部生成物：config.mak/config.h、*.o、tcc、libtcc1.a 等，清单以 `.gitignore` 为准），附 pin 记录与 license |
 | bundle 构建脚本 | 见 §8 权限项 | 构建 libtcc 动态库与各目标运行时归档并组装 bundle |
@@ -88,7 +88,7 @@ FFM 生命周期不变量（写入实现类注释与测试）：
 - `API` 持有的单一 `CProjectBuilder` 服务全部并发任务，因此编译器选择必须是**逐轮不可变**的：不允许按任务改共享可变槽。
 - `CProjectBuilder` 无参构造 = `EnumMap` 双实现；单参构造 = 强制编译器（忽略 `cCompilerKind`，保持现有测试语义）。`TinyCcCompiler` 的惰性初始化（bundle/FFM）只在被选中的首轮发生。
 - `CompileTaskRunner` 构造 `CProjectInfo` 时从 `request.compileOptions().cCompilerKind()` 透传；`GdccCommand.compileOptions(...)` 从 `--compiler` 解析。
-- RPC/wire 兼容政策：`CompileOptions` 经 Gson 按 record 组件名反序列化（`options.set` 整体替换快照）。新增 `cCompilerKind` 缺失时默认为 `ZIG_CC`（紧凑构造器把 null 归一为默认）；显式未知枚举值按既有枚举解析规则报错。需同步更新 `doc/module_impl/api/rpc_api_implementation.md` 与 `json_rpc_service_implementation.md` 的字段表。
+- RPC/wire 兼容政策：`CompileOptions` 经 Gson 按 record 组件名反序列化（`options.set` 整体替换快照）。新增 `cCompilerKind` 缺失或显式 null 均表示自动（按级别分派，见阶段 4 的用户决议；原"缺失默认 ZIG_CC"方案已被取代）；显式未知枚举值按既有枚举解析规则报错。需同步更新 `doc/module_impl/api/rpc_api_implementation.md` 与 `json_rpc_service_implementation.md` 的字段表。
 
 ### 3.4 bundle 布局与分发
 
@@ -130,7 +130,7 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 - **D3 每轮新 state + 全局锁**：`TCCState` 不跨轮复用（失败态不可信）；静态 `ReentrantLock` 串行全部 tcc 轮次（tcc 进程全局状态 + 内部编译锁不构成并发安全承诺）。
 - **D4 取消语义降级为合作式**：仅在 TU 边界与锁等待处响应中断；活跃 downcall 不可中断；中断后恢复 interrupt 状态。buildLog 固定通道 `Failed to run tcc: interrupted`，与 zig 通道形态对齐。API 层 `cancelCompileTask()` 的 `BUILDING_NATIVE → CANCELED` 映射仍成立（native 返回后 runner 再查取消标记），但完成延迟变长，`rpc_api_implementation.md` 的"runner 迅速退出"预期需同步修订。
 - **D5 不支持交叉编译**：libtcc 的目标平台即其构建目标；`targetPlatform != host` 快速失败并提示改用 zig。支持集首期为 `{LINUX_X86_64, WINDOWS_X86_64}`；`LINUX_AARCH64` 待实测后开放。
-- **D6 `CompileOptions` 增加 `cCompilerKind` 组件**：record 构造点全部更新（生产 2 处：`CompileOptions.defaults`、`GdccCommand.compileOptions`；测试 11 处），默认值 `ZIG_CC` 保证既有行为不变；保留六参兼容构造器。
+- **D6 `CompileOptions` 增加 `cCompilerKind` 组件**：record 构造点全部更新（生产 2 处：`CompileOptions.defaults`、`GdccCommand.compileOptions`；测试 11 处）；保留六参兼容构造器。**默认值经阶段 4 用户决议修改**：未指定（null）表示自动——debug→`TINY_CC`、release→`ZIG_CC`（`CCompilerKind.defaultFor`）；`CProjectInfo` 5 参兼容构造器仍固定 `ZIG_CC` 以保持后端既有调用点行为不变。
 - **D7 DEBUG/RELEASE 同构**：tcc 无有效 `-O2`/LTO；两档仅影响输出基名（`debug|release`），编译参数一致，文档明示不承诺优化对等。
 - **D8 构建时 libc 来源差异显式化**：zig 用 bundled sysroot、不依赖宿主开发环境；tcc 依赖宿主开发头/CRT/库。两者产物均为动态 glibc 共享库，部署兼容性以实测动态依赖为准，不作静态链接承诺。
 
@@ -241,16 +241,45 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 
 改动：`CCompilerKind`、`CompileOptions`（含兼容构造器与 null 归一）、`CProjectInfo`、`CProjectBuilder`（EnumMap/强制编译器语义、移除 `setCCompiler`）、`GdccCommand --compiler`、`CompileTaskRunner` 透传、RPC wire 政策（§3.3）与 `EditorAddonProjectInstaller` 构造点兼容（其多平台任务继续固定 zig）；launcher zig 发现降级为可选（§8 确认项）。
 
+**用户决议的修改（覆盖 §3.3/D6 的默认语义）**：launcher 与 API 的默认后端按优化级别分派——debug 默认 `TINY_CC`、release 默认 `ZIG_CC`（§9 的定位表述不变：zig 仍是发布后端）；API  additionally 提供可用后端查询。落地形态：
+
+- `CompileOptions.cCompilerKind` 为 `@Nullable`：`null`（含 wire 缺失/显式 null）表示自动，由 `effectiveCCompilerKind()` 经 `CCompilerKind.defaultFor(optimizationLevel)` 解析（debug→tcc、release→zig）。原"null 归一为 ZIG_CC"的紧凑构造器方案被本决议取代。
+- `CProjectInfo` 6 参为规范构造器（runner 总是透传已解析的 kind）；5 参兼容构造器固定 `ZIG_CC`——后端内部调用点的既有 zig 语义不变（全部既有 zig 集成测试零扰动），级别自动规则只存在于 API 边界。
+- 后端可用性查询：`CProjectBuilder.availableCCompilerKinds()`（静态，逐 kind 探针：zig=可发现性，tcc=bundle 存在性，均无副作用）→ `API.availableCCompilerKinds()` → RPC `server.availableCCompilerKinds`。
+
+进度（实施中逐项同步）：
+
+- [x] `CCompilerKind`（`ZIG_CC`/`TINY_CC` + `defaultFor` 级别默认策略）
+- [x] `CompileOptions` 第 7 组件 `cCompilerKind`（`@Nullable`，null=自动）+ 6 参兼容构造器 + `effectiveCCompilerKind()`
+- [x] `CProjectInfo` 增加 `cCompilerKind`（6 参规范 + 5 参兼容固定 `ZIG_CC`，equals/hashCode 覆盖）
+- [x] `CompileTaskRunner` 透传 `effectiveCCompilerKind()`
+- [x] `TinyCcBundle.isHostBundlePresent`/`isBundlePresent` 无副作用探针（env override 权威、缓存 `.ready`+布局、classpath 可安装性；不安装/不哈希/不加载 native）
+- [x] `CProjectBuilder`：无参=`EnumMap` 双实现按 `CProjectInfo.getCCompilerKind()` 逐轮分发；单参=强制编译器忽略 kind；包私 `Map` 构造缝要求覆盖全部 kind；移除 `setCCompiler`/`getCCompiler`；`availableCCompilerKinds` 静态查询 + 探针注入缝
+- [x] `API.availableCCompilerKinds()`（只读、无副作用，close 后仍可用）
+- [x] `GdccCommand --backend zig|tcc`（缺省=自动；专用解析器固定 `zig|tcc` 拼写；非法值 `EXIT_USAGE`；`-vv` 渲染含解析后 kind）
+- [x] RPC：`server.availableCCompilerKinds` 方法注册
+- [x] `EditorAddonProjectInstaller` 显式固定 `ZIG_CC`（多平台交叉编译继续走 zig）
+- [x] launcher `main.zig`：zig 发现降级为可选——找不到/搜索出错不再 `exit(1)`，仅不设置 `ZIG_HOME`（搜索错误仍打印警告）；三目标 `zig build` 通过
+- [x] 修复阶段 3 遗留缺陷（由本阶段 launcher 端到端 smoke 暴露）：`TinyCcLibrary` 的 `delete`/`setLibPath`/`setErrorFunc` 使用表达式 lambda 体调用签名多态 `invokeExact`，javac 将其静态类型绑定为 `Object` 返回（字节码 `pop` 丢弃），与 `(MemorySegment...)void` 的 handle 运行期精确性检查冲突抛 `WrongMethodTypeException`；改为块体语句表达式（语句位置才静态类型为 void）。`TinyCcCompilerTest`/`TinyCcLibraryTest` 复测 12/12 全绿
+- [x] 单元/集成测试（全部新增或扩展，0 跳过）：`ApiCompileOptionsTest`（兼容构造器 auto 语义、`effectiveCCompilerKind` 级别矩阵、显式 kind 双向覆盖、defaults 为 debug+auto、API set/get 往返）；`CProjectInfoTest`（5 参兼容固定 zig、6 参携带 kind、null kind 拒绝、equals/hashCode 含 kind）；`CProjectBuilderCompilerSelectionTest`（双 fake 按 kind 分发且互不触达、单参强制忽略 kind、EnumMap 缝缺 kind fail-closed、`availableCCompilerKinds` 探针注入正反与生产探针一致性）；`TinyCcBundleTest` 探针三项（env override 权威不回落、缓存 `.ready`+布局门槛与版本键隔离、classpath 可安装性回退）；`GdccCommandOptionTest`/`GdccCommandInputTest`（`--compiler` 声明集/帮助文本/解析缺省 auto/显式 zig|tcc/大小写/非法值 EXIT_USAGE 且不创建模块）；`RpcJsonCodecTest`（wire 形状含 `cCompilerKind`、枚举表、缺失/显式 null=auto、双 kind 往返、未知值 `JsonSyntaxException`）；`JsonRpcDispatcherTest`（25→26 方法、`server.availableCCompilerKinds` 与 API 探针一致、options.set 显式 kind 回显/缺省 null/未知值 -32602 且不污染已存快照）；`ApiCompileOptionsFreezeTest`（冻结后选项变更：在途轮次冻结快照保持 tcc、模块当前选项演进为 zig——放 api 包是因冻结观察需要 `ApiCompileTestSupport` 的 latch 编译器缝，该缝对 rpc 包不可见；wire 侧经 `CompileResult.compileOptions` 形状覆盖）
+- [x] launcher 端到端 smoke（`LauncherSmokeTest`，linux-x86_64 门控，本机 4/4 真实运行 0 跳过）：`--backend tcc` 在 zig 环境变量/PATH 全部缺席下经正式 launcher 完成完整管线编译并产出共享库；`ZIG_HOME` 在 zig 可发现时照常传播；经 user+mount namespace 用 `/dev/null` 绑定遮蔽全部可达 zig 后——launcher 不再 `exit(1)` 且无 `ZIG_HOME` 正常引导 JVM；`--backend zig` 在 zig 不可达时由 `ZigCcCompiler` 报出既有 "Zig executable not found on PATH or known locations" 通道（exit 1）
+- [x] CLI 选项重命名（用户决议）：`--compiler` → `--backend`；`GdccCommand` 字段/解析器/报错文案、`GdccCommandOptionTest`/`GdccCommandInputTest`/`LauncherSmokeTest` 与本节引用同步更名（`CCompilerKind`/`cCompilerKind`/`availableCCompilerKinds` 等 API 命名不变）；复测 CLI 四测试类 + `LauncherSmokeTest` 全绿（0 跳过）
+- [x] 既有 RPC/Godot 集成测试固定 zig（默认翻转的预期追随）：`RpcCompileHttpIntegrationTest` 与 `EditorAddonBootstrapEngineTest` 的环境门控提供的是 zig 而非 tcc bundle，其 `options.set` 显式置 `cCompilerKind=ZIG_CC`
+- [x] 验收：全量 `./gradlew build buildZigLauncher` 全绿（4800+ 测试）；上列全部新增/受影响测试 0 跳过 0 失败（`LauncherSmokeTest` 因 `buildZigLauncher` 与 `test` 无任务依赖需在其产物就绪后单独重跑，已单独复测 4/4）；事实源文档已同步（`rpc_api_implementation.md` §3.4/§3.7/§4.5/§14、`json_rpc_service_implementation.md` §2.2/§2.3、`cli_implementation.md` §2/§5/§10/§11、`backend_build_system_implementation.md` §1）
+- [x] review-expert-c 复核收口（3 项全部修复并复验）：①`CProjectBuilder` 的 zig 可用性探针原直连 `ZigUtil.findZig()`，其 `which`/`where` 分支在 spawn 失败时会置调用线程中断位，违反查询的无副作用合同——`ZigUtil` 提取无 spawn 的 `isZigDiscoverable()`（env/PATH/常见路径，与 `findZig` 覆盖等价：`which` 只搜 PATH），探针改接之，新增调用线程中断位双向不变性测试与 spawn/无 spawn 发现一致性锚点；②`LauncherSmokeTest` 的 tcc 端到端用例原只清洗 env/PATH，zig 仍可能经 launcher 常见路径被发现从而掩盖错误分发——现同样经 namespace 遮蔽全部可达 zig；③`TinyCcBundleTest` 的 override 权威性探针测试原先没有可用回退路径（断言无法区分"不回落"与"无回落对象"）——现建立 `.ready` 缓存与 classpath 双回退，正反断言：null/空白 override 回落可用、无效 override 不回落
+- [x] review-expert-c 第二轮复核：原 3 项确认解决；其新增指出的 Windows 发现范围问题已修复——`where` 在 Windows 会额外搜索当前目录，无 spawn 探针遗漏该通道会少报 `ZIG_CC`；`isZigDiscoverable` 经 OS 注入缝补上 Windows 当前目录检查，`ZigUtilTest.discoveryPeekMirrorsWhereCurrentDirectoryRuleOnWindows` 正反双向锚定（正：CWD 内 `zig.exe` 可发现；反：非 Windows 不看 CWD、不存在的名字恒报缺失），并修正一致性测试的等价性注释
+- [x] review-expert-c 第三轮复核：Windows CWD 修复确认解决；其指出的测试密封性问题已修复——探针负例原先仍读真实环境（`ZIG` 等 env 直接命中时不查 exe 名，负例会在特定主机误失败）且 Linux 负例查询名与 fixture 名不一致；`isZigDiscoverable` 改为带回退注入的 4 参缝（生产 0 参直连真实发现），测试以固定 `false` 回退完全隔离宿主环境，负例查询名与 fixture 严格一致；复测 `ZigUtilTest`(6)/`CProjectBuilderCompilerSelectionTest`(6) 全绿
+
 验收：
-- `./gradlew classes` 编译通过；既有 API/CLI 测试全绿（默认值 `ZIG_CC` 行为不变）。
-- 新增：`CompileOptions` 校验/默认值/兼容构造器测试；`CProjectBuilder` 双编译器选择测试（fake `CCompiler` 双注入断言按 kind 分发；单参构造忽略 kind）；CLI `--compiler` 解析与非法值报错测试；RPC 测试（`RpcJsonCodec`/`JsonRpcDispatcher` 层面）：字段缺失默认 zig、**显式 null 同缺失**、两种编译器往返、未知值报错、冻结后选项变更。
-- launcher：全机 zig 发现位置均不可用时，`--compiler tcc` 经正式 launcher 完成编译；`--compiler zig` 时报 zig 缺失的既有错误通道。
+- `./gradlew classes` 编译通过；既有 API/CLI/后端测试全绿（6 参 `CompileOptions` 与 5 参 `CProjectInfo` 兼容构造器保持既有调用点编译与 zig 语义；新默认仅在 kind 未指定时按级别自动分派）。
+- 新增：`CompileOptions` 默认值/兼容构造器/`effectiveCCompilerKind` 级别矩阵测试；`CProjectInfo` 兼容构造器固定 zig 与 equals/hashCode 测试；`CProjectBuilder` 双编译器选择测试（fake `CCompiler` 双注入断言按 kind 分发；单参构造忽略 kind；`availableCCompilerKinds` 探针注入）；CLI `--compiler` 解析与非法值报错测试；RPC 测试（`RpcJsonCodec`/`JsonRpcDispatcher` 层面）：字段缺失为自动（null）、**显式 null 同缺失**、两种编译器往返、未知值报错、冻结后选项变更。
+- launcher：全机 zig 发现位置均不可用时，`--backend tcc` 经正式 launcher 完成编译；`--backend zig` 时报 zig 缺失的既有错误通道。
 
 ### 阶段 5：Linux x86_64 端到端验收
 
 - `TinyCcCompilerIntegrationTest`（`Assumptions` 门控，需要 bundle + 可选 Godot）：最小 fixture 模块全管线编译 → `.gdextension` 生成 → 产物加载冒烟（复用既有 Godot 校验夹具的目录约定，禁用共享目录）。
 - HRX/运行时行为门（tcc 产物，Godot 可用时必跑，记录非零跳过声明）：execmem probe、四类 thunk 执行、保留 Callable 后卸载/重载、rebind 与失配失效；动态调用（`GD_OBJECT_CALL*`）运行时行为；生成协程四线程 TLS 隔离与取消；与 zig 产物行为一致。
-- 用 `--compiler tcc` 跑 test_suite 的一个子集（协程、字符串、pow、属性绑定用例），Godot 编辑器内行为与 zig 产物一致。
+- 用 `--backend tcc` 跑 test_suite 的一个子集（协程、字符串、pow、属性绑定用例），Godot 编辑器内行为与 zig 产物一致。
 - 泄漏/稳定长跑：成功/失败/取消交替轮次的内存与句柄观察。
 - 同一 includeRoot 上 zig→tcc→zig 交替构建回归（共享 include 树内容比较跳过不影响 tcc 轮次）。
 - 双后端产物竞争：zig 与 tcc 对**同一 `projectDir`、同名输出**并发构建，验证 per-project 锁互斥（固定顺序 project lock → tcc global lock），无半成品/交错删除。

@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicReference;
 /// Threading: the lookup/linker handles are thread-safe, but the states and confined arenas they
 /// serve are not — every caller-visible method must run on the round-owning thread, which
 /// [TinyCcCompiler] guarantees by holding the global tcc lock.
+@SuppressWarnings("CodeBlock2Expr")
 final class TinyCcLibrary {
 
     /// `TCC_OUTPUT_DLL` from `libtcc.h`: compile and link straight to a shared library.
@@ -152,18 +153,25 @@ final class TinyCcLibrary {
     }
 
     void delete(@NotNull MemorySegment state) {
-        // A signature-polymorphic invokeExact only gets the void static type in statement
-        // position; an expression lambda body would bind it as Object and fail exactness.
-        callVoid(() -> tccDelete.invokeExact(state));
+        // A signature-polymorphic invokeExact only gets the void static type as a statement
+        // expression in a BLOCK body; an expression-body lambda would bind it as Object and
+        // fail invokeExact's exactness check with WrongMethodTypeException at run time.
+        callVoid(() -> {
+            tccDelete.invokeExact(state);
+        });
     }
 
     void setLibPath(@NotNull MemorySegment state, @NotNull MemorySegment path) {
-        callVoid(() -> tccSetLibPath.invokeExact(state, path));
+        callVoid(() -> {
+            tccSetLibPath.invokeExact(state, path);
+        });
     }
 
     /// `opaque` is always NULL: the handler instance is bound into the upcall stub itself.
     void setErrorFunc(@NotNull MemorySegment state, @NotNull MemorySegment errorFuncStub) {
-        callVoid(() -> tccSetErrorFunc.invokeExact(state, MemorySegment.NULL, errorFuncStub));
+        callVoid(() -> {
+            tccSetErrorFunc.invokeExact(state, MemorySegment.NULL, errorFuncStub);
+        });
     }
 
     int setOptions(@NotNull MemorySegment state, @NotNull MemorySegment options) {
@@ -244,7 +252,8 @@ final class TinyCcLibrary {
             this.failureSink = failureSink;
         }
 
-        @SuppressWarnings("unused") // invoked from native code through the upcall stub
+        @SuppressWarnings("unused")
+            // invoked from native code through the upcall stub
         void accept(MemorySegment opaque, MemorySegment msg) {
             try {
                 // Upcall ADDRESS parameters arrive as zero-length segments, so the C string can

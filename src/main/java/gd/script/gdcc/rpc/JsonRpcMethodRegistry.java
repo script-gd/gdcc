@@ -73,6 +73,7 @@ public final class JsonRpcMethodRegistry {
                     API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE
             );
         });
+        handlers.put("server.availableCCompilerKinds", (api, codec, params) -> api.availableCCompilerKinds());
         handlers.put("module.create", (api, codec, params) -> {
             var bound = codec.bindParams(params, RpcParams.ModuleCreateParams.class);
             return api.createModule(bound.moduleId(), bound.moduleName());

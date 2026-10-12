@@ -5,6 +5,7 @@ import gd.script.gdcc.api.analysis.ModuleAnalysisSnapshot;
 import gd.script.gdcc.api.task.CompileTaskHooks;
 import gd.script.gdcc.api.task.CompileTaskRunner;
 import gd.script.gdcc.api.task.CompileTaskState;
+import gd.script.gdcc.backend.c.build.CCompilerKind;
 import gd.script.gdcc.backend.c.build.CProjectBuilder;
 import gd.script.gdcc.exception.ApiCompileAlreadyRunningException;
 import gd.script.gdcc.exception.ApiCompileTaskNotFoundException;
@@ -305,6 +306,15 @@ public final class API implements AutoCloseable {
                 normalizedModuleId,
                 ModuleState::getTopLevelCanonicalNameMap
         );
+    }
+
+    /// The C compiler backends that could start a native build on this host right now, in
+    /// [CCompilerKind] declaration order. This is an environment probe, not a configuration read:
+    /// it answers which values of [CompileOptions.cCompilerKind] are usable here, regardless of
+    /// any module's current options. Read-only and side-effect-free (no compilation, bundle
+    /// install or native library load), so it keeps serving after [close] like other queries.
+    public @NotNull List<CCompilerKind> availableCCompilerKinds() {
+        return CProjectBuilder.availableCCompilerKinds();
     }
 
     public @NotNull Map<String, String> setTopLevelCanonicalNameMap(

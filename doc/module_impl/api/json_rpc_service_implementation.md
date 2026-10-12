@@ -81,7 +81,7 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 
 ### 2.2 方法面
 
-方法名采用点分命名空间，与公开 `API` 面一一对应，共 25 个方法。
+方法名采用点分命名空间，与公开 `API` 面一一对应，共 26 个方法。
 `API.recordCurrentCompileTaskEvent(...)` 被排除，因为它绑定进程内编译线程，远程调用
 没有意义；未分页的 `listCompileTaskEvents(taskId)` 重载也被排除，因为 RPC 面始终使用
 分页、带索引的变体。
@@ -94,6 +94,7 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 |---|---|---|
 | `server.ping` | 无 | `"pong"` |
 | `server.info` | 无 | `{version, branch, commit, maxCompileTaskEventPageSize}` |
+| `server.availableCCompilerKinds` | 无 | `CCompilerKind[]`（本机当前可用后端，枚举名数组） |
 | `module.create` | `{moduleId, moduleName}` | `ModuleSnapshot` |
 | `module.get` | `{moduleId}` | `ModuleSnapshot` |
 | `module.list` | `{}` | `ModuleSnapshot[]` |
@@ -150,7 +151,8 @@ DTO codec 规则：
   `"V451"`，`optimizationLevel` 为 `"DEBUG"` 或 `"RELEASE"`，`targetPlatform` 为
   `"WINDOWS_X86_64"`、`"WINDOWS_AARCH64"`、`"LINUX_X86_64"`、`"LINUX_AARCH64"`、
   `"LINUX_RISCV64"`、`"MACOS_X86_64"`、`"MACOS_AARCH64"`、`"ANDROID_X86_64"`、
-  `"ANDROID_AARCH64"`、`"WEB_WASM32"` 之一。
+  `"ANDROID_AARCH64"`、`"WEB_WASM32"` 之一，`cCompilerKind` 为 `"ZIG_CC"` 或
+  `"TINY_CC"`（缺失或显式 `null` 均表示按优化级别自动选择：debug→tcc、release→zig）。
   `RpcJsonCodecTest` 钉死该表。
 - `java.nio.file.Path` 序列化为 `Path.toString()`（主机路径文本；暴露策略见 §2.7），
   反序列化经 `Path.of(...)`。
@@ -595,7 +597,7 @@ fixture，列入 §7 后续工作。
   `maxCount` 按 `1000` 而非 `0` 处理；缺 `moduleId` → `-32602`，即使 API 抛出的
   是 `NullPointerException`）、§2.4 的每个错误码（通过真实 `API` 实例触发）、
   notification 执行后不产生响应对象、批量拒绝、空事件日志使
-  `compile.getLatestEvent` 返回 `null`，以及全部 25 个方法的路由。
+  `compile.getLatestEvent` 返回 `null`，以及全部 26 个方法的路由。
 - HTTP 传输：`RpcServerHttpTest` —— 临时端口上的真实服务端加 JDK `HttpClient`：
   POST 往返、`Content-Type` 强制（`415`）、经有界读取的大小上限（`413`，用刚好
   超过上限的 body 覆盖）、非 POST（`405` 带 `Allow: POST`）、格式错误的 JSON

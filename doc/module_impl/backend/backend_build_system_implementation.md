@@ -11,7 +11,7 @@
 
 ## 1. 范围与职责边界
 
-- `CProjectBuilder`：项目级编排——include 树提取、generated files 写入、native 输入收集、调用 `CCompiler`、记录 `CBuildResult.Timing`。
+- `CProjectBuilder`：项目级编排——include 树提取、generated files 写入、native 输入收集、按 `CProjectInfo.getCCompilerKind()` 逐轮选择已注册的 `CCompiler` 实现并调用之、记录 `CBuildResult.Timing`。无参构造注册 zig 与 tinycc 双实现；单参构造为忽略 kind 的强制编译器（既有测试语义）。`CCompilerKind.defaultFor(optimizationLevel)` 提供 API 层的级别默认（debug→tcc、release→zig）。
 - `ZigCcCompiler`：`CCompiler` 的 zig 实现——逐 TU（translation unit）编译为 object + 一次链接的两阶段构建，含 zig 缓存、PCH、并行、取消与日志合并。
 - `ZigUtil`：zig 工具链发现（`findZig`）与版本探测（`findZigVersion`）。
 - 不变边界：`CCompiler` 接口签名、`CProjectBuilder` 输入收集顺序、generated-file 集合与发布合同、runtime 源码及其宏配置（如 `MCO_USE_ASM` 锁定）、API module 级串行合同均不因构建系统内部演进而改变。

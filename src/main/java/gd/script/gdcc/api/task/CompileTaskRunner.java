@@ -291,7 +291,8 @@ public final class CompileTaskRunner implements Runnable {
                     request.compileOptions().godotVersion(),
                     projectPath,
                     request.compileOptions().optimizationLevel(),
-                    request.compileOptions().targetPlatform()
+                    request.compileOptions().targetPlatform(),
+                    request.compileOptions().effectiveCCompilerKind()
             );
             var codegen = new CCodegen();
             throwIfCancellationRequested();

@@ -37,7 +37,7 @@ class GdccCommandOptionTest {
                 .toList();
 
         assertEquals(
-                Set.of("-o", "--output", "--prefix", "--class-map", "--gde", "--opt", "--optimize", "--target", "--project", "-v", "--verbose"),
+                Set.of("-o", "--output", "--prefix", "--class-map", "--gde", "--opt", "--optimize", "--target", "--backend", "--project", "-v", "--verbose"),
                 Set.copyOf(optionFields)
         );
     }
@@ -59,6 +59,7 @@ class GdccCommandOptionTest {
         assertTrue(help.contains("--gde"), help);
         assertTrue(help.contains("--opt, --optimize"), help);
         assertTrue(help.contains("--target"), help);
+        assertTrue(help.contains("--backend"), help);
         assertTrue(help.contains("--project"), help);
         assertTrue(help.contains("-v, --verbose"), help);
         assertTrue(help.contains("-V, --version"), help);
@@ -140,6 +141,19 @@ class GdccCommandOptionTest {
 
         assertEquals(0, exitCode);
         assertTrue(terminal.outText().contains("Compiled module demo"), terminal.outText());
+    }
+
+    @Test
+    void backendOptionIsAbsentByDefaultAndParsedWhenGiven() {
+        var command = new Terminal().command();
+
+        command.commandLine().parseArgs("src/player.gd");
+
+        assertNull(command.backend);
+
+        command.commandLine().parseArgs("--backend", "tcc", "src/player.gd");
+
+        assertEquals("tcc", command.backend);
     }
 
     private static final class Terminal {

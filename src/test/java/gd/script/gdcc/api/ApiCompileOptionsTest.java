@@ -1,5 +1,6 @@
 package gd.script.gdcc.api;
 
+import gd.script.gdcc.backend.c.build.CCompilerKind;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.enums.GodotVersion;
@@ -8,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ApiCompileOptionsTest {
@@ -110,5 +112,57 @@ class ApiCompileOptionsTest {
                 () -> api.setCompileOptions("demo", null)
         );
         assertEquals("compileOptions must not be null", nullCompileOptions.getMessage());
+    }
+
+    @Test
+    void compilerKindIsAutoByDefaultAndResolvesByOptimizationLevel() {
+        // The compatibility constructor (and the canonical one given an explicit null) leaves the
+        // backend undecided; the level-based default resolves debug to tinycc and release to zig.
+        var debugAuto = new CompileOptions(
+                GodotVersion.V451, null, COptimizationLevel.DEBUG, TargetPlatform.LINUX_X86_64, false, "/build");
+        assertNull(debugAuto.cCompilerKind());
+        assertEquals(CCompilerKind.TINY_CC, debugAuto.effectiveCCompilerKind());
+
+        var releaseAuto = new CompileOptions(
+                GodotVersion.V451, null, COptimizationLevel.RELEASE, TargetPlatform.LINUX_X86_64, false, "/build");
+        assertNull(releaseAuto.cCompilerKind());
+        assertEquals(CCompilerKind.ZIG_CC, releaseAuto.effectiveCCompilerKind());
+
+        var explicitNull = new CompileOptions(
+                GodotVersion.V451, null, COptimizationLevel.RELEASE, TargetPlatform.LINUX_X86_64, false, "/build", null);
+        assertNull(explicitNull.cCompilerKind());
+        assertEquals(CCompilerKind.ZIG_CC, explicitNull.effectiveCCompilerKind());
+
+        // An explicit kind wins over the level-based default on both levels.
+        var zigOnDebug = new CompileOptions(
+                GodotVersion.V451, null, COptimizationLevel.DEBUG, TargetPlatform.LINUX_X86_64, false, "/build",
+                CCompilerKind.ZIG_CC);
+        assertEquals(CCompilerKind.ZIG_CC, zigOnDebug.effectiveCCompilerKind());
+        var tinyCcOnRelease = new CompileOptions(
+                GodotVersion.V451, null, COptimizationLevel.RELEASE, TargetPlatform.LINUX_X86_64, false, "/build",
+                CCompilerKind.TINY_CC);
+        assertEquals(CCompilerKind.TINY_CC, tinyCcOnRelease.effectiveCCompilerKind());
+
+        // The bootstrap profile is debug + auto, i.e. the tinycc backend.
+        assertNull(CompileOptions.defaults().cCompilerKind());
+        assertEquals(CCompilerKind.TINY_CC, CompileOptions.defaults().effectiveCCompilerKind());
+    }
+
+    @Test
+    void apiSetCompileOptionsRoundTripsTheCompilerKind() {
+        var api = new API();
+        api.createModule("demo", "Demo");
+
+        var zig = new CompileOptions(
+                GodotVersion.V451, null, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform(),
+                false, CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT, CCompilerKind.ZIG_CC);
+        assertEquals(CCompilerKind.ZIG_CC, api.setCompileOptions("demo", zig).cCompilerKind());
+        assertEquals(zig, api.getCompileOptions("demo"));
+
+        var auto = new CompileOptions(
+                GodotVersion.V451, null, COptimizationLevel.RELEASE, TargetPlatform.getNativePlatform(),
+                false, CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT, null);
+        assertNull(api.setCompileOptions("demo", auto).cCompilerKind());
+        assertEquals(auto, api.getCompileOptions("demo"));
     }
 }

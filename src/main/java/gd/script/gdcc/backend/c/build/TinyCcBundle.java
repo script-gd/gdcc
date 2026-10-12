@@ -187,6 +187,54 @@ final class TinyCcBundle {
         }
     }
 
+    /// Production availability probe for the tcc backend on this host. Side-effect-free: never
+    /// installs, hashes, locks or loads anything, so it is cheap enough for UI/backend pickers.
+    /// A host without a bundle layout answers `false` instead of throwing.
+    static boolean isHostBundlePresent() {
+        try {
+            return isBundlePresent(
+                    System.getenv(ENV_HOME),
+                    defaultCacheRoot(),
+                    bundlePlatformKey(TargetPlatform.getNativePlatform()),
+                    GdccVersion.current().version(),
+                    TinyCcBundle.class.getClassLoader()
+            );
+        } catch (RuntimeException exception) {
+            // Best-effort probe: a broken host/platform setup means "not available", never a failure.
+            return false;
+        }
+    }
+
+    /// Full-seam probe mirroring the [requireBundleRoot] resolution order without its side
+    /// effects. An env override is authoritative (its invalidity answers `false`, never a fall
+    /// through to cache/classpath); a cache hit requires the `.ready` marker plus the layout and
+    /// `VERSION` contract (content re-hashing stays a compile-time concern); otherwise the
+    /// classpath bundle resource decides installability.
+    static boolean isBundlePresent(
+            @Nullable String envOverride,
+            @NotNull Path cacheRoot,
+            @NotNull String platformKey,
+            @NotNull String gdccVersion,
+            @NotNull ClassLoader classLoader
+    ) {
+        var override = StringUtil.trimToNull(envOverride);
+        if (override != null) {
+            final Path root;
+            try {
+                root = Path.of(override).toAbsolutePath().normalize();
+            } catch (InvalidPathException exception) {
+                return false;
+            }
+            return validateBundleProblems(root, platformKey).isEmpty();
+        }
+        var installed = cacheRoot.resolve(bundleKey(gdccVersion, platformKey));
+        if (Files.isRegularFile(installed.resolve(READY_MARKER_NAME))
+                && validateBundleProblems(installed, platformKey).isEmpty()) {
+            return true;
+        }
+        return classLoader.getResource(CLASSPATH_RESOURCE_ROOT + "/" + platformKey + "/" + MANIFEST_FILE_NAME) != null;
+    }
+
     /// Cross-process wait on the install lock: non-blocking `tryLock` plus an interruptible
     /// backoff. A BLOCKING `channel.lock()` is deliberately not used: on virtual threads the
     /// JDK cannot cancel the native lock wait promptly (`interrupt()` would itself block until
@@ -494,7 +542,8 @@ final class TinyCcBundle {
                     "lib/user32.def",
                     "lib/gdi32.def"
             );
-            default -> throw new IllegalStateException("No tinycc bundle layout is defined for platform key '" + platformKey + "'");
+            default ->
+                    throw new IllegalStateException("No tinycc bundle layout is defined for platform key '" + platformKey + "'");
         };
         var entries = new ArrayList<>(common);
         entries.addAll(platformSpecific);
@@ -630,6 +679,7 @@ final class TinyCcBundle {
             }
         }
         try {
+            //noinspection ResultOfMethodCallIgnored
             Path.of(relativePath);
         } catch (InvalidPathException exception) {
             throw new IOException("Illegal bundle manifest path: " + relativePath, exception);

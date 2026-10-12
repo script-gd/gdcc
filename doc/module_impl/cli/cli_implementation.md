@@ -86,6 +86,7 @@ gdcc [options] <files...>
 - `--gde <version>`：Godot GDExtension API 版本。当前唯一支持值是 `4.5.1`。
 - `--opt` / `--optimize <level>`：C backend 编译优化等级。支持 `debug`、`release`，默认 `debug`。
 - `--target <platform>`：C backend 目标平台。默认 native host platform。
+- `--backend <backend>`：C 编译器后端。支持 `zig`、`tcc`；省略时按优化等级自动选择（debug→tcc、release→zig）。
 - `--project <project.godot>`：Godot 项目文件。仅当所有输入脚本的最近 `project.godot` 都是该文件时，成功编译后生成
   `.gdextension` metadata 文件。
 - `-v` / `--verbose`：可重复传入的 verbosity flag。`-v` 为 level 1，`-vv` 为 level 2。
@@ -319,7 +320,8 @@ new CompileOptions(
         parsedOptimizationLevel,
         parsedTargetPlatformOrNativeHost,
         false,
-        CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT
+        CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT,
+        parsedCCompilerKindOrNullForAuto
 )
 ```
 
@@ -345,6 +347,12 @@ new CompileOptions(
 - 省略时使用 `TargetPlatform.getNativePlatform()`。
 - `--target` 只设置 backend output platform，不改变 `-o` / `--output` 指向的 host build directory。
 - unsupported `--target` 在 API state mutation 和 compile task 创建前返回 usage error。
+
+`--backend` 规则：
+
+- 接受 `zig` 与 `tcc`，大小写不敏感；`zig` 映射到 `CCompilerKind.ZIG_CC`，`tcc` 映射到 `CCompilerKind.TINY_CC`。
+- 省略时 `cCompilerKind` 为 `null`（自动）：`debug` 构建走 tcc，`release` 构建走 zig。
+- unsupported `--backend` 在 API state mutation 和 compile task 创建前返回 usage error。
 
 CLI 当前没有 strict flag。后续除非明确扩展 CLI surface，否则不应因为 `CompileOptions` 有字段就添加未使用 flags。
 
@@ -524,7 +532,7 @@ CLI stdout / stderr writer 使用各自 `PrintStream.charset()`。输出前按 c
 
 - picocli option / parameter 错误返回 `2`。
 - picocli `--help` / `--version` 返回 `0`，不执行 CLI command body。
-- host input 校验、unsupported `--gde`、显式 output target 错误、duplicate `--class-map` key 以及 API module creation failure 返回 `2`。
+- host input 校验、unsupported `--gde` / `--opt` / `--target` / `--backend`、显式 output target 错误、duplicate `--class-map` key 以及 API module creation failure 返回 `2`。
 - frontend diagnostics、frontend failure、native build failure 都是 compile result，不是 CLI usage error，返回 `1`。
 - class-name 合法性和 canonical mapping 深层语义继续由 `FrontendClassNameContract` / API / frontend diagnostics 负责。
 - API exceptions 在 CLI 边界渲染为 user-facing error，不包一层平行异常体系。
@@ -554,6 +562,7 @@ CLI 聚焦测试：
   - `--project` 触发的 `.gdextension` metadata 生成条件
   - explicit blank / root-only output failure
   - shared parent 下不同 output target 的 generated file 隔离
+  - `--backend` 缺省自动 / 显式选择 / 非法值在 module 创建前失败
 - `GdccCommandMappingTest`
   - `--prefix` generated mapping
   - `--prefix` 应用于显式 `class_name` 与 filename-derived 顶层 source name
@@ -575,6 +584,7 @@ CLI 聚焦测试：
 - `ApiCompilePipelineTest`：API compile task pipeline 行为。
 - `ApiCompileArtifactLinkTest`、`ApiRecompileArtifactRefreshTest`：output publication 与 stale artifact refresh。
 - backend C project builder tests：generated files、shared include、artifact provenance。
+- `LauncherSmokeTest`（`gd.script.gdcc.launcher`）：经真实 launcher 二进制的后端选择端到端冒烟——无 zig 环境下 `--backend tcc` 完成编译、launcher 不再因缺 zig 而启动失败、`ZIG_HOME` 可发现时照常传播、`--backend zig` 缺 zig 时报既有缺失通道。
 
 推荐聚焦命令：
 

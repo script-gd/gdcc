@@ -3,6 +3,7 @@ package gd.script.gdcc.rpc;
 import gd.script.gdcc.api.API;
 import gd.script.gdcc.api.CompileOptions;
 import gd.script.gdcc.api.CompileResult;
+import gd.script.gdcc.backend.c.build.CCompilerKind;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.GdextensionMetadataFile;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
@@ -166,7 +167,10 @@ public final class EditorAddonProjectInstaller {
             api.setCompileOptions(MODULE_ID, new CompileOptions(
                     GodotVersion.V451, projectPath.toAbsolutePath(),
                     COptimizationLevel.DEBUG, targetPlatform,
-                    false, CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT));
+                    false, CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT,
+                    // The client library is cross-compiled for every requested platform, and the
+                    // tinycc backend only supports host-native targets — pin zig explicitly.
+                    CCompilerKind.ZIG_CC));
             api.putFile(MODULE_ID, "/src/gdcc_rpc_client.gd3",
                     Files.readString(clientSourcePath));
             var taskId = api.compile(MODULE_ID);

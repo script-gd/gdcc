@@ -910,6 +910,85 @@ class TinyCcBundleTest {
         assertEquals("do not touch\n", Files.readString(target), "the symlink target is never touched");
     }
 
+    @Test
+    void probeTreatsTheEnvOverrideAsAuthoritative(@TempDir Path tempDir) throws IOException {
+        // A usable fallback chain must exist: a ready cache install AND a classpath bundle. Only
+        // then can an invalid override prove it blocks the fallthrough instead of merely finding
+        // nothing anywhere.
+        var cacheRoot = Files.createDirectories(tempDir.resolve("cache"));
+        var finalDir = cacheRoot.resolve(TinyCcBundle.bundleKey(VERSION, PLATFORM));
+        writeLinuxBundleFixture(finalDir);
+        Files.writeString(finalDir.resolve(TinyCcBundle.READY_MARKER_NAME), "");
+        var resources = Files.createDirectories(
+                tempDir.resolve("resources").resolve(TinyCcBundle.CLASSPATH_RESOURCE_ROOT).resolve(PLATFORM));
+        writeLinuxBundleFixture(resources);
+        try (var classLoader = new URLClassLoader(new URL[]{tempDir.resolve("resources").toUri().toURL()}, null)) {
+            // No override: the cache hit answers present (the fallback chain really is usable).
+            assertTrue(TinyCcBundle.isBundlePresent(null, cacheRoot, PLATFORM, VERSION, classLoader));
+            // A blank override is "not set": the cache/classpath chain takes over.
+            assertTrue(TinyCcBundle.isBundlePresent("  ", cacheRoot, PLATFORM, VERSION, classLoader));
+
+            // An override that does not satisfy the layout contract answers false and must NOT
+            // fall through to the usable cache or classpath — resolution would fail the same way.
+            assertFalse(TinyCcBundle.isBundlePresent(
+                    tempDir.resolve("missing").toString(), cacheRoot, PLATFORM, VERSION, classLoader));
+            var incomplete = tempDir.resolve("incomplete");
+            writeLinuxBundleFixture(incomplete);
+            Files.delete(incomplete.resolve("bin/libtcc.so"));
+            assertFalse(TinyCcBundle.isBundlePresent(
+                    incomplete.toString(), cacheRoot, PLATFORM, VERSION, classLoader));
+
+            // A valid override answers true on its own, without consulting cache or classpath.
+            var fixture = tempDir.resolve("bundle");
+            writeLinuxBundleFixture(fixture);
+            assertTrue(TinyCcBundle.isBundlePresent(
+                    fixture.toString(), tempDir.resolve("empty-cache"), PLATFORM, VERSION,
+                    new URLClassLoader(new URL[0], null)
+            ));
+        }
+    }
+
+    @Test
+    void probeAcceptsOnlyReadyAndWellFormedCacheInstalls(@TempDir Path tempDir) throws IOException {
+        var cacheRoot = Files.createDirectories(tempDir.resolve("cache"));
+        var finalDir = cacheRoot.resolve(TinyCcBundle.bundleKey(VERSION, PLATFORM));
+        var noClasspath = new URLClassLoader(new URL[0], null);
+
+        // Cache miss entirely.
+        assertFalse(TinyCcBundle.isBundlePresent(null, cacheRoot, PLATFORM, VERSION, noClasspath));
+
+        // A staged/installed tree without the `.ready` marker is not considered usable.
+        writeLinuxBundleFixture(finalDir);
+        assertFalse(TinyCcBundle.isBundlePresent(null, cacheRoot, PLATFORM, VERSION, noClasspath));
+
+        // The marker plus the layout/VERSION contract makes the install count as present; full
+        // content re-hashing stays a compile-time concern of the resolution path.
+        Files.writeString(finalDir.resolve(TinyCcBundle.READY_MARKER_NAME), "");
+        assertTrue(TinyCcBundle.isBundlePresent(null, cacheRoot, PLATFORM, VERSION, noClasspath));
+
+        // The marker does not rescue a damaged tree.
+        Files.delete(finalDir.resolve("libtcc1.a"));
+        assertFalse(TinyCcBundle.isBundlePresent(null, cacheRoot, PLATFORM, VERSION, noClasspath));
+
+        // A different gdcc version keys a different directory.
+        assertFalse(TinyCcBundle.isBundlePresent(null, cacheRoot, PLATFORM, "9.9.9-other", noClasspath));
+    }
+
+    @Test
+    void probeFallsBackToClasspathInstallability(@TempDir Path tempDir) throws IOException {
+        var resources = Files.createDirectories(
+                tempDir.resolve("resources").resolve(TinyCcBundle.CLASSPATH_RESOURCE_ROOT).resolve(PLATFORM));
+        writeLinuxBundleFixture(resources);
+
+        try (var withBundle = new URLClassLoader(new URL[]{tempDir.resolve("resources").toUri().toURL()}, null)) {
+            assertTrue(TinyCcBundle.isBundlePresent(null, tempDir.resolve("cache"), PLATFORM, VERSION, withBundle));
+        }
+        // Without the bundle resource there is nothing to install from.
+        try (var withoutBundle = new URLClassLoader(new URL[]{tempDir.resolve("empty").toUri().toURL()}, null)) {
+            assertFalse(TinyCcBundle.isBundlePresent(null, tempDir.resolve("cache"), PLATFORM, VERSION, withoutBundle));
+        }
+    }
+
     /// A valid linux-x86_64 fixture: every layout entry, a pinned-commit VERSION and a MANIFEST
     /// over the whole tree.
     private static void writeLinuxBundleFixture(Path dir) throws IOException {
