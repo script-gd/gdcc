@@ -57,6 +57,12 @@ public final class BlockScope extends AbstractFrontendScope {
         return Collections.unmodifiableCollection(valuesByName.values());
     }
 
+    /// Visible-name enumeration view of this block layer: exactly the published locals/constants.
+    @Override
+    public @NotNull Collection<ScopeValue> valuesHere() {
+        return localValues();
+    }
+
     /// Registers a mutable local binding owned by the current block.
     public void defineLocal(
             @NotNull String name,

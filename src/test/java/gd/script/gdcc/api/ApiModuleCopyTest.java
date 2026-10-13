@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -25,6 +26,29 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// state. Positive anchors prove fidelity and independent compilability; negative anchors pin
 /// the error surface and post-copy isolation in both directions.
 class ApiModuleCopyTest {
+    @Test
+    void copyModuleStartsNewGenerationAtContentVersionZero() {
+        try (var api = new API()) {
+            api.createModule("src", "Source");
+            api.putFile("src", "/src/main.gd", "extends Node\n");
+            var sourceVersion = api.getModuleContentVersion("src");
+            assertTrue(sourceVersion.contentVersion() > 0);
+
+            api.copyModule("src", "copy");
+            var copyVersion = api.getModuleContentVersion("copy");
+            assertNotEquals(sourceVersion.moduleGeneration(), copyVersion.moduleGeneration());
+            assertEquals(0, copyVersion.contentVersion());
+
+            api.deleteModule("copy");
+            api.copyModule("src", "copy");
+            var recreatedVersion = api.getModuleContentVersion("copy");
+            assertNotEquals(copyVersion.moduleGeneration(), recreatedVersion.moduleGeneration());
+            assertNotEquals(sourceVersion.moduleGeneration(), recreatedVersion.moduleGeneration());
+            assertEquals(0, recreatedVersion.contentVersion());
+            assertEquals(sourceVersion, api.getModuleContentVersion("src"));
+        }
+    }
+
     @Test
     void copyModuleOverridesNameWithoutChangingSource() {
         try (var api = new API()) {

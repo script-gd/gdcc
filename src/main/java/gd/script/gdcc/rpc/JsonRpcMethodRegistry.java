@@ -82,6 +82,7 @@ public final class JsonRpcMethodRegistry {
             shutdown.requestExit();
             return Map.of();
         });
+        handlers.put("server.availableCCompilerKinds", (api, codec, params) -> api.availableCCompilerKinds());
         handlers.put("module.create", (api, codec, params) -> {
             var bound = codec.bindParams(params, RpcParams.ModuleCreateParams.class);
             return api.createModule(bound.moduleId(), bound.moduleName());

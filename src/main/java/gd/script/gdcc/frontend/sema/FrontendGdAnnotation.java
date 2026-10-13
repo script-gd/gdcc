@@ -13,10 +13,15 @@ import java.util.Objects;
 ///
 /// The analyzer keeps the original argument expressions intact so later phases can decide
 /// whether to interpret them structurally, stringify them, or diagnose unsupported shapes.
+///
+/// @param sourceStatement the AST statement this projection was built from; the annotation-usage
+///                        checker consults it against `skippedSubtreeRoots()` so a damaged
+///                        annotation keeps only its parser diagnostic (single-owner recovery rule)
 public record FrontendGdAnnotation(
         @NotNull String name,
         @NotNull List<Expression> arguments,
-        @Nullable FrontendRange range
+        @Nullable FrontendRange range,
+        @Nullable AnnotationStatement sourceStatement
 ) {
     public FrontendGdAnnotation {
         Objects.requireNonNull(name, "name must not be null");
@@ -28,7 +33,8 @@ public record FrontendGdAnnotation(
         return new FrontendGdAnnotation(
                 annotationStatement.name(),
                 annotationStatement.arguments(),
-                FrontendRange.fromAstRange(annotationStatement.range())
+                FrontendRange.fromAstRange(annotationStatement.range()),
+                annotationStatement
         );
     }
 }

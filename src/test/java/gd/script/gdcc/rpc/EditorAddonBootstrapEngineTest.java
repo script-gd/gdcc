@@ -131,6 +131,9 @@ class EditorAddonBootstrapEngineTest {
                     return
                 var opts: Dictionary = options_rpc["result"]
                 opts["projectPath"] = str(_config["project_path"])
+                # The bootstrap gate provisions zig (not a tinycc bundle), so pin the zig backend
+                # instead of relying on the level-based default (debug would resolve to tcc).
+                opts["cCompilerKind"] = "ZIG_CC"
                 var options_set: Dictionary = await client.set_compile_options("demo", opts).completed
                 _step("options", options_set["ok"], str(options_set))
                 if not options_set["ok"]:

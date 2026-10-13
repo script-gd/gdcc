@@ -34,9 +34,9 @@ public final class LineNumberInsnGen implements CInsnGen<LineNumberInsn> {
         sb.append(instruction.lineNumber());
         sb.append(" ");
         if (clazz.getSourceFile() != null) {
-            sb.append("\"").append(StringUtil.escapeStringLiteral(clazz.getSourceFile())).append("\"");
+            sb.append("\"").append(StringUtil.escapeLineDirectiveFileName(clazz.getSourceFile())).append("\"");
         } else {
-            sb.append("\"").append(StringUtil.escapeStringLiteral(clazz.getName())).append("\"");
+            sb.append("\"").append(StringUtil.escapeLineDirectiveFileName(clazz.getName())).append("\"");
         }
         return sb.toString();
     }

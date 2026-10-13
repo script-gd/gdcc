@@ -62,6 +62,11 @@ public final class FrontendClassSkeletonBuilder {
         var annotationCollector = new FrontendAnnotationCollector();
 
         for (var unit : units) {
+            // Parse-failed units carry an empty synthetic AST: nothing to collect, and their
+            // `parse.internal` diagnostic already lives in the shared manager.
+            if (unit.parseFailed()) {
+                continue;
+            }
             // Reuse the shared analysis data side table so the semantic pipeline sees one stable
             // annotation ownership map instead of local copies.
             analysisData.annotationsByAst().putAll(annotationCollector.collect(unit));
@@ -150,6 +155,7 @@ public final class FrontendClassSkeletonBuilder {
         // The dotted source-level name feeds the backend's class metadata (Phase 6); inner
         // classes extend it segment by segment along the accepted inner-header chain.
         topLevelClassDef.setSourceClassName(topLevelHeader.sourceName());
+        recordDeclarationOrigin(topLevelClassDef, sourceUnitGraph.unit().ast(), context);
         var innerClassRelations = collectAcceptedInnerClassRelations(
                 topLevelHeader.immediateInnerHeaders(),
                 context,
@@ -334,7 +340,9 @@ public final class FrontendClassSkeletonBuilder {
                     )) {
                         continue;
                     }
-                    classDef.addSignal(toLirSignal(signalStatement, declaredTypeScope, context));
+                    var signalDef = toLirSignal(signalStatement, declaredTypeScope, context);
+                    classDef.addSignal(signalDef);
+                    recordDeclarationOrigin(signalDef, signalStatement, context);
                 }
                 case VariableDeclaration variableDeclaration -> {
                     if (variableDeclaration.kind() == DeclarationKind.VAR) {
@@ -348,6 +356,7 @@ public final class FrontendClassSkeletonBuilder {
                         }
                         var propertyDef = toLirProperty(variableDeclaration, declaredTypeScope, context);
                         classDef.addProperty(propertyDef);
+                        recordDeclarationOrigin(propertyDef, variableDeclaration, context);
                         if (variableDeclaration.isStatic()) {
                             pendingStaticPropertyChecks.add(new PendingStaticPropertyConflictCheck(
                                     context.sourcePath(),
@@ -456,8 +465,7 @@ public final class FrontendClassSkeletonBuilder {
                         reservedNames.add(variableDeclaration.name().trim());
                     }
                 }
-                case FunctionDeclaration functionDeclaration ->
-                        reservedNames.add(functionDeclaration.name().trim());
+                case FunctionDeclaration functionDeclaration -> reservedNames.add(functionDeclaration.name().trim());
                 // Constructors share the `_init` slot with same-named functions.
                 case ConstructorDeclaration _ -> reservedNames.add("_init");
                 case ClassDeclaration classDeclaration -> reservedNames.add(classDeclaration.name().trim());
@@ -492,8 +500,10 @@ public final class FrontendClassSkeletonBuilder {
             markSkippedSubtreeRoots(List.of(enumDeclaration), context.analysisData());
             return;
         }
-        // gdparser error recovery maps an empty enum body to one phantom member with an empty
-        // name while keeping parse diagnostics empty, so both shapes collapse into the same
+        // gdparser recovery maps an empty enum body to one phantom member with an empty name.
+        // Current parser versions also report the missing enumerator/identifier themselves, in
+        // which case the hasParserDiagnosticInside guard above already skipped this enum; the
+        // blank-member check stays as a defensive fallback so both shapes collapse into the same
         // "at least one member" rule here.
         if (members.isEmpty() || members.stream().anyMatch(member -> member.name().isBlank())) {
             rejectEnumDeclaration(
@@ -582,11 +592,14 @@ public final class FrontendClassSkeletonBuilder {
                 value = nextAutoValue;
             }
             earlierMemberValues.put(memberName, value);
-            evaluatedMembers.add(new GdScriptEnumConstant(memberName, value, groupName, classDef.getName()));
+            var enumConstant = new GdScriptEnumConstant(memberName, value, groupName, classDef.getName());
+            evaluatedMembers.add(enumConstant);
+            recordDeclarationOrigin(enumConstant, member, context);
             nextAutoValue = value + 1;
         }
         if (groupName != null) {
             var enumGroup = new GdScriptEnumGroup(groupName, List.copyOf(evaluatedMembers), classDef.getName());
+            recordDeclarationOrigin(enumGroup, enumDeclaration, context);
             classDef.addScriptConstant(new GdScriptClassConstant(
                     groupName,
                     new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT),
@@ -716,6 +729,7 @@ public final class FrontendClassSkeletonBuilder {
             );
             var dottedSourceName = ownerSourcePath + "." + acceptedInnerHeader.sourceName();
             innerClassDef.setSourceClassName(dottedSourceName);
+            recordDeclarationOrigin(innerClassDef, classDeclaration, context);
             innerClassRelations.add(new FrontendInnerClassRelation(
                     acceptedInnerHeader.lexicalOwner(),
                     classDeclaration,
@@ -982,6 +996,7 @@ public final class FrontendClassSkeletonBuilder {
             return;
         }
         classDef.addFunction(functionDef);
+        recordDeclarationOrigin(functionDef, sourceNode, context);
     }
 
     private void markSkippedSubtreeRoots(
@@ -994,6 +1009,21 @@ public final class FrontendClassSkeletonBuilder {
                     Boolean.TRUE
             );
         }
+    }
+
+    /// Records the source provenance of one freshly created declaration model object, keyed by
+    /// model object identity. Snapshot query services normalize `declarationSite()` model objects
+    /// back to source positions through this index; models without an entry (engine/builtin
+    /// metadata, synthetic constructors) simply have no source position.
+    private void recordDeclarationOrigin(
+            @NotNull Object declarationModel,
+            @NotNull Node declarationNode,
+            @NotNull SkeletonBuildContext context
+    ) {
+        context.analysisData().declarationOrigins().put(
+                declarationModel,
+                new FrontendDeclarationOrigin(declarationNode, context.sourcePath())
+        );
     }
 
     /// Compiler-owned synthetic property helpers are materialized later under `_field_init_*`,
@@ -1184,6 +1214,14 @@ public final class FrontendClassSkeletonBuilder {
         var rejectedSubtreeRoots = new ArrayList<Node>();
 
         for (var unit : units) {
+            if (unit.parseFailed()) {
+                // A parse-failed unit contributes no class header at all: synthesizing a fictional
+                // empty top-level script class would pollute cross-file references, so references
+                // to its names surface as ordinary unresolved-symbol diagnostics instead
+                // (`frontend_lsp_foundation_implementation.md` §2.2.5). Its `parse.internal`
+                // diagnostic stays in the shared manager.
+                continue;
+            }
             var topLevelHeader = discoverTopLevelHeader(
                     unit,
                     module.topLevelCanonicalNameMap(),

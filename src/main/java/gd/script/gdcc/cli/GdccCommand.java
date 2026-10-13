@@ -5,6 +5,7 @@ import gd.script.gdcc.api.CompileOptions;
 import gd.script.gdcc.api.CompileResult;
 import gd.script.gdcc.api.CompileTaskEvent;
 import gd.script.gdcc.api.CompileTaskSnapshot;
+import gd.script.gdcc.backend.c.build.CCompilerKind;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.GdextensionMetadataFile;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
@@ -110,6 +111,13 @@ public final class GdccCommand implements Callable<Integer> {
             description = "Target platform. Supported: windows-x86-64, windows-aarch64, linux-x86-64, linux-aarch64, linux-riscv64, macos-x86-64, macos-aarch64, android-x86-64, android-aarch64, web-wasm32. Defaults to the native host platform."
     )
     String target;
+
+    @Option(
+            names = "--backend",
+            paramLabel = "<backend>",
+            description = "C compiler backend. Supported: zig, tcc. Defaults to tcc for debug builds and zig for release builds."
+    )
+    String backend;
 
     @Option(
             names = "--project",
@@ -224,7 +232,8 @@ public final class GdccCommand implements Callable<Integer> {
                 optimizationLevel(),
                 targetPlatform(),
                 false,
-                CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT
+                CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT,
+                cCompilerKind()
         );
     }
 
@@ -244,6 +253,22 @@ public final class GdccCommand implements Callable<Integer> {
 
     private @NotNull TargetPlatform targetPlatform() {
         return target == null ? TargetPlatform.getNativePlatform() : parseEnumOption(TargetPlatform.class, "--target", target);
+    }
+
+    private @Nullable CCompilerKind cCompilerKind() {
+        return backend == null ? null : parseCCompilerKind(backend);
+    }
+
+    /// The CLI spellings `zig`/`tcc` deliberately differ from the enum names (`ZIG_CC`/`TINY_CC`)
+    /// that the generic enum parser would derive, so the option gets its own parser.
+    private static @NotNull CCompilerKind parseCCompilerKind(@NotNull String value) {
+        return switch (StringUtil.requireTrimmedNonBlank(value, "--backend").toLowerCase(Locale.ROOT)) {
+            case "zig" -> CCompilerKind.ZIG_CC;
+            case "tcc" -> CCompilerKind.TINY_CC;
+            default -> throw new IllegalArgumentException(
+                    "Unsupported --backend value '" + value + "'. Supported values: zig, tcc"
+            );
+        };
     }
 
     private static <T extends Enum<T>> @NotNull T parseEnumOption(
@@ -531,6 +556,11 @@ public final class GdccCommand implements Callable<Integer> {
         out.println("Compile option: targetPlatform=" + options.targetPlatform());
         out.println("Compile option: strictMode=" + options.strictMode());
         out.println("Compile option: outputMountRoot=" + options.outputMountRoot());
+        // An absent kind means "auto": show the resolved backend so verbose output states what
+        // actually runs instead of echoing a null.
+        out.println("Compile option: cCompilerKind=" + (options.cCompilerKind() == null
+                ? "auto (" + options.effectiveCCompilerKind() + ")"
+                : options.cCompilerKind()));
         for (var sourcePath : result.sourcePaths()) {
             out.println("Source: " + sourcePath);
         }

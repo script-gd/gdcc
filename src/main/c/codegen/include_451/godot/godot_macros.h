@@ -4,6 +4,7 @@
 #define GDCC_GODOT_MACROS_H
 
 #include <stddef.h>
+#include <stdbool.h>
 
 #if !defined(GDE_EXPORT)
 #if defined(_WIN32)

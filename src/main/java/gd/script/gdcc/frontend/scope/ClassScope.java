@@ -19,6 +19,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -202,6 +203,42 @@ public final class ClassScope extends AbstractFrontendScope {
         }
         var parentScope = findFirstNonClassScopeAncestor();
         return parentScope != null ? parentScope.resolveValue(name, restriction) : ScopeLookupResult.notFound();
+    }
+
+    /// Visible-name enumeration view of this class layer: direct members first, then inherited
+    /// members in inheritance-walk order (nearest class layer wins by name), mirroring the member
+    /// set that `resolveValueHere(...)` can resolve. Functions stay in their own namespace and are
+    /// not part of value enumeration.
+    @Override
+    public @NotNull Collection<ScopeValue> valuesHere() {
+        var valuesByName = new LinkedHashMap<String, ScopeValue>();
+        for (var directValue : directValuesByName.values()) {
+            valuesByName.put(directValue.name(), directValue);
+        }
+        for (var inheritedClass : walkInheritedClasses("*", "value enumeration")) {
+            for (var property : inheritedClass.getProperties()) {
+                valuesByName.putIfAbsent(property.getName(), toPropertyScopeValue(property));
+            }
+            for (var signal : inheritedClass.getSignals()) {
+                valuesByName.putIfAbsent(signal.getName(), toSignalScopeValue(signal));
+            }
+            // Script constants inherit as plain value bindings, mirroring resolveInheritedValueMember.
+            for (var constant : inheritedClass.getScriptConstants()) {
+                valuesByName.putIfAbsent(
+                        constant.name(),
+                        new ScopeValue(constant.name(), constant.type(), ScopeValueKind.CONSTANT,
+                                constant.declaration(), true, false, true)
+                );
+            }
+        }
+        return List.copyOf(valuesByName.values());
+    }
+
+    /// Enumeration walks the same chain shape as `resolveValue(...)`: class layers skip continuous
+    /// class-scope ancestors so inner classes do not inherit outer unqualified value bindings.
+    @Override
+    public @Nullable Scope enumerationParentScope() {
+        return findFirstNonClassScopeAncestor();
     }
 
     @Override

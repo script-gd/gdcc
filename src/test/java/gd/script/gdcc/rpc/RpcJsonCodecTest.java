@@ -14,6 +14,7 @@ import gd.script.gdcc.api.CompileTaskEvent;
 import gd.script.gdcc.api.CompileTaskSnapshot;
 import gd.script.gdcc.api.ModuleSnapshot;
 import gd.script.gdcc.api.VfsEntrySnapshot;
+import gd.script.gdcc.backend.c.build.CCompilerKind;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.enums.GodotVersion;
@@ -67,7 +68,8 @@ class RpcJsonCodecTest {
                     "optimizationLevel": "DEBUG",
                     "targetPlatform": "LINUX_X86_64",
                     "strictMode": false,
-                    "outputMountRoot": "/__build__"
+                    "outputMountRoot": "/__build__",
+                    "cCompilerKind": null
                   },
                   "topLevelCanonicalNameMap": {"Player": "game.Player"},
                   "hasLastCompileResult": true,
@@ -90,7 +92,8 @@ class RpcJsonCodecTest {
                   "optimizationLevel": "DEBUG",
                   "targetPlatform": "LINUX_X86_64",
                   "strictMode": false,
-                  "outputMountRoot": "/__build__"
+                  "outputMountRoot": "/__build__",
+                  "cCompilerKind": null
                 }
                 """, codec.toJsonTree(withNullPath));
         // Path crosses the wire as host `Path.toString()` text, so the pinned expectation follows
@@ -135,7 +138,8 @@ class RpcJsonCodecTest {
                     "optimizationLevel": "DEBUG",
                     "targetPlatform": "LINUX_X86_64",
                     "strictMode": false,
-                    "outputMountRoot": "/__build__"
+                    "outputMountRoot": "/__build__",
+                    "cCompilerKind": null
                   },
                   "topLevelCanonicalNameMap": {"Player": "game.Player"},
                   "sourcePaths": ["/src/main.gd"],
@@ -208,7 +212,9 @@ class RpcJsonCodecTest {
                 List.of("/src/main.gd"),
                 new DiagnosticSnapshot(List.of()),
                 null,
-                AnalysisResult.LoweringStatus.NOT_REQUESTED
+                AnalysisResult.LoweringStatus.NOT_REQUESTED,
+                7L,
+                3L
         );
 
         var json = codec.toJsonTree(result).getAsJsonObject();
@@ -222,7 +228,9 @@ class RpcJsonCodecTest {
                   "sourcePaths": ["/src/main.gd"],
                   "diagnostics": {"diagnostics": []},
                   "failureMessage": null,
-                  "loweringStatus": "NOT_REQUESTED"
+                  "loweringStatus": "NOT_REQUESTED",
+                  "moduleGeneration": 7,
+                  "snapshotVersion": 3
                 }
                 """, json);
         assertFalse(json.has("completed"));
@@ -388,6 +396,10 @@ class RpcJsonCodecTest {
         assertEnumWireValues(
                 COptimizationLevel.class,
                 Map.of(COptimizationLevel.DEBUG, "DEBUG", COptimizationLevel.RELEASE, "RELEASE")
+        );
+        assertEnumWireValues(
+                CCompilerKind.class,
+                Map.of(CCompilerKind.ZIG_CC, "ZIG_CC", CCompilerKind.TINY_CC, "TINY_CC")
         );
         assertEnumWireValues(
                 TargetPlatform.class,
@@ -717,6 +729,36 @@ class RpcJsonCodecTest {
                                 + "\"outputMountRoot\": \"/__build__\"}}"),
                         RpcParams.OptionsSetParams.class
                 ));
+    }
+
+    @Test
+    void compileOptionsCompilerKindBindsAutoForMissingAndExplicitNull() {
+        // A missing member and an explicit null are the same "auto" value; the compact
+        // constructor deliberately keeps null instead of normalizing to a concrete backend.
+        var baseShape = """
+                {"godotVersion": "V451", "projectPath": null, "optimizationLevel": "DEBUG", \
+                "targetPlatform": "LINUX_X86_64", "strictMode": false, "outputMountRoot": "/__build__"%s}""";
+        assertNull(codec.bindParams(parse(baseShape.formatted("")), CompileOptions.class).cCompilerKind());
+        assertNull(codec.bindParams(parse(baseShape.formatted(", \"cCompilerKind\": null")), CompileOptions.class).cCompilerKind());
+
+        // Both concrete kinds round-trip through their enum `name()` wire values.
+        for (var kind : CCompilerKind.values()) {
+            var bound = codec.bindParams(
+                    parse(baseShape.formatted(", \"cCompilerKind\": \"" + kind.name() + "\"")),
+                    CompileOptions.class
+            );
+            assertEquals(kind, bound.cCompilerKind());
+            var serialized = codec.toJsonTree(bound).getAsJsonObject();
+            assertEquals(kind.name(), serialized.get("cCompilerKind").getAsString());
+            assertEquals(kind, codec.bindParams(serialized, CompileOptions.class).cCompilerKind());
+        }
+
+        // Unknown spellings fail binding through the strict enum adapter (mapped to -32602 by
+        // the dispatcher).
+        assertThrows(JsonSyntaxException.class, () -> codec.bindParams(
+                parse(baseShape.formatted(", \"cCompilerKind\": \"GCC\"")),
+                CompileOptions.class
+        ));
     }
 
     private static CompileOptions options(Path projectPath) {

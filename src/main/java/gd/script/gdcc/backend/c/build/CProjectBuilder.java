@@ -4,6 +4,7 @@ import gd.script.gdcc.backend.ProjectBuilder;
 import gd.script.gdcc.backend.c.gen.CCodegen;
 import gd.script.gdcc.util.ResourceExtractor;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -11,9 +12,11 @@ import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 
 import static java.time.Duration.ofNanos;
 
@@ -36,31 +39,80 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
             GDCC_INCLUDE_DIR_NAME + "/gdcc_hrx.c"
     );
 
-    private CCompiler cCompiler;
+    /// Backend availability probes are deliberately cheap and side-effect-free: they never spawn
+    /// a process or a compile, never install a bundle or load native code, and never touch the
+    /// caller's interrupt status, so UI/backend pickers can poll freely. Each probe answers
+    /// "could a build with this backend start right now", not "will it succeed".
+    private static final Map<CCompilerKind, BooleanSupplier> AVAILABILITY_PROBES = Map.of(
+            CCompilerKind.ZIG_CC, ZigUtil::isZigDiscoverable,
+            CCompilerKind.TINY_CC, TinyCcBundle::isHostBundlePresent
+    );
+
+    /// One compiler per kind, consulted per build round via [CProjectInfo.getCCompilerKind].
+    /// Selection is immutable per round: this single builder serves all concurrent tasks, so a
+    /// mutable compiler slot would race between rounds. Unused in the forced-compiler shape.
+    private final @NotNull EnumMap<CCompilerKind, CCompiler> compilers;
+    /// Test/embedding shape: a single compiler that every build uses regardless of the requested
+    /// kind. `null` selects the dispatching shape.
+    private final @Nullable CCompiler forcedCompiler;
     private boolean ignoreSharedInclude;
     private final @NotNull Map<String, String> environment;
 
     public CProjectBuilder() {
-        this(new ZigCcCompiler(), System.getenv());
+        this(defaultCompilers(), System.getenv());
     }
 
-    // For tests - allow injecting a fake/compiler wrapper
     public CProjectBuilder(@NotNull CCompiler cCompiler) {
         this(cCompiler, System.getenv());
     }
 
     CProjectBuilder(@NotNull CCompiler cCompiler, @NotNull Map<String, String> environment) {
-        this.cCompiler = Objects.requireNonNull(cCompiler, "cCompiler must not be null");
+        forcedCompiler = Objects.requireNonNull(cCompiler, "cCompiler must not be null");
+        compilers = new EnumMap<>(CCompilerKind.class);
         this.environment = Objects.requireNonNull(environment, "environment must not be null");
-        this.ignoreSharedInclude = false;
+        ignoreSharedInclude = false;
     }
 
-    public CCompiler getCCompiler() {
-        return cCompiler;
+    /// Dispatching-shape seam: the map must cover every [CCompilerKind] so a build can never
+    /// reach dispatch with an unregistered kind. Tests inject fakes here to observe dispatch.
+    CProjectBuilder(@NotNull Map<CCompilerKind, CCompiler> compilers, @NotNull Map<String, String> environment) {
+        this.compilers = new EnumMap<>(CCompilerKind.class);
+        for (var kind : CCompilerKind.values()) {
+            this.compilers.put(
+                    kind,
+                    Objects.requireNonNull(compilers.get(kind), "compilers must contain an entry for " + kind)
+            );
+        }
+        forcedCompiler = null;
+        this.environment = Objects.requireNonNull(environment, "environment must not be null");
+        ignoreSharedInclude = false;
     }
 
-    public void setCCompiler(CCompiler cCompiler) {
-        this.cCompiler = cCompiler;
+    private static @NotNull Map<CCompilerKind, CCompiler> defaultCompilers() {
+        // Both backends are constructed eagerly; their expensive parts (zig discovery, bundle
+        // resolution, native loading) stay lazy and only run for the backend a round selects.
+        var compilers = new EnumMap<CCompilerKind, CCompiler>(CCompilerKind.class);
+        compilers.put(CCompilerKind.ZIG_CC, new ZigCcCompiler());
+        compilers.put(CCompilerKind.TINY_CC, new TinyCcCompiler());
+        return compilers;
+    }
+
+    /// The backends that could start a build on this host right now, in enum declaration order.
+    public static @NotNull List<CCompilerKind> availableCCompilerKinds() {
+        return availableCCompilerKinds(AVAILABILITY_PROBES);
+    }
+
+    static @NotNull List<CCompilerKind> availableCCompilerKinds(
+            @NotNull Map<CCompilerKind, BooleanSupplier> availabilityProbes
+    ) {
+        var available = new ArrayList<CCompilerKind>();
+        for (var kind : CCompilerKind.values()) {
+            var probe = availabilityProbes.get(kind);
+            if (probe != null && probe.getAsBoolean()) {
+                available.add(kind);
+            }
+        }
+        return List.copyOf(available);
     }
 
     public boolean isIgnoreSharedInclude() {
@@ -93,6 +145,12 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
 
         var generatedFileWriteStart = System.nanoTime();
         var generatedFiles = new ArrayList<Path>(generated.size());
+        // These writes are deliberately outside the per-project build lock: the compiler's
+        // lock-held cache-key hashing assumes generated files do not change mid-round, which
+        // holds because a project output directory is built by one task at a time. Two tasks
+        // targeting the same projectPath concurrently could publish an object compiled from a
+        // newer write under the older content's cache key — an accepted risk, not guarded
+        // against.
         for (var gf : generated) {
             generatedFiles.add(gf.saveTo(projectPath));
         }
@@ -137,7 +195,10 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
 
         var compileInputCollectionDuration = elapsedSince(compileInputStart);
         var nativeCompileStart = System.nanoTime();
-        var compileResult = cCompiler.compile(projectPath, includeDirs, cFiles, outputName, opt, tp);
+        // The forced shape deliberately ignores the requested kind: pinning a compiler must pin
+        // it for every project info, which is what existing single-compiler callers rely on.
+        var compiler = forcedCompiler != null ? forcedCompiler : compilers.get(projectInfo.getCCompilerKind());
+        var compileResult = compiler.compile(projectPath, includeDirs, cFiles, outputName, opt, tp);
         var nativeCompileDuration = elapsedSince(nativeCompileStart);
         var timing = new CBuildResult.Timing(
                 includeDuration,

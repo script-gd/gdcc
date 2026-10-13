@@ -253,7 +253,7 @@ class ApiAnalyzeTest {
         assertNull(api.getLastCompileResult("demo"));
         assertTrue(api.listDirectory("demo", "/").isEmpty()
                 || api.listDirectory("demo", "/").stream()
-                        .noneMatch(entry -> entry.name().equals("__build__")));
+                .noneMatch(entry -> entry.name().equals("__build__")));
     }
 
     @Test
@@ -417,7 +417,12 @@ class ApiAnalyzeTest {
     }
 
     @Test
-    void analyzeWaitsForModuleGateBehindOtherOperations() throws InterruptedException {        var api = ApiCompileTestSupport.newApi(ApiCompileTestSupport.RecordingCompiler.succeeding());
+    void analyzeDoesNotWaitForModuleGateBehindOtherOperations() throws InterruptedException {
+        // Concurrency contract (`frontend_lsp_foundation_implementation.md` §2.3.3): analyze
+        // freezes inputs under the ModuleState
+        // monitor and runs off-latch, so another operation holding the module gate must not block
+        // it. If analyze still entered the gate, the join below would time out with no result.
+        var api = ApiCompileTestSupport.newApi(ApiCompileTestSupport.RecordingCompiler.succeeding());
 
         api.createModule("demo", "Gate Demo");
         api.putFile("demo", "/src/valid.gd", validSource("AnalyzeGateSmoke"));
@@ -429,13 +434,11 @@ class ApiAnalyzeTest {
                 .name("gdcc-api-test-analyze-gate")
                 .start(() -> resultRef.set(api.analyze("demo")));
         try {
-            ApiCompileTestSupport.sleepForProgressPolling();
-            assertNull(resultRef.get());
+            analyzeThread.join(TimeUnit.SECONDS.toMillis(30));
+            assertFalse(analyzeThread.isAlive(), "analyze must finish while the module gate is held");
         } finally {
             blocker.close();
         }
-        analyzeThread.join(TimeUnit.SECONDS.toMillis(30));
-        assertFalse(analyzeThread.isAlive());
 
         var result = Objects.requireNonNull(resultRef.get());
         assertEquals(AnalysisResult.Outcome.COMPLETED, result.outcome());

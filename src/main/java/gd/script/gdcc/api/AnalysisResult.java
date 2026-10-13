@@ -19,6 +19,12 @@ import java.util.Objects;
 /// `outcome` reports whether the analysis pipeline itself ran to completion; code health is
 /// reported separately through `diagnostics`, which may contain errors even when the outcome is
 /// `COMPLETED`.
+///
+/// `moduleGeneration` + `snapshotVersion` identify the frozen input this result was computed from
+/// (module generation distinguishes same-id modules across delete/recreate; the snapshot version is
+/// the module's frozen content version). They are filled for every outcome, so callers holding only
+/// a single result can still reliably detect staleness by comparing the pair against
+/// `API.getModuleContentVersion(...)` or the latest snapshot.
 public record AnalysisResult(
         @NotNull Outcome outcome,
         @NotNull AnalyzeOptions analyzeOptions,
@@ -27,7 +33,9 @@ public record AnalysisResult(
         @NotNull List<String> sourcePaths,
         @NotNull DiagnosticSnapshot diagnostics,
         @Nullable String failureMessage,
-        @NotNull LoweringStatus loweringStatus
+        @NotNull LoweringStatus loweringStatus,
+        long moduleGeneration,
+        long snapshotVersion
 ) {
     public AnalysisResult {
         Objects.requireNonNull(outcome, "outcome must not be null");
@@ -41,6 +49,12 @@ public record AnalysisResult(
         Objects.requireNonNull(diagnostics, "diagnostics must not be null");
         failureMessage = validateFailureMessage(outcome, failureMessage);
         validateLoweringStatus(outcome, analyzeOptions, loweringStatus);
+        if (moduleGeneration <= 0) {
+            throw new IllegalArgumentException("moduleGeneration must be positive");
+        }
+        if (snapshotVersion < 0) {
+            throw new IllegalArgumentException("snapshotVersion must not be negative");
+        }
     }
 
     /// Returns whether the analysis pipeline ran to completion. This is intentionally not a

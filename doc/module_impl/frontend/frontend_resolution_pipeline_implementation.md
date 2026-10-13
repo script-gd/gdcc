@@ -159,8 +159,9 @@ Shared semantic pipeline 分成三层加一个 diagnostics-only 层。
 基础结构层：
 
 1. skeleton
-2. scope graph
-3. baseline inventory
+2. error-subtree annotation（`FrontendErrorSubtreeAnnotator`：skeleton 发布后、scope 之前，把 parser 错误节点提升到最小 enclosing statement/declaration 根写入 `skippedSubtreeRoots()`；参数默认值 island 的根是默认值表达式自身；不发诊断，parser 已持有）
+3. scope graph
+4. baseline inventory
 
 职责是建立 `FrontendModuleSkeleton`、`scopesByAst()`、callable parameter inventory、supported ordinary local inventory，以及 skipped/deferred subtree 的硬边界。不做 body expression typing。
 
@@ -174,12 +175,13 @@ Interface 层：
 
 Body 层：
 
-1. `SuiteResolver` 按源码顺序进入 supported body suite
-2. statement resolver 驱动 top binding / local stabilization / chain binding / expr typing / slot post 的 owner 子过程
+1. `SuiteResolver` 按源码顺序进入 supported body suite；逐 statement 解析前先消费 `skippedSubtreeRoots()`，命中即整句跳过（不得再 `requireBlockScope` 或深入子结构——残缺语句一旦深入会触发结构性 fail-fast，并因 patch transaction 非原子（§5 R14）拖垮整次分析）
+2. statement resolver 驱动 top binding / local stabilization / chain binding / expr typing / slot post 的 owner 子过程；`resolveStatement` 分发入口保留同一份 skipped 根的防御性检查
 3. `TypedLexicalEnvironment` 为当前 statement 和当前 suite 提供 effective typed lookup
 4. body suite 收敛后导出 stable side tables
+5. expression island 入口（参数默认值 sweep、属性初始化器）不经过 suite 逐句解析，各自在进入表达式前消费 skipped 根：命中时跳过的是默认值表达式或该属性声明，而不是整个 callable
 
-诊断-only 层在 body facts 完全收敛后运行：
+诊断-only 层在 body facts 完全收敛后运行，且同样消费 skipped 根（如 type-check 的逐 statement 遍历跳过被标注语句）：
 
 1. annotation usage
 2. virtual override

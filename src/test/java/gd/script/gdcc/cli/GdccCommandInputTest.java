@@ -4,6 +4,7 @@ import gd.script.gdcc.api.API;
 import gd.script.gdcc.api.CompileOptions;
 import gd.script.gdcc.api.ModuleSnapshot;
 import gd.script.gdcc.api.VfsEntrySnapshot;
+import gd.script.gdcc.backend.c.build.CCompilerKind;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.GdextensionMetadataFile;
 import gd.script.gdcc.backend.c.build.ModuleLocalGodotBindingFixtureProjectBuilder;
@@ -27,6 +28,7 @@ import java.util.Locale;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GdccCommandInputTest {
@@ -403,6 +405,53 @@ class GdccCommandInputTest {
         assertTrue(invalidTarget.errText().contains("Unsupported --target value 'ios-x86-64'"), invalidTarget.errText());
         invalidTarget.assertCompilerNotInvoked();
         assertTrue(invalidTarget.api.listModules().isEmpty());
+    }
+
+    @Test
+    void backendOptionSelectsCompilerKindAndDefaultsToAuto(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
+
+        // No --backend: the stored options carry no explicit kind; the level-based default
+        // (debug → tinycc) applies at build time.
+        var defaulted = new Terminal();
+        var defaultedExitCode = defaulted.command().commandLine().execute(
+                "-o", tempDir.resolve("build/demo_auto").toString(), source.toString());
+        assertEquals(0, defaultedExitCode);
+        var defaultedOptions = defaulted.api.getCompileOptions("demo_auto");
+        assertNull(defaultedOptions.cCompilerKind());
+        assertEquals(CCompilerKind.TINY_CC, defaultedOptions.effectiveCCompilerKind());
+
+        var tcc = new Terminal();
+        var tccExitCode = tcc.command().commandLine().execute(
+                "--backend", "tcc", "-o", tempDir.resolve("build/demo_tcc").toString(), source.toString());
+        assertEquals(0, tccExitCode);
+        assertEquals(CCompilerKind.TINY_CC, tcc.api.getCompileOptions("demo_tcc").cCompilerKind());
+
+        // Spellings are case-insensitive like the other enum-style options.
+        var zig = new Terminal();
+        var zigExitCode = zig.command().commandLine().execute(
+                "--backend", "ZIG", "-o", tempDir.resolve("build/demo_zig").toString(), source.toString());
+        assertEquals(0, zigExitCode);
+        assertEquals(CCompilerKind.ZIG_CC, zig.api.getCompileOptions("demo_zig").cCompilerKind());
+    }
+
+    @Test
+    void invalidBackendValueFailsBeforeCreatingModule(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(
+                "--backend",
+                "clang",
+                "-o",
+                tempDir.resolve("build/demo").toString(),
+                source.toString()
+        );
+
+        assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+        assertTrue(terminal.errText().contains("Unsupported --backend value 'clang'"), terminal.errText());
+        terminal.assertCompilerNotInvoked();
+        assertTrue(terminal.api.listModules().isEmpty());
     }
 
     @Test

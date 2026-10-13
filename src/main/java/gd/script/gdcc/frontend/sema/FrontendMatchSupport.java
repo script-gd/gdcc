@@ -207,8 +207,14 @@ public final class FrontendMatchSupport {
             @NotNull ArrayList<FrontendMatchBindingPlan> sink
     ) {
         switch (pattern) {
-            case PatternBindingExpression binding ->
+            case PatternBindingExpression binding -> {
+                // Defensive: the error-subtree annotator already excludes blank-named bindings
+                // (damaged `var :` shapes), but inventory construction must never crash on one
+                // if a new parser shape slips past annotation.
+                if (!binding.name().isBlank()) {
                     sink.add(new FrontendMatchBindingPlan(binding.name(), binding, topLevel));
+                }
+            }
             case ArrayExpression array -> {
                 for (var element : array.elements()) {
                     collectPatternBindingsInto(element, false, sink);

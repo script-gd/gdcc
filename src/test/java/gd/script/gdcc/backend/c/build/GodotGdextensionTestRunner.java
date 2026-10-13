@@ -9,7 +9,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -29,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
+import gd.script.gdcc.util.FileUtil;
 import gd.script.gdcc.util.StringUtil;
 
 import static java.time.Duration.ofNanos;
@@ -639,23 +639,7 @@ public final class GodotGdextensionTestRunner implements AutoCloseable {
                 if (path.equals(dir)) {
                     continue;
                 }
-                var trailTimeRemaining = 10;
-                while (trailTimeRemaining > 0) {
-                    try {
-                        Files.deleteIfExists(path);
-                        break;
-                    } catch (AccessDeniedException e) {
-                        try {
-                            trailTimeRemaining--;
-                            if (trailTimeRemaining == 0) {
-                                throw e;
-                            }
-                            Thread.sleep(500);
-                        } catch (InterruptedException e2) {
-                            throw new RuntimeException(e2);
-                        }
-                    }
-                }
+                FileUtil.runWithAccessDeniedRetry(() -> Files.deleteIfExists(path));
             }
         }
     }

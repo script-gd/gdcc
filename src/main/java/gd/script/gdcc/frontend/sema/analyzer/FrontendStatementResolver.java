@@ -79,6 +79,14 @@ public class FrontendStatementResolver {
         Objects.requireNonNull(statement, "statement must not be null");
         Objects.requireNonNull(childSuiteResolver, "childSuiteResolver must not be null");
 
+        // Defensive consumption of the skipped-subtree contract: `FrontendSuiteResolver`'s
+        // statement loop is the primary consumer, and this guard keeps any future direct caller
+        // from driving damaged parser subtrees into structural fail-fast points. No diagnostic is
+        // emitted here — the parser already owns one for every skipped root.
+        if (context.analysisData().skippedSubtreeRoots().containsKey(statement)) {
+            return;
+        }
+
         switch (statement) {
             case VariableDeclaration variableDeclaration -> resolveVariableDeclaration(context, variableDeclaration);
             case ExpressionStatement expressionStatement -> resolveSupportedRoot(context, expressionStatement);

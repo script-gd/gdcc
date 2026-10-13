@@ -74,22 +74,20 @@ pub fn main() !void {
         std.process.exit(1);
     };
 
-    const zig_home = tool_search.findZigHome(arena, &env, exe_dir) catch |err| {
+    // Zig is optional at launch time: debug builds default to the in-process tinycc backend,
+    // which never invokes zig. When discovery errors or finds nothing, ZIG_HOME simply stays
+    // unset — the zig backend reports the gap only when a build actually selects it.
+    const zig_home: ?[]const u8 = tool_search.findZigHome(arena, &env, exe_dir) catch |err| blk: {
         translate.printStderr(
             arena,
             "{s}: {s}: {s}\n",
             .{ text.launcher_prefix, text.zig_search_failed, @errorName(err) },
         );
-        std.process.exit(1);
-    } orelse {
-        translate.printStderr(
-            arena,
-            "{s}: {s}\n",
-            .{ text.launcher_prefix, text.zig_not_found },
-        );
-        std.process.exit(1);
+        break :blk null;
     };
-    try env.put("ZIG_HOME", zig_home);
+    if (zig_home) |home| {
+        try env.put("ZIG_HOME", home);
+    }
 
     var child_args: std.ArrayList([]const u8) = .empty;
     try child_args.append(arena, java_path);

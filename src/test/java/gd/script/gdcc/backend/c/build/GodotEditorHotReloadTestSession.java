@@ -9,8 +9,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AccessDeniedException;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -30,6 +28,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+
+import gd.script.gdcc.util.FileUtil;
 
 /// Orchestrates one headless Godot editor hot-reload test session.
 ///
@@ -70,9 +70,9 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
     private static final String MINIMAL_PROJECT_GODOT = """
             ; Engine configuration file.
             config_version=5
-
+            
             [application]
-
+            
             config/name="GdccEditorHotReloadTest"
             config/features=PackedStringArray("4.5")
             """;
@@ -256,13 +256,9 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
         var publishedName = hashedLibraryFileName(buildName, contentHash);
         var stagedPath = binDir.resolve("." + publishedName + ".new");
         Files.copy(newLibrary, stagedPath, StandardCopyOption.REPLACE_EXISTING);
-        try {
-            Files.move(stagedPath, binDir.resolve(publishedName), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException e) {
-            // The target path is fresh (nothing mapped yet), so a non-atomic replace is safe;
-            // staging still guarantees no partially copied file is ever published.
-            Files.move(stagedPath, binDir.resolve(publishedName), StandardCopyOption.REPLACE_EXISTING);
-        }
+        // The target path is fresh (nothing mapped yet); staging guarantees no partially copied
+        // file is ever published, and moveReplacing tolerates transient Windows handle locks.
+        FileUtil.moveReplacing(stagedPath, binDir.resolve(publishedName));
         publishedLibraryFileName = publishedName;
         publishedContentHash = contentHash;
         writeGdextensionFile();
@@ -538,25 +534,7 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
                 if (path.equals(dir)) {
                     continue;
                 }
-                var retriesRemaining = 10;
-                while (true) {
-                    try {
-                        Files.deleteIfExists(path);
-                        break;
-                    } catch (AccessDeniedException e) {
-                        retriesRemaining--;
-                        if (retriesRemaining == 0) {
-                            throw e;
-                        }
-                        try {
-                            //noinspection BusyWait
-                            Thread.sleep(500);
-                        } catch (InterruptedException interruptedException) {
-                            Thread.currentThread().interrupt();
-                            throw new IOException("Interrupted while clearing " + path, interruptedException);
-                        }
-                    }
-                }
+                FileUtil.runWithAccessDeniedRetry(() -> Files.deleteIfExists(path));
             }
         }
     }

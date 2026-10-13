@@ -151,6 +151,9 @@ public class FrontendScopeAnalyzer {
         /// AST owner is indexed up front so later traversal can reopen the correct class boundary.
         @Override
         public @NotNull FrontendASTTraversalDirective handleSourceFile(@NotNull SourceFile sourceFile) {
+            if (isSkippedSubtreeRoot(sourceFile)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             var sourceFileScope = new ClassScope(
                     classRegistry,
                     classRegistry,
@@ -221,12 +224,18 @@ public class FrontendScopeAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleBlock(@NotNull Block node) {
+            if (isSkippedSubtreeRoot(node)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             visitBlockBoundary(node, BlockScopeKind.BLOCK_STATEMENT);
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleIfStatement(@NotNull IfStatement ifStatement) {
+            if (isSkippedSubtreeRoot(ifStatement)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             recordScope(ifStatement, currentScope());
             astWalker.walk(ifStatement.condition());
             visitBlockBoundary(ifStatement.body(), BlockScopeKind.IF_BODY);
@@ -239,6 +248,9 @@ public class FrontendScopeAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleElifClause(@NotNull ElifClause elifClause) {
+            if (isSkippedSubtreeRoot(elifClause)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             recordScope(elifClause, currentScope());
             astWalker.walk(elifClause.condition());
             visitBlockBoundary(elifClause.body(), BlockScopeKind.ELIF_BODY);
@@ -247,6 +259,9 @@ public class FrontendScopeAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleWhileStatement(@NotNull WhileStatement whileStatement) {
+            if (isSkippedSubtreeRoot(whileStatement)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             recordScope(whileStatement, currentScope());
             astWalker.walk(whileStatement.condition());
             visitBlockBoundary(whileStatement.body(), BlockScopeKind.WHILE_BODY);
@@ -255,6 +270,9 @@ public class FrontendScopeAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleForStatement(@NotNull ForStatement forStatement) {
+            if (isSkippedSubtreeRoot(forStatement)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             // Split scopes: ForStatement → header outer scope; body → FOR_BODY.
             // Iterator inventory / FOR_ITERATION_RESOLUTION overlays use FOR_BODY object identity;
             // owningScopeForDeclaration(ForStatement) must look up scopesByAst[body], not this header record.
@@ -269,6 +287,9 @@ public class FrontendScopeAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
+            if (isSkippedSubtreeRoot(matchStatement)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             recordScope(matchStatement, currentScope());
             astWalker.walk(matchStatement.value());
             walkNodes(matchStatement.sections());
@@ -313,6 +334,9 @@ public class FrontendScopeAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleMatchSection(@NotNull MatchSection node) {
+            if (isSkippedSubtreeRoot(node)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             var branchScope = new BlockScope(currentScope(), BlockScopeKind.MATCH_SECTION_BODY);
             recordScope(node, branchScope);
             withCurrentScope(branchScope, () -> {

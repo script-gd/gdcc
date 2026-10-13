@@ -2,6 +2,7 @@ package gd.script.gdcc.test_suite;
 
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.c.build.CBuildResult;
+import gd.script.gdcc.backend.c.build.CCompiler;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.CProjectBuilder;
 import gd.script.gdcc.backend.c.build.CProjectInfo;
@@ -86,6 +87,16 @@ public final class GdScriptUnitTestCompileRunner {
             @NotNull String scriptResourcePath,
             @NotNull GodotGdextensionTestRunner.RunOptions runOptions
     ) throws Exception {
+        return compileAndValidate(scriptResourcePath, runOptions, null);
+    }
+
+    /// `forcedCompiler` pins the native backend (the single-compiler [CProjectBuilder] shape);
+    /// null keeps the default per-round dispatch on the project info's compiler kind.
+    public @NotNull CaseResult compileAndValidate(
+            @NotNull String scriptResourcePath,
+            @NotNull GodotGdextensionTestRunner.RunOptions runOptions,
+            @Nullable CCompiler forcedCompiler
+    ) throws Exception {
         Objects.requireNonNull(scriptResourcePath);
         Objects.requireNonNull(runOptions);
 
@@ -120,7 +131,7 @@ public final class GdScriptUnitTestCompileRunner {
         var runtimeClassName = requireRuntimeClassName(lowered, scriptResourcePath);
         var runtimeClassValidationDuration = elapsedSince(runtimeClassValidationStart);
 
-        var nativeBuild = buildNativeLibrary(lowered.module(), lowered.classRegistry(), projectDir, caseName);
+        var nativeBuild = buildNativeLibrary(lowered.module(), lowered.classRegistry(), projectDir, caseName, forcedCompiler);
         var buildResult = nativeBuild.result();
         assertTrue(buildResult.success(), () -> "Native build failed for " + scriptResourcePath + ".\nBuild log:\n" + buildResult.buildLog());
 
@@ -205,7 +216,8 @@ public final class GdScriptUnitTestCompileRunner {
             @NotNull LirModule lowered,
             @NotNull ClassRegistry classRegistry,
             @NotNull Path projectDir,
-            @NotNull String caseName
+            @NotNull String caseName,
+            @Nullable CCompiler forcedCompiler
     ) throws IOException {
         var totalStart = System.nanoTime();
         var targetPlatformStart = System.nanoTime();
@@ -235,7 +247,7 @@ public final class GdScriptUnitTestCompileRunner {
         var codegenPrepareDuration = elapsedSince(codegenPrepareStart);
 
         var builderCreateStart = System.nanoTime();
-        var builder = new CProjectBuilder();
+        var builder = forcedCompiler != null ? new CProjectBuilder(forcedCompiler) : new CProjectBuilder();
         var builderCreateDuration = elapsedSince(builderCreateStart);
 
         var projectBuildStart = System.nanoTime();

@@ -85,7 +85,7 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 
 ### 2.2 方法面
 
-方法名采用点分命名空间，与公开 `API` 面一一对应，共 27 个方法（唯一的例外是进程控制
+方法名采用点分命名空间，与公开 `API` 面一一对应，共 28 个方法（唯一的例外是进程控制
 方法 `server.shutdown`，它不映射 `API` 门面，见本节表末说明）。
 `API.recordCurrentCompileTaskEvent(...)` 被排除，因为它绑定进程内编译线程，远程调用
 没有意义；未分页的 `listCompileTaskEvents(taskId)` 重载也被排除，因为 RPC 面始终使用
@@ -100,6 +100,7 @@ module VFS、执行分析、启动编译、轮询任务进度。编辑器插件�
 | `server.ping` | 无 | `"pong"` |
 | `server.info` | 无 | `{version, branch, commit, maxCompileTaskEventPageSize}` |
 | `server.shutdown` | 无 | `{}` |
+| `server.availableCCompilerKinds` | 无 | `CCompilerKind[]`（本机当前可用后端，枚举名数组） |
 | `module.create` | `{moduleId, moduleName}` | `ModuleSnapshot` |
 | `module.get` | `{moduleId}` | `ModuleSnapshot` |
 | `module.list` | `{}` | `ModuleSnapshot[]` |
@@ -183,7 +184,8 @@ DTO codec 规则：
   `"V451"`，`optimizationLevel` 为 `"DEBUG"` 或 `"RELEASE"`，`targetPlatform` 为
   `"WINDOWS_X86_64"`、`"WINDOWS_AARCH64"`、`"LINUX_X86_64"`、`"LINUX_AARCH64"`、
   `"LINUX_RISCV64"`、`"MACOS_X86_64"`、`"MACOS_AARCH64"`、`"ANDROID_X86_64"`、
-  `"ANDROID_AARCH64"`、`"WEB_WASM32"` 之一。
+  `"ANDROID_AARCH64"`、`"WEB_WASM32"` 之一，`cCompilerKind` 为 `"ZIG_CC"` 或
+  `"TINY_CC"`（缺失或显式 `null` 均表示按优化级别自动选择：debug→tcc、release→zig）。
   `RpcJsonCodecTest` 钉死该表。
 - `java.nio.file.Path` 序列化为 `Path.toString()`（主机路径文本；暴露策略见 §2.7），
   反序列化经 `Path.of(...)`。
@@ -281,13 +283,19 @@ DTO codec 规则：
   状态。
 - `compile.start` 立即返回 task id。在某 module 有排队或进行中的编译期间，该 module
   的所有 module 门控调用（`module.*`、`vfs.*`、`options.*`、`classMap.*`、
-  `analyze.run`、`compile.getLastResult`）都会在 module gate 上阻塞直到编译结束，
-  且 `analyze.run` 本身就是同步的。虚拟线程保证服务端整体仍可响应，但发起调用的
-  客户端仍会等待。因此进度轮询只能使用任务表读取 `compile.getTask`、
+  `compile.getLastResult`）都会在 module gate 上阻塞直到编译结束。`analyze.run` 自
+  三段式改造（`rpc_api_implementation.md` §8）起**不再进入 module gate**：它在
+  module-state monitor 内冻结输入后闩外执行，编译期间照常返回（同步语义不变，响应
+  额外携带 `moduleGeneration` 与 `snapshotVersion`）。虚拟线程保证服务端整体仍可响应，
+  但发起门控调用的客户端仍会等待。因此进度轮询只能使用任务表读取 `compile.getTask`、
   `compile.listEvents`、`compile.getLatestEvent`——它们不进入 module gate；GDScript
   客户端的轮询循环只建立在 `compile.getTask` 之上。适配层不在 API gate 已有行为之外
   额外 join 整个编译。
 - 测试在端口 `0`（临时端口）启动服务端并读回实际端口。
+- native 构建的取消延迟按后端不同（`rpc_api_implementation.md` §3.7）：zig runner 在中断时
+  销毁子进程、迅速退出；tinycc runner 只在合作式断点响应取消（锁等待、TU 边界、链接期自愈
+  重编前、最终输出前，以 `../backend/tinycc_compiler_implementation.md` §6 为准），进行中的
+  native 调用必然先完成，因此 tinycc 轮次的取消收尾可能更慢。客户端不得假设取消即时生效。
 
 ### 2.7 安全边界
 
@@ -687,7 +695,7 @@ fixture，列入 §7 后续工作。
   是 `NullPointerException`）、§2.4 的每个错误码（通过真实 `API` 实例触发）、
   notification 执行后不产生响应对象、批量拒绝、空事件日志使
   `compile.getLatestEvent` 返回 `null`、`module.copy` 的源缺失/目标占用/空白参数
-  错误码，以及全部 27 个方法的路由。
+  错误码，以及全部 28 个方法的路由。
 - 进程关闭：`RpcServerShutdownTest` —— `server.shutdown` 的三级合同：dispatcher 层
   （`{}` 结果 + 意图登记幂等）；进程内 HTTP 层（注入非退出测试 latch：200 + `{}` 到达
   客户端**之后**退出动作恰好触发一次、运行在 `gdcc-rpc-exit` 平台线程而非请求

@@ -7,17 +7,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileTime;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -29,14 +25,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -76,9 +70,6 @@ import java.util.function.Supplier;
 ///   PCH and no-PCH objects are never mixed in one link.
 public class ZigCcCompiler implements CCompiler {
     private static final Logger LOGGER = LoggerFactory.getLogger(ZigCcCompiler.class);
-    private static final String PROJECT_CACHE_DIR_NAME = "compiler-cache";
-    private static final String SHARED_CACHE_DIR_NAME = "shared-compiler-cache";
-    private static final String SHARED_CACHE_ENV = "GDCC_SHARED_C_COMPILER_CACHE";
     private static final String MSVC_ABI_SUFFIX = "-windows-msvc";
     private static final String GNU_ABI_SUFFIX = "-windows-gnu";
     private static final String OBJ_DIR_NAME = "obj";
@@ -126,21 +117,13 @@ public class ZigCcCompiler implements CCompiler {
     /// `MCO_USE_ASM`, android linking needs the NDK/Bionic), not ThinLTO problems.
     private static final Set<String> THIN_LTO_UNSUPPORTED_ZIG_TARGETS = Set.of();
 
-    /// In-process serialization of native build rounds per project directory. Concurrent rounds
-    /// on the same directory would overwrite each other's objects under `obj/` (even for
-    /// different output names, objects share the `<opt>/<target>/<index>_<file>.o` shape) and
-    /// the final artifact. External gdcc instances are out of scope: cross-process coordination
-    /// on a shared directory is the caller's own responsibility. Entries are kept for the
-    /// process lifetime — one small lock per project directory ever built.
-    private static final ConcurrentHashMap<Path, ReentrantLock> PROJECT_BUILD_LOCKS = new ConcurrentHashMap<>();
-
     private final CProcessLauncher processLauncher;
     private final @NotNull Supplier<@Nullable Path> zigDiscovery;
     private final @NotNull ZigVersionProbe zigVersionProbe;
     private final @NotNull Function<Path, Path> cacheRootResolver;
 
     public ZigCcCompiler() {
-        this(CProcessLauncher.processBuilder(), ZigUtil::findZig, null, ZigCcCompiler::resolveCompilerCacheRoot);
+        this(CProcessLauncher.processBuilder(), ZigUtil::findZig, null, CCompilerCacheRoot::resolve);
     }
 
     /// Package-private injection point for tests: a fake launcher drives the real round logic
@@ -148,14 +131,14 @@ public class ZigCcCompiler implements CCompiler {
     /// seam keeps PCH off (the version probe resolves to null) so pre-PCH test rounds keep
     /// their exact command sequences; PCH tests use the full seam below.
     ZigCcCompiler(@NotNull CProcessLauncher processLauncher) {
-        this(processLauncher, ZigUtil::findZig, PCH_DISABLED_PROBE, ZigCcCompiler::resolveCompilerCacheRoot);
+        this(processLauncher, ZigUtil::findZig, PCH_DISABLED_PROBE, CCompilerCacheRoot::resolve);
     }
 
     /// Full test seam: additionally fixes zig discovery, making fake-launcher tests pure Java
     /// (no real zig binary needs to be discoverable). Production uses `ZigUtil::findZig`.
     /// Same legacy PCH-off default as the single-argument seam.
     ZigCcCompiler(@NotNull CProcessLauncher processLauncher, @NotNull Supplier<@Nullable Path> zigDiscovery) {
-        this(processLauncher, zigDiscovery, PCH_DISABLED_PROBE, ZigCcCompiler::resolveCompilerCacheRoot);
+        this(processLauncher, zigDiscovery, PCH_DISABLED_PROBE, CCompilerCacheRoot::resolve);
     }
 
     /// PCH test seam: fixes the zig version probe (a fixed version exercises the PCH path
@@ -185,7 +168,7 @@ public class ZigCcCompiler implements CCompiler {
             return new CCompileResult(false, "No C files to compile", List.of());
         }
 
-        var projectLock = requireProjectBuildLock(projectDir);
+        var projectLock = CProjectBuildLock.require(projectDir);
         try {
             // The lock covers the whole round (all TU compiles + link + artifact probing);
             // waiting is interruptible so a cancelled round never starts compiling late.
@@ -396,13 +379,6 @@ public class ZigCcCompiler implements CCompiler {
         for (var process : registry.cancelAndSnapshot()) {
             process.destroyForcibly();
         }
-    }
-
-    /// Resolves the lock serializing native build rounds of one project directory within this
-    /// process. Keys are normalized absolute paths, so textual variants of the same directory
-    /// share one lock.
-    static @NotNull ReentrantLock requireProjectBuildLock(@NotNull Path projectDir) {
-        return PROJECT_BUILD_LOCKS.computeIfAbsent(projectDir.toAbsolutePath().normalize(), key -> new ReentrantLock());
     }
 
     /// ABI-substituted builds and macOS targets omit LTO before any fallback decision.
@@ -736,47 +712,10 @@ public class ZigCcCompiler implements CCompiler {
         for (var i = 0; i < includeDirs.size(); i++) {
             var dir = includeDirs.get(i).toAbsolutePath().normalize();
             document.append("include[").append(i).append("]=").append(dir).append('\n');
-            document.append("include-tree-sha256[").append(i).append("]=").append(hashIncludeTree(dir)).append('\n');
+            document.append("include-tree-sha256[").append(i).append("]=").append(CContentHash.hashIncludeTree(dir)).append('\n');
         }
-        var digest = newSha256().digest(document.toString().getBytes(StandardCharsets.UTF_8));
+        var digest = CContentHash.newSha256().digest(document.toString().getBytes(StandardCharsets.UTF_8));
         return HexFormat.of().formatHex(digest, 0, PCH_KEY_HASH_BYTES);
-    }
-
-    /// Content hash of one include directory tree: regular files are visited in sorted
-    /// relative-path order (sorting applies only inside a directory; the directory order
-    /// itself is preserved by the caller) and each file contributes its length-prefixed
-    /// relative path and content, so editing, adding or removing any header changes the hash.
-    private static @NotNull String hashIncludeTree(@NotNull Path includeDir) throws IOException {
-        var digest = newSha256();
-        final List<Path> files;
-        try (var walk = Files.walk(includeDir)) {
-            files = walk.filter(Files::isRegularFile)
-                    .sorted(Comparator.comparing(path -> includeDir.relativize(path).toString()))
-                    .toList();
-        }
-        for (var file : files) {
-            var relative = includeDir.relativize(file).toString().replace(File.separatorChar, '/');
-            updateLengthPrefixed(digest, relative.getBytes(StandardCharsets.UTF_8));
-            updateLengthPrefixed(digest, Files.readAllBytes(file));
-        }
-        return HexFormat.of().formatHex(digest.digest());
-    }
-
-    /// Length-prefixing removes any concatenation ambiguity between path/content boundaries.
-    private static void updateLengthPrefixed(@NotNull MessageDigest digest, byte @NotNull [] bytes) {
-        var length = (long) bytes.length;
-        for (var i = Long.BYTES - 1; i >= 0; i--) {
-            digest.update((byte) (length >>> (i * Byte.SIZE)));
-        }
-        digest.update(bytes);
-    }
-
-    private static @NotNull MessageDigest newSha256() {
-        try {
-            return MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is a required algorithm of every Java runtime", exception);
-        }
     }
 
     /// Name-based PCH whitelist anchored to the fixed `CProjectBuilder` native inputs: only
@@ -983,40 +922,5 @@ public class ZigCcCompiler implements CCompiler {
 
     private static boolean isWindowsHost() {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
-    }
-
-    static @NotNull Path resolveCompilerCacheRoot(@NotNull Path projectDir) {
-        return resolveCompilerCacheRoot(projectDir, System.getenv());
-    }
-
-    static @NotNull Path resolveCompilerCacheRoot(@NotNull Path projectDir, @NotNull Map<String, String> environment) {
-        var normalizedProjectDir = projectDir.toAbsolutePath().normalize();
-        var envCacheValue = environment.get(SHARED_CACHE_ENV);
-        if (envCacheValue != null && !envCacheValue.isBlank()) {
-            try {
-                var envCacheDir = Path.of(envCacheValue).toAbsolutePath().normalize();
-                Files.createDirectories(envCacheDir);
-                if (Files.isDirectory(envCacheDir)) {
-                    return envCacheDir;
-                }
-            } catch (IOException | InvalidPathException exception) {
-                // Fall back to the project-location cache rule below.
-            }
-        }
-
-        var projectParent = normalizedProjectDir.getParent();
-        if (projectParent == null) {
-            return normalizedProjectDir.resolve(PROJECT_CACHE_DIR_NAME);
-        }
-
-        var sharedCacheDir = projectParent.resolve(SHARED_CACHE_DIR_NAME);
-        if (Files.exists(sharedCacheDir) && !Files.isDirectory(sharedCacheDir)) {
-            return normalizedProjectDir.resolve(PROJECT_CACHE_DIR_NAME);
-        }
-        if (Files.isDirectory(sharedCacheDir)) {
-            return sharedCacheDir.toAbsolutePath().normalize();
-        }
-
-        return normalizedProjectDir.resolve(PROJECT_CACHE_DIR_NAME);
     }
 }

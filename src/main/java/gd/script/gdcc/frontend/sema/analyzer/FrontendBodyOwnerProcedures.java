@@ -24,6 +24,7 @@ import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
+import dev.superice.gdparser.frontend.ast.MissingAttributeStep;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PatternBindingExpression;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
@@ -2481,6 +2482,13 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 return FrontendExpressionType.unsupported(
                         "Nested chain expression is inside an unsupported or skipped subtree"
                 );
+            }
+            // A chain ending in a missing member name keeps its FAILED fact for downstream readers,
+            // but the parser already owns the user-facing diagnostic (`Missing identifier` via
+            // `parse.lowering`), so the root expression reporter must stay silent here.
+            var steps = attributeExpression.steps();
+            if (!steps.isEmpty() && steps.getLast() instanceof MissingAttributeStep) {
+                rootOwnsExpressionDiagnostics.put(attributeExpression, Boolean.FALSE);
             }
             return FrontendChainStatusBridge.toPublishedExpressionType(reduced);
         }

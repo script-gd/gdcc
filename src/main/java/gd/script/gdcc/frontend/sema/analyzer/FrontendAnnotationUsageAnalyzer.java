@@ -119,7 +119,10 @@ public class FrontendAnnotationUsageAnalyzer {
         }
 
         private void walkNode(@Nullable Node node) {
-            if (node == null) {
+            // Never descend into or validate a damaged subtree root: its declaration facts (such
+            // as the owning ClassScope) were never published, so placement checks would misreport
+            // recovery artifacts as real violations (single-owner recovery rule).
+            if (node == null || analysisData.skippedSubtreeRoots().containsKey(node)) {
                 return;
             }
             validateOnreadyUsage(node);
@@ -176,10 +179,18 @@ public class FrontendAnnotationUsageAnalyzer {
         /// coexist without a diagnostic (a documented difference from Godot's hard error).
         private void validateExportUsage(@NotNull Node annotatedNode) {
             for (var annotation : analysisData.annotationsByAst().getOrDefault(annotatedNode, List.of())) {
-                if (FrontendExportAnnotationSupport.isExportFamilyAnnotation(annotation.name())) {
+                if (!isDamagedSource(annotation)
+                        && FrontendExportAnnotationSupport.isExportFamilyAnnotation(annotation.name())) {
                     validateSingleExportAnnotation(annotatedNode, annotation);
                 }
             }
+        }
+
+        /// An annotation whose source statement is a damaged subtree root keeps only its parser
+        /// diagnostic; the surviving semantic projection must not be validated on top of it.
+        private boolean isDamagedSource(@NotNull FrontendGdAnnotation annotation) {
+            var sourceStatement = annotation.sourceStatement();
+            return sourceStatement != null && analysisData.skippedSubtreeRoots().containsKey(sourceStatement);
         }
 
         private void validateSingleExportAnnotation(@NotNull Node annotatedNode, @NotNull FrontendGdAnnotation annotation) {
@@ -196,9 +207,10 @@ public class FrontendAnnotationUsageAnalyzer {
                 reportInvalidUsage(annotation, "@" + name + " cannot be used on static property '" + variableDeclaration.name() + "'");
                 return;
             }
-            if (FrontendExportAnnotationSupport.evaluate(annotation)
-                    instanceof FrontendExportAnnotationSupport.Evaluation.Malformed malformed) {
-                reportInvalidUsage(annotation, malformed.reason());
+            if (FrontendExportAnnotationSupport.evaluate(annotation) instanceof FrontendExportAnnotationSupport.Evaluation.Malformed(
+                    var reason
+            )) {
+                reportInvalidUsage(annotation, reason);
                 return;
             }
             var propertyDef = findClassProperty(propertyScope.getCurrentClass(), variableDeclaration.name().trim());
@@ -393,7 +405,7 @@ public class FrontendAnnotationUsageAnalyzer {
             return switch (fact.status()) {
                 case RESOLVED -> fact.publishedType() instanceof GdVariantType
                         ? new EffectiveExportType.VariantTyped()
-                        : new EffectiveExportType.Determined(fact.publishedType());
+                        : new EffectiveExportType.Determined(Objects.requireNonNull(fact.publishedType()));
                 case DYNAMIC -> new EffectiveExportType.VariantTyped();
                 case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> new EffectiveExportType.UpstreamBlocked();
             };
@@ -473,6 +485,7 @@ public class FrontendAnnotationUsageAnalyzer {
         private @Nullable FrontendGdAnnotation findAnnotationByName(@NotNull Node annotatedNode, @NotNull String name) {
             return analysisData.annotationsByAst().getOrDefault(annotatedNode, List.of()).stream()
                     .filter(annotation -> annotation.name().equals(name))
+                    .filter(annotation -> !isDamagedSource(annotation))
                     .findFirst()
                     .orElse(null);
         }
@@ -480,6 +493,7 @@ public class FrontendAnnotationUsageAnalyzer {
         private @NotNull List<FrontendGdAnnotation> findAnnotationsByName(@NotNull Node annotatedNode, @NotNull String name) {
             return analysisData.annotationsByAst().getOrDefault(annotatedNode, List.of()).stream()
                     .filter(annotation -> annotation.name().equals(name))
+                    .filter(annotation -> !isDamagedSource(annotation))
                     .toList();
         }
 

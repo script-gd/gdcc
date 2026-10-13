@@ -44,6 +44,7 @@ import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.DictionaryExpression;
+import dev.superice.gdparser.frontend.ast.ErrorExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.GetNodeExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -1070,6 +1071,10 @@ public final class FrontendExpressionSemanticSupport {
             );
             case UnknownExpression unknownExpression -> rootOutcome(FrontendExpressionType.unsupported(
                     "Parser recovery expression '" + unknownExpression.nodeType()
+                            + "' cannot participate in expression typing"
+            ));
+            case ErrorExpression errorExpression -> rootOutcome(FrontendExpressionType.unsupported(
+                    "Parser error expression '" + errorExpression.nodeType()
                             + "' cannot participate in expression typing"
             ));
             case LiteralExpression _,

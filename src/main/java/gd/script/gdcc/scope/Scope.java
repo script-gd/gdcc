@@ -3,6 +3,8 @@ package gd.script.gdcc.scope;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
 
@@ -112,6 +114,44 @@ public interface Scope {
     default @Nullable ScopeValue resolveValue(@NotNull String name) {
         Objects.requireNonNull(name, "name");
         return resolveValue(name, ResolveRestriction.unrestricted()).allowedValueOrNull();
+    }
+
+    /// Enumerates the value bindings owned by this scope layer only, in declaration order.
+    ///
+    /// This is the enumeration counterpart of `resolveValueHere(...)` for completion-style tooling
+    /// that needs every visible name instead of a single-name lookup. The view is unrestricted
+    /// (no `ResolveRestriction` filtering) and source-order filtering such as
+    /// declaration-after-use is left to the frontend caller, which owns the use-site range.
+    /// Default is empty for scope layers that own no value bindings.
+    default @NotNull Collection<ScopeValue> valuesHere() {
+        return List.of();
+    }
+
+    /// Enumerates the values visible from this scope through the lexical parent chain.
+    ///
+    /// Nearest-layer shadowing applies: a name contributed by an inner layer hides the same name
+    /// from outer layers. The parent hop goes through `enumerationParentScope()` so class layers
+    /// keep the same chain shape as `resolveValue(...)` (inner class scopes do not leak outer class
+    /// members into enumeration, mirroring lookup).
+    default @NotNull List<ScopeValue> collectVisibleValues() {
+        var visibleByName = new LinkedHashMap<String, ScopeValue>();
+        Scope current = this;
+        while (current != null) {
+            for (var value : current.valuesHere()) {
+                visibleByName.putIfAbsent(value.name(), value);
+            }
+            current = current.enumerationParentScope();
+        }
+        return List.copyOf(visibleByName.values());
+    }
+
+    /// The lexical parent consulted by visible-name enumeration.
+    ///
+    /// Defaults to `getParentScope()`; layers whose lookup skips intermediate ancestors (class
+    /// layers skip class-scope ancestors in `resolveValue`) override this so enumeration sees
+    /// exactly the names lookup would resolve.
+    default @Nullable Scope enumerationParentScope() {
+        return getParentScope();
     }
 
     /// Resolves function candidates through the lexical parent chain using the supplied restriction.

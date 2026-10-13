@@ -181,11 +181,49 @@
   - `bitfield::...`
   - `typedarray::...`
   - `typeddictionary::K;V`
+  - 逗号联合属性类型元数据（见 §3.1）
 - `typeddictionary::K;V` 只接受 flat leaf atom：
   - 允许 primitive / builtin / packed array / object / plain `Array` / plain `Dictionary`
   - 拒绝 nested structured container text，例如 `Array[int]`、`Dictionary[String, int]`
   - 拒绝 nested typed metadata spellings，例如 `typedarray::T`
 - backend typed-dictionary ABI 仍是独立合同，但它现在独立的是 outward hint / runtime guard / C wrapper 行为，不是 exported spelling 的 shared 解析
+
+### 3.1 逗号联合属性类型元数据（NCA 映射）
+
+Godot dump 中部分引擎属性的 `type` 字段不是单一运行类，而是**编辑器资源选取器提示**
+（PROPERTY_HINT_RESOURCE_TYPE）。bundled 4.5.1 dump 中共 33 处出现（折叠为 12 个唯一
+字符串），全部位于 `classes[].properties[].type`，分两个拼写家族：
+
+- **纯联合 `A,B[,C...]`**（如 `CanvasItemMaterial,ShaderMaterial`）：运行时 Variant 检查
+  本就按最近公共祖先（NCA）宽化接受（`node.material` 实际 Variant 类型即 `Material`，
+  联合字符串只收窄编辑器选取器），因此 NCA 宽化与 Godot 运行时行为一致——绝不误拒
+  合法程序，仅诊断精度弱于成员资格检查。
+- **基类+排除项 `A,-B,-C...`**（如 `Texture2D,-AnimatedTexture,...`）：排除子类仅过滤
+  编辑器选取器，**首元素即运行时类型**，无需 NCA。
+
+工程形态：**加载期预计算、解析期查表**。
+
+- `ExtensionUnionTypeMappings.compute(ExtensionAPI)` 在 `ExtensionApiLoader.loadFromResource`
+  构造 API 后运行——NCA 只依赖 dump 自带的 `inherits` 父链（引擎类单继承、无环时
+  `Object` 兜底，NCA 恒存在），无需 `ClassRegistry`，因此可以在任何 registry 构建之前
+  完成。
+- 产出 `Map<rawUnionString, resolvingClassName>` 经
+  `ScopeTypeParsers.registerUnionTypeMetadataMappings` 合入静态表；解析路径在一切通用
+  规则**之前**查表，命中后把映射类名继续走正常严格解析（表为 string→string，两参/三参
+  重载都受益）。
+- **冲突策略**（用户决定）：同一联合字符串在新加载的 ExtensionAPI 中解析出**不同**类名
+  （多 GodotVersion 继承漂移，理应不出现）时，注册处直接抛 `IllegalStateException`，
+  加载失败且表状态不被污染；同值幂等放行。
+- **fail-closed**：纯联合中任一成员无法按 dump 层次解析（未知名、builtin 成员、畸形空
+  片段）或父链存在**继承环**时，该字符串**不进表**（继承环检测只作用于纯联合的祖先
+  遍历；基类+排除项不走 `inherits` 链，不受影响）——解析期保持既有严格
+  `IllegalArgumentException`，dump 版本偏移可观测。
+- 行为影响面：映射使 `CanvasItem.material` 等属性的 `getType()` 从抛异常变为返回
+  `Material` 等 NCA 类——普通语义解析（`resolveInheritedValueMember`）与补全枚举同时
+  受益；补全层不再保留任何 Variant 降级保底，未进表的未知元数据在一切路径上保持原有
+  严格失败行为（抛 `IllegalArgumentException`）。
+- 测试锚点：`ExtensionUnionTypeMappingsTest`（dump 真值 12 唯一串、registry 属性类型
+  链路、2 参解析查表、冲突抛错且表不污染、合成层次 fail-closed 与畸形片段）。
 
 ---
 
@@ -295,6 +333,10 @@ GDCC 当前的 type-meta 解析仍主要建立在 lexical parent chain 上。结
 - shared resolver 与 frontend lexical scope 都继续按 mapped top-level `sourceName` 命中，再发布 canonical-derived `displayName()`
 - `FrontendModuleSkeleton` caller-side remap helper 已覆盖 skeleton、variable inventory、top binding、chain binding、expr type 与 compile-only gate 的 mapped top-level source-facing 回归
 - malformed structured text 不会触发 compatibility mapper
+- 逗号联合属性类型元数据经 `ExtensionUnionTypeMappingsTest` 锚定：bundled dump 12 个唯一
+  联合串全部点名映射到 NCA/首元素、registry 属性类型链路、冲突抛错且表不污染、
+  fail-closed 跳过不可解析联合、继承环经 `inheritanceCycleSkipsTheUnionInsteadOfHanging`
+  锚定为"跳过且不挂死"
 - skeleton 与 analyzer 对 immediate inner class type-meta 的发布规则保持一致
 - deferred type-meta 来源会产生显式 diagnostic，而不是静默忽略
 - `findType(...)` / `tryParseTextType(...)` 仍然有活跃的兼容消费面

@@ -1,9 +1,12 @@
 package gd.script.gdcc.backend.c.build;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
@@ -33,6 +36,27 @@ class ZigUtilTest {
     void clearVersionCacheAfter() {
         // A cached fake version must not leak into later real-zig tests of the same worker.
         ZigUtil.clearCachedZigVersionForTesting();
+    }
+
+    @Test
+    void discoveryPeekMirrorsWhereCurrentDirectoryRuleOnWindows(@TempDir Path tempDir) throws IOException {
+        // `where` on Windows searches the current directory before PATH; the no-spawn peek must
+        // keep that reachable case or the backend picker would wrongly omit ZIG_CC there.
+        var zigExe = tempDir.resolve("zig.exe");
+        Files.writeString(zigExe, "");
+        if (!zigExe.toFile().setExecutable(true)) {
+            Assumptions.abort("cannot mark the fixture executable");
+            return;
+        }
+        // A pinned-false fallback isolates the CWD branch from the host's real zig environment
+        // (an env override like ZIG=<path> resolves without consulting the exe name at all).
+        assertTrue(ZigUtil.isZigDiscoverable("windows 11", "zig.exe", tempDir, () -> false));
+
+        // The current-directory channel is Windows-only: elsewhere even a matching executable in
+        // the working directory does not count.
+        assertFalse(ZigUtil.isZigDiscoverable("linux", "zig.exe", tempDir, () -> false));
+        // And on Windows it counts only the requested name, not arbitrary files sitting there.
+        assertFalse(ZigUtil.isZigDiscoverable("windows 11", "zig-absent-3f8d9c2.exe", tempDir, () -> false));
     }
 
     @Test

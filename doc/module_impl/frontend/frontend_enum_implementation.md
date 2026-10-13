@@ -162,7 +162,7 @@ EnumDeclaration（类体，含 inner class 体）
 | 成员值引用父类枚举常量 | `class Child extends Parent:` 内 `enum {NEXT = BASE + 1}`：skeleton 按源码序而非继承序填充类，求值器看不到父类常量表；发 `sema.class_skeleton` error（继承序求值属独立工作） |
 | 成员值为非 int / 非受支持形态 | 浮点、字符串、bool、调用、三元、`**`、attribute、subscript 等：`sema.class_skeleton` error + 跳过该枚举 |
 | 匿名/命名枚举成员的重复值 | `enum {A = 1, B = 1}`：**允许**（对齐 Godot），非边界 |
-| 空枚举 `enum State {}` | `sema.class_skeleton` error（Godot 要求至少一个成员） |
+| 空枚举 `enum State {}` | gdparser 0.6.0 起由 parser 报 `parse.lowering` error（`Missing enumerator`/`Missing identifier`，仍保留 phantom 空名成员 AST）；skeleton 经 `hasParserDiagnosticInside` 跳过该枚举，不重复发 sema 诊断（Godot 要求至少一个成员） |
 | 枚举 Dictionary 的运行时只读性 | Godot 对枚举字典 `make_read_only()` 且共享单例；当前每次求值（裸 `State` 或 `Other.State`）物化新 Dictionary，`State["X"] = 1` 不做写保护（Godot 为运行时错误）；见 §8 |
 
 ### 4.3 数据模型（`gd.script.gdcc.scope` 包）
