@@ -150,9 +150,15 @@ files through them.
 - `setCompileOptions(moduleId, compileOptions)`
 - `getTopLevelCanonicalNameMap(moduleId)`
 - `setTopLevelCanonicalNameMap(moduleId, map)`
+- `availableCCompilerKinds()`
 
 `CompileOptions` is replaced as a whole immutable snapshot. Updating options or class-name mappings
 does not trigger compilation.
+
+`availableCCompilerKinds()` is module-independent: it reports which `CompileOptions.cCompilerKind`
+values can actually start a native build on this host (zig discoverability, tinycc bundle
+presence). The probe is read-only and side-effect-free — it never compiles, installs a bundle, or
+loads native code — so it stays cheap enough for backend pickers to poll.
 
 Top-level canonical name mapping keeps the frontend contract: the map is passed to `FrontendModule`
 and validated through `FrontendClassNameContract`. API code must not maintain a second copy of the
@@ -212,18 +218,22 @@ idempotent. In order, it:
    their runners notice the cancellation flag, finish as `CANCELED` through the normal runner
    completion path, and release the module gate exactly like an explicit `cancelCompileTask(...)`.
 3. Joins runner threads with a bounded total budget; tasks still alive after the budget are logged
-   as a warning instead of blocking shutdown forever. Native subprocesses respond to interruption
-   by being destroyed, so runners are expected to die promptly.
+   as a warning instead of blocking shutdown forever. Native build cancellation is cooperative:
+   zig runners destroy their subprocesses on interruption and die promptly, while tinycc runners
+   only notice at cooperative checkpoints (lock waits, translation-unit boundaries, the cache
+   self-heal recompile, and the final output — see `../backend/tinycc_compiler_implementation.md`
+   §6), so a tinycc round can take longer to wind down (it always finishes the active native call
+   first).
 
 After `close()` returns, the instance rejects new work: state-mutating methods (`createModule`,
 `deleteModule`, all VFS writes/links/deletes, `setCompileOptions`, `setTopLevelCanonicalNameMap`,
 `analyze(...)`, `compile(...)`, `cancelCompileTask(...)`, `clearCompileTaskEvents(...)`) throw
 `IllegalStateException`. Read-only queries (`getModule`, `listModules`, `readFile`,
 `listDirectory`, `readEntry`, `getCompileOptions`, `getTopLevelCanonicalNameMap`,
-`getLastCompileResult`, `getCompileTask`, `getLatestCompileTaskEvent`, `listCompileTaskEvents`)
-keep serving the final snapshots so teardown outcomes stay inspectable. Adapters mapping
-`IllegalStateException` from a closing instance treat it as an internal error, which is acceptable
-because the transport is already shutting down.
+`availableCCompilerKinds`, `getLastCompileResult`, `getCompileTask`, `getLatestCompileTaskEvent`,
+`listCompileTaskEvents`) keep serving the final snapshots so teardown outcomes stay inspectable.
+Adapters mapping `IllegalStateException` from a closing instance treat it as an internal error,
+which is acceptable because the transport is already shutting down.
 
 ---
 
@@ -291,6 +301,7 @@ For directories and links, `path()` and `virtualPath()` are the same virtual pat
 - `TargetPlatform targetPlatform`
 - `boolean strictMode`
 - `String outputMountRoot`
+- `CCompilerKind cCompilerKind` (`ZIG_CC` or `TINY_CC`)
 
 Defaults:
 
@@ -300,6 +311,13 @@ Defaults:
 - strict mode: `false`
 - output mount root: `/__build__`
 - project path: `null`
+- C compiler: `null` (automatic)
+
+`cCompilerKind == null` means automatic selection by optimization level: `DEBUG` builds use the
+in-process tinycc backend (no toolchain discovery or subprocess overhead) and `RELEASE` builds use
+the zig backend (tinycc has no meaningful optimizer). An explicit kind always wins over this
+level-based default. On the wire the field may be absent or explicitly `null`; both forms mean
+automatic, while an unknown enum name is rejected like every other enum field.
 
 `projectPath == null` is accepted while configuring a module, but compilation fails with
 `CONFIGURATION_FAILED` until a project path is set.
@@ -718,7 +736,9 @@ Focused API tests currently anchor the contract:
 - module lifecycle: `ApiModuleLifecycleTest`
 - VFS path and CRUD: `ApiVirtualPathTest`, `ApiVirtualFileSystemTest`
 - links: `ApiVirtualLinkTest`
-- compile configuration: `ApiCompileOptionsTest`, `ApiCanonicalNameMapTest`
+- compile configuration: `ApiCompileOptionsTest`, `ApiCanonicalNameMapTest`,
+  `ApiCompileOptionsFreezeTest` (option changes after request freeze never affect the in-flight
+  round)
 - compile pipeline and diagnostics: `ApiCompilePipelineTest`, `ApiCompileDiagnosticsTest`,
   `ApiMappedClassCompileTest`
 - analyze-only surface: `ApiAnalyzeTest`

@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 
 public final class ZigUtil {
     private ZigUtil() {
@@ -135,7 +136,6 @@ public final class ZigUtil {
         return null;
     }
 
-    @SuppressWarnings("DuplicateExpressions")
     public static @Nullable Path findZigInternal() {
         var os = System.getProperty("os.name", "").toLowerCase(Locale.ENGLISH);
         var exeName = os.contains("win") ? "zig.exe" : "zig";
@@ -144,6 +144,40 @@ public final class ZigUtil {
         var byTool = findByWhichOrWhere(exeName, os);
         if (byTool != null) return byTool;
 
+        return findZigOnKnownLocations(exeName, os);
+    }
+
+    /// Side-effect-free answer to "could a zig-backed build start right now", for backend
+    /// pickers. Covers the same environment variables, PATH entries and common install
+    /// locations as [findZig], minus the `which`/`where` spawn — whose failure modes would leak
+    /// onto the caller's interrupt flag. Never spawns a process, never reads or writes the
+    /// [findZig] discovery cache, and never changes the calling thread's interrupt status. This
+    /// is a picker-level hint, not a usability proof: an actual build round re-discovers zig
+    /// through [findZig].
+    static boolean isZigDiscoverable() {
+        var os = System.getProperty("os.name", "").toLowerCase(Locale.ENGLISH);
+        var exeName = os.contains("win") ? "zig.exe" : "zig";
+        return isZigDiscoverable(os, exeName, Path.of("").toAbsolutePath(), () -> findZigOnKnownLocations(exeName, os) != null);
+    }
+
+    /// Fallback-injectable seam of [isZigDiscoverable]. `where` on Windows searches the current
+    /// directory before PATH, so the no-spawn probe must mirror that channel explicitly or a
+    /// zig.exe sitting only next to the working directory would be reported as missing. The
+    /// fallback covers the remaining env/PATH/common-location channels; tests pin it to `false`
+    /// to isolate the current-directory rule from the host's real environment.
+    static boolean isZigDiscoverable(
+            @NotNull String os,
+            @NotNull String exeName,
+            @NotNull Path workingDir,
+            @NotNull BooleanSupplier knownLocationFallback
+    ) {
+        if (os.contains("win") && Files.isExecutable(workingDir.resolve(exeName))) {
+            return true;
+        }
+        return knownLocationFallback.getAsBoolean();
+    }
+
+    private static @Nullable Path findZigOnKnownLocations(String exeName, String os) {
         var env = System.getenv();
 
         // env

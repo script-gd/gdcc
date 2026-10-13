@@ -36,6 +36,10 @@ public enum TargetPlatform {
         return family == PlatformFamily.WINDOWS;
     }
 
+    public boolean isMacOS() {
+        return family == PlatformFamily.MACOS;
+    }
+
     public @NotNull String sharedLibraryFileName(@NotNull String outputBaseName) {
         return switch (family) {
             case WINDOWS -> outputBaseName + ".dll";

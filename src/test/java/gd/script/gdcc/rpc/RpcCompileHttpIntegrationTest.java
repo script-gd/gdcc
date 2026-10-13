@@ -48,6 +48,9 @@ class RpcCompileHttpIntegrationTest {
             // exact `options.get` shape — never a hand-written partial object.
             var options = rpc.callForResult("options.get", params("moduleId", "demo")).getAsJsonObject();
             options.addProperty("projectPath", tempDir.resolve("compile-project").toString());
+            // The gate above provisions zig (not a tinycc bundle), so pin the zig backend instead
+            // of relying on the level-based default (debug would resolve to tcc).
+            options.addProperty("cCompilerKind", "ZIG_CC");
             var replaced = rpc.callForResult("options.set", params(
                     "moduleId", "demo", "compileOptions", options
             )).getAsJsonObject();

@@ -8,11 +8,13 @@
 
 - `doc/gdcc_c_backend.md`：C 后端总览，是 Native Compiler Cache 与 PCH Cache 的合同源头（缓存目录解析、PCH key 组成与自愈协议）。本文档从构建管线侧引用其结论，不重复定义。
 - `doc/gdcc_runtime_lib.md`：runtime C 源码（`godot_binding.c`、`minicoro.c`、`gdcc_coroutine.c`、`gdcc_hrx.c`）的内容与宏配置合同。
+- `doc/module_impl/backend/tinycc_compiler_implementation.md`：`TinyCcCompiler`（libtcc FFM 后端）的 bundle、对象缓存、取消/日志与平台合同事实源；本文档 §3.4 只登记差异。
 
 ## 1. 范围与职责边界
 
-- `CProjectBuilder`：项目级编排——include 树提取、generated files 写入、native 输入收集、调用 `CCompiler`、记录 `CBuildResult.Timing`。
+- `CProjectBuilder`：项目级编排——include 树提取、generated files 写入、native 输入收集、按 `CProjectInfo.getCCompilerKind()` 逐轮选择已注册的 `CCompiler` 实现并调用之、记录 `CBuildResult.Timing`。无参构造注册 zig 与 tinycc 双实现；单参构造为忽略 kind 的强制编译器（既有测试语义）。`CCompilerKind.defaultFor(optimizationLevel)` 提供 API 层的级别默认（debug→tcc、release→zig）。
 - `ZigCcCompiler`：`CCompiler` 的 zig 实现——逐 TU（translation unit）编译为 object + 一次链接的两阶段构建，含 zig 缓存、PCH、并行、取消与日志合并。
+- `TinyCcCompiler`：`CCompiler` 的 tinycc 实现——libtcc 经 FFM 在 JVM 进程内逐 TU 产 object（`TCC_OUTPUT_OBJ`，按 TU 内容寻址缓存）并由新 state 一次链接；无子进程、无 PCH、无 PDB。bundle 安装、FFM 生命周期、对象缓存、取消与平台合同的事实源为 `tinycc_compiler_implementation.md`。
 - `ZigUtil`：zig 工具链发现（`findZig`）与版本探测（`findZigVersion`）。
 - 不变边界：`CCompiler` 接口签名、`CProjectBuilder` 输入收集顺序、generated-file 集合与发布合同、runtime 源码及其宏配置（如 `MCO_USE_ASM` 锁定）、API module 级串行合同均不因构建系统内部演进而改变。
 
@@ -36,7 +38,9 @@ native 输入顺序固定（`CProjectBuilder.buildProject()` 内联收集）：
 4. `<includeRoot>/gdcc/gdcc_coroutine.c`；
 5. `<includeRoot>/gdcc/gdcc_hrx.c`。
 
-include 目录为 `<includeRoot>/gdcc` 与 `<includeRoot>/godot`。include root 解析优先级：`CProjectBuilder.setIgnoreSharedInclude(true)` 强制项目本地 `include/`（测试隔离缝）；否则若 `GDCC_SHARED_INCLUDE` 指向可用路径则创建并使用该目录（相对路径按进程 cwd 规范化为绝对路径）；再否则项目父目录存在 `shared-include/` 则用之，最后回退项目内 `include/`。空白值、无效路径、文件、无法创建的路径均跳过环境变量并回退。runtime 资源从 classpath `include_451` 的 `gdcc/**`、`godot/**` 提取，`initProject()` 与每次 `buildProject()` 都执行；提取按内容比较，内容一致时不替换文件（保持 mtime 稳定，见 §4.4），内容变化时临时文件 + atomic replace。
+include 目录为 `<includeRoot>/gdcc` 与 `<includeRoot>/godot`。include root 解析优先级：`CProjectBuilder.setIgnoreSharedInclude(true)` 强制项目本地 `include/`（测试隔离缝）；否则若 `GDCC_SHARED_INCLUDE` 指向可用路径则创建并使用该目录（相对路径按进程 cwd 规范化为绝对路径）；再否则项目父目录存在 `shared-include/` 则用之，最后回退项目内 `include/`。空白值、无效路径、文件、无法创建的路径均跳过环境变量并回退。runtime 资源从 classpath `include_451` 的 `gdcc/**`、`godot/**` 提取，`initProject()` 与每次 `buildProject()` 都执行；提取按内容比较，内容一致时不替换文件（保持 mtime 稳定，见 §4.4），内容变化时经临时文件 + atomic replace 替换（Windows 上的瞬态句柄竞争由 `FileUtil.moveReplacing` 的有界退避重试吸收）。
+
+`TinyCcCompiler` 的轮次结构（锁序、FFM 状态生命周期、缓存与自愈、日志/取消形态）见 `tinycc_compiler_implementation.md`；§3-§7 的命令、并行、进程注册表、buildLog 合并与产物合同以 zig 管线为描述对象，tinycc 管线的差异汇总于 §3.4。
 
 ## 3. 编译与链接命令合同
 
@@ -57,10 +61,10 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
        -o <outputPath> <objPath...>
 ```
 
-- `-I`/`-std`/`-fPIC`/`-c` 只出现在编译类命令；`-shared` 只出现在链接命令；两者共享同一 `-target`、同一 `ZIG_CACHE_DIR`/`ZIG_GLOBAL_CACHE_DIR`（同一 cache root）与同一工作目录（`CProcessLauncher` 对每个子进程设置 `directory(projectDir)`）。
+- `-I`/`-std`/`-fPIC`/`-c` 只出现在编译类命令；`-shared` 只出现在链接命令；两者共享同一 `-target`、同一 `ZIG_LOCAL_CACHE_DIR`/`ZIG_GLOBAL_CACHE_DIR`（同一 cache root）与同一工作目录（`CProcessLauncher` 对每个子进程设置 `directory(projectDir)`）。
 - `languageFlags(ltoMode, opt)` 是 TU 编译、PCH 构建、PCH probe、PCH key 的统一 flag 来源；PCH 构建命令使用同一 `languageFlags` 但不带 `-c`，形态为 `zig cc -target <zigTarget> <languageFlags> -I<includeDir>... -x c-header <prefix.h> -o <pchPath>`。
 - object 路径固定为 `<projectDir>/obj/<debug|release>/<zigTarget>/<index>_<fileName>.o`，`<index>` 为 `cFiles` 下标，用于同名 `.c` 消歧。
-- 链接输入只使用本轮按 `cFiles` 顺序生成的 object 绝对路径列表：禁止 glob `obj/`、禁止以"object 已存在"跳过编译；每个 TU 每轮都执行 `zig cc -c`，缓存复用完全交给 zig 内容缓存。stale object 永远不进入链接。
+- 链接输入只使用本轮按 `cFiles` 顺序生成的 object 绝对路径列表：禁止 glob `obj/`、禁止以"object 已存在"跳过编译；每个 TU 每轮都执行 `zig cc -c`，缓存复用完全交给 zig 内容缓存。stale object 永远不进入链接。该「每轮重编」纪律仅约束 zig 管线；tinycc 管线按 TU 内容寻址缓存跳过未变动 TU（见 §3.4 与 `tinycc_compiler_implementation.md`）。
 
 ### 3.2 LTO 决策（优先级从高到低）
 
@@ -77,6 +81,17 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
 - android/web-wasm32 的失败是 sysroot/runtime 限制（android 需 NDK/Bionic；wasm 上 minicoro 锁定 `MCO_USE_ASM` 按设计 fail loudly），与 LTO 无关：二者的 LTO 决策保持默认（RELEASE 取 `-flto=thin`），真实构建显式跳过或仅做 `-c` 编译。web 的 Emscripten 后端是独立 post-MVP 项目，不属于 zig 后端职责。
 - `macos-x86-64` / `macos-aarch64` 在 macOS 本机产出 `lib<name>.dylib`；从非 Darwin 主机交叉链接需要 Darwin sysroot，不进入 `ZigCcCompilerCrossTargetSmokeTest` 的 zig-bundled-libc 矩阵。
 - zig cc 拒绝透传 `-Wl,--thinlto-cache-dir`/`-fthinlto-cache-dir`，因此 ThinLTO 链接后端无法跨构建缓存；不直接驱动 `zig ld.lld`（见 §9 后续方向）。
+
+### 3.4 TinyCC 管线差异登记
+
+`TinyCcCompiler` 与 zig 管线同为逐 TU object + 一次链接的两阶段构建，但编译与链接均为 JVM 进程内 libtcc FFM 调用，不派生子进程。相对本章其余合同的差异：
+
+- 逐 TU 独立 state 产 `TCC_OUTPUT_OBJ` object（tcc 的 object 恒为 ELF，含 Windows 目标），按 TU 内容寻址缓存于 `<cacheRoot>/tcc-obj/`；命中 TU 整段跳过编译，其诊断不再重现。缓存键组成、原子发布、链接期自愈恰好一次与降级哲学的完整合同见 `tinycc_compiler_implementation.md`。
+- §5.2 的进程注册表与 §5.3 的「销毁子进程」语义不适用；tinycc 取消为合作式断点（项目锁等待、全局锁等待、每个 TU 前、链接期自愈重编前、最终输出前），固定通道 `Failed to run tcc: interrupted`（完整合同见 `tinycc_compiler_implementation.md` §6）。
+- §6 的 `Command:` 段不存在（无子进程 argv）；诊断由 libtcc error 回调携带 `file:line:` 前缀合并；buildLog 追加缓存统计行 `[gdcc] tcc object cache: <hits> hits, <misses> misses` 与降级行 `[gdcc] tcc object cache unavailable this round: <reason>`。
+- §5.4 的项目构建锁共用；tinycc 另有进程级全局锁串行化全部 libtcc 调用，锁序固定为项目锁 → 全局锁，两级等待均可中断。
+- 无 PCH、无 PDB、无 LTO；`optimizationLevel` 不改变 tinycc 编译 flag，DEBUG/RELEASE 共享缓存条目，仅输出基名不同。
+- 平台支持集 `{LINUX_X86_64, WINDOWS_X86_64, LINUX_AARCH64, MACOS_AARCH64}`，host == target；其余平台快速失败并指引改用 zig。
 
 ## 4. PCH 使用（构建管线侧）
 
@@ -133,13 +148,13 @@ PCH 的完整合同（key 组成、布局、自愈协议）以 `doc/gdcc_c_backe
 
 ## 8. 测试约定
 
-- 真 zig/Godot 依赖一律 `ZigUtil.findZig()` + `Assumptions` 门控；迭代期只跑定向测试：`script/run-gradle-targeted-tests.sh --tests <类名>`。
+- 真 zig/Godot 依赖一律 `ZigUtil.findZig()` + `Assumptions` 门控；真 tinycc 依赖一律经 `TinyCcCliTestSupport`/bundle 在场 `Assumptions` 门控（无 bundle/CLI 时跳过而非失败）。迭代期只跑定向测试：`script/run-gradle-targeted-tests.sh --tests <类名>`。
 - negative path 直调公开 `ZigCcCompiler.compile(...)`（精心构造的 `.c` 与独立 include 树），不得通过破坏 shared include/共享 cache 构造失败。
 - 性能数字是手工参考值（注明机器与 zig 版本），写入 PR 描述，不进入 CI 断言。
-- 类级并行（`src/test/resources/junit-platform.properties`）：全局默认 `same_thread`，仅 `@Execution(ExecutionMode.CONCURRENT)` 标注类进入 fork-join 池，fixed parallelism=4（可经 `-Djunit.jupiter.execution.parallel.config.fixed.parallelism=N` 覆盖）。当前标注类：`ZigCcCompilerCrossTargetSmokeTest`（多 target 以 `@ParameterizedTest` 逐 target 拆分）、`ZigCcCompilerFailureTest`、`ZigCcCompilerIncrementalIntegrationTest`、`ZigCcCompilerPchIntegrationTest`。明确不并行：`ZigCcCompilerParallelTest` 与 `ApiZigCcCompilerCancellationTest`（时序/取消语义敏感）及全部 fake/纯 Java 测试。
-- 并行安全约定：并发类必须逐方法 `@TempDir`、无静态可变状态；Godot 校验不得使用共享 `test_project` 目录（复制 fixture 到独立目录）。
+- 类级并行（`src/test/resources/junit-platform.properties`）：全局默认 `same_thread`，仅 `@Execution(ExecutionMode.CONCURRENT)` 标注类进入 fork-join 池，fixed parallelism=4（可经 `-Djunit.jupiter.execution.parallel.config.fixed.parallelism=N` 覆盖）。当前标注类：`ZigCcCompilerCrossTargetSmokeTest`（多 target 以 `@ParameterizedTest` 逐 target 拆分）、`ZigCcCompilerFailureTest`、`ZigCcCompilerIncrementalIntegrationTest`、`ZigCcCompilerPchIntegrationTest`、`GodotEditorHotReloadIntegrationTest`、`RpcCompileHttpIntegrationTest`。明确不并行：`ZigCcCompilerParallelTest`、`TinyCcCompilerParallelTest` 与 `ApiZigCcCompilerCancellationTest`（时序/取消语义敏感）及全部 fake/纯 Java 测试。
+- 并行安全约定：并发类必须逐方法 `@TempDir`、无静态可变状态；Godot 校验不得使用共享 `test_project` 目录（复制 fixture 到独立目录）。共享 include 树（`GDCC_SHARED_INCLUDE`）被多个并发类同时提取是允许且常见的：提取按内容比较跳过一致文件，覆写经 `FileUtil.moveReplacing`（Windows 瞬态句柄竞争退避重试）保证并发安全。
 - 吞吐量测试：`GdScriptBenchmarkCompileTest` 标注 `@Tag("throughput")`，test 任务默认 `excludeTags("throughput")`，本地经 `-PrunThroughputTests=true` 显式开启。
-- 锚点测试类：命令级 `ZigCcCompilerCommandTest`（纯 Java）、`ZigCcCompilerPchTest`/`ZigCcCompilerPchKeyTest`（fake）、`ZigCcCompilerFailureTest`/`ZigCcCompilerIncrementalIntegrationTest`/`ZigCcCompilerCrossTargetSmokeTest`/`ZigCcCompilerPchIntegrationTest`（真 zig）、`ZigCcCompilerProjectLockTest`、`ZigCcCompilerParallelTest`、`CProcessRegistryTest`、`ApiZigCcCompilerCancellationTest`、`ZigUtilTest`。
+- 锚点测试类：命令级 `ZigCcCompilerCommandTest`（纯 Java）、`ZigCcCompilerPchTest`/`ZigCcCompilerPchKeyTest`（fake）、`ZigCcCompilerFailureTest`/`ZigCcCompilerIncrementalIntegrationTest`/`ZigCcCompilerCrossTargetSmokeTest`/`ZigCcCompilerPchIntegrationTest`（真 zig）、`ZigCcCompilerProjectLockTest`、`ZigCcCompilerParallelTest`、`CProcessRegistryTest`、`ApiZigCcCompilerCancellationTest`、`ZigUtilTest`。tinycc 侧：`TinyCcCompilerTest`/`TinyCcCompilerIntegrationTest`/`TinyCcCompilerStabilityTest`/`TinyCcLibraryTest`/`TinyCcCliGateTest`/`TinyCcBundleAdmissionGateTest`（真 bundle/CLI 门控）、`TinyCcCompilerNativeFakeTest`/`TinyCcObjCacheTest`/`TinyCcBundleTest`（纯 Java/fake）、`TinyCcCompilerParallelTest`、`MinicoroTlsIsolationParityTest`、`MinicoroTlsUnloadReclaimTest`、`CrossBackendProjectLockTest`、`CrossBackendIncludeStabilityTest`（各测试的平台范围见 `tinycc_compiler_implementation.md`）。
 
 ## 9. 性能参考（本开发机，zig 0.16.0）
 
@@ -154,7 +169,7 @@ rotating_camera 示例全管线实测（44 核 Xeon E5-2699 v4）：
 构成性事实（架构取舍依据）：
 
 - `godot_binding.c` 聚合 TU 占编译时间 O0 约 83%、O2 约 93%，其内容只随 Godot API 版本与 gdcc runtime 变化；
-- zig per-TU 内容缓存命中代价约 30-48ms，cache key 不含输出路径，同一 cache root 可跨项目复用，因此 gdcc 不自管 object 缓存；
+- zig per-TU 内容缓存命中代价约 30-48ms，cache key 不含输出路径，同一 cache root 可跨项目复用，因此 zig 管线不自管 object 缓存（该结论仅约束 zig 管线；tinycc 管线的 `tcc-obj` 内容寻址缓存为独立合同，见 `tinycc_compiler_implementation.md`）；
 - PCH 使 entry TU 前端耗时再降约 35-40%（`godot_binding.c` 收益很小，其价值在 entry TU 与一致性）；
 - 全冷构建的增量成本是 zig 一次性 compiler-rt 构建，属非常态。
 

@@ -128,6 +128,26 @@ public class StringUtilTest {
     }
 
     @Test
+    public void escapeLineDirectiveFileNameKeepsNonAsciiRawAndEscapesStructuralChars() {
+        assertEquals("foo.gd", StringUtil.escapeLineDirectiveFileName("foo.gd"));
+        // Raw UTF-8 is the only spelling that stays byte-identical under tcc's escape-free #line
+        // parser and under clang/zig (generated sources are UTF-8).
+        assertEquals("café中文.gd", StringUtil.escapeLineDirectiveFileName("café中文.gd"));
+        assertEquals("dir\\\"quoted\\\".gd", StringUtil.escapeLineDirectiveFileName("dir\"quoted\".gd"));
+        assertEquals("C:\\\\work\\\\main.gd", StringUtil.escapeLineDirectiveFileName("C:\\work\\main.gd"));
+        // A raw tab is legal inside the quoted directive operand on both clang/zig and tcc.
+        assertEquals("a\tb.gd", StringUtil.escapeLineDirectiveFileName("a\tb.gd"));
+    }
+
+    @Test
+    public void escapeLineDirectiveFileNameRejectsControlCharacters() {
+        assertThrows(IllegalArgumentException.class, () -> StringUtil.escapeLineDirectiveFileName("a\nb.gd"));
+        assertThrows(IllegalArgumentException.class, () -> StringUtil.escapeLineDirectiveFileName("a\0b.gd"));
+        assertThrows(IllegalArgumentException.class,
+                () -> StringUtil.escapeLineDirectiveFileName("a" + (char) 0x7F + "b.gd"));
+    }
+
+    @Test
     public void unescapeQuotedHandlesEscapesAndUnicode() {
         assertEquals("line\nbreak", StringUtil.unescapeQuoted("line\\nbreak"));
         assertEquals("tab\tquote\"", StringUtil.unescapeQuoted("tab\\tquote\\\""));

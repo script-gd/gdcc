@@ -3,6 +3,9 @@ plugins {
     id("org.gradlex.extra-java-module-info") version "1.9"
 }
 
+// TinyCC CLI detection/build helpers and the `buildTinyccCli` task (wired into `test`).
+apply(from = "gradle/tinycc.gradle.kts")
+
 group = "gd.script"
 version = "0.0.2"
 
@@ -66,6 +69,9 @@ tasks.test {
             excludeTags("throughput")
         }
     }
+    // The in-process libtcc backend calls FFM restricted methods; tests run on the classpath
+    // (unnamed module), matching the launcher's `java -jar` native-access contract.
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
 
 val benchmark by tasks.registering(JavaExec::class) {
@@ -85,6 +91,8 @@ val buildAddonNative by tasks.registering(JavaExec::class) {
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass.set("gd.script.gdcc.rpc.EditorAddonProjectInstaller")
     workingDir = rootDir
+    // Runs from the classpath (unnamed module); the in-process libtcc backend needs FFM access.
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
 
 val buildAddonAllPlatform by tasks.registering(JavaExec::class) {
@@ -96,6 +104,8 @@ val buildAddonAllPlatform by tasks.registering(JavaExec::class) {
     mainClass.set("gd.script.gdcc.rpc.EditorAddonProjectInstaller")
     args("WINDOWS_X86_64", "LINUX_X86_64", "LINUX_AARCH64")
     workingDir = rootDir
+    // Runs from the classpath (unnamed module); the in-process libtcc backend needs FFM access.
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
 
 val generateVersionResource by tasks.registering {

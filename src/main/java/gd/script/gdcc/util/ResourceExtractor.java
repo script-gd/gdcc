@@ -294,7 +294,7 @@ public final class ResourceExtractor {
             var tmp = Files.createTempFile(out.getParent(), ".gdcc-extract-", ".tmp");
             try {
                 Files.write(tmp, bytes);
-                atomicReplace(tmp, out);
+                FileUtil.moveReplacing(tmp, out);
             } catch (Throwable t) {
                 try {
                     Files.deleteIfExists(tmp);
@@ -380,7 +380,7 @@ public final class ResourceExtractor {
                 // We already wrote the first mismatching chunk; now continue dumping rest of entry to temp.
                 zis.transferTo(tmpOut);
                 tmpOut.close();
-                atomicReplace(tmp, out);
+                FileUtil.moveReplacing(tmp, out);
             } catch (Throwable t) {
                 // ensure temp cleanup on any failure
                 if (tmpOut != null) {
@@ -433,19 +433,11 @@ public final class ResourceExtractor {
             }
             throw t;
         }
-        atomicReplace(tmp, out);
+        FileUtil.moveReplacing(tmp, out);
     }
 
     private static void writeEntryToTempAndReplaceFromAlreadyConsumed(ZipInputStream zis, Path out, byte[] prefix, int prefixLen) throws IOException {
         writeEntryToTempAndReplace(zis, out, prefix, prefixLen);
-    }
-
-    private static void atomicReplace(Path tmp, Path out) throws IOException {
-        try {
-            Files.move(tmp, out, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(tmp, out, StandardCopyOption.REPLACE_EXISTING);
-        }
     }
 
     private static Path safeResolve(Path dir, String entryName) throws IOException {
@@ -465,10 +457,19 @@ public final class ResourceExtractor {
         }
         // write to tmp in same dir then replace
         var tmp = Files.createTempFile(out.getParent(), ".gdcc-copy-", ".tmp");
-        try (var is = Files.newInputStream(sourceFile); var os = Files.newOutputStream(tmp)) {
-            is.transferTo(os);
+        try {
+            try (var is = Files.newInputStream(sourceFile); var os = Files.newOutputStream(tmp)) {
+                is.transferTo(os);
+            }
+            FileUtil.moveReplacing(tmp, out);
+        } catch (Throwable t) {
+            try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException ignored) {
+                // Best-effort cleanup of the staging file.
+            }
+            throw t;
         }
-        atomicReplace(tmp, out);
     }
 
     private static String stripZipExt(String name) {

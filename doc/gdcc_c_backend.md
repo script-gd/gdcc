@@ -7,7 +7,7 @@ registration rules are maintained in [gdcc_runtime_lib.md](gdcc_runtime_lib.md).
 
 `ZigCcCompiler` stores Zig local and global compiler caches under a shared cache root when one is
 available. If `GDCC_SHARED_C_COMPILER_CACHE` is set to a usable directory path, the compiler creates
-that directory when necessary and uses it as the root for `ZIG_CACHE_DIR` and `ZIG_GLOBAL_CACHE_DIR`.
+that directory when necessary and uses it as the root for `ZIG_LOCAL_CACHE_DIR` and `ZIG_GLOBAL_CACHE_DIR`.
 Blank values, invalid paths, files, or paths that cannot be created fall back to the existing
 project-location behavior: use the project parent's `shared-compiler-cache` directory when it
 already exists, otherwise use the project's own `compiler-cache` directory.
@@ -68,6 +68,43 @@ Usage and lifecycle rules:
   no-PCH rounds (builds stay correct) until a content change produces a new key. Changing only
   the prefix header is safe: its mtime is pinned, as described above.
 - PCH files and probe litter never appear in `artifacts()`.
+
+### TinyCC Object Cache
+
+`TinyCcCompiler` keeps its own content-addressed object cache under the cache root resolved by the
+same rules above (shared root when configured, otherwise the project-location fallback): each
+translation unit is compiled once per content key and published at `<cacheRoot>/tcc-obj/<key>.o`.
+Unlike the zig pipeline — where every TU recompiles every round and reuse is delegated to zig's
+content cache — a TinyCC cache hit skips the TU's compilation entirely, so diagnostics of a hit TU
+do not reappear in later rounds. The key composition, atomic publish, link-time self-heal and
+degradation contract is defined in
+[module_impl/backend/tinycc_compiler_implementation.md](module_impl/backend/tinycc_compiler_implementation.md);
+the zig-side conclusion that gdcc does not self-manage object caches applies to the zig pipeline
+only.
+
+## TinyCC Compatibility Surface
+
+The generated C is C23 and is also compiled by the vendored TinyCC tree (`src/main/c/tinycc`,
+pinned commit recorded in `src/main/c/tinycc/GDCC_PIN.md`) under `-std=c11`; a local patch in that
+tree treats `u8"..."` as a transparent narrow-string prefix, so the codegen `u8"..."` contract is
+unchanged and neither compiler needs a second template or include tree. The following adaptations
+keep one source tree compilable by both toolchains and are part of the current contract:
+
+- `gdcc_string.h`, `gdcc_string_name.h`, `gdcc_callable.h`: empty initializers spell `{NULL}`
+  instead of C23 `{nullptr}`.
+- `gdcc_operator.h` `pow_int`: the intermediate accumulator is `uint64_t` instead of `__int128`
+  (unavailable under TinyCC); two's-complement low-64-bit multiplication keeps results identical
+  after the final truncation to `godot_int`.
+- `gdcc_call.h`: the GNU/clang feature-test branch additionally matches `__TINYC__`.
+- `<stdbool.h>` is injected into the generated `godot_macros.h` (TinyCC under `-std=c11` does not
+  provide C23 `bool`/`true`/`false` keywords).
+- Generated entry sources initialize records with `= { 0 }` instead of C23 empty `= {}`.
+- `#line` file names must go through `StringUtil.escapeLineDirectiveFileName`, not the generic
+  string-literal escaper: TinyCC copies the `#line` operand bytes verbatim without decoding
+  escapes, so non-ASCII is emitted raw (generated sources are UTF-8), `"` and `\` are still
+  escaped, and ASCII control characters other than tab are rejected.
+- The vendored minicoro and `gdcc_hrx.c` carry further TinyCC/aarch64 branches; the patch registry
+  lives in [gdcc_runtime_lib.md](gdcc_runtime_lib.md) (`Vendored minicoro`, HRX thunk runtime).
 
 ## Reminders
 

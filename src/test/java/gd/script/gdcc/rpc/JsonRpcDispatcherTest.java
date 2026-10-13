@@ -8,6 +8,7 @@ import com.google.gson.JsonPrimitive;
 import gd.script.gdcc.api.API;
 import gd.script.gdcc.api.CompileOptions;
 import gd.script.gdcc.api.CompileTaskSnapshot;
+import gd.script.gdcc.backend.c.build.CCompilerKind;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.enums.GodotVersion;
@@ -17,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -483,7 +485,7 @@ class JsonRpcDispatcherTest {
 
     @Test
     void allDocumentedMethodsAreRouted() {
-        assertEquals(25, JsonRpcMethodRegistry.create().methodCount());
+        assertEquals(26, JsonRpcMethodRegistry.create().methodCount());
 
         api.createModule("demo", "Demo");
         api.putFile("demo", "/src/main.gd", "class_name RoutingDemo\nextends Node\n");
@@ -495,6 +497,7 @@ class JsonRpcDispatcherTest {
         var calls = Map.ofEntries(
                 Map.entry("server.ping", new JsonObject()),
                 Map.entry("server.info", new JsonObject()),
+                Map.entry("server.availableCCompilerKinds", new JsonObject()),
                 Map.entry("module.create", params("moduleId", "second", "moduleName", "Second")),
                 Map.entry("module.get", params("moduleId", "demo")),
                 Map.entry("module.list", new JsonObject()),
@@ -519,7 +522,7 @@ class JsonRpcDispatcherTest {
                 Map.entry("compile.clearEvents", params("taskId", taskId)),
                 Map.entry("analyze.run", params("moduleId", "demo"))
         );
-        assertEquals(25, calls.size());
+        assertEquals(26, calls.size());
 
         long startedTask = 0;
         for (var entry : calls.entrySet()) {
@@ -538,6 +541,60 @@ class JsonRpcDispatcherTest {
         if (startedTask != 0) {
             awaitTaskTerminal(startedTask);
         }
+    }
+
+    @Test
+    void availableCCompilerKindsEchoesTheApiProbeAsWireNames() {
+        var response = dispatcher.dispatch(
+                request("server.availableCCompilerKinds", new JsonObject(), new JsonPrimitive(1)));
+
+        assertFalse(response.has("error"), () -> "query must succeed: " + response);
+        var result = response.getAsJsonArray("result");
+        // The wire shape is an array of enum name()s matching the API probe exactly; which kinds
+        // a host reports is environment-dependent and anchored by the probe tests instead.
+        var expected = api.availableCCompilerKinds().stream().map(CCompilerKind::name).toList();
+        var actual = new ArrayList<String>();
+        for (var element : result) {
+            actual.add(element.getAsString());
+        }
+        assertEquals(expected, actual);
+    }
+
+    @Test
+    void optionsSetRoundTripsCompilerKindAndRejectsUnknownValues() {
+        api.createModule("demo", "Demo");
+
+        // Explicit kind: the whole snapshot is replaced and echoed with the selection applied.
+        var withKind = optionsSetParams();
+        withKind.getAsJsonObject("compileOptions").addProperty("cCompilerKind", "TINY_CC");
+        var echo = dispatcher.dispatch(request("options.set", withKind, new JsonPrimitive(1)));
+        assertFalse(echo.has("error"), () -> "options.set must succeed: " + echo);
+        assertEquals(
+                "TINY_CC",
+                echo.getAsJsonObject("result").get("cCompilerKind").getAsString()
+        );
+        assertEquals(CCompilerKind.TINY_CC, api.getCompileOptions("demo").cCompilerKind());
+
+        // Missing member: binds as "auto" (null) and serializes back as an explicit null.
+        var withoutKind = optionsSetParams();
+        var autoEcho = dispatcher.dispatch(request("options.set", withoutKind, new JsonPrimitive(2)));
+        assertFalse(autoEcho.has("error"), () -> "options.set must succeed: " + autoEcho);
+        assertEquals(
+                JsonNull.INSTANCE,
+                autoEcho.getAsJsonObject("result").get("cCompilerKind")
+        );
+        assertNull(api.getCompileOptions("demo").cCompilerKind());
+
+        // Unknown wire value: the strict enum adapter fails binding as invalid params.
+        var unknownKind = optionsSetParams();
+        unknownKind.getAsJsonObject("compileOptions").addProperty("cCompilerKind", "GCC");
+        var rejected = dispatcher.dispatch(request("options.set", unknownKind, new JsonPrimitive(3)));
+        assertEquals(
+                JsonRpcDispatcher.INVALID_PARAMS,
+                rejected.getAsJsonObject("error").get("code").getAsInt()
+        );
+        // The rejected set never reached the module: the previously stored snapshot is intact.
+        assertNull(api.getCompileOptions("demo").cCompilerKind());
     }
 
     // ------------------------------------------------------------------ helpers

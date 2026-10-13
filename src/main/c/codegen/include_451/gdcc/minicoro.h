@@ -431,6 +431,15 @@ extern "C" {
 #ifndef MCO_THREAD_LOCAL
   #ifdef MCO_NO_MULTITHREAD
     #define MCO_THREAD_LOCAL
+  #elif defined(__TINYC__) && defined(__aarch64__) && !defined(_WIN32)
+    /* gdcc patch: tcc's native TLS is unsafe for a DSO on aarch64 — on ELF its local-exec
+       model makes the loaded image alias the host executable's TLS slots, and its Mach-O
+       target has no TLV support at all — so mco_current_co goes through the pthread-key
+       accessors below instead. This branch sits ahead of the generic chain so the selection
+       cannot silently drift with tcc's threads-related predefined macros. x86_64 keeps
+       __thread: the defect is aarch64-specific and that path is verified working. */
+    #define MCO_USE_PTHREAD_TLS
+    #define MCO_THREAD_LOCAL
   #else
     #ifdef thread_local
       #define MCO_THREAD_LOCAL thread_local
@@ -438,13 +447,24 @@ extern "C" {
       #define MCO_THREAD_LOCAL _Thread_local
     #elif defined(_WIN32) && (defined(_MSC_VER) || defined(__ICL) ||  defined(__DMC__) ||  defined(__BORLANDC__))
       #define MCO_THREAD_LOCAL __declspec(thread)
-    #elif defined(__GNUC__) || defined(__SUNPRO_C) || defined(__xlC__)
+    #elif defined(__GNUC__) || defined(__SUNPRO_C) || defined(__xlC__) || defined(__TINYC__)
+      /* gdcc patch: tcc implements __thread but defines neither __GNUC__ nor, under -std=c11, a
+         usable _Thread_local path (its tccdefs.h sets __STDC_NO_THREADS__). Without __TINYC__ in
+         this condition the chain silently degrades to MCO_NO_MULTITHREAD below, making
+         mco_running thread-unsafe. */
       #define MCO_THREAD_LOCAL __thread
     #else /* No thread local support, `mco_running` will be thread unsafe. */
       #define MCO_THREAD_LOCAL
       #define MCO_NO_MULTITHREAD
     #endif
   #endif
+#endif
+
+/* gdcc patch guard: under tcc a real TLS branch above must win (pthread key on aarch64,
+   __thread elsewhere); degrading to MCO_NO_MULTITHREAD is a silent thread-safety regression,
+   so fail the compile instead. */
+#if defined(__TINYC__) && defined(MCO_NO_MULTITHREAD)
+  #error "minicoro requires thread-local state under tcc; MCO_NO_MULTITHREAD is not supported"
 #endif
 
 #ifndef MCO_FORCE_INLINE
@@ -562,7 +582,39 @@ static MCO_FORCE_INLINE size_t _mco_align_forward(size_t addr, size_t align) {
 }
 
 /* Variable holding the current running coroutine per thread. */
+#ifdef MCO_USE_PTHREAD_TLS
+/* gdcc patch: pthread-key storage behind accessors (see the MCO_THREAD_LOCAL chain for why
+   __thread is unsafe here). Every pthread failure aborts: a half-initialized key would corrupt
+   mco_running() silently, so the path is fail-closed. The destructor deletes the key on image
+   unload; it is spelled __attribute((destructor)) because glibc headers may macro-erase the
+   __attribute__ identifier when tcc does not advertise __GNUC__ — without it the key would
+   leak once per dlopen/dlclose round until pthread_key_create exhausts. The host must drain
+   coroutines and stop calling this image before unloading it. */
+#include <pthread.h>
+#include <stdlib.h>
+static pthread_key_t mco_current_co_key;
+static pthread_once_t mco_current_co_once = PTHREAD_ONCE_INIT;
+static int mco_current_co_key_initialized;
+static void _mco_create_tls_key(void) {
+  if(pthread_key_create(&mco_current_co_key, NULL) != 0) abort();
+  mco_current_co_key_initialized = 1;
+}
+__attribute((destructor)) static void _mco_delete_tls_key(void) {
+  if(mco_current_co_key_initialized) pthread_key_delete(mco_current_co_key);
+}
+static mco_coro* _mco_get_current(void) {
+  if(pthread_once(&mco_current_co_once, _mco_create_tls_key) != 0) abort();
+  return (mco_coro*)pthread_getspecific(mco_current_co_key);
+}
+static void _mco_set_current(mco_coro* co) {
+  if(pthread_once(&mco_current_co_once, _mco_create_tls_key) != 0) abort();
+  if(pthread_setspecific(mco_current_co_key, co) != 0) abort();
+}
+#else
 static MCO_THREAD_LOCAL mco_coro* mco_current_co = NULL;
+static mco_coro* _mco_get_current(void) { return mco_current_co; }
+static void _mco_set_current(mco_coro* co) { mco_current_co = co; }
+#endif
 
 static MCO_FORCE_INLINE void _mco_prepare_jumpin(mco_coro* co) {
   /* Set the old coroutine to normal state and update it. */
@@ -573,7 +625,7 @@ static MCO_FORCE_INLINE void _mco_prepare_jumpin(mco_coro* co) {
     MCO_ASSERT(prev_co->state == MCO_RUNNING);
     prev_co->state = MCO_NORMAL;
   }
-  mco_current_co = co;
+  _mco_set_current(co);
 #ifdef _MCO_USE_ASAN
   if(prev_co) {
     void* bottom_old = NULL;
@@ -598,7 +650,7 @@ static MCO_FORCE_INLINE void _mco_prepare_jumpout(mco_coro* co) {
     /* MCO_ASSERT(prev_co->state == MCO_NORMAL); */
     prev_co->state = MCO_RUNNING;
   }
-  mco_current_co = prev_co;
+  _mco_set_current(prev_co);
 #ifdef _MCO_USE_ASAN
   void* bottom_old = NULL;
   size_t size_old = 0;
@@ -671,7 +723,9 @@ typedef struct _mco_ctxbuf {
   void* stack_base;
 } _mco_ctxbuf;
 
-#if defined(__GNUC__)
+/* gdcc patch: tcc defines neither __GNUC__ nor _MSC_VER on its Windows target, but it accepts
+   __attribute__((section(".text"))), which these executable machine-code blobs require. */
+#if defined(__GNUC__) || defined(__TINYC__)
 #define _MCO_ASM_BLOB __attribute__((section(".text")))
 #elif defined(_MSC_VER)
 #define _MCO_ASM_BLOB __declspec(allocate(".text"))
@@ -776,6 +830,8 @@ typedef struct _mco_ctxbuf {
 void _mco_wrap_main(void);
 int _mco_switch(_mco_ctxbuf* from, _mco_ctxbuf* to);
 
+/* gdcc patch: tcc's inline assembler requires the comma form `.type name, @function` and does
+   not know the `jmpq` mnemonic; both forms used below are accepted identically by gcc/clang. */
 __asm__(
   ".text\n"
 #ifdef __MACH__ /* Mac OS X assembler */
@@ -783,12 +839,12 @@ __asm__(
   "__mco_wrap_main:\n"
 #else /* Linux assembler */
   ".globl _mco_wrap_main\n"
-  ".type _mco_wrap_main @function\n"
+  ".type _mco_wrap_main, @function\n"
   ".hidden _mco_wrap_main\n"
   "_mco_wrap_main:\n"
 #endif
   "  movq %r13, %rdi\n"
-  "  jmpq *%r12\n"
+  "  jmp *%r12\n"
 #ifndef __MACH__
   ".size _mco_wrap_main, .-_mco_wrap_main\n"
 #endif
@@ -801,11 +857,14 @@ __asm__(
   "__mco_switch:\n"
 #else /* Linux assembler */
   ".globl _mco_switch\n"
-  ".type _mco_switch @function\n"
+  ".type _mco_switch, @function\n"
   ".hidden _mco_switch\n"
   "_mco_switch:\n"
 #endif
-  "  leaq 0x3d(%rip), %rax\n"
+  /* gdcc patch: the resume address must reference a local label instead of a hard-coded
+     displacement — tcc's inline assembler mis-encodes constant RIP-relative displacements.
+     The label sits on the `ret` immediately after the jump below. */
+  "  leaq .Lmco_switch_resume(%rip), %rax\n"
   "  movq %rax, (%rdi)\n"
   "  movq %rsp, 8(%rdi)\n"
   "  movq %rbp, 16(%rdi)\n"
@@ -821,7 +880,8 @@ __asm__(
   "  movq 24(%rsi), %rbx\n"
   "  movq 16(%rsi), %rbp\n"
   "  movq 8(%rsi), %rsp\n"
-  "  jmpq *(%rsi)\n"
+  "  jmp *(%rsi)\n"
+  ".Lmco_switch_resume:\n"
   "  ret\n"
 #ifndef __MACH__
   ".size _mco_switch, .-_mco_switch\n"
@@ -863,7 +923,8 @@ int _mco_switch(_mco_ctxbuf* from, _mco_ctxbuf* to);
 __asm__(
   ".text\n"
   ".globl _mco_wrap_main\n"
-  ".type _mco_wrap_main @function\n"
+  /* gdcc patch: comma form, see the x86_64 block. */
+  ".type _mco_wrap_main, @function\n"
   ".hidden _mco_wrap_main\n"
   "_mco_wrap_main:\n"
   "  mv a0, s0\n"
@@ -874,7 +935,8 @@ __asm__(
 __asm__(
   ".text\n"
   ".globl _mco_switch\n"
-  ".type _mco_switch @function\n"
+  /* gdcc patch: comma form, see the x86_64 block. */
+  ".type _mco_switch, @function\n"
   ".hidden _mco_switch\n"
   "_mco_switch:\n"
   #if __riscv_xlen == 64
@@ -1059,7 +1121,8 @@ __asm__(
 #else
   ".text\n"
   ".globl _mco_switch\n"
-  ".type _mco_switch @function\n"
+  /* gdcc patch: comma form, see the x86_64 block. */
+  ".type _mco_switch, @function\n"
   ".hidden _mco_switch\n"
   "_mco_switch:\n"
 #endif
@@ -1179,6 +1242,9 @@ typedef struct _mco_ctxbuf {
 void _mco_wrap_main(void);
 int _mco_switch(_mco_ctxbuf* from, _mco_ctxbuf* to);
 
+/* gdcc patch: tcc's inline assembler accepts `.type` only in the comma form with an `@`/`%`
+   type prefix and rejects the hash spelling; the `%function` forms below are accepted
+   identically by gcc/clang's assembler. */
 __asm__(
   ".text\n"
 #ifdef __APPLE__
@@ -1186,7 +1252,7 @@ __asm__(
   "__mco_switch:\n"
 #else
   ".globl _mco_switch\n"
-  ".type _mco_switch #function\n"
+  ".type _mco_switch, %function\n"
   ".hidden _mco_switch\n"
   "_mco_switch:\n"
 #endif
@@ -1229,7 +1295,7 @@ __asm__(
   "__mco_wrap_main:\n"
 #else
   ".globl _mco_wrap_main\n"
-  ".type _mco_wrap_main #function\n"
+  ".type _mco_wrap_main, %function\n"
   ".hidden _mco_wrap_main\n"
   "_mco_wrap_main:\n"
 #endif
@@ -1927,11 +1993,11 @@ size_t mco_get_storage_size(mco_coro* co) {
 
 #ifdef MCO_NO_MULTITHREAD
 mco_coro* mco_running(void) {
-  return mco_current_co;
+  return _mco_get_current();
 }
 #else
 static MCO_NO_INLINE mco_coro* _mco_running(void) {
-  return mco_current_co;
+  return _mco_get_current();
 }
 mco_coro* mco_running(void) {
   /*

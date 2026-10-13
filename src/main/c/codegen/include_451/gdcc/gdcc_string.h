@@ -20,7 +20,7 @@ typedef struct StringDestroyRegistry {
 } StringDestroyRegistry;
 
 
-static StringDestroyRegistry g_n_registry = {nullptr};
+static StringDestroyRegistry g_n_registry = {NULL};
 
 static void gdcc_s_registry_add(godot_String* p_sn) {
     // No deduplication: each expansion site registers once per generation.

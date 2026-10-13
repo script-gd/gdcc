@@ -26,20 +26,21 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// Gate for the in-process per-project-directory build lock: concurrent `compile(...)` rounds
-/// on one project directory must be serialized (their objects share the
-/// `obj/<opt>/<target>/<index>_<file>.o` shape even across different output names), a round
-/// cancelled while waiting for the lock must surface through the standard interrupt channel,
-/// and textual path variants of one directory must share a single lock.
+/// Gate for the in-process per-project-directory build lock (held by [CProjectBuildLock] and
+/// shared by every [CCompiler] implementation): concurrent `compile(...)` rounds on one project
+/// directory must be serialized (their objects share the `obj/<opt>/<target>/<index>_<file>.o`
+/// shape even across different output names), a round cancelled while waiting for the lock must
+/// surface through the standard interrupt channel, and textual path variants of one directory
+/// must share a single lock.
 public class ZigCcCompilerProjectLockTest {
 
     @Test
     public void projectBuildLockIsSharedPerNormalizedDirectory() {
         var projectDir = Path.of("proj").toAbsolutePath();
-        var lock = ZigCcCompiler.requireProjectBuildLock(projectDir);
-        assertSame(lock, ZigCcCompiler.requireProjectBuildLock(projectDir.resolve("sub").resolve("..")),
+        var lock = CProjectBuildLock.require(projectDir);
+        assertSame(lock, CProjectBuildLock.require(projectDir.resolve("sub").resolve("..")),
                 "textual variants of one directory must share the lock");
-        assertNotSame(lock, ZigCcCompiler.requireProjectBuildLock(projectDir.resolve("other")),
+        assertNotSame(lock, CProjectBuildLock.require(projectDir.resolve("other")),
                 "different directories get independent locks");
     }
 
@@ -104,7 +105,7 @@ public class ZigCcCompilerProjectLockTest {
         Files.writeString(probe, "int gdcc_probe(void) { return 1; }\n");
         // Hold the project lock directly so the waiting round provably blocks on it — no
         // dependence on a slow real compile for timing.
-        var lock = ZigCcCompiler.requireProjectBuildLock(projectDir);
+        var lock = CProjectBuildLock.require(projectDir);
         lock.lock();
         var waiterResult = new AtomicReference<@Nullable CCompileResult>();
         var compiler = new ZigCcCompiler();
