@@ -87,8 +87,9 @@ public final class TinyCcCliTestSupport {
 
     /// A bundle usable by the FFM tests: the runtime layout plus the loadable libtcc binary.
     private static boolean isUsableBundleRoot(Path root) {
+        var libraryName = isWindowsHost() ? "libtcc.dll" : isMacOSHost() ? "libtcc.dylib" : "libtcc.so";
         return isUsableRuntimeRoot(root)
-                && Files.isRegularFile(root.resolve("bin").resolve(isWindowsHost() ? "libtcc.dll" : "libtcc.so"));
+                && Files.isRegularFile(root.resolve("bin").resolve(libraryName));
     }
 
     /// A tcc runtime root must carry its own headers and the runtime archive — at the root on
@@ -103,12 +104,19 @@ public final class TinyCcCliTestSupport {
         return switch (TargetPlatform.getNativePlatform()) {
             case LINUX_X86_64 -> "linux-x86_64";
             case WINDOWS_X86_64 -> "windows-x86_64";
+            case LINUX_AARCH64 -> "linux-aarch64";
+            case MACOS_AARCH64 -> "macos-aarch64";
             default -> null;
         };
     }
 
     private static boolean isWindowsHost() {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private static boolean isMacOSHost() {
+        var osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        return osName.contains("mac") || osName.contains("darwin");
     }
 
     static @Nullable Path findOnPath(String name) {

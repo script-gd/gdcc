@@ -38,8 +38,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /// Each leg is assumption-gated on its own toolchain; the parity test requires both.
 class MinicoroTlsIsolationParityTest {
 
-    private static final List<Path> RUNTIME_SOURCES = List.of(
-            RuntimeProbeToolchain.GDCC_INCLUDE_DIR.resolve("minicoro.c"));
+    /// The probe is a single TU: it pulls the implementation in through minicoro.c itself, so
+    /// its compile-time anchors can see the TLS selection chain's result (the chain's macros
+    /// live inside MINICORO_IMPL and are invisible to a declarations-only TU).
+    private static final List<Path> RUNTIME_SOURCES = List.of();
 
     private static final List<String> EXPECTED_LINES = List.of(
             "EV t0 done steps=250",

@@ -49,11 +49,13 @@ import java.util.concurrent.locks.ReentrantLock;
 ///    into a versioned user cache directory and reused from there.
 ///
 /// Bundle layout contract (validated on every resolution):
-/// - both platforms: `VERSION`, `MANIFEST`, `COPYING`, `RELICENSING`, and tinycc's own headers
+/// - all platforms: `VERSION`, `MANIFEST`, `COPYING`, `RELICENSING`, and tinycc's own headers
 ///   under `include/` (`tccdefs.h`, `stddef.h`, `stdarg.h` — these are NOT provided by the host
 ///   C library headers, so a bundle without them cannot compile anything);
-/// - `linux-x86_64`: `bin/libtcc.so`, and `libtcc1.a` at the bundle ROOT — on Linux the
-///   library search path expands `{B}` itself, not `{B}/lib`;
+/// - `linux-x86_64` / `linux-aarch64`: `bin/libtcc.so`, and `libtcc1.a` at the bundle ROOT — on
+///   Linux the library search path expands `{B}` itself, not `{B}/lib`;
+/// - `macos-aarch64`: `bin/libtcc.dylib`, and `libtcc1.a` at the bundle ROOT — the Mach-O
+///   backend expands `{B}` the same way as ELF;
 /// - `windows-x86_64`: `bin/libtcc.dll`, `lib/libtcc1.a` (the PE library search path is
 ///   `{B}/lib`), the merged `include/` tree (`_mingw.h` at the top level, `windows.h` under
 ///   `include/winapi/` — the PE backend searches both) and the import definitions
@@ -105,6 +107,8 @@ final class TinyCcBundle {
     static final String TINYCC_PINNED_COMMIT = "43c7708b85681a2fd4451c8a541af4494a8919b2";
     static final String LINUX_X86_64_KEY = "linux-x86_64";
     static final String WINDOWS_X86_64_KEY = "windows-x86_64";
+    static final String LINUX_AARCH64_KEY = "linux-aarch64";
+    static final String MACOS_AARCH64_KEY = "macos-aarch64";
     static final String CLASSPATH_RESOURCE_ROOT = "gdcc/tinycc-bundle";
 
     /// Crash residue younger than this is left untouched: an installer that is merely slow
@@ -279,6 +283,8 @@ final class TinyCcBundle {
         return switch (platform) {
             case LINUX_X86_64 -> LINUX_X86_64_KEY;
             case WINDOWS_X86_64 -> WINDOWS_X86_64_KEY;
+            case LINUX_AARCH64 -> LINUX_AARCH64_KEY;
+            case MACOS_AARCH64 -> MACOS_AARCH64_KEY;
             default -> throw new IllegalStateException(
                     "No tinycc bundle is available for " + platform + "; use the zig backend for this target");
         };
@@ -291,7 +297,8 @@ final class TinyCcBundle {
     static @NotNull Path libraryPath(@NotNull Path bundleRoot, @NotNull TargetPlatform platform) {
         // bundlePlatformKey is the single gate for "no bundle layout exists for this platform".
         bundlePlatformKey(platform);
-        return bundleRoot.resolve("bin").resolve(platform == TargetPlatform.WINDOWS_X86_64 ? "libtcc.dll" : "libtcc.so");
+        var libraryName = platform.isWindows() ? "libtcc.dll" : platform.isMacOS() ? "libtcc.dylib" : "libtcc.so";
+        return bundleRoot.resolve("bin").resolve(libraryName);
     }
 
     /// Cache directory key: gdcc version + pinned tinycc commit + platform, sanitized so the
@@ -514,9 +521,9 @@ final class TinyCcBundle {
     }
 
     /// Required entries per platform; a trailing `/` marks a directory entry. The `libtcc1.a`
-    /// placement differs by design: Linux searches `{B}` itself for libraries while the PE
-    /// backend searches `{B}/lib`, so each platform's archive must sit where its
-    /// `tcc_set_lib_path` expansion looks.
+    /// placement differs by design: the ELF and Mach-O backends search `{B}` itself for
+    /// libraries while the PE backend searches `{B}/lib`, so each platform's archive must sit
+    /// where its `tcc_set_lib_path` expansion looks.
     private static @NotNull List<String> requiredLayoutEntries(@NotNull String platformKey) {
         var common = List.of(
                 MANIFEST_FILE_NAME,
@@ -527,8 +534,12 @@ final class TinyCcBundle {
                 "include/stdarg.h"
         );
         var platformSpecific = switch (platformKey) {
-            case LINUX_X86_64_KEY -> List.of(
+            case LINUX_X86_64_KEY, LINUX_AARCH64_KEY -> List.of(
                     "bin/libtcc.so",
+                    "libtcc1.a"
+            );
+            case MACOS_AARCH64_KEY -> List.of(
+                    "bin/libtcc.dylib",
                     "libtcc1.a"
             );
             case WINDOWS_X86_64_KEY -> List.of(

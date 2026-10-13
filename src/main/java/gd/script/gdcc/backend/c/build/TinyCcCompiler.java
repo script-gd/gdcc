@@ -69,7 +69,12 @@ public class TinyCcCompiler implements CCompiler {
 
     /// Platforms with a verified libtcc backend bundle; cross-compilation is not possible
     /// because libtcc's target is fixed by how the library itself was built.
-    private static final List<TargetPlatform> SUPPORTED_PLATFORMS = List.of(TargetPlatform.LINUX_X86_64, TargetPlatform.WINDOWS_X86_64);
+    private static final List<TargetPlatform> SUPPORTED_PLATFORMS = List.of(
+            TargetPlatform.LINUX_X86_64,
+            TargetPlatform.WINDOWS_X86_64,
+            TargetPlatform.LINUX_AARCH64,
+            TargetPlatform.MACOS_AARCH64
+    );
 
     private static final String INTERRUPTED_CHANNEL = "Failed to run tcc: interrupted";
     private static final String FAILED_PREFIX = "Failed to run tcc: ";

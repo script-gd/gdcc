@@ -60,8 +60,9 @@ class TinyCcCompilerNativeFakeTest {
     /// these tests must run on a supported host to reach the behavior they anchor.
     private static @NotNull TargetPlatform assumeSupportedHost() {
         var host = TargetPlatform.getNativePlatform();
-        Assumptions.assumeTrue(host == TargetPlatform.LINUX_X86_64 || host == TargetPlatform.WINDOWS_X86_64,
-                "tinycc supports only linux/windows x86_64 hosts");
+        Assumptions.assumeTrue(host == TargetPlatform.LINUX_X86_64 || host == TargetPlatform.WINDOWS_X86_64
+                        || host == TargetPlatform.LINUX_AARCH64 || host == TargetPlatform.MACOS_AARCH64,
+                "tinycc supports only linux-x86_64, windows-x86_64, linux-aarch64 and macos-aarch64 hosts");
         return host;
     }
 

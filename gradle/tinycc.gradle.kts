@@ -13,12 +13,16 @@
 fun tinyccHostPlatformKey(): String? {
     val os = System.getProperty("os.name").lowercase()
     val arch = System.getProperty("os.arch").lowercase()
-    // Matches TargetPlatform.parseArchitecture's x86_64 spellings so Gradle and the test-side
+    // Matches TargetPlatform.parseArchitecture's spellings so Gradle and the test-side
     // discovery agree on the platform key.
     val isX64 = arch == "x86_64" || arch == "amd64" || arch == "x64"
+    val isAarch64 = arch == "aarch64" || arch == "arm64"
+    val isMac = os.contains("mac") || os.contains("darwin")
     return when {
         os.contains("linux") && isX64 -> "linux-x86_64"
         os.contains("windows") && isX64 -> "windows-x86_64"
+        os.contains("linux") && isAarch64 -> "linux-aarch64"
+        isMac && isAarch64 -> "macos-aarch64"
         else -> null
     }
 }

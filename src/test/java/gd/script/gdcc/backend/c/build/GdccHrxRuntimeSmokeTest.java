@@ -322,8 +322,9 @@ class GdccHrxRuntimeSmokeTest {
         // Buildability regression pin: LINUX_RISCV64 (no thunk template set) must still
         // COMPILE the runtime — the probe fails closed there instead of breaking the build.
         // The aarch64 and Win64 variants pin the ISA-specific branches (icache flush,
-        // VirtualAlloc) that the x86_64 host build never compiles.
-        for (var target : List.of("riscv64-linux-gnu", "aarch64-linux-gnu", "x86_64-windows-gnu")) {
+        // VirtualAlloc) that the x86_64 host build never compiles; aarch64-macos additionally
+        // pins the Darwin sys_icache_invalidate branch of gdcc_hrx_flush_icache.
+        for (var target : List.of("riscv64-linux-gnu", "aarch64-linux-gnu", "x86_64-windows-gnu", "aarch64-macos-none")) {
             var output = sharedDir.resolve("gdcc_hrx_" + target + ".o");
             var command = new ArrayList<String>();
             command.add(zig.toString());

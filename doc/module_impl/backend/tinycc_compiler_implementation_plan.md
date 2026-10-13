@@ -400,17 +400,17 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 
 进度（实施中逐项同步）：
 
-- [ ] C 层三项补丁（pthread TLS 访问器化、aarch64 `.type` 逗号化、`__APPLE__` icache 分支）+ `CPortabilitySurfaceTest` aarch64 断言扩展；本机 zig/tcc x86_64 侧零回退（`GdccCoroutineRuntimeSmokeTest`、`MinicoroTlsIsolationParityTest`、`GdccHrxRuntimeSmokeTest` 复绿）
-- [ ] `TinyCcBundle` 四点扩展（键常量/映射/布局/dylib 分支）+ `TinyCcBundleTest` 新平台布局、VERSION、MANIFEST 正反用例与负向样例迁移（`LINUX_AARCH64` → `MACOS_X86_64`，纯 Java fixture，不依赖真包）
-- [ ] `TinyCcCompiler.SUPPORTED_PLATFORMS` 放开 + 测试缝/门控同步（`TinyCcCliTestSupport`、`TinyCcCompilerNativeFakeTest`、`TinyCcCompilerParallelTest`、`CrossBackendProjectLockTest`）；fake/锁套件在 aarch64 CI 实际运行
-- [ ] `NativeArtifactInspector` macOS 腿（Mach-O 形态 + `nm -gU` 导出）+ 三处既有断言接入
-- [ ] pthread TLS 卸载回收门（≥1100 轮 dlopen/dlclose，双 aarch64 平台 CI 实跑）
-- [ ] 真实 bundle 入场门（`requireBundleRoot` 全缝，双平台 CI 实跑）
-- [ ] 四个构建脚本 + `gradle/tinycc.gradle.kts` + `ci.yml` 接线（§8.8/§8.9 获批后）
+- [x] C 层三项补丁（pthread TLS 访问器化、aarch64 `.type` 逗号化、`__APPLE__` icache 分支）+ `CPortabilitySurfaceTest` aarch64 断言扩展；本机 zig/tcc x86_64 侧零回退（`GdccCoroutineRuntimeSmokeTest`、`MinicoroTlsIsolationParityTest`、`GdccHrxRuntimeSmokeTest` 复绿）
+- [x] `TinyCcBundle` 四点扩展（键常量/映射/布局/dylib 分支）+ `TinyCcBundleTest` 新平台布局、VERSION、MANIFEST 正反用例与负向样例迁移（`LINUX_AARCH64` → `MACOS_X86_64`，纯 Java fixture，不依赖真包）
+- [x] `TinyCcCompiler.SUPPORTED_PLATFORMS` 放开 + 测试缝/门控同步（`TinyCcCliTestSupport`、`TinyCcCompilerNativeFakeTest`、`TinyCcCompilerParallelTest`、`CrossBackendProjectLockTest`）；fake/锁套件门控已同步支持集（aarch64 CI 实跑归下方未勾项）
+- [x] `NativeArtifactInspector` macOS 腿（Mach-O 形态 + `nm -gU` 导出）+ 三处既有断言接入
+- [x] pthread TLS 卸载回收门测试落地（≥1100 轮 dlopen/dlclose + RTLD_NOLOAD + 析构见证 + TLS 路径自报锚定；本机 x86_64 已实跑，双 aarch64 平台 CI 实跑归下方未勾项）
+- [x] 真实 bundle 入场门测试落地（`requireBundleRoot` 全缝 + FFM 编译 + 篡改/跨平台负向；本机 x86_64 已实跑，双平台 CI 实跑归下方未勾项）
+- [x] 四个构建脚本 + `gradle/tinycc.gradle.kts` + `ci.yml` 接线（§8.8/§8.9 获批后）
 - [ ] Linux aarch64 CI：bundle 构建成功；验收清单所列 TinyCc* 门（FFM 编译/缓存矩阵/HRX/稳定性/test_suite tcc 子集含 Godot 门）实际运行、0 跳过 0 失败
 - [ ] macOS aarch64 CI：同上，外加 bundle 结构断言（`otool -hv` 见 `TWOLEVEL`、`codesign -v` 通过、`bin/libtcc.dylib` 为 Mach-O arm64）
 - [ ] 验收后修订：§1.2 非目标、§3.2 step 2 支持集、D5、§3.4 布局合同、§9 已知限制（对齐阶段 7「验收后落地」先例）
-- [ ] review-expert-c 复核收口
+- [x] review-expert-c 复核收口
 
 验收（G8，全部以 CI 实际运行为准；关键测试全部 skipped 不算通过）：
 
@@ -487,8 +487,8 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 5. per-project 构建锁从 `ZigCcCompiler` 提取为编译器中立持有器（`ZigCcCompiler` 相应改造）：改动既有 zig 实现的锁持有方式，需确认。（**已批准并落地（阶段 3）**：`CProjectBuildLock` 提取完成，`ZigCcCompiler` 与其锁测试均已迁移。）
 6. 移除 `CProjectBuilder.setCCompiler`（当前无生产调用方，测试改用构造器注入）——公共 API 面缩减，需确认。
 7. `ci.yml` 改动与 Windows 主机 bundle 构建脚本：Windows job 新增 bundle 构建步骤（`build-script/build-tinycc-bundle-windows-x86_64.bat`，zig cc 产 `libtcc.dll` + 组装/校验 bundle），Linux job 接入既有 `build-tinycc-bundle-linux-x86_64.sh`，使 FFM/bundle 门控测试集在两平台 CI 真实执行。（**已批准并落地（阶段 6）**：用户明确批准"允许修改ci.yml，Windows job 内新增 bundle 构建步骤，执行与Linux类似步骤的测试"。）
-8. `build-script/` 新增四个 aarch64 脚本：bundle 构建（`build-tinycc-bundle-linux-aarch64.sh`、`build-tinycc-bundle-macos-aarch64.sh`）与 CLI 工作树构建（`build-tinycc-cli-linux-aarch64.sh`、`build-tinycc-cli-macos-aarch64.sh`）——目录决议同 §8.2。
-9. `ci.yml` 在 `linux-aarch64`/`macos-aarch64` job 新增 bundle 构建步骤；`gradle/tinycc.gradle.kts` 的 `tinyccHostPlatformKey()` 扩展两平台键（构建配置改动）。
+8. `build-script/` 新增四个 aarch64 脚本：bundle 构建（`build-tinycc-bundle-linux-aarch64.sh`、`build-tinycc-bundle-macos-aarch64.sh`）与 CLI 工作树构建（`build-tinycc-cli-linux-aarch64.sh`、`build-tinycc-cli-macos-aarch64.sh`）——目录决议同 §8.2。（**已批准并落地（阶段 8）**：用户明确批准"全部批准"四个脚本与 §8.9 的 gradle/CI 改动；CI 实跑验收归 G8。）
+9. `ci.yml` 在 `linux-aarch64`/`macos-aarch64` job 新增 bundle 构建步骤；`gradle/tinycc.gradle.kts` 的 `tinyccHostPlatformKey()` 扩展两平台键（构建配置改动）。（**已批准并落地（阶段 8）**：批准记录同 §8.8。）
 
 ## 9. 已知限制与后续方向
 

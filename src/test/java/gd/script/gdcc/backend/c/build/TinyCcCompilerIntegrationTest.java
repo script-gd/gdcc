@@ -69,7 +69,7 @@ class TinyCcCompilerIntegrationTest {
 
         var artifact = prepared.buildResult().artifacts().getFirst();
         assertTrue(Files.isRegularFile(artifact) && Files.size(artifact) > 0, "the tcc artifact must exist");
-        assertSharedLibraryShape(artifact);
+        NativeArtifactInspector.assertSharedLibraryShape(artifact);
 
         var gdextension = prepared.godotProjectDir().resolve("GDExtensionTest.gdextension");
         assertTrue(Files.isRegularFile(gdextension), "prepareProject must write the .gdextension metadata");
@@ -207,18 +207,6 @@ class TinyCcCompilerIntegrationTest {
         }
         assertTrue(Files.isRegularFile(godotProjectDir.resolve("project.godot")), "project.godot must be copied");
         assertTrue(Files.isRegularFile(godotProjectDir.resolve("root.gd")), "root.gd must be copied");
-    }
-
-    /// ELF magic on Linux, MZ header on Windows — the minimal freshness proof for the artifact.
-    private static void assertSharedLibraryShape(@NotNull Path artifact) throws IOException {
-        var bytes = Files.readAllBytes(artifact);
-        assertTrue(bytes.length > 4, "artifact is suspiciously small: " + bytes.length + " bytes");
-        if (TargetPlatform.getNativePlatform().isWindows()) {
-            assertTrue(bytes[0] == 'M' && bytes[1] == 'Z', "the artifact must be a PE image");
-        } else {
-            assertTrue(bytes[0] == 0x7F && bytes[1] == 'E' && bytes[2] == 'L' && bytes[3] == 'F',
-                    "the artifact must be an ELF shared library");
-        }
     }
 
     /// The fixture keeps state transitions fully inside method calls (no `_ready` ordering

@@ -71,7 +71,7 @@ class CrossBackendIncludeStabilityTest {
             var artifact = result.artifacts().getFirst();
             assertTrue(Files.isRegularFile(artifact) && Files.size(artifact) > 0,
                     () -> "round " + roundNo + " produced no artifact");
-            assertSharedLibraryShape(artifact, host);
+            assertSharedLibraryShape(artifact);
             if (kind == CCompilerKind.TINY_CC) {
                 assertFalse(result.buildLog().contains("Command:"),
                         () -> "tcc rounds never log subprocess commands:\n" + result.buildLog());
@@ -151,16 +151,9 @@ class CrossBackendIncludeStabilityTest {
     private record FileFingerprint(long size, long mtimeMillis, @NotNull String sha256) {
     }
 
-    /// ELF magic on Linux, MZ header on Windows — minimal freshness proof for the round artifact.
-    private static void assertSharedLibraryShape(@NotNull Path artifact, @NotNull TargetPlatform host) throws IOException {
-        var bytes = Files.readAllBytes(artifact);
-        assertTrue(bytes.length > 4, "artifact is suspiciously small: " + bytes.length + " bytes");
-        if (host.isWindows()) {
-            assertTrue(bytes[0] == 'M' && bytes[1] == 'Z', "the artifact must be a PE image");
-        } else {
-            assertTrue(bytes[0] == 0x7F && bytes[1] == 'E' && bytes[2] == 'L' && bytes[3] == 'F',
-                    "the artifact must be an ELF shared library");
-        }
+    private static void assertSharedLibraryShape(@NotNull Path artifact) throws IOException {
+        // The shared inspector dispatches per host (ELF / Mach-O arm64 / PE).
+        NativeArtifactInspector.assertSharedLibraryShape(artifact);
     }
 
     private static final String FIXTURE_SOURCE = """

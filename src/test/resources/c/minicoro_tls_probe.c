@@ -1,4 +1,8 @@
-#include <minicoro.h>
+// Single-TU probe: the implementation is pulled in through minicoro.c (which applies the
+// production MCO_USE_ASM/allocator configuration) so the compile-time anchors below see the
+// TLS selection chain's result — its macros live inside MINICORO_IMPL and are invisible to a
+// declarations-only TU.
+#include <minicoro.c>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -6,6 +10,13 @@
 // this TU must not compile at all if the fallback ever engages under either compiler.
 #if defined(MCO_NO_MULTITHREAD)
 #error "the TLS probe requires a thread-local mco_running(); MCO_NO_MULTITHREAD must stay undefined"
+#endif
+
+// Compile-time anchor: under tcc on aarch64 the pthread-key TLS path must be selected — tcc's
+// native __thread is unsafe for a DSO there (local-exec aliases host TLS slots on ELF; Mach-O
+// has no TLV support), so a regression in the selection chain must fail the compile.
+#if defined(__TINYC__) && defined(__aarch64__) && !defined(_WIN32) && !defined(MCO_USE_PTHREAD_TLS)
+#error "tcc aarch64 must select the MCO_USE_PTHREAD_TLS path"
 #endif
 
 #if defined(_WIN32)

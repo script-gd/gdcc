@@ -42,8 +42,9 @@ class CrossBackendProjectLockTest {
     void zigRoundWaitsForTinyCcRoundHoldingTheProjectLock(@TempDir Path tempDir) throws Exception {
         Assumptions.assumeTrue(ZigUtil.findZig() != null, "zig is required for the zig leg");
         var host = TargetPlatform.getNativePlatform();
-        Assumptions.assumeTrue(host == TargetPlatform.LINUX_X86_64 || host == TargetPlatform.WINDOWS_X86_64,
-                "tinycc supports only linux/windows x86_64 hosts");
+        Assumptions.assumeTrue(host == TargetPlatform.LINUX_X86_64 || host == TargetPlatform.WINDOWS_X86_64
+                        || host == TargetPlatform.LINUX_AARCH64 || host == TargetPlatform.MACOS_AARCH64,
+                "tinycc supports only linux-x86_64, windows-x86_64, linux-aarch64 and macos-aarch64 hosts");
         var projectDir = Files.createDirectories(tempDir.resolve("project"));
         // The zig TU carries a distinctive export so the final artifact's producer is provable.
         var zigTu = Files.writeString(projectDir.resolve("zig_entry.c"),
@@ -116,8 +117,9 @@ class CrossBackendProjectLockTest {
     @Test
     void tinyCcRoundNeverStartsWhileTheSharedProjectLockIsHeld(@TempDir Path tempDir) throws Exception {
         var host = TargetPlatform.getNativePlatform();
-        Assumptions.assumeTrue(host == TargetPlatform.LINUX_X86_64 || host == TargetPlatform.WINDOWS_X86_64,
-                "tinycc supports only linux/windows x86_64 hosts");
+        Assumptions.assumeTrue(host == TargetPlatform.LINUX_X86_64 || host == TargetPlatform.WINDOWS_X86_64
+                        || host == TargetPlatform.LINUX_AARCH64 || host == TargetPlatform.MACOS_AARCH64,
+                "tinycc supports only linux-x86_64, windows-x86_64, linux-aarch64 and macos-aarch64 hosts");
         var projectDir = Files.createDirectories(tempDir.resolve("project"));
         var tccTu = Files.writeString(projectDir.resolve("entry.c"),
                 NativeArtifactInspector.EXPORT_MACRO_DEFINITION + "GDCC_TEST_EXPORT int gdextension_entry(void) { return 1; }\n");

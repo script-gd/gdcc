@@ -51,6 +51,8 @@ class CPortabilitySurfaceTest {
     private static final Pattern ASM_JMPQ = Pattern.compile("\\bjmpq\\b");
     /// The rejected form has whitespace (not a comma) between symbol and @function.
     private static final Pattern ASM_TYPE_WITHOUT_COMMA = Pattern.compile("\\.type\\s+[^\\s,]+\\s+@function");
+    /// tcc rejects the hash spelling entirely; ARM assemblers spell the same directive `%function`.
+    private static final Pattern ASM_TYPE_HASH_FUNCTION = Pattern.compile("\\.type\\s+[^\\s,]+\\s+#function");
 
     @Test
     void includeAndTemplateTreesShouldCarryNoC23OnlyCodeTokens() throws IOException {
@@ -86,6 +88,27 @@ class CPortabilitySurfaceTest {
         // wrong regions and passing vacuously).
         assertTrue(asmContent.contains(".type _mco_switch, @function"), "patched .type form missing");
         assertTrue(asmContent.contains(".Lmco_switch_resume"), "labeled resume address missing");
+    }
+
+    @Test
+    void minicoroAarch64InlineAssemblyShouldUseOnlyTccAcceptedForms() throws IOException {
+        // The ARM32 blocks keep their `#function` spellings deliberately (non-target platforms),
+        // so the negative assertion must be scoped to the aarch64 block instead of the whole file.
+        var minicoroHeader = INCLUDE_ROOT.resolve("gdcc/minicoro.h");
+        var source = Files.readString(minicoroHeader, StandardCharsets.UTF_8);
+        var blockStart = source.indexOf("#elif defined(__aarch64__)");
+        assertTrue(blockStart >= 0 && blockStart == source.lastIndexOf("#elif defined(__aarch64__)"),
+                "a unique aarch64 asm block opener is required for these scoped assertions");
+        var blockEnd = source.indexOf("#error \"Unsupported architecture for assembly method.\"");
+        assertTrue(blockEnd > blockStart, "the aarch64 asm block must reach the unsupported-architecture guard");
+        var scan = scanC(source.substring(blockStart, blockEnd), minicoroHeader);
+        var asmContent = String.join("\n", scan.stringContents());
+        assertFalse(ASM_TYPE_HASH_FUNCTION.matcher(asmContent).find(),
+                "tcc rejects the hash form of .type; aarch64 uses `.type name, %function`");
+        // Presence anchors: the patched forms must actually be there (guards against scanning the
+        // wrong region and passing vacuously).
+        assertTrue(asmContent.contains(".type _mco_switch, %function"), "patched aarch64 .type form missing");
+        assertTrue(asmContent.contains(".type _mco_wrap_main, %function"), "patched aarch64 .type form missing");
     }
 
     @Test
@@ -152,6 +175,8 @@ class CPortabilitySurfaceTest {
         assertFalse(ASM_JMPQ.matcher("  jmp *(%rsi)\n").find());
         assertTrue(ASM_TYPE_WITHOUT_COMMA.matcher(".type _mco_switch @function\n").find());
         assertFalse(ASM_TYPE_WITHOUT_COMMA.matcher(".type _mco_switch, @function\n").find());
+        assertTrue(ASM_TYPE_HASH_FUNCTION.matcher(".type _mco_switch #function\n").find());
+        assertFalse(ASM_TYPE_HASH_FUNCTION.matcher(".type _mco_switch, %function\n").find());
     }
 
     // ---------------------------------------------------------------------------

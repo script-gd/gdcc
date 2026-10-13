@@ -83,14 +83,7 @@ class TinyCcCliGateTest {
                 () -> "tcc reported diagnostics on the shared C layer:\n" + buildOutput);
         assertTrue(Files.isRegularFile(output) && Files.size(output) > 0, "shared library artifact missing");
 
-        var nm = TinyCcCliTestSupport.findOnPath("nm");
-        Assumptions.assumeTrue(nm != null, "nm is required to assert exported entry symbol");
-        var nmProcess = new ProcessBuilder(nm.toString(), "-D", "--defined-only", output.toString())
-                .redirectErrorStream(true).start();
-        var nmOutput = new String(nmProcess.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        assertEquals(0, nmProcess.waitFor(), () -> "nm failed:\n" + nmOutput);
-        assertTrue(nmOutput.contains("gdextension_entry"),
-                () -> "entry symbol missing from dynamic exports:\n" + nmOutput);
+        NativeArtifactInspector.assertExportsSymbol(output, "gdextension_entry");
     }
 
     /// Runs the production generation/extraction pipeline with the native compile step replaced by

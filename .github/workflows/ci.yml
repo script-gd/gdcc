@@ -206,7 +206,7 @@ jobs:
 
       # The in-process (FFM) tinycc tests need the libtcc bundle, which the Gradle
       # `buildTinyccCli` task deliberately does not produce (it builds the CLI only). Build the
-      # bundle on both tcc-supported hosts so the whole TinyCc* gate set actually runs instead of
+      # bundle on every tcc-supported host so the whole TinyCc* gate set actually runs instead of
       # skipping on its assumptions; other platforms keep skipping by design.
       - name: Build tinycc bundle (Linux x64)
         if: matrix.id == 'linux-x64'
@@ -218,6 +218,18 @@ jobs:
         if: matrix.id == 'windows-x64'
         shell: cmd
         run: build-script\build-tinycc-bundle-windows-x86_64.bat
+
+      - name: Build tinycc bundle (Linux aarch64)
+        if: matrix.id == 'linux-aarch64'
+        run: |
+          set -euo pipefail
+          bash build-script/build-tinycc-bundle-linux-aarch64.sh
+
+      - name: Build tinycc bundle (macOS aarch64)
+        if: matrix.id == 'macos-aarch64'
+        run: |
+          set -euo pipefail
+          bash build-script/build-tinycc-bundle-macos-aarch64.sh
 
       - name: Run unit tests
         env:

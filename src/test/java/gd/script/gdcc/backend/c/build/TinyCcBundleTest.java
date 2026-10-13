@@ -195,6 +195,52 @@ class TinyCcBundleTest {
     }
 
     @Test
+    void aarch64PlatformsMapToTheirBundleKeys() {
+        // Literal expectations pin the key spelling contract: the keys name on-disk bundle
+        // directories that the build scripts and CI steps produce.
+        assertEquals("linux-aarch64", TinyCcBundle.bundlePlatformKey(TargetPlatform.LINUX_AARCH64));
+        assertEquals("macos-aarch64", TinyCcBundle.bundlePlatformKey(TargetPlatform.MACOS_AARCH64));
+    }
+
+    @Test
+    void libraryPathSelectsTheSharedLibraryNamePerPlatformFamily(@TempDir Path tempDir) {
+        assertEquals(tempDir.resolve("bin/libtcc.so"), TinyCcBundle.libraryPath(tempDir, TargetPlatform.LINUX_X86_64));
+        assertEquals(tempDir.resolve("bin/libtcc.so"), TinyCcBundle.libraryPath(tempDir, TargetPlatform.LINUX_AARCH64));
+        assertEquals(tempDir.resolve("bin/libtcc.dylib"), TinyCcBundle.libraryPath(tempDir, TargetPlatform.MACOS_AARCH64));
+        assertEquals(tempDir.resolve("bin/libtcc.dll"), TinyCcBundle.libraryPath(tempDir, TargetPlatform.WINDOWS_X86_64));
+    }
+
+    @Test
+    void linuxAarch64BundleResolvesThroughEnvOverride(@TempDir Path tempDir) throws IOException {
+        var fixture = tempDir.resolve("bundle");
+        writeLinuxAarch64BundleFixture(fixture);
+
+        var resolved = TinyCcBundle.requireBundleRoot(fixture.toString(), tempDir.resolve("cache"), failingSource(), TinyCcBundle.LINUX_AARCH64_KEY, VERSION);
+
+        assertEquals(fixture.toAbsolutePath().normalize(), resolved);
+    }
+
+    @Test
+    void macosAarch64BundleResolvesThroughEnvOverride(@TempDir Path tempDir) throws IOException {
+        var fixture = tempDir.resolve("bundle");
+        writeMacosAarch64BundleFixture(fixture);
+
+        var resolved = TinyCcBundle.requireBundleRoot(fixture.toString(), tempDir.resolve("cache"), failingSource(), TinyCcBundle.MACOS_AARCH64_KEY, VERSION);
+
+        assertEquals(fixture.toAbsolutePath().normalize(), resolved);
+    }
+
+    @Test
+    void macosAarch64BundleWithoutTheDylibFails(@TempDir Path tempDir) throws IOException {
+        var fixture = tempDir.resolve("bundle");
+        writeMacosAarch64BundleFixture(fixture);
+        Files.delete(fixture.resolve("bin/libtcc.dylib"));
+        var exception = assertThrows(IOException.class,
+                () -> TinyCcBundle.requireBundleRoot(fixture.toString(), tempDir.resolve("cache"), failingSource(), TinyCcBundle.MACOS_AARCH64_KEY, VERSION));
+        assertTrue(exception.getMessage().contains("bin/libtcc.dylib"), () -> exception.getMessage());
+    }
+
+    @Test
     void installFromSourceCreatesTheVersionedCacheDirectory(@TempDir Path tempDir) throws IOException {
         var fixture = tempDir.resolve("fixture");
         writeLinuxBundleFixture(fixture);
@@ -242,7 +288,8 @@ class TinyCcBundleTest {
 
     @Test
     void unsupportedPlatformsFailBeforeAnyBundleWork(@TempDir Path tempDir) throws IOException {
-        var exception = assertThrows(IllegalStateException.class, () -> TinyCcBundle.bundlePlatformKey(TargetPlatform.LINUX_AARCH64));
+        // macOS x86_64 stays a non-target: only the aarch64 Mac has a verified libtcc backend.
+        var exception = assertThrows(IllegalStateException.class, () -> TinyCcBundle.bundlePlatformKey(TargetPlatform.MACOS_X86_64));
         assertTrue(exception.getMessage().contains("zig"), () -> "the fallback guidance names the zig backend: " + exception.getMessage());
 
         // The same gate holds through the resolution seam for a platform key with no layout.
@@ -1014,6 +1061,26 @@ class TinyCcBundleTest {
         for (var def : List.of("msvcrt", "kernel32", "user32", "gdi32")) {
             Files.writeString(dir.resolve("lib/" + def + ".def"), "LIBRARY " + def + "\n");
         }
+        writeManifest(dir);
+    }
+
+    /// A valid linux-aarch64 fixture: identical layout to linux-x86_64 (the ELF library search
+    /// expands `{B}` itself), keyed for linux-aarch64.
+    private static void writeLinuxAarch64BundleFixture(Path dir) throws IOException {
+        writeCommonFixture(dir, TinyCcBundle.LINUX_AARCH64_KEY);
+        Files.createDirectories(dir.resolve("bin"));
+        Files.writeString(dir.resolve("bin/libtcc.so"), "fixture libtcc.so\n");
+        Files.writeString(dir.resolve("libtcc1.a"), "fixture libtcc1.a\n");
+        writeManifest(dir);
+    }
+
+    /// A valid macos-aarch64 fixture: the dylib under bin/ and the runtime archive at the
+    /// bundle root (the Mach-O backend expands `{B}` itself, like ELF).
+    private static void writeMacosAarch64BundleFixture(Path dir) throws IOException {
+        writeCommonFixture(dir, TinyCcBundle.MACOS_AARCH64_KEY);
+        Files.createDirectories(dir.resolve("bin"));
+        Files.writeString(dir.resolve("bin/libtcc.dylib"), "fixture libtcc.dylib\n");
+        Files.writeString(dir.resolve("libtcc1.a"), "fixture libtcc1.a\n");
         writeManifest(dir);
     }
 
