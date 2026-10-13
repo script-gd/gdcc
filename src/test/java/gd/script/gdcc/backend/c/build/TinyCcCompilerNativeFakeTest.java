@@ -66,7 +66,7 @@ class TinyCcCompilerNativeFakeTest {
     }
 
     /// A real directory with a `VERSION` file so key preparation succeeds and the cache is
-    /// available; the cache root resolves to `<project>/compiler-cache` (no shared sibling).
+    /// available; the cache root is pinned to `<project>/compiler-cache` by `newCompiler`.
     private static @NotNull Path newBundleRoot(@NotNull Path tempDir) throws IOException {
         var bundleRoot = Files.createDirectories(tempDir.resolve("bundle"));
         Files.writeString(bundleRoot.resolve(TinyCcBundle.VERSION_FILE_NAME), "bundleFormat=1\n");
@@ -74,12 +74,15 @@ class TinyCcCompilerNativeFakeTest {
     }
 
     private static @NotNull TinyCcCompiler newCompiler(@NotNull Path bundleRoot, @NotNull AtomicReference<@Nullable FakeTinyCcNative> created, @NotNull Consumer<FakeTinyCcNative> program) {
+        // Pin an isolated project-local cache root: `@TempDir` cannot scrub a parent-process
+        // GDCC_SHARED_C_COMPILER_CACHE (CI sets it for the zig cache), which would otherwise
+        // redirect resolution away from this temporary project tree.
         return new TinyCcCompiler(() -> bundleRoot, (root, targetPlatform, roundArena) -> {
             var fake = new FakeTinyCcNative(roundArena);
             program.accept(fake);
             created.set(fake);
             return fake;
-        });
+        }, projectDir -> projectDir.resolve("compiler-cache"));
     }
 
     private static @NotNull Path writeTu(@NotNull Path dir, @NotNull String name) throws IOException {

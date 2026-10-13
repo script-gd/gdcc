@@ -42,7 +42,7 @@ import java.util.concurrent.locks.ReentrantLock;
 ///   step; an active downcall cannot be interrupted. Cancellation always surfaces as the fixed
 ///   `Failed to run tcc: interrupted` channel with the interrupt status restored and never
 ///   carries cache statistics (the round did not complete).
-/// - The cache is never a build failure source: key preparation runs outside the locks (no
+/// - The cache is never a build failure source: key preparation runs inside both locks (no
 ///   libtcc calls), an include-tree/bundle-VERSION/cache-root failure degrades the whole round
 ///   to cacheless with one fixed fallback line, a publish failure degrades only that TU to its
 ///   temp artifact, and a TU read failure is a plain miss. When the linker rejects a cache-hit
@@ -78,6 +78,7 @@ public class TinyCcCompiler implements CCompiler {
 
     private final @NotNull BundleResolver bundleResolver;
     private final @NotNull NativeFactory nativeFactory;
+    private final @NotNull CacheRootResolver cacheRootResolver;
 
     public TinyCcCompiler() {
         this(TinyCcBundle::requireBundleRoot, TinyCcFfmNative::create);
@@ -86,8 +87,14 @@ public class TinyCcCompiler implements CCompiler {
     /// Test seam: a fake bundle resolver and a pure-Java [TinyCcNative] drive failure paths
     /// without touching the native library.
     TinyCcCompiler(@NotNull BundleResolver bundleResolver, @NotNull NativeFactory nativeFactory) {
+        this(bundleResolver, nativeFactory, CCompilerCacheRoot::resolve);
+    }
+
+    /// Full test seam: additionally pins the cache root resolution (see [CacheRootResolver]).
+    TinyCcCompiler(@NotNull BundleResolver bundleResolver, @NotNull NativeFactory nativeFactory, @NotNull CacheRootResolver cacheRootResolver) {
         this.bundleResolver = Objects.requireNonNull(bundleResolver, "bundleResolver must not be null");
         this.nativeFactory = Objects.requireNonNull(nativeFactory, "nativeFactory must not be null");
+        this.cacheRootResolver = Objects.requireNonNull(cacheRootResolver, "cacheRootResolver must not be null");
     }
 
     /// Resolves the tinycc bundle root for this round (installing it from the classpath on first
@@ -103,6 +110,15 @@ public class TinyCcCompiler implements CCompiler {
     @FunctionalInterface
     interface NativeFactory {
         @NotNull TinyCcNative create(@NotNull Path bundleRoot, @NotNull TargetPlatform targetPlatform, @NotNull Arena roundArena) throws IOException;
+    }
+
+    /// Resolves the cache root of a round. Production delegates to [CCompilerCacheRoot]; tests
+    /// pin an isolated temporary root because `@TempDir` cannot scrub a parent-process
+    /// `GDCC_SHARED_C_COMPILER_CACHE` (CI sets it for the zig cache), which would otherwise
+    /// redirect the round's entries away from the temporary project tree.
+    @FunctionalInterface
+    interface CacheRootResolver {
+        @NotNull Path resolve(@NotNull Path projectDir);
     }
 
     @Override
@@ -181,9 +197,9 @@ public class TinyCcCompiler implements CCompiler {
     /// the file if its compile also fails); any other failure (include-tree hashing, bundle
     /// VERSION, cache root) degrades the whole round to cacheless, so the cache can never fail
     /// a build.
-    private static @NotNull CachePlan prepareCachePlan(@NotNull Path bundleRoot, @NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull TargetPlatform targetPlatform) {
+    private @NotNull CachePlan prepareCachePlan(@NotNull Path bundleRoot, @NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull TargetPlatform targetPlatform) {
         try {
-            var cacheRoot = CCompilerCacheRoot.resolve(projectDir);
+            var cacheRoot = cacheRootResolver.resolve(projectDir);
             var bundleVersion = Files.readString(bundleRoot.resolve(TinyCcBundle.VERSION_FILE_NAME), StandardCharsets.UTF_8);
             // Hash each include tree once per round, not once per TU.
             var includeTreeHashes = TinyCcObjCache.hashIncludeTrees(includeDirs);
@@ -503,7 +519,7 @@ public class TinyCcCompiler implements CCompiler {
         return TCC_GLOBAL_LOCK;
     }
 
-    /// Cache inputs resolved outside the locks. `available()` is false for a cacheless round
+    /// Cache inputs resolved inside both locks. `available()` is false for a cacheless round
     /// (`cacheRoot`/`keys` are then meaningless); `keys` otherwise parallels `cFiles`, a null
     /// element marking a TU that could not be read and compiles as a plain miss.
     private record CachePlan(@Nullable Path cacheRoot, @NotNull List<@Nullable String> keys,
