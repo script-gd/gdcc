@@ -118,8 +118,8 @@ class TinyCcCompilerParallelTest {
         var projectB = Files.createDirectories(tempDir.resolve("project_b"));
         var tuA = projectA.resolve("a.c");
         var tuB = projectB.resolve("b.c");
-        Files.writeString(tuA, "int gdcc_parallel_a(void) { return 1; }\n");
-        Files.writeString(tuB, "int gdcc_parallel_b(void) { return 2; }\n");
+        Files.writeString(tuA, NativeArtifactInspector.EXPORT_MACRO_DEFINITION + "GDCC_TEST_EXPORT int gdcc_parallel_a(void) { return 1; }\n");
+        Files.writeString(tuB, NativeArtifactInspector.EXPORT_MACRO_DEFINITION + "GDCC_TEST_EXPORT int gdcc_parallel_b(void) { return 2; }\n");
         var compiler = new TinyCcCompiler(() -> bundleRoot, TinyCcFfmNative::create);
 
         var executor = Executors.newFixedThreadPool(2);

@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+import static java.util.Locale.*;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -19,6 +20,20 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// which host needs which tool — and keeps the Windows legs from silently skipping the export
 /// assertions that Linux enforces.
 final class NativeArtifactInspector {
+    /// Export attribute prelude for fixture C sources. On PE targets both tinycc and zig cc
+    /// (clang) only enter a symbol into the DLL export table when it carries
+    /// `__declspec(dllexport)` — bare definitions stay invisible there, unlike ELF where every
+    /// global symbol is dynamic by default. Every fixture symbol checked by an export assertion
+    /// (or looked up via FFM) must be defined through this macro. Both compilers predefine
+    /// `_WIN32` on Windows targets.
+    static final String EXPORT_MACRO_DEFINITION = """
+            #ifdef _WIN32
+            #define GDCC_TEST_EXPORT __declspec(dllexport)
+            #else
+            #define GDCC_TEST_EXPORT __attribute__((visibility("default")))
+            #endif
+            """;
+
     private NativeArtifactInspector() {
     }
 
@@ -110,6 +125,6 @@ final class NativeArtifactInspector {
     }
 
     private static boolean isWindowsHost() {
-        return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win");
+        return System.getProperty("os.name", "").toLowerCase(ROOT).contains("win");
     }
 }

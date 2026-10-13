@@ -1,7 +1,6 @@
 package gd.script.gdcc.backend.c.build;
 
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,6 +27,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// native message buffer is freed by libtcc when the callback returns, so only a full copy can
 /// survive), and the process-lifetime cache contract (failures are never cached, a success is
 /// published exactly once).
+///
+/// Every state gets an explicit `tcc_set_lib_path(bundleRoot)`: the Windows bundle is built
+/// with predefs disabled, so libtcc reads `tccdefs.h` from `{B}/include` at runtime, and the
+/// default `{B}` resolves to the libtcc.dll directory (`bin/`) — not the bundle root. The Linux
+/// bundle embeds its predefs, which would silently mask a missing lib path there.
 class TinyCcLibraryTest {
 
     /// `TCC_OUTPUT_MEMORY` from libtcc.h: the lightest output type for compile-only probes.
@@ -36,11 +40,12 @@ class TinyCcLibraryTest {
     /// here sets an output type first (the compiler rounds use TCC_OUTPUT_DLL the same way).
     private static final int TCC_OUTPUT_MEMORY = 1;
 
+    private static Path bundleRoot;
     private static Path libraryPath;
 
     @BeforeAll
     static void requireBundle() {
-        var bundleRoot = TinyCcCliTestSupport.findTinyCcBundleRoot();
+        bundleRoot = TinyCcCliTestSupport.findTinyCcBundleRoot();
         Assumptions.assumeTrue(bundleRoot != null,
                 "no tinycc bundle available (GDCC_TINYCC_HOME unset, no build/tinycc-bundle); skipping FFM binding tests");
         libraryPath = TinyCcBundle.libraryPath(bundleRoot, TargetPlatform.getNativePlatform());
@@ -59,6 +64,7 @@ class TinyCcLibraryTest {
         try (var arena = Arena.ofConfined()) {
             var state = library.newState();
             assertNotNull(state, "tcc_new must return a usable state");
+            library.setLibPath(state, arena.allocateFrom(bundleRoot.toString()));
             // -std=c11 is the fixed dialect of every gdcc tinycc round.
             assertEquals(0, library.setOptions(state, arena.allocateFrom("-std=c11")));
             assertEquals(0, library.setOutputType(state, TinyCcLibrary.TCC_OUTPUT_DLL));
@@ -77,6 +83,7 @@ class TinyCcLibraryTest {
         try (var arena = Arena.ofConfined()) {
             var state = library.newState();
             assertNotNull(state);
+            library.setLibPath(state, arena.allocateFrom(bundleRoot.toString()));
             assertEquals(0, library.setOutputType(state, TCC_OUTPUT_MEMORY));
             library.setErrorFunc(state, library.newErrorFuncStub(arena, messages::add, failure));
             var status = library.compileString(state, arena.allocateFrom("int broken("));
@@ -100,6 +107,7 @@ class TinyCcLibraryTest {
         try (var arena = Arena.ofConfined()) {
             var state = library.newState();
             assertNotNull(state);
+            library.setLibPath(state, arena.allocateFrom(bundleRoot.toString()));
             assertEquals(0, library.setOutputType(state, TCC_OUTPUT_MEMORY));
             library.setErrorFunc(state, library.newErrorFuncStub(arena, messages::add, failure));
             var status = library.compileString(state, arena.allocateFrom("int f(void) { return " + longIdentifier + "; }"));
@@ -121,6 +129,7 @@ class TinyCcLibraryTest {
             for (var broken : List.of("int broken_a(", "int broken_b(")) {
                 var state = library.newState();
                 assertNotNull(state);
+                library.setLibPath(state, arena.allocateFrom(bundleRoot.toString()));
                 assertEquals(0, library.setOutputType(state, TCC_OUTPUT_MEMORY));
                 library.setErrorFunc(state, library.newErrorFuncStub(arena, messages::add, failure));
                 assertTrue(library.compileString(state, arena.allocateFrom(broken)) != 0);
@@ -145,6 +154,7 @@ class TinyCcLibraryTest {
         try (var arena = Arena.ofConfined()) {
             var state = library.newState();
             assertNotNull(state);
+            library.setLibPath(state, arena.allocateFrom(bundleRoot.toString()));
             assertEquals(0, library.setOutputType(state, TCC_OUTPUT_MEMORY));
             library.setErrorFunc(state, library.newErrorFuncStub(arena, handler, failure));
             // The throwing handler must not make the downcall itself throw.

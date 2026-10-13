@@ -56,9 +56,9 @@ class TinyCcCompilerTest {
                 int gdcc_probe_a(void) { return GDCC_PROBE_ANSWER; }
                 """);
         var tuB = tempDir.resolve("tu_b.c");
-        Files.writeString(tuB, """
+        Files.writeString(tuB, NativeArtifactInspector.EXPORT_MACRO_DEFINITION + """
                 int gdcc_probe_a(void);
-                int gdextension_entry(void) { return gdcc_probe_a(); }
+                GDCC_TEST_EXPORT int gdextension_entry(void) { return gdcc_probe_a(); }
                 """);
 
         var host = TargetPlatform.getNativePlatform();
@@ -97,7 +97,7 @@ class TinyCcCompilerTest {
         var broken = tempDir.resolve("broken.c");
         Files.writeString(broken, "int broken(\n");
         var good = tempDir.resolve("good.c");
-        Files.writeString(good, "int gdextension_entry(void) { return 1; }\n");
+        Files.writeString(good, NativeArtifactInspector.EXPORT_MACRO_DEFINITION + "GDCC_TEST_EXPORT int gdextension_entry(void) { return 1; }\n");
         var host = TargetPlatform.getNativePlatform();
         var compiler = newCompiler();
 
@@ -120,7 +120,7 @@ class TinyCcCompilerTest {
     @Test
     void aStaleArtifactIsReplacedByASuccessfulRound(@TempDir Path tempDir) throws IOException {
         var good = tempDir.resolve("good.c");
-        Files.writeString(good, "int gdextension_entry(void) { return 1; }\n");
+        Files.writeString(good, NativeArtifactInspector.EXPORT_MACRO_DEFINITION + "GDCC_TEST_EXPORT int gdextension_entry(void) { return 1; }\n");
         var host = TargetPlatform.getNativePlatform();
         var artifact = tempDir.resolve(host.sharedLibraryFileName("probe"));
         Files.writeString(artifact, "stale artifact from an earlier round");
@@ -132,8 +132,9 @@ class TinyCcCompilerTest {
     }
 
     @Test
-    void interruptWhileWaitingForTheGlobalLockSurfacesTheFixedChannel(@TempDir Path tempDir) throws Exception {        var good = tempDir.resolve("good.c");
-        Files.writeString(good, "int gdextension_entry(void) { return 1; }\n");
+    void interruptWhileWaitingForTheGlobalLockSurfacesTheFixedChannel(@TempDir Path tempDir) throws Exception {
+        var good = tempDir.resolve("good.c");
+        Files.writeString(good, NativeArtifactInspector.EXPORT_MACRO_DEFINITION + "GDCC_TEST_EXPORT int gdextension_entry(void) { return 1; }\n");
         var host = TargetPlatform.getNativePlatform();
         var compiler = newCompiler();
         var globalLock = TinyCcCompiler.tccGlobalLock();
@@ -184,9 +185,9 @@ class TinyCcCompilerTest {
                 int gdcc_probe_a(void) { return GDCC_PROBE_ANSWER; }
                 """);
         var tuB = tempDir.resolve("tu_b.c");
-        Files.writeString(tuB, """
+        Files.writeString(tuB, NativeArtifactInspector.EXPORT_MACRO_DEFINITION + """
                 int gdcc_probe_a(void);
-                int gdextension_entry(void) { return gdcc_probe_a(); }
+                GDCC_TEST_EXPORT int gdextension_entry(void) { return gdcc_probe_a(); }
                 """);
         var host = TargetPlatform.getNativePlatform();
         var outputTypesPerRound = new java.util.ArrayList<List<Integer>>();
@@ -224,9 +225,9 @@ class TinyCcCompilerTest {
                 """);
         var tuBDir = Files.createDirectories(tempDir.resolve("sub"));
         var tuB = tuBDir.resolve("tu_b.c");
-        Files.writeString(tuB, """
+        Files.writeString(tuB, NativeArtifactInspector.EXPORT_MACRO_DEFINITION + """
                 int gdcc_probe_a(void);
-                int gdextension_entry(void) { return gdcc_probe_a(); }
+                GDCC_TEST_EXPORT int gdextension_entry(void) { return gdcc_probe_a(); }
                 """);
         var host = TargetPlatform.getNativePlatform();
         var outputTypesPerRound = new java.util.ArrayList<List<Integer>>();
@@ -252,7 +253,7 @@ class TinyCcCompilerTest {
     @Test
     void debugAndReleaseRoundsShareCacheEntries(@TempDir Path tempDir) throws IOException {
         var tuA = tempDir.resolve("tu_a.c");
-        Files.writeString(tuA, "int gdextension_entry(void) { return 1; }\n");
+        Files.writeString(tuA, NativeArtifactInspector.EXPORT_MACRO_DEFINITION + "GDCC_TEST_EXPORT int gdextension_entry(void) { return 1; }\n");
         var host = TargetPlatform.getNativePlatform();
         var outputTypesPerRound = new java.util.ArrayList<List<Integer>>();
         var compiler = newCompilerWithSpy(outputTypesPerRound);

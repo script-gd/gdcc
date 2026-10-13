@@ -47,10 +47,12 @@ class CrossBackendProjectLockTest {
         var projectDir = Files.createDirectories(tempDir.resolve("project"));
         // The zig TU carries a distinctive export so the final artifact's producer is provable.
         var zigTu = Files.writeString(projectDir.resolve("zig_entry.c"),
-                "int gdcc_zig_round_symbol(void) { return 7; }\n"
-                        + "int gdextension_entry(void) { return 0; }\n");
+                NativeArtifactInspector.EXPORT_MACRO_DEFINITION
+                        + "GDCC_TEST_EXPORT int gdcc_zig_round_symbol(void) { return 7; }\n"
+                        + "GDCC_TEST_EXPORT int gdextension_entry(void) { return 0; }\n");
         var tccTu = Files.writeString(projectDir.resolve("tcc_entry.c"),
-                "int gdextension_entry(void) { return 1; }\n");
+                NativeArtifactInspector.EXPORT_MACRO_DEFINITION
+                        + "GDCC_TEST_EXPORT int gdextension_entry(void) { return 1; }\n");
 
         var probe = new BlockingNativeProbe();
         var tccCompiler = new TinyCcCompiler(() -> projectDir, (root, platform, arena) -> {
@@ -117,7 +119,8 @@ class CrossBackendProjectLockTest {
         Assumptions.assumeTrue(host == TargetPlatform.LINUX_X86_64 || host == TargetPlatform.WINDOWS_X86_64,
                 "tinycc supports only linux/windows x86_64 hosts");
         var projectDir = Files.createDirectories(tempDir.resolve("project"));
-        var tccTu = Files.writeString(projectDir.resolve("entry.c"), "int gdextension_entry(void) { return 1; }\n");
+        var tccTu = Files.writeString(projectDir.resolve("entry.c"),
+                NativeArtifactInspector.EXPORT_MACRO_DEFINITION + "GDCC_TEST_EXPORT int gdextension_entry(void) { return 1; }\n");
         var factoryCalls = new AtomicInteger();
         var resultRef = new AtomicReference<@Nullable CCompileResult>();
         var compiler = new TinyCcCompiler(() -> projectDir, (root, platform, arena) -> {
@@ -177,7 +180,8 @@ class CrossBackendProjectLockTest {
         Assumptions.assumeTrue(bundleRoot != null, "no tinycc bundle available; skipping the coherence rounds");
         var host = TargetPlatform.getNativePlatform();
         var projectDir = Files.createDirectories(tempDir.resolve("project"));
-        var tu = Files.writeString(projectDir.resolve("entry.c"), "int gdextension_entry(void) { return 1; }\n");
+        var tu = Files.writeString(projectDir.resolve("entry.c"),
+                NativeArtifactInspector.EXPORT_MACRO_DEFINITION + "GDCC_TEST_EXPORT int gdextension_entry(void) { return 1; }\n");
         var zig = new ZigCcCompiler();
         var tcc = new TinyCcCompiler(() -> bundleRoot, TinyCcFfmNative::create);
         var artifact = projectDir.resolve(host.sharedLibraryFileName("shared"));
