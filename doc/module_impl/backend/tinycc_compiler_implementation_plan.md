@@ -2,13 +2,14 @@
 
 ## 文档状态
 
-- 状态：实施中（阶段 1-4 已完成，阶段 5-6 实施中；阶段 7「按 TU 内容寻址编译缓存」已实施并通过 Linux 验收，待 review 收口；Windows 腿归 G6 同渠道 CI）。本文档是 `TinyCcCompiler` 特性的唯一计划文档，完成后按归档约定转化为事实源文档或归档。
+- 状态：实施中（阶段 1-4 已完成，阶段 5-6 实施中；阶段 7「按 TU 内容寻址编译缓存」已实施并通过 Linux 验收，待 review 收口，Windows 腿归 G6 同渠道 CI；阶段 8「Linux/macOS aarch64 支持」已规划待实施）。本文档是 `TinyCcCompiler` 特性的唯一计划文档，完成后按归档约定转化为事实源文档或归档。
 - 适用范围：`gd.script.gdcc.backend.c.build` 包、`src/main/c/codegen/{include_451,template_451}`、`src/main/c/tinycc`（新增）、API/CLI/RPC 编译选项接线、zig launcher（行为变更，见 §8）。
 - 依据文档（结论来源，本文档不重复其论证）：
   - `doc/analysis/tinycc_analysis_windows_handoff.md`：Windows x86_64 上 tinycc mob `43c7708` + Java 25 FFM 的完整验证（构建命令、FFM 契约、11 文件兼容清单、资源包结构）。
   - `tmp/tcc-c11-probes/EVIDENCE.md`：Linux x86_64 上 tcc 0.9.27/0.9.28rc 对 gdcc 生成 C 的特性接受矩阵。
   - `tmp/tcc-risk-verify/EVIDENCE.md`：asm 逗号/`jmpq`、TLS 宏链路、`_MCO_ASM_BLOB`、`__builtin___clear_cache`、大枚举值等风险实证。
   - `doc/module_impl/backend/backend_build_system_implementation.md`：现有 zig 构建管线事实源，本文档声明的不变边界以其为准。
+  - `../probe-env/REPORT.md`（外部研究仓库，证据未入库）：aarch64 双平台（ubuntu-24.04-arm / macos-15）tinycc 实证——libtcc 构建、两阶段编译与缓存矩阵、Godot `.arm64` 键加载、HRX 模拟，以及 flat namespace 错绑、TLS、icache、asm 形态四处负向发现。
 
 ## 1. 目标与范围
 
@@ -18,13 +19,14 @@
 2. tinycc mob `43c7708b85681a2fd4451c8a541af4494a8919b2`（0.9.28rc）源码 vendored 于 `src/main/c/tinycc/`，配套构建链产出平台化资源包（bundle）。
 3. 改造共享 C 层（模板 + include 树 + Java 字面量生产者），使同一份生成 C 同时被 zig cc（`-std=c23`）与 tinycc（`-std=c11`）接受，zig 行为不回退。
 4. Windows 支持按 `tinycc_analysis_windows_handoff.md` 的已验证路径落地。
+5. Linux aarch64 与 macOS aarch64 支持按 `../probe-env/` 实证路径落地（阶段 8；host==target 约束不变，见 D5 与阶段 8 范围决议）。
 
 ### 1.2 非目标（本期不做）
 
 - 交叉编译：TinyCcCompiler 只支持 host == target 的目标平台（见 §4 D5）。
 - `TCC_OUTPUT_MEMORY` JIT 执行、`tcc_run`、PCH、LTO、ThinLTO、PDB 生成（PCH 仍不做；按 TU object 内容缓存不属 PCH，归阶段 7）。
 - 优化对等：不宣称 tcc 产物的优化水平与 zig `-O2`/LTO 对等。
-- macOS、Android、Web、linux-riscv64 的 tcc 支持；`LINUX_AARCH64` 待实测后另行开放。
+- macOS x86_64、Android、Web、linux-riscv64 的 tcc 支持（Linux aarch64 与 macOS aarch64 已立项为阶段 8，不再是非目标）。
 - 修改 `CCompiler` 接口签名、`CProjectBuilder` 输入收集顺序、`.gdextension` 由 CLI 写入的合同（不变边界，同 `backend_build_system_implementation.md` §1）。
 
 ## 2. 前置调研结论（已确认事实）
@@ -41,6 +43,9 @@
 10. **逃逸生产者**：`StringUtil.escapeStringLiteral` 对非 ASCII 输出 `\uXXXX`/`\UXXXXXXXX`。UCN 在 plain 与 `u8"..."` 字面量中的执行编码已在 Linux x86_64 的 zig `-std=c23` 与 vendored tcc `-std=c11` 双侧验证（P0-1 字节矩阵 + `TinyCcU8StringTest`）；Windows 侧执行字符集仍未验证（handoff §5.1）。
 11. **金字面量测试面**：`src/test` 中 `u8"` 断言保持原样（vendored 补丁后 u8 前缀保留，无需清扫）；`nullptr` 断言 1 处，随可移植化同步。
 12. **libtcc OBJ 路径可用**（pinned 源码核对）：`libtcc.h:71` 定义 `TCC_OUTPUT_OBJ=3`，`tcc_set_output_type` 接受之（`libtcc.c:987-991`：object 恒为 ELF 输出格式——"always elf for objects"，PE 目标亦不例外，无 COFF object 路径）；`tcc_add_file` 按扩展名/内容识别 object 文件（`tcc_add_file_internal` 分发 `tcc_load_object`），`tcc -shared *.o` 是上游 CLI 的标准链接形态（`tcc.c` OBJ/多输入流程）。libtcc 层面逐 TU OBJ + 新 state 链接的端到端可行性仍以阶段 7 的 P7-1 探针实证为准。
+13. **aarch64 双平台实证已完成**（`../probe-env/`，pin 与本仓库 vendored 树同为 mob `43c7708`）：`ubuntu-24.04-arm` 与 `macos-15` native runner 上 libtcc 构建（`./configure --disable-static --libdir="$PWD"`）、OBJ+DLL 两阶段（macOS 的 OBJ 同为 ELF 中间格式，最终 `TCC_OUTPUT_DLL` 走 Mach-O 写出）、按 TU 内容缓存矩阵（冷/热/变更/自愈/错误后复用全绿）、Godot `linux|macos.{debug,release}.arm64` 键真实加载、HRX 模拟全部通过。
+14. **macOS 的 libtcc.dylib 必须 twolevel namespace**：上游 Makefile 默认给宿主 dylib 加 `-flat_namespace`；在 JVM 这类符号富集进程内，flat namespace 会把 libtcc 的全局符号错绑到他库同名符号（实证：libtcc 全局数据 `parse_flags` 被绑到 Heimdal 的 `_parse_flags` 函数，FFM 首次 `tcc_add_file` 编译 TU 时在 `preprocess_start` 内因错绑触发 SIGBUS）。bundle 构建须以 `LDFLAGS=-Wl,-twolevel_namespace` 重建 libtcc.dylib 并经 `otool -hv` 断言 `TWOLEVEL`。
+15. **aarch64 tcc 三处 C 层适配**（均有实证依据）：tcc 的 aarch64 `__thread` 走 local-exec TLS（Linux 下 DSO 读到宿主镜像 TLS 槽）且 Mach-O 无 TLV 支持（macOS 直接 SIGSEGV）→ minicoro 须改 pthread-key 路径；macOS 上直接调用 `__arm64_clear_cache` 为非法指令 → 须用 `sys_icache_invalidate()`；tcc aarch64 汇编器拒绝无逗号 `.type name #function`（须改 `.type name, %function`；macOS `__APPLE__` 分支本无 `.type` 行，仅 Linux 腿受影响）。
 
 ## 3. 总体架构
 
@@ -99,7 +104,7 @@ FFM 生命周期不变量（写入实现类注释与测试）：
 ### 3.4 bundle 布局与分发
 
 ```text
-tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x86_64
+tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x86_64；阶段 8 增 linux-aarch64 / macos-aarch64
   VERSION                               # properties：bundleFormat（=1）+ tinyccCommit（pin）+ platform
   MANIFEST                              # 全部其他文件的 sha256sum 清单（安装完整性校验用）
   bin/libtcc.so | bin/libtcc.dll        # FFM 加载对象
@@ -117,6 +122,7 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 
 - Windows：PE 默认系统头路径 `{B}/include` + `{B}/include/winapi`，库路径 `{B}/lib`；`tcc_set_lib_path(root)` 后 `lib/libtcc1.a` 命中。bundle 的 `include/` 必须是上游 `include/*.h` 与 `win32/include/**` 的**合并树**（`windows.h` 依赖同层 `_mingw.h`），禁止另建 `include/win32/` 层级。
 - Linux：默认系统头路径 `{B}/include` + triplet 化的系统 include；库路径为 `{B}` + triplet 化系统库目录（**不含 `{B}/lib`**）；multiarch include/CRT 路径依赖 `configure` 生成的 `CONFIG_TRIPLET`。因此 Linux bundle 要么将 `libtcc1.a` 直接置于 root，要么在构建 libtcc 时以受控 `config.h` 明确 `{B}/lib`；系统头/CRT 路径由 `configure` 产物决定，禁止靠手写 `-D` 跳过该块。实现时以 G1 的移位 smoke 验收锁定（见 §5 阶段 1）。
+- macOS（阶段 8）：`libtcc1.a` 置于 root（`{B}` 展开同 Linux）；FFM 加载对象为 `bin/libtcc.dylib`，bundle 必须以 twolevel namespace 重建（§2 第 14 条）；系统头路径为 configure 烤入的 SDK 绝对路径，产物依赖宿主 Xcode CLT/SDK（分发可移植性见 R22 与 §9）。
 - `tcc_set_lib_path` 指向 `<root>`；libtcc 本体路径仅用于 FFM `SymbolLookup.libraryLookup`。
 - JAR 内资源必须先落盘（handoff 已确认 loader 不接受 JAR URL）。
 
@@ -145,7 +151,7 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 
 ## 5. 分步骤实施
 
-阶段依赖：`G0 → G1；G0/G1 → G2；G1 → G3；G2/G3 → G4 → G5/G6 → G7 → G8`。内部基础设施可先行合入，但未通过对应平台端到端门前不得声明该平台受支持；关键测试全部 skipped 不算验收通过。
+阶段依赖：`G0 → G1；G0/G1 → G2；G1 → G3；G2/G3 → G4 → G5/G6 → G7 → G8 → G9`。内部基础设施可先行合入，但未通过对应平台端到端门前不得声明该平台受支持；关键测试全部 skipped 不算验收通过。
 
 ### 阶段 0：权限确认与前置探针
 
@@ -342,7 +348,7 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
   5. buildLog：诊断收集合同不变；顶部新增固定缓存统计行 `[gdcc] tcc object cache: <hits> hits, <misses> misses`（命中 TU 不重编译、其警告不再重现——与 zig 内容缓存同性质，文档明示）；降级时固定 fallback 行 `[gdcc] tcc object cache unavailable this round: <reason>`（先例：zig PCH fallback line）。
 - `TinyCcLibrary`：新增 `TCC_OUTPUT_OBJ=3` 常量。
 - 注释纪律沿用阶段 2 声明：注释只解释 C 语义与 libtcc 契约事实，不得引用本计划文档或任务编号。
-- 对 zig 合同的偏离显式化：本机制是 tcc 后端自有合同；`backend_build_system_implementation.md` §3.1「禁止 glob `obj/`、禁止以 object 已存在跳过编译、stale object 永不进链接」（L63 段）与 §9「zig per-TU 内容缓存……因此 gdcc 不自管 object 缓存」（构成性事实段）两处纪律仍仅约束 zig 管线，tcc 侧立段归阶段 8 文档收口（两处同步修订，不是只改 §3.1）。
+- 对 zig 合同的偏离显式化：本机制是 tcc 后端自有合同；`backend_build_system_implementation.md` §3.1「禁止 glob `obj/`、禁止以 object 已存在跳过编译、stale object 永不进链接」（L63 段）与 §9「zig per-TU 内容缓存……因此 gdcc 不自管 object 缓存」（构成性事实段）两处纪律仍仅约束 zig 管线，tcc 侧立段归阶段 9 文档收口（两处同步修订，不是只改 §3.1）。
 
 进度（实施中逐项同步）：
 
@@ -364,7 +370,59 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 - 缓存永不成为构建失败源（全部降级路径经测试锚定）；命中条目损坏/被删时自愈恰好一次。
 - 端到端行为不变：两阶段形态下 Godot 集成与 test_suite tcc 子集复跑全绿。
 
-### 阶段 8：文档收口
+### 阶段 8：Linux aarch64 与 macOS aarch64 支持
+
+**范围决议（覆盖 D5 与 §1.2 的原支持集表述）**：支持集由 `{LINUX_X86_64, WINDOWS_X86_64}` 扩为 `{LINUX_X86_64, WINDOWS_X86_64, LINUX_AARCH64, MACOS_AARCH64}`；host==target 约束不变（tcc 仍不支持交叉编译）；macOS x86_64、Android、Web、linux-riscv64 仍为非目标。前置实证（§2 第 13-15 条）已完成，本阶段不设探针前置项；全部验收以两个既有 CI runner（`ubuntu-24.04-arm` / `macos-latest`）实际运行为准。
+
+改动：
+
+1. C 层可移植化（zig 不回退为前提；注释纪律沿用阶段 2——注释只解释 C 语义与工具链兼容事实，不引用本计划文档或任务编号）：
+   - `minicoro.h` 新增 pthread-key TLS 路径（蓝本 `../probe-env/fixture/include/gdcc/minicoro.h`，经双平台 1100 轮 dlopen/dlclose 与两线程协程隔离实证；本仓库的四线程门由既有 `MinicoroTlsIsolationParityTest` 承担）：`MCO_THREAD_LOCAL` 链在 `defined(__TINYC__) && defined(__aarch64__) && !defined(_WIN32)` 下走 `MCO_USE_PTHREAD_TLS`——`pthread_once` + `pthread_key_create`/`getspecific`/`setspecific`，`__attribute((destructor))` 拼写删键（glibc 头在 tcc 不定义 `__GNUC__` 时可能把 `__attribute__` 标识符宏擦除，故用 `__attribute`）；pthread 调用失败 `abort()` 属 fail-closed。`mco_current_co` 静态变量改为 `_mco_get_current()`/`_mco_set_current()` 访问器，5 处使用点（声明 :575、写 :586/:611、读 :1951/:1955）随之迁移。x86_64 的 `__thread` 路径不变（已在 tcc x86_64 下实测可用，不动）。`#error` 护栏保留并覆盖新路径（tcc 下任何落回 `MCO_NO_MULTITHREAD` 均为编译期硬错误）。
+   - `minicoro.h` aarch64 asm 形态：两处非 Apple 块 `.type _mco_switch #function`/`.type _mco_wrap_main #function`（:1210/:1253）改为逗号形式 `.type name, %function`；ARM32 块（:1143/:1169）不动（非目标平台，无可验证渠道）；`__APPLE__` 分支本无 `.type` 行，无需改动。
+   - `gdcc_hrx.c:474-486` `gdcc_hrx_flush_icache`：新增 `__APPLE__` 分支——`#include <libkern/OSCacheControl.h>`（`__APPLE__` 条件包含）+ `sys_icache_invalidate(addr, size)`；非 Apple aarch64 维持 `__TINYC__` → `__arm64_clear_cache` / 否则 `__builtin___clear_cache` 的现状分支。
+   - `CPortabilitySurfaceTest` 扩展：aarch64 asm 块范围内断言无 `#function` 形态、逗号 `%function` 在场（x86_64 既有断言不变；ARM32 块不在断言范围）。
+2. Java 门控放开（无对外合同变更）：
+   - `TinyCcCompiler.SUPPORTED_PLATFORMS`（:72）加入 `LINUX_AARCH64`、`MACOS_AARCH64`；快速失败文案与 host==target 校验不变。
+   - `TinyCcBundle`：新增键常量 `LINUX_AARCH64_KEY="linux-aarch64"` / `MACOS_AARCH64_KEY="macos-aarch64"`；`bundlePlatformKey` 与 `requiredLayoutEntries` 各增两 case——linux-aarch64 布局同 linux-x86_64（`bin/libtcc.so` + 根 `libtcc1.a`），macos-aarch64 为 `bin/libtcc.dylib` + 根 `libtcc1.a`（`{B}` 展开同 Linux，不走 Windows 的 `{B}/lib`）；`libraryPath` 增 `.dylib` 分支（Windows→`.dll`，MACOS family→`.dylib`，其余→`.so`）。`defaultCacheRoot` 两新平台沿用 `~/.cache/gdcc/tinycc`（跨平台统一优先于平台惯例，不引入 `~/Library/Caches` 分叉）。配套：`TinyCcBundleTest.unsupportedPlatformsFailBeforeAnyBundleWork`（:244）现以 `LINUX_AARCH64` 为负向样例，映射放开后必败——负向样例迁移到仍属非目标的 `MACOS_X86_64`（保留异常与 zig 指引断言），并为两新平台补 `bundlePlatformKey` 正向映射断言。
+   - 已读码核验**无需改动**的件（实施时逐条复核并在进度勾选）：`TargetPlatform`（两枚枚举、`getNativePlatform` 检测、`sharedLibraryFileName` 的 `.dylib` 均已就绪）；`GdextensionMetadataFile.renderMultiPlatform` 的 `*.arm64` 键形（probe 已实证 Godot 接受）；`TinyCcObjCache` 键已含 `targetPlatform` 与 bundle VERSION（跨平台隔离天然成立）；`TinyCcLibrary` FFM 绑定与平台 ABI 无关；`CProjectBuilder` 输出基名（arch 段在两 OS 同为 `aarch64`，host==target 下无同目录撞名）。
+   - 测试缝扩展：`TinyCcCliTestSupport.nativePlatformKey()`（:102）增两键、`isUsableBundleRoot()`（:89）增 `.dylib` 分支；`TinyCcCompilerNativeFakeTest.assumeSupportedHost()`（:61）、`TinyCcCompilerParallelTest.assumeSupportedHost()`（:147）与 `CrossBackendProjectLockTest` 两处平台门（:45/:119 附近）同步支持集，使 fake/锁套件在 aarch64 CI 上真实运行而非跳过。
+   - `NativeArtifactInspector` 增 macOS 腿：Mach-O magic 与 arm64 CPU type 形态断言；导出符号检查在 Darwin 上改用 `nm -gU` 并按前导 `_` 规范化（Linux `nm -D --defined-only` / Windows `PeExportReader` 两腿不变）；`TinyCcCompilerIntegrationTest` 与 `CrossBackendIncludeStabilityTest` 内重复的 ELF-only 形态断言、`TinyCcCliGateTest` 的导出检查统一接入该 helper——否则产物正确也会在 macOS 断言失败。
+   - 平台范围登记（不纳入 G8 零跳过口径）：`TinyCcWindowsBundleParityTest`（Windows bundle 结构门）、`MinicoroAsmEncodingTest`（linux-x86_64 反汇编门）、`LauncherSmokeTest`（linux-x86_64 launcher 门）保持原平台范围；aarch64 asm 形态由 `CPortabilitySurfaceTest` 扩展与协程运行门承担。
+3. 新增验收门（均为测试代码）：
+   - pthread TLS 卸载回收门（新增运行时探针测试，tcc 腿 G8 必跑）：按 `../probe-env/probes/load.c` 形态用真实 tcc 管线产出携带 pthread-key TLS 的协程 DSO，同一宿主进程 ≥1100 轮 dlopen → 协程调用 → dlclose，断言宿主 TLS sentinel 不变、映像确认卸载（`RTLD_NOLOAD` 或等效）、key 析构确被执行（probe 曾实证 destructor 遭宏擦除导致 key 泄漏耗尽，该回归必须在本仓库锁定）。
+   - 真实 bundle 入场门（新增 bundle 门控测试）：经 `TinyCcBundle.requireBundleRoot` 五参全缝（:144，注入 override 路径 + 对应平台键 + 隔离 cache root）走生产完整校验链（布局 + VERSION 三键 + MANIFEST 全文件 SHA-256），通过后才允许 FFM 编译——覆盖现有 native 门直接注入 bundleRoot、绕过生产校验的缺口。
+4. 构建链与 CI（权限项 §8.8/§8.9，获批后实施）：
+   - `build-script/build-tinycc-bundle-linux-aarch64.sh`：结构对齐既有 linux-x86_64 脚本（native 主机构建；CI runner 已装 zig 0.16.0 aarch64，沿用 `zig cc` 配置以统一工具链叙事；组装 + VERSION/MANIFEST/license 合同不变）。
+   - `build-script/build-tinycc-bundle-macos-aarch64.sh`：宿主 clang；`./configure --disable-static --libdir="$PWD"` → `make tcc libtcc.dylib libtcc1.a` → **twolevel 重建腿**（`make -B LDFLAGS=-Wl,-twolevel_namespace libtcc.dylib`）→ `otool -hv` 断言 `TWOLEVEL` 在场 + `codesign -v` 断言签名（Apple Silicon 上链接器默认 ad-hoc 签名，属断言而非额外签名步骤）→ 组装 + VERSION/MANIFEST/COPYING/RELICENSING。
+   - `build-script/build-tinycc-cli-linux-aarch64.sh` 与 `build-script/build-tinycc-cli-macos-aarch64.sh`：CLI 工作树（`cli-verified` 标记合同不变），供 `TinyCcCliGateTest`/`TinyCcU8StringTest`/`TinyCcHrxRuntimeGateTest` 等 CLI 门控测试在新平台运行。
+   - `gradle/tinycc.gradle.kts`：`tinyccHostPlatformKey()` 增两平台映射（`arm64`/`aarch64` 拼写对齐 `TargetPlatform.parseArchitecture`）；两新平台的 `libtcc1.a` 输出声明均在根（非 `lib/`）。
+   - `ci.yml`：`linux-aarch64` 与 `macos-aarch64` job 各新增 bundle 构建步骤（位置对齐 :207-220 既有两步），使全量 `TinyCc*` 门控集在两平台真实执行。
+
+进度（实施中逐项同步）：
+
+- [ ] C 层三项补丁（pthread TLS 访问器化、aarch64 `.type` 逗号化、`__APPLE__` icache 分支）+ `CPortabilitySurfaceTest` aarch64 断言扩展；本机 zig/tcc x86_64 侧零回退（`GdccCoroutineRuntimeSmokeTest`、`MinicoroTlsIsolationParityTest`、`GdccHrxRuntimeSmokeTest` 复绿）
+- [ ] `TinyCcBundle` 四点扩展（键常量/映射/布局/dylib 分支）+ `TinyCcBundleTest` 新平台布局、VERSION、MANIFEST 正反用例与负向样例迁移（`LINUX_AARCH64` → `MACOS_X86_64`，纯 Java fixture，不依赖真包）
+- [ ] `TinyCcCompiler.SUPPORTED_PLATFORMS` 放开 + 测试缝/门控同步（`TinyCcCliTestSupport`、`TinyCcCompilerNativeFakeTest`、`TinyCcCompilerParallelTest`、`CrossBackendProjectLockTest`）；fake/锁套件在 aarch64 CI 实际运行
+- [ ] `NativeArtifactInspector` macOS 腿（Mach-O 形态 + `nm -gU` 导出）+ 三处既有断言接入
+- [ ] pthread TLS 卸载回收门（≥1100 轮 dlopen/dlclose，双 aarch64 平台 CI 实跑）
+- [ ] 真实 bundle 入场门（`requireBundleRoot` 全缝，双平台 CI 实跑）
+- [ ] 四个构建脚本 + `gradle/tinycc.gradle.kts` + `ci.yml` 接线（§8.8/§8.9 获批后）
+- [ ] Linux aarch64 CI：bundle 构建成功；验收清单所列 TinyCc* 门（FFM 编译/缓存矩阵/HRX/稳定性/test_suite tcc 子集含 Godot 门）实际运行、0 跳过 0 失败
+- [ ] macOS aarch64 CI：同上，外加 bundle 结构断言（`otool -hv` 见 `TWOLEVEL`、`codesign -v` 通过、`bin/libtcc.dylib` 为 Mach-O arm64）
+- [ ] 验收后修订：§1.2 非目标、§3.2 step 2 支持集、D5、§3.4 布局合同、§9 已知限制（对齐阶段 7「验收后落地」先例）
+- [ ] review-expert-c 复核收口
+
+验收（G8，全部以 CI 实际运行为准；关键测试全部 skipped 不算通过）：
+
+- 两个新 job 的 bundle 构建步骤成功；linux-aarch64 包 `nm -D bin/libtcc.so` 导出覆盖 FFM 绑定的 10 个符号（对齐 G1 口径）；macOS 包经 `otool -hv`/`codesign -v`/Mach-O arm64 三项结构断言。
+- 真实 bundle 入场门在两平台通过：生产 `requireBundleRoot` 全缝（布局 + VERSION 三键 + MANIFEST 全文件 SHA-256）校验脚本实际产物。
+- 两平台 CI 上下列测试全部实际运行、0 跳过 0 失败（`TinyCcWindowsBundleParityTest`/`MinicoroAsmEncodingTest`/`LauncherSmokeTest` 按改动第 2 组的平台范围登记豁免）：`TinyCcCompilerTest`、`TinyCcLibraryTest`、`TinyCcCompilerParallelTest`、`TinyCcCompilerStabilityTest`、`TinyCcHrxRuntimeGateTest`、`TinyCcCliGateTest`、`TinyCcU8StringTest`、`TinyCcCompilerIntegrationTest`、`GdScriptUnitTestTinyCcSubsetTest`、`MinicoroTlsIsolationParityTest`、`GdccCallMacroRuntimeParityTest`、`GdccOperatorPowSmokeTest`、`CrossBackendIncludeStabilityTest`、`CrossBackendProjectLockTest`、`TinyCcObjCacheTest`、`TinyCcCompilerNativeFakeTest`、`TinyCcBundleTest`；产物形态/导出断言经 `NativeArtifactInspector` 各平台腿真实执行（macOS 为 Mach-O + `nm -gU`）。
+- pthread TLS 卸载回收门在两平台实跑通过（≥1100 轮、宿主 TLS sentinel 不变、映像确认卸载、key 析构执行）。
+- `MinicoroTlsIsolationParityTest` 在 aarch64 双平台覆盖 pthread TLS 路径（tcc 腿）；负向锚定：`__TINYC__ && __aarch64__` 下 `__thread` 分支不被选中（编译期锚点或探针断言）。
+- macOS Godot 门：`GdScriptUnitTestTinyCcSubsetTest` 与 `TinyCcCompilerIntegrationTest` 的 Godot 腿在 `macos-aarch64` runner 真实加载 tcc 产出的 `lib*.dylib`——`.gdextension` 由单平台 `render` 产出 `macos.debug`/`macos.release` 未限定架构键，Godot 按 feature tag 匹配命中；`*.arm64` 限定键形由 `GdextensionMetadataFileTest` 的 multi-platform 用例另行锁定，本阶段不改 CLI 元数据合同。
+- zig 侧零回退：linux-x64 / windows-x64 CI 既有结果不退化；`CPortabilitySurfaceTest` 双编译器口径全绿。
+
+### 阶段 9：文档收口
 
 - `backend_build_system_implementation.md`：新增 TinyCcCompiler 职责段（阶段 7 验收后含两阶段编译形态与 `<cacheRoot>/tcc-obj/` 缓存合同：键组成、原子发布、链接期自愈恰好一次、降级哲学、buildLog 缓存统计行与 fallback 行；并显式登记 zig 侧 §3.1 object 纪律与 §9「不自管 object 缓存」结论仅约束 zig 管线、为 tcc 单独立段——两处同步修订）、日志/取消差异合同、§8 测试锚点清单与并行约定更新。
 - `doc/gdcc_c_backend.md`：编译器后端章节补 tcc 路径；Native Compiler Cache 章节补 tcc object cache 段；可移植化落地的实际差异（`{nullptr}`→`{NULL}`、`pow_int` 中间量、`__TINYC__` 分支、minicoro 补丁、stdbool 注入）随阶段 2 同步修订（`u8"..."` 合同不变）。
@@ -389,7 +447,7 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 | R9 | 中 | HRX/动态调用/协程取消在 tcc 产物下未验 | handoff §12 明示验收缺口 | 阶段 5/6 强制行为门；未过不得声明平台支持 |
 | R10 | 低 | tcc 忽略部分 `__attribute__`（visibility/pure/const） | tcc 解析后丢弃语义 | 导出符号默认可见即可用；优化提示丢失不影响正确性 |
 | R11 | 低 | bundle 分发 license 合规 | tcc LGPL-2.1、winapi 头等上游许可 | 阶段 1 随包 `COPYING`/`RELICENSING`；发布前 license 审查（handoff §6.2 同要求） |
-| R12 | 低 | linux-aarch64 tcc 未实测 | 无该架构探针证据；`__arm64_clear_cache` 为源码级推断 | 首期不支持集排除，实测后再开放 |
+| R12 | 低 | ~~linux-aarch64 tcc 未实测~~（已消解） | `../probe-env/` 实证已完成（§2 第 13-15 条），阶段 8 立项开放 | 首期不支持集排除的决议由阶段 8 范围决议取代 |
 | R13 | 低 | bundle 用户缓存目录无容量管理 | 与 zig cache root 同性质缺口 | 本期不自动清理，列入已知限制 |
 | R14 | 高 | OBJ+链接两阶段形态与合并编译的行为等价性未验证 | libtcc `TCC_OUTPUT_OBJ` + `tcc_add_file(.o)` 链接路径此前未走（含 Windows 上 ELF `.o` 链成 PE DLL 的路径，见 R19） | P7-1 探针先行，未通过不实施；G7 复跑全部端到端行为门 |
 | R15 | 中 | 缓存键遗漏编译输入致错误命中（错误复用旧产物） | 键由人工清单组成，未来新增编译输入（新 flag/新 include 维度）可能忘入键 | 键组成集中在 `TinyCcObjCache` 单点并在类注释明示入键义务；逐输入扰动正反锚定测试 |
@@ -398,6 +456,12 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 | R18 | 低 | `tcc-obj` 缓存无容量管理 | 与 zig cache root 同性质缺口 | 本期不自动清理，列入已知限制 |
 | R19 | 中 | Windows 上「ELF `.o` 链接成 PE DLL」未端到端验证 | object 恒为 ELF（`libtcc.c:987-991`），PE 目标无 COFF object 路径；P7-1 探针仅覆盖 Linux FFM | G6 同渠道 CI 复跑缓存测试矩阵（既有测试类已全部跨平台化），Windows 腿断言 ELF magic |
 | R20 | 中 | 生成文件写入方不参与项目锁协议：另一构建任务可在本轮持锁期间重写 `entry.c`/生成头，造成「键是旧内容、编译读新内容」的缓存污染 | `CProjectBuilder` 的 `GeneratedFile.saveTo`（无锁）与 `compiler.compile`（锁内）分离；API 并发互斥按 module 而非输出目录 | **已接受，不兜底**（用户决议 2026-10-13）：触发需两个不同 module 并发构建同一输出目录，正常用法不存在；风险说明已写入 `CProjectBuilder`/`TinyCcCompiler` 相关代码注释 |
+| R21 | 高 | macOS 上 flat namespace 的 libtcc.dylib 在 JVM 进程内符号错绑致 SIGBUS | 上游 Makefile 对宿主 dylib 默认加 `-flat_namespace`；flat namespace 下 libtcc 全局数据符号 `parse_flags` 被绑到 Heimdal `_parse_flags`（probe `ffm-flat.log` + `hs_err_pid*.log` 实证），FFM 首次 `tcc_add_file` 编译时即崩（`preprocess_start`） | macOS bundle 脚本 twolevel 重建腿为必做项；`otool -hv` 断言 `TWOLEVEL` 纳入 G8 验收（§2 第 14 条） |
+| R22 | 中 | macOS bundle 的 `CONFIG_TCC_SYSINCLUDEPATHS` 烤入构建机 Xcode SDK 绝对路径，分发到他机可能失效 | configure 探测并烤入 SDK 路径（probe config.h 实证为 `/Applications/Xcode_*.app/...` 形式） | CI 同机构建同机测试不受影响；「需 Xcode CLT/SDK」登记已知限制；运行时 `tcc_add_sysinclude_path` 探测列后续方向 |
+| R23 | 高 | aarch64 上 tcc `__thread` 不安全：Linux DSO 读宿主镜像 TLS 槽，macOS Mach-O 无 TLV 直接 SIGSEGV | pinned ARM64 tcc 的 local-exec TLS 模型缺陷（probe `tls-negative.log` 实证） | 阶段 8 必改项：minicoro pthread-key TLS 路径 + 负向锚定 + `MinicoroTlsIsolationParityTest` aarch64 实跑（§2 第 15 条） |
+| R24 | 中 | macOS aarch64 直接调用 `__arm64_clear_cache` 为非法指令（exit 132） | tcc 的该 intrinsic 直接生成 ARM cache-control 指令，在实测 Darwin 环境执行触发 SIGILL（probe 负向探针实证） | 阶段 8 必改项：`gdcc_hrx_flush_icache` 增 `__APPLE__` 分支用 `sys_icache_invalidate()`（§2 第 15 条） |
+| R25 | 中 | macOS 上 HRX RW→RX thunk 发布在官方 Godot 编辑器的签名/entitlement 配置组合下未全覆盖 | probe 仅覆盖 runner 默认环境（REPORT 验证边界声明） | HRX 保持 fail-closed（不可用则 `HRX_UNAVAILABLE` 降级）；G8 Godot 门实测记录；全签名矩阵列后续方向 |
+| R26 | 中 | macOS dyld 按路径缓存镜像，同路径 `dlopen` 返回旧镜像 | Godot `OS_MacOS::open_dynamic_library` 未实现 `generate_temp_files`（`hot_reload_implementation.md` 既有结论） | 平台级既有缺口，非本阶段引入；本阶段验收不含编辑器内同路径重载；发新路径方案归 macOS 平台立项 |
 
 ## 7. 验收细则总表
 
@@ -411,17 +475,20 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 | G5 | Linux 端到端 | `--tests TinyCcCompilerIntegrationTest`；HRX/运行时行为门；test_suite 子集 tcc 冒烟；zig→tcc→zig 交替回归 |
 | G6 | Windows 端到端 | Windows 主机按 handoff §8 验证表 + HRX 门复测 |
 | G7 | tcc 按 TU 内容缓存 | P7-1 探针证据（`tmp/tcc-obj-cache-probes/EVIDENCE.md`）；单元层 `script/run-gradle-targeted-tests.sh --tests TinyCcCompilerTest,TinyCcCompilerNativeFakeTest,TinyCcObjCacheTest,ZigCcCompilerPchKeyTest,CCompilerCacheRootTest`；集成层（bundle/Godot `Assumptions` 门控，同 G5 口径）`--tests CrossBackendIncludeStabilityTest,TinyCcCompilerIntegrationTest,GdScriptUnitTestTinyCcSubsetTest` |
-| G8 | 文档 | §5 阶段 8 清单全落 |
+| G8 | Linux aarch64 + macOS aarch64 端到端 | §5 阶段 8 验收清单：两 CI job bundle 构建与结构断言（`nm -D`/`otool -hv` TWOLEVEL/`codesign -v`）+ 真实 bundle 入场门 + TLS 卸载回收门 + 清单所列测试类两平台实际运行、0 跳过 0 失败 |
+| G9 | 文档 | §5 阶段 9 清单全落 |
 
 ## 8. 权限与确认清单（超出 src/doc/tmp 范围或改变既有合同，需用户逐条批准）
 
-1. `build.gradle.kts`：`tasks.test` 增加 `jvmArgs("--enable-native-access=ALL-UNNAMED")`；`sourceSets.main.resources` 增加 bundle srcDir（或在 `processResources` 接入构建产物目录）；`EditorAddonProjectInstaller` 相关 `JavaExec` 任务的 `jvmArgs` 同参数核对。（**已批准并落地（阶段 3）**：`tasks.test` 与两个 `EditorAddonProjectInstaller` JavaExec 任务均已加入该参数；bundle srcDir 接入属分发打包范畴，随阶段 8 文档收口另行处理。）
+1. `build.gradle.kts`：`tasks.test` 增加 `jvmArgs("--enable-native-access=ALL-UNNAMED")`；`sourceSets.main.resources` 增加 bundle srcDir（或在 `processResources` 接入构建产物目录）；`EditorAddonProjectInstaller` 相关 `JavaExec` 任务的 `jvmArgs` 同参数核对。（**已批准并落地（阶段 3）**：`tasks.test` 与两个 `EditorAddonProjectInstaller` JavaExec 任务均已加入该参数；bundle srcDir 接入属分发打包范畴，随阶段 9 文档收口另行处理。）
 2. `build-script/` 新增 bundle 构建脚本（Linux/Windows 各一）。（用户决议：目录由 `script/` 改为 `build-script/`；`script/` 被 `.gitignore` 整体忽略，而 `build-script/` 可正常纳入版本管理。）
 3. ~~`.gitignore`：忽略 bundle 构建产物与本机提取缓存~~（已消解：构建产物默认输出到已被忽略的 `build/`；用户缓存目录在仓库之外；`build-script/` 未被忽略，无需改动 `.gitignore`）。
 4. launcher 行为变更确认：`main.zig` 的 zig 发现从硬前置降级为可选（找不到 zig 不再 `exit(1)`，仅不设置 `ZIG_HOME`）；这是既有启动合同的变更，实施前需明确批准。
 5. per-project 构建锁从 `ZigCcCompiler` 提取为编译器中立持有器（`ZigCcCompiler` 相应改造）：改动既有 zig 实现的锁持有方式，需确认。（**已批准并落地（阶段 3）**：`CProjectBuildLock` 提取完成，`ZigCcCompiler` 与其锁测试均已迁移。）
 6. 移除 `CProjectBuilder.setCCompiler`（当前无生产调用方，测试改用构造器注入）——公共 API 面缩减，需确认。
 7. `ci.yml` 改动与 Windows 主机 bundle 构建脚本：Windows job 新增 bundle 构建步骤（`build-script/build-tinycc-bundle-windows-x86_64.bat`，zig cc 产 `libtcc.dll` + 组装/校验 bundle），Linux job 接入既有 `build-tinycc-bundle-linux-x86_64.sh`，使 FFM/bundle 门控测试集在两平台 CI 真实执行。（**已批准并落地（阶段 6）**：用户明确批准"允许修改ci.yml，Windows job 内新增 bundle 构建步骤，执行与Linux类似步骤的测试"。）
+8. `build-script/` 新增四个 aarch64 脚本：bundle 构建（`build-tinycc-bundle-linux-aarch64.sh`、`build-tinycc-bundle-macos-aarch64.sh`）与 CLI 工作树构建（`build-tinycc-cli-linux-aarch64.sh`、`build-tinycc-cli-macos-aarch64.sh`）——目录决议同 §8.2。
+9. `ci.yml` 在 `linux-aarch64`/`macos-aarch64` job 新增 bundle 构建步骤；`gradle/tinycc.gradle.kts` 的 `tinyccHostPlatformKey()` 扩展两平台键（构建配置改动）。
 
 ## 9. 已知限制与后续方向
 
@@ -430,4 +497,6 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 - 取消为合作式；强取消/超时需 worker 进程隔离方案（独立立项）。
 - tcc 构建依赖宿主开发头/CRT/库（zig 用 bundled sysroot 自给），CI/分发环境的 glibc 版本需纳入验证。
 - bundle 缓存无自动清理。
-- `LINUX_AARCH64` 实测后开放；macOS 需 mach-o 后端评估，不在路线图。
+- macOS tcc bundle 依赖宿主 Xcode CLT/SDK 头文件与 CRT（`CONFIG_TCC_SYSINCLUDEPATHS` 烤入构建机路径）；分发到他机的 SDK 路径兼容性与运行时 sysinclude 探测列后续方向（R22）。
+- macOS 编辑器内热重载受 dyld 同路径缓存限制（平台级既有缺口，非 tcc 特有），发新路径方案归 macOS 平台立项（R26）。
+- macOS x86_64、Android、Web、linux-riscv64 仍不在 tcc 路线图。
