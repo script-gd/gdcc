@@ -70,6 +70,28 @@ final class NativeArtifactInspector {
                 () -> "the artifact must not carry the other round's symbol:\n" + output);
     }
 
+    /// The artifact's full dynamic export set: `nm -D --defined-only` on Linux (assumption-gated
+    /// on the tool), the PE export directory on Windows. Used to pin that two rounds/artifacts
+    /// export exactly the same symbols.
+    static java.util.@NotNull Set<String> exportedSymbols(@NotNull Path artifact) throws IOException {
+        if (isWindowsHost()) {
+            return new java.util.TreeSet<>(PeExportReader.parse(artifact).exportedSymbols());
+        }
+        var nm = TinyCcCliTestSupport.findOnPath("nm");
+        Assumptions.assumeTrue(nm != null, "nm is required to list exported symbols");
+        var output = run(nm, List.of("-D", "--defined-only", artifact.toString()));
+        var symbols = new java.util.TreeSet<String>();
+        for (var line : output.split("\n")) {
+            var trimmed = line.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            var lastSpace = trimmed.lastIndexOf(' ');
+            symbols.add(lastSpace >= 0 ? trimmed.substring(lastSpace + 1) : trimmed);
+        }
+        return symbols;
+    }
+
     private static @NotNull String run(@NotNull Path tool, @NotNull List<String> arguments) throws IOException {
         var command = new java.util.ArrayList<String>();
         command.add(tool.toString());

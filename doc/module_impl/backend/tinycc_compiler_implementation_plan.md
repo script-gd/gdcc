@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：实施中（阶段 1-4 已完成，阶段 5-6 实施中）。本文档是 `TinyCcCompiler` 特性的唯一计划文档，完成后按归档约定转化为事实源文档或归档。
+- 状态：实施中（阶段 1-4 已完成，阶段 5-6 实施中；阶段 7「按 TU 内容寻址编译缓存」已实施并通过 Linux 验收，待 review 收口；Windows 腿归 G6 同渠道 CI）。本文档是 `TinyCcCompiler` 特性的唯一计划文档，完成后按归档约定转化为事实源文档或归档。
 - 适用范围：`gd.script.gdcc.backend.c.build` 包、`src/main/c/codegen/{include_451,template_451}`、`src/main/c/tinycc`（新增）、API/CLI/RPC 编译选项接线、zig launcher（行为变更，见 §8）。
 - 依据文档（结论来源，本文档不重复其论证）：
   - `doc/analysis/tinycc_analysis_windows_handoff.md`：Windows x86_64 上 tinycc mob `43c7708` + Java 25 FFM 的完整验证（构建命令、FFM 契约、11 文件兼容清单、资源包结构）。
@@ -22,7 +22,7 @@
 ### 1.2 非目标（本期不做）
 
 - 交叉编译：TinyCcCompiler 只支持 host == target 的目标平台（见 §4 D5）。
-- `TCC_OUTPUT_MEMORY` JIT 执行、`tcc_run`、PCH、LTO、ThinLTO、PDB 生成。
+- `TCC_OUTPUT_MEMORY` JIT 执行、`tcc_run`、PCH、LTO、ThinLTO、PDB 生成（PCH 仍不做；按 TU object 内容缓存不属 PCH，归阶段 7）。
 - 优化对等：不宣称 tcc 产物的优化水平与 zig `-O2`/LTO 对等。
 - macOS、Android、Web、linux-riscv64 的 tcc 支持；`LINUX_AARCH64` 待实测后另行开放。
 - 修改 `CCompiler` 接口签名、`CProjectBuilder` 输入收集顺序、`.gdextension` 由 CLI 写入的合同（不变边界，同 `backend_build_system_implementation.md` §1）。
@@ -40,6 +40,7 @@
 9. **FFM 启动参数**：launcher 已带 `--enable-native-access=ALL-UNNAMED`（`src/launcher/zig/src/main.zig:94`）；`java -jar` 为 unnamed 部署，该参数匹配。named-module 启动（IDE 模块路径）需 `--enable-native-access=gdcc`，须在阶段 0 用真实加载核对各启动方式。
 10. **逃逸生产者**：`StringUtil.escapeStringLiteral` 对非 ASCII 输出 `\uXXXX`/`\UXXXXXXXX`。UCN 在 plain 与 `u8"..."` 字面量中的执行编码已在 Linux x86_64 的 zig `-std=c23` 与 vendored tcc `-std=c11` 双侧验证（P0-1 字节矩阵 + `TinyCcU8StringTest`）；Windows 侧执行字符集仍未验证（handoff §5.1）。
 11. **金字面量测试面**：`src/test` 中 `u8"` 断言保持原样（vendored 补丁后 u8 前缀保留，无需清扫）；`nullptr` 断言 1 处，随可移植化同步。
+12. **libtcc OBJ 路径可用**（pinned 源码核对）：`libtcc.h:71` 定义 `TCC_OUTPUT_OBJ=3`，`tcc_set_output_type` 接受之（`libtcc.c:987-991`：object 恒为 ELF 输出格式——"always elf for objects"，PE 目标亦不例外，无 COFF object 路径）；`tcc_add_file` 按扩展名/内容识别 object 文件（`tcc_add_file_internal` 分发 `tcc_load_object`），`tcc -shared *.o` 是上游 CLI 的标准链接形态（`tcc.c` OBJ/多输入流程）。libtcc 层面逐 TU OBJ + 新 state 链接的端到端可行性仍以阶段 7 的 P7-1 探针实证为准。
 
 ## 3. 总体架构
 
@@ -59,20 +60,25 @@
 | launcher | `src/launcher/zig/src/main.zig`（行为变更，§8） | zig 发现从启动硬前置降级为可选：找不到 zig 时不再 `exit(1)`，仅不设置 `ZIG_HOME`；zig 缺失由 `ZigCcCompiler` 在编译时报告 |
 | tinycc vendored 源码 | `src/main/c/tinycc/`（新增） | mob `43c7708` 干净源码树（去除 `.git` 与全部生成物：config.mak/config.h、*.o、tcc、libtcc1.a 等，清单以 `.gitignore` 为准），附 pin 记录与 license |
 | bundle 构建脚本 | 见 §8 权限项 | 构建 libtcc 动态库与各目标运行时归档并组装 bundle |
+| `TinyCcObjCache` | `backend/c/build/`（阶段 7 新增，package-private） | per-TU 内容键计算（源 + include 树 + bundle VERSION + 固定编译输入 + target）、命中判定、`ATOMIC_MOVE` 单文件原子发布与命中条目删除；缓存目录 `<cacheRoot>/tcc-obj/` |
+| `CContentHash` / `CCompilerCacheRoot` | `backend/c/build/`（阶段 7 提取，package-private） | 编译器中立共享工具：SHA-256/length-prefixed/include 目录树内容哈希与 cache root 解析（`GDCC_SHARED_C_COMPILER_CACHE` → projectParent `shared-compiler-cache/` → projectDir `compiler-cache/`）；`ZigCcCompiler` 改用之（zig 行为不变为前提） |
 
 ### 3.2 编译流程（对比 zig 两阶段）
 
 zig：每 TU 一个子进程产 object（并行、内容缓存、PCH）→ 一次链接。tcc 一轮内全部 TU 合并编译直接产共享库，无 object 阶段：
 
+> 注（阶段 7 已落地）：tcc 流程为两阶段——per-TU 独立 state 以 `TCC_OUTPUT_OBJ` 编译（按内容键落盘缓存、命中跳过编译）→ 新 state 按 `cFiles` 顺序 `tcc_add_file(.o)` 一次链接产出共享库；下方流程即两阶段形态。
+
 1. `TinyCcBundle` 解析 bundle 根（失败 → `success=false`，日志说明缺失与 `GDCC_TINYCC_HOME` 用法）。
 2. 校验 `targetPlatform == TargetPlatform.getNativePlatform()` 且在支持集 `{LINUX_X86_64, WINDOWS_X86_64}` 内，否则快速失败（不触碰 native 库）。
-3. 锁获取顺序固定为 **per-project 构建锁 → tcc 全局锁**，禁止反向：per-project 锁与 zig 共用同一把（提取为编译器中立的 package-private 持有器，`ZigCcCompiler` 改用之），保护同一 `projectDir` 下的产物文件与输出路径，使 zig/tcc 对同一项目的并发构建互斥；tcc 全局锁（`ReentrantLock.lockInterruptibly`，取消通道）仅保护 libtcc 进程级 native 状态。
-4. 本轮 `Arena.ofConfined`；经 `TinyCcNative` 创建 state（NULL 拒绝）；安装诊断 upcall（消息即时拷贝为 Java `String` 追加到本轮列表）。
-5. `tcc_set_lib_path(bundleRoot)` → `tcc_set_options("-std=c11")` → `tcc_set_output_type(TCC_OUTPUT_DLL)` → 逐个 `tcc_add_include_path`（顺序与 `includeDirs` 一致）。**每个 int 返回值 `!= 0` 即中止本轮**（覆盖 -1/-2/-3 与 setup 期失败）。
-6. 按 `cFiles` 顺序逐个 `tcc_add_file`，返回值 `!= 0` 即中止（不继续后续文件、不 output）；文件间检查线程中断标记（合作式取消，中断则中止并恢复 interrupt 状态）。**每次 downcall 返回后检查本轮回调失败标记：非空即按失败中止**（native 返回 0 且产物已生成也不得报成功）。
-7. output 前删除已存在的同名旧产物（避免以陈旧文件冒充成功）；全部成功后 `tcc_output_file(outputPath)`，返回值 `!= 0` 即失败；再校验产物为普通文件。
-8. `finally`：`tcc_delete`（upcall/库 arena 仍存活）→ 关闭本轮 arena → 释放锁。
-9. 成功：`artifacts=[outputPath]`（tcc 不产 PDB）；buildLog 为诊断列表拼接（可为空）。失败：`buildLog` = 诊断列表 + 失败通道说明；`artifacts` 为空。
+3. **锁外缓存键准备**（不调用 libtcc、不新增中断点）：`CCompilerCacheRoot` 解析 cache root、读 bundle `VERSION` 内容、逐 TU 读源并按 `TinyCcObjCache` 键规则计算内容键；include 树哈希/`VERSION`/cache root 失败 → 本轮无缓存降级（固定 fallback 行），TU 源读取失败仅该 TU 按 miss 处理（不降级）。
+4. 锁获取顺序固定为 **per-project 构建锁 → tcc 全局锁**，禁止反向：per-project 锁与 zig 共用同一把（提取为编译器中立的 package-private 持有器，`ZigCcCompiler` 改用之），保护同一 `projectDir` 下的产物文件与输出路径，使 zig/tcc 对同一项目的并发构建互斥；tcc 全局锁（`ReentrantLock.lockInterruptibly`，取消通道）仅保护 libtcc 进程级 native 状态。
+5. 本轮 `Arena.ofConfined`；经 `TinyCcNative` 创建 round 桥（NULL 拒绝）；各 state 安装诊断 upcall（消息即时拷贝为 Java `String` 追加到本轮列表）。
+6. **逐 TU**（中断检查在每个 TU 的 OBJ 编译前）：键命中（缓存条目为普通文件）→ 收集 `.o` 路径，不创建 OBJ state；miss → 独立 fresh state 以 `TCC_OUTPUT_OBJ` 编译（`tcc_set_lib_path(bundleRoot)` → `tcc_set_options("-std=c11")` → `tcc_set_output_type(TCC_OUTPUT_OBJ)` → 逐个 `tcc_add_include_path` 保序 → `tcc_add_file(.c)` → `tcc_output_file(同目录唯一临时名 .o)`）。**每个 int 返回值 `!= 0` 即中止本轮**（覆盖 -1/-2/-3 与 setup 期失败）；**每次 downcall 返回后检查本轮回调失败标记：非空即按失败中止**（native 返回 0 且产物已生成也不得报成功）。产物校验为普通文件 → `ATOMIC_MOVE` 原子发布为 `<key>.o`（不支持原子移动/发布失败 → 降级为本轮直接使用该临时产物 + fallback 行，禁止非原子覆盖最终 key）。每个 state 单次使用、`finally` 删除。
+7. **链接**：新 fresh state（`tcc_set_lib_path` → `-std=c11` → `TCC_OUTPUT_DLL`；object 输入无需 include 路径）按 `cFiles` 顺序逐个 `tcc_add_file(.o)`；命中条目被拒（返回值 `!= 0`）→ 删除该条目、按 miss 以新 OBJ state 重编该 TU、**丢弃失败的链接 state**、以新建链接 state 恰好重链一次（本轮新编译条目被拒不重试）。
+8. DLL output 前做最终中断检查（合作式取消，中断则中止并恢复 interrupt 状态）；output 前删除已存在的同名旧产物（避免以陈旧文件冒充成功）；`tcc_output_file(outputPath)`，返回值 `!= 0` 即失败；再校验产物为普通文件。
+9. `finally`：每个 state `tcc_delete`（upcall/库 arena 仍存活）→ 关闭本轮 arena → 释放锁；降级轮借用的临时 object 于轮末尽力删除。
+10. 成功：`artifacts=[outputPath]`（tcc 不产 PDB）；buildLog 顶部为固定统计行 `[gdcc] tcc object cache: <hits> hits, <misses> misses`（缓存可用轮）或 fallback 行 `[gdcc] tcc object cache unavailable this round: <reason>`（降级轮；仅发布腿降级时两行并存），诊断列表跟随其后（可为空）。失败：`buildLog` = 头部行 + 诊断列表 + 失败通道说明；`artifacts` 为空。命中 TU 不重编译，其当轮警告不再重现。
 
 FFM 生命周期不变量（写入实现类注释与测试）：
 
@@ -133,10 +139,13 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 - **D6 `CompileOptions` 增加 `cCompilerKind` 组件**：record 构造点全部更新（生产 2 处：`CompileOptions.defaults`、`GdccCommand.compileOptions`；测试 11 处）；保留六参兼容构造器。**默认值经阶段 4 用户决议修改**：未指定（null）表示自动——debug→`TINY_CC`、release→`ZIG_CC`（`CCompilerKind.defaultFor`）；`CProjectInfo` 5 参兼容构造器仍固定 `ZIG_CC` 以保持后端既有调用点行为不变。
 - **D7 DEBUG/RELEASE 同构**：tcc 无有效 `-O2`/LTO；两档仅影响输出基名（`debug|release`），编译参数一致，文档明示不承诺优化对等。
 - **D8 构建时 libc 来源差异显式化**：zig 用 bundled sysroot、不依赖宿主开发环境；tcc 依赖宿主开发头/CRT/库。两者产物均为动态 glibc 共享库，部署兼容性以实测动态依赖为准，不作静态链接承诺。
+- **D9 tcc 两阶段编译 + 按 TU 内容寻址缓存**（阶段 7）：每个 TU 经独立 state 以 `TCC_OUTPUT_OBJ` 编译为 `.o` 并按内容键落盘缓存，命中跳过编译；链接由新 state 逐个 `tcc_add_file(.o)` 一次产出共享库。合并编译形态被替换（一轮内最多 N+1 个 state：miss TU 各一 + 链接一）；D3「失败态不跨轮复用」不变（每个 state 仍单次使用，finally 删除）。
+- **D10 缓存键组成与 D7 推论**：键 = 格式版本（`gdcc-tcc-obj-v2`）+ bundle `VERSION` 内容 + 固定编译输入（`-std=c11` + OBJ 输出语义）+ `targetPlatform` + 保序 include 目录（归一化绝对路径 + 目录树内容哈希）+ **TU 源文件归一化绝对路径** + TU 源内容 + **TU 同目录顶层 `*.h`（名字+内容，按名排序）**，SHA-256 截断前 16 字节。源路径必须进键：无条件写入的 `STT_FILE` 符号与未被 `#line` 覆盖处的 `__FILE__`（模板与 `gdcc_helper` 头中的 `GDCC_PRINT_RUNTIME_ERROR` 宏大量使用）烤的是传给 `tcc_add_file` 的路径——因此编译器在入口处把 `cFiles`/`includeDirs` 统一归一化（`toAbsolutePath().normalize()`），键与 native 调用见同一拼写。（`#line` 烤的是 GDScript 源路径，已由 TU 内容哈希覆盖，不另立键输入。）TU 同目录头段覆盖引号包含的主解析位置（libtcc 先查当前文件目录）——`entry.h` 等生成头是真实编译输入却不在 `includeDirs` 内；粗粒度整目录头是保守失效（同目录无关 TU 连坐 miss），不追踪真实 include 闭包；非 `.h` 文件（产物、构建元数据）不进键以免自我失效。include 树哈希拒绝目录符号链接（native 搜索会跟随而遍历不会，检测到即本轮降级为无缓存）；文件符号链接按目标内容入哈希，与 native 读取一致。推论：entry TU（`projectDir` 下）天然按项目隔离；4 个运行时 TU 在共享 includeRoot（`GDCC_SHARED_INCLUDE`/`shared-include`）布局下路径稳定、可跨项目复用，项目内 `include/` 布局下按项目隔离。因 D7（optimizationLevel 不进编译参数），DEBUG/RELEASE 共享条目。include 整树哈希是保守失效策略（任一头部内容变化 → 相关条目全 miss），与 zig PCH key 同策略。`bundleRoot` 路径与宿主系统头内容不进键：`{B}` 只展开 sysinclude/lib 路径，与 zig PCH 不哈希宿主头同一保守度。
+- **D11 缓存永不成为构建失败源**：include 树哈希（含目录符号链接拒绝）/cache root/发布任一层失败均降级（固定 fallback 行后本轮无缓存或跳过发布继续），不使编译失败；TU 源文件读取失败不降级、按 miss 处理（`tcc_add_file` 给出权威诊断）。对象输出恒落在**本轮独占的系统临时文件**（缓存文件系统故障不可能阻塞编译），发布腿为「复制到缓存同目录唯一临时名 → `ATOMIC_MOVE`+`REPLACE_EXISTING` 原子替换到 `<key>.o`」；链接始终消费命中条目或本轮独占临时（新编译 TU 不以缓存最终路径参与链接，发布后条目被外部删除不影响本轮）。链接期缓存命中条目被 tcc 拒绝时：先查回调失败与中断（两者均为轮级通道、不触自愈），再删除该条目、按 miss 重编该 TU、**丢弃失败的链接 state**、以新建链接 state 恰好重链一次（对齐 PCH 自愈语义与 D3「失败 state 不复用」，覆盖毒化条目与外部删除窗口）；本轮新编译条目失败不重试。`AtomicMoveNotSupportedException` 属发布失败走降级，**禁止**退回非原子覆盖最终 key（半截文件会被「普通文件」命中判定消费）。跨进程同 key 并发写为 last-writer-wins（等价条目互换安全），不引入跨进程文件锁（与 zig PCH §5.4 同政策）。
 
 ## 5. 分步骤实施
 
-阶段依赖：`G0 → G1；G0/G1 → G2；G1 → G3；G2/G3 → G4 → G5/G6 → G7`。内部基础设施可先行合入，但未通过对应平台端到端门前不得声明该平台受支持；关键测试全部 skipped 不算验收通过。
+阶段依赖：`G0 → G1；G0/G1 → G2；G1 → G3；G2/G3 → G4 → G5/G6 → G7 → G8`。内部基础设施可先行合入，但未通过对应平台端到端门前不得声明该平台受支持；关键测试全部 skipped 不算验收通过。
 
 ### 阶段 0：权限确认与前置探针
 
@@ -316,10 +325,49 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 - `CreateFiberEx` 缺口不涉及（fiber 后端禁用，`gdcc_runtime_lib.md` 合同不变）。
 - G6 未通过前，Windows 不得在支持声明中标记完成。
 
-### 阶段 7：文档收口
+### 阶段 7：按 TU 内容寻址编译缓存（tcc object cache）
 
-- `backend_build_system_implementation.md`：新增 TinyCcCompiler 职责段、日志/取消差异合同、§8 测试锚点清单与并行约定更新。
-- `doc/gdcc_c_backend.md`：编译器后端章节补 tcc 路径；可移植化落地的实际差异（`{nullptr}`→`{NULL}`、`pow_int` 中间量、`__TINYC__` 分支、minicoro 补丁、stdbool 注入）随阶段 2 同步修订（`u8"..."` 合同不变）。
+改动：
+- 前置探针 P7-1（tmp 下，真 bundle 经 FFM 驱动，证据写 `tmp/tcc-obj-cache-probes/EVIDENCE.md`）：libtcc `TCC_OUTPUT_OBJ` 逐 TU 编译产 object + 新 state 逐个 `tcc_add_file(.o)` 链接成共享库的端到端可行性——`nm -D` 导出断言与合并编译产物一致、最小 fixture（含 `stdio.h`/`sys/mman.h` 调用与 HRX 探针）双路径产物行为等价；object 恒为 ELF（`libtcc.c:987-991`），缓存文件扩展名两平台统一 `.o`，Windows 腿断言 ELF magic 而非 COFF；不试 `-fPIC`（libtcc 无此选项，x86_64 codegen 本就走 GOT/RIP——P7-1 用真实 `TCC_OUTPUT_DLL` 链接验证）。Windows 上「ELF `.o` 链接成 PE DLL」的端到端验证归 G6 同渠道 CI。探针未通过则本阶段不进入实施（维持合并编译形态）。
+- 提取编译器中立共享工具（`backend/c/build/` package-private，zig 行为不变为前提；提取范围收窄为纯哈希与路径解析，zig 语义件留在原处）：
+  - `CContentHash`：SHA-256 构造、length-prefixed 更新、include 目录树内容哈希（自 `ZigCcCompiler` 私有实现 `hashIncludeTree`/`updateLengthPrefixed`/`newSha256` 平移）；`resolvePchCacheKey` **不整段搬**（zig version/LTO/optimization 语义属 zig），仅改用它。`TinyCcBundle` 自带的 MANIFEST SHA-256 实现是否归并属实施期可选项，不作本阶段要求。
+  - `CCompilerCacheRoot`：`resolveCompilerCacheRoot` 语义平移；tcc 缓存与 zig 共用同一 cache root 解析，固定 4 个运行时 TU 的缓存条目在共享 includeRoot 布局下随共享 cache root 跨项目复用。（已落地：`ZigCcCompilerCachePathTest` 迁移为 `CCompilerCacheRootTest`；`ZigCcCompilerPchKeyTest` 不变——`resolvePchCacheKey` 留在 `ZigCcCompiler`。）
+- 新增 `TinyCcObjCache`（package-private）：per-TU 键计算、命中判定、发布与命中条目删除。缓存布局 `<cacheRoot>/tcc-obj/<key>.o`——发布腿为「编译产物复制到同目录唯一临时名（`<key>.tmp-<random>.o`）→ `ATOMIC_MOVE`+`REPLACE_EXISTING` 原子替换」即完整（无 `.ready` 组标记；同目录保证同文件系统；`ATOMIC_MOVE` 不支持属发布失败、走降级，禁止非原子覆盖最终 key）。命中判定为「条目是普通文件」。
+  - 键输入依次为：格式版本常量（`gdcc-tcc-obj-v2`）、bundle `VERSION` 文件内容、固定编译输入（`-std=c11` + OBJ 输出语义）、`targetPlatform`、保序 include 目录（归一化绝对路径 + 目录树内容哈希，length-prefixed 防歧义；目录符号链接拒绝→轮级降级）、**TU 源文件归一化绝对路径**（`STT_FILE`/`__FILE__` 路径敏感，且编译器入口统一归一化使键与 native 见同一拼写，见 D10）、TU 源文件内容、**TU 同目录顶层 `*.h`**（名字+内容按名排序——覆盖 `entry.h` 等生成头的引号包含主解析位置）。
+- `TinyCcCompiler` 流程改造（替换 §3.2「一轮内全部 TU 合并编译、无 object 阶段」的形态；对外合同不变——`artifacts` 首位共享库、无 PDB、无 `Command:` 段）：
+  1. bundle 解析、平台校验、空输入快速失败（不变）；随后 `cFiles`/`includeDirs` 统一归一化（`toAbsolutePath().normalize()`）。
+  2. 锁序不变（per-project 构建锁 → tcc 全局锁，均 `lockInterruptibly`）。**锁内**做缓存键准备：cache 根解析 + 读 bundle `VERSION` + 逐 TU 读源算键（纯 Java 哈希，不调用 libtcc，不新增中断点，取消面保持三处：锁等待、每个 TU 的 OBJ 编译前、DLL output 前）。**必须在锁内**：键哈希的内容与 libtcc 之后编译的内容必须一致——锁外哈希会留下「源文件被改写后以新内容发布到旧键」的污染窗口。include 树哈希失败（含目录符号链接拒绝）或 cache root 不可用 → 固定 fallback 行 + 本轮无缓存继续；TU 源读取失败按 miss 不降级。
+  3. 锁内逐 TU：命中（条目为普通文件）→ 收集 `.o` 路径；miss → 独立新 state 以 `TCC_OUTPUT_OBJ` 编译该 TU（`tcc_set_lib_path` → `-std=c11` → include 保序 → `tcc_add_file(.c)` → `tcc_output_file(本轮独占系统临时 .o)`；每个 int 返回值 `!= 0` 即中止、每次 downcall 后回调失败检查、每个 TU 的 OBJ 编译前中断检查——既有不变量逐条保留）→ 产物校验为普通文件 → 发布腿（复制到缓存同目录临时名 + `ATOMIC_MOVE`）失败降级为 fallback 行，链接始终消费本轮独占临时。对象输出不落在缓存文件系统上：缓存盘故障不可能阻塞编译。
+  4. 链接：新 state（`TCC_OUTPUT_DLL` + `tcc_set_lib_path` + `-std=c11`；`.o` 输入不需要 include path）按 `cFiles` 顺序逐个 `tcc_add_file(.o)` → DLL output 前中断检查 → 删旧产物 → `tcc_output_file(outputPath)` → 普通文件校验（与现流程一致）。链接期 `tcc_add_file` 失败且失败输入为**缓存命中**条目时：先查回调失败与中断（轮级通道优先，不触自愈）→ 删除该条目、按 miss 以新 OBJ state 重编该 TU、**丢弃失败的链接 state**（D3：失败 state 不复用）、以新建链接 state 按 `cFiles` 顺序重链**恰好一次**（对齐 PCH 自愈语义，覆盖毒化条目与外部删除窗口）；本轮新编译条目失败不重试。
+  5. buildLog：诊断收集合同不变；顶部新增固定缓存统计行 `[gdcc] tcc object cache: <hits> hits, <misses> misses`（命中 TU 不重编译、其警告不再重现——与 zig 内容缓存同性质，文档明示）；降级时固定 fallback 行 `[gdcc] tcc object cache unavailable this round: <reason>`（先例：zig PCH fallback line）。
+- `TinyCcLibrary`：新增 `TCC_OUTPUT_OBJ=3` 常量。
+- 注释纪律沿用阶段 2 声明：注释只解释 C 语义与 libtcc 契约事实，不得引用本计划文档或任务编号。
+- 对 zig 合同的偏离显式化：本机制是 tcc 后端自有合同；`backend_build_system_implementation.md` §3.1「禁止 glob `obj/`、禁止以 object 已存在跳过编译、stale object 永不进链接」（L63 段）与 §9「zig per-TU 内容缓存……因此 gdcc 不自管 object 缓存」（构成性事实段）两处纪律仍仅约束 zig 管线，tcc 侧立段归阶段 8 文档收口（两处同步修订，不是只改 §3.1）。
+
+进度（实施中逐项同步）：
+
+- [x] 探针 P7-1（证据入库 `tmp/tcc-obj-cache-probes/EVIDENCE.md`，结论：两阶段形态导出与行为等价，进入实施）
+- [x] `CContentHash`/`CCompilerCacheRoot` 提取 + `ZigCcCompiler` 迁移 + zig 侧全回归（`ZigCcCompilerPchKeyTest` 复绿；`ZigCcCompilerCachePathTest` 迁移为 `CCompilerCacheRootTest` 复绿；含 `ZigCcCompilerPchTest`/`ZigCcCompilerPchIntegrationTest` 在内零回退）
+- [x] `TinyCcObjCache`（键计算/命中/原子发布/删除）+ `TinyCcObjCacheTest`（纯 Java：键正反——逐输入扰动必 miss、同输入必命中；发布/命中/删除语义；cache root 集成锚点。cache root 决策表归 `CCompilerCacheRootTest`）
+- [x] `TinyCcCompiler` 两阶段流程改造 + `TinyCcLibrary.TCC_OUTPUT_OBJ`
+- [x] `TinyCcCompilerNativeFakeTest` 扩展（纯 Java，多 state 按句柄记录 fake，已删句柄操作即失败）：命中 TU 不创建 OBJ state、miss 编译与发布调用序列、自愈恰好一次（旧链接 state 丢弃 + 重编 + 新 state 重链 + 每 state 恰好一次 delete；二次被拒即失败）、拒绝+回调失败走回调通道不触自愈、拒绝+中断走取消通道不触自愈、降级路径（VERSION 缺失/include 树哈希失败/目录符号链接/发布 staging 失败/发布 move 失败）、TU 读失败按 miss、命中 TU 警告不重现、路径归一化统一（键与 native 同拼写）、取消点保持三处
+- [x] `TinyCcCompilerTest`（真 bundle）扩展：首轮全 miss；二轮全命中仅创建链接 state；TU 同目录头（引号包含）变化仅该 TU 重编且产物行为经 FFM 调用断言变化（42→43）；二轮产物导出集合与首轮一致（先快照后对比）；DEBUG/RELEASE 共享条目
+- [x] 端到端回归：`TinyCcCompilerIntegrationTest`、`GdScriptUnitTestTinyCcSubsetTest`（40 例）、`CrossBackendIncludeStabilityTest`（缓存只读 include 树，零触碰断言复绿）——全部 0 跳过 0 失败
+- [x] 性能参考值（本机实测，生产形态 fixture：entry.c + 4 运行时 TU；冷轮全 miss 364ms → 全命中轮 37-51ms（仅键计算 + 链接，include 树每轮一次哈希）；仅 entry TU 变动轮 55ms。对比阶段 4 基线全量轮 ≈99ms：命中轮约减半。PR 描述引用，不进 CI 断言）
+- [x] §3.2 流程改写为两阶段形态、§9「无 PCH/内容缓存」条目修订（验收后落地）
+- [x] review 收口（review-expert-c 两轮复核：首轮 3 HIGH + 6 MEDIUM 全部修复——锁内键计算、TU 同目录头入键（v2）、目录符号链接拒绝、路径归一化统一、独占临时输出+复制发布、自愈前回调/中断检查、fake 句柄化、行为断言增强；二轮确认 8/9 解决，残留 R20 待用户确认管线级锁扩展）
+
+验收：
+- P7-1 证据：Linux FFM 下 OBJ 逐 TU + `.o` 链接产出共享库，导出符号与合并编译一致；两平台统一 `.o`（ELF）扩展名的结论经实证锁定。
+- 新增/受影响测试全部实际运行、0 跳过 0 失败；zig 侧零回退（`ZigCcCompiler` 全部既有测试复绿）。
+- 缓存键正反锚定成立：任何键输入变化必 miss，同输入必命中；DEBUG/RELEASE 共享条目（D7 推论，测试锚定）。
+- 缓存永不成为构建失败源（全部降级路径经测试锚定）；命中条目损坏/被删时自愈恰好一次。
+- 端到端行为不变：两阶段形态下 Godot 集成与 test_suite tcc 子集复跑全绿。
+
+### 阶段 8：文档收口
+
+- `backend_build_system_implementation.md`：新增 TinyCcCompiler 职责段（阶段 7 验收后含两阶段编译形态与 `<cacheRoot>/tcc-obj/` 缓存合同：键组成、原子发布、链接期自愈恰好一次、降级哲学、buildLog 缓存统计行与 fallback 行；并显式登记 zig 侧 §3.1 object 纪律与 §9「不自管 object 缓存」结论仅约束 zig 管线、为 tcc 单独立段——两处同步修订）、日志/取消差异合同、§8 测试锚点清单与并行约定更新。
+- `doc/gdcc_c_backend.md`：编译器后端章节补 tcc 路径；Native Compiler Cache 章节补 tcc object cache 段；可移植化落地的实际差异（`{nullptr}`→`{NULL}`、`pow_int` 中间量、`__TINYC__` 分支、minicoro 补丁、stdbool 注入）随阶段 2 同步修订（`u8"..."` 合同不变）。
 - `doc/gdcc_runtime_lib.md`：minicoro tcc 适配补丁登记（`__TINYC__` 分支清单）。
 - `doc/module_impl/api/rpc_api_implementation.md`、`json_rpc_service_implementation.md`：`cCompilerKind` 字段表与取消延迟预期修订。
 - 分发说明：两后端的 libc/构建环境合同（D8）与 launcher 行为变更。
@@ -343,6 +391,13 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 | R11 | 低 | bundle 分发 license 合规 | tcc LGPL-2.1、winapi 头等上游许可 | 阶段 1 随包 `COPYING`/`RELICENSING`；发布前 license 审查（handoff §6.2 同要求） |
 | R12 | 低 | linux-aarch64 tcc 未实测 | 无该架构探针证据；`__arm64_clear_cache` 为源码级推断 | 首期不支持集排除，实测后再开放 |
 | R13 | 低 | bundle 用户缓存目录无容量管理 | 与 zig cache root 同性质缺口 | 本期不自动清理，列入已知限制 |
+| R14 | 高 | OBJ+链接两阶段形态与合并编译的行为等价性未验证 | libtcc `TCC_OUTPUT_OBJ` + `tcc_add_file(.o)` 链接路径此前未走（含 Windows 上 ELF `.o` 链成 PE DLL 的路径，见 R19） | P7-1 探针先行，未通过不实施；G7 复跑全部端到端行为门 |
+| R15 | 中 | 缓存键遗漏编译输入致错误命中（错误复用旧产物） | 键由人工清单组成，未来新增编译输入（新 flag/新 include 维度）可能忘入键 | 键组成集中在 `TinyCcObjCache` 单点并在类注释明示入键义务；逐输入扰动正反锚定测试 |
+| R16 | 中 | 缓存条目毒化（崩溃半成品/磁盘损坏/外部删除） | 单文件缓存无多文件组校验 | 同目录临时文件 + `ATOMIC_MOVE` 原子发布；链接期命中条目被拒时自愈重编恰好一次 |
+| R17 | 低 | 命中 TU 的诊断（警告）不再重现 | 缓存命中不重编译，与 zig 内容缓存同性质 | buildLog 缓存统计行；事实源文档明示 |
+| R18 | 低 | `tcc-obj` 缓存无容量管理 | 与 zig cache root 同性质缺口 | 本期不自动清理，列入已知限制 |
+| R19 | 中 | Windows 上「ELF `.o` 链接成 PE DLL」未端到端验证 | object 恒为 ELF（`libtcc.c:987-991`），PE 目标无 COFF object 路径；P7-1 探针仅覆盖 Linux FFM | G6 同渠道 CI 复跑缓存测试矩阵（既有测试类已全部跨平台化），Windows 腿断言 ELF magic |
+| R20 | 中 | 生成文件写入方不参与项目锁协议：另一构建任务可在本轮持锁期间重写 `entry.c`/生成头，造成「键是旧内容、编译读新内容」的缓存污染 | `CProjectBuilder` 的 `GeneratedFile.saveTo`（无锁）与 `compiler.compile`（锁内）分离；API 并发互斥按 module 而非输出目录 | **已接受，不兜底**（用户决议 2026-10-13）：触发需两个不同 module 并发构建同一输出目录，正常用法不存在；风险说明已写入 `CProjectBuilder`/`TinyCcCompiler` 相关代码注释 |
 
 ## 7. 验收细则总表
 
@@ -355,11 +410,12 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 | G4 | 接线与 launcher | `--tests CProjectBuilder*,CompileOptions*,GdccCommand*,RpcJsonCodec*,JsonRpcDispatcher*` 相关新增/既有测试；launcher 无 zig 环境 tcc 编译 smoke |
 | G5 | Linux 端到端 | `--tests TinyCcCompilerIntegrationTest`；HRX/运行时行为门；test_suite 子集 tcc 冒烟；zig→tcc→zig 交替回归 |
 | G6 | Windows 端到端 | Windows 主机按 handoff §8 验证表 + HRX 门复测 |
-| G7 | 文档 | §5 阶段 7 清单全落 |
+| G7 | tcc 按 TU 内容缓存 | P7-1 探针证据（`tmp/tcc-obj-cache-probes/EVIDENCE.md`）；单元层 `script/run-gradle-targeted-tests.sh --tests TinyCcCompilerTest,TinyCcCompilerNativeFakeTest,TinyCcObjCacheTest,ZigCcCompilerPchKeyTest,CCompilerCacheRootTest`；集成层（bundle/Godot `Assumptions` 门控，同 G5 口径）`--tests CrossBackendIncludeStabilityTest,TinyCcCompilerIntegrationTest,GdScriptUnitTestTinyCcSubsetTest` |
+| G8 | 文档 | §5 阶段 8 清单全落 |
 
 ## 8. 权限与确认清单（超出 src/doc/tmp 范围或改变既有合同，需用户逐条批准）
 
-1. `build.gradle.kts`：`tasks.test` 增加 `jvmArgs("--enable-native-access=ALL-UNNAMED")`；`sourceSets.main.resources` 增加 bundle srcDir（或在 `processResources` 接入构建产物目录）；`EditorAddonProjectInstaller` 相关 `JavaExec` 任务的 `jvmArgs` 同参数核对。（**已批准并落地（阶段 3）**：`tasks.test` 与两个 `EditorAddonProjectInstaller` JavaExec 任务均已加入该参数；bundle srcDir 接入属分发打包范畴，随阶段 4/7 另行处理。）
+1. `build.gradle.kts`：`tasks.test` 增加 `jvmArgs("--enable-native-access=ALL-UNNAMED")`；`sourceSets.main.resources` 增加 bundle srcDir（或在 `processResources` 接入构建产物目录）；`EditorAddonProjectInstaller` 相关 `JavaExec` 任务的 `jvmArgs` 同参数核对。（**已批准并落地（阶段 3）**：`tasks.test` 与两个 `EditorAddonProjectInstaller` JavaExec 任务均已加入该参数；bundle srcDir 接入属分发打包范畴，随阶段 8 文档收口另行处理。）
 2. `build-script/` 新增 bundle 构建脚本（Linux/Windows 各一）。（用户决议：目录由 `script/` 改为 `build-script/`；`script/` 被 `.gitignore` 整体忽略，而 `build-script/` 可正常纳入版本管理。）
 3. ~~`.gitignore`：忽略 bundle 构建产物与本机提取缓存~~（已消解：构建产物默认输出到已被忽略的 `build/`；用户缓存目录在仓库之外；`build-script/` 未被忽略，无需改动 `.gitignore`）。
 4. launcher 行为变更确认：`main.zig` 的 zig 发现从硬前置降级为可选（找不到 zig 不再 `exit(1)`，仅不设置 `ZIG_HOME`）；这是既有启动合同的变更，实施前需明确批准。
@@ -370,7 +426,7 @@ tinycc-bundle/<platformKey>/            # platformKey: linux-x86_64 / windows-x8
 ## 9. 已知限制与后续方向
 
 - tcc 轮次全局串行，吞吐低于 zig 并行 TU；定位为快速迭代/无 zig 环境的备选后端，zig 仍是默认与发布后端。
-- 无 PCH/内容缓存，全量编译耗时随 TU 线性增长；`godot_binding.c` 聚合 TU 拆分（zig 侧后续方向）同样利好 tcc。
+- 按 TU 内容寻址缓存（阶段 7 已落地）消除未变动 TU 的重编译；命中轮仅剩链接与键计算耗时。`godot_binding.c` 聚合 TU 拆分（zig 侧后续方向）同样利好 tcc。
 - 取消为合作式；强取消/超时需 worker 进程隔离方案（独立立项）。
 - tcc 构建依赖宿主开发头/CRT/库（zig 用 bundled sysroot 自给），CI/分发环境的 glibc 版本需纳入验证。
 - bundle 缓存无自动清理。

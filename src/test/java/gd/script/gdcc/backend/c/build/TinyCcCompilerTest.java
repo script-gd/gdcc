@@ -65,7 +65,8 @@ class TinyCcCompilerTest {
         var result = newCompiler().compile(tempDir, List.of(includeDir), List.of(tuA, tuB), "probe", COptimizationLevel.DEBUG, host);
 
         assertTrue(result.success(), () -> "compilation failed:\n" + result.buildLog());
-        assertEquals("", result.buildLog(), "a clean round must not produce diagnostics");
+        assertEquals("[gdcc] tcc object cache: 0 hits, 2 misses\n", result.buildLog(),
+                "a clean cache-available round carries only the fixed statistics line");
         var artifact = tempDir.resolve(host.sharedLibraryFileName("probe")).toAbsolutePath();
         assertEquals(List.of(artifact), result.artifacts());
         assertTrue(Files.isRegularFile(artifact) && Files.size(artifact) > 0);
@@ -131,8 +132,7 @@ class TinyCcCompilerTest {
     }
 
     @Test
-    void interruptWhileWaitingForTheGlobalLockSurfacesTheFixedChannel(@TempDir Path tempDir) throws Exception {
-        var good = tempDir.resolve("good.c");
+    void interruptWhileWaitingForTheGlobalLockSurfacesTheFixedChannel(@TempDir Path tempDir) throws Exception {        var good = tempDir.resolve("good.c");
         Files.writeString(good, "int gdextension_entry(void) { return 1; }\n");
         var host = TargetPlatform.getNativePlatform();
         var compiler = newCompiler();
@@ -172,5 +172,187 @@ class TinyCcCompilerTest {
         // The lock survives the cancelled round: a later round compiles normally.
         var followUp = compiler.compile(tempDir, List.of(), List.of(good), "probe", COptimizationLevel.DEBUG, host);
         assertTrue(followUp.success(), () -> "round after lock release failed:\n" + followUp.buildLog());
+    }
+
+    @Test
+    void aSecondRoundHitsEveryUnchangedTu(@TempDir Path tempDir) throws IOException {
+        var includeDir = Files.createDirectories(tempDir.resolve("inc"));
+        Files.writeString(includeDir.resolve("gdcc_probe.h"), "#define GDCC_PROBE_ANSWER 42\n");
+        var tuA = tempDir.resolve("tu_a.c");
+        Files.writeString(tuA, """
+                #include <gdcc_probe.h>
+                int gdcc_probe_a(void) { return GDCC_PROBE_ANSWER; }
+                """);
+        var tuB = tempDir.resolve("tu_b.c");
+        Files.writeString(tuB, """
+                int gdcc_probe_a(void);
+                int gdextension_entry(void) { return gdcc_probe_a(); }
+                """);
+        var host = TargetPlatform.getNativePlatform();
+        var outputTypesPerRound = new java.util.ArrayList<List<Integer>>();
+        var compiler = newCompilerWithSpy(outputTypesPerRound);
+
+        var first = compiler.compile(tempDir, List.of(includeDir), List.of(tuA, tuB), "probe", COptimizationLevel.DEBUG, host);
+        assertTrue(first.success(), () -> "first round failed:\n" + first.buildLog());
+        assertEquals("[gdcc] tcc object cache: 0 hits, 2 misses\n", first.buildLog());
+        assertEquals(List.of(TinyCcLibrary.TCC_OUTPUT_OBJ, TinyCcLibrary.TCC_OUTPUT_OBJ, TinyCcLibrary.TCC_OUTPUT_DLL),
+                outputTypesPerRound.getFirst(), "first round: two OBJ states plus one link state");
+        // Snapshot before the second round rewrites the output path.
+        var firstExports = NativeArtifactInspector.exportedSymbols(first.artifacts().getFirst());
+
+        var second = compiler.compile(tempDir, List.of(includeDir), List.of(tuA, tuB), "probe", COptimizationLevel.DEBUG, host);
+
+        assertTrue(second.success(), () -> "second round failed:\n" + second.buildLog());
+        assertEquals("[gdcc] tcc object cache: 2 hits, 0 misses\n", second.buildLog());
+        assertEquals(List.of(TinyCcLibrary.TCC_OUTPUT_DLL), outputTypesPerRound.get(1),
+                "a full-hit round creates only the link state");
+        // The hit round's artifact exports exactly the same symbols as the miss round's.
+        assertEquals(firstExports, NativeArtifactInspector.exportedSymbols(second.artifacts().getFirst()));
+    }
+
+    @Test
+    void onlyTheChangedTuRecompiles(@TempDir Path tempDir) throws Throwable {
+        // The answer lives in a TU-adjacent header reached via a quote-include: changing it must
+        // invalidate tu_a's entry even though tu_a.c itself is untouched. tu_b lives in its own
+        // directory — adjacent headers hash per TU directory, so an unrelated header change in
+        // tu_a's directory must not invalidate tu_b.
+        Files.writeString(tempDir.resolve("probe_value.h"), "#define GDCC_PROBE_ANSWER 42\n");
+        var tuA = tempDir.resolve("tu_a.c");
+        Files.writeString(tuA, """
+                #include "probe_value.h"
+                int gdcc_probe_a(void) { return GDCC_PROBE_ANSWER; }
+                """);
+        var tuBDir = Files.createDirectories(tempDir.resolve("sub"));
+        var tuB = tuBDir.resolve("tu_b.c");
+        Files.writeString(tuB, """
+                int gdcc_probe_a(void);
+                int gdextension_entry(void) { return gdcc_probe_a(); }
+                """);
+        var host = TargetPlatform.getNativePlatform();
+        var outputTypesPerRound = new java.util.ArrayList<List<Integer>>();
+        var compiler = newCompilerWithSpy(outputTypesPerRound);
+
+        var first = compiler.compile(tempDir, List.of(), List.of(tuA, tuB), "probe", COptimizationLevel.DEBUG, host);
+        assertTrue(first.success(), () -> "first round failed:\n" + first.buildLog());
+        assertEquals(42, callEntry(first.artifacts().getFirst()), "the miss round links the current sources");
+
+        // Only the local header changes: tu_a's key must change, tu_b's must not.
+        Files.writeString(tempDir.resolve("probe_value.h"), "#define GDCC_PROBE_ANSWER 43\n");
+        var second = compiler.compile(tempDir, List.of(), List.of(tuA, tuB), "probe", COptimizationLevel.DEBUG, host);
+
+        assertTrue(second.success(), () -> "second round failed:\n" + second.buildLog());
+        assertEquals("[gdcc] tcc object cache: 1 hits, 1 misses\n", second.buildLog());
+        assertEquals(List.of(TinyCcLibrary.TCC_OUTPUT_OBJ, TinyCcLibrary.TCC_OUTPUT_DLL), outputTypesPerRound.get(1),
+                "exactly one OBJ state for the changed TU, plus the link state");
+        NativeArtifactInspector.assertExportsSymbol(second.artifacts().getFirst(), "gdextension_entry");
+        assertEquals(43, callEntry(second.artifacts().getFirst()),
+                "the relinked library runs the recompiled code, not the stale object");
+    }
+
+    @Test
+    void debugAndReleaseRoundsShareCacheEntries(@TempDir Path tempDir) throws IOException {
+        var tuA = tempDir.resolve("tu_a.c");
+        Files.writeString(tuA, "int gdextension_entry(void) { return 1; }\n");
+        var host = TargetPlatform.getNativePlatform();
+        var outputTypesPerRound = new java.util.ArrayList<List<Integer>>();
+        var compiler = newCompilerWithSpy(outputTypesPerRound);
+
+        // tcc has no optimization pipeline, so the level never enters the cache key — the
+        // RELEASE round consumes the DEBUG round's entries (the caller encodes the level into
+        // the output base name, keeping artifacts distinct).
+        var debug = compiler.compile(tempDir, List.of(), List.of(tuA), "probe_debug", COptimizationLevel.DEBUG, host);
+        assertTrue(debug.success(), () -> "debug round failed:\n" + debug.buildLog());
+        var release = compiler.compile(tempDir, List.of(), List.of(tuA), "probe_release", COptimizationLevel.RELEASE, host);
+
+        assertTrue(release.success(), () -> "release round failed:\n" + release.buildLog());
+        assertEquals("[gdcc] tcc object cache: 1 hits, 0 misses\n", release.buildLog(),
+                "the RELEASE round reuses the DEBUG round's entries");
+        NativeArtifactInspector.assertExportsSymbol(release.artifacts().getFirst(), "gdextension_entry");
+    }
+
+    /// dlopens the artifact and calls `gdextension_entry()` — proves the linked library actually
+    /// runs the current round's code, which symbol presence alone cannot show.
+    private static int callEntry(@NotNull Path library) throws Throwable {
+        var linker = java.lang.foreign.Linker.nativeLinker();
+        try (var arena = java.lang.foreign.Arena.ofConfined()) {
+            var lookup = java.lang.foreign.SymbolLookup.libraryLookup(library, arena);
+            var symbol = lookup.find("gdextension_entry");
+            assertTrue(symbol.isPresent(), "gdextension_entry not found in " + library);
+            var handle = linker.downcallHandle(symbol.get(),
+                    java.lang.foreign.FunctionDescriptor.of(java.lang.foreign.ValueLayout.JAVA_INT));
+            return (int) handle.invokeExact();
+        }
+    }
+
+    /// Wraps the real FFM bridge with a spy recording each state's output type, so tests can
+    /// pin how many OBJ/DLL states a round created without faking the native behavior.
+    private static @NotNull TinyCcCompiler newCompilerWithSpy(@NotNull List<List<Integer>> outputTypesPerRound) {
+        return new TinyCcCompiler(() -> bundleRoot, (root, targetPlatform, roundArena) -> {
+            var delegate = TinyCcFfmNative.create(root, targetPlatform, roundArena);
+            var stateOutputTypes = new java.util.ArrayList<Integer>();
+            outputTypesPerRound.add(stateOutputTypes);
+            return new SpyTinyCcNative(delegate, stateOutputTypes);
+        });
+    }
+
+    private static final class SpyTinyCcNative implements TinyCcNative {
+        private final TinyCcNative delegate;
+        private final List<Integer> stateOutputTypes;
+
+        private SpyTinyCcNative(@NotNull TinyCcNative delegate, @NotNull List<Integer> stateOutputTypes) {
+            this.delegate = delegate;
+            this.stateOutputTypes = stateOutputTypes;
+        }
+
+        @Override
+        public @Nullable java.lang.foreign.MemorySegment newState() {
+            return delegate.newState();
+        }
+
+        @Override
+        public void delete(@NotNull java.lang.foreign.MemorySegment state) {
+            delegate.delete(state);
+        }
+
+        @Override
+        public void setLibPath(@NotNull java.lang.foreign.MemorySegment state, @NotNull String path) {
+            delegate.setLibPath(state, path);
+        }
+
+        @Override
+        public int setOptions(@NotNull java.lang.foreign.MemorySegment state, @NotNull String options) {
+            return delegate.setOptions(state, options);
+        }
+
+        @Override
+        public int setOutputType(@NotNull java.lang.foreign.MemorySegment state, int outputType) {
+            stateOutputTypes.add(outputType);
+            return delegate.setOutputType(state, outputType);
+        }
+
+        @Override
+        public int addIncludePath(@NotNull java.lang.foreign.MemorySegment state, @NotNull String path) {
+            return delegate.addIncludePath(state, path);
+        }
+
+        @Override
+        public int addFile(@NotNull java.lang.foreign.MemorySegment state, @NotNull String file) {
+            return delegate.addFile(state, file);
+        }
+
+        @Override
+        public int outputFile(@NotNull java.lang.foreign.MemorySegment state, @NotNull String file) {
+            return delegate.outputFile(state, file);
+        }
+
+        @Override
+        public void setErrorHandler(@NotNull java.lang.foreign.MemorySegment state, @NotNull ErrorHandler handler) {
+            delegate.setErrorHandler(state, handler);
+        }
+
+        @Override
+        public @Nullable Throwable callbackFailure() {
+            return delegate.callbackFailure();
+        }
     }
 }

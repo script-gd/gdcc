@@ -145,6 +145,12 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
 
         var generatedFileWriteStart = System.nanoTime();
         var generatedFiles = new ArrayList<Path>(generated.size());
+        // These writes are deliberately outside the per-project build lock: the compiler's
+        // lock-held cache-key hashing assumes generated files do not change mid-round, which
+        // holds because a project output directory is built by one task at a time. Two tasks
+        // targeting the same projectPath concurrently could publish an object compiled from a
+        // newer write under the older content's cache key — an accepted risk, not guarded
+        // against.
         for (var gf : generated) {
             generatedFiles.add(gf.saveTo(projectPath));
         }

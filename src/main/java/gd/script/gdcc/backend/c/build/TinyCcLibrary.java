@@ -38,6 +38,10 @@ final class TinyCcLibrary {
     /// `TCC_OUTPUT_DLL` from `libtcc.h`: compile and link straight to a shared library.
     static final int TCC_OUTPUT_DLL = 4;
 
+    /// `TCC_OUTPUT_OBJ` from `libtcc.h`: compile one TU to an object file. libtcc always emits
+    /// ELF for objects (libtcc.c "always elf for objects"), even when the target is PE.
+    static final int TCC_OUTPUT_OBJ = 3;
+
     private static final FunctionDescriptor DESC_NEW = FunctionDescriptor.of(ValueLayout.ADDRESS);
     private static final FunctionDescriptor DESC_DELETE = FunctionDescriptor.ofVoid(ValueLayout.ADDRESS);
     private static final FunctionDescriptor DESC_SET_LIB_PATH = FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS);
