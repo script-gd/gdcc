@@ -15,7 +15,6 @@ import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
-import gd.script.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -32,10 +31,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// G2 portability gate: the exact compiler input set that `CProjectBuilder` assembles (one
+/// Portability gate: the exact compiler input set that `CProjectBuilder` assembles (one
 /// generated entry TU from a real codegen pass plus the four extracted runtime TUs) must link into
-/// a shared library under the mob tinycc CLI with `-std=c11` and zero diagnostics — the same round
-/// `TinyCcCompiler` will drive through FFM later. A recording fake `CCompiler` captures the
+/// a shared library under the mob tinycc CLI with `-std=c11` and zero diagnostics — the same TU
+/// set `TinyCcCompiler` compiles through FFM (the FFM round uses per-TU `TCC_OUTPUT_OBJ` objects
+/// and its own flag set, not these CLI flags). A recording fake `CCompiler` captures the
 /// production input list without invoking zig, so this test exercises the real include extraction
 /// and generation path. Real linking (never `-c`) keeps the crt/libc resolution chain covered.
 /// Assumption-gated on the tinycc CLI and `nm` (see TinyCcCliTestSupport).
@@ -46,7 +46,7 @@ class TinyCcCliGateTest {
     @Test
     void sharedLibraryOfFullTuSetLinksCleanlyUnderTinyCc() throws IOException, InterruptedException {
         var tcc = TinyCcCliTestSupport.findTinyCcCli();
-        Assumptions.assumeTrue(tcc != null, "tinycc CLI is required for the G2 link gate");
+        Assumptions.assumeTrue(tcc != null, "tinycc CLI is required for the portability link gate");
         // null omits -B and keeps this binary's compiled-in runtime search paths.
         var runtimeRoot = TinyCcCliTestSupport.resolveRuntimeRoot(tcc);
 

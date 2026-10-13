@@ -220,8 +220,10 @@ idempotent. In order, it:
 3. Joins runner threads with a bounded total budget; tasks still alive after the budget are logged
    as a warning instead of blocking shutdown forever. Native build cancellation is cooperative:
    zig runners destroy their subprocesses on interruption and die promptly, while tinycc runners
-   only notice at translation-unit boundaries and lock waits, so a tinycc round can take longer to
-   wind down (it always finishes the active native call first).
+   only notice at cooperative checkpoints (lock waits, translation-unit boundaries, the cache
+   self-heal recompile, and the final output — see `../backend/tinycc_compiler_implementation.md`
+   §6), so a tinycc round can take longer to wind down (it always finishes the active native call
+   first).
 
 After `close()` returns, the instance rejects new work: state-mutating methods (`createModule`,
 `deleteModule`, all VFS writes/links/deletes, `setCompileOptions`, `setTopLevelCanonicalNameMap`,

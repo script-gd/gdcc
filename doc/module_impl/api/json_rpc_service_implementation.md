@@ -256,6 +256,10 @@ DTO codec 规则：
   客户端的轮询循环只建立在 `compile.getTask` 之上。适配层不在 API gate 已有行为之外
   额外 join 整个编译。
 - 测试在端口 `0`（临时端口）启动服务端并读回实际端口。
+- native 构建的取消延迟按后端不同（`rpc_api_implementation.md` §3.7）：zig runner 在中断时
+  销毁子进程、迅速退出；tinycc runner 只在合作式断点响应取消（锁等待、TU 边界、链接期自愈
+  重编前、最终输出前，以 `../backend/tinycc_compiler_implementation.md` §6 为准），进行中的
+  native 调用必然先完成，因此 tinycc 轮次的取消收尾可能更慢。客户端不得假设取消即时生效。
 
 ### 2.7 安全边界
 

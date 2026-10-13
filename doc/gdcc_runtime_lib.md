@@ -272,6 +272,25 @@ already covers them.
     The fiber backend (`MCO_USE_FIBERS`) is forbidden: it converts the calling thread to a
     Windows fiber, which fails when Godot's main thread already is a fiber.
   - `MCO_USE_VMEM_ALLOCATOR`: virtual-memory backed stack allocator.
+- GDCC-local patches on the vendored sources (keep this registry complete when touching
+  `minicoro.h`; `CPortabilitySurfaceTest` locks the inline-asm string forms — `jmpq`, comma-less
+  `.type`, `#function` in the aarch64 blocks — while the TLS predicate, destructor and
+  `_MCO_ASM_BLOB` branches are registered here only and not pinned by that test):
+  - Assembly portability for TinyCC: `.type name, @function` (comma form) in the x86_64 blocks and
+    `.type name, %function` in the aarch64 non-Apple blocks (the ARM32 blocks keep the upstream
+    `#function` spelling), `jmp` instead of `jmpq` in the x86_64 inline asm (the Windows
+    `_MCO_ASM_BLOB` byte-comment spelling is intentionally out of the test's scan scope), and the
+    `_mco_switch` resume address encoded via the local label `.Lmco_switch_resume` instead of a
+    hardcoded RIP-relative displacement (TinyCC mis-encodes such displacements).
+  - Thread-local selection: `defined(__TINYC__) && defined(__aarch64__) && !defined(_WIN32)`
+    selects a pthread-key implementation (`pthread_once` + `pthread_key_create`/`getspecific`/
+    `setspecific`, key deleted from an `__attribute((destructor))` function) because TinyCC on
+    aarch64 emits local-exec TLS, which resolves wrongly inside dlopen'd DSOs on Linux and has no
+    Mach-O TLV support at all. `mco_current_co` is reached through `_mco_get_current()` /
+    `_mco_set_current()` accessors on every path. x86_64 keeps `__thread`, and a compile-time
+    guard makes any TinyCC fallback to `MCO_NO_MULTITHREAD` a hard `#error`.
+  - The `_MCO_ASM_BLOB` branch additionally matches `__TINYC__` so the Windows assembly blob lands
+    in `.text` under TinyCC as well.
 - Vmem commit semantics, verified against the pinned source:
   - POSIX: `mmap(MAP_PRIVATE | MAP_ANONYMOUS)` reserves address space only; physical pages
     materialize on demand. Reservation != commit.
@@ -553,6 +572,10 @@ semantics and the direct-path split are covered by
   the probe fails closed there so export builds for those targets keep working.
 - **Thunk templates**: hand-assembled, position-independent, ABI-frozen byte arrays for
   x86_64 SysV (also macOS Intel), x86_64 Win64 and aarch64 (icache flushed after writes) —
+  the aarch64 flush in `gdcc_hrx.c` is toolchain/OS-dependent: `__APPLE__` uses
+  `sys_icache_invalidate()` from `<libkern/OSCacheControl.h>` (issuing cache-control
+  instructions directly is illegal in Darwin user space), other aarch64 targets use
+  `__arm64_clear_cache` under `__TINYC__` and `__builtin___clear_cache` otherwise —
   **zero runtime patching**: the spec arrives via the callback's first argument (Godot
   always passes `callable_userdata`, verified `gdextension_interface.cpp:132-170,230-234`),
   and the free thunk reaches the hub through the spec's `hub` back-pointer
