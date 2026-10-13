@@ -24,22 +24,23 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Phase 1 static gate of the .gd3 editor integration (plan §7/§8.1), sibling to
+/// Static gate of the .gd3 editor integration, sibling to
 /// `EditorAddonClientAnalysisTest` (which keeps pinning the RPC client alone). Covers:
 /// - every compiled `.gd3` source of the addon (language / script / loader / saver / service /
 ///   client) analyzed and lowered together in one module, so cross-class references resolve;
 /// - the no-coroutine interop contract on every compiled source (the engine calls these
 ///   classes synchronously, so a coroutine anywhere would break the boundary exactly like it
 ///   would in the RPC client);
-/// - parse-level gating of the three interpreted scripts (editor-only APIs are not gdcc
+/// - parse-level gating of the interpreted editor scripts (editor-only APIs are not gdcc
 ///   compile targets, so the check stops at parsing);
 /// - the `reloadable = false` post-processing on every installer exit (single-platform,
-///   multi-platform), the hot-reload dangling-pointer guard of the plan's §6.
+///   multi-platform), guarding the language instance against hot-reload dangling pointers.
 class EditorAddonScriptLanguageAnalysisTest {
     private static final Path ADDON_DIR = Path.of("src/editor_addon/addons/gdcc");
     private static final String MODULE_ID = "editor-addon-language";
     private static final List<String> INTERPRETED_SCRIPTS = List.of(
-            "plugin.gd", "gdcc_dock.gd", "server_launcher.gd", "gdcc_syntax_highlighter.gd");
+            "plugin.gd", "gdcc_dock.gd", "gdcc_project_manager.gd", "gdcc_build_toolbar.gd",
+            "server_launcher.gd", "gdcc_syntax_highlighter.gd");
     private static final Pattern AWAIT_PATTERN = Pattern.compile("\\bawait\\b");
 
     @TempDir

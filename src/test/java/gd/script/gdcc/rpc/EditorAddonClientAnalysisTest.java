@@ -104,7 +104,9 @@ class EditorAddonClientAnalysisTest {
     @Test
     void pluginScriptsParseCleanly() throws IOException {
         var parserService = new GdScriptParserService();
-        for (var scriptPath : List.of(PLUGIN_SCRIPT_PATH, DOCK_SCRIPT_PATH)) {
+        for (var scriptPath : List.of(PLUGIN_SCRIPT_PATH, DOCK_SCRIPT_PATH,
+                DOCK_SCRIPT_PATH.resolveSibling("gdcc_project_manager.gd"),
+                DOCK_SCRIPT_PATH.resolveSibling("gdcc_build_toolbar.gd"))) {
             var diagnosticManager = new DiagnosticManager();
             parserService.parseUnit(scriptPath, Files.readString(scriptPath), diagnosticManager);
             assertFalse(diagnosticManager.hasErrors(), () -> {

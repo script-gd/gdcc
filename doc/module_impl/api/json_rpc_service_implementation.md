@@ -347,7 +347,7 @@ DTO codec 规则：
   version="0.1.0"
   script="plugin.gd"
   ```
-- `plugin.gd` — `@tool extends EditorPlugin`；拥有 dock、一个 dock 专用
+- `plugin.gd` — `@tool extends EditorPlugin`；拥有 dock、标题栏 Build、共享项目管理器及项目专用
   `GdccRpcClient` 节点与 `server_launcher.gd` 实例；持有低功耗 busy 协调器
   （`OS.low_processor_usage_mode` 单一写入者，§6.3）；负责 `GdccEditorService`
   常驻节点的就位与 `install(...)`/`uninstall()` 调用（含
@@ -356,8 +356,12 @@ DTO codec 规则：
 - `gdcc_dock.gd` — `@tool extends VBoxContainer`；用代码构建的最小 UI：诊断通道状态区
   （只读显示 configured/effective 端点与 auto-launch 指示；host/port/启动命令自
   2026-10 起为项目级设置 `gdcc/server/*`，dock 不再提供编辑框，详见 §4.4）、连接检查
-  （`server.ping`）、module id 输入、按钮（创建 module、上传当前脚本、analyze、
-  compile、cancel），以及只读日志 `TextEdit`。解释执行。
+  （`server.ping`）、module id 输入、按钮（Create、Analyze、Build、Cancel），以及只读
+  日志 `TextEdit`。仅为共享管理器的解释型视图，不持有项目模块/任务所有权。
+- `gdcc_project_manager.gd` — `@tool extends Node`；独立共享项目操作节点，拥有模块副本
+  预约、项目操作、编译/取消和部署/延迟启用；保留信号 await 及解释型编辑器 API。
+- `gdcc_build_toolbar.gd` — `@tool extends HBoxContainer`；标题栏图标/Build/箭头分裂按钮，
+  PopupPanel 显示服务版本、成功安装时间、项目级编译参数以及真实 GDCC 项目设置入口。
 - `server_launcher.gd` — `@tool extends Node`；按需拉起/所有权内关闭 `gdcc serve`
   （解释执行；dock 在 gdcc 语言注册前就依赖它）。合同见集成计划 §3.7。
 - `gdcc_syntax_highlighter.gd` — `@tool extends EditorSyntaxHighlighter`；`.gd3` 的
@@ -606,19 +610,21 @@ fixture，列入 §7 后续工作。
 - `plugin.gd` 在 `_enter_tree()` 中通过 `add_control_to_bottom_panel(dock, "GDCC")`
   创建底部面板，在 `_exit_tree()` 中用 `remove_control_from_bottom_panel(dock)` 加
   `dock.free()` 移除，并把一个 `GdccRpcClient` 节点加为自己的子节点（使客户端位于
-  编辑器 `SceneTree` 内）。dock 入树后 `plugin.gd` 以 fire-and-forget 方式调用
-  `_dock.auto_setup_module()`：确保服务可达并等待驻留服务宣布诊断模块 id，将 Module
+  编辑器 `SceneTree` 内）。独立项目管理器入树后 `plugin.gd` 以 fire-and-forget 方式调用
+  `_project_manager.auto_setup_module()`：确保服务可达并等待驻留服务宣布诊断模块 id，将 Module
   检查字段指向它。诊断模块由服务独立创建并自动同步，无需 Upload。
   **Build** 按钮复制诊断模块到基于项目名称和根路径的固定编译副本，传入当前
   `application/config/name` 作为 `newModuleName`（空白项目名拒绝构建）；随后
-  `options.get` 取完整快照，仅把 `projectPath` 改为
-  `res://.godot/gdcc/<副本id>/<端点hash>` 的 globalize 结果后 `options.set` 回传，再启动异步编译。
+  `options.get` 取完整快照，把 `projectPath` 改为
+  `res://.godot/gdcc/<副本id>/<端点hash>` 的 globalize 结果，并应用点击时冻结的项目
+  `gdcc/build/optimization_level`（DEBUG/RELEASE）与 `gdcc/build/strict_mode` 后通过
+  `options.set` 回传，再启动异步编译；诊断模块选项不变。
   固定 id 为 `gdcc_editor_compile_<安全化项目名前32字符>_<hash>`，hash 为
   `globalize_path("res://") + "\n" + trim 后项目名` 的 SHA-256 前16字符，不含 PID。
   文件名安全化在 `validate_filename()` 基础上将 U+0000–U+001F 和 U+007F 替换为 `_`。
   端点 hash 为 `host + "\n" + port` 的 SHA-256 前16字符；相同端点跨会话复用目录，
   不同服务器使用独立目录，避免各服务的内存占用无法协调跨进程磁盘写入。
-  以 `<副本id>_owner` 内存模块和 dock 随机 token 原子占用，其他编辑器占用时拒绝
+  以 `<副本id>_owner` 内存模块和共享项目管理器随机 token 原子占用，其他编辑器占用时拒绝
   构建，不删除/取消其任务；正常空闲卸载释放副本及占用，异常退出或在途请求卸载
   保留占用，提示重启服务，不自动接管。诊断模块仍保持进程隔离。
   options/copy 调用走通用 `call_rpc`，无需依赖已安装扩展中的新 typed wrapper；副本
@@ -626,13 +632,17 @@ fixture，列入 §7 后续工作。
   成功任务的 `CompileResult.artifacts` 中的动态库部署到项目 `bin`，库名使用
   安全化项目名称、平台、优化级别、Godot 架构标签及库内容 SHA-256 前16字符；写入
   `res://bin/gdcc.gdextension` 后通过 EditorFileSystem 扫描让引擎维护扩展清单并首次
-  加载，已加载时显式重载。详细文件发布、失败和跨目标合同见编辑器集成文档的
+  加载，已加载时显式重载。项目描述文件的 `[libraries]` 使用 `<platform>.<architecture>`，
+  不带 debug/release；同一目标指向本次安装库，旧模式条目迁移且别名字段移除，
+  避免 Debug 编辑器选中历史 Debug 库而忽略当前 Release 构建。DLL 文件名仍保留
+  优化级别和内容哈希，其他目标条目保留。CLI/编辑器 addon 库安装器的元数据生成
+  不受此项目 Build 合同影响。详细文件发布、失败和跨目标合同见编辑器集成文档的
   “Build 部署与启用”节；API/RPC 本身不生成描述文件。
   注意：`.gd3` 源码不被引擎加载，编辑器中的 `GdccRpcClient` 只能来自**已安装的
   编译产物 GDExtension**（§5 的安装器与 gradle 任务负责就地安装）。
-- dock 直接以 `var res: Dictionary = await client.create_module(...).completed` 的
-  形式驱动 `GdccRpcClient`（挂起对象信号，§4.3；无需任何辅助文件），并向
-  日志追加人类可读的行。它按 §2.2/§2.3 的定义精确读取 JSON 中的 record 组件名：
+- 项目管理器以 `var res: Dictionary = await client.create_module(...).completed` 的
+  形式驱动 `GdccRpcClient`（挂起对象信号，§4.3），通过日志/状态信号供 dock 与
+  标题栏共享。它按 §2.2/§2.3 的定义精确读取 JSON 中的 record 组件名：
   ping 结果、module 快照、analyze 结果与 diagnostics
   （`severity`/`category`/`message`/`sourcePath`/`range`）、编译任务进度
   （`state`/`stage`/`completedUnits`/`totalUnits`；没有单独的 `progress` 字段，
@@ -648,7 +658,7 @@ fixture，列入 §7 后续工作。
   持有 `shutdown_owned()`（插件 `_exit_tree` 最后一步）：对本会话拉起的进程发
   `server.shutdown` RPC，收到 200 响应即完成；不可达且端口仍在侦听时才 `OS.kill`
   兜底（PID 复用防护，见集成计划 §9 R19）。
-- dock 的正常操作不阻塞网络等待；所有网络等待都是信号 await。卸载时清理副本使用
+- 管理器的正常操作不阻塞网络等待；所有网络等待都是信号 await。卸载时清理副本使用
   有界阻塞 HTTPClient，因为帧泵客户端已离树。编辑器空闲活性的缓解见 §6.3。
 
 ---
@@ -718,14 +728,15 @@ fixture，列入 §7 后续工作。
   `call_rpc` 栈上完成，踩中"先发射后 await"陷阱，而 ping 成功路径暴露不出它）。
   合同断言运行在去注释后的代码上：文件自身文档会提到这些记号，匹配原始源码会在
   删掉真实代码后仍保持绿色（false green）。该测试还包含 `plugin.gd` /
-  `gdcc_dock.gd` 的解析级检查（仅解析，不 lowering，因为编辑器专用 API 不是自举
+  `gdcc_dock.gd` / `gdcc_project_manager.gd` / `gdcc_build_toolbar.gd` 的解析级检查
+  （仅解析，不 lowering，因为编辑器专用 API 不是自举
   目标）与 `plugin.cfg` 五字段检查。若分析或 lowering 拒绝了客户端的某个构造，
   按 §4.2 简化客户端后重跑；不得削弱测试期望。
 - `.gd3` 语言集成静态门禁：`EditorAddonScriptLanguageAnalysisTest`（gd3 编辑器集成
   计划 Phase 1）—— `addons/gdcc/` 下**全部** `.gd3` 源码（语言/脚本/加载器/保存器/
   常驻服务/客户端）作为一个模块 analyze+lowering 干净（跨类引用可解析）；全部编译源
-  去注释+去字符串内容后无 `await`；`plugin.gd`/`gdcc_dock.gd`/`server_launcher.gd`
-  仅语法解析；安装器两个 `.gdextension` 安装出口（单平台/多平台）产物均含
+  去注释+去字符串内容后无 `await`；plugin/dock/项目管理器/工具栏/launcher/高亮器
+  等解释型 `.gd` 仅语法解析；安装器两个 `.gdextension` 安装出口（单平台/多平台）产物均含
   `reloadable = false` 且无 `reloadable = true`（热重载悬空指针防护，集成计划 §6；
   后端 `GdextensionMetadataFile` 的 `reloadable = true` 渲染合同不变，改写只做在
   安装器后处理）；无动态库产物的安装必须抛 `IOException`（负例）。

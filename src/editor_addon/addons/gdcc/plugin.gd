@@ -6,13 +6,15 @@ extends EditorPlugin
 # The compiled classes (`GdccRpcClient`, `GdccEditorService`, ...) come exclusively from the
 # installed GDExtension: the `.gd3` sources are never loaded by the engine, so this plugin can
 # only be enabled in a project where the compiled extension is installed. This script owns the
-# dock, one dock-facing client node, the server launcher, and the low-power busy coordinator;
-# the language integration lives in the process-resident `GdccEditorService` (§3.5 of the
-# integration plan), which survives plugin disable/enable cycles so open `.gd3` tabs keep a
+# dock, build toolbar, shared project manager/client, launcher and low-power coordinator;
+# the language integration lives in the process-resident `GdccEditorService`,
+# which survives plugin disable/enable cycles so open `.gd3` tabs keep a
 # valid language instance.
 
 const DockScript := preload("res://addons/gdcc/gdcc_dock.gd")
 const LauncherScript := preload("res://addons/gdcc/server_launcher.gd")
+const ProjectManagerScript := preload("res://addons/gdcc/gdcc_project_manager.gd")
+const BuildToolbarScript := preload("res://addons/gdcc/gdcc_build_toolbar.gd")
 # Interpreted like the dock: a compiled `.gd3` class can never extend EditorSyntaxHighlighter
 # (extension classes register at the GDExtension SCENE level, editor-only base classes only
 # exist after `register_editor_types()`), so the highlighter lives outside the module.
@@ -29,6 +31,8 @@ const SETTING_SERVER_PORT := "gdcc/server/port"
 
 var _client: GdccRpcClient
 var _dock: DockScript
+var _project_manager: ProjectManagerScript
+var _build_toolbar: BuildToolbarScript
 var _launcher: Node
 var _service: GdccEditorService
 var _use_thread_saved: bool = false
@@ -54,6 +58,7 @@ var _last_invalid_endpoint: Array = []
 # The registered syntax-highlighter template (per-tab instances come from its `_create()`).
 var _syntax_highlighter: EditorSyntaxHighlighter = null
 var _script_icon: Texture2D = null
+var _script_language_index: int = -1
 # CodeEdit instance IDs whose highlighter this plugin has already settled (manual assignment
 # or an observed native selection). The set is what stops the `editor_script_changed` relay
 # from re-assigning ours over a user's deliberate dropdown pick on a later focus: a pick
@@ -168,8 +173,17 @@ func _enter_tree() -> void:
     ProjectSettings.add_property_info({
         "name": _service.EXCLUDED_GLOBS_SETTING, "type": TYPE_PACKED_STRING_ARRAY,
     })
+    if not ProjectSettings.has_setting(ProjectManagerScript.SETTING_OPTIMIZATION_LEVEL):
+        ProjectSettings.set_setting(ProjectManagerScript.SETTING_OPTIMIZATION_LEVEL, "DEBUG")
+    ProjectSettings.set_initial_value(ProjectManagerScript.SETTING_OPTIMIZATION_LEVEL, "DEBUG")
+    ProjectSettings.add_property_info({"name": ProjectManagerScript.SETTING_OPTIMIZATION_LEVEL,
+            "type": TYPE_STRING, "hint": PROPERTY_HINT_ENUM, "hint_string": "DEBUG,RELEASE"})
+    if not ProjectSettings.has_setting(ProjectManagerScript.SETTING_STRICT_MODE):
+        ProjectSettings.set_setting(ProjectManagerScript.SETTING_STRICT_MODE, false)
+    ProjectSettings.set_initial_value(ProjectManagerScript.SETTING_STRICT_MODE, false)
+    ProjectSettings.add_property_info({"name": ProjectManagerScript.SETTING_STRICT_MODE, "type": TYPE_BOOL})
 
-    # 4) Server launcher (single-flight spawn/shutdown coordinator shared by dock and service;
+    # 4) Server launcher (single-flight coordinator shared by project manager and service;
     #    its busy reports point at this plugin's coordinator — see `_report_busy`).
     _launcher = LauncherScript.new()
     _launcher.name = "GdccServerLauncher"
@@ -178,8 +192,12 @@ func _enter_tree() -> void:
 
     _client = GdccRpcClient.new()
     add_child(_client)
+    _project_manager = ProjectManagerScript.new()
+    _project_manager.name = "GdccProjectManager"
+    _project_manager.setup(_client, _report_busy, _launcher, _service)
+    add_child(_project_manager)
     _dock = DockScript.new()
-    _dock.setup(_client, get_editor_interface(), _report_busy, _launcher, _service)
+    _dock.setup(_project_manager)
     add_control_to_bottom_panel(_dock, "GDCC")
 
     # 5) Install the language integration BEFORE any asynchronous flow (auto-setup may spawn
@@ -220,7 +238,8 @@ func _enter_tree() -> void:
     get_editor_interface().get_base_control().theme_changed.connect(_apply_script_icon)
     _apply_script_icon()
     # Fire-and-forget: the coroutine awaits RPC responses off this synchronous stack.
-    _dock.auto_setup_module()
+    _project_manager.auto_setup_module()
+    _install_build_toolbar()
     # 5.5) Syntax highlighter: registration covers only NEW tabs (ScriptEditor never re-runs
     #    selection for existing ones), so the method also applies to the tab that is current
     #    right now and relays future tab focuses. Best-effort: highlighting must never gate
@@ -251,6 +270,9 @@ func _rollback_failed_enter_tree() -> void:
         remove_control_from_bottom_panel(_dock)
         _dock.free()
         _dock = null
+    if _project_manager != null:
+        _project_manager.free()
+        _project_manager = null
     if _client != null:
         remove_child(_client)
         _client.free()
@@ -320,7 +342,7 @@ func _lsp_endpoint_listening(host: String, port: int) -> bool:
 
 
 func _exit_tree() -> void:
-    # Teardown order is contractual: disconnect feeds → drain the dock's busy reports →
+    # Teardown order is contractual: disconnect feeds, release the views and project manager,
     # uninstall the language integration → restore the LSP thread setting → and only then
     # shut down the spawned server (uninstall may still need the server reachable). Note the
     # scripted restore does NOT restart the engine's LSP server (settings-changed
@@ -329,10 +351,6 @@ func _exit_tree() -> void:
     var base_control := get_editor_interface().get_base_control()
     if base_control.theme_changed.is_connected(_apply_script_icon):
         base_control.theme_changed.disconnect(_apply_script_icon)
-    var theme := get_editor_interface().get_editor_theme()
-    if theme.has_icon("GdccScript", "EditorIcons") and theme.get_icon("GdccScript", "EditorIcons") == _script_icon:
-        theme.clear_icon("GdccScript", "EditorIcons")
-    _script_icon = null
     var filesystem := get_editor_interface().get_resource_filesystem()
     if _filesystem_connected and filesystem != null:
         if filesystem.filesystem_changed.is_connected(_on_filesystem_changed):
@@ -354,14 +372,28 @@ func _exit_tree() -> void:
             script_editor.unregister_syntax_highlighter(_syntax_highlighter)
     _syntax_highlighter = null
     _handled_highlighter_editors.clear()
+    if _build_toolbar != null:
+        remove_control_from_container(CONTAINER_TOOLBAR, _build_toolbar)
+        _build_toolbar.free()
+        _build_toolbar = null
     if _dock != null:
         remove_control_from_bottom_panel(_dock)
-        # The dock's own `_exit_tree` zeroes its residual busy reports through the coordinator.
         _dock.free()
         _dock = null
+    if _project_manager != null:
+        # Release project reservations and drain busy before uninstalling its diagnostics source.
+        _project_manager.free()
+        _project_manager = null
     _client = null
     if _service != null:
         _service.uninstall()
+    _sync_script_language_menus(false)
+    # Clearing the icon refreshes script-language menus. Unregister our language first
+    # so Godot does not index its extra language into a menu created before registration.
+    var theme := get_editor_interface().get_editor_theme()
+    if theme.has_icon("GdccScript", "EditorIcons") and theme.get_icon("GdccScript", "EditorIcons") == _script_icon:
+        theme.clear_icon("GdccScript", "EditorIcons")
+    _script_icon = null
     # A primed flag is only truthful while the flipped value still stands. Leaving BEFORE
     # the server listened means the restored original value is what it will read at start —
     # un-prime so the next enable re-probes instead of trusting a stale flag.
@@ -379,9 +411,30 @@ func _exit_tree() -> void:
         _launcher = null
 
 
+func _install_build_toolbar() -> void:
+    _build_toolbar = BuildToolbarScript.new()
+    _build_toolbar.setup(_project_manager)
+    _build_toolbar.build_requested.connect(_show_build_log)
+    add_control_to_container(CONTAINER_TOOLBAR, _build_toolbar)
+    # CONTAINER_TOOLBAR appends to EditorTitleBar, after the renderer selector. Reorder the
+    # title-bar sibling, not the private HBox inside EditorRunBar's run-button panel.
+    var title_bar := _build_toolbar.get_parent()
+    for child in title_bar.get_children():
+        if child.is_class("EditorRunBar"):
+            title_bar.move_child(_build_toolbar, child.get_index())
+            return
+    push_warning("GDCC: editor run toolbar not found; the Build control remains at the end of the title bar.")
+
+
+func _show_build_log() -> void:
+    if _dock != null:
+        make_bottom_panel_item_visible(_dock)
+
+
 ## FileSystemDock and script tabs look up the resource type in EditorIcons, not the script's
 ## class icon path. Reapply after editor theme regeneration; the identity guard avoids reentry.
 func _apply_script_icon() -> void:
+    _sync_script_language_menus(true)
     if _script_icon == null:
         # Plugins load before the first SVG import, so do not depend on ResourceLoader here.
         var image := Image.new()
@@ -396,9 +449,56 @@ func _apply_script_icon() -> void:
     theme.set_icon("GdccScript", "EditorIcons", _script_icon)
 
 
+## Godot 4.5 caches dialog languages before addons register, but theme updates use the live
+## language count. Keep cached rows aligned; GD3 creation stays disabled through Godot 4.6.0.
+func _sync_script_language_menus(registered: bool) -> void:
+    if registered:
+        if _service == null:
+            return
+        _script_language_index = -1
+        for index in range(Engine.get_script_language_count()):
+            if Engine.get_script_language(index) == _service.get_language_instance():
+                _script_language_index = index
+                break
+    if _script_language_index < 0:
+        return
+    var disable_creation: bool = Engine.get_version_info().hex <= 0x040600
+    for dialog in get_tree().root.find_children("*", "ScriptCreateDialog", true, false):
+        for menu in dialog.find_children("*", "OptionButton", true, false):
+            # Language names are untranslated; accessibility names are localized by Godot.
+            if menu.item_count == 0 or menu.get_item_text(0) != "GDScript":
+                continue
+            var index := _script_language_index
+            if registered and menu.item_count == index:
+                menu.add_item("GD3")
+            if menu.item_count <= index or menu.get_item_text(index) != "GD3":
+                continue
+            if registered:
+                menu.set_item_disabled(index, disable_creation)
+                if disable_creation and menu.get_selected() == index:
+                    menu.select(0)
+                    menu.item_selected.emit(0)
+            else:
+                var selected: int = menu.get_selected()
+                var last: int = menu.item_count - 1
+                # ScriptServer unregisters by moving the last language into the removed slot.
+                if index != last:
+                    menu.set_item_text(index, menu.get_item_text(last))
+                    menu.set_item_icon(index, menu.get_item_icon(last))
+                    menu.set_item_disabled(index, menu.is_item_disabled(last))
+                    menu.set_item_metadata(index, menu.get_item_metadata(last))
+                menu.remove_item(last)
+                if selected == index or selected == last:
+                    var replacement := 0 if selected == index else index
+                    menu.select(replacement)
+                    menu.item_selected.emit(replacement)
+    if not registered:
+        _script_language_index = -1
+
+
 ## Single-writer low-power coordinator: `OS.low_processor_usage_mode` is toggled ONLY here.
 ## The editor idles without frames under that mode, starving every `process_frame`-driven pump
-## (RPC client, launcher). Dock and launcher report ±1 deltas instead of writing the global
+## (RPC client, launcher). Project manager and launcher report busy deltas instead of writing the global
 ## flag themselves, so their save/restore snapshots cannot trample each other. The original
 ## value is captured on the first busy report and restored when the count drains — never
 ## hard-coded to `true`, so a user's own setting survives.

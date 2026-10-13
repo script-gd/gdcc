@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -75,10 +76,10 @@ class EditorAddonScriptLanguageEngineTest {
     private static final Map<String, List<String>> EXPECTED_STEPS = Map.ofEntries(
             Map.entry("language", List.of(
                     "config", "language_registered", "language_identity", "load_roundtrip",
-                    "script_icon", "script_icon_refresh",
+                    "script_icon", "language_menus", "script_icon_refresh", "language_menus_refresh",
                     "save_roundtrip", "save_bad_path", "reload_from_disk", "threaded_load",
                     "validate_valid_true", "create_script_valid", "header_scan_edges",
-                    "disabled_safe", "reenabled_same_instance")),
+                    "disabled_safe", "disabled_language_menus", "reenabled_same_instance", "reenabled_language_menus")),
             Map.entry("launch", List.of(
                     "config", "configure", "relaunched", "server_up", "server_stopped_on_disable")),
             Map.entry("launch_bad", List.of("config", "configure", "relaunched", "no_server_started", "editor_alive")),
@@ -151,10 +152,15 @@ class EditorAddonScriptLanguageEngineTest {
                     "foreign_owner_preserved", "copy_created", "diag_alive_during_compile",
                     "compile_succeeded", "project_module_name", "library_deployed",
                     "extension_enabled", "extension_list_persisted", "invalid_deployment_preserves_build",
-                    "invalid_metadata_preserves_build", "optimization_variants_preserved",
+                    "invalid_metadata_preserves_build", "optimization_selection_replaces_current_target",
                     "fixture_resynced", "recompile_replaces_copy", "fixed_build_paths", "rebuilt_extension_enabled",
                     "diag_still_responsive", "server_build_paths_isolated", "compile_owner_released",
                     "new_session_reuses_identity", "survived")),
+            Map.entry("build_toolbar", List.of(
+                    "config", "shared_manager", "toolbar_position", "popup_first_open_size", "popup_reopen_size", "menu_focus",
+                    "menu_contents", "server_version", "version_endpoint_isolation",
+                    "project_options", "shared_busy", "build_spinner", "spinner_pending_activation", "spinner_idle",
+                    "settings_navigation", "disabled_cleanup", "reenabled_shared_manager")),
             // Phase 4: `_complete_code` — degraded answers (client not READY / no sentinel /
             // disabled service), white-box pins of the kind table and the insert-text
             // precedence (the server's emitted kind set is not controllable, so the mapping
@@ -311,6 +317,30 @@ class EditorAddonScriptLanguageEngineTest {
                 func _service() -> Node:
                     return get_tree().root.get_node_or_null("GdccEditorService")
                 
+                func _script_language_menus_match(registered: bool) -> bool:
+                    var found := 0
+                    for dialog in get_tree().root.find_children("*", "ScriptCreateDialog", true, false):
+                        for menu in dialog.find_children("*", "OptionButton", true, false):
+                            if menu.item_count == 0 or menu.get_item_text(0) != "GDScript":
+                                continue
+                            found += 1
+                            if menu.item_count != Engine.get_script_language_count():
+                                return false
+                            var gd3_count := 0
+                            for index in range(menu.item_count):
+                                if menu.get_item_text(index) == "GD3":
+                                    gd3_count += 1
+                                    if menu.is_item_disabled(index) != (Engine.get_version_info().hex <= 0x040600):
+                                        return false
+                            if gd3_count != (1 if registered else 0):
+                                return false
+                            var selected: int = menu.get_selected()
+                            if selected < 0 or selected >= menu.item_count or menu.is_item_disabled(selected):
+                                return false
+                            if menu.get_item_text(selected) != "GDScript":
+                                return false
+                    return found > 1
+                
                 # Points the editor's GDScript language server AND our client at the test's free
                 # port. Runs before the editor finishes booting, so the server (which starts
                 # listening only after editor-ready) picks up the port; the service's
@@ -418,6 +448,8 @@ class EditorAddonScriptLanguageEngineTest {
                         await _run_gdcc_diag_mode()
                     elif mode == "dock_compile":
                         await _run_dock_compile_mode()
+                    elif mode == "build_toolbar":
+                        await _run_build_toolbar_mode()
                     elif mode == "lsp_completion":
                         await _run_lsp_completion_mode()
                     elif mode == "diag_revalidate":
@@ -478,10 +510,15 @@ class EditorAddonScriptLanguageEngineTest {
                             has_visible_pixel = has_visible_pixel or pixel.a > 0.0
                             icon_ok = icon_ok and is_equal_approx(pixel.r, pixel.g) and is_equal_approx(pixel.g, pixel.b)
                     _step("script_icon", icon_ok and has_visible_pixel)
+                    _step("language_menus", _script_language_menus_match(true))
+                    # Also cover dialogs created after the language has already registered.
+                    var late_dialog: ScriptCreateDialog = ClassDB.instantiate("ScriptCreateDialog")
+                    get_tree().root.add_child(late_dialog)
                     icon_theme.clear_icon("GdccScript", "EditorIcons")
                     await get_tree().process_frame
                     await get_tree().process_frame
                     _step("script_icon_refresh", EditorInterface.get_editor_theme().get_icon("GdccScript", "EditorIcons") == script_icon)
+                    _step("language_menus_refresh", _script_language_menus_match(true))
                 
                     var updated := source + "\\n# edited in memory\\n"
                     res._set_source_code(updated)
@@ -560,6 +597,8 @@ class EditorAddonScriptLanguageEngineTest {
                     var still_valid: bool = res._get_language() == lang \\
                             and lang._validate("extends RefCounted\\n", sample_path, true, true, true, true).get("valid", false) == true
                     _step("disabled_safe", gone and still_valid and not EditorInterface.get_editor_theme().has_icon("GdccScript", "EditorIcons"))
+                    late_dialog.config("Node", "res://language_menu_probe.gd", false, false)
+                    _step("disabled_language_menus", _script_language_menus_match(false))
                     EditorInterface.set_plugin_enabled("gdcc", true)
                     await get_tree().process_frame
                     await get_tree().process_frame
@@ -567,6 +606,8 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("reenabled_same_instance", relang != null and relang == lang
                             and EditorInterface.get_editor_theme().has_icon("GdccScript", "EditorIcons")
                             and EditorInterface.get_editor_theme().get_icon("GdccScript", "EditorIcons").get_size() == Vector2(16, 16))
+                    _step("reenabled_language_menus", _script_language_menus_match(true))
+                    late_dialog.free()
                 
                     DirAccess.remove_absolute(ProjectSettings.globalize_path(sample_path))
                     DirAccess.remove_absolute(ProjectSettings.globalize_path(threaded_path))
@@ -1787,35 +1828,190 @@ class EditorAddonScriptLanguageEngineTest {
                         if sib_script != null and str(sib_script.resource_path).ends_with("addons/gdcc/plugin.gd"):
                             return sib.get("_dock")
                     return null
-
+                
+                # Verify the shared editor views against the real title bar and settings dialog.
+                func _run_build_toolbar_mode() -> void:
+                    var dock: Variant = _find_gdcc_dock()
+                    if dock == null:
+                        _step("shared_manager", false, "dock missing")
+                        return
+                    var manager: Variant = dock._manager
+                    var plugin: Variant = manager.get_parent()
+                    var toolbar: Variant = plugin.get("_build_toolbar")
+                    _step("shared_manager", toolbar != null and toolbar._manager == manager \\
+                            and manager.name == "GdccProjectManager" and manager.is_inside_tree())
+                    if toolbar == null:
+                        return
+                    var title_bar: Node = toolbar.get_parent()
+                    var run_bar: Node = null
+                    for child in title_bar.get_children():
+                        if child.is_class("EditorRunBar"):
+                            run_bar = child
+                    _step("toolbar_position", run_bar != null and toolbar.get_index() + 1 == run_bar.get_index())
+                    var service := _service()
+                    service.install(EditorInterface, "127.0.0.1", int(_config["lsp_port"]), "127.0.0.1", int(_config["rpc_port"]))
+                    var ready_deadline := Time.get_ticks_msec() + 20000
+                    while not manager.can_start_action() and Time.get_ticks_msec() < ready_deadline:
+                        await get_tree().process_frame
+                    # A fresh hidden popup must size correctly before any container layout pass.
+                    var cold_toolbar: Variant = toolbar.get_script().new()
+                    cold_toolbar.setup(manager)
+                    add_child(cold_toolbar)
+                    var popup_content: Control = cold_toolbar._version_label.get_parent().get_parent()
+                    var first_content_height: float = popup_content.get_combined_minimum_size().y
+                    var first_size: Vector2i = cold_toolbar._popup.get_contents_minimum_size()
+                    cold_toolbar._popup.popup(Rect2i(Vector2i.ZERO, first_size))
+                    var opened_content_height: float = popup_content.size.y
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    var settled_content_height: float = popup_content.get_combined_minimum_size().y
+                    # Window dimensions include shadows only while visible; measure the content instead.
+                    _step("popup_first_open_size", abs(first_content_height - settled_content_height) <= 1 \\
+                            and abs(opened_content_height - settled_content_height) <= 1 \\
+                            and abs(popup_content.size.y - settled_content_height) <= 1,
+                            "first=" + str(first_content_height) + " opened=" + str(opened_content_height) \\
+                            + " settled=" + str(settled_content_height) + " actual=" + str(popup_content.size.y))
+                    cold_toolbar._popup.hide()
+                    cold_toolbar._popup.popup(Rect2i(Vector2i.ZERO, cold_toolbar._popup.get_contents_minimum_size()))
+                    await get_tree().process_frame
+                    _step("popup_reopen_size", abs(popup_content.size.y - settled_content_height) <= 1,
+                            "expected=" + str(settled_content_height) + " actual=" + str(popup_content.size.y))
+                    cold_toolbar._popup.hide()
+                    cold_toolbar.free()
+                    var button_viewport: Viewport = toolbar._menu_button.get_viewport()
+                    var click_position: Vector2 = toolbar._menu_button.get_global_rect().get_center()
+                    var motion := InputEventMouseMotion.new()
+                    motion.position = click_position
+                    button_viewport.push_input(motion, true)
+                    for pressed in [true, false]:
+                        var click := InputEventMouseButton.new()
+                        click.button_index = MOUSE_BUTTON_LEFT
+                        click.position = click_position
+                        click.pressed = pressed
+                        button_viewport.push_input(click, true)
+                    var mouse_opened: bool = toolbar._popup.visible
+                    toolbar._popup.hide()
+                    _step("menu_focus", mouse_opened and toolbar._menu_button.focus_mode == Control.FOCUS_ACCESSIBILITY \\
+                            and not toolbar._menu_button.has_focus() and toolbar._build_button.focus_mode == Control.FOCUS_ACCESSIBILITY)
+                    toolbar._menu_button.pressed.emit()
+                    _step("menu_contents", toolbar._popup.visible and toolbar._build_button.text == "Build" \\
+                            and toolbar._build_button.icon != null and toolbar._menu_button.icon != null \\
+                            and toolbar._settings_button.size_flags_horizontal == Control.SIZE_EXPAND_FILL \\
+                            and toolbar._last_build_label.text.contains("Last successful build") \\
+                            and toolbar._popup.theme == EditorInterface.get_editor_theme())
+                    var version_deadline := Time.get_ticks_msec() + 15000
+                    while manager.server_version == "Not connected" and Time.get_ticks_msec() < version_deadline:
+                        await get_tree().process_frame
+                    _step("server_version", not manager.server_version.begins_with("Unavailable") \\
+                            and manager.server_version != "Not connected" and toolbar._version_label.text.contains(manager.server_version), manager.server_version)
+                    manager.refresh_server_version()
+                    service.retarget_rpc_endpoint("127.0.0.1", int(_config["closed_port"]))
+                    version_deadline = Time.get_ticks_msec() + 15000
+                    while manager._version_busy and Time.get_ticks_msec() < version_deadline:
+                        await get_tree().process_frame
+                    _step("version_endpoint_isolation", not manager._version_busy and manager.server_version == "Not connected" \\
+                            and toolbar._version_label.text == "GDCC: Not connected")
+                    service.retarget_rpc_endpoint("127.0.0.1", int(_config["rpc_port"]))
+                    toolbar._optimization.item_selected.emit(1)
+                    toolbar._strict_mode.toggled.emit(true)
+                    await get_tree().process_frame
+                    var config := ConfigFile.new()
+                    _step("project_options", config.load("res://project.godot") == OK \\
+                            and ProjectSettings.get_setting("gdcc/build/optimization_level") == "RELEASE" \\
+                            and config.get_value("gdcc", "build/optimization_level", "") == "RELEASE" \\
+                            and ProjectSettings.get_setting("gdcc/build/strict_mode") == true)
+                    manager._begin_busy()
+                    var disabled: bool = toolbar._build_button.disabled and toolbar._optimization.disabled
+                    for button in dock._action_buttons:
+                        disabled = disabled and button.disabled
+                    toolbar._optimization.item_selected.emit(0)
+                    toolbar._build_button.pressed.emit()
+                    disabled = disabled and manager._busy_count == 1 and manager._current_task_id == -1 \\
+                            and ProjectSettings.get_setting("gdcc/build/optimization_level") == "RELEASE"
+                    manager._end_busy()
+                    manager._pending_activation = {"deadline": Time.get_ticks_msec() + 10000}
+                    manager.state_changed.emit()
+                    disabled = disabled and toolbar._build_button.disabled and not manager.can_start_action()
+                    manager._pending_activation.clear()
+                    manager.state_changed.emit()
+                    _step("shared_busy", disabled and not toolbar._build_button.disabled \\
+                            and toolbar._build_button.text == "Build" and not toolbar.is_processing())
+                    var spinner_codes := [0x280b, 0x2819, 0x2839, 0x2838, 0x283c, 0x2834, 0x2826, 0x2827, 0x2807, 0x280f]
+                    manager._build_in_progress = true
+                    manager._begin_busy()
+                    var spinner_ok: bool = manager.is_building() and toolbar.is_processing() \\
+                            and toolbar._build_button.text == "Building " + String.chr(spinner_codes[0])
+                    toolbar._spinner_last_msec = Time.get_ticks_msec() + 1000
+                    toolbar._process(0.0)
+                    spinner_ok = spinner_ok and toolbar._spinner_index == 0
+                    for index in range(1, 11):
+                        toolbar._spinner_last_msec = Time.get_ticks_msec() - 1000
+                        toolbar._process(0.0)
+                        spinner_ok = spinner_ok and toolbar._build_button.text == "Building " + String.chr(spinner_codes[index % 10])
+                    _step("build_spinner", spinner_ok)
+                    manager._pending_activation = {"deadline": Time.get_ticks_msec() + 10000}
+                    manager._end_build()
+                    _step("spinner_pending_activation", manager.is_building() and toolbar.is_processing() \\
+                            and toolbar._build_button.disabled and toolbar._build_button.text.begins_with("Building "))
+                    manager._pending_activation.clear()
+                    manager.state_changed.emit()
+                    _step("spinner_idle", not manager.is_building() and not toolbar.is_processing() \\
+                            and toolbar._build_button.text == "Build")
+                    toolbar._settings_button.pressed.emit()
+                    await get_tree().process_frame
+                    _step("settings_navigation", not toolbar._popup.visible and is_instance_valid(toolbar._settings_dialog) \\
+                            and toolbar._settings_dialog.visible and toolbar._settings_filter != null \\
+                            and toolbar._settings_filter.text == "gdcc" and toolbar._settings_sections != null \\
+                            and toolbar._settings_sections.get_selected() != null \\
+                            and toolbar._settings_sections.get_selected().get_metadata(0) == "gdcc/build")
+                    if is_instance_valid(toolbar._settings_dialog):
+                        toolbar._settings_dialog.hide()
+                    var old_manager_id: int = manager.get_instance_id()
+                    EditorInterface.set_plugin_enabled("gdcc", false)
+                    await get_tree().process_frame
+                    var leftover := false
+                    for child in title_bar.get_children():
+                        leftover = leftover or child.name == "GdccBuildToolbar"
+                    _step("disabled_cleanup", not leftover and not is_instance_valid(manager) and not is_instance_valid(toolbar))
+                    EditorInterface.set_plugin_enabled("gdcc", true)
+                    await get_tree().process_frame
+                    var next_dock: Variant = _find_gdcc_dock()
+                    var next_manager: Variant = next_dock._manager if next_dock != null else null
+                    var next_toolbar: Variant = next_manager.get_parent().get("_build_toolbar") if next_manager != null else null
+                    _step("reenabled_shared_manager", next_manager != null and next_toolbar != null \\
+                            and next_toolbar._manager == next_manager and next_manager.get_instance_id() != old_manager_id \\
+                            and next_toolbar._manager.last_build_time == str(EditorInterface.get_editor_settings().get_project_metadata("gdcc", "last_build_time", "")))
+                
                 # Build snapshots diagnostics without holding its gate during native compilation,
                 # then deploys and loads the resulting extension through the real editor APIs.
                 func _run_dock_compile_mode() -> void:
                     var service := _service()
                     var dock: Variant = _find_gdcc_dock()
+                    var manager: Variant = dock._manager if dock != null else null
+                    var toolbar: Variant = manager.get_parent().get("_build_toolbar") if manager != null else null
                     if service == null or dock == null:
                         _step("service_ready", false, "GdccEditorService or dock missing")
                         return
                     var lsp_port := int(_config["lsp_port"])
                     var rpc_port := int(_config["rpc_port"])
                     _step("service_ready", service.install(EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", rpc_port) == OK)
-
+                
                     var fixture_path := "res://compile_probe.gd3"
                     var fixture_src := "class_name DockCompileProbe\\nextends Node\\nfunc build_value() -> int:\\n    return 1\\n"
                     _write_text_file(fixture_path, fixture_src)
                     service.notify_filesystem_changed()
                     _step("fixture_written", true)
-
+                
                     # Driver-owned client: observes sync/copy/compile state straight from the
                     # server, independent of the dock's own client.
                     var client := GdccRpcClient.new()
                     add_child(client)
                     client.host = "127.0.0.1"
                     client.port = rpc_port
-
+                
                     var ready_ok: bool = await _wait_diag_ready(service, 45.0)
                     var diag_module_id: String = service.get_diag_module_id()
-
+                
                     # The addon project ships res://src/test2.gd3 — a deliberately broken
                     # sample (parameterized _init, bare print()) whose frontend errors would
                     # block any whole-workspace compile. Remove it from this case's copy and
@@ -1842,7 +2038,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("broken_fixture_removed", present and removed)
                     if not (present and removed):
                         return
-
+                
                     # res://compile_probe.gd3 mirrors to /src/compile_probe.gd3 (service VFS
                     # mapping contract); poll until the content round-trips verbatim.
                     var synced := false
@@ -1855,42 +2051,42 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("fixture_synced", ready_ok and synced)
                     if not (ready_ok and synced):
                         return
-
+                
                     # Change the name AFTER diagnostics setup: Build must name the new copy,
                     # not inherit the diagnostics module's display name.
                     var project_name := 'Dock "Game"' + String.chr(10) + "Project"
                     ProjectSettings.set_setting("application/config/name", project_name)
-                    dock._apply_endpoint()
-                    var copy_module_id: String = dock._compile_module_id(project_name)
+                    manager._apply_endpoint()
+                    var copy_module_id: String = manager._compile_module_id(project_name)
                     var identity := ProjectSettings.globalize_path("res://") + "\\n" + project_name
                     _step("fixed_compile_identity", copy_module_id == "gdcc_editor_compile_" \\
                             + project_name.replace("\\n", "_").validate_filename().left(32) + "_" + identity.sha256_text().left(16) \\
-                            and dock._compile_module_id("Dock/Game") != dock._compile_module_id("Dock:Game") \\
-                            and dock._project_filename("Dock" + String.chr(1) + String.chr(31) + String.chr(127)) == "Dock___")
-
+                            and manager._compile_module_id("Dock/Game") != manager._compile_module_id("Dock:Game") \\
+                            and manager._project_filename("Dock" + String.chr(1) + String.chr(31) + String.chr(127)) == "Dock___")
+                
                     # An existing copy with no reservation is not evidence of our ownership.
                     await client.create_module(copy_module_id, "foreign copy").completed
                     await client.put_file(copy_module_id, "/keep.txt", "foreign source", "keep.txt", "").completed
-                    var unowned_id: String = await dock._prepare_compile_copy(diag_module_id, project_name)
+                    var unowned_id: String = await manager._prepare_compile_copy(diag_module_id, project_name)
                     var kept: Dictionary = await client.read_file(copy_module_id, "/keep.txt").completed
                     var unowned_owner: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id + "_owner"}).completed
-                    dock._exit_tree()
+                    manager._exit_tree()
                     var unowned_released: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id + "_owner"}).completed
                     var kept_after_cleanup: Dictionary = await client.read_file(copy_module_id, "/keep.txt").completed
                     _step("unowned_copy_preserved", unowned_id == "" and kept["ok"] and str(kept["result"]) == "foreign source" \\
-                            and unowned_owner["ok"] and str(unowned_owner["result"]["moduleName"]) == dock._compile_owner_token \\
+                            and unowned_owner["ok"] and str(unowned_owner["result"]["moduleName"]) == manager._compile_owner_token \\
                             and not unowned_released["ok"] and int(unowned_released["error"]["code"]) == -32000 \\
                             and kept_after_cleanup["ok"] and str(kept_after_cleanup["result"]) == "foreign source" \\
                             and dock._log_output.text.contains("an unowned compile module already exists"))
                     await client.delete_module(copy_module_id).completed
-
+                
                     # A reused endpoint/local record must not authorize touching a new owner.
                     await client.create_module(copy_module_id + "_owner", "foreign owner").completed
                     await client.create_module(copy_module_id, "foreign copy").completed
-                    dock._owned_copies.append({"host": client.host, "port": client.port,
+                    manager._owned_copies.append({"host": client.host, "port": client.port,
                             "module_id": copy_module_id, "copy_created": true})
-                    var foreign_id: String = await dock._prepare_compile_copy(diag_module_id, project_name)
-                    dock._exit_tree()
+                    var foreign_id: String = await manager._prepare_compile_copy(diag_module_id, project_name)
+                    manager._exit_tree()
                     var foreign_owner: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id + "_owner"}).completed
                     var foreign_copy: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id}).completed
                     _step("foreign_owner_preserved", foreign_id == "" and foreign_owner["ok"] \\
@@ -1926,15 +2122,18 @@ class EditorAddonScriptLanguageEngineTest {
                     if not copy_seen:
                         print("DOCK LOG:\\n" + dock._log_output.text)
                         return
-
+                
                     # While the dock knows an active compile task on the copy, an analyze on
                     # the DIAGNOSTICS module must still answer fast: a compile holding the
                     # diag gate would delay it by the remaining native build (seconds even
                     # when warm), while a healthy loopback round-trip is subsecond.
                     var task_deadline := Time.get_ticks_msec() + 30000
-                    while int(dock._current_task_id) <= 0 and Time.get_ticks_msec() < task_deadline:
+                    while int(manager._current_task_id) <= 0 and Time.get_ticks_msec() < task_deadline:
                         await get_tree().process_frame
-                    var first_task: int = int(dock._current_task_id)
+                    var first_task: int = int(manager._current_task_id)
+                    # Settings changed after the click must not leak into the in-flight snapshot.
+                    ProjectSettings.set_setting("gdcc/build/optimization_level", "RELEASE")
+                    ProjectSettings.set_setting("gdcc/build/strict_mode", true)
                     var analyze_start := Time.get_ticks_msec()
                     var analyzed: Dictionary = await client.analyze(diag_module_id, false).completed
                     var analyze_elapsed := Time.get_ticks_msec() - analyze_start
@@ -1945,10 +2144,11 @@ class EditorAddonScriptLanguageEngineTest {
                     var task_state := str(task_view["result"]["state"]) if task_view["ok"] else "?"
                     var diag_alive: bool = first_task > 0 and analyzed["ok"] \
                             and str(analyzed["result"]["outcome"]) == "COMPLETED" \
-                            and (task_state == "QUEUED" or task_state == "RUNNING")
+                            and (task_state == "QUEUED" or task_state == "RUNNING") \\
+                            and manager.is_building() and toolbar.is_processing() and toolbar._build_button.text.begins_with("Building ")
                     _step("diag_alive_during_compile", diag_alive,
                             "task_state=" + task_state + " elapsed_ms=" + str(analyze_elapsed))
-
+                
                     var last_result := {}
                     var succeeded := false
                     var result_deadline := Time.get_ticks_msec() + 240000
@@ -1966,11 +2166,15 @@ class EditorAddonScriptLanguageEngineTest {
                     succeeded = succeeded and DirAccess.dir_exists_absolute(build_dir) \
                             and (DirAccess.get_directories_at(build_dir).size() \
                             + DirAccess.get_files_at(build_dir).size()) > 0
+                    succeeded = succeeded and last_result["compileOptions"]["optimizationLevel"] == "DEBUG" \\
+                            and last_result["compileOptions"]["strictMode"] == false
+                    ProjectSettings.set_setting("gdcc/build/optimization_level", "DEBUG")
+                    ProjectSettings.set_setting("gdcc/build/strict_mode", false)
                     _step("compile_succeeded", succeeded, str(last_result))
                     if not succeeded:
                         print("DOCK LOG:\\n" + dock._log_output.text)
                         return
-
+                
                     var idle_deadline := Time.get_ticks_msec() + 30000
                     while compile_button.disabled and Time.get_ticks_msec() < idle_deadline:
                         await get_tree().process_frame
@@ -1981,11 +2185,13 @@ class EditorAddonScriptLanguageEngineTest {
                     var metadata_ok := metadata.load(extension_path) == OK
                     var library_path := ""
                     if metadata_ok:
-                        var feature_key := OS.get_name().to_lower() + ".debug." + Engine.get_architecture_name()
+                        var feature_key := OS.get_name().to_lower() + "." + Engine.get_architecture_name()
                         library_path = str(metadata.get_value("libraries", feature_key, ""))
                         metadata_ok = metadata.get_value("configuration", "entry_symbol", "") == "gdextension_entry" \\
                                 and metadata.get_value("configuration", "compatibility_minimum", "") == "4.5" \\
-                                and metadata.get_value("configuration", "reloadable", false) == true
+                                and metadata.get_value("configuration", "reloadable", false) == true \\
+                                and metadata.get_section_keys("libraries") == PackedStringArray([feature_key]) \\
+                                and not metadata.has_section_key("configuration", "gdcc_library_aliases")
                     var source_library := ""
                     for artifact in last_result["artifacts"]:
                         if str(artifact).get_extension() in ["dll", "so", "dylib"]:
@@ -2000,7 +2206,8 @@ class EditorAddonScriptLanguageEngineTest {
                         return
                     var enabled := GDExtensionManager.is_extension_loaded(extension_path) and ClassDB.class_exists("DockCompileProbe")
                     var probe: Variant = ClassDB.instantiate("DockCompileProbe") if enabled else null
-                    _step("extension_enabled", enabled and probe != null and int(probe.build_value()) == 1)
+                    _step("extension_enabled", enabled and probe != null and int(probe.build_value()) == 1 \\
+                            and manager.last_build_time != "" and toolbar._last_build_label.text.contains(manager.last_build_time))
                     if not enabled or probe == null:
                         return
                     _step("extension_list_persisted", FileAccess.get_file_as_string("res://.godot/extension_list.cfg").split("\\n").has(extension_path))
@@ -2008,18 +2215,18 @@ class EditorAddonScriptLanguageEngineTest {
                     var library_md5 := FileAccess.get_md5(library_path)
                     var invalid_result: Dictionary = last_result.duplicate(true)
                     invalid_result["artifacts"] = []
-                    var empty_rejected: bool = not await dock._deploy_build_result(invalid_result, project_name)
+                    var empty_rejected: bool = not await manager._deploy_build_result(invalid_result, project_name)
                     invalid_result["artifacts"] = [source_library + ".missing." + source_library.get_extension()]
-                    var missing_rejected: bool = not await dock._deploy_build_result(invalid_result, project_name)
+                    var missing_rejected: bool = not await manager._deploy_build_result(invalid_result, project_name)
                     invalid_result["outcome"] = "FAILURE"
-                    var failed_rejected: bool = not await dock._deploy_build_result(invalid_result, project_name)
+                    var failed_rejected: bool = not await manager._deploy_build_result(invalid_result, project_name)
                     invalid_result = last_result.duplicate(true)
                     invalid_result["sourcePaths"] = ["res://addons/gdcc/gdcc_script.gd3"]
-                    var addon_rejected: bool = not await dock._deploy_build_result(invalid_result, project_name)
+                    var addon_rejected: bool = not await manager._deploy_build_result(invalid_result, project_name)
                     _step("invalid_deployment_preserves_build", empty_rejected and missing_rejected and failed_rejected and addon_rejected \\
                             and FileAccess.get_md5(extension_path) == metadata_md5 \\
                             and FileAccess.get_md5(library_path) == library_md5 and int(probe.build_value()) == 1)
-
+                
                     var invalid_metadata_ok := true
                     for key in ["gdcc_library_aliases", "gdcc_libraries", "gdcc_managed"]:
                         var malformed := ConfigFile.new()
@@ -2029,7 +2236,7 @@ class EditorAddonScriptLanguageEngineTest {
                         var malformed_md5 := FileAccess.get_md5(extension_path)
                         var before_files := DirAccess.get_files_at("res://bin")
                         before_files.sort()
-                        var rejected: bool = not await dock._deploy_build_result(last_result, project_name)
+                        var rejected: bool = not await manager._deploy_build_result(last_result, project_name)
                         var after_files := DirAccess.get_files_at("res://bin")
                         after_files.sort()
                         invalid_metadata_ok = invalid_metadata_ok and rejected and before_files == after_files \\
@@ -2037,7 +2244,7 @@ class EditorAddonScriptLanguageEngineTest {
                                 and FileAccess.get_md5(library_path) == library_md5
                         invalid_metadata_ok = invalid_metadata_ok and metadata.save(extension_path) == OK
                     _step("invalid_metadata_preserves_build", invalid_metadata_ok, dock._log_output.text)
-
+                
                     # Ownership records cannot authorize deletion outside the direct bin directory.
                     var external_path := "res://foreign_build.keep"
                     _write_text_file(external_path, "project-owned file")
@@ -2046,30 +2253,54 @@ class EditorAddonScriptLanguageEngineTest {
                     recorded_libraries.append("res://bin/../foreign_build.keep")
                     metadata.set_value("configuration", "gdcc_libraries", recorded_libraries)
                     metadata.save(extension_path)
-
-                    # Distinct explicit optimization variants must not be mistaken for aliases.
+                
+                    # Seed the old descriptor format: even a real debug entry must not shadow Release.
+                    var library_key := OS.get_name().to_lower() + "." + Engine.get_architecture_name()
+                    var debug_key := OS.get_name().to_lower() + ".debug." + Engine.get_architecture_name()
+                    var release_key := OS.get_name().to_lower() + ".release." + Engine.get_architecture_name()
+                    metadata.erase_section_key("libraries", library_key)
+                    metadata.set_value("libraries", debug_key, library_path)
+                    metadata.set_value("libraries", release_key, library_path)
+                    metadata.set_value("libraries", "android.x86_64", "res://foreign_generic.so")
+                    metadata.set_value("libraries", "android.debug.x86_64", "res://foreign_debug.so")
+                    metadata.set_value("libraries", "android.release.x86_64", "res://foreign_release.so")
+                    metadata.set_value("libraries", "android.debug.arm64", "res://foreign_debug_arm64.so")
+                    metadata.set_value("libraries", "android.release.arm64", "res://foreign_release_arm64.so")
+                    metadata.set_value("libraries", "web.release.wasm32", "res://foreign_release.wasm")
+                    metadata.set_value("configuration", "gdcc_library_aliases", PackedStringArray([release_key]))
+                    metadata.save(extension_path)
                     var release_result: Dictionary = last_result.duplicate(true)
                     release_result["compileOptions"]["optimizationLevel"] = "RELEASE"
-                    var release_installed: bool = await dock._deploy_build_result(release_result, project_name)
+                    var release_installed: bool = await manager._deploy_build_result(release_result, project_name)
                     var activation_deadline := Time.get_ticks_msec() + 30000
-                    while not dock._pending_activation.is_empty() and Time.get_ticks_msec() < activation_deadline:
+                    while not manager._pending_activation.is_empty() and Time.get_ticks_msec() < activation_deadline:
                         await get_tree().process_frame
                     var variants := ConfigFile.new()
                     var variants_ok := release_installed and variants.load(extension_path) == OK
-                    var debug_key := OS.get_name().to_lower() + ".debug." + Engine.get_architecture_name()
-                    var release_key := OS.get_name().to_lower() + ".release." + Engine.get_architecture_name()
-                    var release_library := str(variants.get_value("libraries", release_key, ""))
-                    variants_ok = variants_ok and str(variants.get_value("libraries", debug_key, "")) == library_path \\
-                            and release_library != library_path and FileAccess.file_exists(release_library)
-                    var debug_installed: bool = await dock._deploy_build_result(last_result, project_name)
+                    var release_library := str(variants.get_value("libraries", library_key, ""))
+                    variants_ok = variants_ok and release_library != library_path and FileAccess.file_exists(release_library) \\
+                            and release_library.get_file().contains("_release_") \\
+                            and not variants.has_section_key("libraries", debug_key) \\
+                            and not variants.has_section_key("libraries", release_key) \\
+                            and not variants.has_section_key("configuration", "gdcc_library_aliases") \\
+                            and variants.get_section_keys("libraries").size() == 4 \\
+                            and str(variants.get_value("libraries", "android.x86_64", "")) == "res://foreign_generic.so" \\
+                            and str(variants.get_value("libraries", "android.arm64", "")) == "res://foreign_debug_arm64.so" \\
+                            and str(variants.get_value("libraries", "web.wasm32", "")) == "res://foreign_release.wasm"
+                    for key in variants.get_section_keys("libraries"):
+                        variants_ok = variants_ok and key.split(".").size() == 2
+                    var debug_installed: bool = await manager._deploy_build_result(last_result, project_name)
                     activation_deadline = Time.get_ticks_msec() + 30000
-                    while not dock._pending_activation.is_empty() and Time.get_ticks_msec() < activation_deadline:
+                    while not manager._pending_activation.is_empty() and Time.get_ticks_msec() < activation_deadline:
                         await get_tree().process_frame
                     variants_ok = variants_ok and debug_installed and variants.load(extension_path) == OK \\
-                            and str(variants.get_value("libraries", release_key, "")) == release_library \\
+                            and str(variants.get_value("libraries", library_key, "")) == library_path \\
+                            and not variants.has_section_key("libraries", release_key) \\
+                            and str(variants.get_value("libraries", "android.x86_64", "")) == "res://foreign_generic.so" \\
+                            and str(variants.get_value("libraries", "web.wasm32", "")) == "res://foreign_release.wasm" \\
                             and FileAccess.get_file_as_string(external_path) == "project-owned file"
-                    _step("optimization_variants_preserved", variants_ok, dock._log_output.text)
-
+                    _step("optimization_selection_replaces_current_target", variants_ok, dock._log_output.text)
+                
                     # Rebuild through the real UI after a sync: both the new copy's source and
                     # a live instance's behavior must change, not just a comment or file timestamp.
                     var updated_src := fixture_src.replace("return 1", "return 2")
@@ -2085,13 +2316,15 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("fixture_resynced", not compile_button.disabled and resynced)
                     if not resynced:
                         return
-                    compile_button.pressed.emit()
+                    # A real Release build must replace the Debug DLL used by this debug editor.
+                    ProjectSettings.set_setting("gdcc/build/optimization_level", "RELEASE")
+                    toolbar._build_button.pressed.emit()
                     # Waiting for the new task id first pins the ordering: anything observed
                     # afterwards belongs to the re-copied module, never to the pre-delete one.
                     var second_task: int = -1
                     var second_start_deadline := Time.get_ticks_msec() + 30000
                     while Time.get_ticks_msec() < second_start_deadline and second_task < 0:
-                        var current: int = int(dock._current_task_id)
+                        var current: int = int(manager._current_task_id)
                         if current > first_task:
                             second_task = current
                         await get_tree().process_frame
@@ -2121,34 +2354,39 @@ class EditorAddonScriptLanguageEngineTest {
                     if not (second_ok and fresh_copy and second_success):
                         print("DOCK LOG:\\n" + dock._log_output.text)
                         return
-
+                
                     _step("fixed_build_paths", str(second_result["compileOptions"]["projectPath"]).replace("\\\\", "/") == build_dir \\
-                            and second_result["artifacts"] == last_result["artifacts"])
-
+                            and second_result["compileOptions"]["optimizationLevel"] == "RELEASE")
+                
                     idle_deadline = Time.get_ticks_msec() + 30000
                     while compile_button.disabled and Time.get_ticks_msec() < idle_deadline:
                         await get_tree().process_frame
                     variants_ok = variants.load(extension_path) == OK \\
-                            and str(variants.get_value("libraries", release_key, "")) == release_library
+                            and str(variants.get_value("libraries", library_key, "")).get_file().contains("_release_") \\
+                            and not variants.has_section_key("libraries", debug_key) \\
+                            and not variants.has_section_key("libraries", release_key) \\
+                            and str(variants.get_value("libraries", "android.x86_64", "")) == "res://foreign_generic.so" \\
+                            and str(variants.get_value("libraries", "android.arm64", "")) == "res://foreign_debug_arm64.so" \\
+                            and str(variants.get_value("libraries", "web.wasm32", "")) == "res://foreign_release.wasm"
                     _step("rebuilt_extension_enabled", not compile_button.disabled \\
                             and GDExtensionManager.is_extension_loaded(extension_path) \\
-                            and int(probe.build_value()) == 2 and variants_ok, dock._log_output.text)
+                            and int(probe.build_value()) == 2 and variants_ok and not manager.is_building() \\
+                            and toolbar._build_button.text == "Build" and not toolbar.is_processing(), dock._log_output.text)
                     if probe != null:
                         probe.free()
-
+                
                     var final_analyze: Dictionary = await client.analyze(diag_module_id, false).completed
                     _step("diag_still_responsive", final_analyze["ok"]
                             and str(final_analyze["result"]["outcome"]) == "COMPLETED")
-
+                
                     # Independent server reservations must not let two builders share C/objects.
                     var other_client := GdccRpcClient.new()
                     add_child(other_client)
                     other_client.host = client.host
                     other_client.port = int(_config["other_rpc_port"])
                     await other_client.create_module(diag_module_id, "other diagnostics").completed
-                    var other_dock: Variant = dock.get_script().new()
+                    var other_dock: Variant = manager.get_script().new()
                     other_dock._client = other_client
-                    other_dock._log_output = TextEdit.new()
                     var other_id: String = await other_dock._prepare_compile_copy(diag_module_id, project_name)
                     var other_options: Dictionary = await other_client.call_rpc("options.get", {"moduleId": other_id}).completed
                     var original_owner: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id + "_owner"}).completed
@@ -2158,34 +2396,31 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("server_build_paths_isolated", other_id == copy_module_id and other_options["ok"] \\
                             and str(other_options["result"]["projectPath"]).replace("\\\\", "/") == other_dir \\
                             and other_dir != build_dir and original_owner["ok"] \\
-                            and str(original_owner["result"]["moduleName"]) == dock._compile_owner_token)
+                            and str(original_owner["result"]["moduleName"]) == manager._compile_owner_token)
                     other_dock._exit_tree()
-                    other_dock._log_output.free()
                     other_dock.free()
                     await other_client.delete_module(diag_module_id).completed
                     other_client.queue_free()
-                    dock._exit_tree()
+                    manager._exit_tree()
                     var released: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id + "_owner"}).completed
                     var deleted_copy: Dictionary = await client.call_rpc("module.get", {"moduleId": copy_module_id}).completed
                     _step("compile_owner_released", not released["ok"] and int(released["error"]["code"]) == -32000 \\
                             and not deleted_copy["ok"] and int(deleted_copy["error"]["code"]) == -32000)
-
+                
                     # A different diagnostics session and dock still resolve to the same disk identity.
                     var next_diag_id := diag_module_id + "_next_session"
                     await client.call_rpc("module.copy", {"sourceModuleId": diag_module_id, "newModuleId": next_diag_id}).completed
-                    var next_dock: Variant = dock.get_script().new()
+                    var next_dock: Variant = manager.get_script().new()
                     next_dock._client = client
-                    next_dock._log_output = TextEdit.new()
                     var reused_id: String = await next_dock._prepare_compile_copy(next_diag_id, project_name)
                     var reused_options: Dictionary = await client.call_rpc("options.get", {"moduleId": reused_id}).completed
                     _step("new_session_reuses_identity", reused_id == copy_module_id and reused_options["ok"] \\
                             and str(reused_options["result"]["projectPath"]).replace("\\\\", "/") == build_dir)
                     next_dock._exit_tree()
-                    next_dock._log_output.free()
                     next_dock.free()
                     await client.delete_module(next_diag_id).completed
                     _step("survived", true)
-
+                
                 func _run_diag_revalidate_mode() -> void:
                     var service := _service()
                     var lang := _find_gd3_language()
@@ -2412,7 +2647,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("endpoint_retarget_closed", closed_ok and failure_seen and status_closed,
                             "retargeted=" + str(closed_ok) + " failure=" + str(failure_seen)
                             + " status=" + str(status_closed))
-
+                
                     ProjectSettings.set_setting("gdcc/server/port", rpc_port)
                     var recover_deadline := Time.get_ticks_msec() + 10000
                     while Time.get_ticks_msec() < recover_deadline and service.rpc_port() != rpc_port:
@@ -2427,7 +2662,7 @@ class EditorAddonScriptLanguageEngineTest {
                         await get_tree().process_frame
                     _step("endpoint_retarget_recover", recovered and status_ready,
                             "recovered=" + str(recovered) + " status=" + str(status_ready))
-
+                
                     # Single-sourcing across a plugin cycle (item 3): install() must read the
                     # configured ProjectSettings pair, so the re-enabled plugin lands on the same
                     # endpoint without any settings rewrite.
@@ -3243,7 +3478,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("lsp_ready", ready)
                     if not ready:
                         return
-
+                
                     var lookup = service.lookup()
                     var hover_only: Dictionary = lookup._lookup_result("res://src/gd3_lookup_suspended.gd3",
                             {"hover": {"contents": {"kind": "markdown", "value": "doc text"}}})
@@ -3255,7 +3490,7 @@ class EditorAddonScriptLanguageEngineTest {
                             and int(hover_only.get("result", -1)) == OK \\
                             and str(hover_only.get("description", "")) == "doc text" \\
                             and _is_degraded_lookup(lookup._lookup_result("res://src/gd3_lookup_suspended.gd3", {})))
-
+                
                     var path := "res://src/gd3_lookup_suspended.gd3"
                     EditorInterface.set_main_screen_editor("Script")
                     var script: Resource = ResourceLoader.load(path)
@@ -3275,7 +3510,7 @@ class EditorAddonScriptLanguageEngineTest {
                             and script.resource_path == path)
                     if code_edit == null or script == null:
                         return
-
+                
                     await get_tree().process_frame
                     await get_tree().process_frame
                     var client = service.get_lsp_client()
@@ -3285,7 +3520,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("lookup_unavailable", _is_degraded_lookup(result) \\
                             and version_before > 0 and client.document_version_for(uri) == version_before,
                             str(result) + " version=" + str(version_before))
-
+                
                     var line: int = 5
                     var column: int = code_edit.get_line(line).find("rotating_speed") + 2
                     code_edit.emit_signal("symbol_validate", "rotating_speed")
@@ -3301,7 +3536,7 @@ class EditorAddonScriptLanguageEngineTest {
                             + " current=" + str(editor.get_current_script() == script) \\
                             + " column=" + str(column) + " version=" + str(version_before) \\
                             + "/" + str(client.document_version_for(uri)))
-
+                
                     var edited: String = code_edit.get_text() + "# edited after lookup\\n"
                     code_edit.set_text(edited)
                     script.set_source_code(edited)
@@ -3312,7 +3547,7 @@ class EditorAddonScriptLanguageEngineTest {
                             and path_before_save == path and script.resource_path == path,
                             "err=" + str(save_error) + " path_before=" + path_before_save)
                     _step("survived", true)
-
+                
                 # ---------------- Phase 9: auto indent (plan §7 Phase 9) ----------------
                 
                 # Exact-output anchors for the verbatim mirror of the 4.5
@@ -3980,7 +4215,11 @@ class EditorAddonScriptLanguageEngineTest {
 
     @Test
     void languageSkeletonWorksInRealEditor() throws Exception {
-        runCase("language", new JsonObject());
+        var output = runCase("language", new JsonObject());
+        assertFalse(output.contains("at: set_item_icon (scene/gui/popup_menu.cpp:"),
+                () -> "Editor refreshed a stale script language menu:\n" + output);
+        assertFalse(output.contains("[0] _exit_tree (res://addons/gdcc/plugin.gd:"),
+                () -> "Editor plugin teardown emitted an error:\n" + output);
     }
 
     @Test
@@ -4122,7 +4361,8 @@ class EditorAddonScriptLanguageEngineTest {
     /// via `module.copy`, compiles the copy with a real native build into its own
     /// `.godot/gdcc/<copy>/<endpoint>` directory, keeps the diagnostics module gate responsive
     /// mid-compile, deploys into `bin`, persists the extension list and replaces live native
-    /// behavior on the second press. Invalid results leave the installed build intact. Uses a real
+    /// behavior on the second press using a Release DLL inside the debug editor. Legacy mode
+    /// entries migrate to one OS.arch entry; invalid results leave the installed build intact. Uses a real
     /// pair of in-process gdcc RPC servers to verify directory isolation across endpoints
     /// (zig-gated through `runCase`).
     @Test
@@ -4139,6 +4379,20 @@ class EditorAddonScriptLanguageEngineTest {
             config.addProperty("rpc_port", server.port());
             config.addProperty("other_rpc_port", otherServer.port());
             runCase("dock_compile", config);
+        }
+    }
+
+    /// Both editor views share one project node; the real title bar, popup, project settings
+    /// navigation, option persistence and disable/enable lifecycle are checked inside Godot.
+    @Test
+    void buildToolbarSharesProjectManagerAndNavigatesSettings() throws Exception {
+        var config = new JsonObject();
+        config.addProperty("lsp_port", findFreePort());
+        config.addProperty("closed_port", findFreePort());
+        try (var server = JsonRpcServer.start(new JsonRpcDispatcher(new API()), "127.0.0.1", 0,
+                JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES)) {
+            config.addProperty("rpc_port", server.port());
+            runCase("build_toolbar", config);
         }
     }
 
@@ -4304,9 +4558,9 @@ class EditorAddonScriptLanguageEngineTest {
         if (caseName.equals("lookup_suspended")) {
             Files.writeString(projectDir.resolve("src/gd3_lookup_suspended.gd3"), """
                     extends Node
-
+                    
                     @export var rotating_speed: float = 30.0
-
+                    
                     func _process(delta: float) -> void:
                         rotation_degrees.y += rotating_speed * delta
                     """);

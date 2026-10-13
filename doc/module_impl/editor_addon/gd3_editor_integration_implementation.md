@@ -24,9 +24,16 @@
   `ApiModuleCopyTest` 7 项 + RPC 三层测试 + 引擎用例 `dock_compile` 当时12步全绿，
   api+rpc 全量回归无回归，双评审终审 APPROVE；手动验收项见 Phase 10 验收节）；
   已经过多轮并行评审并修订）
-- 更新日期：2026-10-10
+- 更新日期：2026-10-12
+- 2026-10-12 修订（项目库选择）：addon 生成的 `bin/gdcc.gdextension` 改用
+  `<platform>.<architecture>` 条目，每个目标只指向最近安装的库；迁移旧 debug/release
+  条目并移除兼容别名，避免 Debug 编辑器在 Release 构建后仍加载旧 Debug 库。
+- 2026-10-12 修订：项目操作迁入解释型 `gdcc_project_manager.gd` 独立节点，底部 dock
+  与标题栏 Build 分裂按钮共享同一实例、构建所有权、任务和启用状态。新增项目级
+  debug/release 与 strictMode 选择、服务版本查询、上次成功安装时间及 GDCC 项目设置入口；
+  自动诊断模块创建与排除路径同步保持原服务合同。详见“共享项目管理与标题栏 Build”节。
 - 2026-10-10 修订：构建副本 ID、内部目录及产物名基于项目名称和根路径固定；
-  同一项目身份只允许一个 dock 所有者，诊断模块继续进程隔离。当前回归步骤以
+  同一项目身份只允许一个构建所有者，诊断模块继续进程隔离。当前回归步骤以
   `EditorAddonScriptLanguageEngineTest.EXPECTED_STEPS` 的 `dock_compile` 为准。
 - 2026-10-06 修订：Compile 按钮改为 **Build**；编译副本使用当前项目名称，成功后部署
   动态库到项目 `bin` 并生成 `gdcc.gdextension`，通过引擎扫描持久化扩展清单并加载，
@@ -178,8 +185,9 @@
     `GdccEditorService` 新增 `get_language_instance()` 访问器。回归锚点：
     `EditorAddonScriptLanguageEngineTest` 新增 `create_resource` 用例（模拟
     CreateDialog→InspectorDock 序列：ClassDB 实例化 + 属性枚举 + 保存 +
-    `edit_resource`，外加禁用态下同路径不崩溃且语言仍可解析）。注：创建脚本对话框
-    不出现 GD3 是 R5 已知限制，不在本修复范围。
+    `edit_resource`，外加禁用态下同路径不崩溃且语言仍可解析）。注：当时创建脚本
+    对话框不出现 GD3 是 R5 已知限制；当前补齐 GD3 行避免主题刷新越界，
+    Godot ≤ 4.6.0 保持禁用，> 4.6.0 允许选择（§2.1）。
 - Phase 2 验收结果（2026-09-23，自动化项全绿，手动项待 §8.3）：
   - `EditorAddonScriptLanguageEngineTest` 7/7 通过（无跳过），新增三用例：
     `lsp_connect`（退避重连吸收"插件先加载、LSP 后监听"窗口；端点强制断开后重连 +
@@ -1021,6 +1029,9 @@ Godot 编辑器
 │           ├── install(...)（失败回滚并恢复 use_thread）→ 连接 filesystem_changed
 │           ├── server_launcher.gd（解释型 GDScript，新增）：按配置的启动命令拉起
 │           │   gdcc serve、记录 PID，退出时仅关闭自己拉起的进程（§3.7）
+│           ├── gdcc_project_manager.gd (Node)：独立项目操作/编译部署节点与 RPC 客户端
+│           │   ├── gdcc_dock.gd：检查模块、诊断状态、构建日志及取消的底部视图
+│           │   └── gdcc_build_toolbar.gd：标题栏 Build 与参数弹出窗口，共享管理器
 │           └── （延迟一帧）EditorFileSystem.scan() —— 仅运行期启用插件时
 ├── gdcc_for_editor GDExtension（gdcc 编译产物，本计划扩展；安装为 reloadable = false）
 │     ├── GdccRpcClient            （已有，异步 HTTP JSON-RPC → gdcc serve :6099）
@@ -1080,8 +1091,12 @@ Godot 编辑器
   注册，证明纯 GDExtension 路径可行。
 - 已知限制（Godot 4.5，godotengine/godot#106480）：`ScriptCreateDialog` 在
   `ScriptEditor` 初始化时构造并一次性缓存语言列表——**早于**任何 addon 的
-  `_enter_tree`，因此 4.5 中本语言**不会**出现在"创建脚本"对话框的 Language 下拉中，
-  与注册时机无关（§9 R5）。
+  `_enter_tree`。主题刷新却按当前注册语言数设置图标，迟注册会导致菜单索引越界。
+  `plugin.gd` 在注入图标前为已有对话框补齐 GD3 行，并在注销后移除该行，按
+  `ScriptServer` 的末项换位规则保留其他语言与选中项。通过首项不翻译的 `GDScript`
+  定位语言选择器，避免依赖会本地化的 accessibility name；Godot 版本升级需复核该结构。
+  GD3 行仅在 Godot ≤ 4.6.0 时禁用，旧版本创建入口继续使用 dock；> 4.6.0 允许
+  在原生对话框选择 GD3，不额外实现或验证原生创建流程（§9 R5）。
 
 ### 2.2 ScriptLanguageExtension 合同
 
@@ -1305,10 +1320,10 @@ Godot 编辑器
   compile-only 门禁（`sema.compile_check`）与 lowering——仅前者会漏掉"GDScript 合法
   但 gdcc 无法编译"的错误（`ApiAnalyzeTest` 有实证）。编辑器诊断目标是提前暴露真实
   编译失败，故默认使用 `includeLowering=true`（可配置，见 §3.5）。
-- 编辑器插件已有 `GdccRpcClient` 挂起对象 + `process_frame` 帧泵模式；dock 的
-  `auto_setup_module` 会创建/重建**它自己的**模块。编辑器诊断使用独立私有模块，
-  由 `GdccEditorService` 独占创建/删除，与 dock 模块互不可见，避免创建/删除竞争与
-  VFS 互相清空（§4.4）。
+- 编辑器插件使用 `GdccRpcClient` 挂起对象 + `process_frame` 帧泵。私有诊断模块由
+  `GdccEditorService` 独占创建/删除并自动同步；共享项目管理器的 `auto_setup_module`
+  只确保服务可达并宣布诊断模块 ID，不创建第二个诊断模块。Build 经 `module.copy`
+  建立隔离编译快照，诊断模块不承载编译任务，避免门闩冻结和 VFS 互相清空（§4.4）。
 - gdcc 注册多类、engine virtual 严格签名校验（frontend+backend 双层，frontend 在
   analyze 阶段即拒绝错误签名）已具备：签名写错会在 gdcc 编译期报错，是签名合同的
   回归测试；但 analyze+lowering 不覆盖 C 代码生成与链接，故 Phase 0 另设 native
@@ -1597,31 +1612,34 @@ MVP 不含自定义基类 `extends`，功能协议（`bind_service`/`service_tic
    仅登记保存/恢复逻辑，首个 busy 0→1 时才保存原值并置 `false`，§3.5）。协调器
    必须先于任何 `ensure_server_hook` 调用存在。
 5. 创建 `server_launcher.gd` 实例并挂为子节点（§3.7），其 busy 上报指向协调器；
-   把引用传给 dock；dock **不再**提供 host/port/启动命令编辑框（2026-10 起配置全部
-   移入项目设置，dock 只读显示 configured/effective 端点与 auto-launch 是否已配置）；
-   dock 的 busy 同步改为上报协调器（不再直写 `OS.*`）。
+   创建项目专用 RPC 客户端和 `GdccProjectManager` 节点，将 launcher/service/协调器
+   注入管理器；dock 只持有管理器引用，不再管理请求、模块或 busy。host/port/启动命令
+   全部来自项目设置，dock 只读显示 configured/effective 端点与 auto-launch 指示。
 6. 调用 `install(...)` 并检查返回的 Error，失败时恢复 `use_thread` 原值并向用户报告。
    同时把 `server_launcher.ensure_running` 作为 `ensure_server_hook` 注入服务（§3.5）。
+   成功后调用管理器 `auto_setup_module()`，创建共享管理器的标题栏 Build 控件并重排到
+   `EditorRunBar` 左侧；失败则释放 dock、管理器、客户端和 launcher。
 7. 连接 `EditorInterface.get_resource_filesystem().filesystem_changed` → 转发服务的
    对账调度（重复启用时先 `is_connected` 检查，仅连接一次；§3.5）。
 8. 不直接调 `EditorFileSystem.scan()`：首次启动时本插件在首次扫描的 `init_plugins()`
    阶段进入树，同步 scan 会重入首次扫描；且 loader 注册后外层扫描本就会识别 `.gd3`。
    仅当编辑器已就绪后手动启用插件时，用 `call_deferred` 延迟触发一次 scan。
 
-`_exit_tree`：断开 `filesystem_changed` 转发连接 → dock 残余 busy 计数归零 →
+`_exit_tree`：断开事件转发连接 → 释放标题栏及 dock → 管理器核验并清理构建占用、
+残余 busy 计数归零 →
 `uninstall()`（常驻节点保留；其中删除私有模块仍需服务在线）→ 恢复 `use_thread`
-原值（恢复会触发引擎 LSP 服务重启，必须发生在本客户端已断开、语言已注销之后，
+原值（脚本恢复不会重启引擎 LSP 服务，仍必须发生在本客户端已断开、语言已注销之后，
 顺序不可颠倒，§2.6、§4.1）→ **最后** `launcher.shutdown_owned()` 关闭本插件拉起的
-服务（§3.7，须在 uninstall 之后，否则模块删除失去服务端）。`gdcc_dock.gd` 的改动含
-busy 上报改造（**Phase 1**，与协调器同时落地，§3.5）与 LSP/gdcc 连接状态指示
+服务（§3.7，须在 uninstall 之后，否则模块删除失去服务端）。项目管理器负责 busy 上报，
+dock 保留 LSP/gdcc 连接状态指示
 （Phase 5 的诊断通道可观测，§7 Phase 5 第 2 项；2026-10 起状态区同时承载只读
 configured/effective 端点与 auto-launch 指示，原启动命令输入框随配置迁移移除）。
 
 ### 3.7 `server_launcher.gd` — 编译服务拉起与关闭（解释型 GDScript）
 
 职责：gdcc 编译服务的**按需拉起**与**所有权内关闭**。用解释型 GDScript（不用 `.gd3`）：
-dock 在 gdcc 语言注册之前就依赖它（§1.1）。形态为 `Node`，由 plugin.gd 创建并挂为
-子节点，dock 与 `GdccEditorService` 共用同一实例（拉起是单飞操作，天然需要单点协调）。
+项目管理器在 gdcc 语言注册之前就持有它。形态为 `Node`，由 plugin.gd 创建并挂为
+子节点，项目管理器与 `GdccEditorService` 共用同一实例（拉起是单飞操作，需要单点协调）。
 
 - 配置：**项目级设置** `gdcc/server/launch_command`（String，默认 `""` = 不自动拉起，
   保持纯被动连接行为）。2026-10 起由 EditorSettings 迁入 ProjectSettings
@@ -1680,8 +1698,9 @@ dock 在 gdcc 语言注册之前就依赖它（§1.1）。形态为 `Node`，由
   （替换当前单文件常量，探针文件不进插件目录、不纳入收集）；**所有**安装出口
   （`buildNative`/`buildAllPlatform`/测试安装）统一后处理
   `gdcc_for_editor.gdextension`，把 `reloadable = true` 改写为 `false`（§6）。
-- 解释型 `.gd`（`plugin.gd`、`gdcc_dock.gd`、`server_launcher.gd`、
-  `gdcc_syntax_highlighter.gd`）不进编译模块、不上面向世界清单，由 `plugin.gd`
+- 解释型 `.gd`（`plugin.gd`、`gdcc_dock.gd`、`gdcc_project_manager.gd`、
+  `gdcc_build_toolbar.gd`、`server_launcher.gd`、`gdcc_syntax_highlighter.gd`）
+  不进编译模块、不上面向世界清单，由 `plugin.gd`
   `preload` 直接引用。
 - `buildAddonNative` / `buildAddonAllPlatform` Gradle 任务不变。
 
@@ -1750,11 +1769,11 @@ dock 在 gdcc 语言注册之前就依赖它（§1.1）。形态为 `Node`，由
     仅当本次 primed 的安装被回滚、设置已还原时才清除）。该会话内 `_validate` 的
     内联等待仅在未标记 unsafe 时进行（诊断仍异步流动，见 §4.2 第 1 步）。
 3. （plugin.gd）初始化低功耗 busy 协调器（计数 0，**不触碰** `OS.low_processor_usage_mode`，
-   首个 busy 0→1 时才保存原值并置 `false`；dock 与 launcher 的 busy 上报指向它）。
+   首个 busy 0→1 时才保存原值并置 `false`；管理器与 launcher 的 busy 上报指向它）。
    此步必须先于第 6 步的任何 `ensure_server_hook` 调用（§3.5/§3.7）。
 4. `install(...)`（RPC 端点来自**项目级设置** `gdcc/server/host|port`，缺省
    127.0.0.1:6099；配置非法时 fail-closed 回退默认值并 push_error，§3.6 第 3 项）：首建时创建服务专用
-   `GdccRpcClient` 子节点（与 dock 客户端队列隔离）；语言实例（首建或复用）
+   `GdccRpcClient` 子节点（与项目管理客户端队列隔离）；语言实例（首建或复用）
    `Engine.register_script_language(lang)`，返回值非 `OK` 即按 §3.5 回滚并向上报错
    （16 语言上限/重名属可预期失败，不得断言了事）；注册 loader/saver 并以探针资源
    分别验证后置条件；启动 LSP 带退避重连。`install` 返回非 OK 时恢复 `use_thread`
@@ -1770,7 +1789,7 @@ dock 在 gdcc 语言注册之前就依赖它（§1.1）。形态为 `Node`，由
    `analyze.run` 预热缓存。
 7. （plugin.gd）仅运行期启用场景：`call_deferred` 触发 `EditorFileSystem.scan()`。
 
-注销（`_exit_tree`）：断开 `filesystem_changed` 连接、dock 残余 busy 归零 →
+注销（`_exit_tree`）：断开事件连接、释放两个视图、管理器清理占用并排空残余 busy →
 `uninstall()`（停防抖调度与在途分析回调 → 断 LSP → 移除 loader/saver → 注销语言
 （**不释放**实例）→ 删除私有模块（需服务在线）→ UNINSTALLED）→ 恢复
 `use_thread` 原值（脚本 `set_setting` 不会重启引擎 LSP 服务（§2.6）；顺序仍须保持
@@ -2264,7 +2283,7 @@ hover/定义跳转的数据面。reconciler 已有全项目 `.gd3` 磁盘扫描�
   本计划的 abstract 恒定不变故不受影响。验收：手动检查创建节点/资源对话框条目
   （含同名已编译类的占槽行为），回归确认不产生重复/不可实例化条目。
 - 模板：`_make_template` / `_get_built_in_templates` 的 API 完整性实现；注意 4.5 中
-  "创建脚本"对话框的语言下拉不会列出 GD3（§2.1 已知限制），`.gd3` 新建入口改为
+  "创建脚本"对话框的 GD3 项仅在 Godot > 4.6.0 时可选（§2.1）；旧版本 `.gd3` 新建入口仍为
   dock 按钮或在文件面板外创建。
 - `--lsp-port`/host 手动覆盖设置项（dock 状态行已前移至 Phase 5 第 2 项）。
 
@@ -2375,8 +2394,8 @@ Cancel 改道）——Cancel 改用钉住任务端点的临时客户端，重试
   复用子目录；切换端点或其他编辑器使用不同服务器时分开生成 C、对象和原始库，
   不自动删除旧端点目录。原因是占用模块仅在单个服务内互斥，后端构建锁也仅限同一
   JVM，且生成 C 发生在原生编译锁之前；上一次轮询超时的旧服务可能仍在写入。
-- 同一服务上同一项目身份只允许一个 dock 拥有构建模块：先用既有 `module.create`
-  原子创建 `<副本id>_owner`，其 `moduleName` 为每个 dock 随机生成的 token，该占用
+- 同一服务上同一项目身份只允许一个项目管理器拥有构建模块：先用既有 `module.create`
+  原子创建 `<副本id>_owner`，其 `moduleName` 为每个项目管理器随机生成的 token，该占用
   模块不编译、无磁盘产物。重复构建先核对服务端 token，再替换自己已创建的快照；
   其他 token、无占用但已存在的未知副本均拒绝接管，不删除/取消他人的模块或任务。
   正常空闲卸载核对 token 后先删副本，确认成功/不存在后再删占用；服务器重启后
@@ -2401,11 +2420,18 @@ Cancel 改道）——Cancel 改用钉住任务端点的临时客户端，重试
   描述文件。`entry_symbol = "gdextension_entry"`、`compatibility_minimum = "4.5"`、
   `reloadable = true`；`gdcc_managed = true` 标记插件管理的文件，拒绝覆盖未标记或
   无法解析的已有文件。用 ConfigFile 正确转义路径并保留其他目标条目。
-  `[libraries]` 使用架构限定键，缺少另一优化级别时提供同库兼容别名；独立构建的
-  debug/release 条目保留，不被另一种构建覆盖；`gdcc_library_aliases` 显式记录兼容
-  别名（不能仅凭路径相同推断别名），`gdcc_libraries` 记录插件拥有的库文件。
-  两个记录必须是 PackedStringArray；非法类型在文件发布前拒绝，避免脚本类型错误
-  中断构建收尾。
+  `[libraries]` 只生成 `<platform>.<architecture>`（例如 `windows.x86_64`），不使用
+  debug/release 标签或模式别名；同一目标的后续构建覆盖该条目，因此 Debug 编辑器也
+  加载本次选择的 Release 库。库文件名仍保留优化级别，描述文件键与编译优化选项分离。
+  已托管描述文件中的旧 `<platform>.<debug|release>.<architecture>` 条目合并为新键；
+  其他目标优先保留已有新键，没有新键时优先选择当前编辑器原来匹配的模式，缺少该模式
+  则保留已有库路径。当前构建目标始终改指本次产物，删除所有被迁移的模式条目，避免
+  Godot 的更具体标签匹配盖过新键。旧 `gdcc_library_aliases` 校验类型后移除，不再生成。
+  `gdcc_libraries` 继续以 PackedStringArray 记录插件拥有的库文件；该字段及存在的旧
+  别名字段若类型非法，在文件发布前拒绝。重载比较迁移前实际匹配的旧模式路径或新键
+  路径与本次路径，不能因旧 Debug 路径保留而跳过 Release 重载。
+  此合同仅作用于 addon 的项目 Build；CLI 和 `gdcc_for_editor` 安装器的独立元数据
+  生成合同不变。
 - 等待现有编辑器扫描结束，再暂存库并通过 rename 发布到内容哈希路径，不直接截断
   可能被映射的库文件；描述文件使用 ConfigFile.save，不使用 Windows 会先删除旧
   目标的 rename。成功启用后仅清理 `res://bin` 直接目录中、不再被任何目标条目引用
@@ -2448,15 +2474,69 @@ Cancel 改道）——Cancel 改用钉住任务端点的临时客户端，重试
 `CCodegenTest.moduleDisplayNameIsEscapedInEntryMessages` 覆盖 C 字符串边界。
 `EditorAddonScriptLanguageEngineTest.dockCompileCopiesDiagnosticsModule` 驱动真实 Build：
 固定模块身份与非法字符替换碰撞隔离、未知副本/其他所有者不被删除、卸载释放占用、
-新诊断会话和新 dock 复用同一身份及目录、两次真实构建产物路径一致、控制字符
+新诊断会话和新 dock 复用同一身份及目录、Debug/Release 两次真实构建复用同一内部目录、控制字符
 安全化（实际项目名含换行仍能构建及部署）、两个真实 RPC 服务的构建目录隔离，
 构建期间诊断仍响应、setup 后更改含引号的项目名、库字节一致、描述文件配置与实际加载、
 清单持久化、无效结果不覆盖安装，以及二次构建后存活实例的方法返回值从 1 变为 2。
-还覆盖显式 debug/release 条目互不覆盖、相同内容路径复用与别名升级；非法配置类型、
+还覆盖旧 debug/release 条目迁移、单一 OS.arch 条目切换、其他目标保留，以及真实
+Release DLL 在 Debug 编辑器中重载并改变存活实例行为；非法配置类型、
 未托管描述文件、误包含编辑器插件源码以及 bin 外/目录穿越路径不删除项目文件也有
 失败路径锚点。引擎测试驱动在
 此模式将自身脚本资源置为无路径，避免被 Godot 按资源路径收集的全脚本软重载取消；
-被测插件与 dock 保留正常资源路径，仍经过真实引擎扫描/重载。
+  被测插件与 dock 保留正常资源路径，仍经过真实引擎扫描/重载。
+
+### 共享项目管理与标题栏 Build（2026-10-12）
+
+- `plugin.gd` 创建唯一 `GdccProjectManager` 子节点，注入独立 RPC 客户端、launcher、
+  驻留诊断服务和 busy 协调器。`gdcc_dock.gd` 与 `gdcc_build_toolbar.gd` 仅持有同一
+  管理器实例，不各自创建模块、客户端或构建副本。Ping/Create/Analyze、构建/取消、
+  所有权核验、部署及延迟启用均由管理器执行，日志和动作状态通过信号传播。
+- 管理器使用解释型 `.gd` 而不是 `.gd3`：既有异步操作依赖信号 `await`，构建部署使用
+  EditorFileSystem/GDExtensionManager；编译型 addon 的无协程自举约束不变。
+  不为 UI 拆分另建一套编译状态机，不改诊断服务的自动模块创建、全项目递归同步、
+  排除 glob、打开排除脚本临时纳入以及关闭后的剔除行为。
+- 所有普通动作在修改 RPC 端点前检查共享 busy 与待启用状态；构建在首次 `await` 前
+  同步占用 busy。两个视图因此无法重入构建或将同一客户端改道。Cancel 继续使用任务
+  启动时端点上的独立客户端。待扫描/重载阶段仍禁用 Build，轮询超时保留任务 ID，
+  不阻止原有取消旧任务并重建路径。
+- 标题栏根控件是 `HBoxContainer`：左侧为 GDCC 图标与 **Build** 文本的动作按钮，
+  右侧独立箭头打开 `PopupPanel`。使用公开 `CONTAINER_TOOLBAR` 添加后，在其实际
+  父容器中按原生类名找到 `EditorRunBar` 并 `move_child` 到其左侧；不进入私有
+  `get_buttons_container()`。Godot 4.5.1 的该公开容器实际追加到渲染选择器后，故需
+  显式重排。内部类名不存在时警告并保留可用入口；插件退出时按原公开容器移除。
+  Build 与箭头均使用 `FOCUS_ACCESSIBILITY`，普通鼠标点击不会留下持续的焦点框，
+  同时保留读屏聚焦能力。
+  构建准备、编译、部署及待启用期间，Build 文本显示 `Building ` 加点阵序列
+  `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`；每帧检查距上次切换是否超过 100ms，满足时仅推进一个字符，
+  不补帧。成功启用或构建操作失败、取消、轮询超时后恢复 `Build`；空闲时不运行动画。
+  管理器单独发布构建状态，不把 Ping/Create/Analyze 等其他忙操作误显示为构建。
+- 弹出窗口显示 `server.info` 返回的版本/分支/commit 和 **Last successful build**。
+  服务版本查询使用独立客户端，不能改写正在构建的端点；端点改变后的旧响应不更新 UI，
+  且清除旧端点版本显示；空闲状态轮询同样使已缓存的旧端点版本失效。PopupPanel
+  显式使用编辑器主题，并随标题栏主题变化更新。
+  自动换行的版本标签具有与内容容器一致的最小宽度，避免隐藏窗口首次布局前按零宽度
+  折行、将弹窗最小高度放大；首次打开无需先构建或等待定时器即可按内容高度显示。
+  上次成功构建时间仅在扫描确认安装或本机加载/重载成功后记录，使用本机日期时间，
+  保存于项目 editor metadata `gdcc/last_build_time`，不混入共享项目配置。
+- 新项目配置 `gdcc/build/optimization_level` 为字符串枚举 `DEBUG`/`RELEASE`，默认
+  `DEBUG`；`gdcc/build/strict_mode` 为 bool，默认 false，沿用 API 的编译策略字段。
+  下拉修改即时更新 ProjectSettings 并检查 `ProjectSettings.save()` 返回值。
+  构建点击时冻结选择，`options.get` 获取完整副本快照，仅改 `projectPath`、
+  `optimizationLevel` 和 `strictMode` 后整体回传；不修改诊断模块选项。构建中的设置
+  编辑只影响下一次构建，不新增自动保存源码或排空诊断上传队列的保证。
+- 弹出窗口最底部为占满内容宽度的 **GDCC Project Settings** 按钮，打开真实的
+  Project Settings General 页面、启用 Advanced Settings 并过滤 `gdcc`，选中可编辑的
+  `gdcc/build` 子分类（`gdcc` 父分类不可选）；其他 GDCC 分类仍可从筛选树访问。4.5.1 没有
+  公开的项目设置导航入口，因此适配器先核验 `ProjectSettingsEditor` 及搜索行结构，
+  再调用继承的 Window API 和筛选控件；不能找到时提示手动打开，不替换成 Editor
+  Settings 或私有配置文件。该结构依赖需在更换 Godot 版本时复验。
+- 卸载先释放两个视图，再释放管理器（副本所有权清理及 busy 排空），之后注销诊断服务，
+  最后关闭本插件拉起的服务器。失败安装同样回收管理器，不留下半安装状态。
+- 测试锚点：`buildToolbarSharesProjectManagerAndNavigatesSettings` 检查真实标题栏位置、
+  首次/再次弹出的内容高度、箭头焦点策略、菜单内容、版本查询、配置持久化、共享
+  busy/待启用门、点阵顺序/循环/单步节拍、动画恢复、设置导航及启停清理；
+  `dockCompileCopiesDiagnosticsModule` 首次从 dock 构建、二次从标题栏构建，验证同一
+  所有权/快照/目录、参数冻结、上次成功时间和原有部署与存活实例重载合同。
 
 ### Phase 10 后修复（编辑器体验，2026-10-05 自动化验收通过）
 
@@ -2589,7 +2669,8 @@ disk-known 路径置墓碑（否则取消排除后永不复纳）；(3)（低，
 
 `EditorAddonScriptLanguageAnalysisTest`：与 `EditorAddonClientAnalysisTest` 同构——
 逐文件 `analyze(includeLowering=true)`、无 ERROR、无 `await` 等禁用构造；
-`plugin.cfg` 五字段不变；`plugin.gd`/`gdcc_dock.gd` 仅语法解析。
+`plugin.cfg` 五字段不变；解释型 plugin/dock/项目管理器/构建工具栏/launcher/高亮器
+仅语法解析，不作为编译目标。
 
 ### 8.2 引擎集成测试（`GODOT_BIN` + Zig 门控，Assumptions 跳过）
 
@@ -2634,7 +2715,7 @@ EditorSettings；迁移后写 harness 项目的 ProjectSettings，随用例目�
 | R2 | 多编辑器实例/端口占用导致连错实例 | 中 | 握手后监听 `gdscript_client/changeWorkspace` 并与 `ProjectSettings.globalize_path("res://")` 比对，不符即 DEGRADED；host/port 可配；运行期改 `use_thread` 服务端自动重启、客户端重连接管（§2.6） |
 | R3 | `_complete_code`/`_validate` 同步等待卡顿编辑器 | 中 | 硬超时（LSP 150ms / 补全 400ms）+ 超时降级；阻塞形态约束写入 §1.2；线程模式硬前提 |
 | R4 | 热重载导致 ScriptServer 悬空指针 | 高 | `reloadable = false`（§6），安装器全出口断言钉死 |
-| R5 | `ScriptCreateDialog` 语言列表缓存（godot#106480）：4.5 中本语言**永不**出现在创建对话框 | 低 | 已知限制；`.gd3` 新建入口走 dock 按钮/外部创建（Phase 9） |
+| R5 | `ScriptCreateDialog` 缓存语言列表，主题刷新却使用实时语言数（godot#106480） | 低 | 插件补齐 GD3 行并在注销后移除，避免索引越界；Godot ≤ 4.6.0 禁用该行并使用 dock/外部创建，> 4.6.0 允许选择（Phase 9） |
 | R6 | gdcc 前端/后端不支持所需 API 调用路由或类型 | 高 | Phase 0 三级探针门禁（含 native compile 与运行时冒烟），阻塞后续阶段 |
 | R7 | `.gd3` 被误挂载到节点时无占位实例（`void*` 虚函数未实现） | 低 | `_can_instantiate() == false` + `_supports_builtin_mode() == false` 双重拒绝；文档声明非目标 |
 | R8 | LSP 同步模式假设不成立 | 低 | 握手校验 `textDocumentSync`（int `1` 或 `{change: 1}` 两种形状），否则 DEGRADED |
