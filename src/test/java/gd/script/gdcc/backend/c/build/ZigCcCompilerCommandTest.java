@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Pure-Java gate for the two-phase zig command construction: no process is ever started. It
 /// pins the compile/link flag split, the per-optimization-level LTO tiers (DEBUG none, RELEASE
 /// `-flto=thin`, known-unsupported targets falling back to full `-flto`), the hard rule that
-/// ABI-substituted builds omit every `-flto*` token, the object path shape
+/// ABI-substituted builds and macOS targets omit every `-flto*` token, the object path shape
 /// `<projectDir>/obj/<opt>/<zigTarget>/<index>_<file>.o`, the buildLog merge forms
 /// (success concatenation vs. per-started-process `Command:` sections), and the PCH contracts:
 /// the name-based TU whitelist (`minicoro.c` never gets `-include-pch`), the exact prefix
@@ -96,6 +96,27 @@ class ZigCcCompilerCommandTest {
         assertTrue(linkCmd.contains("-flto=thin"), "release link must run ThinLTO: " + linkCmd);
         assertTrue(tuCmd.contains("-O2"));
         assertTrue(linkCmd.contains("-O2"), "LTO link-time code generation runs at -O2: " + linkCmd);
+    }
+
+    @Test
+    void macosBuildsNeverUseLtoAndNeverEnterThinLtoFallback() {
+        for (var target : List.of(TargetPlatform.MACOS_X86_64, TargetPlatform.MACOS_AARCH64)) {
+            for (var opt : COptimizationLevel.values()) {
+                var zigTarget = target.zigTarget;
+                var ltoMode = ZigCcCompiler.resolveLtoMode(zigTarget, false, opt);
+                assertEquals(CLtoMode.NONE, ltoMode, zigTarget + " " + opt);
+                assertEquals(CLtoMode.NONE, ZigCcCompiler.resolveLtoMode(zigTarget, false, opt, Set.of(zigTarget)),
+                        "macOS must not fall back to full LTO");
+                var object = objPath(opt, zigTarget, 0, "entry.c");
+                var tuCmd = ZigCcCompiler.buildTuCompileCommand(ZIG, zigTarget, ltoMode, opt, INCLUDE_DIRS, object, Path.of("entry.c"));
+                var linkCmd = ZigCcCompiler.buildLinkCommand(ZIG, zigTarget, ltoMode, opt, PROJECT_DIR.resolve("libdemo.dylib"), List.of(object));
+                assertNoLtoToken(tuCmd);
+                assertNoLtoToken(linkCmd);
+                assertTrue(tuCmd.contains(opt == COptimizationLevel.RELEASE ? "-O2" : "-O0"));
+                assertFalse(linkCmd.stream().anyMatch(arg -> arg.startsWith("-O")),
+                        "without LTO the link step performs no code generation: " + linkCmd);
+            }
+        }
     }
 
     @Test

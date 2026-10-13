@@ -120,8 +120,9 @@ public class ZigCcCompiler implements CCompiler {
     /// Zig targets whose lld backend is known to reject `-flto=thin`; RELEASE builds for these
     /// fall back to full LTO (the two-phase per-TU bitcode + single link shape is unchanged, so
     /// the per-TU cache benefit is kept). Populated from the cross-target ThinLTO smoke results;
-    /// empty so far because every buildable target passed. web-wasm32/android must never be
-    /// listed here: their failures are sysroot/runtime limitations (minicoro locks
+    /// empty so far because every tested LLD target passed. macOS bypasses this full-LTO
+    /// fallback because its Zig Mach-O linker supports neither LTO mode. web-wasm32/android
+    /// must never be listed here: their failures are sysroot/runtime limitations (minicoro locks
     /// `MCO_USE_ASM`, android linking needs the NDK/Bionic), not ThinLTO problems.
     private static final Set<String> THIN_LTO_UNSUPPORTED_ZIG_TARGETS = Set.of();
 
@@ -404,17 +405,20 @@ public class ZigCcCompiler implements CCompiler {
         return PROJECT_BUILD_LOCKS.computeIfAbsent(projectDir.toAbsolutePath().normalize(), key -> new ReentrantLock());
     }
 
-    /// LTO token decision with a fixed priority: an ABI-substituted build (msvc→gnu on a
-    /// non-Windows host) never gets any `-flto*` flag — zig's LTO link for windows-gnu fails
-    /// to pull in libmingwex/compiler-rt symbols — and never enters the ThinLTO fallback
-    /// check; DEBUG never uses LTO; RELEASE uses ThinLTO unless the target is known to lack
-    /// ThinLTO support, in which case it falls back to full LTO.
+    /// ABI-substituted builds and macOS targets omit LTO before any fallback decision.
+    /// Zig 0.15.2 does not enable LLD for Mach-O, while both thin and full LTO require LLD;
+    /// macOS RELEASE still compiles each TU with `-O2`. DEBUG never uses LTO; other RELEASE
+    /// builds use ThinLTO unless the target requires the full-LTO fallback.
     static @NotNull CLtoMode resolveLtoMode(@NotNull String zigTarget, boolean abiSubstituted, @NotNull COptimizationLevel optimizationLevel) {
         return resolveLtoMode(zigTarget, abiSubstituted, optimizationLevel, THIN_LTO_UNSUPPORTED_ZIG_TARGETS);
     }
 
     static @NotNull CLtoMode resolveLtoMode(@NotNull String zigTarget, boolean abiSubstituted, @NotNull COptimizationLevel optimizationLevel, @NotNull Set<String> thinLtoUnsupportedZigTargets) {
         if (abiSubstituted) {
+            return CLtoMode.NONE;
+        }
+        if (zigTarget.equals(TargetPlatform.MACOS_X86_64.zigTarget)
+                || zigTarget.equals(TargetPlatform.MACOS_AARCH64.zigTarget)) {
             return CLtoMode.NONE;
         }
         return switch (optimizationLevel) {

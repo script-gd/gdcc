@@ -64,9 +64,13 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
 
 ### 3.2 LTO 决策（优先级从高到低）
 
-1. DEBUG：无 LTO（`-O0`）；
-2. target 命中 `THIN_LTO_UNSUPPORTED_ZIG_TARGETS`：RELEASE 回退 `-flto`（full LTO）；当前该集合为空；
-3. 其余 RELEASE：`-flto=thin`（编译与链接同带，链接随 LTO 带 `-O2`）。
+1. ABI 替换构建：无 LTO，不进入 full LTO 回退；
+2. macOS target（`x86_64-macos-none` / `aarch64-macos-none`）：无 LTO，不进入 full LTO 回退；DEBUG 的 TU 使用 `-O0`，RELEASE 的 TU 保留 `-O2`，链接不带 LTO 或 `-O` 参数；
+3. DEBUG：无 LTO（`-O0`）；
+4. target 命中 `THIN_LTO_UNSUPPORTED_ZIG_TARGETS`：RELEASE 回退 `-flto`（full LTO）；当前该集合为空；
+5. 其余 RELEASE：`-flto=thin`（编译与链接同带，链接随 LTO 带 `-O2`）。
+
+macOS 禁用 LTO 的原因是 Zig 0.15.2 的驱动不为 Mach-O 启用 LLD，而 thin/full LTO 都要求 LLD；`-flto=thin` 和 `-flto` 均会在编译配置阶段报 `LTO requires using LLD`，不能通过回退 full LTO 解决。这是该版本 Zig 的集成限制，并非上游 LLD 不支持 Mach-O；策略按目标平台生效，与构建主机无关。
 
 决策由 package-private 静态方法 `resolveLtoMode(...)` 给出，ThinLTO 不兼容 target 必须由命令级测试（`ZigCcCompilerCommandTest`）锁定，不得通过链接失败反推。
 
@@ -75,7 +79,7 @@ zig cc -target <zigTarget> -shared [-flto=thin|-flto -O2]
 - Windows 声明 target 统一为 `x86_64-windows-gnu` / `aarch64-windows-gnu`，不依赖 MSVC SDK。GDExtension C 边界与 Godot Windows 加载器依据见 `doc/gdcc_c_backend.md` 的 Windows ABI。
 - CI 与完整分发固定使用 Zig 0.15.2。Zig 0.16.0 存在 Windows GNU/LTO `zigc` weak-symbol 链接 bug（`frexpf`/`frexpl`/`modfl` 等 undefined；[Zig #31958](https://codeberg.org/ziglang/zig/issues/31958)），不应概括为 GNU ABI 不支持 LTO。该工具链限制不改变公共 LTO 策略。
 - android/web-wasm32 的失败是 sysroot/runtime 限制（android 需 NDK/Bionic；wasm 上 minicoro 锁定 `MCO_USE_ASM` 按设计 fail loudly），与 LTO 无关：二者的 LTO 决策保持默认（RELEASE 取 `-flto=thin`），真实构建显式跳过或仅做 `-c` 编译。web 的 Emscripten 后端是独立 post-MVP 项目，不属于 zig 后端职责。
-- `macos-x86-64` / `macos-aarch64` 在 macOS 本机产出 `lib<name>.dylib`；从非 Darwin 主机交叉链接需要 Darwin sysroot，不进入 `ZigCcCompilerCrossTargetSmokeTest` 的 zig-bundled-libc 矩阵。
+- `macos-x86-64` / `macos-aarch64` 在 macOS 本机产出 `lib<name>.dylib`，不启用 LTO（见 §3.2）；从非 Darwin 主机交叉链接需要 Darwin sysroot，不进入 `ZigCcCompilerCrossTargetSmokeTest` 的 zig-bundled-libc 矩阵。两种架构的无 LTO 命令和 RELEASE `-O2` 由 `ZigCcCompilerCommandTest` 覆盖。
 - zig cc 拒绝透传 `-Wl,--thinlto-cache-dir`/`-fthinlto-cache-dir`，因此 ThinLTO 链接后端无法跨构建缓存；不直接驱动 `zig ld.lld`（见 §9 后续方向）。
 
 ## 4. PCH 使用（构建管线侧）
