@@ -158,9 +158,9 @@ class EditorAddonScriptLanguageEngineTest {
                     "diag_still_responsive", "server_build_paths_isolated", "compile_owner_released",
                     "new_session_reuses_identity", "survived")),
             Map.entry("build_toolbar", List.of(
-                    "config", "shared_manager", "toolbar_position", "popup_first_open_size", "popup_reopen_size", "menu_focus",
-                    "menu_contents", "server_version", "version_endpoint_isolation",
-                    "project_options", "shared_busy", "build_spinner", "spinner_pending_activation", "spinner_idle",
+                    "config", "shared_manager", "toolbar_position", "dock_layout", "dock_minimum_rows", "popup_first_open_size", "popup_reopen_size", "menu_focus",
+                    "menu_contents", "relative_time_units", "relative_time_refresh", "server_version", "version_endpoint_isolation",
+                    "project_options", "output_clear", "shared_busy", "build_spinner", "spinner_pending_activation", "spinner_idle",
                     "settings_navigation", "disabled_cleanup", "reenabled_shared_manager")),
             // Phase 4: `_complete_code` — degraded answers (client not READY / no sentinel /
             // disabled service), white-box pins of the kind table and the insert-text
@@ -1917,6 +1917,46 @@ class EditorAddonScriptLanguageEngineTest {
                         if child.is_class("EditorRunBar"):
                             run_bar = child
                     _step("toolbar_position", run_bar != null and toolbar.get_index() + 1 == run_bar.get_index())
+                    plugin._show_build_log()
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    var status_row: Control = dock._status_label.get_parent()
+                    var dock_controls := 0
+                    for child in dock.get_children():
+                        if child is Control:
+                            dock_controls += 1
+                    _step("dock_layout", dock_controls == 2 and dock.get_child(0) == status_row \\
+                            and dock.get_child(1) == dock._log_output and status_row.get_child_count() == 2 \\
+                            and status_row.get_child(1) == dock._clear_button and dock._clear_button.icon != null \\
+                            and dock.find_children("*", "Button", true, false).size() == 1 \\
+                            and dock._status_label.autowrap_mode == TextServer.AUTOWRAP_OFF \\
+                            and not dock._status_label.text.contains("\\n") and not dock._log_output.editable \\
+                            and dock._log_output.size_flags_vertical == Control.SIZE_EXPAND_FILL \\
+                            and abs(dock._log_output.size.y + status_row.size.y \\
+                            + dock.get_theme_constant("separation") - dock.size.y) <= 1.0)
+                    var previous_log: String = dock._log_output.text
+                    dock._log_output.text = ("wide log ".repeat(300) + "\\n").repeat(6)
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    var minimum_rows: bool = dock._log_output.get_visible_line_count() >= 6 \\
+                            and dock._log_output.get_h_scroll_bar().visible \\
+                            and dock._log_output.custom_minimum_size.y \\
+                            - dock._log_output.get_theme_stylebox("normal").get_minimum_size().y \\
+                            - dock._log_output.get_h_scroll_bar().get_combined_minimum_size().y \\
+                            >= 6 * dock._log_output.get_line_height()
+                    var initial_minimum: float = dock._log_output.custom_minimum_size.y
+                    var font_size: int = dock._log_output.get_theme_font_size("font_size")
+                    dock._log_output.add_theme_font_size_override("font_size", font_size + 8)
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    minimum_rows = minimum_rows and dock._log_output.get_visible_line_count() >= 6 \\
+                            and dock._log_output.custom_minimum_size.y > initial_minimum
+                    dock._log_output.remove_theme_font_size_override("font_size")
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    _step("dock_minimum_rows", minimum_rows and dock._log_output.get_visible_line_count() >= 6 \\
+                            and dock._log_output.custom_minimum_size.y == initial_minimum)
+                    dock._log_output.text = previous_log
                     var service := _service()
                     service.install(EditorInterface, "127.0.0.1", int(_config["lsp_port"]), "127.0.0.1", int(_config["rpc_port"]))
                     var ready_deadline := Time.get_ticks_msec() + 20000
@@ -1962,12 +2002,44 @@ class EditorAddonScriptLanguageEngineTest {
                     toolbar._popup.hide()
                     _step("menu_focus", mouse_opened and toolbar._menu_button.focus_mode == Control.FOCUS_ACCESSIBILITY \\
                             and not toolbar._menu_button.has_focus() and toolbar._build_button.focus_mode == Control.FOCUS_ACCESSIBILITY)
+                    # Drain the mouse-open popup's deferred hide before reopening it.
+                    await get_tree().process_frame
                     toolbar._menu_button.pressed.emit()
                     _step("menu_contents", toolbar._popup.visible and toolbar._build_button.text == "Build" \\
                             and toolbar._build_button.icon != null and toolbar._menu_button.icon != null \\
                             and toolbar._settings_button.size_flags_horizontal == Control.SIZE_EXPAND_FILL \\
                             and toolbar._last_build_label.text.contains("Last successful build") \\
                             and toolbar._popup.theme == EditorInterface.get_editor_theme())
+                    var relative_units := true
+                    for sample in [[-1, "0s ago"], [0, "0s ago"], [59, "59s ago"],
+                            [60, "1min ago"], [89, "1min ago"], [90, "1.5min ago"],
+                            [599, "9.5min ago"], [600, "10min ago"], [659, "10min ago"],
+                            [660, "11min ago"], [3599, "59min ago"], [3600, "1h ago"],
+                            [5399, "1h ago"], [5400, "1.5h ago"], [86399, "23.5h ago"],
+                            [86400, "1d ago"], [129599, "1d ago"], [129600, "1.5d ago"],
+                            [172800, "2d ago"], [216000, "2.5d ago"]]:
+                        relative_units = relative_units and manager.relative_time_text(sample[0]) == sample[1]
+                    _step("relative_time_units", relative_units)
+                    var saved_build_time: int = manager.last_build_time
+                    manager.last_build_time = 0
+                    manager.state_changed.emit()
+                    var relative_refresh: bool = dock._status_label.text.contains("Build: Never") \\
+                            and toolbar._last_build_label.text == "Last successful build: Never"
+                    manager.last_build_time = int(Time.get_unix_time_from_system()) + 90
+                    manager.state_changed.emit()
+                    relative_refresh = relative_refresh and dock._status_label.text.contains("Build: 0s ago") \\
+                            and toolbar._last_build_label.text == "Last successful build: 0s ago"
+                    manager.last_build_time = int(Time.get_unix_time_from_system()) - 89
+                    manager.state_changed.emit()
+                    relative_refresh = relative_refresh and dock._status_label.text.contains("Build: 1min ago") \\
+                            and toolbar._last_build_label.text == "Last successful build: 1min ago"
+                    # No state signal: both visible views must age on their timers while idle.
+                    await get_tree().create_timer(2.2).timeout
+                    _step("relative_time_refresh", relative_refresh and toolbar._popup.visible \\
+                            and dock._status_label.text.contains("Build: 1.5min ago") \\
+                            and toolbar._last_build_label.text == "Last successful build: 1.5min ago")
+                    manager.last_build_time = saved_build_time
+                    manager.state_changed.emit()
                     var version_deadline := Time.get_ticks_msec() + 15000
                     while manager.server_version == "Not connected" and Time.get_ticks_msec() < version_deadline:
                         await get_tree().process_frame
@@ -1991,12 +2063,16 @@ class EditorAddonScriptLanguageEngineTest {
                             and ProjectSettings.get_setting("gdcc/build/strict_mode") == true)
                     manager._begin_busy()
                     var disabled: bool = toolbar._build_button.disabled and toolbar._optimization.disabled
-                    for button in dock._action_buttons:
-                        disabled = disabled and button.disabled
                     toolbar._optimization.item_selected.emit(0)
                     toolbar._build_button.pressed.emit()
                     disabled = disabled and manager._busy_count == 1 and manager._current_task_id == -1 \\
                             and ProjectSettings.get_setting("gdcc/build/optimization_level") == "RELEASE"
+                    manager.log_message.emit("output before clear")
+                    dock._clear_button.pressed.emit()
+                    var cleared: bool = dock._log_output.text == "" and not dock._clear_button.disabled \\
+                            and manager._busy_count == 1 and toolbar._build_button.disabled
+                    manager.log_message.emit("output after clear")
+                    _step("output_clear", cleared and dock._log_output.text == "output after clear\\n")
                     manager._end_busy()
                     manager._pending_activation = {"deadline": Time.get_ticks_msec() + 10000}
                     manager.state_changed.emit()
@@ -2035,6 +2111,11 @@ class EditorAddonScriptLanguageEngineTest {
                             and toolbar._settings_sections.get_selected().get_metadata(0) == "gdcc/build")
                     if is_instance_valid(toolbar._settings_dialog):
                         toolbar._settings_dialog.hide()
+                    # Existing installations persisted offset-free local datetime text.
+                    var persisted_time := int(Time.get_unix_time_from_system()) - 5400
+                    var legacy_time := Time.get_datetime_string_from_unix_time(persisted_time \\
+                            + int(Time.get_time_zone_from_system()["bias"]) * 60).replace("T", " ")
+                    EditorInterface.get_editor_settings().set_project_metadata("gdcc", "last_build_time", legacy_time)
                     var old_manager_id: int = manager.get_instance_id()
                     EditorInterface.set_plugin_enabled("gdcc", false)
                     await get_tree().process_frame
@@ -2049,7 +2130,9 @@ class EditorAddonScriptLanguageEngineTest {
                     var next_toolbar: Variant = next_manager.get_parent().get("_build_toolbar") if next_manager != null else null
                     _step("reenabled_shared_manager", next_manager != null and next_toolbar != null \\
                             and next_toolbar._manager == next_manager and next_manager.get_instance_id() != old_manager_id \\
-                            and next_toolbar._manager.last_build_time == str(EditorInterface.get_editor_settings().get_project_metadata("gdcc", "last_build_time", "")))
+                            and next_manager.last_build_time == persisted_time \\
+                            and EditorInterface.get_editor_settings().get_project_metadata("gdcc", "last_build_time", 0) == persisted_time \\
+                            and next_toolbar._last_build_label.text == "Last successful build: 1.5h ago")
                 
                 # Build snapshots diagnostics without holding its gate during native compilation,
                 # then deploys and loads the resulting extension through the real editor APIs.
@@ -2164,14 +2247,11 @@ class EditorAddonScriptLanguageEngineTest {
                             and dock._log_output.text.contains("owned by another editor"))
                     await client.delete_module(copy_module_id).completed
                     await client.delete_module(copy_module_id + "_owner").completed
-                    # Press the dock's real Build button: its RPC endpoint is sourced from
+                    # Press the title bar's real Build button: its RPC endpoint is sourced from
                     # the service (installed on the test ports above), so no pointing is needed.
-                    var compile_button: Button = null
-                    for button in dock._action_buttons:
-                        if button.text == "Build":
-                            compile_button = button
+                    var compile_button: Button = toolbar._build_button if toolbar != null else null
                     if compile_button == null:
-                        _step("copy_created", false, "Build button not found in the dock")
+                        _step("copy_created", false, "Build button not found in the title bar")
                         return
                     compile_button.pressed.emit()
                     # module.get would block server-side behind the copy's compile (the
@@ -2275,8 +2355,13 @@ class EditorAddonScriptLanguageEngineTest {
                         return
                     var enabled := GDExtensionManager.is_extension_loaded(extension_path) and ClassDB.class_exists("DockCompileProbe")
                     var probe: Variant = ClassDB.instantiate("DockCompileProbe") if enabled else null
+                    # The independently refreshed labels may trail the current clock by a second.
+                    var seconds_age := RegEx.create_from_string("^[0-9]+s ago$")
                     _step("extension_enabled", enabled and probe != null and int(probe.build_value()) == 1 \\
-                            and manager.last_build_time != "" and toolbar._last_build_label.text.contains(manager.last_build_time))
+                            and manager.last_build_time > 0 \\
+                            and EditorInterface.get_editor_settings().get_project_metadata("gdcc", "last_build_time", 0) == manager.last_build_time \\
+                            and seconds_age.search(toolbar._last_build_label.text.trim_prefix("Last successful build: ")) != null \\
+                            and seconds_age.search(dock._status_label.text.get_slice(" | Build: ", 1)) != null)
                     if not enabled or probe == null:
                         return
                     _step("extension_list_persisted", FileAccess.get_file_as_string("res://.godot/extension_list.cfg").split("\\n").has(extension_path))
@@ -2709,9 +2794,8 @@ class EditorAddonScriptLanguageEngineTest {
                     var status_deadline := Time.get_ticks_msec() + 8000
                     while failure_seen and dock != null and Time.get_ticks_msec() < status_deadline and not status_closed:
                         var closed_text: String = dock.get("_status_label").text
-                        status_closed = closed_text.contains(str(closed_port)) \\
-                                and closed_text.contains("not ready") \\
-                                and not closed_text.contains("Last failure: none")
+                        status_closed = closed_text.begins_with("Disconnected | Diagnostics: ") \\
+                                and closed_text.contains(" | Build: ") and not closed_text.contains("\\n")
                         await get_tree().process_frame
                     _step("endpoint_retarget_closed", closed_ok and failure_seen and status_closed,
                             "retargeted=" + str(closed_ok) + " failure=" + str(failure_seen)
@@ -2726,8 +2810,7 @@ class EditorAddonScriptLanguageEngineTest {
                     var ready_text_deadline := Time.get_ticks_msec() + 8000
                     while recovered and dock != null and Time.get_ticks_msec() < ready_text_deadline and not status_ready:
                         var ready_text: String = dock.get("_status_label").text
-                        status_ready = ready_text.contains(str(rpc_port)) \\
-                                and ready_text.contains("ready") and not ready_text.contains("not ready")
+                        status_ready = ready_text.begins_with("Connected | Diagnostics: ")
                         await get_tree().process_frame
                     _step("endpoint_retarget_recover", recovered and status_ready,
                             "recovered=" + str(recovered) + " status=" + str(status_ready))
@@ -2750,7 +2833,7 @@ class EditorAddonScriptLanguageEngineTest {
                             "port=" + (str(service2.rpc_port()) if service2 != null else "n/a"))
                 
                     # The dock is recreated by the re-enable: re-locate it and confirm the
-                    # status area reflects the recovered channel (endpoint + ready + a
+                    # status row reflects the recovered channel (connected + a
                     # completed analysis round).
                     var dock2: Variant = _find_gdcc_dock()
                     var status_final := false
@@ -2758,8 +2841,8 @@ class EditorAddonScriptLanguageEngineTest {
                     while dock2 != null and Time.get_ticks_msec() < final_deadline and not status_final:
                         var final_text: String = dock2.get("_status_label").text
                         var st2: Dictionary = service2.diag_channel_status()
-                        status_final = final_text.contains(str(rpc_port)) \\
-                                and final_text.contains("ready") and not final_text.contains("not ready") \\
+                        status_final = final_text.begins_with("Connected | Diagnostics: ") \\
+                                and not final_text.contains("Diagnostics: Never") and final_text.contains("ago | Build: ") \\
                                 and int(st2.get("last_round_msec", 0)) > 0
                         await get_tree().process_frame
                     _step("status_area", dock2 != null and status_final)

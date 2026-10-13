@@ -797,10 +797,11 @@ func _on_orphan_cleanup_done(_response: Dictionary) -> void:
     _pump_orphan_cleanup()
 
 
-## Read-only status snapshot for the dock's status area (plan §7 Phase 5 item 2): the
+## Read-only diagnostics status snapshot: the
 ## EFFECTIVE endpoint, diagnostics readiness, the last merged analysis round (ticks msec,
 ## 0 = none yet) and the most recent failure text ("" = none). The configured endpoint is
-## deliberately NOT echoed — the dock owns the EditorSettings side and shows both.
+## deliberately NOT echoed; configuration belongs to ProjectSettings. The compact dock
+## displays only readiness and analysis age, while endpoint/failure details remain queryable.
 func diag_channel_status() -> Dictionary:
     var failure: String = ""
     var last_round: int = 0

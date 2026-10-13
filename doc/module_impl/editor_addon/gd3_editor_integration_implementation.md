@@ -24,7 +24,11 @@
   `ApiModuleCopyTest` 7 项 + RPC 三层测试 + 引擎用例 `dock_compile` 当时12步全绿，
   api+rpc 全量回归无回归，双评审终审 APPROVE；手动验收项见 Phase 10 验收节）；
   已经过多轮并行评审并修订）
-- 更新日期：2026-10-12
+- 更新日期：2026-10-13
+- 2026-10-13 修订：dock 精简为单行连接/上次诊断/上次成功构建状态与填满剩余空间的
+  只读输出，移除模块输入及 Ping/Create/Analyze/Build/Cancel 按钮，仅保留清空输出图标。
+  dock 与标题栏 Build 菜单共用秒/分钟/小时/天的相对时间格式，空闲时每秒刷新；详见
+  “精简 dock 与相对时间”节。
 - 2026-10-12 修订（项目库选择）：addon 生成的 `bin/gdcc.gdextension` 改用
   `<platform>.<architecture>` 条目，每个目标只指向最近安装的库；迁移旧 debug/release
   条目并移除兼容别名，避免 Debug 编辑器在 Release 构建后仍加载旧 Debug 库。
@@ -1030,7 +1034,7 @@ Godot 编辑器
 │           ├── server_launcher.gd（解释型 GDScript，新增）：按配置的启动命令拉起
 │           │   gdcc serve、记录 PID，退出时仅关闭自己拉起的进程（§3.7）
 │           ├── gdcc_project_manager.gd (Node)：独立项目操作/编译部署节点与 RPC 客户端
-│           │   ├── gdcc_dock.gd：检查模块、诊断状态、构建日志及取消的底部视图
+│           │   ├── gdcc_dock.gd：单行状态与可清空输出的底部视图
 │           │   └── gdcc_build_toolbar.gd：标题栏 Build 与参数弹出窗口，共享管理器
 │           └── （延迟一帧）EditorFileSystem.scan() —— 仅运行期启用插件时
 ├── gdcc_for_editor GDExtension（gdcc 编译产物，本计划扩展；安装为 reloadable = false）
@@ -1631,9 +1635,9 @@ MVP 不含自定义基类 `extends`，功能协议（`bind_service`/`service_tic
 原值（脚本恢复不会重启引擎 LSP 服务，仍必须发生在本客户端已断开、语言已注销之后，
 顺序不可颠倒，§2.6、§4.1）→ **最后** `launcher.shutdown_owned()` 关闭本插件拉起的
 服务（§3.7，须在 uninstall 之后，否则模块删除失去服务端）。项目管理器负责 busy 上报，
-dock 保留 LSP/gdcc 连接状态指示
-（Phase 5 的诊断通道可观测，§7 Phase 5 第 2 项；2026-10 起状态区同时承载只读
-configured/effective 端点与 auto-launch 指示，原启动命令输入框随配置迁移移除）。
+dock 保留 gdcc 诊断通道连接状态、上次诊断及上次成功构建的相对时间指示。
+状态行不再展示 configured/effective 端点、auto-launch 或最近失败文本；配置仍来自
+项目设置，端点与失败详情仍可通过 `diag_channel_status()` 查询。
 
 ### 3.7 `server_launcher.gd` — 编译服务拉起与关闭（解释型 GDScript）
 
@@ -2107,9 +2111,9 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
    弹窗期间暂缓并排队、关闭后补发）；插件 `call_deferred` 跳出泵栈后经
    `should_still_revalidate` **复核**同一组门禁（一帧间用户可能又键入或打开弹窗；
    弹窗刚开则重新入队而非丢弃）再发射。无反馈循环：相同文本的重校验不会重新标脏。
-2. **诊断通道可观测**：dock 增加状态区——配置端点 vs 实际生效端点、诊断模块
-   READY、上次分析轮时间、最近一次失败原因（数据全部来自既有 lifecycle/
-   scheduler 状态，只读展示）。
+2. **诊断通道可观测**：dock 的单行状态显示诊断模块 READY 对应的连接状态、上次
+   成功合并分析轮距今时间及上次成功构建距今时间（2026-10-13 精简）。诊断状态
+   仍只读既有 lifecycle/scheduler 数据；端点和最近失败原因保留于状态 API。
 3. **端点同源**：service install 读 `gdcc/server/host|port`（2026-10 起为项目级
    ProjectSettings；此前为与 dock 同一对 EditorSettings）。Project Settings 对话框的
    host/port 编辑经插件 `settings_changed` 继电器调 service 专用 retarget 入口同步
@@ -2334,7 +2338,8 @@ reconciler 自 Phase 3 起已把全项目自动同步进私有诊断模块。202
    （绕过已离树的帧泵客户端）核对服务器上的所有权后做有界删除；未知响应或忙副本
    不释放占用，在途请求卸载保留占用，避免卸载后的 RPC 写入新所有者的模块。已删除 Upload 按钮与
    `_on_upload_script_pressed`；`auto_setup_module` 简化为仅确保服务可达并把检查用
-   模块字段指向诊断模块；Analyze 保留为检查口；旧服务端无此方法（-32601）时报错
+    模块字段指向诊断模块（2026-10-13 已移除 dock 检查字段及 Analyze 按钮，操作由
+    共享管理器承载）；旧服务端无此方法（-32601）时报错
    提示升级服务端，不回退有损的手动上传路径。`gdcc_rpc_client.gd3` 增补类型化
    `copy_module` 包装（dock 为兼容旧扩展仍走 `call_rpc`）。
 3. 服务端测试 ✅（2026-09-28）：API 层（`ApiModuleCopyTest`——复制保真（内容/
@@ -2344,7 +2349,7 @@ reconciler 自 Phase 3 起已把全项目自动同步进私有诊断模块。202
    （dispatcher 错误码与路由数 27、codec wire 形状、HTTP 工作流
    create→put→copy→options.set→analyze→delete 且双模块操作互不阻塞）。
 4. 引擎测试 ✅（2026-09-28 自动化验收通过）：`dock_compile` 用例（真实 gdcc RPC 服
-   务 + 真实 zig 构建）：诊断模块自动同步后驱动 dock 构建按钮（当前名为 Build）→ 副本经
+   务 + 真实 zig 构建）：诊断模块自动同步后驱动标题栏 Build 按钮→ 副本经
    `module.list` 观察注册（**不能用 `module.get`/`read_file`——它们走模块门，副本
    编译期间会阻塞**）（`copy_created`）→ 编译期间诊断模块 analyze 在任务非终态时返
    回（`diag_alive_during_compile`，任务状态锚点替代耗时门限——不冻结证明）→ 副
@@ -2523,7 +2528,7 @@ Release DLL 在 Debug 编辑器中重载并改变存活实例行为；非法配�
   显式使用编辑器主题，并随标题栏主题变化更新。
   自动换行的版本标签具有与内容容器一致的最小宽度，避免隐藏窗口首次布局前按零宽度
   折行、将弹窗最小高度放大；首次打开无需先构建或等待定时器即可按内容高度显示。
-  上次成功构建时间仅在扫描确认安装或本机加载/重载成功后记录，使用本机日期时间，
+   上次成功构建时间仅在扫描确认安装或本机加载/重载成功后记录，使用 Unix 秒时间戳，
   保存于项目 editor metadata `gdcc/last_build_time`，不混入共享项目配置。
 - 新项目配置 `gdcc/build/optimization_level` 为字符串枚举 `DEBUG`/`RELEASE`，默认
   `DEBUG`；`gdcc/build/strict_mode` 为 bool，默认 false，沿用 API 的编译策略字段。
@@ -2541,9 +2546,34 @@ Release DLL 在 Debug 编辑器中重载并改变存活实例行为；非法配�
   最后关闭本插件拉起的服务器。失败安装同样回收管理器，不留下半安装状态。
 - 测试锚点：`buildToolbarSharesProjectManagerAndNavigatesSettings` 检查真实标题栏位置、
   首次/再次弹出的内容高度、箭头焦点策略、菜单内容、版本查询、配置持久化、共享
-  busy/待启用门、点阵顺序/循环/单步节拍、动画恢复、设置导航及启停清理；
-  `dockCompileCopiesDiagnosticsModule` 首次从 dock 构建、二次从标题栏构建，验证同一
-  所有权/快照/目录、参数冻结、上次成功时间和原有部署与存活实例重载合同。
+   busy/待启用门、点阵顺序/循环/单步节拍、动画恢复、设置导航及启停清理，另覆盖
+   精简 dock 布局、相对时间边界/定时刷新、忙时清空输出及旧时间元数据读取；
+   `dockCompileCopiesDiagnosticsModule` 两次均从标题栏构建，验证同一
+   所有权/快照/目录、参数冻结、上次成功时间和原有部署与存活实例重载合同。
+
+### 精简 dock 与相对时间（2026-10-13）
+
+- dock 只有两块可视内容：顶部单行 `Connected/Disconnected | Diagnostics: ... | Build: ...`
+  与下方只读 `TextEdit`。连接指示对应诊断通道 READY；诊断时间取最近成功合并轮的
+  单调时钟，构建时间沿用成功安装/启用后的记录。尚无记录时显示 `Never`。
+- 移除配置提示、模块输入及 Ping/Create/Analyze/Build/Cancel 按钮。构建入口仅保留
+  标题栏 Build；模块自动创建、同步、所有权核验和内部取消恢复流程不变。
+- 输出水平/垂直填满剩余区域，最小高度按实际行高容纳至少六行，并加上内边距及横向
+  滚动条预留高度；字体/主题变化后重新计算，不使用固定像素高度。状态文字不换行，窄宽度时
+  省略并可悬停读取完整内容；右侧主题图标 `Clear` 清空现有输出，构建忙时仍可使用，
+  不修改任务、诊断或构建记录，后续日志继续正常追加。
+- `gdcc_project_manager.gd.relative_time_text` 是两个视图唯一的相对时间格式化入口，
+  沿用英文 UI；负间隔按 0 秒处理。少于 60 秒显示整数秒，如 `59s ago`；60–599 秒
+  向下取整到半分钟，如 `1min ago`、`1.5min ago`、`9.5min ago`；600–3599 秒
+  向下取整到整数分钟，如 `10min ago`、`59min ago`；3600–86399 秒向下取整到半小时，
+  如 `1h ago`、`1.5h ago`、`23.5h ago`；至少 86400 秒向下取整到半天，如
+  `1d ago`、`1.5d ago`、`2d ago`。
+- dock 状态行与 Build 菜单的 **Last successful build** 均每秒刷新，且状态变化/菜单
+  打开时立即刷新；不依赖用户再次触发诊断或构建，空闲 Build 动画仍保持关闭。
+- `gdcc/last_build_time` 仍是项目 editor metadata，不写共享项目设置；新记录改存 Unix
+  秒，避免显示时依赖本机时区。已有无偏移的本机日期字符串按当前本机 UTC 偏移一次性
+  转换并保存为 Unix 秒，后续启动不再重复解释；由于旧格式未记录历史时区偏移，
+  首次迁移跨夏令时的旧值可能有偏差。
 
 ### Phase 10 后修复（编辑器体验，2026-10-05 自动化验收通过）
 

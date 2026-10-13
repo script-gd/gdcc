@@ -10,4 +10,4 @@ func _process(delta: float) -> void:
     self.rotation_degrees.x += rotating_speed * delta;
     self.rotation_degrees.x = fmod(self.rotation_degrees.x, 360);
     
-    self.position.y = sin(time);
+    self.position.y = abs(sin(time));

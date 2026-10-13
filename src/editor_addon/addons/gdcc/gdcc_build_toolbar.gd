@@ -95,6 +95,11 @@ func _ready() -> void:
     theme_changed.connect(_apply_theme)
     _apply_theme()
     _refresh_state()
+    var timer := Timer.new()
+    timer.wait_time = 1.0
+    timer.autostart = true
+    timer.timeout.connect(_refresh_time)
+    add_child(timer)
 
 
 func _exit_tree() -> void:
@@ -130,9 +135,13 @@ func _refresh_state() -> void:
     _optimization.disabled = not enabled
     _strict_mode.disabled = not enabled
     _version_label.text = "GDCC: " + _manager.server_version
-    _last_build_label.text = "Last successful build: " + ("Never" if _manager.last_build_time == "" else _manager.last_build_time)
+    _refresh_time()
     _optimization.select(1 if ProjectSettings.get_setting(SETTING_OPTIMIZATION_LEVEL, "DEBUG") == "RELEASE" else 0)
     _strict_mode.set_pressed_no_signal(bool(ProjectSettings.get_setting(SETTING_STRICT_MODE, false)))
+
+
+func _refresh_time() -> void:
+    _last_build_label.text = "Last successful build: " + _manager.last_build_age_text()
 
 
 func _process(_delta: float) -> void:

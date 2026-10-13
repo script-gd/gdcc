@@ -36,14 +36,14 @@ var _launcher: Node
 var _service: GdccEditorService
 
 var diagnostics_module_id: String = ""
-var last_build_time: String = ""
+var last_build_time: int = 0
 var server_version: String = "Not connected"
 var _version_endpoint: Array = []
 var _version_busy: bool = false
 
 var _current_task_id: int = -1
 # Endpoint captured at compile start: task ids are scoped to one server instance, so the
-# Cancel button must talk to the server that owns the task, not to whatever endpoint the
+# Cancellation must talk to the server that owns the task, not to whatever endpoint the
 # service has since been retargeted to.
 var _current_task_host: String = ""
 var _current_task_port: int = 0
@@ -68,7 +68,16 @@ func setup(client: GdccRpcClient, busy_reporter: Callable, launcher: Node, servi
 
 
 func _ready() -> void:
-    last_build_time = str(EditorInterface.get_editor_settings().get_project_metadata("gdcc", "last_build_time", ""))
+    var saved_time: Variant = EditorInterface.get_editor_settings().get_project_metadata("gdcc", "last_build_time", 0)
+    if saved_time is String:
+        # Previously persisted local datetime strings have no offset; use the current local bias.
+        if saved_time != "":
+            var local_seconds := Time.get_unix_time_from_datetime_string(saved_time)
+            if local_seconds > 0:
+                last_build_time = local_seconds - int(Time.get_time_zone_from_system()["bias"]) * 60
+                EditorInterface.get_editor_settings().set_project_metadata("gdcc", "last_build_time", last_build_time)
+    else:
+        last_build_time = int(saved_time)
     var status_timer := Timer.new()
     status_timer.wait_time = 1.0
     status_timer.autostart = true
@@ -100,20 +109,35 @@ func _refresh_diagnostics_module() -> void:
 
 
 func status_text() -> String:
-    if _service == null:
-        return "Diagnostics: service unavailable"
-    var status: Dictionary = _service.diag_channel_status()
-    var configured := str(ProjectSettings.get_setting(SETTING_SERVER_HOST, "127.0.0.1")).strip_edges() + ":" \
-            + str(int(ProjectSettings.get_setting(SETTING_SERVER_PORT, 6099)))
-    var effective := str(status.get("effective_host", "")) + ":" + str(status.get("effective_port", ""))
-    var ready_text := "ready" if status.get("ready", false) else "not ready"
+    var status: Dictionary = {} if _service == null else _service.diag_channel_status()
     var last_round := int(status.get("last_round_msec", 0))
-    var round_text := "never" if last_round == 0 else str(maxi(0, (Time.get_ticks_msec() - last_round) / 1000)) + "s ago"
-    var failure := str(status.get("last_failure", ""))
-    var launch := str(ProjectSettings.get_setting(SETTING_LAUNCH_COMMAND, "")).strip_edges()
-    return "Diagnostics: %s | effective %s (configured %s) | %s\nLast analysis: %s | Last failure: %s" \
-            % [ready_text, effective, configured, "auto-launch: configured" if launch != "" else "auto-launch: not configured", \
-            round_text, "none" if failure == "" else failure]
+    var round_text := "Never" if last_round == 0 else relative_time_text(int((Time.get_ticks_msec() - last_round) / 1000.0))
+    return "%s | Diagnostics: %s | Build: %s" \
+            % ["Connected" if status.get("ready", false) else "Disconnected", round_text, last_build_age_text()]
+
+
+func last_build_age_text() -> String:
+    return "Never" if last_build_time <= 0 else relative_time_text(int(Time.get_unix_time_from_system()) - last_build_time)
+
+
+# Both views use floored half-units, except 10-59 minutes which use whole minutes.
+static func relative_time_text(elapsed_seconds: int) -> String:
+    var seconds := maxi(0, elapsed_seconds)
+    if seconds < 60:
+        return "%ds ago" % seconds
+    var unit_seconds := 60
+    var unit := "min"
+    if seconds >= 86400:
+        unit_seconds = 86400
+        unit = "d"
+    elif seconds >= 3600:
+        unit_seconds = 3600
+        unit = "h"
+    var count := int(seconds / float(unit_seconds))
+    var half := ".5" if seconds % unit_seconds >= unit_seconds * 0.5 else ""
+    if seconds >= 600 and seconds < 3600:
+        half = ""
+    return "%d%s%s ago" % [count, half, unit]
 
 
 func _exit_tree() -> void:
@@ -661,7 +685,7 @@ func _on_build_filesystem_changed() -> void:
                 _log("build activation failed: extension reload status " + str(status) + "; restart the editor")
                 return
         _log("build enabled: " + str(activation["project_name"]))
-    last_build_time = Time.get_datetime_string_from_system(false, true)
+    last_build_time = int(Time.get_unix_time_from_system())
     EditorInterface.get_editor_settings().set_project_metadata("gdcc", "last_build_time", last_build_time)
     state_changed.emit()
     for obsolete in activation["obsolete"]:
@@ -703,8 +727,7 @@ func cancel_build() -> void:
 # the compile service is reachable (launching it first when a launch command is configured),
 # then announces the service's private diagnostics module to its views.
 # Build copies that module on demand, so no additional diagnostics module is created here.
-# Failures are only logged: the server may simply not be running yet, and the manual buttons
-# stay usable.
+# Failures are only logged: the server may simply not be running yet, and Build stays usable.
 func auto_setup_module() -> void:
     _apply_endpoint()
     if _launcher != null:
@@ -715,7 +738,7 @@ func auto_setup_module() -> void:
             _log("compile service not reachable and could not be launched (error "
                     + str(ensure_result[0]) + "); continuing with passive connection")
     # The diagnostics module is created asynchronously by the service lifecycle; wait briefly
-    # so the inspection field lands on a real module instead of the placeholder default.
+    # so the output can announce the actual diagnostics module.
     var deadline_msec: int = Time.get_ticks_msec() + 10000
     while Time.get_ticks_msec() < deadline_msec:
         if _service != null:
@@ -725,7 +748,7 @@ func auto_setup_module() -> void:
                 _log("inspecting diagnostics module: " + diag_module_id)
                 return
         await get_tree().create_timer(0.5).timeout
-    _log("diagnostics module not announced yet; the module field keeps its current value")
+    _log("diagnostics module not announced yet; waiting for automatic synchronization")
 
 
 ## Version requests have their own client so opening the menu cannot retarget a live build.

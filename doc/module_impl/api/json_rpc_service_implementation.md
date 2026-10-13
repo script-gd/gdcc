@@ -361,15 +361,15 @@ DTO codec 规则：
   常驻节点的就位与 `install(...)`/`uninstall()` 调用（含
   `network/language_server/use_thread` 的暂存/恢复）。在编辑器中解释执行（不是自举
   目标）。
-- `gdcc_dock.gd` — `@tool extends VBoxContainer`；用代码构建的最小 UI：诊断通道状态区
-  （只读显示 configured/effective 端点与 auto-launch 指示；host/port/启动命令自
-  2026-10 起为项目级设置 `gdcc/server/*`，dock 不再提供编辑框，详见 §4.4）、连接检查
-  （`server.ping`）、module id 输入、按钮（Create、Analyze、Build、Cancel），以及只读
-  日志 `TextEdit`。仅为共享管理器的解释型视图，不持有项目模块/任务所有权。
+- `gdcc_dock.gd` — `@tool extends VBoxContainer`；顶部单行显示诊断通道连接状态、上次
+  诊断/成功构建的相对时间，其余空间由只读输出 `TextEdit` 填满，右侧图标可清空输出。
+  不再提供 module id 输入或 Ping/Create/Analyze/Build/Cancel 按钮；构建走标题栏 Build，
+  配置走项目设置 `gdcc/*`。仅为共享管理器的解释型视图，不持有项目模块/任务所有权。
 - `gdcc_project_manager.gd` — `@tool extends Node`；独立共享项目操作节点，拥有模块副本
   预约、项目操作、编译/取消和部署/延迟启用；保留信号 await 及解释型编辑器 API。
 - `gdcc_build_toolbar.gd` — `@tool extends HBoxContainer`；标题栏图标/Build/箭头分裂按钮，
-  PopupPanel 显示服务版本、成功安装时间、项目级编译参数以及真实 GDCC 项目设置入口。
+  PopupPanel 显示服务版本、与 dock 同格式且每秒刷新的成功构建相对时间、项目级编译参数
+  以及真实 GDCC 项目设置入口。相对时间阈值与旧时间记录读取见编辑器集成文档。
 - `server_launcher.gd` — `@tool extends Node`；按需拉起/所有权内关闭 `gdcc serve`
   （解释执行；dock 在 gdcc 语言注册前就依赖它）。合同见集成计划 §3.7。
 - `gdcc_syntax_highlighter.gd` — `@tool extends EditorSyntaxHighlighter`；`.gd3` 的

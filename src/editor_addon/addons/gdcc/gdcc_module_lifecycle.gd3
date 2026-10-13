@@ -74,8 +74,8 @@ var _hook_inflight_since: int = 0
 # (review finding).
 var _create_sent_host: String = ""
 var _create_sent_port: int = 0
-# Most recent setup/heartbeat failure text for the dock status area (plan §7 Phase 5
-# item 2); cleared on module-ready entry and on channel reset/shutdown.
+# Most recent setup/heartbeat failure text exposed by the diagnostics status snapshot;
+# cleared on module-ready entry and on channel reset/shutdown.
 var _last_failure: String = ""
 # Vars, not consts: class-level const is outside gdcc's bootstrap MVP.
 var HEARTBEAT_MSEC: int = 3000
@@ -332,7 +332,7 @@ func _defer_setup_retry() -> void:
 ## surviving server still holds our module, so the recreate hits -32001 and the
 ## delete+recreate path wipes any zombie files left by interrupted reconciles. Sibling
 ## cleanup (flight, mirror, reconcile state, cache) is broadcast by the root. `reason` (when
-## non-empty) becomes the channel's last-failure text shown by the dock status area; the
+## non-empty) becomes the channel's last-failure text in the status snapshot; the
 ## caller that already recorded the reason directly (ping path) passes "".
 func notify_outage(reason: String) -> void:
     if reason != "":
