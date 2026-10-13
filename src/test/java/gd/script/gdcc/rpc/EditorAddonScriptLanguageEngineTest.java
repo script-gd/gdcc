@@ -78,7 +78,8 @@ class EditorAddonScriptLanguageEngineTest {
                     "config", "language_registered", "language_identity", "load_roundtrip",
                     "script_icon", "language_menus", "script_icon_refresh", "language_menus_refresh",
                     "save_roundtrip", "save_bad_path", "reload_from_disk", "threaded_load",
-                    "validate_valid_true", "create_script_valid", "header_scan_edges",
+                    "validate_valid_true", "create_script_valid", "template_default", "template_substitutions",
+                    "template_identifier", "native_script_create", "header_scan_edges",
                     "disabled_safe", "disabled_language_menus", "reenabled_same_instance", "reenabled_language_menus")),
             Map.entry("launch", List.of(
                     "config", "configure", "relaunched", "server_up", "server_stopped_on_disable")),
@@ -568,6 +569,74 @@ class EditorAddonScriptLanguageEngineTest {
                                 and fresh._get_language() == lang
                     _step("create_script_valid", create_ok)
                 
+                    var default_script: Script = lang._make_template("", "template_default_probe", "Node")
+                    var default_ok: bool = default_script != null and default_script is GdccScript
+                    if default_ok:
+                        default_ok = default_script._get_language() == lang and default_script._is_valid() \\
+                                and default_script._get_source_code() == "class_name TemplateDefaultProbe\\nextends Node\\n" \\
+                                and default_script._get_instance_base_type() == &"Node" \\
+                                and default_script._get_global_name() == &"TemplateDefaultProbe"
+                        var template_path := "res://template_default_probe.gd3"
+                        default_ok = default_ok and ResourceSaver.save(default_script, template_path) == OK \\
+                                and FileAccess.get_file_as_string(template_path) == "class_name TemplateDefaultProbe\\nextends Node\\n"
+                        DirAccess.remove_absolute(ProjectSettings.globalize_path(template_path))
+                    _step("template_default", default_ok)
+                    var editor_settings := EditorInterface.get_editor_settings()
+                    var saved_indent_type: int = editor_settings.get_setting("text_editor/behavior/indent/type")
+                    var saved_indent_size: int = editor_settings.get_setting("text_editor/behavior/indent/size")
+                    editor_settings.set_setting("text_editor/behavior/indent/type", 1)
+                    editor_settings.set_setting("text_editor/behavior/indent/size", 2)
+                    var template := "class_name _CLASS_\\nextends _BASE_\\n\\nvar _CLASS_SNAKE_CASE_: int = 1\\n\\nfunc value() -> int:\\n_TS_return _CLASS_SNAKE_CASE_\\n"
+                    var template_script: Script = lang._make_template(template, "template_probe", "Node3D")
+                    editor_settings.set_setting("text_editor/behavior/indent/type", saved_indent_type)
+                    editor_settings.set_setting("text_editor/behavior/indent/size", saved_indent_size)
+                    var template_ok: bool = template_script != null and template_script is GdccScript
+                    if template_ok:
+                        template_ok = template_script != default_script and template_script._get_language() == lang \\
+                                and template_script._get_source_code() == "class_name TemplateProbe\\nextends Node3D\\n\\nvar template_probe: int = 1\\n\\nfunc value() -> int:\\n  return template_probe\\n" \\
+                                and template_script._get_instance_base_type() == &"Node3D" \\
+                                and template_script._get_global_name() == &"TemplateProbe" \\
+                                and template_script._is_valid()
+                    _step("template_substitutions", template_ok)
+                    var identifier_script: Script = lang._make_template("class_name _CLASS_\\nextends _BASE_\\n\\nvar _CLASS_SNAKE_CASE_: int = 1\\n", "9 bad!", "Node")
+                    var identifier_ok: bool = identifier_script != null and identifier_script is GdccScript
+                    if identifier_ok:
+                        identifier_ok = identifier_script._get_source_code() == "class_name _9Bad_\\nextends Node\\n\\nvar _9_bad_: int = 1\\n" \\
+                                and identifier_script._get_global_name() == &"_9Bad_"
+                    _step("template_identifier", identifier_ok)
+                    # Exercise the real native handler, not just the exposed virtual method.
+                    var native_ok := true
+                    if Engine.get_version_info().hex > 0x040600:
+                        var native_path := "res://native_create_probe.gd3"
+                        var created: Array[Script] = []
+                        late_dialog.script_created.connect(func(script: Script) -> void: created.append(script))
+                        late_dialog.config("Node", native_path, false, false)
+                        var selected_gd3 := false
+                        for menu in late_dialog.find_children("*", "OptionButton", true, false):
+                            if menu.item_count == 0 or menu.get_item_text(0) != "GDScript":
+                                continue
+                            for index in range(menu.item_count):
+                                if menu.get_item_text(index) == "GD3" and not menu.is_item_disabled(index):
+                                    menu.select(index)
+                                    menu.item_selected.emit(index)
+                                    selected_gd3 = true
+                        late_dialog.popup_centered()
+                        await get_tree().process_frame
+                        await get_tree().process_frame
+                        native_ok = selected_gd3 and not late_dialog.get_ok_button().disabled
+                        if native_ok:
+                            late_dialog.get_ok_button().pressed.emit()
+                            native_ok = created.size() == 1 and FileAccess.file_exists(native_path)
+                        if native_ok:
+                            var native_script: Script = created[0]
+                            native_ok = native_script is GdccScript and native_script._get_language() == lang \\
+                                    and native_script.get_path() == native_path \\
+                                    and native_script._get_source_code() == "class_name NativeCreateProbe\\nextends Node\\n" \\
+                                    and native_script._get_global_name() == &"NativeCreateProbe" \\
+                                    and FileAccess.get_file_as_string(native_path) == "class_name NativeCreateProbe\\nextends Node\\n"
+                        late_dialog.hide()
+                        DirAccess.remove_absolute(ProjectSettings.globalize_path(native_path))
+                    _step("native_script_create", native_ok)
                     # Header scan edges: tab separators and an indented (inner-scope / invalid)
                     # `extends` line must not perturb the top-level header.
                     var edge_path := "res://gd3_phase1_edges.gd3"

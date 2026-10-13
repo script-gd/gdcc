@@ -428,7 +428,31 @@ func _get_global_class_name(path: String) -> Dictionary:
 
 
 func _make_template(template: String, class_name: String, base_class_name: String) -> Script:
-    return null
+    var script: GdccScript = _create_script() as GdccScript
+    # The native create dialog calls this even when template selection is disabled.
+    var source: String = template
+    if source.is_empty():
+        source = "class_name _CLASS_\nextends _BASE_\n"
+    source = source.replace("_BASE_", base_class_name)
+    source = source.replace("_CLASS_SNAKE_CASE_", _template_identifier(class_name.to_snake_case()))
+    source = source.replace("_CLASS_", _template_identifier(class_name.to_pascal_case()))
+    source = source.replace("_TS_", _indentation_unit())
+    script._set_source_code(source)
+    return script
+
+
+## Mirrors Godot's native identifier sanitizer using the script-accessible predicates.
+func _template_identifier(name: String) -> String:
+    if name.is_empty():
+        return "_"
+    var result: String = name
+    if not result.substr(0, 1).is_valid_unicode_identifier():
+        result = "_" + result
+    var identifier: String = ""
+    for index in range(result.length()):
+        var character: String = result.substr(index, 1)
+        identifier += character if ("_" + character).is_valid_unicode_identifier() else "_"
+    return identifier
 
 
 func _get_built_in_templates(object: StringName) -> Array[Dictionary]:

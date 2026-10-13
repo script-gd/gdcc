@@ -2282,7 +2282,14 @@ hover/定义跳转的数据面。reconciler 已有全项目 `.gd3` 磁盘扫描�
   base/path/language 变化时更新 abstract/tool 标志（`script_language.cpp:408-418`），
   本计划的 abstract 恒定不变故不受影响。验收：手动检查创建节点/资源对话框条目
   （含同名已编译类的占槽行为），回归确认不产生重复/不可实例化条目。
-- 模板：`_make_template` / `_get_built_in_templates` 的 API 完整性实现；注意 4.5 中
+- 模板：`_make_template` 已实现，复用语言工厂返回已关联语言的有效脚本；空模板生成
+  `class_name <类名>\nextends <基类>\n`，类名由无扩展名的文件名转 PascalCase 并规范为
+  合法标识符。非空模板替换 `_BASE_`、`_CLASS_`、`_CLASS_SNAKE_CASE_`、`_TS_`，
+  类名占位符按 Godot 规则转换，缩进使用编辑器设置，不额外插入 `class_name`。
+  `_get_built_in_templates` 仍返回空列表，`_is_using_templates` 仍为 false。
+  原生创建即使关闭模板也调用 `_make_template`，因此不能返回 null，否则引擎在设置
+  脚本路径时空指针崩溃。回归锚点：`languageSkeletonWorksInRealEditor` 的
+  `template_default`、`template_substitutions`、`template_identifier` 和 `native_script_create`。注意
   "创建脚本"对话框的 GD3 项仅在 Godot > 4.6.0 时可选（§2.1）；旧版本 `.gd3` 新建入口仍为
   dock 按钮或在文件面板外创建。
 - `--lsp-port`/host 手动覆盖设置项（dock 状态行已前移至 Phase 5 第 2 项）。
