@@ -26,4 +26,8 @@ build there — this tree itself must never be configured or built in place.
     token, skip the prefix and use the existing ordinary narrow-string parser unchanged.
     This is transparent prefix support, not C23 `char8_t` support or new encoding/merging rules.
     Regression coverage: `TinyCcU8StringTest` (requires a CLI rebuilt from these sources).
+  - `tccmacho.c`: invoke `codesign` through `posix_spawnp` with separate arguments instead of
+    an unescaped shell command. Signing launch/wait/status failures return a diagnostic and
+    failure status rather than terminating the embedding process through `tcc_error`.
+    Regression coverage: `TinyCcCompilerTest` (including macOS child-JVM signing recovery).
   Update this record when changing the upstream pin or local patch list.

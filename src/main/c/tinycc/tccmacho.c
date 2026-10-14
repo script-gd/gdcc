@@ -17,6 +17,12 @@
  */
 #include "tcc.h"
 
+#ifdef CONFIG_CODESIGN
+#include <spawn.h>
+#include <sys/wait.h>
+#include <crt_externs.h>
+#endif
+
 /* In order to make life easy for us we are generating Mach-O files which
    don't make use of some modern features, but which aren't entirely classic
    either in that they do use some modern features.  We're also only
@@ -2236,13 +2242,24 @@ ST_FUNC int macho_output_file(TCCState *s1, const char *filename)
     fclose(fp);
 #ifdef CONFIG_CODESIGN
     if (!ret) {
-	char command[1024];
-	int retval;
+        pid_t pid, waited;
+        int status, spawn_status;
+        char *args[] = { "codesign", "-f", "-s", "-", "--", (char *)filename, NULL };
 
-	snprintf(command, sizeof(command), "codesign -f -s - %s", filename);
-	retval = system (command);
-	if (retval == -1 || !(WIFEXITED(retval) && WEXITSTATUS(retval) == 0))
-	    tcc_error ("command failed '%s'", command);
+        /* No shell expansion or fork-side libc work inside another process. */
+        spawn_status = posix_spawnp(&pid, "codesign", NULL, NULL, args, *_NSGetEnviron());
+        if (spawn_status != 0)
+            return tcc_error_noabort("could not start codesign for '%s': %s",
+                                     filename, strerror(spawn_status));
+        do {
+            waited = waitpid(pid, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        if (waited < 0)
+            return tcc_error_noabort("could not wait for codesign for '%s': %s",
+                                     filename, strerror(errno));
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+            return tcc_error_noabort("codesign failed for '%s' (wait status %d)",
+                                     filename, status);
     }
 #endif
     return ret;

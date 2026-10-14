@@ -1,11 +1,19 @@
 package gd.script.gdcc.backend.c.build;
 
+import com.sun.nio.file.ExtendedOpenOption;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -16,6 +24,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Pure-Java PCH round gate: a [FakeProcessLauncher] plus a fixed zig version drives the real
@@ -196,6 +205,69 @@ class ZigCcCompilerPchTest {
                     .filter(cmd -> cmd.getLast().endsWith("entry.c")).findFirst().orElseThrow();
             assertEquals(pchPath, entryTu.get(entryTu.indexOf("-include-pch") + 1),
                     "both rounds reference the single installed pch");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void prefixHeaderPublicationRetriesWindowsHandleContention(boolean cancel, @TempDir Path tempDir) throws Exception {
+        Assumptions.assumeTrue(TargetPlatform.getNativePlatform() == TargetPlatform.WINDOWS_X86_64);
+        var includeDirs = writeIncludeDirs(tempDir);
+        var projectDir = Files.createDirectories(tempDir.resolve("project"));
+        var sources = writeTuSources(projectDir);
+        var cacheRoot = tempDir.resolve("cache");
+        var seed = new FakeProcessLauncher().failCommandsWithExitOne(ZigCcCompilerPchTest::isPchBuildCommand);
+        assertTrue(seed.newCompilerWithPch(VERSION, cacheRoot)
+                .compile(projectDir, includeDirs, sources, "probe", COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform()).success());
+        var keyDir = singleKeyDir(cacheRoot);
+        var header = keyDir.resolve("gdcc_godot_prefix.h");
+        Files.writeString(header, "corrupt prefix header\n");
+        var launcher = new FakeProcessLauncher();
+        var compiler = launcher.newCompilerWithPch(VERSION, cacheRoot);
+        var resultRef = new AtomicReference<CCompileResult>();
+        var interrupted = new AtomicBoolean();
+        var worker = Thread.ofVirtual().unstarted(() -> {
+            try {
+                resultRef.set(compiler.compile(projectDir, includeDirs, sources, "probe", COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform()));
+                interrupted.set(Thread.currentThread().isInterrupted());
+            } catch (IOException exception) {
+                throw new AssertionError(exception);
+            }
+        });
+        try (var _ = FileChannel.open(header, StandardOpenOption.READ, ExtendedOpenOption.NOSHARE_DELETE)) {
+            worker.start();
+            var deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (worker.getState() != Thread.State.TIMED_WAITING) {
+                assertTrue(worker.isAlive(), "publication must retry instead of falling back");
+                assertTrue(System.nanoTime() < deadline, "publication never entered retry backoff");
+                Thread.sleep(5);
+            }
+            assertTrue(launcher.recordedCommands().isEmpty(), "the prefix must be installed before any PCH process starts");
+            if (cancel) {
+                worker.interrupt();
+            }
+        } finally {
+            worker.join(Duration.ofSeconds(10));
+            if (worker.isAlive()) {
+                worker.interrupt();
+                worker.join(Duration.ofSeconds(10));
+            }
+        }
+        assertFalse(worker.isAlive());
+        var result = resultRef.get();
+        assertNotNull(result);
+        assertNoTemporaryLitter(keyDir);
+        if (cancel) {
+            assertFalse(result.success());
+            assertEquals("Failed to run zig: interrupted", result.buildLog());
+            assertTrue(result.artifacts().isEmpty());
+            assertTrue(interrupted.get());
+            assertTrue(launcher.recordedCommands().isEmpty());
+        } else {
+            assertTrue(result.success(), result::buildLog);
+            assertFalse(result.buildLog().contains("PCH unavailable"), result::buildLog);
+            assertEquals(ZigCcCompiler.PCH_PREFIX_HEADER_CONTENT, Files.readString(header));
+            assertEquals(Instant.EPOCH, Files.getLastModifiedTime(header).toInstant());
         }
     }
 

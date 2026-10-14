@@ -62,7 +62,10 @@ Usage and lifecycle rules:
   is retried once without it — PCH and no-PCH objects are never mixed in one link.
 - Concurrency: processes sharing a cache root may duplicate a build, but cannot corrupt it
   (identical contents, unique temporary names, last-writer-wins rename, marker written last).
-  There is no cross-process PCH lock; capacity management is backlog work.
+  Prefix-header mtimes are normalized before publication, and replacements use
+  `FileUtil.moveReplacing` to retry transient Windows access conflicts. Interrupted retries
+  take the cancellation channel, not a no-PCH fallback; unpublished temporary files are best-effort cleaned
+  on failure or cancellation. There is no cross-process PCH lock; capacity management is backlog work.
 - Header mtime stability is required: runtime resource extraction compares content before
   replacing, so gdcc-driven rebuilds never churn include-tree mtimes. External mtime-only
   churn (touching a recorded header without a content change) makes clang reject the installed

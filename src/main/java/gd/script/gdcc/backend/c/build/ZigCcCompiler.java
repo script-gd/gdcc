@@ -1,5 +1,6 @@
 package gd.script.gdcc.backend.c.build;
 
+import gd.script.gdcc.util.FileUtil;
 import gd.script.gdcc.util.ProcessUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -9,10 +10,8 @@ import org.slf4j.LoggerFactory;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
@@ -574,27 +573,32 @@ public class ZigCcCompiler implements CCompiler {
     /// so a racing rename simply lets the last writer's equivalent entry win. Returns `null`
     /// on success, otherwise the failure reason for the fallback line.
     private @Nullable String buildAndInstallPch(@NotNull Path zig, @NotNull String zigTarget, @NotNull CLtoMode ltoMode, @NotNull COptimizationLevel optimizationLevel, @NotNull List<Path> includeDirs, @NotNull Path keyDir, @NotNull Path projectDir, @NotNull Path cachePath, @NotNull CProcessRegistry registry, @NotNull List<List<String>> startedCommands, @NotNull List<String> outputs) throws InterruptedException {
+        var tmpPch = keyDir.resolve(PCH_FILE_NAME + ".tmp-" + randomSuffix());
         try {
             Files.createDirectories(keyDir);
             var prefixHeader = keyDir.resolve(PCH_PREFIX_HEADER_NAME);
             installPrefixHeader(prefixHeader);
-            var tmpPch = keyDir.resolve(PCH_FILE_NAME + ".tmp-" + randomSuffix());
             var buildCmd = buildPchBuildCommand(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, prefixHeader, tmpPch);
             var buildRun = runPchProcess(buildCmd, projectDir, cachePath, registry, startedCommands, outputs);
             if (buildRun.exitCode() != 0 || !Files.isRegularFile(tmpPch)) {
-                Files.deleteIfExists(tmpPch);
                 return "pch build failed (exit " + buildRun.exitCode() + ")";
             }
             // Probe before publishing: an entry zig would reject never reaches consumers.
             if (!probePch(zig, zigTarget, ltoMode, optimizationLevel, includeDirs, keyDir, tmpPch, projectDir, cachePath, registry, startedCommands, outputs)) {
-                Files.deleteIfExists(tmpPch);
                 return "pch probe failed for the freshly built entry";
             }
-            moveReplacing(tmpPch, keyDir.resolve(PCH_FILE_NAME));
+            FileUtil.moveReplacing(tmpPch, keyDir.resolve(PCH_FILE_NAME));
             Files.writeString(keyDir.resolve(PCH_READY_MARKER_NAME), "");
             return null;
         } catch (IOException exception) {
+            checkNotInterrupted();
             return "pch install failed: " + exception.getMessage();
+        } finally {
+            try {
+                Files.deleteIfExists(tmpPch);
+            } catch (IOException exception) {
+                // Unpublished temporary files are never consumed as cache entries.
+            }
         }
     }
 
@@ -660,21 +664,17 @@ public class ZigCcCompiler implements CCompiler {
     private static void installPrefixHeader(@NotNull Path prefixHeader) throws IOException {
         if (!(Files.isRegularFile(prefixHeader) && Files.readString(prefixHeader).equals(PCH_PREFIX_HEADER_CONTENT))) {
             var tmp = prefixHeader.resolveSibling(PCH_PREFIX_HEADER_NAME + ".tmp-" + randomSuffix());
-            Files.writeString(tmp, PCH_PREFIX_HEADER_CONTENT);
-            moveReplacing(tmp, prefixHeader);
+            try {
+                Files.writeString(tmp, PCH_PREFIX_HEADER_CONTENT);
+                // Concurrent builds must never see a replacement with an unnormalized mtime.
+                Files.setLastModifiedTime(tmp, FileTime.from(PCH_PREFIX_HEADER_MTIME));
+                FileUtil.moveReplacing(tmp, prefixHeader);
+            } finally {
+                Files.deleteIfExists(tmp);
+            }
         }
         if (!Files.getLastModifiedTime(prefixHeader).toInstant().equals(PCH_PREFIX_HEADER_MTIME)) {
             Files.setLastModifiedTime(prefixHeader, FileTime.from(PCH_PREFIX_HEADER_MTIME));
-        }
-    }
-
-    /// Renames `tmp` onto `target`, atomically where supported, replacing any existing entry —
-    /// same-key racing entries are interchangeable, so last-writer-wins is safe.
-    private static void moveReplacing(@NotNull Path tmp, @NotNull Path target) throws IOException {
-        try {
-            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException exception) {
-            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 

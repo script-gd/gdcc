@@ -58,6 +58,7 @@ tinycc-bundle/<platformKey>/            # linux-x86_64 / windows-x86_64 / linux-
 
 - 平台路径合同：Windows 库路径为 `{B}/lib`（`lib/libtcc1.a`）；Linux/macOS 库路径为 `{B}` 根（`libtcc1.a` 置于 root）。交叉构建器按目标生成配置：Linux 经 `CONFIG_TRIPLET` 使用目标系统头/CRT；macOS 使用目标机标准 CLT 路径 `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr`，不烤入构建机路径。
 - macOS 的 `bin/libtcc.dylib` 必须使用 twolevel namespace（flat namespace 会把 libtcc 全局符号错绑到进程内其他库的同名符号，首次 FFM 编译即崩溃）。Zig 0.15.2 的 Mach-O 链接器默认设置 `MH_TWOLEVEL`，不接受 `-Wl,-twolevel_namespace`；交叉构建只设置可移植的 `@rpath/libtcc.dylib` install name，ARM64 ad-hoc 签名由 Zig 自动生成，矩阵测试检查 namespace、install name 与 `LC_CODE_SIGNATURE`。旧宿主脚本仍用 `otool -hv`/`codesign -v` 验证。
+- 最终 Mach-O 产物的 `codesign` 调用使用 `posix_spawnp` 的独立 argv，不经过 shell，路径中的空格、引号和 shell 特殊字符保持字面含义。等待被 `EINTR` 打断时重试；启动、等待或签名状态失败经 `tcc_error_noabort` 返回非零编译状态，不得终止嵌入 libtcc 的 JVM。`TinyCcCompilerTest` 的 macOS 子 JVM 用例覆盖签名失败后继续编译。
 - `tcc_set_lib_path` 指向 bundle 根；libtcc 本体路径仅用于 FFM `SymbolLookup.libraryLookup`；JAR 内 bundle 资源必须先落盘。
 
 ### 4.2 安装协议
@@ -85,6 +86,7 @@ tinycc-bundle/<platformKey>/            # linux-x86_64 / windows-x86_64 / linux-
 ## 7. 可移植化适配（双编译器单一源码树）
 
 - vendored tcc 树（`src/main/c/tinycc`）带本地补丁：`tccpp.c` 将 `u8"..."` 视为透明窄字符串前缀（codegen `u8"..."` 合同不变，见 `GDCC_PIN.md`）。
+- `tccmacho.c` 的签名参数与非致命错误处理补丁登记于 `GDCC_PIN.md`；不改变上游 pin 或构建配置。
 - runtime include 树与生成代码的适配清单（含 `{NULL}`、`pow_int` 的 `uint64_t` 中间量、`gdcc_call.h` 的 `__TINYC__` 分支、`<stdbool.h>` 注入、`= { 0 }` 初始化、`#line` 文件名转义）登记于 `doc/gdcc_c_backend.md` 的 TinyCC Compatibility Surface；minicoro 与 `gdcc_hrx.c` 的补丁登记于 `doc/gdcc_runtime_lib.md`。
 - 维护规则：可移植化只允许改生产者（模板、include 树、字面量生成处），禁止生成后文本替换，禁止第二套模板/include 树；`CPortabilitySurfaceTest` 锁定代码 token（`nullptr`/`__int128`）与 inline asm 字符串形态（`jmpq`、无逗号 `.type`、aarch64 块 `#function`），忽略注释与字符串字面量；pthread TLS 谓词、`__attribute((destructor))` 与 `_MCO_ASM_BLOB` 的 `__TINYC__` 分支仅源码登记、未被该测试钉住。
 
