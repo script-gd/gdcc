@@ -16,15 +16,24 @@
   `class_name_erasure` 13 步全绿）；**Phase 8 已实施并通过自动化验收**（2026-09-28，
   引擎用例 `lsp_workspace` 14 步全绿）；**Phase 9（原 Phase 5 打磨）部分实施**：
   `_lookup_code` 与 `_auto_indent_code` 曾通过自动化验收（2026-09-28，引擎
-  用例 `lsp_lookup` 15 步 / `auto_indent` 8 步全绿）；`_lookup_code` 现已临时禁用：
-  内置 GDScript LSP 的符号查询会接管 `.gd3` 资源路径，导致打开的脚本无法保存；
-  原 `lsp_lookup` 用例保留但暂停，待安全实现后恢复。`_get_global_class_name`
+  用例 `lsp_lookup` 15 步 / `auto_indent` 8 步全绿）；`_lookup_code` 在
+  **Godot >= 4.6.0** 恢复 `hover`/`definition` 转发，旧版本仍返回 `ERR_UNAVAILABLE`：
+  4.5.1 的浅层 GDScript 会接管 `.gd3` 资源路径，4.6 已修复此缓存副作用；
+  `lsp_lookup` 按版本条件恢复，保存回归同时覆盖启用与禁用分支。`_get_global_class_name`
   （Stage C 暂缓）、模板、`--lsp-port` 设置项尚未实施；**Phase 10（编译工作流：
   `module.copy` + 编译副本）已实施并通过自动化验收**（2026-09-28：服务端
   `ApiModuleCopyTest` 7 项 + RPC 三层测试 + 引擎用例 `dock_compile` 当时12步全绿，
   api+rpc 全量回归无回归，双评审终审 APPROVE；手动验收项见 Phase 10 验收节）；
   已经过多轮并行评审并修订）
-- 更新日期：2026-10-13
+- 更新日期：2026-10-14
+- 2026-10-14 修订：`_lookup_code` 使用 `int(Engine.get_version_info()["hex"]) >= 0x040600`
+  的版本门槛；光标定位、码点行列计算、擦除视图前向映射与查询结果映射集中于
+  `GdccLookupService`，语言入口仅委托。`request_lookup` 原始传输入口也拒绝旧版本，
+  防止绕过门槛。此门槛独立于脚本创建对话框的 `> 4.6.0` 限制。
+- 2026-10-14 验收：`EditorAddonScriptLanguageAnalysisTest` 5 项全绿；Godot 4.5.1
+  `lookup_suspended` 9 步全绿，`lsp_lookup` 按版本跳过；Godot 4.6.3 与 4.7.0
+  均通过 `lsp_lookup` 15 步及 `lookup_suspended` 9 步，含真实编辑器符号信号后
+  原资源身份、缓存路径与保存往返检查。4.6.0 和 4.8 开发版尚未实测。
 - 2026-10-13 修订（编译后端）：Build 菜单通过 `server.availableCCompilerKinds` 获取可用
   后端，新增默认 Auto 的项目级选择；断连、无后端或查询失败时禁用构建并显示前置警告
   图标的黄色提示。启动命令改为 `gdcc/compilation_server/launch_command`，旧项目键一次性迁移。
@@ -846,7 +855,7 @@
     （强制断连重连后 epoch 递增，全量重放且缓冲区文本仍为准）。
   - 回归：`EditorAddonScriptLanguageAnalysisTest` 全绿（新 `.gd3` 经目录扫描自动
     纳入整模块 analyze+lowering）。
-- Phase 9 `_lookup_code` 历史验收结果（2026-09-28；当前因资源路径接管问题临时禁用）：
+- Phase 9 `_lookup_code` 历史验收结果（2026-09-28；2026-10-14 起按 Godot >= 4.6.0 恢复）：
   - 实施：新增无状态子节点 `GdccLookupService`（`gdcc_lookup_service.gd3`：全量同步
     + hover/definition 各 200ms 有界阻塞；hover 先答——悬浮是更高频路径，
     definition 腿失败降级为 hover-only，hover 腿失败整体降级）；服务根
@@ -856,10 +865,10 @@
     `get_text_with_cursor_char`/`get_text_for_symbol_lookup` 携带 0xFFFF 哨兵）、
     无哨兵整词回退（跳过注释尾）、0 基码点行列计算、Phase 7 视图前向映射与
     LSP → 引擎 LookupResult 字典映射（当时为"服务给裸数据、语言做映射"分工）；
-    临时禁用后，映射与无哨兵词定位等 lookup 专用辅助函数已迁至
-    `GdccLookupService`，语言只保留直接返回降级结果的 `_lookup_code` 入口。原
-    `_lookup_code` 内联的哨兵定位、行列计算及 Phase 7 前向映射已随禁用移除，
-    恢复查询时应在 lookup 专用类中重建，不应放回语言入口。
+    临时禁用时，映射与无哨兵词定位等 lookup 专用辅助函数迁至
+    `GdccLookupService`；恢复后哨兵定位、码点行列计算及 Phase 7 前向映射也由
+    该类的 `lookup_code` 负责，语言入口仅做服务可用性检查和委托。Godot < 4.6.0
+    在同步文档前降级，不发出符号查询。
   - 关键引擎事实（4.5 源码核实）：适配器强制 `result` 与 `type` 两键（缺一即
     ERR_UNAVAILABLE）；`LookupResultType` 枚举 SCRIPT_LOCATION=0…LOCAL_VARIABLE=10；
     LSP 线路无结构化符号 kind，LOCAL_VARIABLE 是唯一同时喂饱悬浮 tooltip
@@ -1012,7 +1021,8 @@
 2. 脚本编辑器对 `.gd3` 提供错误/警告标注：优先采用引擎 GDScript 解析结果（经编辑器内建
    LSP 服务），GDScript 侧无错误时叠加 gdcc 前端 `analyze.run` 的诊断（合并显示）。
 3. 代码补全代理到 GDScript LSP（承担大部分补全能力）。
-4. 自动缩进已实施；悬浮/符号查找（`_lookup_code`）因资源路径接管临时禁用，
+4. 自动缩进已实施；悬浮/符号查找（`_lookup_code`）在 Godot >= 4.6.0 代理到 LSP，
+   旧版本因资源路径接管风险返回 `ERR_UNAVAILABLE`；
    全局类名与脚本模板仍为后续打磨项。
 5. gdcc 编译服务未在目标端口侦听时，可按**用户配置的启动命令**自动拉起
    `gdcc serve`；插件卸载/编辑器退出时正确关闭**由本插件拉起**的服务进程
@@ -1050,7 +1060,7 @@ Godot 编辑器
 │     │     ├── _validate       → LSP 诊断（线程模式下有界同步等待 ≤150ms）
 │     │     │                     + 缓存的 gdcc 诊断合并（异步产生，§4.4）
 │     │     ├── _complete_code  → 0xFFFF 哨兵定位光标 → LSP completion（≤400ms）
-│     │     └── _lookup_code    → 暂时返回 ERR_UNAVAILABLE（Phase 9 LSP 查询禁用）
+│     │     └── _lookup_code    → Godot >= 4.6.0：LSP hover/definition（各 ≤200ms）；旧版降级
 │     ├── GdccScript (ScriptExtension, _can_instantiate() == false)
 │     ├── GdccScriptFormatLoader (ResourceFormatLoader，_load 纯加载、线程安全)
 │     ├── GdccScriptFormatSaver  (ResourceFormatSaver)
@@ -2270,9 +2280,18 @@ hover/定义跳转的数据面。reconciler 已有全项目 `.gd3` 磁盘扫描�
 
 ### Phase 9：打磨（可并行子项，各自独立验收）
 
-- `_lookup_code` **临时禁用**：当前返回 `ERR_UNAVAILABLE`，避免内置 GDScript LSP
-  符号查询接管 `.gd3` 资源路径；此前 `hover`/`definition` 的 15 步验收结果仅为
-  历史记录，`lsp_lookup` 用例暂停，待路径问题修复后恢复。
+- `_lookup_code` **按版本恢复**：Godot >= 4.6.0 转发 `hover`/`definition`，更早版本
+  返回 `{"result": ERR_UNAVAILABLE, "type": 0}` 且不同步文档、不发送查询。
+  Godot [PR #109345](https://github.com/godotengine/godot/pull/109345)（4.6）将
+  `GDScriptCache.get_shallow_script` 的 `set_path(path, true)` 改为 `set_path_cache(path)`，
+  浅层脚本不再替换全局 `ResourceCache` 中的原脚本。4.8 开发版
+  [PR #120487](https://github.com/godotengine/godot/pull/120487) 进一步把 lookup 结果
+  改为路径表示，并移除结果构造中的浅层脚本获取（保留 `ScriptLanguageExtension` 适配）。
+  客户端继续用 `languageId: "gdscript"` 打开 `.gd3`；这不是正式的自定义语言支持，
+  也不是非 GDScript 文档过滤带来的修复。`GdccLookupService.lookup_code` 定位并移除
+  0xFFFF 哨兵（无哨兵时整词回退），计算 0 基码点位置，发送 Phase 7 擦除视图及前向
+  映射位置，再把有界查询结果映射为 LookupResult。`lsp_lookup` 仅在 >= 4.6.0 运行；
+  `lookup_suspended` 在各版本验证门槛、真实编辑器符号信号、资源身份及原路径保存。
 - `_auto_indent_code` ✅（2026-09-28 自动化验收通过）：逐字镜像 4.5 GDScript 参考
   算法（空白宽度栈嵌套；计划条文的"冒号后增缩进等最小规则"即该参考实现）；验收：
   `auto_indent` 8 步精确输出锚点全绿 + 编辑器内手动对照（待 §8.3）。
@@ -2763,7 +2782,7 @@ EditorSettings；迁移后写 harness 项目的 ProjectSettings，随用例目�
 
 | # | 风险 | 等级 | 缓解 |
 |---|---|---|---|
-| R1 | `.gd3` 不在 GDScript LSP 的 workspace 索引内，跨文件符号/类缓存解析受限 | 中 | didOpen/didChange 不做扩展名过滤，单文件解析与诊断可用；**Phase 8 workspace 镜像**将全部项目 `.gd3` 主动 didOpen，提供跨文件查询的数据面，但 `_lookup_code` 当前临时禁用，hover/定义跳转不可用；补全成员枚举不经过 workspace（引擎事实，§7 Phase 8），不受镜像影响 |
+| R1 | `.gd3` 不在 GDScript LSP 的 workspace 索引内，跨文件符号/类缓存解析受限 | 中 | 以 `languageId: "gdscript"` didOpen 的文档可解析；**Phase 8 workspace 镜像**将全部项目 `.gd3` 主动 didOpen，提供跨文件查询的数据面；Godot >= 4.6.0 启用 `_lookup_code` hover/定义跳转，旧版本因浅层脚本接管资源路径而降级。未打开文件的磁盘扩展名过滤及 Stage C 全局类名边界仍存在；补全成员枚举不经过 workspace（引擎事实，§7 Phase 8），不受镜像影响 |
 | R2 | 多编辑器实例/端口占用导致连错实例 | 中 | 握手后监听 `gdscript_client/changeWorkspace` 并与 `ProjectSettings.globalize_path("res://")` 比对，不符即 DEGRADED；host/port 可配；运行期改 `use_thread` 服务端自动重启、客户端重连接管（§2.6） |
 | R3 | `_complete_code`/`_validate` 同步等待卡顿编辑器 | 中 | 硬超时（LSP 150ms / 补全 400ms）+ 超时降级；阻塞形态约束写入 §1.2；线程模式硬前提 |
 | R4 | 热重载导致 ScriptServer 悬空指针 | 高 | `reloadable = false`（§6），安装器全出口断言钉死 |

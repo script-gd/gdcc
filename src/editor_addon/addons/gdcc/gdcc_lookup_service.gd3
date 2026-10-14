@@ -2,8 +2,7 @@
 class_name GdccLookupService
 extends Node
 
-## LSP-backed symbol lookup slice (plan §7 Phase 9 `_lookup_code`), child feature of
-## `GdccEditorService`. Lookup is currently disabled at the language entry. When enabled,
+## LSP-backed symbol lookup, child feature of `GdccEditorService`. On Godot 4.6 or later,
 ## the whole flow runs INLINE on the editor UI thread — the document full-sync
 ## lands on the shared connection first (FIFO, so hover/definition see the text that
 ## produced the request position) and `GdccLspClient.request_blocking` then pumps the
@@ -15,7 +14,7 @@ extends Node
 ## remains), while a definition failure after a successful hover degrades to hover-only:
 ## the blocking contract may have torn the connection down, but the hover payload stays
 ## valid and is still worth a tooltip. The 200ms per-request budget keeps the worst-case
-## UI stall in the same league as completion's 400ms (plan §4.3) — hover is
+## UI stall in the same league as completion's 400ms; hover is
 ## pointer-driven and fires repeatedly.
 
 # A var, not a const: class-level const is outside gdcc's bootstrap MVP.
@@ -28,15 +27,42 @@ func bind_service(owner: GdccEditorService) -> void:
     service = owner
 
 
+## Locates the editor caret, syncs the transformed text, and maps the LSP answer.
+## Older engines let shallow GDScript resources replace the open script in ResourceCache.
+func lookup_code(code: String, symbol: String, path: String) -> Dictionary:
+    if int(Engine.get_version_info()["hex"]) < 0x040600 or service == null or not service.is_active():
+        return _lookup_degraded()
+    var caret: int = code.find(String.chr(0xFFFF))
+    var clean: String = code
+    if caret >= 0:
+        clean = code.substr(0, caret) + code.substr(caret + 1)
+    else:
+        caret = _find_word_position(code, symbol)
+        if caret < 0:
+            return _lookup_degraded()
+    var before: String = clean.substr(0, caret)
+    var line: int = before.count("\n")
+    var character: int = before.length() - before.rfind("\n") - 1
+    var view: Dictionary = service.lsp_safe_text(path, clean)
+    var mapped: Dictionary = service.lsp_safe_forward_position(view, line, character)
+    var response: Dictionary = service.request_lookup(
+            path, str(view["text"]), int(mapped["line"]), int(mapped["character"]))
+    if response.get("ok") != true:
+        return _lookup_degraded()
+    return _lookup_result(path, response)
+
+
 ## Syncs `text` for `path` and issues bounded `textDocument/hover` +
 ## `textDocument/definition` requests at the 0-based code-point position (`line`, `col`).
 ## Returns `{"ok": true, "hover": Variant, "definition": Variant, "definition_ok": bool}`
 ## with the raw LSP payloads unmapped (definition is null when that leg failed or
 ## answered nothing; `definition_ok` distinguishes the two). This class also owns the
-## engine LookupResult mapping, but the disabled language entry does not call it. Preconditions
+## engine LookupResult mapping. Preconditions
 ## (service ACTIVE, LSP handshake-verified READY, server in thread mode) are enforced by
 ## the service facade BEFORE delegation.
 func request_lookup(path: String, text: String, line: int, col: int) -> Dictionary:
+    if int(Engine.get_version_info()["hex"]) < 0x040600:
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "lookup requires Godot >= 4.6.0"}}
     var client: GdccLspClient = service.get_lsp_client()
     if client == null:
         return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "LSP client missing"}}

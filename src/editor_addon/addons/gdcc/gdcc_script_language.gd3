@@ -355,10 +355,11 @@ func _completion_kind(lsp_kind: int) -> int:
     return 9  # KIND_PLAIN_TEXT (4.5 has no KEYWORD kind)
 
 
-## The editor's symbol lookup is disabled until the in-process GDScript LSP can resolve
-## `.gd3` symbols without taking over the open GdccScript's resource path.
+## Godot 4.6 stops shallow GDScript lookups from taking over existing resource paths.
 func _lookup_code(code: String, symbol: String, path: String, owner: Object) -> Dictionary:
-    return {"result": ERR_UNAVAILABLE, "type": 0}
+    if _service == null or not _service.is_active() or _service.lookup() == null:
+        return {"result": ERR_UNAVAILABLE, "type": 0}
+    return _service.lookup().lookup_code(code, symbol, path)
 
 
 ## Auto-indent entry (plan §7 Phase 9). Mirrors the 4.5 GDScript reference

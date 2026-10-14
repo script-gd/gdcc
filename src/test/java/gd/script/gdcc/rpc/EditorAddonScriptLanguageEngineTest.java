@@ -11,7 +11,6 @@ import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.backend.c.build.ZigUtil;
 import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
@@ -29,6 +28,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -248,7 +248,7 @@ class EditorAddonScriptLanguageEngineTest {
                     "recovery_module_rebuilt", "recovery_reuploaded", "survived")),
             Map.entry("lookup_suspended", List.of(
                     "config", "service_ready", "lsp_ready", "lookup_helpers", "editor_opened",
-                    "lookup_unavailable", "lookup_keeps_path", "save_on_original_path", "survived")),
+                    "lookup_version_gate", "lookup_keeps_path", "save_on_original_path", "survived")),
             // Phase 9: `_auto_indent_code` — verbatim mirror of the 4.5 GDScript reference
             // algorithm (whitespace-stack nesting, blank/comment passthrough, the dedent
             // quirk, the from_line gate, the spaces-indent setting, and the pathological
@@ -3721,8 +3721,7 @@ class EditorAddonScriptLanguageEngineTest {
                         DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
                     _step("survived", true)
                 
-                # Temporary safety gate: exercise the actual editor symbol signals, not only
-                # a direct call to the language virtual, while the in-process LSP is READY.
+                # Exercise the version gate and actual editor symbol signals while LSP is READY.
                 func _run_lookup_suspended_mode() -> void:
                     var lang := _find_gd3_language()
                     var service := _service()
@@ -3773,13 +3772,22 @@ class EditorAddonScriptLanguageEngineTest {
                     var client = service.get_lsp_client()
                     var uri: String = service.lsp_uri_for(path)
                     var version_before: int = client.document_version_for(uri)
+                    var lookup_enabled: bool = Engine.get_version_info().hex >= 0x040600
                     var result: Dictionary = lang._lookup_code(code_edit.get_text(), "rotating_speed", path, null)
-                    _step("lookup_unavailable", _is_degraded_lookup(result) \\
-                            and version_before > 0 and client.document_version_for(uri) == version_before,
+                    if lookup_enabled:
+                        result = await _lookup_until_ok(lang, code_edit.get_text(), "rotating_speed", path)
+                    var gate_ok: bool = int(result.get("result", -1)) == OK \\
+                            and client.document_version_for(uri) > version_before
+                    if not lookup_enabled:
+                        var raw: Dictionary = service.request_lookup(path, code_edit.get_text(), 5, 30)
+                        gate_ok = _is_degraded_lookup(result) and raw.get("ok") == false \\
+                                and client.document_version_for(uri) == version_before
+                    _step("lookup_version_gate", version_before > 0 and gate_ok,
                             str(result) + " version=" + str(version_before))
                 
                     var line: int = 5
                     var column: int = code_edit.get_line(line).find("rotating_speed") + 2
+                    var version_before_signals: int = client.document_version_for(uri)
                     code_edit.emit_signal("symbol_validate", "rotating_speed")
                     code_edit.emit_signal("symbol_hovered", "rotating_speed", line, column)
                     code_edit.emit_signal("symbol_lookup", "rotating_speed", line, column)
@@ -3788,7 +3796,8 @@ class EditorAddonScriptLanguageEngineTest {
                     var cached: Resource = ResourceLoader.get_cached_ref(path)
                     _step("lookup_keeps_path", column > 1 and script.resource_path == path \\
                             and cached == script and editor.get_current_script() == script \\
-                            and client.document_version_for(uri) == version_before,
+                            and (client.document_version_for(uri) > version_before_signals if lookup_enabled \\
+                                    else client.document_version_for(uri) == version_before),
                             "path=" + script.resource_path + " cached=" + str(cached == script) \\
                             + " current=" + str(editor.get_current_script() == script) \\
                             + " column=" + str(column) + " version=" + str(version_before) \\
@@ -4741,18 +4750,39 @@ class EditorAddonScriptLanguageEngineTest {
     /// LOCAL_VARIABLE type / 1-based location / Script-resource navigation contract, the
     /// code-point caret anchor, and the sentinel-less fallback.
     @Test
-    @Disabled("GDScript LSP lookup steals the open .gd3 resource path; restore after fixing the lookup channel")
     void lspLookupProxiesHoverAndDefinition() throws Exception {
+        var godotBinary = GodotGdextensionTestRunner.findGodotBinaryFromEnv();
+        Assumptions.assumeTrue(godotBinary != null, "GODOT_BIN not found");
+        var process = new ProcessBuilder(godotBinary.toString(), "--version").redirectErrorStream(true).start();
+        var output = new StringBuffer();
+        var reader = startLineReader(process.getInputStream(), output);
+        try {
+            assertTrue(process.waitFor(10, TimeUnit.SECONDS), "Godot version probe timed out");
+            reader.join(5_000);
+            assertEquals(0, process.exitValue(), "Godot version probe failed");
+            var version = output.toString().trim();
+            var match = Pattern.compile("(?m)^(\\d+)\\.(\\d+)(?:\\.|$)").matcher(version);
+            assertTrue(match.find(), () -> "Unrecognized Godot version: " + version);
+            var major = Integer.parseInt(match.group(1));
+            var minor = Integer.parseInt(match.group(2));
+            Assumptions.assumeTrue(major > 4 || major == 4 && minor >= 6,
+                    "LSP lookup requires Godot >= 4.6.0: " + version);
+        } finally {
+            if (process.isAlive()) {
+                process.destroyForcibly();
+            }
+            reader.join(5_000);
+        }
         var config = new JsonObject();
         config.addProperty("lsp_port", findFreePort());
         config.addProperty("closed_port", findFreePort());
         runCase("lsp_lookup", config);
     }
 
-    /// Lookup stays unavailable while the LSP is ready, and real editor symbol signals
-    /// must not detach an open .gd3 script from its path or prevent saving it.
+    /// Lookup is enabled only on Godot >= 4.6.0; real editor symbol signals must not
+    /// detach an open .gd3 script from its path or prevent saving it on either branch.
     @Test
-    void disabledLookupKeepsScriptPathAndSaveWorking() throws Exception {
+    void lookupVersionGateKeepsScriptPathAndSaveWorking() throws Exception {
         var config = new JsonObject();
         config.addProperty("lsp_port", findFreePort());
         runCase("lookup_suspended", config);
@@ -4814,7 +4844,7 @@ class EditorAddonScriptLanguageEngineTest {
         }
         if (caseName.equals("lookup_suspended")) {
             Files.writeString(projectDir.resolve("src/gd3_lookup_suspended.gd3"), """
-                    extends Node
+                    extends Node3D
                     
                     @export var rotating_speed: float = 30.0
                     

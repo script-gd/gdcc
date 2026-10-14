@@ -90,8 +90,8 @@ tinycc-bundle/<platformKey>/            # linux-x86_64 / windows-x86_64 / linux-
 
 ## 8. 构建链与 CI
 
-- 正式构建器为独立脚本 `gradle/tinycc-bundle.gradle.kts` 中的 `BuildTinyccBundle` 任务，
-  直接运行于 Gradle JVM，不依赖主编译器类或主资源。每次用 Zig 交叉构建
+- 正式构建器为 `src/buildtools/java/gd/script/gdcc/tools/TinyCcBundleBuilder.java`，在独立的
+  Java 25 `buildTools` source set 中编译，不依赖主编译器类或主资源。每次用 Zig 交叉构建
   Windows x86_64、Linux x86_64、Linux aarch64、macOS aarch64 四套 `libtcc`，同一 JAR
   包含全部平台，不要求人工 stage 非宿主 bundle。
 - 每个目标先由 Zig 构建宿主可执行的 TinyCC 交叉编译器，再由它编译和归档对应
@@ -108,7 +108,7 @@ tinycc-bundle/<platformKey>/            # linux-x86_64 / windows-x86_64 / linux-
 - CLI 工作树脚本（`build-script/build-tinycc-cli-<platform>.sh`）产出带 `cli-verified` 标记的 tcc 二进制，供 CLI 门控测试使用。
 - `gradle/tinycc.gradle.kts` 的 `tinyccHostPlatformKey()` 将宿主映射到四平台键并声明产物；
   `buildTinyccCli` 任务挂入 `test` 依赖，完整声明运行时 include 树及 Windows lib 树。
-  `gradle/tinycc-bundle.gradle.kts` 的 `buildTinyccBundle` 以 vendored 源码为输入，构建完整四平台矩阵；
+  `buildTinyccBundle` 依赖独立 buildTools 类及 vendored 源码，构建完整四平台矩阵；
   `processResources` 依赖该任务，将 `build/tinycc-bundle/<platformKey>/**` 映射至
   `gdcc/tinycc-bundle/<platformKey>/**`，完整的 native 库、头文件、运行时库、清单与许可随 JAR 打包。
 - CI：四个 `Unit Tests` job 各带本平台的 bundle 构建步骤（按矩阵条件跳过其他平台），全量 TinyCC 门控集在四平台真实执行。
@@ -130,6 +130,7 @@ tinycc-bundle/<platformKey>/            # linux-x86_64 / windows-x86_64 / linux-
   校验安装。Gradle `test` 依赖 `jar` 并传入实际归档路径，不能依赖旧 JAR 或测试侧 bundle 覆盖。
 - `TinyCcPackagedMatrixTest` 在任意宿主校验四套 classpath bundle 的完整安装、目标机器与
   文件格式、Mach-O namespace/install name/签名，以及运行时 archive 内的目标 ELF 对象。
+  `gd.script.gdcc.tools.util.UtilTest` 覆盖完整目录发布及失败回滚。
 
 ## 10. 已知限制与后续方向
 
