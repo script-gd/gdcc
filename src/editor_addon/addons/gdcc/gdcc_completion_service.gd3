@@ -2,19 +2,20 @@
 class_name GdccCompletionService
 extends Node
 
-## LSP-backed code completion slice (plan §4.3), child feature of `GdccEditorService`.
+## LSP-backed code completion and signature-help slice (plan §4.3), child feature of
+## `GdccEditorService`.
 ## Stateless by design: the whole flow runs INLINE inside the language's `_complete_code`
 ## on the editor UI thread — the document full-sync lands on the shared connection first
-## (FIFO, so the completion request always sees the text that produced the request
-## position) and `GdccLspClient.request_blocking` then pumps the socket inline with a hard
-## deadline. No tick line, no busy term, no outage hooks: there is no frame-driven work to
-## coordinate and no state to invalidate (the busy coordinator exists for frame-pumped
-## work; an inline pump needs no frames). The 400ms budget is the UI-stall bound pinned by
-## plan §4.3 (`_validate` uses 150ms; completion gets more because the answer is directly
-## user-requested).
+## (FIFO, so both requests see the text that produced the request position) and
+## `GdccLspClient.request_blocking` then pumps the socket inline with hard deadlines. No tick
+## line, no busy term, no outage hooks: there is no frame-driven work to coordinate and no
+## state to invalidate. Completion gets the 400ms UI-stall bound pinned by plan §4.3; the
+## follow-up signature request has its own 200ms bound, and a signature timeout cannot
+## invalidate an already valid completion answer.
 
 # A var, not a const: class-level const is outside gdcc's bootstrap MVP.
 var COMPLETION_TIMEOUT_MSEC: int = 400
+var SIGNATURE_HELP_TIMEOUT_MSEC: int = 200
 
 var service: GdccEditorService = null
 
@@ -24,11 +25,12 @@ func bind_service(owner: GdccEditorService) -> void:
 
 
 ## Syncs `text` for `path` and issues one bounded `textDocument/completion` request at the
-## 0-based code-point position (`line`, `col`). Returns the LSP client's own response shape
-## (`{"ok": true, "result": ...}` / `{"ok": false, "error": ...}`) — the language maps `ok`
-## results into engine options and degrades everything else. Preconditions (service ACTIVE,
-## LSP handshake-verified READY, server in thread mode) are enforced by the service facade
-## BEFORE delegation; a failed sync is reported here so a stale document is never completed.
+## 0-based code-point position (`line`, `col`). A successful completion request is followed by
+## one bounded `textDocument/signatureHelp` request on the same synced document; its raw result
+## is attached as `signature`. Signature failure leaves the completed response intact with no
+## hint. Preconditions (service ACTIVE, LSP handshake-verified READY, server in thread mode) are
+## enforced by the service facade BEFORE delegation; a failed sync is reported here so a stale
+## document is never completed.
 func request_completion(path: String, text: String, line: int, col: int) -> Dictionary:
     var client: GdccLspClient = service.get_lsp_client()
     if client == null:
@@ -47,7 +49,17 @@ func request_completion(path: String, text: String, line: int, col: int) -> Dict
     # the protocol state), which drops the queued generation with the dead connection —
     # server-side documents die with it too, so the next sync re-opens on the fresh
     # connection and no cross-connection misattribution is possible.
-    return client.request_blocking("textDocument/completion", {
+    var params: Dictionary = {
         "textDocument": {"uri": uri},
         "position": {"line": line, "character": col},
-    }, COMPLETION_TIMEOUT_MSEC)
+    }
+    var completion_response: Dictionary = client.request_blocking(
+            "textDocument/completion", params, COMPLETION_TIMEOUT_MSEC)
+    if completion_response.get("ok") != true:
+        return completion_response
+    if client.is_ready():
+        var signature_response: Dictionary = client.request_blocking(
+                "textDocument/signatureHelp", params, SIGNATURE_HELP_TIMEOUT_MSEC)
+        if signature_response.get("ok") == true:
+            completion_response["signature"] = signature_response.get("result")
+    return completion_response

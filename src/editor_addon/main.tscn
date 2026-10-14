@@ -1,11 +1,11 @@
-[gd_scene format=3 uid="uid://c2e2xtt665htp"]
+[gd_scene load_steps=2 format=3 uid="uid://c2e2xtt665htp"]
 
 [sub_resource type="BoxMesh" id="BoxMesh_7dm0k"]
 
-[node name="Node3D" type="Node3D" unique_id=232561153]
+[node name="Node3D" type="Node3D"]
 
-[node name="Test2" type="Test2" parent="." unique_id=233677302]
+[node name="Test2" type="Test2" parent="."]
 rotating_speed = 100.0
-time = 1325.620429759917
-transform = Transform3D(-0.88839716, -0.24515767, 0.3881311, 0.4003485, -1.7499765e-08, 0.9163618, -0.22465366, 0.96948063, 0.09814878, 0, 0.13128993, 0)
+time = 1458.2376870920145
+transform = Transform3D(0.35588259, -0.92150337, -0.15548132, 0.40034857, -1.7499769e-08, 0.91636175, -0.8444324, -0.3883638, 0.36892354, 0, 0.51301694, 0)
 mesh = SubResource("BoxMesh_7dm0k")

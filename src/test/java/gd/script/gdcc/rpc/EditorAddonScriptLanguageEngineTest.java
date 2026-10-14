@@ -183,10 +183,11 @@ class EditorAddonScriptLanguageEngineTest {
             // binding), and a post-disable/enable `_validate` sanity check.
             Map.entry("lsp_completion", List.of(
                     "config", "lsp_endpoint_closed", "complete_degraded", "lsp_endpoint",
-                    "lsp_ready", "kind_mapping", "insert_text_priority", "complete_keywords",
-                    "complete_empty_context", "complete_member", "complete_cjk",
-                    "complete_no_sentinel", "fifo_survives_completion",
-                    "complete_disabled_safe", "validate_still_healthy", "survived")),
+                    "lsp_ready", "kind_mapping", "insert_text_priority", "call_hint_mapping",
+                    "complete_keywords", "complete_empty_context", "complete_member",
+                    "complete_call_hint", "complete_cjk", "complete_no_sentinel",
+                    "fifo_survives_completion", "complete_disabled_safe",
+                    "validate_still_healthy", "survived")),
             // Phase 5: diagnostic visibility — the signal-triggered revalidation after a
             // background merge (current-tab + version gated, popup-deferred, ordering-pinned
             // against the idle beat), the version-advance and same-version-remerge
@@ -1684,6 +1685,14 @@ class EditorAddonScriptLanguageEngineTest {
                         options = result.get("options", [])
                     return result
                 
+                func _complete_until_call_hint(lang: ScriptLanguage, code: String, path: String) -> Dictionary:
+                    var deadline := Time.get_ticks_msec() + 30000
+                    var result: Dictionary = lang._complete_code(code, path, null)
+                    while str(result.get("call_hint", "")) == "" and Time.get_ticks_msec() < deadline:
+                        await get_tree().process_frame
+                        result = lang._complete_code(code, path, null)
+                    return result
+
                 func _options_include(options: Array, display: String) -> bool:
                     for opt in options:
                         if opt is Dictionary and str(opt.get("display", "")) == display:
@@ -1726,6 +1735,26 @@ class EditorAddonScriptLanguageEngineTest {
                     it_ok = it_ok and lang._completion_insert_text({"label": "lab", "insertText": ""}, "lab") == "lab"
                     _step("insert_text_priority", it_ok)
                 
+                    # SignatureHelp mapping: the active signature is selected, the complete
+                    # active parameter span (including type/default) is wrapped in the editor's
+                    # 0xFFFF pair, nested defaults cannot split the parameter list early, and a
+                    # malformed result degrades to no hint.
+                    var hint_source := {
+                        "signatures": [
+                            {"label": "func ignored(a: int) -> void"},
+                            {"label": "func target(first: String, second: Callable = Callable(), third: Array[int] = []) -> void"},
+                        ],
+                        "activeSignature": 1,
+                        "activeParameter": 1,
+                    }
+                    var expected_hint := "func target(first: String, " + sentinel \\
+                            + "second: Callable = Callable()" + sentinel \\
+                            + ", third: Array[int] = []) -> void"
+                    var hint_ok: bool = lang._completion_call_hint(hint_source) == expected_hint
+                    hint_ok = hint_ok and lang._completion_call_hint({"signatures": []}) == ""
+                    hint_ok = hint_ok and lang._completion_call_hint({"signatures": [{}], "activeParameter": 2}) == ""
+                    _step("call_hint_mapping", hint_ok)
+
                     # Class-body keyword completion behind an identifier prefix: an empty line
                     # yields COMPLETION_NONE (no token sits at the cursor, so the parser never
                     # assigns a context) and legitimately zero options — keywords are offered
@@ -1775,6 +1804,19 @@ class EditorAddonScriptLanguageEngineTest {
                             member_result.get("result", -1) == OK and _options_include(member_options, "x"),
                             "options=" + str(member_options.size()))
                 
+                    # A real call site through `textDocument/signatureHelp`: the second
+                    # argument's full type/default span is highlighted in the returned hint.
+                    var hint_path := "res://gd3_complete_hint.gd3"
+                    var hint_code := "extends Node\\n\\nfunc greet(name: String, count: int = 2) -> void:\\n    pass\\n\\n" \\
+                            + "func f() -> void:\\n    greet(\\"n\\", " + sentinel + ")\\n"
+                    var hint_result := await _complete_until_call_hint(lang, hint_code, hint_path)
+                    var expected_live_hint := "func greet(name: String, " + sentinel \\
+                            + "count: int = 2" + sentinel + ") -> void"
+                    _step("complete_call_hint",
+                            hint_result.get("result", -1) == OK \\
+                                    and str(hint_result.get("call_hint", "")) == expected_live_hint,
+                            str(hint_result.get("call_hint", "")))
+
                     # R11 residual anchor: an emoji sits BEFORE the caret on the same line and
                     # `x` follows it — a UTF-16/byte miscount would push the server-side
                     # sentinel past the `v.` member context and `y` would vanish from the
@@ -1844,7 +1886,7 @@ class EditorAddonScriptLanguageEngineTest {
                         health_ok = not (health_result.get("errors", []) as Array).is_empty()
                     _step("validate_still_healthy", health_ok)
                 
-                    for p in [body_path, member_path, cjk_path, health_path]:
+                    for p in [body_path, member_path, hint_path, cjk_path, health_path]:
                         DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
                     _step("survived", true)
                 """;
@@ -4728,8 +4770,9 @@ class EditorAddonScriptLanguageEngineTest {
 
     /// Phase 4 acceptance (plan §4.3): `_complete_code` end-to-end — degraded answers for
     /// the negative paths (client not READY, no sentinel, disabled service), white-box pins
-    /// of the kind mapping and insert-text precedence, keyword/member completion through
-    /// the real GDScript LSP with the seven mandatory option keys, the code-point caret
+    /// of the kind mapping and insert-text precedence, signature-help mapping plus a real
+    /// call-site hint through the GDScript LSP, keyword/member completion with the seven
+    /// mandatory option keys, the code-point caret
     /// anchor (CJK before the caret, text after it), a per-generation FIFO attribution check
     /// on a completion-synced URI, and a post-cycle `_validate` sanity check.
     @Test

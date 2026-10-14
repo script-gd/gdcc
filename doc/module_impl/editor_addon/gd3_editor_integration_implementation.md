@@ -30,8 +30,15 @@
   的版本门槛；光标定位、码点行列计算、擦除视图前向映射与查询结果映射集中于
   `GdccLookupService`，语言入口仅委托。`request_lookup` 原始传输入口也拒绝旧版本，
   防止绕过门槛。此门槛独立于脚本创建对话框的 `> 4.6.0` 限制。
+- 2026-10-14 修订：`_complete_code` 的 `call_hint` 转发到内置 GDScript LSP 的
+  `textDocument/signatureHelp`。补全请求成功后复用同一已同步文档与码点位置追加一次
+  有界查询；映射器从签名 label 的顶层参数列表截取完整参数片段，并用成对
+  `String.chr(0xFFFF)` 标记 `activeParameter`。补全失败仍整体降级；签名查询失败仅
+  返回空 hint，不丢弃已成功的补全结果。Godot 4.5.1 引擎用例 `lsp_completion` 18 步
+  全绿，含映射白盒与同文件函数调用的真实 LSP 往返。
 - 2026-10-14 验收：`EditorAddonScriptLanguageAnalysisTest` 5 项全绿；Godot 4.5.1
   `lookup_suspended` 9 步全绿，`lsp_lookup` 按版本跳过；Godot 4.6.3 与 4.7.0
+
   均通过 `lsp_lookup` 15 步及 `lookup_suspended` 9 步，含真实编辑器符号信号后
   原资源身份、缓存路径与保存往返检查。4.6.0 和 4.8 开发版尚未实测。
 - 2026-10-13 修订（编译后端）：Build 菜单通过 `server.availableCCompilerKinds` 获取可用
@@ -435,15 +442,18 @@
     共享助手 `lsp_uri_for(path)`（包装既有 `_path_to_uri`，与 `vfs_path` 同级）；
     语言侧 `_complete_code` 负责哨兵定位/剔除、0-based 码点 (line, character) 计算与
     LSP → 引擎选项映射（与 `_validate` 的"服务给裸数据、语言做映射"分工一致）。
-  - `EditorAddonScriptLanguageEngineTest` 新增 `lsp_completion` 用例（16 步全绿）：
+  - `EditorAddonScriptLanguageEngineTest` 新增 `lsp_completion` 用例（18 步全绿）：
     `complete_degraded`（客户端未 READY → 降级字典）；`kind_mapping` /
     `insert_text_priority`（映射表与 insert 文本优先级的白盒锚定——服务端发出哪些
-    kind 不可控，故映射合同直接钉死）；`complete_keywords`（类体内标识符前缀 `f` 后
+    kind 不可控，故映射合同直接钉死）；`call_hint_mapping`（SignatureHelp active
+    signature/parameter 与嵌套默认值的高亮片段白盒锚定）；`complete_keywords`（类体内标识符前缀 `f` 后
     触发，`options` 非空且含 `func`，每项七键齐全（§2.2 必填键；
     `matches` 为可选项，4.5 `script_language_extension.h` 以 `op.has("matches")`
     守卫读取）且 `font_color`/`location` 类型值钉死、kind ∈ [0,9]）；
     `complete_empty_context`（空行 → OK + 空选项的合法空结果，与降级形状区分）；
-    `complete_member`（`v.` 成员补全含 `x`）；`complete_cjk`（R11 残余锚定：emoji 在
+    `complete_member`（`v.` 成员补全含 `x`）；`complete_call_hint`（真实 LSP
+    signatureHelp 往返，同文件函数第二参数的类型+默认值片段被 0xFFFF 对标记）；
+    `complete_cjk`（R11 残余锚定：emoji 在
     光标同行之前且光标后有文本，码点误算会丢掉 `v.` 成员上下文而不再含 `y`）；
     `complete_no_sentinel`（无哨兵 → 降级字典）；`fifo_survives_completion`（补全
     重试在同一 URI 上积压的 generation 不破坏后续同步的按代绑定：新错误同步的
@@ -1300,7 +1310,7 @@ Godot 编辑器
      脚本无法驱动服务端运行期重启；引擎测试改用端点强制断开 + 插件禁用/启用覆盖
      客户端重连路径（用户从设置对话框修改的引擎行为不变）。
 - 协议为标准 LSP（`Content-Length` 帧头 + JSON-RPC）。已实现方法含 `initialize`、
-  `textDocument/didOpen|didChange|didClose|completion|hover|definition|references|
+  `textDocument/didOpen|didChange|didClose|completion|signatureHelp|hover|definition|references|
   rename|documentSymbol` 等；诊断由服务端经 `textDocument/publishDiagnostics` 推送，
   但默认只发给最近初始化的那个客户端（`LSP_MAX_CLIENTS=8`，`notify_client` 默认
   目标是 `latest_client_id`）：外部 LSP 客户端（如 VSCode）并存时诊断可能发给别人，
@@ -1528,7 +1538,7 @@ scheduler，最后统一 `refresh_busy`）、协调广播（`broadcast_module_re
 `GdccFileReconciler`（磁盘↔VFS 文件集合对账）、`GdccDiagScheduler`（单飞
 upload+analyze 链、镜像版本、失败退避、结果合并）、`GdccSourceRegistry`（内容真值表
 /脏跟踪/墓碑）、`GdccDiagCache`（版本门禁诊断缓存）、`GdccCompletionService`（无状态
-补全切片，无 tick/busy/关停挂接）、`GdccClassNameEraser`（Phase 7 擦除：视图变换 +
+补全与 signature-help 切片，无 tick/busy/关停挂接）、`GdccClassNameEraser`（Phase 7 擦除：视图变换 +
 准入备忘 + GDExtensionManager 翻转监听；翻转的编辑器侧重同步/重校验机制留在根上，
 `lsp_safe_text` 等语言门面为根到子节点的委托）。子节点经根访问器
 （`rpc_client()`/`lifecycle()`/`registry()`/`cache()`/`reconciler()`/`scheduler()`）
@@ -1858,7 +1868,9 @@ RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
 1. `idx := code.find(String.chr(0xFFFF))`；`idx < 0` → 返回
    `{"result": ERR_UNAVAILABLE, "force": false, "call_hint": "", "options": []}`。
 2. 由 `idx` 计算 0-based `(line, character)`，剔除哨兵得纯净文本，先同步文档再
-   `request_blocking("textDocument/completion", ...)`，预算 ≤400ms。
+   `request_blocking("textDocument/completion", ...)`，预算 ≤400ms。补全成功后复用同一
+   已同步文档与位置追加 `request_blocking("textDocument/signatureHelp", ...)`，预算
+   ≤200ms；签名查询失败、超时或无结果只产生空 `call_hint`，不丢弃已成功的补全应答。
 3. 结果映射（LSP `CompletionItem` → 引擎 option）：
    - `display := item.label`；
      `insert_text := item.textEdit.newText ?? item.insertText ?? label`。
@@ -1869,8 +1881,13 @@ RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
      映射；其余→9(PLAIN_TEXT)。（4.5 无 KEYWORD kind。）
    - `font_color := Color(1, 1, 1)`，`icon := null`，`default_value := null`，
      `location := 1024`（`LOCATION_OTHER`）。
-4. 返回 `{"result": OK, "force": false, "call_hint": "", "options": options}`；
-   任何失败返回第 1 步的降级字典。注意空选项列表是合法的成功应答（引擎对无上下文
+4. `call_hint` 映射：读取 SignatureHelp 的 `signatures[activeSignature].label`，
+   按引号与括号深度拆分顶层参数列表，选中 `activeParameter` 对应的完整参数片段
+   （含类型与默认值），在其两侧插入成对 `String.chr(0xFFFF)`；编辑器绘制时移除该
+   标记并对当前参数做下划线/高亮。无可用签名、无参数或越界且无 vararg 槽时返回
+   原 label 或空串，不视为补全失败。
+5. 返回 `{"result": OK, "force": false, "call_hint": call_hint, "options": options}`；
+   任何补全失败返回第 1 步的降级字典。注意空选项列表是合法的成功应答（引擎对无上下文
    位置如实返回空，见 §7 Phase 4 偏差 1），不得坍缩为降级形状。
 
 ### 4.4 gdcc 诊断调度（全异步）
@@ -2094,7 +2111,9 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
 
 实施：`_complete_code`（§4.3）——哨兵定位/剔除与码点位置计算在语言侧，同步+有界
 阻塞请求封装为无状态子节点 `GdccCompletionService`（§3.5 配方），服务根以
-`request_completion` 门面做前置守卫（ACTIVE + LSP READY + 线程模式）。
+`request_completion` 门面做前置守卫（ACTIVE + LSP READY + 线程模式）。2026-10-14
+起该子节点在补全成功后追加有界 `textDocument/signatureHelp`，语言侧把
+`signatures[activeSignature].label` 与 `activeParameter` 映射为 `call_hint`。
 验收：
 - 引擎测试：~~对固定样例（类体内空行，含 0xFFFF 哨兵）~~ **实施期修正**：类体内纯
   空行在引擎侧得到 `COMPLETION_NONE` 上下文而合法返回零选项（与 `.gd` 一致），
@@ -2103,8 +2122,8 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
   "OK + 空选项"边界锚点；无哨兵输入返回降级字典；另含成员补全、CJK 码点锚定、
   补全流量的 FIFO 按代绑定锚定、禁用态安全应答与循环后 `_validate` 健康检查
   （见文档状态节 Phase 4 条目）。
-- 手动：真实编辑器中 `.gd3` 内触发补全，成员/关键字弹窗与 `.gd` 行为相当；输入无
-  可感知卡顿（上限 400ms）。
+- 手动：真实编辑器中 `.gd3` 内触发补全，成员/关键字弹窗与 `.gd` 行为相当；函数调用
+  输入 `(`/`,` 时显示参数提示；输入无可感知卡顿（补全 ≤400ms，签名提示 ≤200ms）。
 
 ### Phase 5：诊断可见性修复（手动测试回归驱动）
 

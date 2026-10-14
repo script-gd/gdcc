@@ -27,8 +27,9 @@ extends Node
 ##   * `GdccDiagScheduler` — single-flight upload+analyze chain and merge;
 ##   * `GdccSourceRegistry` — content truth table and dirty tracking;
 ##   * `GdccDiagCache` — version-gated diagnostics cache;
-##   * `GdccCompletionService` — stateless synchronous LSP completion slice (plan §4.3);
-##     no tick/busy/hook wiring because its whole flow is one inline bounded pump.
+##   * `GdccCompletionService` — stateless synchronous LSP completion + signature-help
+##     slice (plan §4.3); no tick/busy/hook wiring because its whole flow is inline bounded
+##     pumps.
 ##   * `GdccLookupService` — Phase 9 symbol-lookup slice (`_lookup_code`): the same
 ##     stateless inline shape as completion (sync + bounded hover/definition requests).
 ##   * `GdccClassNameEraser` — Phase 7 conditional `class_name` erasure for the LSP sync view:
@@ -239,8 +240,9 @@ func lsp_diagnostics_for(path: String) -> Array:
 ## ACTIVE with a handshake-verified READY client AND a thread-mode server — inline bounded
 ## waiting starves a main-thread-polled server (§2.6), so the session degrades instead.
 ## Failure answers share the client's `{"ok": false, "error": ...}` shape, so the language
-## only ever branches on `ok`. The raw LSP result is returned unmapped; option mapping is
-## the language's engine-contract job (same split as `_validate` mapping raw diagnostics).
+## only ever branches on `ok`. The raw LSP completion result and the optional raw
+## signature-help result are returned unmapped; option/hint mapping is the language's
+## engine-contract job (same split as `_validate` mapping raw diagnostics).
 func request_completion(path: String, text: String, line: int, col: int) -> Dictionary:
     if not _active or _completion == null:
         return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "completion unavailable"}}

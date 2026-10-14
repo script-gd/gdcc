@@ -266,7 +266,12 @@ func _complete_code(code: String, path: String, owner: Object) -> Dictionary:
             path, str(view["text"]), int(mapped["line"]), int(mapped["character"]))
     if response.get("ok") != true:
         return _completion_degraded()
-    return {"result": OK, "force": false, "call_hint": "", "options": _completion_options(response.get("result"))}
+    return {
+        "result": OK,
+        "force": false,
+        "call_hint": _completion_call_hint(response.get("signature")),
+        "options": _completion_options(response.get("result")),
+    }
 
 
 ## The safe failure answer. All four keys are mandatory: a missing `result` is treated as
@@ -309,6 +314,115 @@ func _completion_options(result: Variant) -> Array:
             "location": 1024,
         })
     return options
+
+
+## LSP SignatureHelp → CodeEdit's call hint. The editor highlights the active argument
+## between a pair of 0xFFFF markers and removes those markers before drawing. Godot's
+## SignatureInformation label carries the full parameter text while parameters[] only carry
+## names, so the marker span is recovered from the label's top-level parameter list.
+func _completion_call_hint(signature_help: Variant) -> String:
+    if not (signature_help is Dictionary):
+        return ""
+    var signatures_value: Variant = signature_help.get("signatures", [])
+    if not (signatures_value is Array):
+        return ""
+    var signatures: Array = signatures_value
+    if signatures.is_empty():
+        return ""
+    var active_signature: int = int(signature_help.get("activeSignature", 0))
+    if active_signature < 0 or active_signature >= signatures.size():
+        return ""
+    var signature_value: Variant = signatures[active_signature]
+    if not (signature_value is Dictionary):
+        return ""
+    var signature: Dictionary = signature_value
+    var label: String = str(signature.get("label", "")).replace(String.chr(0xFFFF), "")
+    if label.is_empty():
+        return ""
+    var active_parameter: int = int(signature_help.get("activeParameter", 0))
+    var spans: Array[Dictionary] = _signature_parameter_spans(label)
+    if active_parameter < 0 or spans.is_empty():
+        return label
+    if active_parameter >= spans.size():
+        var last_span: Dictionary = spans[spans.size() - 1]
+        var last_text: String = label.substr(int(last_span["start"]), int(last_span["end"]) - int(last_span["start"]))
+        if not last_text.begins_with("..."):
+            return label
+        active_parameter = spans.size() - 1
+    var span: Dictionary = spans[active_parameter]
+    var start: int = int(span["start"])
+    var end: int = int(span["end"])
+    return label.substr(0, start) + String.chr(0xFFFF) + label.substr(start, end - start) \
+            + String.chr(0xFFFF) + label.substr(end)
+
+
+## Returns the code-point spans of the label's top-level parameters. Quotes and nested
+## containers are skipped so defaults like `Callable()` or `{"x": 1}` do not split early.
+func _signature_parameter_spans(label: String) -> Array[Dictionary]:
+    var spans: Array[Dictionary] = []
+    var open_index: int = label.find("(")
+    if open_index < 0:
+        return spans
+    var paren_depth: int = 0
+    var bracket_depth: int = 0
+    var brace_depth: int = 0
+    var quote: int = 0
+    var escaped: bool = false
+    var span_start: int = open_index + 1
+    var close_index: int = -1
+    var index: int = span_start
+    while index < label.length():
+        var ch: int = label.unicode_at(index)
+        if quote != 0:
+            if escaped:
+                escaped = false
+            elif ch == 92:
+                escaped = true
+            elif ch == quote:
+                quote = 0
+            index += 1
+            continue
+        if ch == 34 or ch == 39:
+            quote = ch
+        elif ch == 40:
+            paren_depth += 1
+        elif ch == 41:
+            if paren_depth == 0:
+                close_index = index
+                var tail: Dictionary = _signature_parameter_span(label, span_start, index)
+                if not tail.is_empty():
+                    spans.append(tail)
+                break
+            paren_depth -= 1
+        elif ch == 91:
+            bracket_depth += 1
+        elif ch == 93 and bracket_depth > 0:
+            bracket_depth -= 1
+        elif ch == 123:
+            brace_depth += 1
+        elif ch == 125 and brace_depth > 0:
+            brace_depth -= 1
+        elif ch == 44 and paren_depth == 0 and bracket_depth == 0 and brace_depth == 0:
+            var span: Dictionary = _signature_parameter_span(label, span_start, index)
+            if not span.is_empty():
+                spans.append(span)
+            span_start = index + 1
+        index += 1
+    if close_index < 0:
+        return []
+    return spans
+
+
+func _signature_parameter_span(label: String, start: int, end: int) -> Dictionary:
+    var first: int = start
+    while first < end and (label.unicode_at(first) == 32 or label.unicode_at(first) == 9):
+        first += 1
+    var last: int = end
+    while last > first and (label.unicode_at(last - 1) == 32 or label.unicode_at(last - 1) == 9):
+        last -= 1
+    if first >= last:
+        return {}
+    return {"start": first, "end": last}
 
 
 ## Insert-text precedence (plan §4.3): `textEdit.newText`, then `insertText`, then the
