@@ -25,7 +25,7 @@ const SERVICE_NODE_NAME := "GdccEditorService"
 const SETTING_LSP_USE_THREAD := "network/language_server/use_thread"
 const SETTING_LSP_HOST := "network/language_server/remote_host"
 const SETTING_LSP_PORT := "network/language_server/remote_port"
-const SETTING_LAUNCH_COMMAND := "gdcc/server/launch_command"
+const SETTING_LAUNCH_COMMAND := "gdcc/compilation_server/launch_command"
 const SETTING_SERVER_HOST := "gdcc/server/host"
 const SETTING_SERVER_PORT := "gdcc/server/port"
 
@@ -121,7 +121,7 @@ func _enter_tree() -> void:
     # PER-PROJECT settings (project.godot) so a project's server setup is versioned and
     # shared with its contributors; register the schema with defaults, seeding from the
     # pre-2026-10 machine-local EditorSettings values when this project never customized the
-    # key (one-time migration; the legacy keys are left untouched for downgrade safety, and
+    # key (one-time migration; the machine-local keys are left untouched for downgrade safety, and
     # the seeded values stay in-memory until the user saves the project).
     var migrated := false
     if not ProjectSettings.has_setting(SETTING_SERVER_HOST):
@@ -147,14 +147,20 @@ func _enter_tree() -> void:
         "name": SETTING_SERVER_PORT, "type": TYPE_INT, "hint": PROPERTY_HINT_RANGE,
         "hint_string": "1,65535",
     })
+    var legacy_launch_key := "gdcc/server/launch_command"
     if not ProjectSettings.has_setting(SETTING_LAUNCH_COMMAND):
         var command := ""
-        if editor_settings.has_setting(SETTING_LAUNCH_COMMAND):
-            var legacy_command := str(editor_settings.get_setting(SETTING_LAUNCH_COMMAND)).strip_edges()
+        if ProjectSettings.has_setting(legacy_launch_key):
+            command = str(ProjectSettings.get_setting(legacy_launch_key))
+            migrated = true
+        elif editor_settings.has_setting(legacy_launch_key):
+            var legacy_command := str(editor_settings.get_setting(legacy_launch_key)).strip_edges()
             if legacy_command != "":
                 command = legacy_command
                 migrated = true
         ProjectSettings.set_setting(SETTING_LAUNCH_COMMAND, command)
+    if ProjectSettings.has_setting(legacy_launch_key):
+        ProjectSettings.set_setting(legacy_launch_key, null)
     ProjectSettings.set_initial_value(SETTING_LAUNCH_COMMAND, "")
     ProjectSettings.add_property_info({
         "name": SETTING_LAUNCH_COMMAND,
@@ -163,7 +169,7 @@ func _enter_tree() -> void:
         "hint_string": "gdcc serve --host {host} --port {port}",
     })
     if migrated:
-        push_warning("GDCC: server settings migrated from machine-local editor settings into this project's settings (gdcc/server/*); save the project to persist them.")
+        push_warning("GDCC: server settings migrated into this project's gdcc/server and gdcc/compilation_server settings; save the project to persist them.")
     # Project-level sync exclusion globs: `String.match` patterns against res://-relative
     # paths. Name and default are single-sourced from the resident service (it owns the
     # matching predicate).
@@ -182,6 +188,11 @@ func _enter_tree() -> void:
         ProjectSettings.set_setting(ProjectManagerScript.SETTING_STRICT_MODE, false)
     ProjectSettings.set_initial_value(ProjectManagerScript.SETTING_STRICT_MODE, false)
     ProjectSettings.add_property_info({"name": ProjectManagerScript.SETTING_STRICT_MODE, "type": TYPE_BOOL})
+    if not ProjectSettings.has_setting(ProjectManagerScript.SETTING_C_COMPILER_KIND):
+        ProjectSettings.set_setting(ProjectManagerScript.SETTING_C_COMPILER_KIND, "AUTO")
+    ProjectSettings.set_initial_value(ProjectManagerScript.SETTING_C_COMPILER_KIND, "AUTO")
+    ProjectSettings.add_property_info({"name": ProjectManagerScript.SETTING_C_COMPILER_KIND,
+            "type": TYPE_STRING, "hint": PROPERTY_HINT_ENUM, "hint_string": "AUTO,ZIG_CC,TINY_CC"})
 
     # 4) Server launcher (single-flight coordinator shared by project manager and service;
     #    its busy reports point at this plugin's coordinator — see `_report_busy`).

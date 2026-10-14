@@ -1,4 +1,4 @@
-// TinyCC CLI build orchestration for the test suite.
+// TinyCC host CLI build orchestration.
 //
 // The vendored sources (src/main/c/tinycc, including the local transparent u8"..." patch) are
 // compiled into build/tinycc/<platformKey>/ by build-script/build-tinycc-cli-<platformKey>.sh|bat.
@@ -54,6 +54,7 @@ val buildTinyccCli by tasks.registering(Exec::class) {
         // forces a rebuild.
         inputs.dir(layout.projectDirectory.dir("src/main/c/tinycc"))
         inputs.files(tinyccCliBuildScript(platformKey))
+        outputs.dir(workTree.map { it.dir("include") })
         // The marker is written last by the script, after its u8 probe passes; a killed build
         // leaves binary/archive without it and is therefore never considered up-to-date.
         // include/tccdefs.h (and lib/kernel32.def on Windows) are declared because the tests'
@@ -65,7 +66,7 @@ val buildTinyccCli by tasks.registering(Exec::class) {
             workTree.map { it.file(if (platformKey.startsWith("windows")) "lib/libtcc1.a" else "libtcc1.a") },
         )
         if (platformKey.startsWith("windows")) {
-            outputs.file(workTree.map { it.file("lib/kernel32.def") })
+            outputs.dir(workTree.map { it.dir("lib") })
         }
 
         doFirst {

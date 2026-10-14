@@ -7,6 +7,7 @@ signal settings_requested
 const ICON_PATH := "res://addons/gdcc/gdcc_script.svg"
 const SETTING_OPTIMIZATION_LEVEL := "gdcc/build/optimization_level"
 const SETTING_STRICT_MODE := "gdcc/build/strict_mode"
+const SETTING_C_COMPILER_KIND := "gdcc/build/c_compiler_kind"
 const SPINNER_FRAMES := "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 
 var _manager: Node
@@ -17,6 +18,11 @@ var _version_label: Label
 var _last_build_label: Label
 var _optimization: OptionButton
 var _strict_mode: CheckButton
+var _backend: OptionButton
+var _backend_kinds: Array = []
+var _warning_row: HBoxContainer
+var _warning_icon: TextureRect
+var _warning_label: Label
 var _settings_button: Button
 var _settings_dialog: AcceptDialog
 var _settings_filter: LineEdit
@@ -66,6 +72,28 @@ func _ready() -> void:
     _last_build_label = Label.new()
     content.add_child(_last_build_label)
     content.add_child(HSeparator.new())
+
+    var backend_row := HBoxContainer.new()
+    var backend_label := Label.new()
+    backend_label.text = "Compilation Backend"
+    backend_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    backend_row.add_child(backend_label)
+    _backend = OptionButton.new()
+    # The longest-item size cache is deferred; initial popup sizing needs the current text now.
+    _backend.fit_to_longest_item = false
+    _backend.add_item("Auto")
+    _backend.set_item_metadata(0, "AUTO")
+    _backend.tooltip_text = "Auto uses Builtin for Debug and Zig for Release; explicit selections override this rule."
+    _backend.item_selected.connect(_on_backend_selected)
+    backend_row.add_child(_backend)
+    content.add_child(backend_row)
+    _warning_row = HBoxContainer.new()
+    _warning_icon = TextureRect.new()
+    _warning_icon.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
+    _warning_row.add_child(_warning_icon)
+    _warning_label = Label.new()
+    _warning_row.add_child(_warning_label)
+    content.add_child(_warning_row)
 
     var options_row := HBoxContainer.new()
     var label := Label.new()
@@ -119,13 +147,36 @@ func _apply_theme() -> void:
     _build_button.add_theme_font_override("font", get_theme_font("bold", "EditorFonts"))
     _menu_button.icon = get_theme_icon("GuiOptionArrow", "EditorIcons")
     _settings_button.icon = get_theme_icon("Tools", "EditorIcons")
+    _warning_icon.texture = get_theme_icon("StatusWarning", "EditorIcons")
+    var warning_color := get_theme_color("warning_color", "Editor")
+    _warning_icon.modulate = warning_color
+    _warning_label.add_theme_color_override("font_color", warning_color)
 
 
 func _refresh_state() -> void:
     if _build_button == null:
         return
     var enabled: bool = _manager.can_start_action()
-    _build_button.disabled = not enabled
+    var warning: String = _manager.build_warning()
+    _build_button.disabled = not enabled or warning != ""
+    _warning_label.text = warning
+    _warning_row.visible = warning != ""
+    var kinds: Array = _manager.available_c_compiler_kinds
+    if kinds != _backend_kinds:
+        _backend_kinds = kinds.duplicate()
+        _backend.clear()
+        _backend.add_item("Auto")
+        _backend.set_item_metadata(0, "AUTO")
+        for kind in kinds:
+            _backend.add_item({"ZIG_CC": "Zig", "TINY_CC": "Builtin"}.get(kind, kind))
+            _backend.set_item_metadata(_backend.item_count - 1, kind)
+    var selected := str(ProjectSettings.get_setting(SETTING_C_COMPILER_KIND, "AUTO"))
+    _backend.select(-1)
+    for index in range(_backend.item_count):
+        if _backend.get_item_metadata(index) == selected:
+            _backend.select(index)
+            break
+    _backend.disabled = not enabled or kinds.is_empty()
     var building: bool = _manager.is_building()
     if building and not is_processing():
         _spinner_index = 0
@@ -138,6 +189,10 @@ func _refresh_state() -> void:
     _refresh_time()
     _optimization.select(1 if ProjectSettings.get_setting(SETTING_OPTIMIZATION_LEVEL, "DEBUG") == "RELEASE" else 0)
     _strict_mode.set_pressed_no_signal(bool(ProjectSettings.get_setting(SETTING_STRICT_MODE, false)))
+    if _popup.visible:
+        var popup_size := Vector2i(_popup.get_contents_minimum_size())
+        if _popup.size != popup_size:
+            _popup.popup(Rect2i(_popup.position, popup_size))
 
 
 func _refresh_time() -> void:
@@ -177,6 +232,14 @@ func _on_strict_mode_toggled(enabled: bool) -> void:
         _refresh_state()
         return
     ProjectSettings.set_setting(SETTING_STRICT_MODE, enabled)
+    _save_settings()
+
+
+func _on_backend_selected(index: int) -> void:
+    if not _manager.can_start_action() or _backend.disabled or index < 0 or index >= _backend.item_count:
+        _refresh_state()
+        return
+    ProjectSettings.set_setting(SETTING_C_COMPILER_KIND, _backend.get_item_metadata(index))
     _save_settings()
 
 

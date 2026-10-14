@@ -21,7 +21,11 @@ final class RpcHttpTestClient {
     private long nextId = 1;
 
     RpcHttpTestClient(JsonRpcServer server) {
-        endpoint = URI.create("http://" + server.host() + ":" + server.port() + "/rpc");
+        this(URI.create("http://" + server.host() + ":" + server.port() + "/rpc"));
+    }
+
+    RpcHttpTestClient(URI endpoint) {
+        this.endpoint = endpoint;
     }
 
     /// Posts one request and returns the raw response envelope for explicit result/error asserts.

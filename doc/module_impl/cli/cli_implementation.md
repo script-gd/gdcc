@@ -178,7 +178,11 @@ launcher 使用自身可执行文件同级目录作为本地工具链优先搜�
 
 Windows Java 常见系统位置包括 `%ProgramW6432%`、`%ProgramFiles%`、`%ProgramFiles(x86)%` 下的常见 JDK vendor 目录，以及 `%USERPROFILE%/.jdks` 和 `%LOCALAPPDATA%/Programs/Java` 下的一层 JDK 目录。
 
-native 构建环境合同按后端不同：zig 后端使用 zig 自带 sysroot，构建自给；tinycc 后端的 bundle 构建依赖宿主开发头/CRT/库（Linux 为 glibc 开发环境，macOS 为 Xcode CLT/SDK 且 sysinclude 绝对路径烤入构建机），两后端产物在 Linux 上均动态链接 glibc，部署兼容性以实测动态依赖为准。当前 zip 分发不携带 tinycc bundle（bundle 的 jar 打包与分发属后续工作）；`--backend tcc` 的可用性取决于 `GDCC_TINYCC_HOME` 指向的已安装 bundle 或 classpath 上的 bundle 资源，详见 `../backend/tinycc_compiler_implementation.md`。
+native 构建环境合同按后端不同：zig 后端使用 zig 自带 sysroot，构建自给；TinyCC bundle 矩阵由独立的 `gradle/tinycc-bundle.gradle.kts` 构建任务调用 Zig 交叉构建，不需构建机的目标 SDK，但 TinyCC 运行时仍需目标机开发头/CRT/库（Linux 为 glibc 开发环境，macOS 为标准 CLT SDK）。两后端产物在 Linux 上均动态链接 glibc，部署兼容性以实测动态依赖为准。每个主 JAR 在 `gdcc/tinycc-bundle/<platformKey>/` 同时携带 Windows x86_64、Linux x86_64、Linux aarch64、macOS aarch64 四套完整 bundle，zip 随该 JAR 分发；运行时按本机平台从 classpath 校验并安装到用户缓存，不要求设置 `GDCC_TINYCC_HOME`。该变量仍是显式覆盖且优先级不变，详见 `../backend/tinycc_compiler_implementation.md`。
+
+`processResources` 依赖四平台 `buildTinyccBundle`，完整矩阵成功后统一发布至
+`build/tinycc-bundle/` 并复制到主 JAR。平台 zip 打包前仍确认其对应平台 MANIFEST 存在；
+不需要人工 stage 平台载荷。构建载荷的交叉编译不扩展 TinyCC 运行时的 host == target 边界。
 
 ---
 

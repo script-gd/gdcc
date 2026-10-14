@@ -25,6 +25,9 @@
   api+rpc 全量回归无回归，双评审终审 APPROVE；手动验收项见 Phase 10 验收节）；
   已经过多轮并行评审并修订）
 - 更新日期：2026-10-13
+- 2026-10-13 修订（编译后端）：Build 菜单通过 `server.availableCCompilerKinds` 获取可用
+  后端，新增默认 Auto 的项目级选择；断连、无后端或查询失败时禁用构建并显示前置警告
+  图标的黄色提示。启动命令改为 `gdcc/compilation_server/launch_command`，旧项目键一次性迁移。
 - 2026-10-13 修订：dock 精简为单行连接/上次诊断/上次成功构建状态与填满剩余空间的
   只读输出，移除模块输入及 Ping/Create/Analyze/Build/Cancel 按钮，仅保留清空输出图标。
   dock 与标题栏 Build 菜单共用秒/分钟/小时/天的相对时间格式，空闲时每秒刷新；详见
@@ -1645,7 +1648,7 @@ dock 保留 gdcc 诊断通道连接状态、上次诊断及上次成功构建的
 项目管理器在 gdcc 语言注册之前就持有它。形态为 `Node`，由 plugin.gd 创建并挂为
 子节点，项目管理器与 `GdccEditorService` 共用同一实例（拉起是单飞操作，需要单点协调）。
 
-- 配置：**项目级设置** `gdcc/server/launch_command`（String，默认 `""` = 不自动拉起，
+- 配置：**项目级设置** `gdcc/compilation_server/launch_command`（String，默认 `""` = 不自动拉起，
   保持纯被动连接行为）。2026-10 起由 EditorSettings 迁入 ProjectSettings
   （project.godot）：端点与启动命令属于"项目使用哪台编译服务"的配置，应随项目
   版本化并共享给协作者（与排除 glob `gdcc/sync/excluded_globs` 同一先例）。plugin.gd
@@ -1655,6 +1658,9 @@ dock 保留 gdcc 诊断通道连接状态、上次诊断及上次成功构建的
   提示保存项目；遗留 EditorSettings 键保留不删，便于降级回退）。launcher 每次拉起前
   重新读取（不缓存），项目设置对话框的编辑对下次拉起即生效。机器相关的可执行文件
   路径若不便提交，可把命令留空、改用外部启动的服务（被动连接行为不变）。
+  旧项目的 `gdcc/server/launch_command` 在新键不存在时迁入，随后移除旧项目键；两键
+  并存时保留新键。旧机器级启动命令仍从原 EditorSettings 键播种。host/port 仍为
+  `gdcc/server/host`、`gdcc/server/port`，不随启动命令改名。
 - 命令模板：支持 `{host}` / `{port}` 占位符，拉起前替换为目标端点；典型值使用 zig
   启动器 `gdcc serve --host {host} --port {port}`（zig 启动器原样转发参数给 jar，
   `json_rpc_service_implementation.md` §2.5；非 PATH 安装时写启动器的完整路径，如
@@ -2015,7 +2021,7 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
   + `load_threaded_get` 的 worker 线程加载路径同样成功（覆盖 §2.4 约束）；
   直接调用语言的 `_validate` 返回 `valid == true`。
 - 拉起功能引擎测试（同 harness）：Java 侧先找一个空闲端口但不侦听，驱动插件把
-  项目设置 `gdcc/server/launch_command` 设为
+  项目设置 `gdcc/compilation_server/launch_command` 设为
   `java -cp <测试 classpath> gd.script.gdcc.Main serve --host {host} --port {port}`
   （占位符由 launcher 替换为该端口；测试自包含，不依赖预构建 jar——与生产推荐的
   zig 启动器 `gdcc serve` 形式不同，见文档状态节偏差 3；2026-10 前写入
@@ -2523,8 +2529,10 @@ Release DLL 在 Debug 编辑器中重载并改变存活实例行为；非法配�
   不补帧。成功启用或构建操作失败、取消、轮询超时后恢复 `Build`；空闲时不运行动画。
   管理器单独发布构建状态，不把 Ping/Create/Analyze 等其他忙操作误显示为构建。
 - 弹出窗口显示 `server.info` 返回的版本/分支/commit 和 **Last successful build**。
-  服务版本查询使用独立客户端，不能改写正在构建的端点；端点改变后的旧响应不更新 UI，
-  且清除旧端点版本显示；空闲状态轮询同样使已缓存的旧端点版本失效。PopupPanel
+  服务版本与 `server.availableCCompilerKinds` 查询共用独立客户端，不能改写正在构建的
+  端点；诊断通道就绪后自动查询，每五秒及打开菜单时刷新。端点改变或断连后清除缓存，
+  且旧端点响应不更新 UI。查询使用具名信号回调，不依赖会被脚本重载取消的挂起 await，
+  避免查询状态和 busy 引用滞留。PopupPanel
   显式使用编辑器主题，并随标题栏主题变化更新。
   自动换行的版本标签具有与内容容器一致的最小宽度，避免隐藏窗口首次布局前按零宽度
   折行、将弹窗最小高度放大；首次打开无需先构建或等待定时器即可按内容高度显示。
@@ -2532,9 +2540,15 @@ Release DLL 在 Debug 编辑器中重载并改变存活实例行为；非法配�
   保存于项目 editor metadata `gdcc/last_build_time`，不混入共享项目配置。
 - 新项目配置 `gdcc/build/optimization_level` 为字符串枚举 `DEBUG`/`RELEASE`，默认
   `DEBUG`；`gdcc/build/strict_mode` 为 bool，默认 false，沿用 API 的编译策略字段。
+  `gdcc/build/c_compiler_kind` 默认为 `AUTO`；菜单始终额外保留 **Auto**，其他项仅来自
+  RPC 的可用后端列表，`ZIG_CC` 显示为 Zig，`TINY_CC` 显示为 Builtin。Auto 回传 null，
+  沿用服务端 Debug→TinyCC、Release→Zig 的规则，不按可用列表另行回退。
+  未连接到编译服务、无可用后端或查询失败时，Build 禁用，菜单显示以编辑器警告图标开头
+  的黄色提示；不可用的已保存显式选择同样禁用 Build，用户可重新选择 Auto 或可用后端。
   下拉修改即时更新 ProjectSettings 并检查 `ProjectSettings.save()` 返回值。
   构建点击时冻结选择，`options.get` 获取完整副本快照，仅改 `projectPath`、
-  `optimizationLevel` 和 `strictMode` 后整体回传；不修改诊断模块选项。构建中的设置
+  `optimizationLevel`、`strictMode` 和 `cCompilerKind` 后整体回传；Auto 显式覆盖继承的
+  后端选择，不修改诊断模块选项。构建中的设置
   编辑只影响下一次构建，不新增自动保存源码或排空诊断上传队列的保证。
 - 弹出窗口最底部为占满内容宽度的 **GDCC Project Settings** 按钮，打开真实的
   Project Settings General 页面、启用 Advanced Settings 并过滤 `gdcc`，选中可编辑的
@@ -2545,7 +2559,8 @@ Release DLL 在 Debug 编辑器中重载并改变存活实例行为；非法配�
 - 卸载先释放两个视图，再释放管理器（副本所有权清理及 busy 排空），之后注销诊断服务，
   最后关闭本插件拉起的服务器。失败安装同样回收管理器，不留下半安装状态。
 - 测试锚点：`buildToolbarSharesProjectManagerAndNavigatesSettings` 检查真实标题栏位置、
-  首次/再次弹出的内容高度、箭头焦点策略、菜单内容、版本查询、配置持久化、共享
+  首次/再次弹出的内容高度、箭头焦点策略、菜单内容、版本/后端查询、Auto 与显式选择
+  持久化、断连/无后端/查询失败提示、重连恢复、查询期间脚本重载与旧端点隔离、启动命令迁移、共享
    busy/待启用门、点阵顺序/循环/单步节拍、动画恢复、设置导航及启停清理，另覆盖
    精简 dock 布局、相对时间边界/定时刷新、忙时清空输出及旧时间元数据读取；
    `dockCompileCopiesDiagnosticsModule` 两次均从标题栏构建，验证同一
@@ -2713,7 +2728,7 @@ disk-known 路径置墓碑（否则取消排除后永不复纳）；(3)（低，
 
 harness：复制 `src/editor_addon` 到 `tmp/test/editor_addon_script_language/<case>/`
 时排除 `.godot/` 和项目根 `bin/`，避免手动 Build 的游戏扩展在首次扫描中触发额外
-脚本重载。启动前清空副本的 `gdcc/server/launch_command`，由用例配置自己的端点
+脚本重载。启动前清空副本的 `gdcc/compilation_server/launch_command`，由用例配置自己的端点
 和拉起命令，不能继承源工程的相对 jar 路径。
 并安装编译产物（复用 `EditorAddonBootstrapEngineTest` 模式），**额外注入一个仅测试
 用的解释型驱动插件** `addons/gdcc_test_driver/`（`plugin.cfg` + `driver_plugin.gd`，
@@ -2730,7 +2745,7 @@ Java 侧逐行匹配 `GD3_TEST_RESULT: `；RPC 服务端 `127.0.0.1:0` 起停沿
 `install(..., rpc_host, rpc_port)`，或直接写服务下固定名 `GdccEditorRpcClient`
 子节点的 `host`/`port` 字段；§3.5 已要求每次 `install` 写回端点，两条路径等价）。
 拉起功能用例（Phase 1）反向操作：Java 侧只选定空闲端口而不启动服务，由驱动插件把
-项目设置 `gdcc/server/host|port|launch_command` 写好后触发连接（2026-10 前写
+项目设置 `gdcc/server/host|port` 与 `gdcc/compilation_server/launch_command` 写好后触发连接（2026-10 前写
 EditorSettings；迁移后写 harness 项目的 ProjectSettings，随用例目录天然隔离），
 验证自动拉起与退出关闭路径（§7 Phase 1 验收）。
 若 headless editor 路径在实现期证实不稳定，降级为：(a) 现有非编辑器 bootstrap 断言
@@ -2769,7 +2784,7 @@ EditorSettings；迁移后写 harness 项目的 ProjectSettings，随用例目�
 | R19 | 拉起进程的 PID 在会话内被系统复用，`shutdown_owned` 误杀无关进程 | 低 | 仅跟踪本会话 `create_process` 返回的 PID；`OS.kill` 仅在 `server.shutdown` 不可达**且**记录端点仍接受 TCP 连接时使用（双条件，§3.7）；会话级窗口内复用概率极低 |
 | R20 | 编辑器崩溃导致拉起的服务成为孤儿进程 | 低 | 崩溃路径本就无法执行插件代码；下次会话端口探测将其收养为外部服务（只连不关），不会泄漏累积（§3.7） |
 | R21 | `server.shutdown` 不可达（服务挂起/半死连接）时服务残留 | 低 | 2s 有界等待后按 R19 双条件决定是否 `OS.kill`；服务已死但 PID 被复用时宁可残留也不误杀；Windows 下硬切不执行 shutdown hook 的事实写入 §2.8 |
-| R22 | 启动命令以编辑器权限执行任意本地命令 | 低 | 命令仅来自项目所有者显式配置（2026-10 起为项目级设置 `gdcc/server/launch_command`，此前为机器级 EditorSettings），插件不自动生成命令文本；文档明示信任边界（§3.7）。项目级意味着 clone 他人项目即带入命令——与打开含 tool 脚本/编辑器插件的项目同属一类既有信任面（Godot 打开项目本就会执行其工具代码），评审陌生项目时应一并检查该键 |
+| R22 | 启动命令以编辑器权限执行任意本地命令 | 低 | 命令仅来自项目所有者显式配置（项目级设置 `gdcc/compilation_server/launch_command`，旧项目键 `gdcc/server/launch_command` 一次性迁移，此前为机器级 EditorSettings），插件不自动生成命令文本；文档明示信任边界（§3.7）。项目级意味着 clone 他人项目即带入命令——与打开含 tool 脚本/编辑器插件的项目同属一类既有信任面（Godot 打开项目本就会执行其工具代码），评审陌生项目时应一并检查该键 |
 | R24 | `validate_script` 信号触发重校验依赖编辑器内部信号接线（非公开 API 承诺） | 中 | 4.5 已核实接线（§2.5 末条）；Godot 升级时重跑 §2.5 核查；引擎测试以"无输入后 `_validate` 调用计数前进"锚定该路径（§7 Phase 5） |
 | R25 | `class_name` 擦除的行扫描可能误命中字符串/注释内的同名文本 | 低 | 行级迷你词法器（字符串转义/注释/`"""` 状态机）+ 行首无缩进锚定 + 首个匹配 + 顺序尾部解析（图标串/注释尾不注入基类）+ 陷阱样例测试（§7 Phase 7）；已知残余：多行字符串内转义引号的闭合歧义（词法近似，方向安全）、超时旧代诊断按当前视图反映射的一拍级列偏移（§7 Phase 7 评审保留项 3）；根治待编译器引用区间输出（评估项，不阻塞） |
 | R26 | 元数据 JSON→C 双层转义缺陷，或 `_gdcc_` 合成方法与用户代码冲突 | 中 | 复用 `StringUtil.escapeStringLiteral` + 转义矩阵测试；前端 `_gdcc_` 前缀保留规则（用户声明冲突即报错）；合成符号纳入 `validateFileScopeSymbolsDisjoint`（§7 Phase 6） |

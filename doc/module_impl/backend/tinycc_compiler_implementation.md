@@ -17,7 +17,7 @@
 
 ## 1. 定位与支持集
 
-- 定位：快速迭代与无 zig 环境的备选后端；zig 仍是默认与发布后端。libtcc 经 FFM 在 JVM 进程内调用，无子进程开销；代价是优化能力弱（不宣称与 zig `-O2`/LTO 对等）且无故障隔离（native 崩溃可终止 JVM，属已接受的取舍，worker 进程隔离列后续方向）。
+- 定位：默认 Debug 的快速迭代后端，也可在无 zig 运行环境中使用；zig 是默认 Release 与发布优化后端。libtcc 经 FFM 在 JVM 进程内调用，无子进程开销；代价是优化能力弱（不宣称与 zig `-O2`/LTO 对等）且无故障隔离（native 崩溃可终止 JVM，属已接受的取舍，worker 进程隔离列后续方向）。
 - 支持集 `{LINUX_X86_64, WINDOWS_X86_64, LINUX_AARCH64, MACOS_AARCH64}`，仅 host == target，不支持交叉编译；目标平台不等于本机或不在支持集时快速失败（不触碰 native 库），并指引改用 zig。macOS x86_64、Android、Web、linux-riscv64 不在路线图。
 - 编译器选择：`CCompilerKind { ZIG_CC, TINY_CC }`；`CompileOptions.cCompilerKind` 为 `null` 时按优化级别自动选择（debug→tcc、release→zig，`CCompilerKind.defaultFor`），显式值永远优先。RPC 线上字段缺失或显式 `null` 同义于自动，未知枚举名报错。CLI 为 `--backend zig|tcc`（大小写不敏感，非法值在 module 创建前返回 usage error）。
 - 非目标：`TCC_OUTPUT_MEMORY` JIT 执行、`tcc_run`、PCH、LTO/ThinLTO、PDB 生成；`CCompiler` 接口签名、`CProjectBuilder` 输入收集顺序、`.gdextension` 由 CLI 写入的合同不变。
@@ -56,8 +56,8 @@ tinycc-bundle/<platformKey>/            # linux-x86_64 / windows-x86_64 / linux-
   # _mingw.h 在顶层，禁止另建 include/win32/ 层级）；lib/{msvcrt,kernel32,user32,gdi32,...}.def
 ```
 
-- 平台路径合同：Windows 库路径为 `{B}/lib`（`lib/libtcc1.a`）；Linux/macOS 库路径为 `{B}` 根（`libtcc1.a` 置于 root），系统头/CRT 路径由 `configure` 产物决定（Linux 经 `CONFIG_TRIPLET`，macOS 烤入构建机 SDK 绝对路径）。
-- macOS 的 `bin/libtcc.dylib` 必须以 twolevel namespace 重建（flat namespace 会把 libtcc 全局符号错绑到进程内其他库的同名符号，首次 FFM 编译即崩溃）；bundle 脚本以 `otool -hv` 断言 `TWOLEVEL`、`codesign -v` 断言签名。
+- 平台路径合同：Windows 库路径为 `{B}/lib`（`lib/libtcc1.a`）；Linux/macOS 库路径为 `{B}` 根（`libtcc1.a` 置于 root）。交叉构建器按目标生成配置：Linux 经 `CONFIG_TRIPLET` 使用目标系统头/CRT；macOS 使用目标机标准 CLT 路径 `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr`，不烤入构建机路径。
+- macOS 的 `bin/libtcc.dylib` 必须使用 twolevel namespace（flat namespace 会把 libtcc 全局符号错绑到进程内其他库的同名符号，首次 FFM 编译即崩溃）。Zig 0.15.2 的 Mach-O 链接器默认设置 `MH_TWOLEVEL`，不接受 `-Wl,-twolevel_namespace`；交叉构建只设置可移植的 `@rpath/libtcc.dylib` install name，ARM64 ad-hoc 签名由 Zig 自动生成，矩阵测试检查 namespace、install name 与 `LC_CODE_SIGNATURE`。旧宿主脚本仍用 `otool -hv`/`codesign -v` 验证。
 - `tcc_set_lib_path` 指向 bundle 根；libtcc 本体路径仅用于 FFM `SymbolLookup.libraryLookup`；JAR 内 bundle 资源必须先落盘。
 
 ### 4.2 安装协议
@@ -90,11 +90,34 @@ tinycc-bundle/<platformKey>/            # linux-x86_64 / windows-x86_64 / linux-
 
 ## 8. 构建链与 CI
 
-- bundle 构建脚本（`build-script/build-tinycc-bundle-<platform>.sh`，Windows 宿主为 `.bat`）：Linux 双架构用 `zig cc`（`./configure --cc="zig cc"` → `make tcc` → `make libtcc.so` → `make libtcc1.a`）；Windows 在 Linux 上交叉构建用 `build-tinycc-bundle-windows-x86_64.sh`（`./configure --cc="zig cc" --config-predefs=no` → `make cross-x86_64-win32`，再以 `zig cc -target x86_64-windows-gnu -fno-sanitize=undefined -shared` 链接 `libtcc.dll`），Windows 宿主则用 `build-tinycc-bundle-windows-x86_64.bat`；两者均按上游 `install-win` 语义合并 winapi 头与 `.def`。macOS 用宿主 clang，且必须执行 twolevel 重建腿（`make -B LDFLAGS=-Wl,-twolevel_namespace libtcc.dylib`）+ `otool -hv`/`codesign -v` 断言。各平台均组装 VERSION/MANIFEST/COPYING/RELICENSING 并自校验（Linux/macOS 脚本断言 `tcc_new` 导出在场）。
+- 正式构建器为独立脚本 `gradle/tinycc-bundle.gradle.kts` 中的 `BuildTinyccBundle` 任务，
+  直接运行于 Gradle JVM，不依赖主编译器类或主资源。每次用 Zig 交叉构建
+  Windows x86_64、Linux x86_64、Linux aarch64、macOS aarch64 四套 `libtcc`，同一 JAR
+  包含全部平台，不要求人工 stage 非宿主 bundle。
+- 每个目标先由 Zig 构建宿主可执行的 TinyCC 交叉编译器，再由它编译和归档对应
+  `libtcc1.a`。运行时对象保持 TinyCC ELF 格式，不能换成 Zig 生成的 COFF/Mach-O 对象；
+  Windows 头只合并到 Windows 工作树和 bundle。各目标 ABI 探针用 `-nostdinc` 配合显式
+  `-I<work>/include`，断言指针与 `size_t` 均为 8 字节，Windows `long` 为 4 字节，其他为 8。
+- macOS 宿主交叉编译器关闭 `CONFIG_CODESIGN`，原生 macOS 库启用该配置并包含
+  `<sys/wait.h>`，最终目标程序由目标机 `codesign` 签名。此设置不影响 Zig 自动签名的
+  `libtcc.dylib`；`-fno-sanitize=undefined` 保留 PE import 路径的 UBSan 规避。
+- 所有平台先写入唯一 staging，完整生成 native 库、运行时库、头文件、VERSION、SHA-256
+  MANIFEST 与 COPYING/RELICENSING 后才发布整个矩阵。替换旧目录时保留备份，发布失败恢复
+  旧目录；构建失败清理 staging，不覆盖已有完整矩阵。旧 `build-script/build-tinycc-bundle-<platform>`
+  宿主脚本继续供独立构建/CI 使用，不再是 Gradle 正式打包路径。
 - CLI 工作树脚本（`build-script/build-tinycc-cli-<platform>.sh`）产出带 `cli-verified` 标记的 tcc 二进制，供 CLI 门控测试使用。
-- `gradle/tinycc.gradle.kts` 的 `tinyccHostPlatformKey()` 将宿主映射到四平台键并声明产物；`buildTinyccCli` 任务挂入 `test` 依赖。
+- `gradle/tinycc.gradle.kts` 的 `tinyccHostPlatformKey()` 将宿主映射到四平台键并声明产物；
+  `buildTinyccCli` 任务挂入 `test` 依赖，完整声明运行时 include 树及 Windows lib 树。
+  `gradle/tinycc-bundle.gradle.kts` 的 `buildTinyccBundle` 以 vendored 源码为输入，构建完整四平台矩阵；
+  `processResources` 依赖该任务，将 `build/tinycc-bundle/<platformKey>/**` 映射至
+  `gdcc/tinycc-bundle/<platformKey>/**`，完整的 native 库、头文件、运行时库、清单与许可随 JAR 打包。
 - CI：四个 `Unit Tests` job 各带本平台的 bundle 构建步骤（按矩阵条件跳过其他平台），全量 TinyCC 门控集在四平台真实执行。
-- 构建环境合同：zig 后端用自带 sysroot；tcc bundle 构建依赖宿主开发头/CRT/库（Linux 为 glibc 开发环境，macOS 为 Xcode CLT/SDK）。两后端产物在 Linux 上均动态链接 glibc；部署兼容性以实测动态依赖为准。zip 分发当前不携带 bundle（jar 打包分发属后续工作）。
+- 构建环境合同：正式 bundle 矩阵构建只需 Java 25 与 Zig，不需构建机的目标 SDK。
+  TinyCC 运行时仍依赖目标机开发头/CRT/库（Linux 为 glibc 开发环境，macOS 为 CLT/SDK）；
+  两后端产物在 Linux 上均动态链接 glibc，部署兼容性以实测动态依赖为准。
+  zip 通过主 JAR 携带 bundle；每个 `packageDistribution<Platform>` 在发布前检查该平台
+  MANIFEST 是否存在于 JAR，缺失时失败而不发布默认 Debug 后端不可用的分发包。
+  库的四平台交叉构建只用于分发载荷，不扩展 GDCC 运行时 TinyCC 的 host == target 边界。
 
 ## 9. 测试约定与平台范围
 
@@ -102,12 +125,18 @@ tinycc-bundle/<platformKey>/            # linux-x86_64 / windows-x86_64 / linux-
 - 平台范围登记：`TinyCcWindowsBundleParityTest`（Windows bundle 结构门，宿主无关）、`MinicoroAsmEncodingTest`（linux-x86_64 objdump 门）、`LauncherSmokeTest`（linux-x86_64）为平台限定豁免；`MinicoroTlsUnloadReclaimTest`（≥1100 轮 dlopen/dlclose + 析构见证）为 POSIX-only；其余 TinyCC 测试类的 supported-host 假设覆盖全部四个支持平台。
 - 产物形态与导出断言经 `NativeArtifactInspector` 各平台腿执行（ELF `nm -D`、Mach-O `nm -gU`、PE 由纯 Java `PeExportReader` 解析导出表——CI 无 `dumpbin`）；FFM 绑定面 10 符号的导出覆盖由 `TinyCcWindowsBundleParityTest` 在 Windows bundle 上锁定。
 - 锚点测试类清单登记于 `backend_build_system_implementation.md` §8。
+- `RpcPackagedTinyCcIntegrationTest` 运行真实 `java -jar` 服务器，清除 TinyCC 环境覆盖并使用
+  空的隔离用户缓存，验证 RPC 发现 TinyCC、Auto（null）+ Debug 原生构建成功及 bundle 完整
+  校验安装。Gradle `test` 依赖 `jar` 并传入实际归档路径，不能依赖旧 JAR 或测试侧 bundle 覆盖。
+- `TinyCcPackagedMatrixTest` 在任意宿主校验四套 classpath bundle 的完整安装、目标机器与
+  文件格式、Mach-O namespace/install name/签名，以及运行时 archive 内的目标 ELF 对象。
 
 ## 10. 已知限制与后续方向
 
 - 轮次全局串行（`TCC_GLOBAL_LOCK`），吞吐低于 zig 并行 TU；对象缓存命中后轮次仅剩链接与键计算耗时。
 - 取消为合作式；强取消/超时需 worker 进程隔离（独立立项）。进程内 libtcc 无故障隔离。
-- bundle 构建依赖宿主开发环境；macOS bundle 的系统头路径烤入构建机 SDK 绝对路径，分发到他机的兼容性与运行时 sysinclude 探测列后续方向。
+- Linux/macOS 的 TinyCC 原生编译仍依赖目标机开发环境；macOS 当前使用标准 CLT SDK 路径，
+  非标准 SDK 布局的运行时发现与额外 sysinclude 配置仍属后续方向。
 - bundle 用户缓存目录与 `tcc-obj` 缓存均无容量管理。
 - Windows 侧 Unicode/执行字符集正确性只在 Linux x86_64 验证过；macOS 编辑器内热重载受 dyld 同路径缓存限制（平台级缺口，非 tcc 特有）；macOS HRX 在官方签名/entitlement 组合下未全覆盖（保持 fail-closed `HRX_UNAVAILABLE` 降级）。
 - tcc 忽略部分 `__attribute__`（visibility/pure/const），不影响正确性；generated-file 写入不参与项目构建锁协议（已接受的取舍，同输出目录并发构建两个模块可能污染缓存键，代码注释已登记）。

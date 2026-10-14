@@ -1,9 +1,12 @@
+import java.util.jar.JarFile
+
 plugins {
     id("java")
     id("org.gradlex.extra-java-module-info") version "1.9"
 }
 
-// TinyCC CLI detection/build helpers and the `buildTinyccCli` task (wired into `test`).
+// TinyCC CLI test helpers and four-platform runtime bundle packaging.
+apply(from = "gradle/tinycc-bundle.gradle.kts")
 apply(from = "gradle/tinycc.gradle.kts")
 
 group = "gd.script"
@@ -61,6 +64,10 @@ dependencies {
 }
 
 tasks.test {
+    dependsOn(tasks.jar)
+    doFirst {
+        systemProperty("gdcc.test.jar", tasks.jar.get().archiveFile.get().asFile.absolutePath)
+    }
     useJUnitPlatform {
         // Throughput-tagged tests (real release builds of the benchmark suite) are excluded by
         // default; opt in locally with `./gradlew test -PrunThroughputTests=true`.
@@ -97,7 +104,8 @@ val buildAddonNative by tasks.registering(JavaExec::class) {
 
 val buildAddonAllPlatform by tasks.registering(JavaExec::class) {
     group = "build"
-    description = "Builds the editor addon native libraries for Windows x86_64 and Linux x86_64/AArch64 and installs them into src/editor_addon."
+    description =
+        "Builds the editor addon native libraries for Windows x86_64 and Linux x86_64/AArch64 and installs them into src/editor_addon."
 
     dependsOn(tasks.testClasses)
     classpath = sourceSets.test.get().runtimeClasspath
@@ -202,6 +210,15 @@ fun registerLauncherDistribution(distribution: LauncherDistribution) = tasks.reg
         }
         dirPermissions {
             unix("0755")
+        }
+    }
+    doFirst {
+        val resource = "gdcc/tinycc-bundle/${distribution.platform}/MANIFEST"
+        JarFile(tasks.jar.get().archiveFile.get().asFile).use { jar ->
+            check(jar.getJarEntry(resource) != null) {
+                "Missing TinyCC bundle for ${distribution.platform}; build/stage it under " +
+                        "build/tinycc-bundle/${distribution.platform} before packaging this distribution."
+            }
         }
     }
 }

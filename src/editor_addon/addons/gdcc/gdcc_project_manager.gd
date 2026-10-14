@@ -17,11 +17,12 @@ const ERR_METHOD_NOT_FOUND := -32601
 const COMPILE_MODULE_PREFIX := "gdcc_editor_compile_"
 const ERR_MODULE_NOT_FOUND := -32000
 const BUILD_EXTENSION_PATH := "res://bin/gdcc.gdextension"
-const SETTING_LAUNCH_COMMAND := "gdcc/server/launch_command"
+const SETTING_LAUNCH_COMMAND := "gdcc/compilation_server/launch_command"
 const SETTING_SERVER_HOST := "gdcc/server/host"
 const SETTING_SERVER_PORT := "gdcc/server/port"
 const SETTING_OPTIMIZATION_LEVEL := "gdcc/build/optimization_level"
 const SETTING_STRICT_MODE := "gdcc/build/strict_mode"
+const SETTING_C_COMPILER_KIND := "gdcc/build/c_compiler_kind"
 
 var _client: GdccRpcClient
 # Low-power busy reporting goes to the plugin's coordinator (the single writer of
@@ -40,6 +41,9 @@ var last_build_time: int = 0
 var server_version: String = "Not connected"
 var _version_endpoint: Array = []
 var _version_busy: bool = false
+var available_c_compiler_kinds: Array[String] = []
+var _compiler_warning: String = ""
+var _server_refresh_msec: int = -5000
 
 var _current_task_id: int = -1
 # Endpoint captured at compile start: task ids are scoped to one server instance, so the
@@ -56,7 +60,7 @@ var _busy_count: int = 0
 var _build_in_progress: bool = false
 var _pending_activation: Dictionary = {}
 var _filesystem_generation: int = 0
-var _build_options: Dictionary = {"optimizationLevel": "DEBUG", "strictMode": false}
+var _build_options: Dictionary = {"optimizationLevel": "DEBUG", "strictMode": false, "cCompilerKind": null}
 
 
 # Dependencies are injected before this shared node enters the editor tree.
@@ -101,11 +105,31 @@ func _refresh_diagnostics_module() -> void:
     if module_id != diagnostics_module_id:
         diagnostics_module_id = module_id
         diagnostics_module_changed.emit(module_id)
-    if _service != null and not _version_endpoint.is_empty() \
-            and _version_endpoint != [_service.rpc_host(), _service.rpc_port()]:
+    if _service == null or not _service.is_diag_ready() \
+            or _version_endpoint != [_service.rpc_host(), _service.rpc_port()]:
         _version_endpoint.clear()
         server_version = "Not connected"
-        state_changed.emit()
+        available_c_compiler_kinds.clear()
+        _compiler_warning = ""
+    state_changed.emit()
+    if _service != null and _service.is_diag_ready() and not _version_busy \
+            and (_version_endpoint.is_empty() or Time.get_ticks_msec() - _server_refresh_msec >= 5000):
+        refresh_server_version()
+
+
+func build_warning() -> String:
+    if _service == null or not _service.is_diag_ready():
+        return "Compilation server is not connected."
+    if _version_endpoint != [_service.rpc_host(), _service.rpc_port()]:
+        return "Checking compilation backends..."
+    if _compiler_warning != "":
+        return _compiler_warning
+    if available_c_compiler_kinds.is_empty():
+        return "No compilation backends are available."
+    var selected := str(ProjectSettings.get_setting(SETTING_C_COMPILER_KIND, "AUTO"))
+    if selected != "AUTO" and selected not in available_c_compiler_kinds:
+        return "Selected compilation backend is unavailable."
+    return ""
 
 
 func status_text() -> String:
@@ -413,6 +437,7 @@ func _prepare_compile_copy(source_module_id: String, project_name: String) -> St
     compile_options["projectPath"] = project_path
     compile_options["optimizationLevel"] = _build_options["optimizationLevel"]
     compile_options["strictMode"] = _build_options["strictMode"]
+    compile_options["cCompilerKind"] = _build_options["cCompilerKind"]
     var applied: Dictionary = await _client.call_rpc(
             "options.set", {"moduleId": copy_module_id, "compileOptions": compile_options}).completed
     if not applied["ok"]:
@@ -433,6 +458,10 @@ func build_project() -> void:
     if _service == null or not _service.is_diag_ready():
         _log("build skipped: diagnostics channel is not ready yet")
         return
+    var warning := build_warning()
+    if warning != "":
+        _log("build skipped: " + warning)
+        return
     # `_apply_endpoint` sources the client endpoint from the service itself, so the compile
     # copy always targets the server that owns the diagnostics module. Its separate reservation
     # prevents the -32001 replace path from touching another editor's build.
@@ -450,7 +479,9 @@ func build_project() -> void:
         _log("build skipped: invalid gdcc/build project settings")
         return
     # Freeze user choices before the first await; edits during a build affect the next one.
-    _build_options = {"optimizationLevel": level, "strictMode": strict}
+    var kind := str(ProjectSettings.get_setting(SETTING_C_COMPILER_KIND, "AUTO"))
+    _build_options = {"optimizationLevel": level, "strictMode": strict,
+            "cCompilerKind": null if kind == "AUTO" else kind}
     _build_in_progress = true
     _begin_busy()
     var module_id: String = await _prepare_compile_copy(source_module_id, project_name)
@@ -727,7 +758,7 @@ func cancel_build() -> void:
 # the compile service is reachable (launching it first when a launch command is configured),
 # then announces the service's private diagnostics module to its views.
 # Build copies that module on demand, so no additional diagnostics module is created here.
-# Failures are only logged: the server may simply not be running yet, and Build stays usable.
+# Failures are only logged; the toolbar disables Build until the channel and backends are ready.
 func auto_setup_module() -> void:
     _apply_endpoint()
     if _launcher != null:
@@ -751,36 +782,68 @@ func auto_setup_module() -> void:
     _log("diagnostics module not announced yet; waiting for automatic synchronization")
 
 
-## Version requests have their own client so opening the menu cannot retarget a live build.
+## Server metadata uses its own client so menu queries cannot retarget a live build.
 func refresh_server_version() -> void:
-    if _version_busy or _service == null:
+    if _version_busy or _service == null or not _service.is_diag_ready():
         return
     var endpoint := [_service.rpc_host(), _service.rpc_port()]
     if endpoint != _version_endpoint:
         server_version = "Not connected"
+        available_c_compiler_kinds.clear()
         state_changed.emit()
     var version_client := GdccRpcClient.new()
     add_child(version_client)
     version_client.host = endpoint[0]
     version_client.port = endpoint[1]
     _version_busy = true
+    _server_refresh_msec = Time.get_ticks_msec()
     if _report_busy.is_valid():
         _report_busy.call(1)
-    var response: Dictionary = await version_client.call_rpc("server.info", {}).completed
+    # Script reload cancels suspended awaits; name-bound signal callbacks keep the flight live.
+    version_client.call_rpc("server.info", {}).completed.connect(
+            Callable(self, "_on_server_info_received").bind(version_client, endpoint), CONNECT_ONE_SHOT)
+
+
+func _on_server_info_received(response: Dictionary, version_client: GdccRpcClient, endpoint: Array) -> void:
+    version_client.call_rpc("server.availableCCompilerKinds", {}).completed.connect(
+            Callable(self, "_on_compiler_kinds_received").bind(version_client, endpoint, response), CONNECT_ONE_SHOT)
+
+
+func _on_compiler_kinds_received(compilers: Dictionary, version_client: GdccRpcClient,
+        endpoint: Array, response: Dictionary) -> void:
     version_client.queue_free()
     _version_busy = false
     if _report_busy.is_valid():
         _report_busy.call(-1)
-    if _service == null or endpoint != [_service.rpc_host(), _service.rpc_port()]:
+    if _service == null or not _service.is_diag_ready() \
+            or endpoint != [_service.rpc_host(), _service.rpc_port()]:
         _version_endpoint.clear()
         server_version = "Not connected"
+        available_c_compiler_kinds.clear()
+        _compiler_warning = ""
         state_changed.emit()
         return
     _version_endpoint = endpoint
-    if response["ok"]:
+    if response["ok"] and response["result"] is Dictionary:
         var info: Dictionary = response["result"]
         server_version = str(info.get("version", "Unknown")) + " (" \
                 + str(info.get("branch", "")) + " " + str(info.get("commit", "")) + ")"
+    elif response["ok"]:
+        server_version = "Unavailable: invalid server info"
     else:
         server_version = "Unavailable: " + str(response["error"]["message"])
+    available_c_compiler_kinds.clear()
+    _compiler_warning = ""
+    if not compilers["ok"]:
+        _compiler_warning = "Could not query compilation backends."
+    elif not compilers["result"] is Array:
+        _compiler_warning = "Invalid compilation backend response."
+    else:
+        for kind in compilers["result"]:
+            if not kind is String or kind.is_empty() or kind == "AUTO":
+                available_c_compiler_kinds.clear()
+                _compiler_warning = "Invalid compilation backend response."
+                break
+            if kind not in available_c_compiler_kinds:
+                available_c_compiler_kinds.append(kind)
     state_changed.emit()

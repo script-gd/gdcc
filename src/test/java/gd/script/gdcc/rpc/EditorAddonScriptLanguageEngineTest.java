@@ -159,9 +159,11 @@ class EditorAddonScriptLanguageEngineTest {
                     "new_session_reuses_identity", "survived")),
             Map.entry("build_toolbar", List.of(
                     "config", "shared_manager", "toolbar_position", "dock_layout", "dock_minimum_rows", "popup_first_open_size", "popup_reopen_size", "menu_focus",
-                    "menu_contents", "relative_time_units", "relative_time_refresh", "server_version", "version_endpoint_isolation",
+                    "menu_contents", "relative_time_units", "relative_time_refresh", "server_version",
+                    "backend_options", "backend_selection", "backend_unavailable", "backend_query_failure",
+                    "version_endpoint_isolation", "backend_disconnected", "backend_reconnected",
                     "project_options", "output_clear", "shared_busy", "build_spinner", "spinner_pending_activation", "spinner_idle",
-                    "settings_navigation", "disabled_cleanup", "reenabled_shared_manager")),
+                    "settings_navigation", "disabled_cleanup", "reenabled_shared_manager", "launch_command_migration")),
             // Phase 4: `_complete_code` — degraded answers (client not READY / no sentinel /
             // disabled service), white-box pins of the kind table and the insert-text
             // precedence (the server's emitted kind set is not controllable, so the mapping
@@ -275,7 +277,7 @@ class EditorAddonScriptLanguageEngineTest {
     /// results — method calls are not compile-time constant expressions, so javac emits a
     /// runtime concat instead of folding the parts back into a single oversized constant.
     private static final String DRIVER_PLUGIN = driverPluginCore() + driverPluginLifecycle() + driverPluginCompletion()
-            + driverPluginRevalidate() + driverPluginClassMetadata() + driverPluginWorkspace()
+            + driverPluginRevalidate() + driverPluginBuildToolbar() + driverPluginBuild() + driverPluginClassMetadata() + driverPluginWorkspace()
             + driverPluginLookup() + driverPluginExclusions() + driverPluginSyntaxHighlighter();
 
     private static String driverPluginCore() {
@@ -694,7 +696,7 @@ class EditorAddonScriptLanguageEngineTest {
                     # the spawn assertions).
                     ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
                     ProjectSettings.set_setting("gdcc/server/port", port)
-                    ProjectSettings.set_setting("gdcc/server/launch_command", str(_config["launch_command"]))
+                    ProjectSettings.set_setting("gdcc/compilation_server/launch_command", str(_config["launch_command"]))
                     _step("configure", true)
                     # Re-enable so the plugin startup path runs with the command configured; the
                     # dock's auto-setup consults the launcher, which spawns the service.
@@ -733,7 +735,7 @@ class EditorAddonScriptLanguageEngineTest {
                     var port := int(_config["port"])
                     ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
                     ProjectSettings.set_setting("gdcc/server/port", port)
-                    ProjectSettings.set_setting("gdcc/server/launch_command", str(_config["launch_command"]))
+                    ProjectSettings.set_setting("gdcc/compilation_server/launch_command", str(_config["launch_command"]))
                     _step("configure", true)
                     EditorInterface.set_plugin_enabled("gdcc", false)
                     await get_tree().process_frame
@@ -755,7 +757,7 @@ class EditorAddonScriptLanguageEngineTest {
                     var port := int(_config["port"])
                     ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
                     ProjectSettings.set_setting("gdcc/server/port", port)
-                    ProjectSettings.set_setting("gdcc/server/launch_command", "")
+                    ProjectSettings.set_setting("gdcc/compilation_server/launch_command", "")
                     EditorInterface.set_plugin_enabled("gdcc", false)
                     await get_tree().process_frame
                     await get_tree().process_frame
@@ -1898,6 +1900,11 @@ class EditorAddonScriptLanguageEngineTest {
                             return sib.get("_dock")
                     return null
                 
+                """;
+    }
+
+    private static String driverPluginBuildToolbar() {
+        return """
                 # Verify the shared editor views against the real title bar and settings dialog.
                 func _run_build_toolbar_mode() -> void:
                     var dock: Variant = _find_gdcc_dock()
@@ -1960,7 +1967,7 @@ class EditorAddonScriptLanguageEngineTest {
                     var service := _service()
                     service.install(EditorInterface, "127.0.0.1", int(_config["lsp_port"]), "127.0.0.1", int(_config["rpc_port"]))
                     var ready_deadline := Time.get_ticks_msec() + 20000
-                    while not manager.can_start_action() and Time.get_ticks_msec() < ready_deadline:
+                    while (not manager.can_start_action() or manager.build_warning() != "") and Time.get_ticks_msec() < ready_deadline:
                         await get_tree().process_frame
                     # A fresh hidden popup must size correctly before any container layout pass.
                     var cold_toolbar: Variant = toolbar.get_script().new()
@@ -2045,14 +2052,87 @@ class EditorAddonScriptLanguageEngineTest {
                         await get_tree().process_frame
                     _step("server_version", not manager.server_version.begins_with("Unavailable") \\
                             and manager.server_version != "Not connected" and toolbar._version_label.text.contains(manager.server_version), manager.server_version)
+                    var probe := GdccRpcClient.new()
+                    add_child(probe)
+                    probe.host = "127.0.0.1"
+                    probe.port = int(_config["rpc_port"])
+                    var available: Dictionary = await probe.call_rpc("server.availableCCompilerKinds", {}).completed
+                    var backend_options: bool = available["ok"] and manager.available_c_compiler_kinds == available["result"] \\
+                            and toolbar._backend.item_count == available["result"].size() + 1 \\
+                            and toolbar._backend.get_item_text(0) == "Auto" and toolbar._backend.selected == 0 \\
+                            and toolbar._backend.get_item_metadata(0) == "AUTO" and not toolbar._warning_row.visible \\
+                            and not toolbar._build_button.disabled
+                    for index in range(1, toolbar._backend.item_count):
+                        backend_options = backend_options and toolbar._backend.get_item_metadata(index) == available["result"][index - 1]
+                    _step("backend_options", backend_options, str(available))
+                    probe.queue_free()
+                    toolbar._backend.item_selected.emit(1)
+                    var selected_config := ConfigFile.new()
+                    var chosen: String = toolbar._backend.get_item_metadata(1)
+                    var selection_saved: bool = selected_config.load("res://project.godot") == OK \\
+                            and selected_config.get_value("gdcc", "build/c_compiler_kind", "") == chosen \\
+                            and ProjectSettings.get_setting("gdcc/build/c_compiler_kind") == chosen
+                    toolbar._backend.item_selected.emit(0)
+                    await get_tree().process_frame
+                    _step("backend_selection", selection_saved and toolbar._backend.selected == 0 \\
+                            and ProjectSettings.get_setting("gdcc/build/c_compiler_kind") == "AUTO")
+                    var saved_kinds: Array = manager.available_c_compiler_kinds.duplicate()
+                    manager.available_c_compiler_kinds.clear()
+                    manager.state_changed.emit()
+                    var no_backend: bool = toolbar._build_button.disabled and toolbar._backend.disabled \\
+                            and toolbar._backend.item_count == 1 and toolbar._warning_row.visible \\
+                            and toolbar._warning_label.text == "No compilation backends are available." \\
+                            and toolbar._warning_row.get_child(0) == toolbar._warning_icon \\
+                            and toolbar._warning_icon.texture != null \\
+                            and toolbar._warning_label.get_theme_color("font_color") \\
+                            == toolbar.get_theme_color("warning_color", "Editor")
+                    toolbar._build_button.pressed.emit()
+                    _step("backend_unavailable", no_backend and manager._current_task_id == -1 and manager._busy_count == 0)
+                    manager.available_c_compiler_kinds.assign(saved_kinds)
+                    manager._compiler_warning = "Could not query compilation backends."
+                    manager.state_changed.emit()
+                    _step("backend_query_failure", toolbar._warning_row.visible and toolbar._build_button.disabled \\
+                            and toolbar._warning_label.text == manager._compiler_warning)
+                    manager._compiler_warning = ""
+                    manager.state_changed.emit()
+                    version_deadline = Time.get_ticks_msec() + 15000
+                    while (manager._version_busy or not service.is_diag_ready()) and Time.get_ticks_msec() < version_deadline:
+                        await get_tree().process_frame
+                    var build_endpoint := [manager._client.host, manager._client.port]
                     manager.refresh_server_version()
+                    var version_inflight: bool = manager._version_busy
+                    var reload_error: int = manager.get_script().reload(true)
                     service.retarget_rpc_endpoint("127.0.0.1", int(_config["closed_port"]))
+                    # Drive the real status tick rather than race its one-second timer.
+                    manager._refresh_diagnostics_module()
                     version_deadline = Time.get_ticks_msec() + 15000
                     while manager._version_busy and Time.get_ticks_msec() < version_deadline:
                         await get_tree().process_frame
-                    _step("version_endpoint_isolation", not manager._version_busy and manager.server_version == "Not connected" \\
-                            and toolbar._version_label.text == "GDCC: Not connected")
+                    _step("version_endpoint_isolation", reload_error == OK and version_inflight and not manager._version_busy \\
+                            and manager.server_version == "Not connected" \\
+                            and toolbar._version_label.text == "GDCC: Not connected" \\
+                            and [manager._client.host, manager._client.port] == build_endpoint,
+                            "inflight=" + str(version_inflight) + " reload_error=" + str(reload_error) \\
+                            + " version=" + manager.server_version)
+                    _step("backend_disconnected", toolbar._build_button.disabled and toolbar._warning_row.visible \\
+                            and toolbar._warning_label.text == "Compilation server is not connected." \\
+                            and manager.available_c_compiler_kinds.is_empty())
                     service.retarget_rpc_endpoint("127.0.0.1", int(_config["rpc_port"]))
+                    # Channel recovery may need the lifecycle's 30s hook timeout plus a retry.
+                    var reconnected_ready: bool = await _wait_diag_ready(service, 45.0)
+                    manager._refresh_diagnostics_module()
+                    ready_deadline = Time.get_ticks_msec() + 20000
+                    while manager.build_warning() != "" and Time.get_ticks_msec() < ready_deadline:
+                        await get_tree().process_frame
+                    _step("backend_reconnected", reconnected_ready and manager.build_warning() == "" \\
+                            and not toolbar._build_button.disabled and not toolbar._warning_row.visible \\
+                            and manager.available_c_compiler_kinds == saved_kinds,
+                            "ready=" + str(reconnected_ready) + " warning=" + manager.build_warning() \\
+                            + " channel=" + str(service.diag_channel_status()) \\
+                            + " metadata_busy=" + str(manager._version_busy) \\
+                            + " metadata_endpoint=" + str(manager._version_endpoint) \\
+                            + " metadata_age_ms=" + str(Time.get_ticks_msec() - manager._server_refresh_msec) \\
+                            + " action_busy=" + str(manager._busy_count))
                     toolbar._optimization.item_selected.emit(1)
                     toolbar._strict_mode.toggled.emit(true)
                     await get_tree().process_frame
@@ -2062,11 +2142,13 @@ class EditorAddonScriptLanguageEngineTest {
                             and config.get_value("gdcc", "build/optimization_level", "") == "RELEASE" \\
                             and ProjectSettings.get_setting("gdcc/build/strict_mode") == true)
                     manager._begin_busy()
-                    var disabled: bool = toolbar._build_button.disabled and toolbar._optimization.disabled
+                    var disabled: bool = toolbar._build_button.disabled and toolbar._optimization.disabled and toolbar._backend.disabled
                     toolbar._optimization.item_selected.emit(0)
+                    toolbar._backend.item_selected.emit(1)
                     toolbar._build_button.pressed.emit()
                     disabled = disabled and manager._busy_count == 1 and manager._current_task_id == -1 \\
-                            and ProjectSettings.get_setting("gdcc/build/optimization_level") == "RELEASE"
+                            and ProjectSettings.get_setting("gdcc/build/optimization_level") == "RELEASE" \\
+                            and ProjectSettings.get_setting("gdcc/build/c_compiler_kind") == "AUTO"
                     manager.log_message.emit("output before clear")
                     dock._clear_button.pressed.emit()
                     var cleared: bool = dock._log_output.text == "" and not dock._clear_button.disabled \\
@@ -2123,6 +2205,11 @@ class EditorAddonScriptLanguageEngineTest {
                     for child in title_bar.get_children():
                         leftover = leftover or child.name == "GdccBuildToolbar"
                     _step("disabled_cleanup", not leftover and not is_instance_valid(manager) and not is_instance_valid(toolbar))
+                    ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
+                    ProjectSettings.set_setting("gdcc/server/port", int(_config["rpc_port"]))
+                    ProjectSettings.set_setting("gdcc/compilation_server/launch_command", null)
+                    var legacy_command := "gdcc serve --host {host} --port {port}"
+                    ProjectSettings.set_setting("gdcc/server/launch_command", legacy_command)
                     EditorInterface.set_plugin_enabled("gdcc", true)
                     await get_tree().process_frame
                     var next_dock: Variant = _find_gdcc_dock()
@@ -2133,7 +2220,15 @@ class EditorAddonScriptLanguageEngineTest {
                             and next_manager.last_build_time == persisted_time \\
                             and EditorInterface.get_editor_settings().get_project_metadata("gdcc", "last_build_time", 0) == persisted_time \\
                             and next_toolbar._last_build_label.text == "Last successful build: 1.5h ago")
+                    _step("launch_command_migration", ProjectSettings.get_setting("gdcc/compilation_server/launch_command", "") == legacy_command \\
+                            and not ProjectSettings.has_setting("gdcc/server/launch_command") \\
+                            and next_manager.get_parent().get("_launcher")._read_launch_command() == legacy_command)
                 
+                """;
+    }
+
+    private static String driverPluginBuild() {
+        return """
                 # Build snapshots diagnostics without holding its gate during native compilation,
                 # then deploys and loads the resulting extension through the real editor APIs.
                 func _run_dock_compile_mode() -> void:
@@ -2209,6 +2304,10 @@ class EditorAddonScriptLanguageEngineTest {
                     var project_name := 'Dock "Game"' + String.chr(10) + "Project"
                     ProjectSettings.set_setting("application/config/name", project_name)
                     manager._apply_endpoint()
+                    var diag_options: Dictionary = await client.call_rpc("options.get", {"moduleId": diag_module_id}).completed
+                    var inherited_options: Dictionary = diag_options["result"]
+                    inherited_options["cCompilerKind"] = "ZIG_CC"
+                    await client.call_rpc("options.set", {"moduleId": diag_module_id, "compileOptions": inherited_options}).completed
                     var copy_module_id: String = manager._compile_module_id(project_name)
                     var identity := ProjectSettings.globalize_path("res://") + "\\n" + project_name
                     _step("fixed_compile_identity", copy_module_id == "gdcc_editor_compile_" \\
@@ -2283,6 +2382,7 @@ class EditorAddonScriptLanguageEngineTest {
                     # Settings changed after the click must not leak into the in-flight snapshot.
                     ProjectSettings.set_setting("gdcc/build/optimization_level", "RELEASE")
                     ProjectSettings.set_setting("gdcc/build/strict_mode", true)
+                    ProjectSettings.set_setting("gdcc/build/c_compiler_kind", "ZIG_CC")
                     var analyze_start := Time.get_ticks_msec()
                     var analyzed: Dictionary = await client.analyze(diag_module_id, false).completed
                     var analyze_elapsed := Time.get_ticks_msec() - analyze_start
@@ -2316,7 +2416,8 @@ class EditorAddonScriptLanguageEngineTest {
                             and (DirAccess.get_directories_at(build_dir).size() \
                             + DirAccess.get_files_at(build_dir).size()) > 0
                     succeeded = succeeded and last_result["compileOptions"]["optimizationLevel"] == "DEBUG" \\
-                            and last_result["compileOptions"]["strictMode"] == false
+                            and last_result["compileOptions"]["strictMode"] == false \\
+                            and last_result["compileOptions"]["cCompilerKind"] == null
                     ProjectSettings.set_setting("gdcc/build/optimization_level", "DEBUG")
                     ProjectSettings.set_setting("gdcc/build/strict_mode", false)
                     _step("compile_succeeded", succeeded, str(last_result))
@@ -2473,6 +2574,7 @@ class EditorAddonScriptLanguageEngineTest {
                     # A real Release build must replace the Debug DLL used by this debug editor.
                     ProjectSettings.set_setting("gdcc/build/optimization_level", "RELEASE")
                     toolbar._build_button.pressed.emit()
+                    ProjectSettings.set_setting("gdcc/build/c_compiler_kind", "AUTO")
                     # Waiting for the new task id first pins the ordering: anything observed
                     # afterwards belongs to the re-copied module, never to the pre-delete one.
                     var second_task: int = -1
@@ -2510,7 +2612,8 @@ class EditorAddonScriptLanguageEngineTest {
                         return
                 
                     _step("fixed_build_paths", str(second_result["compileOptions"]["projectPath"]).replace("\\\\", "/") == build_dir \\
-                            and second_result["compileOptions"]["optimizationLevel"] == "RELEASE")
+                            and second_result["compileOptions"]["optimizationLevel"] == "RELEASE" \\
+                            and second_result["compileOptions"]["cCompilerKind"] == "ZIG_CC")
                 
                     idle_deadline = Time.get_ticks_msec() + 30000
                     while compile_button.disabled and Time.get_ticks_msec() < idle_deadline:
@@ -2530,8 +2633,10 @@ class EditorAddonScriptLanguageEngineTest {
                         probe.free()
                 
                     var final_analyze: Dictionary = await client.analyze(diag_module_id, false).completed
+                    diag_options = await client.call_rpc("options.get", {"moduleId": diag_module_id}).completed
                     _step("diag_still_responsive", final_analyze["ok"]
-                            and str(final_analyze["result"]["outcome"]) == "COMPLETED")
+                            and str(final_analyze["result"]["outcome"]) == "COMPLETED" \\
+                            and diag_options["ok"] and diag_options["result"]["cCompilerKind"] == "ZIG_CC")
                 
                     # Independent server reservations must not let two builders share C/objects.
                     var other_client := GdccRpcClient.new()
@@ -4540,10 +4645,10 @@ class EditorAddonScriptLanguageEngineTest {
     void buildToolbarSharesProjectManagerAndNavigatesSettings() throws Exception {
         var config = new JsonObject();
         config.addProperty("lsp_port", findFreePort());
-        config.addProperty("closed_port", findFreePort());
         try (var server = JsonRpcServer.start(new JsonRpcDispatcher(new API()), "127.0.0.1", 0,
                 JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES)) {
             config.addProperty("rpc_port", server.port());
+            config.addProperty("closed_port", findFreePort());
             runCase("build_toolbar", config);
         }
     }
@@ -4817,7 +4922,9 @@ class EditorAddonScriptLanguageEngineTest {
         }
         // Each case owns its endpoint and launch hook; never bootstrap the source project's
         // relative jar command before the driver installs those settings.
-        content = content.replaceAll("(?m)^server/launch_command=.*$", "server/launch_command=\"\"");
+        content = content.replaceAll("(?m)^compilation_server/launch_command=.*$", "compilation_server/launch_command=\"\"");
+        // Build cases start from defaults, independent of choices saved in the source project.
+        content = content.replaceAll("(?m)^build/(optimization_level|strict_mode|c_compiler_kind)=.*\\R?", "");
         Files.writeString(projectFile, content.replace(anchor,
                 enableGdcc
                         ? "enabled=PackedStringArray(\"res://addons/gdcc/plugin.cfg\", "

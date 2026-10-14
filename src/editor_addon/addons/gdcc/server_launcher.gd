@@ -11,13 +11,13 @@ extends Node
 ## "adopted" by the next session's probe as an external service, so nothing leaks or
 ## accumulates.
 ##
-## The launch command comes from the per-project setting `gdcc/server/launch_command`
+## The launch command comes from the per-project setting `gdcc/compilation_server/launch_command`
 ## (project.godot, edited via the Project Settings dialog; empty = never auto-launch, pure
 ## passive-connect behavior). It is a user-supplied local command executed with editor
 ## privileges — the trust boundary is the project owner's configuration, the plugin never
 ## generates command text by itself.
 
-const SETTING_LAUNCH_COMMAND := "gdcc/server/launch_command"
+const SETTING_LAUNCH_COMMAND := "gdcc/compilation_server/launch_command"
 const PROBE_BUDGET_MSEC := 200
 const READY_TIMEOUT_MSEC := 15000
 const SHUTDOWN_BUDGET_MSEC := 2000

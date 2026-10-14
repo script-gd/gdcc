@@ -657,7 +657,7 @@ fixture，列入 §7 后续工作。
   `createdAt`/`completedAt` 是 ISO-8601 字符串），以及最终的
   `CompileResult.outcome`。
 - dock 的 host/port/启动命令是**项目级设置**（ProjectSettings `gdcc/server/host`、
-  `gdcc/server/port`、`gdcc/server/launch_command`，2026-10 起；见集成计划 §3.7 的
+  `gdcc/server/port`、`gdcc/compilation_server/launch_command`；旧项目启动命令键一次性迁移，见集成计划 §3.7 的
   配置来源修订与一次性 EditorSettings 迁移说明），dock 自身不再提供编辑框，只在状态
   区只读显示 configured/effective 端点与 auto-launch 是否已配置；`auto_setup_module`
   在任何连接尝试前先经 `server_launcher.gd` 的 `ensure_running_async`（见集成计划
@@ -666,6 +666,10 @@ fixture，列入 §7 后续工作。
   持有 `shutdown_owned()`（插件 `_exit_tree` 最后一步）：对本会话拉起的进程发
   `server.shutdown` RPC，收到 200 响应即完成；不可达且端口仍在侦听时才 `OS.kill`
   兜底（PID 复用防护，见集成计划 §9 R19）。
+- 标题栏菜单通过独立客户端查询 `server.availableCCompilerKinds`，可用项之外始终提供
+  默认 Auto。项目选择保存于 `gdcc/build/c_compiler_kind`，Auto 在构建副本的 `options.set`
+  中写入 `cCompilerKind: null`；显式选择回传枚举名称。断连、查询失败或无后端时禁用
+  Build，并显示黄色警告图标与提示；端点改变后的旧响应不可更新缓存。
 - 管理器的正常操作不阻塞网络等待；所有网络等待都是信号 await。卸载时清理副本使用
   有界阻塞 HTTPClient，因为帧泵客户端已离树。编辑器空闲活性的缓解见 §6.3。
 
