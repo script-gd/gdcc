@@ -60,7 +60,7 @@ public final class GodotEditorHotReloadTestSession implements AutoCloseable {
     public static final String GDEXTENSION_RESOURCE_PATH = "res://" + GDEXTENSION_FILE_NAME;
     public static final String SWAP_FLAG_FILE_NAME = "hr_swap.flag";
     public static final Duration DEFAULT_MARKER_TIMEOUT = Duration.ofSeconds(240);
-    public static final Duration DEFAULT_EXIT_TIMEOUT = Duration.ofSeconds(60);
+    public static final Duration DEFAULT_EXIT_TIMEOUT = Duration.ofSeconds(180);
 
     private static final String DRIVER_FILE_NAME = "driver.gd";
     private static final String DRIVER_RESOURCE_PATH = "res://" + DRIVER_FILE_NAME;

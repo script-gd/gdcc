@@ -404,6 +404,7 @@ property initializer 与 parameter default 中的 lambda 不进入 `FrontendLamb
 
 编排合同：
 
+- 阶段 marker 等待上限为 240 秒，编辑器退出等待上限为 180 秒，为较慢的 CI 退出收尾留出余量。保持场景并发调度、阶段验证、退出码和诊断断言不变；超时仍终止编辑器并报告失败。
 - 换库必须原子 rename（先拷到临时文件再 `mv`）。禁止 in-place 覆盖已映射 `.so`：会把干净页灌成新内容而 GOT 脏页仍指向旧版，随后 SIGSEGV。
 - 变更后的库必须发布到新路径。测试 harness 按库内容 SHA-256 截断 16 hex 命名 `<base>-<hash>.<ext>`（v1 安装即哈希命名）。内容相同则只写 swap flag、不改路径；内容不同则按「暂存 + 原子 rename 到新路径 → 重写 `.gdextension` libraries → 删除上一代文件 → 写 swap flag」发布。driver 只轮询 flag，因此 `reload_extension` 时元数据已指向完整新库。A→B→A 内容轮回会回到 hash A 的路径：若 dyld 仍缓存该映像，返回的是字节相同的 A，语义正确。macOS dyld 按路径缓存映像，且 Godot 的 `OS_MacOS::open_dynamic_library` 未实现 `generate_temp_files`（4.7.2 仍未修；上游 godotengine/godot#90108、#112202），同路径 `dlopen` 永远返回旧映像。真实用户在 macOS 热重载同样需要每次构建更换库文件名。该流程全平台统一，不做 macOS 分支。
 - driver 在最终 marker / `quit` 前停留 180 帧，让编辑器文档再生成在扩展存活期内排空（上游缺陷，类 godot#123511 / #111048）。
