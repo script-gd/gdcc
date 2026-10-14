@@ -1,5 +1,6 @@
 package gd.script.gdcc.backend.c.build;
 
+import gd.script.gdcc.util.ZigTestUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -112,6 +113,9 @@ final class RuntimeProbeToolchain {
         }
         command.add("-o");
         command.add(executable.toString());
+        if (!tcc) {
+            ZigTestUtil.addMacosNativeTarget(command);
+        }
 
         var build = runProcess(command, COMPILE_TIMEOUT, null);
         assertEquals(0, build.exitCode(), build::diagnostic);

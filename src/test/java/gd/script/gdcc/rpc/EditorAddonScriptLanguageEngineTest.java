@@ -4,8 +4,12 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.sun.net.httpserver.HttpServer;
 import gd.script.gdcc.api.API;
+import gd.script.gdcc.api.ApiCompileTestSupport;
 import gd.script.gdcc.api.CompileResult;
+import gd.script.gdcc.api.CompileTaskSnapshot;
+import gd.script.gdcc.api.task.CompileTaskHooks;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
+import gd.script.gdcc.backend.c.build.CProjectBuilder;
 import gd.script.gdcc.backend.c.build.GdextensionMetadataFile;
 import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
@@ -23,11 +27,15 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -2371,14 +2379,19 @@ class EditorAddonScriptLanguageEngineTest {
                         print("DOCK LOG:\\n" + dock._log_output.text)
                         return
                 
-                    # While the dock knows an active compile task on the copy, an analyze on
-                    # the DIAGNOSTICS module must still answer fast: a compile holding the
-                    # diag gate would delay it by the remaining native build (seconds even
-                    # when warm), while a healthy loopback round-trip is subsecond.
+                    # The test server holds the first task at native build until this probe
+                    # releases it, so even a warm TinyCC build cannot outrun the assertion.
                     var task_deadline := Time.get_ticks_msec() + 30000
                     while int(manager._current_task_id) <= 0 and Time.get_ticks_msec() < task_deadline:
                         await get_tree().process_frame
                     var first_task: int = int(manager._current_task_id)
+                    var native_build_held := false
+                    while first_task > 0 and Time.get_ticks_msec() < task_deadline and not native_build_held:
+                        var running: Dictionary = await client.get_compile_task(first_task).completed
+                        native_build_held = running["ok"] and str(running["result"]["state"]) == "RUNNING" \\
+                                and str(running["result"]["stage"]) == "BUILDING_NATIVE"
+                        if not native_build_held:
+                            await get_tree().process_frame
                     # Settings changed after the click must not leak into the in-flight snapshot.
                     ProjectSettings.set_setting("gdcc/build/optimization_level", "RELEASE")
                     ProjectSettings.set_setting("gdcc/build/strict_mode", true)
@@ -2391,11 +2404,17 @@ class EditorAddonScriptLanguageEngineTest {
                     # would let analyze return only after the compile finished (terminal here).
                     var task_view: Dictionary = await client.get_compile_task(first_task).completed
                     var task_state := str(task_view["result"]["state"]) if task_view["ok"] else "?"
-                    var diag_alive: bool = first_task > 0 and analyzed["ok"] \
+                    var diag_alive: bool = native_build_held and analyzed["ok"] \
                             and str(analyzed["result"]["outcome"]) == "COMPLETED" \
-                            and (task_state == "QUEUED" or task_state == "RUNNING") \\
+                            and task_state == "RUNNING" \\
                             and manager.is_building() and toolbar.is_processing() and toolbar._build_button.text.begins_with("Building ")
-                    _step("diag_alive_during_compile", diag_alive,
+                    var release_client := GdccRpcClient.new()
+                    add_child(release_client)
+                    release_client.host = "127.0.0.1"
+                    release_client.port = int(_config["compile_release_port"])
+                    var compile_released: Dictionary = await release_client.call_rpc("test.releaseCompile", {}).completed
+                    release_client.queue_free()
+                    _step("diag_alive_during_compile", diag_alive and compile_released["ok"],
                             "task_state=" + task_state + " elapsed_ms=" + str(analyze_elapsed))
                 
                     var last_result := {}
@@ -4638,13 +4657,42 @@ class EditorAddonScriptLanguageEngineTest {
         // Two real native builds run inside the editor; the default frame budget would cut the
         // editor off mid-compile (the wall-clock process timeout remains the backstop).
         config.addProperty("quit_after", 500000);
-        try (var server = JsonRpcServer.start(new JsonRpcDispatcher(new API()), "127.0.0.1", 0,
+        var releaseCompile = new CountDownLatch(1);
+        var held = new AtomicBoolean();
+        var hooks = CompileTaskHooks.afterSnapshotUpdate(snapshot -> {
+            if (snapshot.stage() != CompileTaskSnapshot.Stage.BUILDING_NATIVE || !held.compareAndSet(false, true)) {
+                return;
+            }
+            try {
+                assertTrue(releaseCompile.await(30, TimeUnit.SECONDS), "diagnostics probe did not release the compile");
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("Interrupted while holding the compile for the diagnostics probe", exception);
+            }
+        });
+        var releaseRegistry = new JsonRpcMethodRegistry(Map.of("test.releaseCompile", (_, _, _) -> {
+            releaseCompile.countDown();
+            return null;
+        }));
+        try (var api = ApiCompileTestSupport.newApi(new CProjectBuilder(), hooks, Clock.systemUTC(),
+                Duration.ofMinutes(30), Duration.ofMinutes(1));
+             var otherApi = new API();
+             var server = JsonRpcServer.start(new JsonRpcDispatcher(api), "127.0.0.1", 0,
                 JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES);
-             var otherServer = JsonRpcServer.start(new JsonRpcDispatcher(new API()), "127.0.0.1", 0,
+             var otherServer = JsonRpcServer.start(new JsonRpcDispatcher(otherApi), "127.0.0.1", 0,
+                     JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES);
+             var releaseServer = JsonRpcServer.start(new JsonRpcDispatcher(api, new RpcJsonCodec(), releaseRegistry),
+                     "127.0.0.1", 0,
                      JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES)) {
             config.addProperty("rpc_port", server.port());
             config.addProperty("other_rpc_port", otherServer.port());
-            runCase("dock_compile", config);
+            config.addProperty("compile_release_port", releaseServer.port());
+            try {
+                runCase("dock_compile", config);
+                assertTrue(held.get(), "the diagnostics probe must overlap a running native build");
+            } finally {
+                releaseCompile.countDown();
+            }
         }
     }
 

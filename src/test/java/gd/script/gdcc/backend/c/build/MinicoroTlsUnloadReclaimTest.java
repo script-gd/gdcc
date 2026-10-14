@@ -1,6 +1,7 @@
 package gd.script.gdcc.backend.c.build;
 
 import gd.script.gdcc.enums.HardwareArchitecture;
+import gd.script.gdcc.util.ZigTestUtil;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -124,6 +125,7 @@ class MinicoroTlsUnloadReclaimTest {
         }
         command.add("-o");
         command.add(output.toString());
+        ZigTestUtil.addMacosNativeTarget(command);
         var build = RuntimeProbeToolchain.runProcess(command, COMPILE_TIMEOUT, null);
         assertEquals(0, build.exitCode(), build::diagnostic);
         return output;
