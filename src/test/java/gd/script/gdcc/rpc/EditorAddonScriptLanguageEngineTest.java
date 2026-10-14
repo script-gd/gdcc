@@ -208,7 +208,7 @@ class EditorAddonScriptLanguageEngineTest {
             Map.entry("class_name_erasure", List.of(
                     "config", "service_ready", "lsp_ready", "metadata_readback",
                     "metadata_inner_and_cache", "admission_matrix", "rewrite_forms",
-                    "analysis_ready", "validate_no_hides_error", "editor_opened",
+                    "analysis_ready", "validate_no_hides_error", "editor_opened", "lookup_named_erased",
                     "decision_flip", "edit_shows_gdcc_not_hides",
                     "flip_to_no_erasure", "flip_back_to_erasure", "survived")),
             // Phase 8: LSP workspace mirror — project `.gd3` files reach the server's parse
@@ -232,7 +232,8 @@ class EditorAddonScriptLanguageEngineTest {
             // whole-word fallback.
             Map.entry("lsp_lookup", List.of(
                     "config", "fixtures_written", "lsp_endpoint_closed", "lookup_degraded",
-                    "lsp_endpoint", "lsp_ready", "lookup_whitebox", "lookup_local_method",
+                    "lsp_endpoint", "lsp_ready", "lookup_whitebox", "lookup_markup",
+                    "lookup_classification", "lookup_class_names", "lookup_local_method",
                     "lookup_cross_file", "lookup_class_name_gap", "lookup_cjk",
                     "lookup_unknown_symbol", "lookup_no_sentinel_fallback",
                     "lookup_disabled_safe", "survived")),
@@ -3224,7 +3225,33 @@ class EditorAddonScriptLanguageEngineTest {
                             if candidate is CodeEdit:
                                 code_edit = candidate as CodeEdit
                     _step("editor_opened", code_edit != null)
-                
+
+                    # The outline's erased root is a filename, but lookup/docs must still
+                    # use the source class_name and keep navigation in the script editor.
+                    var lookup = service.lookup()
+                    var named_erased_ok: bool = lookup._script_doc_name(subject_path, subject_src) == "Gd3Phase7Subject"
+                    if Engine.get_version_info().hex >= 0x040600 and code_edit != null:
+                        var inner_code: String = subject_src.replace("class Inner", "class " + String.chr(0xFFFF) + "Inner")
+                        var inner_lookup: Dictionary = await _lookup_until_ok(lang, inner_code, "Inner", subject_path)
+                        named_erased_ok = named_erased_ok \\
+                                and inner_lookup.get("class_name") == "Gd3Phase7Subject.Inner" \\
+                                and subject_res._get_doc_class_name() == &"Gd3Phase7Subject"
+                        # Simulate help regeneration replacing equal-content script docs.
+                        var native_docs: Array[Dictionary] = []
+                        for doc in subject_res._get_documentation():
+                            var native_doc: Dictionary = doc.duplicate(true)
+                            native_doc["is_script_doc"] = false
+                            native_docs.append(native_doc)
+                        var carrier: GdccScript = GdccScript.new()
+                        carrier.set_lookup_documentation(native_docs, subject_src)
+                        EditorInterface.get_script_editor().update_docs_from_script(carrier)
+                        code_edit.emit_signal("symbol_lookup", "Inner", 3, 8)
+                        await get_tree().process_frame
+                        named_erased_ok = named_erased_ok \\
+                                and EditorInterface.get_script_editor().get_current_script() == subject_res \\
+                                and subject_res.resource_path == subject_path
+                    _step("lookup_named_erased", named_erased_ok)
+
                     # Decision flip: the signal must clear the memoized admissions, RE-SYNC the
                     # current document (anchored by the LSP document version advancing), and fire a
                     # Phase 5 revalidation (validate counter advances with no driver-side edit).
@@ -3650,6 +3677,175 @@ class EditorAddonScriptLanguageEngineTest {
                     wb_ok = wb_ok and lookup._find_word_position("probe_local_methodx", "probe_local_method") == -1
                     _step("lookup_whitebox", wb_ok)
                 
+                    # Markdown is converted to Godot documentation BBCode; plaintext
+                    # brackets and code content cannot become accidental markup.
+                    var md_ok: bool = lookup._lookup_hover_text({"contents": {"kind": "markdown",
+                            "value": "**bold** *italic* __under__ ~~gone~~ `Array[int]`"}}) \\
+                            == "[b]bold[/b] [i]italic[/i] [u]under[/u] [s]gone[/s] [code]Array[int][/code]"
+                    md_ok = md_ok and lookup._lookup_hover_text({"contents": {"kind": "plaintext",
+                            "value": "[b]not bold[/b]"}}) == "[lb]b[rb]not bold[lb]/b[rb]"
+                    md_ok = md_ok and lookup._lookup_hover_text({"contents": {"kind": "markdown",
+                            "value": "Defined in [x.gd3](file:///x.gd3) [web](https://example.com/a(b))"}}) \\
+                            == "Defined in x.gd3 [url=https://example.com/a(b)]web[/url]"
+                    md_ok = md_ok and lookup._lookup_hover_text({"contents": {"kind": "markdown",
+                            "value": "\\tvar snake_case: int\\n\\n```gdscript\\nvar x = [1, 2]\\n```"}}) \\
+                            == "[code]var snake_case: int[/code]\\n\\n[codeblock]var x = [1, 2][/codeblock]"
+                    md_ok = md_ok and lookup._lookup_hover_text({"contents": {"kind": "markdown",
+                            "value": "snake_case **unclosed [Node]"}}) == "snake_case **unclosed [lb]Node[rb]"
+                    md_ok = md_ok and lookup._lookup_hover_text({"contents": {"language": "gdscript",
+                            "value": "[/codeblock][b]literal[/b]"}}) \\
+                            == "[codeblock][/codeblock][lb]/codeblock[rb][codeblock][b]literal[/b][/codeblock]"
+                    md_ok = md_ok and lookup._lookup_hover_text({"contents": {"kind": "markdown",
+                            "value": "Example:\\n\\n\\tif true:\\n\\t    print(1)\\n\\t\\n\\tprint(2)"}}) \\
+                            == "Example:\\n\\n[codeblock]if true:\\n    print(1)\\n\\nprint(2)[/codeblock]"
+                    _step("lookup_markup", md_ok)
+
+                    # Native symbols use original engine docs. The script outline excludes
+                    # locals, so a same-named local cannot be mistaken for a class member.
+                    var typed_path := "res://gd3_lookup_typed.gd3"
+                    var typed_src := "extends Node2D\\n\\n## Member [b]documentation[/b].\\nvar member_value: int = 1\\n" \\
+                            + "const MEMBER_CONST = 2\\nsignal changed(value: int)\\nenum Choice { FIRST, SECOND }\\n" \\
+                            + "class Inner:\\n    var inner_value: int\\n\\n## Method [i]documentation[/i].\\n" \\
+                            + "func typed_probe(argument: int) -> void:\\n    var local_value: int = argument\\n" \\
+                            + "    const LOCAL_CONST = 3\\n    print(local_value, LOCAL_CONST, member_value, MEMBER_CONST, Choice.FIRST)\\n" \\
+                            + "    changed.emit(1)\\n    var item: Inner = Inner.new()\\n    print(item.inner_value)\\n" \\
+                            + "    typed_probe(1)\\n    print(Vector2.ZERO, Node, abs(-1), PI, position, get_name(), tree_entered)\\n" \\
+                            + "\\nfunc shadow() -> void:\\n    var member_value: int = 5\\n    print(member_value)\\n"
+                    _write_text_file(typed_path, typed_src)
+                    client.sync_document(service.lsp_uri_for(typed_path), typed_src)
+                    var typed_parsed: bool = await _wait_doc_symbol(service.lsp_uri_for(typed_path), "typed_probe", 20.0)
+                    var typed_ok: bool = typed_parsed
+                    var checks := [
+                        ["Vector2", 1, "Vector2"], ["Node", 1, "Node"],
+                        ["abs", 4, "@GlobalScope"], ["PI", 2, "@GDScript"],
+                        ["position", 3, "Node2D"], ["get_name", 4, "Node"],
+                        ["member_value", 10, ""], ["MEMBER_CONST", 2, ""], ["tree_entered", 5, "Node"],
+                        ["changed", 5, ""], ["Choice", 6, ""], ["FIRST", 2, ""],
+                        ["Inner", 1, ""], ["inner_value", 3, ""], ["typed_probe", 4, ""],
+                        ["local_value", 10, ""], ["LOCAL_CONST", 9, ""], ["argument", 10, ""],
+                    ]
+                    var typed_details := ""
+                    for check in checks:
+                        var word: String = check[0]
+                        var at: int = typed_src.rfind(word)
+                        var query := typed_src.substr(0, at) + sentinel + typed_src.substr(at)
+                        var answer: Dictionary = await _lookup_until_ok(lang, query, word, typed_path)
+                        var correct: bool = int(answer.get("type", -1)) == check[1]
+                        if check[2] != "":
+                            correct = correct and str(answer.get("class_name", "")) == check[2]
+                        typed_ok = typed_ok and correct
+                        if not correct:
+                            typed_details += word + "=" + str(answer) + " "
+                    var typed_resource: Script = ResourceLoader.load(typed_path)
+                    var member_query: String = typed_src.replace("var member_value: int = 1", "var " + sentinel + "member_value: int = 1")
+                    var member_answer: Dictionary = await _lookup_until_ok(lang, member_query, "member_value", typed_path)
+                    typed_ok = typed_ok and int(member_answer.get("type", -1)) == 3
+                    var typed_docs: Array = typed_resource._get_documentation()
+                    typed_ok = typed_ok and typed_docs.size() == 2 \\
+                            and typed_resource._get_doc_class_name() == StringName("\\\"gd3_lookup_typed.gd3\\\"")
+                    var member_doc_ok := false
+                    var method_doc_ok := false
+                    var signal_doc_ok := false
+                    for doc in typed_docs:
+                        for member in doc.get("properties", []):
+                            if member.get("name") == "member_value":
+                                member_doc_ok = str(member.get("description", "")).contains("[b]documentation[/b]")
+                        for method in doc.get("methods", []):
+                            if method.get("name") == "typed_probe":
+                                method_doc_ok = method.get("return_type") == "void" \\
+                                        and method.get("arguments", []) == [{"name": "argument", "type": "int"}] \\
+                                        and str(method.get("description", "")).contains("[i]documentation[/i]")
+                        for signal_doc in doc.get("signals", []):
+                            if signal_doc.get("name") == "changed":
+                                signal_doc_ok = signal_doc.get("arguments", []) == [{"name": "value"}]
+                    typed_ok = typed_ok and _is_degraded_lookup(lookup._native_method_fallback(
+                            "func f():\\n    other.get_name()", "get_name", 24, typed_path))
+                    var collision_code := "extends Node\\nfunc get_name() -> String:\\n    return \\"script\\"\\nfunc f():\\n    get_name()"
+                    typed_ok = typed_ok and _is_degraded_lookup(lookup._native_method_fallback(
+                            collision_code, "get_name", collision_code.rfind("get_name"), typed_path))
+                    var native_hover_only: Dictionary = lookup._lookup_result(typed_path, {
+                        "hover": {"contents": {"kind": "markdown", "value": "\\t<Native> class Node extends Object\\n\\nDocumentation"}},
+                        "definition_ok": false,
+                    })
+                    typed_ok = typed_ok and int(native_hover_only.get("result", -1)) == OK \\
+                            and int(native_hover_only.get("type", -1)) == 1 \\
+                            and native_hover_only.get("class_name") == "Node"
+                    for special in [9, 25, 7]:
+                        var special_result: Dictionary = lookup._lookup_result(typed_path, {
+                            "hover": {"contents": "documentation"},
+                            "native": {"native_class": "Control", "kind": special, "name": "entry",
+                                    "detail": "<Theme> var Control.entry" if special == 7 else "signature"},
+                        })
+                        typed_ok = typed_ok and int(special_result.get("type", -1)) == 1
+                    var navigation_only: Dictionary = lookup._lookup_result(typed_path, {
+                        "hover": {"contents": {"kind": "markdown", "value": "\\tfunc typed_probe(argument: int) -> void"}},
+                        "definition": {"uri": service.lsp_uri_for(typed_path), "range": {"start": {"line": 11}}},
+                    })
+                    typed_ok = typed_ok and int(navigation_only.get("result", -1)) == OK \\
+                            and int(navigation_only.get("type", -1)) == 0 \\
+                            and int(navigation_only.get("location", -1)) == 12
+                    var pending_source: String = typed_src + "# new editor buffer\\n"
+                    service.publish_lookup_documentation(typed_resource, typed_docs, pending_source)
+                    service.notify_source_changed(typed_path, pending_source)
+                    typed_ok = typed_ok and typed_resource.published_lookup_documentation().size() == 2
+                    typed_resource.set_source_code(pending_source)
+                    typed_ok = typed_ok and typed_resource._get_documentation().size() == 2
+                    typed_resource.set_source_code(pending_source + "# documentation invalidated\\n")
+                    typed_ok = typed_ok and typed_resource._get_documentation().is_empty() \\
+                            and typed_resource.published_lookup_documentation().size() == 2
+                    service.notify_source_changed(typed_path, typed_resource.get_source_code())
+                    typed_ok = typed_ok and typed_resource.published_lookup_documentation().is_empty()
+                    _step("lookup_classification", typed_ok and member_doc_ok and method_doc_ok and signal_doc_ok, typed_details)
+
+                    # Named scripts use their source class_name, including nested owners
+                    # and inherited members reached through a different script path.
+                    var named_path := "res://gd3_lookup_named.gd3"
+                    var named_src := "class_name Gd3LookupNamed\\nextends RefCounted\\nvar time: float = 0.0\\n" \\
+                            + "class Inner:\\n    var nested_value: int = 0\\n" \\
+                            + "func use_it() -> void:\\n    var inner := Inner.new()\\n    print(time, inner.nested_value)\\n"
+                    var named_caller_path := "res://gd3_lookup_named_caller.gd3"
+                    var named_caller_src := "class_name Gd3LookupNamedCaller\\nextends \\"res://gd3_lookup_named.gd3\\"\\n" \\
+                            + "func use_it() -> void:\\n    print(time)\\n"
+                    _write_text_file(named_path, named_src)
+                    _write_text_file(named_caller_path, named_caller_src)
+                    client.sync_document(service.lsp_uri_for(named_path), named_src)
+                    var names_ok: bool = await _wait_doc_symbol(service.lsp_uri_for(named_path), "time", 20.0)
+                    var named_answer: Dictionary = await _lookup_until_ok(lang,
+                            named_src.replace("print(time", "print(" + sentinel + "time"), "time", named_path)
+                    var inner_answer: Dictionary = await _lookup_until_ok(lang,
+                            named_src.replace("inner.nested_value", "inner." + sentinel + "nested_value"), "nested_value", named_path)
+                    var inherited_answer: Dictionary = await _lookup_until_ok(lang,
+                            named_caller_src.replace("print(time", "print(" + sentinel + "time"), "time", named_caller_path)
+                    var named_resource: Script = ResourceLoader.load(named_path)
+                    names_ok = names_ok and named_answer.get("class_name") == "Gd3LookupNamed" \\
+                            and inner_answer.get("class_name") == "Gd3LookupNamed.Inner" \\
+                            and inherited_answer.get("class_name") == "Gd3LookupNamed" \\
+                            and inherited_answer.get("script_path") == named_path \\
+                            and inherited_answer.get("script") == named_resource \\
+                            and named_resource._get_doc_class_name() == &"Gd3LookupNamed"
+                    var renamed_src: String = named_src.replace("class_name Gd3LookupNamed", "class_name Gd3LookupRenamed")
+                    var renamed_answer: Dictionary = await _lookup_until_ok(lang,
+                            renamed_src.replace("print(time", "print(" + sentinel + "time"), "time", named_path)
+                    names_ok = names_ok and renamed_answer.get("class_name") == "Gd3LookupRenamed" \\
+                            and named_resource._get_doc_class_name() == &"Gd3LookupRenamed"
+                    # Rename only the provider buffer: neither the disk nor its cached
+                    # Script source is updated, so a cross-file query must use the registry.
+                    var registry_version: int = service.notify_source_changed(named_path, renamed_src)
+                    var renamed_uri: String = service.lsp_uri_for(named_path)
+                    client.sync_document(renamed_uri, renamed_src)
+                    names_ok = names_ok and registry_version > 0 \\
+                            and await _wait_doc_symbol(renamed_uri, "Gd3LookupRenamed", 20.0)
+                    var inherited_renamed: Dictionary = await _lookup_until_ok(lang,
+                            named_caller_src.replace("print(time", "print(" + sentinel + "time"), "time", named_caller_path)
+                    names_ok = names_ok and inherited_renamed.get("class_name") == "Gd3LookupRenamed" \\
+                            and inherited_renamed.get("script") == named_resource \\
+                            and named_resource._get_doc_class_name() == &"Gd3LookupRenamed" \\
+                            and named_resource.get_source_code() == named_src \\
+                            and FileAccess.get_file_as_string(named_path) == named_src
+                    _step("lookup_class_names", names_ok,
+                            str(named_answer) + " inner=" + str(inner_answer) + " inherited=" + str(inherited_answer) \\
+                                    + " renamed=" + str(renamed_answer) + " inherited_renamed=" + str(inherited_renamed))
+
                     # Same-file lookup: the sentinel sits at the CALL site of a local method;
                     # the definition points at its declaration line (0-based line 2 → engine
                     # location 3) and stays inside the current tab (no `script` key).
@@ -3659,7 +3855,7 @@ class EditorAddonScriptLanguageEngineTest {
                             lang, call_code, "probe_local_method", consumer_path)
                     _step("lookup_local_method",
                             int(local_result.get("result", -1)) == OK \\
-                                    and int(local_result.get("type", -1)) == 10 \\
+                                    and int(local_result.get("type", -1)) == 4 \\
                                     and str(local_result.get("description", "")) != "" \\
                                     and str(local_result.get("script_path", "")) == consumer_path \\
                                     and int(local_result.get("location", -1)) == 3 \\
@@ -3726,6 +3922,7 @@ class EditorAddonScriptLanguageEngineTest {
                     var cjk_path := "res://gd3_lookup_cjk.gd3"
                     var cjk_code := "extends Node\\n\\nfunc cjk_probe() -> int:\\n    return 1\\n\\n" \\
                             + "func use_it() -> void:\\n    var s := \\"🙂\\" + str(" + sentinel + "cjk_probe())\\n"
+                    _write_text_file(cjk_path, cjk_code.replace(sentinel, ""))
                     var cjk_result: Dictionary = await _lookup_until_ok(lang, cjk_code, "cjk_probe", cjk_path)
                     _step("lookup_cjk", int(cjk_result.get("result", -1)) == OK, str(cjk_result))
                 
@@ -3778,7 +3975,7 @@ class EditorAddonScriptLanguageEngineTest {
                     await get_tree().process_frame
                     _step("lookup_disabled_safe", _is_degraded_lookup(dis), str(dis))
                 
-                    for p in [provider_path, consumer_path, classy_path, classy_use_path, cjk_path, unknown_path]:
+                    for p in [provider_path, consumer_path, classy_path, classy_use_path, cjk_path, unknown_path, typed_path, named_path, named_caller_path]:
                         DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
                     _step("survived", true)
                 
@@ -3798,7 +3995,8 @@ class EditorAddonScriptLanguageEngineTest {
                 
                     var lookup = service.lookup()
                     var hover_only: Dictionary = lookup._lookup_result("res://src/gd3_lookup_suspended.gd3",
-                            {"hover": {"contents": {"kind": "markdown", "value": "doc text"}}})
+                            {"hover": {"contents": {"kind": "markdown", "value": "doc text"}},
+                             "native": {"native_class": "Node", "kind": 5, "name": "Node"}})
                     _step("lookup_helpers", lookup._lookup_hover_text({"contents": ["a", {"value": "b"}]}) == "a\\nb" \\
                             and str(lookup._lookup_definition_location(
                                     [{"targetUri": "file:///x.gd3", "targetSelectionRange": {}}]).get("uri", "")) \\

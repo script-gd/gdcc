@@ -30,6 +30,32 @@
   的版本门槛；光标定位、码点行列计算、擦除视图前向映射与查询结果映射集中于
   `GdccLookupService`，语言入口仅委托。`request_lookup` 原始传输入口也拒绝旧版本，
   防止绕过门槛。此门槛独立于脚本创建对话框的 `> 4.6.0` 限制。
+- 2026-10-14 修订：lookup 不再把所有符号伪装为 LOCAL_VARIABLE。hover/definition 后
+  最多追加一次有界符号检查：项目定义用 `documentSymbol` 的 selectionRange 精确分类，
+  原生符号用 `nativeSymbol` 分类；类、方法、属性、常量、枚举与信号按真实类型返回。
+  局部变量/常量通过 `GdccMarkdownToBbcode` 转换 hover Markdown；脚本成员从大纲
+  读取原始 BBCode，发布到 ScriptExtension 文档与编辑器帮助缓存。文档名优先使用
+  目标脚本原始源码中的 `class_name`，内部类使用 `Outer.Inner`；无声明类名时才回退
+  为带引号的项目相对路径。不启用 Stage C 全局类注册。命名脚本文档以源文档身份
+  覆盖同名编译扩展的帮助条目，使成员显示类名并保留源码导航；lookup 时重新发布
+  命名条目，避免扩展文档重新生成后误走原生帮助导航。旧命名条目的清理仍按已发布
+  快照执行。类名读取不依赖已擦除 `class_name` 的 LSP 同步视图。
+  同文件使用请求携带的原始缓冲区；跨文件优先使用源码注册表的存活文本，再回退
+  为目标资源源码，避免未保存的 `class_name` 改名仍显示旧名字；不采用墓碑条目。
+  命名修订验收：Godot 4.6.3 的分析测试 5 项通过；4.6.3、4.7.0 的 `lsp_lookup`
+  18 步、`lookup_suspended` 9 步、`class_name_erasure` 16 步均通过；4.5.1 的安全
+  分支与擦除回归通过（不启用 lookup）。跨文件缓冲区取值修订后复审 APPROVE。
+  符号检查失败保留有效导航（SCRIPT_LOCATION），不再误标为局部变量；单次 lookup
+  最多三个各 200ms 的 LSP 请求。原生属性访问器被上游 LSP 文档表省略时，仅对当前
+  脚本根函数的未限定方法调用做 ClassDB 回退，不猜测任意接收者类型。
+  原生符号检查失败时可从带原生所有者的 hover 声明恢复帮助引用；无法确认的脚本
+  符号不伪造分类。LookupResult 无构造函数、运算符与主题项种类，这些符号引用所属
+  类型的帮助，而非错误的方法/属性分区。信号大纲缺失参数类型时不编造类型字段。
+- 2026-10-14 分类/文档修复验收：`EditorAddonScriptLanguageAnalysisTest` 5 项通过；
+  Godot 4.6.3、4.7.0 的 `lsp_lookup` 17 步与 `lookup_suspended` 9 步均通过；
+  4.5.1 的 lookup 按版本跳过，`lookup_suspended` 与 `lsp_completion` 回归通过。
+  `review-expert-a` 初审反馈后的缓存清理、缩进代码块与回退遮蔽修订再次通过同一
+  版本矩阵；复审 APPROVE，无剩余阻断项。编辑器可视交互仍按 §8.3 手动验收。
 - 2026-10-14 修订：`_complete_code` 的 `call_hint` 转发到内置 GDScript LSP 的
   `textDocument/signatureHelp`。补全请求成功后复用同一已同步文档与码点位置追加一次
   有界查询；映射器从签名 label 的顶层参数列表截取完整参数片段，并用成对
@@ -39,7 +65,7 @@
 - 2026-10-14 验收：`EditorAddonScriptLanguageAnalysisTest` 5 项全绿；Godot 4.5.1
   `lookup_suspended` 9 步全绿，`lsp_lookup` 按版本跳过；Godot 4.6.3 与 4.7.0
 
-  均通过 `lsp_lookup` 15 步及 `lookup_suspended` 9 步，含真实编辑器符号信号后
+  均通过当时的 `lsp_lookup` 15 步及 `lookup_suspended` 9 步，含真实编辑器符号信号后
   原资源身份、缓存路径与保存往返检查。4.6.0 和 4.8 开发版尚未实测。
 - 2026-10-13 修订（编译后端）：Build 菜单通过 `server.availableCCompilerKinds` 获取可用
   后端，新增默认 Auto 的项目级选择；断连、无后端或查询失败时禁用构建并显示前置警告
@@ -881,9 +907,10 @@
     在同步文档前降级，不发出符号查询。
   - 关键引擎事实（4.5 源码核实）：适配器强制 `result` 与 `type` 两键（缺一即
     ERR_UNAVAILABLE）；`LookupResultType` 枚举 SCRIPT_LOCATION=0…LOCAL_VARIABLE=10；
-    LSP 线路无结构化符号 kind，LOCAL_VARIABLE 是唯一同时喂饱悬浮 tooltip
-    （`description` 进入 tooltip 负载）与位置导航（`_lookup_symbol` 在
-    `class_name` 为空时对任何 `location >= 0` 导航）的类型；`location` 为 1 基
+    hover/definition 本身不提供结构化符号 kind，早期因此统一用 LOCAL_VARIABLE
+    承载 `description`，但这会把类/函数等错误显示为局部变量。2026-10-14 改为
+    documentSymbol/nativeSymbol 分类：CLASS_* tooltip 从帮助缓存读取文档，忽略
+    LookupResult.description；LOCAL_* 才消费该字段。`location` 为 1 基
     （引擎以 `location - 1` 跳转）；跨文件目标必须附 `script` 资源，否则引擎会在
     当前页签内跳行。评审后收紧 OK 判定：description 为空**且** definition 不可
     导航（目标不出项目、无有效起始行、或跨文件 Script 加载失败）时一律降级——
@@ -898,7 +925,7 @@
     `lookup_degraded`（客户端未 READY 的同步拒绝）；`lookup_whitebox`（hover
     文本抽取覆盖 MarkupContent/旧 MarkedString 各形、首个可用 Location 覆盖
     bare/array/LocationLink 各形、URI 方言往返、整词回退的边界/注释尾/后缀碰撞）；
-    `lookup_local_method`（同文件：OK、type 10、description 非空、location 3、
+    `lookup_local_method`（同文件：OK、type 4、description 非空、location 3、
     无 `script` 键）；`lookup_cross_file`（path-extends 继承方法：provider Script
     资源 + 路径 + location 3）；`lookup_class_name_gap`（负例，见上）；
     `lookup_cjk`（emoji 在哨兵前仍解析，R11 码点锚）；`lookup_unknown_symbol` 与
@@ -1070,7 +1097,7 @@ Godot 编辑器
 │     │     ├── _validate       → LSP 诊断（线程模式下有界同步等待 ≤150ms）
 │     │     │                     + 缓存的 gdcc 诊断合并（异步产生，§4.4）
 │     │     ├── _complete_code  → 0xFFFF 哨兵定位光标 → LSP completion（≤400ms）
-│     │     └── _lookup_code    → Godot >= 4.6.0：LSP hover/definition（各 ≤200ms）；旧版降级
+│     │     └── _lookup_code    → Godot >= 4.6.0：hover/definition + 可选符号检查（各 ≤200ms）；旧版降级
 │     ├── GdccScript (ScriptExtension, _can_instantiate() == false)
 │     ├── GdccScriptFormatLoader (ResourceFormatLoader，_load 纯加载、线程安全)
 │     ├── GdccScriptFormatSaver  (ResourceFormatSaver)
@@ -1207,8 +1234,9 @@ Godot 编辑器
 - `_get_global_name() -> StringName`：解析 `class_name` 行，缺省空。
 - `_get_base_script() -> Script`：null。`_inherits_script(script) -> bool`：false。
   `_instance_has(object) -> bool`：false。
-- `_get_doc_class_name() -> StringName`、`_get_documentation()`（空；typed array 可表达
-  已由探针证实，见 §2.2 C 档结论）、`_get_class_icon_path()`（空串，非 required）。
+- `_get_doc_class_name() -> StringName`、`_get_documentation()`：初始为空；lookup 成功后
+  承载按声明类名（缺省为路径）命名的 LSP 脚本文档缓存，源文本变化时清空。typed array 可表达已由
+  探针证实（§2.2 C 档结论）。`_get_class_icon_path()` 返回插件脚本图标路径。
 - `_has_method/_has_static_method/_has_script_signal` → false；
   `_has_property_default_value` → false、`_get_property_default_value` → null
   （required，显式实现避免日志噪音）；`_get_method_info` → `{}`（required，同理）；
@@ -2311,6 +2339,18 @@ hover/定义跳转的数据面。reconciler 已有全项目 `.gd3` 磁盘扫描�
   0xFFFF 哨兵（无哨兵时整词回退），计算 0 基码点位置，发送 Phase 7 擦除视图及前向
   映射位置，再把有界查询结果映射为 LookupResult。`lsp_lookup` 仅在 >= 4.6.0 运行；
   `lookup_suspended` 在各版本验证门槛、真实编辑器符号信号、资源身份及原路径保存。
+  分类与文档检查附加 `lookup_markup`、`lookup_classification` 锚点，覆盖原生/内建
+  类型及成员、脚本方法/属性/常量/枚举/信号/内部类、局部变量/常量/参数与遮蔽，
+  以及 BBCode 文档发布、代码/链接转换、代码结束标签转义、文档失效和检查失败时导航。
+  `_get_documentation` 是按需 LSP 大纲缓存，不在资源加载或文档虚函数内发网络请求；
+  源码变化时清空资源侧当前缓存，但保留上次发布的类名/文档快照，以便编辑器线程
+  在源更新通知或重新发布时清除帮助缓存中的全部旧类（含内部类）。未命名脚本的
+  相同文档不重复更新帮助缓存；命名脚本每次 lookup 都恢复源文档帮助条目。
+  `lookup_class_names` 覆盖同文件/跨文件/内部类与未保存头部改名（含目标资源与磁盘
+  均保留旧文本的跨文件查询）；
+  `lookup_named_erased` 覆盖编译态头部擦除后类名与文档重生成后的源码导航。
+  `nativeSymbol` 为
+  Godot 内置 LSP 扩展方法，其响应保留原始 BBCode；原生符号直接引用引擎帮助。
 - `_auto_indent_code` ✅（2026-09-28 自动化验收通过）：逐字镜像 4.5 GDScript 参考
   算法（空白宽度栈嵌套；计划条文的"冒号后增缩进等最小规则"即该参考实现）；验收：
   `auto_indent` 8 步精确输出锚点全绿 + 编辑器内手动对照（待 §8.3）。

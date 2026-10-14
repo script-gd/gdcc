@@ -20,6 +20,9 @@ var _language: GdccScriptLanguage = null
 # Path the loader read this resource from; `_reload` prefers the engine-bound `get_path()`
 # (which tracks `take_over_path` and renames) and falls back to this recorded load path.
 var _path: String = ""
+var _lookup_documentation: Array[Dictionary] = []
+var _published_lookup_documentation: Array[Dictionary] = []
+var _lookup_documentation_source: String = ""
 
 
 ## Dependency injection at creation time (loader / language factory); the instance graph has no
@@ -31,6 +34,8 @@ func setup(language: GdccScriptLanguage) -> void:
 ## Fills every derived field from freshly read source text. Shared by the format loader and
 ## `_reload` so the parse never diverges between the two entry points.
 func load_from_text(path: String, text: String) -> void:
+    if _path != path or _lookup_documentation_source != text:
+        _lookup_documentation = []
     _path = path
     _source = text
     _valid = true
@@ -77,6 +82,8 @@ func _get_source_code() -> String:
 
 
 func _set_source_code(code: String) -> void:
+    if _lookup_documentation_source != code:
+        _lookup_documentation = []
     _source = code
     _valid = true
     _parse_header()
@@ -126,12 +133,38 @@ func _instance_has(object: Object) -> bool:
 
 
 func _get_doc_class_name() -> StringName:
-    return &""
+    if _lookup_documentation.is_empty():
+        return &""
+    return StringName(str(_lookup_documentation[0].get("name", "")))
 
 
 func _get_documentation() -> Array[Dictionary]:
-    var result: Array[Dictionary] = []
-    return result
+    return _lookup_documentation
+
+
+## Populated on the editor thread from a successful LSP symbol outline. Resource
+## loading and documentation virtuals remain pure and never perform network work.
+func set_lookup_documentation(docs: Array[Dictionary], source: String = "") -> void:
+    _lookup_documentation = docs
+    _published_lookup_documentation = docs
+    var documentation_source: String = source if source != "" else _source
+    _lookup_documentation_source = documentation_source
+
+
+## Retain the last published entries after source invalidation: ScriptEditor clears
+## docs by enumerating class names, so an already empty current cache cannot clear them.
+func published_lookup_documentation() -> Array[Dictionary]:
+    return _published_lookup_documentation
+
+
+func lookup_documentation_source() -> String:
+    return _lookup_documentation_source
+
+
+func clear_lookup_documentation() -> void:
+    _lookup_documentation = []
+    _published_lookup_documentation = []
+    _lookup_documentation_source = ""
 
 
 func _get_class_icon_path() -> String:

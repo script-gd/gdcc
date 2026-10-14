@@ -11,11 +11,11 @@ extends Node
 ##
 ## Hover is requested first (it feeds the tooltip, the more frequent path); definition
 ## follows on the same position. A hover failure fails the whole answer (nothing useful
-## remains), while a definition failure after a successful hover degrades to hover-only:
-## the blocking contract may have torn the connection down, but the hover payload stays
-## valid and is still worth a tooltip. The 200ms per-request budget keeps the worst-case
-## UI stall in the same league as completion's 400ms; hover is
-## pointer-driven and fires repeatedly.
+## remains). Classification never fabricates a local-variable label for an unknown
+## symbol. A failed inspection retains navigable definitions; native declarations can
+## still resolve their known owner from the hover signature. The per-request budget keeps
+## UI stall bounded. A third, optional symbol-inspection request supplies classification
+## and script documentation; its failure never discards a navigable definition.
 
 # A var, not a const: class-level const is outside gdcc's bootstrap MVP.
 var LOOKUP_TIMEOUT_MSEC: int = 200
@@ -49,7 +49,60 @@ func lookup_code(code: String, symbol: String, path: String) -> Dictionary:
             path, str(view["text"]), int(mapped["line"]), int(mapped["character"]))
     if response.get("ok") != true:
         return _lookup_degraded()
-    return _lookup_result(path, response)
+    response["source"] = clean
+    var result: Dictionary = _lookup_result(path, response)
+    if result.get("result") != OK and response.get("definition_ok") == true and _lookup_definition_location(response.get("definition")).is_empty():
+        return _native_method_fallback(clean, symbol, caret, path)
+    return result
+
+
+## Godot omits property accessors from its LSP documentation table. For an unqualified
+## call only, ClassDB can recover the current script's native method owner without
+## guessing the type of an arbitrary receiver such as `other.get_name()`.
+func _native_method_fallback(code: String, symbol: String, caret: int, path: String) -> Dictionary:
+    var start: int = caret
+    while start > 0 and _is_identifier_code(code.unicode_at(start - 1)):
+        start -= 1
+    if symbol == "" or code.substr(start, symbol.length()) != symbol:
+        return _lookup_degraded()
+    var before: int = start - 1
+    while before >= 0 and (code.substr(before, 1) == " " or code.substr(before, 1) == "\t"):
+        before -= 1
+    if before >= 0 and code.substr(before, 1) == ".":
+        return _lookup_degraded()
+    var after: int = start + symbol.length()
+    while after < code.length() and (code.substr(after, 1) == " " or code.substr(after, 1) == "\t"):
+        after += 1
+    if code.substr(after, 1) != "(":
+        return _lookup_degraded()
+    var lines: PackedStringArray = code.substr(0, start).split("\n")
+    var index: int = lines.size() - 2
+    var root_function: bool = false
+    while index >= 0:
+        var line: String = lines[index]
+        if line != "" and not line.begins_with(" ") and not line.begins_with("\t") and not line.begins_with("#"):
+            root_function = line.begins_with("func ") or line.begins_with("static func ")
+            break
+        index -= 1
+    if not root_function:
+        return _lookup_degraded()
+    for raw in code.split("\n"):
+        if raw.begins_with(" ") or raw.begins_with("\t"):
+            continue
+        var declaration: String = raw.trim_prefix("static ")
+        for prefix in ["func ", "var ", "const ", "signal "]:
+            if declaration.begins_with(prefix):
+                var name: String = declaration.trim_prefix(prefix).get_slice("(", 0).get_slice(":", 0).get_slice(" ", 0)
+                if name == symbol:
+                    return _lookup_degraded()
+    var resource: GdccScript = GdccScript.new()
+    resource.load_from_text(path, code)
+    var owner: String = str(resource.get_instance_base_type())
+    while owner != "" and ClassDB.class_exists(owner):
+        if ClassDB.class_has_method(owner, symbol, true):
+            return {"result": OK, "type": 4, "class_name": owner, "class_member": symbol}
+        owner = str(ClassDB.get_parent_class(owner))
+    return _lookup_degraded()
 
 
 ## Syncs `text` for `path` and issues bounded `textDocument/hover` +
@@ -91,6 +144,22 @@ func request_lookup(path: String, text: String, line: int, col: int) -> Dictiona
         definition_ok = definition_response.get("ok") == true
         if definition_ok:
             definition = definition_response.get("result")
+    var symbols: Variant = null
+    var native: Variant = null
+    if client.is_ready():
+        var target: Dictionary = _lookup_definition_location(definition)
+        if not target.is_empty() and service.lsp_path_from_uri(str(target.get("uri", ""))) != "":
+            var symbols_response: Dictionary = client.request_blocking("textDocument/documentSymbol",
+                    {"textDocument": {"uri": target["uri"]}}, LOOKUP_TIMEOUT_MSEC)
+            if symbols_response.get("ok") == true:
+                symbols = symbols_response.get("result")
+        else:
+            var native_query: Dictionary = _native_hover_query(hover_response.get("result"))
+            if not native_query.is_empty():
+                var native_response: Dictionary = client.request_blocking(
+                        "textDocument/nativeSymbol", native_query, LOOKUP_TIMEOUT_MSEC)
+                if native_response.get("ok") == true:
+                    native = native_response.get("result")
     # `definition_ok` rides along for observability: a null definition with
     # `definition_ok == true` is the server's "no definition found", while
     # `definition_ok == false` is a leg failure — callers asserting "unknown symbol"
@@ -98,6 +167,7 @@ func request_lookup(path: String, text: String, line: int, col: int) -> Dictiona
     return {
         "ok": true, "hover": hover_response.get("result"),
         "definition": definition, "definition_ok": definition_ok,
+        "symbols": symbols, "native": native,
     }
 
 
@@ -141,9 +211,74 @@ func _lookup_result(path: String, response: Dictionary) -> Dictionary:
             location = -1
     if description == "" and location <= 0:
         return _lookup_degraded()
-    # LOCAL_VARIABLE (10) is the only LookupResultType feeding both hover tooltip and
-    # location navigation in Godot 4.5.
-    var result: Dictionary = {"result": OK, "type": 10, "description": description}
+    var result: Dictionary = {"result": OK, "type": 0, "description": description}
+    var native: Variant = response.get("native")
+    if native is Dictionary and str(native.get("native_class", "")) != "":
+        result["type"] = _symbol_lookup_type(int(native.get("kind", 0)))
+        result["class_name"] = str(native["native_class"])
+        result["class_member"] = str(native.get("name", ""))
+        if str(result["class_member"]).begins_with("@"):
+            result["type"] = 8
+        if int(native.get("kind", 0)) == 9 or int(native.get("kind", 0)) == 25 or str(native.get("detail", "")).begins_with("<Theme>"):
+            # LookupResult has no constructor/operator/theme-item category. Refer to
+            # the owning type rather than a method/property help entry that does not exist.
+            result["type"] = 1
+    elif location > 0:
+        var resource: Resource = script
+        if resource == null:
+            resource = ResourceLoader.load(target)
+        var source: String = ""
+        if resource is Script:
+            source = resource.get_source_code()
+        if target == path:
+            source = str(response.get("source", source))
+        else:
+            # A target resource can lag behind its open editor buffer. Use the same
+            # live content truth as the workspace mirror, never a retained tombstone.
+            var registry: GdccSourceRegistry = service.registry()
+            if registry != null and not registry.is_tombstoned(target):
+                var entry: Variant = registry.entry(target)
+                if entry is Dictionary:
+                    source = str(entry.get("text", source))
+        var owner: String = _script_doc_name(target, source)
+        var matched: Dictionary = _find_member(response.get("symbols"), definition.get("range"), owner)
+        if not matched.is_empty():
+            result.merge(matched, true)
+            var docs: Array[Dictionary] = []
+            _collect_script_docs(response.get("symbols"), target, owner, docs)
+            if resource is GdccScript:
+                service.publish_lookup_documentation(resource as GdccScript, docs, source)
+        else:
+            # The outline excludes locals. Only identify a local when the outline
+            # actually arrived; failure to inspect a member must not relabel it.
+            var outline: Variant = response.get("symbols")
+            if outline is Array and not outline.is_empty():
+                var detail: String = _hover_detail(response.get("hover"))
+                if detail.begins_with("var ") or detail.begins_with("const "):
+                    var local_type: int = 9 if detail.begins_with("const ") else 10
+                    result["type"] = local_type
+                    result["doc_type"] = _declaration_type(detail)
+    if int(result["type"]) == 0 and location <= 0:
+        var query: Dictionary = _native_hover_query(response.get("hover"))
+        if query.is_empty():
+            return _lookup_degraded()
+        result["class_name"] = str(query["native_class"])
+        result["class_member"] = str(query["symbol_name"])
+        var detail: String = _hover_detail(response.get("hover"))
+        if detail.begins_with("<Native> class ") or detail.begins_with("<Theme>") or str(query["symbol_name"]) == "operator" or str(query["symbol_name"]) == str(query["native_class"]):
+            result["type"] = 1
+        elif detail.begins_with("const "):
+            result["type"] = 2
+        elif detail.begins_with("var "):
+            result["type"] = 3
+        elif detail.begins_with("enum "):
+            result["type"] = 6
+        elif str(query["symbol_name"]).begins_with("@"):
+            result["type"] = 8
+        elif ClassDB.class_exists(str(query["native_class"])) and ClassDB.class_has_signal(str(query["native_class"]), str(query["symbol_name"])):
+            result["type"] = 5
+        else:
+            result["type"] = 4
     if location > 0:
         result["script_path"] = target
         result["location"] = location
@@ -152,7 +287,7 @@ func _lookup_result(path: String, response: Dictionary) -> Dictionary:
     return result
 
 
-## Hover payload → plain text. The 4.5 GDScript server answers MarkupContent
+## Hover payload → Godot documentation BBCode. The GDScript server answers MarkupContent
 ## (`{"kind": "markdown", "value": ...}`); the legacy MarkedString forms (bare string,
 ## `{"language", "value"}`, arrays thereof) are tolerated defensively.
 func _lookup_hover_text(hover: Variant) -> String:
@@ -160,20 +295,187 @@ func _lookup_hover_text(hover: Variant) -> String:
         return ""
     var contents: Variant = hover.get("contents")
     if contents is String:
-        return contents
+        return GdccMarkdownToBbcode.convert(contents)
     if contents is Dictionary:
-        return str(contents.get("value", ""))
+        return _hover_content(contents)
     if contents is Array:
         # PackedStringArray, not Array: gdcc's `String.join` overload set only covers the
         # packed form.
         var parts := PackedStringArray()
         for item in contents:
             if item is Dictionary:
-                parts.append(str(item.get("value", "")))
+                parts.append(_hover_content(item))
             elif item is String:
-                parts.append(item)
+                parts.append(GdccMarkdownToBbcode.convert(item))
         return "\n".join(parts)
     return ""
+
+
+func _hover_content(contents: Dictionary) -> String:
+    var value: String = str(contents.get("value", ""))
+    if str(contents.get("kind", "")) == "plaintext":
+        return GdccMarkdownToBbcode.escape(value)
+    if contents.has("language"):
+        return GdccMarkdownToBbcode.code(value, true)
+    return GdccMarkdownToBbcode.convert(value)
+
+
+## The first indented line is a Godot LSP declaration, not arbitrary documentation.
+func _hover_detail(hover: Variant) -> String:
+    if not (hover is Dictionary):
+        return ""
+    var contents: Variant = hover.get("contents")
+    if not (contents is Dictionary) or str(contents.get("kind", "")) != "markdown":
+        return ""
+    var value: String = str(contents.get("value", ""))
+    if not value.begins_with("\t"):
+        return ""
+    return value.get_slice("\n", 0).strip_edges()
+
+
+func _native_hover_query(hover: Variant) -> Dictionary:
+    var detail: String = _hover_detail(hover)
+    if detail.begins_with("<Native> class "):
+        return {"native_class": detail.trim_prefix("<Native> class ").get_slice(" ", 0), "symbol_name": ""}
+    detail = detail.trim_prefix("<Theme> ")
+    var name: String = ""
+    for prefix in ["func ", "var ", "const ", "enum "]:
+        if detail.begins_with(prefix):
+            name = detail.trim_prefix(prefix)
+            break
+    for separator in ["(", ":", " ", "{", "="]:
+        name = name.get_slice(separator, 0)
+    var dot: int = name.rfind(".")
+    if dot <= 0:
+        return {}
+    return {"native_class": name.substr(0, dot), "symbol_name": name.substr(dot + 1)}
+
+
+func _symbol_lookup_type(kind: int) -> int:
+    match kind:
+        5: return 1
+        14, 22: return 2
+        7, 8, 13: return 3
+        6, 9, 12: return 4
+        24: return 5
+        10: return 6
+    return 0
+
+
+## Read the raw header, not the LSP outline: compiled classes have their class_name
+## erased in the synchronized view. Unnamed scripts retain Godot's quoted-path name.
+func _script_doc_name(path: String, source: String) -> String:
+    var script: GdccScript = GdccScript.new()
+    script.load_from_text(path, source)
+    var name: String = str(script._get_global_name())
+    if name != "":
+        return name
+    return "\"" + path.trim_prefix("res://") + "\""
+
+
+func _find_member(symbols: Variant, range_value: Variant, owner: String, root: bool = true) -> Dictionary:
+    if not (symbols is Array) or not (range_value is Dictionary):
+        return {}
+    for symbol_value in symbols:
+        if not (symbol_value is Dictionary):
+            continue
+        var symbol: Dictionary = symbol_value
+        var name: String = str(symbol.get("name", ""))
+        var kind: int = int(symbol.get("kind", 0))
+        var child_owner: String = owner
+        if kind == 5 and not root:
+            child_owner = owner + "." + name
+        var selection: Variant = symbol.get("selectionRange")
+        if selection is Dictionary and selection.get("start") == range_value.get("start") and selection.get("end") == range_value.get("end"):
+            return {"type": _symbol_lookup_type(kind), "class_name": child_owner, "class_member": name}
+        var found: Dictionary = _find_member(symbol.get("children"), range_value, child_owner, false)
+        if not found.is_empty():
+            return found
+    return {}
+
+
+## documentSymbol carries the original Godot BBCode documentation, before hover's
+## lossy Markdown rendering. Publish that data through ScriptExtension so CLASS_*
+## tooltips can retrieve it: the engine ignores LookupResult.description for members.
+func _collect_script_docs(symbols: Variant, path: String, owner: String, docs: Array[Dictionary]) -> void:
+    if not (symbols is Array):
+        return
+    for symbol_value in symbols:
+        if not (symbol_value is Dictionary) or int(symbol_value.get("kind", 0)) != 5:
+            continue
+        var symbol: Dictionary = symbol_value
+        var doc: Dictionary = {
+            "name": owner, "is_script_doc": true, "script_path": path,
+            "description": str(symbol.get("documentation", "")),
+            "methods": [], "signals": [], "properties": [], "constants": [], "enums": {},
+        }
+        docs.append(doc)
+        var children: Variant = symbol.get("children", [])
+        if children is Array:
+            for child_value in children:
+                if not (child_value is Dictionary):
+                    continue
+                var child: Dictionary = child_value
+                var name: String = str(child.get("name", ""))
+                var kind: int = int(child.get("kind", 0))
+                var member: Dictionary = {
+                    "name": name,
+                    "description": GdccMarkdownToBbcode.code(str(child.get("detail", ""))) + "\n\n" + str(child.get("documentation", "")),
+                }
+                var detail: String = str(child.get("detail", ""))
+                member["type"] = _declaration_type(detail)
+                var equals: int = detail.find(" = ")
+                if equals >= 0:
+                    member["value"] = detail.substr(equals + 3)
+                    member["default_value"] = detail.substr(equals + 3)
+                match kind:
+                    6, 12:
+                        _fill_method_doc(member, detail)
+                        if kind == 12:
+                            member["qualifiers"] = "static"
+                        doc["methods"].append(member)
+                    24:
+                        _fill_method_doc(member, detail, true)
+                        doc["signals"].append(member)
+                    7, 8, 13: doc["properties"].append(member)
+                    14, 22: doc["constants"].append(member)
+                    10:
+                        doc["enums"][name] = member
+                        var values: Variant = child.get("children", [])
+                        if values is Array:
+                            for value in values:
+                                if value is Dictionary:
+                                    doc["constants"].append({"name": str(value.get("name", "")), "enumeration": owner + "." + name, "description": str(value.get("documentation", ""))})
+                    5: _collect_script_docs([child], path, owner + "." + name, docs)
+
+
+func _declaration_type(detail: String) -> String:
+    var declaration: String = detail.get_slice(" = ", 0)
+    var colon: int = declaration.find(": ")
+    if colon < 0:
+        return "Variant"
+    return declaration.substr(colon + 2).strip_edges()
+
+
+func _fill_method_doc(member: Dictionary, detail: String, signal_doc: bool = false) -> void:
+    var language: GdccScriptLanguage = service.get_language_instance()
+    var arguments: Array[Dictionary] = []
+    for span in language._signature_parameter_spans(detail):
+        var parameter: String = detail.substr(int(span["start"]), int(span["end"]) - int(span["start"]))
+        var name: String = parameter.get_slice(" = ", 0).get_slice(":", 0).strip_edges()
+        var argument: Dictionary = {"name": name}
+        if not signal_doc or parameter.find(": ") >= 0:
+            argument["type"] = _declaration_type(parameter)
+        var equals: int = parameter.find(" = ")
+        if equals >= 0:
+            argument["default_value"] = parameter.substr(equals + 3)
+        arguments.append(argument)
+    member["arguments"] = arguments
+    var arrow: int = detail.rfind(" -> ")
+    var return_type: String = "Variant"
+    if arrow >= 0:
+        return_type = detail.substr(arrow + 4).strip_edges()
+    member["return_type"] = return_type
 
 
 ## Definition payload → the first usable `{"uri", "range"}` Location ({} when none). The

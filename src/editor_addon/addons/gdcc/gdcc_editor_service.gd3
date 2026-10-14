@@ -278,9 +278,40 @@ func lsp_path_from_uri(uri: String) -> String:
     return localized
 
 
-## The configured editor indent unit for `_auto_indent_code` (mirrors## `GDScriptLanguage::_get_indentation`): a `text_editor/behavior/indent/size` space run
-## when `text_editor/behavior/indent/type` selects Spaces, a single tab otherwise — and
-## always a tab before the first install (the engine's non-editor branch).
+## Member tooltips resolve CLASS_* references through the editor's documentation cache.
+func publish_lookup_documentation(script: GdccScript, docs: Array[Dictionary], source: String) -> void:
+    if not _active or _editor_interface == null:
+        return
+    if script._get_documentation() == docs:
+        script.set_lookup_documentation(docs, source)
+        # Named scripts share a help key with their compiled extension class. Restore
+        # the source-backed entry even if extension doc regeneration replaced it.
+        if not docs.is_empty() and not str(docs[0].get("name", "")).begins_with("\""):
+            _editor_interface.get_script_editor().update_docs_from_script(script)
+        return
+    var editor: ScriptEditor = _editor_interface.get_script_editor()
+    clear_lookup_documentation(script)
+    script.set_lookup_documentation(docs, source)
+    editor.update_docs_from_script(script)
+
+
+## Source/resource virtuals may run on worker threads. Clear retired help entries here
+## on the editor thread, using the last published names rather than the invalidated array.
+func clear_lookup_documentation(script: GdccScript) -> void:
+    if _editor_interface == null:
+        return
+    var old_docs: Array[Dictionary] = script.published_lookup_documentation()
+    if not old_docs.is_empty():
+        var carrier: GdccScript = GdccScript.new()
+        carrier.set_lookup_documentation(old_docs)
+        _editor_interface.get_script_editor().clear_docs_from_script(carrier)
+    script.clear_lookup_documentation()
+
+
+## The configured editor indent unit for `_auto_indent_code` (mirrors
+## `GDScriptLanguage::_get_indentation`): a `text_editor/behavior/indent/size` space run
+## when `text_editor/behavior/indent/type` selects Spaces, a single tab otherwise,
+## and always a tab before the first install (the engine's non-editor branch).
 func editor_indent_unit() -> String:
     if _editor_interface == null:
         return "\t"
@@ -365,6 +396,11 @@ func erasure_memo_size() -> int:
 func notify_source_changed(path: String, text: String) -> int:
     if not _active:
         return -1
+    var resource: Resource = ResourceLoader.get_cached_ref(path)
+    if resource is GdccScript:
+        var script: GdccScript = resource as GdccScript
+        if script.lookup_documentation_source() != text:
+            clear_lookup_documentation(script)
     return _registry.notify_source_changed(path, text)
 
 
