@@ -231,6 +231,8 @@ func _enter_tree() -> void:
     # engine-test bisect), while this interpreted emission reaches them all.
     if not _service.revalidation_requested.is_connected(_on_gdcc_revalidation_requested):
         _service.revalidation_requested.connect(_on_gdcc_revalidation_requested)
+    if not _service.outline_revalidation_requested.is_connected(_on_outline_revalidation_requested):
+        _service.outline_revalidation_requested.connect(_on_outline_revalidation_requested)
     var server_endpoint := _read_server_endpoint()
     # Fail-closed on an unusable configured pair: install on the defaults rather than
     # halfway onto a dead endpoint (the settings-changed path instead keeps the current
@@ -644,8 +646,16 @@ func _on_gdcc_revalidation_requested(path: String, version: int) -> void:
     call_deferred("_emit_revalidation_deferred", path, version)
 
 
-func _emit_revalidation_deferred(path: String, version: int) -> void:
-    if _service == null or not _service.should_still_revalidate(path, version):
+func _on_outline_revalidation_requested(path: String, version: int) -> void:
+    call_deferred("_emit_revalidation_deferred", path, version, true)
+
+
+func _emit_revalidation_deferred(path: String, version: int, outline: bool = false) -> void:
+    if _service == null:
+        return
+    var current := _service.outline().should_still_revalidate(path, version) if outline \
+            else _service.should_still_revalidate(path, version)
+    if not current:
         return
     var script_editor := get_editor_interface().get_script_editor()
     if script_editor == null:

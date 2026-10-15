@@ -254,7 +254,7 @@
     2. generation 等待断言从"等于"改为水位线"≥"并新增有界 per-generation 绑定历史
        （`_diag_history`，每 URI 留 8 条）：两条通知可在单次读批内先后出队，相等断言
        会被后一条覆盖而永假。
-    3. 诊断位置：服务端 `update_diagnostics` 把所有诊断的 `character` 报为**错误行
+    3. 诊断位置（4.5 实证，4.6 相同）：服务端 `update_diagnostics` 把所有诊断的 `character` 报为**错误行
        首个非空白字符**（缩进的码点数），不携带 token 级精确列；UTF-16/码点分歧在该
        路径不存在（全程码点计数），R11 锚定改为"多字节行不错位 + 缩进列正确"。
     4. `use_thread` 运行期重启链路存在但不可脚本触发：服务端仅在
@@ -1193,7 +1193,7 @@ Godot 编辑器
 | `valid` | bool | 缺省视为 false |
 | `errors` | Array[Dictionary] | 每项必须含 `line:int`、`column:int`、`message:String`；`path:String` 在本计划中**必填**（缺省时 `ScriptTextEditor` 会把错误归入"依赖脚本错误"而非当前文件，见 §4.2） |
 | `warnings` | Array[Dictionary] | 每项必须含 `start_line:int`、`end_line:int`、`code:int`、`string_code:String`、`message:String`，缺任一键被引擎丢弃 |
-| `functions` | PackedStringArray | 可选，本计划不提供 |
+| `functions` | PackedStringArray | `validate_functions=true` 时读取 LSP 异步符号缓存，格式 `方法名:1基行号`；内部类方法为 `Inner.method:行号` |
 | `safe_lines` | PackedInt32Array | 可选，本计划不提供 |
 
 `_complete_code(code, path, owner) -> Dictionary`：
@@ -1312,6 +1312,15 @@ Godot 编辑器
   `String.chr(0xFFFF)` 插入源码（`scene/gui/code_edit.cpp`），语言实现需自行定位并
   剔除；GDScript 解析器以同一哨兵确定补全上下文
   （`modules/gdscript/gdscript_parser.cpp`）。`validate` 的入参文本**不含**哨兵。
+- 左侧成员大纲来自 `ScriptEditor._update_members_overview()` →
+  `ScriptTextEditor.get_functions()` → `ScriptLanguage.validate(..., r_functions)`，不是
+  `ScriptExtension._get_script_method_list()`。原生 GDScript 的
+  `get_function_names_recursively()` 只列出类方法与静态函数，递归内部类并使用点限定名；
+  不显示变量、信号、常量、属性访问器或函数体内 lambda。编辑器把 `name:line` 中的
+  1 基行号减一作为跳转位置，且只有 `valid=true` 时更新缓存；有错误时保留旧大纲。
+  源码依据：Godot 4.6.3 的
+  [`gdscript_editor.cpp:133–143`](https://github.com/godotengine/godot/blob/4.6.3-stable/modules/gdscript/gdscript_editor.cpp#L133-L143)
+  与 [`script_text_editor.cpp:126–140`](https://github.com/godotengine/godot/blob/4.6.3-stable/editor/script/script_text_editor.cpp#L126-L140)。
 - `.gd3.uid`：4.4+ 编辑器会为脚本生成 `.uid` 伴生文件，对本计划无害。
 
 ### 2.6 GDScript LSP 服务（编辑器内建）
@@ -1347,10 +1356,14 @@ Godot 编辑器
   `uri_encode`（空 authority 形式；`file://E:/...` 会被 `get_file_path` 的
   `parse_url` 把盘符误判为 host 而报 "nonlocal files"）。客户端必须按同一方言生成
   URI（`GdccLspClient.path_to_uri`），服务端回显字节一致。
-- **诊断位置（Phase 2 实证）**：`update_diagnostics` 把每条诊断的 `character` 报为
+- **诊断位置（Phase 2 的 4.5 实证，4.6 相同）**：`update_diagnostics` 把每条诊断的 `character` 报为
   错误行**首个非空白字符**位置（缩进的码点数，`range.end` 覆盖整行去空白内容），
   不携带 token 级精确列；全程码点计数，无 UTF-16/码点分歧（§9 R11 在诊断路径不
   显化；补全路径的 `character` 同样按码点索引行文本）。
+  Godot 4.7 的 [PR #114185](https://github.com/godotengine/godot/pull/114185) 改为报告
+  真实 token 范围，`GodotPosition.to_lsp()` 直接将原始字符串行列各减一，仍按码点而非
+  UTF-16 单元计数。客户端映射不变；`validate_cjk_columns` 分别锚定旧版缩进列 5 与
+  4.7 在 emoji 后的未闭合字符串起始引号列 19（UTF-16/字节误计会得到 20/22）。
 - `initialize` 结果中 `capabilities.textDocumentSync` 在 4.5 是**对象**
   `{openClose, change: 1, willSave, willSaveWaitUntil, save}`（`change == 1` 即全量
   同步），不是整数 `1`；握手校验必须两种形状都接受（§3.4）。
@@ -2321,12 +2334,51 @@ hover/定义跳转的数据面。reconciler 已有全项目 `.gd3` 磁盘扫描�
   定位：`AnalysisRunner` 语义分析返回后、`FrontendAnalysisData` 丢弃前；骨架在
   COMPLETED-含错误时保留、解析失败时无）+ `_complete_code` 对 `self.`/`X.`/显式
   标注上下文合并缺失成员。排期条件：Phase 5–8 落地后按残余补全缺口的实证需求。
+  这不再阻止编辑器左侧成员大纲：该区域已由 `_validate.functions` 的 LSP 通道独立提供，
+  不新增 gdcc RPC，也不依赖 Stage C 的资源成员内省。
 - **Stage C（全局类注册 + `GdccScript` 成员内省虚函数）暂缓**：见 Phase 9 的
   `_get_global_class_name` 条目（含必须同批实施与对话框行为的已核实约束）。
 - **已否决**：全项目合成改名、显示端过滤伪错误（证据链见 Phase 7 背景）。
 
 ### Phase 9：打磨（可并行子项，各自独立验收）
 
+- 左侧成员大纲：`_validate` 在 `validate_functions=true` 时，仅通过
+  `GdccEditorService.outline_functions()` 读取缓存并登记需求，不在该路径发送网络请求。
+  `GdccOutlineService` 子节点在服务帧泵中同步所需 `lsp_safe_text` 擦除视图并异步请求
+  `textDocument/documentSymbol`，按 §2.5 的原生规则
+  扁平化为 `functions: PackedStringArray`。使用声明 `range.start.line + 1`；擦除保持
+  行数不变，顶层不加脚本类名前缀，内部类递归限定。仅递归类节点，不进入方法、变量或
+  属性子树，因此不会把局部 lambda 或 getter/setter 混入大纲。
+  请求键包含路径、源码内容版本、连接 READY 代次及擦除视图；同键只发一次，空列表也作为
+  已完成结果缓存。新源码/擦除决策使旧请求失效，断线清除可见缓存，重连重新请求；删除、
+  墓碑、关闭的排除路径及卸载取消并清理相关请求。模块诊断服务不可用不影响大纲。
+  响应消费前重新检查版本和视图；同文本的诊断/镜像同步可能推进 LSP 文档版本，不因此
+  丢弃仍对应相同视图的结果。等待更新时保留上次成功的大纲；失败/超时不重复请求同键，
+  内容、擦除视图或连接代次改变后才重试。
+  `GdccLspClient.request_async/take_response/cancel_request` 使用已有帧驱动收包；读取挂起
+  状态不轮询 socket，也不阻塞。大纲请求超时为 2s，仅移除该 id，迟到响应忽略，不断开连接。
+  每帧最多发起两个查询；只有在途/未处理请求及待刷新工作持有忙标记。异步查询无
+  `use_thread` 前提，非线程服务端随正常帧推进即可回答。原诊断路径的 150ms 有界等待及
+  非线程降级逻辑保持独立，不为大纲额外等待。
+  新结果通过 `outline_revalidation_requested` → 解释型插件延迟发射 `validate_script`
+  刷新实际大纲；发送前和延迟回调均检查当前页签、实际缓冲区、缓存新鲜度，弹出补全时
+  延后。该门禁独立于 gdcc 诊断缓存的 READY/版本门禁，因此纯 LSP 会话也会主动刷新。
+  重验证只读已完成缓存，不重新发起同键请求。离线、禁用或不支持的路径返回空列表；
+  关闭 `validate_functions` 不登记新需求；错误仍令 `valid=false`，
+  不为强制刷新大纲而隐藏诊断。`safe_lines` 仍不提供。
+  此查询不沿用 lookup 的 4.6 门槛：4.5.1 的
+  [`documentSymbol`](https://github.com/godotengine/godot/blob/4.5.1-stable/modules/gdscript/language_server/gdscript_text_document.cpp#L170-L180)
+  仅从工作区现有解析缓存读取并序列化符号，不经过 hover/definition 的浅层脚本加载；
+  同步引起的分析与既有诊断通道相同。`lsp_outline` 验收锚定映射、过滤、行号、标志、
+  降级、错误、空脚本、真实 Members Overview、点击跳转和未保存刷新；
+  `class_name_erasure.outline_erased` 覆盖编译态擦除后的行号，
+  `lookup_suspended.outline_keeps_path` 覆盖查询后的原脚本路径与 ResourceCache 身份。
+  异步回归 `lsp_outline` 的 22 步还覆盖纯缓存读取、同键去重、过期响应、超时不断线、
+  空结果缓存、非线程查询、删除/排除清理和重连；`lsp_runtime_enable` 在真实非线程服务端
+  验证异步大纲可达。异步修订验收：Godot 4.5.1、4.6.3、4.7.0 的大纲、真实非线程
+  查询、诊断、类名擦除与资源身份/保存回归均通过；4.6.3 另通过分析门禁 5 项及补全、
+  lookup、工作区镜像、诊断 FIFO、gdcc 诊断合并与主动重验证，共 26 次测试执行全部通过。
+  异步修订由 `review-expert-a` 独立审阅并逐项复核，最终结论 APPROVE，无遗留问题。
 - `_lookup_code` **按版本恢复**：Godot >= 4.6.0 转发 `hover`/`definition`，更早版本
   返回 `{"result": ERR_UNAVAILABLE, "type": 0}` 且不同步文档、不发送查询。
   Godot [PR #109345](https://github.com/godotengine/godot/pull/109345)（4.6）将
@@ -2851,7 +2903,7 @@ EditorSettings；迁移后写 harness 项目的 ProjectSettings，随用例目�
 | R8 | LSP 同步模式假设不成立 | 低 | 握手校验 `textDocumentSync`（int `1` 或 `{change: 1}` 两种形状），否则 DEGRADED |
 | R9 | 诊断行号 0/1-based 转换错误 | 中 | 与同内容 `.gd` 文件逐条对比验收（§8.3） |
 | R10 | Godot 版本漂移（master 已废弃 `_create_script`/`_get_recognized_extensions`） | 低 | 锁定 4.5 元数据；升级 Godot 时重跑 §2 核查 |
-| R11 | 非 ASCII 文本下 LSP `character` 与 Godot 列口径不一致（UTF-16 vs 码点） | 中 | Phase 2 实证（§2.6）：诊断路径的 `character` 是行首非空白字符的码点计数，全程码点、无 UTF-16 分歧；引擎测试以非 BMP emoji 样例锚定行/列不错位。**Phase 4 已锚定残余关注点**：补全光标 `character` 按码点索引，引擎用例 `complete_cjk` 以"emoji 在光标同行之前且光标后有文本"的样例钉死（误算会丢失成员补全上下文） |
+| R11 | 非 ASCII 文本下 LSP `character` 与 Godot 列口径不一致（UTF-16 vs 码点） | 中 | §2.6：4.5/4.6 诊断列为行首非空白字符，4.7 为真实 token 列，两者均按码点而非 UTF-16 单元计数；非 BMP emoji 回归分别锚定列 5/19。补全光标也按码点索引，`complete_cjk` 以"emoji 在光标同行之前且光标后有文本"的样例钉死（误算会丢失成员补全上下文） |
 | R12 | 编辑器-only 类进入导出构建 | 低 | 本扩展仅 addon 内使用，文档声明不随项目导出 |
 | R13 | `analyze.run` 是整模块分析，大项目延迟高 | 中 | 异步 + 防抖 + 单飞；服务专用客户端与 dock 队列隔离（§4.4）；后续在 RPC 侧评估增量分析（不在本计划） |
 | R14 | 外部 LSP 客户端并存时 `publishDiagnostics` 只发最近客户端 | 中 | 等待超时即回落缓存并继续；dock 状态行提示；记录为已知限制 |

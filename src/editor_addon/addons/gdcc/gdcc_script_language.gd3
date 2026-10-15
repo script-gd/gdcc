@@ -77,7 +77,7 @@ func _get_string_delimiters() -> PackedStringArray:
 # editor validation triggered by signal handlers.
 var _in_validate: bool = false
 
-# Hard bound for the inline diagnostics wait (plan §4.2, ≤150ms). A var, not a const:
+# Bound for inline diagnostic waiting (<=150ms); outline queries never wait here. A var, not a const:
 # class-level const is outside gdcc's bootstrap MVP.
 var VALIDATE_LSP_TIMEOUT_MSEC: int = 150
 
@@ -110,11 +110,12 @@ func validate_call_count() -> int:
 ## diagnostics, whose errors still count (stale beats none).
 func _validate(script: String, path: String, validate_functions: bool, validate_errors: bool, validate_warnings: bool, validate_safe_lines: bool) -> Dictionary:
     if _in_validate or _service == null or not _service.is_active():
-        return {"valid": true}
+        return {"valid": true, "functions": PackedStringArray()}
     _in_validate = true
     _validate_call_count += 1
     var errors: Array = []
     var warnings: Array = []
+    var functions: PackedStringArray = PackedStringArray()
     if _service.is_lsp_ready():
         # A timeout simply means the freshest generation did not arrive; the cache read
         # below then yields the previous diagnostics (stale beats none).
@@ -152,6 +153,8 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
                     "message": message,
                 })
     var content_version: int = _service.notify_source_changed(path, script)
+    if validate_functions:
+        functions = _service.outline_functions(path, script)
     if errors.is_empty() and content_version >= 0:
         for item in _service.gdcc_diagnostics_for(path, content_version):
             if not (item is Dictionary):
@@ -183,7 +186,37 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
                     "message": gdcc_message,
                 })
     _in_validate = false
-    return {"valid": errors.is_empty(), "errors": errors, "warnings": warnings}
+    return {"valid": errors.is_empty(), "errors": errors, "warnings": warnings, "functions": functions}
+
+
+## Match GDScript's method overview: omit the script root, qualify inner classes, and
+## never descend into methods/properties (their locals, lambdas and accessors are not members).
+## Declaration ranges are zero-based; class_name erasure preserves their line numbers.
+func _outline_functions(symbols: Variant, prefix: String = "", root: bool = true) -> PackedStringArray:
+    var functions: PackedStringArray = PackedStringArray()
+    if not (symbols is Array):
+        return functions
+    for raw in symbols:
+        if not (raw is Dictionary):
+            continue
+        var kind: int = int(raw.get("kind", 0))
+        var name: String = str(raw.get("name", ""))
+        if name.is_empty() or name.contains(":"):
+            continue
+        if kind == 5:
+            var child_prefix: String = prefix if root else prefix + name + "."
+            functions.append_array(_outline_functions(raw.get("children"), child_prefix, false))
+        elif kind == 6 or kind == 12:
+            var range_value: Variant = raw.get("range")
+            if not (range_value is Dictionary):
+                continue
+            var start: Variant = range_value.get("start")
+            if not (start is Dictionary):
+                continue
+            var line: int = int(start.get("line", -1))
+            if line >= 0:
+                functions.append(prefix + name + ":" + str(line + 1))
+    return functions
 
 
 func _validate_path(path: String) -> String:

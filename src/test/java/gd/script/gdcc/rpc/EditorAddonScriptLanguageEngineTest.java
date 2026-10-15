@@ -116,6 +116,12 @@ class EditorAddonScriptLanguageEngineTest {
                     "config", "lsp_endpoint_closed", "validate_degraded", "lsp_endpoint",
                     "lsp_ready", "validate_error", "validate_clean", "validate_warning",
                     "validate_cjk_columns", "disabled_validate_safe", "survived")),
+            Map.entry("lsp_outline", List.of(
+                    "config", "outline_mapping", "lsp_endpoint_closed", "outline_degraded",
+                    "lsp_endpoint", "lsp_ready", "outline_functions", "outline_flag",
+                    "outline_async_cache", "outline_stale", "outline_timeout", "outline_empty_cache",
+                    "outline_non_threaded", "outline_eviction", "outline_error", "outline_empty", "editor_outline",
+                    "outline_navigation", "outline_unsaved", "outline_reconnect", "outline_disabled", "survived")),
             // Phase 2: publishDiagnostics carry no version, so attribution must follow the
             // per-URI generation FIFO (g1 sent, g2 sent, then g1's notification must still
             // bind to g1); plus a blocking request/response round-trip.
@@ -129,7 +135,7 @@ class EditorAddonScriptLanguageEngineTest {
             // starvation per validate) while diagnostics still surface asynchronously.
             Map.entry("lsp_runtime_enable", List.of(
                     "config", "lsp_port_set", "editor_ready", "plugin_enabled", "lsp_ready",
-                    "blocking_refused", "async_diagnostics_surface", "survived")),
+                    "blocking_refused", "async_diagnostics_surface", "async_outline_surfaces", "survived")),
             // Phase 2 (review round 3): boot-time prime followed by a disable BEFORE the
             // server listened must un-prime (the restored setting makes the server start
             // main-thread-polled); the next enable re-probes and degrades correctly.
@@ -208,7 +214,7 @@ class EditorAddonScriptLanguageEngineTest {
             Map.entry("class_name_erasure", List.of(
                     "config", "service_ready", "lsp_ready", "metadata_readback",
                     "metadata_inner_and_cache", "admission_matrix", "rewrite_forms",
-                    "analysis_ready", "validate_no_hides_error", "editor_opened", "lookup_named_erased",
+                    "analysis_ready", "validate_no_hides_error", "outline_erased", "editor_opened", "lookup_named_erased",
                     "decision_flip", "edit_shows_gdcc_not_hides",
                     "flip_to_no_erasure", "flip_back_to_erasure", "survived")),
             // Phase 8: LSP workspace mirror — project `.gd3` files reach the server's parse
@@ -258,7 +264,7 @@ class EditorAddonScriptLanguageEngineTest {
                     "recovery_module_rebuilt", "recovery_reuploaded", "survived")),
             Map.entry("lookup_suspended", List.of(
                     "config", "service_ready", "lsp_ready", "lookup_helpers", "editor_opened",
-                    "lookup_version_gate", "lookup_keeps_path", "save_on_original_path", "survived")),
+                    "lookup_version_gate", "outline_keeps_path", "lookup_keeps_path", "save_on_original_path", "survived")),
             // Phase 9: `_auto_indent_code` — verbatim mirror of the 4.5 GDScript reference
             // algorithm (whitespace-stack nesting, blank/comment passthrough, the dedent
             // quirk, the from_line gate, the spaces-indent setting, and the pathological
@@ -288,7 +294,7 @@ class EditorAddonScriptLanguageEngineTest {
     /// runtime concat instead of folding the parts back into a single oversized constant.
     private static final String DRIVER_PLUGIN = driverPluginCore() + driverPluginLifecycle() + driverPluginCompletion()
             + driverPluginRevalidate() + driverPluginBuildToolbar() + driverPluginBuild() + driverPluginClassMetadata() + driverPluginWorkspace()
-            + driverPluginLookup() + driverPluginExclusions() + driverPluginSyntaxHighlighter();
+            + driverPluginLookup() + driverPluginExclusions() + driverPluginSyntaxHighlighter() + driverPluginOutline();
 
     private static String driverPluginCore() {
         return """
@@ -451,6 +457,8 @@ class EditorAddonScriptLanguageEngineTest {
                         await _run_lsp_connect_mode()
                     elif mode == "lsp_validate":
                         await _run_lsp_validate_mode()
+                    elif mode == "lsp_outline":
+                        await _run_lsp_outline_mode()
                     elif mode == "lsp_fifo":
                         await _run_lsp_fifo_mode()
                     elif mode == "lsp_runtime_enable":
@@ -954,13 +962,10 @@ class EditorAddonScriptLanguageEngineTest {
                                 and str(w.get("string_code", "")) == "GDSCRIPT_LSP"
                     _step("validate_warning", warn_ok, str(warn_result))
                 
-                    # R11 anchor. Verified engine fact (extend_parser.cpp update_diagnostics):
-                    # the server reports every diagnostic at the error line's first
-                    # non-whitespace character — `character` is a code-point count of the
-                    # indent, never a token position — so the UTF-16-vs-code-point concern
-                    # cannot manifest on this path. What must hold: a line whose content is
-                    # multibyte (non-BMP emoji here) still maps to the correct LINE and the
-                    # indent-derived column (4 spaces → column 5).
+                    # Godot 4.5/4.6 anchor errors at the first non-whitespace character.
+                    # In 4.7, PR #114185 reports the real token column; raw string offsets
+                    # still count code points, so the quote after the emoji is column 19,
+                    # not UTF-16 column 20 or UTF-8 byte column 22.
                     var cjk_path := "res://gd3_lsp_cjk.gd3"
                     var cjk_source := "extends Node\\nfunc f() -> void:\\n    var s = \\"🙂\\" + \\"abc\\n"
                     _write_text_file(cjk_path, cjk_source)
@@ -968,10 +973,11 @@ class EditorAddonScriptLanguageEngineTest {
                     var cjk_errors: Array = cjk_result.get("errors", [])
                     var cjk_ok := false
                     var cjk_detail := str(cjk_errors)
+                    var cjk_column := 19 if Engine.get_version_info().hex >= 0x040700 else 5
                     for e in cjk_errors:
                         if e is Dictionary and str(e.get("message", "")).contains("Unterminated string"):
                             cjk_detail = str(e)
-                            cjk_ok = int(e.get("line", -1)) == 3 and int(e.get("column", -1)) == 5
+                            cjk_ok = int(e.get("line", -1)) == 3 and int(e.get("column", -1)) == cjk_column
                     _step("validate_cjk_columns", cjk_ok, cjk_detail)
                 
                     for p in [err_path, clean_path, warn_path, cjk_path]:
@@ -1114,6 +1120,14 @@ class EditorAddonScriptLanguageEngineTest {
                     var async_result := await _validate_until_errors(lang, rt_source, rt_path)
                     var async_errors: Array = async_result.get("errors", [])
                     _step("async_diagnostics_surface", not async_errors.is_empty(), str(async_result))
+                    var outline_src := "extends Node\\nfunc async_outline() -> void:\\n    pass\\n"
+                    service.notify_source_changed(rt_path, outline_src)
+                    var functions: PackedStringArray = service.outline_functions(rt_path, outline_src)
+                    var outline_deadline := Time.get_ticks_msec() + 15000
+                    while functions != PackedStringArray(["async_outline:2"]) and Time.get_ticks_msec() < outline_deadline:
+                        await get_tree().process_frame
+                        functions = service.outline_functions(rt_path, outline_src)
+                    _step("async_outline_surfaces", service.lsp_blocking_unsafe and functions == PackedStringArray(["async_outline:2"]), str(functions))
                     DirAccess.remove_absolute(ProjectSettings.globalize_path(rt_path))
                     _step("survived", true)
                 
@@ -3039,7 +3053,8 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("lsp_ready", await _wait_lsp_ready(30.0))
                 
                     var subject_path := "res://src/phase7_subject.gd3"
-                    var subject_src := "class_name Gd3Phase7Subject\\nextends Node\\n\\nclass Inner extends RefCounted:\\n    pass\\n"
+                    var subject_src := "class_name Gd3Phase7Subject\\nextends Node\\n\\nclass Inner extends RefCounted:\\n    pass\\n" \\
+                            + "\\nfunc outline_erased() -> void:\\n    pass\\n"
                     var subject_abs := ProjectSettings.globalize_path(subject_path)
                 
                     # --- Phase 6: metadata readback through ClassDB (the runtime consumption
@@ -3207,6 +3222,9 @@ class EditorAddonScriptLanguageEngineTest {
                         if str(e.get("message", "")).contains("hides a native class"):
                             clean_ok = false
                     _step("validate_no_hides_error", clean_ok, str(clean_result))
+                    clean_result = await _validate_until_outline(lang, subject_src, subject_path, PackedStringArray(["outline_erased:7"]))
+                    var erased_functions: PackedStringArray = clean_result.get("functions", PackedStringArray())
+                    _step("outline_erased", erased_functions == PackedStringArray(["outline_erased:7"]), str(clean_result))
                 
                     # Open the subject tab: the decision flip only re-syncs the CURRENT document.
                     EditorInterface.set_main_screen_editor("Script")
@@ -4044,9 +4062,14 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("lookup_version_gate", version_before > 0 and gate_ok,
                             str(result) + " version=" + str(version_before))
                 
+                    var outline: Dictionary = await _validate_until_outline(lang, code_edit.get_text(), path, PackedStringArray(["_process:5"]))
+                    _step("outline_keeps_path", outline.get("functions") == PackedStringArray(["_process:5"]) and script.resource_path == path \\
+                            and ResourceLoader.get_cached_ref(path) == script, str(outline))
+
                     var line: int = 5
                     var column: int = code_edit.get_line(line).find("rotating_speed") + 2
                     var version_before_signals: int = client.document_version_for(uri)
+                    var requests_before_signals: int = client._next_id
                     code_edit.emit_signal("symbol_validate", "rotating_speed")
                     code_edit.emit_signal("symbol_hovered", "rotating_speed", line, column)
                     code_edit.emit_signal("symbol_lookup", "rotating_speed", line, column)
@@ -4056,10 +4079,10 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("lookup_keeps_path", column > 1 and script.resource_path == path \\
                             and cached == script and editor.get_current_script() == script \\
                             and (client.document_version_for(uri) > version_before_signals if lookup_enabled \\
-                                    else client.document_version_for(uri) == version_before),
+                                    else client._next_id == requests_before_signals),
                             "path=" + script.resource_path + " cached=" + str(cached == script) \\
                             + " current=" + str(editor.get_current_script() == script) \\
-                            + " column=" + str(column) + " version=" + str(version_before) \\
+                            + " column=" + str(column) + " version=" + str(version_before_signals) \\
                             + "/" + str(client.document_version_for(uri)))
                 
                     var edited: String = code_edit.get_text() + "# edited after lookup\\n"
@@ -5032,6 +5055,278 @@ class EditorAddonScriptLanguageEngineTest {
         runCase("lsp_workspace", config);
     }
 
+    private static String driverPluginOutline() {
+        return """
+
+                var _outline_refreshes: int = 0
+
+                func _on_outline_refresh(_path: String, _version: int) -> void:
+                    _outline_refreshes += 1
+
+                func _validate_until_outline(lang: ScriptLanguage, source: String, path: String, expected: PackedStringArray) -> Dictionary:
+                    var deadline := Time.get_ticks_msec() + 15000
+                    var answer: Dictionary = lang._validate(source, path, true, true, true, false)
+                    while Time.get_ticks_msec() < deadline and answer.get("functions") != expected:
+                        await get_tree().process_frame
+                        answer = lang._validate(source, path, true, true, true, false)
+                    return answer
+
+                # No frame or socket pump runs during these probes. Real replies stay in
+                # the socket while controlled responses test delayed/out-of-order completion.
+                func _exercise_outline_cache() -> void:
+                    var service := _service()
+                    var outline = service.outline()
+                    var client = service.get_lsp_client()
+                    var path := "res://gd3_outline_cache_probe.gd3"
+                    var old := "extends RefCounted\\nfunc old() -> void:\\n    pass\\n"
+                    var fresh := old.replace("old", "fresh")
+                    service.notify_source_changed(path, old)
+                    var before: int = client._next_id
+                    var started := Time.get_ticks_msec()
+                    var first: PackedStringArray = service.outline_functions(path, old)
+                    var read_elapsed := Time.get_ticks_msec() - started
+                    var read_only: bool = client._next_id == before
+                    outline.service_tick(Time.get_ticks_msec())
+                    var id: int = outline._entries[path]["request"]
+                    var warm: PackedStringArray = service.outline_functions(path, old)
+                    _step("outline_async_cache", first.is_empty() and warm.is_empty() and read_only \\
+                            and read_elapsed < 100 and id >= 0 and client._next_id == before + 1,
+                            "cache_read_ms=" + str(read_elapsed))
+                    client._handle_message({"id": id, "result": [{"kind": 5, "name": "Root", "children": [
+                        {"kind": 6, "name": "old", "range": {"start": {"line": 1}}}]}]})
+                    service.notify_source_changed(path, fresh)
+                    outline.service_tick(Time.get_ticks_msec())
+                    var new_id: int = outline._entries[path]["request"]
+                    var stale_dropped: bool = not client._pending.has(id) and new_id > id \\
+                            and service.outline_functions(path, fresh).is_empty()
+                    client._handle_message({"id": new_id, "result": [{"kind": 5, "name": "Root", "children": [
+                        {"kind": 6, "name": "fresh", "range": {"start": {"line": 1}}}]}]})
+                    outline.service_tick(Time.get_ticks_msec())
+                    before = client._next_id
+                    for i in 3:
+                        service.outline_functions(path, fresh)
+                        outline.service_tick(Time.get_ticks_msec())
+                    _step("outline_stale", stale_dropped and client._next_id == before \\
+                            and service.outline_functions(path, fresh) == PackedStringArray(["fresh:2"]))
+
+                    var timed := fresh + "# timeout\\n"
+                    service.notify_source_changed(path, timed)
+                    service.outline_functions(path, timed)
+                    outline.service_tick(Time.get_ticks_msec())
+                    id = outline._entries[path]["request"]
+                    var epoch: int = client.get_ready_epoch()
+                    client._pending[id]["deadline"] = 0
+                    outline.service_tick(Time.get_ticks_msec())
+                    client._handle_message({"id": id, "result": []})
+                    before = client._next_id
+                    outline.service_tick(Time.get_ticks_msec())
+                    _step("outline_timeout", client.is_ready() and client.get_ready_epoch() == epoch \\
+                            and not client._pending.has(id) and client._next_id == before \\
+                            and service.outline_functions(path, timed) == PackedStringArray(["fresh:2"]))
+
+                    var empty := "extends RefCounted\\n"
+                    service.notify_source_changed(path, empty)
+                    service.outline_functions(path, empty)
+                    outline.service_tick(Time.get_ticks_msec())
+                    id = outline._entries[path]["request"]
+                    client._handle_message({"id": id, "result": []})
+                    outline.service_tick(Time.get_ticks_msec())
+                    before = client._next_id
+                    outline.service_tick(Time.get_ticks_msec())
+                    _step("outline_empty_cache", outline._entries[path]["current"] \\
+                            and service.outline_functions(path, empty).is_empty() and client._next_id == before)
+
+                    service.lsp_blocking_unsafe = true
+                    service.notify_source_changed(path, old)
+                    service.outline_functions(path, old)
+                    outline.service_tick(Time.get_ticks_msec())
+                    service.lsp_blocking_unsafe = false
+                    id = outline._entries[path]["request"]
+                    _step("outline_non_threaded", id >= 0 and client._pending.has(id))
+                    service.registry().tombstone(path)
+                    outline.service_tick(Time.get_ticks_msec())
+                    var evicted: bool = not outline._entries.has(path) and not client._pending.has(id)
+                    var disk_path := "res://gd3_outline_deleted_probe.gd3"
+                    _write_text_file(disk_path, empty)
+                    service.notify_source_changed(disk_path, empty)
+                    service.outline_functions(disk_path, empty)
+                    outline.service_tick(Time.get_ticks_msec())
+                    var disk_id: int = outline._entries[disk_path]["request"]
+                    DirAccess.remove_absolute(ProjectSettings.globalize_path(disk_path))
+                    outline.service_tick(Time.get_ticks_msec())
+                    evicted = evicted and not outline._entries.has(disk_path) and not client._pending.has(disk_id)
+                    var excluded_path := "res://gd3_outline_excluded_probe.gd3"
+                    service.notify_source_changed(excluded_path, empty)
+                    service.outline_functions(excluded_path, empty)
+                    outline.service_tick(Time.get_ticks_msec())
+                    var exclusions: PackedStringArray = service.excluded_globs()
+                    var with_probe := PackedStringArray(exclusions)
+                    with_probe.append("gd3_outline_excluded_probe.gd3")
+                    ProjectSettings.set_setting(service.EXCLUDED_GLOBS_SETTING, with_probe)
+                    outline.service_tick(Time.get_ticks_msec())
+                    _step("outline_eviction", evicted and not outline._entries.has(excluded_path))
+                    ProjectSettings.set_setting(service.EXCLUDED_GLOBS_SETTING, exclusions)
+
+                # Match the real Members Overview by both its labels and goto-line metadata.
+                func _find_outline_list(node: Node, entries: PackedStringArray) -> ItemList:
+                    if node is ItemList and node.item_count == entries.size():
+                        var matches := true
+                        for entry in entries:
+                            var found := false
+                            for i in node.item_count:
+                                if node.get_item_text(i) == entry.get_slice(":", 0) \\
+                                        and node.get_item_metadata(i) == int(entry.get_slice(":", 1)) - 1:
+                                    found = true
+                            matches = matches and found
+                        if matches:
+                            return node as ItemList
+                    for child in node.get_children():
+                        var found := _find_outline_list(child, entries)
+                        if found != null:
+                            return found
+                    return null
+
+                func _wait_outline_list(entries: PackedStringArray) -> ItemList:
+                    var deadline := Time.get_ticks_msec() + 15000
+                    while Time.get_ticks_msec() < deadline:
+                        var found := _find_outline_list(EditorInterface.get_script_editor(), entries)
+                        if found != null:
+                            return found
+                        await get_tree().process_frame
+                    return null
+
+                func _run_lsp_outline_mode() -> void:
+                    var lang := _find_gd3_language()
+                    var service := _service()
+                    var sample := [{"kind": 5, "name": "Root", "children": [
+                        {"kind": 6, "name": "top", "range": {"start": {"line": 2}}, "children": [
+                            {"kind": 12, "name": "lambda", "range": {"start": {"line": 3}}}]},
+                        {"kind": 5, "name": "Inner", "children": [
+                            {"kind": 12, "name": "static_method", "range": {"start": {"line": 8}}},
+                            {"kind": 5, "name": "Deep", "children": [
+                                {"kind": 6, "name": "deep", "range": {"start": {"line": 12}}}]}]},
+                        {"kind": 7, "name": "property", "children": [
+                            {"kind": 6, "name": "getter", "range": {"start": {"line": 15}}}]},
+                        {"kind": 24, "name": "signal"}, {"kind": 14, "name": "constant"},
+                        {"kind": 6, "name": "missing_range"}, {"kind": 6, "name": "bad_start", "range": {}},
+                        {"kind": 6, "name": "negative", "range": {"start": {"line": -1}}},
+                        {"kind": 6, "name": "bad:name", "range": {"start": {"line": 1}}},
+                        {"kind": 12, "name": "", "range": {"start": {"line": 1}}}, null]}]
+                    var mapped: PackedStringArray = lang._outline_functions(sample)
+                    _step("outline_mapping", mapped == PackedStringArray(["top:3", "Inner.static_method:9", "Inner.Deep.deep:13"]) \\
+                            and lang._outline_functions(null).is_empty() and lang._outline_functions([null]).is_empty(), str(mapped))
+
+                    var path := "res://gd3_lsp_outline.gd3"
+                    var source := "class_name Gd3OutlineSample extends RefCounted\\n" \\
+                            + "signal changed\\nconst LABEL: int = 1\\n" \\
+                            + "var stored: int = 1:\\n    get:\\n        return 1\\n" \\
+                            + "var _callable: Callable = func(value: int) -> int: return value\\n" \\
+                            + "@warning_ignore(\\"unused_variable\\")\\n" \\
+                            + "func outline_top() -> int:\\n    var local: Callable = func() -> int: return 1\\n    local.call()\\n    return 1\\n" \\
+                            + "static func outline_static() -> void:\\n    pass\\n" \\
+                            + "class Inner:\\n    func same_name() -> void:\\n        pass\\n" \\
+                            + "    class Deep:\\n        func deep() -> void:\\n            pass\\n" \\
+                            + "func same_name() -> void:\\n    pass\\n"
+                    _write_text_file(path, source)
+                    var lines := source.split("\\n")
+                    var expected := PackedStringArray([
+                        "outline_top:" + str(lines.find("func outline_top() -> int:") + 1),
+                        "outline_static:" + str(lines.find("static func outline_static() -> void:") + 1),
+                        "Inner.same_name:" + str(lines.find("    func same_name() -> void:") + 1),
+                        "Inner.Deep.deep:" + str(lines.find("        func deep() -> void:") + 1),
+                        "same_name:" + str(lines.find("func same_name() -> void:") + 1)])
+                    var port := int(_config["lsp_port"])
+                    _step("lsp_endpoint_closed", _configure_lsp_port(port) and _steer_lsp_client(int(_config["closed_port"])))
+                    await get_tree().create_timer(0.5).timeout
+                    var degraded: Dictionary = lang._validate(source, path, true, true, true, false)
+                    _step("outline_degraded", degraded.get("valid") == true \\
+                            and degraded.get("functions") is PackedStringArray and degraded["functions"].is_empty(), str(degraded))
+                    _step("lsp_endpoint", _steer_lsp_client(port))
+                    var ready: bool = await _wait_lsp_ready(45.0)
+                    _step("lsp_ready", ready)
+                    if not ready:
+                        return
+
+                    var answer: Dictionary = {}
+                    var max_elapsed := 0
+                    var deadline := Time.get_ticks_msec() + 15000
+                    while Time.get_ticks_msec() < deadline:
+                        var started := Time.get_ticks_msec()
+                        answer = lang._validate(source, path, true, true, true, false)
+                        max_elapsed = maxi(max_elapsed, Time.get_ticks_msec() - started)
+                        if answer.get("valid") == true and answer.get("functions") == expected:
+                            break
+                        await get_tree().process_frame
+                    _step("outline_functions", answer.get("valid") == true and answer.get("functions") == expected \\
+                            and max_elapsed < 400, str(answer) + " max_elapsed=" + str(max_elapsed))
+
+                    var client = service.get_lsp_client()
+                    var requests_before: int = client._next_id
+                    var no_functions: Dictionary = lang._validate(source, path, false, true, true, false)
+                    _step("outline_flag", no_functions.get("functions").is_empty() \\
+                            and client._next_id == requests_before, str(no_functions))
+                    _exercise_outline_cache()
+                    var broken: Dictionary = await _validate_until_errors(lang,
+                            "extends RefCounted\\nfunc broken( -> void:\\n    pass\\n", "res://gd3_outline_error.gd3")
+                    _step("outline_error", broken.get("valid") == false and not broken.get("errors", []).is_empty(), str(broken))
+                    var empty: Dictionary = lang._validate("extends RefCounted\\n", "res://gd3_outline_empty.gd3", true, true, true, false)
+                    _step("outline_empty", empty.get("valid") == true and empty.get("functions").is_empty(), str(empty))
+
+                    var code_edit: CodeEdit = await _open_in_script_editor(path)
+                    service.outline_revalidation_requested.connect(_on_outline_refresh)
+                    var overview: ItemList = await _wait_outline_list(expected)
+                    _step("editor_outline", code_edit != null and overview != null)
+                    if code_edit == null or overview == null:
+                        return
+                    var last := overview.item_count - 1
+                    overview.emit_signal("item_selected", last)
+                    await get_tree().process_frame
+                    _step("outline_navigation", code_edit.get_caret_line() == overview.get_item_metadata(last),
+                            "caret=" + str(code_edit.get_caret_line()))
+                    var edited := source.replace("outline_top", "outline_edited")
+                    var edited_entries := PackedStringArray(expected)
+                    edited_entries[0] = expected[0].replace("outline_top", "outline_edited")
+                    var refreshes_before := _outline_refreshes
+                    code_edit.set_text(edited)
+                    var updated: ItemList = await _wait_outline_list(edited_entries)
+                    _step("outline_unsaved", updated != null and _outline_refreshes > refreshes_before \\
+                            and not service.is_diag_ready() and FileAccess.get_file_as_string(path) == source \\
+                            and EditorInterface.get_script_editor().get_current_script().resource_path == path)
+
+                    var epoch_before: int = client.get_ready_epoch()
+                    _steer_lsp_client(int(_config["closed_port"]))
+                    await get_tree().process_frame
+                    var cleared: bool = service.outline_functions(path, edited).is_empty()
+                    _steer_lsp_client(port)
+                    var reconnected: bool = await _wait_lsp_ready(45.0, epoch_before + 1)
+                    var cache_deadline := Time.get_ticks_msec() + 15000
+                    while reconnected and Time.get_ticks_msec() < cache_deadline \\
+                            and not service.outline()._entries[path].get("current", false):
+                        await get_tree().process_frame
+                    _step("outline_reconnect", cleared and reconnected \\
+                            and service.outline()._entries[path].get("current", false) \\
+                            and await _wait_outline_list(edited_entries) != null)
+
+                    EditorInterface.set_plugin_enabled("gdcc", false)
+                    await get_tree().process_frame
+                    var resident: ScriptLanguage = service.get_language_instance()
+                    var disabled: Dictionary = resident._validate(source, path, true, true, true, false)
+                    _step("outline_disabled", disabled.get("valid") == true and disabled.get("functions").is_empty() \\
+                            and service.outline()._entries.is_empty(), str(disabled))
+                    EditorInterface.set_plugin_enabled("gdcc", true)
+                    await get_tree().process_frame
+                    _step("survived", true)
+                """;
+    }
+
+    @Test
+    void lspOutlinePopulatesEditorMembers() throws Exception {
+        var config = new JsonObject();
+        config.addProperty("lsp_port", findFreePort());
+        config.addProperty("closed_port", findFreePort());
+        runCase("lsp_outline", config);
+    }
+
     /// Phase 9 acceptance (plan §7 Phase 9 `_lookup_code`): hover/definition proxied to
     /// the GDScript LSP — degraded answers for the negative paths (client not READY,
     /// unknown symbol, disabled service), white-box pins of the payload mapping and URI
@@ -5181,7 +5476,8 @@ class EditorAddonScriptLanguageEngineTest {
     /// subject source lands on disk before the editor boots so the reconciler mirrors it like
     /// any project file.
     private static void installPhase7Fixture(Path projectDir, Path caseDir) throws IOException {
-        var subjectSource = "class_name Gd3Phase7Subject\nextends Node\n\nclass Inner extends RefCounted:\n    pass\n";
+        var subjectSource = "class_name Gd3Phase7Subject\nextends Node\n\nclass Inner extends RefCounted:\n    pass\n"
+                + "\nfunc outline_erased() -> void:\n    pass\n";
         var subjectFile = projectDir.resolve("src/phase7_subject.gd3");
         Files.writeString(subjectFile, subjectSource);
         // Godot paths use '/' on every platform; the admission comparison normalizes both

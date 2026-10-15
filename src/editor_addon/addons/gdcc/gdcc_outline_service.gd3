@@ -1,0 +1,170 @@
+@tool
+class_name GdccOutlineService
+extends Node
+
+## Cache reads only register demand. Socket work and response consumption run from the
+## service frame pump, never from ScriptLanguage._validate or an editor virtual.
+var service: GdccEditorService = null
+var REQUEST_TIMEOUT_MSEC: int = 2000
+var _epoch: int = -1
+# path -> latest desired source/version/view, request id, settled result and visible functions.
+var _entries: Dictionary = {}
+
+
+func bind_service(owner: GdccEditorService) -> void:
+    service = owner
+
+
+func functions_for(path: String, source: String) -> PackedStringArray:
+    if not service.is_active() or not _eligible(path):
+        return PackedStringArray()
+    var live: Variant = service.registry().entry(path)
+    if not (live is Dictionary) or live.get("text") != source:
+        return PackedStringArray()
+    if not _entries.has(path):
+        _entries[path] = {"version": -1, "text": "", "view": "", "epoch": -1,
+                "disk_known": FileAccess.file_exists(path),
+                "request": -1, "settled": false, "current": false, "refresh": false, "functions": PackedStringArray()}
+    service.refresh_busy()
+    if not service.is_lsp_ready() or _epoch != service.get_lsp_client().get_ready_epoch():
+        return PackedStringArray()
+    # Keep the last successful outline visible while a newer source is in flight.
+    return _entries[path]["functions"]
+
+
+func busy_wanted() -> bool:
+    if not service.is_active() or not service.is_lsp_ready():
+        return false
+    if _entries.is_empty():
+        return false
+    if _epoch != service.get_lsp_client().get_ready_epoch():
+        return true
+    for path in _entries.keys():
+        var entry: Dictionary = _entries[path]
+        if not entry.get("settled", false) or entry.get("refresh", false) \
+                or service.registry().live_version(str(path)) != int(entry.get("version", -1)):
+            return true
+    return false
+
+
+func service_tick(_now: int) -> void:
+    if not service.is_active():
+        return
+    var client: GdccLspClient = service.get_lsp_client()
+    var epoch: int = client.get_ready_epoch() if service.is_lsp_ready() else -1
+    if epoch != _epoch:
+        for old_path in _entries.keys():
+            var entry: Dictionary = _entries[old_path]
+            client.cancel_request(int(entry.get("request", -1)))
+            entry["request"] = -1
+            entry["settled"] = false
+            entry["current"] = false
+            entry["refresh"] = false
+            entry["functions"] = PackedStringArray()
+        _epoch = epoch
+    var sent: int = 0
+    for raw_path in _entries.keys():
+        var path: String = str(raw_path)
+        var entry: Dictionary = _entries[path]
+        if not _eligible(path):
+            client.cancel_request(int(entry.get("request", -1)))
+            _entries.erase(path)
+            continue
+        if epoch < 0:
+            continue
+        var live: Dictionary = service.registry().entry(path)
+        var text: String = str(live.get("text", ""))
+        var version: int = int(live.get("version", -1))
+        if int(entry.get("version", -1)) != version or int(entry.get("epoch", -1)) != epoch:
+            var view: Dictionary = service.lsp_safe_text(path, text)
+            client.cancel_request(int(entry.get("request", -1)))
+            entry["request"] = -1
+            entry["version"] = version
+            entry["text"] = text
+            entry["view"] = str(view["text"])
+            entry["epoch"] = epoch
+            entry["settled"] = false
+            entry["current"] = false
+            entry["refresh"] = false
+        var view_text: String = str(entry.get("view", ""))
+        var uri: String = service.lsp_uri_for(path)
+        var request: int = int(entry.get("request", -1))
+        if request >= 0:
+            var response: Dictionary = client.take_response(request)
+            if not response.is_empty():
+                entry["request"] = -1
+                # Equal-text diagnostics/mirror syncs may advance the document version;
+                # compare the actual view instead, so they cannot starve this response.
+                if client.document_version_for(uri) < 0 or client.debug_sent_text(uri) != view_text:
+                    continue
+                entry["settled"] = true
+                if response.get("ok") == true and response.get("result") is Array:
+                    entry["functions"] = service.get_language_instance()._outline_functions(response["result"])
+                    entry["current"] = true
+                    entry["refresh"] = true
+        elif not entry.get("settled", false) and sent < 2:
+            if client.document_version_for(uri) < 0 or client.debug_sent_text(uri) != view_text:
+                if client.sync_document(uri, view_text) < 0:
+                    continue
+            entry["request"] = client.request_async("textDocument/documentSymbol",
+                    {"textDocument": {"uri": uri}}, REQUEST_TIMEOUT_MSEC)
+            sent += 1
+        if entry.get("refresh", false):
+            entry["refresh"] = false
+            if should_still_revalidate(path, version):
+                service.outline_revalidation_requested.emit(path, version)
+
+
+## Separate from gdcc's diagnostic-cache gate: LSP-only sessions must refresh too.
+## Rechecked by the interpreted relay after its deferred hop.
+func should_still_revalidate(path: String, version: int) -> bool:
+    if not service.is_lsp_ready() or _epoch != service.get_lsp_client().get_ready_epoch() \
+            or not _eligible(path) or not _entries.has(path):
+        return false
+    var entry: Dictionary = _entries[path]
+    if not entry.get("current", false) or int(entry.get("version", -1)) != version \
+            or service.registry().live_version(path) != version or int(entry.get("epoch", -1)) != _epoch:
+        return false
+    var context: Dictionary = service._current_editor_context()
+    if context.get("path") != path:
+        return false
+    var code_edit: CodeEdit = context["code_edit"] as CodeEdit
+    if code_edit.get_text() != entry.get("text"):
+        return false
+    if not code_edit.get_code_completion_options().is_empty():
+        entry["refresh"] = true
+        return false
+    return true
+
+
+func _eligible(path: String) -> bool:
+    if _entries.has(path):
+        var entry: Dictionary = _entries[path]
+        var exists: bool = FileAccess.file_exists(path)
+        if entry.get("disk_known", false) and not exists:
+            return false
+        if exists:
+            entry["disk_known"] = true
+    return path.begins_with("res://") and service.registry().has(path) \
+            and not service.registry().vanished(path) \
+            and (not service.is_path_excluded(path) or service.is_path_open_in_editor(path))
+
+
+## Extension metadata can change erasure without changing the raw source/version.
+func invalidate_views() -> void:
+    for entry in _entries.values():
+        service.get_lsp_client().cancel_request(int(entry.get("request", -1)))
+        entry["request"] = -1
+        entry["epoch"] = -1
+        entry["settled"] = false
+        entry["current"] = false
+        entry["refresh"] = false
+    service.refresh_busy()
+
+
+func service_shutdown() -> void:
+    var client: GdccLspClient = service.get_lsp_client()
+    for entry in _entries.values():
+        client.cancel_request(int(entry.get("request", -1)))
+    _entries.clear()
+    _epoch = -1

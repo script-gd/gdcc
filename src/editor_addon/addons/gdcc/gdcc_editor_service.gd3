@@ -71,6 +71,7 @@ var _completion: GdccCompletionService = null
 var _lookup: GdccLookupService = null
 var _eraser: GdccClassNameEraser = null
 var _mirror: GdccWorkspaceMirror = null
+var _outline: GdccOutlineService = null
 var _lsp_host: String = "127.0.0.1"
 var _lsp_port: int = 6005
 var _rpc_host: String = "127.0.0.1"
@@ -114,6 +115,7 @@ signal busy_delta(delta: int)
 ## while an interpreted emission reaches every connection. The service therefore reports
 ## WHAT to revalidate and the plugin performs the emission itself.
 signal revalidation_requested(path: String, version: int)
+signal outline_revalidation_requested(path: String, version: int)
 
 var _busy_held: bool = false
 # (path -> version) revalidation requests not yet emitted (plan §7 Phase 5 item 1):
@@ -234,6 +236,17 @@ func lsp_diagnostics_for(path: String) -> Array:
     if uri == "":
         return []
     return _lsp_client.get_diagnostics(uri)
+
+
+## Immediate cache read/demand registration; the outline child sends requests on frames.
+func outline_functions(path: String, source: String) -> PackedStringArray:
+    if not _active or _outline == null:
+        return PackedStringArray()
+    return _outline.functions_for(path, source)
+
+
+func outline() -> GdccOutlineService:
+    return _outline
 
 
 ## Code-completion entry (plan §4.3). The synchronous LSP path is legal exclusively while
@@ -589,6 +602,10 @@ func install(editor_interface: EditorInterface, lsp_host: String, lsp_port: int,
         _mirror.name = &"GdccWorkspaceMirror"
         _mirror.bind_service(self)
         add_child(_mirror)
+        _outline = GdccOutlineService.new()
+        _outline.name = &"GdccOutlineService"
+        _outline.bind_service(self)
+        add_child(_outline)
     _editor_interface = editor_interface
     _lsp_host = lsp_host
     _lsp_port = lsp_port
@@ -637,6 +654,7 @@ func uninstall() -> void:
     _registry.service_shutdown()
     _cache.service_shutdown()
     _mirror.service_shutdown()
+    _outline.service_shutdown()
     _revalidate_pending.clear()
     _lsp_client.stop()
     ResourceSaver.remove_resource_format_saver(_saver)
@@ -709,6 +727,7 @@ func _on_diag_frame() -> void:
     # its revalidation request can fire in the same frame.
     if _eraser != null:
         _eraser.process_deferred_resync()
+    _outline.service_tick(now)
     _pump_revalidation()
     refresh_busy()
 
@@ -863,6 +882,8 @@ func diag_channel_status() -> Dictionary:
 ## (extension load/reload immediately, unload deferred one frame); the text transform itself is
 ## the eraser's `lsp_safe_text`, while the editor/registry/LSP/revalidation plumbing stays here.
 func resync_current_document_lsp() -> void:
+    if _outline != null:
+        _outline.invalidate_views()
     if not _active or _lsp_client == null or not _lsp_client.is_ready():
         return
     var context: Dictionary = _current_editor_context()
@@ -994,7 +1015,7 @@ func refresh_busy() -> void:
     var want: bool = false
     if _active:
         want = _lifecycle.busy_wanted() or _reconciler.busy_wanted() \
-                or _scheduler.busy_wanted() or _mirror.busy_wanted()
+                or _scheduler.busy_wanted() or _mirror.busy_wanted() or _outline.busy_wanted()
     if want == _busy_held:
         return
     _busy_held = want

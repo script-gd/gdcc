@@ -313,6 +313,36 @@ func wait_diagnostics(uri: String, generation: int, timeout_msec: int) -> bool:
     return found
 
 
+## Non-blocking request. The owner must poll/take the response or cancel the id.
+## Expiration removes only this request; late replies are ignored without reconnecting.
+func request_async(method: String, params: Dictionary, timeout_msec: int) -> int:
+    if not is_ready() or timeout_msec <= 0:
+        return -1
+    var id: int = _send_request(method, params)
+    if id >= 0:
+        _pending[id]["deadline"] = Time.get_ticks_msec() + timeout_msec
+    return id
+
+
+## Empty means pending; a non-empty result is terminal and consumed exactly once.
+## Disconnect clears pending ids, so their owners observe an unavailable result here.
+func take_response(id: int) -> Dictionary:
+    var value: Variant = _pending.get(id)
+    if not (value is Dictionary):
+        return {"ok": false, "error": {"code": ERR_UNAVAILABLE, "message": "request no longer pending"}}
+    if value.get("done") == true:
+        _pending.erase(id)
+        return value.get("response", {})
+    if Time.get_ticks_msec() >= int(value.get("deadline", 0)):
+        _pending.erase(id)
+        return {"ok": false, "error": {"code": ERR_TIMEOUT, "message": "LSP request timeout"}}
+    return {}
+
+
+func cancel_request(id: int) -> void:
+    _pending.erase(id)
+
+
 ## Sends a request and waits inline for its response, bounded by the deadline. Same
 ## thread-mode precondition as `wait_diagnostics`. Per the blocking-form contract, a
 ## timeout closes the connection so a late response can never hang the protocol state.
