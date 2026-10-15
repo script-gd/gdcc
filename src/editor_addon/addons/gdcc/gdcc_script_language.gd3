@@ -142,6 +142,8 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
             var end_line: int = int(end_value.get("line", 0)) + 1
             var message: String = str(raw.get("message", ""))
             if severity == 1:
+                if _is_lsp_erased_class_type_error(message, path, view):
+                    continue
                 errors.append({"line": line, "column": character, "message": message, "path": path})
             elif severity == 2:
                 # All five keys are mandatory — the engine silently drops partial entries.
@@ -187,6 +189,32 @@ func _validate(script: String, path: String, validate_functions: bool, validate_
                 })
     _in_validate = false
     return {"valid": errors.is_empty(), "errors": errors, "warnings": warnings, "functions": functions}
+
+
+## The erased script path and its proven native class are one type, but Godot's proxy sees two.
+## Suppress only incompatibilities between those aliases, never unrelated types or gdcc errors.
+func _is_lsp_erased_class_type_error(message: String, path: String, view: Dictionary) -> bool:
+    if not view.get("erased", false) or not path.ends_with(".gd3"):
+        return false
+    var class_name_text: String = str(view.get("class_name", ""))
+    if class_name_text.is_empty():
+        return false
+    for pair in [[path, class_name_text], [class_name_text, path]]:
+        var source_type: String = str(pair[0])
+        var target_type: String = str(pair[1])
+        if message.begins_with("Cannot assign a value of type " + source_type + " to ") \
+                and message.ends_with(" with specified type " + target_type + "."):
+            return true
+        if message == "Value of type \"" + source_type \
+                + "\" cannot be assigned to a variable of type \"" + target_type + "\".":
+            return true
+        if message == "Cannot return value of type \"" + source_type \
+                + "\" because the function return type is \"" + target_type + "\".":
+            return true
+        if message.begins_with("Invalid argument for \"") and message.contains("()\" function: argument ") \
+                and message.ends_with(" should be \"" + target_type + "\" but is \"" + source_type + "\"."):
+            return true
+    return false
 
 
 ## Match GDScript's method overview: omit the script root, qualify inner classes, and

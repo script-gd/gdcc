@@ -50,12 +50,13 @@ func _ready() -> void:
     GDExtensionManager.extension_unloading.connect(_on_extension_unloading)
 
 
-## Identity view shape: `{"text", "erased", "erase_line", "removed_prefix"}`. `erase_line` is
+## View shape: `{"text", "erased", "class_name", "erase_line", "removed_prefix"}`. `class_name`
+## is non-empty only when metadata proves the erased native class belongs to this file. `erase_line` is
 ## the 0-based affected line (-1 when identity); `removed_prefix` is the number of code points
 ## removed from that line's start (same-line `class_name X extends Y` form; 0 for the
 ## whole-line blank form, which never drifts columns).
 func lsp_safe_text(path: String, text: String) -> Dictionary:
-    var identity: Dictionary = {"text": text, "erased": false, "erase_line": -1, "removed_prefix": 0}
+    var identity: Dictionary = {"text": text, "erased": false, "class_name": "", "erase_line": -1, "removed_prefix": 0}
     if service == null or not service.is_active() or not path.begins_with("res://"):
         return identity
     var scan: Dictionary = _scan_class_name_header(text)
@@ -75,7 +76,8 @@ func lsp_safe_text(path: String, text: String) -> Dictionary:
     else:
         # Standalone `class_name X` line → equal-length whitespace: zero line/column drift.
         lines[erase_line] = " ".repeat(original_line.length())
-    return {"text": "\n".join(lines), "erased": true, "erase_line": erase_line, "removed_prefix": removed_prefix}
+    return {"text": "\n".join(lines), "erased": true, "class_name": str(scan["name"]),
+            "erase_line": erase_line, "removed_prefix": removed_prefix}
 
 
 ## Forward map for LSP-bound positions (completion request): a position on the erased line

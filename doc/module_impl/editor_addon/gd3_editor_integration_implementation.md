@@ -1891,6 +1891,12 @@ RPC 不可达且记录端点仍在侦听时才 `OS.kill` 兜底（§3.7）。
      string_code: "GDSCRIPT_LSP", message}`（五键齐全，缺键会被引擎丢弃；LSP 的
      `code` 可能是字符串，不作 int 转换）。
    - 其余 severity 丢弃。
+   - 映射 error 前过滤已证实的代理类型身份误报：仅当本次 `lsp_safe_text` 通过完整
+     擦除准入，消息中的两端类型恰为当前 `.gd3` 路径与该视图返回的 `class_name`，
+     才丢弃声明初始化、普通赋值、返回值和实参不兼容诊断（支持两端互换）。这是同一
+     源文件在 LSP 中被拆成匿名脚本类与 ClassDB 编译类造成的限制，不按 `.gd3` 子串
+     或类型错误类别整体过滤。未擦除、来源不匹配、其他类/基础类型/容器类型仍照常显示；
+     原始 LSP 缓存不变，gdcc 诊断也不参与过滤。被过滤项不触发第 3 步的级联抑制门禁。
 3. gdcc 通道：**先** `version := notify_source_changed(path, script)`（每次校验都执行，
    包括 LSP 有错误时——LSP 错误只抑制 gdcc 诊断的**显示**，不抑制标脏与缓存失效），
    再读 `gdcc_diagnostics_for(path, version)`：**Phase 10 后修复 1 起为过期可见**
@@ -2273,7 +2279,7 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
 报 error 级 `Class "X" hides a native class.`（`gdscript_analyzer.cpp:394-403`——
 `push_error` 而非 warning，`@warning_ignore` 与项目设置均不可抑制），既污染显示
 又触发 `_validate` 的 LSP-error 抑制门禁（§4.2 第 3 步）压制 gdcc 诊断。
-已否决方案（评审复核）：显示端过滤（服务端视图仍被污染——标识符解析 ClassDB
+已否决方案（评审复核）：仅在显示端过滤 `hides a native class`（服务端视图仍被污染——标识符解析 ClassDB
 优先于 ScriptServer，`gdscript_analyzer.cpp:4530`，补全仍解析到滞后的编译类）；
 全项目合成改名（跨文件成员解析对非 `.gd` 脚本类走 `ResourceLoader.load` + Script
 资源内省——`gdscript_analyzer.cpp:787-801`、`gdscript_editor.cpp:1266-1333`——
@@ -2299,12 +2305,21 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
    重载，`reloadable = true`）与扩展装卸 → 失效按类名的备忘缓存 → 重同步当前
    文档 → 触发 Phase 5 的重校验。
 5. 性能：C 侧元数据惰性解析缓存；addon 按类名备忘、重载信号失效。
+6. 擦除视图携带通过准入的 `class_name`（未擦除时为空），供 §4.2 精确过滤同一类型的
+   路径/原生类身份误报。例如 `var a: Test2 = self` 的路径类型不兼容诊断不会显示；
+   `int` 赋给 `Test2` 等真实错误不受影响。这不替代本阶段对 `hides a native class`
+   的服务端视图修复：后者仍不得仅在显示端过滤。
 验收：
 - 引擎测试：准入矩阵白盒（扩展类+路径匹配→擦除；核心类冲突→不擦；无元数据
   扩展类→不擦；路径不匹配→不擦）；两种行形式的改写文本与双向映射断言（含 CJK
   行）；端到端（Zig 门控，复用 Phase 6 编译夹具）：编译安装后继续编辑源文件，
   `hides a native class` 不再出现、gdcc 诊断经重校验浮现；决策翻转后自动重同步；
   正则陷阱（注释/多行字符串内的 `class_name` 文本不误命中）。
+- 类型身份误报过滤回归：准入矩阵覆盖四类消息、反向别名及真实类型/来源不匹配反例；
+  真实 LSP 的 `var a: Gd3Phase7Subject = self` 诊断保留在原始缓存但不进入编辑器，
+  gdcc 诊断仍可见；改为 `= 42` 后真实类型错误保留并继续阻断 gdcc 级联显示。
+  Godot 4.5.1、4.6.3、4.7 自定义构建均通过；含分析门禁、诊断合并及异步大纲回归，
+  本次共 13 次定向测试执行全部通过，无跳过；独立复审结论 APPROVE。
 - 手动：编译→安装→继续编辑全流程中编辑器无伪错误、gdcc 错误正常显示、补全可用。
 
 ### Phase 8：LSP workspace 镜像 ✅（2026-09-28 自动化验收通过，手动项待 §8.3）
@@ -2338,7 +2353,8 @@ hover/定义跳转的数据面。reconciler 已有全项目 `.gd3` 磁盘扫描�
   不新增 gdcc RPC，也不依赖 Stage C 的资源成员内省。
 - **Stage C（全局类注册 + `GdccScript` 成员内省虚函数）暂缓**：见 Phase 9 的
   `_get_global_class_name` 条目（含必须同批实施与对话框行为的已核实约束）。
-- **已否决**：全项目合成改名、显示端过滤伪错误（证据链见 Phase 7 背景）。
+- **已否决**：全项目合成改名、仅在显示端过滤 `hides a native class`（证据链见 Phase 7
+  背景）。同文件路径/编译类的类型身份误报使用 §4.2 的精确显示过滤，不在此否决项内。
 
 ### Phase 9：打磨（可并行子项，各自独立验收）
 

@@ -216,7 +216,8 @@ class EditorAddonScriptLanguageEngineTest {
                     "metadata_inner_and_cache", "admission_matrix", "rewrite_forms",
                     "analysis_ready", "validate_no_hides_error", "outline_erased", "editor_opened", "lookup_named_erased",
                     "decision_flip", "edit_shows_gdcc_not_hides",
-                    "flip_to_no_erasure", "flip_back_to_erasure", "survived")),
+                    "flip_to_no_erasure", "flip_back_to_erasure", "self_type_filter_matrix",
+                    "self_type_error_filtered", "real_type_error_kept", "survived")),
             // Phase 8: LSP workspace mirror — project `.gd3` files reach the server's parse
             // cache only via client didOpen (its disk scan indexes `.gd` only). Anchors:
             // nothing is mirrored while the channel is down (negative), the initial replay
@@ -3362,6 +3363,70 @@ class EditorAddonScriptLanguageEngineTest {
                             and ClassDB.class_exists("Gd3Phase7Subject"),
                             "load err=" + str(load_err) + " resynced=" + str(v_after_load > v_before_load)
                             + " erased_sent=" + str(erased_sent_ok))
+                    # Type aliases are filtered only after the same-file erasure admission.
+                    var type_view: Dictionary = service.lsp_safe_text(subject_path, subject_src)
+                    var alias_messages: Array = [
+                        'Cannot assign a value of type %s to variable "a" with specified type Gd3Phase7Subject.' % subject_path,
+                        'Cannot assign a value of type %s to parameter "other" with specified type Gd3Phase7Subject.' % subject_path,
+                        'Value of type "%s" cannot be assigned to a variable of type "Gd3Phase7Subject".' % subject_path,
+                        'Value of type "Gd3Phase7Subject" cannot be assigned to a variable of type "%s".' % subject_path,
+                        'Cannot return value of type "%s" because the function return type is "Gd3Phase7Subject".' % subject_path,
+                        'Invalid argument for "receive()" function: argument 1 should be "Gd3Phase7Subject" but is "%s".' % subject_path,
+                    ]
+                    var filter_ok: bool = type_view.get("class_name") == "Gd3Phase7Subject"
+                    for message in alias_messages:
+                        filter_ok = filter_ok and lang._is_lsp_erased_class_type_error(message, subject_path, type_view)
+                        filter_ok = filter_ok and not lang._is_lsp_erased_class_type_error(message, subject_path, v_wrong_path)
+                    var real_messages: Array = [
+                        'Cannot assign a value of type int to variable "a" with specified type Gd3Phase7Subject.',
+                        'Cannot assign a value of type %s to variable "a" with specified type RefCounted.' % subject_path,
+                        'Cannot assign a value of type %s to variable "a" with specified type Gd3Phase7Subject__sub__Inner.' % subject_path,
+                        'Cannot assign a value of type %s to variable "a" with specified type Array[Gd3Phase7Subject].' % subject_path,
+                        'Cannot assign a value of type res://src/another.gd3 to variable "a" with specified type Gd3Phase7Subject.',
+                        'Invalid argument for "receive()" function: argument 1 should be "RefCounted" but is "%s".' % subject_path,
+                        'Cannot return value of type "%s" because the function return type is "int".' % subject_path,
+                        'Class "Gd3Phase7Subject" hides a native class.',
+                    ]
+                    for message in real_messages:
+                        filter_ok = filter_ok and not lang._is_lsp_erased_class_type_error(message, subject_path, type_view)
+                    _step("self_type_filter_matrix", filter_ok)
+
+                    var self_src: String = subject_src + "\\nfunc self_usage() -> void:\\n    var a: Gd3Phase7Subject = self\\n"
+                    if code_edit != null:
+                        code_edit.set_text(self_src)
+                    var self_result: Dictionary = {}
+                    var saw_proxy_error := false
+                    for attempt in range(5):
+                        self_result = lang._validate(self_src, subject_path, false, true, true, false)
+                        for diagnostic in service.lsp_diagnostics_for(subject_path):
+                            saw_proxy_error = saw_proxy_error or str(diagnostic.get("message", "")) == alias_messages[0]
+                        if saw_proxy_error:
+                            break
+                    var self_filtered: bool = saw_proxy_error
+                    var gdcc_kept := false
+                    for error in self_result.get("errors", []):
+                        var error_message: String = str(error.get("message", ""))
+                        self_filtered = self_filtered and not error_message.begins_with("Cannot assign a value of type ")
+                        gdcc_kept = gdcc_kept or error_message.begins_with("[gdcc ")
+                    _step("self_type_error_filtered", self_filtered and gdcc_kept, str(self_result))
+
+                    var wrong_src: String = self_src.replace("= self", "= 42")
+                    if code_edit != null:
+                        code_edit.set_text(wrong_src)
+                    var wrong_result: Dictionary = {}
+                    var kept_real_error := false
+                    var leaked_gdcc := false
+                    for attempt in range(5):
+                        wrong_result = lang._validate(wrong_src, subject_path, false, true, true, false)
+                        for error in wrong_result.get("errors", []):
+                            var error_message: String = str(error.get("message", ""))
+                            kept_real_error = kept_real_error or error_message == real_messages[0]
+                            leaked_gdcc = leaked_gdcc or error_message.begins_with("[gdcc ")
+                        if kept_real_error:
+                            break
+                        leaked_gdcc = false
+                    _step("real_type_error_kept", kept_real_error and not leaked_gdcc
+                            and wrong_result.get("valid", true) == false, str(wrong_result))
                     _step("survived", true)
                 """;
     }
