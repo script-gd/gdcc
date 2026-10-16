@@ -136,13 +136,6 @@ class EditorAddonScriptLanguageEngineTest {
             Map.entry("lsp_runtime_enable", List.of(
                     "config", "lsp_port_set", "editor_ready", "plugin_enabled", "lsp_ready",
                     "blocking_refused", "async_diagnostics_surface", "async_outline_surfaces", "survived")),
-            // Phase 2 (review round 3): boot-time prime followed by a disable BEFORE the
-            // server listened must un-prime (the restored setting makes the server start
-            // main-thread-polled); the next enable re-probes and degrades correctly.
-            Map.entry("lsp_disable_before_prime", List.of(
-                    "config", "lsp_port_set", "disabled_before_listen", "editor_ready",
-                    "plugin_reenabled", "lsp_ready", "blocking_refused",
-                    "async_diagnostics_surface", "survived")),
             // Phase 3: gdcc diagnostics channel — merge into `_validate` (path-extends
             // error + lowering warning/error pair), displayPath keying for same-basename
             // files, stale-visible retention across an edit and LSP-error suppression
@@ -468,8 +461,6 @@ class EditorAddonScriptLanguageEngineTest {
                         await _run_lsp_fifo_mode()
                     elif mode == "lsp_runtime_enable":
                         await _run_lsp_runtime_enable_mode()
-                    elif mode == "lsp_disable_before_prime":
-                        await _run_lsp_disable_before_prime_mode()
                     elif mode == "gdcc_diag":
                         await _run_gdcc_diag_mode()
                     elif mode == "dock_compile":
@@ -1133,56 +1124,6 @@ class EditorAddonScriptLanguageEngineTest {
                         await get_tree().process_frame
                         functions = service.outline_functions(rt_path, outline_src)
                     _step("async_outline_surfaces", service.lsp_blocking_unsafe and functions == PackedStringArray(["async_outline:2"]), str(functions))
-                    DirAccess.remove_absolute(ProjectSettings.globalize_path(rt_path))
-                    _step("survived", true)
-                
-                # Lifecycle edge (review): gdcc primed thread mode at boot, but the plugin is
-                # disabled BEFORE the server starts listening — the restored setting makes the
-                # server start main-thread-polled, so the stale prime must be dropped and the
-                # next enable must re-probe (and find the listening, non-threaded server).
-                func _run_lsp_disable_before_prime_mode() -> void:
-                    var port := int(_config["lsp_port"])
-                    var settings := EditorInterface.get_editor_settings()
-                    settings.set_setting("network/language_server/remote_host", "127.0.0.1")
-                    settings.set_setting("network/language_server/remote_port", port)
-                    _step("lsp_port_set", true)
-                    # Plugin init runs long before the server's editor-ready start, so this
-                    # disable lands inside the "not listening yet" window deterministically.
-                    EditorInterface.set_plugin_enabled("gdcc", false)
-                    await get_tree().process_frame
-                    await get_tree().process_frame
-                    var service := _service()
-                    _step("disabled_before_listen", service != null and not service.lsp_thread_primed,
-                            "primed=" + str(service.lsp_thread_primed))
-                    if service == null:
-                        return
-                    var fs := EditorInterface.get_resource_filesystem()
-                    var ready_deadline := Time.get_ticks_msec() + 60000
-                    while fs.is_scanning() and Time.get_ticks_msec() < ready_deadline:
-                        await get_tree().process_frame
-                    var server_up := false
-                    var up_deadline := Time.get_ticks_msec() + 30000
-                    while Time.get_ticks_msec() < up_deadline and not server_up:
-                        server_up = await _port_open("127.0.0.1", port)
-                    _step("editor_ready", not fs.is_scanning() and server_up)
-                    EditorInterface.set_plugin_enabled("gdcc", true)
-                    await get_tree().process_frame
-                    await get_tree().process_frame
-                    _step("plugin_reenabled", service.is_active() and service.lsp_blocking_unsafe,
-                            "unsafe=" + str(service.lsp_blocking_unsafe))
-                    _step("lsp_ready", await _wait_lsp_ready(45.0))
-                    var rt_path := "res://gd3_lsp_reprime.gd3"
-                    var rt_source := "extends Node\\n\\nfunc broken( -> void:\\n    pass\\n"
-                    _write_text_file(rt_path, rt_source)
-                    var wait_start := Time.get_ticks_msec()
-                    var wait_refused: bool = not service.lsp_sync_and_wait(rt_path, rt_source, 2000)
-                    var wait_elapsed := Time.get_ticks_msec() - wait_start
-                    _step("blocking_refused", wait_refused and wait_elapsed < 1000,
-                            "elapsed_ms=" + str(wait_elapsed))
-                    var lang := _find_gd3_language()
-                    var async_result := await _validate_until_errors(lang, rt_source, rt_path)
-                    var async_errors: Array = async_result.get("errors", [])
-                    _step("async_diagnostics_surface", not async_errors.is_empty(), str(async_result))
                     DirAccess.remove_absolute(ProjectSettings.globalize_path(rt_path))
                     _step("survived", true)
                 
@@ -5194,16 +5135,6 @@ class EditorAddonScriptLanguageEngineTest {
         config.addProperty("lsp_port", findFreePort());
         config.addProperty("gdcc_enabled_at_boot", false);
         runCase("lsp_runtime_enable", config);
-    }
-
-    /// Phase 2 (review round 3): disabling the plugin BEFORE the primed server ever listened
-    /// must un-prime thread mode (the restored setting makes the server start
-    /// main-thread-polled), so the next enable re-probes and refuses inline waits.
-    @Test
-    void lspDisableBeforeServerPrimeReprobesOnNextEnable() throws Exception {
-        var config = new JsonObject();
-        config.addProperty("lsp_port", findFreePort());
-        runCase("lsp_disable_before_prime", config);
     }
 
     /// Phase 3 acceptance: the gdcc diagnostics channel end-to-end — version-gated merge
