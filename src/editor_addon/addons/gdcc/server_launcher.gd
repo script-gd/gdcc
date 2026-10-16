@@ -123,7 +123,7 @@ func shutdown_owned() -> void:
             if _probe_port_open(host, port, probe_budget):
                 OS.kill(pid)
             else:
-                print("GDCC server launcher: spawned service (pid %d) unreachable and its port is closed; leaving it alone." % pid)
+                print(tr("GDCC server launcher: spawned service (pid %d) unreachable and its port is closed; leaving it alone.") % pid)
     _spawned.clear()
 
 
@@ -211,7 +211,7 @@ func _poll_ready_phase(head: Dictionary, now: int) -> void:
     # the child then failed execvp() (the engine printed "Could not create child process" and
     # SIGKILLed it), and `is_process_running` reaps the dead child on a poll.
     if pid > 0 and not OS.is_process_running(pid):
-        printerr("GDCC server launcher: spawned compile service (pid %d) exited before accepting connections; check the launch command." % pid)
+        printerr(tr("GDCC server launcher: spawned compile service (pid %d) exited before accepting connections; check the launch command.") % pid)
         _remove_spawned(pid)
         _finish_head(ERR_CANT_CONNECT, false)
         return
@@ -219,7 +219,7 @@ func _poll_ready_phase(head: Dictionary, now: int) -> void:
         if pid > 0 and OS.is_process_running(pid):
             OS.kill(pid)
             _remove_spawned(pid)
-        printerr("GDCC server launcher: spawned compile service did not accept connections within %d ms; killed." % READY_TIMEOUT_MSEC)
+        printerr(tr("GDCC server launcher: spawned compile service did not accept connections within %d ms; killed.") % READY_TIMEOUT_MSEC)
         _finish_head(ERR_TIMEOUT, false)
         return
     var peer: StreamPeerTCP = head["peer"]
@@ -281,10 +281,10 @@ func _spawn(command_template: String, host: String, port: int) -> Array:
         return [ERR_INVALID_PARAMETER, -1]
     var pid := OS.create_process(tokens[0], tokens.slice(1))
     if pid <= 0:
-        printerr("GDCC server launcher: OS.create_process failed for the configured launch command (executable: %s)." % tokens[0])
+        printerr(tr("GDCC server launcher: OS.create_process failed for the configured launch command (executable: %s).") % tokens[0])
         return [ERR_CANT_FORK, -1]
     _spawned.append({"pid": pid, "host": host, "port": port})
-    print("GDCC server launcher: started compile service (pid %d) for %s:%d." % [pid, host, port])
+    print(tr("GDCC server launcher: started compile service (pid %d) for %s:%d.") % [pid, host, port])
     return [OK, pid]
 
 

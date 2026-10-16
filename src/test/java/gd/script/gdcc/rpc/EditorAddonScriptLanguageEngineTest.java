@@ -168,16 +168,20 @@ class EditorAddonScriptLanguageEngineTest {
                     "compile_succeeded", "project_module_name", "library_deployed",
                     "extension_enabled", "extension_list_persisted", "invalid_deployment_preserves_build",
                     "invalid_metadata_preserves_build", "optimization_selection_replaces_current_target",
-                    "fixture_resynced", "recompile_replaces_copy", "fixed_build_paths", "rebuilt_extension_enabled",
+                    "fixture_resynced", "compile_failure_visible", "recompile_replaces_copy", "fixed_build_paths", "rebuilt_extension_enabled",
                     "diag_still_responsive", "server_build_paths_isolated", "compile_owner_released",
                     "new_session_reuses_identity", "survived")),
             Map.entry("build_toolbar", List.of(
                     "config", "shared_manager", "toolbar_position", "dock_layout", "dock_minimum_rows", "popup_first_open_size", "popup_reopen_size", "menu_focus",
-                    "menu_contents", "relative_time_units", "relative_time_refresh", "server_version",
+                    "menu_contents", "saved_changes_marker", "save_failure_unchanged", "build_failure_status",
+                    "relative_time_units", "relative_time_refresh", "server_version",
                     "backend_options", "backend_selection", "backend_unavailable", "backend_query_failure",
                     "version_endpoint_isolation", "backend_disconnected", "backend_reconnected",
-                    "project_options", "output_clear", "shared_busy", "build_spinner", "spinner_pending_activation", "spinner_idle",
-                    "settings_navigation", "disabled_cleanup", "reenabled_shared_manager", "launch_command_migration")),
+                    "localization_chinese", "localization_tooltip", "localization_english_fallback",
+                    "project_options", "output_clear", "shared_busy", "build_spinner", "save_during_build",
+                    "spinner_pending_activation", "activation_failure_state", "spinner_idle",
+                    "settings_navigation", "settings_localization", "settings_locale_aliases", "settings_translation_restore", "settings_english_fallback",
+                    "disabled_cleanup", "reenabled_shared_manager", "launch_command_migration")),
             // Phase 4: `_complete_code` — degraded answers (client not READY / no sentinel /
             // disabled service), white-box pins of the kind table and the insert-text
             // precedence (the server's emitted kind set is not controllable, so the mapping
@@ -1971,6 +1975,30 @@ class EditorAddonScriptLanguageEngineTest {
 
     private static String driverPluginBuildToolbar() {
         return """
+                func _project_settings_labels(toolbar: Variant) -> Dictionary:
+                    var labels: Dictionary = {}
+                    var items: Array = [toolbar._settings_sections.get_root()]
+                    while not items.is_empty():
+                        var item: TreeItem = items.pop_back()
+                        if item != null:
+                            labels[str(item.get_metadata(0))] = item.get_text(0)
+                            items.append_array(item.get_children())
+                    for property in toolbar._settings_dialog.find_children("*", "EditorProperty", true, false):
+                        labels[str(property.get_edited_property()).get_file()] = property.label
+                    return labels
+
+                func _select_project_settings_section(toolbar: Variant, section: String) -> bool:
+                    var items: Array = [toolbar._settings_sections.get_root()]
+                    while not items.is_empty():
+                        var item: TreeItem = items.pop_back()
+                        if item != null:
+                            if str(item.get_metadata(0)) == section:
+                                item.select(0)
+                                toolbar._settings_sections.item_selected.emit()
+                                return true
+                            items.append_array(item.get_children())
+                    return false
+
                 # Verify the shared editor views against the real title bar and settings dialog.
                 func _run_build_toolbar_mode() -> void:
                     var dock: Variant = _find_gdcc_dock()
@@ -1980,6 +2008,10 @@ class EditorAddonScriptLanguageEngineTest {
                     var manager: Variant = dock._manager
                     var plugin: Variant = manager.get_parent()
                     var toolbar: Variant = plugin.get("_build_toolbar")
+                    var translation_domain := TranslationServer.get_or_add_domain(plugin.TRANSLATION_DOMAIN)
+                    translation_domain.set_locale_override("en")
+                    toolbar._refresh_state()
+                    dock._refresh_status()
                     _step("shared_manager", toolbar != null and toolbar._manager == manager \\
                             and manager.name == "GdccProjectManager" and manager.is_inside_tree())
                     if toolbar == null:
@@ -2080,9 +2112,49 @@ class EditorAddonScriptLanguageEngineTest {
                     toolbar._menu_button.pressed.emit()
                     _step("menu_contents", toolbar._popup.visible and toolbar._build_button.text == "Build" \\
                             and toolbar._build_button.icon != null and toolbar._menu_button.icon != null \\
+                            and toolbar._build_button.tooltip_text == "Compile GDCC scripts" \\
+                            and not toolbar._last_failure_label.visible \\
                             and toolbar._settings_button.size_flags_horizontal == Control.SIZE_EXPAND_FILL \\
                             and toolbar._last_build_label.text.contains("Last successful build") \\
                             and toolbar._popup.theme == EditorInterface.get_editor_theme())
+                    var saved_script := GdccScript.new()
+                    saved_script._set_source_code("extends RefCounted\\n")
+                    manager._refresh_diagnostics_module()
+                    var save_marker_ok: bool = toolbar._build_button.text == "Build"
+                    var save_error: int = ResourceSaver.save(saved_script, "res://gdcc_build_status.gd3", 0)
+                    var save_deadline := Time.get_ticks_msec() + 3000
+                    while toolbar._build_button.text != "Build*" and Time.get_ticks_msec() < save_deadline:
+                        await get_tree().process_frame
+                    save_marker_ok = save_marker_ok and save_error == OK and toolbar._build_button.text == "Build*" \\
+                            and manager.last_source_save_time > manager.last_compile_time
+                    manager.last_compile_time = manager.last_source_save_time
+                    manager.state_changed.emit()
+                    save_marker_ok = save_marker_ok and toolbar._build_button.text == "Build"
+                    manager.last_compile_time -= 0.001
+                    manager.state_changed.emit()
+                    save_marker_ok = save_marker_ok and toolbar._build_button.text == "Build*"
+                    _step("saved_changes_marker", save_marker_ok)
+                    var last_save: float = service.last_script_save_time()
+                    var bad_save: int = ResourceSaver.save(saved_script, "res://no_such_dir/status.gd3", 0)
+                    var unrelated := GDScript.new()
+                    unrelated.source_code = "extends RefCounted\\n"
+                    var unrelated_save: int = ResourceSaver.save(unrelated, "res://gdcc_unrelated.gd", 0)
+                    _step("save_failure_unchanged", bad_save != OK and unrelated_save == OK \\
+                            and service.last_script_save_time() == last_save)
+                    manager._set_last_build_failed(true)
+                    var failed_status: bool = toolbar._build_button.text == "Build*" \\
+                            and toolbar._build_button.icon == toolbar.get_theme_icon("StatusError", "EditorIcons") \\
+                            and toolbar._build_button.icon_alignment == HORIZONTAL_ALIGNMENT_RIGHT \\
+                            and toolbar._last_failure_label.visible and toolbar._last_failure_label.text == "Last build failed" \\
+                            and toolbar._last_failure_label.get_theme_color("font_color") == toolbar.get_theme_color("error_color", "Editor") \\
+                            and toolbar._build_button.tooltip_text == "Compile GDCC scripts [last build failed]"
+                    manager._set_last_build_failed(false)
+                    manager.last_compile_time = last_save
+                    manager.state_changed.emit()
+                    _step("build_failure_status", failed_status and not toolbar._last_failure_label.visible \\
+                            and toolbar._build_button.text == "Build" \\
+                            and toolbar._build_button.icon_alignment == HORIZONTAL_ALIGNMENT_LEFT \\
+                            and toolbar._build_button.tooltip_text == "Compile GDCC scripts")
                     var relative_units := true
                     for sample in [[-1, "0s ago"], [0, "0s ago"], [59, "59s ago"],
                             [60, "1min ago"], [89, "1min ago"], [90, "1.5min ago"],
@@ -2143,9 +2215,11 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("backend_selection", selection_saved and toolbar._backend.selected == 0 \\
                             and ProjectSettings.get_setting("gdcc/build/c_compiler_kind") == "AUTO")
                     var saved_kinds: Array = manager.available_c_compiler_kinds.duplicate()
+                    manager._set_last_build_failed(true)
                     manager.available_c_compiler_kinds.clear()
                     manager.state_changed.emit()
                     var no_backend: bool = toolbar._build_button.disabled and toolbar._backend.disabled \\
+                            and toolbar._build_button.tooltip_text == "No compilation backend available" \\
                             and toolbar._backend.item_count == 1 and toolbar._warning_row.visible \\
                             and toolbar._warning_label.text == "No compilation backends are available." \\
                             and toolbar._warning_row.get_child(0) == toolbar._warning_icon \\
@@ -2158,6 +2232,7 @@ class EditorAddonScriptLanguageEngineTest {
                     manager._compiler_warning = "Could not query compilation backends."
                     manager.state_changed.emit()
                     _step("backend_query_failure", toolbar._warning_row.visible and toolbar._build_button.disabled \\
+                            and toolbar._build_button.tooltip_text == "No compilation backend available" \\
                             and toolbar._warning_label.text == manager._compiler_warning)
                     manager._compiler_warning = ""
                     manager.state_changed.emit()
@@ -2181,8 +2256,10 @@ class EditorAddonScriptLanguageEngineTest {
                             "inflight=" + str(version_inflight) + " reload_error=" + str(reload_error) \\
                             + " version=" + manager.server_version)
                     _step("backend_disconnected", toolbar._build_button.disabled and toolbar._warning_row.visible \\
+                            and toolbar._build_button.tooltip_text == "Cannot connect to the GDCC compilation server" \\
                             and toolbar._warning_label.text == "Compilation server is not connected." \\
                             and manager.available_c_compiler_kinds.is_empty())
+                    manager._set_last_build_failed(false)
                     service.retarget_rpc_endpoint("127.0.0.1", int(_config["rpc_port"]))
                     # Channel recovery may need the lifecycle's 30s hook timeout plus a retry.
                     var reconnected_ready: bool = await _wait_diag_ready(service, 45.0)
@@ -2191,6 +2268,7 @@ class EditorAddonScriptLanguageEngineTest {
                     while manager.build_warning() != "" and Time.get_ticks_msec() < ready_deadline:
                         await get_tree().process_frame
                     _step("backend_reconnected", reconnected_ready and manager.build_warning() == "" \\
+                            and toolbar._build_button.tooltip_text == "Compile GDCC scripts" \\
                             and not toolbar._build_button.disabled and not toolbar._warning_row.visible \\
                             and manager.available_c_compiler_kinds == saved_kinds,
                             "ready=" + str(reconnected_ready) + " warning=" + manager.build_warning() \\
@@ -2199,6 +2277,91 @@ class EditorAddonScriptLanguageEngineTest {
                             + " metadata_endpoint=" + str(manager._version_endpoint) \\
                             + " metadata_age_ms=" + str(Time.get_ticks_msec() - manager._server_refresh_msec) \\
                             + " action_busy=" + str(manager._busy_count))
+                    var game_locale := TranslationServer.get_locale()
+                    var editor_domain := TranslationServer.get_or_add_domain(&"godot.editor")
+                    var editor_build: String = editor_domain.translate("Build")
+                    translation_domain.set_locale_override("zh_CN")
+                    toolbar.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
+                    dock.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    manager._set_last_build_failed(true)
+                    var chinese_ok: bool = toolbar._build_button.text == "构建" \\
+                            and toolbar._build_button.tooltip_text == "编译gdcc脚本[上次编译出错]" \\
+                            and toolbar._last_failure_label.atr(toolbar._last_failure_label.text) == "上次构建失败" \\
+                            and toolbar._settings_button.atr(toolbar._settings_button.text) == "GDCC 项目设置" \\
+                            and toolbar._backend.atr(toolbar._backend.get_item_text(0)) == "自动" \\
+                            and toolbar._optimization.atr(toolbar._optimization.get_item_text(0)) == "调试" \\
+                            and toolbar._optimization.atr(toolbar._optimization.get_item_text(1)) == "发布" \\
+                            and toolbar._strict_mode.atr(toolbar._strict_mode.text) == "严格模式" \\
+                            and dock._clear_button.atr(dock._clear_button.tooltip_text) == "清空 GDCC 输出" \\
+                            and dock._status_label.text.contains("诊断：") \\
+                            and toolbar._last_build_label.text.begins_with("上次成功构建：") \\
+                            and manager.relative_time_text(90) == "1.5分钟前" \\
+                            and manager.relative_time_text(5400) == "1.5小时前" \\
+                            and manager.relative_time_text(129600) == "1.5天前" \\
+                            and toolbar._popup.get_translation_domain() == plugin.TRANSLATION_DOMAIN \\
+                            and service.get_translation_domain() == plugin.TRANSLATION_DOMAIN
+                    var raw_version: String = manager.server_version
+                    manager.server_version = "Unknown (raw-branch deadbeef)"
+                    chinese_ok = chinese_ok and manager.server_version_text() == "未知 (raw-branch deadbeef)"
+                    manager.server_version = "Unavailable: raw message 50%"
+                    chinese_ok = chinese_ok and manager.server_version_text() == "不可用：raw message 50%"
+                    manager.server_version = raw_version
+                    manager._log("module created: %s", ["raw: 50%"])
+                    manager._log_error("compile start", {"error": {"code": -1, "message": "raw message 50%"}})
+                    chinese_ok = chinese_ok and dock._log_output.text.contains("模块已创建：raw: 50%") \\
+                            and dock._log_output.text.contains("启动编译失败 [-1]：raw message 50%")
+                    manager._compiler_warning = "Could not query compilation backends."
+                    manager.state_changed.emit()
+                    chinese_ok = chinese_ok and toolbar._warning_label.text == "无法查询编译后端。" \\
+                            and toolbar._build_button.tooltip_text == "无可用编译后端"
+                    manager._compiler_warning = ""
+                    manager.available_c_compiler_kinds.clear()
+                    manager.state_changed.emit()
+                    chinese_ok = chinese_ok and toolbar._warning_label.text == "无可用编译后端。"
+                    manager.available_c_compiler_kinds.assign(saved_kinds)
+                    manager._service = null
+                    manager.state_changed.emit()
+                    chinese_ok = chinese_ok and toolbar._build_button.tooltip_text == "无法连接gdcc编译服务器"
+                    manager._service = service
+                    manager._set_last_build_failed(false)
+                    chinese_ok = chinese_ok and toolbar._build_button.tooltip_text == "编译gdcc脚本"
+                    manager._build_in_progress = true
+                    manager.state_changed.emit()
+                    chinese_ok = chinese_ok and toolbar._build_button.text.begins_with("正在构建 ")
+                    manager._build_in_progress = false
+                    manager.state_changed.emit()
+                    _step("localization_chinese", chinese_ok, toolbar._build_button.tooltip_text + " | " + dock._status_label.text)
+                    toolbar._popup.hide()
+                    plugin._show_build_log()
+                    await get_tree().process_frame
+                    var hover := InputEventMouseMotion.new()
+                    hover.position = dock._clear_button.get_global_rect().get_center()
+                    dock._clear_button.get_viewport().push_input(hover, true)
+                    var tooltip_label: Label = null
+                    var tooltip_deadline := Time.get_ticks_msec() + 3000
+                    while tooltip_label == null and Time.get_ticks_msec() < tooltip_deadline:
+                        for child in dock._clear_button.get_children():
+                            if child is PopupPanel:
+                                var labels: Array = child.find_children("*", "Label", true, false)
+                                if not labels.is_empty():
+                                    tooltip_label = labels[0]
+                        await get_tree().process_frame
+                    _step("localization_tooltip", tooltip_label != null and tooltip_label.can_auto_translate() \\
+                            and tooltip_label.get_translation_domain() == plugin.TRANSLATION_DOMAIN \\
+                            and tooltip_label.atr(tooltip_label.text) == "清空 GDCC 输出")
+                    translation_domain.set_locale_override("fr")
+                    toolbar.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
+                    dock.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    _step("localization_english_fallback", toolbar._build_button.text == "Build" \\
+                            and toolbar._build_button.tooltip_text == "Compile GDCC scripts" \\
+                            and toolbar._last_build_label.text.begins_with("Last successful build: ") \\
+                            and toolbar._settings_button.atr(toolbar._settings_button.text) == "GDCC Project Settings" \\
+                            and TranslationServer.get_locale() == game_locale and editor_domain.translate("Build") == editor_build)
+                    translation_domain.set_locale_override("en")
                     toolbar._optimization.item_selected.emit(1)
                     toolbar._strict_mode.toggled.emit(true)
                     await get_tree().process_frame
@@ -2242,14 +2405,28 @@ class EditorAddonScriptLanguageEngineTest {
                         toolbar._process(0.0)
                         spinner_ok = spinner_ok and toolbar._build_button.text == "Building " + String.chr(spinner_codes[index % 10])
                     _step("build_spinner", spinner_ok)
+                    saved_script._set_source_code("extends RefCounted\\n# saved during build\\n")
+                    var during_save: int = ResourceSaver.save(saved_script, "res://gdcc_build_status.gd3", 0)
+                    manager._refresh_diagnostics_module()
+                    last_save = service.last_script_save_time()
+                    _step("save_during_build", during_save == OK and manager.has_saved_changes() \\
+                            and toolbar._build_button.text.begins_with("Building "))
+                    manager._set_last_build_failed(true)
                     manager._pending_activation = {"deadline": Time.get_ticks_msec() + 10000}
                     manager._end_build()
                     _step("spinner_pending_activation", manager.is_building() and toolbar.is_processing() \\
+                            and manager.last_build_failed \\
                             and toolbar._build_button.disabled and toolbar._build_button.text.begins_with("Building "))
-                    manager._pending_activation.clear()
-                    manager.state_changed.emit()
+                    manager._pending_activation["deadline"] = Time.get_ticks_msec() - 1
+                    manager._poll_build_activation()
+                    _step("activation_failure_state", manager.last_build_failed and toolbar._last_failure_label.visible \\
+                            and EditorInterface.get_editor_settings().get_project_metadata("gdcc", "last_build_failed", false) \\
+                            and toolbar._build_button.icon == toolbar.get_theme_icon("StatusError", "EditorIcons"))
                     _step("spinner_idle", not manager.is_building() and not toolbar.is_processing() \\
-                            and toolbar._build_button.text == "Build")
+                            and toolbar._build_button.text == "Build*")
+                    manager._set_last_build_failed(false)
+                    manager.last_compile_time = last_save
+                    manager.state_changed.emit()
                     toolbar._settings_button.pressed.emit()
                     await get_tree().process_frame
                     _step("settings_navigation", not toolbar._popup.visible and is_instance_valid(toolbar._settings_dialog) \\
@@ -2257,6 +2434,62 @@ class EditorAddonScriptLanguageEngineTest {
                             and toolbar._settings_filter.text == "gdcc" and toolbar._settings_sections != null \\
                             and toolbar._settings_sections.get_selected() != null \\
                             and toolbar._settings_sections.get_selected().get_metadata(0) == "gdcc/build")
+                    var property_domain := TranslationServer.get_or_add_domain(&"godot.properties")
+                    var property_domain_id: int = property_domain.get_instance_id()
+                    var property_locale: String = property_domain.get_locale_override()
+                    property_domain.set_locale_override("zh_CN")
+                    var host_translation: String = property_domain.translate("Host")
+                    get_tree().root.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    var settings_labels: Dictionary = _project_settings_labels(toolbar)
+                    var localized_settings: bool = settings_labels.get("gdcc/build") == "构建" \\
+                            and settings_labels.get("gdcc/server") == "服务器" \\
+                            and settings_labels.get("gdcc/compilation_server") == "编译服务器" \\
+                            and settings_labels.get("optimization_level") == "优化级别" \\
+                            and settings_labels.get("strict_mode") == "严格模式" \\
+                            and settings_labels.get("c_compiler_kind") == "C 编译器类型"
+                    for section in ["gdcc/compilation_server", "gdcc/server", "gdcc/sync"]:
+                        localized_settings = _select_project_settings_section(toolbar, section) and localized_settings
+                        await get_tree().process_frame
+                        await get_tree().process_frame
+                        settings_labels.merge(_project_settings_labels(toolbar), true)
+                    localized_settings = localized_settings and settings_labels.get("launch_command") == "启动命令" \\
+                            and settings_labels.get("excluded_globs") == "排除匹配模式" \\
+                            and settings_labels.get("host") == host_translation \\
+                            and property_domain.translate("Host") == host_translation \\
+                            and ProjectSettings.get_setting("gdcc/build/optimization_level") == "RELEASE" \\
+                            and ProjectSettings.get_setting("gdcc/build/c_compiler_kind") == "AUTO" \\
+                            and ProjectSettings.get_setting("gdcc/build/strict_mode") == true
+                    _step("settings_localization", localized_settings, str(settings_labels))
+                    property_domain.set_locale_override("zh_Hans")
+                    get_tree().root.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    var alias_labels: Dictionary = _project_settings_labels(toolbar)
+                    _step("settings_locale_aliases", TranslationServer.compare_locales("zh_CN", "zh_Hans") == 10 \\
+                            and alias_labels.get("gdcc/build") == "构建" \\
+                            and alias_labels.get("gdcc/compilation_server") == "编译服务器" \\
+                            and alias_labels.get("excluded_globs") == "排除匹配模式", str(alias_labels))
+                    property_domain.set_locale_override("zh_CN")
+                    property_domain.remove_translation(plugin.CHINESE_SETTINGS_TRANSLATION)
+                    var removed_translation: bool = property_domain.translate("Excluded Globs") == "Excluded Globs"
+                    get_tree().root.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    _step("settings_translation_restore", removed_translation \\
+                            and property_domain.translate("Excluded Globs") == "排除匹配模式" \\
+                            and _project_settings_labels(toolbar).get("excluded_globs") == "排除匹配模式")
+                    property_domain.set_locale_override("en")
+                    get_tree().root.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    var english_labels: Dictionary = _project_settings_labels(toolbar)
+                    _step("settings_english_fallback", english_labels.get("gdcc/build") == "Build" \\
+                            and english_labels.get("gdcc/server") == "Server" \\
+                            and english_labels.get("excluded_globs") == "Excluded Globs", str(english_labels))
+                    property_domain.set_locale_override(property_locale)
+                    get_tree().root.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
                     if is_instance_valid(toolbar._settings_dialog):
                         toolbar._settings_dialog.hide()
                     # Existing installations persisted offset-free local datetime text.
@@ -2264,13 +2497,20 @@ class EditorAddonScriptLanguageEngineTest {
                     var legacy_time := Time.get_datetime_string_from_unix_time(persisted_time \\
                             + int(Time.get_time_zone_from_system()["bias"]) * 60).replace("T", " ")
                     EditorInterface.get_editor_settings().set_project_metadata("gdcc", "last_build_time", legacy_time)
+                    EditorInterface.get_editor_settings().set_project_metadata("gdcc", "last_compile_time", manager.last_compile_time)
+                    # Disabling midway through activation must not persist a successful result.
+                    manager._pending_activation = {"deadline": Time.get_ticks_msec() + 10000}
                     var old_manager_id: int = manager.get_instance_id()
                     EditorInterface.set_plugin_enabled("gdcc", false)
                     await get_tree().process_frame
                     var leftover := false
                     for child in title_bar.get_children():
                         leftover = leftover or child.name == "GdccBuildToolbar"
-                    _step("disabled_cleanup", not leftover and not is_instance_valid(manager) and not is_instance_valid(toolbar))
+                    _step("disabled_cleanup", not leftover and not is_instance_valid(manager) and not is_instance_valid(toolbar) \\
+                            and not TranslationServer.has_domain(&"gdcc.editor") \\
+                            and TranslationServer.has_domain(&"godot.properties") \\
+                            and TranslationServer.get_or_add_domain(&"godot.properties").get_instance_id() == property_domain_id \\
+                            and property_domain.translate("Excluded Globs") == "Excluded Globs")
                     ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
                     ProjectSettings.set_setting("gdcc/server/port", int(_config["rpc_port"]))
                     ProjectSettings.set_setting("gdcc/compilation_server/launch_command", null)
@@ -2281,9 +2521,14 @@ class EditorAddonScriptLanguageEngineTest {
                     var next_dock: Variant = _find_gdcc_dock()
                     var next_manager: Variant = next_dock._manager if next_dock != null else null
                     var next_toolbar: Variant = next_manager.get_parent().get("_build_toolbar") if next_manager != null else null
+                    TranslationServer.get_or_add_domain(&"gdcc.editor").set_locale_override("en")
+                    next_toolbar._refresh_state()
                     _step("reenabled_shared_manager", next_manager != null and next_toolbar != null \\
                             and next_toolbar._manager == next_manager and next_manager.get_instance_id() != old_manager_id \\
                             and next_manager.last_build_time == persisted_time \\
+                            and next_manager.last_build_failed and next_toolbar._last_failure_label.visible \\
+                            and property_domain.get_instance_id() == property_domain_id \\
+                            and next_manager.last_source_save_time == last_save and not next_manager.has_saved_changes() \\
                             and EditorInterface.get_editor_settings().get_project_metadata("gdcc", "last_build_time", 0) == persisted_time \\
                             and next_toolbar._last_build_label.text == "Last successful build: 1.5h ago")
                     _step("launch_command_migration", ProjectSettings.get_setting("gdcc/compilation_server/launch_command", "") == legacy_command \\
@@ -2305,6 +2550,9 @@ class EditorAddonScriptLanguageEngineTest {
                     if service == null or dock == null:
                         _step("service_ready", false, "GdccEditorService or dock missing")
                         return
+                    TranslationServer.get_or_add_domain(&"gdcc.editor").set_locale_override("en")
+                    toolbar._refresh_state()
+                    dock._refresh_status()
                     var lsp_port := int(_config["lsp_port"])
                     var rpc_port := int(_config["rpc_port"])
                     _step("service_ready", service.install(EditorInterface, "127.0.0.1", lsp_port, "127.0.0.1", rpc_port) == OK)
@@ -2648,6 +2896,21 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("fixture_resynced", not compile_button.disabled and resynced)
                     if not resynced:
                         return
+                    # A real compile error must be visible without losing the installed build.
+                    var broken_src: String = updated_src.replace("return 2", "return missing_build_symbol")
+                    var broken_upload: Dictionary = await client.put_file(diag_module_id, "/src/compile_probe.gd3", broken_src,
+                            fixture_path, ProjectSettings.globalize_path(fixture_path)).completed
+                    await manager.build_project()
+                    _step("compile_failure_visible", broken_upload["ok"] and manager.last_build_failed \\
+                            and toolbar._build_button.text == "Build" \\
+                            and not manager.is_building() and toolbar._last_failure_label.visible \\
+                            and toolbar._build_button.icon == toolbar.get_theme_icon("StatusError", "EditorIcons") \\
+                            and toolbar._build_button.icon_alignment == HORIZONTAL_ALIGNMENT_RIGHT \\
+                            and toolbar._build_button.tooltip_text == "Compile GDCC scripts [last build failed]" \\
+                            and GDExtensionManager.is_extension_loaded(extension_path) and int(probe.build_value()) == 1,
+                            dock._log_output.text)
+                    await client.put_file(diag_module_id, "/src/compile_probe.gd3", updated_src,
+                            fixture_path, ProjectSettings.globalize_path(fixture_path)).completed
                     # A real Release build must replace the Debug DLL used by this debug editor.
                     ProjectSettings.set_setting("gdcc/build/optimization_level", "RELEASE")
                     toolbar._build_button.pressed.emit()
@@ -2703,6 +2966,8 @@ class EditorAddonScriptLanguageEngineTest {
                             and str(variants.get_value("libraries", "android.arm64", "")) == "res://foreign_debug_arm64.so" \\
                             and str(variants.get_value("libraries", "web.wasm32", "")) == "res://foreign_release.wasm"
                     _step("rebuilt_extension_enabled", not compile_button.disabled \\
+                            and not manager.last_build_failed and not toolbar._last_failure_label.visible \\
+                            and toolbar._build_button.tooltip_text == "Compile GDCC scripts" \\
                             and GDExtensionManager.is_extension_loaded(extension_path) \\
                             and int(probe.build_value()) == 2 and variants_ok and not manager.is_building() \\
                             and toolbar._build_button.text == "Build" and not toolbar.is_processing(), dock._log_output.text)

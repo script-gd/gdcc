@@ -20,6 +20,9 @@ const BuildToolbarScript := preload("res://addons/gdcc/gdcc_build_toolbar.gd")
 # exist after `register_editor_types()`), so the highlighter lives outside the module.
 const HighlighterScript := preload("res://addons/gdcc/gdcc_syntax_highlighter.gd")
 const SCRIPT_ICON_PATH := "res://addons/gdcc/gdcc_script.svg"
+const TRANSLATION_DOMAIN := &"gdcc.editor"
+const CHINESE_TRANSLATION := preload("res://addons/gdcc/locale/zh.po")
+const CHINESE_SETTINGS_TRANSLATION := preload("res://addons/gdcc/locale/zh_properties.po")
 
 const SERVICE_NODE_NAME := "GdccEditorService"
 const SETTING_LSP_USE_THREAD := "network/language_server/use_thread"
@@ -65,9 +68,18 @@ var _script_language_index: int = -1
 # survives because the tab was recorded the first time we saw it with any highlighter state.
 # Instance IDs are session-unique, so closed-tab entries can never match a future editor.
 var _handled_highlighter_editors: Dictionary = {}
+var _translation_domain: TranslationDomain
+var _settings_translation_domain: TranslationDomain
 
 
 func _enter_tree() -> void:
+    # Normal addon UI uses its own domain; native property names need a separate catalog.
+    _translation_domain = TranslationServer.get_or_add_domain(TRANSLATION_DOMAIN)
+    _translation_domain.add_translation(CHINESE_TRANSLATION)
+    # Native Project Settings resolves property names in this engine-owned domain.
+    _settings_translation_domain = TranslationServer.get_or_add_domain(&"godot.properties")
+    _settings_translation_domain.add_translation(CHINESE_SETTINGS_TRANSLATION)
+    set_translation_domain(TRANSLATION_DOMAIN)
     # 1) Resident service node, BEFORE any settings change (a fail-closed abort must leave
     #    zero side effects). A foreign node squatted on the fixed name means we must not
     #    create a second service — two `GD3` language instances would corrupt the editor's
@@ -77,13 +89,14 @@ func _enter_tree() -> void:
         if existing is GdccEditorService:
             _service = existing
         else:
-            push_error("GDCC: root node '" + SERVICE_NODE_NAME
-                    + "' exists with an unexpected type; script language integration is disabled.")
+            push_error(tr("GDCC: root node '%s' exists with an unexpected type; script language integration is disabled.") % SERVICE_NODE_NAME)
+            _unregister_translation()
             return
     else:
         _service = GdccEditorService.new()
         _service.name = SERVICE_NODE_NAME
         get_tree().root.add_child(_service)
+    _service.set_translation_domain(TRANSLATION_DOMAIN)
 
     var editor_settings := get_editor_interface().get_editor_settings()
     # 2) Endpoints first (the thread-mode probe below needs them): LSP follows the user's
@@ -113,7 +126,7 @@ func _enter_tree() -> void:
             if not _service.lsp_blocking_unsafe and not _service.lsp_thread_primed:
                 if _lsp_endpoint_listening(lsp_host, lsp_port):
                     _service.lsp_blocking_unsafe = true
-                    push_warning("GDCC: plugin enabled while the GDScript language server is already running; it keeps its current polling mode until the editor restarts — .gd3 diagnostics will refresh on editor beats instead of synchronously.")
+                    push_warning(tr("GDCC: plugin enabled while the GDScript language server is already running; it keeps its current polling mode until the editor restarts — .gd3 diagnostics will refresh on editor beats instead of synchronously."))
                 else:
                     _service.lsp_thread_primed = true
                     _primed_this_enter = true
@@ -169,7 +182,7 @@ func _enter_tree() -> void:
         "hint_string": "gdcc serve --host {host} --port {port}",
     })
     if migrated:
-        push_warning("GDCC: server settings migrated into this project's gdcc/server and gdcc/compilation_server settings; save the project to persist them.")
+        push_warning(tr("GDCC: server settings migrated into this project's gdcc/server and gdcc/compilation_server settings; save the project to persist them."))
     # Project-level sync exclusion globs: `String.match` patterns against res://-relative
     # paths. Name and default are single-sourced from the resident service (it owns the
     # matching predicate).
@@ -245,7 +258,7 @@ func _enter_tree() -> void:
     _relayed_endpoint = [server_host, server_port]
     var install_err: int = _service.install(get_editor_interface(), lsp_host, lsp_port, server_host, server_port)
     if install_err != OK:
-        push_error("GDCC: script language install failed (error %d); editor settings restored." % install_err)
+        push_error(tr("GDCC: script language install failed (error %d); editor settings restored.") % install_err)
         _rollback_failed_enter_tree()
         return
     get_editor_interface().get_base_control().theme_changed.connect(_apply_script_icon)
@@ -274,6 +287,13 @@ func _enter_tree() -> void:
     #    enabled at runtime (filesystem idle) triggers one deferred scan.
     if not filesystem.is_scanning():
         filesystem.call_deferred("scan")
+    get_tree().root.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
+
+
+func _notification(what: int) -> void:
+    if what == NOTIFICATION_TRANSLATION_CHANGED and _settings_translation_domain != null:
+        # Godot reloads its property catalog on editor language changes; re-add idempotently.
+        _settings_translation_domain.add_translation(CHINESE_SETTINGS_TRANSLATION)
 
 
 ## Rolls back everything `_enter_tree` created after the resident service node (which is
@@ -298,6 +318,20 @@ func _rollback_failed_enter_tree() -> void:
     if _primed_this_enter:
         _service.lsp_thread_primed = false
         _primed_this_enter = false
+    _unregister_translation()
+
+
+func _unregister_translation() -> void:
+    if _translation_domain == null:
+        return
+    _translation_domain.remove_translation(CHINESE_TRANSLATION)
+    _settings_translation_domain.remove_translation(CHINESE_SETTINGS_TRANSLATION)
+    _settings_translation_domain = null
+    TranslationServer.remove_domain(TRANSLATION_DOMAIN)
+    _translation_domain = null
+    if _service != null:
+        _service.set_translation_domain_inherited()
+    get_tree().root.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
 
 
 ## Reads the LSP endpoint from EditorSettings with the engine defaults; shared by
@@ -326,7 +360,7 @@ func _read_server_endpoint() -> Array:
     if host.is_empty() or port < 1 or port > 65535:
         if [host, port] != _last_invalid_endpoint:
             _last_invalid_endpoint = [host, port]
-            push_error("GDCC: invalid gdcc/server project settings (host='%s', port=%d); expected a non-empty host and a port in 1..65535." % [host, port])
+            push_error(tr("GDCC: invalid gdcc/server project settings (host='%s', port=%d); expected a non-empty host and a port in 1..65535.") % [host, port])
         return []
     _last_invalid_endpoint = []
     return [host, port]
@@ -422,6 +456,7 @@ func _exit_tree() -> void:
     if _launcher != null:
         _launcher.shutdown_owned()
         _launcher = null
+    _unregister_translation()
 
 
 func _install_build_toolbar() -> void:
@@ -436,7 +471,7 @@ func _install_build_toolbar() -> void:
         if child.is_class("EditorRunBar"):
             title_bar.move_child(_build_toolbar, child.get_index())
             return
-    push_warning("GDCC: editor run toolbar not found; the Build control remains at the end of the title bar.")
+    push_warning(tr("GDCC: editor run toolbar not found; the Build control remains at the end of the title bar."))
 
 
 func _show_build_log() -> void:
@@ -453,7 +488,7 @@ func _apply_script_icon() -> void:
         var image := Image.new()
         var error := image.load_svg_from_string(FileAccess.get_file_as_string(SCRIPT_ICON_PATH))
         if error != OK:
-            push_error("GDCC: script icon SVG could not be loaded (error %d)." % error)
+            push_error(tr("GDCC: script icon SVG could not be loaded (error %d).") % error)
             return
         _script_icon = ImageTexture.create_from_image(image)
     var theme := get_editor_interface().get_editor_theme()

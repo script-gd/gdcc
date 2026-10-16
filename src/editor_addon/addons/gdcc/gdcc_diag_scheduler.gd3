@@ -241,7 +241,7 @@ func _on_flight_analyze_done(response: Dictionary) -> void:
         _last_failure = "analysis outcome: " + str(result.get("outcome"))
         if _flight_failures >= 5:
             _flight_suspended = true
-            push_warning("GDCC: analysis keeps failing (outcome=%s); pausing until the next change."
+            push_warning(tr("GDCC: analysis keeps failing (outcome=%s); pausing until the next change.")
                     % str(result.get("outcome")))
         else:
             _flight_backoff_until = Time.get_ticks_msec() \

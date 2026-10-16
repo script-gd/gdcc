@@ -2,6 +2,8 @@
 class_name GdccScriptFormatSaver
 extends ResourceFormatSaver
 
+var last_save_time: float = 0.0
+
 ## Writes `.gd3` resources back to disk (implementation plan §2.4/§3.3): a plain text
 ## round-trip of the in-memory source, nothing else. Write failures are reported — the file
 ## may already be truncated by the `WRITE` open, so returning OK on a failed write would make
@@ -34,6 +36,8 @@ func _save(resource: Resource, path: String, flags: int) -> int:
         return read_error
     if read_back != source:
         return ERR_FILE_CANT_WRITE
+    if path.begins_with("res://") and path.get_extension() == "gd3":
+        last_save_time = Time.get_unix_time_from_system()
     return OK
 
 

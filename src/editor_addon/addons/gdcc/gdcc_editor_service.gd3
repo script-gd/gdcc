@@ -513,6 +513,13 @@ func get_diag_module_id() -> String:
     return _lifecycle.module_id()
 
 
+## The saver records successful disk writes, not unsaved validation or filesystem scans.
+func last_script_save_time() -> float:
+    if _saver == null:
+        return 0.0
+    return _saver.last_save_time
+
+
 ## Forwarding target for the editor's `filesystem_changed` signal (connected by the plugin).
 func notify_filesystem_changed() -> void:
     if not _active:

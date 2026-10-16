@@ -67,6 +67,14 @@
 
   均通过当时的 `lsp_lookup` 15 步及 `lookup_suspended` 9 步，含真实编辑器符号信号后
   原资源身份、缓存路径与保存往返检查。4.6.0 和 4.8 开发版尚未实测。
+- 2026-10-16 修订（双语界面）：插件自有 UI、状态、日志和警告改用英文原文与中文翻译，
+  独立 `gdcc.editor` 翻译域跟随编辑器语言，不改游戏 locale 或 `godot.editor` 域；详见
+  “编辑器插件国际化”节。
+- 2026-10-16 修订（项目设置翻译）：另用设置名称专用目录接入现有 `godot.properties`
+  域，使原生项目设置分类与属性名显示中文；配置键和枚举存储值不变，卸载仅移除自己的资源。
+- 2026-10-16 修订（构建状态）：新增保存后的 `Build*`、右侧原生错误图标、菜单失败提示
+  与四种状态悬浮提示；保存时间、构建尝试时间及失败状态在项目 editor metadata 中保存。
+  三版本定向验证与启用失败边界见“构建状态提示”节。
 - 2026-10-13 修订（编译后端）：Build 菜单通过 `server.availableCCompilerKinds` 获取可用
   后端，新增默认 Auto 的项目级选择；断连、无后端或查询失败时禁用构建并显示前置警告
   图标的黄色提示。启动命令改为 `gdcc/compilation_server/launch_command`，旧项目键一次性迁移。
@@ -2712,6 +2720,76 @@ Release DLL 在 Debug 编辑器中重载并改变存活实例行为；非法配�
    `dockCompileCopiesDiagnosticsModule` 两次均从标题栏构建，验证同一
    所有权/快照/目录、参数冻结、上次成功时间和原有部署与存活实例重载合同。
 
+### 构建状态提示（2026-10-16）
+
+- `.gd3` saver 仅在写盘和读回校验均成功后记录项目脚本的最近保存时间；未保存的输入、
+  其他资源保存、失败保存及文件系统扫描不更新此记录。共享管理器在已有的一秒状态节拍
+  读取记录，退出时再读取一次；不依赖编译型信号投递到解释型脚本。
+- 空闲按钮在最近保存时间晚于最后一次构建尝试时显示 `Build*`。构建尝试以开始时的
+  时间为界，构建中再次保存仍保留星号，完成或启用事件不会误清除它；没有新保存时，
+  已失败的构建只显示错误标记，不继续显示星号。原有 `Building` 点阵动画不变。
+- 构建准备、启动、轮询、编译、部署或启用失败后，按钮在文字右侧使用编辑器原生
+  `StatusError` 红色图标，替换正常左侧的 GDCC 图标；菜单单独显示红色“上次构建失败”。
+  失败不禁用重试；下一次构建按新结果刷新，成功安装/启用后才确认成功，取消不作为编译失败。
+  尚在构建或等待启用时卸载插件，按未完成构建保存失败状态，避免重新启用后误显成功。
+- 按钮悬浮提示按优先级显示：断连时 `Cannot connect to the GDCC compilation server`，
+  后端不可用（含查询中、查询失败或已选后端不可用）时 `No compilation backend available`，
+  上次失败时 `Compile GDCC scripts [last build failed]`，其余情况仅显示
+  `Compile GDCC scripts`。中文编辑器使用翻译目录中的对应中文。
+- 最近保存时间、构建尝试时间和失败状态分别保存在项目 editor metadata 的
+  `gdcc/last_source_save_time`、`gdcc/last_compile_time`、`gdcc/last_build_failed`。
+  旧项目尚无构建尝试记录时沿用既有成功时间；`last_build_time` 仍只表示安装/启用成功，
+  不因失败构建改变。源码保存和构建尝试使用带小数的 Unix 秒，区分同秒内的先后事件。
+- 回归锚点：`buildToolbarSharesProjectManagerAndNavigatesSettings` 覆盖保存/未保存、
+  同秒边界、保存失败/非 `.gd3` 保存、构建中再次保存、四种悬浮提示、原生错误图标、
+  菜单状态、启用超时及待启用时卸载/重新启用；
+  `dockCompileCopiesDiagnosticsModule` 覆盖真实编译错误的提示与随后成功重建后的恢复。
+- 验收：Godot 4.5.1、4.6.3、4.7 自定义构建均通过上述两个引擎测试；4.6.3 另通过
+  `EditorAddonScriptLanguageAnalysisTest` 与 `EditorAddonClientAnalysisTest`。最终版本
+  共 15 次定向测试执行全部通过，无失败或跳过；IDE 构建及文件检查通过，独立复审 APPROVE。
+
+### 编辑器插件国际化（2026-10-16）
+
+- 英文是消息原文和未支持语言的回退；`addons/gdcc/locale/zh.po` 提供中文，使用原生
+  `Translation` 资源和独立的 `gdcc.editor` 翻译域。`Language: zh` 匹配旧版的 `zh_CN`
+  与新版的 `zh_Hans`，其他中文区域也使用此简体中文目录。
+- `plugin.gd` 在启用时注册目录，回滚或卸载时移除自己的翻译和域；不向 `godot.editor`
+  或游戏主域注入消息，不修改项目的语言、翻译资源设置或编辑器语言设置。`.po` 由核心
+  资源加载器直接读取，不依赖导入缓存；插件首次扫描前即可预加载。
+- 管理器和 launcher 继承插件的域；驻留 service 显式使用该域，卸载后恢复继承。
+  dock 与 toolbar 在 `setup` 中复制管理器的域，因为添加到编辑器容器后不再位于插件
+  子树内；其子节点（含 PopupPanel、OptionButton 菜单及原生悬浮 tooltip）继承该域。
+- 静态标签、选项和 tooltip 保留英文，使用节点自动翻译；状态、相对时间、构建点阵及
+  带参数的提示使用 `tr()`。语言变化通知会刷新动态文字，已有日志不回溯翻译。
+  管理器的 `_log` 先翻译完整模板、再插入参数，不对参数中的 `%`、路径或外部错误二次格式化。
+- 翻译范围包含构建菜单、dock、所有插件自有操作日志、launcher 输出及插件/诊断调度器
+  警告。技术标识（GDCC、GD3、Zig、设置键、RPC 方法、状态枚举、代码模板）及编译器/LSP
+  返回的原始诊断保留原文。日志 TextEdit 禁用自动翻译，避免再次翻译已格式化消息或源码。
+- 引擎限制：插件列表中的 `plugin.cfg` description 是插入引擎 tooltip 的原始元数据，
+  Godot 4.5–4.7 均不为其调用翻译；保留英文，不通过修改引擎或注入保留域绕过。
+- 原生项目设置使用 `EditorPropertyNameProcessor` 与 `godot.properties`，不会读取插件
+  自有域，也不使用控件自动翻译。`locale/zh_properties.po` 单独提供分类和属性名，
+  启用时向现有属性域注册；卸载或回滚只移除这份资源，绝不删除或清空引擎属性域。
+  目录使用处理器生成的英文显示名（如 `Compilation Server`、`C Compiler Kind`），
+  不包含已有引擎翻译的 `Host`、`Port`、`Sync`，避免覆盖通用属性名。
+- 设置名称遵循编辑器的“本地化设置”开关；`zh_CN` 与 `zh_Hans` 都匹配此简体目录。
+  Godot 4.6+ 切换语言会重载并清空属性目录，因此在翻译变化通知中幂等重加同一资源，
+  再由原生 inspector 刷新分类与标签。键名和 `DEBUG`、`RELEASE`、`AUTO`、`ZIG_CC`、
+  `TINY_CC` 等实际存储值保持不变，不通过翻译枚举提示修改配置格式。
+- 测试锚点：`chineseCatalogCoversEditorMessagesAndPreservesFormatArguments` 检查用户可见
+  消息的目录覆盖、英文原文、重复键和格式参数顺序；`buildToolbarSharesProjectManagerAndNavigatesSettings`
+  检查英文、中文、未支持语言回退、静态控件自动翻译、动态日志、原生悬浮 tooltip、
+  翻译域隔离与卸载/重新启用。`dockCompileCopiesDiagnosticsModule` 保留真实构建回归。
+- 验收：Godot 4.6.3 下静态门禁与两个引擎用例共 12 项通过，Godot 4.5.1 与 4.7
+  自定义构建各通过两个引擎用例；最终版本共 16 次定向测试执行全部通过，无跳过。
+  中文检查包含引擎真实悬浮生成的 tooltip Label，而非只读取未翻译的属性原文。
+  独立复审结论 APPROVE。
+- 项目设置翻译验收：`settingsCatalogContainsOnlyAddonPropertyNames` 保护专用目录边界；
+  引擎用例检查真实分类树与四个 GDCC 分区的属性标签、两种中文 locale、英文回退、
+  目录重载恢复及卸载后的引擎域身份。Godot 4.6.3 共 13 项静态/引擎测试通过，
+  Godot 4.5.1 与 4.7 自定义构建各通过两个引擎用例，共 17 次执行，无失败或跳过；
+  独立复审 APPROVE。
+
 ### 精简 dock 与相对时间（2026-10-13）
 
 - dock 只有两块可视内容：顶部单行 `Connected/Disconnected | Diagnostics: ... | Build: ...`
@@ -2724,7 +2802,7 @@ Release DLL 在 Debug 编辑器中重载并改变存活实例行为；非法配�
   省略并可悬停读取完整内容；右侧主题图标 `Clear` 清空现有输出，构建忙时仍可使用，
   不修改任务、诊断或构建记录，后续日志继续正常追加。
 - `gdcc_project_manager.gd.relative_time_text` 是两个视图唯一的相对时间格式化入口，
-  沿用英文 UI；负间隔按 0 秒处理。少于 60 秒显示整数秒，如 `59s ago`；60–599 秒
+  英文原文支持中文翻译；负间隔按 0 秒处理。少于 60 秒显示整数秒，如 `59s ago`；60–599 秒
   向下取整到半分钟，如 `1min ago`、`1.5min ago`、`9.5min ago`；600–3599 秒
   向下取整到整数分钟，如 `10min ago`、`59min ago`；3600–86399 秒向下取整到半小时，
   如 `1h ago`、`1.5h ago`、`23.5h ago`；至少 86400 秒向下取整到半天，如

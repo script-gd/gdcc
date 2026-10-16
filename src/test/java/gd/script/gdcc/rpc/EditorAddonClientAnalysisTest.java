@@ -1,5 +1,6 @@
 package gd.script.gdcc.rpc;
 
+import com.google.gson.JsonParser;
 import gd.script.gdcc.api.API;
 import gd.script.gdcc.api.AnalysisResult;
 import gd.script.gdcc.api.AnalyzeOptions;
@@ -12,10 +13,13 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Compile-readiness gate for the editor addon's GDScript JSON-RPC client library. The
@@ -135,6 +139,72 @@ class EditorAddonClientAnalysisTest {
         }
         assertTrue(Pattern.compile("(?m)^script=\"plugin\\.gd\"$").matcher(section).find(),
                 "plugin.cfg [plugin] section must point script at plugin.gd");
+    }
+
+    @Test
+    void chineseCatalogCoversEditorMessagesAndPreservesFormatArguments() throws IOException {
+        var addonDir = PLUGIN_SCRIPT_PATH.getParent();
+        var catalog = new LinkedHashMap<String, String>();
+        var entries = Pattern.compile("(?m)^msgid (\".*\")\\Rmsgstr (\".*\")$")
+                .matcher(Files.readString(addonDir.resolve("locale/zh.po")));
+        var placeholders = Pattern.compile("%[sd]");
+        while (entries.find()) {
+            var message = JsonParser.parseString(entries.group(1)).getAsString();
+            if (message.isEmpty()) {
+                continue;
+            }
+            var translated = JsonParser.parseString(entries.group(2)).getAsString();
+            assertNull(catalog.put(message, translated), "duplicate catalog key: " + message);
+            assertFalse(translated.isBlank(), "empty translation: " + message);
+            assertFalse(message.codePoints().anyMatch(code -> Character.UnicodeScript.of(code) == Character.UnicodeScript.HAN),
+                    "source messages must default to English: " + message);
+            assertEquals(placeholders.matcher(message).results().map(match -> match.group()).toList(),
+                    placeholders.matcher(translated).results().map(match -> match.group()).toList(),
+                    "translation must preserve argument order and types: " + message);
+        }
+        assertTrue(catalog.size() > 50, "editor catalog missing");
+        var visibleMessages = Pattern.compile(
+                "(?:\\btr|\\b_log|\\b_log_error|\\.add_item)\\(\\s*(\"(?:[^\"\\\\]|\\\\.)*\")"
+                        + "|\\.(?:text|tooltip_text)\\s*=\\s*(\"(?:[^\"\\\\]|\\\\.)*\")"
+                        + "|\\b_compiler_warning\\s*=\\s*(\"(?:[^\"\\\\]|\\\\.)*\")");
+        var technicalLabels = Set.of("GDCC", "gdcc", "Zig", "GD3");
+        try (var sources = Files.list(addonDir)) {
+            for (var path : sources.filter(path -> path.toString().endsWith(".gd") || path.toString().endsWith(".gd3")).toList()) {
+                var messages = visibleMessages.matcher(stripComments(Files.readString(path)));
+                while (messages.find()) {
+                    var literal = messages.group(1) != null ? messages.group(1)
+                            : messages.group(2) != null ? messages.group(2) : messages.group(3);
+                    var message = JsonParser.parseString(literal).getAsString();
+                    if (!message.isEmpty() && !technicalLabels.contains(message)) {
+                        assertTrue(catalog.containsKey(message), () -> path.getFileName() + " missing translation: " + message);
+                    }
+                }
+            }
+        }
+        for (var message : List.of("Builtin", "Not connected", "Unknown")) {
+            assertTrue(catalog.containsKey(message), "missing dynamic display translation: " + message);
+        }
+    }
+
+    @Test
+    void settingsCatalogContainsOnlyAddonPropertyNames() throws IOException {
+        var source = Files.readString(PLUGIN_SCRIPT_PATH.resolveSibling("locale/zh_properties.po"));
+        var names = new LinkedHashMap<String, String>();
+        var entries = Pattern.compile("(?m)^msgid (\".*\")\\Rmsgstr (\".*\")$").matcher(source);
+        while (entries.find()) {
+            var name = JsonParser.parseString(entries.group(1)).getAsString();
+            if (!name.isEmpty()) {
+                var translated = JsonParser.parseString(entries.group(2)).getAsString();
+                assertNull(names.put(name, translated), "duplicate property translation: " + name);
+                assertFalse(translated.isBlank(), "empty property translation: " + name);
+            }
+        }
+        assertEquals(Set.of("Gdcc", "Server", "Compilation Server", "Launch Command", "Build",
+                "Optimization Level", "Strict Mode", "C Compiler Kind", "Excluded Globs"), names.keySet());
+        assertFalse(source.contains("msgctxt"), "native property names use an empty translation context");
+        assertFalse(names.containsKey("Host"), "do not override Godot's built-in property translations");
+        assertFalse(names.containsKey("Port"), "do not override Godot's built-in property translations");
+        assertFalse(names.containsKey("Sync"), "do not override Godot's built-in property translations");
     }
 
     /// Extracts the `[plugin]` section body (up to the next section header or EOF). The header

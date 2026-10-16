@@ -12,10 +12,12 @@ const SPINNER_FRAMES := "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\
 
 var _manager: Node
 var _build_button: Button
+var _build_icon: Texture2D
 var _menu_button: Button
 var _popup: PopupPanel
 var _version_label: Label
 var _last_build_label: Label
+var _last_failure_label: Label
 var _optimization: OptionButton
 var _strict_mode: CheckButton
 var _backend: OptionButton
@@ -33,6 +35,8 @@ var _spinner_last_msec: int = 0
 
 func setup(manager: Node) -> void:
     _manager = manager
+    set_translation_domain(manager.get_translation_domain())
+    auto_translate_mode = Node.AUTO_TRANSLATE_MODE_ALWAYS
 
 
 func _ready() -> void:
@@ -44,7 +48,6 @@ func _ready() -> void:
     _build_button.flat = true
     _build_button.focus_mode = Control.FOCUS_ACCESSIBILITY
     _build_button.theme_type_variation = "RunBarButton"
-    _build_button.tooltip_text = "Build and install the GDCC project from the synchronized diagnostics snapshot."
     _build_button.pressed.connect(_on_build_pressed)
     add_child(_build_button)
     _menu_button = Button.new()
@@ -71,6 +74,9 @@ func _ready() -> void:
     content.add_child(_version_label)
     _last_build_label = Label.new()
     content.add_child(_last_build_label)
+    _last_failure_label = Label.new()
+    _last_failure_label.text = "Last build failed"
+    content.add_child(_last_failure_label)
     content.add_child(HSeparator.new())
 
     var backend_row := HBoxContainer.new()
@@ -135,6 +141,11 @@ func _exit_tree() -> void:
         ProjectSettings.settings_changed.disconnect(_refresh_state)
 
 
+func _notification(what: int) -> void:
+    if what == NOTIFICATION_TRANSLATION_CHANGED and is_node_ready():
+        _refresh_state.call_deferred()
+
+
 func _apply_theme() -> void:
     if _build_button == null:
         return
@@ -143,7 +154,7 @@ func _apply_theme() -> void:
     # SVG imports may not exist yet when the editor first enables its plugins.
     var image := Image.new()
     if image.load_svg_from_string(FileAccess.get_file_as_string(ICON_PATH), EditorInterface.get_editor_scale()) == OK:
-        _build_button.icon = ImageTexture.create_from_image(image)
+        _build_icon = ImageTexture.create_from_image(image)
     _build_button.add_theme_font_override("font", get_theme_font("bold", "EditorFonts"))
     _menu_button.icon = get_theme_icon("GuiOptionArrow", "EditorIcons")
     _settings_button.icon = get_theme_icon("Tools", "EditorIcons")
@@ -151,6 +162,8 @@ func _apply_theme() -> void:
     var warning_color := get_theme_color("warning_color", "Editor")
     _warning_icon.modulate = warning_color
     _warning_label.add_theme_color_override("font_color", warning_color)
+    _last_failure_label.add_theme_color_override("font_color", get_theme_color("error_color", "Editor"))
+    _refresh_state()
 
 
 func _refresh_state() -> void:
@@ -159,6 +172,8 @@ func _refresh_state() -> void:
     var enabled: bool = _manager.can_start_action()
     var warning: String = _manager.build_warning()
     _build_button.disabled = not enabled or warning != ""
+    _build_button.tooltip_text = _manager.build_tooltip()
+    _last_failure_label.visible = _manager.last_build_failed
     _warning_label.text = warning
     _warning_row.visible = warning != ""
     var kinds: Array = _manager.available_c_compiler_kinds
@@ -182,10 +197,14 @@ func _refresh_state() -> void:
         _spinner_index = 0
         _spinner_last_msec = Time.get_ticks_msec()
     set_process(building)
-    _build_button.text = "Building " + SPINNER_FRAMES[_spinner_index] if building else "Build"
+    var idle_text := tr("Build") + ("*" if _manager.has_saved_changes() else "")
+    _build_button.text = tr("Building %s") % SPINNER_FRAMES[_spinner_index] if building else idle_text
+    var failed: bool = _manager.last_build_failed and not building
+    _build_button.icon = get_theme_icon("StatusError", "EditorIcons") if failed else _build_icon
+    _build_button.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT if failed else HORIZONTAL_ALIGNMENT_LEFT
     _optimization.disabled = not enabled
     _strict_mode.disabled = not enabled
-    _version_label.text = "GDCC: " + _manager.server_version
+    _version_label.text = tr("GDCC: %s") % _manager.server_version_text()
     _refresh_time()
     _optimization.select(1 if ProjectSettings.get_setting(SETTING_OPTIMIZATION_LEVEL, "DEBUG") == "RELEASE" else 0)
     _strict_mode.set_pressed_no_signal(bool(ProjectSettings.get_setting(SETTING_STRICT_MODE, false)))
@@ -196,7 +215,7 @@ func _refresh_state() -> void:
 
 
 func _refresh_time() -> void:
-    _last_build_label.text = "Last successful build: " + _manager.last_build_age_text()
+    _last_build_label.text = tr("Last successful build: %s") % _manager.last_build_age_text()
 
 
 func _process(_delta: float) -> void:
@@ -204,7 +223,7 @@ func _process(_delta: float) -> void:
     if now - _spinner_last_msec > 100:
         _spinner_index = (_spinner_index + 1) % SPINNER_FRAMES.length()
         _spinner_last_msec = now
-        _build_button.text = "Building " + SPINNER_FRAMES[_spinner_index]
+        _build_button.text = tr("Building %s") % SPINNER_FRAMES[_spinner_index]
 
 
 func _on_build_pressed() -> void:
@@ -246,7 +265,7 @@ func _on_backend_selected(index: int) -> void:
 func _save_settings() -> void:
     var error := ProjectSettings.save()
     if error != OK:
-        _manager.log_message.emit("build settings could not be saved (error " + str(error) + ")")
+        _manager.log_message.emit(tr("build settings could not be saved (error %s)") % error)
 
 
 ## Godot exposes no Project Settings navigation API. Validate the known editor layout before
@@ -260,11 +279,11 @@ func _open_project_settings() -> void:
             _settings_dialog = candidate
             break
     if not is_instance_valid(_settings_dialog):
-        push_warning("GDCC: Project Settings dialog not found; open Project > Project Settings > GDCC manually.")
+        push_warning(tr("GDCC: Project Settings dialog not found; open Project > Project Settings > GDCC manually."))
         return
     var tabs := _settings_dialog.find_children("*", "TabContainer", true, false)
     if tabs.is_empty() or tabs[0].get_child_count() == 0:
-        push_warning("GDCC: Project Settings layout changed; open the GDCC category manually.")
+        push_warning(tr("GDCC: Project Settings layout changed; open the GDCC category manually."))
         return
     var general: Node = tabs[0].get_child(0)
     if general.get_child_count() == 0:
@@ -272,7 +291,7 @@ func _open_project_settings() -> void:
     var search_row := general.get_child(0)
     if not search_row is HBoxContainer or search_row.get_child_count() < 2 \
             or not search_row.get_child(0) is LineEdit or not search_row.get_child(1) is CheckButton:
-        push_warning("GDCC: Project Settings filter layout changed; open the GDCC category manually.")
+        push_warning(tr("GDCC: Project Settings filter layout changed; open the GDCC category manually."))
         return
     tabs[0].current_tab = 0
     _settings_dialog.popup_centered_clamped(Vector2i(Vector2(1200.0, 700.0) * EditorInterface.get_editor_scale()), 0.8)
@@ -307,5 +326,5 @@ func _open_project_settings() -> void:
                 chosen.select(0)
                 _settings_sections.scroll_to_item(chosen)
             else:
-                push_warning("GDCC: settings categories changed; choose a GDCC subcategory manually.")
+                push_warning(tr("GDCC: settings categories changed; choose a GDCC subcategory manually."))
     _settings_filter.grab_focus()

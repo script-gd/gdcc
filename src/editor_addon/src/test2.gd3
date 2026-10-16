@@ -9,5 +9,5 @@ func _process(delta: float) -> void:
     time += delta;
     
     self.rotation.y = fmod(rotating_speed * time / 180.0, TAU);
-       
+    
     self.position.y = abs(sin(time * self.bouncing_speed));

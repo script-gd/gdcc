@@ -296,7 +296,7 @@ func _on_diag_stale_delete_done(response: Dictionary) -> void:
     # cleared so that retried -32001 answers still get their delete attempt.
     _stale_deleted = false
     _last_failure = "stale module delete failed (code %d)" % service.response_error_code(response)
-    push_warning("GDCC: deleting the stale diagnostics module failed (code %d); will retry." \
+    push_warning(tr("GDCC: deleting the stale diagnostics module failed (code %d); will retry.") \
             % service.response_error_code(response))
     _defer_setup_retry()
 

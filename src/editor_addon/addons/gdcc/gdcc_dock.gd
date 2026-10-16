@@ -10,6 +10,8 @@ var _clear_button: Button
 
 func setup(manager: Node) -> void:
     _manager = manager
+    set_translation_domain(manager.get_translation_domain())
+    auto_translate_mode = Node.AUTO_TRANSLATE_MODE_ALWAYS
 
 
 func _ready() -> void:
@@ -27,6 +29,7 @@ func _ready() -> void:
     add_child(status_row)
 
     _log_output = TextEdit.new()
+    _log_output.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
     _log_output.editable = false
     _log_output.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _log_output.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -44,6 +47,11 @@ func _ready() -> void:
     timer.autostart = true
     timer.timeout.connect(_refresh_status)
     add_child(timer)
+
+
+func _notification(what: int) -> void:
+    if what == NOTIFICATION_TRANSLATION_CHANGED and is_node_ready():
+        _refresh_status.call_deferred()
 
 
 func _apply_theme() -> void:

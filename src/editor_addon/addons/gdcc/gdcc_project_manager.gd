@@ -38,6 +38,9 @@ var _service: GdccEditorService
 
 var diagnostics_module_id: String = ""
 var last_build_time: int = 0
+var last_compile_time: float = 0.0
+var last_source_save_time: float = 0.0
+var last_build_failed: bool = false
 var server_version: String = "Not connected"
 var _version_endpoint: Array = []
 var _version_busy: bool = false
@@ -82,6 +85,10 @@ func _ready() -> void:
                 EditorInterface.get_editor_settings().set_project_metadata("gdcc", "last_build_time", last_build_time)
     else:
         last_build_time = int(saved_time)
+    var settings := EditorInterface.get_editor_settings()
+    last_compile_time = float(settings.get_project_metadata("gdcc", "last_compile_time", last_build_time))
+    last_source_save_time = float(settings.get_project_metadata("gdcc", "last_source_save_time", 0.0))
+    last_build_failed = bool(settings.get_project_metadata("gdcc", "last_build_failed", false))
     var status_timer := Timer.new()
     status_timer.wait_time = 1.0
     status_timer.autostart = true
@@ -101,6 +108,7 @@ func is_building() -> bool:
 
 
 func _refresh_diagnostics_module() -> void:
+    _refresh_source_save_time()
     var module_id := "" if _service == null else _service.get_diag_module_id()
     if module_id != diagnostics_module_id:
         diagnostics_module_id = module_id
@@ -119,52 +127,90 @@ func _refresh_diagnostics_module() -> void:
 
 func build_warning() -> String:
     if _service == null or not _service.is_diag_ready():
-        return "Compilation server is not connected."
+        return tr("Compilation server is not connected.")
     if _version_endpoint != [_service.rpc_host(), _service.rpc_port()]:
-        return "Checking compilation backends..."
+        return tr("Checking compilation backends...")
     if _compiler_warning != "":
-        return _compiler_warning
+        return tr(_compiler_warning)
     if available_c_compiler_kinds.is_empty():
-        return "No compilation backends are available."
+        return tr("No compilation backends are available.")
     var selected := str(ProjectSettings.get_setting(SETTING_C_COMPILER_KIND, "AUTO"))
     if selected != "AUTO" and selected not in available_c_compiler_kinds:
-        return "Selected compilation backend is unavailable."
+        return tr("Selected compilation backend is unavailable.")
     return ""
+
+
+func _refresh_source_save_time() -> void:
+    var saved_time: float = 0.0 if _service == null else _service.last_script_save_time()
+    if saved_time > last_source_save_time:
+        last_source_save_time = saved_time
+        EditorInterface.get_editor_settings().set_project_metadata("gdcc", "last_source_save_time", saved_time)
+
+
+func has_saved_changes() -> bool:
+    return last_source_save_time > last_compile_time
+
+
+func build_tooltip() -> String:
+    if _service == null or not _service.is_diag_ready():
+        return tr("Cannot connect to the GDCC compilation server")
+    if build_warning() != "":
+        return tr("No compilation backend available")
+    return tr("Compile GDCC scripts [last build failed]") if last_build_failed else tr("Compile GDCC scripts")
+
+
+func server_version_text() -> String:
+    if server_version == "Unavailable: invalid server info":
+        return tr("Unavailable: invalid server info")
+    if server_version.begins_with("Unavailable: "):
+        return tr("Unavailable: %s") % server_version.trim_prefix("Unavailable: ")
+    if server_version.begins_with("Unknown ("):
+        return tr("Unknown") + server_version.trim_prefix("Unknown")
+    return tr(server_version)
+
+
+func _set_last_build_failed(failed: bool) -> void:
+    last_build_failed = failed
+    EditorInterface.get_editor_settings().set_project_metadata("gdcc", "last_build_failed", failed)
+    state_changed.emit()
 
 
 func status_text() -> String:
     var status: Dictionary = {} if _service == null else _service.diag_channel_status()
     var last_round := int(status.get("last_round_msec", 0))
-    var round_text := "Never" if last_round == 0 else relative_time_text(int((Time.get_ticks_msec() - last_round) / 1000.0))
-    return "%s | Diagnostics: %s | Build: %s" \
-            % ["Connected" if status.get("ready", false) else "Disconnected", round_text, last_build_age_text()]
+    var round_text := tr("Never") if last_round == 0 else relative_time_text(int((Time.get_ticks_msec() - last_round) / 1000.0))
+    return tr("%s | Diagnostics: %s | Build: %s") \
+            % [tr("Connected") if status.get("ready", false) else tr("Disconnected"), round_text, last_build_age_text()]
 
 
 func last_build_age_text() -> String:
-    return "Never" if last_build_time <= 0 else relative_time_text(int(Time.get_unix_time_from_system()) - last_build_time)
+    return tr("Never") if last_build_time <= 0 else relative_time_text(int(Time.get_unix_time_from_system()) - last_build_time)
 
 
 # Both views use floored half-units, except 10-59 minutes which use whole minutes.
-static func relative_time_text(elapsed_seconds: int) -> String:
+func relative_time_text(elapsed_seconds: int) -> String:
     var seconds := maxi(0, elapsed_seconds)
     if seconds < 60:
-        return "%ds ago" % seconds
+        return tr("%ds ago") % seconds
     var unit_seconds := 60
-    var unit := "min"
+    var text_format := tr("%smin ago")
     if seconds >= 86400:
         unit_seconds = 86400
-        unit = "d"
+        text_format = tr("%sd ago")
     elif seconds >= 3600:
         unit_seconds = 3600
-        unit = "h"
+        text_format = tr("%sh ago")
     var count := int(seconds / float(unit_seconds))
     var half := ".5" if seconds % unit_seconds >= unit_seconds * 0.5 else ""
     if seconds >= 600 and seconds < 3600:
         half = ""
-    return "%d%s%s ago" % [count, half, unit]
+    return text_format % (str(count) + half)
 
 
 func _exit_tree() -> void:
+    _refresh_source_save_time()
+    if is_building():
+        _set_last_build_failed(true)
     var requests_in_flight := _busy_count > 0
     # GDScript has no try/finally: if the plugin is disabled mid-request, the pending
     # coroutines are dropped with this node and `_end_busy` never runs — drain the residual
@@ -198,13 +244,14 @@ func _exit_tree() -> void:
     _owned_copies.clear()
 
 
-func _log(message: String) -> void:
-    log_message.emit(message)
+func _log(message: String, arguments: Array = []) -> void:
+    var translated := tr(message)
+    log_message.emit(translated if arguments.is_empty() else translated % arguments)
 
 
 func _log_error(action: String, rpc: Dictionary) -> void:
     var error: Dictionary = rpc["error"]
-    _log(action + " failed [" + str(error["code"]) + "]: " + str(error["message"]))
+    _log("%s failed [%s]: %s", [tr(action), error["code"], error["message"]])
 
 
 # Busy bookkeeping for the editor-idle liveness mitigation; nesting-safe via a counter. The
@@ -283,7 +330,7 @@ func ping() -> void:
     var rpc: Dictionary = await _client.ping().completed
     _end_busy()
     if rpc["ok"]:
-        _log("ping: " + str(rpc["result"]))
+        _log("ping: %s", [rpc["result"]])
     else:
         _log_error("ping", rpc)
 
@@ -297,7 +344,7 @@ func create_module(module_id: String) -> void:
     var rpc: Dictionary = await _client.create_module(module_id, module_id).completed
     _end_busy()
     if rpc["ok"]:
-        _log("module created: " + module_id)
+        _log("module created: %s", [module_id])
     else:
         _log_error("create module", rpc)
 
@@ -316,7 +363,7 @@ func analyze(module_id: String) -> void:
         _log_error("analyze", rpc)
         return
     var result: Dictionary = rpc["result"]
-    _log("analyze outcome: " + str(result["outcome"]))
+    _log("analyze outcome: %s", [result["outcome"]])
     # Wire shape: AnalysisResult.diagnostics is a snapshot record wrapping the list.
     var diagnostics: Array = result["diagnostics"]["diagnostics"]
     for diagnostic in diagnostics:
@@ -324,7 +371,7 @@ func analyze(module_id: String) -> void:
                 + str(diagnostic["message"]) + " (" + str(diagnostic["sourcePath"]) + ")"
         if diagnostic.get("range", null) != null:
             line += " @ " + str(diagnostic["range"])
-        _log(line)
+        log_message.emit(line)
     if diagnostics.is_empty():
         _log("  no diagnostics")
 
@@ -443,7 +490,7 @@ func _prepare_compile_copy(source_module_id: String, project_name: String) -> St
     if not applied["ok"]:
         _log_error("set options", applied)
         return ""
-    _log("compile copy ready: " + copy_module_id + " (projectPath: " + project_path + ")")
+    _log("compile copy ready: %s (projectPath: %s)", [copy_module_id, project_path])
     return copy_module_id
 
 
@@ -460,7 +507,7 @@ func build_project() -> void:
         return
     var warning := build_warning()
     if warning != "":
-        _log("build skipped: " + warning)
+        _log("build skipped: %s", [warning])
         return
     # `_apply_endpoint` sources the client endpoint from the service itself, so the compile
     # copy always targets the server that owns the diagnostics module. Its separate reservation
@@ -482,15 +529,19 @@ func build_project() -> void:
     var kind := str(ProjectSettings.get_setting(SETTING_C_COMPILER_KIND, "AUTO"))
     _build_options = {"optimizationLevel": level, "strictMode": strict,
             "cCompilerKind": null if kind == "AUTO" else kind}
+    # Saves after this snapshot belong to the next build, even if this one finishes later.
+    _refresh_source_save_time()
+    last_compile_time = Time.get_unix_time_from_system()
+    EditorInterface.get_editor_settings().set_project_metadata("gdcc", "last_compile_time", last_compile_time)
     _build_in_progress = true
     _begin_busy()
     var module_id: String = await _prepare_compile_copy(source_module_id, project_name)
     if module_id == "":
-        _end_build()
+        _end_build(true)
         return
     var started: Dictionary = await _client.start_compile(module_id).completed
     if not started["ok"]:
-        _end_build()
+        _end_build(true)
         _log_error("compile start", started)
         return
     _current_task_id = int(started["result"]["taskId"])
@@ -499,7 +550,7 @@ func build_project() -> void:
     # Snapshot the identity locally: Cancel may clear the shared field while this coroutine is
     # suspended, so the whole poll loop, logs, and terminal handling use the local copy.
     var task_id: int = _current_task_id
-    _log("compile started: task " + str(task_id))
+    _log("compile started: task %s", [task_id])
     # Wall-clock deadline polling on the task snapshot — the only progress channel that does
     # not block behind the module gate while the compile runs (120s covers cold native builds).
     var deadline_msec: int = Time.get_ticks_msec() + 120000
@@ -507,7 +558,7 @@ func build_project() -> void:
     while Time.get_ticks_msec() < deadline_msec:
         var polled: Dictionary = await _client.get_compile_task(task_id).completed
         if not polled["ok"]:
-            _end_build()
+            _end_build(true)
             _log_error("compile poll", polled)
             return
         var task: Dictionary = polled["result"]
@@ -516,28 +567,30 @@ func build_project() -> void:
                 + str(task["completedUnits"]) + "/" + str(task["totalUnits"])
         if progress_line != last_progress_line:
             last_progress_line = progress_line
-            _log("task " + str(task_id) + ": " + progress_line)
+            _log("task %s: %s", [task_id, progress_line])
         if state == "SUCCEEDED" or state == "FAILED" or state == "CANCELED":
-            _log("task finished: createdAt=" + str(task["createdAt"])
-                    + " completedAt=" + str(task["completedAt"]))
+            _log("task finished: createdAt=%s completedAt=%s", [task["createdAt"], task["completedAt"]])
             if task["result"] != null:
-                _log("compile outcome: " + str(task["result"]["outcome"]))
-            if state == "SUCCEEDED" and task["result"] != null:
+                _log("compile outcome: %s", [task["result"]["outcome"]])
+            var failed := state == "FAILED"
+            if state == "SUCCEEDED":
                 # Deploy this task's frozen result, never a later module result or stale files.
-                await _deploy_build_result(task["result"], project_name)
+                failed = task["result"] == null or not await _deploy_build_result(task["result"], project_name)
             if _current_task_id == task_id:
                 _current_task_id = -1
-            _end_build()
+            _end_build(failed)
             return
         await get_tree().create_timer(0.25).timeout
-    _end_build()
+    _end_build(true)
     # The task keeps running server-side and `_current_task_id` is deliberately kept: pressing
     # Build again cancels it through the stale-copy busy path.
-    _log("build poll timed out (task " + str(task_id) + " still running; press Cancel, or Build again to cancel and replace it)")
+    _log("build poll timed out (task %s still running; press Cancel, or Build again to cancel and replace it)", [task_id])
 
 
-func _end_build() -> void:
+func _end_build(failed: bool = false) -> void:
     _build_in_progress = false
+    if failed or _pending_activation.is_empty():
+        _set_last_build_failed(failed)
     _end_busy()
 
 
@@ -561,13 +614,13 @@ func _deploy_build_result(result: Dictionary, project_name: String) -> bool:
             "android": "so", "web": "wasm"}
     if target_parts.size() != 2 or not platform_features.has(target_parts[0]) \
             or not architecture_features.has(target_parts[1]):
-        _log("build deployment failed: unsupported target " + str(options["targetPlatform"]))
+        _log("build deployment failed: unsupported target %s", [options["targetPlatform"]])
         return false
     var platform: String = platform_features[target_parts[0]]
     var architecture: String = architecture_features[target_parts[1]]
     var level := str(options["optimizationLevel"]).to_lower()
     if level not in ["debug", "release"]:
-        _log("build deployment failed: unsupported optimization level " + level)
+        _log("build deployment failed: unsupported optimization level %s", [level])
         return false
     var library_source := ""
     for artifact in result["artifacts"]:
@@ -594,12 +647,12 @@ func _deploy_build_result(result: Dictionary, project_name: String) -> bool:
         var loaded := config.load(BUILD_EXTENSION_PATH)
         var managed: Variant = config.get_value("configuration", "gdcc_managed", false)
         if loaded != OK or not managed is bool or not managed:
-            _log("build deployment failed: refusing to overwrite an unmanaged or invalid " + BUILD_EXTENSION_PATH)
+            _log("build deployment failed: refusing to overwrite an unmanaged or invalid %s", [BUILD_EXTENSION_PATH])
             return false
     var aliases_value: Variant = config.get_value("configuration", "gdcc_library_aliases", PackedStringArray())
     var owned_value: Variant = config.get_value("configuration", "gdcc_libraries", PackedStringArray())
     if not aliases_value is PackedStringArray or not owned_value is PackedStringArray:
-        _log("build deployment failed: invalid library ownership/alias metadata in " + BUILD_EXTENSION_PATH)
+        _log("build deployment failed: invalid library ownership/alias metadata in %s", [BUILD_EXTENSION_PATH])
         return false
     config.set_value("configuration", "entry_symbol", "gdextension_entry")
     config.set_value("configuration", "compatibility_minimum", "4.5")
@@ -648,7 +701,7 @@ func _deploy_build_result(result: Dictionary, project_name: String) -> bool:
         return false
     var error := DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://bin"))
     if error != OK:
-        _log("build deployment failed: cannot create bin (error " + str(error) + ")")
+        _log("build deployment failed: cannot create bin (error %s)", [error])
         return false
     var library_temp := ProjectSettings.globalize_path(library_path + ".tmp")
     if not FileAccess.file_exists(library_path):
@@ -656,16 +709,16 @@ func _deploy_build_result(result: Dictionary, project_name: String) -> bool:
         if error == OK:
             error = DirAccess.rename_absolute(library_temp, ProjectSettings.globalize_path(library_path))
     elif FileAccess.get_sha256(library_path) != library_hash:
-        _log("build deployment failed: hash-named library has unexpected contents: " + library_path)
+        _log("build deployment failed: hash-named library has unexpected contents: %s", [library_path])
         return false
     if error == OK:
         # Windows rename deletes an existing destination first; do not use it for the descriptor.
         error = config.save(BUILD_EXTENSION_PATH)
     if error != OK:
         DirAccess.remove_absolute(library_temp)
-        _log("build deployment failed: cannot publish library/metadata (error " + str(error) + ")")
+        _log("build deployment failed: cannot publish library/metadata (error %s)", [error])
         return false
-    _log("build deployed: " + library_path + " (" + BUILD_EXTENSION_PATH + ")")
+    _log("build deployed: %s (%s)", [library_path, BUILD_EXTENSION_PATH])
     _pending_activation = {"project_name": project_name, "target": platform + "." + architecture,
             "native": OS.has_feature(platform) and OS.has_feature(architecture),
             "reload": GDExtensionManager.is_extension_loaded(BUILD_EXTENSION_PATH) \
@@ -684,7 +737,7 @@ func _poll_build_activation() -> void:
         return
     if Time.get_ticks_msec() >= int(_pending_activation["deadline"]):
         _pending_activation.clear()
-        state_changed.emit()
+        _set_last_build_failed(true)
         _log("build activation pending: filesystem scan timed out; restart the editor to load the deployed extension")
         return
     # is_scanning() can turn false before the worker is joined. A rejected scan is retried
@@ -705,25 +758,27 @@ func _on_build_filesystem_changed() -> void:
     _pending_activation = {}
     state_changed.emit()
     if not activation["native"]:
-        _log("build installed for " + str(activation["target"]) + "; not the current editor target")
+        _log("build installed for %s; not the current editor target", [activation["target"]])
     elif not GDExtensionManager.is_extension_loaded(BUILD_EXTENSION_PATH):
+        _set_last_build_failed(true)
         _log("build activation failed: Godot did not load the extension; check engine errors and restart the editor")
         return
     else:
         if activation["reload"]:
             var status := GDExtensionManager.reload_extension(BUILD_EXTENSION_PATH)
             if status != GDExtensionManager.LOAD_STATUS_OK:
-                _log("build activation failed: extension reload status " + str(status) + "; restart the editor")
+                _set_last_build_failed(true)
+                _log("build activation failed: extension reload status %s; restart the editor", [status])
                 return
-        _log("build enabled: " + str(activation["project_name"]))
+        _log("build enabled: %s", [activation["project_name"]])
     last_build_time = int(Time.get_unix_time_from_system())
     EditorInterface.get_editor_settings().set_project_metadata("gdcc", "last_build_time", last_build_time)
-    state_changed.emit()
+    _set_last_build_failed(false)
     for obsolete in activation["obsolete"]:
         if str(obsolete).get_base_dir() == "res://bin":
             var error := DirAccess.remove_absolute(ProjectSettings.globalize_path(str(obsolete)))
             if error != OK:
-                _log("build cleanup deferred: " + str(obsolete) + " (error " + str(error) + ")")
+                _log("build cleanup deferred: %s (error %s)", [obsolete, error])
 
 
 func cancel_build() -> void:
@@ -746,7 +801,7 @@ func cancel_build() -> void:
     _end_busy()
     if rpc["ok"]:
         var state: String = str(rpc["result"]["state"])
-        _log("cancel requested: task " + str(task_id) + " state " + state)
+        _log("cancel requested: task %s state %s", [task_id, state])
         if (state == "SUCCEEDED" or state == "FAILED" or state == "CANCELED") \
                 and _current_task_id == task_id:
             _current_task_id = -1
@@ -766,8 +821,7 @@ func auto_setup_module() -> void:
         var ensure_result: Array = await _launcher.ensure_running_async(_client.host, _client.port)
         _end_busy()
         if int(ensure_result[0]) != OK:
-            _log("compile service not reachable and could not be launched (error "
-                    + str(ensure_result[0]) + "); continuing with passive connection")
+            _log("compile service not reachable and could not be launched (error %s); continuing with passive connection", [ensure_result[0]])
     # The diagnostics module is created asynchronously by the service lifecycle; wait briefly
     # so the output can announce the actual diagnostics module.
     var deadline_msec: int = Time.get_ticks_msec() + 10000
@@ -776,7 +830,7 @@ func auto_setup_module() -> void:
             var diag_module_id: String = _service.get_diag_module_id()
             if diag_module_id != "":
                 _refresh_diagnostics_module()
-                _log("inspecting diagnostics module: " + diag_module_id)
+                _log("inspecting diagnostics module: %s", [diag_module_id])
                 return
         await get_tree().create_timer(0.5).timeout
     _log("diagnostics module not announced yet; waiting for automatic synchronization")
