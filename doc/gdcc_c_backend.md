@@ -5,6 +5,12 @@ registration rules are maintained in [gdcc_runtime_lib.md](gdcc_runtime_lib.md).
 
 ## Native Compiler Cache
 
+The packaged TinyCC bundle extraction cache is separate from the object/PCH caches below.
+It is installed at `<OS.get_cache_dir()>/gdcc/tinycc/<bundleKey>/`, following Godot's desktop
+system-cache rules (including macOS `~/Library/Caches` and Linux `XDG_CACHE_HOME`).
+`GDCC_TINYCC_HOME` still selects an existing bundle directly. Platform fallbacks and the install
+contract are maintained in [TinyCC bundle installation](module_impl/backend/tinycc_compiler_implementation.md#42-安装协议).
+
 `ZigCcCompiler` stores Zig local and global compiler caches under a shared cache root when one is
 available. If `GDCC_SHARED_C_COMPILER_CACHE` is set to a usable directory path, the compiler creates
 that directory when necessary and sets `ZIG_LOCAL_CACHE_DIR` to its `local` subdirectory and

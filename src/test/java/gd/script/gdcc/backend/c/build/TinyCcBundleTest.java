@@ -1,5 +1,6 @@
 package gd.script.gdcc.backend.c.build;
 
+import gd.script.gdcc.util.SystemPathUtil;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -65,6 +66,11 @@ import static org.junit.jupiter.api.Assertions.fail;
 class TinyCcBundleTest {
     private static final String PLATFORM = TinyCcBundle.LINUX_X86_64_KEY;
     private static final String VERSION = "1.2.3-test";
+
+    @Test
+    void defaultCacheRootUsesGodotSystemCacheDirectory() {
+        assertEquals(SystemPathUtil.getCacheDir().resolve("gdcc/tinycc"), TinyCcBundle.defaultCacheRoot());
+    }
 
     @Test
     void envOverrideWithValidBundleResolvesInPlaceWithoutTouchingCache(@TempDir Path tempDir) throws IOException {

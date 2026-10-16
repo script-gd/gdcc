@@ -45,7 +45,10 @@ class RpcPackagedTinyCcIntegrationTest {
         var environment = builder.environment();
         environment.remove("GDCC_TINYCC_HOME");
         environment.remove("GDCC_TINYCC_TCC");
+        environment.put("HOME", home.toString());
         environment.put("LOCALAPPDATA", home.toString());
+        var xdgCache = tempDir.resolve("xdg-cache");
+        environment.put("XDG_CACHE_HOME", xdgCache.toString());
         environment.put("GDCC_SHARED_C_COMPILER_CACHE", tempDir.resolve("compiler-cache").toString());
         environment.put("GDCC_SHARED_INCLUDE", tempDir.resolve("include-cache").toString());
         var process = builder.start();
@@ -96,7 +99,8 @@ class RpcPackagedTinyCcIntegrationTest {
             assertTrue(result.getAsJsonObject("compileOptions").get("cCompilerKind").isJsonNull());
             assertTrue(result.get("buildLog").getAsString().contains("tcc object cache"), result.toString());
             assertTrue(Files.isRegularFile(Path.of(result.getAsJsonArray("artifacts").get(0).getAsString())));
-            var cache = windows ? home.resolve("gdcc/tinycc") : home.resolve(".cache/gdcc/tinycc");
+            var systemCache = windows ? home : host.isMacOS() ? home.resolve("Library/Caches") : xdgCache;
+            var cache = systemCache.resolve("gdcc/tinycc");
             try (var files = Files.walk(cache)) {
                 assertTrue(files.anyMatch(file -> file.getFileName().toString().equals(".ready")),
                         "The shipped bundle must be extracted and verified into the empty cache");

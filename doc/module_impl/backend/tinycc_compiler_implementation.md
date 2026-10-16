@@ -63,7 +63,14 @@ tinycc-bundle/<platformKey>/            # linux-x86_64 / windows-x86_64 / linux-
 
 ### 4.2 安装协议
 
-- 目标目录：用户缓存目录（Linux/macOS `~/.cache/gdcc/tinycc/<key>/`，Windows `%LOCALAPPDATA%/gdcc/tinycc/<key>/`），key = `<sanitized-gdccVersion>-tinycc-<fullCommit>-<platformKey>`；`GDCC_TINYCC_HOME` 覆盖直接指向 bundle 根（跳过安装，仍全量校验）。
+- 目标目录：`<OS.get_cache_dir()>/gdcc/tinycc/<key>/`，key = `<sanitized-gdccVersion>-tinycc-<fullCommit>-<platformKey>`；`GDCC_TINYCC_HOME` 覆盖直接指向 bundle 根（跳过安装，仍全量校验）。这里使用系统全局缓存根，不是 `EditorPaths` 的 Godot 编辑器专属缓存，也不是项目 `user://`。
+- 系统缓存根由 `SystemPathUtil.getCacheDir()` 解析，对齐 Godot **4.5.1-stable** 的 `OS.get_cache_dir()` → `get_cache_path()`，基线 commit `f62fdbde15035c5576dad93e586201f4d41ef0cb`：
+  - Windows：非空 `%LOCALAPPDATA%`；缺失或空串时调用 `GetTempPathW`，并用 `GetLongPathNameW` 尝试展开短路径；系统临时目录查询失败才回退非空 `%APPDATA%`，再回退 `.`。不使用 JVM `java.io.tmpdir` 或拼接 `user.home/AppData/Local`。
+  - macOS：`$HOME/Library/Caches`；没有 `HOME` 时回退 `.`，忽略 `XDG_CACHE_HOME`。
+  - Linux/BSD：绝对的 `$XDG_CACHE_HOME` 优先；未设置、空串或相对路径均回退 `$HOME/.cache`。没有 `HOME` 时改用绝对的 `$XDG_CONFIG_HOME`，仍不可用则回退 `.`。绝对路径判定与 Godot `String.is_absolute_path()` 一致。
+  - 环境路径保留首尾空白；Unix 的空 `HOME` 与未设置不同，分别得到相对的 `.cache` / `Library/Caches` 与上述无 `HOME` 回退。不用 JVM `user.home` 替代环境变量；路径解析不创建目录。对齐的是路径选择，不复制引擎的日志或进程内静态缓存机制。
+  - 上游实现：[Windows](https://github.com/godotengine/godot/blob/f62fdbde15035c5576dad93e586201f4d41ef0cb/platform/windows/os_windows.cpp#L2396-L2442)、[Linux/BSD](https://github.com/godotengine/godot/blob/f62fdbde15035c5576dad93e586201f4d41ef0cb/platform/linuxbsd/os_linuxbsd.cpp#L881-L923)、[macOS](https://github.com/godotengine/godot/blob/f62fdbde15035c5576dad93e586201f4d41ef0cb/platform/macos/os_macos.mm#L417-L433)。BSD 路径规则不代表扩展 TinyCC 支持平台集。
+- bundle 解压缓存独立于 §5 的对象/PCH 编译缓存与 `GDCC_SHARED_C_COMPILER_CACHE`；更换路径后按现有安装协议重新提取，不迁移或删除旧目录。
 - 按 key 的安装锁为两层互斥：先取 JVM 内 per-key `ReentrantLock`（在打开 channel 之前获取、在 FileLock 与 channel 关闭之后释放——POSIX fcntl 锁在进程关闭同一文件任意 fd 时释放该进程全部锁），再对兄弟锁文件 `<key>.lock` 以非阻塞 `tryLock` + 25ms 可中断退避循环获取跨进程互斥（禁止阻塞式 `channel.lock()`：虚拟线程的中断语义下它会等 native 锁调用返回，等于不可取消）。两处等待均可中断并恢复 interrupt 状态。
 - 锁内：建唯一 staging 目录（同父目录 `.staging-<key>-<uuid>`）→ 全量写入 → 按 MANIFEST 逐文件 SHA-256 校验 → 布局/VERSION 校验 → 最后写 `.ready` → rename 发布（优先 `ATOMIC_MOVE`；文件系统不支持时退回普通 `Files.move`，仍不带 `REPLACE_EXISTING`，冲突走胜出者校验——与 §5 object 发布的「原子失败即降级、禁止非原子覆写」是两套不同语义）；rename 冲突时校验胜出目录完整性后采用之，校验失败则替换；`.ready` 缺失或校验失败的目录（含占位文件/符号链接）整体删除重来。
 - 完整性 fail-closed：缓存复用、胜出者采用与 `GDCC_TINYCC_HOME` 覆盖路径均按 MANIFEST 重验全部文件哈希；空清单、截断清单、树内未被清单覆盖的普通文件（`MANIFEST`/`.ready` 除外）、穿越/盘符/非法字符路径一律拒绝。
@@ -128,8 +135,9 @@ tinycc-bundle/<platformKey>/            # linux-x86_64 / windows-x86_64 / linux-
 - 产物形态与导出断言经 `NativeArtifactInspector` 各平台腿执行（ELF `nm -D`、Mach-O `nm -gU`、PE 由纯 Java `PeExportReader` 解析导出表——CI 无 `dumpbin`）；FFM 绑定面 10 符号的导出覆盖由 `TinyCcWindowsBundleParityTest` 在 Windows bundle 上锁定。
 - 锚点测试类清单登记于 `backend_build_system_implementation.md` §8。
 - `RpcPackagedTinyCcIntegrationTest` 运行真实 `java -jar` 服务器，清除 TinyCC 环境覆盖并使用
-  空的隔离用户缓存，验证 RPC 发现 TinyCC、Auto（null）+ Debug 原生构建成功及 bundle 完整
+  隔离的 `HOME`、`LOCALAPPDATA` 与 `XDG_CACHE_HOME`，验证 RPC 发现 TinyCC、Auto（null）+ Debug 原生构建成功及 bundle 完整
   校验安装。Gradle `test` 依赖 `jar` 并传入实际归档路径，不能依赖旧 JAR 或测试侧 bundle 覆盖。
+- `TinyCcBundleTest` 锁定系统缓存根下的 `gdcc/tinycc` 后缀。
 - `TinyCcPackagedMatrixTest` 在任意宿主校验四套 classpath bundle 的完整安装、目标机器与
   文件格式、Mach-O namespace/install name/签名，以及运行时 archive 内的目标 ELF 对象。
   `gd.script.gdcc.tools.util.UtilTest` 覆盖完整目录发布及失败回滚。
