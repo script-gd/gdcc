@@ -75,6 +75,16 @@ tasks.test {
         if (!runThroughputTests) {
             excludeTags("throughput")
         }
+        // Editor-addon tests (Godot editor integration scenarios against src/editor_addon) are
+        // excluded by default; opt in locally with `./gradlew test -PincludeEditorAddonTest=true`,
+        // or run only them with `./gradlew test -PeditorAddonTestOnly=true`.
+        val includeEditorAddonTest = providers.gradleProperty("includeEditorAddonTest").map(String::toBoolean).getOrElse(false)
+        val editorAddonTestOnly = providers.gradleProperty("editorAddonTestOnly").map(String::toBoolean).getOrElse(false)
+        if (editorAddonTestOnly) {
+            includeTags("editor_addon")
+        } else if (!includeEditorAddonTest) {
+            excludeTags("editor_addon")
+        }
     }
     // The in-process libtcc backend calls FFM restricted methods; tests run on the classpath
     // (unnamed module), matching the launcher's `java -jar` native-access contract.

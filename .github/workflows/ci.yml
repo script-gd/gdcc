@@ -6,6 +6,7 @@ on:
     paths:
       - "src/main/**"
       - "src/test/**"
+      - "src/editor_addon/**"
       - "build-script/**"
       - ".github/workflows/ci.yml"
 
@@ -38,6 +39,11 @@ jobs:
             os: windows-latest
             id: windows-x64
             upload_jar: false
+          - name: Windows x64 (Editor Addon)
+            os: windows-latest
+            id: windows-x64-editor-addon
+            upload_jar: false
+            editor_addon_only: true
           - name: macOS aarch64
             os: macos-latest
             id: macos-aarch64
@@ -238,7 +244,9 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x ./gradlew
-          if [[ "${{ matrix.upload_jar }}" == "true" ]]; then
+          if [[ "${{ matrix.editor_addon_only }}" == "true" ]]; then
+            ./gradlew test -PeditorAddonTestOnly=true --no-daemon --info --console=plain
+          elif [[ "${{ matrix.upload_jar }}" == "true" ]]; then
             ./gradlew test jar --no-daemon --info --console=plain
           else
             ./gradlew test --no-daemon --info --console=plain

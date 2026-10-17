@@ -15,6 +15,7 @@ import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.backend.c.build.ZigUtil;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
@@ -72,6 +73,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Editor settings are user-global, so every case redirects the child process's config dirs
 /// (`APPDATA` / `XDG_CONFIG_HOME` / `HOME`) into the case directory — the test never pollutes
 /// the developer's real editor settings.
+@Tag("editor_addon")
 class EditorAddonScriptLanguageEngineTest {
     private static final Path ADDON_PROJECT_DIR = Path.of("src/editor_addon");
     private static final Path CASE_ROOT = Path.of("tmp/test/editor_addon_script_language");

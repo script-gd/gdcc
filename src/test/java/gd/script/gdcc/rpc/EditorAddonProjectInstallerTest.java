@@ -1,5 +1,6 @@
 package gd.script.gdcc.rpc;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -10,6 +11,7 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
+@Tag("editor_addon")
 class EditorAddonProjectInstallerTest {
     @Test
     void copyProjectExcludesCachesAndGameBuildsButKeepsAddonResources(@TempDir Path tempDir) throws IOException {

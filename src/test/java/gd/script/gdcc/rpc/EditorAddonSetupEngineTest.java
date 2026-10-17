@@ -8,6 +8,7 @@ import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.backend.c.build.ZigUtil;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -32,6 +33,7 @@ import javax.tools.ToolProvider;
 import static org.junit.jupiter.api.Assertions.*;
 
 /// Exercises the interpreted setup UI against compiled installation services in an isolated editor.
+@Tag("editor_addon")
 class EditorAddonSetupEngineTest {
     private final Path temporary = Path.of("tmp/test/editor_addon_setup", UUID.randomUUID().toString()).toAbsolutePath();
 

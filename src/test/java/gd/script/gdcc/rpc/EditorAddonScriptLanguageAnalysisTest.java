@@ -8,6 +8,7 @@ import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -35,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 ///   compile targets, so the check stops at parsing);
 /// - the `reloadable = false` post-processing on every installer exit (single-platform,
 ///   multi-platform), guarding the language instance against hot-reload dangling pointers.
+@Tag("editor_addon")
 class EditorAddonScriptLanguageAnalysisTest {
     private static final Path ADDON_DIR = Path.of("src/editor_addon/addons/gdcc");
     private static final String MODULE_ID = "editor-addon-language";

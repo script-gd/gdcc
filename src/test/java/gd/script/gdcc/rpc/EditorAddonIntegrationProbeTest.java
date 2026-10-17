@@ -14,6 +14,7 @@ import gd.script.gdcc.backend.c.build.ZigUtil;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
@@ -40,6 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// P0-B (zig-gated) proves the same module survives C code generation and linking; P0-C
 /// (zig + `GODOT_BIN` gated) loads the compiled probe extension in a real Godot process and
 /// drives language registration plus virtual dispatch through an interpreted SceneTree script.
+@Tag("editor_addon")
 class EditorAddonIntegrationProbeTest {
     private static final Path PROBE_SOURCE_DIR = Path.of("src/test/resources/editor_addon_probe");
     private static final String MODULE_ID = "gdcc_editor_probe";

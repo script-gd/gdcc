@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import java.util.List;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /// Behavioral anchors for the exact fixtures the Phase 3 engine test
@@ -15,6 +16,7 @@ import org.junit.jupiter.api.Test;
 /// `displayPath`; these tests pin what the frontend actually reports for each fixture
 /// (category, severity, 1-based position, message shape) so the engine-side assertions test
 /// the addon's mapping instead of guessing frontend output.
+@Tag("editor_addon")
 class EditorAddonDiagnosticsFixtureTest {
 
     /// `extends "res://..."` is legal GDScript (the GDScript LSP stays silent) but rejected by

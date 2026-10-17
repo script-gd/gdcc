@@ -9,6 +9,7 @@ import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.backend.c.build.ZigUtil;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
@@ -30,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// JSON-RPC server — covering the full interop chain (compiled class connect → frame pump →
 /// HTTPRequest → pending-object `completed` self-emit → interpreted `await`).
 /// Gated on zig and `GODOT_BIN`; aborts cleanly when either is missing.
+@Tag("editor_addon")
 class EditorAddonBootstrapEngineTest {
     private static final Path ADDON_PROJECT_DIR = Path.of("src/editor_addon");
     private static final Path CASE_ROOT = Path.of("tmp/test/editor_addon_bootstrap/default");

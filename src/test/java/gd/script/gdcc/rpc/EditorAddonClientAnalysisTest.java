@@ -7,6 +7,7 @@ import gd.script.gdcc.api.AnalyzeOptions;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -27,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// zig or Godot; the source-level half pins the interop contracts that lowering cannot see
 /// (no coroutines, pending-object API surface, and an un-bypassed frame pump), because a file
 /// with `await` would still lower cleanly yet break the cross-boundary coroutine contract.
+@Tag("editor_addon")
 class EditorAddonClientAnalysisTest {
     private static final Path CLIENT_SOURCE_PATH = Path.of("src/editor_addon/addons/gdcc/gdcc_rpc_client.gd3");
     private static final Path PLUGIN_MANIFEST_PATH = Path.of("src/editor_addon/addons/gdcc/plugin.cfg");
