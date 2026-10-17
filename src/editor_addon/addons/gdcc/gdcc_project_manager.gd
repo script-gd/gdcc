@@ -1,8 +1,8 @@
 @tool
 extends Node
 
-# Shared project operations, independent of either editor view. This remains interpreted:
-# compiled addon classes cannot use coroutines, and deployment needs editor-only APIs.
+# Shared project operations, independent of either editor view. Interpreted orchestration
+# owns editor-only deployment APIs and the launcher's asynchronous operations.
 signal log_message(message: String)
 signal state_changed
 signal diagnostics_module_changed(module_id: String)
@@ -318,12 +318,40 @@ func _call_rpc_blocking(host: String, port: int, method: String, params: Diction
 ## the plugin's settings-changed relay). Falls back to the raw configured pair only when the
 ## service is unavailable.
 func _apply_endpoint() -> void:
+    var endpoint := server_endpoint()
+    _client.host = endpoint[0]
+    _client.port = endpoint[1]
+
+
+func server_endpoint() -> Array:
     if _service != null:
-        _client.host = _service.rpc_host()
-        _client.port = _service.rpc_port()
-    else:
-        _client.host = str(ProjectSettings.get_setting(SETTING_SERVER_HOST, "127.0.0.1")).strip_edges()
-        _client.port = int(ProjectSettings.get_setting(SETTING_SERVER_PORT, 6099))
+        return [_service.rpc_host(), _service.rpc_port()]
+    return [str(ProjectSettings.get_setting(SETTING_SERVER_HOST, "127.0.0.1")).strip_edges(),
+            int(ProjectSettings.get_setting(SETTING_SERVER_PORT, 6099))]
+
+
+# Rebuild the diagnostics epoch before awaiting shutdown; no old reply may revive the old channel.
+func restart_server(previous_endpoint: Array) -> int:
+    if not can_start_action():
+        return ERR_BUSY
+    if _service == null or _launcher == null:
+        return ERR_UNCONFIGURED
+    _begin_busy()
+    _service.retarget_rpc_endpoint(str(ProjectSettings.get_setting(SETTING_SERVER_HOST)),
+            int(ProjectSettings.get_setting(SETTING_SERVER_PORT)))
+    _apply_endpoint()
+    var endpoint := server_endpoint()
+    _version_endpoint.clear()
+    _refresh_diagnostics_module()
+    var stopped: int = await _launcher.stop_owned_async(str(previous_endpoint[0]), int(previous_endpoint[1]))
+    if stopped != OK:
+        _log("The previous compilation service could not be stopped (error %s); it remains tracked for editor shutdown.", [stopped])
+    if server_endpoint() != endpoint:
+        _end_busy()
+        return ERR_BUSY
+    var result: Array = await _launcher.ensure_running_async(endpoint[0], endpoint[1])
+    _end_busy()
+    return int(result[0]) if server_endpoint() == endpoint else ERR_BUSY
 
 
 func ping() -> void:

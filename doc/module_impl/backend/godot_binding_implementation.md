@@ -332,6 +332,8 @@ module-local wrapper 只输出 `providedByRuntime = false` 的 symbol。当前�
   - `returnTypeName` 来自已验证的 `ExtensionSingleton.type()`，用于 C return type、cast type、cache pointer type
     和 diagnostic `context.type`
   - symbol owner 固定为 `"@GlobalScope"`，symbol name 固定为 `lookupName`
+  - cache 声明为 `static _Atomic(godot_<returnTypeName> *)`，使用显式 acquire load / release store；
+    允许并发冷查找，失败分支先返回 `NULL`，不发布失败结果，也不隐式读写原子槽
   - 只缓存非空结果；`NULL` 走 `gdcc_binding_lookup_fail(...)`
 - class constant：
   - `static inline godot_int godot_<Class>_<CONSTANT>(void)`
@@ -446,6 +448,8 @@ constant 这类模块变化 symbol 才进入 module-local。
   - provided set、module-local explicit registration、C name 冲突和 metadata drift fail-fast
 - `ModuleLocalGodotBindingTemplateTest`
   - singleton / class constant header-only renderer
+  - singleton lookup name 与 return type 独立，原子 cache 的 payload 仍使用 declared return type
+  - 显式 acquire/release 访问及查找失败先于成功发布的控制流顺序
 - `FixedGodotBindingsTest` / `GodotBindingToolAbiSupportTest`
   - fixed source list、ABI support 和 generator contract
 - `CProjectBuilderSharedIncludeTest` / `ApiCompilePipelineTest`

@@ -162,8 +162,20 @@ msgstr "正在下载并安装 GDCC..."
 msgid "The compiler is installed. Apply it to this project when ready."
 msgstr "编译器已安装，准备就绪后可应用到当前项目。"
 
-msgid "The server is connected or busy. Configuration was not changed."
-msgstr "服务器已连接或正忙，未修改配置。"
+msgid "The server is busy. Configuration was not changed."
+msgstr "服务器正忙，未修改配置。"
+
+msgid "Could not reserve a local port for the compilation server."
+msgstr "无法为编译服务器预留本地端口。"
+
+msgid "Starting the configured compilation server..."
+msgstr "正在启动新配置的编译服务器..."
+
+msgid "The configuration was saved, but the new compilation server could not be started (error %s)."
+msgstr "配置已保存，但无法启动新的编译服务器（错误 %s）。"
+
+msgid "The previous compilation service could not be stopped (error %s); it remains tracked for editor shutdown."
+msgstr "无法停止之前的编译服务（错误 %s），编辑器退出时仍会尝试关闭它。"
 
 msgid "The selected path contains unsupported command characters."
 msgstr "所选路径包含不支持的命令字符。"

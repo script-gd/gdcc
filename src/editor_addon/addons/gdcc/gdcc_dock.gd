@@ -96,7 +96,6 @@ func _open_setup() -> void:
         _setup_dialog = SetupDialogScript.new()
         _setup_dialog.setup(_manager)
         add_child(_setup_dialog)
-        _setup_dialog.configured.connect(func() -> void: _manager.auto_setup_module())
     _setup_dialog.open_setup()
 
 

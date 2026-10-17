@@ -55,7 +55,7 @@ class ModuleLocalGodotBindingTemplateTest {
 
         assertAll(
                 () -> assertTrue(header.contains("static inline godot_Node * godot_GameSingleton_singleton(void)"), header),
-                () -> assertTrue(header.contains("static godot_Node * gdcc_module_singleton_GameSingleton = NULL;"), header),
+                () -> assertTrue(header.contains("static _Atomic(godot_Node *) gdcc_module_singleton_GameSingleton = NULL;"), header),
                 () -> assertTrue(header.contains("godot_global_get_singleton(GD_STATIC_SN(u8\"GameSingleton\"))"), header),
                 () -> assertTrue(header.contains("context.function_name = \"godot_GameSingleton_singleton\";"), header),
                 () -> assertTrue(header.contains("context.lookup_name = \"GameSingleton\";"), header),
@@ -63,6 +63,30 @@ class ModuleLocalGodotBindingTemplateTest {
                 () -> assertTrue(header.contains("context.type = \"Node\";"), header),
                 () -> assertFalse(header.contains("godot_Node_singleton"), header),
                 () -> assertFalse(header.contains("godot_GameSingleton *"), header)
+        );
+    }
+
+    @Test
+    void singletonWrapperShouldPublishOnlySuccessfulLookupsAtomically() throws Exception {
+        var header = render(
+                List.of(ModuleLocalGodotBinding.singleton("GameSingleton", "Node")),
+                List.of()
+        );
+        var acquire = header.indexOf("godot_Node * cached = atomic_load_explicit(&gdcc_module_singleton_GameSingleton, memory_order_acquire);");
+        var lookup = header.indexOf("cached = (godot_Node *)godot_global_get_singleton(GD_STATIC_SN(u8\"GameSingleton\"));");
+        var miss = header.indexOf("if (cached == NULL)", lookup);
+        var failure = header.indexOf("gdcc_binding_lookup_fail(&context);");
+        var returnNull = header.indexOf("return NULL;");
+        var release = header.indexOf("atomic_store_explicit(&gdcc_module_singleton_GameSingleton, cached, memory_order_release);");
+        var returnCached = header.indexOf("return cached;");
+
+        assertAll(
+                () -> assertTrue(acquire >= 0 && acquire < lookup, header),
+                () -> assertTrue(lookup < miss && miss < failure, header),
+                () -> assertTrue(failure < returnNull && returnNull < release, header),
+                () -> assertTrue(release < returnCached, header),
+                () -> assertFalse(header.contains("return gdcc_module_singleton_GameSingleton;"), header),
+                () -> assertFalse(header.contains("gdcc_module_singleton_GameSingleton = ("), header)
         );
     }
 

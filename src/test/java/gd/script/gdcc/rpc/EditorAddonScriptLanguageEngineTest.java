@@ -91,6 +91,8 @@ class EditorAddonScriptLanguageEngineTest {
                     "disabled_safe", "disabled_language_menus", "reenabled_same_instance", "reenabled_language_menus")),
             Map.entry("launch", List.of(
                     "config", "configure", "relaunched", "server_up", "server_stopped_on_disable")),
+            Map.entry("launch_replace", List.of("config", "configure", "relaunched", "server_up",
+                    "replacement_ready", "previous_owner_policy", "server_stopped_on_disable", "previous_endpoint_after_disable")),
             Map.entry("launch_bad", List.of("config", "configure", "relaunched", "no_server_started", "editor_alive")),
             Map.entry("launch_none", List.of("config", "relaunched", "passive_no_server", "editor_alive")),
             // Reproduction of the manual-testing crash: the Create Resource dialog instantiates
@@ -443,7 +445,7 @@ class EditorAddonScriptLanguageEngineTest {
                         get_script().resource_path = ""
                     if mode == "language":
                         await _run_language_mode()
-                    elif mode == "launch":
+                    elif mode == "launch" or mode == "launch_replace":
                         await _run_launch_mode()
                     elif mode == "launch_bad":
                         await _run_launch_bad_mode()
@@ -734,6 +736,39 @@ class EditorAddonScriptLanguageEngineTest {
                     if not up:
                         await _ensure_gdcc_disabled()
                         return
+                    var previous_port := port
+                    if str(_config.get("mode", "")) == "launch_replace":
+                        var manager: Node = _find_gdcc_dock()._manager
+                        var launcher: Node = manager.get_parent().get("_launcher")
+                        var old_record: Dictionary = launcher._find_spawned("127.0.0.1", port)
+                        var ready_deadline := Time.get_ticks_msec() + 15000
+                        while (not manager.is_server_connected() or not manager.can_start_action()) and Time.get_ticks_msec() < ready_deadline:
+                            await get_tree().process_frame
+                        var was_connected: bool = manager.is_server_connected()
+                        var reservation := TCPServer.new()
+                        reservation.listen(0, "127.0.0.1")
+                        port = reservation.get_local_port()
+                        ProjectSettings.set_setting("gdcc/server/port", port)
+                        ProjectSettings.set_setting("gdcc/compilation_server/launch_command",
+                                str(_config["launch_command"]).replace(" -cp ", " -Dgdcc.setup.replacement=true -cp "))
+                        reservation.stop()
+                        var restart_error: int = await manager.restart_server(["127.0.0.1", previous_port])
+                        ready_deadline = Time.get_ticks_msec() + 15000
+                        while not manager.is_server_connected() and Time.get_ticks_msec() < ready_deadline:
+                            await get_tree().process_frame
+                        client.port = port
+                        var pong: Dictionary = await client.ping().completed
+                        var new_record: Dictionary = launcher._find_spawned("127.0.0.1", port)
+                        _step("replacement_ready", was_connected and restart_error == OK and manager.is_server_connected()
+                                and pong.get("ok", false) and not new_record.is_empty()
+                                and new_record.get("pid", -1) != old_record.get("pid", -1)
+                                and manager.server_endpoint() == ["127.0.0.1", port], str(new_record))
+                        var external := bool(_config.get("external", false))
+                        ready_deadline = Time.get_ticks_msec() + 15000
+                        while not external and await _port_open("127.0.0.1", previous_port) and Time.get_ticks_msec() < ready_deadline:
+                            await get_tree().process_frame
+                        _step("previous_owner_policy", (await _port_open("127.0.0.1", previous_port)) == external
+                                and launcher._find_spawned("127.0.0.1", previous_port).is_empty())
                     EditorInterface.set_plugin_enabled("gdcc", false)
                     await get_tree().process_frame
                     var down := false
@@ -743,6 +778,8 @@ class EditorAddonScriptLanguageEngineTest {
                         if not down:
                             await get_tree().create_timer(0.5).timeout
                     _step("server_stopped_on_disable", down)
+                    if str(_config.get("mode", "")) == "launch_replace":
+                        _step("previous_endpoint_after_disable", (await _port_open("127.0.0.1", previous_port)) == bool(_config.get("external", false)))
                     client.queue_free()
                 
                 func _run_launch_bad_mode() -> void:
@@ -5095,6 +5132,35 @@ class EditorAddonScriptLanguageEngineTest {
         config.addProperty("port", port);
         config.addProperty("launch_command", launchCommand);
         runCase("launch", config);
+    }
+
+    @Test
+    void configurationReplacesOwnedLauncherAndRebuildsDiagnostics() throws Exception {
+        var config = replacementLaunchConfig();
+        config.addProperty("port", findFreePort());
+        var output = runCase("launch_replace", config);
+        assertFalse(output.contains("ERROR:"), output);
+    }
+
+    @Test
+    void configurationStartsNewLauncherWithoutStoppingExternalServer() throws Exception {
+        try (var server = JsonRpcServer.start(new JsonRpcDispatcher(new API()), "127.0.0.1", 0,
+                JsonRpcServer.DEFAULT_MAX_REQUEST_BYTES)) {
+            var config = replacementLaunchConfig();
+            config.addProperty("port", server.port());
+            config.addProperty("external", true);
+            var output = runCase("launch_replace", config);
+            assertFalse(output.contains("ERROR:"), output);
+        }
+    }
+
+    private static JsonObject replacementLaunchConfig() {
+        var javaBin = Path.of(System.getProperty("java.home"), "bin",
+                System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win") ? "java.exe" : "java");
+        var config = new JsonObject();
+        config.addProperty("launch_command", "\"" + javaBin + "\" -cp \"" + System.getProperty("java.class.path")
+                + "\" gd.script.gdcc.Main serve --host {host} --port {port}");
+        return config;
     }
 
     /// A nonexistent launch executable must be reported without crashing the editor. The

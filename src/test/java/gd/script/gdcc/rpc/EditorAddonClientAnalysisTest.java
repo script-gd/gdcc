@@ -110,6 +110,7 @@ class EditorAddonClientAnalysisTest {
         var parserService = new GdScriptParserService();
         for (var scriptPath : List.of(PLUGIN_SCRIPT_PATH, DOCK_SCRIPT_PATH,
                 DOCK_SCRIPT_PATH.resolveSibling("gdcc_project_manager.gd"),
+                DOCK_SCRIPT_PATH.resolveSibling("server_launcher.gd"),
                 DOCK_SCRIPT_PATH.resolveSibling("gdcc_build_toolbar.gd"),
                 DOCK_SCRIPT_PATH.resolveSibling("gdcc_setup_dialog.gd"))) {
             var diagnosticManager = new DiagnosticManager();
@@ -176,7 +177,7 @@ class EditorAddonClientAnalysisTest {
                 while (messages.find()) {
                     var literal = messages.group(1) != null ? messages.group(1)
                             : messages.group(2) != null ? messages.group(2)
-                            : messages.group(3) != null ? messages.group(3) : messages.group(4);
+                              : messages.group(3) != null ? messages.group(3) : messages.group(4);
                     var message = JsonParser.parseString(literal).getAsString();
                     if (!message.isEmpty() && !technicalLabels.contains(message)) {
                         assertTrue(catalog.containsKey(message), () -> path.getFileName() + " missing translation: " + message);

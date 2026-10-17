@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.ArrayList;
 import java.util.UUID;
 import java.util.concurrent.Executors;
@@ -116,11 +117,11 @@ class EditorAddonSetupEngineTest {
                     body = libraries;
                 } else if (path.equals("/preview.zip")) {
                     body = preview;
-                } else if (path.equals("/gdcc-jre/releases/latest")) {
+                } else if (path.equals("/gdcc-jre/releases/latest") || path.equals("/bad/gdcc-jre/releases/latest")) {
                     body = ("""
                             {"assets":[{"name":"gdcc-jre-1.0.0-windows-x64.zip","browser_download_url":"%sruntime.zip","size":%d},
                             {"name":"SHA256SUMS","browser_download_url":"%sSHA256SUMS"}]}
-                            """.formatted(base, runtimeBytes.length, base)).getBytes(StandardCharsets.UTF_8);
+                            """.formatted(base, runtimeBytes.length, base + (path.startsWith("/bad/") ? "bad/" : ""))).getBytes(StandardCharsets.UTF_8);
                 } else if (path.equals("/runtime.zip")) {
                     exchange.sendResponseHeaders(200, runtimeBytes.length);
                     for (var offset = 0; offset < runtimeBytes.length; offset += 65536) {
@@ -136,7 +137,9 @@ class EditorAddonSetupEngineTest {
                     exchange.close();
                     return;
                 } else if (path.equals("/SHA256SUMS")) {
-                    body = (sha256(runtimeBytes) + "  gdcc-jre-1.0.0-windows-x64.zip\n").getBytes(StandardCharsets.UTF_8);
+                    body = (sha256(runtimeBytes).toUpperCase(Locale.ROOT) + "  gdcc-jre-1.0.0-windows-x64.zip\n").getBytes(StandardCharsets.UTF_8);
+                } else if (path.equals("/bad/SHA256SUMS")) {
+                    body = ("0".repeat(64) + "  gdcc-jre-1.0.0-windows-x64.zip\n").getBytes(StandardCharsets.UTF_8);
                 } else if (path.equals("/gdcc/releases")) {
                     var count = exchange.getRequestURI().getQuery().endsWith("page=2") ? 1 : 20;
                     var releases = new com.google.gson.JsonArray();
@@ -196,15 +199,15 @@ class EditorAddonSetupEngineTest {
                 var result = output.lines().filter(line -> line.startsWith("GDCC_SETUP_RESULT: ")).findFirst();
                 assertTrue(result.isPresent(), output);
                 var steps = JsonParser.parseString(result.orElseThrow().substring("GDCC_SETUP_RESULT: ".length())).getAsJsonArray();
-                var expected = new ArrayList<>(List.of("disconnected", "connected", "timeline", "window_bounds",
+                var expected = new ArrayList<>(List.of("disconnected", "connected", "timeline", "window_bounds", "footer_bounds",
                         "native_coroutine_bridge", "proxy_initialization", "java_parser", "java_process", "java_scan", "java_check_stays", "header_alignment", "next_navigation", "load_more_item", "action_layout", "action_alignment",
                         "process_timeout", "user_cancellation", "safe_paths", "manual_proxy", "jar_metadata", "zip_traversal",
                         "release_pagination", "release_dates", "nightly_link", "preview_dates", "release_install", "preview_nested_libraries",
                         "local_import_reuse", "local_dependency_sentinel", "missing_dependency_dialog", "checksum_failure", "cache_inventory"));
                 if (distributionSmoke) {
-                    expected.addAll(List.of("real_windows_jre", "real_linux_tar", "jre_publish", "jre_repair", "all_java_list", "download_size", "jre_phases", "locked_jre_copy", "incomplete_runtime_hidden", "hidden_cleanup"));
+                    expected.addAll(List.of("real_windows_jre", "real_linux_tar", "jre_publish", "jre_reuse", "jre_repair", "download_window_bounds", "all_java_list", "download_size", "jre_phases", "jre_copy_reuse", "jre_changed_checksum", "locked_jre_copy", "incomplete_runtime_hidden", "hidden_cleanup"));
                 }
-                expected.addAll(List.of("finish_enabled", "apply_configuration", "connected_apply_rejected",
+                expected.addAll(List.of("finish_enabled", "apply_configuration", "connected_apply_restarts", "busy_apply_rejected", "restart_failure_reported",
                         "process_teardown", "download_teardown", "worker_teardown", "busy_cleanup"));
                 var actual = new ArrayList<String>();
                 for (var step : steps) {
@@ -237,7 +240,8 @@ class EditorAddonSetupEngineTest {
         return bytes.toByteArray();
     }
 
-    private record Entry(String name, byte[] bytes) {}
+    private record Entry(String name, byte[] bytes) {
+    }
 
     private static byte[] zip(String name, byte[] bytes) throws Exception {
         return zipEntries(List.of(new Entry(name, bytes)));
@@ -279,14 +283,25 @@ class EditorAddonSetupEngineTest {
                 signal state_changed
                 signal log_message(message: String)
                 var connected := false
+                var busy := false
+                var restarts := 0
+                var restart_error := OK
+                var previous_endpoint: Array = []
                 func status_text() -> String:
                     return "fixture status"
                 func is_server_connected() -> bool:
                     return connected
                 func can_start_action() -> bool:
-                    return true
-                func auto_setup_module() -> void:
-                    pass
+                    return not busy
+                func server_endpoint() -> Array:
+                    return ["127.0.0.1", ProjectSettings.get_setting("gdcc/server/port", 6099)]
+                func restart_server(previous: Array) -> int:
+                    previous_endpoint = previous
+                    restarts += 1
+                    connected = false
+                    await get_tree().process_frame
+                    connected = restart_error == OK
+                    return restart_error
 
             func _enter_tree() -> void:
                 _run.call_deferred()
@@ -322,6 +337,16 @@ class EditorAddonSetupEngineTest {
                 await get_tree().process_frame
                 await get_tree().process_frame
                 check_step("window_bounds", dialog._java_page.visible and not dialog._compiler_page.visible and dialog.size.y <= int(get_tree().root.size.y * 0.8) + 1 and dialog._next_button.get_global_rect().end.y <= dialog.size.y and abs(dialog._next_button.size.x - dialog._next_button.get_parent().size.x) <= 1, str(dialog.size))
+                var idle_size: Vector2i = dialog.size
+                var idle_status_height := dialog._status.get_minimum_size().y
+                dialog._set_busy(true)
+                dialog._status.text = "Downloading and installing Java... ".repeat(100)
+                dialog._progress_text.text = "Downloaded 123.45 MiB of 234.56 MiB"
+                dialog._progress_text.modulate.a = 1.0
+                await get_tree().process_frame
+                await get_tree().process_frame
+                check_step("footer_bounds", dialog.size == idle_size and dialog._status.get_minimum_size().y <= idle_status_height + 1 and dialog._status.tooltip_text == dialog._status.text, str({"idle": idle_size, "size": dialog.size, "minimum": dialog._status.get_minimum_size(), "idle_status_height": idle_status_height, "tooltip_matches": dialog._status.tooltip_text == dialog._status.text}))
+                dialog._set_busy(false)
                 dialog._busy = false
                 var service := dialog._service
                 service.cache_root = ProjectSettings.globalize_path("res://cache")
@@ -439,8 +464,12 @@ class EditorAddonSetupEngineTest {
                     service.last_error = ""
                     var published: String = await Setup.await_result(service.install_jre())
                     check_step("jre_publish", not published.is_empty() and FileAccess.file_exists(published) and published.begins_with(service.cache_root.path_join("runtimes")), service.last_error)
-                    var runtime_root: String = service.cache_root.path_join("runtimes/gdcc-jre-1.0.0-windows-x64")
-                    await Setup.await_result(service.work(func() -> void: GdccInstallUtil.remove_tree(runtime_root)))
+                    var runtime_root: String = service.cache_root.path_join("runtimes").path_join(FileAccess.get_sha256(config["windows_runtime"]))
+                    var runtime_count := DirAccess.get_directories_at(service.cache_root.path_join("runtimes")).size()
+                    service.download_size = 0
+                    var reused: String = await Setup.await_result(service.install_jre())
+                    check_step("jre_reuse", reused == published and service.download_size == 0 and DirAccess.get_directories_at(service.cache_root.path_join("runtimes")).size() == runtime_count, reused)
+                    await Setup.await_result(service.work(func() -> void: GdccInstallUtil.remove_tree(published.get_base_dir().get_base_dir().get_base_dir())))
                     DirAccess.make_dir_recursive_absolute(runtime_root)
                     var phases: Array[String] = []
                     var phase_ui := {"matches": true}
@@ -451,13 +480,33 @@ class EditorAddonSetupEngineTest {
                     dialog.open_setup()
                     dialog._busy = false
                     dialog._show_step(0)
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    var before_download: Vector2i = dialog.size
+                    var download_layout := {"height": dialog.size.y, "seen": false}
+                    var watch_layout := func() -> void:
+                        download_layout["height"] = maxi(download_layout["height"], dialog.size.y)
+                        if service.http != null and not service.http.download_file.is_empty():
+                            download_layout["seen"] = true
+                    get_tree().process_frame.connect(watch_layout)
                     await dialog._install_jre()
+                    get_tree().process_frame.disconnect(watch_layout)
                     check_step("jre_repair", FileAccess.file_exists(dialog._valid_java) and dialog._valid_java.begins_with(runtime_root) and await Setup.await_result(service.check_java(dialog._valid_java)) and dialog._current_step == 0 and not dialog._next_button.disabled, service.last_error)
+                    check_step("download_window_bounds", download_layout["seen"] and download_layout["height"] <= before_download.y + 1 and dialog.size.y <= int(get_tree().root.size.y * 0.8) + 1, str(download_layout))
                     var all_java: Array = await Setup.await_result(service.scan_java())
                     check_step("all_java_list", all_java.any(func(info: Dictionary) -> bool: return info["path"] == config["java"]) and all_java.any(func(info: Dictionary) -> bool: return info["path"].begins_with(runtime_root)) and dialog._java_versions.size() >= 2, str(all_java))
                     var runtime_size := FileAccess.get_file_as_bytes(config["windows_runtime"]).size()
                     check_step("download_size", service.download_size == runtime_size and dialog._progress_text.text.contains(String.humanize_size(runtime_size)), dialog._progress_text.text)
                     check_step("jre_phases", phase_ui["matches"] and phases == ["Reading JRE release information...", "Reading JRE checksums...", "Downloading file...", "Verifying download...", "Extracting JRE...", "Checking extracted Java...", "Installing JRE...", "Copying and verifying JRE files...", "Checking installed Java...", "Cleaning temporary files...", "JRE installation complete."], str(phases))
+                    var repaired: String = dialog._valid_java
+                    runtime_count = DirAccess.get_directories_at(service.cache_root.path_join("runtimes")).size()
+                    service.download_size = 0
+                    await dialog._install_jre()
+                    check_step("jre_copy_reuse", dialog._valid_java == repaired and service.download_size == 0 and DirAccess.get_directories_at(service.cache_root.path_join("runtimes")).size() == runtime_count, dialog._valid_java)
+                    service.api_base = config["api"] + "bad/"
+                    var wrong_jre: String = await Setup.await_result(service.install_jre())
+                    check_step("jre_changed_checksum", wrong_jre.is_empty() and service.last_error.contains("SHA-256") and DirAccess.get_directories_at(service.cache_root.path_join("runtimes")).size() == runtime_count, service.last_error)
+                    service.api_base = config["api"]
                     var blocked := service.cache_root.path_join("runtimes/blocked-runtime")
                     var blocker := FileAccess.open(blocked, FileAccess.WRITE)
                     blocker.store_string("preserve the existing destination")
@@ -487,9 +536,19 @@ class EditorAddonSetupEngineTest {
                 var saved := ConfigFile.new()
                 var loaded := saved.load("res://project.godot")
                 check_step("apply_configuration", loaded == OK and saved_command.contains(installed["path"]) and saved_command.contains("--enable-native-access=ALL-UNNAMED") and saved.get_value("gdcc", "server/host", "") == "127.0.0.1", saved_command)
+                var old_port: int = ProjectSettings.get_setting("gdcc/server/port")
                 manager.connected = true
+                dialog._selected_jar = imported
                 await dialog._apply_configuration()
-                check_step("connected_apply_rejected", ProjectSettings.get_setting("gdcc/compilation_server/launch_command", "") == saved_command and not dialog._busy)
+                saved_command = ProjectSettings.get_setting("gdcc/compilation_server/launch_command", "")
+                check_step("connected_apply_restarts", saved_command.contains(imported["path"]) and manager.restarts == 2 and manager.previous_endpoint == ["127.0.0.1", old_port] and ProjectSettings.get_setting("gdcc/server/port") != old_port and manager.connected and not dialog._busy)
+                manager.busy = true
+                await dialog._apply_configuration()
+                check_step("busy_apply_rejected", ProjectSettings.get_setting("gdcc/compilation_server/launch_command", "") == saved_command and manager.restarts == 2 and not dialog._busy)
+                manager.busy = false
+                manager.restart_error = ERR_CANT_CONNECT
+                await dialog._apply_configuration()
+                check_step("restart_failure_reported", manager.restarts == 3 and not dialog._busy and dialog._status.text.contains("configuration was saved") and not manager.connected)
                 var process_service := GdccInstallService.new()
                 process_service.cache_root = service.cache_root
                 process_service.report_busy = Callable(owner, "_report_busy")

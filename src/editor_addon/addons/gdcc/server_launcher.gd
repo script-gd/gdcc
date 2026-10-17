@@ -87,6 +87,29 @@ func ensure_running_async(host: String, port: int) -> Array:
     return [int(box["err"]), bool(box["spawned"])]
 
 
+## Interactive replacement keeps the frame pump alive and only stops an owned endpoint.
+## Acknowledged shutdown may finish in the background; its PID must not be killed on teardown.
+func stop_owned_async(host: String, port: int) -> int:
+    var record := _find_spawned(host, port)
+    if record.is_empty():
+        return OK
+    var pid := int(record["pid"])
+    if not OS.is_process_running(pid):
+        _remove_spawned(pid)
+        return OK
+    var client := GdccRpcClient.new()
+    client.host = host
+    client.port = port
+    client.request_timeout = SHUTDOWN_BUDGET_MSEC / 1000.0
+    add_child(client)
+    var response: Dictionary = await client.call_rpc("server.shutdown", {}).completed
+    client.queue_free()
+    if not response["ok"]:
+        return ERR_CONNECTION_ERROR
+    _remove_spawned(pid)
+    return OK
+
+
 ## Last step of the plugin's `_exit_tree`: gracefully stops ONLY the service process this
 ## session spawned. The frame pump may already be stopped at this point, so the wait is a
 ## bounded non-blocking `poll()` + wall-clock deadline loop (the single allowed exemption from
@@ -118,7 +141,7 @@ func shutdown_owned() -> void:
         if err != OK:
             # The RPC was unreachable. Kill only when the recorded endpoint still accepts TCP —
             # that proves our service process is alive and holding the port; a recycled PID
-            # belonging to an unrelated process must never be killed (risk register R19).
+            # belonging to an unrelated process must never be killed.
             var probe_budget: int = mini(PROBE_BUDGET_MSEC, maxi(0, deadline - Time.get_ticks_msec()) + 150)
             if _probe_port_open(host, port, probe_budget):
                 OS.kill(pid)

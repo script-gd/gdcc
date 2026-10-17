@@ -15,6 +15,7 @@ var _step_arrow: Label
 var _current_step := 0
 var _java_page: VBoxContainer
 var _compiler_page: VBoxContainer
+var _compiler_actions: HBoxContainer
 var _java_path: LineEdit
 var _valid_java := ""
 var _java_list: ItemList
@@ -154,7 +155,10 @@ func _ready() -> void:
     var install_actions := HBoxContainer.new()
     install_actions.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
     install_actions.add_theme_constant_override("separation", 12)
-    _compiler_page.add_child(install_actions)
+    # Keep installation actions outside the scrolling lists so the footer cannot clip them.
+    _compiler_actions = install_actions
+    _compiler_actions.hide()
+    layout.add_child(install_actions)
     var remote_install := _button(install_actions, "Install selected version", _install_selected)
     remote_install.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     remote_install.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -167,15 +171,18 @@ func _ready() -> void:
     local_install.clip_text = true
     _progress = ProgressBar.new()
     _progress.show_percentage = false
-    _progress.visible = false
+    _progress.modulate.a = 0.0
     layout.add_child(_progress)
     _progress_text = _label(layout, "")
     _progress_text.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
-    _progress_text.hide()
+    _progress_text.modulate.a = 0.0
     _status = _label(layout, "")
     _status.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
-    _status.max_lines_visible = 2
-    _status.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+    # Keep footer slots allocated; newly shown, wrapping labels can grow the Window before sorting.
+    for label in [_progress_text, _status]:
+        label.autowrap_mode = TextServer.AUTOWRAP_OFF
+        label.clip_text = true
+        label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
     _service.phase_changed.connect(func(message: String) -> void: _status.text = message)
     _next_button = _button(layout, "Next", _advance)
     _next_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -261,6 +268,7 @@ func _show_step(index: int) -> void:
     _current_step = index
     _java_page.visible = index == 0
     _compiler_page.visible = index == 1
+    _compiler_actions.visible = index == 1
     _update_steps()
     if index == 1 and not _loaded[_tabs.current_tab]:
         _load_page(_tabs.current_tab)
@@ -323,13 +331,15 @@ func _set_busy(value: bool) -> void:
     _java_path.editable = not value
     if not value and _service.is_cancelled():
         _status.text = tr("Installation cancelled.")
-    _progress.visible = value
+    _progress.modulate.a = 1.0 if value else 0.0
     _progress.indeterminate = value
-    _progress_text.visible = false
+    _progress_text.modulate.a = 0.0
     _update_steps()
 
 
 func _process(_delta: float) -> void:
+    if _status != null:
+        _status.tooltip_text = _status.text
     if _progress == null or not _busy:
         return
     var request := _service.http
@@ -338,11 +348,11 @@ func _process(_delta: float) -> void:
         var total := maxi(request.get_body_size(), _service.download_size)
         _progress.max_value = maxi(1, total)
         _progress.value = request.get_downloaded_bytes()
-        _progress_text.visible = not request.download_file.is_empty()
+        _progress_text.modulate.a = 1.0 if not request.download_file.is_empty() else 0.0
         _progress_text.text = tr("Downloaded %s of %s") % [String.humanize_size(request.get_downloaded_bytes()),
                 String.humanize_size(total) if total > 0 else tr("Unknown size")]
     else:
-        _progress_text.hide()
+        _progress_text.modulate.a = 0.0
 
 
 func _close() -> void:
@@ -493,8 +503,8 @@ func _show_error(message: String) -> void:
 func _apply_configuration() -> void:
     if _busy or _valid_java.is_empty() or _selected_jar.is_empty():
         return
-    if _manager.is_server_connected() or not _manager.can_start_action():
-        _status.text = tr("The server is connected or busy. Configuration was not changed.")
+    if not _manager.can_start_action():
+        _status.text = tr("The server is busy. Configuration was not changed.")
         return
     var jar := str(_selected_jar["path"]).replace("\\", "/")
     var info := GdccInstallUtil.jar_info(jar)
@@ -515,18 +525,37 @@ func _apply_configuration() -> void:
         _status.text = tr("The selected compiler could not run with this Java installation.")
         _set_busy(false)
         return
-    if _manager.is_server_connected() or not _manager.can_start_action():
-        _status.text = tr("The server is connected or busy. Configuration was not changed.")
+    if not _manager.can_start_action():
+        _status.text = tr("The server is busy. Configuration was not changed.")
         _set_busy(false)
         return
+    var previous_endpoint: Array = _manager.server_endpoint()
+    # A new endpoint cannot reconnect to the old executable or require stopping an external server.
+    var reservation := TCPServer.new()
+    if reservation.listen(0, "127.0.0.1") != OK:
+        _status.text = tr("Could not reserve a local port for the compilation server.")
+        _set_busy(false)
+        return
+    if reservation.get_local_port() == int(previous_endpoint[1]):
+        var other := TCPServer.new()
+        if other.listen(0, "127.0.0.1") != OK:
+            reservation.stop()
+            _status.text = tr("Could not reserve a local port for the compilation server.")
+            _set_busy(false)
+            return
+        reservation.stop()
+        reservation = other
     var key := "gdcc/compilation_server/launch_command"
     var previous := {key: ProjectSettings.get_setting(key, ""),
-            "gdcc/server/host": ProjectSettings.get_setting("gdcc/server/host", "127.0.0.1")}
+            "gdcc/server/host": ProjectSettings.get_setting("gdcc/server/host", "127.0.0.1"),
+            "gdcc/server/port": ProjectSettings.get_setting("gdcc/server/port", 6099)}
     var command := '"%s" --enable-native-access=ALL-UNNAMED "-Dgdparser.gdscript.resourceDir=%s/native" -jar "%s" serve --host {host} --port {port}' \
             % [_valid_java, jar.get_base_dir(), jar]
     ProjectSettings.set_setting(key, command)
     ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
+    ProjectSettings.set_setting("gdcc/server/port", reservation.get_local_port())
     var error := ProjectSettings.save()
+    reservation.stop()
     if error != OK:
         for setting in previous:
             ProjectSettings.set_setting(setting, previous[setting])
@@ -536,6 +565,11 @@ func _apply_configuration() -> void:
     var settings := EditorInterface.get_editor_settings()
     settings.set_project_metadata("gdcc", "java_path", _valid_java)
     settings.set_project_metadata("gdcc", "compiler_jar", jar)
+    _status.text = tr("Starting the configured compilation server...")
+    var restart_error: int = await _manager.restart_server(previous_endpoint)
     _set_busy(false)
+    if restart_error != OK:
+        _status.text = tr("The configuration was saved, but the new compilation server could not be started (error %s).") % restart_error
+        return
     configured.emit()
     hide()

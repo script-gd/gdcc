@@ -315,10 +315,25 @@ func install_jre() -> Variant:
     for line in checksum_text.split("\n"):
         var parts := line.strip_edges().split(" ", false)
         if parts.size() == 2 and parts[1].trim_prefix("*") == selected["name"]:
-            digest = parts[0]
+            digest = parts[0].to_lower()
     if digest.length() != 64 or not digest.is_valid_hex_number():
         last_error = tr("The JRE checksum is missing or invalid.")
         return ""
+    # Copy fallbacks retain the archive identity, so a locked primary path cannot create duplicates.
+    var runtimes := cache_root.path_join("runtimes")
+    var relative := "jre/bin/java.exe" if OS.get_name() == "Windows" else "jre/bin/java"
+    if DirAccess.dir_exists_absolute(runtimes):
+        for name in DirAccess.get_directories_at(runtimes):
+            if name != digest and not name.begins_with(digest + "-"):
+                continue
+            var directory := runtimes.path_join(name)
+            if not FileAccess.file_exists(directory.path_join(".installing")) and (await check_java(directory.path_join(relative))):
+                if _cancelled:
+                    return ""
+                _set_phase(tr("JRE installation complete."))
+                return directory.path_join(relative)
+            if _cancelled:
+                return ""
     var stage := new_staging()
     if stage.is_empty():
         return ""
@@ -334,10 +349,9 @@ func install_jre() -> Variant:
             var directories := DirAccess.get_directories_at(extracted)
             if directories.size() == 1:
                 var root := extracted.path_join(directories[0])
-                var relative := "jre/bin/java.exe" if OS.get_name() == "Windows" else "jre/bin/java"
                 _set_phase(tr("Checking extracted Java..."))
                 if (await check_java(root.path_join(relative))) and not _cancelled:
-                    java_path = await _publish_jre(root, directories[0], relative)
+                    java_path = await _publish_jre(root, digest, relative)
         if java_path.is_empty() and not _cancelled and last_error.is_empty():
             last_error = tr("The JRE archive could not be installed or is not Java 25+.")
     _set_phase(tr("Cleaning temporary files..."))
@@ -352,7 +366,7 @@ func _publish_jre(source: String, name: String, relative: String) -> Variant:
     var runtimes := cache_root.path_join("runtimes")
     var destination := runtimes.path_join(name)
     var executable := destination.path_join(relative)
-    if await check_java(executable):
+    if not FileAccess.file_exists(destination.path_join(".installing")) and (await check_java(executable)):
         return "" if _cancelled else executable
     if _cancelled:
         return ""
