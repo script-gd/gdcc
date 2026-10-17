@@ -76,9 +76,8 @@ struct ${classDef.name} {
         </#if>
         <#-- Exactly-once destruction guard: lives ONLY in the root segment; derived wrappers -->
         <#-- reach it through the `_super` chain (renderDestructedFlagAccessExpr). Set by -->
-        <#-- `<C>_class_destructor`, cleared by create/recreate; `free_instance_func` re-enters -->
-        <#-- the destructor when the PREDELETE path never ran (engine reload calls free_instance -->
-        <#-- WITHOUT PREDELETE). -->
+        <#-- `<C>_class_destructor`, cleared by create/recreate; `free_instance_func` destroys -->
+        <#-- fields after exit notifications on normal deletion, and also handles reload. -->
         GDExtensionBool _gdcc_destructed;
     </#if>
     <#list classDef.properties as property>

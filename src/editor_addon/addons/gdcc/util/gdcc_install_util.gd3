@@ -1,8 +1,9 @@
 @tool
+class_name GdccInstallUtil
 extends RefCounted
 
-const MAX_UNPACKED := 512 * 1024 * 1024
-const MAX_ENTRIES := 20000
+static var MAX_UNPACKED: int = 512 * 1024 * 1024
+static var MAX_ENTRIES: int = 20000
 
 
 static func platform_token(system: String, architecture: String) -> String:
@@ -325,8 +326,8 @@ static func extract_tar_gzip(archive: String, destination: String) -> int:
         elif kind != 53:
             return ERR_UNAVAILABLE
     # Materialize notice aliases after regular files, never traverse archive-created symlinks.
-    for link in links:
-        if not FileAccess.file_exists(link[1]) or DirAccess.copy_absolute(link[1], link[0]) != OK:
+    for alias in links:
+        if not FileAccess.file_exists(alias[1]) or DirAccess.copy_absolute(alias[1], alias[0]) != OK:
             return ERR_CANT_CREATE
     return OK
 

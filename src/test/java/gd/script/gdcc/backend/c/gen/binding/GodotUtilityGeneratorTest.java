@@ -105,7 +105,7 @@ class GodotUtilityGeneratorTest {
                 () -> assertTrue(printBody.contains("GDExtensionConstTypePtr args[1 + (argc > 0 ? argc : 1)];"),
                         printBody),
                 () -> assertTrue(printBody.contains(
-                                "gdcc_utility_print(NULL, (1 + argc == 0) ? NULL : args, (int)(1 + argc));"),
+                                "GDCC_BINDING_CACHE(gdcc_utility_print)(NULL, (1 + argc == 0) ? NULL : args, (int)(1 + argc));"),
                         printBody),
                 () -> assertFalse(printBody.contains("args[1 + argc]"), printBody)
         );
@@ -132,10 +132,10 @@ class GodotUtilityGeneratorTest {
         var functionStart = source.indexOf("void " + functionName + "(");
         assertTrue(functionStart >= 0, "missing generated function: " + functionName);
         var resolveMacro = source.indexOf("GDCC_RESOLVE_UTILITY_CACHE(" + cacheName, functionStart);
-        var cachedCall = source.indexOf(cacheName + "(", resolveMacro);
+        var cachedCall = source.indexOf("GDCC_BINDING_CACHE(" + cacheName + ")(", resolveMacro);
         var macroDefinition = source.indexOf("#define GDCC_RESOLVE_UTILITY_CACHE(");
         var missCheck = source.indexOf("if (resolved == NULL)", macroDefinition);
-        var cacheAssignment = source.indexOf("(cache) = resolved;", macroDefinition);
+        var cacheAssignment = source.indexOf("atomic_store_explicit(&(cache), resolved, memory_order_release);", macroDefinition);
 
         assertAll(
                 () -> assertTrue(resolveMacro > functionStart, "missing generated resolve macro"),

@@ -3127,9 +3127,9 @@ public class CCodegenTest {
         assertFalse(directParentConstructPattern.matcher(cCode).find());
     }
 
-    /// free_instance must re-enter field destruction when the PREDELETE path never ran
-    /// (the engine reload path calls free_instance WITHOUT PREDELETE), while the normal
-    /// PREDELETE-then-free sequence must still destruct exactly once. This pins the guard
+    /// free_instance destroys fields after exit notifications on both normal deletion and
+    /// reload (which does not send PREDELETE). PREDELETE must leave fields intact for
+    /// Node's subsequent `_exit_tree` callback. This pins the guard
     /// layout: the root-only `_gdcc_destructed` flag, the guarded `<C>_class_destructor`
     /// entry, and the unguarded `<C>_class_destruct_fields` chain — with destroyable fields
     /// on BOTH base and derived classes so a flag-set truncation of the parent segment fails
@@ -3223,9 +3223,10 @@ public class CCodegenTest {
                 "godot_object_set_instance("
         );
 
-        // PREDELETE keeps funneling through the same guarded entry.
+        // Node processes PREDELETE after the extension: fields must survive until free_instance.
         var childNotificationBody = resolveFunctionBodyByPrefix(cCode, "void GDGuardChild_class_notification");
-        assertContainsAll(childNotificationBody, "GDGuardChild_class_destructor(self);");
+        assertFalse(childNotificationBody.contains("GDGuardChild_class_destructor("), childNotificationBody);
+        assertFalse(childNotificationBody.contains("GDGuardChild_class_destruct_fields("), childNotificationBody);
     }
 
     /// Every creatable class must supply recreate_instance_func (Godot disables reload for

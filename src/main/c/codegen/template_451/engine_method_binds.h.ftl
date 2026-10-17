@@ -45,10 +45,11 @@ static inline godot_${constructor.cIdentifier} *godot_new_${constructor.cIdentif
 <#if binding.familyName() == "SINGLETON">
 <#-- @ftlvariable name="binding" type="gd.script.gdcc.backend.c.gen.binding.ModuleLocalGodotBinding.Singleton" -->
 static inline ${binding.returnType()} ${binding.cFunctionName()}(void) {
-    static ${binding.returnType()} ${binding.cacheName()} = NULL;
-    if (${binding.cacheName()} == NULL) {
-        ${binding.cacheName()} = (${binding.returnType()})godot_global_get_singleton(GD_STATIC_SN(u8"${binding.escapedLookupName()}"));
-        if (${binding.cacheName()} == NULL) {
+    static _Atomic(${binding.returnType()}) ${binding.cacheName()} = NULL;
+    ${binding.returnType()} cached = atomic_load_explicit(&${binding.cacheName()}, memory_order_acquire);
+    if (cached == NULL) {
+        cached = (${binding.returnType()})godot_global_get_singleton(GD_STATIC_SN(u8"${binding.escapedLookupName()}"));
+        if (cached == NULL) {
             gdcc_binding_lookup_context context = { 0 };
             context.kind = "module_singleton";
             context.function_name = "${binding.escapedCFunctionName()}";
@@ -58,8 +59,9 @@ static inline ${binding.returnType()} ${binding.cFunctionName()}(void) {
             gdcc_binding_lookup_fail(&context);
             return NULL;
         }
+        atomic_store_explicit(&${binding.cacheName()}, cached, memory_order_release);
     }
-    return ${binding.cacheName()};
+    return cached;
 }
 
 <#elseif binding.familyName() == "CLASS_CONSTANT">

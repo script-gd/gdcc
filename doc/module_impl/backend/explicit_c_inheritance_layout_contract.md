@@ -168,11 +168,11 @@
 
 ### 8. 字段析构 exactly-once 合同
 
-- 背景：正常路径在 PREDELETE 时析构字段，但引擎 reload 路径经 `Object::clear_internal_extension` 直接调用 `free_instance_func`，**不发 PREDELETE**——字段析构必须能在 free_instance 中补齐，且两条路径合计只执行一次。
+- 正常删除和 reload 均在 `free_instance_func` 析构字段。普通类 PREDELETE 不析构字段：Godot 反向 PREDELETE 先通知 extension，随后 Node 才退树并调用 `_exit_tree`，字段必须保留到这些回调完成。reload 经 `Object::clear_internal_extension` 直接调用 `free_instance_func`，不依赖 PREDELETE。
 - 析构固定拆分为两层（命名不得更改）：
     - `<C>_class_destruct_fields(<C>* self)`：**无守卫**的字段析构链——析构本类 destroyable 非 static 字段后递归 `<super>_class_destruct_fields(&self->_super)`（derived→base）。守卫禁止放在链式函数入口，否则派生类置位后父类段被截断、父类字段全部泄漏。
     - `<C>_class_destructor(<C>* self)`：**唯一带守卫的入口**——`self == NULL` 或根 `_gdcc_destructed` 已置位则直接返回；否则置位根标志并调用 `<C>_class_destruct_fields(self)`。
-- 两条调用路径都只经守卫入口：PREDELETE notification 调 `<C>_class_destructor`；`<C>_class_free_instance` 先判 `!_gdcc_destructed` 再调 `<C>_class_destructor`，最后 `godot_mem_free(self)`。
+- `<C>_class_free_instance` 先判 `!_gdcc_destructed` 再调 `<C>_class_destructor`，最后 `godot_mem_free(self)`；普通类 notification 不触发字段析构。
 - 根标志由 create（§3）与 recreate 显式置 `false`（`godot_mem_alloc` 不置零）。
 - 协程状态类**不接入**该标志：其 PREDELETE 只做 cancel（不析构 frame 字段），字段清理由其 `free_instance` 唯一承担，引擎对每条路径恰好各调一次 free_instance，天然 exactly-once。
 - 析构路径不得新增对 `GD_STATIC_S`/`GD_STATIC_SN` 惰性创建的依赖（reload 时 free_instance 在 deinitialize 类注销段内执行，届时 registry 尚未销毁，现有路径可工作，但不得新增依赖以防御未来顺序调整）；字段析构链与协程字段清理**不得依赖 static backing**（static 销毁在类注销段之前，注销段内 free_instance 执行时 static 已销毁——它们只触碰 self 字段）；**Object 字段/capture/参数的释放一律经 `instance_id` → ObjectDB（`gdcc_object_live_ptr`），禁止经 fat ptr 缓存的 GDCC wrapper 取 raw object**——reload 批量 clear 的实例遍历顺序任意，被引用实例的 wrapper 可能已先释放而其 Godot 对象仍因强引用存活，解引用缓存 wrapper 即 UAF（wrapper 生命 ≠ 对象生命）。

@@ -4,6 +4,9 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.sun.net.httpserver.HttpServer;
 import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
+import gd.script.gdcc.backend.c.build.COptimizationLevel;
+import gd.script.gdcc.backend.c.build.TargetPlatform;
+import gd.script.gdcc.backend.c.build.ZigUtil;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
@@ -27,7 +30,7 @@ import javax.tools.ToolProvider;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/// Exercises interpreted setup scripts in an isolated real editor, without rebuilding the native addon.
+/// Exercises the interpreted setup UI against compiled installation services in an isolated editor.
 class EditorAddonSetupEngineTest {
     private final Path temporary = Path.of("tmp/test/editor_addon_setup", UUID.randomUUID().toString()).toAbsolutePath();
 
@@ -35,11 +38,18 @@ class EditorAddonSetupEngineTest {
     void setupInstallsAndValidatesCachedCompilersWithoutBlockingEditor() throws Exception {
         var godot = GodotGdextensionTestRunner.findGodotBinaryFromEnv();
         Assumptions.assumeTrue(godot != null, "GODOT_BIN is required");
+        Assumptions.assumeTrue(ZigUtil.findZig() != null, "Zig is required");
         var addon = temporary.resolve("addons/gdcc");
         Files.createDirectories(addon.resolve("util"));
-        for (var name : List.of("gdcc_dock.gd", "gdcc_setup_dialog.gd", "gdcc_install_service.gd", "util/gdcc_install_util.gd")) {
+        for (var name : List.of("gdcc_dock.gd", "gdcc_setup_dialog.gd")) {
             Files.copy(Path.of("src/editor_addon/addons/gdcc").resolve(name), addon.resolve(name));
         }
+        var compiled = EditorAddonProjectInstaller.compileClientLibrary(temporary.resolve("build"), TargetPlatform.getNativePlatform());
+        assertTrue(compiled.success(), () -> compiled.diagnostics().toString());
+        Files.writeString(temporary.resolve("build/.gdignore"), "");
+        EditorAddonProjectInstaller.installExtension(temporary, EditorAddonProjectInstaller.EXTENSION_SUB_DIR,
+                compiled.artifacts(), EditorAddonProjectInstaller.EXTENSION_FILE_NAME,
+                COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform(), true);
         Files.writeString(temporary.resolve("project.godot"), """
                 config_version=5
                 [application]
@@ -187,14 +197,15 @@ class EditorAddonSetupEngineTest {
                 assertTrue(result.isPresent(), output);
                 var steps = JsonParser.parseString(result.orElseThrow().substring("GDCC_SETUP_RESULT: ".length())).getAsJsonArray();
                 var expected = new ArrayList<>(List.of("disconnected", "connected", "timeline", "window_bounds",
-                        "java_parser", "java_process", "java_scan", "java_check_stays", "header_alignment", "next_navigation", "load_more_item", "action_layout", "action_alignment",
+                        "native_coroutine_bridge", "proxy_initialization", "java_parser", "java_process", "java_scan", "java_check_stays", "header_alignment", "next_navigation", "load_more_item", "action_layout", "action_alignment",
                         "process_timeout", "user_cancellation", "safe_paths", "manual_proxy", "jar_metadata", "zip_traversal",
                         "release_pagination", "release_dates", "nightly_link", "preview_dates", "release_install", "preview_nested_libraries",
                         "local_import_reuse", "local_dependency_sentinel", "missing_dependency_dialog", "checksum_failure", "cache_inventory"));
                 if (distributionSmoke) {
                     expected.addAll(List.of("real_windows_jre", "real_linux_tar", "jre_publish", "jre_repair", "all_java_list", "download_size", "jre_phases", "locked_jre_copy", "incomplete_runtime_hidden", "hidden_cleanup"));
                 }
-                expected.addAll(List.of("finish_enabled", "apply_configuration", "connected_apply_rejected", "busy_cleanup"));
+                expected.addAll(List.of("finish_enabled", "apply_configuration", "connected_apply_rejected",
+                        "process_teardown", "download_teardown", "worker_teardown", "busy_cleanup"));
                 var actual = new ArrayList<String>();
                 for (var step : steps) {
                     actual.add(step.getAsJsonObject().get("name").getAsString());
@@ -255,7 +266,6 @@ class EditorAddonSetupEngineTest {
     private static final String DRIVER = """
             @tool
             extends EditorPlugin
-            const Util = preload("res://addons/gdcc/util/gdcc_install_util.gd")
             const Dock = preload("res://addons/gdcc/gdcc_dock.gd")
             const Setup = preload("res://addons/gdcc/gdcc_setup_dialog.gd")
             var steps: Array = []
@@ -283,6 +293,11 @@ class EditorAddonSetupEngineTest {
 
             func check_step(name: String, ok: bool, details: String = "") -> void:
                 steps.append({"name": name, "ok": ok, "details": details})
+                print("GDCC_SETUP_STEP: " + name + " " + str(ok))
+
+            func _capture_result(operation: Variant, state: Dictionary) -> void:
+                state["result"] = await Setup.await_result(operation)
+                state["done"] = true
 
             func _run() -> void:
                 var config: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://config.json"))
@@ -312,11 +327,19 @@ class EditorAddonSetupEngineTest {
                 service.cache_root = ProjectSettings.globalize_path("res://cache")
                 service.api_base = config["api"]
                 service.set_busy(true)
-                check_step("java_parser", Util.java_major('openjdk 25.0.2 2026-01-20') == 25 and Util.java_major('java version "21.0.1"') == 21 and Util.java_major("garbage 99") == 0)
-                var java_result := await service.check_java(config["java"])
+                var operation: Variant = service.work(func() -> int: return 7)
+                var suspended: bool = operation is Object and operation.has_signal("completed")
+                var resumed: Variant = await Setup.await_result(operation)
+                var immediate: Variant = service.check_java(config["java"] + "-missing")
+                check_step("native_coroutine_bridge", suspended and resumed == 7 and immediate is bool and not (await Setup.await_result(immediate)))
+                await Setup.await_result(service.initialize_proxy())
+                check_step("proxy_initialization", service._proxies is Dictionary)
+                service._proxies = {} # Local HTTP fixtures must not depend on the machine's proxy.
+                check_step("java_parser", GdccInstallUtil.java_major('openjdk 25.0.2 2026-01-20') == 25 and GdccInstallUtil.java_major('java version "21.0.1"') == 21 and GdccInstallUtil.java_major("garbage 99") == 0)
+                var java_result: bool = await Setup.await_result(service.check_java(config["java"]))
                 check_step("java_process", java_result)
                 OS.set_environment("JAVA", config["java"])
-                var detected := await service.scan_java()
+                var detected: Array = await Setup.await_result(service.scan_java())
                 check_step("java_scan", detected.any(func(info: Dictionary) -> bool: return info["path"] == config["java"] and info["usable"]), str(detected))
                 service.set_busy(false)
                 dialog._java_versions = detected
@@ -357,42 +380,42 @@ class EditorAddonSetupEngineTest {
                         divider = child
                 check_step("action_alignment", divider != null and divider.autowrap_mode == TextServer.AUTOWRAP_OFF and divider.size.x >= divider.get_minimum_size().x and abs(divider.get_global_rect().get_center().y - remote_button.get_global_rect().get_center().y) <= 1 and divider.get_global_rect().end.x < local_button.get_global_rect().position.x and abs(remote_button.size.y - remote_button.get_combined_minimum_size().y) <= 1 and abs(local_button.size.y - local_button.get_combined_minimum_size().y) <= 1)
                 service.set_busy(true)
-                var timed := await service.run_process(config["java"], PackedStringArray(["-cp", ProjectSettings.globalize_path("res://fixture"), "FixtureMain", "--hang"]), 0.1)
+                var timed: Dictionary = await Setup.await_result(service.run_process(config["java"], PackedStringArray(["-cp", ProjectSettings.globalize_path("res://fixture"), "FixtureMain", "--hang"]), 0.1))
                 check_step("process_timeout", timed["code"] == -1 and service._process_id == -1)
                 dialog._set_busy(true)
                 get_tree().create_timer(0.1).timeout.connect(dialog._close, CONNECT_ONE_SHOT)
-                var cancelled := await service.run_process(config["java"], PackedStringArray(["-cp", ProjectSettings.globalize_path("res://fixture"), "FixtureMain", "--hang"]), 5.0)
+                var cancelled: Dictionary = await Setup.await_result(service.run_process(config["java"], PackedStringArray(["-cp", ProjectSettings.globalize_path("res://fixture"), "FixtureMain", "--hang"]), 5.0))
                 check_step("user_cancellation", cancelled["code"] == -1 and service.is_cancelled() and service._process_id == -1)
                 dialog._set_busy(false)
                 service.set_busy(true)
-                check_step("safe_paths", not Util.check_relative_path("../escape") and not Util.check_relative_path("C:/escape") and not Util.check_relative_path("a/../../escape") and Util.check_relative_path("lib/a.jar"))
-                var proxy := Util.parse_windows_proxy("  ProxyEnable    REG_DWORD    0x1\\n  ProxyServer    REG_SZ    http=127.0.0.1:7890;https=[::1]:8080\\n")
-                check_step("manual_proxy", proxy.get("http") == ["127.0.0.1", 7890] and proxy.get("https") == ["::1", 8080] and Util.parse_windows_proxy("ProxyEnable REG_DWORD 0x0\\nProxyServer REG_SZ x:1").is_empty(), str(proxy))
-                var info := Util.jar_info(ProjectSettings.globalize_path("res://fixture/compiler.jar"))
-                check_step("jar_metadata", info.get("version") == "1.2.3" and Util.check_dependencies(info))
-                check_step("zip_traversal", Util.extract_zip(ProjectSettings.globalize_path("res://fixture/unsafe.zip"), ProjectSettings.globalize_path("res://unsafe")) != OK and not FileAccess.file_exists("res://escaped.txt"))
-                var release := await service.compiler_page(false, 1)
-                var second := await service.compiler_page(false, 2)
+                check_step("safe_paths", not GdccInstallUtil.check_relative_path("../escape") and not GdccInstallUtil.check_relative_path("C:/escape") and not GdccInstallUtil.check_relative_path("a/../../escape") and GdccInstallUtil.check_relative_path("lib/a.jar"))
+                var proxy := GdccInstallUtil.parse_windows_proxy("  ProxyEnable    REG_DWORD    0x1\\n  ProxyServer    REG_SZ    http=127.0.0.1:7890;https=[::1]:8080\\n")
+                check_step("manual_proxy", proxy.get("http") == ["127.0.0.1", 7890] and proxy.get("https") == ["::1", 8080] and GdccInstallUtil.parse_windows_proxy("ProxyEnable REG_DWORD 0x0\\nProxyServer REG_SZ x:1").is_empty(), str(proxy))
+                var info := GdccInstallUtil.jar_info(ProjectSettings.globalize_path("res://fixture/compiler.jar"))
+                check_step("jar_metadata", info.get("version") == "1.2.3" and GdccInstallUtil.check_dependencies(info))
+                check_step("zip_traversal", GdccInstallUtil.extract_zip(ProjectSettings.globalize_path("res://fixture/unsafe.zip"), ProjectSettings.globalize_path("res://unsafe")) != OK and not FileAccess.file_exists("res://escaped.txt"))
+                var release: Dictionary = await Setup.await_result(service.compiler_page(false, 1))
+                var second: Dictionary = await Setup.await_result(service.compiler_page(false, 2))
                 check_step("release_pagination", release.get("entries", []).size() == 20 and release.get("more", false) and second.get("entries", []).size() == 1 and not second.get("more", true), service.last_error)
                 check_step("release_dates", release["entries"][0]["label"].ends_with("2026-10-17"))
-                var previews := await service.compiler_page(true, 1)
+                var previews: Dictionary = await Setup.await_result(service.compiler_page(true, 1))
                 check_step("nightly_link", previews.get("entries", []).size() == 1 and previews["entries"][0]["url"] == "https://nightly.link/script-gd/gdcc/actions/artifacts/123.zip", str(previews))
                 var preview_label: String = previews["entries"][0]["label"]
                 check_step("preview_dates", preview_label.begins_with("feature/setup · abcdef12 · ") and not preview_label.contains("T09:") and not preview_label.ends_with("Z") and not preview_label.contains(" / "), preview_label)
-                var installed := await service.install_compiler(release["entries"][0])
-                check_step("release_install", Util.check_dependencies(installed) and installed.get("path", "").begins_with(service.cache_root), service.last_error)
+                var installed: Dictionary = await Setup.await_result(service.install_compiler(release["entries"][0]))
+                check_step("release_install", GdccInstallUtil.check_dependencies(installed) and installed.get("path", "").begins_with(service.cache_root), service.last_error)
                 var preview_entry := {"id": "actions-123", "url": config["api"] + "preview.zip", "archive": true}
-                var preview_install := await service.install_compiler(preview_entry)
-                check_step("preview_nested_libraries", Util.check_dependencies(preview_install), service.last_error)
-                var imported := await service.import_compiler(ProjectSettings.globalize_path("res://fixture/compiler.jar"))
-                var imported_again := await service.import_compiler(ProjectSettings.globalize_path("res://fixture/compiler.jar"))
-                check_step("local_import_reuse", Util.check_dependencies(imported) and Util.check_dependencies(imported_again) and imported["path"] == imported_again["path"], service.last_error)
+                var preview_install: Dictionary = await Setup.await_result(service.install_compiler(preview_entry))
+                check_step("preview_nested_libraries", GdccInstallUtil.check_dependencies(preview_install), service.last_error)
+                var imported: Dictionary = await Setup.await_result(service.import_compiler(ProjectSettings.globalize_path("res://fixture/compiler.jar")))
+                var imported_again: Dictionary = await Setup.await_result(service.import_compiler(ProjectSettings.globalize_path("res://fixture/compiler.jar")))
+                check_step("local_import_reuse", GdccInstallUtil.check_dependencies(imported) and GdccInstallUtil.check_dependencies(imported_again) and imported["path"] == imported_again["path"], service.last_error)
                 var original_cache: String = service.cache_root
                 service.cache_root = original_cache + "-sentinel"
                 var dependency := ProjectSettings.globalize_path("res://fixture/lib/runtime.jar")
                 DirAccess.rename_absolute(dependency, dependency + ".backup")
-                var sentinel_import := await service.import_compiler(ProjectSettings.globalize_path("res://fixture/compiler.jar"))
-                check_step("local_dependency_sentinel", Util.check_dependencies(sentinel_import) and sentinel_import.get("local", false) and not FileAccess.file_exists(str(sentinel_import.get("path", "")).get_base_dir().path_join("lib/runtime.jar")), service.last_error)
+                var sentinel_import: Dictionary = await Setup.await_result(service.import_compiler(ProjectSettings.globalize_path("res://fixture/compiler.jar")))
+                check_step("local_dependency_sentinel", GdccInstallUtil.check_dependencies(sentinel_import) and sentinel_import.get("local", false) and not FileAccess.file_exists(str(sentinel_import.get("path", "")).get_base_dir().path_join("lib/runtime.jar")), service.last_error)
                 DirAccess.rename_absolute(dependency + ".backup", dependency)
                 service.cache_root = original_cache
                 await dialog._import_jar(ProjectSettings.globalize_path("res://missing/compiler.jar"))
@@ -401,23 +424,23 @@ class EditorAddonSetupEngineTest {
                 check_step("missing_dependency_dialog", dialog._error_dialog.visible and dialog._error_dialog.dialog_text.contains("gdparser-*.jar"))
                 dialog._error_dialog.hide()
                 var corrupted := {"id": "corrupted", "url": config["api"] + "compiler.jar", "archive": false, "digest": "sha256:" + "0".repeat(64)}
-                var rejected := await service.install_compiler(corrupted)
+                var rejected: Dictionary = await Setup.await_result(service.install_compiler(corrupted))
                 check_step("checksum_failure", rejected.is_empty() and not DirAccess.dir_exists_absolute(service.cache_root.path_join("compilers/corrupted")), service.last_error)
                 check_step("cache_inventory", service.cached_compilers().size() == 3)
                 if config.has("windows_runtime"):
                     var windows_output := ProjectSettings.globalize_path("res://runtime-windows")
-                    var windows_error: Variant = await service.work(func() -> int: return Util.extract_zip(config["windows_runtime"], windows_output))
+                    var windows_error: Variant = await Setup.await_result(service.work(func() -> int: return GdccInstallUtil.extract_zip(config["windows_runtime"], windows_output)))
                     var java := windows_output.path_join("gdcc-jre-1.0.0-windows-x64/jre/bin/java.exe")
-                    check_step("real_windows_jre", windows_error == OK and await service.check_java(java), str(windows_error))
+                    check_step("real_windows_jre", windows_error == OK and await Setup.await_result(service.check_java(java)), str(windows_error))
                     var linux_output := ProjectSettings.globalize_path("res://runtime-linux")
-                    var linux_error: Variant = await service.work(func() -> int: return Util.extract_tar_gzip(config["linux_runtime"], linux_output))
+                    var linux_error: Variant = await Setup.await_result(service.work(func() -> int: return GdccInstallUtil.extract_tar_gzip(config["linux_runtime"], linux_output)))
                     check_step("real_linux_tar", linux_error == OK and FileAccess.file_exists(linux_output.path_join("gdcc-jre-1.0.0-linux-x64/jre/bin/java")), str(linux_error))
                     service.set_busy(false)
                     service.last_error = ""
-                    var published := await service.install_jre()
+                    var published: String = await Setup.await_result(service.install_jre())
                     check_step("jre_publish", not published.is_empty() and FileAccess.file_exists(published) and published.begins_with(service.cache_root.path_join("runtimes")), service.last_error)
                     var runtime_root: String = service.cache_root.path_join("runtimes/gdcc-jre-1.0.0-windows-x64")
-                    await service.work(func() -> void: Util.remove_tree(runtime_root))
+                    await Setup.await_result(service.work(func() -> void: GdccInstallUtil.remove_tree(runtime_root)))
                     DirAccess.make_dir_recursive_absolute(runtime_root)
                     var phases: Array[String] = []
                     var phase_ui := {"matches": true}
@@ -429,8 +452,8 @@ class EditorAddonSetupEngineTest {
                     dialog._busy = false
                     dialog._show_step(0)
                     await dialog._install_jre()
-                    check_step("jre_repair", FileAccess.file_exists(dialog._valid_java) and dialog._valid_java.begins_with(runtime_root) and await service.check_java(dialog._valid_java) and dialog._current_step == 0 and not dialog._next_button.disabled, service.last_error)
-                    var all_java := await service.scan_java()
+                    check_step("jre_repair", FileAccess.file_exists(dialog._valid_java) and dialog._valid_java.begins_with(runtime_root) and await Setup.await_result(service.check_java(dialog._valid_java)) and dialog._current_step == 0 and not dialog._next_button.disabled, service.last_error)
+                    var all_java: Array = await Setup.await_result(service.scan_java())
                     check_step("all_java_list", all_java.any(func(info: Dictionary) -> bool: return info["path"] == config["java"]) and all_java.any(func(info: Dictionary) -> bool: return info["path"].begins_with(runtime_root)) and dialog._java_versions.size() >= 2, str(all_java))
                     var runtime_size := FileAccess.get_file_as_bytes(config["windows_runtime"]).size()
                     check_step("download_size", service.download_size == runtime_size and dialog._progress_text.text.contains(String.humanize_size(runtime_size)), dialog._progress_text.text)
@@ -440,16 +463,16 @@ class EditorAddonSetupEngineTest {
                     blocker.store_string("preserve the existing destination")
                     blocker.close()
                     var locked := FileAccess.open(blocked, FileAccess.READ)
-                    var copied := await service._publish_jre(windows_output.path_join("gdcc-jre-1.0.0-windows-x64"), "blocked-runtime", "jre/bin/java.exe")
+                    var copied: String = await Setup.await_result(service._publish_jre(windows_output.path_join("gdcc-jre-1.0.0-windows-x64"), "blocked-runtime", "jre/bin/java.exe"))
                     locked.close()
-                    check_step("locked_jre_copy", not copied.is_empty() and copied.contains("blocked-runtime-") and await service.check_java(copied) and DirAccess.dir_exists_absolute(windows_output.path_join("gdcc-jre-1.0.0-windows-x64")) and FileAccess.get_file_as_string(blocked) == "preserve the existing destination", copied + " | " + service.last_error)
+                    check_step("locked_jre_copy", not copied.is_empty() and copied.contains("blocked-runtime-") and await Setup.await_result(service.check_java(copied)) and DirAccess.dir_exists_absolute(windows_output.path_join("gdcc-jre-1.0.0-windows-x64")) and FileAccess.get_file_as_string(blocked) == "preserve the existing destination", copied + " | " + service.last_error)
                     var marker_path: String = copied.get_base_dir().get_base_dir().get_base_dir().path_join(".installing")
                     var hidden_runtime := FileAccess.open(marker_path, FileAccess.WRITE)
                     hidden_runtime.close()
-                    var visible_java := await service.scan_java()
+                    var visible_java: Array = await Setup.await_result(service.scan_java())
                     check_step("incomplete_runtime_hidden", not visible_java.any(func(info: Dictionary) -> bool: return info["path"] == copied))
                     var copied_root: String = marker_path.get_base_dir()
-                    await service.work(func() -> void: Util.remove_tree(copied_root))
+                    await Setup.await_result(service.work(func() -> void: GdccInstallUtil.remove_tree(copied_root)))
                     check_step("hidden_cleanup", not DirAccess.dir_exists_absolute(copied_root))
                 service.set_busy(false)
                 dialog._refresh_installed(installed["path"])
@@ -467,6 +490,39 @@ class EditorAddonSetupEngineTest {
                 manager.connected = true
                 await dialog._apply_configuration()
                 check_step("connected_apply_rejected", ProjectSettings.get_setting("gdcc/compilation_server/launch_command", "") == saved_command and not dialog._busy)
+                var process_service := GdccInstallService.new()
+                process_service.cache_root = service.cache_root
+                process_service.report_busy = Callable(owner, "_report_busy")
+                owner.add_child(process_service)
+                process_service.set_busy(true)
+                var process_state := {"done": false}
+                _capture_result(process_service.run_process(config["java"], PackedStringArray(["-cp", ProjectSettings.globalize_path("res://fixture"), "FixtureMain", "--hang"]), 5.0), process_state)
+                process_service.free()
+                await get_tree().process_frame
+                check_step("process_teardown", process_state["done"] and process_state["result"]["code"] == -1 and owner.busy == 0)
+                var download_service := GdccInstallService.new()
+                var download_root := ProjectSettings.globalize_path("res://teardown-download")
+                download_service.cache_root = download_root
+                download_service.report_busy = Callable(owner, "_report_busy")
+                owner.add_child(download_service)
+                download_service.set_busy(true)
+                var download_state := {"done": false}
+                _capture_result(download_service.install_compiler({"id": "teardown", "url": config["api"] + "compiler.jar", "archive": false}), download_state)
+                download_service.free()
+                await get_tree().process_frame
+                check_step("download_teardown", download_state["done"] and download_state["result"].is_empty() and DirAccess.get_directories_at(download_root.path_join("staging")).is_empty() and owner.busy == 0)
+                var worker_service := GdccInstallService.new()
+                var worker_root := ProjectSettings.globalize_path("res://teardown-worker")
+                worker_service.cache_root = worker_root
+                worker_service.report_busy = Callable(owner, "_report_busy")
+                owner.add_child(worker_service)
+                worker_service.set_busy(true)
+                var worker_state := {"done": false}
+                _capture_result(worker_service.import_compiler(ProjectSettings.globalize_path("res://fixture/compiler.jar")), worker_state)
+                var worker_started := worker_service._worker != null
+                worker_service.free()
+                await get_tree().process_frame
+                check_step("worker_teardown", worker_started and worker_state["done"] and worker_state["result"].is_empty() and DirAccess.get_directories_at(worker_root.path_join("staging")).is_empty() and owner.busy == 0)
                 check_step("busy_cleanup", owner.busy == 0)
                 owner.queue_free()
                 await get_tree().process_frame

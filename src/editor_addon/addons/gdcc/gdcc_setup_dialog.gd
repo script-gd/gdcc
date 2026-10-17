@@ -1,12 +1,9 @@
 @tool
 extends ConfirmationDialog
 
-const InstallService := preload("res://addons/gdcc/gdcc_install_service.gd")
-const Util := preload("res://addons/gdcc/util/gdcc_install_util.gd")
-
 signal configured
 
-var _service: InstallService
+var _service: GdccInstallService
 var _manager: Node
 var _java_step: LinkButton
 var _compiler_step: LinkButton
@@ -54,7 +51,7 @@ func _ready() -> void:
     dialog_hide_on_ok = false
     close_requested.connect(_close)
     canceled.connect(_close)
-    _service = InstallService.new()
+    _service = GdccInstallService.new()
     _service.report_busy = Callable(_manager.get_parent(), "_report_busy")
     add_child(_service)
     var layout := VBoxContainer.new()
@@ -243,12 +240,19 @@ func open_setup() -> void:
 func _initialize() -> void:
     _set_busy(true)
     _status.text = tr("Looking for Java 25+ and installed compilers...")
-    await _service.initialize_proxy()
-    _java_versions = await _service.scan_java()
+    await await_result(_service.initialize_proxy())
+    _java_versions = await await_result(_service.scan_java())
     _refresh_java_list()
     _refresh_installed()
     _status.text = tr("Java 25+ is ready.") if not _valid_java.is_empty() else tr("Java 25+ was not found. Choose Java or install the JRE.")
     _set_busy(false)
+
+
+# Native coroutines return either a completed value or a state with a completed signal.
+static func await_result(result: Variant) -> Variant:
+    if result is Object and result.has_signal("completed"):
+        return await result.completed
+    return result
 
 
 func _show_step(index: int) -> void:
@@ -375,10 +379,10 @@ func _validate_java(_text: String = "") -> void:
     _set_busy(true)
     var path := _java_path.text.strip_edges().replace("\\", "/")
     if path.is_empty():
-        _java_versions = await _service.scan_java()
+        _java_versions = await await_result(_service.scan_java())
         _refresh_java_list()
     else:
-        var info := await _service.inspect_java(path)
+        var info: Dictionary = await await_result(_service.inspect_java(path))
         _valid_java = path if info.get("usable", false) else ""
         if not info.is_empty():
             _remember_java(info)
@@ -395,9 +399,9 @@ func _install_jre() -> void:
         return
     _set_busy(true)
     _status.text = tr("Downloading and installing Java...")
-    var path := await _service.install_jre()
+    var path: String = await await_result(_service.install_jre())
     if not path.is_empty():
-        var info := await _service.inspect_java(path)
+        var info: Dictionary = await await_result(_service.inspect_java(path))
         if not info.is_empty():
             _remember_java(info)
         _status.text = tr("Java 25+ is ready.")
@@ -428,7 +432,7 @@ func _load_page(index: int) -> void:
         return
     _set_busy(true)
     _status.text = tr("Loading compiler versions...")
-    var result := await _service.compiler_page(index == 1, _pages[index])
+    var result: Dictionary = await await_result(_service.compiler_page(index == 1, _pages[index]))
     if not result.is_empty():
         for entry in result["entries"]:
             _entries[index].append(entry)
@@ -463,18 +467,18 @@ func _install_selected() -> void:
         return
     _set_busy(true)
     _status.text = tr("Downloading and installing GDCC...")
-    var info := await _service.install_compiler(_entries[index][selection[0]])
+    var info: Dictionary = await await_result(_service.install_compiler(_entries[index][selection[0]]))
     _status.text = tr("The compiler is installed. Apply it to this project when ready.") if not info.is_empty() else _service.last_error
     _refresh_installed(str(info.get("path", "")))
     _set_busy(false)
 
 
 func _import_jar(path: String) -> void:
-    if not Util.has_gdparser_library(path):
+    if not GdccInstallUtil.has_gdparser_library(path):
         _show_error(tr("The selected JAR needs an adjacent lib directory containing gdparser-*.jar."))
         return
     _set_busy(true)
-    var info := await _service.import_compiler(path)
+    var info: Dictionary = await await_result(_service.import_compiler(path))
     _status.text = tr("The compiler is installed. Apply it to this project when ready.") if not info.is_empty() else _service.last_error
     _refresh_installed(str(info.get("path", "")))
     _set_busy(false)
@@ -493,10 +497,10 @@ func _apply_configuration() -> void:
         _status.text = tr("The server is connected or busy. Configuration was not changed.")
         return
     var jar := str(_selected_jar["path"]).replace("\\", "/")
-    var info := Util.jar_info(jar)
+    var info := GdccInstallUtil.jar_info(jar)
     if not info.is_empty():
         info["local"] = _selected_jar.get("local", false)
-    if not Util.check_dependencies(info):
+    if not GdccInstallUtil.check_dependencies(info):
         _status.text = tr("The compiler archive is invalid or its runtime libraries are missing.")
         return
     for path in [_valid_java, jar]:
@@ -504,10 +508,10 @@ func _apply_configuration() -> void:
             _status.text = tr("The selected path contains unsupported command characters.")
             return
     _set_busy(true)
-    var result := await _service.run_process(_valid_java, PackedStringArray([
+    var result: Dictionary = await await_result(_service.run_process(_valid_java, PackedStringArray([
         "--enable-native-access=ALL-UNNAMED", "-jar", jar, "--version",
-    ]), 15.0)
-    if result["code"] != 0 or not await _service.check_java(_valid_java) or _service.is_cancelled():
+    ]), 15.0))
+    if result["code"] != 0 or not await await_result(_service.check_java(_valid_java)) or _service.is_cancelled():
         _status.text = tr("The selected compiler could not run with this Java installation.")
         _set_busy(false)
         return

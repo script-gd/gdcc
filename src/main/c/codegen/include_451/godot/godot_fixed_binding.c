@@ -2,6 +2,12 @@
 /* Do not edit by hand. */
 #include "godot_fixed_binding.h"
 
+#include <stdatomic.h>
+
+#ifndef GDCC_BINDING_CACHE
+#define GDCC_BINDING_CACHE(cache) atomic_load_explicit(&(cache), memory_order_acquire)
+#endif
+
 #ifndef GDCC_BINDING_LOOKUP_FAIL_TYPE
 #define GDCC_BINDING_LOOKUP_FAIL_TYPE(kind_value, function_value, lookup_value, owner_value) \
     gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){ \
@@ -37,13 +43,13 @@
 #ifndef GDCC_RESOLVE_BUILTIN_CACHE
 #define GDCC_RESOLVE_BUILTIN_CACHE(cache, resolved_type, resolved_expr, function_value, lookup_value, owner_value, return_stmt) \
     do { \
-        if ((cache) == NULL) { \
+        if (GDCC_BINDING_CACHE(cache) == NULL) { \
             resolved_type resolved = (resolved_expr); \
             if (resolved == NULL) { \
                 GDCC_BINDING_LOOKUP_FAIL_TYPE("builtin", function_value, lookup_value, owner_value); \
                 return_stmt; \
             } \
-            (cache) = resolved; \
+            atomic_store_explicit(&(cache), resolved, memory_order_release); \
         } \
     } while (false)
 #endif
@@ -51,7 +57,7 @@
 #ifndef GDCC_RESOLVE_BUILTIN_NAMED_CACHE
 #define GDCC_RESOLVE_BUILTIN_NAMED_CACHE(cache, resolved_type, name_var, name_text, resolved_expr, function_value, lookup_value, owner_value, return_stmt) \
     do { \
-        if ((cache) == NULL) { \
+        if (GDCC_BINDING_CACHE(cache) == NULL) { \
             godot_StringName name_var; \
             godot_string_name_new_with_utf8_chars((GDExtensionUninitializedStringNamePtr)&name_var, name_text); \
             resolved_type resolved = (resolved_expr); \
@@ -60,7 +66,7 @@
                 GDCC_BINDING_LOOKUP_FAIL_TYPE("builtin", function_value, lookup_value, owner_value); \
                 return_stmt; \
             } \
-            (cache) = resolved; \
+            atomic_store_explicit(&(cache), resolved, memory_order_release); \
         } \
     } while (false)
 #endif
@@ -68,7 +74,7 @@
 #ifndef GDCC_RESOLVE_UTILITY_CACHE
 #define GDCC_RESOLVE_UTILITY_CACHE(cache, lookup_value, hash_value, function_value, return_stmt) \
     do { \
-        if ((cache) == NULL) { \
+        if (GDCC_BINDING_CACHE(cache) == NULL) { \
             godot_StringName utility_name; \
             godot_string_name_new_with_utf8_chars((GDExtensionUninitializedStringNamePtr)&utility_name, lookup_value); \
             GDExtensionPtrUtilityFunction resolved = godot_variant_get_ptr_utility_function(&utility_name, hash_value); \
@@ -77,7 +83,7 @@
                 GDCC_BINDING_LOOKUP_FAIL_HASH("utility", function_value, lookup_value, hash_value); \
                 return_stmt; \
             } \
-            (cache) = resolved; \
+            atomic_store_explicit(&(cache), resolved, memory_order_release); \
         } \
     } while (false)
 #endif
@@ -85,18 +91,19 @@
 #ifndef GDCC_RESOLVE_FIXED_METHOD_CACHE
 #define GDCC_RESOLVE_FIXED_METHOD_CACHE(cache, class_value, method_value, hash_value, function_value, return_stmt) \
     do { \
-        if ((cache) == NULL) { \
-            (cache) = gdcc_fixed_resolve_method(class_value, method_value, hash_value, function_value); \
-            if ((cache) == NULL) { \
+        if (GDCC_BINDING_CACHE(cache) == NULL) { \
+            GDExtensionMethodBindPtr resolved = gdcc_fixed_resolve_method(class_value, method_value, hash_value, function_value); \
+            if (resolved == NULL) { \
                 return_stmt; \
             } \
+            atomic_store_explicit(&(cache), resolved, memory_order_release); \
         } \
     } while (false)
 #endif
 
 #ifndef GDCC_DEFINE_VARIANT_TO_TYPE
 #define GDCC_DEFINE_VARIANT_TO_TYPE(c_name, return_type, variant_type, zero_return) \
-    static GDExtensionTypeFromVariantConstructorFunc gdcc_builtin_variant_to_##c_name = NULL; \
+    static _Atomic(GDExtensionTypeFromVariantConstructorFunc) gdcc_builtin_variant_to_##c_name = NULL; \
     return_type godot_new_##c_name##_with_Variant(const godot_Variant *value) { \
         GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_variant_to_##c_name, \
                 GDExtensionTypeFromVariantConstructorFunc, \
@@ -106,14 +113,14 @@
                 #c_name, \
                 return zero_return); \
         return_type self; \
-        gdcc_builtin_variant_to_##c_name((GDExtensionUninitializedTypePtr)&self, (GDExtensionVariantPtr)value); \
+        GDCC_BINDING_CACHE(gdcc_builtin_variant_to_##c_name)((GDExtensionUninitializedTypePtr)&self, (GDExtensionVariantPtr)value); \
         return self; \
     }
 #endif
 
 #ifndef GDCC_DEFINE_VARIANT_FROM_TYPE_VALUE
 #define GDCC_DEFINE_VARIANT_FROM_TYPE_VALUE(c_name, parameter_type, variant_type) \
-    static GDExtensionVariantFromTypeConstructorFunc gdcc_builtin_variant_from_##c_name = NULL; \
+    static _Atomic(GDExtensionVariantFromTypeConstructorFunc) gdcc_builtin_variant_from_##c_name = NULL; \
     godot_Variant godot_new_Variant_with_##c_name(parameter_type value) { \
         GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_variant_from_##c_name, \
                 GDExtensionVariantFromTypeConstructorFunc, \
@@ -123,14 +130,14 @@
                 #c_name, \
                 return godot_new_Variant_nil()); \
         godot_Variant self; \
-        gdcc_builtin_variant_from_##c_name((GDExtensionUninitializedVariantPtr)&self, (GDExtensionTypePtr)&value); \
+        GDCC_BINDING_CACHE(gdcc_builtin_variant_from_##c_name)((GDExtensionUninitializedVariantPtr)&self, (GDExtensionTypePtr)&value); \
         return self; \
     }
 #endif
 
 #ifndef GDCC_DEFINE_VARIANT_FROM_TYPE_PTR
 #define GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(c_name, parameter_type, variant_type) \
-    static GDExtensionVariantFromTypeConstructorFunc gdcc_builtin_variant_from_##c_name = NULL; \
+    static _Atomic(GDExtensionVariantFromTypeConstructorFunc) gdcc_builtin_variant_from_##c_name = NULL; \
     godot_Variant godot_new_Variant_with_##c_name(parameter_type value) { \
         GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_variant_from_##c_name, \
                 GDExtensionVariantFromTypeConstructorFunc, \
@@ -140,14 +147,14 @@
                 #c_name, \
                 return godot_new_Variant_nil()); \
         godot_Variant self; \
-        gdcc_builtin_variant_from_##c_name((GDExtensionUninitializedVariantPtr)&self, (GDExtensionTypePtr)value); \
+        GDCC_BINDING_CACHE(gdcc_builtin_variant_from_##c_name)((GDExtensionUninitializedVariantPtr)&self, (GDExtensionTypePtr)value); \
         return self; \
     }
 #endif
 
 #ifndef GDCC_DEFINE_VARIANT_FROM_OBJECT
 #define GDCC_DEFINE_VARIANT_FROM_OBJECT(c_name, parameter_type, variant_type) \
-    static GDExtensionVariantFromTypeConstructorFunc gdcc_builtin_variant_from_##c_name = NULL; \
+    static _Atomic(GDExtensionVariantFromTypeConstructorFunc) gdcc_builtin_variant_from_##c_name = NULL; \
     godot_Variant godot_new_Variant_with_##c_name(parameter_type value) { \
         GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_variant_from_##c_name, \
                 GDExtensionVariantFromTypeConstructorFunc, \
@@ -158,16 +165,16 @@
                 return godot_new_Variant_nil()); \
         godot_Variant self; \
         const godot_Object *object_value = value; \
-        gdcc_builtin_variant_from_##c_name((GDExtensionUninitializedVariantPtr)&self, (GDExtensionTypePtr)&object_value); \
+        GDCC_BINDING_CACHE(gdcc_builtin_variant_from_##c_name)((GDExtensionUninitializedVariantPtr)&self, (GDExtensionTypePtr)&object_value); \
         return self; \
     }
 #endif
 
 #ifndef GDCC_DEFINE_FIXED_SINGLETON
 #define GDCC_DEFINE_FIXED_SINGLETON(type_name, class_value, function_name, cache_name) \
-    static type_name *cache_name = NULL; \
+    static _Atomic(type_name *) cache_name = NULL; \
     type_name *function_name(void) { \
-        if (cache_name == NULL) { \
+        if (GDCC_BINDING_CACHE(cache_name) == NULL) { \
             godot_StringName singleton_name; \
             godot_string_name_new_with_utf8_chars((GDExtensionUninitializedStringNamePtr)&singleton_name, class_value); \
             type_name *resolved = (type_name *)godot_global_get_singleton(&singleton_name); \
@@ -176,9 +183,9 @@
                 GDCC_BINDING_LOOKUP_FAIL_OWNER("fixed_singleton", #function_name, class_value, class_value); \
                 return NULL; \
             } \
-            cache_name = resolved; \
+            atomic_store_explicit(&cache_name, resolved, memory_order_release); \
         } \
-        return cache_name; \
+        return GDCC_BINDING_CACHE(cache_name); \
     }
 #endif
 
@@ -219,26 +226,26 @@ GDCC_DEFINE_FIXED_SINGLETON(godot_Engine, "Engine", godot_Engine_singleton, gdcc
 
 GDCC_DEFINE_FIXED_SINGLETON(godot_ClassDB, "ClassDB", godot_ClassDB_singleton, gdcc_fixed_singleton_ClassDB)
 
-static GDExtensionMethodBindPtr gdcc_fixed_method_Engine_is_editor_hint = NULL;
+static _Atomic(GDExtensionMethodBindPtr) gdcc_fixed_method_Engine_is_editor_hint = NULL;
 
 godot_bool godot_Engine_is_editor_hint(godot_Engine *self) {
     GDCC_RESOLVE_FIXED_METHOD_CACHE(gdcc_fixed_method_Engine_is_editor_hint, "Engine", "is_editor_hint", 36873697LL, "godot_Engine_is_editor_hint", return false);
     godot_bool result = { 0 };
-    godot_object_method_bind_ptrcall(gdcc_fixed_method_Engine_is_editor_hint, (GDExtensionObjectPtr)self, NULL, (GDExtensionTypePtr)&result);
+    godot_object_method_bind_ptrcall(GDCC_BINDING_CACHE(gdcc_fixed_method_Engine_is_editor_hint), (GDExtensionObjectPtr)self, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
 
-static GDExtensionMethodBindPtr gdcc_fixed_method_ClassDB_is_parent_class = NULL;
+static _Atomic(GDExtensionMethodBindPtr) gdcc_fixed_method_ClassDB_is_parent_class = NULL;
 
 godot_bool godot_ClassDB_is_parent_class(godot_ClassDB *self, const godot_StringName *class_name, const godot_StringName *inherits) {
     GDCC_RESOLVE_FIXED_METHOD_CACHE(gdcc_fixed_method_ClassDB_is_parent_class, "ClassDB", "is_parent_class", 471820014LL, "godot_ClassDB_is_parent_class", return false);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)class_name, (GDExtensionConstTypePtr)inherits };
     godot_bool result = { 0 };
-    godot_object_method_bind_ptrcall(gdcc_fixed_method_ClassDB_is_parent_class, (GDExtensionObjectPtr)self, args, (GDExtensionTypePtr)&result);
+    godot_object_method_bind_ptrcall(GDCC_BINDING_CACHE(gdcc_fixed_method_ClassDB_is_parent_class), (GDExtensionObjectPtr)self, args, (GDExtensionTypePtr)&result);
     return result;
 }
 
-static GDExtensionMethodBindPtr gdcc_fixed_method_Object_call = NULL;
+static _Atomic(GDExtensionMethodBindPtr) gdcc_fixed_method_Object_call = NULL;
 
 godot_Variant godot_Object_call(
         GDExtensionObjectPtr self,
@@ -255,7 +262,7 @@ godot_Variant godot_Object_call(
     }
     godot_Variant result;
     GDExtensionCallError error = { 0 };
-    godot_object_method_bind_call(gdcc_fixed_method_Object_call, self, args, 1 + argc, (GDExtensionUninitializedVariantPtr)&result, &error);
+    godot_object_method_bind_call(GDCC_BINDING_CACHE(gdcc_fixed_method_Object_call), self, args, 1 + argc, (GDExtensionUninitializedVariantPtr)&result, &error);
     godot_Variant_destroy(&method_variant);
     if (error.error != GDEXTENSION_CALL_OK) {
         // gdextension_object_method_bind_call placement-constructs `result` even on call
@@ -267,68 +274,68 @@ godot_Variant godot_Object_call(
     return result;
 }
 
-static GDExtensionMethodBindPtr gdcc_fixed_method_Object_get = NULL;
+static _Atomic(GDExtensionMethodBindPtr) gdcc_fixed_method_Object_get = NULL;
 
 godot_Variant godot_Object_get(GDExtensionConstObjectPtr self, const godot_StringName *property) {
     GDCC_RESOLVE_FIXED_METHOD_CACHE(gdcc_fixed_method_Object_get, "Object", "get", 2760726917LL, "godot_Object_get", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)property };
     godot_Variant result = { 0 };
-    godot_object_method_bind_ptrcall(gdcc_fixed_method_Object_get, (GDExtensionObjectPtr)self, args, (GDExtensionTypePtr)&result);
+    godot_object_method_bind_ptrcall(GDCC_BINDING_CACHE(gdcc_fixed_method_Object_get), (GDExtensionObjectPtr)self, args, (GDExtensionTypePtr)&result);
     return result;
 }
 
-static GDExtensionMethodBindPtr gdcc_fixed_method_Object_set = NULL;
+static _Atomic(GDExtensionMethodBindPtr) gdcc_fixed_method_Object_set = NULL;
 
 void godot_Object_set(GDExtensionObjectPtr self, const godot_StringName *property, const godot_Variant *value) {
     GDCC_RESOLVE_FIXED_METHOD_CACHE(gdcc_fixed_method_Object_set, "Object", "set", 3776071444LL, "godot_Object_set", return);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)property, (GDExtensionConstTypePtr)value };
-    godot_object_method_bind_ptrcall(gdcc_fixed_method_Object_set, (GDExtensionObjectPtr)self, args, NULL);
+    godot_object_method_bind_ptrcall(GDCC_BINDING_CACHE(gdcc_fixed_method_Object_set), (GDExtensionObjectPtr)self, args, NULL);
 }
 
-static GDExtensionMethodBindPtr gdcc_fixed_method_Object_get_instance_id = NULL;
+static _Atomic(GDExtensionMethodBindPtr) gdcc_fixed_method_Object_get_instance_id = NULL;
 
 godot_int godot_Object_get_instance_id(GDExtensionConstObjectPtr self) {
     GDCC_RESOLVE_FIXED_METHOD_CACHE(gdcc_fixed_method_Object_get_instance_id, "Object", "get_instance_id", 3905245786LL, "godot_Object_get_instance_id", return (godot_int)0);
     uint64_t result = { 0 };
-    godot_object_method_bind_ptrcall(gdcc_fixed_method_Object_get_instance_id, (GDExtensionObjectPtr)self, NULL, (GDExtensionTypePtr)&result);
+    godot_object_method_bind_ptrcall(GDCC_BINDING_CACHE(gdcc_fixed_method_Object_get_instance_id), (GDExtensionObjectPtr)self, NULL, (GDExtensionTypePtr)&result);
     return (godot_int)result;
 }
 
-static GDExtensionMethodBindPtr gdcc_fixed_method_Object_notification = NULL;
+static _Atomic(GDExtensionMethodBindPtr) gdcc_fixed_method_Object_notification = NULL;
 
 void godot_Object_notification(GDExtensionObjectPtr self, godot_int what, godot_bool reversed) {
     GDCC_RESOLVE_FIXED_METHOD_CACHE(gdcc_fixed_method_Object_notification, "Object", "notification", 4023243586LL, "godot_Object_notification", return);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&what, (GDExtensionConstTypePtr)&reversed };
-    godot_object_method_bind_ptrcall(gdcc_fixed_method_Object_notification, (GDExtensionObjectPtr)self, args, NULL);
+    godot_object_method_bind_ptrcall(GDCC_BINDING_CACHE(gdcc_fixed_method_Object_notification), (GDExtensionObjectPtr)self, args, NULL);
 }
 
 GDCC_DEFINE_FIXED_CONSTANT(godot_Object_NOTIFICATION_POSTINITIALIZE, 0)
 
 GDCC_DEFINE_FIXED_CONSTANT(godot_Object_NOTIFICATION_PREDELETE, 1)
 
-static GDExtensionMethodBindPtr gdcc_fixed_method_RefCounted_reference = NULL;
+static _Atomic(GDExtensionMethodBindPtr) gdcc_fixed_method_RefCounted_reference = NULL;
 
 godot_bool godot_RefCounted_reference(godot_RefCounted *self) {
     GDCC_RESOLVE_FIXED_METHOD_CACHE(gdcc_fixed_method_RefCounted_reference, "RefCounted", "reference", 2240911060LL, "godot_RefCounted_reference", return false);
     godot_bool result = { 0 };
-    godot_object_method_bind_ptrcall(gdcc_fixed_method_RefCounted_reference, (GDExtensionObjectPtr)self, NULL, (GDExtensionTypePtr)&result);
+    godot_object_method_bind_ptrcall(GDCC_BINDING_CACHE(gdcc_fixed_method_RefCounted_reference), (GDExtensionObjectPtr)self, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
 
-static GDExtensionMethodBindPtr gdcc_fixed_method_RefCounted_unreference = NULL;
+static _Atomic(GDExtensionMethodBindPtr) gdcc_fixed_method_RefCounted_unreference = NULL;
 
 godot_bool godot_RefCounted_unreference(godot_RefCounted *self) {
     GDCC_RESOLVE_FIXED_METHOD_CACHE(gdcc_fixed_method_RefCounted_unreference, "RefCounted", "unreference", 2240911060LL, "godot_RefCounted_unreference", return false);
     godot_bool result = { 0 };
-    godot_object_method_bind_ptrcall(gdcc_fixed_method_RefCounted_unreference, (GDExtensionObjectPtr)self, NULL, (GDExtensionTypePtr)&result);
+    godot_object_method_bind_ptrcall(GDCC_BINDING_CACHE(gdcc_fixed_method_RefCounted_unreference), (GDExtensionObjectPtr)self, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
 
-static GDExtensionMethodBindPtr gdcc_fixed_method_RefCounted_init_ref = NULL;
+static _Atomic(GDExtensionMethodBindPtr) gdcc_fixed_method_RefCounted_init_ref = NULL;
 
 godot_bool godot_RefCounted_init_ref(godot_RefCounted *self) {
     GDCC_RESOLVE_FIXED_METHOD_CACHE(gdcc_fixed_method_RefCounted_init_ref, "RefCounted", "init_ref", 2240911060LL, "godot_RefCounted_init_ref", return false);
     godot_bool result = { 0 };
-    godot_object_method_bind_ptrcall(gdcc_fixed_method_RefCounted_init_ref, (GDExtensionObjectPtr)self, NULL, (GDExtensionTypePtr)&result);
+    godot_object_method_bind_ptrcall(GDCC_BINDING_CACHE(gdcc_fixed_method_RefCounted_init_ref), (GDExtensionObjectPtr)self, NULL, (GDExtensionTypePtr)&result);
     return result;
 }

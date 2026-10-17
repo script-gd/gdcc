@@ -139,8 +139,9 @@ class GdccStaticStringRuntimeSmokeTest {
     /// FakeString pointer there. Destructors free the copy AND scribble a poison pattern into the
     /// caller storage, so any generation gate that wrongly hands a destroyed value to the new
     /// generation is caught by an explicit check instead of a flaky use-after-free read.
-    private static final String FAKE_ENGINE = """
+    static final String FAKE_ENGINE = """
             #include <godot_binding.h>
+            #include <stdatomic.h>
             #include <stddef.h>
             #include <stdint.h>
             #include <stdio.h>
@@ -160,25 +161,25 @@ class GdccStaticStringRuntimeSmokeTest {
                 char *utf8;
             } FakeString;
 
-            static int g_mem_balance = 0;
-            static uint64_t g_s_utf8_construct = 0;      // interface string_new_with_utf8_chars
-            static uint64_t g_s_destruct = 0;            // String destructor
-            static uint64_t g_sn_from_string_construct = 0; // StringName ctor #2 (from String): one per GD_STATIC_SN rebuild
-            static uint64_t g_sn_raw_utf8_construct = 0;    // raw string_name_new_with_utf8_chars (builtin-method name lookups)
-            static uint64_t g_sn_destruct = 0;           // StringName destructor
-            static uint64_t g_sn_hash_invoke = 0;        // StringName.hash builtin invocations
+            static _Atomic(int) g_mem_balance = 0;
+            static _Atomic(uint64_t) g_s_utf8_construct = 0;      // interface string_new_with_utf8_chars
+            static _Atomic(uint64_t) g_s_destruct = 0;            // String destructor
+            static _Atomic(uint64_t) g_sn_from_string_construct = 0; // StringName ctor #2 (from String): one per GD_STATIC_SN rebuild
+            static _Atomic(uint64_t) g_sn_raw_utf8_construct = 0;    // raw string_name_new_with_utf8_chars (builtin-method name lookups)
+            static _Atomic(uint64_t) g_sn_destruct = 0;           // StringName destructor
+            static _Atomic(uint64_t) g_sn_hash_invoke = 0;        // StringName.hash builtin invocations
 
             static void *fake_mem_alloc(size_t bytes) {
-                g_mem_balance++;
+                atomic_fetch_add_explicit(&g_mem_balance, 1, memory_order_relaxed);
                 return malloc(bytes == 0 ? 1 : bytes);
             }
             static void *fake_mem_realloc(void *ptr, size_t bytes) {
-                if (ptr == NULL) g_mem_balance++;
+                if (ptr == NULL) atomic_fetch_add_explicit(&g_mem_balance, 1, memory_order_relaxed);
                 return realloc(ptr, bytes == 0 ? 1 : bytes);
             }
             static void fake_mem_free(void *ptr) {
                 if (ptr != NULL) {
-                    g_mem_balance--;
+                    atomic_fetch_sub_explicit(&g_mem_balance, 1, memory_order_relaxed);
                     free(ptr);
                 }
             }
@@ -208,28 +209,28 @@ class GdccStaticStringRuntimeSmokeTest {
             }
 
             static void fake_string_new_with_utf8_chars(GDExtensionUninitializedStringPtr out, const char *text) {
-                g_s_utf8_construct++;
+                atomic_fetch_add_explicit(&g_s_utf8_construct, 1, memory_order_relaxed);
                 FakeString *fs = fake_string_new_owned(text);
                 memcpy(out, &fs, sizeof(fs));
             }
             static void fake_string_name_new_with_utf8_chars(GDExtensionUninitializedStringNamePtr out, const char *text) {
-                g_sn_raw_utf8_construct++;
+                atomic_fetch_add_explicit(&g_sn_raw_utf8_construct, 1, memory_order_relaxed);
                 FakeString *fs = fake_string_new_owned(text);
                 memcpy(out, &fs, sizeof(fs));
             }
             static void fake_string_ptr_destructor(GDExtensionTypePtr ptr) {
-                g_s_destruct++;
+                atomic_fetch_add_explicit(&g_s_destruct, 1, memory_order_relaxed);
                 fake_string_release(fake_string_read(ptr, "double-destroyed String"));
                 memset(ptr, 0xEE, sizeof(FakeString *));
             }
             static void fake_string_name_ptr_destructor(GDExtensionTypePtr ptr) {
-                g_sn_destruct++;
+                atomic_fetch_add_explicit(&g_sn_destruct, 1, memory_order_relaxed);
                 fake_string_release(fake_string_read(ptr, "double-destroyed StringName"));
                 memset(ptr, 0xEE, sizeof(FakeString *));
             }
 
             static void fake_string_name_from_string_ctor(GDExtensionUninitializedTypePtr p_base, const GDExtensionConstTypePtr *p_args) {
-                g_sn_from_string_construct++;
+                atomic_fetch_add_explicit(&g_sn_from_string_construct, 1, memory_order_relaxed);
                 FakeString *source = fake_string_read(p_args[0], "StringName ctor got destroyed String");
                 FakeString *fs = fake_string_new_owned(source->utf8);
                 memcpy(p_base, &fs, sizeof(fs));
@@ -257,7 +258,7 @@ class GdccStaticStringRuntimeSmokeTest {
             static void fake_string_name_hash_method(GDExtensionTypePtr p_base, const GDExtensionConstTypePtr *p_args, GDExtensionTypePtr r_return, int p_argument_count) {
                 (void)p_args;
                 if (p_argument_count != 0) fail("StringName.hash called with arguments");
-                g_sn_hash_invoke++;
+                atomic_fetch_add_explicit(&g_sn_hash_invoke, 1, memory_order_relaxed);
                 FakeString *self = fake_string_read(p_base, "hash of destroyed StringName");
                 *(godot_int *)r_return = fake_fnv1a(self->utf8);
             }

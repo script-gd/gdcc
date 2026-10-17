@@ -40,8 +40,7 @@ class EditorAddonScriptLanguageAnalysisTest {
     private static final String MODULE_ID = "editor-addon-language";
     private static final List<String> INTERPRETED_SCRIPTS = List.of(
             "plugin.gd", "gdcc_dock.gd", "gdcc_project_manager.gd", "gdcc_build_toolbar.gd",
-            "server_launcher.gd", "gdcc_syntax_highlighter.gd", "gdcc_setup_dialog.gd",
-            "gdcc_install_service.gd", "util/gdcc_install_util.gd");
+            "server_launcher.gd", "gdcc_syntax_highlighter.gd", "gdcc_setup_dialog.gd");
     private static final Pattern AWAIT_PATTERN = Pattern.compile("\\bawait\\b");
 
     @TempDir
@@ -56,7 +55,7 @@ class EditorAddonScriptLanguageAnalysisTest {
         var api = new API();
         api.createModule(MODULE_ID, "Editor Addon Language");
         for (var source : sources) {
-            api.putFile(MODULE_ID, "/src/" + source.getFileName().toString(), Files.readString(source));
+            api.putFile(MODULE_ID, "/src/" + ADDON_DIR.relativize(source).toString().replace('\\', '/'), Files.readString(source));
         }
 
         var result = api.analyze(MODULE_ID, new AnalyzeOptions(true));
@@ -65,17 +64,20 @@ class EditorAddonScriptLanguageAnalysisTest {
         assertFalse(result.hasErrors(), () -> diagnosticsText(result));
         assertEquals(AnalysisResult.LoweringStatus.SUCCEEDED, result.loweringStatus(), () -> diagnosticsText(result));
         var expectedPaths = sources.stream()
-                .map(source -> "/src/" + source.getFileName().toString())
+                .map(source -> "/src/" + ADDON_DIR.relativize(source).toString().replace('\\', '/'))
                 .toList();
         assertEquals(expectedPaths, result.sourcePaths());
     }
 
     @Test
-    void compiledSourcesContainNoCoroutines() throws IOException {
+    void languageServicesContainNoCoroutines() throws IOException {
         // Contract assertions run on code with comments and string-literal contents stripped:
         // the sources' own documentation mentions `await` and the language's reserved-words
         // table carries it as DATA, so matching raw text would fail on non-code occurrences.
         for (var source : listAddonSources()) {
+            if (source.getFileName().toString().equals("gdcc_install_service.gd3")) {
+                continue; // The installer has a completed-signal bridge and native coroutine acceptance coverage.
+            }
             var code = stripCommentsAndStringContents(Files.readString(source).replace("\r\n", "\n"));
             assertFalse(AWAIT_PATTERN.matcher(code).find(),
                     () -> source.getFileName() + " must not contain a coroutine (await found in code)");
@@ -149,7 +151,7 @@ class EditorAddonScriptLanguageAnalysisTest {
     }
 
     private static List<Path> listAddonSources() throws IOException {
-        try (Stream<Path> stream = Files.list(ADDON_DIR)) {
+        try (Stream<Path> stream = Files.walk(ADDON_DIR)) {
             return stream
                     .filter(path -> path.getFileName().toString().endsWith(".gd3"))
                     .sorted()

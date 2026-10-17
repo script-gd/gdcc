@@ -733,10 +733,14 @@ static gdcc_hrx_spec *gdcc_hrx_spec_new(
 /// hub-owned (shared by every spec), so a spec carries no per-spec code resource.
 static void gdcc_hrx_shell_free(gdcc_hrx_hub *hub, gdcc_hrx_spec *spec) {
     (void)hub;
-    godot_mem_free((void *)spec->impl_key);
-    godot_mem_free((void *)spec->schema_desc);
+    if (spec->impl_key != NULL) {
+        godot_mem_free((void *)spec->impl_key);
+    }
+    if (spec->schema_desc != NULL) {
+        godot_mem_free((void *)spec->schema_desc);
+    }
     // v1 blocks predate the appended field: never read/free it through them.
-    if (spec->abi_version >= 2u) {
+    if (spec->abi_version >= 2u && spec->callsite_context != NULL) {
         godot_mem_free((void *)spec->callsite_context);
     }
     if (spec->interned) {

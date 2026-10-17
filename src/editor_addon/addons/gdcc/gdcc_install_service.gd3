@@ -1,27 +1,28 @@
 @tool
+class_name GdccInstallService
 extends Node
 
 # Tool installation is editor-wide; only the dialog's confirmation changes project settings.
-const Util := preload("res://addons/gdcc/util/gdcc_install_util.gd")
-const API := "https://api.github.com/repos/script-gd/"
-const PAGE_SIZE := 20
+var PAGE_SIZE: int = 20
 
 signal worker_completed(result: Variant)
 signal phase_changed(message: String)
+signal frame
 
-var cache_root := ""
-var api_base := API
+var cache_root: String = ""
+var api_base: String = "https://api.github.com/repos/script-gd/"
 var report_busy: Callable
-var last_error := ""
+var last_error: String = ""
 var http: HTTPRequest
-var download_size := 0
-var phase := ""
+var download_size: int = 0
+var phase: String = ""
 var _worker: Thread
-var _process_id := -1
+var _process_id: int = -1
 var _pipes: Dictionary = {}
 var _proxies: Dictionary = {}
-var _cancelled := false
-var _busy := false
+var _cancelled: bool = false
+var _busy: bool = false
+var _exiting: bool = false
 
 
 func _ready() -> void:
@@ -45,16 +46,22 @@ func _process(_delta: float) -> void:
         var result: Variant = _worker.wait_to_finish()
         _worker = null
         worker_completed.emit(result)
+    else:
+        frame.emit()
 
 
 func _exit_tree() -> void:
+    _exiting = true
     cancel()
+    # Drain suspended work while this Node and its callers still exist.
+    frame.emit()
+    if _worker != null:
+        var result: Variant = _worker.wait_to_finish()
+        _worker = null
+        worker_completed.emit(result)
     for pipe in _pipes.values():
         if pipe is FileAccess:
             pipe.close()
-    if _worker != null:
-        _worker.wait_to_finish()
-        _worker = null
     set_busy(false)
 
 
@@ -77,6 +84,8 @@ func _set_phase(message: String) -> void:
 
 
 func work(action: Callable) -> Variant:
+    if _exiting:
+        return action.call() # Teardown cleanup must finish without another suspended worker.
     if _worker != null:
         last_error = tr("Another installation task is already running.")
         return null
@@ -89,7 +98,7 @@ func work(action: Callable) -> Variant:
     return await worker_completed
 
 
-func run_process(executable: String, arguments: PackedStringArray, seconds: float = 5.0) -> Dictionary:
+func run_process(executable: String, arguments: PackedStringArray, seconds: float = 5.0) -> Variant:
     if _cancelled:
         return {"code": -1, "output": ""}
     _pipes = OS.execute_with_pipe(executable, arguments, false)
@@ -97,7 +106,7 @@ func run_process(executable: String, arguments: PackedStringArray, seconds: floa
         return {"code": -1, "output": ""}
     _process_id = int(_pipes["pid"])
     var bytes := PackedByteArray()
-    var deadline := Time.get_ticks_msec() + int(seconds * 1000)
+    var deadline := Time.get_ticks_msec() + int(seconds * 1000.0)
     var timed_out := false
     while not _cancelled:
         var received := false
@@ -115,7 +124,7 @@ func run_process(executable: String, arguments: PackedStringArray, seconds: floa
             OS.kill(_process_id)
             timed_out = true
             break
-        await get_tree().process_frame
+        await frame
     var code := -1 if timed_out or _cancelled else OS.get_process_exit_code(_process_id)
     for key in ["stdio", "stderr"]:
         _pipes[key].close()
@@ -124,7 +133,7 @@ func run_process(executable: String, arguments: PackedStringArray, seconds: floa
     return {"code": code, "output": bytes.get_string_from_utf8()}
 
 
-func initialize_proxy() -> void:
+func initialize_proxy() -> Variant:
     var settings := EditorInterface.get_editor_settings()
     var host := str(settings.get_setting("network/http_proxy/host"))
     if not host.is_empty():
@@ -135,18 +144,20 @@ func initialize_proxy() -> void:
             "query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
         ]))
         if result["code"] == 0:
-            _proxies = Util.parse_windows_proxy(result["output"])
+            _proxies = GdccInstallUtil.parse_windows_proxy(result["output"])
 
 
-func fetch(url: String, destination: String = "") -> Dictionary:
+func fetch(url: String, destination: String = "") -> Variant:
     if _cancelled:
         return {}
     http = HTTPRequest.new()
     http.use_threads = true
     http.accept_gzip = false
     http.max_redirects = 8
-    http.timeout = 300.0 if not destination.is_empty() else 30.0
-    http.body_size_limit = 128 * 1024 * 1024 if not destination.is_empty() else 8 * 1024 * 1024
+    var timeout := 300.0 if not destination.is_empty() else 30.0
+    var body_limit := 128 * 1024 * 1024 if not destination.is_empty() else 8 * 1024 * 1024
+    http.timeout = timeout
+    http.body_size_limit = body_limit
     http.download_file = destination
     add_child(http)
     for protocol in _proxies:
@@ -162,9 +173,10 @@ func fetch(url: String, destination: String = "") -> Dictionary:
     var error := http.request(url, PackedStringArray(["User-Agent: GDCC-Editor-Installer", "Accept-Encoding: identity"]))
     if error == OK:
         while not completion["done"] and not _cancelled:
-            await get_tree().process_frame
+            await frame
     var values: Array = completion["values"]
-    http.queue_free()
+    if not _exiting:
+        http.queue_free()
     http = null
     if error != OK or values.is_empty():
         if not _cancelled:
@@ -186,26 +198,26 @@ func fetch_json(url: String) -> Variant:
     return value
 
 
-func check_java(path: String) -> bool:
+func check_java(path: String) -> Variant:
     if not FileAccess.file_exists(path):
         return false
     var result := await run_process(path, PackedStringArray(["--version"]))
-    return result["code"] == 0 and Util.java_major(result["output"]) >= 25
+    return result["code"] == 0 and GdccInstallUtil.java_major(result["output"]) >= 25
 
 
-func inspect_java(path: String) -> Dictionary:
+func inspect_java(path: String) -> Variant:
     if not FileAccess.file_exists(path) or _cancelled:
         return {}
     var result := await run_process(path, PackedStringArray(["--version"]))
     if result["code"] != 0 and not _cancelled:
         result = await run_process(path, PackedStringArray(["-version"]))
-    var major := Util.java_major(result["output"])
+    var major := GdccInstallUtil.java_major(result["output"])
     if result["code"] != 0 or major == 0:
         return {}
     return {"path": path.replace("\\", "/"), "major": major, "usable": major >= 25}
 
 
-func scan_java() -> Array:
+func scan_java() -> Variant:
     var candidates := PackedStringArray()
     var executable := "java.exe" if OS.get_name() == "Windows" else "java"
     var saved := str(EditorInterface.get_editor_settings().get_project_metadata("gdcc", "java_path", ""))
@@ -246,7 +258,7 @@ func cached_compilers() -> Array:
     if not DirAccess.dir_exists_absolute(root):
         return result
     for name in DirAccess.get_directories_at(root):
-        var info := Util.compiler_in_directory(root.path_join(name), name.begins_with("local-"))
+        var info := GdccInstallUtil.compiler_in_directory(root.path_join(name), name.begins_with("local-"))
         if not info.is_empty():
             result.append(info)
     return result
@@ -260,7 +272,7 @@ func new_staging() -> String:
     return directory
 
 
-func download_asset(asset: Dictionary, destination: String) -> bool:
+func download_asset(asset: Dictionary, destination: String) -> Variant:
     _set_phase(tr("Downloading file..."))
     download_size = int(asset.get("size", 0))
     if str(asset.get("url", "")).is_empty() or (await fetch(asset["url"], destination)).is_empty():
@@ -275,14 +287,14 @@ func download_asset(asset: Dictionary, destination: String) -> bool:
     return true
 
 
-func install_jre() -> String:
+func install_jre() -> Variant:
     _set_phase(tr("Reading JRE release information..."))
     var release: Variant = await fetch_json(api_base + "gdcc-jre/releases/latest")
     if not release is Dictionary or not release.get("assets") is Array:
         if last_error.is_empty():
             last_error = tr("The server returned an unexpected JRE release.")
         return ""
-    var platform := Util.platform_token(OS.get_name(), Engine.get_architecture_name())
+    var platform := GdccInstallUtil.platform_token(OS.get_name(), Engine.get_architecture_name())
     var suffix := "-" + platform + (".zip" if OS.get_name() == "Windows" else ".tar.gz")
     var selected: Dictionary = {}
     var checksums: Dictionary = {}
@@ -311,31 +323,31 @@ func install_jre() -> String:
     if stage.is_empty():
         return ""
     var archive := stage.path_join("runtime" + (".zip" if suffix.ends_with(".zip") else ".tar.gz"))
-    var asset := {"url": selected["browser_download_url"], "digest": "sha256:" + digest, "size": selected.get("size", 0)}
+    var download := {"url": selected["browser_download_url"], "digest": "sha256:" + digest, "size": selected.get("size", 0)}
     var java_path := ""
-    if await download_asset(asset, archive):
+    if await download_asset(download, archive):
         _set_phase(tr("Extracting JRE..."))
         var extracted := stage.path_join("unpacked")
         var error: Variant = await work(func() -> int:
-            return Util.extract_zip(archive, extracted) if archive.ends_with(".zip") else Util.extract_tar_gzip(archive, extracted))
+            return GdccInstallUtil.extract_zip(archive, extracted) if archive.ends_with(".zip") else GdccInstallUtil.extract_tar_gzip(archive, extracted))
         if error == OK and not _cancelled:
             var directories := DirAccess.get_directories_at(extracted)
             if directories.size() == 1:
                 var root := extracted.path_join(directories[0])
                 var relative := "jre/bin/java.exe" if OS.get_name() == "Windows" else "jre/bin/java"
                 _set_phase(tr("Checking extracted Java..."))
-                if await check_java(root.path_join(relative)) and not _cancelled:
+                if (await check_java(root.path_join(relative))) and not _cancelled:
                     java_path = await _publish_jre(root, directories[0], relative)
         if java_path.is_empty() and not _cancelled and last_error.is_empty():
             last_error = tr("The JRE archive could not be installed or is not Java 25+.")
     _set_phase(tr("Cleaning temporary files..."))
-    await work(func() -> void: Util.remove_tree(stage))
+    await work(func() -> void: GdccInstallUtil.remove_tree(stage))
     if not java_path.is_empty() and not _cancelled:
         _set_phase(tr("JRE installation complete."))
     return java_path
 
 
-func _publish_jre(source: String, name: String, relative: String) -> String:
+func _publish_jre(source: String, name: String, relative: String) -> Variant:
     _set_phase(tr("Installing JRE..."))
     var runtimes := cache_root.path_join("runtimes")
     var destination := runtimes.path_join(name)
@@ -368,24 +380,24 @@ func _publish_jre(source: String, name: String, relative: String) -> String:
     var marker := FileAccess.open(marker_path, FileAccess.WRITE)
     if marker == null:
         last_error = tr("Could not create the installation directory.")
-        await work(func() -> void: Util.remove_tree(copied))
+        await work(func() -> void: GdccInstallUtil.remove_tree(copied))
         return ""
     marker.close()
     _set_phase(tr("Copying and verifying JRE files..."))
-    var result: Variant = await work(func() -> int: return Util.copy_tree_verified(copy_source, copied))
+    var result: Variant = await work(func() -> int: return GdccInstallUtil.copy_tree_verified(copy_source, copied))
     if result == OK and not _cancelled:
         _set_phase(tr("Checking installed Java..."))
         var copied_executable := copied.path_join(relative)
-        if await check_java(copied_executable) and not _cancelled and DirAccess.remove_absolute(marker_path) == OK:
+        if (await check_java(copied_executable)) and not _cancelled and DirAccess.remove_absolute(marker_path) == OK:
             return copied_executable
-    await work(func() -> void: Util.remove_tree(copied))
+    await work(func() -> void: GdccInstallUtil.remove_tree(copied))
     if not _cancelled:
         last_error = tr("Could not copy the JRE to %s (error %s).") % [copied, result] if result != OK \
                 else tr("Java 25+ could not run from the installed JRE: %s") % copied
     return ""
 
 
-func compiler_page(preview: bool, page: int) -> Dictionary:
+func compiler_page(preview: bool, page: int) -> Variant:
     var url := api_base + "gdcc/" + ("actions/artifacts?name=gdcc-jar-and-libs&" if preview else "releases?")
     var response: Variant = await fetch_json(url + "per_page=20&page=" + str(page))
     var entries: Array = []
@@ -397,7 +409,7 @@ func compiler_page(preview: bool, page: int) -> Dictionary:
                 continue
             var run: Dictionary = artifact.get("workflow_run", {})
             entries.append({"id": "actions-" + str(int(artifact["id"])), "label": str(run.get("head_branch", "")) + " · "
-                    + str(run.get("head_sha", "")).left(8) + " · " + Util.local_date_time(str(artifact.get("created_at", "")), tr("%04d-%02d-%02d %02d:%02d")),
+                    + str(run.get("head_sha", "")).left(8) + " · " + GdccInstallUtil.local_date_time(str(artifact.get("created_at", "")), tr("%04d-%02d-%02d %02d:%02d")),
                     "url": "https://nightly.link/script-gd/gdcc/actions/artifacts/" + str(int(artifact["id"])) + ".zip",
                     "digest": artifact.get("digest", ""), "archive": true})
     elif not preview and response is Array:
@@ -425,7 +437,7 @@ func compiler_page(preview: bool, page: int) -> Dictionary:
     return {"entries": entries, "more": values.size() == PAGE_SIZE}
 
 
-func install_compiler(entry: Dictionary) -> Dictionary:
+func install_compiler(entry: Dictionary) -> Variant:
     var stage := new_staging()
     if stage.is_empty():
         return {}
@@ -434,27 +446,27 @@ func install_compiler(entry: Dictionary) -> Dictionary:
     var downloaded := stage.path_join("download.zip") if entry["archive"] else root.path_join("gdcc.jar")
     var ok := await download_asset(entry, downloaded)
     if ok and entry["archive"]:
-        ok = (await work(func() -> int: return Util.extract_zip(downloaded, root))) == OK
+        ok = (await work(func() -> int: return GdccInstallUtil.extract_zip(downloaded, root))) == OK
     var libraries: Dictionary = entry.get("libraries", {})
     if ok and not libraries.is_empty():
         ok = await download_asset({"url": libraries["browser_download_url"], "digest": libraries.get("digest", "")}, stage.path_join("libs.zip"))
         if ok:
-            ok = (await work(func() -> int: return Util.extract_zip(stage.path_join("libs.zip"), root))) == OK
+            ok = (await work(func() -> int: return GdccInstallUtil.extract_zip(stage.path_join("libs.zip"), root))) == OK
     if ok:
         for name in DirAccess.get_files_at(root):
             if name.ends_with("-libs.zip"):
-                ok = (await work(func() -> int: return Util.extract_zip(root.path_join(name), root))) == OK
+                ok = (await work(func() -> int: return GdccInstallUtil.extract_zip(root.path_join(name), root))) == OK
                 if not ok:
                     break
     var info: Dictionary = {}
     if ok:
-        info = Util.compiler_in_directory(root)
-        ok = ok and Util.check_dependencies(info) and not _cancelled
+        info = GdccInstallUtil.compiler_in_directory(root)
+        ok = ok and GdccInstallUtil.check_dependencies(info) and not _cancelled
     if ok:
         var destination := cache_root.path_join("compilers").path_join(str(entry["id"]).validate_filename())
         DirAccess.make_dir_recursive_absolute(destination.get_base_dir())
         if DirAccess.dir_exists_absolute(destination):
-            info = Util.compiler_in_directory(destination)
+            info = GdccInstallUtil.compiler_in_directory(destination)
         elif DirAccess.rename_absolute(root, destination) == OK:
             info["path"] = destination.path_join(str(info["path"]).get_file())
         else:
@@ -463,18 +475,18 @@ func install_compiler(entry: Dictionary) -> Dictionary:
         info = {}
     if info.is_empty() and last_error.is_empty():
         last_error = tr("The compiler archive is invalid or its runtime libraries are missing.")
-    await work(func() -> void: Util.remove_tree(stage))
+    await work(func() -> void: GdccInstallUtil.remove_tree(stage))
     return info
 
 
-func import_compiler(path: String) -> Dictionary:
-    if not Util.has_gdparser_library(path):
+func import_compiler(path: String) -> Variant:
+    if not GdccInstallUtil.has_gdparser_library(path):
         last_error = tr("The selected JAR needs an adjacent lib directory containing gdparser-*.jar.")
         return {}
     var stage := new_staging()
     if stage.is_empty():
         return {}
-    var info: Variant = await work(func() -> Dictionary: return Util.copy_jar(path, stage.path_join("compiler")))
+    var info: Variant = await work(func() -> Dictionary: return GdccInstallUtil.copy_jar(path, stage.path_join("compiler")))
     if info == null or info.is_empty() or _cancelled:
         info = {}
         last_error = tr("Select a GDCC JAR with gdcc-version.properties and its adjacent runtime libraries.")
@@ -482,12 +494,12 @@ func import_compiler(path: String) -> Dictionary:
         var destination := cache_root.path_join("compilers").path_join("local-" + str(info["sha256"]))
         DirAccess.make_dir_recursive_absolute(destination.get_base_dir())
         if DirAccess.dir_exists_absolute(destination):
-            info = Util.compiler_in_directory(destination, true)
+            info = GdccInstallUtil.compiler_in_directory(destination, true)
         elif DirAccess.rename_absolute(stage.path_join("compiler"), destination) == OK:
             info["path"] = destination.path_join(path.get_file())
         else:
             info = {}
     if info.is_empty() and last_error.is_empty():
         last_error = tr("The compiler archive is invalid or its runtime libraries are missing.")
-    await work(func() -> void: Util.remove_tree(stage))
+    await work(func() -> void: GdccInstallUtil.remove_tree(stage))
     return {} if info == null else info

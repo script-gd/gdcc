@@ -260,7 +260,7 @@ final class GodotBuiltinGenerator {
                 var functionName = constructorName(builtin.name(), constructor);
                 var cacheName = "gdcc_builtin_ctor_" + GodotBindingSupport.cIdentifier(builtin.name())
                         + "_" + constructor.index();
-                out.append("static GDExtensionPtrConstructor ").append(cacheName).append(" = NULL;\n\n");
+                out.append("static _Atomic(GDExtensionPtrConstructor) ").append(cacheName).append(" = NULL;\n\n");
                 out.append(GodotBindingSupport.cType(builtin.name())).append(' ').append(functionName).append('(')
                         .append(renderParameters(constructor.arguments())).append(") {\n")
                         .append("    GDCC_RESOLVE_BUILTIN_CACHE(")
@@ -277,7 +277,7 @@ final class GodotBuiltinGenerator {
                         .append(");\n")
                         .append("    ").append(GodotBindingSupport.cType(builtin.name())).append(" self;\n");
                 appendConstTypeArgs(out, constructor.arguments(), "    ");
-                out.append("    ").append(cacheName).append("((GDExtensionUninitializedTypePtr)&self, ")
+                out.append("    GDCC_BINDING_CACHE(").append(cacheName).append(")((GDExtensionUninitializedTypePtr)&self, ")
                         .append(constructor.arguments().isEmpty() ? "NULL" : "args")
                         .append(");\n")
                         .append("    return self;\n")
@@ -303,7 +303,7 @@ final class GodotBuiltinGenerator {
             var cName = GodotBindingSupport.cIdentifier(builtin.name());
             var functionName = "godot_" + cName + "_destroy";
             var cacheName = "gdcc_builtin_dtor_" + cName;
-            out.append("static GDExtensionPtrDestructor ").append(cacheName).append(" = NULL;\n\n");
+            out.append("static _Atomic(GDExtensionPtrDestructor) ").append(cacheName).append(" = NULL;\n\n");
             out.append("void ").append(functionName).append('(')
                     .append(GodotBindingSupport.cType(builtin.name())).append(" *self) {\n")
                     .append("    GDCC_RESOLVE_BUILTIN_CACHE(")
@@ -315,7 +315,7 @@ final class GodotBuiltinGenerator {
                     .append("\", \"variant_get_ptr_destructor\", \"")
                     .append(GodotBindingSupport.escapeCString(builtin.name()))
                     .append("\", return);\n")
-                    .append("    ").append(cacheName).append("((GDExtensionTypePtr)self);\n")
+                    .append("    GDCC_BINDING_CACHE(").append(cacheName).append(")((GDExtensionTypePtr)self);\n")
                     .append("}\n\n");
         }
 
@@ -406,7 +406,7 @@ final class GodotBuiltinGenerator {
             var memberName = GodotBindingSupport.cIdentifier(member.name());
             var functionName = "godot_" + owner + "_get_" + memberName;
             var cacheName = "gdcc_builtin_get_" + owner + "_" + memberName;
-            out.append("static GDExtensionPtrGetter ").append(cacheName).append(" = NULL;\n\n");
+            out.append("static _Atomic(GDExtensionPtrGetter) ").append(cacheName).append(" = NULL;\n\n");
             out.append(GodotBindingSupport.cType(member.type())).append(' ').append(functionName)
                     .append("(const ").append(GodotBindingSupport.cType(builtin.name())).append(" *self) {\n")
                     .append("    GDCC_RESOLVE_BUILTIN_NAMED_CACHE(")
@@ -426,8 +426,8 @@ final class GodotBuiltinGenerator {
                     .append(");\n")
                     .append("    ").append(GodotBindingSupport.initializedCarrierDeclaration(
                             GodotBindingSupport.cType(member.type()), "value")).append(";\n")
-                    .append("    ").append(cacheName)
-                    .append("((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);\n")
+                    .append("    GDCC_BINDING_CACHE(").append(cacheName)
+                    .append(")((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);\n")
                     .append("    return value;\n")
                     .append("}\n\n");
         }
@@ -441,7 +441,7 @@ final class GodotBuiltinGenerator {
             var memberName = GodotBindingSupport.cIdentifier(member.name());
             var functionName = "godot_" + owner + "_set_" + memberName;
             var cacheName = "gdcc_builtin_set_" + owner + "_" + memberName;
-            out.append("static GDExtensionPtrSetter ").append(cacheName).append(" = NULL;\n\n");
+            out.append("static _Atomic(GDExtensionPtrSetter) ").append(cacheName).append(" = NULL;\n\n");
             out.append("void ").append(functionName).append('(')
                     .append(GodotBindingSupport.cType(builtin.name())).append(" *self, ")
                     .append(GodotBindingSupport.renderPublicParameter(member.type(), "value"))
@@ -459,7 +459,7 @@ final class GodotBuiltinGenerator {
                     .append("\", \"")
                     .append(GodotBindingSupport.escapeCString(builtin.name()))
                     .append("\", return);\n")
-                    .append("    ").append(cacheName).append("((GDExtensionTypePtr)self, ")
+                    .append("    GDCC_BINDING_CACHE(").append(cacheName).append(")((GDExtensionTypePtr)self, ")
                     .append(GodotBindingSupport.typePtrArgument(member.type(), "value"))
                     .append(");\n")
                     .append("}\n\n");
@@ -505,7 +505,7 @@ final class GodotBuiltinGenerator {
             var returnType = GodotBindingSupport.returnCType(method.returnType());
             var arguments = GodotBindingSupport.list(method.arguments());
             var compatibilityHashes = GodotBindingSupport.list(method.hashCompatibility());
-            out.append("static GDExtensionPtrBuiltInMethod ").append(cacheName).append(" = NULL;\n\n");
+            out.append("static _Atomic(GDExtensionPtrBuiltInMethod) ").append(cacheName).append(" = NULL;\n\n");
             out.append(returnType).append(' ').append(functionName).append('(')
                     .append(renderMethodParameters(builtin, method)).append(") {\n")
                     .append("    ");
@@ -605,7 +605,7 @@ final class GodotBuiltinGenerator {
                         + "_" + GodotBindingSupport.cIdentifier(operator.operator().name())
                         + (operator.rightType() == null || operator.rightType().isBlank()
                         ? "" : "_" + GodotBindingSupport.cIdentifier(operator.rightType()));
-                out.append("static GDExtensionPtrOperatorEvaluator ").append(cacheName).append(" = NULL;\n\n");
+                out.append("static _Atomic(GDExtensionPtrOperatorEvaluator) ").append(cacheName).append(" = NULL;\n\n");
                 out.append(GodotBindingSupport.cType(operator.returnType())).append(' ').append(functionName)
                         .append('(').append(renderOperatorParameters(builtin.name(), operator)).append(") {\n")
                         .append("    GDCC_RESOLVE_BUILTIN_CACHE(")
@@ -627,7 +627,7 @@ final class GodotBuiltinGenerator {
                         .append(");\n")
                         .append("    ").append(GodotBindingSupport.initializedCarrierDeclaration(
                                 GodotBindingSupport.cType(operator.returnType()), "result")).append(";\n")
-                        .append("    ").append(cacheName).append('(')
+                        .append("    GDCC_BINDING_CACHE(").append(cacheName).append(")(")
                         .append(GodotBindingSupport.typePtrArgument(builtin.name(), "left"))
                         .append(", ")
                         .append(operator.rightType() == null || operator.rightType().isBlank()
@@ -688,8 +688,8 @@ final class GodotBuiltinGenerator {
             var getterName = "godot_" + owner + "_indexed_get";
             var setterCache = "gdcc_builtin_indexed_set_" + owner;
             var getterCache = "gdcc_builtin_indexed_get_" + owner;
-            out.append("static GDExtensionPtrIndexedSetter ").append(setterCache).append(" = NULL;\n");
-            out.append("static GDExtensionPtrIndexedGetter ").append(getterCache).append(" = NULL;\n\n");
+            out.append("static _Atomic(GDExtensionPtrIndexedSetter) ").append(setterCache).append(" = NULL;\n");
+            out.append("static _Atomic(GDExtensionPtrIndexedGetter) ").append(getterCache).append(" = NULL;\n\n");
             out.append("void ").append(setterName).append('(')
                     .append(GodotBindingSupport.cType(builtin.name()))
                     .append(" *self, godot_int index, ")
@@ -704,7 +704,7 @@ final class GodotBuiltinGenerator {
                     .append("\", \"variant_get_ptr_indexed_setter\", \"")
                     .append(GodotBindingSupport.escapeCString(builtin.name()))
                     .append("\", return);\n")
-                    .append("    ").append(setterCache).append("((GDExtensionTypePtr)self, index, ")
+                    .append("    GDCC_BINDING_CACHE(").append(setterCache).append(")((GDExtensionTypePtr)self, index, ")
                     .append(GodotBindingSupport.typePtrArgument(builtin.indexingReturnType(), "value"))
                     .append(");\n")
                     .append("}\n\n");
@@ -724,8 +724,8 @@ final class GodotBuiltinGenerator {
                     .append(");\n")
                     .append("    ").append(GodotBindingSupport.initializedCarrierDeclaration(
                             GodotBindingSupport.cType(builtin.indexingReturnType()), "result")).append(";\n")
-                    .append("    ").append(getterCache)
-                    .append("((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);\n")
+                    .append("    GDCC_BINDING_CACHE(").append(getterCache)
+                    .append(")((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);\n")
                     .append("    return result;\n")
                     .append("}\n\n");
         }
@@ -736,8 +736,8 @@ final class GodotBuiltinGenerator {
             var getterName = "godot_" + owner + "_keyed_get";
             var setterCache = "gdcc_builtin_keyed_set_" + owner;
             var getterCache = "gdcc_builtin_keyed_get_" + owner;
-            out.append("static GDExtensionPtrKeyedSetter ").append(setterCache).append(" = NULL;\n");
-            out.append("static GDExtensionPtrKeyedGetter ").append(getterCache).append(" = NULL;\n\n");
+            out.append("static _Atomic(GDExtensionPtrKeyedSetter) ").append(setterCache).append(" = NULL;\n");
+            out.append("static _Atomic(GDExtensionPtrKeyedGetter) ").append(getterCache).append(" = NULL;\n\n");
             out.append("void ").append(setterName).append('(')
                     .append(GodotBindingSupport.cType(builtin.name()))
                     .append(" *self, const godot_Variant *key, const godot_Variant *value) {\n")
@@ -750,8 +750,8 @@ final class GodotBuiltinGenerator {
                     .append("\", \"variant_get_ptr_keyed_setter\", \"")
                     .append(GodotBindingSupport.escapeCString(builtin.name()))
                     .append("\", return);\n")
-                    .append("    ").append(setterCache)
-                    .append("((GDExtensionTypePtr)self, (GDExtensionConstTypePtr)key, (GDExtensionConstTypePtr)value);\n")
+                    .append("    GDCC_BINDING_CACHE(").append(setterCache)
+                    .append(")((GDExtensionTypePtr)self, (GDExtensionConstTypePtr)key, (GDExtensionConstTypePtr)value);\n")
                     .append("}\n\n");
             out.append("godot_Variant ").append(getterName).append("(const ")
                     .append(GodotBindingSupport.cType(builtin.name()))
@@ -767,8 +767,8 @@ final class GodotBuiltinGenerator {
                     .append("\", return godot_new_Variant_nil());\n")
                     .append("    ").append(GodotBindingSupport.initializedCarrierDeclaration("godot_Variant", "result"))
                     .append(";\n")
-                    .append("    ").append(getterCache)
-                    .append("((GDExtensionConstTypePtr)self, (GDExtensionConstTypePtr)key, (GDExtensionTypePtr)&result);\n")
+                    .append("    GDCC_BINDING_CACHE(").append(getterCache)
+                    .append(")((GDExtensionConstTypePtr)self, (GDExtensionConstTypePtr)key, (GDExtensionTypePtr)&result);\n")
                     .append("    return result;\n")
                     .append("}\n\n");
         }

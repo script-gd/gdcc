@@ -9,6 +9,9 @@ int main(void) {
     gdcc_hrx_test_reset_image_state(); // simulate a fresh DSO image arriving
     gdcc_hrx_initialize_core(NULL, (GDExtensionObjectPtr)&g_engine_marker, true, true, 0x66u, NULL, 0);
     int captures = 9;
+    godot_Callable immediate = gdcc_hrx_create_lambda(&captures, 0, impl1, valid1, noop_destroy, -1, NULL, NULL);
+    godot_Callable_destroy(&immediate);
+    CHECK(g_null_free_count == 0, "identityless waiter cleanup must not free NULL metadata");
     godot_Callable cb = gdcc_hrx_create_lambda(&captures, 0, impl1, valid1, noop_destroy, -1, NULL, NULL);
     FakeCallableCustom *custom = fake_callable_custom_of(&cb);
     custom->call_func(custom->userdata, NULL, 0, NULL, NULL);
@@ -28,6 +31,7 @@ int main(void) {
     godot_Callable_destroy(&cb);
     CHECK(gdcc_hrx_current_hub()->leaked_capture_count == 1,
             "post-reload waiter captures are intentionally leaked, not mis-destroyed");
+    CHECK(g_null_free_count == 0, "post-reload shell cleanup must not free NULL metadata");
     printf("OK waiter_no_rebind\n");
     return 0;
 }

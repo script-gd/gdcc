@@ -126,7 +126,7 @@ final class GodotUtilityGenerator {
         private void appendDefinition(@NotNull StringBuilder out, @NotNull ExtensionUtilityFunction function) {
             var functionName = utilityName(function.name());
             var cacheName = "gdcc_utility_" + GodotBindingSupport.cIdentifier(function.name());
-            out.append("static GDExtensionPtrUtilityFunction ").append(cacheName).append(" = NULL;\n\n");
+            out.append("static _Atomic(GDExtensionPtrUtilityFunction) ").append(cacheName).append(" = NULL;\n\n");
             out.append(GodotBindingSupport.returnCType(function.returnType())).append(' ')
                     .append(functionName).append('(').append(renderParameters(function)).append(") {\n")
                     .append("    GDCC_RESOLVE_UTILITY_CACHE(")
@@ -154,7 +154,7 @@ final class GodotUtilityGenerator {
                         .append(";\n");
             }
             var fixedCount = argumentCount(function);
-            out.append("    ").append(cacheName).append('(')
+            out.append("    GDCC_BINDING_CACHE(").append(cacheName).append(")(")
                     .append(GodotBindingSupport.isVoid(function.returnType()) ? "NULL" : "(GDExtensionTypePtr)&result")
                     .append(", ")
                     .append(function.isVararg()

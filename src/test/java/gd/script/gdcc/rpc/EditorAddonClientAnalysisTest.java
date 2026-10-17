@@ -111,9 +111,7 @@ class EditorAddonClientAnalysisTest {
         for (var scriptPath : List.of(PLUGIN_SCRIPT_PATH, DOCK_SCRIPT_PATH,
                 DOCK_SCRIPT_PATH.resolveSibling("gdcc_project_manager.gd"),
                 DOCK_SCRIPT_PATH.resolveSibling("gdcc_build_toolbar.gd"),
-                DOCK_SCRIPT_PATH.resolveSibling("gdcc_setup_dialog.gd"),
-                DOCK_SCRIPT_PATH.resolveSibling("gdcc_install_service.gd"),
-                DOCK_SCRIPT_PATH.resolveSibling("util/gdcc_install_util.gd"))) {
+                DOCK_SCRIPT_PATH.resolveSibling("gdcc_setup_dialog.gd"))) {
             var diagnosticManager = new DiagnosticManager();
             parserService.parseUnit(scriptPath, Files.readString(scriptPath), diagnosticManager);
             assertFalse(diagnosticManager.hasErrors(), () -> {

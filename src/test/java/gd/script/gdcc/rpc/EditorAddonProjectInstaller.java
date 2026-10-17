@@ -173,12 +173,13 @@ public final class EditorAddonProjectInstaller {
                     // The client library supports cross-compilation; TinyCC is host-native only.
                     CCompilerKind.ZIG_CC));
             for (var source : listAddonSources()) {
-                // VFS layout contract: every addon source sits at /src/<file name>.gd3. The
+                // Preserve addon-relative paths, including utility subdirectories. The
                 // res:// display label and the host-absolute path feed Phase 6 class metadata
                 // (`source_res_path`/`source_path`); the Phase 7 class-name erasure admission
                 // probe requires `source_path` and fails closed without it.
-                api.putFile(MODULE_ID, "/src/" + source.getFileName().toString(), Files.readString(source),
-                        "res://addons/gdcc/" + source.getFileName().toString(),
+                var relative = ADDON_SOURCE_DIR.relativize(source).toString().replace('\\', '/');
+                api.putFile(MODULE_ID, "/src/" + relative, Files.readString(source),
+                        "res://addons/gdcc/" + relative,
                         source.toAbsolutePath().toString().replace('\\', '/'));
             }
             return awaitCompile(api, api.compile(MODULE_ID));
@@ -243,7 +244,7 @@ public final class EditorAddonProjectInstaller {
     /// Interpreted `.gd` plugin scripts are deliberately excluded — they are not gdcc compile
     /// targets.
     static List<Path> listAddonSources() throws IOException {
-        try (var stream = Files.list(ADDON_SOURCE_DIR)) {
+        try (var stream = Files.walk(ADDON_SOURCE_DIR)) {
             return stream
                     .filter(path -> path.getFileName().toString().endsWith(".gd3"))
                     .sorted()

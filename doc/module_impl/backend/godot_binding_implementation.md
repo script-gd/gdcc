@@ -245,6 +245,12 @@ method-bind accessor 名称为：
 - instance：`gdcc_engine_method_bind_<owner>_<method>_<symbolId>()`
 - static：`gdcc_engine_method_bind_static_<owner>_<method>_<symbolId>()`
 
+缓存指针通过显式 acquire 读取、release 发布。冷路径允许多个线程重复执行只读 Godot 查找，
+依次尝试 primary/compatibility hashes，仅非空结果进入缓存；失败不会覆盖其他线程已经发布的绑定。
+该合同以查找 API 可并发调用、返回绑定在缓存生命周期内稳定为前提。builtin、utility、conversion、
+fixed 与单例的生成绑定使用同样的原子指针发布；TinyCC 路径同样使用显式原子 API，不能依赖 `_Atomic`
+限定符的隐式读写。缓存安全不等于目标引擎方法、场景树操作或 HRX 回收可以跨线程执行。
+
 `BackendMethodCallResolver.ResolvedMethodCall` 只负责 lookup 身份：
 
 - dispatch mode
