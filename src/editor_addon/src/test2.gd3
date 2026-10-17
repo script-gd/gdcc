@@ -5,6 +5,9 @@ class_name Test2 extends MeshInstance3D
 @export var bouncing_speed: float = 1;
 var time: float = 0.0;
 
+func _init() -> void:
+    time = 0.0;
+
 func _process(delta: float) -> void:
     time += delta;
     

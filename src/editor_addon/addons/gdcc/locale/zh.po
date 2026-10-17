@@ -6,6 +6,213 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
+msgid "Configure compilation server..."
+msgstr "手动配置编译服务器..."
+
+msgid "Installation cancelled."
+msgstr "安装已取消。"
+
+msgid "Another installation task is already running."
+msgstr "另一个安装任务正在运行。"
+
+msgid "Could not start the installation worker."
+msgstr "无法启动安装工作线程。"
+
+msgid "Install compilation server..."
+msgstr "安装编译服务器..."
+
+msgid "Install GDCC compilation server"
+msgstr "安装 GDCC 编译服务器"
+
+msgid "GDCC: Editor menu not found; use the GDCC dock to install the server."
+msgstr "GDCC：未找到编辑器菜单，请通过 GDCC 面板安装编译服务器。"
+
+msgid "Install GDCC"
+msgstr "安装GDCC"
+
+msgid "Java %s · %s"
+msgstr "Java %s · %s"
+
+msgid "Next"
+msgstr "下一步"
+
+msgid "Finish compiler configuration"
+msgstr "完成编译器配置"
+
+msgid "Exit"
+msgstr "退出"
+
+msgid "or"
+msgstr "或"
+
+msgid "Select Java 25 or newer, or install the GDCC runtime."
+msgstr "选择 Java 25 或更新版本，或安装 GDCC 运行环境。"
+
+msgid "Path to the Java executable"
+msgstr "Java 可执行文件路径"
+
+msgid "Choose Java..."
+msgstr "选择 Java..."
+
+msgid "Java executable"
+msgstr "Java 可执行文件"
+
+msgid "Check Java"
+msgstr "检查 Java"
+
+msgid "Install JRE"
+msgstr "安装JRE"
+
+msgid "Installed compilers"
+msgstr "已安装的编译器"
+
+msgid "Releases"
+msgstr "正式版"
+
+msgid "Previews"
+msgstr "预览版"
+
+msgid "Install selected version"
+msgstr "安装所选版本"
+
+msgid "Load more"
+msgstr "加载更多"
+
+msgid "Install from local..."
+msgstr "从本地安装..."
+
+msgid "Compiler installation error"
+msgstr "编译器安装错误"
+
+msgid "The selected JAR needs an adjacent lib directory containing gdparser-*.jar."
+msgstr "所选 JAR 的同目录中必须有 lib 文件夹，且其中包含 gdparser-*.jar。"
+
+msgid "Could not copy the JRE to %s (error %s)."
+msgstr "无法将 JRE 复制到 %s（错误 %s）。"
+
+msgid "Java 25+ could not run from the installed JRE: %s"
+msgstr "无法从已安装的 JRE 运行 Java 25+：%s"
+
+msgid "Reading JRE release information..."
+msgstr "正在读取 JRE 发布信息..."
+
+msgid "Reading JRE checksums..."
+msgstr "正在读取 JRE 校验和..."
+
+msgid "Downloading file..."
+msgstr "正在下载文件..."
+
+msgid "Verifying download..."
+msgstr "正在校验下载文件..."
+
+msgid "Extracting JRE..."
+msgstr "正在解压 JRE..."
+
+msgid "Checking extracted Java..."
+msgstr "正在检验解压后的 Java..."
+
+msgid "Installing JRE..."
+msgstr "正在安装 JRE..."
+
+msgid "Copying and verifying JRE files..."
+msgstr "正在复制并校验 JRE 文件..."
+
+msgid "Checking installed Java..."
+msgstr "正在检验安装后的 Java..."
+
+msgid "Cleaning temporary files..."
+msgstr "正在清理临时文件..."
+
+msgid "JRE installation complete."
+msgstr "JRE 安装完成。"
+
+msgid "%04d-%02d-%02d %02d:%02d"
+msgstr "%04d年%02d月%02d日 %02d:%02d"
+
+msgid "Looking for Java 25+ and installed compilers..."
+msgstr "正在查找 Java 25+ 和已安装的编译器..."
+
+msgid "Java 25+ is ready."
+msgstr "Java 25+ 已就绪。"
+
+msgid "Java 25+ was not found. Choose Java or install the JRE."
+msgstr "未找到 Java 25+，请选择 Java 或安装 JRE。"
+
+msgid "Downloaded %s of %s"
+msgstr "已下载 %s，共 %s"
+
+msgid "Unknown size"
+msgstr "未知大小"
+
+msgid "The selected executable is not Java 25+."
+msgstr "所选可执行文件不是 Java 25+。"
+
+msgid "Downloading and installing Java..."
+msgstr "正在下载并安装 Java..."
+
+msgid "Loading compiler versions..."
+msgstr "正在加载编译器版本..."
+
+msgid "Select a version to install."
+msgstr "请选择要安装的版本。"
+
+msgid "Downloading and installing GDCC..."
+msgstr "正在下载并安装 GDCC..."
+
+msgid "The compiler is installed. Apply it to this project when ready."
+msgstr "编译器已安装，准备就绪后可应用到当前项目。"
+
+msgid "The server is connected or busy. Configuration was not changed."
+msgstr "服务器已连接或正忙，未修改配置。"
+
+msgid "The selected path contains unsupported command characters."
+msgstr "所选路径包含不支持的命令字符。"
+
+msgid "The selected compiler could not run with this Java installation."
+msgstr "所选编译器无法使用此 Java 环境运行。"
+
+msgid "The project configuration could not be saved."
+msgstr "无法保存项目配置。"
+
+msgid "Could not start the download."
+msgstr "无法开始下载。"
+
+msgid "Download failed (network %s, HTTP %s)."
+msgstr "下载失败（网络状态 %s，HTTP 状态 %s）。"
+
+msgid "The server returned invalid JSON."
+msgstr "服务器返回了无效的 JSON。"
+
+msgid "Could not create the installation directory."
+msgstr "无法创建安装目录。"
+
+msgid "The downloaded file failed its SHA-256 check."
+msgstr "下载文件的 SHA-256 校验失败。"
+
+msgid "No JRE download is available for this platform. Select an existing Java 25+ installation."
+msgstr "此平台没有可用的 JRE 下载，请选择已安装的 Java 25+。"
+
+msgid "The JRE checksum is missing or invalid."
+msgstr "JRE 校验和缺失或无效。"
+
+msgid "The JRE archive could not be installed or is not Java 25+."
+msgstr "无法安装 JRE 压缩包，或其中的 Java 版本低于 25。"
+
+msgid "The server returned an unexpected version list."
+msgstr "服务器返回了无法识别的版本列表。"
+
+msgid "The server returned an unexpected JRE release."
+msgstr "服务器返回了无法识别的 JRE 发布信息。"
+
+msgid "This compiler is already installed. Select it from the installed versions."
+msgstr "此编译器已安装，请从已安装版本中选择。"
+
+msgid "The compiler archive is invalid or its runtime libraries are missing."
+msgstr "编译器压缩包无效，或缺少运行库。"
+
+msgid "Select a GDCC JAR with gdcc-version.properties and its adjacent runtime libraries."
+msgstr "请选择包含 gdcc-version.properties 的 GDCC JAR，并确保其配套运行库位于相邻目录。"
+
 msgid "Build"
 msgstr "构建"
 

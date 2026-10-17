@@ -1,7 +1,7 @@
 @tool
 extends Node
 
-## On-demand launcher for the `gdcc serve` compile service (implementation plan §3.7) —
+## On-demand launcher for the `gdcc serve` compile service;
 ## interpreted GDScript on purpose: the dock needs it before the gdcc language is registered,
 ## so it can never be a compile target.
 ##
@@ -14,8 +14,8 @@ extends Node
 ## The launch command comes from the per-project setting `gdcc/compilation_server/launch_command`
 ## (project.godot, edited via the Project Settings dialog; empty = never auto-launch, pure
 ## passive-connect behavior). It is a user-supplied local command executed with editor
-## privileges — the trust boundary is the project owner's configuration, the plugin never
-## generates command text by itself.
+## privileges. The setup dialog can generate it after explicit user confirmation;
+## project-supplied commands remain inside the project owner's trust boundary.
 
 const SETTING_LAUNCH_COMMAND := "gdcc/compilation_server/launch_command"
 const PROBE_BUDGET_MSEC := 200

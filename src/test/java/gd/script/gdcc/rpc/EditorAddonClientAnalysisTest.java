@@ -110,7 +110,10 @@ class EditorAddonClientAnalysisTest {
         var parserService = new GdScriptParserService();
         for (var scriptPath : List.of(PLUGIN_SCRIPT_PATH, DOCK_SCRIPT_PATH,
                 DOCK_SCRIPT_PATH.resolveSibling("gdcc_project_manager.gd"),
-                DOCK_SCRIPT_PATH.resolveSibling("gdcc_build_toolbar.gd"))) {
+                DOCK_SCRIPT_PATH.resolveSibling("gdcc_build_toolbar.gd"),
+                DOCK_SCRIPT_PATH.resolveSibling("gdcc_setup_dialog.gd"),
+                DOCK_SCRIPT_PATH.resolveSibling("gdcc_install_service.gd"),
+                DOCK_SCRIPT_PATH.resolveSibling("util/gdcc_install_util.gd"))) {
             var diagnosticManager = new DiagnosticManager();
             parserService.parseUnit(scriptPath, Files.readString(scriptPath), diagnosticManager);
             assertFalse(diagnosticManager.hasErrors(), () -> {
@@ -166,14 +169,16 @@ class EditorAddonClientAnalysisTest {
         var visibleMessages = Pattern.compile(
                 "(?:\\btr|\\b_log|\\b_log_error|\\.add_item)\\(\\s*(\"(?:[^\"\\\\]|\\\\.)*\")"
                         + "|\\.(?:text|tooltip_text)\\s*=\\s*(\"(?:[^\"\\\\]|\\\\.)*\")"
-                        + "|\\b_compiler_warning\\s*=\\s*(\"(?:[^\"\\\\]|\\\\.)*\")");
-        var technicalLabels = Set.of("GDCC", "gdcc", "Zig", "GD3");
+                        + "|\\b_compiler_warning\\s*=\\s*(\"(?:[^\"\\\\]|\\\\.)*\")"
+                        + "|\\b_(?:button|label|inline_label)\\([^,]+,\\s*(\"(?:[^\"\\\\]|\\\\.)*\")");
+        var technicalLabels = Set.of("GDCC", "gdcc", "Zig", "GD3", "✔", "»");
         try (var sources = Files.list(addonDir)) {
             for (var path : sources.filter(path -> path.toString().endsWith(".gd") || path.toString().endsWith(".gd3")).toList()) {
                 var messages = visibleMessages.matcher(stripComments(Files.readString(path)));
                 while (messages.find()) {
                     var literal = messages.group(1) != null ? messages.group(1)
-                            : messages.group(2) != null ? messages.group(2) : messages.group(3);
+                            : messages.group(2) != null ? messages.group(2)
+                            : messages.group(3) != null ? messages.group(3) : messages.group(4);
                     var message = JsonParser.parseString(literal).getAsString();
                     if (!message.isEmpty() && !technicalLabels.contains(message)) {
                         assertTrue(catalog.containsKey(message), () -> path.getFileName() + " missing translation: " + message);

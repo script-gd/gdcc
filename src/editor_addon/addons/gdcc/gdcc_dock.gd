@@ -1,11 +1,17 @@
 @tool
 extends VBoxContainer
 
+const SetupDialogScript := preload("res://addons/gdcc/gdcc_setup_dialog.gd")
+
+signal settings_requested
+
 # Inspection/log view. Project state belongs to the shared manager, not this panel.
 var _manager: Node
 var _log_output: TextEdit
 var _status_label: Label
 var _clear_button: Button
+var _disconnected: VBoxContainer
+var _setup_dialog: SetupDialogScript
 
 
 func setup(manager: Node) -> void:
@@ -35,6 +41,18 @@ func _ready() -> void:
     _log_output.size_flags_vertical = Control.SIZE_EXPAND_FILL
     add_child(_log_output)
     _clear_button.pressed.connect(_log_output.clear)
+    _disconnected = VBoxContainer.new()
+    _disconnected.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    _disconnected.alignment = BoxContainer.ALIGNMENT_CENTER
+    var settings_button := Button.new()
+    settings_button.text = "Configure compilation server..."
+    settings_button.pressed.connect(func() -> void: settings_requested.emit())
+    _disconnected.add_child(settings_button)
+    var install_button := Button.new()
+    install_button.text = "Install compilation server..."
+    install_button.pressed.connect(_open_setup)
+    _disconnected.add_child(install_button)
+    add_child(_disconnected)
     _manager.log_message.connect(_log)
     _manager.state_changed.connect(_refresh_status)
     # Child theme caches must be updated before measuring their line height.
@@ -67,6 +85,19 @@ func _apply_theme() -> void:
 func _refresh_status() -> void:
     _status_label.text = _manager.status_text()
     _status_label.tooltip_text = _status_label.text
+    var connected: bool = _manager.is_server_connected()
+    _log_output.visible = connected
+    _clear_button.visible = connected
+    _disconnected.visible = not connected
+
+
+func _open_setup() -> void:
+    if _setup_dialog == null:
+        _setup_dialog = SetupDialogScript.new()
+        _setup_dialog.setup(_manager)
+        add_child(_setup_dialog)
+        _setup_dialog.configured.connect(func() -> void: _manager.auto_setup_module())
+    _setup_dialog.open_setup()
 
 
 func _log(message: String) -> void:

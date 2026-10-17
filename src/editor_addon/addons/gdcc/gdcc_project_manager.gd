@@ -183,6 +183,10 @@ func status_text() -> String:
             % [tr("Connected") if status.get("ready", false) else tr("Disconnected"), round_text, last_build_age_text()]
 
 
+func is_server_connected() -> bool:
+    return _service != null and _service.is_diag_ready()
+
+
 func last_build_age_text() -> String:
     return tr("Never") if last_build_time <= 0 else relative_time_text(int(Time.get_unix_time_from_system()) - last_build_time)
 

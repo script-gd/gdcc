@@ -2790,10 +2790,93 @@ Release DLL 在 Debug 编辑器中重载并改变存活实例行为；非法配�
   Godot 4.5.1 与 4.7 自定义构建各通过两个引擎用例，共 17 次执行，无失败或跳过；
   独立复审 APPROVE。
 
-### 精简 dock 与相对时间（2026-10-13）
+### 编译服务器安装向导（2026-10-17）
 
-- dock 只有两块可视内容：顶部单行 `Connected/Disconnected | Diagnostics: ... | Build: ...`
-  与下方只读 `TextEdit`。连接指示对应诊断通道 READY；诊断时间取最近成功合并轮的
+- 诊断通道未 READY 时隐藏输出 TextEdit 和 Clear，保留状态行，下方显示“手动配置编译服务器”
+  和“安装编译服务器”两个按钮。日志仍在后台保留；连接恢复后自动显示原输出。手动配置
+  复用 Build toolbar 的原生项目设置导航，明确选择 `gdcc/compilation_server`，不维护第二份设置。
+- 顶部“编辑器”菜单另提供“安装 GDCC 编译服务器”，连接与断连状态都可打开同一向导。
+  条目使用独立命令 ID，菜单重建后在打开时恢复，语言变化时刷新，插件卸载时移除。
+- 向导使用解释执行的 `gdcc_setup_dialog.gd`、`gdcc_install_service.gd`，通用文件/压缩包/
+  版本解析在 `util/gdcc_install_util.gd`；不向编译的 `.gd3` 服务引入协程或编辑器 API。
+  顶部使用可点击的“安装JRE » 安装GDCC”步骤链接，就绪步骤后显示绿色 ✔，右侧退出也为链接文本。
+  步骤与对勾按 2 像素间距分组，箭头两侧各保留 12 像素间距；行内符号不自动换行并与链接垂直居中。
+  头尾固定、内容区滚动；弹出前仅显示第一页，默认尺寸按 720×460 缩放并限制在父窗口 80% 内，
+  避免同时计算两页最小高度撑出屏幕。底部全宽按钮在第一步为“下一步”，第二步为“完成编译器配置”。
+  检查 Java 或安装 JRE 成功只启用下一步，不自动跳转；需用户点击下一步或第二步链接。
+- Java 探测依次检查该项目上次确认的路径、`JAVA`、`JAVA_HOME`、`JDK_HOME`、`JRE_HOME`、
+  PATH 以及 Editor Data 中的缓存，去重后列出所有可识别 Java 供用户选择。每个候选通过非阻塞
+  进程管道执行 `--version`，必要时回退 `-version`；低于 25 的版本仍显示但不可选。管道同时排空
+  stdout/stderr，有截止时间并只终止自己创建的探测进程；不存在的可执行文件不发起子进程。
+- 安装 JRE 查询 `script-gd/gdcc-jre/releases/latest`，按平台/架构选择 Windows x64 ZIP、
+  Linux x64/aarch64 或 macOS aarch64 tar.gz，使用同次发布的 `SHA256SUMS` 强制校验。
+  没有对应资产的平台提示手动选择已有 Java，不猜测其他架构或静默使用模拟器版本。
+- 缓存根为 `EditorInterface.get_editor_paths().get_data_dir()/gdcc`，因此遵循 Godot 的
+  Windows/Linux/macOS 和便携模式路径：`runtimes/<发布包目录>[-<随机后缀>]/jre` 存运行环境，
+  `compilers/release-<id>`、`actions-<id>`、`local-<完整SHA256>` 分离编译器安装。
+  列表读取 JAR 内 `gdcc-version.properties` 的 version/branch/commit，不依赖文件名推断版本。
+  下载的发行包验证 manifest Class-Path 依赖，本地导入按下面的 gdparser 标志库规则识别依赖。
+- 第二步的正式版和预览版标签页各按 20 条分页，按需加载；“加载更多”是列表末尾的特殊项，
+  选中即请求下一页，不作为独立按钮，也不允许把这一项当作可安装版本。
+  正式版只列非 draft/prerelease 的 `script-gd/gdcc` Releases，同时安装 JAR 与 `-libs.zip`。
+  正式版追加 `published_at` 的日期；预览版查询 `gdcc-jar-and-libs` Actions artifacts，排除 expired，
+  显示分支、commit、按当前系统时区偏移转换的本地日期时间，中文使用年月日格式，字段用 `·` 分隔，
+  不以分支名中已使用的 `/` 作分隔符，不直接显示 ISO 8601 时间戳。
+  通过 `https://nightly.link/script-gd/gdcc/actions/artifacts/<整数ID>.zip` 匿名下载；
+  nightly.link 已获仓库 Actions 读取授权，插件不收集 Token，也不依赖本机 gh 登录。
+  预览压缩包中的嵌套 libs ZIP 同样解压；界面不显示 nightly.link 下载说明。
+  “安装所选版本”和“从本地安装”位于同一行，中间显示“或”，按 2:1 分配按钮空间。
+  两按钮只取主题最小高度，避免垂直拉伸；“或”不换行、保留自然文字宽度并垂直居中，不被按钮覆盖。
+  选择本地 JAR 后要求相邻 `lib/` 中存在 `gdparser-*.jar`，否则显示错误对话框；满足此标志即认为
+  依赖库已找到，导入时复制 lib 中的文件，不逐项拒绝 manifest 中其他缺失项。完成配置前仍实际
+  运行 `java -jar ... --version`，不会在运行校验失败后保存启动命令。
+- 下载保持原始字节、有限重定向，直接流式写入 staging；进度显示已下载大小和文件总大小，取消时中止
+  请求/探测进程。哈希、解压和复制在工作线程执行，通过插件既有 busy 计数维持帧泵。
+  服务通过 `phase_changed` 更新当前阶段，明确显示读取发布信息、下载、SHA-256 校验、解压、
+  检验解压后的 Java、安装/复制校验、检验安装后的 Java、清理和完成；非下载阶段使用不确定进度动画。
+  JRE 必须有 SHA-256；编译器在 GitHub 提供 digest 时校验，旧资产无 digest 时依赖 HTTPS。
+  Windows 自动读取当前用户手动代理的 `ProxyEnable`/`ProxyServer`，忽略 PAC/绕过规则；
+  显式 Godot Editor HTTP 代理优先。系统策略强制机器级代理、SOCKS 和代理认证不在此接口范围。
+- ZIP 解包前检查中央目录的大小/条目数，拒绝路径穿越、加密和不支持的 ZIP64；tar.gz
+  有解压大小、头校验和及条目数上限，支持发行包的 PAX 时间戳和普通文件/目录，保留 Unix
+  执行位。法律声明符号链接在普通文件完成后物化为包内副本，不创建可用于逃逸的链接。
+  编译器验证完成后把 staging 原子移动为缓存，失败不修改项目设置，取消后清理 staging。
+  JRE 优先复用有效目标；目标不存在时尝试快速移动。Windows `MoveFileW` 失败只返回笼统的 `FAILED=1`，
+  因此移动失败或旧目标不可用时，改用独立随机后缀目录复制完整 JRE，逐文件 SHA-256 校验后再次运行 Java。
+  复制成功不要求最后再重命名，直接使用实际可执行路径；旧目标不被移动、覆盖或删除。
+  复制中的目录带 `.installing` 标记，扫描时跳过，校验成功才移除标记；失败/取消清理未完成目录，
+  清理包含隐藏文件。仅存在空目录、被占用的旧目标不再阻止安装，也不对不存在的 java.exe 发起探测。
+- “完成编译器配置”在 Java 和所选编译器就绪后启用，先验证 Java、JAR 依赖和 `java -jar ... --version`，再将本地启动命令
+  写入 `gdcc/compilation_server/launch_command`、host 设为 loopback，并保存项目；保存失败
+  恢复原内存设置。Java/JAR 路径另存项目 editor metadata。确认时若服务已连接或管理器忙则拒绝
+  改写，绝不终止被其他进程启动的服务；成功后通过共享管理器和原 launcher 尝试建立连接。
+  此流程配置的是编译服务器启动程序，不擅自修改 `c_compiler_kind`、优化级别或其他构建偏好。
+- 测试锚点：`EditorAddonSetupEngineTest` 使用隔离真实编辑器、本地 HTTP 服务和 ZIP/JAR
+  fixture 检查断连/恢复、timeline、Java 进程探测、分页、nightly.link、依赖解包、缓存复用、
+  本地导入、SHA-256 失败和路径穿越；存在已下载离线发行包时额外校验并解压 Windows/Linux
+  JRE，实际执行 Windows Java。`buildToolbarSharesProjectManagerAndNavigatesSettings` 检查
+  连接后输出布局及手动设置导航，原构建部署引擎回归继续保留。新增界面与错误使用既有翻译域。
+- 初版验收记录：Windows 宿主的 Godot 4.5.1、4.6.3、4.7 自定义构建均通过向导 24 步检查，
+  包括真实 JRE 离线包、探测超时/取消、项目配置持久化和已连接服务保护；三个版本的原生
+  设置导航与构建部署两个回归也均通过。11 项静态门禁通过。Linux 包仅验证跨平台解压，
+  尚未在 Linux/macOS 宿主执行安装；不可将此记录解释为这些宿主的端到端验收。
+  `review-expert-a` 独立审阅及本地导入取消边界修复后的复核均为 APPROVE，无待确认的架构变更。
+  这 24 步只覆盖 JRE 解包和探测，未覆盖安装发布，不能视为完整 JRE 安装验收。
+- 上一轮布局修复在 Godot 4.6.3 下通过向导 38 步及 11 项静态检查。
+  新增真实 JRE 经本地 HTTP 服务下载、校验、首次发布、已有空目录修复、发布后 Java 25 执行，
+  以及窗口范围、步骤停留/切换、全部 Java 列表、列表内分页、操作按钮比例、本地缺库错误弹窗、
+  gdparser 标志依赖规则和全宽完成按钮状态的检查；未运行其他 Godot 版本。
+- 目录移动容错及对齐修复的最终验收显式指定 Godot 4.6.3，并核对日志 banner，避免继承本机默认引擎。
+  向导新增顶部链接/符号间距、按钮高度、“或”的居中与不遮挡、11 个 JRE 阶段即时显示、Windows 文件锁
+  导致移动失败后的完整复制与 Java 运行、未完成缓存排除及隐藏标记清理检查。
+  TAR 字段先按 NUL 字节截断再解码，避免构造 `String.chr(0)` 产生大量 Unicode 解析诊断。
+  最终在 `4.6.3.stable.official.7d41c59c4` 通过向导 44 步和 11 项静态检查，无 ERROR、SCRIPT ERROR
+  或 Unicode 解析诊断。版本由同次进程显式设置的 `GODOT_BIN` 和实际编辑器日志共同确认。
+
+### 精简 dock 与相对时间（2026-10-13；断连展示于 2026-10-17 扩展）
+
+- dock 连接时只有两块可视内容：顶部单行 `Connected/Disconnected | Diagnostics: ... | Build: ...`
+  与下方只读 `TextEdit`；断连时下方切换为配置入口，见上节。连接指示对应诊断通道 READY；诊断时间取最近成功合并轮的
   单调时钟，构建时间沿用成功安装/启用后的记录。尚无记录时显示 `Never`。
 - 移除配置提示、模块输入及 Ping/Create/Analyze/Build/Cancel 按钮。构建入口仅保留
   标题栏 Build；模块自动创建、同步、所有权核验和内部取消恢复流程不变。
@@ -3008,7 +3091,7 @@ EditorSettings；迁移后写 harness 项目的 ProjectSettings，随用例目�
 | R19 | 拉起进程的 PID 在会话内被系统复用，`shutdown_owned` 误杀无关进程 | 低 | 仅跟踪本会话 `create_process` 返回的 PID；`OS.kill` 仅在 `server.shutdown` 不可达**且**记录端点仍接受 TCP 连接时使用（双条件，§3.7）；会话级窗口内复用概率极低 |
 | R20 | 编辑器崩溃导致拉起的服务成为孤儿进程 | 低 | 崩溃路径本就无法执行插件代码；下次会话端口探测将其收养为外部服务（只连不关），不会泄漏累积（§3.7） |
 | R21 | `server.shutdown` 不可达（服务挂起/半死连接）时服务残留 | 低 | 2s 有界等待后按 R19 双条件决定是否 `OS.kill`；服务已死但 PID 被复用时宁可残留也不误杀；Windows 下硬切不执行 shutdown hook 的事实写入 §2.8 |
-| R22 | 启动命令以编辑器权限执行任意本地命令 | 低 | 命令仅来自项目所有者显式配置（项目级设置 `gdcc/compilation_server/launch_command`，旧项目键 `gdcc/server/launch_command` 一次性迁移，此前为机器级 EditorSettings），插件不自动生成命令文本；文档明示信任边界（§3.7）。项目级意味着 clone 他人项目即带入命令——与打开含 tool 脚本/编辑器插件的项目同属一类既有信任面（Godot 打开项目本就会执行其工具代码），评审陌生项目时应一并检查该键 |
+| R22 | 启动命令以编辑器权限执行任意本地命令 | 低 | 命令来自项目所有者显式配置，或安装向导经过确认后生成（项目级设置 `gdcc/compilation_server/launch_command`，旧项目键一次性迁移）；下载的 Java/JAR 亦属于用户确认执行的工具代码。项目级意味着 clone 他人项目即带入命令，与打开含 tool 脚本/编辑器插件的项目同属一类既有信任面，评审陌生项目时应一并检查该键及安装来源 |
 | R24 | `validate_script` 信号触发重校验依赖编辑器内部信号接线（非公开 API 承诺） | 中 | 4.5 已核实接线（§2.5 末条）；Godot 升级时重跑 §2.5 核查；引擎测试以"无输入后 `_validate` 调用计数前进"锚定该路径（§7 Phase 5） |
 | R25 | `class_name` 擦除的行扫描可能误命中字符串/注释内的同名文本 | 低 | 行级迷你词法器（字符串转义/注释/`"""` 状态机）+ 行首无缩进锚定 + 首个匹配 + 顺序尾部解析（图标串/注释尾不注入基类）+ 陷阱样例测试（§7 Phase 7）；已知残余：多行字符串内转义引号的闭合歧义（词法近似，方向安全）、超时旧代诊断按当前视图反映射的一拍级列偏移（§7 Phase 7 评审保留项 3）；根治待编译器引用区间输出（评估项，不阻塞） |
 | R26 | 元数据 JSON→C 双层转义缺陷，或 `_gdcc_` 合成方法与用户代码冲突 | 中 | 复用 `StringUtil.escapeStringLiteral` + 转义矩阵测试；前端 `_gdcc_` 前缀保留规则（用户声明冲突即报错）；合成符号纳入 `validateFileScopeSymbolsDisjoint`（§7 Phase 6） |

@@ -173,7 +173,7 @@ class EditorAddonScriptLanguageEngineTest {
                     "localization_chinese", "localization_tooltip", "localization_english_fallback",
                     "project_options", "output_clear", "shared_busy", "build_spinner", "save_during_build",
                     "spinner_pending_activation", "activation_failure_state", "spinner_idle",
-                    "settings_navigation", "settings_localization", "settings_locale_aliases", "settings_translation_restore", "settings_english_fallback",
+                    "settings_navigation", "manual_server_settings", "editor_setup_menu", "settings_localization", "settings_locale_aliases", "settings_translation_restore", "settings_english_fallback",
                     "disabled_cleanup", "reenabled_shared_manager", "launch_command_migration")),
             // Phase 4: `_complete_code` — degraded answers (client not READY / no sentinel /
             // disabled service), white-box pins of the kind table and the insert-text
@@ -1964,6 +1964,13 @@ class EditorAddonScriptLanguageEngineTest {
                             run_bar = child
                     _step("toolbar_position", run_bar != null and toolbar.get_index() + 1 == run_bar.get_index())
                     plugin._show_build_log()
+                    var layout_service := _service()
+                    layout_service.install(EditorInterface, "127.0.0.1", int(_config["lsp_port"]), "127.0.0.1", int(_config["rpc_port"]))
+                    for _i in range(400):
+                        if manager.is_server_connected():
+                            break
+                        await get_tree().create_timer(0.05).timeout
+                    dock._refresh_status()
                     await get_tree().process_frame
                     await get_tree().process_frame
                     var status_row: Control = dock._status_label.get_parent()
@@ -1971,10 +1978,11 @@ class EditorAddonScriptLanguageEngineTest {
                     for child in dock.get_children():
                         if child is Control:
                             dock_controls += 1
-                    _step("dock_layout", dock_controls == 2 and dock.get_child(0) == status_row \\
+                    _step("dock_layout", dock_controls == 3 and dock.get_child(0) == status_row \\
                             and dock.get_child(1) == dock._log_output and status_row.get_child_count() == 2 \\
                             and status_row.get_child(1) == dock._clear_button and dock._clear_button.icon != null \\
-                            and dock.find_children("*", "Button", true, false).size() == 1 \\
+                            and dock.find_children("*", "Button", true, false).size() == 3 \\
+                            and not dock._disconnected.visible and dock._log_output.visible \\
                             and dock._status_label.autowrap_mode == TextServer.AUTOWRAP_OFF \\
                             and not dock._status_label.text.contains("\\n") and not dock._log_output.editable \\
                             and dock._log_output.size_flags_vertical == Control.SIZE_EXPAND_FILL \\
@@ -2375,6 +2383,35 @@ class EditorAddonScriptLanguageEngineTest {
                             and toolbar._settings_filter.text == "gdcc" and toolbar._settings_sections != null \\
                             and toolbar._settings_sections.get_selected() != null \\
                             and toolbar._settings_sections.get_selected().get_metadata(0) == "gdcc/build")
+                    dock.settings_requested.emit()
+                    await get_tree().process_frame
+                    await get_tree().process_frame
+                    _step("manual_server_settings", toolbar._settings_sections.get_selected().get_metadata(0) == "gdcc/compilation_server")
+                    toolbar._settings_dialog.hide()
+                    var setup_menu: PopupMenu = plugin._editor_setup_menu
+                    var setup_menu_id: int = plugin.SETUP_MENU_ID
+                    var menu_index := setup_menu.get_item_index(setup_menu_id)
+                    var menu_count := setup_menu.item_count
+                    setup_menu.remove_item(menu_index)
+                    setup_menu.about_to_popup.emit()
+                    plugin._ensure_editor_setup_menu()
+                    dock._setup_dialog = dock.SetupDialogScript.new()
+                    dock._setup_dialog.setup(manager)
+                    dock.add_child(dock._setup_dialog)
+                    # Hold initialization so opening the real window cannot contact GitHub.
+                    dock._setup_dialog._busy = true
+                    setup_menu.id_pressed.emit(setup_menu_id)
+                    await get_tree().process_frame
+                    var setup_instance: int = dock._setup_dialog.get_instance_id()
+                    setup_menu.id_pressed.emit(setup_menu_id)
+                    _step("editor_setup_menu", setup_menu.name == &"Editor" and setup_menu.item_count == menu_count \\
+                            and setup_menu.get_item_index(setup_menu_id) >= 0 and dock._setup_dialog.visible \\
+                            and dock._setup_dialog.get_instance_id() == setup_instance)
+                    dock._setup_dialog.hide()
+                    dock._setup_dialog._busy = false
+                    toolbar._open_project_settings()
+                    await get_tree().process_frame
+                    await get_tree().process_frame
                     var property_domain := TranslationServer.get_or_add_domain(&"godot.properties")
                     var property_domain_id: int = property_domain.get_instance_id()
                     var property_locale: String = property_domain.get_locale_override()
@@ -2449,6 +2486,7 @@ class EditorAddonScriptLanguageEngineTest {
                         leftover = leftover or child.name == "GdccBuildToolbar"
                     _step("disabled_cleanup", not leftover and not is_instance_valid(manager) and not is_instance_valid(toolbar) \\
                             and not TranslationServer.has_domain(&"gdcc.editor") \\
+                            and setup_menu.get_item_index(setup_menu_id) == -1 \\
                             and TranslationServer.has_domain(&"godot.properties") \\
                             and TranslationServer.get_or_add_domain(&"godot.properties").get_instance_id() == property_domain_id \\
                             and property_domain.translate("Excluded Globs") == "Excluded Globs")
@@ -2468,6 +2506,7 @@ class EditorAddonScriptLanguageEngineTest {
                             and next_toolbar._manager == next_manager and next_manager.get_instance_id() != old_manager_id \\
                             and next_manager.last_build_time == persisted_time \\
                             and next_manager.last_build_failed and next_toolbar._last_failure_label.visible \\
+                            and setup_menu.get_item_index(setup_menu_id) >= 0 \\
                             and property_domain.get_instance_id() == property_domain_id \\
                             and next_manager.last_source_save_time == last_save and not next_manager.has_saved_changes() \\
                             and EditorInterface.get_editor_settings().get_project_metadata("gdcc", "last_build_time", 0) == persisted_time \\

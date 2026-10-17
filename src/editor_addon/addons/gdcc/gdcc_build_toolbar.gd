@@ -270,7 +270,7 @@ func _save_settings() -> void:
 
 ## Godot exposes no Project Settings navigation API. Validate the known editor layout before
 ## opening its real dialog; never substitute the editor preferences or a second settings store.
-func _open_project_settings() -> void:
+func _open_project_settings(target_section: String = "gdcc/build") -> void:
     _popup.hide()
     settings_requested.emit()
     var dialogs := EditorInterface.get_base_control().find_children("*", "AcceptDialog", true, false)
@@ -317,13 +317,14 @@ func _open_project_settings() -> void:
                 var section := str(item.get_metadata(0))
                 # Three-part settings create a non-selectable gdcc parent and selectable leaves.
                 if item.is_selectable(0) and section.begins_with("gdcc/"):
-                    if chosen == null or section == "gdcc/build":
+                    if chosen == null or section == target_section:
                         chosen = item
-                    if section == "gdcc/build":
+                    if section == target_section:
                         break
                 items.append_array(item.get_children())
             if chosen != null:
                 chosen.select(0)
+                _settings_sections.item_selected.emit()
                 _settings_sections.scroll_to_item(chosen)
             else:
                 push_warning(tr("GDCC: settings categories changed; choose a GDCC subcategory manually."))

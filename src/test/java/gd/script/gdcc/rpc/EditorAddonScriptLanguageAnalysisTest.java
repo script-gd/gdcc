@@ -40,7 +40,8 @@ class EditorAddonScriptLanguageAnalysisTest {
     private static final String MODULE_ID = "editor-addon-language";
     private static final List<String> INTERPRETED_SCRIPTS = List.of(
             "plugin.gd", "gdcc_dock.gd", "gdcc_project_manager.gd", "gdcc_build_toolbar.gd",
-            "server_launcher.gd", "gdcc_syntax_highlighter.gd");
+            "server_launcher.gd", "gdcc_syntax_highlighter.gd", "gdcc_setup_dialog.gd",
+            "gdcc_install_service.gd", "util/gdcc_install_util.gd");
     private static final Pattern AWAIT_PATTERN = Pattern.compile("\\bawait\\b");
 
     @TempDir

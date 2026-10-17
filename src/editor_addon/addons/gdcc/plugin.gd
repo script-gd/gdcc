@@ -6,7 +6,7 @@ extends EditorPlugin
 # The compiled classes (`GdccRpcClient`, `GdccEditorService`, ...) come exclusively from the
 # installed GDExtension: the `.gd3` sources are never loaded by the engine, so this plugin can
 # only be enabled in a project where the compiled extension is installed. This script owns the
-# dock, build toolbar, shared project manager/client, launcher and low-power coordinator;
+# dock/setup dialog, build toolbar, shared project manager/client, launcher and low-power coordinator;
 # the language integration lives in the process-resident `GdccEditorService`,
 # which survives plugin disable/enable cycles so open `.gd3` tabs keep a
 # valid language instance.
@@ -23,6 +23,7 @@ const SCRIPT_ICON_PATH := "res://addons/gdcc/gdcc_script.svg"
 const TRANSLATION_DOMAIN := &"gdcc.editor"
 const CHINESE_TRANSLATION := preload("res://addons/gdcc/locale/zh.po")
 const CHINESE_SETTINGS_TRANSLATION := preload("res://addons/gdcc/locale/zh_properties.po")
+const SETUP_MENU_ID := 0x47444343
 
 const SERVICE_NODE_NAME := "GdccEditorService"
 const SETTING_LSP_USE_THREAD := "network/language_server/use_thread"
@@ -70,6 +71,7 @@ var _script_language_index: int = -1
 var _handled_highlighter_editors: Dictionary = {}
 var _translation_domain: TranslationDomain
 var _settings_translation_domain: TranslationDomain
+var _editor_setup_menu: PopupMenu
 
 
 func _enter_tree() -> void:
@@ -266,6 +268,9 @@ func _enter_tree() -> void:
     # Fire-and-forget: the coroutine awaits RPC responses off this synchronous stack.
     _project_manager.auto_setup_module()
     _install_build_toolbar()
+    _dock.settings_requested.connect(func() -> void:
+        _build_toolbar._open_project_settings("gdcc/compilation_server"))
+    _install_editor_setup_menu()
     # 5.5) Syntax highlighter: registration covers only NEW tabs (ScriptEditor never re-runs
     #    selection for existing ones), so the method also applies to the tab that is current
     #    right now and relays future tab focuses. Best-effort: highlighting must never gate
@@ -294,6 +299,48 @@ func _notification(what: int) -> void:
     if what == NOTIFICATION_TRANSLATION_CHANGED and _settings_translation_domain != null:
         # Godot reloads its property catalog on editor language changes; re-add idempotently.
         _settings_translation_domain.add_translation(CHINESE_SETTINGS_TRANSLATION)
+        if is_instance_valid(_editor_setup_menu):
+            _ensure_editor_setup_menu.call_deferred()
+
+
+func _install_editor_setup_menu() -> void:
+    # Godot keeps this source node name in both full and compact menu layouts.
+    for candidate in get_editor_interface().get_base_control().find_children("*", "PopupMenu", true, false):
+        if candidate.name == &"Editor":
+            _editor_setup_menu = candidate
+            _editor_setup_menu.about_to_popup.connect(_ensure_editor_setup_menu)
+            _editor_setup_menu.id_pressed.connect(_on_editor_setup_menu_pressed)
+            _ensure_editor_setup_menu()
+            return
+    push_warning(tr("GDCC: Editor menu not found; use the GDCC dock to install the server."))
+
+
+func _ensure_editor_setup_menu() -> void:
+    if not is_instance_valid(_editor_setup_menu):
+        return
+    # Editor menu rebuilds clear items but preserve the popup and its connections.
+    var index := _editor_setup_menu.get_item_index(SETUP_MENU_ID)
+    if index < 0:
+        # A dedicated ID must not overlap Godot's native editor commands.
+        _editor_setup_menu.add_item(tr("Install GDCC compilation server"), SETUP_MENU_ID)
+    else:
+        _editor_setup_menu.set_item_text(index, tr("Install GDCC compilation server"))
+
+
+func _on_editor_setup_menu_pressed(id: int) -> void:
+    if id == SETUP_MENU_ID:
+        _dock._open_setup()
+
+
+func _remove_editor_setup_menu() -> void:
+    if not is_instance_valid(_editor_setup_menu):
+        return
+    _editor_setup_menu.about_to_popup.disconnect(_ensure_editor_setup_menu)
+    _editor_setup_menu.id_pressed.disconnect(_on_editor_setup_menu_pressed)
+    var index := _editor_setup_menu.get_item_index(SETUP_MENU_ID)
+    if index >= 0:
+        _editor_setup_menu.remove_item(index)
+    _editor_setup_menu = null
 
 
 ## Rolls back everything `_enter_tree` created after the resident service node (which is
@@ -389,6 +436,7 @@ func _lsp_endpoint_listening(host: String, port: int) -> bool:
 
 
 func _exit_tree() -> void:
+    _remove_editor_setup_menu()
     # Teardown order is contractual: disconnect feeds, release the views and project manager,
     # uninstall the language integration → restore the LSP thread setting → and only then
     # shut down the spawned server (uninstall may still need the server reachable). Note the
