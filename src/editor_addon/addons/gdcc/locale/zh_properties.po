@@ -9,9 +9,6 @@ msgstr ""
 msgid "Gdcc"
 msgstr "GDCC"
 
-msgid "Server"
-msgstr "服务器"
-
 msgid "Compilation Server"
 msgstr "编译服务器"
 

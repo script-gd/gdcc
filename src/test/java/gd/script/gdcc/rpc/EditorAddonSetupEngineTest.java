@@ -296,7 +296,7 @@ class EditorAddonSetupEngineTest {
                 func can_start_action() -> bool:
                     return not busy
                 func server_endpoint() -> Array:
-                    return ["127.0.0.1", ProjectSettings.get_setting("gdcc/server/port", 6099)]
+                    return ["127.0.0.1", ProjectSettings.get_setting("gdcc/compilation_server/port", 6099)]
                 func restart_server(previous: Array) -> int:
                     previous_endpoint = previous
                     restarts += 1
@@ -537,13 +537,13 @@ class EditorAddonSetupEngineTest {
                 var saved_command: String = ProjectSettings.get_setting("gdcc/compilation_server/launch_command", "")
                 var saved := ConfigFile.new()
                 var loaded := saved.load("res://project.godot")
-                check_step("apply_configuration", loaded == OK and saved_command.contains(installed["path"]) and saved_command.contains("--enable-native-access=ALL-UNNAMED") and saved.get_value("gdcc", "server/host", "") == "127.0.0.1", saved_command)
-                var old_port: int = ProjectSettings.get_setting("gdcc/server/port")
+                check_step("apply_configuration", loaded == OK and saved_command.contains(installed["path"]) and saved_command.contains("--enable-native-access=ALL-UNNAMED") and saved.get_value("gdcc", "compilation_server/host", "") == "127.0.0.1", saved_command)
+                var old_port: int = ProjectSettings.get_setting("gdcc/compilation_server/port")
                 manager.connected = true
                 dialog._selected_jar = imported
                 await dialog._apply_configuration()
                 saved_command = ProjectSettings.get_setting("gdcc/compilation_server/launch_command", "")
-                check_step("connected_apply_restarts", saved_command.contains(imported["path"]) and manager.restarts == 2 and manager.previous_endpoint == ["127.0.0.1", old_port] and ProjectSettings.get_setting("gdcc/server/port") != old_port and manager.connected and not dialog._busy)
+                check_step("connected_apply_restarts", saved_command.contains(imported["path"]) and manager.restarts == 2 and manager.previous_endpoint == ["127.0.0.1", old_port] and ProjectSettings.get_setting("gdcc/compilation_server/port") != old_port and manager.connected and not dialog._busy)
                 manager.busy = true
                 await dialog._apply_configuration()
                 check_step("busy_apply_rejected", ProjectSettings.get_setting("gdcc/compilation_server/launch_command", "") == saved_command and manager.restarts == 2 and not dialog._busy)

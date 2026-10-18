@@ -205,7 +205,7 @@ class EditorAddonClientAnalysisTest {
                 assertFalse(translated.isBlank(), "empty property translation: " + name);
             }
         }
-        assertEquals(Set.of("Gdcc", "Server", "Compilation Server", "Launch Command", "Build",
+        assertEquals(Set.of("Gdcc", "Compilation Server", "Launch Command", "Build",
                 "Optimization Level", "Strict Mode", "C Compiler Kind", "Excluded Globs"), names.keySet());
         assertFalse(source.contains("msgctxt"), "native property names use an empty translation context");
         assertFalse(names.containsKey("Host"), "do not override Godot's built-in property translations");

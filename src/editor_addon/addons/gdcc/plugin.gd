@@ -30,8 +30,8 @@ const SETTING_LSP_USE_THREAD := "network/language_server/use_thread"
 const SETTING_LSP_HOST := "network/language_server/remote_host"
 const SETTING_LSP_PORT := "network/language_server/remote_port"
 const SETTING_LAUNCH_COMMAND := "gdcc/compilation_server/launch_command"
-const SETTING_SERVER_HOST := "gdcc/server/host"
-const SETTING_SERVER_PORT := "gdcc/server/port"
+const SETTING_SERVER_HOST := "gdcc/compilation_server/host"
+const SETTING_SERVER_PORT := "gdcc/compilation_server/port"
 
 var _client: GdccRpcClient
 var _dock: DockScript
@@ -103,9 +103,9 @@ func _enter_tree() -> void:
     var editor_settings := get_editor_interface().get_editor_settings()
     # 2) Endpoints first (the thread-mode probe below needs them): LSP follows the user's
     #    language-server settings; the gdcc RPC endpoint reads the SAME ProjectSettings pair
-    #    the Project Settings dialog edits (`gdcc/server/host|port`) so the background
-    #    diagnostics channel and the configured endpoint can never diverge (plan §7 Phase 5
-    #    item 3). Defaults are registered a few lines below and therefore always exist by the
+    #    the Project Settings dialog edits (`gdcc/compilation_server/host|port`) so the background
+    #    diagnostics channel and the configured endpoint can never diverge.
+    #    Defaults are registered a few lines below and therefore always exist by the
     #    time install() runs.
     var lsp_endpoint := _read_lsp_endpoint()
     var lsp_host: String = lsp_endpoint[0]
@@ -139,10 +139,18 @@ func _enter_tree() -> void:
     # key (one-time migration; the machine-local keys are left untouched for downgrade safety, and
     # the seeded values stay in-memory until the user saves the project).
     var migrated := false
+    # Migrate saved project keys before registering defaults; canonical keys take precedence.
+    for key in [SETTING_SERVER_HOST, SETTING_SERVER_PORT, SETTING_LAUNCH_COMMAND]:
+        var legacy_key: String = key.replace("gdcc/compilation_server/", "gdcc/server/")
+        if ProjectSettings.has_setting(legacy_key):
+            if not ProjectSettings.has_setting(key):
+                ProjectSettings.set_setting(key, ProjectSettings.get_setting(legacy_key))
+            ProjectSettings.set_setting(legacy_key, null)
+            migrated = true
     if not ProjectSettings.has_setting(SETTING_SERVER_HOST):
         var host := "127.0.0.1"
-        if editor_settings.has_setting(SETTING_SERVER_HOST):
-            var legacy_host := str(editor_settings.get_setting(SETTING_SERVER_HOST)).strip_edges()
+        if editor_settings.has_setting("gdcc/server/host"):
+            var legacy_host := str(editor_settings.get_setting("gdcc/server/host")).strip_edges()
             if legacy_host != "" and legacy_host != "127.0.0.1":
                 host = legacy_host
                 migrated = true
@@ -151,8 +159,8 @@ func _enter_tree() -> void:
     ProjectSettings.add_property_info({"name": SETTING_SERVER_HOST, "type": TYPE_STRING})
     if not ProjectSettings.has_setting(SETTING_SERVER_PORT):
         var port := 6099
-        if editor_settings.has_setting(SETTING_SERVER_PORT):
-            var legacy_port := int(editor_settings.get_setting(SETTING_SERVER_PORT))
+        if editor_settings.has_setting("gdcc/server/port"):
+            var legacy_port := int(editor_settings.get_setting("gdcc/server/port"))
             if legacy_port != 6099 and legacy_port >= 1 and legacy_port <= 65535:
                 port = legacy_port
                 migrated = true
@@ -165,17 +173,12 @@ func _enter_tree() -> void:
     var legacy_launch_key := "gdcc/server/launch_command"
     if not ProjectSettings.has_setting(SETTING_LAUNCH_COMMAND):
         var command := ""
-        if ProjectSettings.has_setting(legacy_launch_key):
-            command = str(ProjectSettings.get_setting(legacy_launch_key))
-            migrated = true
-        elif editor_settings.has_setting(legacy_launch_key):
+        if editor_settings.has_setting(legacy_launch_key):
             var legacy_command := str(editor_settings.get_setting(legacy_launch_key)).strip_edges()
             if legacy_command != "":
                 command = legacy_command
                 migrated = true
         ProjectSettings.set_setting(SETTING_LAUNCH_COMMAND, command)
-    if ProjectSettings.has_setting(legacy_launch_key):
-        ProjectSettings.set_setting(legacy_launch_key, null)
     ProjectSettings.set_initial_value(SETTING_LAUNCH_COMMAND, "")
     ProjectSettings.add_property_info({
         "name": SETTING_LAUNCH_COMMAND,
@@ -184,7 +187,7 @@ func _enter_tree() -> void:
         "hint_string": "gdcc serve --host {host} --port {port}",
     })
     if migrated:
-        push_warning(tr("GDCC: server settings migrated into this project's gdcc/server and gdcc/compilation_server settings; save the project to persist them."))
+        push_warning(tr("GDCC: server settings migrated into this project's gdcc/compilation_server settings; save the project to persist them."))
     # Project-level sync exclusion globs: `String.match` patterns against res://-relative
     # paths. Name and default are single-sourced from the resident service (it owns the
     # matching predicate).
@@ -394,9 +397,9 @@ func _read_lsp_endpoint() -> Array:
     return [host, port]
 
 
-## Reads the gdcc server endpoint from the per-project settings (`gdcc/server/host|port`) —
+## Reads the gdcc server endpoint from the per-project settings (`gdcc/compilation_server/host|port`).
 ## single-sourced with the Project Settings dialog so the background diagnostics channel can
-## never diverge from the configured endpoint (plan §7 Phase 5 item 3). The defaults are
+## never diverge from the configured endpoint. The defaults are
 ## registered earlier in `_enter_tree`, so this always resolves. Returns [] when the
 ## configured pair is unusable (a hand-edited project.godot can bypass the dialog's range
 ## hint), letting each caller fail closed its own way; the rejection is logged once per
@@ -407,7 +410,7 @@ func _read_server_endpoint() -> Array:
     if host.is_empty() or port < 1 or port > 65535:
         if [host, port] != _last_invalid_endpoint:
             _last_invalid_endpoint = [host, port]
-            push_error(tr("GDCC: invalid gdcc/server project settings (host='%s', port=%d); expected a non-empty host and a port in 1..65535.") % [host, port])
+            push_error(tr("GDCC: invalid gdcc/compilation_server project settings (host='%s', port=%d); expected a non-empty host and a port in 1..65535.") % [host, port])
         return []
     _last_invalid_endpoint = []
     return [host, port]

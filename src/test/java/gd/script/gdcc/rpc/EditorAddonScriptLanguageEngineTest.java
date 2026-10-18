@@ -178,7 +178,8 @@ class EditorAddonScriptLanguageEngineTest {
                     "project_options", "output_clear", "shared_busy", "build_spinner", "save_during_build",
                     "spinner_pending_activation", "activation_failure_state", "spinner_idle",
                     "settings_navigation", "manual_server_settings", "editor_setup_menu", "settings_localization", "settings_locale_aliases", "settings_translation_restore", "settings_english_fallback",
-                    "disabled_cleanup", "reenabled_shared_manager", "launch_command_migration")),
+                    "disabled_cleanup", "reenabled_shared_manager", "launch_command_migration",
+                    "server_endpoint_migration", "server_settings_precedence")),
             // Phase 4: `_complete_code` — degraded answers (client not READY / no sentinel /
             // disabled service), white-box pins of the kind table and the insert-text
             // precedence (the server's emitted kind set is not controllable, so the mapping
@@ -712,8 +713,8 @@ class EditorAddonScriptLanguageEngineTest {
                     # to the test's free port keeps the case hermetic (a real service on the
                     # default port would otherwise be adopted as an external server and break
                     # the spawn assertions).
-                    ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
-                    ProjectSettings.set_setting("gdcc/server/port", port)
+                    ProjectSettings.set_setting("gdcc/compilation_server/host", "127.0.0.1")
+                    ProjectSettings.set_setting("gdcc/compilation_server/port", port)
                     ProjectSettings.set_setting("gdcc/compilation_server/launch_command", str(_config["launch_command"]))
                     _step("configure", true)
                     # Re-enable so the plugin startup path runs with the command configured; the
@@ -750,7 +751,7 @@ class EditorAddonScriptLanguageEngineTest {
                         var reservation := TCPServer.new()
                         reservation.listen(0, "127.0.0.1")
                         port = reservation.get_local_port()
-                        ProjectSettings.set_setting("gdcc/server/port", port)
+                        ProjectSettings.set_setting("gdcc/compilation_server/port", port)
                         ProjectSettings.set_setting("gdcc/compilation_server/launch_command",
                                 str(_config["launch_command"]).replace(" -cp ", " -Dgdcc.setup.replacement=true -cp "))
                         reservation.stop()
@@ -785,9 +786,10 @@ class EditorAddonScriptLanguageEngineTest {
                     client.queue_free()
                 
                 func _run_launch_bad_mode() -> void:
+                    TranslationServer.set_locale("en")
                     var port := int(_config["port"])
-                    ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
-                    ProjectSettings.set_setting("gdcc/server/port", port)
+                    ProjectSettings.set_setting("gdcc/compilation_server/host", "127.0.0.1")
+                    ProjectSettings.set_setting("gdcc/compilation_server/port", port)
                     ProjectSettings.set_setting("gdcc/compilation_server/launch_command", str(_config["launch_command"]))
                     _step("configure", true)
                     EditorInterface.set_plugin_enabled("gdcc", false)
@@ -808,8 +810,8 @@ class EditorAddonScriptLanguageEngineTest {
                 
                 func _run_launch_none_mode() -> void:
                     var port := int(_config["port"])
-                    ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
-                    ProjectSettings.set_setting("gdcc/server/port", port)
+                    ProjectSettings.set_setting("gdcc/compilation_server/host", "127.0.0.1")
+                    ProjectSettings.set_setting("gdcc/compilation_server/port", port)
                     ProjectSettings.set_setting("gdcc/compilation_server/launch_command", "")
                     EditorInterface.set_plugin_enabled("gdcc", false)
                     await get_tree().process_frame
@@ -2461,12 +2463,12 @@ class EditorAddonScriptLanguageEngineTest {
                     await get_tree().process_frame
                     var settings_labels: Dictionary = _project_settings_labels(toolbar)
                     var localized_settings: bool = settings_labels.get("gdcc/build") == "构建" \\
-                            and settings_labels.get("gdcc/server") == "服务器" \\
+                            and not settings_labels.has("gdcc/server") \\
                             and settings_labels.get("gdcc/compilation_server") == "编译服务器" \\
                             and settings_labels.get("optimization_level") == "优化级别" \\
                             and settings_labels.get("strict_mode") == "严格模式" \\
                             and settings_labels.get("c_compiler_kind") == "C 编译器类型"
-                    for section in ["gdcc/compilation_server", "gdcc/server", "gdcc/sync"]:
+                    for section in ["gdcc/compilation_server", "gdcc/sync"]:
                         localized_settings = _select_project_settings_section(toolbar, section) and localized_settings
                         await get_tree().process_frame
                         await get_tree().process_frame
@@ -2503,7 +2505,7 @@ class EditorAddonScriptLanguageEngineTest {
                     await get_tree().process_frame
                     var english_labels: Dictionary = _project_settings_labels(toolbar)
                     _step("settings_english_fallback", english_labels.get("gdcc/build") == "Build" \\
-                            and english_labels.get("gdcc/server") == "Server" \\
+                            and english_labels.get("gdcc/compilation_server") == "Compilation Server" \\
                             and english_labels.get("excluded_globs") == "Excluded Globs", str(english_labels))
                     property_domain.set_locale_override(property_locale)
                     get_tree().root.propagate_notification(NOTIFICATION_TRANSLATION_CHANGED)
@@ -2531,6 +2533,8 @@ class EditorAddonScriptLanguageEngineTest {
                             and property_domain.translate("Excluded Globs") == "Excluded Globs")
                     ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
                     ProjectSettings.set_setting("gdcc/server/port", int(_config["rpc_port"]))
+                    ProjectSettings.set_setting("gdcc/compilation_server/host", null)
+                    ProjectSettings.set_setting("gdcc/compilation_server/port", null)
                     ProjectSettings.set_setting("gdcc/compilation_server/launch_command", null)
                     var legacy_command := "gdcc serve --host {host} --port {port}"
                     ProjectSettings.set_setting("gdcc/server/launch_command", legacy_command)
@@ -2553,6 +2557,24 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("launch_command_migration", ProjectSettings.get_setting("gdcc/compilation_server/launch_command", "") == legacy_command \\
                             and not ProjectSettings.has_setting("gdcc/server/launch_command") \\
                             and next_manager.get_parent().get("_launcher")._read_launch_command() == legacy_command)
+                    _step("server_endpoint_migration", next_manager.server_endpoint() == ["127.0.0.1", int(_config["rpc_port"])] \\
+                            and ProjectSettings.get_setting("gdcc/compilation_server/host") == "127.0.0.1" \\
+                            and ProjectSettings.get_setting("gdcc/compilation_server/port") == int(_config["rpc_port"]) \\
+                            and not ProjectSettings.has_setting("gdcc/server/host") \\
+                            and not ProjectSettings.has_setting("gdcc/server/port"))
+                    EditorInterface.set_plugin_enabled("gdcc", false)
+                    await get_tree().process_frame
+                    ProjectSettings.set_setting("gdcc/server/host", "legacy.invalid")
+                    ProjectSettings.set_setting("gdcc/server/port", 1)
+                    ProjectSettings.set_setting("gdcc/server/launch_command", "legacy-command")
+                    EditorInterface.set_plugin_enabled("gdcc", true)
+                    await get_tree().process_frame
+                    var canonical_plugin: Variant = _find_gdcc_dock()._manager.get_parent()
+                    _step("server_settings_precedence", canonical_plugin._read_server_endpoint() == ["127.0.0.1", int(_config["rpc_port"])] \\
+                            and ProjectSettings.get_setting("gdcc/compilation_server/launch_command") == legacy_command \\
+                            and not ProjectSettings.has_setting("gdcc/server/host") \\
+                            and not ProjectSettings.has_setting("gdcc/server/port") \\
+                            and not ProjectSettings.has_setting("gdcc/server/launch_command"))
                 
                 """;
     }
@@ -3042,6 +3064,7 @@ class EditorAddonScriptLanguageEngineTest {
                     _step("survived", true)
                 
                 func _run_diag_revalidate_mode() -> void:
+                    TranslationServer.set_locale("en")
                     var service := _service()
                     var lang := _find_gd3_language()
                     if service == null or lang == null:
@@ -3234,13 +3257,13 @@ class EditorAddonScriptLanguageEngineTest {
                     # Baseline: pin the configured endpoint to the live test server first — the
                     # explicit install above bypassed the settings, and production never lets
                     # configured/effective diverge. The relay no-ops an unchanged retarget.
-                    ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
-                    ProjectSettings.set_setting("gdcc/server/port", rpc_port)
+                    ProjectSettings.set_setting("gdcc/compilation_server/host", "127.0.0.1")
+                    ProjectSettings.set_setting("gdcc/compilation_server/port", rpc_port)
                     await get_tree().process_frame
                     await get_tree().process_frame
                     # The settings-changed emission is deferred (per-frame coalesced): poll a
                     # few frames for the relay to land the retarget on the dead endpoint.
-                    ProjectSettings.set_setting("gdcc/server/port", closed_port)
+                    ProjectSettings.set_setting("gdcc/compilation_server/port", closed_port)
                     var closed_ok := false
                     var retarget_deadline := Time.get_ticks_msec() + 10000
                     while Time.get_ticks_msec() < retarget_deadline and not closed_ok:
@@ -3248,7 +3271,7 @@ class EditorAddonScriptLanguageEngineTest {
                         if not closed_ok:
                             await get_tree().process_frame
                     closed_ok = closed_ok \\
-                            and int(ProjectSettings.get_setting("gdcc/server/port")) == closed_port
+                            and int(ProjectSettings.get_setting("gdcc/compilation_server/port")) == closed_port
                     var failure_seen := false
                     var fail_deadline := Time.get_ticks_msec() + 20000
                     while closed_ok and Time.get_ticks_msec() < fail_deadline and not failure_seen:
@@ -3267,7 +3290,7 @@ class EditorAddonScriptLanguageEngineTest {
                             "retargeted=" + str(closed_ok) + " failure=" + str(failure_seen)
                             + " status=" + str(status_closed))
                 
-                    ProjectSettings.set_setting("gdcc/server/port", rpc_port)
+                    ProjectSettings.set_setting("gdcc/compilation_server/port", rpc_port)
                     var recover_deadline := Time.get_ticks_msec() + 10000
                     while Time.get_ticks_msec() < recover_deadline and service.rpc_port() != rpc_port:
                         await get_tree().process_frame

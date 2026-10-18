@@ -18,8 +18,8 @@ const COMPILE_MODULE_PREFIX := "gdcc_editor_compile_"
 const ERR_MODULE_NOT_FOUND := -32000
 const BUILD_EXTENSION_PATH := "res://bin/gdcc.gdextension"
 const SETTING_LAUNCH_COMMAND := "gdcc/compilation_server/launch_command"
-const SETTING_SERVER_HOST := "gdcc/server/host"
-const SETTING_SERVER_PORT := "gdcc/server/port"
+const SETTING_SERVER_HOST := "gdcc/compilation_server/host"
+const SETTING_SERVER_PORT := "gdcc/compilation_server/port"
 const SETTING_OPTIMIZATION_LEVEL := "gdcc/build/optimization_level"
 const SETTING_STRICT_MODE := "gdcc/build/strict_mode"
 const SETTING_C_COMPILER_KIND := "gdcc/build/c_compiler_kind"
@@ -33,7 +33,7 @@ var _report_busy: Callable
 var _launcher: Node
 # Resident editor service: the status area reads its diagnostics-channel
 # snapshot, and the project RPC endpoint is sourced from it (the service follows the
-# per-project `gdcc/server/*` settings — the single configuration source).
+# per-project `gdcc/compilation_server/*` settings — the single configuration source).
 var _service: GdccEditorService
 
 var diagnostics_module_id: String = ""
@@ -314,7 +314,7 @@ func _call_rpc_blocking(host: String, port: int, method: String, params: Diction
 
 
 ## Points the project RPC client at the service's effective endpoint — the single source the
-## diagnostics channel follows (the per-project `gdcc/server/*` settings reach it through
+## diagnostics channel follows (the per-project `gdcc/compilation_server/*` settings reach it through
 ## the plugin's settings-changed relay). Falls back to the raw configured pair only when the
 ## service is unavailable.
 func _apply_endpoint() -> void:

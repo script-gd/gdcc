@@ -656,8 +656,8 @@ fixture，列入 §7 后续工作。
   （`state`/`stage`/`completedUnits`/`totalUnits`；没有单独的 `progress` 字段，
   `createdAt`/`completedAt` 是 ISO-8601 字符串），以及最终的
   `CompileResult.outcome`。
-- dock 的 host/port/启动命令是**项目级设置**（ProjectSettings `gdcc/server/host`、
-  `gdcc/server/port`、`gdcc/compilation_server/launch_command`；旧项目启动命令键一次性迁移，见集成计划 §3.7 的
+- dock 的 host/port/启动命令是**项目级设置**（ProjectSettings `gdcc/compilation_server/host`、
+  `gdcc/compilation_server/port`、`gdcc/compilation_server/launch_command`；旧项目的 `gdcc/server/*` 三键一次性迁移并移除，新键优先，见集成计划 §3.7 的
   配置来源修订与一次性 EditorSettings 迁移说明），dock 自身不再提供编辑框，只在状态
   区只读显示 configured/effective 端点与 auto-launch 是否已配置；`auto_setup_module`
   在任何连接尝试前先经 `server_launcher.gd` 的 `ensure_running_async`（见集成计划
@@ -757,7 +757,7 @@ fixture，列入 §7 后续工作。
   （`--headless --editor --path <副本> --quit-after <兜底帧数>`），驱动插件
   `addons/gdcc_test_driver`（仅测试用，不随插件发布）逐行输出 `GD3_TEST_RESULT: `。
   子进程的配置目录被重定向进用例目录（`APPDATA`/`XDG_CONFIG_HOME`/`HOME`），
-  EditorSettings 写入（`use_thread` 等）绝不污染真实用户配置；`gdcc/server/*` 自
+  EditorSettings 写入（`use_thread` 等）绝不污染真实用户配置；`gdcc/compilation_server/*` 自
   2026-10 起是 harness 项目内的项目级设置，天然随用例目录隔离。用例：
   `language`（语言注册 GD3、`ResourceLoader.load` 往返、`ResourceSaver.save` 往返、
   `_reload` 重读、worker 线程 `load_threaded_*` 路径、`_validate` 返回 valid、

@@ -531,14 +531,14 @@ msgstr "GDCC：根节点“%s”已存在但类型不符；已禁用脚本语言
 msgid "GDCC: plugin enabled while the GDScript language server is already running; it keeps its current polling mode until the editor restarts — .gd3 diagnostics will refresh on editor beats instead of synchronously."
 msgstr "GDCC：插件启用时 GDScript 语言服务器已在运行，重启编辑器前将沿用当前轮询模式；.gd3 诊断将随编辑器节拍刷新，而非同步刷新。"
 
-msgid "GDCC: server settings migrated into this project's gdcc/server and gdcc/compilation_server settings; save the project to persist them."
-msgstr "GDCC：服务器设置已迁移到此项目的 gdcc/server 与 gdcc/compilation_server 设置；请保存项目以持久化。"
+msgid "GDCC: server settings migrated into this project's gdcc/compilation_server settings; save the project to persist them."
+msgstr "GDCC：服务器设置已迁移到此项目的 gdcc/compilation_server 设置；请保存项目以持久化。"
 
 msgid "GDCC: script language install failed (error %d); editor settings restored."
 msgstr "GDCC：脚本语言安装失败（错误 %d）；已恢复编辑器设置。"
 
-msgid "GDCC: invalid gdcc/server project settings (host='%s', port=%d); expected a non-empty host and a port in 1..65535."
-msgstr "GDCC：gdcc/server 项目设置无效（主机='%s'，端口=%d）；主机不能为空，端口必须在 1..65535 范围内。"
+msgid "GDCC: invalid gdcc/compilation_server project settings (host='%s', port=%d); expected a non-empty host and a port in 1..65535."
+msgstr "GDCC：gdcc/compilation_server 项目设置无效（主机='%s'，端口=%d）；主机不能为空，端口必须在 1..65535 范围内。"
 
 msgid "GDCC: editor run toolbar not found; the Build control remains at the end of the title bar."
 msgstr "GDCC：未找到编辑器运行工具栏；构建控件将保留在标题栏末尾。"

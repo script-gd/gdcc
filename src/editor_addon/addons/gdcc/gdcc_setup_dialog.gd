@@ -547,13 +547,13 @@ func _apply_configuration() -> void:
         reservation = other
     var key := "gdcc/compilation_server/launch_command"
     var previous := {key: ProjectSettings.get_setting(key, ""),
-            "gdcc/server/host": ProjectSettings.get_setting("gdcc/server/host", "127.0.0.1"),
-            "gdcc/server/port": ProjectSettings.get_setting("gdcc/server/port", 6099)}
+            "gdcc/compilation_server/host": ProjectSettings.get_setting("gdcc/compilation_server/host", "127.0.0.1"),
+            "gdcc/compilation_server/port": ProjectSettings.get_setting("gdcc/compilation_server/port", 6099)}
     var command := '"%s" --enable-native-access=ALL-UNNAMED "-Dgdparser.gdscript.resourceDir=%s/native" -jar "%s" serve --host {host} --port {port}' \
             % [_valid_java, jar.get_base_dir(), jar]
     ProjectSettings.set_setting(key, command)
-    ProjectSettings.set_setting("gdcc/server/host", "127.0.0.1")
-    ProjectSettings.set_setting("gdcc/server/port", reservation.get_local_port())
+    ProjectSettings.set_setting("gdcc/compilation_server/host", "127.0.0.1")
+    ProjectSettings.set_setting("gdcc/compilation_server/port", reservation.get_local_port())
     var error := ProjectSettings.save()
     reservation.stop()
     if error != OK:

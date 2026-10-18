@@ -70,6 +70,9 @@
 - 2026-10-16 修订（双语界面）：插件自有 UI、状态、日志和警告改用英文原文与中文翻译，
   独立 `gdcc.editor` 翻译域跟随编辑器语言，不改游戏 locale 或 `godot.editor` 域；详见
   “编辑器插件国际化”节。
+- 2026-10-18 修订（编译服务配置统一）：host、port、launch_command 全部归入
+  `gdcc/compilation_server/*`；旧项目的 `gdcc/server/*` 键一次性迁入并移除，新键优先。
+  旧机器级 EditorSettings 仍从原键播种；迁移提示保存项目。设置分类、安装器、端点中继与测试同步。
 - 2026-10-16 修订（项目设置翻译）：另用设置名称专用目录接入现有 `godot.properties`
   域，使原生项目设置分类与属性名显示中文；配置键和枚举存储值不变，卸载仅移除自己的资源。
 - 2026-10-16 修订（构建状态）：新增保存后的 `Build*`、右侧原生错误图标、菜单失败提示
@@ -177,8 +180,8 @@
       写了启动命令一项）：拉起用例必须把端点导向测试空闲端口，否则会收养/碰撞开发机
       6099 上的真实服务；顺带修正"每次重启编辑器重输端口"的体验缺口。服务的诊断
       RPC 端点仍固定 127.0.0.1:6099，不与 dock 联动（~~§3.6 不变~~ **已由 Phase 5 取代**：
-      install 与 dock 同源读 `gdcc/server/host|port`，见 Phase 5 验收记录）。
-      **2026-10 更新**：三个 `gdcc/server/*` 键已迁入项目级 ProjectSettings，dock 输入框
+      install 与 dock 同源读端点设置，见 Phase 5 验收记录）。
+      **2026-10 更新**：三个键已迁入项目级 ProjectSettings `gdcc/compilation_server/*`，dock 输入框
       随之移除，引擎测试改写项目设置驱动（拉起用例的端口转向语义不变），详见 §3.7。
   3. 引擎 harness 落地细节：headless 编辑器 + 注入 `addons/gdcc_test_driver` 驱动插件
      （`plugin.cfg` + `driver_plugin.gd`，不随插件发布）；子进程配置目录经
@@ -576,7 +579,7 @@
     （配置端点 vs 生效端点 / READY / 上轮分析时间 / 最近失败原因，1s 轮询只读镜像；
     失败原因由 lifecycle 在 hook/ping/create/delete 失败点、scheduler 在 put/analyze/
     非 COMPLETED 失败点记录，成功轮次清除）；③ 端点同源：plugin install 改读
-    `gdcc/server/host|port`，dock 提交手势（Enter/失焦）经
+    `gdcc/compilation_server/host|port`，dock 提交手势（Enter/失焦）经
     `service.retarget_rpc_endpoint` 走 §3.5 channel-reset（不重装语言、不断 LSP）。
   - 实施期引擎事实修正（相对 §7 Phase 5 设计，按事实源口径）：
     1. 4.5 `ScriptTextEditor.get_base_editor()` 直接返回 **CodeEdit**
@@ -1680,7 +1683,7 @@ MVP 不含自定义基类 `extends`，功能协议（`bind_service`/`service_tic
 2. 读取并暂存 `network/language_server/use_thread` 原值；为 false 则置 true
    （持久化副作用与恢复义务见 §2.6/§4.1）。
 3. 读取 `network/language_server/remote_host` / `remote_port`（缺省 127.0.0.1/6005）；
-   gdcc RPC 端点读 `gdcc/server/host|port`（缺省 127.0.0.1:6099，2026-10 起为
+   gdcc RPC 端点读 `gdcc/compilation_server/host|port`（缺省 127.0.0.1:6099，2026-10 起为
    **项目级设置** project.godot，经 Project Settings 对话框编辑；插件的
    `settings_changed` 继电器把 host/port 编辑经 `retarget_rpc_endpoint` 切换——只对
    **配置值相对上次中继的变化**触发，显式 `service.install` 不会被无关设置写入拽回）。
@@ -1727,9 +1730,10 @@ dock 保留 gdcc 诊断通道连接状态、上次诊断及上次成功构建的
   提示保存项目；遗留 EditorSettings 键保留不删，便于降级回退）。launcher 每次拉起前
   重新读取（不缓存），项目设置对话框的编辑对下次拉起即生效。机器相关的可执行文件
   路径若不便提交，可把命令留空、改用外部启动的服务（被动连接行为不变）。
-  旧项目的 `gdcc/server/launch_command` 在新键不存在时迁入，随后移除旧项目键；两键
-  并存时保留新键。旧机器级启动命令仍从原 EditorSettings 键播种。host/port 仍为
-  `gdcc/server/host`、`gdcc/server/port`，不随启动命令改名。
+  host、port、launch_command 统一使用 `gdcc/compilation_server/*`。旧项目的
+  `gdcc/server/host`、`gdcc/server/port`、`gdcc/server/launch_command` 在对应新键不存在时
+  迁入，随后移除旧项目键；新旧键并存时保留新键。迁移先于默认值注册，提示用户保存项目。
+  没有项目配置时，旧机器级值仍从原来的 `gdcc/server/*` EditorSettings 键播种。
 - 命令模板：支持 `{host}` / `{port}` 占位符，拉起前替换为目标端点；典型值使用 zig
   启动器 `gdcc serve --host {host} --port {port}`（zig 启动器原样转发参数给 jar，
   `json_rpc_service_implementation.md` §2.5；非 PATH 安装时写启动器的完整路径，如
@@ -1854,7 +1858,7 @@ dock 保留 gdcc 诊断通道连接状态、上次诊断及上次成功构建的
 3. （plugin.gd）初始化低功耗 busy 协调器（计数 0，**不触碰** `OS.low_processor_usage_mode`，
    首个 busy 0→1 时才保存原值并置 `false`；管理器与 launcher 的 busy 上报指向它）。
    此步必须先于第 6 步的任何 `ensure_server_hook` 调用（§3.5/§3.7）。
-4. `install(...)`（RPC 端点来自**项目级设置** `gdcc/server/host|port`，缺省
+4. `install(...)`（RPC 端点来自**项目级设置** `gdcc/compilation_server/host|port`，缺省
    127.0.0.1:6099；配置非法时 fail-closed 回退默认值并 push_error，§3.6 第 3 项）：首建时创建服务专用
    `GdccRpcClient` 子节点（与项目管理客户端队列隔离）；语言实例（首建或复用）
    `Engine.register_script_language(lang)`，返回值非 `OK` 即按 §3.5 回滚并向上报错
@@ -2194,7 +2198,7 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
 显示。断点有二：(a) 异步分析完成后没有任何机制让编辑器重跑 `_validate`——引擎
 4.5 无绑定的主动校验 API（§2.5），且缓存按内容版本精确匹配，"打字→停顿→再打字"
 节奏下校验节拍与可读版本可能永远错开；(b) service 的 RPC 端点在 `plugin.gd`
-硬编码 `127.0.0.1:6099`，与 dock 的 `gdcc/server/host|port` 设置分叉，且后台
+硬编码 `127.0.0.1:6099`，与 dock 的端点设置分叉，且后台
 通道失败按设计静默降级、无可观测面。
 实施：
 1. **主动重校验信号**：scheduler 合并分析结果时记录本轮"哪些 (path, version)
@@ -2212,7 +2216,7 @@ busy 协调器（plugin.gd 单一写入者，本阶段落地，dock busy 改造�
 2. **诊断通道可观测**：dock 的单行状态显示诊断模块 READY 对应的连接状态、上次
    成功合并分析轮距今时间及上次成功构建距今时间（2026-10-13 精简）。诊断状态
    仍只读既有 lifecycle/scheduler 数据；端点和最近失败原因保留于状态 API。
-3. **端点同源**：service install 读 `gdcc/server/host|port`（2026-10 起为项目级
+3. **端点同源**：service install 读 `gdcc/compilation_server/host|port`（2026-10 起为项目级
    ProjectSettings；此前为与 dock 同一对 EditorSettings）。Project Settings 对话框的
    host/port 编辑经插件 `settings_changed` 继电器调 service 专用 retarget 入口同步
    切换（复用 §3.5 模块生命周期的 channel-reset，不重装语言、不断开 LSP 连接）；
@@ -3092,7 +3096,7 @@ Java 侧逐行匹配 `GD3_TEST_RESULT: `；RPC 服务端 `127.0.0.1:0` 起停沿
 `install(..., rpc_host, rpc_port)`，或直接写服务下固定名 `GdccEditorRpcClient`
 子节点的 `host`/`port` 字段；§3.5 已要求每次 `install` 写回端点，两条路径等价）。
 拉起功能用例（Phase 1）反向操作：Java 侧只选定空闲端口而不启动服务，由驱动插件把
-项目设置 `gdcc/server/host|port` 与 `gdcc/compilation_server/launch_command` 写好后触发连接（2026-10 前写
+项目设置 `gdcc/compilation_server/host|port|launch_command` 写好后触发连接（2026-10 前写
 EditorSettings；迁移后写 harness 项目的 ProjectSettings，随用例目录天然隔离），
 验证自动拉起与退出关闭路径（§7 Phase 1 验收）。
 若 headless editor 路径在实现期证实不稳定，降级为：(a) 现有非编辑器 bootstrap 断言
