@@ -87,6 +87,10 @@ jobs:
         shell: bash
         run: bash build-script/package-full-distributions.sh
 
+      - name: Build and package editor addon (four platforms, Release)
+        shell: bash
+        run: ./gradlew buildAddonAllPlatform --args=--package --no-daemon --info --console=plain
+
       - name: Package jar and runtime libraries
         shell: bash
         run: |
@@ -125,6 +129,7 @@ jobs:
             "build/distributions/gdcc-${VERSION}-linux-aarch64-full.zip"
             "build/distributions/gdcc-${VERSION}.jar"
             "build/distributions/gdcc-${VERSION}-libs.zip"
+            "build/distributions/gdcc_editor_addon.zip"
           )
 
           for release_file in "${release_files[@]}"; do
@@ -150,6 +155,7 @@ jobs:
             build/distributions/gdcc-${{ steps.version.outputs.version }}-linux-aarch64-full.zip
             build/distributions/gdcc-${{ steps.version.outputs.version }}.jar
             build/distributions/gdcc-${{ steps.version.outputs.version }}-libs.zip
+            build/distributions/gdcc_editor_addon.zip
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -169,4 +175,4 @@ jobs:
           gh release create "${TAG}" "${release_files[@]}" \
             --target "${GITHUB_SHA}" \
             --title "gdcc ${VERSION}" \
-            --notes "Automated gdcc ${VERSION} release with platform distributions, full distributions, the gdcc jar, and runtime libraries."
+            --notes "Automated gdcc ${VERSION} release with platform distributions, full distributions, the gdcc jar, runtime libraries, and the four-platform editor addon."

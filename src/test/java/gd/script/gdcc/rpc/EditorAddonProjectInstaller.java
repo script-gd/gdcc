@@ -23,6 +23,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 /// Installation helper for the editor-addon bootstrap flow, plus a manual `main` entry that
 /// installs the compiled client extension **in place** into `src/editor_addon/addons/gdcc/`
@@ -35,6 +37,8 @@ import java.util.concurrent.TimeUnit;
 /// `main` argument contract: no arguments builds the host platform only; any arguments are
 /// `TargetPlatform` names (dashes/underscores and case are normalized) and every listed
 /// platform is built and registered into one arch-qualified `.gdextension`.
+/// `--package` instead builds the four distribution platforms in Release mode and writes
+/// `build/distributions/gdcc_editor_addon.zip` without changing the source addon installation.
 ///
 /// Deliberately separate from `GodotGdextensionTestRunner`: that runner rewrites `main.tscn`
 /// and binds the `test_project`/`root.gd` stop-signal contract, while the bootstrap flow drives
@@ -53,17 +57,21 @@ public final class EditorAddonProjectInstaller {
     private static final String RELOADABLE_TRUE_MARKER = "reloadable = true";
     private static final String RELOADABLE_FALSE_MARKER = "reloadable = false";
     private static final Path BUILD_ROOT = Path.of("tmp/editor_addon_build");
+    static final List<TargetPlatform> DISTRIBUTION_PLATFORMS = List.of(
+            TargetPlatform.WINDOWS_X86_64, TargetPlatform.LINUX_X86_64,
+            TargetPlatform.LINUX_AARCH64, TargetPlatform.MACOS_AARCH64);
     private static final long COMPILE_TIMEOUT_MINUTES = 5;
 
     private EditorAddonProjectInstaller() {
     }
 
-    /// Manual entry point: compiles `gdcc_rpc_client.gd3` natively and installs it as a
+    /// Manual entry point: compiles the addon `.gd3` sources and installs them as a
     /// loadable GDExtension under `src/editor_addon/addons/gdcc/` (`bin/` +
     /// `gdcc_for_editor.gdextension`). Run it from the repository root (the gradle tasks
     /// `buildAddonNative` / `buildAddonAllPlatform` wrap this); requires zig. With no
     /// arguments only the host platform is built; otherwise each argument names a
-    /// `TargetPlatform` to build. The Godot editor discovers the `.gdextension` through its
+    /// `TargetPlatform` to build. The single `--package` argument instead produces the
+    /// four-platform Release distribution. The Godot editor discovers the `.gdextension` through its
     /// own filesystem scan, so no `extension_list.cfg` is written into the source tree's
     /// `.godot/` cache.
     static void main(String[] args) throws Exception {
@@ -76,7 +84,10 @@ public final class EditorAddonProjectInstaller {
             System.err.println("zig not found on PATH or in known locations; cannot build the native library.");
             System.exit(1);
         }
-        if (args.length == 0) {
+        if (args.length == 1 && args[0].equals("--package")) {
+            buildDistribution();
+            return;
+        } else if (args.length == 0) {
             buildNative();
         } else {
             buildPlatforms(parsePlatforms(args));
@@ -115,6 +126,63 @@ public final class EditorAddonProjectInstaller {
                 EXTENSION_FILE_NAME, COptimizationLevel.DEBUG, false);
         for (var artifacts : artifactsByPlatform.values()) {
             printInstalled(artifacts);
+        }
+    }
+
+    private static void buildDistribution() throws IOException {
+        var artifactsByPlatform = new LinkedHashMap<TargetPlatform, List<Path>>();
+        for (var platform : DISTRIBUTION_PLATFORMS) {
+            System.out.println("Compiling " + ADDON_SOURCE_DIR + "/*.gd3 for " + platform + " (Release) ...");
+            var result = compileClientLibrary(buildDirFor(platform).resolve("release"), platform, COptimizationLevel.RELEASE);
+            requireBuildSuccess(result, platform);
+            artifactsByPlatform.put(platform, result.artifacts());
+        }
+        var archive = Path.of("build/distributions/gdcc_editor_addon.zip");
+        writeDistribution(ADDON_SOURCE_DIR, BUILD_ROOT.resolve("distribution"), artifactsByPlatform, archive);
+        System.out.println("Packaged editor addon: " + archive.toAbsolutePath());
+    }
+
+    /// Stages only interpreted addon assets and this build's native artifacts, then archives
+    /// them under `addons/gdcc/`. Existing in-place binaries and imported resource caches are
+    /// never copied, so a prior manual or Debug build cannot contaminate the distribution.
+    static void writeDistribution(
+            Path addonSourceDir,
+            Path stagingProjectDir,
+            LinkedHashMap<TargetPlatform, List<Path>> artifactsByPlatform,
+            Path archive
+    ) throws IOException {
+        if (!artifactsByPlatform.keySet().equals(new LinkedHashSet<>(DISTRIBUTION_PLATFORMS))) {
+            throw new IOException("Editor addon distribution requires all four platforms: " + DISTRIBUTION_PLATFORMS);
+        }
+        if (Files.exists(stagingProjectDir)) {
+            clearDirectory(stagingProjectDir);
+        }
+        var extensionDir = stagingProjectDir.resolve(EXTENSION_SUB_DIR);
+        Files.createDirectories(extensionDir);
+        try (var walk = Files.walk(addonSourceDir)) {
+            for (var source : walk.filter(Files::isRegularFile).sorted().toList()) {
+                var relative = addonSourceDir.relativize(source);
+                var name = source.getFileName().toString();
+                if (relative.getName(0).toString().equals("bin") || isInsideGodotCache(relative)
+                        || name.endsWith(".gd3") || name.endsWith(".gd3.uid") || name.endsWith(".import")
+                        || relative.toString().equals(EXTENSION_FILE_NAME)) {
+                    continue;
+                }
+                var target = extensionDir.resolve(relative);
+                Files.createDirectories(target.getParent());
+                Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+        installMultiPlatformExtension(stagingProjectDir, EXTENSION_SUB_DIR, artifactsByPlatform,
+                EXTENSION_FILE_NAME, COptimizationLevel.RELEASE, false);
+        Files.createDirectories(archive.toAbsolutePath().getParent());
+        try (var zip = new ZipOutputStream(Files.newOutputStream(archive));
+             var walk = Files.walk(extensionDir)) {
+            for (var file : walk.filter(Files::isRegularFile).sorted().toList()) {
+                zip.putNextEntry(new ZipEntry(stagingProjectDir.relativize(file).toString().replace('\\', '/')));
+                Files.copy(file, zip);
+                zip.closeEntry();
+            }
         }
     }
 
@@ -164,11 +232,19 @@ public final class EditorAddonProjectInstaller {
             Path projectPath,
             TargetPlatform targetPlatform
     ) throws IOException {
+        return compileClientLibrary(projectPath, targetPlatform, COptimizationLevel.DEBUG);
+    }
+
+    private static CompileResult compileClientLibrary(
+            Path projectPath,
+            TargetPlatform targetPlatform,
+            COptimizationLevel optimizationLevel
+    ) throws IOException {
         try (var api = new API()) {
             api.createModule(MODULE_ID, "GDCC Editor Extension");
             api.setCompileOptions(MODULE_ID, new CompileOptions(
                     GodotVersion.V451, projectPath.toAbsolutePath(),
-                    COptimizationLevel.DEBUG, targetPlatform,
+                    optimizationLevel, targetPlatform,
                     false, CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT,
                     // The client library supports cross-compilation; TinyCC is host-native only.
                     CCompilerKind.ZIG_CC));

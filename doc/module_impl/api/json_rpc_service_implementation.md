@@ -814,6 +814,14 @@ x86_64/AArch64），供真实编辑器手工验收（启用插件 + dock ping + 
 PCH、逐 TU 编译与单次链接策略。GDExtension 的边界为 C ABI，具体构建合同见
 `backend_build_system_implementation.md`。
 
+发布插件使用同一入口的 `--package` 模式：
+`./gradlew buildAddonAllPlatform --args=--package --no-daemon --info --console=plain`。
+该模式独立为 Windows x86_64、Linux x86_64/AArch64、macOS AArch64 编译 Release 库，
+生成 `build/distributions/gdcc_editor_addon.zip`，不改变源码目录的手工安装。
+包根为 `addons/gdcc/`，排除 `.gd3` 与其他 addon；debug/release 模式均加载对应 Release 库，
+扩展保持 `reloadable = false`。CI 的 Linux x64 editor-addon 任务和 Release 工作流共用此入口，
+详细内容边界见 `gd3_editor_integration_implementation.md` §3.8。
+
 ---
 
 ## 6. 互操作结论与已知风险

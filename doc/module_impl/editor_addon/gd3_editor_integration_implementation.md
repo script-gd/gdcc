@@ -1790,6 +1790,17 @@ dock 保留 gdcc 诊断通道连接状态、上次诊断及上次成功构建的
   不进编译模块、不上面向世界清单，由 `plugin.gd`
   `preload` 直接引用。
 - `buildAddonNative` / `buildAddonAllPlatform` Gradle 任务不变。
+- 分发入口：`./gradlew buildAddonAllPlatform --args=--package --no-daemon --info --console=plain`。
+  独立编译 Windows x86_64、Linux x86_64、Linux AArch64、macOS AArch64 四套 **Release** 库，
+  不覆盖源码目录的手工安装；生成 `build/distributions/gdcc_editor_addon.zip`。
+  ZIP 仅包含 `src/editor_addon/addons/gdcc/` 的运行时内容，路径前缀固定为 `addons/gdcc/`；
+  保留解释型 `.gd`、插件配置、翻译和图标，排除已编译的 `.gd3`、其 UID、导入缓存、
+  `.godot/` 和源码目录原有的 `bin/`。重新生成的 `bin/` 仅来自本次四平台构建，
+  `gdcc_for_editor.gdextension` 的八个架构限定 debug/release 键均指向对应 Release 库，
+  并维持 `reloadable = false`。不包含 `src/editor_addon` 项目根或其他 addon 的内容。
+- CI 在 Windows x64 和 Linux x64 分别运行 editor-addon 测试；Linux x64 的专用任务
+  在测试通过后执行上述四平台打包并上传 `gdcc-editor-addon` 工件。`release.yml` 使用同一入口，
+  将 `gdcc_editor_addon.zip` 加入工件、完整性检查和 GitHub Release 附件。
 
 ### 3.9 `gdcc_syntax_highlighter.gd` — `.gd3` 语法高亮（解释型 GDScript）
 

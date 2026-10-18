@@ -44,6 +44,11 @@ jobs:
             id: windows-x64-editor-addon
             upload_jar: false
             editor_addon_only: true
+          - name: Linux x64 (Editor Addon)
+            os: ubuntu-latest
+            id: linux-x64-editor-addon
+            upload_jar: false
+            editor_addon_only: true
           - name: macOS aarch64
             os: macos-latest
             id: macos-aarch64
@@ -251,6 +256,18 @@ jobs:
           else
             ./gradlew test --no-daemon --info --console=plain
           fi
+
+      - name: Build and package editor addon (four platforms, Release)
+        if: matrix.id == 'linux-x64-editor-addon'
+        run: ./gradlew buildAddonAllPlatform --args=--package --no-daemon --info --console=plain
+
+      - name: Upload editor addon
+        if: matrix.id == 'linux-x64-editor-addon'
+        uses: actions/upload-artifact@v7
+        with:
+          name: gdcc-editor-addon
+          path: build/distributions/gdcc_editor_addon.zip
+          if-no-files-found: error
 
       - name: Package jar and runtime libraries
         if: matrix.upload_jar
